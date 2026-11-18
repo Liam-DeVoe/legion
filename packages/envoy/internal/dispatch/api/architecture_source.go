@@ -93,15 +93,19 @@ func querySources(ctx context.Context, q queryer, tail string, args ...any) ([]m
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (model.ArchitectureSource, error) { return architecture.ScanSource(row) })
 }
 
+// putArchitectureSourceInput is the body of PUT
+// /api/v1/projects/{key}/architecture-sources/{owner}/{repo}.
+type putArchitectureSourceInput struct {
+	Branch string       `json:"branch" required:"true"`
+	Actor  *model.Actor `json:"actor"`
+}
+
 // putArchitectureSource adds the repository in the path as a source of the project, or changes
 // the branch of the source it already is. A re-save keeps the source's id and its components and
 // resets its sync bookkeeping, so the next sync re-imports from the new branch.
 func (s *server) putArchitectureSource(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
-	var input struct {
-		Branch string       `json:"branch"`
-		Actor  *model.Actor `json:"actor"`
-	}
+	var input putArchitectureSourceInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -179,7 +183,7 @@ func (s *server) putArchitectureSource(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(event)
+	s.publish(r.Context(), event)
 	WriteJSON(w, http.StatusOK, source)
 }
 
@@ -209,9 +213,7 @@ func (s *server) checkArchitectureSource(ctx context.Context, owner, name, branc
 // edges (graph_edges loses their component arms with them) and the times recorded for them
 // (component_facts). Every other source's components stay, and snapshots stay as history.
 func (s *server) deleteArchitectureSource(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		Actor *model.Actor `json:"actor"`
-	}
+	var input actorInput
 	if !s.decodeOptionalJSON(w, r, &input) {
 		return
 	}
@@ -259,7 +261,7 @@ func (s *server) deleteArchitectureSource(w http.ResponseWriter, r *http.Request
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(event)
+	s.publish(r.Context(), event)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -375,17 +377,22 @@ func sourcePathRepo(r *http.Request) (owner, name string, err error) {
 	return parseSourceRepo(r.PathValue("owner") + "/" + r.PathValue("repo"))
 }
 
-// parseSourceRepo validates and canonicalizes an owner/name repository input
-// the same way repository mappings are stored (lowercase, .git trimmed). The
-// segments are restricted to GitHub's own charset so a stored repo can never
-// smuggle path segments into an outbound API URL (".." would traverse).
-var sourceRepoOwnerPattern = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$`)
 var sourceRepoNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
+// parseSourceRepo validates and canonicalizes an owner/name repository input
+// the same way repository mappings are stored (lowercase, .git trimmed). The
+// owner is read by the grammar an issue's own repository is (repoOwnerPattern,
+// the daemon's ghrepo ownerName): a login as GitHub serves it, which is wider
+// than GitHub's sign-up charset, since a managed user's login ends in
+// `_<shortcode>` (`mona-cat_octo`) and a source in such an account is one a
+// project can hold. The name is held to letters, digits, `.`, `-` and `_`, and
+// `.` and `..` are refused, so a stored repo can never smuggle path segments
+// into an outbound API URL (".." would traverse); an underscore traverses
+// nothing, in either segment.
 func parseSourceRepo(raw string) (owner, name string, err error) {
 	trimmed := strings.TrimSpace(raw)
 	parts := strings.Split(trimmed, "/")
-	if len(parts) != 2 || !sourceRepoOwnerPattern.MatchString(parts[0]) ||
+	if len(parts) != 2 || !repoOwnerPattern.MatchString(parts[0]) ||
 		!sourceRepoNamePattern.MatchString(parts[1]) || parts[1] == "." || parts[1] == ".." {
 		return "", "", errorf(http.StatusBadRequest, "SOURCE_INPUT", "repository must be owner/name, got %q", raw)
 	}

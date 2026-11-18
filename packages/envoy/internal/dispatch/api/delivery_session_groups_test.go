@@ -21,7 +21,7 @@ func recordSessionTitles(t *testing.T, database *store.Store, at time.Time, titl
 	ctx := t.Context()
 	pool := database.Pool
 	for _, statement := range []string{
-		`insert into projects (key, name) values ('ACME', 'Acme') on conflict do nothing`,
+		`insert into projects (key, name, default_assignee) values ('ACME', 'Acme', 'alice') on conflict do nothing`,
 		`insert into issues (key, project_key, number, title, status, created_by, rank)
 			values ('ACME-900', 'ACME', 900, 'Titles', 'todo', '{"kind":"system","id":"test"}', 'Z')
 			on conflict do nothing`,
@@ -166,10 +166,36 @@ func TestCreateSessionGroupRefusesBadInput(t *testing.T) {
 		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/delivery/session-groups", body, "alice")
 		expectRefusal(t, label, response, http.StatusBadRequest, "SESSION_GROUP_INPUT")
 	}
-	unknown := dispatchRequest(t, handler, http.MethodPost, "/api/v1/delivery/session-groups", map[string]any{
+}
+
+// A member the route does not declare, as a newer build's page may send while a release rolls out,
+// is ignored: the group is created from the members the route declares, and nothing keeps the
+// other one.
+func TestCreateSessionGroupIgnoresAMemberItDoesNotDeclare(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/delivery/session-groups", map[string]any{
 		"name": "Extra", "sessions": []string{"s1"}, "colour": "red",
 	}, "alice")
-	expectRefusal(t, "an unknown field", unknown, http.StatusBadRequest, "INVALID_JSON")
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create with a colour: status = %d, body = %s, want 201", response.Code, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), "colour") || strings.Contains(response.Body.String(), "red") {
+		t.Fatalf("the created group %s carries the colour the route does not declare", response.Body.String())
+	}
+	var group sessionGroupBody
+	if err := json.Unmarshal(response.Body.Bytes(), &group); err != nil {
+		t.Fatalf("decode group: %v", err)
+	}
+	if group.Name != "Extra" || !slices.Equal(group.Sessions, []string{"s1"}) {
+		t.Fatalf("group = %+v, want Extra holding s1", group)
+	}
+	var stored string
+	if err := database.Pool.QueryRow(t.Context(), `select to_jsonb(g)::text from delivery_session_groups g where id = $1::uuid`, group.ID).Scan(&stored); err != nil {
+		t.Fatalf("read the stored group: %v", err)
+	}
+	if strings.Contains(stored, "red") {
+		t.Fatalf("the stored group %s keeps the colour", stored)
+	}
 }
 
 func TestASessionIsInOneGroup(t *testing.T) {
@@ -262,6 +288,50 @@ func TestPatchRenamesAddsRemoves(t *testing.T) {
 		"remove": []string{"s2", "s4"},
 	}, "alice")
 	expectRefusal(t, "removing every session", emptied, http.StatusBadRequest, "SESSION_GROUP_INPUT")
+}
+
+// TestAPatchThatChangesNothingKeepsTheLiveViewEqualToTheRead: a live Delivery view hears of a
+// session group's write only through its change row, so a PATCH that moves what the read answers
+// for the group writes one, and a PATCH that writes none leaves the group as the read answered it.
+// A PATCH naming the group's own name, by the actor who last wrote it, changes nothing: here it
+// moved updated_at, which the read answers, while the trigger, which skips an update that differs
+// only in updated_at, logged no change row, so the view kept the old updated_at until some later
+// write's delta (dispatch://INFRA-2916, the testing round of 2026-11-16 at db4f353b).
+func TestAPatchThatChangesNothingKeepsTheLiveViewEqualToTheRead(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	group := createSessionGroup(t, handler, "Crew", "s1", "s2")
+	path := "/api/v1/delivery/session-groups/" + group.ID
+	changes := func() int {
+		t.Helper()
+		var count int
+		if err := database.Pool.QueryRow(t.Context(), `select count(*) from delivery_changes where kind = 'session_group'`).Scan(&count); err != nil {
+			t.Fatalf("count session_group changes: %v", err)
+		}
+		return count
+	}
+	updatedAt := func(label string, response interface{ Result() *http.Response }) time.Time {
+		t.Helper()
+		result := response.Result()
+		defer result.Body.Close()
+		var body struct {
+			UpdatedAt time.Time `json:"updated_at"`
+		}
+		if result.StatusCode != http.StatusOK {
+			t.Fatalf("%s: status = %d, want 200", label, result.StatusCode)
+		}
+		if err := json.NewDecoder(result.Body).Decode(&body); err != nil {
+			t.Fatalf("%s: decode group: %v", label, err)
+		}
+		return body.UpdatedAt
+	}
+
+	first := updatedAt("first rename", dispatchRequest(t, handler, http.MethodPatch, path, map[string]any{"name": "Release crew"}, "alice"))
+	before := changes()
+	again := updatedAt("the same name again", dispatchRequest(t, handler, http.MethodPatch, path, map[string]any{"name": "Release crew"}, "alice"))
+	logged := changes() - before
+	if !again.Equal(first) && logged != 1 {
+		t.Errorf("a PATCH that changes nothing moved updated_at from %s to %s and logged %d session_group change rows, want the group unchanged or one change row", first.Format(time.RFC3339Nano), again.Format(time.RFC3339Nano), logged)
+	}
 }
 
 func TestDeleteSessionGroup(t *testing.T) {

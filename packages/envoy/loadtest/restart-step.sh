@@ -10,8 +10,8 @@
 # --warm-at, --kill-at and --down are whole seconds; --duration, --backlog-over and --warm-over are
 # durations as Go reads them ("25s", "1m30s").
 #
-# The step is a run-step.sh step under consumer delivery (LOADTEST_SESSION_DELIVERY=consumer, which
-# this script sets). Counted from the window start:
+# The step is a run-step.sh step under consumer delivery, as every step is: every session asks for
+# a consumer of its own. Counted from the window start:
 #
 #   --warm-at   one envelope per session (`loadgen backlog -per 1`), so every session has answered
 #               a frame done and holds a resume point, as a session running for a while does. With
@@ -86,7 +86,6 @@ lock_root "$ROOT"
 out=$(realpath -m -- "$out")
 RUN=$ROOT/run
 LOGS=$ROOT/logs
-export LOADTEST_SESSION_DELIVERY=consumer
 no_resume=false
 if [ "${LOADTEST_NO_RESUME:-}" = 1 ]; then no_resume=true; fi
 
@@ -134,7 +133,7 @@ kill_and_restart() {
     new=$(cat -- "$pidf")
     up=false
     while [ -e "/proc/$new" ] && ! grep -q '^State:.*Z' "/proc/$new/status" 2>/dev/null; do
-      if curl -fsS --max-time 1 -H "Authorization: Bearer $token" "http://127.0.0.1:$port/v1/sessions" >/dev/null 2>&1; then
+      if printf 'Authorization: Bearer %s' "$token" | curl -fsS --max-time 1 -H @- "http://127.0.0.1:$port/v1/sessions" >/dev/null 2>&1; then
         up=true
         break
       fi

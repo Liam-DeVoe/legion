@@ -1,13 +1,12 @@
 package bus_test
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -74,7 +73,7 @@ func TestAPublishThatFailedWhileReconnectingIsNeverSent(t *testing.T) {
 		DedupeKey:     "publish-while-reconnecting",
 		IssuedAt:      contracts.NowMillis(),
 	}
-	if err := client.PublishCore(item); err == nil {
+	if err := client.Publish(item); err == nil {
 		t.Fatal("a core publish while the server was away reported success")
 	}
 
@@ -182,20 +181,7 @@ func TestAReconnectDuringDrainClosesQuietly(t *testing.T) {
 
 // busLogs collects the default slog logger's JSON records for one test.
 type busLogs struct {
-	mu     sync.Mutex
-	buffer bytes.Buffer
-}
-
-func (l *busLogs) Write(p []byte) (int, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.buffer.Write(p)
-}
-
-func (l *busLogs) String() string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.buffer.String()
+	logtest.Buffer
 }
 
 func (l *busLogs) errorLine() string {
@@ -296,7 +282,7 @@ func TestAReconnectInPlaceKeepsTheSubscriptionsNATSRestored(t *testing.T) {
 		t.Fatalf("role subscribe: %v", err)
 	}
 	reconnected := make(chan struct{}, 1)
-	client.AddReconnectHook(func(*natsgo.Conn) error {
+	client.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
 		reconnected <- struct{}{}
 		return nil
 	})
@@ -370,7 +356,7 @@ func TestAReconnectHookFailureIsReportedByItsStallUnlessTheClientStopped(t *test
 			}
 			t.Cleanup(client.Close)
 			hooked := make(chan struct{}, 1)
-			client.AddReconnectHook(func(*natsgo.Conn) error {
+			client.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
 				if tc.stop {
 					// The shutdown begins while the hook is still running, and the hook's next
 					// server request fails on the closed connection.

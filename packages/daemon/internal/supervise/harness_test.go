@@ -1,7 +1,6 @@
 package supervise
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -17,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 )
 
 const (
@@ -147,7 +147,9 @@ type memStore struct {
 	claims     map[claim.Token]Claim
 	deliveries map[claim.Token]Delivery
 	puts       []Claim
-	failures   map[string]error
+	// writes is each write and retirement of a pending delivery, in order (deliveryLog).
+	writes   []string
+	failures map[string]error
 	// onPut, when set, runs on every PutClaim before it is recorded.
 	onPut func(Claim)
 }
@@ -171,6 +173,19 @@ func (s *memStore) PutClaim(_ context.Context, c Claim) error {
 	}
 	c = copyClaim(c)
 	c.Pending = nil
+	// The step columns are PutClaimStep's alone, as they are in the store (store's putClaim): a
+	// machine's write carries whatever its in-memory claim last read, and a step recorded since
+	// that read must survive it.
+	held, stored := s.claims[c.Token]
+	c.Step = held.Step
+	// So are the four activity columns PutClaimActivity's (reportActivity), with the store's one
+	// exception: a write that moves the generation is a launch, and it clears them, as an insert
+	// leaves them at their defaults.
+	c.ActivityAt, c.ActivityBackground, c.ActivityKinds, c.ActivityNextReminderAt = time.Time{}, false, nil, time.Time{}
+	if stored && held.Generation == c.Generation {
+		c.ActivityAt, c.ActivityBackground = held.ActivityAt, held.ActivityBackground
+		c.ActivityKinds, c.ActivityNextReminderAt = slices.Clone(held.ActivityKinds), held.ActivityNextReminderAt
+	}
 	s.claims[c.Token] = c
 	s.puts = append(s.puts, c)
 	return nil
@@ -192,6 +207,7 @@ func (s *memStore) PutDelivery(_ context.Context, token claim.Token, d Delivery)
 		return fmt.Errorf("put delivery %s: no claim %s", d.ID, token)
 	}
 	s.deliveries[token] = d
+	s.writes = append(s.writes, "put "+d.ID)
 	return nil
 }
 
@@ -241,7 +257,86 @@ func (s *memStore) RetireDelivery(ctx context.Context, c Claim, deliveryID strin
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.deliveries, c.Token)
+	s.writes = append(s.writes, "retire "+deliveryID)
 	return nil
+}
+
+// PutClaimStep is the store's narrow write of the step columns, with the rules the real one
+// holds to (store.Store.PutClaimStep): a zero At records the call without moving the claim's
+// last-step time, a zero TurnStartedAt leaves the stored turn start alone, an empty CallID
+// carries no call and leaves the six call columns as they stand, and a step older than the one
+// recorded is dropped whole. It writes nothing else of the claim, which is the property the
+// machine relies on.
+func (s *memStore) PutClaimStep(_ context.Context, token claim.Token, step StepRecord) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.failures["PutClaimStep"]; err != nil {
+		return false, err
+	}
+	c, known := s.claims[token]
+	if !known {
+		return false, nil
+	}
+	held := c.Step
+	if !step.At.IsZero() && !held.At.IsZero() && step.At.Before(held.At) {
+		return true, nil
+	}
+	if !step.At.IsZero() {
+		held.At = step.At
+	}
+	if !step.TurnStartedAt.IsZero() {
+		held.TurnStartedAt = step.TurnStartedAt
+	}
+	if step.CallID != "" {
+		held.Tool, held.CallID = step.Tool, step.CallID
+		held.ArgsBytes, held.ArgsHash = step.ArgsBytes, step.ArgsHash
+		held.StartedAt, held.EndedAt = step.StartedAt, step.EndedAt
+	}
+	c.Step = held
+	s.claims[token] = c
+	return true, nil
+}
+
+// reportActivity is a session's activity report reaching the store, with the rules the real one
+// holds to (store.Store.PutClaimActivity): it is written onto the launch it names alone, so a
+// report of a launch the claim has moved past is refused, and one older than the report recorded
+// is dropped. It answers whether the store holds the claim at that launch.
+func (s *memStore) reportActivity(token claim.Token, generation uint64, report ActivityReport) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, known := s.claims[token]
+	if !known || c.Generation != generation {
+		return false
+	}
+	if !c.ActivityAt.IsZero() && report.At.Before(c.ActivityAt) {
+		return true
+	}
+	c.ActivityAt, c.ActivityBackground, c.ActivityKinds = report.At, report.Background, slices.Clone(report.Kinds)
+	s.claims[token] = c
+	return true
+}
+
+// ClaimActivity is the store's read of one launch's activity report (store.Store.ClaimActivity):
+// the report of the launch the row records, and no report for any other launch or for a launch
+// that has reported nothing.
+func (s *memStore) ClaimActivity(_ context.Context, token claim.Token, generation uint64) (ActivityReport, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.failures["ClaimActivity"]; err != nil {
+		return ActivityReport{}, false, err
+	}
+	c, known := s.claims[token]
+	if !known || c.Generation != generation || c.ActivityAt.IsZero() {
+		return ActivityReport{}, false, nil
+	}
+	return ActivityReport{At: c.ActivityAt, Background: c.ActivityBackground, Kinds: slices.Clone(c.ActivityKinds)}, true, nil
+}
+
+// step is the record the store holds for token, as a claim read carries it back.
+func (s *memStore) step(token claim.Token) StepRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.claims[token].Step
 }
 
 func (s *memStore) fail(method string, err error) {
@@ -266,6 +361,17 @@ func (s *memStore) delivery(token claim.Token) (Delivery, bool) {
 	defer s.mu.Unlock()
 	d, ok := s.deliveries[token]
 	return d, ok
+}
+
+// deliveryLog is every write and retirement of a pending delivery, in order, as "put <id>" and
+// "retire <id>". A case reads it to see how a delivery ended: the real store releases what a
+// delivery holds of a person's decisions in the delete alone (its releaseKeptDecisions), so a
+// row overwritten in place by the next delivery leaves those rows held by an id that is gone,
+// and a write under an id after its retirement is that fault.
+func (s *memStore) deliveryLog() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.writes...)
 }
 
 func (s *memStore) history() []Claim {
@@ -307,22 +413,13 @@ func (s *testSpecs) last(t *testing.T) Claim {
 
 // logBuffer is a log handler's destination that tests read from.
 type logBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *logBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
+	testlog.Buffer
 }
 
 // lines is every log line containing all of the fragments.
 func (b *logBuffer) lines(fragments ...string) []string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
 	var matched []string
-	for _, line := range strings.Split(b.buf.String(), "\n") {
+	for _, line := range strings.Split(b.String(), "\n") {
 		all := line != ""
 		for _, fragment := range fragments {
 			all = all && strings.Contains(line, fragment)
@@ -530,8 +627,11 @@ func newBareHarness(t *testing.T) *harness {
 		Runtime: h.rt,
 		Conns:   h.conns,
 		Store:   h.store,
-		Specs:   h.specs,
-		Clock:   h.clock,
+		// The store's read of a launch's activity report, which a let-go records the background
+		// work it ended from (recordEnd); a test reports into it through reportActivity.
+		ClaimActivity: h.store.ClaimActivity,
+		Specs:         h.specs,
+		Clock:         h.clock,
 		// Both handlers over the one logger: the text buffer every test that reads lines uses,
 		// and the recorder a test that reads an attribute's own value asks (logRecords.of).
 		Log: slog.New(logRecorder{
@@ -544,6 +644,10 @@ func newBareHarness(t *testing.T) *harness {
 		// helper below records for every claim it brings up: a test exercising plugin staleness
 		// overrides it (or posts a RequestRegister naming a different one) itself.
 		PluginContract: 24,
+		// The gate of a daemon that paces nothing, which grants every refresh: every Deps carries
+		// one and none is nil, and a test that wants the lane bounded builds its own
+		// (NewRefreshGate, gatedHarness).
+		RefreshGate: NewRefreshGate(0),
 	}
 	return h
 }
@@ -604,9 +708,13 @@ func (h *harness) post(ev Event, result bool) error {
 // promptInTurn is the delivery of the prompt the agent took and has not reported the end of: the
 // one whose work the turn now ending did. It is read before the end reaches the machine, so a
 // task that end re-sends is the next turn's prompt rather than this one's. A prompt the
-// connection refused reports nothing, and neither does one the agent has already refused late:
-// Oh My Pi answers a prompt once, a failure or a result, and the machine stops waiting for the
-// result at exactly the moment it takes that task back (awaitingResult).
+// connection refused reports nothing, and neither does one the agent has already answered with
+// no turn, a busy answer or a late refusal: Oh My Pi answers a prompt once, a failure or a result,
+// and the machine stops waiting for that prompt's result at exactly the moment it takes that
+// answer (Machine.outstanding). A prompt whose wait for its turn ran out is still outstanding, and
+// its turn, starting late, reports it only while it is the last prompt the connection accepted:
+// the fake connection keeps that one alone (fake.Conn's TakePromptResult), so a test whose task
+// was sent again since posts the first prompt's result itself.
 func (h *harness) promptInTurn() string {
 	conn, ok := h.conns.Conn(h.token)
 	if !ok {
@@ -617,10 +725,22 @@ func (h *harness) promptInTurn() string {
 		return ""
 	}
 	delivery, _ := reporter.TakePromptResult()
-	if delivery != h.m.awaitingResult {
+	h.m.mu.Lock()
+	held := slices.Contains(h.m.outstanding, delivery)
+	h.m.mu.Unlock()
+	if !held {
 		return ""
 	}
 	return delivery
+}
+
+// outstanding is every prompt of the pending task the machine waits on a result for
+// (Machine.outstanding), read under the machine's lock, since a send's goroutine may be handling
+// its acknowledgement.
+func (h *harness) outstanding() []string {
+	h.m.mu.Lock()
+	defer h.m.mu.Unlock()
+	return slices.Clone(h.m.outstanding)
 }
 
 func (h *harness) must(ev Event) {
@@ -708,6 +828,33 @@ func (h *harness) wantBudgets(want Budgets) {
 	h.t.Helper()
 	if got := h.budgets(); got != want {
 		h.t.Fatalf("budgets = %+v, want %+v", got, want)
+	}
+}
+
+// wantFailure is the whole record a failure leaves on the claim: the cause word the site that
+// failed it chose, the sentence that site wrote for a person to read — matched on a fragment,
+// since several of them carry the error the runtime or the provider answered with — and the
+// moment of the failure, which lies between the clock reading the caller took before the step
+// that failed the claim and the clock now. It says nothing of the claim's state: a claim an
+// operator retired after it failed carries the same record.
+func (h *harness) wantFailure(cause FailureCause, detail string, since time.Time) {
+	h.t.Helper()
+	got := h.claim()
+	if got.FailureCause == cause && strings.Contains(got.Failure, detail) &&
+		!got.FailedAt.Before(since) && !got.FailedAt.After(h.clock.Now()) {
+		return
+	}
+	h.t.Fatalf("the claim carries cause %q, failure %q and failed at %s; want cause %q, a failure naming %q, and a failure between %s and %s",
+		got.FailureCause, got.Failure, got.FailedAt, cause, detail, since, h.clock.Now())
+}
+
+// wantNoFailure is a claim that carries no failure record at all, which is every claim but one
+// the daemon has failed and not launched again.
+func (h *harness) wantNoFailure() {
+	h.t.Helper()
+	if got := h.claim(); got.FailureCause != "" || got.Failure != "" || !got.FailedAt.IsZero() {
+		h.t.Fatalf("the claim carries cause %q, failure %q and failed at %s, want no record of a failure",
+			got.FailureCause, got.Failure, got.FailedAt)
 	}
 }
 

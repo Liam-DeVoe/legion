@@ -221,3 +221,40 @@ func TestRequesters(t *testing.T) {
 		}
 	}
 }
+
+// TestTrimLineEnding is the one line-ending rule's table: the value TrimLineEnding spends for
+// each stored value, and whether it says it changed it. The whole trailing run of carriage
+// returns and line feeds goes only where what is left is not empty and holds no carriage return
+// and no line feed inside it, so a PEM document keeps the line ending that ends it, and a value
+// that is nothing but line endings keeps them, since the empty string reads to a caller as a
+// credential that is not set. (The values below are fixtures, not credentials.)
+func TestTrimLineEnding(t *testing.T) {
+	const (
+		token = "tok-abc"
+		pem   = "-----BEGIN KEY-----\nabc\n-----END KEY-----\n"
+	)
+	for _, c := range []struct {
+		name        string
+		value       string
+		want        string
+		wantChanged bool
+	}{
+		{"a line feed", token + "\n", token, true},
+		{"a carriage return and a line feed", token + "\r\n", token, true},
+		{"a carriage return", token + "\r", token, true},
+		{"two line feeds", token + "\n\n", token, true},
+		{"no line ending", token, token, false},
+		// A PEM document holds line endings inside it, so its last one is left alone.
+		{"a PEM document", pem, pem, false},
+		{"a line ending inside the value", "a\nb\r", "a\nb\r", false},
+		{"two lines", "a\nb\n", "a\nb\n", false},
+		{"one line feed alone", "\n", "\n", false},
+		{"leading line feeds", "\n\n" + token, "\n\n" + token, false},
+	} {
+		got, changed := policy.TrimLineEnding(c.value)
+		if got != c.want || changed != c.wantChanged {
+			t.Errorf("%s: TrimLineEnding(%q) = %q, %t; want %q, %t",
+				c.name, c.value, got, changed, c.want, c.wantChanged)
+		}
+	}
+}

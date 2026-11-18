@@ -15,7 +15,6 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
 const duplicateHeadlineOptions = "StartSel=" + markStart + ", StopSel=" + markEnd + ", HighlightAll=true"
@@ -68,6 +67,43 @@ const (
 // duplicateIssueKeyLexeme matches a lexeme shaped like a Dispatch issue key, lower-cased as a
 // vector holds it.
 var duplicateIssueKeyLexeme = regexp.MustCompile(`^[a-z][a-z0-9_]*-[0-9]+$`)
+
+// duplicateTitleKeyPattern is an issue key as a title writes it, `ACME-431`, in Postgres's
+// regular expression syntax: the server's issue key shape (issueKeyShape) between word bounds.
+const duplicateTitleKeyPattern = `\m` + issueKeyShape + `\M`
+
+// duplicateNamesAnotherIssue is the condition, on a candidate issue `i`, that the new title
+// (the statement's parameter newTitle) names other issues than the candidate is about: both
+// titles name an issue key, and no key the new title names is the candidate's own key or a key
+// the candidate's title names. Two titles that name different issues are about different
+// issues, whatever else they share, so the candidate is no near copy of the new issue. A new
+// title that names the candidate itself is about the candidate, whatever other issue the
+// candidate's title cites: a title that ends "(carries ACME-28)" is a copy of ACME-28.
+//
+// The gate drops every issue-key lexeme from the terms it scores (duplicateKeyLexemes says why),
+// so titles filed from one template, one for each issue they concern, score as copies of each
+// other: "Review ACME-15 against its verification.md" scored 1.0 against "Review ACME-12 against
+// its verification.md". It is a condition of the statement, not a filter on its answer,
+// because the statement answers at most duplicateCandidateLimit candidates: a project with more
+// open issues from one template than that would otherwise crowd a real copy out of the answer.
+//
+// Keys are read from both titles by the same pattern in the same statement, so the two sides
+// cannot disagree on what a key is. The pattern also reads a word that only has the shape of a
+// key, `UTF-8` or `SHA-256`, so a copy that changes only such a word is left out. A key in a
+// spec is left alone: a spec cites the nearest issue it ruled out, which says nothing about what
+// the new issue is.
+func duplicateNamesAnotherIssue(newTitle string) string {
+	return `exists (select 1 from regexp_matches(` + newTitle + `, '` + duplicateTitleKeyPattern + `', 'g'))
+     and exists (select 1 from regexp_matches(i.title, '` + duplicateTitleKeyPattern + `', 'g'))
+     and not exists (
+       select 1
+         from regexp_matches(` + newTitle + `, '` + duplicateTitleKeyPattern + `', 'g') named(key)
+        where named.key[1] = i.key
+           or exists (
+                select 1
+                  from regexp_matches(i.title, '` + duplicateTitleKeyPattern + `', 'g') candidate(key)
+                 where candidate.key = named.key))`
+}
 
 // duplicateGateRollback bounds the gate's own rollback, which runs after the read whatever
 // happened to it. It is not the read's bound: it ends a rollback the database will not take,
@@ -128,8 +164,11 @@ func duplicateKeyLexemes(ctx context.Context, q queryer, project string) (map[st
 // A candidate's headline marks the words of its title the new text shares: its query is the
 // shared lexemes, as the title rule it replaces built it.
 //
+// A candidate is left out when the new title names other issues than the candidate is about
+// (duplicateNamesAnotherIssue).
+//
 // Parameters: $1 project, $2 the picked lexemes, $3 their idf, $4 the new issue's ancestors,
-// $5 the lowest score to return, $6 the headline options.
+// $5 the lowest score to return, $6 the headline options, $7 the new title.
 var duplicateScoreQuery = `
 with term_weights as (
   select quote_literal(w.lexeme)::tsquery as tq, w.lexeme, w.idf
@@ -160,6 +199,7 @@ select s.key, i.title, i.status, s.shared, s.score,
          to_tsquery('simple', (select string_agg(quote_literal(x), ' | ') from unnest(s.shared_lex) x)), $6) as headline
   from scored s join issues i on i.key = s.key
  where s.score >= $5
+   and not (` + duplicateNamesAnotherIssue("$7") + `)
  order by s.score desc, i.updated_at desc
  limit ` + strconv.Itoa(duplicateCandidateLimit) + `
 `
@@ -179,7 +219,7 @@ select s.key, i.title, i.status, s.shared, s.score,
 // stored markdown with its ask blocks stripped, as 0087 rewrote that function (0058 built the
 // same vector with to_tsvector, which search_vector only leaves for text too long to hold in one
 // tsvector). The spec this side reads is the new one as Dispatch would store it, rendered by
-// duplicateStoredSpec, because the stored vector is of the rendering and not of the request's
+// storedMarkdown, because the stored vector is of the rendering and not of the request's
 // markdown. tsvector_to_array answers a vector's lexemes sorted and each once, as title_lexemes
 // does, so array equality is set equality here.
 //
@@ -191,7 +231,9 @@ select s.key, i.title, i.status, s.shared, s.score,
 //
 // A title that yields no lexemes at all, every word of it a stopword, matches nothing: there is
 // no text to be a copy of. Without that guard it would name every other such issue in the
-// project.
+// project. It needs no title-key rule of duplicateScoreQuery's kind (duplicateNamesAnotherIssue):
+// a title's lexemes hold each key it names as a compound lexeme (`infra-431`), so two titles that
+// name different keys hold the same lexemes only when each also writes the other's key.
 //
 // Parameters: $1 project, $2 the new title, $3 the new spec as it would be stored, $4 the new
 // issue's ancestors, $5 the headline options.
@@ -216,38 +258,6 @@ select i.key, i.title, i.status, cardinality(n.title_lex)::int as shared, 1::flo
  limit ` + strconv.Itoa(duplicateCandidateLimit) + `
 `
 
-// duplicateStoredSpec is the new spec as a create would store it: the parse and the render
-// createIssue runs over it (docs' SeedText, pmdoc.ParseWritten over no live document, taken as
-// an upload is taken, then pmdoc.Render), without writing anything. Nothing else of the seed is
-// run here, since nothing else of it changes the markdown.
-//
-// duplicateEqualLexemesQuery compares the new spec with document_search.search, the vector of
-// the markdown the seed stored, and a rendering differs from the text it was parsed from
-// wherever the renderer normalises one: an ordered list is renumbered, and Postgres keeps a
-// list's numbers as lexemes, so `1.` `1.` is stored as `1.` `2.` and an exact copy of that spec
-// would hold different lexemes from the row it copies. An empty spec is what createIssue seeds
-// for a spec of whitespace alone.
-//
-// Markdown the parse or the render refuses is handed on as it came. The create that follows
-// refuses it with the error of its own seed, which says what is wrong with it; the gate answers
-// on the text it was given rather than failing a create the seed would have let through.
-func duplicateStoredSpec(spec string) string {
-	if strings.TrimSpace(spec) == "" {
-		return ""
-	}
-	tree, _, err := pmdoc.ParseWritten(spec, nil)
-	if err != nil {
-		return spec
-	}
-	tree = pmdoc.StripAnchorMarks(tree)
-	pmdoc.StripServerOwnedAttrs(tree)
-	stored, err := pmdoc.Render(tree)
-	if err != nil {
-		return spec
-	}
-	return stored
-}
-
 // scoredDuplicate is one candidate with the near-copy score that found it. The score is the
 // gate's own reading and is not part of what a client is told, so it rides here rather than on
 // model.DuplicateCandidate.
@@ -258,12 +268,12 @@ type scoredDuplicate struct {
 
 // duplicateGateResult is what the near-copy gate answered for one create.
 type duplicateGateResult struct {
-	// Unanswered is why the gate's read did not answer, in the words the create tells the filer
-	// (model.Suggestions.NearCopyCheck); empty exactly when it answered. The create goes in
-	// either way and is told this, forced or not, a forced one also recording that it was forced
-	// with no issues named, because refusing a create whose check was slow or broken would turn
-	// one bad read into a project that cannot be written to.
-	Unanswered string
+	// NotMade is why the gate's read did not answer, as near_copy_checks.reason records it:
+	// nearCopyNotMadeBound or nearCopyNotMadeFailed; empty exactly when it answered. The create
+	// goes in either way and is told why (nearCopyNotMadeNote), forced or not, a forced one also
+	// recording that it was forced with no issues named, because refusing a create whose check
+	// was slow or broken would turn one bad read into a project that cannot be written to.
+	NotMade string
 	// Candidates are the project's open non-ancestor issues whose score reaches
 	// duplicateNudgeScore, best score first, at most duplicateCandidateLimit.
 	Candidates []scoredDuplicate
@@ -271,7 +281,7 @@ type duplicateGateResult struct {
 
 // answered reports whether the gate's read answered at all. Candidates is empty both when it
 // answered and found nothing and when it did not answer, and the two are recorded apart.
-func (result duplicateGateResult) answered() bool { return result.Unanswered == "" }
+func (result duplicateGateResult) answered() bool { return result.NotMade == "" }
 
 // refusals are the candidates at or above duplicateRefuseScore: what a 409 names, and what a
 // forced create records that it forced past. Never nil, so it marshals as [].
@@ -327,9 +337,9 @@ func duplicateGateText(title, spec string) string {
 // that the check did not answer.
 //
 // A read that does not answer refuses nothing: the create goes in and the filer is told, in the
-// words Unanswered carries, that no near-copy check was made. The bound and a failure of the
-// read itself are told apart there and in the log, because the second is the server's own fault
-// - before this gate it was a visible 500 - and happens whatever the bound is.
+// words nearCopyNotMadeNote gives its reason, that no near-copy check was made. The bound and a
+// failure of the read itself are told apart there and in the log, because the second is the
+// server's own fault - before this gate it was a visible 500 - and happens whatever the bound is.
 func (s *server) duplicateGate(
 	ctx context.Context, project, title, spec string, ancestors []string,
 ) duplicateGateResult {
@@ -345,10 +355,10 @@ func (s *server) duplicateGate(
 		// answers nobody anything.
 		slog.Warn("dispatch: the near-copy check did not answer within its bound",
 			"project", project, "bound", bound, "error", err)
-		return duplicateGateResult{Unanswered: nearCopyCheckNotMade(bound)}
+		return duplicateGateResult{NotMade: nearCopyNotMadeBound}
 	}
 	slog.Error("dispatch: the near-copy check failed", "project", project, "error", err)
-	return duplicateGateResult{Unanswered: nearCopyCheckFailed}
+	return duplicateGateResult{NotMade: nearCopyNotMadeFailed}
 }
 
 // readDuplicateCandidates picks the new text's rarest words and scores the project's open issues
@@ -358,6 +368,13 @@ func (s *server) duplicateGate(
 func (s *server) readDuplicateCandidates(
 	ctx context.Context, project, title, spec string, ancestors []string, bound time.Duration, floor float64,
 ) ([]scoredDuplicate, error) {
+	// The test seam: a case holds the read here until its bound ends it (server
+	// beforeDuplicateRead). Nothing but a test sets it.
+	if s.beforeDuplicateRead != nil {
+		if err := s.beforeDuplicateRead(ctx); err != nil {
+			return nil, err
+		}
+	}
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return nil, err
@@ -397,14 +414,14 @@ func (s *server) readDuplicateCandidates(
 		// whose spec mentions a stopped one. Its answer is an equality rather than a score, so
 		// floor does not apply to it - a match is 1 and nothing else is answered.
 		rows, err := tx.Query(ctx, duplicateEqualLexemesQuery,
-			project, title, duplicateStoredSpec(spec), ancestors, duplicateHeadlineOptions)
+			project, title, storedMarkdown(spec), ancestors, duplicateHeadlineOptions)
 		if err != nil {
 			return nil, err
 		}
 		return scanDuplicateCandidates(rows)
 	}
 	rows, err := tx.Query(ctx, duplicateScoreQuery,
-		project, lexemes, weights, ancestors, floor, duplicateHeadlineOptions)
+		project, lexemes, weights, ancestors, floor, duplicateHeadlineOptions, title)
 	if err != nil {
 		return nil, err
 	}
@@ -463,6 +480,16 @@ func nearCopyBoundHit(err error) bool {
 	return errors.As(err, &pgError) && pgError.Code == "57014" // query_canceled
 }
 
+// nearCopyNotMadeNote is model.Suggestions.NearCopyCheck for a gate read that did not answer, from
+// the reason near_copy_checks records (duplicateGateResult.NotMade), so the note and the row cannot
+// name two causes.
+func (s *server) nearCopyNotMadeNote(reason string) string {
+	if reason == nearCopyNotMadeBound {
+		return nearCopyCheckNotMade(s.duplicateGateBound())
+	}
+	return nearCopyCheckFailed
+}
+
 // nearCopyCheckNotMade is model.Suggestions.NearCopyCheck when the gate's read ran out of its
 // bound: the create went in without the near-copy check an unforced create otherwise meets. The
 // time is the bound the read was given (duplicateGateBound), never a literal, so the note cannot
@@ -479,3 +506,14 @@ func nearCopyCheckNotMade(bound time.Duration) string {
 // the cause.
 const nearCopyCheckFailed = "the near-copy check before this create failed, so the create was " +
 	"not checked against the project's open issues"
+
+// nearCopyCheckUnrecorded is model.Suggestions.NearCopyCheck when the gate found a near copy but
+// the record of its refusal could not be written (nearCopyOutcome.unrecorded): the create went in
+// as a check not made, which its row records, and the note names the open issue the refusal would
+// have named, so the filer can still read it. Every released client prints the note after "No
+// near-copy check was made: ", so it reads true after those words.
+func nearCopyCheckUnrecorded(candidate model.DuplicateCandidate) string {
+	return fmt.Sprintf("this create's refusal could not be recorded, so it went in unchecked; the "+
+		"refusal named %s (%q) as a near copy of it: read %s, and if it is the same work, fold this "+
+		"issue into it", candidate.Key, candidate.Title, candidate.Key)
+}

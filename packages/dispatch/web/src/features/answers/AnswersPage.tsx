@@ -76,12 +76,13 @@ function AnswerRow({
         lines={2}
         markdown={row.question}
         source={source}
+        tree={row.question_tree}
       />
       {row.kind === "answer" && row.answer !== undefined ? (
         <div className={`mt-2 text-sm ${textPrimaryOnCanvas}`}>
-          {row.answer.selected.length === 0 ? null : (
+          {(row.answer.selected ?? []).length === 0 ? null : (
             <div className="flex flex-wrap gap-1.5">
-              {row.answer.selected.map((label) => (
+              {(row.answer.selected ?? []).map((label) => (
                 <LabelPill key={label} selected>
                   {label}
                 </LabelPill>
@@ -90,7 +91,11 @@ function AnswerRow({
           )}
           {row.answer.text === null || row.answer.text === "" ? null : (
             <div className="mt-1">
-              <MarkdownBody markdown={row.answer.text} source={source} />
+              <MarkdownBody
+                markdown={row.answer.text}
+                source={source}
+                tree={row.answer.text_tree}
+              />
             </div>
           )}
         </div>
@@ -98,7 +103,12 @@ function AnswerRow({
       {row.kind === "reply" && row.reply !== undefined ? (
         <p className={`mt-2 text-sm ${textPrimaryOnCanvas}`}>
           <span className={`font-medium ${textMutedOnCanvas}`}>Replied:</span>{" "}
-          <MarkdownBody markdown={row.reply.body} source={source} variant="inline" />
+          <MarkdownBody
+            markdown={row.reply.body}
+            source={source}
+            tree={row.reply.body_tree}
+            variant="inline"
+          />
         </p>
       ) : null}
       <div className="mt-2 flex flex-wrap items-center gap-4 text-sm">
@@ -130,7 +140,9 @@ export function AnswersPage(): ReactNode {
   const [changingAsk, setChangingAsk] = useState<string | null>(null);
   const answers = useInfiniteQuery({
     getNextPageParam: (last: MyAnswersResponse) =>
-      last.offset + last.rows.length < last.total ? last.offset + last.rows.length : undefined,
+      last.offset + (last.rows ?? []).length < last.total
+        ? last.offset + (last.rows ?? []).length
+        : undefined,
     initialPageParam: 0,
     queryFn: ({ pageParam }) => api.listMyAnswers({ limit: PAGE_SIZE, offset: pageParam }),
     queryKey: ["me", "answers"],
@@ -140,7 +152,7 @@ export function AnswersPage(): ReactNode {
   if (answers.isError) {
     return <p className={dangerText}>Could not load your answers: {answers.error.message}</p>;
   }
-  const rows = answers.data.pages.flatMap((page) => page.rows);
+  const rows = answers.data.pages.flatMap((page) => page.rows ?? []);
   // The card belongs to the ask, under the first answer row that names it: after a change that is
   // the new answer's row, so the card the person is looking at stays mounted where they are. A
   // reply the person wrote on the same ask can sort above it, and is never the card's row.

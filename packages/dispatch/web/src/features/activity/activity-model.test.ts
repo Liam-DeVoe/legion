@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
+import type { SettledDeliveryState } from "@legion/contracts";
 
-import type { Event } from "../../api/types";
+import type { DispatchEvent } from "../../api/types";
 import { activityDescription, buildActivityItems, dateKey } from "./activity-model";
 
-function message(seq: number, at: string): Event {
+function message(seq: number, at: string): DispatchEvent {
   const actor = { id: "alice", kind: "user" as const };
   return {
     actor,
@@ -14,6 +15,8 @@ function message(seq: number, at: string): Event {
     payload: {
       author: actor,
       body: `Message ${seq}`,
+      broadcast_id: null,
+      reply_block: null,
       created_at: at,
       deliveries: [],
       id: `message-${seq}`,
@@ -92,6 +95,103 @@ test("an architecture import names the repository it came from; a retained event
   expect(
     activityDescription({ ...projectEvent, payload: { error }, type: "architecture.sync_failed" })
   ).toEqual(["failed to sync the architecture model: duplicate component id api"]);
+});
+
+test("a project's default assignee names the person it moved to; a retained clear reads as cleared", () => {
+  expect(
+    activityDescription({
+      ...projectEvent,
+      payload: { assignee: "bob", project: "CORE", thread_logins: ["alice", "bob"] },
+      type: "settings.project_default_assignee.updated",
+    })
+  ).toEqual(["set the default assignee of CORE to bob"]);
+  // Written before every project named a default: the stored row of a clear, and no
+  // `thread_logins`.
+  expect(
+    activityDescription({
+      ...projectEvent,
+      payload: { assignee: null, project: "CORE" },
+      type: "settings.project_default_assignee.updated",
+    })
+  ).toEqual(["cleared the default assignee of CORE"]);
+});
+
+function commentDelivery(receipt: {
+  state: SettledDeliveryState;
+  duplicate?: boolean;
+}): DispatchEvent {
+  return {
+    actor: { id: "alice", kind: "user" },
+    created_at: "2026-10-25T00:00:00Z",
+    id: 1,
+    issue_key: "CORE-1",
+    notify: false,
+    payload: {
+      attempt: 1,
+      comment_id: "comment-1",
+      delivery: "btw",
+      reply_id: null,
+      session_id: null,
+      target: "session:planner",
+      ...(receipt.state === "failed" ? { error: "no live session planner" } : {}),
+      ...receipt,
+    },
+    seq: 1,
+    type: "comment.delivery",
+  };
+}
+
+test("a mention receipt says whether the mention reached its target", () => {
+  expect(activityDescription(commentDelivery({ state: "sent" }))).toEqual([
+    "delivered a comment mention to session:planner",
+  ]);
+  expect(activityDescription(commentDelivery({ state: "failed" }))).toEqual([
+    "could not deliver a comment mention to session:planner",
+  ]);
+  // INFRA-626: the listener holds a queued mention for a session that is not running, which is
+  // neither a delivery nor a refusal, and the line says so as every queued attempt does.
+  expect(activityDescription(commentDelivery({ state: "queued" }))).toEqual([
+    "queued a comment mention for session:planner, which is stopped; it gets the message if it runs again within 72 hours",
+  ]);
+  // A repeat the stream already held reached nobody new, which the line says rather than
+  // counting it as a second delivery.
+  expect(activityDescription(commentDelivery({ duplicate: true, state: "sent" }))).toEqual([
+    "already delivered a comment mention to session:planner",
+  ]);
+  // A queued repeat still waits for a session that is not running, so it reads as queued rather
+  // than as delivered.
+  expect(activityDescription(commentDelivery({ duplicate: true, state: "queued" }))).toEqual([
+    "queued a comment mention for session:planner, which is stopped; it gets the message if it runs again within 72 hours",
+  ]);
+});
+
+function messageDelivery(state: SettledDeliveryState): DispatchEvent {
+  return {
+    actor: { id: "alice", kind: "user" },
+    created_at: "2026-10-25T00:00:00Z",
+    id: 2,
+    issue_key: null,
+    notify: false,
+    payload: {
+      attempt: 1,
+      delivery: "steer",
+      message_id: "message-1",
+      session_id: "planner",
+      state,
+      target: "session:planner",
+      title: "planner",
+    },
+    seq: 2,
+    type: "message.delivery",
+  };
+}
+
+// A message the listener holds for a session that is not running has not reached that session.
+test("a message receipt says a queued message waits for the stopped session", () => {
+  expect(activityDescription(messageDelivery("sent"))).toEqual(["delivered a message"]);
+  expect(activityDescription(messageDelivery("queued"))).toEqual([
+    "queued a message for session:planner, which is stopped; it gets the message if it runs again within 72 hours",
+  ]);
 });
 
 test("a recorded handoff names its phase and version", () => {

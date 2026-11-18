@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"errors"
 	"log"
 	"log/slog"
 	"maps"
@@ -14,14 +13,15 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 )
 
-// work recomputes the dirty views and the expired ones, one at a time, and keeps the freshness
-// verdict on its threshold. One timer, re-armed after every pass, wakes it at the earliest moment
-// a view is due or the reconciled sources cross their threshold; nothing else wakes it but a mark.
-func (h *deliveryHub) work(ctx context.Context) {
+// work recomputes g's dirty views and the expired ones, one at a time, and keeps the freshness
+// verdict on its threshold, until g ends. One timer, re-armed after every pass, wakes it at the
+// earliest moment a view is due or the reconciled sources cross their threshold; nothing else
+// wakes it but a mark.
+func (h *deliveryHub) work(g *hubGeneration) {
 	select {
-	case <-ctx.Done():
+	case <-g.ctx.Done():
 		return
-	case <-h.ready:
+	case <-g.ready:
 	}
 	var timer hubTimer
 	defer func() {
@@ -30,36 +30,36 @@ func (h *deliveryHub) work(ctx context.Context) {
 		}
 	}()
 	for {
-		for h.runDue() {
+		for h.runDue(g) {
 		}
 		now := h.clock.Now()
 		h.mu.Lock()
-		h.judgeLocked(now)
-		next, ok := h.nextWakeLocked(now)
+		h.judgeLocked(g, now)
+		next, ok := h.nextWakeLocked(g, now)
 		h.mu.Unlock()
 		if timer != nil {
 			timer.Stop()
 			timer = nil
 		}
 		if ok {
-			timer = h.clock.At(next, func() { signal(h.wakeWork) })
+			timer = h.clock.At(next, func() { signal(g.wakeWork) })
 		}
 		select {
-		case <-ctx.Done():
+		case <-g.ctx.Done():
 			return
-		case <-h.wakeWork:
+		case <-g.wakeWork:
 		}
 	}
 }
 
 // runDue recomputes, or narrows, the view that is due earliest, and is false when none is due.
-func (h *deliveryHub) runDue() bool {
+func (h *deliveryHub) runDue(g *hubGeneration) bool {
 	now := h.clock.Now()
 	h.mu.Lock()
 	var due *deliveryView
 	var dueAt time.Time
 	var cause string
-	for _, view := range h.views {
+	for _, view := range g.views {
 		at, why, ok := view.dueAt()
 		if ok && !at.After(now) && (due == nil || at.Before(dueAt)) {
 			due, dueAt, cause = view, at, why
@@ -70,9 +70,9 @@ func (h *deliveryHub) runDue() bool {
 	case due == nil:
 		return false
 	case cause == deliveryCauseExpiry:
-		h.expire(due)
+		h.expire(g, due)
 	default:
-		h.recompute(due, cause)
+		h.recompute(g, due, cause)
 	}
 	return true
 }
@@ -103,22 +103,22 @@ func (view *deliveryView) dueAt() (time.Time, string, bool) {
 	return time.Time{}, "", false
 }
 
-// nextWakeLocked is the earliest moment after now a view is due or the verdict's reconciled
+// nextWakeLocked is the earliest moment after now a view is due or g's verdict's reconciled
 // sources cross their threshold.
-func (h *deliveryHub) nextWakeLocked(now time.Time) (time.Time, bool) {
+func (h *deliveryHub) nextWakeLocked(g *hubGeneration, now time.Time) (time.Time, bool) {
 	var next time.Time
 	consider := func(at time.Time) {
 		if next.IsZero() || at.Before(next) {
 			next = at
 		}
 	}
-	for _, view := range h.views {
+	for _, view := range g.views {
 		if at, _, ok := view.dueAt(); ok {
 			consider(at)
 		}
 	}
-	if h.known && h.fresh.lastReconcileAt != nil {
-		if crossing := h.fresh.lastReconcileAt.Add(deliveryStaleAfter).Add(time.Nanosecond); crossing.After(now) {
+	if g.known && g.fresh.lastReconcileAt != nil {
+		if crossing := g.fresh.lastReconcileAt.Add(deliveryStaleAfter).Add(time.Nanosecond); crossing.After(now) {
 			consider(crossing)
 		}
 	}
@@ -145,38 +145,38 @@ type deliveryViewRead struct {
 // takes over every mark made until then (read), so a change committed during the read lands past
 // it and marks the view again; then the GET route's population read, the ancestors of the issues
 // it names, and the pure compute. It sends each sub the delta against what it holds (a snapshot to
-// a sub with none), or DELIVERY_NOT_CONFIGURED to a sub not yet told.
-func (h *deliveryHub) recompute(view *deliveryView, cause string) {
+// a sub with none), or the refusal its read answered (viewReads.refusal) to a sub not yet told.
+func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause string) {
 	started := time.Now()
 	h.mu.Lock()
 	view.computing = true
-	spec, epoch := view.spec, h.epoch
+	spec, epoch := view.spec, g.epoch
 	h.mu.Unlock()
 	h.note(deliveryHubNote{what: "recompute begin", view: spec.key, cause: cause})
 
-	read, err := h.read(view, spec, epoch)
+	read, err := h.read(g, view, spec, epoch)
 	h.note(deliveryHubNote{what: "recompute read", view: spec.key, cause: cause, through: read.seq})
 
 	now := h.clock.Now()
+	classes := spec.classes()
+	code, message, refused := classes.reads.refusal(err)
 	h.mu.Lock()
-	heard := view.heard
-	view.computing, view.readingSeq, view.heard = false, 0, nil
+	view.computing, view.readingSeq = false, 0
 	sent := 0
 	switch {
-	case h.views[spec.key] != view:
-		// Every sub left while it read.
-	case errors.Is(err, delivery.ErrNoSettings):
+	case g.views[spec.key] != view:
+		// Every sub left while it read, and the generation stopped if they were the last.
+	case refused:
 		view.body, view.expiry, view.seq = nil, time.Time{}, read.seq
 		for sub := range view.subs {
 			if !sub.told {
-				sub.conn.Send(liveRefusal(sub.id, "DELIVERY_NOT_CONFIGURED",
-					"delivery is not configured; set delivery_settings through PUT /api/v1/settings/delivery"))
+				sub.conn.Send(liveRefusal(sub.id, code, message))
 				sub.told = true
 				sent++
 			}
 		}
 	case err != nil:
-		if h.lifetime.Err() == nil {
+		if g.ctx.Err() == nil {
 			slog.Warn("dispatch: delivery live recompute failed; retrying", "view", spec.kind, "error", err)
 		}
 		// A read that failed past its position took the marks over and is marked again here; one
@@ -186,128 +186,204 @@ func (h *deliveryHub) recompute(view *deliveryView, cause string) {
 		}
 		view.lastDirty, view.notBefore = now, now.Add(deliveryLiveRetry)
 	default:
-		if h.epoch != epoch {
-			// The change log was reset while it read, so its position names nothing in the new one.
-			read.seq = 0
-		}
-		if !view.dirty && heard.missedBy(read) {
-			// An event about an issue or a session this read names reached the hub while it read,
-			// and the last answer did not name it, so nothing marked the view for it.
-			h.markDirtyLocked(view, now, deliveryCauseChange)
+		if g.epoch != epoch {
+			// The change log was reset while it read, so its position names nothing in the new
+			// one, and no change of the new log was recorded at it.
+			read.seq, read.changedAt = 0, nil
 		}
 		view.settings, view.pop, view.pipe, view.readFrom = read.settings, read.pop, read.pipe, read.from
 		view.body, view.seq, view.changedAt = &read.body, read.seq, read.changedAt
 		view.from, view.at, view.expiry = read.from, read.at, read.expiry
 		view.issues, view.ancestors, view.sessions = read.issues, read.ancestors, read.sessions
-		sent = h.sendLocked(view)
-		if !h.known {
+		sent = h.sendLocked(g, view)
+		if classes.reads != viewReadsDelivery {
+			// A view that reads no delivery row holds no delivery settings, so it judges no
+			// freshness: the verdict stays the one the delivery views' own reads set.
+			break
+		}
+		if !g.known {
 			// The first verdict is set silently, from the first settings read.
-			h.fresh = deliveryFreshnessHeard{
+			g.fresh = deliveryFreshnessHeard{
 				lastEventAt: read.settings.LastEventAt, lastReconcileAt: read.settings.LastReconcileAt,
 				lastError: read.settings.LastError, unfetchable: read.unfetchable,
 			}
-			h.sent = h.verdictLocked(now)
-			h.known = true
+			g.sent = g.verdictLocked(now)
+			g.known = true
 		} else {
-			h.fresh.unfetchable = read.unfetchable
-			h.judgeLocked(now)
+			g.fresh.unfetchable = read.unfetchable
+			h.judgeLocked(g, now)
 		}
 	}
+	// What the events heard since the read took its position touched is checked against the
+	// answer it installed, or the last one when it installed none (recheckHeardLocked), and the
+	// record is cleared.
+	h.recheckHeardLocked(g, view, now)
 	subscribers := len(view.subs)
 	h.mu.Unlock()
 	h.finishRecompute(spec, cause, started, read.prs, read.runs, subscribers, sent)
 }
 
-// read is recompute's read and compute, outside the hub's lock. Once it holds the newest change
-// position it takes over the view's marks, under the lock: every change, event and subscribe that
-// marked the view until then was committed before the reads that follow, which answer it, so it
-// clears dirty, and from there a change at or before the position marks nothing (readingSeq) while
-// what the intake hears is kept for recompute to judge the answer by (heard). A reset of the change
-// log since the recompute began (epoch) leaves dirty set: the position may name the old log.
-func (h *deliveryHub) read(view *deliveryView, spec deliveryLiveSpec, epoch int64) (deliveryViewRead, error) {
-	ctx, pool := h.readContext(), h.server.deps.Store.Pool
+// read is recompute's read and compute, outside the hub's lock, on g's context. Once it holds the
+// newest change position it takes over the view's marks, under the lock: every change, event and
+// subscribe that marked the view until then was committed before the reads that follow, which
+// answer it, so it clears dirty, and from there a change at or before the position marks nothing
+// (readingSeq) while what the intake hears about the view is kept for recompute to judge the
+// read's answer by (reading, recheckHeardLocked). A reset of the change log since the recompute
+// began leaves dirty set: the position may name the old log, so the marks are taken over only
+// while the generation stands at the epoch the recompute read.
+func (h *deliveryHub) read(g *hubGeneration, view *deliveryView, spec deliveryLiveSpec, epoch int64) (deliveryViewRead, error) {
+	ctx := g.readContext()
 	var read deliveryViewRead
-	var err error
-	if read.seq, err = delivery.LatestChangeSeq(ctx, pool); err != nil {
+	head, err := delivery.ChangesHead(ctx, h.server.deps.Store.Pool)
+	if err != nil {
 		return read, err
 	}
+	read.seq, read.changedAt = head.Seq, head.At
 	h.note(deliveryHubNote{what: "recompute position", view: spec.key, through: read.seq})
 	h.mu.Lock()
-	view.readingSeq = read.seq
-	view.heard = &deliveryHeard{issues: map[string]struct{}{}, titles: map[string]string{}}
-	if h.epoch == epoch {
+	view.readingSeq, view.reading = read.seq, true
+	if g.epoch == epoch {
+		// The log has not been reset since the recompute began, so the position names the log the
+		// marks were made against and the reads that follow answer them. A reset leaves them:
+		// the position may name the old log, and the reset's own mark recomputes the view again.
 		view.dirty, view.immediate = false, false
 	}
 	h.mu.Unlock()
-	if read.seq > 0 {
-		if read.changedAt, err = delivery.ChangeAt(ctx, pool, read.seq); err != nil {
-			return read, err
-		}
-	}
-	if read.settings, err = delivery.GetSettings(ctx, pool); err != nil {
-		return read, err
-	}
 	now := h.clock.Now()
-	var body any
-	if spec.kind == deliveryLivePipeline {
-		read.at = now
-		if spec.at != nil {
-			read.at = *spec.at
-		}
-		if read.pipe, err = h.server.readPipelinePopulation(ctx, read.settings, read.at); err != nil {
-			return read, err
-		}
-		body = deliveryPipelineCompute(read.settings, read.pipe, read.at, now)
-		if spec.at == nil {
-			read.expiry = pipelineNextExpiry(read.pipe, now)
-		}
-		read.from = measures.WindowStart(read.at)
-		read.prs, read.runs = len(read.pipe.leadTimes.prs), len(read.pipe.checks.Runs)+len(read.pipe.deploys.Runs)
-		read.unfetchable = read.pipe.leadTimes.unfetchable
-	} else {
-		from, to := spec.from, spec.to
-		if spec.preset > 0 {
-			from, to = now.Add(-spec.days()), now
-		}
-		if read.pop, err = h.server.readDeliveryPopulation(ctx, read.settings, from, to, spec.query, spec.kind == deliveryLiveTimeline); err != nil {
-			return read, err
-		}
-		read.issues = map[string]struct{}{}
-		read.sessions = map[string]string{}
-		name := func(issue *string, sessions []string) {
-			if issue != nil {
-				read.issues[*issue] = struct{}{}
-			}
-			for _, session := range sessions {
-				read.sessions[session] = delivery.SessionTitle(read.pop.titles, session)
-			}
-		}
-		for _, pr := range read.pop.prs {
-			name(pr.IssueKey, pr.Sessions)
-		}
-		for _, pr := range read.pop.waiting {
-			name(pr.IssueKey, pr.Sessions)
-		}
-		if read.ancestors, err = delivery.IssueAncestors(ctx, pool, slices.Sorted(maps.Keys(read.issues)), parentDepthCap); err != nil {
-			return read, err
-		}
-		body = deliveryLiveCompute(spec.kind, read.settings, read.pop, from, to, now)
-		if spec.preset > 0 {
-			read.expiry = nextExpiry(read.pop, spec.days(), now)
-		}
-		read.from = from
-		read.prs, read.runs = len(read.pop.prs), len(read.pop.applyRuns)+len(read.pop.windowRuns)
-		read.unfetchable = read.pop.unfetchable
+	body, err := spec.classes().read(h, ctx, spec, now, &read)
+	if err != nil {
+		return read, err
 	}
 	read.body, err = encodeDeliveryBody(spec.kind, body)
 	return read, err
+}
+
+// readLegionBoardView is a Legion board's read: the project's own daemon state as the sampler
+// recorded it, and its stored facts closed at now, the moment the body is answered as of. It
+// reads no delivery settings — its own are the project's Legion setting, and a deployment that
+// configured one and not the other still shows the board. A project that does not exist is
+// loadProject's refusal, as GET /api/v1/projects/{key}/legion/board answers it.
+func (h *deliveryHub) readLegionBoardView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
+	if _, err := h.server.loadProject(ctx, h.server.deps.Store.Pool, spec.project); err != nil {
+		return nil, err
+	}
+	board, err := h.server.readLegionBoard(ctx, spec.project, now)
+	if err != nil {
+		return nil, err
+	}
+	// Every issue the board names, so an event about one marks the view (dirtyIssueLocked); the
+	// board shows no session, so it names none.
+	read.issues = board.issueKeys()
+	return legionBoardCompute(board, now), nil
+}
+
+// readEvalsView is an evals view's read: the list read of GET /api/v1/projects/{key}/evals, through
+// the function the route answers with (readProjectEvalList), from the query the route would be
+// sent (evalsQuery). So the body is the route's for the same query, byte for byte. A project no
+// row holds is loadProject's errProjectNotFound, which the view refuses as the route answers it
+// (viewReads.refusal, live_frames.go): its subscribers are told so once, with that refusal's code
+// and message, and stay open, since the project's creation seeds its evals and the change rows of
+// those versions mark the view, whose next read answers it.
+//
+// It names no issue and no session, and reads no delivery settings: what moves it is a write of
+// its project's readings, versions or day rows, each of which the change log carries (touchedBy).
+// It sets no expiry, so no expire narrows it: a window is whole UTC days, which move at midnight,
+// and the refresher's pass at midnight writes every project's rows of the new day, its
+// unowned-p0 row at least, whatever its inputs (evals' walkDaily), whose change marks the view.
+func (h *deliveryHub) readEvalsView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
+	answer, err := h.server.readProjectEvalList(ctx, spec.evalsQuery(now), spec.project, now)
+	if err != nil {
+		return nil, err
+	}
+	return answer, nil
+}
+
+// readPipelineView is a pipeline view's read: the delivery settings and the runs, jobs and merges
+// of the seven days ending on its at, or on the present for a view that names none, with the
+// min_n its slowest jobs are ranked by, through the GET route's own read and compute
+// (readPipelinePopulation, deliveryPipelineCompute), so the view ranks them as the route does.
+func (h *deliveryHub) readPipelineView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
+	pool := h.server.deps.Store.Pool
+	var err error
+	if read.settings, err = delivery.GetSettings(ctx, pool); err != nil {
+		return nil, err
+	}
+	read.at = now
+	if spec.at != nil {
+		read.at = *spec.at
+	}
+	if read.pipe, err = h.server.readPipelinePopulation(ctx, read.settings, read.at); err != nil {
+		return nil, err
+	}
+	body := deliveryPipelineCompute(read.settings, read.pipe, read.at, now)
+	if spec.at == nil {
+		read.expiry = pipelineNextExpiry(read.pipe, now)
+	}
+	read.from = measures.WindowStart(read.at)
+	read.prs, read.runs = len(read.pipe.leadTimes.prs), len(read.pipe.checks.Runs)+len(read.pipe.deploys.Runs)
+	read.unfetchable = read.pipe.leadTimes.unfetchable
+	return body, nil
+}
+
+// readDeliveryView is a timeline or measures view's read: the delivery settings, the population
+// of its window and facets, and, where that population is labeled, the ancestors of every issue
+// it names.
+func (h *deliveryHub) readDeliveryView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
+	pool := h.server.deps.Store.Pool
+	var err error
+	if read.settings, err = delivery.GetSettings(ctx, pool); err != nil {
+		return nil, err
+	}
+	from, to := spec.from, spec.to
+	if spec.preset > 0 {
+		from, to = now.Add(-spec.days()), now
+	}
+	if read.pop, err = h.server.readDeliveryPopulation(ctx, read.settings, from, to, spec.query, spec.kind == deliveryLiveTimeline); err != nil {
+		return nil, err
+	}
+	read.issues = map[string]struct{}{}
+	read.sessions = map[string]string{}
+	labeled := read.pop.labeled()
+	name := func(issue *string, sessions []string) {
+		// A population read without its labels (a measures view selecting nothing) shows no fact
+		// of the issues its pull requests name and no session by its title, so no write of those
+		// issues, of their ancestors or of a session's title moves its answer: it records none of
+		// them, and so reads no ancestors. The one issue fact it shows, the unowned P0 list, moves
+		// with a P0's write, which showsIssue's p0 rule marks every view showing that list for.
+		if !labeled {
+			return
+		}
+		if issue != nil {
+			read.issues[*issue] = struct{}{}
+		}
+		for _, session := range sessions {
+			read.sessions[session] = delivery.SessionTitle(read.pop.titles, session)
+		}
+	}
+	for _, pr := range read.pop.prs {
+		name(pr.IssueKey, pr.Sessions)
+	}
+	for _, pr := range read.pop.waiting {
+		name(pr.IssueKey, pr.Sessions)
+	}
+	if read.ancestors, err = delivery.IssueAncestors(ctx, pool, slices.Sorted(maps.Keys(read.issues)), parentDepthCap); err != nil {
+		return nil, err
+	}
+	body := deliveryLiveCompute(spec.kind, read.settings, read.pop, from, to, now)
+	if spec.preset > 0 {
+		read.expiry = nextExpiry(read.pop, spec.days(), now)
+	}
+	read.from = from
+	read.prs, read.runs = len(read.pop.prs), len(read.pop.applyRuns)+len(read.pop.windowRuns)
+	read.unfetchable = read.pop.unfetchable
+	return body, nil
 }
 
 // expire answers a view whose preset window, or whose pipeline day, moved past something it holds,
 // reading nothing: the compute over the population as last read, narrowed to the window now, with
 // the settings that read held. The population and its read's start stay as read, and the next
 // expiry comes from the narrowed population.
-func (h *deliveryHub) expire(view *deliveryView) {
+func (h *deliveryHub) expire(g *hubGeneration, view *deliveryView) {
 	started := time.Now()
 	h.mu.Lock()
 	view.computing = true
@@ -339,13 +415,13 @@ func (h *deliveryHub) expire(view *deliveryView) {
 	view.computing = false
 	sent := 0
 	switch {
-	case h.views[spec.key] != view:
+	case g.views[spec.key] != view:
 	case err != nil:
 		slog.Error("dispatch: delivery live expiry could not encode its body", "view", spec.kind, "error", err)
 		view.expiry = time.Time{}
 	default:
 		view.body, view.from, view.at, view.expiry = &encoded, from, at, expiry
-		sent = h.sendLocked(view)
+		sent = h.sendLocked(g, view)
 	}
 	subscribers := len(view.subs)
 	h.mu.Unlock()
@@ -368,10 +444,10 @@ func deliveryLiveCompute(kind string, settings delivery.DeliverySettings, pop de
 }
 
 // sendLocked answers every sub of view from its body, and counts the frames it sent.
-func (h *deliveryHub) sendLocked(view *deliveryView) int {
+func (h *deliveryHub) sendLocked(g *hubGeneration, view *deliveryView) int {
 	sent := 0
 	for sub := range view.subs {
-		if h.answerLocked(sub) {
+		if h.answerLocked(g, sub) {
 			sent++
 		}
 	}
@@ -379,14 +455,14 @@ func (h *deliveryHub) sendLocked(view *deliveryView) int {
 }
 
 // answerLocked sends sub what it needs to hold its view's body (answerBodyLocked) and, after its
-// first answer, the verdict the hub knows, when it knows one (Subscribe). It reports whether it
-// sent sub a snapshot or a delta.
-func (h *deliveryHub) answerLocked(sub *deliverySub) bool {
+// first answer, the verdict the generation knows, when it knows one (Subscribe). It reports
+// whether it sent sub a snapshot or a delta.
+func (h *deliveryHub) answerLocked(g *hubGeneration, sub *deliverySub) bool {
 	sent := h.answerBodyLocked(sub)
 	if sub.needsVerdict {
 		sub.needsVerdict = false
-		if h.known {
-			sub.conn.Send(h.freshnessFrameLocked(h.sent))
+		if g.known {
+			sub.conn.Send(g.freshnessFrameLocked(g.sent))
 		}
 	}
 	return sent

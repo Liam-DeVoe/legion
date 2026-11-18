@@ -1,7 +1,6 @@
 package intake_test
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -28,9 +27,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -59,14 +60,15 @@ const (
 func drainRoot(i int) string  { return fmt.Sprintf("LEGION-%d", 1000+i) }
 func drainChild(i int) string { return fmt.Sprintf("LEGION-%d", 2000+i) }
 
-// drainRepositories serves acme/widgets at main, as the daemon's mapping would.
+// drainRepositories records an issue on acme/widgets at main, as the daemon would once GitHub
+// answers for it; a repository nothing has read GitHub for is answered as unread.
 type drainRepositories struct{}
 
 func (drainRepositories) ResolveRepository(resolved string) (workflow.Resolution, error) {
 	if resolved == drainRepo {
 		return workflow.Resolution{Repo: drainRepo, DefaultBranch: "main", GitHubRepo: drainRepo}, nil
 	}
-	return workflow.Resolution{Refusal: resolved + " is not mapped to project " + drainProject + " in Dispatch"}, nil
+	return workflow.Resolution{Refusal: "GitHub has not been read for " + resolved + " yet", Unread: true}, nil
 }
 
 // transactions counts the transactions a pool's connections begin.
@@ -82,22 +84,7 @@ func (c *transactions) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pg
 func (c *transactions) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 // warnings keeps every log line at warn or above the consumer and the handlers write.
-type warnings struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (w *warnings) Write(p []byte) (int, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.buf.Write(p)
-}
-
-func (w *warnings) String() string {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.buf.String()
-}
+type warnings = testlog.Buffer
 
 // A repository Legion works in carries far more GitHub events than Legion's own pull requests:
 // other pull requests opened and pushed to, their reviews and CI settlements, and every workflow
@@ -177,19 +164,17 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 	})
 	defer stop()
 
-	deadline := time.Now().Add(10 * time.Minute)
-	if testDeadline, ok := t.Deadline(); ok && testDeadline.Add(-5*time.Second).Before(deadline) {
-		deadline = testDeadline.Add(-5 * time.Second)
-	}
-	for githubWaiting(t, consumers) != 0 {
+	if !testwait.Holds(testwait.Bounded(t, 10*time.Minute, 5*time.Second), 20*time.Millisecond, func() bool {
+		if githubWaiting(t, consumers) == 0 {
+			return true
+		}
 		if begun := counter.begun.Load(); begun > drainLegion {
 			t.Fatalf("%d transactions begun with %d messages still waiting, want one for each of the %d Legion events and none for any other",
 				begun, githubWaiting(t, consumers), drainLegion)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the backlog of %d events is not drained after %s: %d still wait", len(backlog), time.Since(started).Round(time.Millisecond), githubWaiting(t, consumers))
-		}
-		time.Sleep(20 * time.Millisecond)
+		return false
+	}) {
+		t.Fatalf("the backlog of %d events is not drained after %s: %d still wait", len(backlog), time.Since(started).Round(time.Millisecond), githubWaiting(t, consumers))
 	}
 	drained := time.Since(started)
 	stop()
@@ -199,7 +184,13 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 	}
 
 	// Every message was delivered once, so none was nacked or redelivered, and nothing was logged at
-	// warn or above, so none was poison or failed.
+	// warn or above, so none was poison or failed. The 30 second window the ConsumerSpec above takes
+	// is what makes this exact count sound: a handling here is a decode and, for a Legion event, one
+	// transaction against a Postgres drainRoundTrip - 3 ms - away, so the window is a hang guard far
+	// above the work each message does, and a redelivery the count would see needs the whole
+	// 30 seconds to pass before that handling's acknowledgement reaches the server. This consumer
+	// is intake.OpenConsumers' own (the delivery mechanism: ConsumerSpec.HandlerLimit's comment
+	// in consume.go).
 	item, err := stream.Consumer(ctx, "legion-go-"+drainProject+"-github")
 	if err != nil {
 		t.Fatalf("read the GitHub consumer: %v", err)

@@ -1,6 +1,5 @@
-import { expect, test } from "@playwright/test";
 import { baseUrl, createIssue, createProject } from "./api";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 async function createAskWithToken(issue: string, token: string): Promise<Response> {
@@ -14,11 +13,8 @@ async function createAskWithToken(issue: string, token: string): Promise<Respons
   });
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
-test("a personal agent token attributes its ask, remains private, and is revoked from Settings", async ({
+// @pr: Sign-in and tokens: a personal token's ask is attributed to its owner, stays private, and Settings revokes it.
+test("a personal agent token attributes its ask, remains private, and is revoked from Settings @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -32,6 +28,8 @@ test("a personal agent token attributes its ask, remains private, and is revoked
     await alicePage.goto("/settings");
     await alicePage.getByLabel("Token label").fill("Architect");
     await alicePage.getByRole("button", { name: "New token" }).click();
+    // textContent waits for the code element to attach, and an element's text is never null,
+    // so the check below only narrows the type.
     const token = await alicePage.getByRole("status").locator("code").first().textContent();
     if (token === null) {
       throw new Error("new agent token was not rendered");

@@ -17,7 +17,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,11 +36,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testbuild"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
@@ -60,14 +61,15 @@ const (
 	githubSubjects      = "notifications.github.>"
 )
 
-// redeliveredRepositories serves acme/widgets at main, as the daemon's mapping would.
+// redeliveredRepositories records an issue on acme/widgets at main, as the daemon would once
+// GitHub answers for it; a repository nothing has read GitHub for is answered as unread.
 type redeliveredRepositories struct{}
 
 func (redeliveredRepositories) ResolveRepository(resolved string) (workflow.Resolution, error) {
 	if resolved == redeliveredRepo {
 		return workflow.Resolution{Repo: redeliveredRepo, DefaultBranch: "main", GitHubRepo: redeliveredRepo}, nil
 	}
-	return workflow.Resolution{Refusal: resolved + " is not mapped to project " + redeliveredProject + " in Dispatch"}, nil
+	return workflow.Resolution{Refusal: "GitHub has not been read for " + resolved + " yet", Unread: true}, nil
 }
 
 // GitHub sends a pull request opened on an issue's branch while the stream does not capture
@@ -165,7 +167,7 @@ func TestADeliveryNATSRefusedIsRedeliveredByTheSweepAndApplied(t *testing.T) {
 		"NATS_URLS=" + natsURL,
 		"DISPATCH_APP_CLIENT_ID=" + redeliveredClientID,
 		"DISPATCH_APP_PEM_B64=" + base64.StdEncoding.EncodeToString([]byte(pemText)),
-		"DISPATCH_GITHUB_API_BASE=" + github.server.URL,
+		"DISPATCH_GITHUB_API_BASE=" + github.url,
 	}
 	output, err := sweep.CombinedOutput()
 	if err != nil {
@@ -306,22 +308,7 @@ type listenerProcess struct {
 }
 
 // processOutput keeps everything a process writes to its stdout and stderr.
-type processOutput struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (o *processOutput) Write(p []byte) (int, error) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	return o.buf.Write(p)
-}
-
-func (o *processOutput) String() string {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	return o.buf.String()
-}
+type processOutput = testlog.Buffer
 
 // line is the listener's first output line holding text, or "" when none does.
 func (l *listenerProcess) line(t *testing.T, text string) string {
@@ -469,7 +456,7 @@ type hookDelivery struct {
 // a redelivery re-posts the recorded attempt's body under the same GUID.
 type fakeGitHub struct {
 	t         *testing.T
-	server    *httptest.Server
+	url       string
 	publicKey *rsa.PublicKey
 	clientID  string
 	webhook   string
@@ -489,8 +476,7 @@ func newFakeGitHub(t *testing.T, publicKey *rsa.PublicKey, clientID, webhook str
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /app/hook/deliveries", g.list)
 	mux.HandleFunc("POST /app/hook/deliveries/{id}/attempts", g.attempt)
-	g.server = httptest.NewServer(mux)
-	t.Cleanup(g.server.Close)
+	g.url = githubtest.Server(t, githubtest.Spec{Handle: mux.ServeHTTP})
 	return g
 }
 
@@ -551,7 +537,6 @@ func (g *fakeGitHub) list(w http.ResponseWriter, r *http.Request) {
 	rows := slices.Clone(g.log)
 	g.mu.Unlock()
 	slices.Reverse(rows)
-	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(rows); err != nil {
 		g.t.Errorf("encode the delivery log: %v", err)
 	}

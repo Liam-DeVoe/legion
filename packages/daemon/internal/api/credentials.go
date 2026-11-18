@@ -40,7 +40,15 @@ type Failure struct {
 	Error string `json:"error"`
 }
 
+// refusalNoter is a writer that asks to be told the code of the refusal written through it: the
+// completion route's completionAnswer, whose log line names it (handoffComplete). writeFailure
+// tells it, since the code is in hand here and the writer would otherwise read the body back.
+type refusalNoter interface{ noteRefusal(code string) }
+
 func writeFailure(w http.ResponseWriter, status int, code, message string) {
+	if noter, ok := w.(refusalNoter); ok {
+		noter.noteRefusal(code)
+	}
 	writeJSON(w, status, Failure{Code: code, Error: message})
 }
 
@@ -116,7 +124,7 @@ func (s *server) claimForGrant(ctx context.Context, sessionID, secret, tree, iss
 		if current.Session != sessionID || current.Tree != tree || current.Issue != issue {
 			continue
 		}
-		m, ok := s.authenticated(current.Token, secret)
+		m, _, ok := s.authenticated(current.Token, secret)
 		return m, ok, nil
 	}
 	return nil, false, nil
@@ -241,7 +249,7 @@ func (s *server) appLease(w http.ResponseWriter, r *http.Request, role appauth.A
 		writeFailure(w, http.StatusInternalServerError, "GITHUB_OWNER_UNCONFIGURED", "no repository owner is configured for GitHub App tokens")
 		return appauth.Lease{}, false
 	}
-	lease, err := s.tokens.Token(r.Context(), role, repo)
+	lease, err := s.tokens.Token(r.Context(), role, repo.Owner())
 	if err != nil {
 		s.logRequestFailure(r, err, "api: mint GitHub App token", "role", logRole, "repo", repo.String())
 		writeFailure(w, http.StatusBadGateway, "GITHUB_TOKEN_FAILED", "GitHub token exchange failed")

@@ -21,6 +21,8 @@ const issue: IssueDetails = {
   holder_state: null,
   last_seen: null,
   takeable_at: null,
+  advances: [],
+  advances_revision: 0,
   artifacts: [
     {
       created_at: "2026-09-09T00:00:00Z",
@@ -31,6 +33,8 @@ const issue: IssueDetails = {
       kind: "doc",
       name: "spec.md",
       primary: true,
+      ref_key: "CORE-1/spec",
+      session_id: null,
       slug: "spec",
       versions: [],
     },
@@ -39,6 +43,7 @@ const issue: IssueDetails = {
   closed_at: null,
   created_at: "2026-09-09T00:00:00Z",
   created_by: { id: "alice", kind: "user" },
+  design_gates: [],
   external_links: [],
   key: "CORE-1",
   labels: [],
@@ -51,7 +56,10 @@ const issue: IssueDetails = {
   assignee: null,
   claim: null,
   components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
+  plan_artifact_id: "",
+  decisions_artifact_id: "",
   primary_artifact_id: "artifact-1",
+  verification_artifact_id: "",
   project: "CORE",
   referenced_by_count: 0,
   route: null,
@@ -120,8 +128,28 @@ function stubIssueApi() {
   // children, or open asks. The stub mirrors that so the page is exercised against the
   // real response shape.
   const patchIssue = answerIssuePatches().mockImplementation(
-    async (_key, { rank: _rank, components: _components, ...update }) =>
-      narrowIssue({ ...issue, ...update })
+    // A null `status` or `title` in the body means "leave it as it is", which is what the server
+    // does with it; every other field the body names is written through. The body's `advances`
+    // is a list of priority ids, which the answer states as the resolved relations instead, so
+    // it is left to the issue's own.
+    async (
+      _key,
+      {
+        rank: _rank,
+        components: _components,
+        advances: _advances,
+        advances_revision: _advancesRevision,
+        status,
+        title,
+        ...update
+      }
+    ) =>
+      narrowIssue({
+        ...issue,
+        ...update,
+        status: status ?? issue.status,
+        title: title ?? issue.title,
+      })
   );
 
   return {
@@ -992,7 +1020,7 @@ test("IssuePage saves a parent from the header's parent editor", async () => {
   const { unmount } = renderIssuePage();
 
   try {
-    await user.click(await screen.findByRole("button", { name: "Set parent issue" }));
+    await user.click(await screen.findByRole("button", { name: "None, set parent issue" }));
     const parent = (await screen.findByLabelText("Parent")) as HTMLInputElement;
     await user.click(parent);
     await user.paste("CORE-9");
@@ -1025,7 +1053,7 @@ test("IssuePage clears the parent with an empty editor save", async () => {
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { parent: null }, keyedAttempt)
     );
-    await screen.findByRole("button", { name: "Set parent issue" });
+    await screen.findByRole("button", { name: "None, set parent issue" });
     expect(screen.queryByRole("link", { name: "CORE-9" })).not.toBeInTheDocument();
   } finally {
     unmount();
@@ -1047,7 +1075,7 @@ test("IssuePage renders the server's reason inline when a parent save is refused
   const { unmount } = renderIssuePage();
 
   try {
-    await user.click(await screen.findByRole("button", { name: "Set parent issue" }));
+    await user.click(await screen.findByRole("button", { name: "None, set parent issue" }));
     const parent = (await screen.findByLabelText("Parent")) as HTMLInputElement;
     await user.click(parent);
     await user.paste("CORE-9");
@@ -1071,14 +1099,18 @@ test("a board move then a header status change land in press order after an outa
   const { queryClient, unmount } = renderIssuePage();
   let up = false;
   const landed: string[] = [];
+  // The move's answer is the slower of the two, and how much slower is the test's rather than
+  // real time's: `outstanding` says the move is out again, and its answer lands only when the
+  // test lets it, with the header's change already queued behind it.
+  const outstanding = Promise.withResolvers<void>();
+  const moveAnswers = Promise.withResolvers<void>();
   patchIssue.mockImplementation(async (key, input, bounds) => {
     // As `api.patchIssue` does, the request is told to `sent` before anything goes out.
     bounds.sent?.({ body: input, method: "PATCH", path: `/api/v1/issues/${key}` });
     if (!up) throw new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"));
     if (input.rank !== undefined) {
-      const slow = Promise.withResolvers<void>();
-      setTimeout(slow.resolve, 500);
-      await slow.promise;
+      outstanding.resolve();
+      await moveAnswers.promise;
     }
     landed.push(input.rank !== undefined ? `board move to ${input.status}` : `${input.status}`);
     return narrowIssue({ ...issue, status: input.status ?? issue.status });
@@ -1109,13 +1141,17 @@ test("a board move then a header status change land in press order after an outa
       window.dispatchEvent(new Event("online"));
     });
     await act(async () => {
+      await outstanding.promise;
+    });
+    moveAnswers.resolve();
+    await act(async () => {
       await moved;
     });
-    await waitFor(() => expect(landed).toHaveLength(2), { timeout: 4_000 });
+    await waitFor(() => expect(landed).toHaveLength(2));
     expect(landed).toEqual(["board move to in_progress", "backlog"]);
   } finally {
     board.unmount();
     unmount();
     restore();
   }
-}, 10_000);
+});

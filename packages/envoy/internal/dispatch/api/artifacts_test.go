@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/fixtureenv"
 )
 
 func createArtifactIssue(t *testing.T, handler http.Handler) model.Issue {
@@ -112,6 +113,31 @@ func TestUploadArtifactRejectsPrimaryFlag(t *testing.T) {
 	assertRejected(t, "multipart", multipartResponse.Code, multipartResponse.Body.String(), "multipart-primary.md")
 }
 
+// A JSON upload ignores a member the route does not declare, as a newer build's client may send
+// one while a release rolls out. `primary` above is still declared, so it is still refused.
+func TestUploadArtifactJSONIgnoresAMemberItDoesNotDeclare(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createArtifactIssue(t, handler)
+
+	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
+		"name": "architect-spec.md", "content": "# Spec\n", "summary": "Initial spec", "template": "rfc",
+	}, "alice")
+	if response.Code != http.StatusCreated {
+		t.Fatalf("JSON upload with a member the route does not declare: status=%d body=%s", response.Code, response.Body.String())
+	}
+	upload := decodeBody[struct {
+		Artifact model.Artifact `json:"artifact"`
+		Version  model.Version  `json:"version"`
+	}](t, response)
+	if upload.Artifact.Kind != "doc" || upload.Version.Number != 1 || upload.Version.Summary == nil || *upload.Version.Summary != "Initial spec" {
+		t.Fatalf("JSON artifact = %#v version=%#v, want document version 1 summarised %q", upload.Artifact, upload.Version, "Initial spec")
+	}
+	text := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+upload.Artifact.ID+"/text", nil, "alice")
+	if text.Code != http.StatusOK || !strings.Contains(text.Body.String(), `"markdown":"# Spec\n"`) {
+		t.Fatalf("read JSON artifact text: status=%d body=%s", text.Code, text.Body.String())
+	}
+}
+
 func TestPrimaryRoutesAreGone(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
@@ -160,15 +186,31 @@ func TestUploadArtifactJSONCreatesNextVersion(t *testing.T) {
 	}
 }
 
+// A body whose content is blank makes a new document holding nothing, so under the name of a
+// document that already exists it is refused: it would store a version holding nothing over the
+// text that document has. Blank is blank whatever its spaces.
 func TestUploadArtifactJSONRejectsBlankContent(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
+	owner := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
+		"name": "architect-spec.md", "content": "# Spec\n",
+	}, "alice")
+	if owner.Code != http.StatusCreated {
+		t.Fatalf("create architect-spec.md: status=%d body=%s", owner.Code, owner.Body.String())
+	}
+	want := `"architect-spec.md" names artifact architect-spec-md (architect-spec.md), which exists; ` +
+		`a write with no content makes no document and writes no version: edit it with dispatch doc-edit, ` +
+		`or give the new document another name`
 	for _, content := range []string{"", " \n\t "} {
 		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
 			"name": "architect-spec.md", "content": content,
 		}, "alice")
-		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"ARTIFACT_INPUT"`) {
-			t.Fatalf("blank JSON content %q: status=%d body=%s", content, response.Code, response.Body.String())
+		body := decodeBody[struct {
+			Code  string `json:"code"`
+			Error string `json:"error"`
+		}](t, response)
+		if response.Code != http.StatusBadRequest || body.Code != "ARTIFACT_INPUT" || body.Error != want {
+			t.Fatalf("blank JSON content %q: status=%d body=%s, want 400 ARTIFACT_INPUT %q", content, response.Code, response.Body.String(), want)
 		}
 	}
 }
@@ -581,8 +623,10 @@ func TestMissingDocumentOnABusyOwnerNamesTheClosestAndCountsTheRest(t *testing.T
 				"; GET /api/v1/issues/" + issue.Key + "/artifacts lists them all",
 		},
 		{
+			// The project holds its seeded evals-md beside the eleven runbooks (dispatch://INFRA-2916,
+			// R5); it is not among the closest names.
 			target: "/api/v1/projects/TEST/artifacts/Runbook-2-md",
-			want: `document "Runbook-2-md" not found by slug; this project's 11 documents include: ` +
+			want: `document "Runbook-2-md" not found by slug; this project's 12 documents include: ` +
 				"runbook-2-md (runbook-2.md), " + newest("runbook", 9, 3) +
 				"; GET /api/v1/projects/TEST/artifacts?unlinked=true lists them all",
 		},
@@ -693,7 +737,8 @@ func TestDocumentRoutesRejectAmbiguousFilenameWithSlugChoices(t *testing.T) {
 // An upload whose name is an existing artifact's slug on the same owner is that artifact's next
 // version, for an issue's, a project's and an agent's conversation's uploads alike. Minting a
 // second artifact there (`plan-md-2`, named `plan-md`) would leave `plan-md` naming two documents,
-// one by its slug and one by its name, and nothing deletes a document.
+// one by its slug and one by its name, and a removal takes only a document that holds nothing
+// (removeArtifact), so once either held writing the two would stand for good.
 func TestAnUploadNamedAfterAnArtifactsSlugIsItsNextVersion(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{files: filestest.NewMemory()})
 	issue := createArtifactIssue(t, handler)
@@ -1002,7 +1047,12 @@ func sendUpload(t *testing.T, handler http.Handler, issueKey, key string, file [
 
 // unspooled runs send with the temporary directory gone, where a request that spooled a body past
 // a megabyte - the keyed layer's spool, the multipart parser's - is answered 500
-// (TestAnUploadTheServerCannotSpoolIsItsOwnFailure), and puts it back after.
+// (TestAnUploadTheServerCannotSpoolIsItsOwnFailure), and puts it back once send has answered:
+// TestARepeatOfAnUploadStillRunningWaitsForItsAnswerAfterTheIssueCloses sends a second keyed
+// upload of four megabytes after this one, which spools in its turn and would be answered 500
+// rather than the replay it asserts. Go's own restore, which t.Setenv registers, comes too late
+// for that, since it runs when the test ends; the absent case goes through fixtureenv.Unset
+// rather than a bare os.Unsetenv, which docs/testing.md refuses.
 func unspooled(t *testing.T, send func()) {
 	t.Helper()
 	previous, had := os.LookupEnv("TMPDIR")
@@ -1010,9 +1060,9 @@ func unspooled(t *testing.T, send func()) {
 	send()
 	if had {
 		t.Setenv("TMPDIR", previous)
-	} else {
-		os.Unsetenv("TMPDIR")
+		return
 	}
+	fixtureenv.Unset(t, "TMPDIR")
 }
 
 // closeArtifactIssue closes the issue as alice.

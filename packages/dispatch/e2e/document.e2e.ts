@@ -1,5 +1,3 @@
-import { expect, type Page, test } from "@playwright/test";
-
 import {
   createProject,
   createProjectDocument,
@@ -14,17 +12,12 @@ import {
   documentEditor,
   markSpan,
   selectEditorText,
-  typeAtEnd,
 } from "./editor";
 import { askCard as inboxAskCard, inboxRow } from "./inbox-pane";
-import { resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
+import { expect, type Page, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // SLOW(>=2s): two browser contexts, two mounted editors on one live document, the reload the
 // row proves the text and the version picker survive, and a full-page screenshot.
@@ -45,12 +38,21 @@ test("documentCollaborationLive", async ({ browser }, testInfo) => {
     const artifact = await getProjectArtifact("CORE", "design-notes");
     const bobPage = await bob.newPage();
     await bobPage.goto("/projects/CORE/documents/design-notes");
-    await expect(documentEditor(alicePage)).toContainText("Design notes");
-    await expect(documentEditor(bobPage)).toContainText("Design notes");
+    // The create sends the title alone, so the document opens empty under the title Alice typed:
+    // the heading the list used to write into it is gone. The title is the page's, not the text's.
+    await expect(alicePage.getByRole("heading", { name: "Design notes" })).toBeVisible();
+    await expect(bobPage.getByRole("heading", { name: "Design notes" })).toBeVisible();
+    await expect(documentEditor(alicePage)).toBeAttached();
+    await expect(documentEditor(bobPage)).toBeAttached();
+    await expect(documentEditor(alicePage)).toHaveText("");
+    await expect(documentEditor(bobPage)).toHaveText("");
     await expect(connectedDot(alicePage)).toHaveText("connected");
     await expect(connectedDot(bobPage)).toHaveText("connected");
 
-    await typeAtEnd(alicePage, "Alice wrote this.");
+    // An empty document holds no text a caret can enter, so the first word is typed where the
+    // click puts the caret rather than after text (`typeAtEnd`).
+    await documentEditor(alicePage).click();
+    await alicePage.keyboard.type("Alice wrote this.");
     await expect(documentEditor(bobPage)).toContainText("Alice wrote this.");
     await alicePage.reload();
     // The editor's textbox role is written at the very end of the reload's admission chain - the
@@ -71,7 +73,7 @@ test("documentCollaborationLive", async ({ browser }, testInfo) => {
           getArtifact(artifact.id),
           alicePage.getByRole("combobox", { name: "Version" }).locator("option").count(),
         ]);
-        const versions = current.versions.length;
+        const versions = (current.versions ?? []).length;
         return versions > 1 && options === versions + 1
           ? "one option per settled version, and one for the live document"
           : `${options} options for ${versions} settled versions`;
@@ -87,7 +89,10 @@ test("documentCollaborationLive", async ({ browser }, testInfo) => {
   }
 });
 
-test("picking a file on the Documents tab uploads it at once and lists it", async ({ browser }) => {
+// @pr: Upload and download: a file picked on the Documents tab is uploaded at once and listed.
+test("picking a file on the Documents tab uploads it at once and lists it @pr", async ({
+  browser,
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   const alice = await asUser(browser, "alice");
 
@@ -120,10 +125,13 @@ test("picking a file on the Documents tab uploads it at once and lists it", asyn
 // SLOW(>=2s): two browser contexts, two mounted editors on one live document, a comment, a
 // suggestion accepted into a named version, an ask answered from bob's Inbox, and a full-page
 // screenshot.
-test("comment, suggest, and ask anchor marks on a project document; accept edits the text; the ask flows through the Inbox", async ({
+// @pr: The live document on a project document: a comment, a suggestion accepted into a named version, and an ask answered from the other person's Inbox.
+test("comment, suggest, and ask anchor marks on a project document; accept edits the text; the ask flows through the Inbox @pr", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
+  // CORE names bob: a document has no assignee, so its question reaches the project's default
+  // assignee, and bob is the reader who answers it from his own Inbox below.
+  await createProject({ key: "CORE", name: "Core" }, { login: "bob" });
   const created = await createProjectDocument("CORE", {
     content: "# Design notes\n\nComment target.\n\nSuggestion target.\n\nAsk target.\n",
     name: "Design notes",
@@ -172,7 +180,7 @@ test("comment, suggest, and ask anchor marks on a project document; accept edits
     await expect
       .poll(() =>
         getArtifact(created.artifact.id).then((artifact) =>
-          artifact.versions.some(({ named }) => named)
+          (artifact.versions ?? []).some(({ named }) => named)
         )
       )
       .toBe(true);
@@ -184,6 +192,8 @@ test("comment, suggest, and ask anchor marks on a project document; accept edits
     await askComposer.locator('button[type="submit"]').click();
     const askCard = alicePage.locator("[data-margin-item]", { hasText: "Should we publish this?" });
     await expect(askCard).toBeVisible();
+    // The card's locator requires `data-margin-item`, so the card the wait above saw holds it:
+    // this read is never null and the check below only narrows the type.
     const askId = await askCard.getAttribute("data-margin-item");
     if (askId === null) {
       throw new Error("Document ask did not receive a margin id.");
@@ -193,16 +203,17 @@ test("comment, suggest, and ask anchor marks on a project document; accept edits
       throw new Error("Document ask did not retain its anchor.");
     }
     await expect(markSpan(bobPage, ask.ask.anchor.mark_id)).toContainText(ask.ask.anchor.quote);
-    // A document has no assignee, so its question is in nobody's own list: the Inbox reaches it
-    // under the Unassigned filter. The short row names the document the question belongs to,
-    // and the card - which from 1280 px the reading pane draws (INFRA-575) - answers it.
-    // Neither move is a cold load the row proves: bob is already signed in and on the page.
-    await navigateInApp(bobPage, "/?assignee=unassigned");
+    // A document has no assignee, so its question reaches the default assignee of its project,
+    // which is bob: his own list holds it. The short row names the document the question
+    // belongs to, and the card - which from 1280 px the reading pane draws (INFRA-575) -
+    // answers it. Neither move is a cold load the row proves: bob is already signed in and on
+    // the page.
+    await navigateInApp(bobPage, "/");
     const inboxDocumentRow = inboxRow(bobPage, askId);
     await expect(inboxDocumentRow.getByRole("link", { name: /CORE.*Design notes/ })).toBeVisible();
     const inboxAsk = await inboxAskCard(bobPage, askId);
     await inboxAsk.getByLabel("Your answer").fill("Yes, publish it.");
-    await inboxAsk.getByRole("button", { name: "Answer" }).click();
+    await inboxAsk.getByRole("button", { exact: true, name: "Answer" }).click();
     await expect
       .poll(() => getAsk(askId))
       .toMatchObject({
@@ -229,8 +240,15 @@ async function expectDotBeside(page: Page, neighbour: string): Promise<void> {
   const header = page.getByTestId("artifact-header");
   const dot = connectedDot(header);
   await expect(dot).toHaveText("connected");
-  const beside = await header.getByRole("button", { name: neighbour }).boundingBox();
+  const button = header.getByRole("button", { name: neighbour });
+  await expect(button).toBeVisible();
+  await expect(dot).toBeVisible();
+  await expect(header).toBeVisible();
+  // The waits above drew the button, the dot and the card, and a drawn element has a box.
+  const beside = await button.boundingBox();
+  // The dot was waited for above, so its box is there as the button's is.
   const dotBox = await dot.boundingBox();
+  // The card was waited for above, so its box is there as the button's is.
   const card = await header.boundingBox();
   if (beside === null || dotBox === null || card === null) {
     throw new Error("the version actions are not visible");
@@ -264,10 +282,9 @@ test("a document's connection dot stays on the line with its version actions", a
 // The narrow-screen half of the row above, at the two widths the comment on `expectDotBeside`
 // names: the project's own, where at 390 px the picker, Name version and the dot are wider than
 // the header card, and 320 px, where a version view's two buttons and the dot are.
-test("a document's connection dot stays beside its version actions on a narrow screen @phone", async ({
+test("a document's connection dot stays beside its version actions on a narrow screen @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "the row above makes the same check at 1280 px");
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   await createProjectDocument("CORE", {
     content: "# Ask blocks design\n\nThe ask is a node.\n",

@@ -40,17 +40,21 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
+// issueKeyShape is a Dispatch issue key, `INFRA-431`, unanchored. Go's regular expressions and
+// Postgres's read it alike, so issueKeyPattern and the near-copy gate's title rule
+// (duplicateTitleKeyPattern) take the same shape from it.
+const issueKeyShape = `[A-Z][A-Z0-9]{1,9}-[0-9]+`
+
 var (
-	projectKeyPattern  = regexp.MustCompile(contracts.ProjectKeyPattern)
-	issueKeyPattern    = regexp.MustCompile(`^[A-Z][A-Z0-9]{1,9}-[0-9]+$`)
-	externalRefPattern = regexp.MustCompile(`^([^/\s]+)/([^/\s#]+)#([1-9][0-9]*)$`)
+	projectKeyPattern = regexp.MustCompile(contracts.ProjectKeyPattern)
+	issueKeyPattern   = regexp.MustCompile(`^` + issueKeyShape + `$`)
 )
 
 // projectKeyProblem is every route's refusal of a value that is not a project key: the field it
@@ -78,8 +82,15 @@ type Deps struct {
 	Identity       identity.Identity
 	AgentTokens    *auth.SharedAgentTokens
 	DefaultProject string
-	ServerURL      string
-	Docs           docs.API
+	// NewIssueLabel and NewIssueSession configure the issue the dashboard's search bar files
+	// from the words a person typed when those words match nothing it found
+	// (GET /api/v1/settings/new-issue; cmd/dispatch: DISPATCH_NEW_ISSUE_LABEL,
+	// DISPATCH_NEW_ISSUE_SESSION). NewIssueLabel empty is an issue that carries no label;
+	// NewIssueSession empty is an issue made with no conversation started on it.
+	NewIssueLabel   string
+	NewIssueSession string
+	ServerURL       string
+	Docs            docs.API
 	// Embedder embeds a search request's query for meaning search (LEGION-549), and its Identity
 	// is the only one search compares queries with (INFRA-393); nil means Dispatch has no
 	// embedder, and search answers keyword-only on every request, always setting
@@ -137,6 +148,16 @@ type Deps struct {
 	// DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW, under the test hooks), so a send to a session that
 	// is gone settles without sleeping the production window.
 	ListenerTakeoverWindow time.Duration
+	// HorizonStallAfter and HorizonWarnEvery replace how long a pending event-horizon
+	// observation waits before the process logs its stall warning, and how often each of that
+	// Horizon's three warnings repeats - the stall warning while the stall stands, the
+	// failed-observation warning and the failed-persist warning (events.Horizon.SetStallWarning).
+	// Zero keeps the horizon's own five and thirty seconds; a deployment leaves both zero, and
+	// only a test process sets another (cmd/dispatch: DISPATCH_TEST_HORIZON_STALL_AFTER and
+	// DISPATCH_TEST_HORIZON_WARN_EVERY, under the test hooks), so a test whose wait keys on the
+	// stall warning sees it inside its own patience.
+	HorizonStallAfter time.Duration
+	HorizonWarnEvery  time.Duration
 	// TestHookTimeout replaces how long a test hook waits for every process's acknowledgement
 	// (testHookTimeout, test_hooks_fanout.go). Zero keeps ten seconds; neither
 	// routes.BuildAppContext nor cmd/dispatch sets it, so every deployment with the hooks on and
@@ -157,6 +178,22 @@ type Deps struct {
 	// DashboardEntry is the entry chunk (`/assets/index-*.js`) of the dashboard build this process
 	// serves, "" when it serves none; GET /api/v1/dashboard/builds answers it as serving.
 	DashboardEntry string
+	// Build is the build this process runs as, which the eval day rows a readings write keeps
+	// record as the build that wrote them (eval_days.built_by): the string the eval day-row
+	// refresher records against every row it writes (cmd/dispatch's processBuild), so the
+	// refresher never reads a row this process wrote as another build's. It differs from
+	// BuildCommit where nothing stamped the binary: BuildCommit is then empty, and Build is a
+	// string of this one process (buildversion's answer and a suffix drawn at its start). Empty in
+	// a process that names none, whose readings write then fails rather than write a row no build
+	// owns.
+	Build string
+	// BuildCommit is the legion commit this process was built from, which cmd/dispatch holds in
+	// its own `buildCommit` and the image build stamps (docker/Dockerfile's LEGION_COMMIT). It
+	// is hashed into every list validator (listETag), so two builds never answer one ETag for
+	// two bodies; a build nothing stamped - every `go test` binary, a devbox `go run` - leaves
+	// it empty, which is one identity for every such build and is why a deploy is what it is
+	// for rather than a key anything depends on being unique.
+	BuildCommit string
 }
 
 // defaultStreamHeartbeat is StreamHeartbeat when DepsInput leaves it zero.
@@ -168,8 +205,12 @@ type DepsInput struct {
 	Identity       identity.Identity
 	AgentTokens    *auth.SharedAgentTokens
 	DefaultProject string
-	ServerURL      string
-	EnvoyURL       string
+	// NewIssueLabel and NewIssueSession are the two new-issue settings; see Deps. A label longer
+	// than one an issue may carry, or a session id that is no session id, refuses startup.
+	NewIssueLabel   string
+	NewIssueSession string
+	ServerURL       string
+	EnvoyURL        string
 	// EnvoyToken is the bearer the listener client sends (cmd/dispatch: ENVOY_TOKEN); empty sends
 	// none.
 	EnvoyToken string
@@ -212,6 +253,10 @@ type DepsInput struct {
 	// ListenerTakeoverWindow replaces the twelve-second listener take-over window; see
 	// Deps.ListenerTakeoverWindow.
 	ListenerTakeoverWindow time.Duration
+	// HorizonStallAfter and HorizonWarnEvery replace the five-second stall threshold and the
+	// thirty-second repeat of every event-horizon warning; see Deps.HorizonStallAfter.
+	HorizonStallAfter time.Duration
+	HorizonWarnEvery  time.Duration
 	// TestHookTimeout replaces the ten-second test-hook acknowledgement timeout; see
 	// Deps.TestHookTimeout.
 	TestHookTimeout time.Duration
@@ -220,6 +265,10 @@ type DepsInput struct {
 	ListenerRosterUncached bool
 	// DashboardEntry is this process's dashboard entry chunk; see Deps.DashboardEntry.
 	DashboardEntry string
+	// Build is the build this process runs as; see Deps.Build.
+	Build string
+	// BuildCommit is the commit this process was built from; see Deps.BuildCommit.
+	BuildCommit string
 }
 
 // NewDeps parses boot configuration once and returns API dependencies.
@@ -227,6 +276,13 @@ func NewDeps(input DepsInput) (Deps, error) {
 	defaultProject := strings.TrimSpace(input.DefaultProject)
 	if defaultProject != "" && !projectKeyPattern.MatchString(defaultProject) {
 		return Deps{}, fmt.Errorf("invalid DISPATCH_DEFAULT_PROJECT %q (expected project key)", defaultProject)
+	}
+	newIssue, problem := newIssueSettingsFrom(input.NewIssueLabel, input.NewIssueSession)
+	switch problem {
+	case "label":
+		return Deps{}, fmt.Errorf("invalid DISPATCH_NEW_ISSUE_LABEL %q (at most %d characters)", newIssue.Label, maxIssueLabel16)
+	case "session":
+		return Deps{}, fmt.Errorf("invalid DISPATCH_NEW_ISSUE_SESSION %q (expected a session id)", newIssue.Session)
 	}
 	if input.Events == nil {
 		input.Events = events.NewBroker()
@@ -270,6 +326,8 @@ func NewDeps(input DepsInput) (Deps, error) {
 		Identity:               input.Identity,
 		AgentTokens:            input.AgentTokens,
 		DefaultProject:         defaultProject,
+		NewIssueLabel:          newIssue.Label,
+		NewIssueSession:        newIssue.Session,
 		ServerURL:              strings.TrimSuffix(input.ServerURL, "/"),
 		Docs:                   input.Docs,
 		Embedder:               input.Embedder,
@@ -287,9 +345,13 @@ func NewDeps(input DepsInput) (Deps, error) {
 		StreamHeartbeat:        heartbeat,
 		RouteRosterTTL:         input.RouteRosterTTL,
 		ListenerTakeoverWindow: input.ListenerTakeoverWindow,
+		HorizonStallAfter:      input.HorizonStallAfter,
+		HorizonWarnEvery:       input.HorizonWarnEvery,
 		TestHookTimeout:        input.TestHookTimeout,
 		ListenerRosterUncached: input.ListenerRosterUncached,
 		DashboardEntry:         input.DashboardEntry,
+		Build:                  input.Build,
+		BuildCommit:            input.BuildCommit,
 	}, nil
 }
 
@@ -329,19 +391,55 @@ type server struct {
 	// shutdown for it (detached). Register sets it from its lifetime parameter and refuses a nil one, since nothing would
 	// ever end the work it bounds; a test passes its own t.Context(). A server a test builds
 	// directly has none unless the test sets it (directServer sets context.Background()).
-	lifetime        context.Context
-	routeIndex      []routeIndexEntry
+	lifetime   context.Context
+	routeIndex []routeIndexEntry
+	// readOnlyRefusal is the message every route the read list does not name answers a read-only
+	// token with (refuseReadOnlyToken): the read list as register found it, in words. register
+	// builds it once, before it wraps the first row, so the rows share one text rather than each
+	// holding a copy of its own. A server register did not build has none, and
+	// refuseReadOnlyToken wraps no route of one rather than answer an empty message.
+	readOnlyRefusal string
+	// going is the action catalogue GET /api/v1/going/catalogue serves: the dispatch tools that
+	// write, held to the table this server mounts (going_catalogue.go).
+	going           GoingCatalogue
 	adviceQueryHook func(context.Context, pgx.Tx, string) error
 	// suggestionTimeout overrides the allowance the related-item check runs under; zero, which
 	// every server the deployment builds leaves it, means relatedCheckAllowance. Only tests set it
 	// (newFailingAdviceHandler, and the check's bound tests), so a case's outcome is its own choice
 	// rather than its machine's speed.
 	suggestionTimeout time.Duration
+	// beforeCrossProjectRead runs at the head of relatedOtherProjects, before it reads, and its
+	// error stands in for the read failing. Only a test sets it: it is how a case holds that one
+	// leg of the related-item check past its grace, or makes it fail, while every other leg runs
+	// as it runs in production.
+	beforeCrossProjectRead func(ctx context.Context) error
+	// crossProjectWait overrides how long the related-item check waits for its cross-project leg
+	// once its meaning stage has answered (awaitCrossProject); zero, which every server the
+	// deployment builds leaves it, means crossProjectGrace. Only a test sets it, so a grace that
+	// reaches past the meaning deadline is the test's choice rather than a race between the
+	// meaning query and 300 ms of wall clock (INFRA-3904).
+	crossProjectWait time.Duration
+	// meaningBound overrides the meaning allowance of the related-item check
+	// (relatedMeaningAllowance), which the check's own allowance still caps; zero, which every
+	// server the deployment builds leaves it, means relatedMeaningAllowance. Only a test sets it,
+	// so a meaning deadline no load reaches is the test's choice, and what ends a wait before it
+	// can be told from that deadline without a clock (INFRA-3904).
+	meaningBound time.Duration
 	// duplicateBound overrides the bound the near-copy gate's read runs under; zero, which every
-	// server the deployment builds leaves it, means duplicateGateTimeout. Only a test sets it
-	// (the forced create whose check does not answer), so a case's outcome is its own choice
-	// rather than its machine's speed.
+	// server the deployment builds leaves it, means duplicateGateTimeout. Only a test sets it: a
+	// case that reads the gate's verdict gives it a bound of its own (testServerOptions'
+	// duplicateBound), and a forced create whose check does not answer a short one, so a case's
+	// outcome is its own choice rather than its machine's speed.
 	duplicateBound time.Duration
+	// beforeDuplicateRead runs at the head of the near-copy gate's read, inside its bound, and its
+	// error stands in for the read failing. Only a test sets it: it is how a case holds the read
+	// until the bound ends it, so the bound and nothing else decides that case.
+	beforeDuplicateRead func(ctx context.Context) error
+	// nearCopyRowID overrides how a near_copy_checks row gets its id; nil, which every server the
+	// deployment builds leaves it, means a random uuid. Only a test sets it, to put a refused row in
+	// place under the id a create will write, as a refusal whose insert landed but whose answer the
+	// server never read.
+	nearCopyRowID func() string
 	// broadcastResolveBudget overrides the budget a broadcast's recipient resolution runs under;
 	// zero, which every server the deployment builds leaves it, means broadcastResolveTimeout.
 	// Only a test sets it, so a budget that ends before every selected session is read is the
@@ -351,6 +449,12 @@ type server struct {
 	// issue reads judge routes against and agents lists list (issue_route_status.go). Only
 	// register gives it non-zero TTLs.
 	rosters rosterCache
+	// listAnswers keeps what the comment list and the activity feed last answered, under the ETag
+	// each answers with, so a warm read of either writes bytes instead of making them again
+	// (list_answers.go). Every server register mounts has one; a server a test builds directly
+	// (directServer) has none, and every method of the cache takes a nil one, which keeps
+	// nothing.
+	listAnswers *listAnswerCache
 	// deliveryHub keeps the open Delivery and Pipeline pages current (LEGION-690); every server
 	// register mounts has one, and only a server a test builds directly (directServer) has none.
 	deliveryHub *deliveryHub
@@ -365,8 +469,9 @@ type server struct {
 	// agentWatchInterval is how often an agent view re-arms its session: agentStreamWatchInterval,
 	// which a test replaces.
 	agentWatchInterval time.Duration
-	// eventRelay is the live feed every events subscription reads (INFRA-66), on every server
-	// register mounts: it starts its listening connection on the first subscription.
+	// eventRelay is the live feed every events subscription and the delivery hub read (INFRA-66),
+	// on every server register mounts: it starts its listening connection on the first of them to
+	// subscribe and stops it with the last.
 	eventRelay *eventStreamRelay
 	// testHooks carries every test hook to every process serving the database
 	// (test_hooks_fanout.go); nil without Deps.TestHooksEnabled, and on a server with no Store,
@@ -381,9 +486,12 @@ type server struct {
 	// bootMark closes once the server's boot mark has been taken (takeBootMark), which the marks
 	// in eventMarks begin with; nil on a server with no Store.
 	bootMark chan struct{}
-	// eventMarks is the event log marks the relay's first start and GET /auth/whoami bound the ids
-	// a writer can still hold open by (event_marks.go).
+	// eventMarks is the event log marks the relay's generation starts and GET /auth/whoami bound
+	// the ids a writer can still hold open by (event_marks.go).
 	eventMarks eventMarks
+	// mentions sends comment mentions after their comment's response (comment_mention_sender.go),
+	// on every server register mounts.
+	mentions *mentionSender
 	// detached is everything a request started that runs on past its client: every keyed write's
 	// handler (keyedWrites, which runs it on a context the client's going away does not cancel) and
 	// every delivery a handler started and did not wait for (a broadcast's recipients, a sweep's
@@ -417,6 +525,11 @@ type server struct {
 	// slowWrites and leaves its record here, so a test can disarm a route and still read what the
 	// hook did before and since.
 	slowWriteRuns sync.Map
+	// newIssueOverride is what the new-issue test hook last set
+	// (POST /api/v1/settings/new-issue/_test), which GET /api/v1/settings/new-issue answers in
+	// place of the two settings Deps carries; nil until a hook call sets one, which is every
+	// server without TestHooksEnabled, since that mounts no hook.
+	newIssueOverride atomic.Pointer[newIssueSettings]
 	// warnedUnmatchedRuns holds a warnedProductionRun for each deploy run productionApplies has
 	// asked about - one with no production job or no configured apply step - so this process asks
 	// delivery_run_warnings, which decides which process logs the warning (firstToWarn), once per
@@ -427,18 +540,20 @@ type server struct {
 	// termStats is the per-project term-statistics refreshes a related-item check started
 	// (ensureSearchTermStats), keyed by project, so a project's many checks start one.
 	termStats singleflight.Group
-	// relatedRecordRetrying is how many related_checks records being retried in the background
-	// (recordRelatedChecks, run as detached work) hold or wait on a pool connection right now, at
-	// most relatedRecordRetryLimit.
+	// relatedRecordRetrying is how many records being retried in the background (retryRecord:
+	// related_checks and near_copy_checks rows, run as detached work) hold or wait on a pool
+	// connection right now, at most relatedRecordRetryLimit.
 	relatedRecordRetrying atomic.Int32
-	// defaultBranches is what the results reads last learned about each repository's default
-	// branch (delivery.DefaultBranches), held across requests so the Verification tab's refetch
-	// on every result.recorded does not spend one GET /repos/{owner}/{repo} apiece. The policy
-	// is delivery's; the server holds the one cache the process shares.
-	defaultBranches delivery.DefaultBranches
+	// branches is what the results reads last learned about each repository's default branch
+	// (delivery.Branches), held across requests so the Verification tab's refetch on every
+	// result.recorded does not spend one GET /repos/{owner}/{repo} apiece. It answers about
+	// every branch a check is compared with, and caches the default branch alone, since what
+	// a named branch holds of a commit is kept in the database (branch_commits). The policy is
+	// delivery's; the server holds the one cache the process shares.
+	branches delivery.Branches
 	// commitPulls is the moment before which the results read will not read GitHub again for the
 	// pull requests of a commit it could answer for no other way (delivery.CommitPullReads,
-	// currencyReader.readThroughHead), held across requests so one commit costs at most one such
+	// comparisonReader.readThroughHead), held across requests so one commit costs at most one such
 	// read per delivery.CommitPullReadStaleAfter however often the tab refetches, and one per
 	// delivery.CommitPullSettledFor once GitHub has put that pull request's head elsewhere. The
 	// policy is delivery's; the server holds the one cache the process shares.
@@ -479,6 +594,9 @@ type queryer interface {
 // key rather than run again (keyedWrites, request_keys.go). Every write route - a POST, PATCH, PUT
 // or DELETE - that names its presser in Dispatch-Login runs only as that person
 // (refuseChangedLogin).
+//
+// Every route the read list does not name (readScopeRoutes), GET /ws/live among them, answers a
+// read-only broker token 403 READ_ONLY_TOKEN before anything else it does (refuseReadOnlyToken).
 //
 // The server holds the delivery hub (LEGION-690), which starts its goroutines on the first
 // subscription and runs them until lifetime ends, and mounts GET /ws/live beside the document
@@ -525,16 +643,18 @@ type Background struct {
 }
 
 // waitBackground waits for every keyed handler and every delivery a request left running past
-// its client, then for every live socket and the subscriptions it ran, then for the hub's
-// goroutines, the relay's and the test hooks' listener. The detached work comes first because it
-// is the only work lifetime does not stop: a keyed handler is bounded by keyedHandlerLimit, a
-// delivery by the listener client's receipt timeout per recipient, and each reads and writes
-// through the database pool this wait is holding open for it.
+// its client, then for every live socket and the subscriptions it ran, serving none that opens from
+// then on (liveSocketSet.wait), then for the hub's goroutines, the relay's and the test hooks'
+// listener. The detached work comes first because it is the only work lifetime does not stop: a
+// keyed handler is bounded by keyedHandlerLimit, a delivery by the listener client's receipt
+// timeout per recipient, and each reads and writes through the database pool this wait is holding
+// open for it.
 func (s *server) waitBackground() {
 	s.detached.wait()
 	s.liveSockets.wait()
 	s.deliveryHub.wait()
 	s.eventRelay.wait()
+	s.mentions.wait()
 	if s.testHooks != nil {
 		s.testHooks.wait()
 	}
@@ -602,7 +722,7 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 	if lifetime == nil {
 		panic("api.Register: the lifetime parameter is required: it is the context that ends the delivery hub, the event stream relay and every live socket (a test passes t.Context())")
 	}
-	s := &server{deps: deps, lifetime: lifetime, agentWatchInterval: agentStreamWatchInterval, rosters: rosterCache{
+	s := &server{deps: deps, lifetime: lifetime, agentWatchInterval: agentStreamWatchInterval, listAnswers: newListAnswerCache(), rosters: rosterCache{
 		ttl: cmp.Or(deps.RouteRosterTTL, routeRosterTTL), silenceTTL: routeRosterSilenceTTL,
 	}}
 	s.liveKinds = map[string]liveKind{
@@ -611,6 +731,7 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 	}
 	s.eventRelay = newEventStreamRelay(s, lifetime)
 	s.takeBootMark()
+	s.mentions = s.startMentionSender()
 	s.deliveryHub = newDeliveryHub(s, lifetime, deliveryHubClock{})
 	if deps.TestHooksEnabled && deps.Store != nil {
 		s.testHooks = startTestHookFanout(s, lifetime)
@@ -627,76 +748,154 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 		// (routeScopes).
 		panic("api.Register: the route table's scope map names a route the table does not mount: " + strings.Join(unmounted, "; "))
 	}
+	if refused := readRoutesNotMountedAsGET(readScopeRoutes); len(refused) > 0 {
+		// A read list naming a route nothing serves opens nothing while it reads as though it
+		// did, and one naming a write would open that write to a token minted only to read, so
+		// the table is refused rather than mounted (readScopeRoutes).
+		panic("api.Register: the route table's read list names a route that is not a GET row the table mounts: " + strings.Join(refused, "; "))
+	}
+	// After the check above, so the list it names is one the table mounts, and before the first
+	// row is wrapped, since every row the list does not name answers it (refuseReadOnlyToken).
+	s.readOnlyRefusal = "this request's credential is a read-only token, which may call only the routes Dispatch's read list names (" +
+		strings.Join(readScopeRoutes, ", ") + "): nothing ran"
+	going, err := buildGoingCatalogue(routes)
+	if err != nil {
+		// A catalogue entry naming a row this table does not hold or does not class as a write,
+		// a placeholder no argument of the tool fills, or a relation named in neither edge
+		// family, is refused rather than mounted (going_catalogue.go).
+		panic("api.Register: the route table holds a row the going catalogue cannot hold: " + err.Error())
+	}
+	s.going = going
+	if shapeless := shapelessRoutes(routes); len(shapeless) > 0 {
+		// A row with no shape is a row the generated OpenAPI document would leave out, so the
+		// one definition of the API would stop being one; the table is refused rather than
+		// mounted (routes_shapes.go).
+		panic("api.Register: the route table holds a row with no request and response shape: " + strings.Join(shapeless, "; "))
+	}
+	if unshaped := shapedRoutesNotMounted(); len(unshaped) > 0 {
+		// A shape for a route nothing serves is a shape the document would describe and no
+		// caller could reach — a row renamed or deleted and its entry left behind — so the
+		// table is refused rather than mounted (routeShapes).
+		panic("api.Register: the route table's shape map names a route the table does not mount: " + strings.Join(unshaped, "; "))
+	}
 	s.routeIndex = routeIndexEntries(routes)
 	replays := s.keyedReplays()
 	for _, route := range routes {
-		handler := route.Handler
-		if keyedMethod(route.Method) {
-			handler = s.keyedWrites(route.Method, route.Pattern, handler, replays[route.Method+" "+route.Pattern])
-		}
-		if route.Method+" "+route.Pattern == issueUploadRoute {
-			handler = s.refuseUploadToAClosedIssue(handler)
-		}
-		if route.Method != http.MethodGet {
-			// Outside the keyed layer and the upload's spool, so a write to another project's
-			// object, into another session's own rows, or by a credential that names no person
-			// claims no idempotency key and costs no body (withinProjectScope,
-			// withinSessionScope, writeNeedsASignedInPerson).
-			handler = s.withinProjectScope(route, handler)
-			handler = s.withinSessionScope(route, handler)
-			// Outermost of the three, so a caller that may make no write at all is told that
-			// rather than which session the write it tried belongs to. The project check has
-			// nothing to tell it: a token naming a service is held to no one project
-			// (broker_token.go).
-			handler = s.writeNeedsASignedInPerson(handler)
-			handler = s.refuseChangedLogin(handler)
-		}
-		// Outside the two scope checks and outside the GET test, so it runs before them and
-		// before every handler, on a read as on a write: the whole id it resolves a path
-		// prefix into is the value the project check resolves and the value the handler
-		// addresses its row by, one value for both (resolveIDPrefixes, project_scope.go).
-		handler = s.resolveIDPrefixes(route, handler)
-		handler = s.refuseUnstorableParameters(route.Pattern, handler)
-		if len(route.OAuthScopes) > 0 {
-			// Ahead of the keyed layer and the project and session checks, so the row's own
-			// scopes are the first thing a request is held to: a credential that holds none is
-			// told so rather than told its write belongs to another project or another session,
-			// and its refusal claims no idempotency key, so the person who ticks the scope back
-			// is not answered the stored refusal under the same key. It is inside the drain, so
-			// a client that asked to be told to continue is handled as it is for every other
-			// early answer.
-			handler = s.gateRouteScopes(route.OAuthScopes, handler)
-		}
-		if route.Method != http.MethodGet {
-			// Every layer above may answer before the body is read; the answer waits for the body.
-			//
-			// A client that asked to be told to continue before it sends its body (Expect:
-			// 100-continue) and is answered early sends none of it, and its connection closes after
-			// the answer, as long as nothing reads that body: net/http sends 100 Continue at the
-			// body's first read, and otherwise closes the connection once the answer begins rather
-			// than wait on a body that never comes. It decides from the expect-continue reader its
-			// own response keeps (go1.27's response.ecReader and reqBody), not from the request's
-			// Body, so it is not that trackTransactions hands this layer a copy of the request: the
-			// handling holds with the drain's body put on net/http's own request. What keeps the body
-			// unread is the drain's guard (drainingWriter.askedContinue) and the keyed layer's
-			// (answerDrainedRepeat), which TestAnEarlyAnswerToAClientWaitingToContinueAsksForNoBody
-			// pins: without either, the client is told to continue and the answer waits on its body.
-			handler = s.drainBeforeAnswer(route.Method, route.Pattern, handler)
-		}
-		// The access-log line is outermost, so it records what every layer answered - a keyed
-		// replay, a refused login, an early answer the drain held - and the caller the first of
-		// them resolved.
-		mux.HandleFunc(route.Method+" "+route.Pattern, accesslog.HandlerFunc(route.Pattern, s.decideBrokerToken(trackTransactions(handler))))
+		mux.HandleFunc(route.Method+" "+route.Pattern, s.routeHandler(route, replays[route.Method+" "+route.Pattern]))
 	}
 	if websocket, ok := deps.Docs.(interface {
 		ServeHTTP(http.ResponseWriter, *http.Request)
 	}); ok {
+		// The document service admits a socket by its sign-in cookie alone, so its heartbeat
+		// re-checks that cookie and nothing the request carries beside it (signInStillResolves).
 		const pattern = "/ws/doc/{room}"
-		mux.Handle("GET "+pattern, accesslog.Handler(pattern, s.whileCallerResolves(trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP)))))
+		mux.Handle("GET "+pattern, accesslog.Handler(pattern, s.whileCallerResolves(s.signInStillResolves,
+			trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP)))))
 	}
-	const livePattern = "/ws/live"
-	mux.Handle("GET "+livePattern, accesslog.Handler(livePattern, s.whileCallerResolves(s.decideBrokerToken(trackTransactions(s.refuseUnstorableParameters(livePattern, s.serveLiveSocket))))))
+	mux.Handle("GET "+liveSocketPattern, s.liveSocketHandler(s.serveLiveSocket))
 	return s
+}
+
+// routeHandler is the chain register mounts one row of the table behind: the row's own handler
+// inside every layer the row runs, in the one order every row runs them. It is the one place that
+// order is written, so register and a test that walks the table with each row's handler replaced
+// (read_only_token_test.go) build the same chain. replay is the row's keyed replay
+// (keyedReplays), nil for a row that has none.
+func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFunc {
+	handler := route.Handler
+	if keyedMethod(route.Method) {
+		handler = s.keyedWrites(route.Method, route.Pattern, handler, replay)
+	}
+	if route.Method+" "+route.Pattern == issueUploadRoute {
+		handler = s.refuseUploadToAClosedIssue(handler)
+	}
+	if route.Method != http.MethodGet {
+		// Outside the keyed layer and the upload's spool, so a write to another project's
+		// object, into another session's own rows, or by a credential that names no person
+		// claims no idempotency key and costs no body (withinProjectScope,
+		// withinSessionScope, writeNeedsASignedInPerson).
+		handler = s.withinProjectScope(route, handler)
+		handler = s.withinSessionScope(route, handler)
+		// Outermost of the three, so a caller whose credential names a service and no person
+		// is told it may make no write at all rather than which session the write it tried
+		// belongs to. The project check has nothing to tell it: a token naming a service is
+		// held to no one project (broker_token.go). A read-only token names a service and no
+		// person too, and never reaches here: the read-only gate further out has answered it
+		// (refuseReadOnlyToken).
+		handler = s.writeNeedsASignedInPerson(handler)
+		handler = s.refuseChangedLogin(handler)
+	}
+	// Outside the two scope checks and outside the GET test, so it runs before them and
+	// before every handler, on a read as on a write: the whole id it resolves a path
+	// prefix into is the value the project check resolves and the value the handler
+	// addresses its row by, one value for both (resolveIDPrefixes, project_scope.go).
+	handler = s.resolveIDPrefixes(route, handler)
+	handler = s.refuseUnstorableParameters(route.Pattern, handler)
+	if len(route.OAuthScopes) > 0 {
+		// Ahead of the keyed layer and the project and session checks, so the row's own
+		// scopes are the first thing a request is held to once the read-only gate outside it
+		// has let it through: a credential that holds none is told so rather than told its
+		// write belongs to another project or another session, and its refusal claims no
+		// idempotency key, so the person who ticks the scope back is not answered the stored
+		// refusal under the same key. It is inside the drain, so a client that asked to be
+		// told to continue is handled as it is for every other early answer.
+		handler = s.gateRouteScopes(route.OAuthScopes, handler)
+	}
+	// Outside the scope gate and every layer inside it, so a read-only token on a row the read
+	// list does not name is refused before anything the row does: before the row's own scopes,
+	// which would name a scope to ask for where no scope makes the row its to call; before the
+	// sign-in check, which would tell it to sign a person in; and before a Dispatch-Login check,
+	// an id prefix's lookup, the project and session checks and the Idempotency-Key, none of
+	// which it reaches, so it claims no key. It is inside the drain, as the scope gate is, so a
+	// client that asked to be told to continue is handled as for every other early answer.
+	handler = s.refuseReadOnlyToken(route.ReadScope, handler)
+	// One place for the whole table: every answer says its body depends on Dispatch-Trees
+	// (varyOnDisplayTrees), so no cache between a browser and Dispatch hands a reader with
+	// trees an answer written for a reader without them. It is outside the scope gate and the
+	// read-only gate, so a refusal by either carries the header too. The answer's other Vary,
+	// on Accept-Encoding, is added outside it, where the encoding is chosen (compressAnswers).
+	handler = varyOnDisplayTrees(handler)
+	if route.Method != http.MethodGet {
+		// Every layer above may answer before the body is read; the answer waits for the body.
+		//
+		// A client that asked to be told to continue before it sends its body (Expect:
+		// 100-continue) and is answered early sends none of it, and its connection closes after
+		// the answer, as long as nothing reads that body: net/http sends 100 Continue at the
+		// body's first read, and otherwise closes the connection once the answer begins rather
+		// than wait on a body that never comes. It decides from the expect-continue reader its
+		// own response keeps (go1.27's response.ecReader and reqBody), not from the request's
+		// Body, so it is not that trackTransactions hands this layer a copy of the request: the
+		// handling holds with the drain's body put on net/http's own request. What keeps the body
+		// unread is the drain's guard (drainingWriter.askedContinue) and the keyed layer's
+		// (answerDrainedRepeat), which TestAnEarlyAnswerToAClientWaitingToContinueAsksForNoBody
+		// pins: without either, the client is told to continue and the answer waits on its body.
+		handler = s.drainBeforeAnswer(route.Method, route.Pattern, handler)
+	}
+	// The access-log line is outermost, so it records what every layer answered - a keyed
+	// replay, a refused login, an early answer the drain held - and the caller the first of
+	// them resolved. Compression sits just inside it, so every one of those answers is
+	// compressed for a caller that takes gzip and the line counts the bytes that went on the
+	// wire. The two websockets register mounts beside the table carry no compressed answer: the
+	// upgrade is not a body, and the frames after it are the socket's (compressAnswers).
+	return accesslog.HandlerFunc(route.Pattern, compressAnswers(s.decideBrokerToken(trackTransactions(handler))))
+}
+
+// liveSocketPattern is the path of the live socket, which register mounts beside the table.
+const liveSocketPattern = "/ws/live"
+
+// liveSocketHandler is the chain register mounts GET /ws/live behind, around serve, which is
+// serveLiveSocket there and a stand-in in a test that walks every mount a read-only token can
+// reach (read_only_token_test.go): one place for the order, as routeHandler is for a row.
+//
+// The read-only gate sits just inside decideBrokerToken, whose decision it reads, and ahead of
+// the upgrade: no read list names the socket, since a socket delivers whatever its views carry,
+// so a read-only token is answered 403 READ_ONLY_TOKEN before a socket is ever opened for it. The
+// socket is admitted by whichever credential optionalActor resolves - a bearer, a broker-issued
+// token or a sign-in cookie - so its heartbeat resolves that same credential again
+// (callerStillResolves).
+func (s *server) liveSocketHandler(serve http.HandlerFunc) http.Handler {
+	return accesslog.Handler(liveSocketPattern, s.whileCallerResolves(s.callerStillResolves, s.decideBrokerToken(
+		s.refuseReadOnlyToken(false, trackTransactions(s.refuseUnstorableParameters(liveSocketPattern, serve))))))
 }
 
 func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
@@ -705,15 +904,20 @@ func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// whileCallerResolves serves a connection that outlives its request, a websocket, only while its
-// caller resolves: on every StreamHeartbeat it resolves the caller again, and once the caller no
-// longer resolves (a logout, a membership the sign-in issuer no longer confirms, a revoked token)
-// it cancels the connection's context, on which the document server and the live socket close the
-// socket. The check runs beside the handler, which holds pooled connections of its own while it
+// whileCallerResolves serves a connection that outlives its request, a websocket, only while the
+// credential it was admitted with resolves: on every StreamHeartbeat it asks stillResolves of the
+// request again, and once that refuses (a logout, a membership the sign-in issuer no longer
+// confirms, a revoked token) it cancels the connection's context, on which the document server and
+// the live socket close the socket. stillResolves is the mount's own admission asked again, never
+// a wider one: the live socket's is callerStillResolves, which resolves whichever credential
+// admitted it, and the document socket's is signInStillResolves, the sign-in cookie alone, since
+// that is all the document service admits it by. A check that resolved anything the request
+// carries would let a credential that admitted nothing keep the socket open once the one that did
+// had ended. The check runs beside the handler, which holds pooled connections of its own while it
 // admits the socket, so it marks a context of its own for the pool (store.ErrNestedAcquire), and
 // it resolves on a context detached from the access-log line, which names the caller the socket
 // was admitted as (accesslog.Detached).
-func (s *server) whileCallerResolves(handler http.HandlerFunc) http.HandlerFunc {
+func (s *server) whileCallerResolves(stillResolves func(*http.Request) error, handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, closeConnection := context.WithCancel(r.Context())
 		defer closeConnection()
@@ -726,12 +930,11 @@ func (s *server) whileCallerResolves(handler http.HandlerFunc) http.HandlerFunc 
 				case <-ctx.Done():
 					return
 				case <-heartbeat.C:
-					// The check resolves the credential the request was admitted with, from a
-					// detached copy of that request, which for a broker-issued token asks the
+					// The check resolves the admission's credential from a detached copy of
+					// the request, which for a broker-issued token on the live socket asks the
 					// broker's answer alone rather than the proof the upgrade already spent
-					// (callerStillResolves). Every other credential is resolved exactly as it
-					// is on a request.
-					if err := s.callerStillResolves(check); err != nil {
+					// (callerStillResolves).
+					if err := stillResolves(check); err != nil {
 						closeConnection()
 						return
 					}
@@ -740,6 +943,23 @@ func (s *server) whileCallerResolves(handler http.HandlerFunc) http.HandlerFunc 
 		}()
 		handler(w, r.WithContext(ctx))
 	}
+}
+
+// signInStillResolves answers whether the sign-in cookie a document socket was admitted with
+// still resolves, which is what whileCallerResolves asks on that socket's every heartbeat. The
+// document service admits a socket by that cookie and nothing else (docs.Service.requestActor,
+// Identity.Login), and this asks the API's Identity the same question; cmd/dispatch hands the API
+// and the document service one Identity, so the two read one cookie the same way. It reads no
+// Authorization header. A bearer or a broker-issued token sent beside the cookie admitted nothing,
+// so it keeps nothing open either: resolved here, it would hold the socket open for the token's
+// whole life after the cookie ended, a read-only token's included, which the read list lets read
+// no document at all (readScopeRoutes).
+func (s *server) signInStillResolves(r *http.Request) error {
+	if s.deps.Identity == nil {
+		return errorf(http.StatusInternalServerError, "IDENTITY_ERROR", "identity service unavailable")
+	}
+	_, err := s.deps.Identity.Login(r)
+	return err
 }
 
 type apiError struct {
@@ -780,209 +1000,38 @@ func parseQueryInt(query url.Values, field string, min, max int) (value int, pre
 	return parsed, true, true
 }
 
-// The codes writeHandlerError answers a document it cannot read or serve and an unclassified
-// failure with, which a comment's or ask's single read also carries as anchor_block_error
-// (anchorBlock).
-const (
-	codeDocSchema             = "DOC_SCHEMA"
-	codeDocServiceUnavailable = "DOC_SERVICE_UNAVAILABLE"
-	codeDocumentUnloadable    = "DOCUMENT_UNLOADABLE"
-	codeInternal              = "INTERNAL"
-)
-
-// documentErrorCode names an error a document operation returns when it could not read or serve
-// the document, and is empty for any other error. writeHandlerError and anchorBlock both name a
-// document error by it, and both in one order, so the two cannot name one error differently.
-//
-// A room or store that could not serve the document is DOC_SERVICE_UNAVAILABLE whatever failed it,
-// so both take that code before any branch that reads the error's cause. A failed room carries the
-// error another operation failed it with - settlement's schema refusal, a settlement that failed
-// three times (its warm-up refused because the issue had closed, among others), a writer's commit
-// that failed or its client cancelled, a store write or load that failed, a history that did not
-// decode - and that error says nothing of this request: the caller retries once the room is
-// evicted, and its retry meets the document itself.
-//
-// A stored history this request itself could not decode is DOCUMENT_UNLOADABLE, the state a
-// rebuild repairs. A tree outside the schema is DOC_SCHEMA, which both take only after the
-// branches that name the caller's own input or a block the document does not hold, so a refusal
-// whose reason the renderer gave (an ask block that cannot render) stays that refusal.
-func documentErrorCode(err error) string {
-	switch {
-	case errors.Is(err, docs.ErrServiceUnavailable):
-		return codeDocServiceUnavailable
-	case errors.Is(err, docs.ErrDocumentUnloadable):
-		return codeDocumentUnloadable
-	case errors.Is(err, docs.ErrDocSchema):
-		return codeDocSchema
+// parseQueryBool reads one query parameter as true or false, as parseQueryInt reads one as an
+// integer: present is false when the request carried no value the route reads, and a value that
+// is neither "true" nor "false" is present with valid false, so each route writes its own code
+// and message around it. The two routes that read such a parameter read it differently, and
+// both readings are carried here rather than either being changed: trim cuts the value's
+// surrounding whitespace before it is read, which search's ?keywords_only= does and GET
+// /api/v1/projects/{key}/related does not, and readFirst reads the parameter as url.Values.Get
+// does - the first value, however many were sent, and a blank one as no value at all - which
+// that related route does where search refuses a repeated or a blank one.
+func parseQueryBool(query url.Values, field string, trim, readFirst bool) (value, present, valid bool) {
+	values, ok := query[field]
+	if !ok {
+		return false, false, false
 	}
-	return ""
-}
-
-func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
-	var apiErr *apiError
-	if errors.As(err, &apiErr) {
-		if apiErr.retryAfter > 0 {
-			// Before the body: writeError writes the status and the headers go with it.
-			w.Header().Set("Retry-After", strconv.Itoa(apiErr.retryAfter))
+	first := values[0]
+	if trim {
+		first = strings.TrimSpace(first)
+	}
+	if readFirst {
+		if first == "" {
+			return false, false, false
 		}
-		if apiErr.scope != "" {
-			w.Header().Set("WWW-Authenticate", insufficientScopeChallenge(apiErr.scope))
-		}
-		writeError(w, apiErr.code, apiErr.status, apiErr.message)
-		// A 500 the handler named is a server fault like any other, so the operator's log shows it.
-		if apiErr.status == http.StatusInternalServerError {
-			slog.Error("dispatch: API handler failed", "code", apiErr.code, "error", err)
-		}
-		return
+	} else if len(values) != 1 {
+		return false, true, false
 	}
-	documentCode := documentErrorCode(err)
-	switch documentCode {
-	case codeDocServiceUnavailable:
-		writeError(w, documentCode, http.StatusServiceUnavailable, docs.ErrServiceUnavailable.Error())
-		return
-	case codeDocumentUnloadable:
-		writeError(w, documentCode, http.StatusConflict, docs.ErrDocumentUnloadable.Error())
-		slog.Warn("dispatch: API document history cannot load", "error", err)
-		return
+	switch first {
+	case "false":
+		return false, true, true
+	case "true":
+		return true, true, true
 	}
-	// The edit route's own ambiguity error names the operation and the quote; the bare pmdoc one
-	// still serves every other caller of FindQuote.
-	var ambiguousQuote *docs.ErrAnchorAmbiguous
-	if errors.As(err, &ambiguousQuote) {
-		writeAmbiguousTarget(w, ambiguousQuote.Error(), ambiguousQuote.Candidates)
-		return
-	}
-	var ambiguous *pmdoc.ErrTargetAmbiguous
-	if errors.As(err, &ambiguous) {
-		writeAmbiguousTarget(w, ambiguous.Error(), ambiguous.Candidates)
-		return
-	}
-
-	var preconditionFailed *docs.ErrPreconditionFailed
-	if errors.As(err, &preconditionFailed) {
-		currentBlocks := make([]model.EditBlockPrecondition, 0)
-		for _, mismatch := range preconditionFailed.Mismatches {
-			if mismatch.Scope == "block" && mismatch.Current != nil {
-				currentBlocks = append(currentBlocks, model.EditBlockPrecondition{
-					ID: mismatch.BlockID, Token: *mismatch.Current,
-				})
-			}
-		}
-		WriteJSON(w, http.StatusConflict, map[string]any{
-			"error":      preconditionFailed.Error(),
-			"code":       "PRECONDITION_FAILED",
-			"current":    map[string]any{"document": preconditionFailed.CurrentDocument, "blocks": currentBlocks},
-			"mismatches": preconditionFailed.Mismatches,
-		})
-		return
-	}
-	// A write whose text a concurrent browser change removed before the write could be versioned
-	// (LEGION-269). Nothing was written, so this reads like PRECONDITION_FAILED: re-read the
-	// document and decide again.
-	var lostEdit *docs.ErrEditLost
-	if errors.As(err, &lostEdit) {
-		body := map[string]any{
-			"error":        lostEdit.Error(),
-			"code":         "EDIT_LOST_TO_CONCURRENT_CHANGE",
-			"participants": participantsOrEmpty(lostEdit.Participants),
-		}
-		if lostEdit.Suggestion != "" {
-			body["suggestion"] = lostEdit.Suggestion
-		} else {
-			body["lost_ops"] = lostEdit.Ops
-		}
-		WriteJSON(w, http.StatusConflict, body)
-		return
-	}
-	var invalidPrecondition *docs.ErrInvalidPrecondition
-	if errors.As(err, &invalidPrecondition) {
-		writeError(w, "INVALID_PRECONDITION", http.StatusBadRequest, invalidPrecondition.Error())
-		return
-	}
-	if errors.Is(err, docs.ErrPreconditionBusy) {
-		writeError(w, "EDIT_QUEUE_FULL", http.StatusTooManyRequests, docs.ErrPreconditionBusy.Error())
-		return
-	}
-	var invalidAskBlock *docs.ErrInvalidAskBlock
-	if errors.As(err, &invalidAskBlock) {
-		writeError(w, "INVALID_ASK_BLOCK", http.StatusBadRequest, invalidAskBlock.Error())
-		return
-	}
-	var unrepresentableAsk *docs.ErrAskBlockUnrepresentable
-	if errors.As(err, &unrepresentableAsk) {
-		writeError(w, "ASK_BLOCK_TEXT", http.StatusBadRequest, unrepresentableAsk.Error())
-		return
-	}
-	var invalidOp *docs.ErrInvalidOp
-	if errors.As(err, &invalidOp) {
-		writeError(w, "INVALID_OP", http.StatusBadRequest, invalidOp.Error())
-		return
-	}
-	if errors.Is(err, pmdoc.ErrTargetSpansBlocks) {
-		writeError(w, "TARGET_SPANS_BLOCKS", http.StatusBadRequest, err.Error())
-		return
-	}
-	if errors.Is(err, pmdoc.ErrTableWidth) {
-		writeError(w, "TABLE_WIDTH", http.StatusBadRequest, err.Error())
-		return
-	}
-	if errors.Is(err, docs.ErrAnchorMissing) {
-		writeError(w, "ANCHOR_MISSING", http.StatusConflict, err.Error())
-		return
-	}
-	if errors.Is(err, docs.ErrAnchorOrphaned) {
-		writeError(w, "ANCHOR_ORPHANED", http.StatusConflict, err.Error())
-		return
-	}
-	if errors.Is(err, pmdoc.ErrTargetNotFound) {
-		writeError(w, "TARGET_NOT_FOUND", http.StatusNotFound, err.Error())
-		return
-	}
-	// A block pointer refused on any route but the edit route (which answers INVALID_OP) is the
-	// caller's markdown to fix, as a schema refusal of it is.
-	if errors.Is(err, docs.ErrInvalidMarkdown) || errors.Is(err, pmdoc.ErrBlockPointer) {
-		writeError(w, "INVALID_MARKDOWN", http.StatusBadRequest, err.Error())
-		return
-	}
-	if docs.IsTooLarge(err) {
-		writeError(w, "CAP_EXCEEDED", http.StatusRequestEntityTooLarge, err.Error())
-		slog.Warn("dispatch: API refused a document too large to store", "error", err)
-		return
-	}
-	// A tree outside the schema that the document holds answers 409 with its one message, the same
-	// on every route whatever the route wrapped it in (docs.OutsideSchemaError). Any other schema
-	// refusal is a tree an operation produced, which is the server's fault.
-	if documentCode == codeDocSchema {
-		var outside *docs.OutsideSchemaError
-		if errors.As(err, &outside) {
-			writeError(w, documentCode, http.StatusConflict, outside.Error())
-			slog.Warn("dispatch: API document outside Proof schema", "error", err)
-			return
-		}
-		writeError(w, documentCode, http.StatusInternalServerError, err.Error())
-		slog.Error("dispatch: API document outside Proof schema", "error", err)
-		return
-	}
-	if errors.Is(err, docs.ErrIssueClosed) {
-		writeError(w, "ISSUE_CLOSED", http.StatusConflict, err.Error())
-		return
-	}
-	if errors.Is(err, pgx.ErrNoRows) {
-		writeError(w, "NOT_FOUND", http.StatusNotFound, "not found")
-		return
-	}
-	writeError(w, codeInternal, http.StatusInternalServerError, "internal server error")
-	slog.Error("dispatch: API handler failed", "error", err)
-}
-
-// writeAmbiguousTarget serves a quote that resolved in several places: the caller picks one by
-// the candidates' positions, or narrows the quote.
-func writeAmbiguousTarget(w http.ResponseWriter, message string, candidates []pmdoc.Candidate) {
-	WriteJSON(w, http.StatusConflict, map[string]any{
-		"error":      message,
-		"code":       "TARGET_AMBIGUOUS",
-		"candidates": candidates,
-	})
+	return false, true, false
 }
 
 // refuseChangedLogin runs a write route's handler only for the person who pressed the write, when
@@ -1068,8 +1117,8 @@ func (s *server) optionalActor(r *http.Request) (model.Actor, bool, error) {
 	}
 	accesslog.Note(r.Context(), accesslog.KindUser, login)
 	// A person at a browser is the person, so their cookie holds every scope and names no agent
-	// that acted for them.
-	return model.Actor{Kind: "user", ID: login, Credential: personCredential}, true, nil
+	// that acted for them. The cookie proved the login, so the actor is Proven.
+	return model.Actor{Kind: "user", ID: login, Credential: personCredential, Proven: true}, true, nil
 }
 
 // The two credentials every request of their kind shares. Each is a fact of the deployment
@@ -1152,7 +1201,8 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 				"this request's credential acts for session %s; its actor names another writer", authenticated.ID)
 		}
 		// Recorded: the actor a handler writes and compares carries no credential, as a stored
-		// actor decoded from JSON carries none (model.Actor.Recorded).
+		// actor decoded from JSON carries none (model.Actor.Recorded). It keeps the Proven mark
+		// brokerTokenActor set, since the credential, not the body, named this session.
 		actor := authenticated.Recorded()
 		if supplied != nil {
 			actor.Origin = supplied.Origin
@@ -1173,6 +1223,7 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		// No Credential: this actor is one a handler records and compares, and a stored actor
 		// was decoded from JSON, which carries none (model.Actor.Recorded). A layer that needs
 		// the request's own credential reads it from optionalActor (callerHoldsScope).
+		// Not Proven: the body named this session and the credential proved none.
 	}, nil
 }
 
@@ -1279,6 +1330,43 @@ func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http
 	}
 }
 
+// refuseReadOnlyToken is the one place a read-only token is held to the read list: register wraps
+// every row of the table in it, listed being the row's apiRoute.ReadScope, and GET /ws/live with
+// listed false. On a route the list does not name (readScopeRoutes), a caller decideBrokerToken
+// resolved to a read-only credential (model.Credential.ReadOnly) is answered 403 READ_ONLY_TOKEN
+// and next does not run; every other request runs next as it always did. A row the list names is
+// handed back as it is, so it pays nothing for the gate.
+//
+// It reads the decision decideBrokerToken carried (resolvedCallerKey) and resolves nothing of its
+// own: a second verification would present the request's DPoP proof twice, and a proof is single
+// use. A request that presented no broker token carries no decision, so a cookie, a bearer or an
+// anonymous request passes untouched, at the cost of one context read, and one whose broker
+// token did not resolve passes too, to the layer that answers that refusal today.
+//
+// The refusal carries no WWW-Authenticate challenge, unlike a missing scope's
+// (refuseMissingScope): RFC 6750 Section 3.1 has the challenge name the scope a request needs, and
+// no scope makes such a route the token's to call. Its code is the contract a client reads. Its
+// message is the server's one readOnlyRefusal, which register built before it wrapped a row; a
+// server with none was not built by register, and wrapping a route of it panics rather than
+// answering a refusal that says nothing.
+func (s *server) refuseReadOnlyToken(listed bool, next http.HandlerFunc) http.HandlerFunc {
+	if listed {
+		return next
+	}
+	refusal := s.readOnlyRefusal
+	if refusal == "" {
+		panic("api: refuseReadOnlyToken wraps a route of a server register did not build, which holds no read-only refusal to answer")
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if caller, decided := r.Context().Value(resolvedCallerKey{}).(resolvedCaller); decided && caller.err == nil &&
+			caller.actor.Credential != nil && caller.actor.Credential.ReadOnly {
+			writeError(w, contracts.DispatchReadOnlyToken, http.StatusForbidden, refusal)
+			return
+		}
+		next(w, r)
+	}
+}
+
 // actingPerson answers the person a request acts for, on a route gateRouteScopes has already
 // held to the `person` scope. It names no scope of the route's own: the table decides those, and
 // a handler that repeated them could drift from the row it serves. On a row the table gives the
@@ -1334,13 +1422,18 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 			session = named
 		}
 		act = &model.ActorAct{
-			Session:   session,
-			TokenID:   credential.TokenID,
-			TokenName: credential.TokenName,
-			Scopes:    credential.Scopes,
+			Session: session,
+			// Only the session the credential itself proved; one a personal token's `?session=`
+			// names is the caller's word.
+			SessionProven: session != "" && session == credential.Session,
+			TokenID:       credential.TokenID,
+			TokenName:     credential.TokenName,
+			Scopes:        credential.Scopes,
 		}
 	}
-	return model.Actor{Kind: "user", ID: model.CanonicalLogin(person), Act: act}, true
+	// Proven: every credential that holds the person scope proves its person - the cookie its
+	// login, a personal or broker-issued token the owner it names.
+	return model.Actor{Kind: "user", ID: model.CanonicalLogin(person), Act: act, Proven: true}, true
 }
 
 // actSessionFromBody records on actor's act the session the request body names, for the
@@ -1351,7 +1444,9 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 // `?session=` is taken on every other route (actingPerson). A credential that did prove one - a
 // broker-issued token - decides it, and a body naming another session is the disagreement
 // bearerSessionActor and actingPerson both refuse, 403 ACTOR_SESSION_MISMATCH, rather than a
-// write recorded as a session the caller merely asked for.
+// write recorded as a session the caller merely asked for. The act keeps SessionProven only
+// when the body names the session the credential proved; a session the body alone names is not
+// proven.
 //
 // Only those routes read it: decodeJSON refuses an unknown field, so a body actor on a route
 // whose input struct does not declare one is a 400, and four of the mutating rows a person's
@@ -1372,6 +1467,7 @@ func actSessionFromBody(w http.ResponseWriter, actor model.Actor, supplied *mode
 	}
 	// A copy, so a handler holding the actor actingPerson answered keeps the act it was given.
 	act := *actor.Act
+	act.SessionProven = act.SessionProven && act.Session == named
 	act.Session = named
 	actor.Act = &act
 	return actor, true
@@ -1426,14 +1522,20 @@ func countExceededError(code, field string, count, limit int) *apiError {
 		"%s is %d over the %d-item limit (%d/%d)", field, count-limit, limit, count, limit)
 }
 
-// blockBoundError is what a route answers an itemblocks.Check with: nil where the body passed
-// both bounds, else the refusal the typed error words (itemblocks.CapExceeded names the block,
-// itemblocks.CountExceeded the count), with the status and code every cap refusal carries.
-// Every route that bounds a body calls this one helper, so a route added later cannot word the
-// same refusal differently.
+// blockBoundError is what a route answers an itemblocks.Check with: nil where the body broke no
+// rule, else the refusal the typed error words, under the code that rule is refused by. A bound
+// broken (itemblocks.CapExceeded names the block, itemblocks.CountExceeded the count) carries
+// CAP_EXCEEDED, the code every cap refusal carries; a body holding a decision block
+// (itemblocks.DecisionBlock) carries DECISION_BLOCK_IN_BODY, since what it is refused for is
+// what it holds rather than how long it is. Every route that checks a body calls this one
+// helper, so a route added later cannot word the same refusal differently.
 func blockBoundError(err error) *apiError {
 	if err == nil {
 		return nil
+	}
+	var decision *itemblocks.DecisionBlock
+	if errors.As(err, &decision) {
+		return errorf(http.StatusBadRequest, "DECISION_BLOCK_IN_BODY", "%s", err)
 	}
 	return errorf(http.StatusBadRequest, "CAP_EXCEEDED", "%s", err)
 }
@@ -1485,9 +1587,19 @@ func (maxBytesDiscarder) Header() http.Header             { return nil }
 func (maxBytesDiscarder) Write(value []byte) (int, error) { return len(value), nil }
 func (maxBytesDiscarder) WriteHeader(int)                 {}
 
-// decodeJSON decodes r's body, one JSON value of at most maxJSONRequestBytes, into value, which
-// declares every member the body may carry. A string the body holds anywhere that carries U+0000
-// is refused, naming where it stands (unstorableJSON).
+// actorInput is the body of every route whose only input is who acts.
+type actorInput struct {
+	Actor *model.Actor `json:"actor"`
+}
+
+// decodeJSON decodes r's body, one JSON value of at most maxJSONRequestBytes, into value. A member
+// value does not declare is ignored, because two builds of Dispatch serve one database while a
+// release rolls out, and a body a newer build's client sends can reach the older build. A member
+// whose loss would change what a request does therefore ships as a new route, never as a member.
+// The ignored top-level members are logged at debug with the route (logUndeclaredMembers); the
+// test hooks, which no other build calls, refuse them instead (decodeJSONTestHook, and
+// refuseUndeclaredMembers for a hook that reads its body itself). A string the body holds
+// anywhere that carries U+0000 is refused, naming where it stands (unstorableJSON).
 func decodeJSON(r *http.Request, value any) error {
 	return decodeJSONWithin(r, value, maxJSONRequestBytes, errJSONTooLarge)
 }
@@ -1495,41 +1607,90 @@ func decodeJSON(r *http.Request, value any) error {
 // decodeJSONWithin is decodeJSON for a route whose body has a limit of its own (routeBody): a body
 // past limit bytes is tooLarge, the 413 that route answers one with.
 func decodeJSONWithin(r *http.Request, value any, limit int64, tooLarge *apiError) error {
-	contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if err != nil || (contentType != "application/json" && !strings.HasSuffix(contentType, "+json")) {
-		return errorf(http.StatusUnsupportedMediaType, "JSON_CONTENT_TYPE", "JSON mutations require Content-Type application/json")
+	body, err := readJSONBody(r, value, limit, tooLarge)
+	if err != nil {
+		return err
 	}
-	r.Body = http.MaxBytesReader(maxBytesDiscarder{}, r.Body, limit)
-	var read bytes.Buffer
-	decoder := json.NewDecoder(io.TeeReader(r.Body, &read))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(value); err != nil {
-		var maxBytes *http.MaxBytesError
-		if errors.As(err, &maxBytes) {
-			return tooLarge
-		}
-		return errorf(http.StatusBadRequest, "INVALID_JSON", "invalid JSON body: %v", err)
+	logUndeclaredMembers(r, value, body)
+	return nil
+}
+
+// decodeJSONTestHook is decodeJSON for a route this tree alone calls: the test hooks, mounted only
+// under Deps.TestHooksEnabled. No page or command of another build reaches one, so a member the
+// hook does not declare is a mistake in the test that sent it, and is refused by name rather than
+// ignored.
+func decodeJSONTestHook(r *http.Request, value any) error {
+	body, err := readJSONBody(r, value, maxJSONRequestBytes, errJSONTooLarge)
+	if err != nil {
+		return err
 	}
-	if decoder.More() {
-		return errorf(http.StatusBadRequest, "INVALID_JSON", "request body must contain one JSON value")
-	}
-	if refusal := unstorableJSON("", read.Bytes()); refusal != nil {
-		return refusal
+	return refuseUndeclaredMembers(value, body)
+}
+
+// refuseUndeclaredMembers is decodeJSONTestHook's refusal on its own, for a test hook that reads
+// its body itself and decodes it after: it answers the error naming the top-level members of body
+// that value's type does not declare, and nil when it declares them all.
+func refuseUndeclaredMembers(value any, body []byte) error {
+	if undeclared := undeclaredMembers(value, body); len(undeclared) > 0 {
+		return errorf(http.StatusBadRequest, "INVALID_JSON", "the hook does not take: %s", strings.Join(undeclared, ", "))
 	}
 	return nil
 }
 
-// WriteJSON writes body as the JSON response with the given status.
+// readJSONBody decodes r's body, at most limit bytes of it, into value and returns the bytes it
+// read, for the caller to judge the members value does not declare by. A body past limit is
+// tooLarge, the 413 the route answers one with.
+func readJSONBody(r *http.Request, value any, limit int64, tooLarge *apiError) ([]byte, error) {
+	contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || (contentType != "application/json" && !strings.HasSuffix(contentType, "+json")) {
+		return nil, errorf(http.StatusUnsupportedMediaType, "JSON_CONTENT_TYPE", "JSON mutations require Content-Type application/json")
+	}
+	r.Body = http.MaxBytesReader(maxBytesDiscarder{}, r.Body, limit)
+	var read bytes.Buffer
+	decoder := json.NewDecoder(io.TeeReader(r.Body, &read))
+	if err := decoder.Decode(value); err != nil {
+		var maxBytes *http.MaxBytesError
+		if errors.As(err, &maxBytes) {
+			return nil, tooLarge
+		}
+		return nil, errorf(http.StatusBadRequest, "INVALID_JSON", "invalid JSON body: %v", err)
+	}
+	if decoder.More() {
+		return nil, errorf(http.StatusBadRequest, "INVALID_JSON", "request body must contain one JSON value")
+	}
+	if refusal := unstorableJSON("", read.Bytes()); refusal != nil {
+		return nil, refusal
+	}
+	return read.Bytes(), nil
+}
+
+// WriteJSON writes body as the JSON response with the given status. The body is encoded whole
+// before the status is written, as json.Encoder.Encode builds it, with the newline Encode ends it
+// with, so a body that cannot be encoded (a +Inf, a time past year 9999) answers the server's 500
+// INTERNAL, and is logged, rather than the status with an empty body: an empty 2xx is a success
+// that carries nothing, and a keyed write would answer its retry the same nothing.
 func WriteJSON(w http.ResponseWriter, status int, body any) {
+	var encoded bytes.Buffer
+	if err := json.NewEncoder(&encoded).Encode(body); err != nil {
+		slog.Error("dispatch: a JSON answer cannot be encoded", "status", status, "error", err)
+		writeError(w, codeInternal, http.StatusInternalServerError, "internal server error")
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(body); err != nil {
+	if _, err := w.Write(encoded.Bytes()); err != nil {
 		slog.Warn("dispatch: write json failed", "error", err)
 	}
 }
 
+// errorBody is the body of every refusal writeError answers, on every route.
+type errorBody struct {
+	Code  string `json:"code"`
+	Error string `json:"error"`
+}
+
 func writeError(w http.ResponseWriter, code string, status int, message string) {
-	WriteJSON(w, status, map[string]string{"error": message, "code": code})
+	WriteJSON(w, status, errorBody{Code: code, Error: message})
 }
 
 func encodeJSON(value any) ([]byte, error) {
@@ -1544,10 +1705,16 @@ func (s *server) appendEvent(ctx context.Context, tx pgx.Tx, event model.Event) 
 	return s.deps.Events.Append(ctx, tx, event)
 }
 
-func (s *server) publish(events ...model.Event) {
+// publish hands each event to the broker and then stores the display trees of the stored texts
+// their payloads carry (storeEventDisplayTrees). ctx is the caller's own: a route's request
+// context, which by here has committed and holds no connection of the pool, or a background
+// writer's. A caller that publishes while its transaction is still open stores nothing, and loses
+// no tree by it: such an event carries a text its own write already stored.
+func (s *server) publish(ctx context.Context, events ...model.Event) {
 	for _, event := range events {
 		s.deps.Events.Publish(event)
 	}
+	s.storeEventDisplayTrees(ctx, events)
 }
 
 func (s *server) begin(ctx context.Context) (pgx.Tx, error) {
@@ -1625,15 +1792,6 @@ func refuseClosed(open bool, write closedWrite) error {
 	return nil
 }
 
-// A version event is built by docs.ArtifactVersionEventPayload wherever it is appended; a
-// document's creation is the one other artifact payload, and it states what the write moved
-// through the same helper, so both shapes spell the reference keys once.
-func artifactCreatedEventPayload(artifact model.Artifact, changes model.ReferenceChanges) map[string]any {
-	payload := map[string]any{"artifact": artifact}
-	model.NameReferenceChanges(payload, changes)
-	return payload
-}
-
 func (s *server) namedVersionDiff(ctx context.Context, tx pgx.Tx, artifactID string, version model.Version) (*string, error) {
 	if !version.Named || version.Number < 2 {
 		return nil, nil
@@ -1654,29 +1812,4 @@ func (s *server) namedVersionDiff(ctx context.Context, tx pgx.Tx, artifactID str
 	}
 	diff := text.UnifiedDiff(previous, current)
 	return &diff, nil
-}
-
-func externalRef(ref string) (repo string, number string, err error) {
-	match := externalRefPattern.FindStringSubmatch(strings.TrimSpace(ref))
-	if match == nil {
-		return "", "", errorf(http.StatusBadRequest, "INVALID_ISSUE_REF", "invalid issue reference %q", ref)
-	}
-	return canonicalRepo(match[1], match[2]), match[3], nil
-}
-
-func canonicalRepo(owner, repo string) string {
-	owner = strings.ToLower(strings.TrimSpace(owner))
-	repo = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(repo)), ".git")
-	return owner + "/" + repo
-}
-
-func externalURL(repo, number string) string {
-	return "https://github.com/" + repo + "/issues/" + number
-}
-
-func externalURLs(repo, number string) []string {
-	return []string{
-		externalURL(repo, number),
-		"https://github.com/" + repo + "/pull/" + number,
-	}
 }

@@ -53,8 +53,14 @@ type recordView struct {
 	ExpiresAt   string
 	Approver    string
 	// State is the record's state, "expired" too for one past its expiry the sweeper has not
-	// ended yet; DecidedBy, DecidedAt and Detail are its decision's.
+	// ended yet; DecidedBy, DecidedAt and Detail are its decision's. DecidedBy is empty for a
+	// record nobody decided; it names the model judge where the judge decided it, and the
+	// current policy where the policy made the answer (decidedBy).
 	State, DecidedBy, DecidedAt, Detail string
+	// DecidedByJudge is whether DecidedBy names the model judge rather than a person. The page
+	// prints the two differently: a person's login as it is, and the judge's name as the literal
+	// id it is, in the same <code> every other id on the page is in.
+	DecidedByJudge bool
 	// Pending is a record still waiting for a decision.
 	Pending bool
 	// MayDecide is whether the signed-in person may decide it (record.MayDecide).
@@ -107,7 +113,7 @@ type pageView struct {
 func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session) {
 	id := r.PathValue("record")
 	if !record.ValidID(id) {
-		writeMessage(w, http.StatusBadRequest, say("Not a request", "Credential-request record ids are lowercase-hex SHA-256 hashes."))
+		writeMessage(w, http.StatusBadRequest, codeRecordIDInput, say("Not a request", "Credential-request record ids are lowercase-hex SHA-256 hashes."))
 		return
 	}
 	switching := r.URL.Query().Get("switch") == "1"
@@ -120,7 +126,7 @@ func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session)
 	case errors.Is(err, pgx.ErrNoRows):
 		m := say("No such request", "The secrets broker has no credential request "+id+".")
 		m.Login = sess.Login
-		writeMessage(w, http.StatusNotFound, m)
+		writeMessage(w, http.StatusNotFound, codeRecordNotFound, m)
 		return
 	case err != nil:
 		writeUnavailable(w, "read the request", err)
@@ -220,7 +226,8 @@ func (p *Page) recordView(d requests.RecordDetail, login string, now time.Time) 
 		v.Lifetime = "for " + (time.Duration(*d.LifetimeSeconds) * time.Second).String()
 	}
 	if d.Decided != nil {
-		v.DecidedBy, v.DecidedAt, v.Detail = d.Decided.Login, d.Decided.At.UTC().Format(timeLayout), d.Decided.Detail
+		v.DecidedBy, v.DecidedByJudge = decidedBy(*d.Decided)
+		v.DecidedAt, v.Detail = d.Decided.At.UTC().Format(timeLayout), d.Decided.Detail
 	}
 	v.Pending = d.State == "pending" && d.ExpiresAt.After(now)
 	if d.State == "pending" && !v.Pending {
@@ -228,6 +235,43 @@ func (p *Page) recordView(d requests.RecordDetail, login string, now time.Time) 
 	}
 	v.Buttons = v.Pending && !v.MachineLogin && v.MayDecide
 	return v
+}
+
+// policyDecider is who the page names for an event the current policy answered rather than the
+// person or the model judge that pressed Approve: requests.PolicyDeniedActor's own. It is
+// worded for a reader instead of printed as the actor string the row holds, since nobody signs
+// in as "broker:policy" and every other name this file prints is a login or the judge's id.
+const policyDecider = "the current policy"
+
+// decidedBy is who the page says decided a record, read from its terminal event: the model judge
+// where the event's actor is the judge's, the current policy where the policy made the answer,
+// and the deciding person's login otherwise. It is empty where nobody decided the record — an
+// expiry, or a cancellation the requesting session's end wrote — since such an event carries no
+// login and neither of those two actors.
+//
+// The judge's event carries no login at all, on purpose: the person who would otherwise have
+// decided is named nowhere in it (decider.eventLogin). Its actor is therefore the only thing
+// that names the decider, and a page that read the login alone printed "approved at <time>" with
+// nobody beside it. The name this returns for the judge is the one the audit row holds,
+// "judge:<model id>", which is also what requests.decided_by keeps and what
+// `agent-secrets status` prints under decided_by: one name for the judge everywhere a person
+// reads one.
+//
+// The policy's own denial is where that leaves the judge with no name at all. A judge's approval
+// of a request whose session the current policy has dropped from the secret's requesters tag is
+// recorded denied under requests.PolicyDeniedActor (applyDecisionAttempt), which overwrites the
+// judge's actor, so the event holds neither a login nor a judge actor and the page named nobody.
+// The policy is what such an event names, since the policy and not the decider made the answer.
+// A person's own approval the policy denies keeps the login of whoever pressed Approve beside
+// that same actor, and reads as it always has.
+func decidedBy(d requests.RecordDecision) (name string, judge bool) {
+	if _, byTheJudge := record.JudgeLogin(d.Actor); byTheJudge {
+		return d.Actor, true
+	}
+	if d.Login == "" && d.Actor == requests.PolicyDeniedActor {
+		return policyDecider, false
+	}
+	return d.Login, false
 }
 
 // approverText is who a record's approver field says may decide it.
@@ -270,6 +314,12 @@ func (p *Page) outcomes(ctx context.Context, decided, login string, now time.Tim
 }
 
 // outcome says what became of a record a decision named, from its state now.
+//
+// "already decided: " opens the line whenever somebody other than the reader decided the record,
+// the model judge and the current policy included: the reader clicked Approve and got the
+// broker's refusal, and what they must read first is that the record was already decided and by
+// whom. A record nobody decided — one that expired, or that its requesting session withdrew —
+// has no decider to compare, and its own line says what became of it.
 func outcome(d requests.RecordDetail, login string, now time.Time) string {
 	what := strings.Join(d.Identifiers, ", ") + ": "
 	switch {
@@ -282,7 +332,8 @@ func outcome(d requests.RecordDetail, login string, now time.Time) string {
 	case d.Decided == nil:
 		return what + "still pending; it was not decided."
 	}
-	by, at := d.Decided.Login, d.Decided.At.UTC().Format(timeLayout)
+	by, _ := decidedBy(*d.Decided)
+	at := d.Decided.At.UTC().Format(timeLayout)
 	if by != "" && by != login {
 		what += "already decided: "
 	}
@@ -366,7 +417,7 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxFormBytes)
 	if err := r.ParseForm(); err != nil {
-		writeMessage(w, http.StatusBadRequest, say("Not a decision", "The form could not be read, so nothing was decided."))
+		writeMessage(w, http.StatusBadRequest, codeFormUnreadable, say("Not a decision", "The form could not be read, so nothing was decided."))
 		return
 	}
 	if !sess.live() {
@@ -376,7 +427,7 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 		} else {
 			m.Lines = append(m.Lines, "This form names no request, so open the request's page again from the Inbox to sign in.")
 		}
-		writeMessage(w, http.StatusOK, m)
+		writeMessage(w, http.StatusOK, "", m)
 		return
 	}
 	form := r.PostForm
@@ -386,7 +437,7 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 		approve = true
 	case "deny":
 	default:
-		writeMessage(w, http.StatusBadRequest, say("Not a decision", "A decision is approve or deny, so nothing was decided."))
+		writeMessage(w, http.StatusBadRequest, codeDecisionInvalid, say("Not a decision", "A decision is approve or deny, so nothing was decided."))
 		return
 	}
 	printed, printedOK := recordIDs(form["printed"])
@@ -394,22 +445,22 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 	expires, err := strconv.ParseInt(form.Get("expires"), 10, 64)
 	token, tokenErr := hex.DecodeString(form.Get("token"))
 	if !printedOK || !decideOK || len(decide) == 0 || err != nil || tokenErr != nil {
-		writeMessage(w, http.StatusBadRequest, say("Not a decision", "The form names no request it may decide, so nothing was decided."))
+		writeMessage(w, http.StatusBadRequest, codeDecisionRecordsInvalid, say("Not a decision", "The form names no request it may decide, so nothing was decided."))
 		return
 	}
 	switch {
 	case !hmac.Equal(token, pageMAC(sess.secret, expires, printed)):
-		writeMessage(w, http.StatusForbidden, say("Refused",
+		writeMessage(w, http.StatusForbidden, codePageTokenInvalid, say("Refused",
 			"This form was not made for your sign-in, so nothing was decided. Open the request again."))
 		return
 	case time.Now().Unix() >= expires:
-		writeMessage(w, http.StatusForbidden, say("Page expired",
+		writeMessage(w, http.StatusForbidden, codePageExpired, say("Page expired",
 			"This page is more than an hour old, so nothing was decided. Open the request again."))
 		return
 	}
 	for _, id := range decide {
 		if !slices.Contains(printed, id) {
-			writeMessage(w, http.StatusForbidden, say("Refused",
+			writeMessage(w, http.StatusForbidden, codeRecordNotPrinted, say("Refused",
 				"This form names a request its page did not print, so nothing was decided. Open the request again."))
 			return
 		}

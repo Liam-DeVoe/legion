@@ -8,9 +8,9 @@ import type {
   Agent,
   Artifact,
   Comment,
-  Message,
   MessageDelivery,
   MessageDeliveryMode,
+  MessageWithTrees,
   UserState,
 } from "../../api/types";
 import { PinButton } from "../../components/PinButton";
@@ -76,7 +76,15 @@ import {
   type MessageConversation,
   matchesFilter,
 } from "./conversation-model";
-import { duplicateText, failureGuidance, isSafeRetry, MODE_LABELS, withGuidance } from "./delivery";
+import {
+  deliveryMode,
+  duplicateText,
+  failureGuidance,
+  isSafeRetry,
+  MODE_LABELS,
+  queuedParts,
+  withGuidance,
+} from "./delivery";
 import {
   redirectedReplyTarget,
   useHeldReplyTo,
@@ -149,19 +157,20 @@ function threadDelivery(root: MessageConversation): ReplyTarget["thread"] | unde
   }
   let last: MessageDelivery | undefined;
   for (const attempt of [
-    ...root.root.deliveries,
-    ...root.replies.flatMap((reply) => reply.deliveries),
+    ...(root.root.deliveries ?? []),
+    ...root.replies.flatMap((reply) => reply.deliveries ?? []),
   ]) {
     if (last === undefined || compareTimestamps(attempt.created_at, last.created_at) >= 0) {
       last = attempt;
     }
   }
-  return { delivery: last?.delivery ?? "steer", target: root.root.target };
+  const mode = last === undefined ? undefined : deliveryMode(last.delivery);
+  return { delivery: mode ?? "steer", target: root.root.target };
 }
 
 /** What the composer quotes when the reader replies to `message`. */
 function replyTargetFor(
-  message: Message,
+  message: MessageWithTrees,
   root: MessageConversation,
   issueKey: string
 ): ReplyTarget {
@@ -195,13 +204,13 @@ function ConversationReply({
   /** The shared thread read mark (`useMarkThreadRead`), on the thread's newest reply. */
   markRef?: DwellRef;
   onReply: (target: ReplyTarget) => void;
-  reply: Message;
+  reply: MessageWithTrees;
   replyDisabled: boolean;
   root: MessageConversation;
 }): ReactNode {
   const queryClient = useQueryClient();
   const text = useAgentText();
-  const targetName = recipientOf(reply.deliveries, root.root.target);
+  const targetName = recipientOf(reply.deliveries ?? [], root.root.target);
   const retry = useKeyedWrite({
     label: (delivery: MessageDeliveryMode) =>
       `Delivery to ${text.part(targetName)} again, as ${MODE_LABELS[delivery]}`,
@@ -209,7 +218,7 @@ function ConversationReply({
     write: (delivery, bounds) => api.createMessageDelivery(reply.id, delivery, bounds),
   });
   const capabilities = capabilitiesForTarget(root.root.target, agents);
-  const lastAttempt = reply.deliveries.at(-1);
+  const lastAttempt = (reply.deliveries ?? []).at(-1);
   const answer = root.replies.find(
     (candidate) => candidate.in_reply_to === reply.id && candidate.author.kind === "session"
   );
@@ -221,7 +230,11 @@ function ConversationReply({
       author={reply.author}
       body={
         <>
-          <MarkdownBody markdown={reply.body} source={textSourceOf("message", reply.id)} />
+          <MarkdownBody
+            markdown={reply.body}
+            source={textSourceOf("message", reply.id)}
+            tree={reply.body_tree}
+          />
           <Unfurl body={reply.body} source={textSourceOf("message", reply.id)} />
         </>
       }
@@ -232,7 +245,7 @@ function ConversationReply({
           ? undefined
           : {
               answeredBy: answer?.author,
-              attempts: deliveryAttempts(reply.deliveries, targetName),
+              attempts: deliveryAttempts(reply.deliveries ?? [], targetName),
               retry: {
                 canAside: capabilities?.includes("aside") !== false,
                 canBtw: capabilities?.includes("btw") !== false,
@@ -248,6 +261,7 @@ function ConversationReply({
         author: parent?.author,
         block: reply.reply_block,
         excerpt: parent?.body ?? "",
+        excerptTree: parent?.body_tree,
         to:
           reply.in_reply_to === null
             ? undefined
@@ -352,7 +366,11 @@ function MessageTurn({
             <Timestamp at={item.root.created_at} />
             {item.unread ? <UnreadMark /> : null}
           </p>
-          <MarkdownBody markdown={item.root.body} source={textSourceOf("message", item.root.id)} />
+          <MarkdownBody
+            markdown={item.root.body}
+            source={textSourceOf("message", item.root.id)}
+            tree={item.root.body_tree}
+          />
           <Unfurl body={item.root.body} source={textSourceOf("message", item.root.id)} />
         </div>
         <TurnActions>
@@ -498,7 +516,7 @@ function commentReplyTarget(
   const targets =
     author.kind === "session"
       ? [`session:${author.id}`]
-      : comment.mentions.map((mention) => mention.target);
+      : (comment.mentions ?? []).map((mention) => mention.target);
   const mentions = [...new Set(targets)].map((target) => {
     const sessionId = sessionOfAddress(target);
     return {
@@ -560,7 +578,13 @@ function CommentDeliveryList({
           >
             <span>
               <AgentParts parts={[recipient]} /> ·{" "}
-              {delivery.duplicate === true ? duplicateText : delivery.state}
+              {delivery.state === "queued" ? (
+                <AgentParts parts={queuedParts(recipient)} />
+              ) : delivery.duplicate === true ? (
+                duplicateText
+              ) : (
+                delivery.state
+              )}
               {delivery.error === null
                 ? ""
                 : ` · ${guidance === undefined ? delivery.error : withGuidance(delivery.error, guidance)}`}
@@ -825,7 +849,7 @@ function TargetedMessageTurn({
 }): ReactNode {
   const queryClient = useQueryClient();
   const text = useAgentText();
-  const targetName = recipientOf(item.root.deliveries, item.root.target);
+  const targetName = recipientOf(item.root.deliveries ?? [], item.root.target);
   const retry = useKeyedWrite({
     label: (delivery: MessageDeliveryMode) =>
       `Delivery to ${text.part(targetName)} again, as ${MODE_LABELS[delivery]}`,
@@ -846,7 +870,11 @@ function TargetedMessageTurn({
             <CopyRefButton route={{ id: item.root.id, key: issueKey, kind: "message" }} />
             {item.unread ? <UnreadMark /> : null}
           </p>
-          <MarkdownBody markdown={item.root.body} source={textSourceOf("message", item.root.id)} />
+          <MarkdownBody
+            markdown={item.root.body}
+            source={textSourceOf("message", item.root.id)}
+            tree={item.root.body_tree}
+          />
           <Unfurl body={item.root.body} source={textSourceOf("message", item.root.id)} />
         </>
       }
@@ -854,7 +882,7 @@ function TargetedMessageTurn({
       canBtw={capabilities?.includes("btw") !== false}
       canSteer={capabilities?.includes("steer") !== false}
       current={current}
-      deliveries={deliveryAttempts(item.root.deliveries, targetName)}
+      deliveries={deliveryAttempts(item.root.deliveries ?? [], targetName)}
       header={<Avatar actor={asker} />}
       onReply={() => onReply(replyTargetFor(item.root, item, issueKey))}
       onRetry={retry.mutate}
@@ -1278,7 +1306,7 @@ export function ConversationTab({
         {shown.map((item) => {
           const current = item.id === focus?.id;
           const currentReplyId = current ? focus?.replyId : undefined;
-          const pinned = isPinnedConversation(issueState.dismissed, item.id);
+          const pinned = isPinnedConversation(issueState.dismissed ?? [], item.id);
           // A thread covering the list hides its copy of the newest card, so that copy gives
           // up the mark's ref while one is open; the thread's own card carries it below.
           const register =
@@ -1448,7 +1476,7 @@ export function ConversationTab({
                 pendingAction={commentActions.pendingActionIds.has(phoneThread.root.id)}
                 onPin={() => pinConversation(phoneThread.id)}
                 onReply={phone.beginReply}
-                pinned={isPinnedConversation(issueState.dismissed, phoneThread.id)}
+                pinned={isPinnedConversation(issueState.dismissed ?? [], phoneThread.id)}
                 register={phoneThreadIsNewest ? registerNewest : undefined}
                 replyDisabled={composerSending}
                 sendKey={sendKey}

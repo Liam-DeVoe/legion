@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // INFRA-258. A transaction that only locked rows - a claim's SELECT ... FOR UPDATE - is given a
@@ -123,9 +124,7 @@ func TestTheMaintenanceLoopKeepsAKeyForItsWholeWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	logs := &storetest.LockedLog{}
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(logs, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 	ctx, stop := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -225,9 +224,9 @@ func TestARequestKeysRowIsOneOfItsStates(t *testing.T) {
 }
 
 // Every route the keyed layer's own tables name - those that replay a recovery point, never keep
-// their answer, take an upload's body, or read a body of their own size (handoffWriteRoute) - is a
-// POST or PATCH route the server registers: a pattern spelled wrong would silently turn its rule
-// off.
+// their answer, take an upload's body, or read a body of their own size (handoffWriteRoute,
+// markdownRoundTripRoute) - is a POST or PATCH route the server registers: a pattern spelled
+// wrong would silently turn its rule off.
 func TestEveryKeyedRouteTableNamesARoute(t *testing.T) {
 	registered := map[string]bool{}
 	for _, route := range (&server{}).routes() {
@@ -246,6 +245,7 @@ func TestEveryKeyedRouteTableNamesARoute(t *testing.T) {
 		tables["keyedUploads"] = append(tables["keyedUploads"], route)
 	}
 	tables["handoffWriteRoute"] = []string{handoffWriteRoute}
+	tables["markdownRoundTripRoute"] = []string{markdownRoundTripRoute}
 	for table, routes := range tables {
 		for _, route := range routes {
 			if !registered[route] {

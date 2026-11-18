@@ -1,9 +1,12 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the submit site below is a form submitted with no control pressed, which user-event has no form for
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import type { AgentToken, DispatchScope } from "../../api/types";
 import { AgentTokensSection } from "./AgentTokensSection";
@@ -240,14 +243,15 @@ function madeAt(id: string, name: string, offsetMs: number): AgentToken {
  *  `listed`; the list read before the press holds those of `listed` made before it, which the page
  *  tells apart from the lost mint's by id. `confirmAnswers` answers each `window.confirm` in
  *  turn. */
-async function mintLostWith(listed: AgentToken[], confirmAnswers: boolean[] = []) {
-  const user = userEvent.setup();
+async function mintLostWith(user: UserEvent, listed: AgentToken[], confirmAnswers: boolean[] = []) {
   const now = Date.now();
   const listAgentTokens = spyOn(api, "listAgentTokens")
     .mockResolvedValueOnce(listed.filter((made) => Date.parse(made.created_at) <= now))
     .mockResolvedValue(listed);
+  // Held, and given inside `act` after the press, as packages/dispatch/AGENTS.md's act rule says.
+  const lostMint = Promise.withResolvers<never>();
   const createAgentToken = spyOn(api, "createAgentToken")
-    .mockRejectedValueOnce(new ApiError(409, { code: "KEY_COMMITTED", error: "already made" }))
+    .mockReturnValueOnce(lostMint.promise)
     .mockResolvedValue({ ...token, id: "replacement", name: "reviewer", token: "dsp_replacement" });
   const revokeAgentToken = spyOn(api, "revokeAgentToken").mockResolvedValue();
   const asked: string[] = [];
@@ -269,6 +273,9 @@ async function mintLostWith(listed: AgentToken[], confirmAnswers: boolean[] = []
   await user.click(label);
   await user.paste("reviewer");
   await user.click(screen.getByRole("button", { name: "New token" }));
+  await act(async () => {
+    lostMint.reject(new ApiError(409, { code: "KEY_COMMITTED", error: "already made" }));
+  });
   await screen.findByTestId("landed-without-answer");
   return {
     asked,
@@ -298,9 +305,10 @@ function confirmFor(made: AgentToken): string {
 // since the press - never an older one of the same label - is offered for revoking, and the
 // reader confirms it by its label and when it was made before it is revoked and another minted.
 test("a mint answered KEY_COMMITTED offers the one token made since the press, confirmed first", async () => {
+  jest.useFakeTimers();
   const older = madeAt("older", "reviewer", -86_400_000);
   const lost = madeAt("lost", "reviewer", 60_000);
-  const page = await mintLostWith([lost, older, token], [false, true]);
+  const page = await mintLostWith(userOnFakeClock(), [lost, older, token], [false, true]);
 
   try {
     expect(screen.getByTestId("landed-without-answer").textContent).toBe(
@@ -310,18 +318,24 @@ test("a mint answered KEY_COMMITTED offers the one token made since the press, c
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     // The form submitted with no control pressed: user-event has no form for submit.
     fireEvent.submit(page.label.closest("form") as HTMLFormElement);
-    await Bun.sleep(20);
+    await tick(20);
     expect(page.createAgentToken).toHaveBeenCalledTimes(1);
 
     const replace = await screen.findByRole("button", { name: "Revoke it and mint another" });
     // Cancelled: nothing revoked.
     await page.user.click(replace);
     expect(page.asked).toEqual([confirmFor(lost)]);
-    await Bun.sleep(20);
+    await tick(20);
     expect(page.revokeAgentToken).not.toHaveBeenCalled();
 
+    // The revoke's answer is held as the lost mint's was, and given inside `act` once it is out.
+    const revoked = Promise.withResolvers<void>();
+    page.revokeAgentToken.mockReturnValueOnce(revoked.promise);
     await page.user.click(replace);
     await waitFor(() => expect(page.revokeAgentToken).toHaveBeenCalledWith(lost.id, keyedAttempt));
+    await act(async () => {
+      revoked.resolve();
+    });
     await waitFor(() => expect(page.createAgentToken).toHaveBeenCalledTimes(2));
     // The replacement holds what the lost token held.
     expect(page.createAgentToken.mock.calls[1]?.[0]).toEqual({
@@ -332,6 +346,7 @@ test("a mint answered KEY_COMMITTED offers the one token made since the press, c
     expect(screen.queryByTestId("landed-without-answer")).not.toBeInTheDocument();
     expect(page.revokeAgentToken).toHaveBeenCalledTimes(1);
   } finally {
+    realClock();
     page.restore();
   }
 });
@@ -341,7 +356,7 @@ test("a mint answered KEY_COMMITTED offers the one token made since the press, c
 test("a lost mint with no token made since the press says so and revokes nothing", async () => {
   const older = madeAt("older", "reviewer", -86_400_000);
   const revoked = { ...madeAt("revoked", "reviewer", 60_000), revoked_at: "2099-01-01T00:00:00Z" };
-  const page = await mintLostWith([older, revoked, token]);
+  const page = await mintLostWith(userEvent.setup(), [older, revoked, token]);
 
   try {
     expect(
@@ -368,7 +383,7 @@ test("a lost mint with no token made since the press says so and revokes nothing
 test("a lost mint with several tokens made since the press lists them and revokes the one picked", async () => {
   const first = madeAt("first", "reviewer", 60_000);
   const second = madeAt("second", "reviewer", 120_000);
-  const page = await mintLostWith([first, second, token], [true]);
+  const page = await mintLostWith(userEvent.setup(), [first, second, token], [true]);
 
   try {
     expect(

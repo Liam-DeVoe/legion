@@ -191,7 +191,7 @@ func TestABrokerOutageLongerThanALease(t *testing.T) {
 	if _, err := db.Exec(ctx, `update enrollments set lease_expires_at = now() - interval '1 second' where id = $1`, lapsed.enrollmentID); err != nil {
 		t.Fatalf("set the lapsed pod's lease in the past: %v", err)
 	}
-	first.Await(t, "broker sweeper: ended an enrollment whose lease lapsed enrollment_id="+lapsed.enrollmentID)
+	first.AwaitRecord(t, "broker sweeper: ended an enrollment whose lease lapsed", map[string]any{"enrollment_id": lapsed.enrollmentID})
 
 	t.Log("--- the mismatch pod: enrolled, and served its secret once")
 	mismatch := broker.enroll(launcher, "mismatch-pod", podAccount)
@@ -320,14 +320,11 @@ func TestABrokerOutageLongerThanALease(t *testing.T) {
 // buildBroker builds this command.
 func buildAgentSecrets(t *testing.T) string {
 	t.Helper()
-	binPath := filepath.Join(t.TempDir(), "agent-secrets")
-	build := exec.Command("go", "build", "-o", binPath, ".")
-	build.Dir = filepath.Join("..", "agent-secrets")
-	build.Env = append(os.Environ(), "GOTOOLCHAIN=go1.27.3")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("go build ./cmd/agent-secrets: %v\n%s", err, out)
-	}
-	return binPath
+	return cmdtest.BuildCommand(t, cmdtest.Command{
+		Name: "agent-secrets",
+		Dir:  filepath.Join("..", "agent-secrets"),
+		Env:  append(os.Environ(), "GOTOOLCHAIN=go1.27.3"),
+	})
 }
 
 // agentSecretsEnv is the environment an agent-secrets process of a pod runs with: the test's own,

@@ -348,8 +348,10 @@ func TestRelatedTermsRefreshCountsADocumentOnceAtItsLatestVersion(t *testing.T) 
 		}
 	}
 
-	if items := refreshTermStats(t, database, "VERS"); items != 2 {
-		t.Fatalf("items = %d, want 2: the issue and its spec, once", items)
+	// The project's items are the issue, its spec once, and the project's seeded evals-md
+	// (dispatch://INFRA-2916, R5), whose one version holds none of the words counted below.
+	if items := refreshTermStats(t, database, "VERS"); items != 3 {
+		t.Fatalf("items = %d, want 3: the issue, its spec once, and the seeded evals-md", items)
 	}
 	rows, err := database.Pool.Query(context.Background(), `select lexeme, ndoc from search_term_stats where project_key = 'VERS'`)
 	if err != nil {
@@ -370,8 +372,11 @@ func TestRelatedTermsRefreshCountsADocumentOnceAtItsLatestVersion(t *testing.T) 
 	if _, counted := ndoc["astrolab"]; counted {
 		t.Fatalf("statistics %v count 'astrolab', which only the older version holds", ndoc)
 	}
-	if ndoc["sextant"] != 1 || ndoc["altitud"] != 1 {
-		t.Fatalf("statistics %v, want 'sextant' and 'altitud' in the one latest version", ndoc)
+	// Two of the project's items hold the latest version's words: the document, and the issue,
+	// whose own vector carries its primary document's text (20261105145242). The title's word is
+	// the issue's alone, which is what tells the two items apart in the counts.
+	if ndoc["sextant"] != 2 || ndoc["altitud"] != 2 || ndoc["instrument"] != 1 {
+		t.Fatalf("statistics %v, want 'sextant' and 'altitud' in the issue and the one latest version, and 'instrument' in the issue alone", ndoc)
 	}
 }
 
@@ -392,12 +397,12 @@ func TestRelatedTermsQueryCastsAndMatchesTheItemsHoldingTheChosenWords(t *testin
 	if term, _ := pickedTerm(picked, "walrus"); term.Surface != "Walruses" {
 		t.Fatalf("walrus's surface = %q, want the text's own 'Walruses'", term.Surface)
 	}
-	rows, err := database.Pool.Query(context.Background(), relatedQOpener+searchQueryBody(searchKeywordLegsSQL, ""),
+	rows, err := database.Pool.Query(context.Background(), relatedQOpener+searchQueryBody(searchKeywordLegsSQL, searchFusedSQL, ""),
 		picked.TSQuery, "CAST", searchMaxLimit, "", headlineOptions, 0, contracts.SearchKindDepth, searchFusionK)
 	if err != nil {
 		t.Fatalf("run the keyword body under the related q: %v", err)
 	}
-	response, err := scanSearchRows(rows, "", searchMaxLimit, 0)
+	response, err := scanSearchRows(rows, "", searchMaxLimit, 0, false)
 	rows.Close()
 	if err != nil {
 		t.Fatalf("scan the keyword results: %v", err)

@@ -41,6 +41,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -592,7 +593,7 @@ func TestShutdownWaitsForTheOutboxToReleaseThePublisherHold(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name) values ('TT', 'Test')`); err != nil {
+	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('TT', 'Test', 'alice')`); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 	if _, err := database.Pool.Exec(ctx, `
@@ -650,6 +651,21 @@ func TestShutdownWaitsForTheOutboxToReleaseThePublisherHold(t *testing.T) {
 	if _, err := database.Pool.Exec(ctx, "select 1"); err == nil {
 		t.Fatal("shutdown left the pool open")
 	}
+}
+
+// intakeLeasesOf reserves the intakes' callers of pool's lease pool, as main does while it wires
+// the server (delivery.ReserveIntakeLeases).
+func intakeLeasesOf(t *testing.T, pool *store.Pool) delivery.IntakeLeases {
+	t.Helper()
+	callers, err := pool.Leases()
+	if err != nil {
+		t.Fatalf("open the lease pool: %v", err)
+	}
+	leases, err := delivery.ReserveIntakeLeases(callers)
+	if err != nil {
+		t.Fatalf("reserve the intakes' callers of the lease pool: %v", err)
+	}
+	return leases
 }
 
 // githubAnswersAfterSignal is how long into the stop the fake GitHub of
@@ -724,7 +740,7 @@ func TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool(t *testing.T) {
 
 	stopIntakes, err := delivery.StartIntakes(ctx, func(name string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL}, bus.WithName(name))
-	}, database.Pool, app, events.NewBroker(), nil)
+	}, database.Pool, intakeLeasesOf(t, database.Pool), app, events.NewBroker(), nil)
 	if err != nil {
 		t.Fatalf("start the intakes: %v", err)
 	}
@@ -840,7 +856,7 @@ func TestAPanicAfterTheIntakesStartEndsTheProcess(t *testing.T) {
 	defer cancel()
 	stopIntakes, err := delivery.StartIntakes(ctx, func(name string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL}, bus.WithName(name))
-	}, database.Pool, testGitHubApp(t, githubServer.URL), events.NewBroker(), nil)
+	}, database.Pool, intakeLeasesOf(t, database.Pool), testGitHubApp(t, githubServer.URL), events.NewBroker(), nil)
 	if err != nil {
 		t.Fatalf("start the intakes: %v", err)
 	}
@@ -949,6 +965,25 @@ func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testin
 	process := startDispatchProcess(t, relay.url)
 	process.waitHealthy(t)
 	process.call(t, http.MethodPost, "/api/v1/projects", `{"key":"STOP","name":"Shutdown"}`, http.StatusCreated)
+	// Creating a project seeds its evals and its `evals-md` document, which owes a settlement two
+	// seconds later, and that settlement loads the document's room, which stays resident for a
+	// minute after. The bound below assumes the document service has no room to visit: Shutdown
+	// reads whether each resident room owes a settlement, a read the frozen database never
+	// answers, which would spend the document service's whole drain budget. So wait, on the test's
+	// own pool rather than through the relay, for that settlement to commit, and then close the
+	// room with the quiesce hook (which would cancel a settlement still owed, hence the order).
+	var evalsDocument string
+	if err := database.Pool.QueryRow(ctx, `
+		select id::text from artifacts
+		where project_key = 'STOP' and issue_key is null and session_id is null and slug = 'evals-md'
+	`).Scan(&evalsDocument); err != nil {
+		t.Fatalf("read the project's evals-md: %v", err)
+	}
+	waitForSettlementOwed(t, database, evalsDocument, false)
+	process.call(t, http.MethodPost, "/api/v1/artifacts/_test/quiesce", "", http.StatusOK)
+	if rooms := process.residentRooms(t); len(rooms) != 0 {
+		t.Fatalf("the process holds rooms %v after the quiesce, want none", rooms)
+	}
 
 	// An issue create takes its number from the project's row, so it queues behind this lock.
 	holder, err := database.Pool.Begin(ctx)
@@ -1197,6 +1232,63 @@ func TestTheHealthWaitTakesNoAnswerOnThePortForAProcessThatLostIt(t *testing.T) 
 	}
 }
 
+// A process that exits before it is healthy fails its test with the reason at the head of the
+// failure, before the whole output. An exit for any reason quotes the output's last lines. An exit
+// on a connection Postgres refused for too many clients (SQLSTATE 53300) quotes that line instead
+// and names the server's max_connections and the client backends open on it then
+// (connectionRefusalCause): the connection ceiling check counts only this binary's Dispatch
+// processes, so a server whose slots other clients hold passes it, and the process fails later.
+func TestAProcessThatExitsBeforeItIsHealthySaysWhy(t *testing.T) {
+	exited := func(output, databaseURL string) error {
+		logged := &cmdtest.LockedBuffer{}
+		_, _ = logged.Write([]byte(output))
+		done := make(chan struct{})
+		close(done)
+		process := &dispatchProcess{Process: &cmdtest.Process{Output: logged, Exited: done}, databaseURL: databaseURL}
+		return process.healthyWithin(5 * time.Second)
+	}
+	// cause is what the failure says before the process's whole output.
+	cause := func(err error) string {
+		if err == nil {
+			t.Fatal("a process that exited passed as healthy")
+		}
+		head, _, found := strings.Cut(err.Error(), "\n"+dispatchOutputHeading+"\n")
+		if !found {
+			t.Fatalf("the failure does not set the process's output apart under %q:\n%v", dispatchOutputHeading, err)
+		}
+		return head
+	}
+
+	lines := make([]string, 0, exitCauseLines+3)
+	for i := range exitCauseLines + 3 {
+		lines = append(lines, fmt.Sprintf(`level=INFO msg="dispatch: step %d"`, i+1))
+	}
+	head := cause(exited(strings.Join(lines, "\n")+"\n", ""))
+	for _, line := range lines[len(lines)-exitCauseLines:] {
+		if !strings.Contains(head, line) {
+			t.Errorf("the failure of a process that exited does not quote %q, one of its last %d lines:\n%s", line, exitCauseLines, head)
+		}
+	}
+	if earlier := lines[len(lines)-exitCauseLines-1]; strings.Contains(head, earlier) {
+		t.Errorf("the failure quotes %q, which is not one of the process's last %d lines:\n%s", earlier, exitCauseLines, head)
+	}
+
+	database := storetest.Open(t)
+	var allowed string
+	if err := database.Pool.QueryRow(context.Background(), "select current_setting('max_connections')").Scan(&allowed); err != nil {
+		t.Fatalf("read the server's max_connections: %v", err)
+	}
+	refused := `level=ERROR msg="dispatch: register this server process" error="probe the database: failed to connect to ` +
+		"`user=postgres database=dispatch_test_0`: 127.0.0.1:5432 (127.0.0.1): server error: FATAL: sorry, too many clients already (SQLSTATE 53300)\""
+	head = cause(exited(`level=INFO msg="dispatch: starting"`+"\n"+refused+"\n"+`level=INFO msg="dispatch duty: leased pass cut short by shutdown"`+"\n",
+		database.Pool.Config().ConnString()))
+	for _, want := range []string{"exited before it became healthy", refused, "max_connections=" + allowed, "client backends open"} {
+		if !strings.Contains(head, want) {
+			t.Errorf("the failure of a process Postgres refused for too many clients does not say %q:\n%s", want, head)
+		}
+	}
+}
+
 // A harness that holds the port hands Dispatch the listening socket and sets neither
 // DISPATCH_LISTEN_HOST nor DISPATCH_PORT: Dispatch serves on the socket, at the address the kernel
 // chose for it, and says that address in its listening line. Without the socket it would bind
@@ -1271,6 +1363,15 @@ const dispatchTestAgentToken = "shutdown-test-token"
 type dispatchProcess struct {
 	*cmdtest.Process
 	port int
+	// database is the Postgres database the test gave the process (DATABASE_URL's). The wait
+	// for the event feed's events_start needs it to tell a horizon stall held by this
+	// process's own write transaction from one held by a foreign transaction
+	// (live_events_wait_test.go).
+	database string
+	// databaseURL is the URL the test gave the process (DATABASE_URL). A start that exits before
+	// it is healthy reads the server's connection ceiling through it when Postgres refused the
+	// process a connection for too many clients (connectionRefusalCause).
+	databaseURL string
 }
 
 // dispatchOptions is what a test varies about the Dispatch process it starts. Its zero value is
@@ -1287,12 +1388,16 @@ type dispatchOptions struct {
 	SettleDelay time.Duration
 	// Binary is the envoy-dispatch binary to run. Empty builds the command's own, unstamped
 	// (cmdtest.Build); a row whose processes serve given builds builds each once with
-	// cmdtest.BuildStamped and runs it here.
+	// cmdtest.BuildStamped and runs it here, and the two-build test names an earlier build's
+	// binary here (twobuild_test.go).
 	Binary string
 	// Env overrides and adds to the rows below, by name: a row the caller names wins over the
 	// one here, and a name not here is added. It is how a test gives the process a GitHub App,
 	// a sign-in issuer or cookie identity without every other test growing those rows.
 	Env map[string]string
+	// WebDist is DISPATCH_WEB_DIST, the web app the process serves. Empty serves the process's own
+	// empty home, which is all a test that loads no page needs.
+	WebDist string
 	// OwnProcessGroup starts the process in a process group of its own, so a test can stop it
 	// with SIGSTOP and resume it without the stop reaching the test's own process group: a
 	// kernel that hangs up an orphaned process group holding a stopped process (gVisor does)
@@ -1321,10 +1426,24 @@ func startDispatchProcessWithSettleDelay(t *testing.T, databaseURL string, settl
 // port before it serves. DISPATCH_PORT names the same port, which Dispatch checks against the socket.
 func startDispatchProcessWith(t *testing.T, databaseURL string, options dispatchOptions) *dispatchProcess {
 	t.Helper()
+	// The server must allow what this process and every other Dispatch process this test binary
+	// runs may open (connection_ceiling_test.go), since a server that allows fewer fails later and
+	// elsewhere.
+	releaseConnections := requireConnectionCeiling(t, databaseURL)
+	// The process's own database, for the events_start wait; a URL it cannot serve against is
+	// the test's own mistake, not a stall to wait out.
+	config, err := pgx.ParseConfig(databaseURL)
+	if err != nil {
+		t.Fatalf("parse the database URL the process is given: %v", err)
+	}
 	home := t.TempDir()
 	binary := options.Binary
 	if binary == "" {
 		binary = cmdtest.Build(t, "envoy-dispatch")
+	}
+	webDist := options.WebDist
+	if webDist == "" {
+		webDist = home
 	}
 	cmd := exec.Command(binary)
 	held := cmdtest.HoldPort(t)
@@ -1339,8 +1458,12 @@ func startDispatchProcessWith(t *testing.T, databaseURL string, options dispatch
 		"DISPATCH_IDENTITY_HEADER_TRUSTED": "1",
 		"DISPATCH_LISTEN_HOST":             "127.0.0.1",
 		"DISPATCH_PORT":                    strconv.Itoa(held.Port),
-		"DISPATCH_WEB_DIST":                home,
+		"DISPATCH_WEB_DIST":                webDist,
 		"DISPATCH_TEST_HOOKS":              "1",
+		// Both thresholds, so the stall warning arrives and repeats inside a test's patience
+		// (horizontest.StallWarning, which the events_start wait keys on).
+		"DISPATCH_TEST_HORIZON_STALL_AFTER": horizontest.StallWarning.String(),
+		"DISPATCH_TEST_HORIZON_WARN_EVERY":  horizontest.StallWarning.String(),
 	}
 	if options.NATSURL == "" {
 		environment["DISPATCH_NATS_DISABLED"] = "1"
@@ -1368,7 +1491,11 @@ func startDispatchProcessWith(t *testing.T, databaseURL string, options dispatch
 	if options.OwnProcessGroup {
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	}
-	return &dispatchProcess{Process: cmdtest.Start(t, "Dispatch", cmd), port: held.Port}
+	// The process leaves the count once it has exited and before Exited closes, so a test that
+	// waits on Exited and starts another process is counted with this one gone: a row that
+	// restarts a process one after another asks the server for one process's worth, not one per
+	// start. A start that fails leaves the count at the test's cleanup (requireConnectionCeiling).
+	return &dispatchProcess{Process: cmdtest.StartThen(t, "Dispatch", cmd, releaseConnections), port: held.Port, database: config.Database, databaseURL: databaseURL}
 }
 
 func (p *dispatchProcess) url(path string) string {
@@ -1391,9 +1518,17 @@ func (p *dispatchProcess) waitHealthy(t *testing.T) {
 	}
 }
 
+// exitCauseLines is how many of its last output lines the failure of a process that exited before
+// it was healthy quotes as the reason, when no line of it is a refusal for too many clients.
+const exitCauseLines = 5
+
+// dispatchOutputHeading sets a process's whole output apart from the reason its failure gives.
+const dispatchOutputHeading = "Dispatch's output:"
+
 // healthyWithin waits up to within for the process to log that it serves on its own port and for
 // /healthz there to answer 200 while the process still runs, and says why it did not, with the
-// process's output. The socket the process inherited is not readiness: the kernel queues
+// process's output; for a process that exited, the reason its output gives comes first
+// (exitCause). The socket the process inherited is not readiness: the kernel queues
 // connections on it from before the process starts, and only the process's listening line says it
 // serves them. Nor is an answer once the process has exited, which released the port to whatever
 // took it next. The process serves after the SIGTERM handler is installed, so a server that
@@ -1439,9 +1574,27 @@ func (p *dispatchProcess) healthyWithin(within time.Duration) error {
 		}
 	}
 	if exited() {
-		return fmt.Errorf("Dispatch exited before it became healthy:\n%s", p.Output.String())
+		return fmt.Errorf("Dispatch exited before it became healthy. %s\n%s\n%s", p.exitCause(), dispatchOutputHeading, p.Output.String())
 	}
 	return fmt.Errorf("Dispatch never became healthy:\n%s", p.Output.String())
+}
+
+// exitCause is the reason a process that exited before it was healthy gives in its output: the
+// first line where Postgres refused it a connection for too many clients, with what the server
+// says of its connections now (connectionRefusalCause), or else its last exitCauseLines lines.
+func (p *dispatchProcess) exitCause() string {
+	output := strings.TrimRight(p.Output.String(), "\n")
+	if strings.TrimSpace(output) == "" {
+		return "It wrote no output."
+	}
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		if strings.Contains(line, tooManyConnections) {
+			return connectionRefusalCause(line, p.databaseURL)
+		}
+	}
+	last := lines[max(0, len(lines)-exitCauseLines):]
+	return fmt.Sprintf("Its last %d line(s):\n%s", len(last), strings.Join(last, "\n"))
 }
 
 // waitPromptExit waits for Dispatch to exit after the SIGTERM sent at signalled, and requires it to
@@ -1567,7 +1720,9 @@ type streamEnd struct {
 
 // openLiveEvents opens GET /ws/live as a signed-in tab does and subscribes it to the event feed,
 // from the head, returning once Dispatch has started the subscription (its events_start frame) with
-// the socket the feed's frames arrive on. The socket closes when the test ends.
+// the socket the feed's frames arrive on. The frame is behind the event horizon, so the wait for it
+// is the server's own stall warning rather than a deadline (live_events_wait_test.go). The socket
+// closes when the test ends.
 func (p *dispatchProcess) openLiveEvents(t *testing.T) *gws.Conn {
 	t.Helper()
 	conn, response, err := gws.DefaultDialer.Dial("ws://127.0.0.1:"+strconv.Itoa(p.port)+"/ws/live", http.Header{
@@ -1584,20 +1739,7 @@ func (p *dispatchProcess) openLiveEvents(t *testing.T) *gws.Conn {
 	if err := conn.WriteJSON(map[string]any{"type": "subscribe", "sub": "events", "view": map[string]string{"kind": "events"}}); err != nil {
 		t.Fatalf("subscribe the live socket to the event feed: %v", err)
 	}
-	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	for {
-		var frame struct{ Type, Sub string }
-		if err := conn.ReadJSON(&frame); err != nil {
-			t.Fatalf("read the event feed's events_start: %v\n%s", err, p.Output.String())
-		}
-		if frame.Type == "events_start" && frame.Sub == "events" {
-			break
-		}
-		if frame.Type != "heartbeat" {
-			t.Fatalf("the live socket answered the event feed's subscribe with a %s frame, want its events_start", frame.Type)
-		}
-	}
-	_ = conn.SetReadDeadline(time.Time{})
+	p.waitEventsStart(t, conn, "events")
 	return conn
 }
 
@@ -1755,6 +1897,20 @@ func waitForSettlementOwed(t *testing.T, database *store.Store, artifactID strin
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// residentRooms lists the documents the process holds a room of now
+// (GET /api/v1/artifacts/_test/rooms).
+func (p *dispatchProcess) residentRooms(t *testing.T) []string {
+	t.Helper()
+	answer := p.call(t, http.MethodGet, "/api/v1/artifacts/_test/rooms", "", http.StatusOK)
+	var listed struct {
+		Rooms []string `json:"rooms"`
+	}
+	if err := json.Unmarshal(answer, &listed); err != nil {
+		t.Fatalf("decode the resident rooms: %v: %s", err, answer)
+	}
+	return listed.Rooms
 }
 
 // latestVersion is the number, markdown and authors (JSON) of the document's latest version.

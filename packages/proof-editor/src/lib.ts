@@ -23,7 +23,14 @@
 
 import { BLOCK_ID_DOM_ATTR, blockIdOf, blockIdPlugins } from './editor/schema/block-ids';
 import { withoutLeafMarks } from './editor/schema/leaf-marks';
-import { blockSchemaPlugins, type BlockSchema, type HostBlockRenderer } from './block-schema';
+import { documentFromJSON, type DocumentJSON } from './document-json';
+import {
+  assertCreatable,
+  blockSchemaPlugins,
+  creatableDomParser,
+  type BlockSchema,
+  type HostBlockRenderer,
+} from './block-schema';
 import { createTypedBlockCommands, type TypedBlockCommands } from './typed-block-commands';
 import {
   Editor,
@@ -125,6 +132,7 @@ export type { RemarkOutcome, RemarkRefusal, RetypedMark, RetypeRefusal, RetypeOu
 export type { BlockWidget, ChangeDecorations, TextDecoration } from './editor-change-decorations';
 export type { EditorReferences, ReferenceCandidate, ReferenceTarget } from './reference-decorations';
 export type { BlockMark } from './editor-highlights';
+export type { DocumentJSON, DocumentMarkJSON } from './document-json';
 export type {
   BlockAttributeKind,
   BlockAttributeSchema,
@@ -192,12 +200,29 @@ export interface CreateProofEditorOptions {
   drawMermaid?: MermaidDrawer;
 }
 
+/**
+ * The host's whole hold on one editor.
+ *
+ * Every write on it answers a destroyed handle by doing nothing and reporting that it did: a
+ * host writes from effects, and React runs a child's cleanup after the parent's, so a write can
+ * arrive after the teardown (INFRA-2409). The reads are the exception, and `getMarkdown` is the
+ * one that throws after teardown, since its serializer lives in the editor's ctx, which
+ * `destroy` empties.
+ */
 export interface ProofEditorHandle extends TypedBlockCommands {
   view: EditorView;
   /** Serialize the current document to markdown via the configured serializer. */
   getMarkdown(): string;
-  /** Replace the current document with parsed markdown. */
+  /** Replace the current document with parsed markdown. An editor with `'edit'` access writes
+   *  it, so it throws for content the editor may not create yet; one that takes no edits only
+   *  shows it. */
   setMarkdown(markdown: string): void;
+  /** Replace the current document with `tree`, a document another reader of the same text has
+   *  already built - Dispatch's Go reader of a stored text (`pmdoc.ReadForDisplay`) - as JSON,
+   *  so no parser of this editor's runs. Tolerant of the attributes those readers write, where
+   *  `Schema.nodeFromJSON` is not (./document-json.ts); throws for a node or mark type this
+   *  editor has no schema for, which the host draws in place of the document. */
+  setDocumentJSON(tree: DocumentJSON): void;
   /** Top offset of each mark's first span relative to the library root. */
   markOffsets(): Map<string, number>;
   /** Changes what the reader may do with the document (`access`) post-construction. */
@@ -260,8 +285,11 @@ export interface ProofEditorHandle extends TypedBlockCommands {
   setReferences(references: EditorReferences | null): void;
   /** The stable id of the block containing the selection head, if any. */
   blockIdAtSelection(): string | null;
-  /** Tear down the editor and any collab bindings. */
-  destroy(): void;
+  /** Tears the editor and any collab binding down, the ProseMirror view first. Idempotent, and
+   *  every write on this handle does nothing afterwards. The promise settles when the editor's
+   *  own teardown, which runs after the view's, has finished; a host may ignore it, and a call
+   *  after the first answers an already settled one. */
+  destroy(): Promise<void>;
 }
 
 function installCollabCursorsWhenReady(
@@ -347,6 +375,26 @@ function installSelfHealingParser(ctx: Ctx): void {
       throw error;
     }
     return withoutLeafMarks(parsed);
+  });
+}
+
+/**
+ * Keeps what the editor's parsers write to what an editor of `blockSchema`'s version may create.
+ * A markdown parse through `parserCtx` (a text/plain paste, a suggestion's accept) throws for
+ * content that holds an element the editor may not create yet, as the parse throws for a
+ * directive the schema refuses. The schema's DOM parser, which `DOMParser.fromSchema` keeps in
+ * `schema.cached` and every HTML paste and drop reads with, no longer reads such a node or mark,
+ * so its content is kept without it. A document the editor reads (the collab sync, a node it
+ * already draws) passes through neither, so it keeps every element it holds.
+ */
+function installCreationGate(ctx: Ctx, blockSchema: BlockSchema): void {
+  const schema = ctx.get(schemaCtx);
+  schema.cached.domParser = creatableDomParser(schema, blockSchema);
+  const parse = ctx.get(parserCtx);
+  ctx.set(parserCtx, (markdown) => {
+    const doc = parse(markdown);
+    assertCreatable(blockSchema, doc.content);
+    return doc;
   });
 }
 
@@ -455,17 +503,20 @@ export async function createProofEditor(
 
   editor.action((ctx) => {
     installSelfHealingParser(ctx);
+    if (opts.blockSchema) installCreationGate(ctx, opts.blockSchema);
     setDefaultMarkdownParser(ctx.get(parserCtx));
   });
 
   const view = editor.ctx.get(editorViewCtx);
 
   view.setProps(brokenAskInputGuards); // no input throws in an off-rule ask (./ask-content.ts)
+  let currentAccess: ProofEditorAccess = opts.access ?? 'edit';
   const applyAccess = (access: ProofEditorAccess) => {
+    currentAccess = access;
     setAccess(view, access);
     view.setProps({ editable: () => access === 'edit' });
   };
-  applyAccess(opts.access ?? 'edit');
+  applyAccess(currentAccess);
 
   // --- Collab binding -------------------------------------------------
   // Adapted from ProofEditorImpl's initFromShare() collab-activation block.
@@ -501,18 +552,36 @@ export async function createProofEditor(
     documentRef: opts.documentRef,
     getState: () => view.state,
     dispatch: (transaction) => {
+      // A menu item a host kept across the teardown runs through here (INFRA-2409).
+      if (view.isDestroyed) return;
       view.dispatch(transaction);
     },
   });
 
+  // What `destroy` answers: the editor's own teardown, which runs after the view's and has no
+  // other signal. A call before the first destroy, and every call after it, answers this.
+  let torndown: Promise<void> = Promise.resolve();
+
   return {
     view,
-    ...typedBlockCommands,
+    insertTypedBlock(typeName, attrs) {
+      return view.isDestroyed ? false : typedBlockCommands.insertTypedBlock(typeName, attrs);
+    },
+    retypeBlock(blockId, typeName, attrs) {
+      return view.isDestroyed ? false : typedBlockCommands.retypeBlock(blockId, typeName, attrs);
+    },
+    setBlockAttributes(blockId, attrs) {
+      return view.isDestroyed ? false : typedBlockCommands.setBlockAttributes(blockId, attrs);
+    },
+    blockMenuItems() {
+      return view.isDestroyed ? [] : typedBlockCommands.blockMenuItems();
+    },
     getMarkdown(): string {
       const serializer = editor.ctx.get(serializerCtx);
       return serializer(view.state.doc);
     },
     setMarkdown(markdown: string): void {
+      if (view.isDestroyed) return;
       // Markdown import only: soft line breaks become spaces here and in the headless parser,
       // never in the shared parserCtx, which the clipboard plugin also runs text/plain pastes
       // through - a pasted "alpha\nbeta" must keep its line break. The commonmark preset's own
@@ -526,8 +595,19 @@ export async function createProofEditor(
       // This parser is its own, so the shared parserCtx's rule is applied here too: no inline
       // leaf of an imported document carries a mark (./editor/schema/leaf-marks.ts).
       const parsed = withoutLeafMarks(importParser(markdown));
+      if (opts.blockSchema && currentAccess === 'edit')
+        assertCreatable(opts.blockSchema, parsed.content);
       const { state } = view;
       view.dispatch(state.tr.replaceWith(0, state.doc.content.size, parsed.content));
+    },
+    setDocumentJSON(tree: DocumentJSON): void {
+      // No parser runs: the tree is a document already, and this only rebuilds it against this
+      // editor's own schema (./document-json.ts). It is an import all the same, so the rule
+      // every import seam applies holds here too: no inline leaf of the document carries a mark
+      // (./editor/schema/leaf-marks.ts).
+      const document = withoutLeafMarks(documentFromJSON(editor.ctx.get(schemaCtx), tree));
+      const { state } = view;
+      view.dispatch(state.tr.replaceWith(0, state.doc.content.size, document.content));
     },
     markOffsets(): Map<string, number> {
       const offsets = new Map<string, number>();
@@ -538,14 +618,22 @@ export async function createProofEditor(
       }
       return offsets;
     },
-    setAccess: applyAccess,
+    setAccess(access: ProofEditorAccess): void {
+      if (view.isDestroyed) return;
+      applyAccess(access);
+    },
     applyRemoteMarks(metadata: Record<string, StoredMark>, options?: { hydrateAnchors?: boolean }): void {
+      if (view.isDestroyed) return;
       applyRemoteMarksMutation(view, metadata, options);
     },
     removeMark(markId: string): void {
+      if (view.isDestroyed) return;
       removeRecordMark(view, markId);
     },
     retypeMark(markId: string, kind: SelectionBarActionKind): RetypeOutcome {
+      // A destroyed editor holds no document, so the mark reads nowhere: the same answer as a
+      // document that has lost it (INFRA-2409).
+      if (view.isDestroyed) return { refused: "missing" };
       return retypeRecordMark(view, markId, kind, opts.user.name);
     },
     remarkMark(
@@ -554,9 +642,11 @@ export async function createProofEditor(
       quote: string,
       placement: RecordMarkPlacement | null
     ): RemarkOutcome {
+      if (view.isDestroyed) return { refused: "gone" };
       return remarkRecordMark(view, markId, kind, opts.user.name, quote, placement);
     },
     commentOnSelection(): boolean {
+      if (view.isDestroyed) return false;
       return commentOnSelection(view);
     },
     focusMark(markId: string): void {
@@ -596,14 +686,26 @@ export async function createProofEditor(
       }
       return null;
     },
-    destroy(): void {
+    destroy(): Promise<void> {
+      // Idempotent: a second call would ask a ctx that no longer holds `collabServiceCtx` for it.
+      if (!alive) return torndown;
       alive = false;
       unregisterPopoverHook();
       editor.action((ctx) => {
         const collabService = ctx.get(collabServiceCtx);
         collabService.disconnect();
       });
-      void editor.destroy();
+      // The view goes before the ctx. `editor.destroy()` runs every plugin's cleanup first -
+      // which removes each `$ctx` slice, the commonmark presets' node and mark attributes among
+      // them - and only then destroys the ProseMirror view, so between the two the view is live
+      // over an emptied ctx: anything that redraws it there reads a slice that is gone and
+      // throws `Context "<slice>" not found, do you forget to inject it?` out of whatever called
+      // it, which in Dispatch is a React effect and so the page's error boundary (INFRA-2409).
+      // Every `view.isDestroyed` guard in this package and its hosts is written against this
+      // order: destroying the view here makes all of them hold before a slice can go.
+      view.destroy();
+      torndown = editor.destroy().then(() => {});
+      return torndown;
     },
   };
 }

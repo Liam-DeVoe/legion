@@ -50,6 +50,11 @@ function approvalLabel(approval: ArtifactApproval): string {
       return `${approved} v${version} · changed since`;
     case "changes_requested":
       return "Changes requested";
+    default:
+      // The route table carries the state as a plain string. Dispatch writes one of the five
+      // above; one this build does not know reads as itself, as an unknown capability does
+      // (`capabilityLabel`), rather than leaving the chip blank.
+      return approval.state;
   }
 }
 
@@ -117,6 +122,7 @@ function ReviewsDialog({
                       <MarkdownBody
                         markdown={review.reason}
                         source={textSourceOf("artifact", artifactId)}
+                        tree={review.reason_tree}
                       />
                     </div>
                   )}

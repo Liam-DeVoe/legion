@@ -3,6 +3,8 @@ package main
 import (
 	"os"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 )
 
 // startupRestored are the variables TestControllerStartOmitsTheOptionalPointersTheFileDoesNotSet
@@ -24,14 +26,45 @@ type startupValue struct {
 var startupEnvironment map[string]startupValue
 
 // snapshotStartupEnvironment records what the process holds of startupRestored. TestMain calls it
-// before fixtureenv.Guard, the first thing in this binary that changes the environment, as
-// fixtureenv takes its own unguarded snapshot there.
+// after it clears the NATS seed variables and before fixtureenv.Guard, the first thing after that
+// in this binary that changes the environment, as fixtureenv takes its own unguarded snapshot there.
 func snapshotStartupEnvironment() {
 	startupEnvironment = make(map[string]startupValue, len(startupRestored))
 	for _, name := range startupRestored {
 		value, set := os.LookupEnv(name)
 		startupEnvironment[name] = startupValue{value: value, set: set}
 	}
+}
+
+// unsetRestored takes names out of this binary's own environment for the rest of t, as
+// fixtureenv.Unset does, and asserts in a cleanup registered before that call that each is back
+// once t ends. Cleanups run last registered first, so this one runs after the restore t.Setenv
+// registers inside Unset: the test that takes a variable away is the test that proves it comes
+// back, it proves it whatever order the runner picks the package's tests in, and it fails where
+// the fault is. The whole-binary reader below stays as the backstop for a future test that
+// leaves one of these changed and calls nothing here.
+func unsetRestored(t *testing.T, names ...string) {
+	t.Helper()
+	held := make(map[string]startupValue, len(names))
+	for _, name := range names {
+		value, set := os.LookupEnv(name)
+		held[name] = startupValue{value: value, set: set}
+	}
+	t.Cleanup(func() {
+		for _, name := range names {
+			want := held[name]
+			value, set := os.LookupEnv(name)
+			switch {
+			case want.set && !set:
+				t.Errorf("%s is unset once this test ended; it held %q when the test began", name, want.value)
+			case !want.set && set:
+				t.Errorf("%s is set to %q once this test ended; the test began without it at all", name, value)
+			case value != want.value:
+				t.Errorf("%s holds %q once this test ended, against %q when the test began", name, value, want.value)
+			}
+		}
+	})
+	fixtureenv.Unset(t, names...)
 }
 
 // A variable a test takes out of this binary's own environment is back once that test ends.
@@ -42,11 +75,10 @@ func snapshotStartupEnvironment() {
 // package's tests in the order their files declare them, files taken in name order, and a reader
 // that ran before the unsetter would prove nothing.
 //
-// Three of the four are provable this way, not all four. internal/testnats's init unsets
-// NATS_NKEY_SEED_FILE in every binary that imports that package, this one among them
-// (main_test.go), and an init runs before TestMain: the snapshot already records that name as
-// absent, and it stays absent whatever any test here does. The call at the site covers all four;
-// what this test proves is DISPATCH_URL, DISPATCH_TOKEN_FILE and ENVOY_TOKEN_FILE.
+// Three of the four are provable this way, not all four. TestMain clears NATS_NKEY_SEED_FILE
+// before it takes the snapshot (main_test.go): the snapshot records that name as absent, and it
+// stays absent whatever any test here does. The call at the site covers all four; what this test
+// proves is DISPATCH_URL, DISPATCH_TOKEN_FILE and ENVOY_TOKEN_FILE.
 func TestTheVariablesAControllerTestClearsAreBackOnceItEnds(t *testing.T) {
 	if startupEnvironment == nil {
 		t.Fatal("TestMain took no snapshot of the environment this binary started with")

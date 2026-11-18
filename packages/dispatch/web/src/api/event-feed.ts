@@ -11,7 +11,7 @@ import { askThreadsIssue, eventRefreshTargets } from "./event-refresh";
 import { liveSocketFor } from "./live-socket";
 import { inboxQuery } from "./queries";
 import { type RefreshTarget, refreshQueries, trackQueryFetches } from "./query-refresh";
-import type { AuthenticatedUser, Event, EventType } from "./types";
+import type { AuthenticatedUser, DispatchEvent, EventType } from "./types";
 
 const knownEventTypes: Record<EventType, true> = {
   "project.created": true,
@@ -25,6 +25,7 @@ const knownEventTypes: Record<EventType, true> = {
   "user_agent_state.updated": true,
   "user_thread_state.updated": true,
   "decision.kept": true,
+  "priority.updated": true,
   "issue.created": true,
   "issue.updated": true,
   "issue.closed": true,
@@ -33,6 +34,8 @@ const knownEventTypes: Record<EventType, true> = {
   "issue.deployed": true,
   "handoff.recorded": true,
   "artifact.created": true,
+  "artifact.renamed": true,
+  "artifact.removed": true,
   "artifact.version": true,
   "artifact.human_edited": true,
   "artifact.approved": true,
@@ -41,6 +44,7 @@ const knownEventTypes: Record<EventType, true> = {
   "ask.anchor_refreshed": true,
   "ask.edited": true,
   "ask.handed_back": true,
+  "ask.asked_of": true,
   "ask.answered": true,
   "ask.resolved": true,
   "ask.follower_added": true,
@@ -48,6 +52,8 @@ const knownEventTypes: Record<EventType, true> = {
   "block.repaired": true,
   "block.invalid": true,
   "result.recorded": true,
+  "result.retracted": true,
+  "issue.pull_request_attribution_changed": true,
   "comment.created": true,
   "comment.anchor_refreshed": true,
   "comment.delivery": true,
@@ -72,7 +78,7 @@ const inboxQueryKey = inboxQuery().queryKey;
 
 export interface EventPages {
   pageParams: unknown[];
-  pages: Event[][];
+  pages: DispatchEvent[][];
 }
 
 /**
@@ -97,7 +103,7 @@ export function mergeEventPages(current: EventPages | undefined, incoming: Event
   return { ...incoming, pages: [[...newer, ...fetched], ...incoming.pages.slice(1)] };
 }
 
-export function prependEventToLog(queryClient: QueryClient, event: Event): void {
+export function prependEventToLog(queryClient: QueryClient, event: DispatchEvent): void {
   if (event.issue_key === null) {
     return;
   }
@@ -292,13 +298,10 @@ export function useEventFeed({
         // every event after the resume it was sent (`replay_complete`: a resume the log still
         // holds): those events refresh what they changed, as any other does. A resume above a
         // reset log's head says no such thing. TanStack matches every query when no filter is
-        // given. Nothing is excluded from the refresh: the one query that looks expensive,
-        // `["block-schema"]` with an infinite `staleTime`, resolves from a module-level
-        // per-session cache (`features/doc/schema.ts`), so its refetch issues no request. The
-        // refresh runs at the start itself, which follows a reopen `reconnectDelayMs`
-        // (`api/live-socket.ts`) already spreads after a dropped socket, so it waits no further:
-        // tabs a restart dropped together and Dispatch does not replay in full refresh spread as
-        // well.
+        // given. Nothing is excluded from the refresh. The refresh runs at the start itself, which
+        // follows a reopen `reconnectDelayMs` (`api/live-socket.ts`) already spreads after a
+        // dropped socket, so it waits no further: tabs a restart dropped together and Dispatch
+        // does not replay in full refresh spread as well.
         if (!replayComplete) {
           refreshEverything();
         }
@@ -325,7 +328,10 @@ export function useEventFeed({
           return;
         }
         // The socket hands the event over as the JSON Dispatch sent, whose type is now known.
-        const event = raw as Event;
+        // `DispatchEvent`, not the route table's `Event`: the log this page keeps and every
+        // reader of it (`activity-model`, `event-refresh`) narrows on the type to read the
+        // payload, which the route table carries as `unknown`.
+        const event = raw as DispatchEvent;
         try {
           prependEventToLog(queryClient, event);
           const targets = eventRefreshTargets(

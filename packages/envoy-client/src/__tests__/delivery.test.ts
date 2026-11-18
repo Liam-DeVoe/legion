@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { dispatchIssueSubject, type Envelope } from "@legion/contracts";
+import { type Envelope, legacyDispatchIssueSubject } from "@legion/contracts";
 import { decode } from "@toon-format/toon";
 import { bearerCredential } from "../bearer";
 import {
@@ -50,7 +50,7 @@ function dispatchEvent(
       event_id: "dispatch-1",
       source: "dispatch",
       source_event_id: "1",
-      topic: dispatchIssueSubject("DSP-1", ">"),
+      topic: legacyDispatchIssueSubject("DSP-1", ">"),
       payload_summary: "Dispatch update",
       payload: JSON.stringify({
         id: 1,
@@ -647,6 +647,30 @@ describe("renderInbound dispatch events", () => {
     );
   });
 
+  // A session's inbox has two forms while every reader takes both (dispatch://INFRA-3862): the
+  // session alone, and the session under a project (`_` for none). A message on either form is
+  // this session's own, so its card names it the recipient; another session's inbox is not, in
+  // either form.
+  test("names the session the recipient of a message on its inbox in either form", () => {
+    const otherSession = "01a02222-3333-7444-8555-666666666666";
+    for (const topic of [
+      `notifications.agent.${reader}`,
+      `notifications.agent._.${reader}`,
+      `notifications.agent.PRIV.${reader}`,
+    ]) {
+      const raw = JSON.stringify(envelope({ source: "agent", topic, payload: "hello" }));
+      const intended = decode(renderInbound(raw, reader, topic).content) as {
+        envoy: { to?: string };
+      };
+      const other = decode(renderInbound(raw, otherSession, topic).content) as {
+        envoy: { to?: string };
+      };
+
+      expect(intended.envoy.to, topic).toBe(`you (${reader})`);
+      expect(other.envoy.to, topic).toBeUndefined();
+    }
+  });
+
   test("keeps rendering a targeted Dispatch message when its payload grows", () => {
     const extendedPayload = JSON.parse(targetedDispatchPayload) as {
       event: { payload: Record<string, unknown> };
@@ -736,6 +760,53 @@ describe("renderInbound dispatch events", () => {
       question: apiQuestion,
       resolved: "retracted: A newer question supersedes this one.",
     });
+  });
+
+  // `kind` is an open string now, so a kind this build has never seen parses rather than costing
+  // the reader the card, and the words Dispatch wrote stand beside the person's own note on
+  // every reader of the frame: this one, and a build older than this change, which declares no
+  // `dispatch_words` of its own and prints the payload as it came.
+  test("a resolution kind this build does not know still reads the words Dispatch wrote", () => {
+    const note = "Whoever builds it decides.";
+    const dispatchWords =
+      "The person chose not to answer this question. Decide the next step without an answer. " +
+      "Do not ask this question again unless the facts change. Write in your work what you assumed.";
+    const declined = {
+      ...openAsk,
+      state: "resolved",
+      resolution: {
+        actor: { kind: "user", id: "alice@example.com" },
+        at: "2026-09-10T00:01:00Z",
+        kind: "declined",
+        reason: note,
+        dispatch_words: dispatchWords,
+      },
+    };
+    const card = (payload: object) =>
+      (
+        decode(renderInbound(dispatchEvent("ask.resolved", payload), reader).content) as {
+          envoy: { dispatch: Record<string, unknown> };
+        }
+      ).envoy.dispatch;
+
+    // The reader that cannot parse the frame: `AskEventPayloadSchema` declares `edited_by` as
+    // `z.never().optional()`, so a payload carrying that key is refused whatever its resolution.
+    // Its card carries the raw payload, which is how a build older than this change reads both
+    // parts of a decline.
+    expect(card({ ...declined, edited_by: actor })).toMatchObject({
+      payload: { resolution: { kind: "declined", reason: note, dispatch_words: dispatchWords } },
+    });
+
+    expect(card(declined).resolved).toBe(`declined: ${note} · Dispatch's words: ${dispatchWords}`);
+
+    // A kind no build has ever seen reads as it came, and a resolution the person wrote no
+    // reason for leaves no separator behind.
+    expect(
+      card({
+        ...declined,
+        resolution: { ...declined.resolution, kind: "handed_to_the_council", reason: "" },
+      }).resolved
+    ).toBe(`handed_to_the_council · Dispatch's words: ${dispatchWords}`);
   });
 
   test("renders ask.edited with its current question and edit history", () => {
@@ -1454,7 +1525,7 @@ describe("renderInbound dispatch events", () => {
         quiet: false,
       }),
       reader,
-      dispatchIssueSubject("DSP-1", "comment.created")
+      legacyDispatchIssueSubject("DSP-1", "comment.created")
     );
 
     expect(rendered.skip).toBe(false);
@@ -1473,7 +1544,7 @@ describe("renderInbound dispatch events", () => {
           quiet: true,
         }),
         reader,
-        dispatchIssueSubject("DSP-1", "comment.delivery")
+        legacyDispatchIssueSubject("DSP-1", "comment.delivery")
       )
     ).toMatchObject({ skip: true, content: "" });
     expect(
@@ -1485,7 +1556,7 @@ describe("renderInbound dispatch events", () => {
           { notify: false, quiet: true }
         ),
         reader,
-        dispatchIssueSubject("DSP-1", "artifact.version")
+        legacyDispatchIssueSubject("DSP-1", "artifact.version")
       )
     ).toMatchObject({ skip: true, content: "" });
   });
@@ -1499,7 +1570,7 @@ describe("renderInbound dispatch events", () => {
           notify: false,
         }),
         reader,
-        dispatchIssueSubject("DSP-1", "comment.created")
+        legacyDispatchIssueSubject("DSP-1", "comment.created")
       )
     ).toMatchObject({ skip: true, content: "" });
     expect(
@@ -1511,7 +1582,7 @@ describe("renderInbound dispatch events", () => {
           { notify: true }
         ),
         reader,
-        dispatchIssueSubject("DSP-1", "comment.created")
+        legacyDispatchIssueSubject("DSP-1", "comment.created")
       ).skip
     ).toBe(false);
   });

@@ -4,7 +4,7 @@
 // import it; Go cannot share test-only code across packages.
 //
 // Open clones each database from a template this test process migrates once. Running every
-// migration, each in its own committed transaction, is most of the Postgres work a test would
+// migration in its declared execution mode is most of the Postgres work a test would
 // otherwise do, so a package's wall time would scale with its test count times the speed of the
 // Postgres it runs against; a clone costs one create database.
 //
@@ -47,8 +47,8 @@ import (
 const DatabaseURLEnv = "DISPATCH_TEST_DATABASE_URL"
 
 var shared struct {
-	// main is set by Main before the package's tests run; Open refuses to run without it, since
-	// only Main drops the template and waits for the per-test drops.
+	// main is set by Run before the package's tests run; Open refuses to run without it, since
+	// only Run drops the template and waits for the per-test drops.
 	main     bool
 	once     sync.Once
 	err      error
@@ -66,7 +66,7 @@ var shared struct {
 func Open(t testing.TB) *store.Store {
 	t.Helper()
 	if !shared.main {
-		t.Fatal("storetest.Open needs the package's TestMain to be: func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }")
+		t.Fatal("storetest.Open needs the package's TestMain to be: func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }, or storetest.Run around another harness's Main")
 	}
 	raw := os.Getenv(DatabaseURLEnv)
 	if raw == "" {
@@ -100,9 +100,15 @@ func cloneStatement(name string) string {
 // Main runs the package's tests, waits for their databases to drop, then drops the template Open
 // cloned from. A package whose tests call Open uses it as its TestMain:
 // func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }.
-func Main(m *testing.M) int {
+func Main(m *testing.M) int { return Run(m.Run) }
+
+// Run is Main for a package whose tests also need another harness's Main, which runs m.Run
+// itself: run runs the package's tests through that Main, and Run then does what Main does after
+// them. internal/dispatch/delivery shares one NATS server across its tests (testnats.Main):
+// func TestMain(m *testing.M) { os.Exit(storetest.Run(func() int { return testnats.Main(m) })) }.
+func Run(run func() int) int {
 	shared.main = true
-	code := m.Run()
+	code := run()
 	if shared.admin == nil {
 		return code
 	}

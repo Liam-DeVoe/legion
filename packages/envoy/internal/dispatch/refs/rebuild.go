@@ -52,10 +52,11 @@ type Rebuild struct {
 // every document owed a block index (document_block_versions.version null), which the block-index
 // reconciliation (docs.Service.RunBlockIndexReconciliation) indexes. It marks every comment and
 // message, direct messages included, and every ask owed a block index of its own blocks too
-// (owed_at, a missing state row inserted owed), so the same reconciliation re-reads each item's
-// blocks, an ask's parts included, and the mentions each holds with this build's parser and
-// grammar. It leaves block_grammar_owed alone: it has just re-read every comment, ask and issue
-// message with this build's grammar itself.
+// (owed_at, a missing state row inserted owed), and owed its embedding windows with it
+// (windows_owed_at, ItemsOwedWindows), so the same reconciliation re-reads each item's blocks,
+// an ask's parts included, and the mentions each holds with this build's parser and grammar,
+// and writes the windows those blocks stand in. It leaves block_grammar_owed alone: it has
+// just re-read every comment, ask and issue message with this build's grammar itself.
 //
 // It clears the re-index queue (refs_grammar_owed) for every source it re-indexes: each source's
 // own row goes in that source's transaction (replaceRefs), and the `scope` rows, which owe a
@@ -123,16 +124,19 @@ func RebuildAll(ctx context.Context, pool Pool, serverURL string) (Rebuild, erro
 		return report, fmt.Errorf("mark every document owed a block index: %w", err)
 	}
 	report.BlocksOwed = int(owed.RowsAffected())
+	// Both markers: rebuild-refs re-derives every item from its stored text, its windows
+	// included, so the windows an item holds now stand for nothing until that re-index writes
+	// them again (ItemsOwedWindows). The one statement that writes them clears both.
 	for _, mark := range []struct{ kind, query string }{
 		{"comment", `
-			insert into comment_block_state (comment_id, owed_at) select id, now() from comments
-			on conflict (comment_id) do update set owed_at = excluded.owed_at`},
+			insert into comment_block_state (comment_id, owed_at, windows_owed_at) select id, now(), now() from comments
+			on conflict (comment_id) do update set owed_at = excluded.owed_at, windows_owed_at = excluded.windows_owed_at`},
 		{"message", `
-			insert into message_block_state (message_id, owed_at) select id, now() from messages
-			on conflict (message_id) do update set owed_at = excluded.owed_at`},
+			insert into message_block_state (message_id, owed_at, windows_owed_at) select id, now(), now() from messages
+			on conflict (message_id) do update set owed_at = excluded.owed_at, windows_owed_at = excluded.windows_owed_at`},
 		{"ask", `
-			insert into ask_block_state (ask_id, owed_at) select id, now() from asks
-			on conflict (ask_id) do update set owed_at = excluded.owed_at`},
+			insert into ask_block_state (ask_id, owed_at, windows_owed_at) select id, now(), now() from asks
+			on conflict (ask_id) do update set owed_at = excluded.owed_at, windows_owed_at = excluded.windows_owed_at`},
 	} {
 		owed, err := pool.Exec(ctx, mark.query)
 		if err != nil {
@@ -156,13 +160,24 @@ func loadSourceIDs(ctx context.Context, pool Pool, query string) ([]string, erro
 
 // replaceInTx reconciles one source's refs with its text in a transaction of its own, and
 // reports false for a source gone since it was listed, whose edges the orphan sweep deletes.
+//
+// It reads the text under the lock an edit of that text takes (sourceText's forUpdate, which
+// says which row that is for each kind), so this index of the text and a concurrent edit of it
+// are ordered rather than racing: without it a rebuild reads a source, an editor writes new text
+// and its own edges, and this transaction then replaces those edges with the ones it built from
+// the text it read, losing the edit's own index until something re-indexes that source. The
+// re-index paths beside this one take the same lock through the same read, for the same reason
+// (ReindexOwed and ReindexScopeSource below). The lock is one row at a time, held for the length
+// of that source's own transaction, so a rebuild still never holds the whole table: making the
+// rebuild one transaction instead would order it against every writer at once and hold every
+// source's row for the length of the pass, which is minutes on a large database.
 func replaceInTx(ctx context.Context, pool Pool, fromKind, fromID, serverURL string) (bool, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback(ctx)
-	body, _, found, err := sourceText(ctx, tx, fromKind, fromID, false)
+	body, _, found, err := sourceText(ctx, tx, fromKind, fromID, true)
 	if err != nil || !found {
 		return false, err
 	}
@@ -178,12 +193,26 @@ func replaceInTx(ctx context.Context, pool Pool, fromKind, fromID, serverURL str
 // question, a comment's body, or an issue message's body, with the row's edited_at where its table
 // has one (asks, comments) and its created_at otherwise. found is false when no such source
 // exists: a deleted row, a document with no markdown version, a direct message, which nothing
-// indexes. forUpdate takes the row read `for no key update`, the lock an edit of that text takes,
-// so the caller's index of the text and a concurrent edit of it are ordered.
+// indexes.
+//
+// forUpdate takes the lock an edit of that text takes, so the caller's index of the text and a
+// concurrent edit of it are ordered rather than racing. Which row that is differs by kind,
+// because the two kinds of writer differ: an edit of an ask, a comment or a message updates the
+// row the text is in, so the read of that row `for no key update` conflicts with it; an edit of a
+// document inserts a NEW version row and never writes the one this read finds, so a lock on that
+// row orders nothing. A document writer takes its owner row instead - the artifact row for a
+// project document, the issue row for an issue document (`lockArtifactOwner`,
+// internal/dispatch/docs/service.go, and `ownerRowLock`, internal/dispatch/api/owner.go) - and
+// that is the row lockDocumentOwner takes below, before this read, in the writer's own order.
 func sourceText(ctx context.Context, q Queryer, kind, id string, forUpdate bool) (body string, writtenAt time.Time, found bool, err error) {
 	var query string
 	switch kind {
 	case "artifact":
+		if forUpdate {
+			if err := lockDocumentOwner(ctx, q, id); err != nil {
+				return "", time.Time{}, false, err
+			}
+		}
 		query = `select markdown, created_at from artifact_versions
 			where artifact_id = $1::uuid and markdown is not null order by number desc limit 1`
 	case "ask":
@@ -195,7 +224,7 @@ func sourceText(ctx context.Context, q Queryer, kind, id string, forUpdate bool)
 	default:
 		return "", time.Time{}, false, fmt.Errorf("read the text of %s %s: not a reference source", kind, id)
 	}
-	if forUpdate {
+	if forUpdate && kind != "artifact" {
 		query += " for no key update"
 	}
 	switch err := q.QueryRow(ctx, query, id).Scan(&body, &writtenAt); {
@@ -205,6 +234,33 @@ func sourceText(ctx context.Context, q Queryer, kind, id string, forUpdate bool)
 		return "", time.Time{}, false, fmt.Errorf("read the text of %s %s: %w", kind, id, err)
 	}
 	return body, writtenAt, true, nil
+}
+
+// lockDocumentOwner takes the row a writer of document artifactID takes before it writes a
+// version: the issue row for an issue document, the artifact row for a project document. A
+// document that no longer exists is left to the caller's own read, which finds no text for it.
+func lockDocumentOwner(ctx context.Context, q Queryer, artifactID string) error {
+	var issueKey *string
+	switch err := q.QueryRow(ctx,
+		`select issue_key from artifacts where id = $1::uuid`, artifactID).Scan(&issueKey); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil
+	case err != nil:
+		return fmt.Errorf("read the owner of document %s: %w", artifactID, err)
+	}
+	query := `select true from artifacts where id = $1::uuid for no key update`
+	owner := artifactID
+	if issueKey != nil {
+		query = `select true from issues where key = $1 for no key update`
+		owner = *issueKey
+	}
+	switch err := q.QueryRow(ctx, query, owner).Scan(new(bool)); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil
+	case err != nil:
+		return fmt.Errorf("lock the owner of document %s: %w", artifactID, err)
+	}
+	return nil
 }
 
 // OwedQueue is one queue of text owed a re-index: a table of (kind, id, enqueued_at) a trigger

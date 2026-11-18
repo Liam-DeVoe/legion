@@ -35,13 +35,17 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 var (
@@ -413,12 +417,12 @@ func (c *stubConn) AdoptWorkingCopy(context.Context, runtime.GitIdentity, time.D
 	return errors.New("the stream stub does not adopt working copies")
 }
 
-func (c *stubConn) BundleWorkspace(context.Context, string, time.Duration) (runtime.WorkspaceBundle, error) {
-	return runtime.WorkspaceBundle{}, errors.New("the stream stub bundles no workspace")
+func (c *stubConn) Compact(context.Context, string, time.Duration) error {
+	return errors.New("the stream stub does not compact sessions")
 }
 
-func (c *stubConn) RescueUnpushed(context.Context, runtime.RescueRequest) ([]runtime.WorkspaceRescue, error) {
-	return nil, errors.New("the stream stub does not run push checks")
+func (c *stubConn) BundleWorkspace(context.Context, string, time.Duration) (runtime.WorkspaceBundle, error) {
+	return runtime.WorkspaceBundle{}, errors.New("the stream stub bundles no workspace")
 }
 
 func (c *stubConn) AgentSecretsEnrollment(context.Context, string) error {
@@ -613,12 +617,8 @@ func (r *rig) workspace(issue string) string {
 
 func eventually(t *testing.T, within time.Duration, what string, done func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	for !done() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out after %s waiting for %s", within, what)
-		}
-		time.Sleep(50 * time.Millisecond)
+	if !testwait.Holds(within, 50*time.Millisecond, done) {
+		t.Fatalf("timed out after %s waiting for %s", within, what)
 	}
 }
 
@@ -638,18 +638,15 @@ func probe(t *testing.T, rt *Runtime, loc runtime.Locator) runtime.Observation {
 // exiting under the probe's own list-panes. Both converge on Gone.
 func awaitGone(t *testing.T, rt *Runtime, loc runtime.Locator, after string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		obs := probe(t, rt, loc)
-		switch {
-		case obs.Kind == runtime.Gone:
-			return
-		case obs.Kind == runtime.Alive:
+	var obs runtime.Observation
+	if !testwait.Holds(10*time.Second, 20*time.Millisecond, func() bool {
+		obs = probe(t, rt, loc)
+		if obs.Kind == runtime.Alive {
 			t.Fatalf("Probe after %s = %+v: the stopped process is running", after, obs)
-		case time.Now().After(deadline):
-			t.Fatalf("Probe after %s = %+v, want gone within 10s", after, obs)
 		}
-		time.Sleep(20 * time.Millisecond)
+		return obs.Kind == runtime.Gone
+	}) {
+		t.Fatalf("Probe after %s = %+v, want gone within 10s", after, obs)
 	}
 }
 
@@ -728,24 +725,22 @@ func descendant(t *testing.T, root int, name string) int {
 func readReport(t *testing.T, workspace string, pid int) map[string]any {
 	t.Helper()
 	path := filepath.Join(workspace, fmt.Sprintf("standin-%d.json", pid))
-	deadline := time.Now().Add(30 * time.Second)
-	if testDeadline, ok := t.Deadline(); ok && testDeadline.Add(-time.Second).Before(deadline) {
-		deadline = testDeadline.Add(-time.Second)
+	// The read's own answer is the failure text, so err is the wait's verdict: it holds the last
+	// "no such file" when the bound passes, and any other error the moment the read returns it.
+	var raw []byte
+	var err error
+	testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
+		raw, err = os.ReadFile(path)
+		return err == nil || !errors.Is(err, os.ErrNotExist)
+	})
+	if err != nil {
+		t.Fatalf("read the stand-in's report at %s: %v", path, err)
 	}
-	for {
-		raw, err := os.ReadFile(path)
-		if err == nil {
-			var report map[string]any
-			if err := json.Unmarshal(raw, &report); err != nil {
-				t.Fatalf("the stand-in's report at %s: %v", path, err)
-			}
-			return report
-		}
-		if !errors.Is(err, os.ErrNotExist) || time.Now().After(deadline) {
-			t.Fatalf("read the stand-in's report at %s: %v", path, err)
-		}
-		time.Sleep(10 * time.Millisecond)
+	var report map[string]any
+	if err := json.Unmarshal(raw, &report); err != nil {
+		t.Fatalf("the stand-in's report at %s: %v", path, err)
 	}
+	return report
 }
 
 func hasKillPane(argvs [][]string) bool {
@@ -881,13 +876,17 @@ func TestRealTmuxLifecycle(t *testing.T) {
 		}
 	}
 
-	// One --append-system-prompt word, its $(cat)s expanded by the pane's shell, the addressing
-	// text literal.
+	// One --append-system-prompt value, the claim's prompt file, and the text Oh My Pi takes from
+	// it the whole composed prompt, the addressing text literal.
 	report := readReport(t, r.workspace(spec.Issue), omp)
+	args, _ := report["systemPromptArgs"].([]any)
+	if promptFile := filepath.Join(r.stateDir, "secrets", string(spec.Claim)+"-system-prompt.md"); len(args) != 1 || args[0] != promptFile {
+		t.Errorf("OMP's --append-system-prompt values = %q, want exactly one: the claim's prompt file %s", args, promptFile)
+	}
 	prompts, _ := report["systemPrompt"].([]any)
 	want := "You are the stand-in tester.\n\n" + spec.Prompt.Addressing + "\n\n# Deployment instructions (demo)\n\nRun the checks."
 	if len(prompts) != 1 || prompts[0] != want {
-		t.Errorf("OMP's system prompt arguments = %q, want exactly one: %q", prompts, want)
+		t.Errorf("OMP's system prompt texts = %q, want exactly one: %q", prompts, want)
 	}
 	if report["mode"] != "rpc" || report["resumed"] != false {
 		t.Errorf("OMP ran with mode %v resumed %v, want rpc and fresh", report["mode"], report["resumed"])
@@ -946,15 +945,19 @@ func TestRealTmuxLifecycle(t *testing.T) {
 	}
 
 	// Resuming from a session file found nowhere over a pane's previous incarnation starts nothing
-	// and is a refusal, never runtime.ErrSessionFileMissing: this runtime takes no claim over,
-	// since `runtime.tmux.take_over` is unset here, and only while that key is set does a session
-	// found nowhere get a fresh agent.
+	// and is runtime.ErrSessionFileMissing, whatever `runtime.tmux.take_over` says — unset here.
+	// The search is the same search either way, and a session no folder holds is the same fact
+	// however the daemon is configured (spawn.go's launch), so the runtime reports the fact and
+	// the claim's machine decides what to do with it: it starts a fresh agent in its place,
+	// charged nothing and reported. Before R8 this host refused the launch outright unless the
+	// takeover key was set, which left a claim whose session file had gone relaunching into the
+	// same refusal for ever.
 	missing := r.spec("LEGION-1", "LEGION-1", claim.RoleArchitect)
 	missing.ResumeSessionFile = filepath.Join(r.dir, "no-such-session.jsonl")
 	before = len(r.recorded())
-	if _, err := r.rt.Resume(ctx, &loc2, missing); err == nil || errors.Is(err, runtime.ErrSessionFileMissing) ||
-		!strings.HasPrefix(err.Error(), "Refusing to start LEGION-1 fresh while resurrecting: recorded OMP session file is missing: "+missing.ResumeSessionFile) {
-		t.Errorf("Resume from a missing session file = %v, want the refusal to start fresh", err)
+	if _, err := r.rt.Resume(ctx, &loc2, missing); err == nil || !errors.Is(err, runtime.ErrSessionFileMissing) ||
+		!strings.Contains(err.Error(), "no OMP session at "+missing.ResumeSessionFile) {
+		t.Errorf("Resume from a missing session file = %v, want it to name the session and wrap runtime.ErrSessionFileMissing", err)
 	}
 	for _, argv := range r.recorded()[before:] {
 		if v := verb(argv); v == "new-window" || v == "split-window" {
@@ -1677,7 +1680,7 @@ func TestRealTmuxVerifiesAPaneByItsConfiguredHarnessesMarkers(t *testing.T) {
 // markedLauncher launches nothing; its marker is the string itself.
 type markedLauncher string
 
-func (m markedLauncher) Launch(runtime.SpawnSpec, Host) (string, []string, error) {
+func (m markedLauncher) Launch(runtime.SpawnSpec, Host, string) (string, []string, error) {
 	return "", nil, errors.New("markedLauncher launches nothing")
 }
 
@@ -1827,8 +1830,16 @@ func TestRealTmuxPaneResolvesThisDaemonsLegionCLI(t *testing.T) {
 	ctx := context.Background()
 	realGH := filepath.Join(t.TempDir(), "gh")
 	// The stand-in answers `legion gh`'s reads of a command's help (`[<command>] --help`) with the
-	// real gh's help of that command, gh's own for none, saved beside the wrapper's own tests, and
-	// every other run with the GH_CONFIG_DIR it was given.
+	// real gh's help of that command, gh's own for none, saved beside the wrapper's own tests; the
+	// shared public leak check's own read of a repository's visibility — the one call `legion gh`
+	// hands gh unchecked, and the read the guard makes for every write that names a destination —
+	// with a visibility; and every other run with the GH_CONFIG_DIR it was given. The variable
+	// that read carries is the guard's own exported one (leakguard.VisibilityReadVar), which
+	// `legion gh`'s exemption is written from too, so a rename cannot part this stand-in from the
+	// read it answers. It reports `public` because that is the answer which runs the whole guard
+	// over the call — a private or internal destination skips the in-process rule pass — and
+	// because any other word is no visibility GitHub reports, which refuses the call as a setup
+	// failure rather than letting this test read which gh ran.
 	help, err := filepath.Abs(filepath.Join("..", "..", "..", "cmd", "legion", "testdata", "gh-help"))
 	if err != nil {
 		t.Fatal(err)
@@ -1837,12 +1848,52 @@ func TestRealTmuxPaneResolvesThisDaemonsLegionCLI(t *testing.T) {
 		"if [ \"$last\" = --help ]; then\n" +
 		"  path=$(printf '%s ' \"$@\" | sed -e 's/--help $//' -e 's/ $//' -e 's/ /_/g')\n" +
 		"  exec cat '" + help + "'/\"${path:-gh}\".txt\nfi\n" +
+		"if [ -n \"$" + leakguard.VisibilityReadVar + "\" ]; then\n  echo public\n  exit 0\nfi\n" +
 		"printf 'real gh %s\\n' \"$GH_CONFIG_DIR\"\n"
 	if err := os.WriteFile(realGH, []byte(stub), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	r := newRig(t, func(o *Options) { o.GH = realGH })
-	if err := workerbin.Install(r.stateDir, r.legion); err != nil {
+	// Every `legion gh` call passes the leak guard, and a guard that can resolve no shared public
+	// leak check refuses the call. This pane stands for an operator's own machine, which under the
+	// tmux runtime carries that check itself — Legion installs none there, the check arrives
+	// through its own installer, and a machine without it refuses every public write. So the
+	// check is put the way that installer puts it: its files under a data directory of the
+	// machine's, on no PATH at all, and a pointer file naming the script under the machine's
+	// configuration home, `<XDG_CONFIG_HOME>/public-leak-check/path`, which is the last of the
+	// three places the guard looks (docs/deployment.md, resolveLeakCheck, leakguard's Resolve).
+	// That configuration home is the daemon's own environment's, so the daemon reads the pointer
+	// and no pane can: a pane's XDG_CONFIG_HOME is the daemon's home under the state directory.
+	// The daemon's PUBLIC_LEAK_CHECK is emptied for the same reason the check is on no PATH —
+	// each would answer before the pointer file, and a pod running these tests carries one — so
+	// the pointer file is the only thing that can answer, and the pane's own
+	// PUBLIC_LEAK_CHECK below reads that a real pane was told a check found that way.
+	//
+	// The pane is told nothing else of it: the daemon resolves it on its own machine and names
+	// it for the pane (resolveLeakCheck, panePairs) — the pane's own PATH below is a decoy
+	// directory and the test process's, and holds no check, so a pane that resolved for itself
+	// would find none and every call would be refused. What this test reads besides that is
+	// which `legion` and which gh the pane resolves, not what the guard refuses, which
+	// cmd/legion's own tests read.
+	if found, err := exec.LookPath(leakguardtest.CheckName); err == nil {
+		t.Fatalf("this machine carries %s at %s, on the PATH the daemon is given: the daemon would resolve that one before the pointer file", leakguardtest.CheckName, found)
+	}
+	data := filepath.Join(t.TempDir(), ".local", "share", "public-leak-check")
+	if err := os.MkdirAll(data, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	check := leakguardtest.Write(t, data, leakguardtest.Passes)
+	config := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(config, "public-leak-check"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(config, "public-leak-check", "path"), []byte(check+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := newRig(t, func(o *Options) {
+		o.GH = realGH
+		o.Environ = append(slices.Clone(o.Environ), leakguard.CheckVar+"=", "XDG_CONFIG_HOME="+config)
+	})
+	if err := workerbin.Install(r.stateDir, r.legion, os.Getenv("PATH")); err != nil {
 		t.Fatalf("workerbin.Install: %v", err)
 	}
 	decoy := t.TempDir()
@@ -1866,12 +1917,20 @@ func TestRealTmuxPaneResolvesThisDaemonsLegionCLI(t *testing.T) {
 	if env["PATH"] != want {
 		t.Fatalf("OMP's PATH = %q, want %q", env["PATH"], want)
 	}
+	// The pane's own PUBLIC_LEAK_CHECK is the check the daemon resolved on its machine through
+	// the pointer file, the route a real operator's box takes: the runtime told it, nothing of
+	// the spec did, and neither the pane's PATH nor the daemon's holds a check of its own.
+	if env[leakguard.CheckVar] != check {
+		t.Fatalf("the pane's %s = %q, want the check the daemon resolved through its pointer file, %q", leakguard.CheckVar, env[leakguard.CheckVar], check)
+	}
 	// The agent's bash tool inherits OMP's environment: resolve and run `legion` and `gh` exactly
 	// there, in a directory that is no clone of another owner's repository, as the agent's
-	// workspace is not (this test's own directory is a clone of sjawhar's).
+	// workspace is not (this test's own directory is a clone of sjawhar's). PUBLIC_LEAK_CHECK is
+	// copied with the rest because the guard resolves the shared check from the environment the
+	// `legion gh` this shell starts was handed, and a call that resolves none is refused.
 	shell := exec.Command("/bin/sh", "-c", "command -v legion; legion version; command -v gh; gh api repos/sjawhar/legion-smoke --jq .full_name; gh pr list")
 	shell.Dir = t.TempDir()
-	for _, name := range []string{"PATH", "HOME", "GH_CONFIG_DIR", "LEGION_GH_OWNERS_DIR", "LEGION_GH_PATH"} {
+	for _, name := range []string{"PATH", "HOME", "GH_CONFIG_DIR", "LEGION_GH_OWNERS_DIR", "LEGION_GH_PATH", "PUBLIC_LEAK_CHECK"} {
 		shell.Env = append(shell.Env, name+"="+env[name])
 	}
 	out, err := shell.CombinedOutput()
@@ -1889,6 +1948,54 @@ func TestRealTmuxPaneResolvesThisDaemonsLegionCLI(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(r.stateDir, "worker-bin")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the state directory holds a worker-bin (%v), want the launcher directory alone", err)
+	}
+}
+
+// A pane's git is its launcher directory's git wrapper, which runs `legion git --after`. In the
+// pane's own environment, which the agent's bash tool inherits, `command -v git` names that
+// wrapper, and a commit in a new repository carries the pane's role and the session that Oh My
+// Pi's shell adds (DISPATCH_HOST and DISPATCH_SESSION_ID). Install gets the pane's PATH, whose
+// first git is the tests' compiled git, so a host whose own PATH leads with the image's git
+// wrapper still gets a git wrapper here. The rig's spec gives the pane no git identity, so the
+// shell adds one.
+func TestRealTmuxAPanesGitWrapperTrailsACommit(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t)
+	git := fixturegit.CompiledGit(t)
+	spec := r.spec("LEGION-11", "LEGION-11", claim.RoleArchitect)
+	spec.Env["PATH"] = filepath.Dir(git) + ":" + spec.Env["PATH"]
+	if err := workerbin.Install(r.stateDir, r.legion, spec.Env["PATH"]); err != nil {
+		t.Fatalf("workerbin.Install: %v", err)
+	}
+	loc, err := r.rt.Spawn(ctx, spec)
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	r.daemon.awaitReady(t, spec.BootToken)
+	env := procEnviron(t, descendant(t, panePid(t, loc), "omp"))
+	bin := filepath.Join(r.stateDir, "bin")
+	if want := bin + ":" + spec.Env["PATH"]; env["PATH"] != want || env["LEGION_ROLE"] != "architect" {
+		t.Fatalf("OMP's PATH = %q and LEGION_ROLE = %q, want %q and architect", env["PATH"], env["LEGION_ROLE"], want)
+	}
+	repo := filepath.Join(t.TempDir(), "repo")
+	fixturegit.Isolated(t, t.TempDir()).Run(t.TempDir(), append([]string{git}, fixturegit.InitWorkTree(repo, "")[1:]...)...)
+	session := "tmux-pane-" + randomHex(t, 4)
+	shell := exec.Command("/bin/sh", "-c", "command -v git && git commit --allow-empty -q -m pane && git log -1 --format=%B")
+	shell.Dir = repo
+	for _, name := range []string{"PATH", "HOME", "XDG_CONFIG_HOME", "LEGION_ROLE"} {
+		shell.Env = append(shell.Env, name+"="+env[name])
+	}
+	shell.Env = append(shell.Env, "DISPATCH_HOST=omp", "DISPATCH_SESSION_ID="+session,
+		"GIT_AUTHOR_NAME=Pane test", "GIT_AUTHOR_EMAIL=pane-test@example.invalid",
+		"GIT_COMMITTER_NAME=Pane test", "GIT_COMMITTER_EMAIL=pane-test@example.invalid")
+	out, err := shell.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git in the pane environment: %v: %s", err, out)
+	}
+	got := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	want := []string{filepath.Join(bin, "git"), "pane", "", "Omp-Session: " + session, "Legion-Role: architect"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("the pane's git and its commit = %q, want %q", got, want)
 	}
 }
 

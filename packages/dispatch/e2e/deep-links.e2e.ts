@@ -1,5 +1,3 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import {
   createArtifactComment,
   createAsk,
@@ -24,8 +22,9 @@ import {
   markSpan,
   selectEditorText,
 } from "./editor";
-import { resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
+import { serveWithoutDisplayTrees } from "./strip-trees";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // What this file's init scripts keep on the page's window.
@@ -53,10 +52,6 @@ const longDocument = [
   ),
   "Unique faraway quotation.",
 ].join("\n\n");
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 async function seedIssue() {
   await createProject({ key: "CORE", name: "Core" });
@@ -304,7 +299,10 @@ async function expectSelectedMarginItem(page: Page, id: string) {
 
 // SLOW(>=2s): four anchored writes, each seeded on its own transaction, and the four links the
 // row lands on in turn, in WebKit.
-test("emitted document item hrefs select and scroll their anchored thread", async ({ browser }) => {
+// @pr: The deep-link family's one row on the lane: an emitted document item href selects and scrolls its anchored thread.
+test("emitted document item hrefs select and scroll their anchored thread @pr", async ({
+  browser,
+}) => {
   const { issue } = await seedIssue();
   // Anchored writes are seeded one at a time. Each holds its transaction across the document
   // work that stamps the mark, so concurrent ones queue on the server's connection pool
@@ -798,6 +796,7 @@ test("a past version's comment link lands on its quote in a document with no dia
     // change of the version view's own scroll height - the very measurement a rebuild disturbs -
     // and a loaded machine stretches those frames, which a wall-clock window cannot do.
     await landingSettled(versionView);
+    // The landing settled above, so the frames recorded up to here are every scroll it made.
     const offsets = (await page.evaluate(() => window.__scrollEachFrame)) ?? [];
     const started = offsets.findIndex((offset) => offset > 0);
     expect(started).toBeGreaterThanOrEqual(0);
@@ -999,10 +998,9 @@ test("a linked card's placement ignores the margin's own scroll @webkit @firefox
   }
 });
 
-test("an iPhone document item link brings its far-away mark above the closed review sheet @phone", async ({
+test("an iPhone document item link brings its far-away mark above the closed review sheet @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "the closed sheet is phone-only");
+}) => {
   const { comment, issue, markId } = await seedLongDocument();
   const context = await asUser(browser, "alice");
 
@@ -1030,10 +1028,9 @@ test("an iPhone document item link brings its far-away mark above the closed rev
   }
 });
 
-test("an iPhone secondary-document link scrolls its selected card after opening the review sheet @phone", async ({
+test("an iPhone secondary-document link scrolls its selected card after opening the review sheet @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "the bottom-sheet viewport is phone-only");
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({
     project: "CORE",
@@ -1261,7 +1258,7 @@ test("every item link lands on exactly one marked card, and a reply link marks i
 
     // A search hit opens the very path the palette's row carries.
     const hits = await search("quadrant");
-    const hit = hits.results.find((result) => result.id === found.id);
+    const hit = (hits.results ?? []).find((result) => result.id === found.id);
     expect(hit?.href).toBe(`/issues/${issue.key}/comments/${found.id}`);
     await navigateInApp(page, hit?.href ?? "");
     if (isPhone) {
@@ -1281,5 +1278,46 @@ test("every item link lands on exactly one marked card, and a reply link marks i
     await untilNotFound(page, "Comment not found");
   } finally {
     await context.close();
+  }
+});
+
+// The same link from a server that answers no reading of the version's text, which is what a
+// pod of the build before this one serves while a deploy rolls. The page parses the markdown
+// and embeds the quote in its own reading of it, so the reader lands on the words the comment
+// names rather than being told the range is gone - the message this row refuses by name.
+// No `@pr` tag: the pull-request lane's real-stack budget is full, and of this round's two
+// rows this is the one the lane answers least - its claim is also made by a unit row, which
+// asserts the mark and the absence of the changed-text message, while the approval's marks have
+// no unit row that draws them on a real server. It runs on the full lane at the merge queue.
+test("a past version's comment link marks its quote where the answer carried no reading", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({
+    project: "CORE",
+    spec: "Plain document:\n\nTarget paragraph holds the quoted words.\n",
+    title: "Highlighted mark with no reading",
+  });
+  const comment = await createComment(
+    issue.key,
+    { anchor: { artifact: "spec", quote: "quoted words" }, body: "Read this." },
+    agentSession
+  );
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await serveWithoutDisplayTrees(page);
+    await page.goto(
+      `/issues/${issue.key}/artifact/spec?v=1&comment=${encodeURIComponent(comment.id)}`
+    );
+    const versionView = page.getByRole("region", { name: "Document version 1" });
+    await expect(versionView.locator(`[data-id="${comment.id}"]`)).toHaveText("quoted words");
+    await expect(
+      page.getByText("Text changed. The selected range no longer exists in this document.")
+    ).toHaveCount(0);
+    await expect(page.getByText("Could not load this document version.")).toHaveCount(0);
+  } finally {
+    await alice.close();
   }
 });

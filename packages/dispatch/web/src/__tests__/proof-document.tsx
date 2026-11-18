@@ -32,23 +32,10 @@ export const artifact: Artifact = {
   kind: "doc",
   name: "spec.md",
   primary: true,
+  ref_key: "CORE-1/spec",
+  session_id: null,
   slug: "spec",
   versions: [],
-};
-
-const blockSchema = {
-  types: [
-    {
-      attributes: {
-        kind: { choices: ["note", "warning"], default: "note", kind: "enum" as const },
-        title: { default: "", kind: "string" as const },
-      },
-      content: "paragraph+" as const,
-      name: "callout",
-      render: "host" as const,
-    },
-  ],
-  version: 1,
 };
 
 export function createQueryClient(): QueryClient {
@@ -146,6 +133,7 @@ export function answerTextReadsWithTheSeededText(): void {
   beforeEach(() => {
     const getArtifactText = spyOn(api, "getArtifactText").mockImplementation(async () => ({
       markdown: defaultText,
+      token: "sha256:spec-text",
       version: null,
     }));
     restore = () => getArtifactText.mockRestore();
@@ -207,7 +195,6 @@ export function renderProofDocument({
         }
       | undefined,
   };
-  queryClient.setQueryData(["block-schema"], blockSchema);
   const toolbar: { current: DocumentToolbar | undefined } = { current: undefined };
   /** Every value the document reported upward, so a suite can assert it reported none at all. */
   const toolbarChanges: (DocumentToolbar | undefined)[] = [];
@@ -272,7 +259,9 @@ export function renderProofDocument({
     // has resolved.
     async sync() {
       await waitFor(() => expect(fake.connections).toHaveLength(1));
-      fake.sync();
+      await act(async () => {
+        fake.sync();
+      });
     },
     toolbar,
     toolbarChanges,

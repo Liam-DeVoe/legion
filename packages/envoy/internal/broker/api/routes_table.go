@@ -5,8 +5,10 @@ import (
 	"net/http"
 	"slices"
 
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/approval"
 	"github.com/sjawhar/envoy/internal/broker/enroll"
+	"github.com/sjawhar/envoy/internal/broker/machine"
 )
 
 type routeAuth int
@@ -30,9 +32,12 @@ type caller struct {
 	// authenticated the request: its name, which a handler that acts logs, and the powers that
 	// name carries, which authenticate checks against the route's before the handler runs.
 	account Account
-	// service is the service BROKER_SERVICE_LOGINS says the ServiceAccount token that
-	// authenticated the request logs in as, which a serviceAuth handler logs when it acts.
-	service string
+	// service is the login the ServiceAccount token that authenticated the request made,
+	// machine.Service.VerifyServiceToken's own answer: the service that account logs in as,
+	// the account whose token it presented, and the pod that token was bound to, empty for one
+	// bound to none. serviceAuth hands the whole of it to the handler and says why all three
+	// travel together.
+	service machine.ServiceAccount
 	// signIn is the broker sign-in session a request to the approval page carries, the zero
 	// approval.Session when it carries none that is live.
 	signIn approval.Session
@@ -183,9 +188,13 @@ func accountAuth(needs power, h func(*server, http.ResponseWriter, *http.Request
 // The row declares the power that caller must hold all the same, and the handler is given it:
 // authenticate cannot check it here, since it is the handler that reads the caller, so the check
 // is decideRecord's, against the same accountPowers and with the same 403 ACCOUNT_LACKS_POWER as
-// every other row of that authority.
+// every other row of that authority. Until the handler notes the listed caller it found, the
+// answer's record names the caller unauthenticated, as tokenLogin's does before its token
+// verifies, and never public: authenticate reads no credential for the route, but its handler
+// does.
 func accountAuthAfterRecordKind(needs power, h func(*server, http.ResponseWriter, *http.Request, power)) routeHandler {
 	return routeHandler{auth: authNone, power: needs, serve: func(s *server, w http.ResponseWriter, r *http.Request, _ caller) {
+		answer.FromContext(r.Context()).NoteCaller(answer.CallerUnauthenticated, "")
 		h(s, w, r, needs)
 	}}
 }
@@ -193,15 +202,19 @@ func accountAuthAfterRecordKind(needs power, h func(*server, http.ResponseWriter
 // serviceAuth is a route for a service calling the broker with its own Kubernetes ServiceAccount
 // token, the account BROKER_SERVICE_LOGINS lets log in as that service — a deployment's Legion
 // daemon, which registers the pods it starts. The token is verified and mapped to its service by
-// the check a token login makes (machine.Service.VerifyServiceToken). The handler is given the
-// service's name.
+// the check a token login makes (machine.Service.VerifyServiceToken). The handler is given that
+// check's own answer, one machine.ServiceAccount: the service the caller logs in as, the
+// account whose token it presented, and the pod that token was bound to. The account and the
+// pod come with it because BROKER_SERVICE_LOGINS may name an account BROKER_SERVICES binds to a
+// service: every pod of such an account logs that service in, so a caller here may be the very
+// pod a request names, and the account and the pod uid are what tell the two apart.
 //
 // It is a class of its own rather than a power of accountAuth's because the two lists are two
 // authorities: BROKER_API_ACCOUNTS names the callers that relay a person's decisions and read
 // tokens back, and a daemon that registers its own pods is not one of them. A deployment already
 // lists its per-project daemons in BROKER_SERVICE_LOGINS for their token logins, so these routes
 // need no new setting and no new account.
-func serviceAuth(h func(*server, http.ResponseWriter, *http.Request, string)) routeHandler {
+func serviceAuth(h func(*server, http.ResponseWriter, *http.Request, machine.ServiceAccount)) routeHandler {
 	return routeHandler{auth: authService, serve: func(s *server, w http.ResponseWriter, r *http.Request, who caller) {
 		h(s, w, r, who.service)
 	}}
@@ -214,7 +227,8 @@ func serviceAuth(h func(*server, http.ResponseWriter, *http.Request, string)) ro
 // sign-in, a decision answers a page linking the record it names. Every route of the class spends
 // its source address's bucket first, the one the account class spends (authenticate), so no
 // caller drives a record read, a token request to the sign-in provider or a session write
-// unmetered. Mounted only when the broker builds its approval page, which every broker does.
+// unmetered. Mounted only when the broker builds its approval page, which every broker does but
+// one with BROKER_SIGNIN=off.
 func signInAuth(h func(*approval.Page, http.ResponseWriter, *http.Request, approval.Session)) routeHandler {
 	return routeHandler{auth: authSignIn, serve: func(s *server, w http.ResponseWriter, r *http.Request, who caller) {
 		h(s.deps.Approval, w, r, who.signIn)
@@ -260,7 +274,7 @@ func routes() []apiRoute {
 		// machine login's launcher credential; mounted only when the broker runs its OAuth provider.
 		{http.MethodPost, "/v1/oauth/token", public((*server).oauthToken)},
 		// Read one of the broker's access tokens back (RFC 7662): whether it is live and, when it
-		// is, the session, the person and the project it carries, and the key it is bound to.
+		// is, the session, the person and the projects it carries, and the key it is bound to.
 		// Mounted only when the broker runs its OAuth provider.
 		{http.MethodPost, "/v1/oauth/introspect", accountAuth(readsTokensBack, (*server).introspect)},
 		// End one of the broker's own access tokens (RFC 7009), an exchanged pod's or workflow
@@ -377,7 +391,8 @@ func routes() []apiRoute {
 		{http.MethodPost, "/v1/secrets/{name}/reread", public((*server).rereadSecret)},
 		// A person's approval page for one credential-request record, an HTML page on the broker's
 		// own origin: the record's secret names, the enrollment the broker verified asked, the
-		// session the request claims when it differs, the reason or "No reason given", the
+		// session the request claims when it differs, the reason (empty only on a record an older
+		// build wrote before the broker required one wherever a person decides), the
 		// lifetime, the times, the approver and the state, one sentence saying what Approve gives
 		// and for how long and one saying what Deny and the expiry do, then every other pending
 		// secret request the person may decide, with Approve and Deny for each the person may

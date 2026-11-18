@@ -17,16 +17,19 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
+// createDeliveryInput is the body of POST /api/v1/messages/{id}/deliveries.
+type createDeliveryInput struct {
+	Delivery string       `json:"delivery" required:"true"`
+	Actor    *model.Actor `json:"actor"`
+}
+
 func (s *server) createDelivery(w http.ResponseWriter, r *http.Request) {
 	actor, human, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
 		return
 	}
-	var input struct {
-		Delivery string       `json:"delivery"`
-		Actor    *model.Actor `json:"actor"`
-	}
+	var input createDeliveryInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -63,7 +66,7 @@ func (s *server) createDelivery(w http.ResponseWriter, r *http.Request) {
 const acceptedAsUserTurn = "user_turn"
 
 // acceptFresh is one of the accept's checks, judged by Postgres against the created_at Postgres
-// wrote, as claimLapsed is: the attempt was opened within the last minute. created_at, not
+// wrote, as model.DeliveryClaimFreeSQL is: the attempt was opened within the last minute.
 // claimed_at, because a resume moves claimed_at. So only an attempt a person has just asked for
 // can be taken, and one that reached its session as a card - an older plugin, a card fallback of
 // the last minute's accept - can never be taken as a turn later.
@@ -129,9 +132,7 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "ACCEPT_FORBIDDEN", http.StatusForbidden, "accept requires an agent bearer token")
 		return
 	}
-	var input struct {
-		Actor *model.Actor `json:"actor"`
-	}
+	var input actorInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -237,11 +238,13 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "ACCEPT_NOT_REQUESTED_BY_AUTHOR", http.StatusConflict,
 			fmt.Sprintf("attempt %d was requested by someone other than the person who wrote the message", number))
 		return
-	case state != "pending" && state != "sent":
+	case state != model.DeliveryStatePending && !model.DeliveryTaken(state):
 		// Dispatch told the person this attempt failed, and they may already have sent the message
-		// another way; a frame naming it is not the delivery they were shown.
+		// another way; a frame naming it is not the delivery they were shown. A queued attempt is
+		// not one of those: the listener took it, and the session accepting it now is the session
+		// it was stored for, reading it as it runs again.
 		writeError(w, "ACCEPT_FAILED", http.StatusConflict,
-			fmt.Sprintf("attempt %d failed, and only a pending or sent attempt is taken as the session's turn", number))
+			fmt.Sprintf("attempt %d failed, and only a pending, sent or queued attempt is taken as the session's turn", number))
 		return
 	case !fresh:
 		writeError(w, "ACCEPT_STALE", http.StatusConflict,
@@ -267,7 +270,7 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(appended)
+	s.publish(ctx, appended)
 	WriteJSON(w, http.StatusOK, acceptedDelivery{MessageDelivery: accepted, Body: message.Body})
 }
 
@@ -280,7 +283,21 @@ type pendingMessageDelivery struct {
 	attemptClaim
 	resolved ResolvedMention
 	urgency  *string
-	frame    []byte
+	// connectedOnly is the attempt row's own connected_only, the request's flag: attempt 1's,
+	// which createStoredMessage writes from the request that stored the message, and attempt 1's
+	// again for every later one (insertMessageDeliveryAttempt). Every send of the attempt asks the
+	// listener for a session that is running now when it is set or the send is a model or thinking
+	// switch the session runs as its own turn (deliverMessageResuming, isSessionSwitch): a person's
+	// own issue-less Send or Aside (not one an agent wrote for them), no broadcast's copy, whose
+	// body is one switch line. The listener then refuses a stopped target rather than storing the
+	// message for it: attempt 1's own send, the delivery sweep's resume, a Retry and a mode change
+	// alike. No row records the switch rule, which each send judges from the message and the mode
+	// it is sent in: a switch an earlier release stored has rows with no flag, which a resume
+	// claims as they stand, and the rule's verdict for a Send must not pass to a Use BTW instead,
+	// which changes no model. Every other message - an issue message, a broadcast copy, a BTW, a
+	// session's message - is queued for a stopped session.
+	connectedOnly bool
+	frame         []byte
 }
 
 // messageDeliveryRoute is what a targeted send resolves against the listener: the session a
@@ -310,7 +327,7 @@ func (s *server) messageDeliveryRoute(ctx context.Context, message model.Message
 		`, message.ID, resumeAttempt).Scan(&pinned)
 	} else {
 		err = s.deps.Store.Pool.QueryRow(ctx, `
-			select session_id, `+claimLapsed+`
+			select session_id, `+model.DeliveryClaimFreeSQL+`
 			from message_deliveries
 			where message_id = $1 and state = 'pending'
 			order by attempt
@@ -380,13 +397,17 @@ func (s *server) recordPendingMessageDelivery(
 		var bound model.MessageDelivery
 		var free bool
 		err = tx.QueryRow(ctx, `
-			select attempt, delivery, session_id, urgency, `+claimLapsed+`
+			select attempt, delivery, session_id, urgency, `+model.ConnectedOnlySQL+`, `+model.DeliveryClaimFreeSQL+`
 			from message_deliveries
 			where message_id = $1 and attempt = $2 and state = 'pending'
 			for update
-		`, message.ID, resumeAttempt).Scan(&bound.Attempt, &bound.Delivery, &bound.SessionID, &pending.urgency, &free)
+		`, message.ID, resumeAttempt).Scan(
+			&bound.Attempt, &bound.Delivery, &bound.SessionID, &pending.urgency, &pending.connectedOnly, &free,
+		)
 		if errors.Is(err, pgx.ErrNoRows) {
-			return s.openFirstMessageDeliveryAttempt(ctx, tx, message, target, actor, resolved, replyThread, resumeAttempt)
+			return s.openFirstMessageDeliveryAttempt(
+				ctx, tx, message, target, actor, resolved, replyThread, resumeAttempt,
+			)
 		}
 		if err != nil {
 			return pendingMessageDelivery{}, err
@@ -420,13 +441,15 @@ func (s *server) recordPendingMessageDelivery(
 	var strandedUrgency *string
 	var lapsed bool
 	err = tx.QueryRow(ctx, `
-		select attempt, delivery, session_id, urgency, `+claimLapsed+`
+		select attempt, delivery, session_id, urgency, `+model.ConnectedOnlySQL+`, `+model.DeliveryClaimFreeSQL+`
 		from message_deliveries
 		where message_id = $1 and state = 'pending'
 		order by attempt
 		limit 1
 		for update
-	`, message.ID).Scan(&stranded.Attempt, &stranded.Delivery, &stranded.SessionID, &strandedUrgency, &lapsed)
+	`, message.ID).Scan(
+		&stranded.Attempt, &stranded.Delivery, &stranded.SessionID, &strandedUrgency, &pending.connectedOnly, &lapsed,
+	)
 	var superseded *model.Event
 	switch {
 	case err != nil && !errors.Is(err, pgx.ErrNoRows):
@@ -468,7 +491,7 @@ func (s *server) recordPendingMessageDelivery(
 				return pendingMessageDelivery{}, err
 			}
 			superseded = &receipt
-			if err := s.insertMessageDeliveryAttempt(ctx, tx, message.ID, actor, resolved, &pending); err != nil {
+			if err := s.insertMessageDeliveryAttempt(ctx, tx, message, actor, resolved, &pending); err != nil {
 				return pendingMessageDelivery{}, err
 			}
 			break
@@ -497,7 +520,7 @@ func (s *server) recordPendingMessageDelivery(
 		if target != resolved.Target {
 			return pendingMessageDelivery{}, errStaleResolution
 		}
-		if err := s.insertMessageDeliveryAttempt(ctx, tx, message.ID, actor, resolved, &pending); err != nil {
+		if err := s.insertMessageDeliveryAttempt(ctx, tx, message, actor, resolved, &pending); err != nil {
 			return pendingMessageDelivery{}, err
 		}
 	}
@@ -505,7 +528,7 @@ func (s *server) recordPendingMessageDelivery(
 		return pendingMessageDelivery{}, err
 	}
 	if superseded != nil {
-		s.publish(*superseded)
+		s.publish(ctx, *superseded)
 	}
 	return pending, nil
 }
@@ -517,7 +540,9 @@ func (s *server) recordPendingMessageDelivery(
 // no attempt (sendHeldMessageOn) and the delivery sweep's resume of that keyed send, both of them
 // recoveries for a message an earlier release stored - and the message's
 // lock, which tx holds, makes whichever claims first open the attempt; the other then finds it
-// taken and sends nothing.
+// taken and sends nothing. No request's connected_only was recorded for a message that reaches
+// here, so the attempt it opens records none, and its send asks for a session running now only
+// when it is a switch the session runs as its own turn (deliverMessageResuming, isSessionSwitch).
 func (s *server) openFirstMessageDeliveryAttempt(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -544,7 +569,7 @@ func (s *server) openFirstMessageDeliveryAttempt(
 		return pendingMessageDelivery{}, errStaleResolution
 	}
 	pending := pendingMessageDelivery{resolved: resolved}
-	if err := s.insertMessageDeliveryAttempt(ctx, tx, message.ID, actor, resolved, &pending); err != nil {
+	if err := s.insertMessageDeliveryAttempt(ctx, tx, message, actor, resolved, &pending); err != nil {
 		return pendingMessageDelivery{}, err
 	}
 	if err := finishPendingMessageDelivery(ctx, tx, s, message, replyThread, &pending); err != nil {
@@ -604,8 +629,18 @@ const supersededByModeChangeText = "superseded by a retry in another mode; it ma
 // resolution was taken for, recording requestedBy - the actor this send carries - as who asked
 // for it. The message row is locked by the caller, so the highest attempt cannot move between
 // reading it and inserting beside it.
+//
+// connected_only is attempt 1's, never this send's request's: the request that stored the message
+// is the only one that says whether it asks for a session running now (createStoredMessage), so a
+// Retry or a mode change of a message that asked it asks it again, and the listener stores nothing
+// for a stopped session. The switch rule is no row's (pendingMessageDelivery.connectedOnly): each
+// send judges it in its own mode (deliverMessageResuming, isSessionSwitch), so a Retry or a Use
+// Aside instead of a switch whose request asked nothing is refused for a stopped session and a
+// Use BTW instead of it is queued, whether this release wrote its attempt 1, an earlier release
+// wrote it with no column to write, or it has none and this opens it
+// (openFirstMessageDeliveryAttempt).
 func (s *server) insertMessageDeliveryAttempt(
-	ctx context.Context, tx pgx.Tx, messageID string, requestedBy model.Actor, resolved ResolvedMention,
+	ctx context.Context, tx pgx.Tx, message model.Message, requestedBy model.Actor, resolved ResolvedMention,
 	pending *pendingMessageDelivery,
 ) error {
 	requester, err := json.Marshal(requestedBy)
@@ -613,15 +648,17 @@ func (s *server) insertMessageDeliveryAttempt(
 		return err
 	}
 	return tx.QueryRow(ctx, `
-		insert into message_deliveries (message_id, attempt, delivery, session_id, state, claimed_at, requested_by)
+		insert into message_deliveries (message_id, attempt, delivery, session_id, state, claimed_at,
+		                                requested_by, connected_only)
 		values (
 			$1,
 			(select coalesce(max(attempt), 0) + 1 from message_deliveries where message_id = $1),
-			$2, $3, 'pending', now(), $4
+			$2, $3, 'pending', now(), $4,
+			(select connected_only from message_deliveries where message_id = $1 order by attempt limit 1)
 		)
-		returning attempt, claimed_at
-	`, messageID, resolved.Delivery, resolved.attemptSessionID, requester,
-	).Scan(&pending.attempt, &pending.claimedAt)
+		returning attempt, claimed_at, `+model.ConnectedOnlySQL+`
+	`, message.ID, resolved.Delivery, resolved.attemptSessionID, requester,
+	).Scan(&pending.attempt, &pending.claimedAt, &pending.connectedOnly)
 }
 
 // messageDeliveryReceipt is the message.delivery receipt an attempt row owes, read off that
@@ -648,15 +685,13 @@ func (s *server) completeMessageDelivery(
 	message model.Message,
 	actor model.Actor,
 	pending pendingMessageDelivery,
-	envelopeID *string,
-	duplicate bool,
-	deliveryError string,
+	outcome sendOutcome,
 ) (model.MessageDelivery, error) {
-	state, failure := deliveryOutcome(deliveryError)
+	state, failure := deliveryOutcome(outcome.failure, outcome.queued)
 	// The receipt this send owes, read off the row it is about to write.
 	receipt := messageDeliveryReceipt(message, actor, model.MessageDelivery{
 		MessageID: message.ID, Attempt: pending.attempt, Delivery: pending.resolved.Delivery,
-		SessionID: pending.resolved.attemptSessionID, State: state, Duplicate: duplicate, Error: failure,
+		SessionID: pending.resolved.attemptSessionID, State: state, Duplicate: outcome.duplicate, Error: failure,
 	}, pending.resolved.title)
 	return settleDeliveryAttempt(ctx, s, receipt,
 		func(ctx context.Context, tx pgx.Tx) (model.MessageDelivery, error) {
@@ -664,7 +699,7 @@ func (s *server) completeMessageDelivery(
 				update message_deliveries set envelope_id = $4, state = $5, error = $6, duplicate = $7
 				where message_id = $1 and attempt = $2 and state = 'pending' and claimed_at = $3
 				returning `+messageDeliveryColumns,
-				message.ID, pending.attempt, pending.claimedAt, envelopeID, state, failure, duplicate,
+				message.ID, pending.attempt, pending.claimedAt, outcome.envelopeID, state, failure, outcome.duplicate,
 			))
 		},
 		func(ctx context.Context, tx pgx.Tx) (model.MessageDelivery, bool, *string, error) {
@@ -731,7 +766,7 @@ func (s *server) deliverMessageResuming(
 			if err != nil {
 				return ResolvedMention{}, err
 			}
-			return s.resolveMentionTargets(ctx, []string{route}, delivery)[0], nil
+			return s.resolveMentionTarget(ctx, route, delivery, 0), nil
 		},
 		func(ctx context.Context, resolved ResolvedMention) (pendingMessageDelivery, error) {
 			return s.recordPendingMessageDelivery(ctx, message, actor, resolved, replyThread, resumeAttempt)
@@ -748,19 +783,21 @@ func (s *server) deliverMessageResuming(
 	// listener scopes it further by recipient, which is what lets a role's new holder still be
 	// reached.
 	key := message.ID + ":" + pending.resolved.Delivery
+	// A model or thinking switch the session runs as its own turn asks for a session running now
+	// on every send of it, whatever its row holds, judged in the mode this attempt is sent in
+	// (isSessionSwitch, pendingMessageDelivery.connectedOnly).
+	connectedOnly := pending.connectedOnly || isSessionSwitch(message, pending.resolved.Delivery)
 	takeover := s.newTakeoverRetry()
-	var envelopeID *string
-	var duplicate bool
-	deliveryError, err := takeover.retry(ctx,
+	var outcome sendOutcome
+	err = takeover.retry(ctx,
 		func() string {
-			var failure string
 			// A direct message is written to the session it names and invites its answer;
 			// nothing about one says a reply is unwanted.
-			envelopeID, duplicate, failure = s.sendResolvedDelivery(
+			outcome = s.sendResolvedDelivery(
 				ctx, pending.resolved, message.Body, key, pending.urgency,
-				contracts.ExpectsReplyOptional, pending.frame,
+				contracts.ExpectsReplyOptional, pending.frame, connectedOnly,
 			)
-			return failure
+			return outcome.failure
 		},
 		func() (bool, error) {
 			renewed, held, err := s.renewMessageDeliveryClaim(ctx, message, pending)
@@ -773,7 +810,7 @@ func (s *server) deliverMessageResuming(
 	if err != nil {
 		return model.MessageDelivery{}, err
 	}
-	return s.completeMessageDelivery(ctx, message, actor, pending, envelopeID, duplicate, deliveryError)
+	return s.completeMessageDelivery(ctx, message, actor, pending, outcome)
 }
 
 // renewMessageDeliveryClaim prepares one more try of an attempt this sender holds, after a try a
@@ -793,7 +830,10 @@ func (s *server) renewMessageDeliveryClaim(
 		route = "session:" + pending.resolved.attemptSessionID
 	}
 	renewed := pending
-	renewed.resolved = s.resolveMentionTargets(ctx, []string{route}, pending.resolved.Delivery)[0]
+	// Unbounded, as the message's own resolution above is: only a comment's creation bounds its
+	// lookups at mentionLookupTimeout, because it answers without them. A read cut short here
+	// would leave the attempt unanswered with no resolve error, and this sender settles it.
+	renewed.resolved = s.resolveMentionTarget(ctx, route, pending.resolved.Delivery, 0)
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return pending, false, err
@@ -818,19 +858,22 @@ func (s *server) renewMessageDeliveryClaim(
 	return renewed, true, nil
 }
 
+// messageReplyInput is the body of POST /api/v1/messages/{id}/reply.
+type messageReplyInput struct {
+	Actor   *model.Actor `json:"actor"`
+	Attempt int          `json:"attempt" required:"true"`
+	Body    *string      `json:"body"`
+	Error   *string      `json:"error"`
+	// InReplyToBlock is the id of the block of message {id} the reply answers ("b2").
+	InReplyToBlock *string `json:"in_reply_to_block"`
+}
+
 func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(r.Header.Get("Authorization")) == "" {
 		writeError(w, "REPLY_FORBIDDEN", http.StatusForbidden, "reply requires an agent bearer token")
 		return
 	}
-	var input struct {
-		Actor   *model.Actor `json:"actor"`
-		Attempt int          `json:"attempt"`
-		Body    *string      `json:"body"`
-		Error   *string      `json:"error"`
-		// InReplyToBlock is the id of the block of message {id} the reply answers ("b2").
-		InReplyToBlock *string `json:"in_reply_to_block"`
-	}
+	var input messageReplyInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -921,7 +964,7 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
-		read, posted, err := s.replyAfterAnswer(r.Context(), tx, answer, actor, input.Body, followUp)
+		read, posted, err := s.replyAfterAnswer(r.Context(), tx, answer, actor, input.Body, followUp, wantsDisplayTrees(r))
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -932,6 +975,9 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 				s.writeHandlerError(w, err)
 				return
 			}
+			// The hydration wrote the block into the row the shape stands in front of, so the
+			// shape is taken again over it (display_trees.go).
+			shapeBuilt(wantsDisplayTrees(r), read.shape)
 		}
 		response = read
 		if posted != nil {
@@ -979,13 +1025,13 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
-		response, events, status = replyRead{Message: reply}, append(events, answered), http.StatusCreated
+		response, events, status = replyRead{shapedMessage: newShapedMessage(reply, wantsDisplayTrees(r))}, append(events, answered), http.StatusCreated
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(events...)
+	s.publish(r.Context(), events...)
 	WriteJSON(w, status, response)
 }
 
@@ -996,10 +1042,10 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 // session already posted in this conversation (its first reply, or an earlier follow-up) is a
 // resend and posts nothing; any other is posted under the first reply, and its event is returned.
 func (s *server) replyAfterAnswer(
-	ctx context.Context, tx pgx.Tx, answer model.Message, actor model.Actor, body *string, followUp bool,
+	ctx context.Context, tx pgx.Tx, answer model.Message, actor model.Actor, body *string, followUp, trees bool,
 ) (replyRead, *model.Event, error) {
 	if body == nil || !followUp {
-		return replyRead{Message: answer, Duplicate: true}, nil, nil
+		return replyRead{shapedMessage: newShapedMessage(answer, trees), Duplicate: true}, nil, nil
 	}
 	posted, err := scanMessage(tx.QueryRow(ctx, `
 		select `+messageColumns+`
@@ -1009,7 +1055,7 @@ func (s *server) replyAfterAnswer(
 		order by created_at desc limit 1
 	`, answer.ID, *body, actor.ID))
 	if err == nil {
-		return replyRead{Message: posted, Duplicate: true}, nil, nil
+		return replyRead{shapedMessage: newShapedMessage(posted, trees), Duplicate: true}, nil, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return replyRead{}, nil, err
@@ -1018,7 +1064,7 @@ func (s *server) replyAfterAnswer(
 	if err != nil {
 		return replyRead{}, nil, err
 	}
-	return replyRead{Message: followUpReply}, &event, nil
+	return replyRead{shapedMessage: newShapedMessage(followUpReply, trees)}, &event, nil
 }
 
 // replyRead is what the reply route answers with a message: the message, and `duplicate` when
@@ -1026,7 +1072,7 @@ func (s *server) replyAfterAnswer(
 // attempt's stored reply, or a follow-up whose text the session already posted). A caller cannot
 // otherwise tell a resend from a send, since both carry the message it asked for.
 type replyRead struct {
-	model.Message
+	shapedMessage
 	Duplicate bool `json:"duplicate,omitempty"`
 }
 

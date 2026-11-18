@@ -4,7 +4,17 @@ import { useLocation } from "react-router-dom";
 
 import { api, type WriteBounds } from "../../api/client";
 import { inboxQuery, userStateQuery } from "../../api/queries";
-import type { Actor, Anchor, Artifact, Ask, Comment, Decision, Event } from "../../api/types";
+import type {
+  Actor,
+  Anchor,
+  Artifact,
+  Ask,
+  Comment,
+  CommentWithTrees,
+  Decision,
+  DispatchEvent,
+  DisplayTree,
+} from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import type { ComposerOwner } from "../conversation/composer-model";
 import { rootOf } from "../conversation/conversation-model";
@@ -82,7 +92,7 @@ export interface MarkPlacement {
  * Conversation from comment event payloads (`CommentEventPayload`), which omit `mentions` and
  * `deliveries` on events recorded before 2026-09-18; no thread renderer reads either field.
  */
-export type ThreadComment = Omit<Comment, "mentions" | "deliveries">;
+export type ThreadComment = Omit<CommentWithTrees, "mentions" | "deliveries">;
 
 export interface Thread {
   anchor: Anchor | null;
@@ -99,6 +109,8 @@ export interface PinnedConversationCard {
   readonly at: string;
   readonly author: Actor;
   readonly body: string;
+  /** The reading Go made of `body`, which the card draws (`MarkdownBody`). */
+  readonly tree?: DisplayTree;
   /** The `dismissed` id it is pinned under, which Unpin removes: `<kind>:<id>`. */
   readonly id: string;
   readonly kind: ConversationPinKind;
@@ -108,19 +120,19 @@ const NO_PINS: string[] = [];
 
 const pinnedEventBatchSize = 50;
 
-type IssueEventsFetcher = (issueKey: string, options: { ids: string[] }) => Promise<Event[]>;
+type IssueEventsFetcher = (issueKey: string, options: { ids: string }) => Promise<DispatchEvent[]>;
 
 export async function fetchPinnedEvents(
   listIssueEvents: IssueEventsFetcher,
   issueKey: string,
   ids: string[]
-): Promise<Event[]> {
+): Promise<DispatchEvent[]> {
   const batches: string[][] = [];
   for (let index = 0; index < ids.length; index += pinnedEventBatchSize) {
     batches.push(ids.slice(index, index + pinnedEventBatchSize));
   }
   const events = await Promise.all(
-    batches.map((batch) => listIssueEvents(issueKey, { ids: batch }))
+    batches.map((batch) => listIssueEvents(issueKey, { ids: batch.join(",") }))
   );
   return events.flat().sort((left, right) => left.seq - right.seq);
 }
@@ -392,6 +404,7 @@ export function useMarginItems(
           at: row.created_at,
           author: row.author,
           body: "question" in row ? row.question : row.body,
+          tree: "question" in row ? row.question_tree : row.body_tree,
           id: conversationItemId(kind, id),
           kind,
         },
@@ -479,7 +492,9 @@ export function useMarginItems(
     const decisionItems = (decisionsView.data?.decisions ?? []).flatMap((decision) => {
       if (decision.replaced) return [];
       const blockIds = new Set(
-        decision.links.flatMap((link) => (link.to.block_id === undefined ? [] : [link.to.block_id]))
+        (decision.links ?? []).flatMap((link) =>
+          link.to.block_id === undefined ? [] : [link.to.block_id]
+        )
       );
       return [...blockIds]
         .filter((blockId) => blockFilterId === undefined || blockId === blockFilterId)

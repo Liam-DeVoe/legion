@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"slices"
 	"sync"
 	"testing"
@@ -194,7 +195,7 @@ func TestAHeartbeatNewerThanTheReadsValueWinsAndIsKept(t *testing.T) {
 
 	apply := held.holdApply(t, "ses_beat")
 	completion := held.holdCompletion(t, nil)
-	if err := r.Rewatch(client.Conn); err != nil {
+	if err := r.Rewatch(context.Background(), client.Conn); err != nil {
 		t.Fatalf("Rewatch: %v", err)
 	}
 	waitClosed(t, apply.reached, "the read to deliver ses_beat")
@@ -226,7 +227,7 @@ func TestASessionRegisteredDuringTheReadIsKeptThroughTheSweep(t *testing.T) {
 	}
 	var swept []string
 	completion := held.holdCompletion(t, func() { swept = sweptList(r) })
-	if err := r.Rewatch(client.Conn); err != nil {
+	if err := r.Rewatch(context.Background(), client.Conn); err != nil {
 		t.Fatalf("Rewatch: %v", err)
 	}
 	waitClosed(t, completion.reached, "the read to deliver every record")
@@ -256,7 +257,7 @@ func TestASessionDeletedDuringTheReadStaysGone(t *testing.T) {
 	}
 	var swept []string
 	completion := held.holdCompletion(t, func() { swept = sweptList(r) })
-	if err := r.Rewatch(client.Conn); err != nil {
+	if err := r.Rewatch(context.Background(), client.Conn); err != nil {
 		t.Fatalf("Rewatch: %v", err)
 	}
 	waitClosed(t, completion.reached, "the read to deliver every record")
@@ -379,7 +380,7 @@ func TestAResultFromABucketSinceRecreatedIsDropped(t *testing.T) {
 			recreated := testnats.RecreateKeyValue(t, js, &natsgo.KeyValueConfig{Bucket: bus.SessionBucket, TTL: time.Minute})
 			putRaw(t, recreated, "ses_a", SessionEntry{Port: 1, MachineID: "m1", Title: "new", UpdatedAt: time.Now().UnixMilli()})
 			putRaw(t, recreated, "ses_b", SessionEntry{Port: 2, MachineID: "m1", UpdatedAt: time.Now().UnixMilli()})
-			if err := r.Rewatch(client.Conn); err != nil {
+			if err := r.Rewatch(context.Background(), client.Conn); err != nil {
 				t.Fatalf("Rewatch: %v", err)
 			}
 			waitFor(t, 5*time.Second, func() bool { return r.watcher.Epoch() == 1 && r.watcher.Following() })
@@ -452,7 +453,7 @@ func TestARefreshOvertakenByAWatchAnswersTheBucketsEntry(t *testing.T) {
 	}()
 	waitClosed(t, get.reached, "the bucket to answer the refresh's read")
 	apply := held.holdApply(t, "ses_a")
-	if err := r.Rewatch(client.Conn); err != nil {
+	if err := r.Rewatch(context.Background(), client.Conn); err != nil {
 		t.Fatalf("Rewatch: %v", err)
 	}
 	waitClosed(t, apply.reached, "the new bucket's read to deliver ses_a")
@@ -567,7 +568,7 @@ func TestARowPastItsLiveWindowReadsUnresponsiveThroughAReadAndItsSweep(t *testin
 	}
 
 	completion := held.holdCompletion(t, nil)
-	if err := r.Rewatch(client.Conn); err != nil {
+	if err := r.Rewatch(context.Background(), client.Conn); err != nil {
 		t.Fatalf("Rewatch: %v", err)
 	}
 	waitClosed(t, completion.reached, "the read to deliver every record")
@@ -623,7 +624,7 @@ func TestABucketRecreatedWithAnotherTTLMovesTheExpiry(t *testing.T) {
 	}
 	recreated := testnats.RecreateKeyValue(t, js, &natsgo.KeyValueConfig{Bucket: bus.SessionBucket, TTL: 3 * time.Minute})
 	putRaw(t, recreated, "ses_long", SessionEntry{Port: 1, MachineID: "m1", UpdatedAt: time.Now().UnixMilli()})
-	if err := r.Rewatch(client.Conn); err != nil {
+	if err := r.Rewatch(context.Background(), client.Conn); err != nil {
 		t.Fatalf("Rewatch: %v", err)
 	}
 	waitFor(t, 5*time.Second, func() bool { return r.watcher.Epoch() == 1 && r.watcher.Following() })
@@ -638,5 +639,52 @@ func TestABucketRecreatedWithAnotherTTLMovesTheExpiry(t *testing.T) {
 	now.advance(2 * time.Minute)
 	if _, err := r.Get("ses_long"); !errors.Is(err, natsgo.ErrKeyNotFound) {
 		t.Fatalf("Get(ses_long) 4m after its write = %v, want it expired", err)
+	}
+}
+
+// The leader-answered refresh is Refresh with the leader of the bucket's stream answering the
+// read, and answers what Refresh answers: the record for a session whose registration stands,
+// not found for one the bucket does not hold, and not found for a record past its deadline,
+// which the cache measures by the bucket's maximum age. The row runs the two reads side by side
+// over the same three rows, since the one thing that may differ between them is who answers the
+// read, and a single in-process server, which holds one copy of the bucket and cannot be made to
+// lag, answers both the same way.
+func TestTheLeaderRefreshAnswersAsRefreshDoes(t *testing.T) {
+	client := setupNATS(t)
+	now := &clock{}
+	r, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute), WithSessionClock(now.Now))
+	if err != nil {
+		t.Fatalf("open session registry: %v", err)
+	}
+	t.Cleanup(r.StopWatch)
+	waitFor(t, 5*time.Second, r.watcher.Following)
+	if err := r.Put("ses_live", SessionEntry{Port: 1, MachineID: "m1", Title: "live"}); err != nil {
+		t.Fatalf("register ses_live: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	leader, leaderErr := r.RefreshFromLeader(ctx, "ses_live")
+	direct, directErr := r.Refresh(ctx, "ses_live")
+	if leaderErr != nil || leader.Title != "live" {
+		t.Fatalf("RefreshFromLeader(ses_live) = %+v, %v; want the record the bucket holds", leader, leaderErr)
+	}
+	if directErr != nil || !reflect.DeepEqual(leader, direct) {
+		t.Fatalf("RefreshFromLeader(ses_live) = %+v, Refresh(ses_live) = %+v, %v; want the same record", leader, direct, directErr)
+	}
+
+	if _, err := r.RefreshFromLeader(ctx, "ses_missing"); !errors.Is(err, natsgo.ErrKeyNotFound) {
+		t.Errorf("RefreshFromLeader(ses_missing) = %v, want %v", err, natsgo.ErrKeyNotFound)
+	}
+	if _, err := r.Refresh(ctx, "ses_missing"); !errors.Is(err, natsgo.ErrKeyNotFound) {
+		t.Errorf("Refresh(ses_missing) = %v, want %v: the two answer a session the bucket does not hold alike", err, natsgo.ErrKeyNotFound)
+	}
+
+	now.advance(2 * time.Minute)
+	if _, err := r.RefreshFromLeader(ctx, "ses_live"); !errors.Is(err, natsgo.ErrKeyNotFound) {
+		t.Errorf("RefreshFromLeader(ses_live) past its deadline = %v, want %v", err, natsgo.ErrKeyNotFound)
+	}
+	if _, err := r.Refresh(ctx, "ses_live"); !errors.Is(err, natsgo.ErrKeyNotFound) {
+		t.Errorf("Refresh(ses_live) past its deadline = %v, want %v: the two judge a record past its deadline alike", err, natsgo.ErrKeyNotFound)
 	}
 }

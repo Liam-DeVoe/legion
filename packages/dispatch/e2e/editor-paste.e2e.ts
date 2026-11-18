@@ -1,9 +1,7 @@
-import { type Browser, expect, type Page, test } from "@playwright/test";
-
 import { getArtifactText } from "./api";
 import { documentEditor, openIssue, openWithCaret, paste } from "./editor";
 import { engineTables, goReadBack } from "./read-back";
-import { resetDatabase } from "./seed";
+import { type Browser, expect, type Page, test } from "./test";
 
 // What is left of the clipboard matrix: the rows no headless test can make. Every other row
 // asserted the markdown the server stored for the document the paste built, and runs in a
@@ -11,18 +9,20 @@ import { resetDatabase } from "./seed";
 // document headless and compares its own serializer's spelling of it - each column's alignment
 // included - against that same stored markdown (INFRA-1415).
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
 const table = "| alpha one | beta two |\n| --- | --- |\n| gamma three | delta four |\n";
 
 /** Selects the cells from the one holding `from` to the one holding `to` by dragging across them,
  * as a person does. */
 async function selectCells(page: Page, from: string, to: string) {
   const editor = documentEditor(page);
-  const start = await editor.getByText(from).boundingBox();
-  const end = await editor.getByText(to).boundingBox();
+  const first = editor.getByText(from);
+  const last = editor.getByText(to);
+  await expect(first).toBeVisible();
+  await expect(last).toBeVisible();
+  // The waits above drew both cells, and a drawn element has a box, so each has one.
+  const start = await first.boundingBox();
+  // The last cell was waited for above too, so its box is there as the first one's is.
+  const end = await last.boundingBox();
   if (!start || !end) throw new Error("the cells have no layout");
   await page.mouse.move(start.x + 5, start.y + start.height / 2);
   await page.mouse.down();
@@ -52,7 +52,8 @@ function drawnRows(page: Page) {
 // artifact and the reload, the one path that is not the editor's serializer alone. The same
 // clipboard's markdown is asserted headless; this row is the round trip.
 const copiedCells = "<table><tr><th>one</th><th>two</th></tr><tr><td>1</td><td>2</td></tr></table>";
-test("cells pasted onto a selection of cells are stored and read back after a reload", async ({
+// @pr: The live document: the one editor-paste row that goes through the clipboard, the document socket, the stored artifact and a reload.
+test("cells pasted onto a selection of cells are stored and read back after a reload @pr", async ({
   browser,
 }) => {
   const { alice, issue, page } = await openWithCellsSelected(browser, "alpha one", "delta four");

@@ -7,9 +7,12 @@ import type { ReactNode } from "react";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import type { InboxRow, Issue, IssueDetails, IssueSummary } from "../../api/types";
+import { issuePriority } from "./issue-priority";
 import { PriorityControl } from "./PriorityControl";
 
 const issue: Issue = {
+  advances: [],
+  advances_revision: 0,
   closed_at: null,
   created_at: "2026-09-09T00:00:00Z",
   created_by: { id: "alice", kind: "user" },
@@ -23,7 +26,10 @@ const issue: Issue = {
   assignee: null,
   claim: null,
   components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
+  plan_artifact_id: "",
+  decisions_artifact_id: "",
   primary_artifact_id: "artifact-1",
+  verification_artifact_id: "",
   priority: 1,
   project: "CORE",
   rank: "U",
@@ -44,11 +50,14 @@ const details: IssueDetails = {
   ...issue,
   artifacts: [],
   children: [],
+  design_gates: [],
   open_asks: [],
   progress: { tasks: null, children: null },
   referenced_by_count: 0,
 };
 const summary: IssueSummary = {
+  advances: [],
+  advances_revision: 0,
   route: null,
   repo: null,
   resolved_repo: null,
@@ -71,12 +80,21 @@ const summary: IssueSummary = {
   status: issue.status,
   title: issue.title,
   updated_at: issue.updated_at,
+  closed_at: issue.closed_at,
+  created_by: issue.created_by,
+  created_at: issue.created_at,
 };
 const otherSummary: IssueSummary = { ...summary, key: "CORE-2", priority: 3 };
 const inboxRow: InboxRow = {
   anchor: null,
   answer: null,
+  artifact_id: null,
+  asked_of: null,
+  asked_of_at: null,
+  asked_of_by: null,
   author: { id: "session-1", kind: "session" },
+  block_id: null,
+  last_reply: null,
   created_at: "2026-09-09T00:00:00Z",
   edited_at: null,
   id: "ask-1",
@@ -117,7 +135,9 @@ function CachedControl(): ReactNode {
   if (cached.data === undefined) {
     return null;
   }
-  return <PriorityControl issueKey={cached.data.key} priority={cached.data.priority} />;
+  return (
+    <PriorityControl issueKey={cached.data.key} priority={issuePriority(cached.data.priority)} />
+  );
 }
 
 function renderControl() {

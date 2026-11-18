@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -57,19 +58,20 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 						t.Fatalf("the first daemon creates %s: %v", name, err)
 					}
 				}
-				first.conn.Close()
+				first.closeNATS()
 
 				logs := &syncBuffer{}
 				restarted := connectDaemonGrant(t, uri, daemonSeed, logs)
-				defer restarted.conn.Close()
+				defer restarted.closeNATS()
+				conn := restarted.conn.Load()
 
 				exception := make(chan []byte, 1)
-				subscription, err := subscribeNoticeExceptions(restarted.conn, func(data []byte) { exception <- append([]byte(nil), data...) })
+				subscription, err := subscribeNoticeExceptions(conn, func(data []byte) { exception <- append([]byte(nil), data...) })
 				if err != nil {
 					t.Fatalf("subscribe to role-lane exceptions: %v", err)
 				}
 				defer subscription.Unsubscribe()
-				if err := restarted.conn.Flush(); err != nil {
+				if err := conn.Flush(); err != nil {
 					t.Fatalf("flush the exceptions subscription: %v", err)
 				}
 
@@ -286,8 +288,8 @@ func createDaemonNotificationStream(t *testing.T, js jetstream.JetStream) jetstr
 
 func startDaemonGrantServer(t *testing.T, image string, grant daemonpermissions.Permissions) (string, *nats.Conn, jetstream.JetStream, *tcnats.NATSContainer, string) {
 	t.Helper()
-	daemonSeed, daemonPublic := testnats.User(t)
-	adminSeed, adminPublic := testnats.User(t)
+	daemonSeed, daemonPublic := testnkeys.User(t)
+	adminSeed, adminPublic := testnkeys.User(t)
 	// The server's configuration reads JSON, but not Go's HTML escaping of '>' as \u003e.
 	var permissions strings.Builder
 	encoder := json.NewEncoder(&permissions)
@@ -301,7 +303,7 @@ func startDaemonGrantServer(t *testing.T, image string, grant daemonpermissions.
 	server, uri := testnats.StartNkeyAuthorizedUsers(t, image,
 		testnats.NkeyUser{Public: daemonPublic, Permissions: strings.TrimSpace(permissions.String())},
 		testnats.NkeyUser{Public: adminPublic})
-	admin, err := natsauth.Connect([]string{uri}, adminSeed, nats.Timeout(5*time.Second))
+	admin, err := natsauth.Connect([]string{uri}, adminSeed, t.Name()+" admin", nats.Timeout(5*time.Second))
 	if err != nil {
 		t.Fatalf("connect the admin user: %v", err)
 	}

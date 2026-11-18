@@ -5,12 +5,12 @@ import (
 	"errors"
 	"maps"
 	"os"
-	"regexp"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
@@ -22,8 +22,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// noRepositoriesView is the supplier of a daemon whose project maps and refuses no repository.
-func noRepositoriesView() api.RepositoriesView { return api.RepositoriesView{} }
+// noAppOwners is the owner supplier of a daemon with no GitHub App installed anywhere: every
+// role is told its App reaches no owner.
+func noAppOwners(claim.Role) []string { return nil }
 
 // A tree's root architect is told the design-gate steps its deployment gates after its
 // addressing, the "Design gate steps" line its shared role prompt reads, and its composed role
@@ -66,7 +67,7 @@ func TestARootArchitectIsToldTheGatedStepsAndWhatTheyAsk(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, designSteps: deployment.steps, repositories: noRepositoriesView}
+				s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, designSteps: deployment.steps, appOwners: noAppOwners}
 				spec, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: token, Issue: tc.issue, Tree: "S1-1", Role: tc.role})
 				if err != nil {
 					t.Fatalf("SpawnSpec: %v", err)
@@ -100,40 +101,6 @@ func TestARootArchitectIsToldTheGatedStepsAndWhatTheyAsk(t *testing.T) {
 	}
 }
 
-func TestAMergerIsToldItsProjectsMergeRules(t *testing.T) {
-	composer, err := prompts.New(t.TempDir())
-	if err != nil {
-		t.Fatalf("compose the shipped prompts: %v", err)
-	}
-	rules := config.MergeRules{
-		ByHand: []config.PathPattern{{Expression: "^migrations/versions/", Regexp: regexp.MustCompile("^migrations/versions/")}},
-	}
-	for _, tc := range []struct {
-		name string
-		role claim.Role
-		want bool
-	}{
-		{"merger", claim.RoleMerger, true},
-		{"implementer", claim.RoleImplementer, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			token, err := claim.NewToken("s1", "S1-2", tc.role)
-			if err != nil {
-				t.Fatal(err)
-			}
-			s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, mergeRules: rules, repositories: noRepositoriesView}
-			spec, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: token, Issue: "S1-2", Tree: "S1-1", Role: tc.role})
-			if err != nil {
-				t.Fatalf("SpawnSpec: %v", err)
-			}
-			told := strings.Contains(spec.Prompt.Addressing, "Merge policy: by_hand `^migrations/versions/`.")
-			if told != tc.want {
-				t.Fatalf("addressing %q; merge policy present = %t, want %t", spec.Prompt.Addressing, told, tc.want)
-			}
-		})
-	}
-}
-
 // A role worker_backends puts on claude is launched on Claude Code and told the Claude Code part
 // after its role's parts; every other role, and every role when the daemon names no backend, on Oh
 // My Pi with its parts alone.
@@ -163,7 +130,7 @@ func TestAClaimsBackendIsItsRolesAndAClaudeRoleIsToldClaudeCodesTools(t *testing
 			if err != nil {
 				t.Fatal(err)
 			}
-			s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, backend: tc.backend, repositories: noRepositoriesView}
+			s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, backend: tc.backend, appOwners: noAppOwners}
 			spec, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: token, Issue: "S1-2", Tree: "S1-1", Role: tc.role})
 			if err != nil {
 				t.Fatalf("SpawnSpec: %v", err)
@@ -195,26 +162,27 @@ func TestAClaimsBackendIsItsRolesAndAClaudeRoleIsToldClaudeCodesTools(t *testing
 	}
 }
 
-// A worker's addressing ends naming its issue's repository and default branch, then the project's
-// repositories in the order the daemon serves them. A daemon that runs no workflow resolves no
-// repository for its claims: the whole sentence is left off, not just the issue's own repository.
-// A recorded issue keeps its repository after a refresh unmaps or refuses
-// every one, so the clause then says the daemon maps none, as the controller's does, and never
-// ends in "are .".
-func TestAWorkersAddressingNamesItsRepositoryAndTheProjects(t *testing.T) {
+// A worker's addressing ends naming its issue's repository and default branch, then the reach
+// its role's own GitHub App gives it: the owner accounts that App is installed on, and that its
+// token reaches every repository of those owners. It names no repository list, since the
+// installation and not the mapping decides where the project may work (INFRA-2543 R6), and the
+// owners are the App's own and not the owners of the repositories the project is mapped, which
+// the daemon answers per role (plan.appOwners). A daemon that runs no workflow resolves no
+// repository for its claims: the whole sentence is left off, not just the issue's own
+// repository. A deployment whose Apps are installed nowhere is told the App is installed on
+// none, as the controller's addressing is.
+func TestAWorkersAddressingNamesItsRepositoryAndItsAppsReach(t *testing.T) {
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
-	view := api.RepositoriesView{Mapped: []api.MappedRepositoryView{
-		{Repo: "acme/gadgets"}, {Repo: "acme/widgets"}, {Repo: "sjawhar/legion-smoke"},
-	}}
+	owners := []string{"acme", "sjawhar"}
 	s := specs{
 		stateDir: t.TempDir(), project: "s1", prompts: composer,
 		repository: func(context.Context, string) (ghrepo.Repository, string, error) {
 			return ghrepo.MustParse("acme/widgets"), "release/v7.1", nil
 		},
-		repositories: func() api.RepositoriesView { return view },
+		appOwners: func(claim.Role) []string { return owners },
 	}
 	token, err := claim.NewToken("s1", "S1-2", claim.RoleImplementer)
 	if err != nil {
@@ -230,33 +198,41 @@ func TestAWorkersAddressingNamesItsRepositoryAndTheProjects(t *testing.T) {
 	}
 	const own = "Your issue's repository is acme/widgets (default branch release/v7.1); "
 	for _, tc := range []struct {
-		name string
-		view api.RepositoriesView
-		want string
+		name   string
+		owners []string
+		want   string
 	}{
-		{"the mapping", view, own + "the project's repositories are acme/gadgets, acme/widgets, sjawhar/legion-smoke."},
-		{"an empty mapping", api.RepositoriesView{}, own + "the daemon maps no repository to this project now."},
+		{"two owners", owners, own + "your role's GitHub App is installed on the owners acme, sjawhar, and its token reaches every repository of those owners."},
 		{
-			"every repository refused",
-			api.RepositoriesView{Refused: []api.RefusedRepositoryView{
-				{Repo: "acme/widgets", Reason: "the review App is not installed on acme/widgets"},
-				{Repo: "acme/gadgets", Reason: "the implement App is not installed on acme/gadgets"},
-			}},
-			own + "the daemon maps no repository to this project now: " +
-				"acme/widgets (the review App is not installed on acme/widgets); acme/gadgets (the implement App is not installed on acme/gadgets).",
+			"one owner",
+			[]string{"acme"},
+			own + "your role's GitHub App is installed on the owner acme, and its token reaches every repository of that owner.",
 		},
+		{"no installation", nil, own + "your role's GitHub App is installed on no owner, so its token reaches no repository."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s.repositories = func() api.RepositoriesView { return tc.view }
-			if got := launch(); !strings.HasSuffix(got, tc.want) {
+			s.appOwners = func(claim.Role) []string { return tc.owners }
+			got := launch()
+			if !strings.HasSuffix(got, tc.want) {
 				t.Fatalf("addressing = %q, want it to end with %q", got, tc.want)
+			}
+			if strings.Contains(got, "the project's repositories") {
+				t.Fatalf("addressing = %q, want no list of the project's repositories", got)
 			}
 		})
 	}
 
-	s.repositories = func() api.RepositoriesView { return view }
+	// The owners named are the role's own App's: an implementer's and a reviewer's addressing
+	// differ where their Apps' installations do, which is what the clause promises and what the
+	// owners of the project's mapped repositories could not say (INFRA-2543 R6).
+	s.appOwners = func(role claim.Role) []string { return []string{string(appauth.AppRoleFor(role)) + "-owner"} }
+	if got, want := launch(), own+"your role's GitHub App is installed on the owner implement-owner, and its token reaches every repository of that owner."; !strings.HasSuffix(got, want) {
+		t.Fatalf("the implementer's addressing = %q, want it to end with %q", got, want)
+	}
+
+	s.appOwners = func(claim.Role) []string { return owners }
 	s.repository = nil
-	if got := launch(); strings.Contains(got, "repositories are") || strings.Contains(got, "repository is") {
+	if got := launch(); strings.Contains(got, "GitHub App is installed") || strings.Contains(got, "repository is") {
 		t.Fatalf("addressing with no repository resolved (a daemon with no workflow) = %q, want no repository sentence", got)
 	}
 }
@@ -271,8 +247,11 @@ func TestTheControllersLaunchIsItsHeadlessPromptAndNoCheckout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
+	// The controller's Env is empty only for a daemon holding none of the stall limits every
+	// launch is told (stallLimitVariables): this test's daemon holds none.
+	fixtureenv.Unset(t, stallLimitVariables...)
 	s := specs{
-		stateDir: t.TempDir(), project: "s1", prompts: composer, designSteps: config.DesignGateOff.Steps(), repositories: noRepositoriesView,
+		stateDir: t.TempDir(), project: "s1", prompts: composer, designSteps: config.DesignGateOff.Steps(), appOwners: noAppOwners,
 		instructions: "/state/deployment-instructions.md", secrets: map[string]string{"ENVOY_TOKEN": "envoy-bearer"},
 		repository: func(context.Context, string) (ghrepo.Repository, string, error) {
 			t.Error("the controller's launch asked for a repository")
@@ -294,7 +273,7 @@ func TestTheControllersLaunchIsItsHeadlessPromptAndNoCheckout(t *testing.T) {
 	if !slices.Equal(spec.Prompt.RolePromptPaths, want) {
 		t.Errorf("role prompts = %q, want %q", spec.Prompt.RolePromptPaths, want)
 	}
-	if want := "Design gate steps: none. The daemon maps no repository to this project now."; spec.Prompt.Addressing != want {
+	if want := "Design gate steps: none. Your role's GitHub App is installed on no owner, so its token reaches no repository."; spec.Prompt.Addressing != want {
 		t.Errorf("addressing = %q, want %q", spec.Prompt.Addressing, want)
 	}
 	if spec.Prompt.DeploymentInstructionsPath != s.instructions {
@@ -324,7 +303,7 @@ func TestTheControllersLaunchNamesTheProjectsSlackChannels(t *testing.T) {
 		t.Helper()
 		s := specs{
 			stateDir: t.TempDir(), project: "s1", prompts: composer, designSteps: config.DesignGateRootIssues.Steps(),
-			slackChannels: channels, repositories: noRepositoriesView,
+			slackChannels: channels, appOwners: noAppOwners,
 		}
 		spec, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: claim.ControllerToken("s1"), Project: "s1", Role: claim.RoleController})
 		if err != nil {
@@ -336,48 +315,56 @@ func TestTheControllersLaunchNamesTheProjectsSlackChannels(t *testing.T) {
 	if _, set := spec.Env["LEGION_SLACK_CHANNELS"]; set {
 		t.Errorf("the spec sets LEGION_SLACK_CHANNELS (%v), the runtime's variable", spec.Env)
 	}
-	want := "Design gate steps: `spec`. The daemon maps no repository to this project now. Slack channels: `C00000000`, `G00000001`: " +
+	want := "Design gate steps: `spec`. Your role's GitHub App is installed on no owner, so its token reaches no repository. Slack channels: `C00000000`, `G00000001`: " +
 		"your session hears each one's app mentions while it holds the controller role; answer each in its thread, " +
 		"and nothing from any other channel (skill://legion-controller/references/slack-mentions.md)."
 	if spec.Prompt.Addressing != want {
 		t.Errorf("addressing = %q, want %q", spec.Prompt.Addressing, want)
 	}
-	if none := launch(nil); none.Prompt.Addressing != "Design gate steps: `spec`. The daemon maps no repository to this project now." {
+	if none := launch(nil); none.Prompt.Addressing != "Design gate steps: `spec`. Your role's GitHub App is installed on no owner, so its token reaches no repository." {
 		t.Errorf("with no channel: addressing %q, want no Slack line", none.Prompt.Addressing)
 	}
 }
 
-// The controller's addressing gains the project's repositories after its design gate steps, as a
-// sentence of its own, so `legion controller start`'s operator and the daemon-launched controller
-// both read where the project's issues live; a worker's addressing carries the same clause after
-// a `; `.
-func TestTheControllersAddressingGainsTheProjectsRepositories(t *testing.T) {
+// The controller's addressing gains the reach its GitHub App gives it after its design gate
+// steps, as a sentence of its own, so `legion controller start`'s operator and the
+// daemon-launched controller both read how far the project's token reaches; a worker's
+// addressing carries the same clause after a `; `. Neither names a repository: the App
+// installation decides where the project works (INFRA-2543 R6), and the owners are the
+// controller's own App's, the review App's, which the daemon answers for the controller role
+// (plan.appOwners).
+func TestTheControllersAddressingGainsTheReachItsAppGives(t *testing.T) {
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
 	for _, tc := range []struct {
-		name string
-		view api.RepositoriesView
-		want string
+		name   string
+		owners []string
+		want   string
 	}{
 		{
-			"the mapping",
-			api.RepositoriesView{Mapped: []api.MappedRepositoryView{{Repo: "acme/widgets"}, {Repo: "sjawhar/legion-smoke"}}},
-			"The project's repositories are acme/widgets, sjawhar/legion-smoke.",
+			"two owners",
+			[]string{"acme", "sjawhar"},
+			"Your role's GitHub App is installed on the owners acme, sjawhar, and its token reaches every repository of those owners.",
 		},
-		// An empty mapping is a state a running project reaches, never a refusal to launch.
-		{"an empty mapping", api.RepositoriesView{}, "The daemon maps no repository to this project now."},
 		{
-			"every repository refused",
-			api.RepositoriesView{Refused: []api.RefusedRepositoryView{{Repo: "acme/widgets", Reason: "the review App is not installed on acme/widgets"}}},
-			"The daemon maps no repository to this project now: acme/widgets (the review App is not installed on acme/widgets).",
+			"one owner",
+			[]string{"acme"},
+			"Your role's GitHub App is installed on the owner acme, and its token reaches every repository of that owner.",
 		},
+		// A deployment with no installation is a state a running project reaches, never a
+		// refusal to launch.
+		{"no installation", nil, "Your role's GitHub App is installed on no owner, so its token reaches no repository."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			var asked []claim.Role
 			s := specs{
 				stateDir: t.TempDir(), project: "s1", prompts: composer, designSteps: config.DesignGateOff.Steps(),
-				repositories: func() api.RepositoriesView { return tc.view },
+				appOwners: func(role claim.Role) []string {
+					asked = append(asked, role)
+					return tc.owners
+				},
 			}
 			spec, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: claim.ControllerToken("s1"), Project: "s1", Role: claim.RoleController})
 			if err != nil {
@@ -385,6 +372,9 @@ func TestTheControllersAddressingGainsTheProjectsRepositories(t *testing.T) {
 			}
 			if want := DesignGateFragment(config.DesignGateOff.Steps()) + " " + tc.want; spec.Prompt.Addressing != want {
 				t.Errorf("addressing = %q, want %q", spec.Prompt.Addressing, want)
+			}
+			if !slices.Equal(asked, []claim.Role{claim.RoleController}) {
+				t.Errorf("the launch asked for the owners of %v, want the controller's own role", asked)
 			}
 		})
 	}
@@ -402,7 +392,7 @@ func TestAWorkerLaunchIsOnItsIssuesRecordedRepository(t *testing.T) {
 	}
 	recorded := map[string][2]string{"S1-2": {"acme/widgets", "main"}, "S1-3": {"zeta/tools", "release/v7.1"}}
 	var asked []string
-	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, repositories: noRepositoriesView,
+	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, appOwners: noAppOwners,
 		repository: func(_ context.Context, issue string) (ghrepo.Repository, string, error) {
 			asked = append(asked, issue)
 			if issue == "S1-9" {
@@ -454,7 +444,7 @@ func TestASpecStampsTheIssueKeyOnlyOnARepositoryTheProjectNames(t *testing.T) {
 		"ACME-5": "acme/gadgets",
 	}
 	s := specs{
-		stateDir: t.TempDir(), project: "acme", prompts: composer, repositories: noRepositoriesView,
+		stateDir: t.TempDir(), project: "acme", prompts: composer, appOwners: noAppOwners,
 		commitIssueTrailerRepos: []ghrepo.Repository{ghrepo.MustParse("acme/widgets")},
 		same:                    newRepositories("acme", ghrepo.MustRenames(ghrepo.MustRename("acme/widgets-legacy", "acme/widgets"))).same,
 		repository: func(_ context.Context, issue string) (ghrepo.Repository, string, error) {
@@ -523,7 +513,7 @@ func TestAClaudeLaunchCarriesTheIssueKeyItStampsIntoItsPane(t *testing.T) {
 	for _, backend := range []runtime.Backend{runtime.BackendOmp, runtime.BackendClaude} {
 		t.Run(string(runtime.Of(backend)), func(t *testing.T) {
 			s := specs{
-				stateDir: t.TempDir(), project: "acme", prompts: composer, repositories: noRepositoriesView,
+				stateDir: t.TempDir(), project: "acme", prompts: composer, appOwners: noAppOwners,
 				runtimeName:             "tmux",
 				commitIssueTrailerRepos: []ghrepo.Repository{ghrepo.MustParse("acme/widgets")},
 				same:                    newRepositories("acme", ghrepo.Renames{}).same,
@@ -584,7 +574,7 @@ func TestSpawnSpecPluginsIsSetOnlyForAStaleKubernetesClaimWithASession(t *testin
 		{"tmux", "tmux", pair, base, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, runtimeName: tc.runtimeName, plugins: tc.plugins, repositories: noRepositoriesView}
+			s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, runtimeName: tc.runtimeName, plugins: tc.plugins, appOwners: noAppOwners}
 			spec, err := s.SpawnSpec(context.Background(), tc.claim)
 			if err != nil {
 				t.Fatalf("SpawnSpec: %v", err)
@@ -609,7 +599,7 @@ func TestSpawnSpecPluginsCoversTheDaemonsControllerToo(t *testing.T) {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
 	pair := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion}
-	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, runtimeName: "kubernetes", plugins: pair, repositories: noRepositoriesView}
+	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, runtimeName: "kubernetes", plugins: pair, appOwners: noAppOwners}
 	c := supervise.Claim{Token: claim.ControllerToken("s1"), Project: "s1", Role: claim.RoleController, Session: "sess-1", PluginContract: 23}
 	spec, err := s.SpawnSpec(context.Background(), c)
 	if err != nil {
@@ -620,30 +610,41 @@ func TestSpawnSpecPluginsCoversTheDaemonsControllerToo(t *testing.T) {
 	}
 }
 
-// A phase worker's launch carries the stall limits the daemon's own environment holds, merged
-// into the git identity's variables rather than replacing them or being replaced by them, and
-// carries no stall variable the daemon does not hold: a worker told none of a limit runs on the
-// default its plugin holds (packages/pi-shared/src/stall-limits.ts). Both runtimes forward Env
-// verbatim, so this is where the four reach a pane and a pod alike.
-func TestSpawnSpecCarriesTheStallLimitsTheDaemonHolds(t *testing.T) {
+// A launch carries the passthrough variables the daemon's own environment holds — the seven stall
+// limits and the two refusal cooldowns — merged into the git identity's variables rather than
+// replacing them or being replaced by them, and carries no variable the two lists do not hold: a
+// session told none of one runs on the default its plugin holds
+// (packages/pi-shared/src/stall-limits.ts, packages/pi-shared/src/fallback-cooldown.ts). The
+// stall limits are merged after SpawnSpec's fork, so the controller's launch is told them as a
+// phase worker's is, and the cooldowns reach the controller from its own spec
+// (controllerSpawnSpec). Both runtimes forward Env verbatim, so this is where they reach a pane
+// and a pod alike.
+func TestSpawnSpecCarriesThePassthroughVariablesTheDaemonHolds(t *testing.T) {
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
 	held := map[string]string{
-		"LEGION_STALL_REMINDER_MS": "45000",
-		"LEGION_STALL_WAITING_MS":  "900000",
-		"LEGION_STALL_RESUME_MS":   "15000",
+		"LEGION_STALL_CALL_BOUND_MS": "3600000",
+		"LEGION_STALL_CALL_GRACE_MS": "300000",
+		"LEGION_STALL_REMINDER_MS":   "45000",
+		"LEGION_STALL_RESUME_MS":     "15000",
+		"LEGION_STALL_STEP_MS":       "120000",
+		"LEGION_STALL_WAITING_MS":    "900000",
+		"LEGION_REFUSAL_COOLDOWN_MS": "5000",
 	}
 	for name, value := range held {
 		t.Setenv(name, value)
 	}
-	// The fourth is one this daemon does not hold: fixtureenv.Unset takes it out of this process
-	// and puts the shell's own value, if it had one, back after the test.
-	fixtureenv.Unset(t, "LEGION_STALL_ARCHITECT_AFTER")
+	// A name neither list holds reaches no launch, whatever the daemon's own environment says.
+	t.Setenv("LEGION_STALL_NOT_A_LIMIT_MS", "7")
+	// The seventh stall limit and the second cooldown are ones this daemon does not hold:
+	// fixtureenv.Unset takes them out of this process and puts the shell's own values, if it had
+	// them, back after the test.
+	fixtureenv.Unset(t, "LEGION_STALL_ARCHITECT_AFTER", "LEGION_REFUSAL_COOLDOWN_MAX_MS")
 
 	bot := runtime.GitIdentity{Name: "legion-implement[bot]", Email: "9+legion-implement[bot]@users.noreply.github.com"}
-	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, repositories: noRepositoriesView,
+	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, appOwners: noAppOwners,
 		identity: func(context.Context, claim.Role, ghrepo.Repository) (runtime.GitIdentity, error) { return bot, nil }}
 	token, err := claim.NewToken("s1", "S1-2", claim.RoleImplementer)
 	if err != nil {
@@ -658,16 +659,27 @@ func TestSpawnSpecCarriesTheStallLimitsTheDaemonHolds(t *testing.T) {
 	want := maps.Clone(held)
 	maps.Copy(want, bot.Env())
 	if !maps.Equal(spec.Env, want) {
-		t.Errorf("the launch's Env = %v, want the three limits the daemon holds beside the git identity, %v", spec.Env, want)
+		t.Errorf("the worker's Env = %v, want the seven passthrough variables the daemon holds beside the git identity, %v", spec.Env, want)
 	}
 
-	// A daemon with no GitHub Apps builds no identity, and the limits still reach the launch.
+	// The controller's launch is told the same seven — the stall limits after the fork, the
+	// cooldowns from its own spec — and nothing of a worker's git identity: it works no repository
+	// and commits nothing (controllerSpawnSpec).
+	controller, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: claim.ControllerToken("s1"), Project: "s1", Role: claim.RoleController})
+	if err != nil {
+		t.Fatalf("the controller's SpawnSpec: %v", err)
+	}
+	if !maps.Equal(controller.Env, held) {
+		t.Errorf("the controller's Env = %v, want the seven passthrough variables the daemon holds, %v", controller.Env, held)
+	}
+
+	// A daemon with no GitHub Apps builds no identity, and the variables still reach the launch.
 	s.identity = nil
 	if spec, err = s.SpawnSpec(context.Background(), c); err != nil {
 		t.Fatalf("SpawnSpec with no identity: %v", err)
 	}
 	if !maps.Equal(spec.Env, held) {
-		t.Errorf("the launch's Env with no identity = %v, want the three limits the daemon holds, %v", spec.Env, held)
+		t.Errorf("the worker's Env with no identity = %v, want the seven passthrough variables the daemon holds, %v", spec.Env, held)
 	}
 }
 
@@ -685,7 +697,7 @@ func TestSpawnSpecPluginsSkipsAClaudeClaimAndNoOther(t *testing.T) {
 	pair := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion}
 	// `worker_backends: {implementer: claude}`: every other role, and the controller, on Oh My Pi.
 	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, runtimeName: "kubernetes", plugins: pair,
-		repositories: noRepositoriesView,
+		appOwners: noAppOwners,
 		backend: func(role claim.Role) runtime.Backend {
 			if role == claim.RoleImplementer {
 				return runtime.BackendClaude
@@ -748,7 +760,7 @@ func TestAHostLaunchProvisionsItsWorkspaceFirst(t *testing.T) {
 	var ensured []string
 	var refuse error
 	s := specs{
-		stateDir: t.TempDir(), project: "s1", prompts: composer, repositories: noRepositoriesView,
+		stateDir: t.TempDir(), project: "s1", prompts: composer, appOwners: noAppOwners,
 		repository: func(context.Context, string) (ghrepo.Repository, string, error) {
 			return ghrepo.MustParse("acme/widgets"), "release/v7.1", nil
 		},

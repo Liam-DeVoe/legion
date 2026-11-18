@@ -1,8 +1,8 @@
 # The weekly audit
 
-Read this on your first turn of each UTC week, whatever woke you, and run all four passes below
-before you post the day's report. They are the week's own numbers, beside the daily ones. The
-fourth pass, the duplicate audit, serves R8 of dispatch://INFRA-1160 and is not optional.
+Read this on your first turn of each UTC week, whatever woke you, and run the three passes below,
+and sum the fourth, before you post the day's report. They are the week's own numbers, beside the
+daily ones.
 
 ## The week
 
@@ -34,7 +34,7 @@ any issue with more than ten the `issue.created` line is not printed at all.
 
 Keep the issues created inside the window, read each one's `issue.created` line, and count by
 filer. The line names its writer as `session <id> (<the session's title>)`, and the filer is that
-title cut at its last middle dot (`·`), so `Legion implementer · INFRA-1160` counts as
+title cut at its last middle dot (`·`), so `Legion implementer · ACME-3` counts as
 `Legion implementer`, with every person counted together as one filer. A session that carries no
 title prints its id alone and is counted by that id. Report, per filer, how many creates forced
 past a refusal and which issues each named, then the no-answer creates as their own line.
@@ -62,8 +62,7 @@ Count each tree's descendants at any depth, and report the trees in five buckets
 or `icebox`. Name the recount commands beside the numbers, since a reader checks them against
 Dispatch's own parent links.
 
-The report and, when you lead a stream that keeps a scoreboard, the stream's scoreboard artifact
-both carry the two measures, under the keys `forced_creates_by_filer` and `tree_sizes`.
+The report carries the two measures, under the keys `forced_creates_by_filer` and `tree_sizes`.
 
 ## 3. The nudges
 
@@ -74,11 +73,15 @@ sent to one asks its architect to fold work that is already finished.
 
 - a tree with at least one open descendant, and more than 8 descendants in all or more than 2
   levels below its root;
-- a tree with at least one open descendant that filed a child no red-team verdict names. The
-  verdict is a comment on the root whose first line reads `Red-team verdict for <root key>:`
-  (`skill://legion-architect/references/decomposition.md`). Read the root's comments with
-  `dispatch read --issue <ROOT> --all-events` and the replies under each verdict comment; a child
-  named in none of them was filed without the check.
+- a tree with at least one open descendant that filed a child no red-team verdict names. Each
+  architect posts its verdict on its own issue, the issue it files its children under: a comment
+  whose first line reads `Red-team verdict for <issue key>:`, with that issue's key
+  (`skill://legion-architect/references/decomposition.md`). The root's architect posts on the
+  root, and a child's own architect posts on that child. So read the verdicts on every
+  architect's issue of the tree, not only the root's: the root and each issue of the tree that has
+  children. Read each one's comments with `dispatch read --issue <KEY> --all-events` and the
+  replies under each verdict comment. A child named in none of the tree's verdicts was filed
+  without the check.
 
   Count no child created before that first line existed. The architects write it from the Legion
   release that carries this file, so every child filed before then has no verdict comment to
@@ -104,43 +107,7 @@ List every nudge you sent in the day's report.
 
 ## 4. The duplicate audit
 
-For each open issue of the project, read the related items of its title and spec through the
-no-write related route, leaving the issue, its ancestors and its descendants out, and judge
-whether each pair the two issues' own records do not already settle is the same work.
-
-The project holds hundreds of open issues and one related read takes about a second, so a serial
-pass is ten minutes of HTTP before any judging. Shard the open list and dispatch one
-`task(agent="scout")` per shard of at most 50 issues, then `wait` for them: each returns the pairs
-it found with its evidence, and you judge and fold them yourself.
-
-Give each scout the shard's keys and these commands:
-
-```bash
-dispatch read --issue <KEY>                    # title, spec artifact, Links:, Referenced by:
-dispatch doc-read --issue <KEY>                # the spec text the related read uses
-dispatch related --project <PROJECT> --title '<its title>' --text-file - \
-  --exclude-issue <KEY> --exclude-issue <each ancestor> --exclude-issue <each descendant>
-```
-
-`--exclude-issue` is repeatable and takes up to 50 issues; the issue itself, its ancestors and its
-descendants all go in one call. The read names both: a `child_of` row under `Links:` is the
-issue's own parent, read again on that parent for the next ancestor up, and each `child_of` row
-under `Referenced by:` is a child, read again on each child for the next level down. Ask each
-scout for, per issue, every related item that is an issue with the reason it looks like the same
-work, and nothing else: no comment, no close, no message.
-
-A pair is settled, and is skipped rather than proposed, when the two issues already say so: one
-was closed as a duplicate of the other, one was reopened after such a close, or one was made a
-child of the other. Read the first two from `dispatch read --issue <KEY> --all-events`'s
-`Events:`: the close's reason is the `message.created` line just before `issue.closed`, and a
-reopen is an `issue.updated` line that moves the status off `done`. No `Events:` line reports a
-parent change, so read the third from the same read's `Links:` and `Referenced by:`.
-
-Fold each pair you judge the same work by the duplicate rule of `skill://dispatch-first`: keep the
-issue with the spec, copy to it what only the other has, and close the other
-(`--status done --reason 'Duplicate of dispatch://KEY.'`). An issue carrying the `legion` label,
-or another holder's claim, is not yours to close: comment the kept issue's name on it instead. A
-pair inside a Legion tree goes to that tree's architect with `envoy_publish`, which decides it.
-
-The report lists every pair you judged the same work, with what you did about it, and every pair
-you skipped with what settles it: the event, or the parent link.
+The consolidation pass runs it every six hours
+(`skill://legion-controller/references/consolidation.md`). The week's report sums the three counts
+over the week's sections of the report issue's `consolidation.md` artifact (`dispatch doc-read
+--issue <REPORT KEY> --artifact consolidation.md`).

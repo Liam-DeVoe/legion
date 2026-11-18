@@ -1,12 +1,18 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
+
+// rebuildArtifactInput is the body of POST /api/v1/artifacts/{id}/rebuild.
+type rebuildArtifactInput struct {
+	Markdown *string `json:"markdown"`
+}
 
 // rebuildArtifact discards only a history ygo cannot load and replaces it with one seed update
 // from the latest saved markdown, or supplied markdown. It needs the person scope (routeScopes)
@@ -22,9 +28,7 @@ func (s *server) rebuildArtifact(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var input struct {
-		Markdown *string `json:"markdown"`
-	}
+	var input rebuildArtifactInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -72,11 +76,22 @@ func (s *server) rebuildArtifact(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(published...)
+	s.publish(r.Context(), published...)
 	WriteJSON(w, http.StatusOK, report)
 }
 
 func (s *server) injectArtifactSchemaFailure(w http.ResponseWriter, r *http.Request) {
+	s.injectArtifactForTest(w, r, s.deps.Docs.InjectSchemaInvalidForTest)
+}
+
+// injectArtifactNewerContent appends to the document an element no build knows
+// (docs.InjectUnknownElementForTest), so a browser test opens a document holding newer content.
+func (s *server) injectArtifactNewerContent(w http.ResponseWriter, r *http.Request) {
+	s.injectArtifactForTest(w, r, s.deps.Docs.InjectUnknownElementForTest)
+}
+
+// injectArtifactForTest runs a docs test hook on the request's document and answers 204.
+func (s *server) injectArtifactForTest(w http.ResponseWriter, r *http.Request, inject func(ctx context.Context, artifactID string) error) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
@@ -89,7 +104,7 @@ func (s *server) injectArtifactSchemaFailure(w http.ResponseWriter, r *http.Requ
 		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
 		return
 	}
-	if err := s.deps.Docs.InjectSchemaInvalidForTest(r.Context(), artifact.ID); err != nil {
+	if err := inject(r.Context(), artifact.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

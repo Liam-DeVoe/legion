@@ -24,7 +24,7 @@ import (
 func TestSearchLinksAnAskBlockOnlyWhileTheBlockIsANode(t *testing.T) {
 	const server = "https://dispatch.example"
 	embedder := &fakeEmbedder{vectors: map[string][]float32{"wibbleflorp": queryVector()}}
-	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
+	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
 	issue := createInteractionIssue(t, handler, "TEST", "Ask block links", "Context paragraph.\n")
 	long := randomBlockID(t, 3200)
 	askBlock := func(id, question string) string {
@@ -52,6 +52,14 @@ func TestSearchLinksAnAskBlockOnlyWhileTheBlockIsANode(t *testing.T) {
 	for index := range asks {
 		asks[index].id = blockAskID(t, handler, issue.Key, asks[index].block)
 	}
+	// A batch whose result drops a block an open ask points at is refused (R5 of
+	// dispatch://INFRA-1520), so the question is closed first and the block deleted after, which
+	// is the order a caller takes a decision out of a document in.
+	if resolved := sessionRequest(t, handler, http.MethodPost, "/api/v1/asks/"+asks[2].id+"/resolve", map[string]any{
+		"kind": "retracted", "reason": "asked elsewhere", "actor": sessionActor(),
+	}); resolved.Code != http.StatusOK {
+		t.Fatalf("retract the ask of the block gone: status=%d body=%s", resolved.Code, resolved.Body.String())
+	}
 	if deleted := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
 		"ops": []map[string]string{{"op": "delete", "block": "gone"}},
 	}, "alice"); deleted.Code != http.StatusOK {
@@ -69,6 +77,10 @@ func TestSearchLinksAnAskBlockOnlyWhileTheBlockIsANode(t *testing.T) {
 	if _, stored := blocks[long]; stored {
 		t.Fatalf("the block id of %d bytes is a graph node, want none past the bound", len(long))
 	}
+
+	// The writes record the asks' parts; their windows are the tick's to write (INFRA-988),
+	// and the rows embedded below are the ones it writes.
+	windowOwedOwners(t, deps)
 
 	// Each ask is a meaning match for wibbleflorp, at a cosine above the floor, on an axis of
 	// its own, under the embedder's identity, which meaning search compares a query with alone;

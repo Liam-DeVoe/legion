@@ -2,6 +2,8 @@ package api
 
 import (
 	"net/http"
+
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 )
 
 func (s *server) listProjectArtifacts(w http.ResponseWriter, r *http.Request) {
@@ -15,7 +17,7 @@ func (s *server) listProjectArtifacts(w http.ResponseWriter, r *http.Request) {
 	}
 	unlinked := r.URL.Query().Get("unlinked") == "true"
 	query := `
-		select ` + artifactColumns + `
+		select ` + docs.ArtifactColumns + `
 		from artifacts
 		where project_key = $1 and not is_primary`
 	if unlinked {
@@ -36,7 +38,10 @@ func (s *server) listProjectArtifacts(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, artifacts)
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	reads := artifactReads(artifacts, reader)
+	reader.resolve()
+	WriteJSON(w, http.StatusOK, reads)
 }
 
 func (s *server) uploadProjectArtifact(w http.ResponseWriter, r *http.Request) {

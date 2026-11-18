@@ -39,9 +39,10 @@ func editAdviceDocument(t *testing.T, handler http.Handler, artifactID, markdown
 	return adviceFromResponse(t, response.Code, response.Body.String())
 }
 
-// A document edit that stores a version over the one a person approved says so, because that is
-// what closes a Legion design gate. The edit after it says nothing: that approval was already
-// stale, and the second edit closed nothing.
+// A document edit that stores a version over the one a person approved says so, whatever the
+// document is: that approval is now stale, and whether a Legion design gate was among the things
+// it held open is what the design-gate list beside it answers. The edit after it says nothing:
+// that approval was already stale, and the second edit superseded none.
 func TestDocumentEditAdviceNamesTheApprovalItSuperseded(t *testing.T) {
 	handler := newTestHandler(t)
 	createAdviceProject(t, handler, "GATE")
@@ -62,6 +63,32 @@ func TestDocumentEditAdviceNamesTheApprovalItSuperseded(t *testing.T) {
 	again := editAdviceDocument(t, handler, issue.PrimaryArtifactID, "One more line.")
 	if again.SupersededApproval != nil {
 		t.Fatalf("second edit's superseded_approval = %#v, want none: the approval was already stale", again.SupersededApproval)
+	}
+}
+
+// A plan review's approval, recorded through /plan-reviews, goes stale like a person's: the plan
+// edit that supersedes it reports it, named by the review's session. No request for a person's
+// approval restores a plan's approval (Dispatch refuses one on any plan, PLAN_APPROVED_BY_REVIEW,
+// whoever approved it), so the client names `dispatch plan-approve` rather than
+// `dispatch request-approval` for a plan, which it reads from the document's role.
+func TestPlanEditAdviceNamesThePlanReviewsApprovalItSuperseded(t *testing.T) {
+	handler := newTestHandler(t)
+	createAdviceProject(t, handler, "PLANGATE")
+	spec := "# Transport\n\nThe design.\n"
+	issue := createAdviceIssue(t, handler, "PLANGATE", "Reviewed plan", &spec)
+	plan := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "plan.md", "# Plan\n\nThe plan, as reviewed.\n")
+	recorded := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+plan.Artifact.ID+"/plan-reviews",
+		map[string]any{"actor": adviceSessionActor("session-plan-review"), "version": 1})
+	if recorded.Code != http.StatusCreated {
+		t.Fatalf("record the plan review: status=%d body=%s", recorded.Code, recorded.Body.String())
+	}
+
+	advice := editAdviceDocument(t, handler, plan.Artifact.ID, "A step the review never read.")
+	superseded := advice.SupersededApproval
+	if superseded == nil || superseded.ApprovedVersion != 1 || superseded.Version != 2 ||
+		superseded.ApprovedBy != "session-plan-review" {
+		t.Fatalf("plan edit superseded_approval = %#v, want version 2 superseding the plan review's "+
+			"approval of 1 by session-plan-review", superseded)
 	}
 }
 

@@ -5,12 +5,16 @@ import (
 	"errors"
 	"math"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -61,15 +65,28 @@ func sameClaim(t *testing.T, got, want supervise.Claim) {
 	gotPending, wantPending := got.Pending, want.Pending
 	got.Pending, want.Pending = nil, nil
 	// The served look's check instance is a timestamptz, handed back in the session's zone, so it
-	// is compared as an instant and left out of the whole-struct comparison, as the delivery's
-	// times are below.
+	// is compared as an instant and left out of the whole-struct comparison, as the moment the
+	// claim failed and the delivery's times are below.
 	gotOpened, wantOpened := got.ServingCheckLook.OpenedAt, want.ServingCheckLook.OpenedAt
 	got.ServingCheckLook.OpenedAt, want.ServingCheckLook.OpenedAt = time.Time{}, time.Time{}
+	gotFailed, wantFailed := got.FailedAt, want.FailedAt
+	got.FailedAt, want.FailedAt = time.Time{}, time.Time{}
+	// The handshake's two moments are timestamptz columns too, compared the same way.
+	gotHandshake, wantHandshake := got.Handshake, want.Handshake
+	got.Handshake.QueuedAt, got.Handshake.ConfirmedAt = time.Time{}, time.Time{}
+	want.Handshake.QueuedAt, want.Handshake.ConfirmedAt = time.Time{}, time.Time{}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("claim read back differs:\n got %+v\nwant %+v", got, want)
 	}
 	if !gotOpened.Equal(wantOpened) {
 		t.Errorf("the served look's check opened %v, want %v", gotOpened, wantOpened)
+	}
+	if !gotFailed.Equal(wantFailed) {
+		t.Errorf("the claim failed at %v, want %v", gotFailed, wantFailed)
+	}
+	if !gotHandshake.QueuedAt.Equal(wantHandshake.QueuedAt) || !gotHandshake.ConfirmedAt.Equal(wantHandshake.ConfirmedAt) {
+		t.Errorf("the claim's handshake was queued at %v and confirmed at %v, want %v and %v",
+			gotHandshake.QueuedAt, gotHandshake.ConfirmedAt, wantHandshake.QueuedAt, wantHandshake.ConfirmedAt)
 	}
 	if (gotPending == nil) != (wantPending == nil) {
 		t.Fatalf("pending delivery read back = %+v, want %+v", gotPending, wantPending)
@@ -290,6 +307,44 @@ func TestARePutDeliveryKeepsThePhaseItWasQueuedFor(t *testing.T) {
 	}
 }
 
+// The ladder a provider error puts a task on outlives the daemon that armed it: the count says
+// which step the next send waits, and the sentence is what that send puts in front of the task
+// (dispatch://INFRA-956 R2). The claim's own run of such turns is beside them, because that is
+// what the controller's notice is counted from, and neither a restart nor a re-put of the
+// delivery under a new id may lose either.
+func TestAProviderErrorsLadderAndItsRunRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-212-implementer")
+	c.ProviderErrorRun = 4
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	note := "Your previous turn on this task stopped because of a provider error (HTTP 529)."
+	queued := supervise.Delivery{ID: "delivery-1", Task: "implement the plan", Phase: phase.Implementing, QueuedAt: at(1),
+		ProviderErrorRetries: 3, ProviderErrorNote: note}
+	if err := store.PutDelivery(ctx, c.Token, queued); err != nil {
+		t.Fatalf("put delivery: %v", err)
+	}
+
+	read := onlyClaim(t, store)
+	if read.ProviderErrorRun != 4 {
+		t.Errorf("the claim's run of provider errors read back as %d, want 4", read.ProviderErrorRun)
+	}
+	if p := read.Pending; p == nil || p.ProviderErrorRetries != 3 || p.ProviderErrorNote != note {
+		t.Fatalf("delivery read back = %+v, want three sends counted and the sentence %q", p, note)
+	}
+
+	// A task no provider error has taken back carries neither.
+	fresh := supervise.Delivery{ID: "delivery-2", Task: "test the change", Phase: phase.Testing, QueuedAt: at(2)}
+	if err := store.PutDelivery(ctx, c.Token, fresh); err != nil {
+		t.Fatalf("put the newer delivery: %v", err)
+	}
+	if p := onlyClaim(t, store).Pending; p == nil || p.ProviderErrorRetries != 0 || p.ProviderErrorNote != "" {
+		t.Fatalf("delivery read back = %+v, want a task no provider error has taken back", p)
+	}
+}
+
 func TestAClaimWithNothingOptionalRoundTripsAsNothing(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)
@@ -346,6 +401,56 @@ func TestAClaimsPluginContractRoundTrips(t *testing.T) {
 
 	want.PluginContract = 24
 	want.PluginRelaunchFor = 0
+	if err := store.PutClaim(ctx, want); err != nil {
+		t.Fatalf("put claim again: %v", err)
+	}
+	sameClaim(t, onlyClaim(t, store), want)
+}
+
+// The turn a claim last started and the one it last ended are nullable columns of their own: a
+// claim that has taken no turn reads back with neither time rather than with a zero one, and a
+// claim that has worked reads both back to the microsecond, which is what a restarted daemon
+// hands every reader of the claim.
+func TestAClaimsTurnTimesRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-209-implementer")
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	if got := onlyClaim(t, store); !got.LastTurnStart.IsZero() || !got.LastTurnEnd.IsZero() {
+		t.Fatalf("a claim that has taken no turn read back %v and %v, want no turn times", got.LastTurnStart, got.LastTurnEnd)
+	}
+
+	c.LastTurnStart, c.LastTurnEnd = at(3), at(9)
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put the worked claim: %v", err)
+	}
+	got := onlyClaim(t, store)
+	if !got.LastTurnStart.Equal(at(3)) || !got.LastTurnEnd.Equal(at(9)) {
+		t.Fatalf("turn times read back = %v and %v, want %v and %v", got.LastTurnStart, got.LastTurnEnd, at(3), at(9))
+	}
+}
+
+// What the daemon charged for the death of the process a claim records round-trips: a restart
+// builds every claim from this table and has charged nothing of its own, so a claim restored
+// without this is charged a second death for the one dead process it stands over, which costs
+// that claim what supervise.Claim.DeathCharged states (INFRA-956). It round-trips with the
+// deaths it charged, which the same write carries.
+func TestWhatAClaimsDeathWasChargedRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	want := tmuxClaim("legion-LEGION-209-deathcharged")
+	want.State = supervise.StateWorking
+	want.DeathCharged = true
+	if err := store.PutClaim(ctx, want); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	sameClaim(t, onlyClaim(t, store), want)
+
+	// The launch that replaces that process clears it with the process it lets go (supervise's
+	// letGo), and the claim it writes records a process charged nothing.
+	want.DeathCharged = false
 	if err := store.PutClaim(ctx, want); err != nil {
 		t.Fatalf("put claim again: %v", err)
 	}
@@ -713,10 +818,7 @@ func TestIssueRunsElsewhereNamesOnlyAClaimOfAnotherTreeThatHoldsAProcess(t *test
 			t.Fatalf("put %s %s: %v", implementer.Token, state, err)
 		}
 	}
-	all := []supervise.ClaimState{supervise.StateQueued, supervise.StateLaunchUncertain, supervise.StateLaunching, supervise.StateShimConnected,
-		supervise.StateRegistered, supervise.StateReady, supervise.StateWorking, supervise.StateIdle, supervise.StateSuspended,
-		supervise.StateFailed, supervise.StateRetired}
-	for _, state := range all {
+	for _, state := range supervise.States() {
 		put(state, false)
 		named := elsewhere("LEGION-209") == "legion-LEGION-209-implementer:"+string(state)
 		if runs := !(supervise.Claim{State: state}).RunsNothing(); named != runs {
@@ -770,9 +872,7 @@ func TestClaimUnretiredIsEveryStoredStateButRetired(t *testing.T) {
 	if unretired() {
 		t.Fatalf("ClaimUnretired(%s) with no claim stored = true, want false", controller.Token)
 	}
-	for _, state := range []supervise.ClaimState{supervise.StateQueued, supervise.StateLaunchUncertain, supervise.StateLaunching,
-		supervise.StateShimConnected, supervise.StateRegistered, supervise.StateReady, supervise.StateWorking, supervise.StateIdle,
-		supervise.StateSuspended, supervise.StateFailed, supervise.StateRetired} {
+	for _, state := range supervise.States() {
 		controller.State = state
 		if err := store.PutClaim(ctx, controller); err != nil {
 			t.Fatalf("put %s %s: %v", controller.Token, state, err)
@@ -815,14 +915,14 @@ func TestAnActivityReportNeverOverwritesANewerOne(t *testing.T) {
 		BackgroundWork: claim.BackgroundWork{Running: true, Kinds: []string{"async-job"}},
 		Phase:          claim.PhaseActivity{NextReminderAt: &due},
 	}
-	if known, err := store.PutClaimActivity(ctx, c.Token, newest); err != nil || !known {
+	if known, err := store.PutClaimActivity(ctx, c.Token, c.Generation, newest); err != nil || !known {
 		t.Fatalf("PutClaimActivity of the newest report = %t, %v", known, err)
 	}
 
 	// The reading taken before the job started, which the five-second timer sent first and which
 	// arrives second.
 	stale := claim.SessionActivity{At: at(9)}
-	if known, err := store.PutClaimActivity(ctx, c.Token, stale); err != nil || !known {
+	if known, err := store.PutClaimActivity(ctx, c.Token, c.Generation, stale); err != nil || !known {
 		t.Fatalf("PutClaimActivity of the stale report = %t, %v", known, err)
 	}
 	gotAt, background, kinds, reminder := storedActivity(t, store, c.Token)
@@ -834,7 +934,7 @@ func TestAnActivityReportNeverOverwritesANewerOne(t *testing.T) {
 	// A report of the same instant is the same reading sent twice, and is written: a retry must
 	// not be refused.
 	same := claim.SessionActivity{At: at(10)}
-	if known, err := store.PutClaimActivity(ctx, c.Token, same); err != nil || !known {
+	if known, err := store.PutClaimActivity(ctx, c.Token, c.Generation, same); err != nil || !known {
 		t.Fatalf("PutClaimActivity of the repeated report = %t, %v", known, err)
 	}
 	if _, background, kinds, reminder = storedActivity(t, store, c.Token); background || kinds != "" || !reminder.IsZero() {
@@ -844,7 +944,7 @@ func TestAnActivityReportNeverOverwritesANewerOne(t *testing.T) {
 
 	// A newer one is written whole, the armed reminder cleared with the rest.
 	newer := claim.SessionActivity{At: at(11)}
-	if known, err := store.PutClaimActivity(ctx, c.Token, newer); err != nil || !known {
+	if known, err := store.PutClaimActivity(ctx, c.Token, c.Generation, newer); err != nil || !known {
 		t.Fatalf("PutClaimActivity of the newer report = %t, %v", known, err)
 	}
 	if gotAt, _, _, _ = storedActivity(t, store, c.Token); !gotAt.Equal(newer.At) {
@@ -868,7 +968,7 @@ func TestAnActivityReportDatedAheadOfTheDaemonIsBoundedToItsReceipt(t *testing.T
 	before := time.Now().UTC()
 	ahead := claim.SessionActivity{At: before.Add(2 * time.Hour),
 		BackgroundWork: claim.BackgroundWork{Running: true, Kinds: []string{"async-job"}}}
-	if known, err := store.PutClaimActivity(ctx, c.Token, ahead); err != nil || !known {
+	if known, err := store.PutClaimActivity(ctx, c.Token, c.Generation, ahead); err != nil || !known {
 		t.Fatalf("PutClaimActivity of the report dated ahead = %t, %v", known, err)
 	}
 	after := time.Now().UTC()
@@ -885,7 +985,7 @@ func TestAnActivityReportDatedAheadOfTheDaemonIsBoundedToItsReceipt(t *testing.T
 
 	// The session's next honest report is written, which is what the unbounded time cost.
 	honest := claim.SessionActivity{At: time.Now().UTC()}
-	if known, err := store.PutClaimActivity(ctx, c.Token, honest); err != nil || !known {
+	if known, err := store.PutClaimActivity(ctx, c.Token, c.Generation, honest); err != nil || !known {
 		t.Fatalf("PutClaimActivity of the honest report = %t, %v", known, err)
 	}
 	if _, background, kinds, _ := storedActivity(t, store, c.Token); background || kinds != "" {
@@ -899,11 +999,500 @@ func TestAnActivityReportDatedAheadOfTheDaemonIsBoundedToItsReceipt(t *testing.T
 func TestAnActivityReportOfAnUnknownClaimIsNotRecorded(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)
-	known, err := store.PutClaimActivity(ctx, "legion-LEGION-999-implementer", claim.SessionActivity{At: at(1)})
+	known, err := store.PutClaimActivity(ctx, "legion-LEGION-999-implementer", 1, claim.SessionActivity{At: at(1)})
 	if err != nil {
 		t.Fatalf("PutClaimActivity: %v", err)
 	}
 	if known {
 		t.Fatal("a report for a claim the store does not hold was recorded")
+	}
+}
+
+// activityReport is one reader's answer about the four activity columns of a claim. The
+// role-claim read carries no kinds — a rule over a run asks whether such work is running and
+// never what it is (record.RoleClaim) — so a reader that does not carry them leaves them nil.
+type activityReport struct {
+	at         time.Time
+	background bool
+	kinds      []string
+	reminder   time.Time
+}
+
+// A session's activity report counts for the process that made it and for no other. The four
+// columns survive every write but a launch's: a launch moves the claim's generation on
+// (supervise's launchNow), and putClaim clears the report in that same write, leaving the zero
+// values that already say this session has reported nothing. All three readers of those columns
+// are held to that here, in one test, because none of them checks anything of its own: the
+// daemon's sweep reads the claim (claimSelect), the rules over a run read the record (record's
+// readRoleClaims), and the idle release reads its own view (readIdleView). A write that keeps
+// the generation leaves the report whole, and the replacement's first report is written and read
+// whole even when the dead process's was dated later, since the clear also lifts the ordering
+// guard that report would otherwise hold over it.
+func TestAnActivityReportOfAnEarlierProcessIsNoReportToAnyReader(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	openRunningTree(t, st)
+	token := claim.Token("legion-legion-legion-208-implementer")
+	worker := supervise.Claim{Token: token, Project: "legion", Tree: rootIssue, Issue: rootIssue,
+		Role: claim.RoleImplementer, TreeEpoch: 1, Generation: 4, ServingGeneration: 1,
+		State: supervise.StateReady, Session: "ses_implementer", SessionFile: "/sessions/implementer.jsonl"}
+	if err := st.PutClaim(ctx, worker); err != nil {
+		t.Fatalf("record the worker's claim: %v", err)
+	}
+	// The report the dying process made at the end of its turn: a background task of its own is
+	// running, with the phase reminder armed in that same session.
+	dead := activityReport{at: time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond), background: true,
+		kinds: []string{"claude-background-task"}}
+	dead.reminder = dead.at.Add(10 * time.Minute)
+	if known, err := st.PutClaimActivity(ctx, token, worker.Generation, claim.SessionActivity{At: dead.at,
+		BackgroundWork: claim.BackgroundWork{Running: true, Kinds: dead.kinds},
+		Phase:          claim.PhaseActivity{NextReminderAt: &dead.reminder},
+	}); err != nil || !known {
+		t.Fatalf("report the worker's background work = %t, %v", known, err)
+	}
+
+	readers := []struct {
+		name  string
+		kinds bool
+		read  func(*testing.T) activityReport
+	}{
+		{
+			name: "the sweep's claim read", kinds: true,
+			read: func(t *testing.T) activityReport {
+				t.Helper()
+				held, err := st.Claims(ctx)
+				if err != nil {
+					t.Fatalf("read the claims: %v", err)
+				}
+				if len(held) != 1 || held[0].Token != token {
+					t.Fatalf("the claims = %+v, want the one worker's", held)
+				}
+				return activityReport{at: held[0].ActivityAt, background: held[0].ActivityBackground,
+					kinds: held[0].ActivityKinds, reminder: held[0].ActivityNextReminderAt}
+			},
+		},
+		{
+			name: "the rules' role-claim read",
+			read: func(t *testing.T) activityReport {
+				t.Helper()
+				var held *record.RoleClaim
+				if err := st.Tx(ctx, func(tx pgx.Tx) error {
+					claims, err := record.NewStore().RoleClaims(ctx, tx, []claim.Token{token})
+					held = claims[token]
+					return err
+				}); err != nil {
+					t.Fatalf("read the role claim of %s: %v", token, err)
+				}
+				if held == nil {
+					t.Fatalf("the record holds no claim of %s", token)
+				}
+				return activityReport{at: held.ActivityAt, background: held.ActivityBackground,
+					reminder: held.ActivityNextReminderAt}
+			},
+		},
+		{
+			name: "the idle release's claim read", kinds: true,
+			read: func(t *testing.T) activityReport {
+				t.Helper()
+				view := idleViewOf(t, st, rootIssue)
+				if len(view.Claims) != 1 {
+					t.Fatalf("the idle view's claims = %+v, want the one worker's", view.Claims)
+				}
+				got := view.Claims[0]
+				return activityReport{at: got.ActivityAt, background: got.ActivityBackground,
+					kinds: got.ActivityKinds, reminder: got.ActivityNextReminderAt}
+			},
+		},
+	}
+	whole := func(t *testing.T, want activityReport, when string) {
+		t.Helper()
+		for _, reader := range readers {
+			got := reader.read(t)
+			if !got.at.Equal(want.at) || got.background != want.background || !got.reminder.Equal(want.reminder) {
+				t.Errorf("%s reads %+v %s, want the whole report made at %s, background %t, with its reminder due at %s",
+					reader.name, got, when, want.at, want.background, want.reminder)
+			}
+			if reader.kinds && !slices.Equal(got.kinds, want.kinds) {
+				t.Errorf("%s reads the kinds %q %s, want the kinds %q the report named", reader.name, got.kinds, when, want.kinds)
+			}
+		}
+	}
+	none := func(t *testing.T, when string) {
+		t.Helper()
+		for _, reader := range readers {
+			got := reader.read(t)
+			if !got.at.IsZero() || got.background || len(got.kinds) != 0 || !got.reminder.IsZero() {
+				t.Errorf("%s reads %+v %s, want no report at all: the four are one report and are cleared together",
+					reader.name, got, when)
+			}
+		}
+	}
+
+	whole(t, dead, "while the process that made it is the one running")
+
+	// Another state write of the same process keeps the generation, and the report with it.
+	worker.State = supervise.StateIdle
+	if err := st.PutClaim(ctx, worker); err != nil {
+		t.Fatalf("record the worker gone idle: %v", err)
+	}
+	whole(t, dead, "after a write that kept the generation")
+
+	// The pod is replaced: the launch of the worker in the pod that replaced it moves the
+	// claim's generation on and persists it (supervise's launchNow), and the new process has
+	// reported nothing yet.
+	worker.Generation++
+	worker.State = supervise.StateLaunching
+	if err := st.PutClaim(ctx, worker); err != nil {
+		t.Fatalf("record the launch that replaced the worker's process: %v", err)
+	}
+	none(t, "after the launch that replaced the process that made it")
+
+	// The replacement's first report is dated before the dead process's — a host clock behind
+	// the old pod's — and is written whole: the dead report is gone, and with it the ordering
+	// guard it would have held over every report dated before it.
+	first := activityReport{at: dead.at.Add(-time.Minute), background: true, kinds: []string{"async-job", "subagent"}}
+	first.reminder = first.at.Add(5 * time.Minute)
+	if known, err := st.PutClaimActivity(ctx, token, worker.Generation, claim.SessionActivity{At: first.at,
+		BackgroundWork: claim.BackgroundWork{Running: true, Kinds: first.kinds},
+		Phase:          claim.PhaseActivity{NextReminderAt: &first.reminder},
+	}); err != nil || !known {
+		t.Fatalf("report the replacement's background work = %t, %v", known, err)
+	}
+	whole(t, first, "after the replacement's first report")
+}
+
+// A report belongs to the launch whose secret it was sent with, and a dead process's report can
+// reach the store after the relaunch that replaced it: the route authenticated it just before the
+// launch and wrote it just after the launch's clear. It is refused, so the new process's empty
+// report stands — a Claude Code worker reports only at its Stop hook, and a dead process's
+// background report written over that emptiness would hold its silence repair off for good —
+// and answered as a claim the store does not hold at that launch, which the route answers with
+// claim.InvalidSecret.
+func TestAnActivityReportOfALaunchThatIsGoneIsRefused(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-212-implementer")
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	old := c.Generation
+	c.Generation++
+	c.State = supervise.StateLaunching
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("record the launch that replaced the process: %v", err)
+	}
+
+	dead := claim.SessionActivity{At: time.Now().UTC().Add(-time.Minute),
+		BackgroundWork: claim.BackgroundWork{Running: true, Kinds: []string{"claude-background-task"}}}
+	known, err := store.PutClaimActivity(ctx, c.Token, old, dead)
+	if err != nil {
+		t.Fatalf("PutClaimActivity of the old launch's report: %v", err)
+	}
+	if known {
+		t.Error("the report of a launch that is gone was answered as one the store holds")
+	}
+	if at, background, kinds, reminder := storedActivity(t, store, c.Token); !at.IsZero() || background || kinds != "" || !reminder.IsZero() {
+		t.Fatalf("after the old launch's report the row reads %s, background %t, kinds %q, reminder %s; want the launch's clear standing",
+			at, background, kinds, reminder)
+	}
+
+	// The new launch's own report is written.
+	current := claim.SessionActivity{At: time.Now().UTC().Add(-time.Second)}
+	if known, err := store.PutClaimActivity(ctx, c.Token, c.Generation, current); err != nil || !known {
+		t.Fatalf("PutClaimActivity of the current launch's report = %t, %v", known, err)
+	}
+	if at, _, _, _ := storedActivity(t, store, c.Token); at.IsZero() {
+		t.Fatal("the current launch's report was not written")
+	}
+}
+
+// The kinds a session names reach the architect's worker-background-stalled notice and the
+// daemon's log, and the session chooses every word it sends, so the write keeps only the three
+// known kinds, in the session's order, and drops every other string. Whether work is running is
+// the session's own flag, and a report whose kinds were all unknown keeps it.
+func TestAnActivityReportKeepsOnlyTheKnownKinds(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-211-implementer")
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+
+	named := claim.SessionActivity{At: at(10), BackgroundWork: claim.BackgroundWork{Running: true,
+		Kinds: []string{"subagent", "<b>urgent</b>", "async-job", "", "claude-background-task", "async-job,evil"}}}
+	if known, err := store.PutClaimActivity(ctx, c.Token, c.Generation, named); err != nil || !known {
+		t.Fatalf("PutClaimActivity of the report naming unknown kinds = %t, %v", known, err)
+	}
+	if _, background, kinds, _ := storedActivity(t, store, c.Token); !background || kinds != "subagent,async-job,claude-background-task" {
+		t.Fatalf("the row reads background %t, kinds %q; want the work running and the three known kinds alone, in order",
+			background, kinds)
+	}
+
+	unknown := claim.SessionActivity{At: at(11), BackgroundWork: claim.BackgroundWork{Running: true,
+		Kinds: []string{"shell"}}}
+	if known, err := store.PutClaimActivity(ctx, c.Token, c.Generation, unknown); err != nil || !known {
+		t.Fatalf("PutClaimActivity of the report naming only an unknown kind = %t, %v", known, err)
+	}
+	if _, background, kinds, _ := storedActivity(t, store, c.Token); !background || kinds != "" {
+		t.Fatalf("the row reads background %t, kinds %q; want the work running and no kind", background, kinds)
+	}
+}
+
+// storedStep is the eight step columns of token's claim row, read from the row itself: a claim
+// read carries the same record back, and the tests below compare the two.
+func storedStep(t *testing.T, store *Store, token claim.Token) supervise.StepRecord {
+	t.Helper()
+	var step supervise.StepRecord
+	var stepAt, turn, started, ended *time.Time
+	if err := store.Pool().QueryRow(context.Background(),
+		`select step_at, turn_started_at, step_tool, step_call_id, step_args_bytes, step_args_hash,
+			step_started_at, step_ended_at from claims where token = $1`, string(token)).
+		Scan(&stepAt, &turn, &step.Tool, &step.CallID, &step.ArgsBytes, &step.ArgsHash, &started, &ended); err != nil {
+		t.Fatalf("read the step record of %s: %v", token, err)
+	}
+	step.At, step.TurnStartedAt = orZero(stepAt), orZero(turn)
+	step.StartedAt, step.EndedAt = orZero(started), orZero(ended)
+	return step
+}
+
+// sameStep compares two records, the times as instants: Postgres hands a timestamptz back in the
+// session's zone, not the one it was written in.
+func sameStep(t *testing.T, got, want supervise.StepRecord, what string) {
+	t.Helper()
+	if got.Tool != want.Tool || got.CallID != want.CallID ||
+		got.ArgsBytes != want.ArgsBytes || got.ArgsHash != want.ArgsHash {
+		t.Errorf("%s names the call %q/%q of %d bytes, hash %q; want %q/%q of %d bytes, hash %q",
+			what, got.Tool, got.CallID, got.ArgsBytes, got.ArgsHash,
+			want.Tool, want.CallID, want.ArgsBytes, want.ArgsHash)
+	}
+	for _, field := range []struct {
+		name      string
+		got, want time.Time
+	}{
+		{"At", got.At, want.At},
+		{"TurnStartedAt", got.TurnStartedAt, want.TurnStartedAt},
+		{"StartedAt", got.StartedAt, want.StartedAt},
+		{"EndedAt", got.EndedAt, want.EndedAt},
+	} {
+		if !field.got.Equal(field.want) {
+			t.Errorf("%s %s = %v, want %v", what, field.name, field.got, field.want)
+		}
+	}
+}
+
+// A bash call of a worker, as the stream's two frames leave it on the claim: the turn's start
+// first, then the call, with the length and the hash of its arguments and no text of them.
+func aBashStep() supervise.StepRecord {
+	return supervise.StepRecord{
+		At:        at(3),
+		Tool:      "bash",
+		CallID:    "toolu_turn1_0",
+		ArgsBytes: 142,
+		ArgsHash:  "9f2b7c1d4e5a6b8c",
+		StartedAt: at(2),
+		EndedAt:   at(3),
+	}
+}
+
+// The backstop that ends a hung turn reads this record and nothing else, and it runs in whatever
+// daemon is up at the time: a daemon that restarted mid-turn has only what the row holds, so the
+// whole record has to survive the restart. A reopened store is that restart (reopenStore).
+func TestAStepRecordRoundTripsThroughAReopenedStore(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-209-implementer")
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+
+	if known, err := store.PutClaimStep(ctx, c.Token, supervise.StepRecord{TurnStartedAt: at(1)}); err != nil || !known {
+		t.Fatalf("PutClaimStep of the turn's start = %t, %v", known, err)
+	}
+	step := aBashStep()
+	if known, err := store.PutClaimStep(ctx, c.Token, step); err != nil || !known {
+		t.Fatalf("PutClaimStep of the call = %t, %v", known, err)
+	}
+
+	want := step
+	want.TurnStartedAt = at(1)
+	sameStep(t, storedStep(t, store, c.Token), want, "the row's step record")
+
+	reopened := reopenStore(t, store)
+	claims, err := reopened.Claims(ctx)
+	if err != nil {
+		t.Fatalf("claims of the reopened store: %v", err)
+	}
+	if len(claims) != 1 {
+		t.Fatalf("claims = %d rows, want 1: %+v", len(claims), claims)
+	}
+	sameStep(t, claims[0].Step, want, "the step record a reopened store reads back")
+}
+
+// The record arrives between the machine's writes and the machine's in-memory claim does not
+// carry it, so a machine that persists its next state must leave it standing: a claim written
+// whole would erase every step the stream reported since that machine read its claim, and the
+// backstop would read a worker mid-call as one that has never stepped.
+func TestPutClaimLeavesTheStepRecordAlone(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-210-implementer")
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	step := aBashStep()
+	step.TurnStartedAt = at(1)
+	if known, err := store.PutClaimStep(ctx, c.Token, step); err != nil || !known {
+		t.Fatalf("PutClaimStep = %t, %v", known, err)
+	}
+
+	// The machine, which never read the record, persists its next state.
+	c.State = supervise.StateWorking
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put the claim again: %v", err)
+	}
+
+	sameStep(t, storedStep(t, store, c.Token), step, "the step record after the machine's write")
+	sameStep(t, onlyClaim(t, store).Step, step, "the step record a claim read carries")
+}
+
+// A connection that dies with frames unflushed hands them to the next one, so an earlier step can
+// reach the daemon after a later one. The earlier one must not win: the backstop would read a
+// worker that has been silent for an hour as one that stepped a moment ago, which is the stall
+// this record exists to find.
+func TestAStepOlderThanTheRecordedStepDoesNotMoveItBack(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-211-implementer")
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	newest := aBashStep()
+	newest.At = at(10)
+	if known, err := store.PutClaimStep(ctx, c.Token, newest); err != nil || !known {
+		t.Fatalf("PutClaimStep of the newest step = %t, %v", known, err)
+	}
+
+	older := supervise.StepRecord{At: at(9), Tool: "eval", CallID: "toolu_turn0_3",
+		ArgsBytes: 31, ArgsHash: "0011223344556677", StartedAt: at(8), EndedAt: at(9)}
+	if known, err := store.PutClaimStep(ctx, c.Token, older); err != nil || !known {
+		t.Fatalf("PutClaimStep of the older step = %t, %v", known, err)
+	}
+	sameStep(t, storedStep(t, store, c.Token), newest, "the step record after the older step")
+
+	// A step of the same instant is the same frame sent twice, and is written: a retry must not
+	// be refused.
+	same := supervise.StepRecord{At: at(10), Tool: "read", CallID: "toolu_turn1_1",
+		ArgsBytes: 64, ArgsHash: "aabbccddeeff0011", StartedAt: at(10)}
+	if known, err := store.PutClaimStep(ctx, c.Token, same); err != nil || !known {
+		t.Fatalf("PutClaimStep of the repeated step = %t, %v", known, err)
+	}
+	sameStep(t, storedStep(t, store, c.Token), same, "the step record after the repeated step")
+
+	// A newer one is written whole, the call it names replacing the one before it.
+	newer := supervise.StepRecord{At: at(11), Tool: "write", CallID: "toolu_turn1_2",
+		ArgsBytes: 900, ArgsHash: "2233445566778899", StartedAt: at(11)}
+	if known, err := store.PutClaimStep(ctx, c.Token, newer); err != nil || !known {
+		t.Fatalf("PutClaimStep of the newer step = %t, %v", known, err)
+	}
+	sameStep(t, storedStep(t, store, c.Token), newer, "the step record after the newer step")
+}
+
+// The fence a frame of a replaced process needs. Such a frame — one that arrived on a connection
+// the claim no longer has, or on one older than the connection it has now (supervise's
+// staleStep) — is stamped by the daemon on receipt like any other, so a burst of them would give
+// a hung worker a fresh clock. Such a step carries no time of its own: it records the call it
+// names, which is evidence of what the agent was doing, and leaves the claim's last-step time
+// and its turn's start where they are.
+func TestAStepWithNoTimeOfItsOwnRecordsItsCallAndLeavesTheLastStep(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-212-implementer")
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	live := aBashStep()
+	live.At, live.TurnStartedAt = at(10), at(1)
+	if known, err := store.PutClaimStep(ctx, c.Token, live); err != nil || !known {
+		t.Fatalf("PutClaimStep of the live step = %t, %v", known, err)
+	}
+
+	stale := supervise.StepRecord{Tool: "eval", CallID: "toolu_turn0_7",
+		ArgsBytes: 2048, ArgsHash: "cafebabecafebabe", StartedAt: at(4)}
+	if known, err := store.PutClaimStep(ctx, c.Token, stale); err != nil || !known {
+		t.Fatalf("PutClaimStep of the stale step = %t, %v", known, err)
+	}
+
+	want := stale
+	want.At, want.TurnStartedAt = at(10), at(1)
+	sameStep(t, storedStep(t, store, c.Token), want, "the step record after the stale frame")
+}
+
+// A turn's start is written through the same narrow call and carries no call of its own. It
+// moves no last-step time, and it leaves the call the record names standing: the recovery this
+// record exists for ends the hung process, relaunches the claim on the same session and starts a
+// turn on the replacement, and a turn's start that cleared the call would erase the one fact
+// anybody is looking for — which call was open when the agent stopped.
+func TestATurnsStartMovesTheTurnAndKeepsTheCallTheRecordNames(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-213-implementer")
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	hung := aBashStep()
+	hung.At, hung.TurnStartedAt = at(10), at(1)
+	if known, err := store.PutClaimStep(ctx, c.Token, hung); err != nil || !known {
+		t.Fatalf("PutClaimStep of the call that hung = %t, %v", known, err)
+	}
+
+	// The daemon ended the process and relaunched the claim; the replacement starts a turn.
+	if known, err := store.PutClaimStep(ctx, c.Token, supervise.StepRecord{TurnStartedAt: at(20)}); err != nil || !known {
+		t.Fatalf("PutClaimStep of the recovered turn's start = %t, %v", known, err)
+	}
+
+	want := hung
+	want.TurnStartedAt = at(20)
+	sameStep(t, storedStep(t, store, c.Token), want, "the step record after the recovered turn's start")
+	sameStep(t, onlyClaim(t, store).Step, want, "the step record a claim read carries after the recovery")
+}
+
+// The next call replaces the last one whole, every field of it: no field of one call is ever
+// read beside a field of another, which is what a record built field by field would allow.
+func TestALaterCallOverwritesEveryFieldOfTheStepRecord(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-214-implementer")
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	first := aBashStep()
+	first.At, first.TurnStartedAt = at(10), at(1)
+	if known, err := store.PutClaimStep(ctx, c.Token, first); err != nil || !known {
+		t.Fatalf("PutClaimStep of the first call = %t, %v", known, err)
+	}
+
+	// Every field differs from the first call's, the still-open end among them.
+	next := supervise.StepRecord{At: at(12), Tool: "eval", CallID: "toolu_turn2_5",
+		ArgsBytes: 7, ArgsHash: "1314151617181920", StartedAt: at(12)}
+	if known, err := store.PutClaimStep(ctx, c.Token, next); err != nil || !known {
+		t.Fatalf("PutClaimStep of the next call = %t, %v", known, err)
+	}
+
+	want := next
+	want.TurnStartedAt = at(1)
+	sameStep(t, storedStep(t, store, c.Token), want, "the step record after the next call")
+}
+
+// A step of a claim the daemon has forgotten is nothing to record, and says so, as a session's
+// activity report of one does. A step the ordering guard drops is not that: the claim is there.
+func TestAStepOfAnUnknownClaimIsNotRecorded(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	known, err := store.PutClaimStep(ctx, "legion-LEGION-999-implementer", aBashStep())
+	if err != nil {
+		t.Fatalf("PutClaimStep: %v", err)
+	}
+	if known {
+		t.Fatal("a step of a claim the store does not hold was recorded")
 	}
 }

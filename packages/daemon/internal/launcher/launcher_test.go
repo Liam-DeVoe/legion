@@ -2,7 +2,6 @@ package launcher
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -13,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,7 +23,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/sessionproxy"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 const launcherChildEnv = "LEGION_LAUNCHER_TEST_CHILD"
@@ -87,22 +89,7 @@ type roleConn struct {
 }
 
 // lockedBuffer is a bytes.Buffer the launcher and its children can write while a test reads it.
-type lockedBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *lockedBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *lockedBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
+type lockedBuffer = testlog.Buffer
 
 func newRig(t *testing.T) *rig {
 	t.Helper()
@@ -194,7 +181,14 @@ func acceptRole(t *testing.T, listener net.Listener) *roleConn {
 // acknowledge admits the connection's hello and reads the launcher's first state on it.
 func (g *roleConn) acknowledge() shimwire.LauncherState {
 	g.t.Helper()
-	g.send(shimwire.LauncherHelloAck{})
+	return g.acknowledgeWith(shimwire.LauncherHelloAck{})
+}
+
+// acknowledgeWith admits the connection's hello with ack, whatever memory guard settings it
+// carries, and reads the launcher's first state on it.
+func (g *roleConn) acknowledgeWith(ack shimwire.LauncherHelloAck) shimwire.LauncherState {
+	g.t.Helper()
+	g.send(ack)
 	state, ok := g.next().(shimwire.LauncherState)
 	if !ok {
 		g.t.Fatalf("after the acknowledgement: %#v, want the launcher's state", state)
@@ -314,18 +308,24 @@ type observed struct {
 // verbatim. The stand-in child and the namespace tests' shell scripts both write such markers.
 func published(t *testing.T, marker string) (int, string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if body, err := os.ReadFile(marker); err == nil {
-			pid, rest, _ := strings.Cut(string(body), " ")
-			if n, err := strconv.Atoi(pid); err == nil {
-				return n, rest
-			}
+	var pid int
+	var rest string
+	if !testwait.Holds(10*time.Second, testwait.Poll, func() bool {
+		body, err := os.ReadFile(marker)
+		if err != nil {
+			return false
 		}
-		time.Sleep(10 * time.Millisecond)
+		head, tail, _ := strings.Cut(string(body), " ")
+		n, err := strconv.Atoi(head)
+		if err != nil {
+			return false
+		}
+		pid, rest = n, tail
+		return true
+	}) {
+		t.Fatal("the child never published its marker")
 	}
-	t.Fatal("the child never published its marker")
-	return 0, ""
+	return pid, rest
 }
 
 // publishedAll waits for the stand-in child's `<pid> <socket> <credential>` marker and reports
@@ -342,17 +342,9 @@ func publishedAll(t *testing.T, marker string) observed {
 // PID 1 is the test's own stand-in rather than a reaping init — the probe pod runs `sleep` —
 // every ended descendant the launcher killed is a zombie until the container exits.
 func gone(pid int) bool {
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
-			return true
-		}
-		if zombie(pid) {
-			return true
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	return false
+	return testwait.Holds(5*time.Second, testwait.Poll, func() bool {
+		return errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) || zombie(pid)
+	})
 }
 
 // zombie says whether pid has ended and is only waiting to be reaped: the third field of
@@ -539,17 +531,19 @@ func (g *rig) told(generation uint64, expansion string, env []string, resume str
 	if got := g.start(command); !got.OK {
 		g.t.Fatalf("start of generation %d = %#v", generation, got)
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if body, err := os.ReadFile(told); err == nil {
-			g.stop(generation)
-			return string(body)
+	var said string
+	if !testwait.Holds(10*time.Second, testwait.Poll, func() bool {
+		body, err := os.ReadFile(told)
+		if err != nil {
+			return false
 		}
-		if time.Now().After(deadline) {
-			g.t.Fatalf("generation %d's child never said what it was told", generation)
-		}
-		time.Sleep(10 * time.Millisecond)
+		said = string(body)
+		return true
+	}) {
+		g.t.Fatalf("generation %d's child never said what it was told", generation)
 	}
+	g.stop(generation)
+	return said
 }
 
 // toldRecreated starts generation with env (resuming resume, "" for none), returns the
@@ -593,6 +587,24 @@ type fleet struct {
 // requireRoleNamespaces first.
 func newFleet(t *testing.T, grace time.Duration, roles ...string) *fleet {
 	t.Helper()
+	return newFleetOf(t, Config{StopGrace: grace}, roles...)
+}
+
+// newFleetOf is newFleet of a launcher that carries cfg's own fields (its stop grace, its
+// leak-check directory) besides the fields every fleet's launcher is given.
+func newFleetOf(t *testing.T, cfg Config, roles ...string) *fleet {
+	t.Helper()
+	f := launchFleet(t, cfg, roles...)
+	for _, conn := range f.conns {
+		conn.acknowledge()
+	}
+	return f
+}
+
+// launchFleet is newFleetOf up to every role's hello, which it leaves unacknowledged, for a test
+// whose acknowledgements carry something of their own.
+func launchFleet(t *testing.T, cfg Config, roles ...string) *fleet {
+	t.Helper()
 	scratch := namespaceScratch(t)
 	f := &fleet{
 		t: t, rolesDir: filepath.Join(scratch, "roles"), home: filepath.Join(scratch, "home"),
@@ -628,11 +640,10 @@ func newFleet(t *testing.T, grace time.Duration, roles ...string) *fleet {
 	t.Cleanup(func() { _ = listener.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	f.cancel = cancel
+	cfg.Connect, cfg.Sandbox, cfg.PodUID = "tcp://"+listener.Addr().String(), "legion-legion-legion-208", "pod-1"
+	cfg.RolesDir, cfg.Roles, cfg.Stdout, cfg.Stderr = f.rolesDir, roles, f.stderr, f.stderr
 	go func() {
-		f.result <- Run(ctx, Config{
-			Connect: "tcp://" + listener.Addr().String(), Sandbox: "legion-legion-legion-208", PodUID: "pod-1",
-			RolesDir: f.rolesDir, Roles: roles, Stdout: f.stderr, Stderr: f.stderr, StopGrace: grace,
-		})
+		f.result <- Run(ctx, cfg)
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -648,9 +659,6 @@ func newFleet(t *testing.T, grace time.Duration, roles ...string) *fleet {
 			t.Fatalf("role %s opened two connections", conn.hello.Role)
 		}
 		f.conns[conn.hello.Role] = conn
-	}
-	for _, conn := range f.conns {
-		conn.acknowledge()
 	}
 	return f
 }
@@ -684,15 +692,18 @@ func (g *roleConn) awaitExit(generation uint64) shimwire.LauncherExit {
 // role's output, role-init's refusals among it — when it never does.
 func (f *fleet) waitForRoleFile(path string) string {
 	f.t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		if body, err := os.ReadFile(path); err == nil && len(body) > 0 {
-			return string(body)
+	var said string
+	if !testwait.Holds(30*time.Second, testwait.Poll, func() bool {
+		body, err := os.ReadFile(path)
+		if err != nil || len(body) == 0 {
+			return false
 		}
-		time.Sleep(10 * time.Millisecond)
+		said = string(body)
+		return true
+	}) {
+		f.t.Fatalf("%s was never written; the launcher's log: %s", path, f.stderr.String())
 	}
-	f.t.Fatalf("%s was never written; the launcher's log: %s", path, f.stderr.String())
-	return ""
+	return said
 }
 
 // An issue pod's one container holds one authenticated connection per resident role, each with
@@ -1004,20 +1015,26 @@ const testInstance = "example-project:us-central1:example-instance"
 // testDatabase is the session database a launcher under test proxies its generations to.
 var testDatabase = ompsessions.Database{Instance: testInstance, Name: "legion_sessions", User: "legion-sessions@example-project.iam"}
 
+// testServiceAccount is the Google service account a test's session database may name for the
+// proxy to impersonate; testDatabase's User is its IAM login.
+const testServiceAccount = "legion-sessions@example-project.iam.gserviceaccount.com"
+
 // sessionDialer stands in for the Cloud SQL connector: every connection is a fresh dial of addr,
 // which the test owns, and check is the credential work the connector does before each of them, so
 // a test can refuse one dial and allow the next. While stalling (stallAt), every dial reaches a
 // silent upstream instead and stalls in a real TLS handshake, which, like the connector's own, ends
 // only when the dial's context does. Every dial records when it began and its context's deadline,
 // and a stalled one when it ended (bounds), so a test reads the bound a dial was given from the
-// dial itself, and times only what the launcher did after it.
+// dial itself, and times only what the launcher did after it. Every build records the account the
+// launcher asked the connector to sign in as (accounts), "" for the pod itself.
 type sessionDialer struct {
 	addr  string
 	check func() error
 
-	mu     sync.Mutex
-	bounds []dialBound
-	silent string
+	mu       sync.Mutex
+	bounds   []dialBound
+	silent   string
+	accounts []string
 }
 
 // dialBound is what one Dial was given: the time it was entered and its context's deadline, if
@@ -1063,8 +1080,21 @@ func (d *sessionDialer) stallAt(addr string) {
 func (d *sessionDialer) Close() error { return nil }
 
 // build is the Config.SessionDialer a test passes: every generation of its launcher dials through
-// this very fake.
-func (d *sessionDialer) build(context.Context) (sessionproxy.Dialer, error) { return d, nil }
+// this very fake, and each build records the account it was given. A pod's roles start their
+// generations concurrently, so the record is held under mu.
+func (d *sessionDialer) build(_ context.Context, account string) (sessionproxy.Dialer, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.accounts = append(d.accounts, account)
+	return d, nil
+}
+
+// built answers the account of every build so far, in the order they were made.
+func (d *sessionDialer) built() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return slices.Clone(d.accounts)
+}
 
 // stalledDial opens a real connection to addr, a silent upstream, and runs a real TLS handshake
 // over it, which nothing ever answers, so it ends only when ctx does.
@@ -1149,6 +1179,12 @@ func TestAPartlyNamedSessionDatabaseIsRefusedBeforeTheLauncherStarts(t *testing.
 			"launcher: the session database is named in part: no --session-user"},
 		"no instance": {ompsessions.Database{Name: testDatabase.Name, User: testDatabase.User},
 			"launcher: the session database is named in part: no --session-instance"},
+		// A service account to impersonate names a database too, so it is not the other stores:
+		// with it, each of the three it leaves out is missing.
+		"the account alone": {ompsessions.Database{ImpersonateServiceAccount: testServiceAccount},
+			"launcher: the session database is named in part: no --session-instance, no --session-database, no --session-user"},
+		"the account and the instance": {ompsessions.Database{Instance: testInstance, ImpersonateServiceAccount: testServiceAccount},
+			"launcher: the session database is named in part: no --session-database, no --session-user"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			// The connect address is one nothing listens on: a refused configuration must answer
@@ -1178,6 +1214,36 @@ func TestAChildFindsItsGenerationsSessionSocketAlreadyBound(t *testing.T) {
 		t.Fatalf("the child found its session socket %s, want it already bound", seen.socket)
 	}
 	g.stop(4)
+}
+
+// A generation's proxy is built for the service account the launcher is told its session database
+// names, and for none when it is told none: the account the dialer factory is given is the one the
+// Cloud SQL connector impersonates and signs in as, so a launcher that dropped it would sign every
+// generation in as the pod itself, which the database's login does not name.
+func TestAGenerationsProxyIsBuiltForTheServiceAccountTheLauncherIsTold(t *testing.T) {
+	impersonating := testDatabase
+	impersonating.ImpersonateServiceAccount = testServiceAccount
+	for name, tc := range map[string]struct {
+		database ompsessions.Database
+		want     string
+	}{
+		"impersonating " + testServiceAccount: {impersonating, testServiceAccount},
+		"as the pod itself":                   {testDatabase, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dialer := &sessionDialer{addr: idleUpstream(t)}
+			g := newSessionRig(t, Config{SessionDatabase: tc.database, SessionDialer: dialer.build})
+			marker := filepath.Join(t.TempDir(), "marker")
+			if got := g.start(g.childStart(2, marker, nil)); !got.OK {
+				t.Fatalf("start result = %#v", got)
+			}
+			if got := dialer.built(); !slices.Equal(got, []string{tc.want}) {
+				t.Fatalf("the generation's dialer factory was given %q, want %q once", got, tc.want)
+			}
+			publishedAll(t, marker)
+			g.stop(2)
+		})
+	}
 }
 
 // A generation whose session database cannot be reached fails loudly rather than running an agent

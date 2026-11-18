@@ -20,6 +20,7 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 	"github.com/sjawhar/envoy/internal/broker/proof"
+	"github.com/sjawhar/envoy/internal/fold"
 )
 
 // RequestTyp is the JWS "typ" header for a credential-request object. It is disjoint from
@@ -62,11 +63,12 @@ func ValidID(id string) bool {
 	return idPattern.MatchString(id)
 }
 
-// CanonicalLogin lowercases and trims the name Dispatch signs a person in with, their email (a
-// record created before people were named by email keeps the GitHub login it was decided under).
-// Every login comparison in the module goes through this form on both sides.
+// CanonicalLogin trims the name Dispatch signs a person in with, their email (a record created
+// before people were named by email keeps the GitHub login it was decided under), and lowers its
+// ASCII letters (fold.ASCII) and nothing else. Every login comparison in the module goes through
+// this form on both sides.
 func CanonicalLogin(login string) string {
-	return strings.ToLower(strings.TrimSpace(login))
+	return fold.ASCII(strings.TrimSpace(login))
 }
 
 // HumanActor is the audit actor of a change a person made: "human:" and their canonical login,
@@ -80,6 +82,27 @@ func HumanActor(login string) string {
 // "launcher:" and that launcher credential's id, whose own row names its operator.
 func LauncherActor(credentialID string) string {
 	return "launcher:" + credentialID
+}
+
+// judgePrefix opens the audit actor of a decision the model judge made. JudgeActor writes it and
+// JudgeLogin reads it, and they are the only two places it is spelled.
+const judgePrefix = "judge:"
+
+// JudgeActor is the audit actor of a decision the model judge made: "judge:" and the id of the
+// model that decided it, which is what the audit row names in place of a person. It is no
+// person's login: a judge's approval is the broker's own, taken inside the bound the airlock
+// rules allow the judge, and the person who would otherwise have decided is named nowhere in it.
+func JudgeActor(modelID string) string {
+	return judgePrefix + modelID
+}
+
+// JudgeLogin reads a judge actor back: the model id JudgeActor made it from, and whether actor is
+// one at all. It is the one reader of the prefix, so every place that must tell the judge's
+// decision from a person's asks it rather than comparing the string for itself. An actor with no
+// "judge:" prefix is no judge, and neither is the bare prefix, which names no model.
+func JudgeLogin(actor string) (modelID string, ok bool) {
+	modelID, ok = strings.CutPrefix(actor, judgePrefix)
+	return modelID, ok && modelID != ""
 }
 
 // AnyoneApprover is the approver of a record anyone signed in to Dispatch may decide: a request
@@ -259,14 +282,97 @@ func validateDetails(details []AuthorizationDetail) error {
 	return nil
 }
 
-// validateReason enforces: at most 400 runes, none in Unicode categories Cc, Cf, Cs, Co, Zl, or Zp
-// (bidi overrides and zero-width characters are Cf).
+// MaxReasonRunes is the longest reason a request may sign, and ReasonRefuses the runes it may
+// not carry: Unicode categories Cc, Cf, Cs, Co, Zl and Zp (bidi overrides and zero-width
+// characters are Cf). validateReason refuses a reason that breaks either rule. Text the broker
+// records with nobody to refuse it to is held to the same rules by Sanitize, which drops those
+// runes and cuts the rest: what a model judge wrote (judge/model.go, judge/judge.go) and the
+// reason a session's call gave a release (requests.callReasonOf). One definition here keeps a
+// reason a person reads in the grant log and a reason a requester signed to one rule.
+const MaxReasonRunes = 400
+
+// ReasonRefuses reports whether r is a rune no reason may carry.
+func ReasonRefuses(r rune) bool {
+	return unicode.In(r, unicode.Cc, unicode.Cf, unicode.Cs, unicode.Co, unicode.Zl, unicode.Zp)
+}
+
+// Sanitize is s with every rune ReasonRefuses dropped and what is left cut to its first limit
+// runes by ClampRunes: the reason rules applied to text that is already in hand, where
+// validateReason would refuse it.
+func Sanitize(s string, limit int) string {
+	return ClampRunes(strings.Map(func(r rune) rune {
+		if ReasonRefuses(r) {
+			return -1
+		}
+		return r
+	}, s), limit)
+}
+
+// ClampRunes is s cut to at most n runes. It cuts on a rune boundary, so what it answers is
+// still the UTF-8 the caller handed it, and it walks s once without allocating.
+func ClampRunes(s string, n int) string {
+	count := 0
+	for i := range s {
+		if count == n {
+			return s[:i]
+		}
+		count++
+	}
+	return s
+}
+
+// MaxCommandArguments and MaxCommandArgumentBytes bound the command a release of a grant records
+// (requests.loggedCommand): its first 32 arguments, each cut to 256 bytes. The agent-secrets
+// client sends no more than that (ClipCommand), which keeps a release's body far under the
+// broker's 1 MiB cap whatever the command, and the broker holds every body to the same bounds
+// again, since a session may send any body.
+const (
+	MaxCommandArguments     = 32
+	MaxCommandArgumentBytes = 256
+)
+
+// ClipArgument is arg cut to its first MaxCommandArgumentBytes bytes on a character's boundary:
+// it backs up over the continuation bytes of the one character the cut would split, and over no
+// more than a character holds, so a run of stray continuation bytes does not pull the cut back.
+// What it answers from a longer argument therefore always ReachesTheCut.
+func ClipArgument(arg string) string {
+	if len(arg) <= MaxCommandArgumentBytes {
+		return arg
+	}
+	cut := MaxCommandArgumentBytes
+	for back := 0; back < utf8.UTFMax-1 && !utf8.RuneStart(arg[cut]); back++ {
+		cut--
+	}
+	return arg[:cut]
+}
+
+// ReachesTheCut reports whether arg is as long as an argument ClipArgument cut, so that its end
+// may be where a secret was cut through: the rule a release's redaction applies to such an end
+// (requests.redactArgument).
+func ReachesTheCut(arg string) bool {
+	return len(arg) > MaxCommandArgumentBytes-utf8.UTFMax
+}
+
+// ClipCommand is command's first MaxCommandArguments arguments, each cut by ClipArgument: what a
+// client sends of the command a release starts. It answers nil for no command.
+func ClipCommand(command []string) []string {
+	if len(command) == 0 {
+		return nil
+	}
+	clipped := make([]string, min(len(command), MaxCommandArguments))
+	for i := range clipped {
+		clipped[i] = ClipArgument(command[i])
+	}
+	return clipped
+}
+
+// validateReason enforces: at most MaxReasonRunes runes, none a rune ReasonRefuses.
 func validateReason(reason string) error {
-	if utf8.RuneCountInString(reason) > 400 {
-		return errors.New("reason is over 400 runes")
+	if utf8.RuneCountInString(reason) > MaxReasonRunes {
+		return fmt.Errorf("reason is over %d runes", MaxReasonRunes)
 	}
 	for _, r := range reason {
-		if unicode.In(r, unicode.Cc, unicode.Cf, unicode.Cs, unicode.Co, unicode.Zl, unicode.Zp) {
+		if ReasonRefuses(r) {
 			return errors.New("reason contains a refused rune category")
 		}
 	}
@@ -461,11 +567,16 @@ func (b Body) ApproverLogin(kind, service, login string) (string, error) {
 // is AnyoneApprover, any login; and otherwise the person the approver names. No login is
 // AnyoneApprover itself, and no empty login decides anything. A person's machine login's approver
 // is the person whose machine it becomes, so AnyoneApprover there admits no one, whatever binary
-// opened the record.
+// opened the record. Nor is a judge actor (JudgeLogin) ever a login that decides: the judge's own
+// approval is recorded under JudgeActor and never as a person, so an owner tag or a login_hint
+// spelled "judge:..." makes no record the judge's to approve as a person.
 func MayDecide(kind, approver, service, login string) bool {
 	login, approver = CanonicalLogin(login), CanonicalLogin(approver)
+	_, judge := JudgeLogin(login)
 	switch {
 	case login == "" || login == AnyoneApprover:
+		return false
+	case judge:
 		return false
 	case kind == KindLauncherCredential && service != "":
 		return true
@@ -473,4 +584,78 @@ func MayDecide(kind, approver, service, login string) bool {
 		return true
 	}
 	return login == approver
+}
+
+// ErrNotJudgeable is wrapped around every reason the model judge may not decide a record: the
+// request names other than one agent secret, the airlock rules allow the judge no lifetime for
+// that secret or less than the record asks for, or the request's signed reason names no Dispatch
+// issue. A caller that only asks "is this the judge's to decide" collapses them with
+// errors.Is(err, ErrNotJudgeable); one that must say why keeps the wrapped reason.
+var ErrNotJudgeable = errors.New("not a request the model judge may decide")
+
+// JudgeAllowsLifetime reports whether a signed lifetime in seconds is within the seconds the
+// airlock rules give the judge for one secret, which airlock.Rules.JudgeSeconds answers as
+// bound. It is the one comparison three callers make — the judge's own check before the model
+// (judge.lifetimeAllowed), MayJudge below, which holds a judged approval at decision time and
+// again on every release, and requests.judgeStillDecides, which re-reads the rules for a grant
+// already made — and it is written once here, so a judge that approves and a state machine
+// that then refuses cannot drift apart. Each caller keeps its own refusal wording, which is
+// what a person reads; only the comparison is shared.
+//
+// It lives in this package rather than beside JudgeSeconds in airlock because MayJudge must
+// reach it and this package must not import airlock; the other two callers already import
+// this one. Both sides are widened to int64, the bound being a uint32 and the lifetime an int,
+// so neither is ever cut to the other's range.
+func JudgeAllowsLifetime(bound uint32, lifetimeSeconds int) bool {
+	return int64(lifetimeSeconds) <= int64(bound)
+}
+
+// MayJudge reports whether the model judge may decide this record at all, before any model is
+// asked: the airlock rules' own bound on what a judge decides, read here so one rule answers for
+// every caller. All three must hold, and the error names which one did not.
+//
+// judgeSeconds is the rules file's answer for one secret (airlock.Rules.JudgeSeconds); it is
+// injected because this package must not import airlock. A nil func is no bound at all and
+// refuses, as a record with no lifetime does: an unbounded grant is exactly what the judge's
+// seconds are there to bound, so nothing the rules say can admit it.
+func MayJudge(body Body, obj RequestObject, judgeSeconds func(secret string) (uint32, bool)) error {
+	if len(obj.Details) != 1 {
+		return fmt.Errorf("%w: the request names %d authorization details, and the judge decides a request for one secret", ErrNotJudgeable, len(obj.Details))
+	}
+	if obj.Details[0].Type != KindAgentSecret {
+		return fmt.Errorf("%w: the request is for a %s, not an agent secret", ErrNotJudgeable, obj.Details[0].Type)
+	}
+	name := obj.Details[0].Identifier
+	if judgeSeconds == nil {
+		return fmt.Errorf("%w: no judge bound is available for %q", ErrNotJudgeable, name)
+	}
+	if body.LifetimeSeconds == nil {
+		return fmt.Errorf("%w: the record names no lifetime, so no judge bound holds it", ErrNotJudgeable)
+	}
+	bound, ok := judgeSeconds(name)
+	if !ok {
+		return fmt.Errorf("%w: the rules let the judge decide nothing for %q", ErrNotJudgeable, name)
+	}
+	if !JudgeAllowsLifetime(bound, *body.LifetimeSeconds) {
+		return fmt.Errorf("%w: the record asks for %d seconds of %q, past the %d the rules let the judge decide", ErrNotJudgeable, *body.LifetimeSeconds, name, bound)
+	}
+	if IssueKeyInReason(obj.Reason) == "" {
+		return fmt.Errorf("%w: the request's reason names no Dispatch issue", ErrNotJudgeable)
+	}
+	return nil
+}
+
+// issueKeyPattern is a Dispatch issue key: a project key — an uppercase letter and then uppercase
+// letters or digits, as contracts.ProjectKeyPattern spells it — a hyphen, and the issue's number.
+// The word boundaries keep a key out of the middle of a longer word, so a reason that names no
+// key cannot be read as naming one.
+var issueKeyPattern = regexp.MustCompile(`\b[A-Z][A-Z0-9]+-[0-9]+\b`)
+
+// IssueKeyInReason is the first Dispatch issue key in a request's own signed reason, and "" when
+// it names none. The proxy puts it in the line it logs for each request it carries a secret on,
+// so an operator reading that line can open the issue the session said it was working on, and
+// MayJudge reads it to tell whether the reason names an issue at all. It lives here, beside the
+// reason the record signs, so the log line and the judge read one definition of an issue key.
+func IssueKeyInReason(reason string) string {
+	return issueKeyPattern.FindString(reason)
 }

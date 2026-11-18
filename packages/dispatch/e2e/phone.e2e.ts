@@ -1,4 +1,3 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
 import { setLiveSessions } from "./agents";
 
 import {
@@ -15,11 +14,19 @@ import {
   getAsk,
   patchIssue,
 } from "./api";
-import { actionBar, barAction, documentEditor, needsYouCards, selectEditorText } from "./editor";
+import {
+  actionBar,
+  barAction,
+  connectedDot,
+  documentEditor,
+  needsYouCards,
+  selectEditorText,
+} from "./editor";
 import { askCard, inboxList } from "./inbox-pane";
 import { expectConsecutiveLinksClear } from "./layout";
-import { insertExternalLink, resetDatabase } from "./seed";
+import { insertExternalLink } from "./seed";
 import { navigateInApp, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -57,13 +64,10 @@ async function assertTabTrapped(page: Page, selector: string): Promise<void> {
   }
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
 // SLOW(>=2s): two focus traps of 32 presses each, every one read back from the page, on an
 // emulated phone - the cycle is the property, and both containers hold more than eight stops.
-test("the phone shell traps focus, dismisses on Escape at the right nesting level, never wraps a key, and renders a pinned event's own description @phone", async ({
+// @pr: The phone shell itself: the focus traps, Escape at the right nesting level, and a pinned event's own description.
+test("the phone shell traps focus, dismisses on Escape at the right nesting level, never wraps a key, and renders a pinned event's own description @phone @pr", async ({
   browser,
 }, testInfo) => {
   const isPhone = testInfo.project.name === "iphone";
@@ -139,6 +143,8 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
     // D11: choosing Comment on a selection autofocuses the composer's body field.
     await selectEditorText(page, "brown");
     if (isPhone) {
+      // selectEditorText waited for the bar to show, and the bar builds its buttons before it
+      // first shows, so one read lists them all.
       for (const button of await actionBar(page).getByRole("button").all()) {
         const box = await button.boundingBox();
         expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
@@ -337,6 +343,13 @@ test("a project document has no horizontal overflow, 44px controls, and a Commen
       )
     ).toBe(true);
     if (testInfo.project.name === "iphone") {
+      // The page draws its controls in parts: the header with the document, the toolbar beside
+      // the connection dot, and the review panel's toggle once the margin knows the document.
+      await expect(connectedDot(page)).toHaveText("connected");
+      const reviewToggle = page.getByRole("button", { name: /Open review panel/ });
+      await expect(reviewToggle).toBeVisible();
+      // The waits above saw the editor, the toolbar and the review toggle drawn, so every part
+      // of the page that holds a control is here when it is read.
       const controls = await page
         .getByRole("main")
         .locator("button:visible, a:visible, select:visible")
@@ -345,7 +358,7 @@ test("a project document has no horizontal overflow, 44px controls, and a Commen
         const box = await control.boundingBox();
         expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
       }
-      await page.getByRole("button", { name: /Open review panel/ }).click();
+      await reviewToggle.click();
       await expect(page.getByRole("tab", { name: "Comments" })).toBeVisible();
       await expect(page.getByRole("tab", { name: "Pinned" })).toHaveCount(0);
     }
@@ -354,10 +367,9 @@ test("a project document has no horizontal overflow, 44px controls, and a Commen
   }
 });
 
-test("inline @ autocomplete has touch-sized controls and no overflow on iPhone @phone", async ({
+test("inline @ autocomplete has touch-sized controls and no overflow on iPhone @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "the 390 px interaction applies on iPhone");
+}) => {
   await setLiveSessions([
     {
       capabilities: ["aside", "btw"],
@@ -380,6 +392,8 @@ test("inline @ autocomplete has touch-sized controls and no overflow on iPhone @
     await expect(picker).toBeVisible();
     const option = picker.getByRole("option", { exact: true, name: "planner" });
     await expect(option).toBeVisible();
+    // The planner option above shows the live list has drawn, and a new issue has no
+    // collaborators to add a Not running option, so one read lists every control.
     for (const control of await composer.locator("button:visible, textarea:visible").all()) {
       const box = await control.boundingBox();
       expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
@@ -405,10 +419,9 @@ test("inline @ autocomplete has touch-sized controls and no overflow on iPhone @
 // to its newest turn lands well after a link first has a box, and the row measures what it
 // placed rather than trusting the page's own placement, since a turn left under the fixed comment
 // composer would have a hit test read the composer and not the link.
-test("an inline link keeps its line and grows its hit box without covering its neighbours @phone", async ({
+test("an inline link keeps its line and grows its hit box without covering its neighbours @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "the 390 px interaction applies on iPhone");
+}) => {
   // The settle proof below is bounded at 20 s and two trial clicks at 5 s each stand after it,
   // all of them failure budget: a passing run spends none of it.
   test.setTimeout(60_000);
@@ -703,6 +716,8 @@ test("an inline link keeps its line and grows its hit box without covering its n
  *  vertically rather than horizontally); Chromium reports the clamped box's display as
  *  `flow-root`, so the clamp is read from its own property. */
 async function expectEllipsis(link: Locator): Promise<void> {
+  await expect(link).toBeVisible();
+  // The wait above drew the link, so the styles and the boxes read here are the drawn ones.
   const state = await link.evaluate((node) => {
     const clippers = [node, ...node.querySelectorAll("*")].filter((element) => {
       const style = getComputedStyle(element);
@@ -738,6 +753,8 @@ async function expectEllipsis(link: Locator): Promise<void> {
  *  one before it. Below 1280 px `styles.css` makes every link and button an inline-flex row,
  *  which puts a `block` control's lines side by side. */
 async function expectStacked(control: Locator): Promise<void> {
+  await expect(control).toBeVisible();
+  // The wait above drew the control, so the boxes of its lines read here are the drawn ones.
   const rows = await control.evaluate((node) =>
     [...node.children].map((child) => {
       const box = child.getBoundingClientRect();

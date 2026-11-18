@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -39,21 +40,28 @@ func standInEventLog(ctx *AppContext, head int64) {
 }
 
 // storeRouter is the router main serves over database, with header identity naming the person and
-// a Lifetime, so it mounts GET /ws/live as production does.
+// a Lifetime, so it mounts GET /ws/live as production does. Its people are the database's own
+// table, as main's are: a header names a person by recording them there, and a project create
+// names its default from that same table (allowedLogin), so an in-memory store here would leave
+// the person the header names unknown to the create. Its event horizon warns of a stall at
+// horizontest.StallWarning, as a cmd/dispatch test process's does, so a wait on the event feed
+// (waitEventsStart) hears that the horizon is held inside its own patience.
 func storeRouter(t *testing.T, database *store.Store) http.Handler {
 	t.Helper()
 	broker := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: database, Events: broker})
 	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
-	people := newMemoryPeople()
+	people := store.NewPgPeopleStore(database.Pool, testSigningKey, nil)
 	ctx, err := BuildAppContext(AppContextOptions{
-		SigningKey: testSigningKey,
-		People:     people,
-		Identity:   identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
-		Store:      database,
-		Docs:       documents,
-		Events:     broker,
-		Lifetime:   t.Context(),
+		SigningKey:        testSigningKey,
+		People:            people,
+		Identity:          identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
+		Store:             database,
+		Docs:              documents,
+		Events:            broker,
+		Lifetime:          t.Context(),
+		HorizonStallAfter: horizontest.StallWarning,
+		HorizonWarnEvery:  horizontest.StallWarning,
 	})
 	if err != nil {
 		t.Fatalf("build context: %v", err)
@@ -84,7 +92,7 @@ func askWhoami(t *testing.T, handler http.Handler) whoamiAnswer {
 }
 
 // createProject creates the project key through the router's API, as alice@d.example, which
-// appends one event, project.created.
+// appends two events: project.created, and the artifact.created of its seeded evals-md.
 func createProject(t *testing.T, handler http.Handler, key string) {
 	t.Helper()
 	request := httptest.NewRequest(http.MethodPost, "http://dispatch.test/api/v1/projects", strings.NewReader(`{"key":"`+key+`","name":"`+key+` project"}`))
@@ -98,7 +106,8 @@ func createProject(t *testing.T, handler http.Handler, key string) {
 }
 
 // GET /auth/whoami carries event_head, the decimal id of the newest committed event, read after the
-// sign-in check: "0" on an empty log, and the third event's id once three have committed.
+// sign-in check: "0" on an empty log, and the last event's id once three projects' six have
+// committed.
 func TestWhoamiCarriesTheNewestEventID(t *testing.T) {
 	database := storetest.Open(t)
 	handler := storeRouter(t, database)
@@ -109,26 +118,31 @@ func TestWhoamiCarriesTheNewestEventID(t *testing.T) {
 	for _, key := range []string{"ONE", "TWO", "THREE"} {
 		createProject(t, handler, key)
 	}
-	rows, err := database.Pool.Query(context.Background(), `select id from events order by id`)
+	// Each create writes its project.created and, in the same transaction, the artifact.created of
+	// the project's seeded evals-md (dispatch://INFRA-2916, R5).
+	rows, err := database.Pool.Query(context.Background(), `select id, type from events order by id`)
 	if err != nil {
 		t.Fatalf("read the event log: %v", err)
 	}
 	var ids []int64
+	types := map[string]int{}
 	for rows.Next() {
 		var id int64
-		if err := rows.Scan(&id); err != nil {
+		var eventType string
+		if err := rows.Scan(&id, &eventType); err != nil {
 			t.Fatalf("read an event id: %v", err)
 		}
 		ids = append(ids, id)
+		types[eventType]++
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("read the event log: %v", err)
 	}
-	if len(ids) != 3 {
-		t.Fatalf("the log holds %d events, want the three projects' (%v)", len(ids), ids)
+	if len(ids) != 6 || types["project.created"] != 3 || types["artifact.created"] != 3 {
+		t.Fatalf("the log holds %d events %v (%v), want the three projects' and their seeded documents'", len(ids), types, ids)
 	}
-	if answer := askWhoami(t, handler); answer.EventHead != strconv.FormatInt(ids[2], 10) {
-		t.Fatalf("whoami after three events: event_head = %q, want the third's id %d", answer.EventHead, ids[2])
+	if answer := askWhoami(t, handler); answer.EventHead != strconv.FormatInt(ids[len(ids)-1], 10) {
+		t.Fatalf("whoami after six events: event_head = %q, want the last one's id %d", answer.EventHead, ids[len(ids)-1])
 	}
 }
 
@@ -162,7 +176,6 @@ func TestAnEventsSubscriptionFromTheWhoamiHeadReplaysWhatCommittedSince(t *testi
 	}); err != nil {
 		t.Fatalf("subscribe to the event feed: %v", err)
 	}
-	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	next := func(what string) (string, []byte) {
 		t.Helper()
 		for {
@@ -182,12 +195,15 @@ func TestAnEventsSubscriptionFromTheWhoamiHeadReplaysWhatCommittedSince(t *testi
 		}
 	}
 
-	kind, data := next("the events_start")
+	data := waitEventsStart(t, conn, database)
 	var start api.LiveEventsStart
-	if err := json.Unmarshal(data, &start); err != nil || kind != "events_start" || start.Sub != "events" || start.Since != head {
+	if err := json.Unmarshal(data, &start); err != nil || start.Type != "events_start" || start.Sub != "events" || start.Since != head {
 		t.Fatalf("first frame = %s (%v), want events' events_start from whoami's head %s", data, err, head)
 	}
-	kind, data = next("the change committed while the page loaded")
+	// The replay follows the events_start out of what the subscription read before sending it,
+	// with no wait on the horizon between them (feedEvents), so a deadline the test owns bounds it.
+	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	kind, data := next("the change committed while the page loaded")
 	var frame api.LiveEventFrame
 	if err := json.Unmarshal(data, &frame); err != nil || kind != "event" {
 		t.Fatalf("second frame = %s (%v), want an event", data, err)
@@ -590,19 +606,7 @@ func TestWhoamiAnswersThePersistedHorizonWhileAnEventInsertFromBeforeBootIsOpen(
 	newest := newestEventID(t, database)
 	before := events.NewHorizon(database.Pool)
 	before.PersistProven()
-	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		if _, err := before.Safe(ctx); err != nil {
-			t.Fatalf("observe the horizon: %v", err)
-		}
-		if persisted, err := before.Persisted(ctx); err != nil {
-			t.Fatalf("read the persisted horizon: %v", err)
-		} else if persisted >= newest {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no horizon of %d persisted within 30s", newest)
-		}
-	}
+	horizontest.AwaitPersisted(t, before, newest, database)
 
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {

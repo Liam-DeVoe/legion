@@ -61,14 +61,25 @@ func setApp(a *gcp.DispatchArgs) {
 	a.AppPrivateKeySecretKey = "private-key.b64"
 }
 
+// dispatchOidcAudience is the audience a caller's projected ServiceAccount token must carry for
+// Dispatch to verify it, and dispatchOidcIssuer another cluster's issuer, the value oidcIssuer
+// renders in place of this component's own.
+const (
+	dispatchOidcAudience = "example-dispatch-audience"
+	dispatchOidcIssuer   = "https://container.googleapis.com/v1/projects/example-other/locations/us-central1/clusters/example-other-dispatch"
+)
+
 // dispatchBrokerAndAppArgs is dispatchArgs with both optional groups set: the secrets-broker relay
 // (agentSecretsUrl with agentSecretsAudience) and the GitHub App (appClientId, appId and the
-// existing Kubernetes Secret and key that hold the private key).
+// existing Kubernetes Secret and key that hold the private key). It sets oidcAudience with them,
+// the other half of the broker's traffic: the broker's judge reads Dispatch with its own pod's
+// projected token, which Dispatch verifies only with that pair rendered.
 func dispatchBrokerAndAppArgs(t *testing.T) *gcp.DispatchArgs {
 	t.Helper()
 	args := dispatchArgs()
 	args.AgentSecretsUrl = "https://example-broker.internal.example"
 	args.AgentSecretsAudience = "example-broker-audience"
+	args.OidcAudience = dispatchOidcAudience
 	setApp(args)
 	return args
 }
@@ -263,8 +274,8 @@ func proxyContainer(t *testing.T, template map[string]any) map[string]any {
 
 // Unset, proxyCpu and proxyMemory size the cloud-sql-proxy sidecar for one server pod's pools,
 // 1 CPU and 2Gi as its request and its limit, the sizes the proxy's own Kubernetes sidecar
-// example requests: every database call of the pod, up to dispatchConnectionsPerPod, passes
-// through its TLS.
+// example requests: every database call of the pod, up to envoy-dispatch's
+// store.ConnectionsPerProcess, passes through its TLS.
 func TestDispatchProxyContainerDefaultsToOneCPUAnd2Gi(t *testing.T) {
 	m, err := runDispatch(t, dispatchArgs(), true)
 	require.NoError(t, err)
@@ -363,6 +374,20 @@ func TestDispatchRefusesAPprofPortBeforeRegistering(t *testing.T) {
 	require.ElementsMatch(t, []string{gcpProviderType, randomProviderType, tailscaleProviderType}, m.Types())
 }
 
+// A hostname that is an xn-- label the IDNA lookup profile takes, or that has "--" other than as
+// its third and fourth characters, is accepted: these rows mark where the reserved-label rule
+// stops, whose refusals TestDispatchResolverRefusesInvalidInputs holds.
+func TestDispatchHostnameTakesLabelsTheReservedLabelRuleTakes(t *testing.T) {
+	for _, hostname := range []string{"xn--bcher-kva", "xn--p1ai", "abc--d"} {
+		t.Run(hostname, func(t *testing.T) {
+			args := dispatchArgs()
+			args.Hostname = hostname
+			_, err := gcp.ResolveDispatch(args)
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestDispatchResolverRefusesInvalidInputs(t *testing.T) {
 	cases := []struct {
 		name string
@@ -370,6 +395,15 @@ func TestDispatchResolverRefusesInvalidInputs(t *testing.T) {
 		err  []string
 	}{
 		{name: "an invalid hostname", edit: func(a *gcp.DispatchArgs) { a.Hostname = "dispatch-" }, err: []string{"hostname", "^[a-z][a-z0-9-]{0,24}[a-z0-9]$"}},
+		// A hostname with a label weborigin.ReservedLabel refuses is refused, in every mode, the
+		// cluster-only one included, with that function's reason; the labels it takes are in
+		// TestDispatchHostnameTakesLabelsTheReservedLabelRuleTakes.
+		{name: "a hostname of the reserved label form", edit: func(a *gcp.DispatchArgs) { a.Hostname = "ex--dispatch" }, err: []string{`hostname: host label "ex--dispatch"`, "certificate authorities"}},
+		{name: "a hostname that is an xn-- label the IDNA lookup profile refuses", edit: func(a *gcp.DispatchArgs) { a.Hostname = "xn--a" }, err: []string{`hostname: host label "xn--a"`, "Fake A-label"}},
+		{name: "a cluster-only hostname of the reserved label form", edit: func(a *gcp.DispatchArgs) {
+			*a = *dispatchClusterOnlyArgs()
+			a.Hostname = "ex--dispatch"
+		}, err: []string{`hostname: host label "ex--dispatch"`}},
 		{name: "an invalid tailnet DNS name", edit: func(a *gcp.DispatchArgs) { a.TailnetDnsName = "Example-Tailnet.ts.net" }, err: []string{"tailnetDnsName", "ts.net"}},
 		{name: "no tags", edit: func(a *gcp.DispatchArgs) { a.Tags = nil }, err: []string{"tags", "at least one"}},
 		{name: "an invalid tag", edit: func(a *gcp.DispatchArgs) { a.Tags = []string{"example-dispatch"} }, err: []string{"tags[0]", "tag:"}},
@@ -755,6 +789,7 @@ func TestDispatchRefusesAnNKeySeedInAPlainInput(t *testing.T) {
 		{"a seed in the front-door tools image", "frontDoorToolsImage", func(a *gcp.DispatchArgs) { a.FrontDoorToolsImage = "example.invalid/" + seed + digest }},
 		{"a seed as the sign-in client ID", "signInClientId", func(a *gcp.DispatchArgs) { a.SignInClientId = seed }},
 		{"a seed inside the sign-in domain", "signInDomain", func(a *gcp.DispatchArgs) { a.SignInDomain = lower + ".example.com" }},
+		{"a seed inside the outside origin", "outsideOrigin", func(a *gcp.DispatchArgs) { a.OutsideOrigin = "https://" + lower + ".example.com" }},
 		{"a seed in the database version", "databaseVersion", func(a *gcp.DispatchArgs) { a.DatabaseVersion = pulumi.StringRef(seed) }},
 		{"a seed in the database tier", "databaseTier", func(a *gcp.DispatchArgs) { a.DatabaseTier = pulumi.StringRef(seed) }},
 		{"a seed as the database availability type", "databaseAvailabilityType", func(a *gcp.DispatchArgs) { a.DatabaseAvailabilityType = pulumi.StringRef(seed) }},
@@ -769,6 +804,10 @@ func TestDispatchRefusesAnNKeySeedInAPlainInput(t *testing.T) {
 		{"a seed in an allowed namespace", "allowedNamespaces[1]", func(a *gcp.DispatchArgs) { a.AllowedNamespaces = []string{"envoy", lower} }},
 		{"a seed inside the agent secrets URL", "agentSecretsUrl", func(a *gcp.DispatchArgs) { a.AgentSecretsUrl = "https://" + lower + ".internal.example" }},
 		{"a seed inside the agent secrets audience", "agentSecretsAudience", func(a *gcp.DispatchArgs) { a.AgentSecretsAudience = "https://" + lower + ".internal.example" }},
+		{"a seed as the OIDC audience", "oidcAudience", func(a *gcp.DispatchArgs) { a.OidcAudience = seed }},
+		{"a seed inside the OIDC issuer", "oidcIssuer", func(a *gcp.DispatchArgs) {
+			a.OidcAudience, a.OidcIssuer = dispatchOidcAudience, "https://"+lower+".internal.example"
+		}},
 		{"a seed as the app client ID", "appClientId", func(a *gcp.DispatchArgs) { a.AppClientId = seed }},
 		{"a seed as the app ID", "appId", func(a *gcp.DispatchArgs) { a.AppId = seed }},
 		{"a seed as the app private key secret name", "appPrivateKeySecretName", func(a *gcp.DispatchArgs) { a.AppPrivateKeySecretName = lower }},
@@ -1824,14 +1863,16 @@ func TestDispatchAppAndListenerAgreeOnNats(t *testing.T) {
 }
 
 // A stopping listener pod keeps answering /v1 while its removal from Service example-dispatch-
-// listener reaches every node's proxy: it waits 5 s before it is signalled, and its 35 s grace
-// period covers that wait, the listener's own stop of about 26 s, and a margin.
+// listener reaches every node's proxy: it waits 5 s before it is signalled, and its 40 s grace
+// period covers that wait and the listener's own stop of 28 s, with the margin
+// listenerGraceMargin names (packages/envoy/cmd/listener/main.go), which that listener's own
+// TestListenerPodGracesCoverTheStopBudget holds this pod's golden to.
 func TestDispatchListenerKeepsServingUntilItsRemovalFromRoutingPropagates(t *testing.T) {
 	m, err := runDispatch(t, dispatchArgs(), true)
 	require.NoError(t, err)
 
 	template := deploymentPodTemplate(t, m, "example-dispatch-listener")
-	require.EqualValues(t, 35, template["spec"].(map[string]any)["terminationGracePeriodSeconds"])
+	require.EqualValues(t, 40, template["spec"].(map[string]any)["terminationGracePeriodSeconds"])
 	require.Equal(t, map[string]any{"preStop": map[string]any{"exec": map[string]any{"command": []any{"sleep", "5"}}}},
 		podContainer(t, template, "envoy-listener")["lifecycle"])
 }
@@ -2507,6 +2548,59 @@ func TestDispatchBrokerAndAppLeaveTheOtherWorkloadsUnchanged(t *testing.T) {
 	require.NoError(t, err)
 	requirePodGolden(t, m, "example-dispatch-listener", "dispatch-listener-pod.golden")
 	requirePodGolden(t, m, "example-dispatch-tailnet", "dispatch-tailnet-pod.golden")
+}
+
+// Dispatch verifies a caller's projected ServiceAccount token with DISPATCH_OIDC_ISSUER and
+// DISPATCH_OIDC_AUDIENCE, and refuses to boot holding one of the two alone
+// (internal/oidc.ConfigFromEnv), so the component renders the pair whole or not at all: without
+// an audience neither variable, with one both, the issuer this component's own cluster unless
+// oidcIssuer names another. azureIssuer is that cluster's issuer, the value the
+// serviceAccountIssuer output carries for these arguments.
+func TestDispatchRendersTheServiceAccountVerifierWhole(t *testing.T) {
+	for _, row := range []struct {
+		name           string
+		edit           func(*gcp.DispatchArgs)
+		issuer, admits string
+	}{
+		{name: "no audience", edit: func(*gcp.DispatchArgs) {}},
+		{
+			name:   "an audience alone",
+			edit:   func(a *gcp.DispatchArgs) { a.OidcAudience = dispatchOidcAudience },
+			issuer: azureIssuer, admits: dispatchOidcAudience,
+		},
+		{
+			name: "an audience with an issuer of its own",
+			edit: func(a *gcp.DispatchArgs) {
+				a.OidcAudience, a.OidcIssuer = dispatchOidcAudience, dispatchOidcIssuer
+			},
+			issuer: dispatchOidcIssuer, admits: dispatchOidcAudience,
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			args := dispatchArgs()
+			row.edit(args)
+			m, err := runDispatch(t, args, true)
+			require.NoError(t, err)
+			env := containerEnv(t, podContainer(t, deploymentPodTemplate(t, m, "example-dispatch"), "envoy-dispatch"))
+			if row.admits == "" {
+				require.NotContains(t, env, "DISPATCH_OIDC_ISSUER")
+				require.NotContains(t, env, "DISPATCH_OIDC_AUDIENCE")
+				return
+			}
+			require.Equal(t, row.issuer, env["DISPATCH_OIDC_ISSUER"])
+			require.Equal(t, row.admits, env["DISPATCH_OIDC_AUDIENCE"])
+		})
+	}
+}
+
+// The audience is what turns the verifier on, so an oidcIssuer with no oidcAudience would
+// configure nothing: it is refused by the resolver, before the component registers anything.
+func TestDispatchRefusesAnOidcIssuerWithNoAudience(t *testing.T) {
+	args := dispatchArgs()
+	args.OidcIssuer = dispatchOidcIssuer
+	m, err := runDispatch(t, args, true)
+	require.ErrorContains(t, err, "envoy-infra:gcp:Dispatch example-dispatch: oidcAudience is required when oidcIssuer is set")
+	require.ElementsMatch(t, []string{gcpProviderType, randomProviderType, tailscaleProviderType}, m.Types())
 }
 
 // A refused Azure configuration is refused by the resolver, before the component registers, so

@@ -26,6 +26,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/broker/proof"
+	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/testtmp"
 )
@@ -110,6 +111,35 @@ func TestConfigDerivesDefaultsAndServeRequiresURL(t *testing.T) {
 	cfg, _ = loadConfig(env(map[string]string{"HOME": "/home/u", "AGENT_SECRETS_URL": "https://s", "AGENT_SECRETS_MACHINE_FILE": "/tmp/x/m.json"}))
 	if cfg.MachineFile != "/tmp/x/m.json" {
 		t.Fatalf("AGENT_SECRETS_MACHINE_FILE must name the machine file: %q", cfg.MachineFile)
+	}
+}
+
+// TestHelperConfigWithNoMachineSettingAsksNoMetadataServer: the helper's machine identity is the
+// one AGENT_SECRETS_MACHINE_IDENTITY names and nothing else. `agent-secrets` finds a machine's
+// identity with no setting (brokerclient.DetectMachineIdentity), but the helper does not: with no
+// setting it proves no identity, and a metadata server standing by is never asked.
+func TestHelperConfigWithNoMachineSettingAsksNoMetadataServer(t *testing.T) {
+	var requests atomic.Int64
+	metadata := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Metadata-Flavor", "Google")
+		_, _ = w.Write([]byte("machine@example.iam.gserviceaccount.com"))
+	}))
+	defer metadata.Close()
+	host := strings.TrimPrefix(metadata.URL, "http://")
+	t.Setenv("GCE_METADATA_HOST", host)
+	cfg, err := loadConfig(env(map[string]string{
+		"HOME": t.TempDir(), "XDG_RUNTIME_DIR": t.TempDir(), "AGENT_SECRETS_URL": "https://secrets.internal.example",
+		"GCE_METADATA_HOST": host,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Identity != nil {
+		t.Fatalf("the helper's config proves %s with no AGENT_SECRETS_MACHINE_IDENTITY; want none", cfg.Identity.Describe())
+	}
+	if n := requests.Load(); n != 0 {
+		t.Fatalf("the metadata server saw %d requests; the helper's config asks it nothing", n)
 	}
 }
 
@@ -221,10 +251,7 @@ func registerChild(t *testing.T, sock string) {
 // unit's journal then says only that it ended, so the helper's last line names the signal, how
 // many sessions it had and that it held a launcher credential.
 func TestServeNamesTheSignalItStopsOn(t *testing.T) {
-	binary := filepath.Join(t.TempDir(), "agent-secrets-helper")
-	if out, err := exec.Command("go", "build", "-o", binary, ".").CombinedOutput(); err != nil {
-		t.Fatalf("go build: %v\n%s", err, out)
-	}
+	binary := cmdtest.Build(t, "agent-secrets-helper")
 	for _, tc := range []struct {
 		sig  syscall.Signal
 		name string
@@ -314,10 +341,7 @@ func TestServeNamesTheSignalItStopsOn(t *testing.T) {
 // TestServeLogsTheBrokerWithoutACredential: a user name and password AGENT_SECRETS_URL carries
 // never reach the helper's journal; its listening line names the broker with both masked.
 func TestServeLogsTheBrokerWithoutACredential(t *testing.T) {
-	binary := filepath.Join(t.TempDir(), "agent-secrets-helper")
-	if out, err := exec.Command("go", "build", "-o", binary, ".").CombinedOutput(); err != nil {
-		t.Fatalf("go build: %v\n%s", err, out)
-	}
+	binary := cmdtest.Build(t, "agent-secrets-helper")
 	dir := shortTempDir(t)
 	stderr, err := os.Create(filepath.Join(dir, "stderr"))
 	if err != nil {
@@ -362,10 +386,7 @@ func TestServeLogsTheBrokerWithoutACredential(t *testing.T) {
 // redact.URL will not print, it names the URL as redact.NotPrinted and the failure's class
 // alone; for a clean one, it reads as net/http wrote it.
 func TestALoginTheBrokerNeverAnswersNamesNoCredential(t *testing.T) {
-	binary := filepath.Join(t.TempDir(), "agent-secrets-helper")
-	if out, err := exec.Command("go", "build", "-o", binary, ".").CombinedOutput(); err != nil {
-		t.Fatalf("go build: %v\n%s", err, out)
-	}
+	binary := cmdtest.Build(t, "agent-secrets-helper")
 	for _, row := range []struct{ base, want string }{
 		{"http://127.0.0.1:1", `"http://127.0.0.1:1/v1/oauth/device_authorization": dial tcp 127.0.0.1:1: connect: connection refused`},
 		{"http://tokuser9f3:hunter2pw@127.0.0.1:1", `"` + redact.NotPrinted + `": connection refused`},

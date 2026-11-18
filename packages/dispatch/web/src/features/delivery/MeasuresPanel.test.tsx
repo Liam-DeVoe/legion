@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import type { DeliveryDailyPoint, DeliveryMeasuresResponse } from "../../api/types";
+import { chartBar, dangerText, successText, textPrimaryOnSurface } from "../../theme/classes";
 import { MeasuresPanel } from "./MeasuresPanel";
 
 afterEach(cleanup);
@@ -38,8 +39,47 @@ function fixtureDaily(): DeliveryDailyPoint[] {
   return days;
 }
 
+type Targets = DeliveryMeasuresResponse["targets"];
+
+/** The six targets as the catalogue's evals hold them, which the answer states until a person
+ *  changes one: each with its eval's direction and the statistics its verdict judges. */
+const catalogueTargets: { [K in keyof Targets]: NonNullable<Targets[K]> } = {
+  deploys_per_day: {
+    value: 20,
+    inclusive: true,
+    direction: "higher_better",
+    judges: ["deploys.per_day"],
+  },
+  change_failure_rate: {
+    value: 0.05,
+    inclusive: false,
+    direction: "lower_better",
+    judges: ["per_deploy.rate"],
+  },
+  merge_to_production_minutes: {
+    value: 45,
+    inclusive: false,
+    direction: "lower_better",
+    judges: ["minutes.max", "minutes.median"],
+  },
+  opened_to_merge_median_minutes: {
+    value: 60,
+    inclusive: false,
+    direction: "lower_better",
+    judges: ["minutes.median"],
+  },
+  deploy_run_success_rate: {
+    value: 0.9,
+    inclusive: true,
+    direction: "higher_better",
+    judges: ["runs.rate"],
+  },
+  unowned_p0: { value: 0, inclusive: true, direction: "lower_better", judges: ["issues.value"] },
+};
+
 /** GET /api/v1/delivery/measures for the fixture window, as the server answers it with no flags
- *  stored (the reference request recorded on the slice 2 pull request). */
+ *  stored (the reference request recorded on the slice 2 pull request): no failure source exists,
+ *  so the change failure rate is null and neither of its verdicts is reached. */
 const fixtureMeasures: DeliveryMeasuresResponse = {
   window: { from: "2026-08-30T00:00:00Z", to: "2026-09-27T20:00:00Z" },
   computed_at: "2026-10-09T04:33:22Z",
@@ -56,19 +96,7 @@ const fixtureMeasures: DeliveryMeasuresResponse = {
       opened_to_production: { median_minutes: 1260, p90_minutes: 2874, max_minutes: 4320 },
       opened_to_merge: { median_minutes: 330, p90_minutes: 462.00000000000006, max_minutes: 1080 },
     },
-    change_failure_rate: {
-      per_pr: { confirmed: 0, pending: 0, rejected: 0, reverts: 0, total: 14, rate: 0 },
-      per_deploy: {
-        confirmed: 0,
-        pending: 0,
-        rejected: 0,
-        reverts: 0,
-        total: 5,
-        rate: 0,
-        confirmed_or_pending: 0,
-        upper_bound_rate: 0,
-      },
-    },
+    change_failure_rate: null,
     time_to_restore: { median_minutes: null },
     rework_share: 0.2857142857142857,
     deploy_run_success: {
@@ -81,18 +109,11 @@ const fixtureMeasures: DeliveryMeasuresResponse = {
   },
   flags_source: "none",
   unowned_p0: [{ key: "ACME-103", title: "Production deploy gate flakes" }],
-  targets: {
-    deploys_per_day: 20,
-    change_failure_rate: 0.05,
-    merge_to_production_minutes: 45,
-    opened_to_merge_median_minutes: 60,
-    deploy_run_success_rate: 0.9,
-    unowned_p0: 0,
-  },
+  targets: catalogueTargets,
   status: {
     deploys_per_day: false,
-    change_failure_rate: true,
-    change_failure_rate_upper_bound: true,
+    change_failure_rate: null,
+    change_failure_rate_upper_bound: null,
     merge_to_production_median: false,
     merge_to_production: false,
     opened_to_merge: false,
@@ -121,6 +142,18 @@ function card(title: string): HTMLElement {
   return found;
 }
 
+/** The per-day chart of a card: its dashed target lines, and each day's drawn bar or stub in day
+ *  order, the fixture's 29 days from 2026-08-30. */
+function chart(title: string): { bars: (string | null)[]; lines: number } {
+  const svg = within(card(title)).getByRole("img", { name: "per-day trend" });
+  return {
+    bars: Array.from(svg.querySelectorAll("rect"))
+      .filter((rect) => rect.getAttribute("fill") !== "transparent")
+      .map((rect) => rect.getAttribute("class")),
+    lines: svg.querySelectorAll("line").length,
+  };
+}
+
 test("the panel shows the six KPI cards, each with its badge, number and target", () => {
   renderPanel(fixtureMeasures);
 
@@ -135,7 +168,11 @@ test("the panel shows the six KPI cards, each with its badge, number and target"
   expect(deploys.getByRole("img", { name: "per-day trend" })).toBeDefined();
 
   const cfr = within(card("Change failure rate"));
-  expect(cfr.getByText("0.00%")).toBeDefined();
+  expect(cfr.getByText("n/a")).toBeDefined();
+  expect(cfr.getByText("no data")).toBeDefined();
+  expect(cfr.queryByText("\u2713 met")).not.toBeInTheDocument();
+  expect(cfr.queryByText("\u2717 missed")).not.toBeInTheDocument();
+  expect(cfr.queryByText("confirmed")).not.toBeInTheDocument();
   expect(cfr.getByText("Flags arrive with flag confirmation")).toBeDefined();
   expect(cfr.queryByText(/if every pending flag is confirmed/)).not.toBeInTheDocument();
   expect(cfr.getByText("target < 5% per deploy")).toBeDefined();
@@ -143,11 +180,14 @@ test("the panel shows the six KPI cards, each with its badge, number and target"
   const merge = within(card("Merge \u2192 production"));
   expect(merge.getByText("8.5h")).toBeDefined();
   expect(merge.getByText("2.7d")).toBeDefined();
+  // The catalogue judges the longest change and the median, and the longest change under the
+  // target puts the median under it: the caption names the longest change alone, as before.
   expect(merge.getByText("target < 45m for every change")).toBeDefined();
 
+  // The median is the judged statistic, so it takes the verdict's tone, and the p90 reads plain.
   const opened = within(card("PR open \u2192 merge"));
-  expect(opened.getByText("5.5h")).toBeDefined();
-  expect(opened.getByText("7.7h")).toBeDefined();
+  expect(opened.getByText("5.5h").className).toContain(dangerText);
+  expect(opened.getByText("7.7h").className).toContain(textPrimaryOnSurface);
   expect(opened.getByText("target median < 60m")).toBeDefined();
 
   const runs = within(card("Deploy runs reaching production"));
@@ -162,6 +202,7 @@ test("the panel shows the six KPI cards, each with its badge, number and target"
   expect(link).toHaveAttribute("href", "/issues/ACME-103");
   expect(link).toHaveAttribute("title", "Production deploy gate flakes");
   expect(p0.getByText(/^no claim or route, as of /)).toBeDefined();
+  expect(p0.getByText("target 0")).toBeDefined();
 });
 
 test("met, missed and no-data badges follow the response's status", () => {
@@ -171,13 +212,198 @@ test("met, missed and no-data badges follow the response's status", () => {
   });
   expect(within(card("Deploys a day")).getByText("\u2713 met")).toBeDefined();
   expect(within(card("Deploy runs reaching production")).getByText("no data")).toBeDefined();
-  expect(within(card("Change failure rate")).getByText("\u2713 met")).toBeDefined();
+  expect(within(card("Change failure rate")).getByText("no data")).toBeDefined();
+});
+
+test("each target reads as its eval holds it: its sign follows inclusive, and one turned off reads off", () => {
+  renderPanel({
+    ...fixtureMeasures,
+    targets: {
+      ...catalogueTargets,
+      deploys_per_day: { ...catalogueTargets.deploys_per_day, value: 4, inclusive: false },
+      merge_to_production_minutes: {
+        ...catalogueTargets.merge_to_production_minutes,
+        inclusive: true,
+      },
+      deploy_run_success_rate: null,
+    },
+    status: { ...fixtureMeasures.status, deploy_run_success: null },
+  });
+  expect(within(card("Deploys a day")).getByText("target > 4/day")).toBeDefined();
+  expect(
+    within(card("Merge \u2192 production")).getByText("target \u2264 45m for every change")
+  ).toBeDefined();
+  // At most 0 unowned P0 issues is exactly 0, so the inclusive target reads as the value alone.
+  expect(within(card("P0 issues with no owner")).getByText("target 0")).toBeDefined();
+  const runs = within(card("Deploy runs reaching production"));
+  expect(runs.getByText("target off")).toBeDefined();
+  expect(runs.getByText("no data")).toBeDefined();
+});
+
+test("a judge another judge implies is neither named nor toned: PR open to merge judged by its longest change and its median", () => {
+  renderPanel({
+    ...fixtureMeasures,
+    targets: {
+      ...catalogueTargets,
+      opened_to_merge_median_minutes: {
+        ...catalogueTargets.opened_to_merge_median_minutes,
+        judges: ["minutes.max", "minutes.median"],
+      },
+    },
+  });
+  const opened = within(card("PR open \u2192 merge"));
+  expect(opened.getByText("target < 60m for every change")).toBeDefined();
+  // The verdict, missed, is the longest change's, which the card shows no figure of: the median
+  // it implies is not coloured by it.
+  expect(opened.getByText("5.5h").className).toContain(textPrimaryOnSurface);
+  expect(opened.getByText("5.5h").className).not.toContain(dangerText);
+  cleanup();
+
+  // Better higher nothing is implied, so both are named and the median takes the verdict's tone.
+  renderPanel({
+    ...fixtureMeasures,
+    targets: {
+      ...catalogueTargets,
+      opened_to_merge_median_minutes: {
+        ...catalogueTargets.opened_to_merge_median_minutes,
+        direction: "higher_better",
+        judges: ["minutes.max", "minutes.median"],
+      },
+    },
+  });
+  const higher = within(card("PR open \u2192 merge"));
+  expect(higher.getByText("target longest and median > 60m")).toBeDefined();
+  expect(higher.getByText("5.5h").className).toContain(dangerText);
+});
+
+// R5: a person may judge a delivery eval by any statistic the answer states, and the verdict
+// follows the judges. The card names what the verdict is of, rather than the statistic the
+// catalogue judges: "median" under a card whose badge judges the p90 would be a wrong caption.
+test("a lead-time card names the statistics its target judges and tones those figures: PR open to merge judged by its p90", () => {
+  renderPanel({
+    ...fixtureMeasures,
+    targets: {
+      ...catalogueTargets,
+      opened_to_merge_median_minutes: {
+        value: 720,
+        inclusive: true,
+        direction: "lower_better",
+        judges: ["minutes.p90"],
+      },
+      merge_to_production_minutes: {
+        ...catalogueTargets.merge_to_production_minutes,
+        judges: ["minutes.p90"],
+      },
+    },
+    status: { ...fixtureMeasures.status, opened_to_merge: true },
+  });
+  const opened = within(card("PR open \u2192 merge"));
+  expect(opened.getByText("target p90 \u2264 720m")).toBeDefined();
+  expect(opened.queryByText(/^target median/)).not.toBeInTheDocument();
+  // The verdict, met, is the p90's: the p90 takes its tone, and the median reads plain.
+  expect(opened.getByText("7.7h").className).toContain(successText);
+  expect(opened.getByText("5.5h").className).toContain(textPrimaryOnSurface);
+  expect(opened.getByText("5.5h").className).not.toContain(successText);
+
+  // Merge to production judged by a statistic the card shows no figure of: the caption names it,
+  // and the longest change is no longer toned by a verdict that is not of it.
+  const merge = within(card("Merge \u2192 production"));
+  expect(merge.getByText("target p90 < 45m")).toBeDefined();
+  expect(merge.getByText("2.7d").className).toContain(textPrimaryOnSurface);
+  expect(merge.getByText("2.7d").className).not.toContain(dangerText);
+});
+
+test("a target is phrased and its days are judged in the direction it carries: the same value reads and colours the other way under lower_better", () => {
+  const halfADay = { ...catalogueTargets.deploys_per_day, value: 0.5 };
+  renderPanel({
+    ...fixtureMeasures,
+    targets: { ...catalogueTargets, deploys_per_day: halfADay },
+  });
+  expect(within(card("Deploys a day")).getByText("target \u2265 0.5/day")).toBeDefined();
+  // 2026-09-04 deployed nothing and 2026-09-05 once: the sixth and seventh day of the window.
+  expect(chart("Deploys a day").bars.slice(5, 7)).toEqual([chartBar.missed, chartBar.met]);
+  cleanup();
+
+  renderPanel({
+    ...fixtureMeasures,
+    targets: { ...catalogueTargets, deploys_per_day: { ...halfADay, direction: "lower_better" } },
+  });
+  expect(within(card("Deploys a day")).getByText("target \u2264 0.5/day")).toBeDefined();
+  expect(chart("Deploys a day").bars.slice(5, 7)).toEqual([chartBar.met, chartBar.missed]);
+});
+
+test("a day's bar is coloured by that day's value of the judged statistic, and is neutral with no target line where the day states none", () => {
+  renderPanel({
+    ...fixtureMeasures,
+    targets: {
+      ...catalogueTargets,
+      // Run success judged by its concluded runs, at least one a day.
+      deploy_run_success_rate: {
+        value: 1,
+        inclusive: true,
+        direction: "higher_better",
+        judges: ["runs.concluded"],
+      },
+      // Deploys judged by those that shipped a pull request, which no day row states.
+      deploys_per_day: { ...catalogueTargets.deploys_per_day, judges: ["deploys.with_prs"] },
+    },
+  });
+  const runs = chart("Deploy runs reaching production");
+  expect(
+    within(card("Deploy runs reaching production")).getByText("target concluded runs \u2265 1")
+  ).toBeDefined();
+  // 2026-09-11, the thirteenth day: one run concluded and none reached production. Its success,
+  // 0%, would miss any success target; its one concluded run meets "at least 1".
+  expect(runs.bars[12]).toBe(chartBar.met);
+  // The bars draw the success rate, which the target is not of: no line is drawn over them.
+  expect(runs.lines).toBe(0);
+
+  const deploys = chart("Deploys a day");
+  expect(
+    within(card("Deploys a day")).getByText("target deploys with a PR \u2265 20")
+  ).toBeDefined();
+  expect(new Set(deploys.bars)).toEqual(new Set([chartBar.neutral]));
+  expect(deploys.lines).toBe(0);
+  cleanup();
+
+  // The catalogue's judges: each bar is its own figure's verdict, under its target line.
+  renderPanel(fixtureMeasures);
+  expect(chart("Deploy runs reaching production").bars[12]).toBe(chartBar.missed);
+  expect(chart("Deploy runs reaching production").lines).toBe(1);
+  expect(chart("Deploys a day").lines).toBe(1);
+});
+
+test("a lead-time card whose target is off reads off alone, with no verdict", () => {
+  renderPanel({
+    ...fixtureMeasures,
+    targets: {
+      ...fixtureMeasures.targets,
+      merge_to_production_minutes: null,
+      opened_to_merge_median_minutes: null,
+    },
+    status: {
+      ...fixtureMeasures.status,
+      merge_to_production: null,
+      merge_to_production_median: null,
+      opened_to_merge: null,
+    },
+  });
+  for (const title of ["Merge \u2192 production", "PR open \u2192 merge"]) {
+    const lead = within(card(title));
+    expect(lead.getByText("target off")).toBeDefined();
+    expect(lead.getByText("no data")).toBeDefined();
+  }
 });
 
 test("with stored flags the change failure rate card shows the upper bound and the breakdown", () => {
   renderPanel({
     ...fixtureMeasures,
     flags_source: "stored",
+    status: {
+      ...fixtureMeasures.status,
+      change_failure_rate: false,
+      change_failure_rate_upper_bound: false,
+    },
     measures: {
       ...fixtureMeasures.measures,
       change_failure_rate: {
@@ -197,6 +423,8 @@ test("with stored flags the change failure rate card shows the upper bound and t
   });
   const cfr = within(card("Change failure rate"));
   expect(cfr.getByText("40.00%", { selector: "span.text-lg" })).toBeDefined();
+  expect(cfr.getByText("\u2717 missed")).toBeDefined();
+  expect(cfr.getByText("confirmed")).toBeDefined();
   expect(
     cfr.getByText(
       (_, element) =>
@@ -229,7 +457,7 @@ test("the strip shows the five headline numbers", () => {
   for (const [value, label] of [
     ["0.17/day", "Deploy freq"],
     ["8.5h", "Lead time (merge\u2192prod)"],
-    ["0.0%", "CFR (per PR)"],
+    ["n/a", "CFR (per PR)"],
     ["n/a", "Time to restore"],
     ["28.6%", "Rework share"],
   ]) {
@@ -251,6 +479,10 @@ test("the definitions fold opens to the definition cards and the per-day table, 
   expect(toggle).toHaveAttribute("aria-expanded", "true");
   expect(screen.getByText("Lead time (first commit \u2192 prod)")).toBeDefined();
   expect(screen.getByText("23.0h")).toBeDefined();
+  const perPR = screen.getByText("Change failure rate (per PR)").parentElement;
+  expect(perPR?.textContent).toBe(
+    "Change failure rate (per PR)n/aNo failure source yet: flags arrive with flag confirmation. Incidents: no source yet."
+  );
   const table = screen.getByRole("table");
   const rows = within(table).getAllByRole("row");
   // A header row, then every one of the window's 29 days.

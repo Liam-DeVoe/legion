@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -25,24 +26,33 @@ import (
 // column backwards either.
 const issueUpdatedNow = "greatest(updated_at, clock_timestamp())"
 
+// updateIssueInput is the body of PATCH /api/v1/issues/{key}.
+type updateIssueInput struct {
+	Title         *string               `json:"title"`
+	Status        *string               `json:"status"`
+	Rank          *rankInput            `json:"rank"`
+	Labels        *[]string             `json:"labels"`
+	LabelsAdd     *[]string             `json:"labels_add"`
+	ExpectedSeq   *int64                `json:"expected_sequence"`
+	Priority      json.RawMessage       `json:"priority"`
+	Route         *string               `json:"route"`
+	ExternalLinks *[]model.ExternalLink `json:"external_links"`
+	Assignee      json.RawMessage       `json:"assignee"`
+	Parent        json.RawMessage       `json:"parent"`
+	BlockedBy     *[]string             `json:"blocked_by"`
+	// Advances is the replacement list of priority ids this issue advances ([] clears it), and
+	// AdvancesRevision the revision the read this write is answering returned. A write that
+	// carries the revision is a whole-set write; one that carries none writes single acts and
+	// may change at most one relation (refuseAdvancesRevision).
+	Advances         *[]string       `json:"advances"`
+	AdvancesRevision *int64          `json:"advances_revision"`
+	Components       json.RawMessage `json:"components"`
+	Repo             json.RawMessage `json:"repo"`
+	Actor            *model.Actor    `json:"actor"`
+}
+
 func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		Title         *string               `json:"title"`
-		Status        *string               `json:"status"`
-		Rank          *rankInput            `json:"rank"`
-		Labels        *[]string             `json:"labels"`
-		LabelsAdd     *[]string             `json:"labels_add"`
-		ExpectedSeq   *int64                `json:"expected_sequence"`
-		Priority      json.RawMessage       `json:"priority"`
-		Route         *string               `json:"route"`
-		ExternalLinks *[]model.ExternalLink `json:"external_links"`
-		Assignee      json.RawMessage       `json:"assignee"`
-		Parent        json.RawMessage       `json:"parent"`
-		BlockedBy     *[]string             `json:"blocked_by"`
-		Components    json.RawMessage       `json:"components"`
-		Repo          json.RawMessage       `json:"repo"`
-		Actor         *model.Actor          `json:"actor"`
-	}
+	var input updateIssueInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -55,6 +65,15 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if input.BlockedBy != nil {
 		var err error
 		blockers, err = normalizeIssueBlockers(*input.BlockedBy)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
+	var advances []string
+	if input.Advances != nil {
+		var err error
+		advances, err = normalizeIssueAdvances(*input.Advances)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -156,6 +175,10 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	defer ledger.Discard()
 
 	dependencyWrite := input.BlockedBy != nil || parentProvided
+	// A credential that names one project is refused a target outside it where a target's
+	// project is read, since this route's own address names no target (project_scope.go): the
+	// lock step refuses it before any lock, and writeBlockedBy again under them.
+	callerProject, _ := s.callerProject(r)
 	if dependencyWrite || input.Rank != nil {
 		var project string
 		if err := tx.QueryRow(r.Context(), `select project_key from issues where key = $1`, key).Scan(&project); err != nil {
@@ -163,7 +186,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if dependencyWrite {
-			if err := lockProjectIssueDependencies(r.Context(), tx, project); err != nil {
+			if err := lockIssueDependencyWrite(r.Context(), tx, project, callerProject, blockers); err != nil {
 				s.writeHandlerError(w, err)
 				return
 			}
@@ -231,14 +254,20 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		// reopening status; every other field, its repository included, and closing it again,
 		// waits for a reopen.
 		addsLink := input.ExternalLinks != nil && !isExternalLinksSubset(*input.ExternalLinks, before.ExternalLinks)
-		others := input.Title != nil || input.Labels != nil || input.LabelsAdd != nil || priorityProvided || input.Route != nil || addsLink || assigneeProvided || parentProvided || input.BlockedBy != nil || repoProvided
+		others := input.Title != nil || input.Labels != nil || input.LabelsAdd != nil || priorityProvided || input.Route != nil || addsLink || assigneeProvided || parentProvided || input.BlockedBy != nil || input.Advances != nil || repoProvided
 		if others || (input.Status != nil && !reopening) || (input.Status == nil && input.Rank == nil && !componentsProvided && input.ExternalLinks == nil) {
 			writeError(w, "ISSUE_CLOSED", http.StatusConflict, "issue is closed")
 			return
 		}
 	}
-	if repo != nil {
-		if err := checkIssueRepoMapped(r.Context(), tx, *repo, before.Project); err != nil {
+	// The `advances` revision rule is decided here, beside the other refusals of this handler
+	// and before the first row is written: a refused write leaves the issue exactly as it was.
+	// The held set and the revision are the issue as this write's own row lock read it, so two
+	// writes of one issue decide the rule one after the other rather than together.
+	var heldAdvances []string
+	if input.Advances != nil {
+		heldAdvances = ownAdvances(before.Advances)
+		if err := refuseAdvancesRevision(heldAdvances, before.AdvancesRevision, input.AdvancesRevision, advances); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -313,7 +342,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if repoProvided {
 		set("repo", repo)
 	}
-	changed := len(sets) > 0 || componentsProvided || input.BlockedBy != nil
+	changed := len(sets) > 0 || componentsProvided || input.BlockedBy != nil || input.Advances != nil
 	if changed {
 		sets = append(sets, "updated_at = "+issueUpdatedNow)
 		if _, err := tx.Exec(r.Context(), `update issues set `+strings.Join(sets, ", ")+` where key = $1`, args...); err != nil {
@@ -335,7 +364,13 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if input.BlockedBy != nil {
-		if err := writeBlockedBy(r.Context(), tx, key, before.Project, blockers); err != nil {
+		if err := writeBlockedBy(r.Context(), tx, key, before.Project, callerProject, blockers); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
+	if input.Advances != nil {
+		if err := writeIssueAdvances(r.Context(), tx, key, heldAdvances, advances, actor, time.Now().UTC()); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -387,7 +422,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	if !changed {
 		advice := s.writeAdvice(
-			r.Context(), tx, "PATCH /api/v1/issues/{key}", key, actor, "", before.Status,
+			r.Context(), tx, "PATCH /api/v1/issues/{key}", key, actor, "", before.Status, false,
 		)
 		if err := ledger.Commit(r.Context()); err != nil {
 			s.writeHandlerError(w, err)
@@ -532,7 +567,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	advice := s.writeAdvice(
-		r.Context(), tx, "PATCH /api/v1/issues/{key}", key, actor, "", after.Status,
+		r.Context(), tx, "PATCH /api/v1/issues/{key}", key, actor, "", after.Status, false,
 	)
 	if closing {
 		// The close's last statement before its commit stamps closed_at again, at the moment it
@@ -561,7 +596,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	// the commit itself: migration 20261101181500's trigger notifies, and each process closes its
 	// rooms of the issue's documents so their browsers reconnect with the scope the issue now
 	// allows.
-	s.publish(events...)
+	s.publish(r.Context(), events...)
 	if closing {
 		// The commit's notification closes the issue's rooms on every process; the sweep catches
 		// the ask blocks written since the close forked each document (sweepClosedIssueAsks).

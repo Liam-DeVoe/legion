@@ -36,6 +36,9 @@ export async function pressFinger(page: Page, at: Point): Promise<Finger> {
           y: from.y + ((point.y - from.y) * step) / steps,
         };
         await dispatch("touchMove", position);
+        // A finger's own pace: one frame between moves. The page reads a drag from the moves it
+        // gets, so steps sent faster than it paints would reach it as one jump of the distance a
+        // finger covers over many frames, which is no drag at all.
         await page.waitForTimeout(16);
       }
     },
@@ -89,6 +92,7 @@ export async function touchHold(page: Page, point: Point, holdMs: number): Promi
 
 export async function centerOf(locator: Locator): Promise<Point> {
   await locator.scrollIntoViewIfNeeded();
+  // The scroll above waited for the element to be visible and still, so its box is there.
   const box = await locator.boundingBox();
   if (box === null) {
     throw new Error("element is not visible for a touch gesture");

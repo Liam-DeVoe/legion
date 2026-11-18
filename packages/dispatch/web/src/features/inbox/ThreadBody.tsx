@@ -15,6 +15,7 @@
  * Nothing here marks anything read.
  */
 
+import { inboxThreadRow } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
@@ -23,9 +24,10 @@ import { api } from "../../api/client";
 import { agentMessagesQuery, askThreadQuery, issueQuery, myRepliesKey } from "../../api/queries";
 import type {
   Actor,
-  Comment,
-  Message,
+  CommentWithTrees,
+  DisplayTree,
   MessageRead,
+  MessageWithTrees,
   MyReplyAgentRow,
   MyReplyRow,
   MyReplyThreadRow,
@@ -51,6 +53,7 @@ import { agentReplyTo, newestAttempt } from "../agents/exchange-delivery";
 import { useMarkShownRepliesRead } from "../agents/unread";
 import type { ComposerOwner } from "../conversation/composer-model";
 import { rootOf } from "../conversation/conversation-model";
+import { deliveryMode } from "../conversation/delivery";
 import { MentionComposer } from "../conversation/MentionComposer";
 import { useProjectArtifact } from "../document/useProjectArtifact";
 import { AgentName } from "../refs/AgentName";
@@ -70,6 +73,9 @@ interface ThreadTurn {
   readonly author: Actor;
   readonly body: string;
   readonly created_at: string;
+  /** The reading Go sent with `body`, which the turn draws rather than parsing the markdown
+   *  again (`MarkdownBody`). */
+  readonly tree?: DisplayTree;
   /** Drawn under the body: an Agent reply the session took as a turn of its live conversation
    *  says so there. */
   readonly note?: ReactNode;
@@ -121,7 +127,7 @@ function ThreadTurnView({
         ) : null}
       </p>
       <div className={textPrimaryOnSurfaceMuted}>
-        <MarkdownBody markdown={turn.body} />
+        <MarkdownBody markdown={turn.body} tree={turn.tree} />
       </div>
       {turn.note}
     </div>
@@ -147,7 +153,8 @@ function ThreadTurns({
    *  on screen long enough (`useDwell`), the thread is read. */
   markNewest: DwellRef;
   /** Whether the thread scrolls its first unread message into view when it opens, which the
-   *  reading pane does under **Oldest first** and a card never does. */
+   *  reading pane's own thread body and its fall-backs do under **Oldest first**, and which a
+   *  thread drawn inside a document the pane has placed and a card never do. */
   openAtFirstUnread: boolean;
   /** The thread's replies, oldest first. */
   replies: readonly ThreadTurn[];
@@ -241,7 +248,7 @@ function useThreadRead(thread: MyReplyThreadRow, owner: RepliesOwner | undefined
 }
 
 /** The replies an Agent thread marks when nothing has dwelled yet. */
-const NO_REPLIES: readonly Message[] = [];
+const NO_REPLIES: readonly MessageWithTrees[] = [];
 
 /**
  * An Agent row's read mark. Its replies are read by id (`useMarkShownRepliesRead`), never by
@@ -250,7 +257,10 @@ const NO_REPLIES: readonly Message[] = [];
  * newest message, and it marks the unread replies the row names among the ones drawn - every
  * one of them at or before that newest message, since the body draws the thread whole.
  */
-function useAgentThreadRead(thread: MyReplyAgentRow, replies: readonly Message[]): DwellRef {
+function useAgentThreadRead(
+  thread: MyReplyAgentRow,
+  replies: readonly MessageWithTrees[]
+): DwellRef {
   const unreadIds = thread.unread_reply_ids;
   // Which set of unread replies has dwelled, as `useMarkThreadRead` keeps which reply has: a
   // reply that arrives while the thread is on screen is read only once it has dwelled too.
@@ -346,21 +356,23 @@ function CommentThreadBody({
   );
 }
 
-function commentTurn(comment: Comment): ThreadTurn {
+function commentTurn(comment: CommentWithTrees): ThreadTurn {
   return {
     author: comment.author,
     body: comment.body,
     created_at: comment.created_at,
     id: comment.id,
+    tree: comment.body_tree,
   };
 }
 
-function messageTurn(message: Message, note?: ReactNode): ThreadTurn {
+function messageTurn(message: MessageWithTrees, note?: ReactNode): ThreadTurn {
   return {
     author: message.author,
     body: message.body,
     created_at: message.created_at,
     id: message.id,
+    tree: message.body_tree,
     ...(note === undefined ? {} : { note }),
   };
 }
@@ -394,7 +406,8 @@ function MessageThreadBody({
   const replies = (read?.replies ?? []).map((message) => messageTurn(message));
   // A reply into a targeted thread is delivered as the thread's newest attempt was, which is how
   // the issue's Conversation addresses one.
-  const last = read === undefined ? undefined : newestAttempt([read.message, ...read.replies]);
+  const last =
+    read === undefined ? undefined : newestAttempt([read.message, ...(read.replies ?? [])]);
   const target = root?.target;
   return (
     <ThreadTurns
@@ -418,7 +431,7 @@ function MessageThreadBody({
               parentKind: "message",
               ...(target === null || target === undefined
                 ? {}
-                : { thread: { delivery: last?.delivery ?? "steer", target } }),
+                : { thread: { delivery: deliveryMode(last?.delivery ?? "") ?? "steer", target } }),
             }}
             standing
           />
@@ -468,7 +481,7 @@ function AskThreadBody({
         initialThread={read.data}
         owner={thread.document}
         thread="inline"
-        unread={unreadWrites(thread, read.data.replies)}
+        unread={unreadWrites(thread, read.data.replies ?? [])}
         variant="full"
       />
     </div>
@@ -525,22 +538,22 @@ function AgentThreadBody({
   if (messages.isError) {
     return <p className={`mt-2 text-sm ${dangerText}`}>Could not load this conversation.</p>;
   }
-  const newest = read === undefined ? undefined : (read.replies.at(-1) ?? read.message);
-  const turn = (message: Message): ThreadTurn =>
+  const newest = read === undefined ? undefined : ((read.replies ?? []).at(-1) ?? read.message);
+  const turn = (message: MessageWithTrees): ThreadTurn =>
     messageTurn(
       message,
-      message.deliveries.some((attempt) => attempt.accepted_as === "user_turn") ? (
+      (message.deliveries ?? []).some((attempt) => attempt.accepted_as === "user_turn") ? (
         <AcceptedAsTurn sessionId={sessionId} />
       ) : undefined
     );
-  const turns = read === undefined ? [] : [read.message, ...read.replies].map(turn);
+  const turns = read === undefined ? [] : [read.message, ...(read.replies ?? [])].map(turn);
   return (
     <>
       <ThreadTurns
         composer={
           agent === undefined || read === undefined || newest === undefined ? null : (
             <div data-inbox-agent-composer="">
-              {agent.capabilities.length === 0 ? (
+              {(agent.capabilities ?? []).length === 0 ? (
                 <>
                   <p className={`mt-2 text-xs ${textMutedOnCanvas}`}>Takes no messages</p>
                   <p className={`mt-1 text-sm ${dangerText}`} data-testid="agent-takes-no-messages">
@@ -585,7 +598,8 @@ function noReturn(): void {}
 
 export interface ThreadBodyProps {
   /** Whether the thread scrolls its first unread message into view when it opens: the reading
-   *  pane under **Oldest first**, never a card. */
+   *  pane's own thread body and its fall-backs under **Oldest first**, never a thread drawn
+   *  inside a document the pane has placed, and never a card. */
   openAtFirstUnread?: boolean;
   /** Whether the text the thread is anchored to is drawn above it, which a card and the pane's
    *  fall-back do in place of the document. */
@@ -599,10 +613,12 @@ export function ThreadBody({
   quote = false,
   thread,
 }: ThreadBodyProps): ReactNode {
-  // An Agent row is on no issue and in no document, so it has neither of these; its own body
-  // needs neither.
-  const document = thread.kind === "agent" ? undefined : thread.document;
-  const anchor = thread.kind === "agent" ? undefined : thread.anchor;
+  // The route answers both kinds of row under one schema, so the row is read as the shape its
+  // own kind names first. An Agent row is on no issue and in no document, so it has neither of
+  // these; its own body needs neither.
+  const row = inboxThreadRow(thread);
+  const document = row.kind === "agent" ? undefined : row.document;
+  const anchor = row.kind === "agent" ? undefined : row.anchor;
   // A thread in a project document is read under that document's id. An anchored root carries it;
   // an unanchored one is found by the document's own `project/slug` read, the one the document
   // page shares.
@@ -613,20 +629,16 @@ export function ThreadBody({
   );
   const artifactId = anchor?.artifact_id ?? artifact.data?.id;
   const body = (): ReactNode => {
-    if (thread.kind === "agent") {
-      return <AgentThreadBody openAtFirstUnread={openAtFirstUnread} thread={thread} />;
+    if (row.kind === "agent") {
+      return <AgentThreadBody openAtFirstUnread={openAtFirstUnread} thread={row} />;
     }
-    if (thread.kind === "ask") {
-      return <AskThreadBody artifactId={artifactId} thread={thread} />;
+    if (row.kind === "ask") {
+      return <AskThreadBody artifactId={artifactId} thread={row} />;
     }
-    const issueKey = thread.issue?.key;
-    if (thread.kind === "message") {
+    const issueKey = row.issue?.key;
+    if (row.kind === "message") {
       return issueKey === undefined ? null : (
-        <MessageThreadBody
-          issueKey={issueKey}
-          openAtFirstUnread={openAtFirstUnread}
-          thread={thread}
-        />
+        <MessageThreadBody issueKey={issueKey} openAtFirstUnread={openAtFirstUnread} thread={row} />
       );
     }
     if (issueKey !== undefined) {
@@ -634,7 +646,7 @@ export function ThreadBody({
         <CommentThreadBody
           openAtFirstUnread={openAtFirstUnread}
           owner={{ issueKey, kind: "issue" }}
-          thread={thread}
+          thread={row}
         />
       );
     }
@@ -645,7 +657,7 @@ export function ThreadBody({
       <CommentThreadBody
         openAtFirstUnread={openAtFirstUnread}
         owner={{ artifactId, kind: "artifact", project: document.project }}
-        thread={thread}
+        thread={row}
       />
     );
   };

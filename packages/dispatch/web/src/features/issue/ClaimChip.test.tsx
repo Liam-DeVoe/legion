@@ -8,7 +8,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { api } from "../../api/client";
-import type { Agent, Issue, IssueClaim, IssueClaimLiveness, IssueDetails } from "../../api/types";
+import type { Agent, ClaimHolderLiveness, Issue, IssueClaim, IssueDetails } from "../../api/types";
 import { MarginProvider } from "../margin/margin-context";
 import { claimIsTakeable } from "./ClaimChip";
 import { IssueHeader } from "./IssueHeader";
@@ -21,6 +21,8 @@ const claim: IssueClaim = {
 };
 
 const base: Issue = {
+  advances: [],
+  advances_revision: 0,
   assignee: "alice",
   claim: null,
   components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
@@ -34,7 +36,10 @@ const base: Issue = {
   number: 1,
   parent: null,
   blocked_by: [],
+  plan_artifact_id: "",
+  decisions_artifact_id: "",
   primary_artifact_id: "artifact-1",
+  verification_artifact_id: "",
   priority: null,
   project: "CORE",
   rank: "U",
@@ -56,7 +61,7 @@ const idlePriorityWrite: IssuePriorityWrite = {
 
 function header(
   issue: Issue,
-  liveness: Partial<IssueClaimLiveness> = {}
+  liveness: ClaimHolderLiveness = {}
 ): { unmount: () => void; user: UserEvent } {
   const details: IssueDetails = {
     route_status: null,
@@ -69,6 +74,7 @@ function header(
     ...liveness,
     artifacts: [],
     children: [],
+    design_gates: [],
     open_asks: [],
     progress: { tasks: null, children: null },
     referenced_by_count: 0,
@@ -121,6 +127,7 @@ function running(sessionID: string, title: string): Agent {
     last_seen: 1,
     open_asks: 0,
     last_activity: null,
+    state: "live",
   };
 }
 
@@ -226,6 +233,7 @@ test("the claim shows the holder's live title, not the one stamped on the claim"
       last_seen: 1,
       open_asks: 0,
       last_activity: null,
+      state: "live",
     },
   ]);
   const view = header({ ...base, claim });
@@ -343,7 +351,7 @@ test("the issue read's own holder_state outranks an agent list that does not nam
   const agents = spyOn(api, "listAgents").mockResolvedValue([]);
   const lastSeen = new Date(Date.now() - 6 * 60_000).toISOString();
   const takeableAt = new Date(Date.now() + 14 * 60_000).toISOString();
-  const liveness: Partial<IssueClaimLiveness> = {
+  const liveness: ClaimHolderLiveness = {
     holder_state: "unresponsive",
     last_seen: lastSeen,
     takeable_at: takeableAt,

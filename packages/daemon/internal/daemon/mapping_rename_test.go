@@ -24,14 +24,16 @@ var renamedWidgets = ghrepo.MustRename("acme/widgets", "cybermonklabs/widgets")
 
 // A rename configured before the transfer names a repository Dispatch does not map: the boot's
 // mapping read answers all the same, the project serves exactly what Dispatch maps, and the owners
-// every role's gh bundle holds a directory for are the served repositories' alone — the pair never
-// widens the served set, which is Dispatch's mapping and nothing else. What it does change is what
+// the mapping names are the served repositories' alone — the pair never widens the served set,
+// which is Dispatch's mapping and nothing else. What a role's gh bundle holds a directory for is
+// another question, which the mapping does not answer: it is every owner account the role's App is
+// installed on (appauth.InstalledOwners, INFRA-2543 R2). What it does change is what
 // GitHub intake hears: the consumer's filter subjects carry both names, so an event arrives
 // whichever name GitHub sends it under on the day the repository moves, and an issue Dispatch
 // resolves to the name it moved to is served by the one the mapping holds, under that one name.
 // The boot says once that the pair names a repository this project does not serve. With no pair
-// configured none of it happens: nothing is heard under the second name, and an issue resolved to
-// it is not mapped to the project at all.
+// configured none of it happens: nothing is heard under the second name until an issue is
+// recorded on it, which is what puts a repository no mapping names into the intake's filters.
 func TestARenameConfiguredBeforeTheTransferIsHeardWhileTheServedSetIsUnchanged(t *testing.T) {
 	const unserved = "a configured repository rename names a repository this project does not serve"
 	for _, tc := range []struct {
@@ -56,7 +58,7 @@ func TestARenameConfiguredBeforeTheTransferIsHeardWhileTheServedSetIsUnchanged(t
 				t.Fatalf("served %v, want Dispatch's mapping alone: a configured pair widens nothing", got)
 			}
 			if got := w.repositories.Owners(); !slices.Equal(got, []string{"acme", "zeta"}) {
-				t.Fatalf("owners = %v, want the served repositories' alone", got)
+				t.Fatalf("owners = %v, want the owners of what Dispatch maps alone", got)
 			}
 			heard, err := w.heardAtBoot(context.Background())
 			if err != nil {
@@ -81,8 +83,8 @@ func TestARenameConfiguredBeforeTheTransferIsHeardWhileTheServedSetIsUnchanged(t
 			}
 			switch {
 			case tc.renames.IsZero():
-				if resolved.Refusal != "cybermonklabs/widgets is not mapped to project LEGION in Dispatch" {
-					t.Fatalf("ResolveRepository(cybermonklabs/widgets) = %#v, want it refused as a repository the project does not map", resolved)
+				if !resolved.Unread || resolved.Refusal != "GitHub has not been read for cybermonklabs/widgets yet" {
+					t.Fatalf("ResolveRepository(cybermonklabs/widgets) = %#v, want it unread: no pair joins it to a repository the daemon has read", resolved)
 				}
 			case resolved.Repo != "acme/widgets" || resolved.GitHubRepo != "acme/widgets" || resolved.DefaultBranch != "main":
 				t.Fatalf("ResolveRepository(cybermonklabs/widgets) = %#v, want acme/widgets@main under one name", resolved)
@@ -277,15 +279,14 @@ type mintingTokens struct {
 	minted []string
 }
 
-func (t *mintingTokens) Token(ctx context.Context, role appauth.AppRole, repo ghrepo.Repository) (appauth.Lease, error) {
-	owner := repo.Owner()
+func (t *mintingTokens) Token(ctx context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
 	t.mu.Lock()
 	t.minted = append(t.minted, strings.ToLower(owner))
 	t.mu.Unlock()
 	if !slices.ContainsFunc(t.installed, func(held string) bool { return strings.EqualFold(held, owner) }) {
 		return appauth.Lease{}, fmt.Errorf("no installation of the %s App on %s covers the repository", role, owner)
 	}
-	return t.roleTokens.Token(ctx, role, repo)
+	return t.roleTokens.Token(ctx, role, owner)
 }
 
 // owners is every owner a token was minted for, lowercased, sorted and once each.
@@ -364,8 +365,8 @@ func TestTheMappingLoadServesEachMappedRepositoryUnderTheNameGitHubHasIt(t *test
 		slices.Sort(asked)
 		return asked
 	}
-	const gapReason = "Dispatch's GitHub App is not installed on " + old + ": GitHub sends Legion none of its events and nothing redelivers them; the pass heals its pull requests every 2 minutes"
-	const movedGapReason = "Dispatch's GitHub App is not installed on " + moved + ": GitHub sends Legion none of its events and nothing redelivers them; the pass heals its pull requests every 2 minutes"
+	const gapReason = "Dispatch's GitHub App is not installed on " + old + ": GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed"
+	const movedGapReason = "Dispatch's GitHub App is not installed on " + moved + ": GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed"
 	for _, tc := range []struct {
 		name string
 		// mappings is Dispatch's repository mapping, and missing each installation read GitHub
@@ -480,7 +481,7 @@ func TestTheMappingLoadServesEachMappedRepositoryUnderTheNameGitHubHasIt(t *test
 			installed: []string{"cybermonklabs"},
 			asks:      reads(old),
 			unread:    moved,
-			refuses:   []refusedRepository{{Repo: old, Reason: "the review App is not installed on " + old, mappedDefault: true}},
+			refuses:   []refusedRepository{{Repo: old, Reason: "the review App is not installed on " + old, apps: appAnswers{answered: true, implement: true}, mappedDefault: true}},
 		},
 		{
 			// The entry naming the old name holds the implement App and not the review App, so
@@ -500,7 +501,7 @@ func TestTheMappingLoadServesEachMappedRepositoryUnderTheNameGitHubHasIt(t *test
 			served:         []string{moved},
 			serves:         moved,
 			owners:         []string{"cybermonklabs"},
-			refuses:        []refusedRepository{{Repo: old, Reason: "the review App is not installed on " + old}},
+			refuses:        []refusedRepository{{Repo: old, Reason: "the review App is not installed on " + old, apps: appAnswers{answered: true, implement: true}}},
 			minted:         []string{"cybermonklabs"},
 			gaps:           []webhookAppGap{{Repo: moved, Reason: movedGapReason}},
 		},
@@ -684,7 +685,7 @@ func TestAKeptEntrysWebhookAppGapNamesTheRepositoryItIsServedUnder(t *testing.T)
 	const old, moved = "sjawhar/legion", "cybermonklabs/legion"
 	// Dispatch is asked the check under the name its own mapping holds, so the reason names the
 	// mapped name while the gap is recorded against the served one.
-	want := []webhookAppGap{{Repo: moved, Reason: "Dispatch's GitHub App is not installed on " + old + ": GitHub sends Legion none of its events and nothing redelivers them; the pass heals its pull requests every 2 minutes"}}
+	want := []webhookAppGap{{Repo: moved, Reason: "Dispatch's GitHub App is not installed on " + old + ": GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed"}}
 	client := &mappingDispatch{mappings: []dispatch.RepoProject{{Repo: old, Project: "LEGION", Default: true}}, webhookMissing: map[string]bool{old: true}}
 	github := newNamedGitHub(t, map[string]string{old: "301 " + moved, moved: moved + "@main"})
 	installs := &installations{missing: map[string]bool{"implement " + old: true, "review " + old: true}}

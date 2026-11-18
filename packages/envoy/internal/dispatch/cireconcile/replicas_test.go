@@ -6,6 +6,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // One process serves each period. Two Reconcilers stand for the two processes a deployment runs,
@@ -22,10 +23,7 @@ func TestOneProcessServesEachPeriod(t *testing.T) {
 		checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z"),
 	)
 	other := h.replica()
-	leases, err := h.pool.Leases()
-	if err != nil {
-		t.Fatalf("open the leases pool: %v", err)
-	}
+	leases := storetest.Leases(t, h.pool)
 
 	// Two ticks one Interval apart, the second process first in the second period, so neither
 	// test passes by being the one that always runs.
@@ -65,6 +63,9 @@ func TestARecordedLimitStopsEveryProcess(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
 	h.mapRepository(rowRepository)
 	h.listHead()
+	// GitHub refuses the head's Checks fields to a query, so the pass reads it over REST, which
+	// is the read this test's limit is answered to.
+	h.github.refuseChecks(gitHubRepository, headSHA)
 	h.github.setCheckRuns(gitHubRepository, headSHA,
 		checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z"),
 	)
@@ -111,6 +112,7 @@ func TestTheStopIsInThePassLine(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
 	h.mapRepository(rowRepository)
 	h.listHead()
+	h.github.refuseChecks(gitHubRepository, headSHA)
 	h.github.setCheckRuns(gitHubRepository, headSHA,
 		checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z"),
 	)

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
@@ -186,10 +187,10 @@ func localBareRemote(t *testing.T) string {
 func seedRemote(t *testing.T, root, defaultBranch string) string {
 	t.Helper()
 	remote := filepath.Join(root, "remote.git")
-	runSetup(t, root, "git", "init", "--bare", "--initial-branch="+defaultBranch, remote)
+	runSetup(t, root, fixturegit.InitBare(remote, defaultBranch)...)
 
 	seed := filepath.Join(root, "seed")
-	runSetup(t, root, "jj", "git", "init", "--colocate", seed)
+	runSetup(t, root, fixturegit.JJInit(seed, true)...)
 	runSetup(t, root, "jj", "bookmark", "set", jjString(defaultBranch), "-R", seed)
 	runSetup(t, root, "jj", "git", "remote", "add", "origin", remote, "-R", seed)
 	runSetup(t, root, "jj", "git", "push", "--remote", "origin", "--bookmark", "exact:"+jjString(defaultBranch), "--allow-empty-description", "-R", seed)
@@ -207,15 +208,9 @@ func runSetup(t *testing.T, dir string, argv ...string) string {
 // runSetupWith is runSetup with env added to the command's environment.
 func runSetupWith(t *testing.T, dir string, env []string, argv ...string) string {
 	t.Helper()
-	command := exec.Command(argv[0], argv[1:]...)
-	command.Dir = dir
-	command.Env = append(setupEnvironment(), "JJ_USER=Legion test", "JJ_EMAIL=legion-test@example.invalid")
-	command.Env = append(command.Env, env...)
-	output, err := command.CombinedOutput()
-	if err != nil {
-		t.Fatalf("%s: %v\n%s", strings.Join(argv, " "), err, output)
-	}
-	return string(output)
+	return fixturegit.Runner{TB: t, Env: setupEnvironment()}.
+		With(env...).
+		Raw(dir, argv...)
 }
 
 // fromOrigin runs a fixture command that reaches origin, https://github.com/acme/widgets in a
@@ -812,8 +807,7 @@ func TestProvisionFromAFeedHoldsNoCredential(t *testing.T) {
 // behind holds no working tree at all — its clone takes --no-checkout, and the clear and the
 // abandon that follow keep jj's first snapshot from recording that absent tree as deleted — while
 // the issue's own workspace holds the default branch's files. A clone whose working copy recorded
-// the tree as deleted would show here as a dirty status, a visible deletion commit, or a record of
-// one in .jj/legion-held, which a check of the pod's work reads (internal/rescue).
+// the tree as deleted would show here as a dirty status or a visible deletion commit.
 func TestProvisionFromAFeedLeavesTheSharedCloneWithNoWorkingTree(t *testing.T) {
 	run := newLocalRunner(t)
 	pushRemoteBranch(t, run.remote, "main", "history.txt")
@@ -854,21 +848,14 @@ func TestProvisionFromAFeedLeavesTheSharedCloneWithNoWorkingTree(t *testing.T) {
 	}
 	at := commitOf(t, cloneDir, "@")
 	// The repository's visible heads are the clone's own empty working-copy commit and the one the
-	// issue's workspace works on, which `jj workspace add` created after the clone was recorded:
-	// the deletion commit a clone with no working tree would otherwise carry is one of neither.
+	// issue's workspace works on, which `jj workspace add` created after the clone was made: the
+	// deletion commit a clone with no working tree would otherwise carry is one of neither.
 	heads := strings.Fields(runSetup(t, cloneDir, "jj", "log", "-r", "visible_heads()", "--no-graph", "-T", `commit_id ++ "\n"`, "--ignore-working-copy", "-R", cloneDir))
 	slices.Sort(heads)
 	wantHeads := []string{at, commitOf(t, working.Dir, "@")}
 	slices.Sort(wantHeads)
 	if !slices.Equal(heads, wantHeads) {
 		t.Errorf("the shared clone's visible heads are %q, want %q: its empty working-copy commit and the issue workspace's, and no commit deleting the tree", heads, wantHeads)
-	}
-	recorded, ok, err := Held(cloneDir)
-	if err != nil || !ok {
-		t.Fatalf("Held = %v, %t, %v; want the clone's record of what it held", recorded, ok, err)
-	}
-	if !slices.Equal(recorded, []string{at}) {
-		t.Errorf("the clone's record of what it held names %q, want its empty working-copy commit %s alone: no commit deleting the tree", recorded, at)
 	}
 	if clone := findCall(t, calls, "git", "clone", "--quiet"); !slices.Contains(clone.Argv, "--no-checkout") {
 		t.Errorf("the clone was made with %q, want --no-checkout: no working tree", clone.Argv)
@@ -1448,9 +1435,7 @@ func TestGitWorktreeEntriesThroughASymlinkedClone(t *testing.T) {
 func TestGitWorktreeEntriesResolveACloneSymlinkOutsideTheWorkspace(t *testing.T) {
 	root := t.TempDir()
 	realClone := filepath.Join(root, "real", "clone")
-	runSetup(t, root, "git", "init", "--initial-branch=main", realClone)
-	runSetup(t, realClone, "git", "config", "user.name", "Legion test")
-	runSetup(t, realClone, "git", "config", "user.email", "test@example.invalid")
+	runSetup(t, root, fixturegit.InitWorkTree(realClone, "main")...)
 	if err := os.WriteFile(filepath.Join(realClone, "README"), []byte("seed\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1490,9 +1475,9 @@ func TestGitWorktreeEntriesResolveACloneSymlinkOutsideTheWorkspace(t *testing.T)
 		t.Fatal(err)
 	}
 
-	got, err := gitWorktreeEntries(logicalClone, workspace)
-	if err != nil {
-		t.Fatalf("gitWorktreeEntries(%s, %s): %v", logicalClone, workspace, err)
+	got, unread, err := gitWorktreeEntries(logicalClone, workspace)
+	if err != nil || unread != nil {
+		t.Fatalf("gitWorktreeEntries(%s, %s): %v (unread: %v)", logicalClone, workspace, err, unread)
 	}
 	if !slices.Equal(got, []string{entry}) {
 		t.Errorf("gitWorktreeEntries(%s, %s) = %q, want %q", logicalClone, workspace, got, []string{entry})
@@ -1681,7 +1666,7 @@ func TestProvisionRestoresCleanlyAfterAKillBetweenTheWrites(t *testing.T) {
 // `git read-tree HEAD` ("failed to unpack tree object HEAD").
 func TestProvisionRestoresAWorkspaceWithNoRealParentCommit(t *testing.T) {
 	clone := t.TempDir()
-	runSetup(t, clone, "jj", "git", "init", "--colocate", ".")
+	runSetup(t, clone, fixturegit.JJInit(".", true)...)
 	other := filepath.Join(t.TempDir(), "other")
 	runSetup(t, clone, "jj", "workspace", "add", other, "-R", clone)
 	admin := gitWorktreeAdmin(t, other)

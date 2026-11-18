@@ -5,16 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -278,7 +276,7 @@ func TestALaunchProvisionsAWorkspaceWhoseCheckoutFailed(t *testing.T) {
 	var r *outbox
 	r = &outbox{
 		stateDir: stateDir, tokens: outboxTokens{}, log: quietLogger(),
-		supervisor: &supervisor{deps: supervise.Deps{Runtime: fake.NewRuntime()}},
+		supervisor: &supervisor{deps: supervise.Deps{Runtime: fake.NewRuntime(), RefreshGate: supervise.NewRefreshGate(0)}},
 		provision: func(_ context.Context, request workspace.Request) (workspace.Workspace, error) {
 			provisions++
 			// The registration makes the workspace's directory; the checkout writes its files.
@@ -309,7 +307,7 @@ func TestALaunchProvisionsAWorkspaceWhoseCheckoutFailed(t *testing.T) {
 		t.Fatalf("the first provision = %v, want its checkout's failure", err)
 	}
 	s := specs{
-		stateDir: t.TempDir(), project: "s1", prompts: composer, repositories: noRepositoriesView,
+		stateDir: t.TempDir(), project: "s1", prompts: composer, appOwners: noAppOwners,
 		repository: func(context.Context, string) (ghrepo.Repository, string, error) {
 			return repo, "main", nil
 		},
@@ -349,12 +347,7 @@ func hostWorkspace(t *testing.T, stateDir, repo, issue string) {
 	home := t.TempDir()
 	jj := func(args ...string) {
 		t.Helper()
-		command := exec.Command("jj", args...)
-		command.Dir = stateDir
-		command.Env = fixtureenv.Isolated(home)
-		if output, err := command.CombinedOutput(); err != nil {
-			t.Fatalf("jj %s: %v\n%s", strings.Join(args, " "), err, output)
-		}
+		fixturegit.Isolated(t, home).Run(stateDir, append([]string{"jj"}, args...)...)
 	}
 	for _, dir := range []string{filepath.Dir(located.Clone), filepath.Dir(located.Dir)} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -362,7 +355,7 @@ func hostWorkspace(t *testing.T, stateDir, repo, issue string) {
 		}
 	}
 	if _, err := os.Stat(filepath.Join(located.Clone, ".jj")); errors.Is(err, os.ErrNotExist) {
-		jj("git", "init", "--no-colocate", located.Clone)
+		jj(fixturegit.JJInit(located.Clone, false)[1:]...)
 	} else if err != nil {
 		t.Fatal(err)
 	}

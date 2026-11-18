@@ -11,24 +11,25 @@ import (
 )
 
 type Envelope struct {
-	EventID        string          `json:"event_id"`
-	Source         string          `json:"source"`
-	SourceEventID  string          `json:"source_event_id"`
-	SourceSession  string          `json:"source_session,omitempty"`
-	Topic          string          `json:"topic"`
-	DedupeKey      string          `json:"dedupe_key"`
-	IssuedAt       int64           `json:"issued_at"`
-	ExpiresAt      *int64          `json:"expires_at,omitempty"`
-	KeptAt         *int64          `json:"kept_at,omitempty"`
-	PayloadSummary string          `json:"payload_summary"`
-	PayloadRef     string          `json:"payload_ref,omitempty"`
-	Payload        string          `json:"payload,omitempty"`
-	TraceID        string          `json:"trace_id"`
-	Sender         *EnvelopeSender `json:"sender,omitempty"`
-	InReplyTo      string          `json:"in_reply_to,omitempty"`
-	Supersedes     string          `json:"supersedes,omitempty"`
-	Urgency        string          `json:"urgency,omitempty"`
-	ExpectsReply   ExpectsReply    `json:"expects_reply,omitempty"`
+	EventID           string            `json:"event_id"`
+	Source            string            `json:"source"`
+	SourceEventID     string            `json:"source_event_id"`
+	SourceSession     string            `json:"source_session,omitempty"`
+	Topic             string            `json:"topic"`
+	DedupeKey         string            `json:"dedupe_key"`
+	IssuedAt          int64             `json:"issued_at"`
+	ExpiresAt         *int64            `json:"expires_at,omitempty"`
+	KeptAt            *int64            `json:"kept_at,omitempty"`
+	MentionDedupeKeys map[string]string `json:"mention_dedupe_keys,omitempty"`
+	PayloadSummary    string            `json:"payload_summary"`
+	PayloadRef        string            `json:"payload_ref,omitempty"`
+	Payload           string            `json:"payload,omitempty"`
+	TraceID           string            `json:"trace_id"`
+	Sender            *EnvelopeSender   `json:"sender,omitempty"`
+	InReplyTo         string            `json:"in_reply_to,omitempty"`
+	Supersedes        string            `json:"supersedes,omitempty"`
+	Urgency           string            `json:"urgency,omitempty"`
+	ExpectsReply      ExpectsReply      `json:"expects_reply,omitempty"`
 }
 
 type EnvelopeSender struct {
@@ -132,11 +133,46 @@ func validateWireNonEmpty(fields map[string]json.RawMessage, field, path string)
 const AgentTopicPrefix = "notifications.agent."
 const RoleTopicPrefix = "notifications.role."
 
+// DispatchIssueTopicPrefix begins every issue's event, in either form. Generated from
+// DISPATCH_ISSUE_TOPIC_PREFIX in packages/contracts.
+const DispatchIssueTopicPrefix = "notifications.dispatch.issue."
+
+// NoProject is the project token of a message name that belongs to no project: an agent message
+// or a role lane outside every project. No project key (ProjectKeyPattern) can be it. Generated
+// from NO_PROJECT in packages/contracts.
+const NoProject = "_"
+
 // GithubTopicPrefix begins every GitHub subject, before the repository's owner and name.
 const GithubTopicPrefix = "notifications.github."
 
+// LegionNoticeTopicPrefix opens every Legion daemon notice subject, ControllerNoticeSuffix ends
+// the one subject of that family naming a project's controller rather than an issue, so project
+// <p>'s notice lane is LegionNoticeTopicPrefix + <p> + ControllerNoticeSuffix, and
+// ControllerRoleToken is the Legion role token whose holder that lane is for. Generated from
+// legionControllerNoticeSubject and controllerToken in packages/contracts: a rename there that Go
+// did not follow would leave the listener refusing the holder's registration of its own lane
+// (bus.ReachesPrivateStreamSubject would read a role token no claim names) and the controller
+// would receive no notice, with nothing else failing.
+const LegionNoticeTopicPrefix = "notifications.legion."
+const ControllerNoticeSuffix = ".controller"
+
+func ControllerRoleToken(project string) string {
+	return "legion-" + project + "-controller"
+}
+
+// UncapturedTopicRefusal is what a caller that named topic, a notification topic no stream
+// subject captures and no role lane (bus.ReachesNoSession), is told: nothing would ever be
+// delivered to sessionID on it. POST /v1/interests/subscribe leaves such a topic out of the
+// registration and names it in this warning (splitUncapturedTopics in cmd/listener), and either
+// plugin's explicit subscribe refuses such a topic in the same words. Generated from
+// uncapturedTopicRefusal in packages/contracts, which both plugins build their refusal from, so
+// the listener and the hosts cannot word it apart.
+func UncapturedTopicRefusal(topic, sessionID string) string {
+	return topic + " was not registered: no stream subject captures it, so nothing would be delivered to " + sessionID + " on it; follow a notifications.team.<name> topic instead"
+}
+
 // DeliveryDuplicateWindow is how long a repeated delivery is recognised as a duplicate, by the
-// notification stream and by every host that subscribes over core NATS. Generated from
+// notification stream and by every host that reads it. Generated from
 // DELIVERY_DUPLICATE_WINDOW_MS in packages/contracts, whose doc comment states the retry promise
 // this window bounds, so the stream, the hosts and the dashboard read one number.
 const DeliveryDuplicateWindow = 259200000 * time.Millisecond
@@ -195,6 +231,17 @@ const SearchKindDepth = 100
 // Generated from SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE in packages/contracts so the string
 // Dispatch writes and the string search-answer.ts compares against cannot drift apart.
 const SearchDegradedEmbedderUnavailable = "embedder_unavailable"
+
+// SearchOperatorPhrase, SearchOperatorOr and SearchOperatorExclude are the operator forms
+// GET /api/v1/search reads in a person's words and names in its answer's query.operators: a
+// quoted phrase, the OR between two words, and a -word it leaves out. Generated from
+// SEARCH_OPERATOR_PHRASE, SEARCH_OPERATOR_OR and SEARCH_OPERATOR_EXCLUDE in packages/contracts so
+// the strings Dispatch answers and the strings a client reads them by cannot drift apart.
+const (
+	SearchOperatorPhrase  = "phrase"
+	SearchOperatorOr      = "or"
+	SearchOperatorExclude = "exclude"
+)
 
 // The names of the frames one answer's stream carries: text as the answer arrives, item for each
 // thing the answer cites, cut when the answer reached its word cap, changed when the server did
@@ -268,6 +315,12 @@ const GoingRequestTTL = 3600000 * time.Millisecond
 // MAX_ISSUE_BLOCKERS in packages/contracts so the server and tool schemas share the limit.
 const MaxIssueBlockers = 20
 
+// MaxIssueAdvances bounds the `advances` input of an issue write before deduplication: the most
+// priorities one issue states it advances, its own relations alone. Generated from
+// MAX_ISSUE_ADVANCES in packages/contracts so the server's refusal and every client's bound are
+// one number.
+const MaxIssueAdvances = 20
+
 // MaxIssuePageLimit is the most issues one page of GET /api/v1/issues holds, and
 // DefaultIssuePageLimit the page size when a caller pages with offset alone. Generated from
 // MAX_ISSUE_PAGE_LIMIT and DEFAULT_ISSUE_PAGE_LIMIT in packages/contracts so the server's bounds
@@ -324,6 +377,23 @@ const ProjectNameMax = 80
 // reading of it cannot drift apart.
 const DocumentSchemaCloseCode = 4409
 const DocumentSchemaCloseReason = "DOC_SCHEMA"
+
+// DocumentNewerContentCloseCode and DocumentNewerContentCloseReason close a document websocket
+// whose room holds an element this build cannot read, before any sync. The Hocuspocus provider
+// reconnects on the code. Generated from DOCUMENT_NEWER_CONTENT_CLOSE_CODE and
+// DOCUMENT_NEWER_CONTENT_CLOSE_REASON in packages/contracts so the server's close and the
+// dashboard's reading of it cannot drift apart.
+const DocumentNewerContentCloseCode = 4425
+const DocumentNewerContentCloseReason = "DOC_NEWER_CONTENT"
+
+// DocumentAdmissionRevokedCloseCode and DocumentAdmissionRevokedCloseReason close an open writable
+// document socket whose page the live server processes no longer admit, once the message in flight
+// on it is out. The Hocuspocus provider reconnects on the code, and the reconnect is admitted
+// again. Generated from DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE and
+// DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON in packages/contracts so the server's close and the
+// dashboard's reading of it cannot drift apart.
+const DocumentAdmissionRevokedCloseCode = 4412
+const DocumentAdmissionRevokedCloseReason = "DOC_ADMISSION_REVOKED"
 
 // LiveSocketMaxAgeClose is the close code Dispatch ends a live socket with once the socket reaches
 // its age, a random point in [LiveSocketMinAge, LiveSocketMaxAge), and LiveSocketMaxSubscriptions
@@ -414,12 +484,47 @@ const IDAmbiguous = "ID_AMBIGUOUS"
 // every client's reading of it cannot drift apart.
 const DispatchSignInRequired = "SIGN_IN_REQUIRED"
 
+// DispatchReadOnlyToken is the code of the 403 for a request by a broker-issued access token
+// that holds only the scope read, to a route the read list does not name: the route ran nothing,
+// and the request wrote only the row of its spent DPoP proof. Generated from
+// DISPATCH_READ_ONLY_TOKEN in packages/contracts so the server's refusal and every client's
+// reading of it cannot drift apart.
+const DispatchReadOnlyToken = "READ_ONLY_TOKEN"
+
 func NowMillis() int64 {
 	return time.Now().UnixMilli()
 }
 
-func AgentSubject(session string) string {
-	return AgentTopicPrefix + session
+// DispatchIssueSubject names an issue's event under its project and then its key
+// (notifications.dispatch.issue.INFRA.INFRA-12.comment.created), AgentSubject one session's
+// message under its project, RoleSubject a role's lane under the project it works for, each with
+// NoProject for none, and LegionWakeSubject the wake lane of the Legion deployment whose project
+// token is token. LegacyAgentSubject is a session's agent subject in the old form, with no
+// project, which every reader takes too until the old form is refused (subject_project.go).
+// Generated from dispatchIssueSubject, agentSubject, roleSubject, legionWakeSubject and
+// legacyAgentSubject in packages/contracts, so the two languages write one name.
+func DispatchIssueSubject(project, issueKey, typ string) string {
+	return "notifications.dispatch.issue." + project + "." + issueKey + "." + typ
+}
+
+func AgentSubject(project, session string) string {
+	return "notifications.agent." + project + "." + session
+}
+
+func LegacyAgentSubject(session string) string {
+	return "notifications.agent." + session
+}
+
+func LegacyDispatchIssueSubject(issueKey, typ string) string {
+	return "notifications.dispatch.issue." + issueKey + "." + typ
+}
+
+func RoleSubject(project, role string) string {
+	return "notifications.role." + project + "." + role
+}
+
+func LegionWakeSubject(token string) string {
+	return "notifications.legion." + token + ".wake"
 }
 
 // GithubRepositoryPrefix begins every GitHub subject with its repository's owner and name, each one

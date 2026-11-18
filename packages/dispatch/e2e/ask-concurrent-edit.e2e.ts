@@ -1,12 +1,3 @@
-import {
-  type Browser,
-  type BrowserContext,
-  expect,
-  type Locator,
-  type Page,
-  test,
-} from "@playwright/test";
-
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import { createIssue, createProject, getArtifactText, getIssue } from "./api";
 import {
@@ -17,7 +8,8 @@ import {
   placeCaret,
   selectTextIn,
 } from "./editor";
-import { resetDatabase } from "./seed";
+import { settledState } from "./settled";
+import { type Browser, type BrowserContext, expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // sjawhar/legion#2433: two collaborators editing one decision block at once can leave it holding what its
@@ -28,10 +20,6 @@ import { asUser } from "./users";
 // until it is fixed, and its ask stays open; joining the two lists makes it a decision again.
 
 const SPEC = 'Intro.\n\n:::ask{#a1 urgency="med" multiple="false"}\nWhich one?\n:::\n\nAfter.\n';
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 function askBlock(page: Page): Locator {
   return documentEditor(page).locator('[data-dispatch-ask-block="a1"]');
@@ -134,7 +122,8 @@ async function expectWordsKept(
 // SLOW(>=2s): the crossing itself - two editor mounts, a severed transport each and the
 // y-prosemirror merge - which no write path can seed, since Dispatch refuses such a block
 // (400 INVALID_ASK_BLOCK on every write path).
-test("two editors that each add an option list to an ask while their edits cross keep the question and both options", async ({
+// @pr: A two-context race: two editors add an option list to one ask while their edits cross, and the question and both options survive.
+test("two editors that each add an option list to an ask while their edits cross keep the question and both options @pr", async ({
   browser,
 }) => {
   const issue = await seedDecision();
@@ -147,29 +136,29 @@ test("two editors that each add an option list to an ask while their edits cross
     for (const page of pages) {
       await expect(askBlock(page)).toHaveAttribute("data-dispatch-ask-malformed", "true");
     }
-    expect((await getIssue(issue.key)).open_asks.map((ask) => ask.block_id)).toContain("a1");
+    expect(((await getIssue(issue.key)).open_asks ?? []).map((ask) => ask.block_id)).toContain(
+      "a1"
+    );
 
     // One list again: Backspace at the start of the second list joins it to the first, and the
     // block parses, so the ask takes both options. Which list comes first is the merge's order of
     // the two editors' Yjs client ids, so the second list is read from the page; Backspace at the
     // start of the first list would lift its item into the question instead.
     const [alicePage] = pages;
-    const secondList = (await optionList(alicePage, 1).textContent()) ?? "";
-    await placeCaret(
-      alicePage,
-      "before",
-      secondList.includes("Option B") ? "Option B" : "Option A",
-      askContent(alicePage)
-    );
+    const second = await settledState("the second option list", [
+      ["Option B", optionList(alicePage, 1).filter({ hasText: "Option B" })],
+      ["Option A", optionList(alicePage, 1).filter({ hasText: "Option A" })],
+    ]);
+    await placeCaret(alicePage, "before", second, askContent(alicePage));
     await alicePage.keyboard.press("Backspace");
     for (const page of pages) {
       await expect(askBlock(page)).not.toHaveAttribute("data-dispatch-ask-malformed");
     }
     await expect
       .poll(async () =>
-        (await getIssue(issue.key)).open_asks
+        ((await getIssue(issue.key)).open_asks ?? [])
           .find((ask) => ask.block_id === "a1")
-          ?.options.map(({ label }) => label)
+          ?.options?.map(({ label }) => label)
           .sort()
       )
       .toEqual(["Option A", "Option B"]);
@@ -205,12 +194,13 @@ async function withTwoLists(
     }
     const [alicePage] = pages;
     await expect(askContent(alicePage).locator(":scope > ul")).toHaveCount(2);
-    // A list's text also holds the other editor's cursor label when its caret is in it, so it is
-    // matched, not compared.
-    const firstList = (await optionList(alicePage, 0).textContent()) ?? "";
-    const [first, second] = firstList.includes("Option A")
-      ? ["Option A", "Option B"]
-      : ["Option B", "Option A"];
+    // A list's text also holds the other editor's cursor label when its caret is in it, so the
+    // first list is found by the option it holds, not by its whole text.
+    const first = await settledState("the first option list", [
+      ["Option A", optionList(alicePage, 0).filter({ hasText: "Option A" })],
+      ["Option B", optionList(alicePage, 0).filter({ hasText: "Option B" })],
+    ]);
+    const second = first === "Option A" ? "Option B" : "Option A";
     await expect(optionList(alicePage, 1)).toContainText(second);
 
     const words = await act({
@@ -225,7 +215,9 @@ async function withTwoLists(
     for (const page of pages) {
       await expect(askBlock(page)).toBeVisible();
     }
-    expect((await getIssue(issue.key)).open_asks.map((ask) => ask.block_id)).toContain("a1");
+    expect(((await getIssue(issue.key)).open_asks ?? []).map((ask) => ask.block_id)).toContain(
+      "a1"
+    );
     expect(errors).toEqual([]);
   } finally {
     await alice.close();
@@ -379,11 +371,16 @@ test("dragging a selection from the question into the first list of an ask holdi
 }) => {
   await withTwoLists(browser, async ({ alicePage, first, second }) => {
     await selectQuestionIntoFirstList(alicePage, first, second);
+    // The helper above set this selection in the page itself before it returned, so the
+    // selection's box is there to read at once.
     const from = await alicePage.evaluate(() => {
       const box = window.getSelection()?.getRangeAt(0).getBoundingClientRect();
       return box && { x: box.x + box.width / 2, y: box.y + box.height / 2 };
     });
-    const to = await optionList(alicePage, 1).getByText(second).boundingBox();
+    const option = optionList(alicePage, 1).getByText(second);
+    await expect(option).toBeVisible();
+    // The wait above drew the second list's option, and a drawn element has a box.
+    const to = await option.boundingBox();
     if (!from || !to) throw new Error("the selection or the second list's option has no box");
     await alicePage.mouse.move(from.x, from.y);
     await alicePage.mouse.down();

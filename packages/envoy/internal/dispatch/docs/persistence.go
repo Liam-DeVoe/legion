@@ -16,6 +16,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -239,11 +240,14 @@ func (p *PgVersioned) AppendUpdateTx(ctx context.Context, tx pgx.Tx, room string
 	return p.appendUpdateTxClass(ctx, tx, room, update, contentChanged, appendDerived)
 }
 
-// lockDocumentRoom serializes every durable mutation of one document. Callers
-// that need a check-then-write guarantee must hold it before reading live state. Every durable
-// writer that takes the room lock inside a transaction takes it here; withRoomLock takes the
-// session-level form on its own connection, and lockSettlementCursor takes it for a settlement,
-// waiting at most 100 ms under lock_timeout at shutdown.
+// lockDocumentRoom serializes every durable mutation of one document, which holds because one
+// document is one room: the lock is taken on the room's name, and a socket's admission refuses
+// a room named by anything but the document's canonical uuid (ServeHTTP), so no second spelling
+// of one id takes a second lock. Callers that need a check-then-write guarantee must hold it
+// before reading live state. Every durable writer that takes the room lock inside a transaction
+// takes it here; withRoomLock takes the session-level form on its own connection, and
+// lockSettlementCursor takes it for a settlement, waiting at most 100 ms under lock_timeout at
+// shutdown.
 // The rule between this lock and a document's owner row has two halves, and both are
 // load-bearing.
 //
@@ -263,9 +267,17 @@ func (p *PgVersioned) AppendUpdateTx(ctx context.Context, tx pgx.Tx, room string
 // did, so writers of one owner still serialise and the per-owner event sequence is unchanged.
 //
 // One transaction would still need `for update` on these tables: one that deletes such a row or
-// changes a key column, which is what the weaker level does not cover. Nothing here does either.
-// The check refuses it if something starts to, and that red is the prompt to revisit this rule,
-// not to reach for a weaker level that would not hold.
+// changes a key column, which is what the weaker level does not cover. Nothing holding one of
+// these locks takes `for no key update` on a row it then deletes. One of them does delete a row,
+// and of another table: the removal of an untouched document deletes an artifacts row
+// (api.removeArtifact) while it holds this room's lock. That delete takes the artifacts row's
+// own lock, and nothing of the removal locks that row before it: the removal locks the issue the
+// document hangs from, which it does not delete and whose key columns it does not change, and
+// then this room's lock (LockDocumentRoom), under which it reads what the document holds and
+// deletes the row. It therefore waits for no room lock while it holds the artifacts row.
+// The check refuses a `for update` if something starts to
+// spell one, and that red is the prompt to revisit this rule, not to reach for a weaker level
+// that would not hold.
 //
 // Order. A transaction that takes both an owner row and this lock takes the owner row first.
 // The durable writers - a room's batch of browser updates (AppendRoomFlush),
@@ -280,6 +292,17 @@ func lockDocumentRoom(ctx context.Context, tx pgx.Tx, room string) error {
 		return fmt.Errorf("lock document room: %w", err)
 	}
 	return nil
+}
+
+// LockDocumentRoom takes the room's lock of the document artifactID inside tx, for a transaction
+// of another package that must hold it before it reads live state. It is lockDocumentRoom under
+// a name outside this package, as AnnounceDocumentRemoved is for a removal's notification: a
+// package function taking the caller's transaction, needing no room and no state of this process.
+//
+// A caller outside this package takes the owner's row before this lock, which is the order the
+// rule above requires.
+func LockDocumentRoom(ctx context.Context, tx pgx.Tx, artifactID string) error {
+	return lockDocumentRoom(ctx, tx, artifactID)
 }
 
 // lockedHead takes the document's advisory lock in tx (lockDocumentRoom) and reads the durable
@@ -298,13 +321,32 @@ func lockedHead(ctx context.Context, tx pgx.Tx, room string) (int64, error) {
 // clearSettlementPending deletes the document's pending settlement inside the settlement
 // transaction that has read every update, so it commits only with that settlement's writes. The
 // settlement holds the document's advisory lock from before it reads the update cursor until it
-// commits, so no update it has not read can be appended meanwhile.
-func clearSettlementPending(ctx context.Context, tx pgx.Tx, room string) error {
-	if _, err := tx.Exec(ctx, `delete from doc_settlements_pending where artifact_id = $1`, room); err != nil {
+// commits, so no update it has not read can be appended meanwhile. The same statement keeps kept
+// as the document's closed edit source (doc_closed_edit_sources), or deletes the one kept where
+// kept is nil.
+func clearSettlementPending(ctx context.Context, tx pgx.Tx, room string, kept *model.Actor) error {
+	encoded, err := encodeActor(kept)
+	if err != nil {
+		return fmt.Errorf("encode the closed issue's document's edit source: %w", err)
+	}
+	if _, err := tx.Exec(ctx, clearSettlementPendingStatement, room, encoded); err != nil {
 		return fmt.Errorf("clear the document's pending settlement: %w", err)
 	}
 	return nil
 }
+
+// clearSettlementPendingStatement is clearSettlementPending's one statement: it deletes the pending
+// row of the document $1 and either keeps $2 as the document's closed edit source or, where $2 is
+// null, deletes the one kept.
+const clearSettlementPendingStatement = `
+	with pending as (
+		delete from doc_settlements_pending where artifact_id = $1::uuid
+	), kept as (
+		insert into doc_closed_edit_sources (artifact_id, last_actor)
+		select $1::uuid, $2::jsonb where $2::jsonb is not null
+		on conflict (artifact_id) do update set last_actor = excluded.last_actor
+	)
+	delete from doc_closed_edit_sources where artifact_id = $1::uuid and $2::jsonb is null`
 
 // settlementPending reports whether room owes a settlement. Shutdown's drain uses this to skip
 // settling a document that already has none owed, rather than spending its budget repeating work
@@ -545,7 +587,8 @@ func (p *PgVersioned) RebuildTx(ctx context.Context, tx pgx.Tx, room string, loa
 		return RebuildReport{}, err
 	}
 	if current != loaded {
-		return RebuildReport{}, fmt.Errorf("%w: document %s changed while it was being rebuilt (its head moved from %d to %d), by another rebuild or an edit; read it again before rebuilding", ErrDocumentLive, room, loaded, current)
+		cause := fmt.Sprintf("changed while it was being rebuilt (its head moved from %d to %d), by another rebuild or an edit", loaded, current)
+		return RebuildReport{}, liveRebuildRefusal(ctx, tx, room, cause, readAgainFirst)
 	}
 	if _, err := p.recoverPruneTx(ctx, tx, room); err != nil {
 		return RebuildReport{}, err

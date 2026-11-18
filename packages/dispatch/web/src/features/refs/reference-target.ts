@@ -19,6 +19,7 @@ import type {
   ArtifactVersionContent,
   AskRead,
   CommentRead,
+  DisplayTree,
   GraphReferences,
   IssueReferenceSummary,
   IssueReferenceSummaryDocument,
@@ -68,6 +69,9 @@ export interface ReferenceTarget {
   /** What the target says, as its author wrote it (Markdown): a message's body, a document's
    *  text. `undefined` while loading or for a target with nothing to say. */
   readonly description: string | undefined;
+  /** The reading Go made of `description`, which a card draws (`MarkdownPreview`); absent for a
+   *  description Dispatch does not store, a GitHub body among them. */
+  readonly descriptionTree: DisplayTree | undefined;
   /** The bytes route of the picture a reference to an image artifact names - the version it pins,
    *  else the latest - for a thumbnail beside the title; undefined for anything else. */
   readonly picture: string | undefined;
@@ -169,7 +173,14 @@ export const blockQuery = (reference: string | undefined) =>
 export const questionsQuery = (source: TextSource | undefined) =>
   queryOptions({
     queryKey: ["references", "questions", source?.kind, source?.id] as const,
-    queryFn: () => api.getReferenceQuestions(source?.kind ?? "", source?.id ?? ""),
+    queryFn: async () => {
+      // `useTextReferences` enables the read only for a text that names its source, so an
+      // absent one never reaches Dispatch.
+      if (source === undefined) {
+        throw new Error("the question map is read for one named source");
+      }
+      return await api.getReferenceQuestions(source.kind, source.id);
+    },
     retry: false,
   });
 
@@ -184,7 +195,7 @@ export function questionReferences(
     return undefined;
   }
   const questions: Record<string, string> = {};
-  for (const question of answer.questions) {
+  for (const question of answer.questions ?? []) {
     if (question.reference !== "") {
       questions[question.block_id] = question.reference;
     }
@@ -205,7 +216,7 @@ function agentReferenceArtifact(artifact: Artifact): ReferenceArtifact {
   return {
     id: artifact.id,
     kind: artifact.kind,
-    latest_version: artifact.versions.at(-1)?.number ?? null,
+    latest_version: (artifact.versions ?? []).at(-1)?.number ?? null,
     name: artifact.name,
   };
 }
@@ -214,7 +225,7 @@ function agentReferenceArtifact(artifact: Artifact): ReferenceArtifact {
 export function summarySpec(
   summary: IssueReferenceSummary | undefined
 ): IssueReferenceSummaryDocument | undefined {
-  return summary?.documents.find((document) => document.primary);
+  return (summary?.documents ?? []).find((document) => document.primary);
 }
 
 /** The block a route names, as the reference its graph read is keyed by; undefined for a route
@@ -236,6 +247,8 @@ export interface ReferenceData {
   readonly issue: IssueReferenceSummary | undefined;
   readonly artifact: ReferenceArtifact | undefined;
   readonly markdown: string | undefined;
+  /** The reading Go made of `markdown`, which a card draws. */
+  readonly markdownTree: DisplayTree | undefined;
   readonly ask: AskRead | undefined;
   readonly comment: CommentRead | undefined;
   readonly message: MessageRead | undefined;
@@ -456,7 +469,7 @@ export function useReferenceData(
       ? projectDocument.data
       : agentArtifact !== undefined
         ? sessionArtifact.data
-        : issue.data?.documents.find(
+        : (issue.data?.documents ?? []).find(
             (candidate) => route?.kind === "artifact" && candidate.slug === route.slug
           );
   const text = useQuery({
@@ -469,6 +482,8 @@ export function useReferenceData(
     issue: issue.data,
     artifact,
     markdown: text.data !== undefined && "markdown" in text.data ? text.data.markdown : undefined,
+    markdownTree:
+      text.data !== undefined && "markdown_tree" in text.data ? text.data.markdown_tree : undefined,
     ask: ask.data,
     comment: comment.data,
     message: messageQueryResult.data,
@@ -512,7 +527,7 @@ export function useBlockDocument(
     case "spec":
       return summarySpec(issue.data);
     case "artifact":
-      return issue.data?.documents.find((candidate) => candidate.slug === named.slug);
+      return (issue.data?.documents ?? []).find((candidate) => candidate.slug === named.slug);
     default:
       return undefined;
   }
@@ -522,6 +537,12 @@ export function useBlockDocument(
  *  block's current text otherwise. */
 export function blockText(node: GraphReferences["node"]): string | undefined {
   return node.pin === undefined ? node.text : node.pin.text;
+}
+
+/** The reading Go made of the text `blockText` answers, which a reference's title and card draw
+ *  rather than parsing the block's markdown again. */
+export function blockTextTree(node: GraphReferences["node"]): DisplayTree | undefined {
+  return node.pin === undefined ? node.text_tree : node.pin.text_tree;
 }
 
 /**
@@ -547,37 +568,52 @@ export function useReferenceTarget(
   route: DispatchReferenceRoute | undefined,
   options: ReferenceReadOptions
 ): ReferenceTarget {
-  const { artifact, ask, block, comment, issue, markdown, message } = useReferenceData(
-    route,
-    options
-  );
+  const { artifact, ask, block, comment, issue, markdown, markdownTree, message } =
+    useReferenceData(route, options);
   const kind = route === undefined ? undefined : referenceTargetKind(route);
   let authored: string | undefined;
+  let authoredTree: DisplayTree | undefined;
   switch (kind) {
     case "ask":
       authored = ask?.ask.question;
+      authoredTree = ask?.ask.question_tree;
       break;
     case "comment":
       authored = comment?.comment.body;
+      authoredTree = comment?.comment.body_tree;
       break;
     case "block":
       authored = block === undefined ? undefined : blockText(block.node);
+      authoredTree = block === undefined ? undefined : blockTextTree(block.node);
       break;
     case "message":
       authored = message?.message.body;
+      authoredTree = message?.message.body_tree;
       break;
   }
-  const headline = useMarkdownHeadline(authored, TITLE_HEADLINE_MAX);
+  // The tree is the reading Go made of this text, and where there is one nothing here parses
+  // markdown. An answer that carries none still has a title: a server that has not rolled yet,
+  // or any caller that did not ask for trees, answers the markdown alone, and a deploy serving
+  // two builds has a dashboard reading both at once. `useMarkdownHeadline` reads the fallback
+  // only where `tree` is undefined, so a stored text that came with its tree is still parsed
+  // nowhere (`e2e/parse-count.e2e.ts`).
+  const headline = useMarkdownHeadline(authoredTree, TITLE_HEADLINE_MAX, authored);
 
   if (kind === "message") {
     // A message reads as the head of what it says, the way a comment does; its own body is the
     // description, which the cards under a message reference render formatted.
-    return { title: headline?.text, description: message?.message.body, picture: undefined };
+    return {
+      title: headline?.text,
+      description: message?.message.body,
+      descriptionTree: message?.message.body_tree,
+      picture: undefined,
+    };
   }
   if (kind === "ask" || kind === "comment" || kind === "block") {
     return {
       title: headline?.text,
       description: headline?.cut === true ? authored : undefined,
+      descriptionTree: headline?.cut === true ? authoredTree : undefined,
       picture: undefined,
     };
   }
@@ -586,6 +622,7 @@ export function useReferenceTarget(
   return {
     title: artifact?.name ?? issue?.title,
     description: text ?? (artifact === undefined ? issue?.status : undefined),
+    descriptionTree: text === undefined ? undefined : markdownTree,
     picture: named === undefined ? undefined : picturePath(named, artifact),
   };
 }
@@ -655,7 +692,7 @@ export function watchPicturePath(
     return observePicturePath(
       queryClient,
       issueSummaryQuery(route.key),
-      (summary) => summary.documents.find((candidate) => candidate.slug === route.slug),
+      (summary) => (summary.documents ?? []).find((candidate) => candidate.slug === route.slug),
       named,
       onPicture
     );

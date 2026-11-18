@@ -97,13 +97,15 @@ func TestSpawnCreatesTheIssueSandboxAndRoleLocator(t *testing.T) {
 		t.Fatalf("provision secret data %v", provision.Data)
 	}
 	secret := g.secret(roleSecretName(name, spec.Role))
-	wantKeys := []string{LauncherTokenFile, GitHubConfigKey("acme"), GitHubConfigKey("sjawhar"), GitHubDefaultKey, GitHubHostsKey("acme"), GitHubHostsKey("sjawhar")}
+	wantKeys := []string{LauncherTokenFile, GitHubConfigKey("acme"), GitHubConfigKey("sjawhar"), GitHubDefaultKey,
+		GitHubHostsKey("acme"), GitHubHostsKey("sjawhar"), GitHubPairsKey}
 	slices.Sort(wantKeys)
 	if keys := slices.Sorted(maps.Keys(secret.Data)); !slices.Equal(keys, wantKeys) || len(secret.Data[LauncherTokenFile]) == 0 ||
-		string(secret.Data[GitHubConfigKey("sjawhar")]) != ghconfig.Config || string(secret.Data[GitHubDefaultKey]) != "sjawhar" {
-		t.Fatalf("role secret keys %v, want the launcher token, the default owner sjawhar and each owner's two gh files %v", keys, wantKeys)
+		string(secret.Data[GitHubConfigKey("sjawhar")]) != ghconfig.Config || string(secret.Data[GitHubDefaultKey]) != "sjawhar" ||
+		len(secret.Data[GitHubPairsKey]) != 0 {
+		t.Fatalf("role secret keys %v, want the launcher token, the default owner sjawhar, each owner's two gh files and an empty renames file %v", keys, wantKeys)
 	}
-	for owner, want := range map[string]string{"sjawhar": staticCredentialToken(spec.Role), "acme": staticReadToken(spec.Role, "acme")} {
+	for owner, want := range map[string]string{"sjawhar": staticCredentialToken(spec.Role), "acme": staticOwnerToken(spec.Role, "acme")} {
 		if token, err := ghconfig.TokenFromHosts(secret.Data[GitHubHostsKey(owner)]); err != nil || token != want {
 			t.Fatalf("the tester's %s hosts.yml holds token %q (%v), want %q", owner, token, err, want)
 		}
@@ -130,9 +132,9 @@ func TestTheControllersSecretHoldsTheReviewAppsGhFilesBesideTheLauncherToken(t *
 	g.spawn(controllerSpec(t))
 	name := SandboxName(controllerToken)
 	secret := g.secret(roleSecretName(name, claim.RoleController))
-	if secret == nil || len(secret.Data) != 6 || len(secret.Data[LauncherTokenFile]) == 0 || string(secret.Data[GitHubDefaultKey]) != "sjawhar" ||
+	if secret == nil || len(secret.Data) != 7 || len(secret.Data[LauncherTokenFile]) == 0 || string(secret.Data[GitHubDefaultKey]) != "sjawhar" ||
 		len(secret.Data[GitHubHostsKey("sjawhar")]) == 0 || len(secret.Data[GitHubConfigKey("acme")]) == 0 {
-		t.Fatalf("the controller's Secret holds %v, want the launcher token, the default and the review App's gh files of each owner", secret)
+		t.Fatalf("the controller's Secret holds %v, want the launcher token, the default, the bundle's renames and the review App's gh files of each owner", secret)
 	}
 	found := false
 	for _, volume := range g.pod(name).Spec.Volumes {
@@ -992,15 +994,17 @@ func TestAPodOfATreeLaunchesWhileAnotherIsStillInitializing(t *testing.T) {
 
 // ProvisionBound is the three provisioning phases' bounds together, workspace.FetchBudget (190m:
 // the wait for the repository cache, which covers the cache's own first clone, then one bound for
-// the cache's stream and its verification, then one of its own for the delta from GitHub) for
+// the verification of what the cache streamed, then one of its own for the delta from GitHub) for
 // workspace-fetch, workspace.CloneTimeout (30m) for workspace-init's shared clone, and
 // workspace.CheckoutTimeout (60m) for the issue's own checkout of that clone, and nothing more:
 // provisioning from the feed onto the pod's own disk waits on no other pod, so no lock wait is
-// added to it. Pinned to a literal, 280 minutes, since no test can wait the real bound out.
+// added to it. The cache's stream holds the low-speed bound and no clock, so a stream that keeps
+// receiving runs on into the slack this bound holds over what its fetch actually waited and
+// checked. Pinned to a literal, 280 minutes, since no test can wait the real bound out.
 func TestProvisionBoundIsTheFetchsWholeBudgetTheClonesBoundAndTheCheckouts(t *testing.T) {
 	g := newRig(t, nil)
 	if got, want := g.r.ProvisionBound(), workspace.CacheWaitTimeout+2*workspace.FetchTimeout+workspace.CloneTimeout+workspace.CheckoutTimeout; got != 280*time.Minute || got != want {
-		t.Fatalf("ProvisionBound = %s, want %s: the cache wait, the stream's bound, the delta's own, the shared clone's, and the checkout's", got, want)
+		t.Fatalf("ProvisionBound = %s, want %s: the cache wait, the verification's bound, the delta's own, the shared clone's, and the checkout's", got, want)
 	}
 }
 
@@ -1894,6 +1898,7 @@ func loggedSandboxMachine(
 			Boot: time.Hour, RegistrationIntervals: 1, RPC: time.Hour, Probe: time.Hour, Stop: time.Hour, LaunchBackoff: time.Millisecond,
 		},
 		PluginContract: 24,
+		RefreshGate:    supervise.NewRefreshGate(0),
 	}, c)
 	if err != nil {
 		t.Fatalf("new Machine: %v", err)
@@ -1957,6 +1962,16 @@ func (s *supervisedSandboxStore) PutClaimAndDelivery(_ context.Context, c superv
 func (s *supervisedSandboxStore) RetireDelivery(_ context.Context, c supervise.Claim, _ string) error {
 	s.claim = c
 	return nil
+}
+
+// PutClaimStep records the step columns alone, as the store's own narrow write does; these
+// tests read none of them.
+func (s *supervisedSandboxStore) PutClaimStep(_ context.Context, token claim.Token, step supervise.StepRecord) (bool, error) {
+	if s.claim.Token != token {
+		return false, nil
+	}
+	s.claim.Step = step
+	return true, nil
 }
 
 // A Running patch the server applied but whose answer never arrived (a client timeout) is as

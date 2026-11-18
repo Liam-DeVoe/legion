@@ -1180,6 +1180,164 @@ run_check "$root"
 check "a call-mode term in the build step's own if: is refused" "$(is "$status" 1)"
 check "  and quotes the term" "$(contains "$out" "step 'Build image' builds or calls an image, and its if: is narrowed by \`inputs.mode == ''\`")"
 
+echo "case: one gate is admitted as data, for one workflow and one job and no other"
+# The live shape: the browser image's build step is skipped where the published image was
+# already built from the tree's Dockerfile, which no path filter can say. The hatch is an entry
+# in PINNED_IMAGE_GATES, keyed to the workflow, the job and the term's exact text.
+#
+# pin_gate <root> <workflow file> <job id> <term>: replaces the symlinked checker with a copy
+# whose PINNED_IMAGE_GATES names one gate - the reviewed edit a refusal asks for. Editing the
+# script is the point: the hatch is data in a reviewed file, not a shape a gate can claim.
+pin_gate() {
+  local root=$1
+  rm -f "$root/.github/scripts/check-image-trigger-paths.sh"
+  python3 - "$check_script" "$root/.github/scripts/check-image-trigger-paths.sh" "$2" "$3" "$4" <<'PYEOF'
+import sys
+source, destination, workflow, job, term = sys.argv[1:6]
+text = open(source).read()
+anchor = "PINNED_IMAGE_GATES: list[tuple[str, str, str, str]] = [\n"
+entry = f"    ({workflow!r}, {job!r}, {term!r}, 'the argument a reviewer read'),\n"
+assert anchor in text
+open(destination, "w").write(text.replace(anchor, anchor + entry, 1))
+PYEOF
+  chmod +x "$root/.github/scripts/check-image-trigger-paths.sh"
+}
+published="steps.decide.outputs.publish == 'true'"
+
+root=$(fixture pinned-gate-unlisted)
+gate_probe "$root" "$unchanged"
+step_if "$root" "$published"
+run_check "$root"
+check "a gate on what the package already serves is refused unlisted" "$(is "$status" 1)"
+check "  and quotes the term" "$(contains "$out" "is narrowed by \`$published\`")"
+
+root=$(fixture pinned-gate-listed)
+gate_probe "$root" "$unchanged"
+step_if "$root" "$published"
+pin_gate "$root" ".github/workflows/image.yaml" "docker" "$published"
+run_check "$root"
+check "  and goes green once listed" "$(is "$status" 0)"
+check "  and the excusal names the if: it was read in" \
+  "$(contains "$out" "listed in PINNED_IMAGE_GATES: .github/workflows/image.yaml: jobs.docker step 'Build image' if: \`$published\`")"
+
+# Keyed to one job: the same term in a job no entry names is refused, and the entry that
+# excused nothing fails beside it rather than standing as an exemption nobody reviews again.
+root=$(fixture pinned-gate-other-job)
+gate_probe "$root" "$unchanged"
+step_if "$root" "$published"
+pin_gate "$root" ".github/workflows/image.yaml" "changes" "$published"
+run_check "$root"
+check "the same term in another job is refused" "$(is "$status" 1)"
+check "  and quotes the term" "$(contains "$out" "is narrowed by \`$published\`")"
+check "  and the entry that excused nothing fails too" \
+  "$(contains "$out" "PINNED_IMAGE_GATES names .github/workflows/image.yaml job changes term")"
+
+# And to one workflow: a second workflow of this tree, with a job of the same id and no such
+# term, is not the holder the entry names either. (An entry for a workflow the tree does not
+# hold at all is passed over, since this check runs over the fixtures here as well as over the
+# repository, so the second workflow is a real one.)
+root=$(fixture pinned-gate-other-workflow)
+gate_probe "$root" "$unchanged"
+step_if "$root" "$published"
+cat > "$root/.github/workflows/other.yaml" <<'YAML'
+name: Other
+on:
+  workflow_dispatch:
+jobs:
+  docker:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo nothing is built here
+YAML
+pin_gate "$root" ".github/workflows/other.yaml" "docker" "$published"
+run_check "$root"
+check "the same term in another workflow is refused" "$(is "$status" 1)"
+check "  and quotes the term" "$(contains "$out" "is narrowed by \`$published\`")"
+check "  and the entry that excused nothing fails too" \
+  "$(contains "$out" "PINNED_IMAGE_GATES names .github/workflows/other.yaml job docker term")"
+
+# An entry excuses its own term and nothing beside it: the filter gate in the same `if:` is
+# read as it always was, so a filter that drops an input still fails.
+root=$(fixture pinned-gate-beside-a-filter)
+gate_probe "$root" "$unchanged"
+step_if "$root" "needs.changes.outputs.narrow == 'true' && $published"
+pin_gate "$root" ".github/workflows/image.yaml" "docker" "$published"
+run_check "$root"
+check "the filter beside an excused term still decides" "$(is "$status" 1)"
+check "  and names the input that filter drops" "$(contains "$out" 'does not cover package.json')"
+
+echo "case: a file computed into a build's inputs is data, and then read like the context"
+# The live shape: browser-image.yaml's build step writes a `labels:` whose value is the recipe
+# hash its row step computes with .github/scripts/ci_images.py, so that file decides the bytes
+# the build pushes while no `COPY` names it and no key of the step holds its path. The hatch is
+# an entry in COMPUTED_BUILD_INPUTS, keyed to the workflow and the job that builds.
+#
+# computed_input <root> <workflow file> <job id> <path>: replaces the symlinked checker with a
+# copy whose COMPUTED_BUILD_INPUTS names one file - the reviewed edit this hatch asks for, as
+# pin_gate above does for a gate term.
+computed_input() {
+  local root=$1
+  rm -f "$root/.github/scripts/check-image-trigger-paths.sh"
+  python3 - "$check_script" "$root/.github/scripts/check-image-trigger-paths.sh" "$2" "$3" "$4" <<'PYEOF'
+import sys
+source, destination, workflow, job, path = sys.argv[1:6]
+text = open(source).read()
+anchor = "COMPUTED_BUILD_INPUTS: list[tuple[str, str, str, str]] = [\n"
+entry = f"    ({workflow!r}, {job!r}, {path!r}, 'the argument a reviewer read'),\n"
+assert anchor in text
+open(destination, "w").write(text.replace(anchor, anchor + entry, 1))
+PYEOF
+  chmod +x "$root/.github/scripts/check-image-trigger-paths.sh"
+}
+
+# Nothing is inferred from a file sitting in the tree: unlisted, it is no input of this build,
+# and the trigger that leaves it out is left alone.
+root=$(fixture computed-input-unlisted)
+mkdir -p "$root/scripts"
+echo 'print("the hash the labels: carries")' > "$root/scripts/recipe.py"
+run_check "$root"
+check "a file no entry names is no input of the build" "$(is "$status" 0)"
+
+root=$(fixture computed-input-listed)
+mkdir -p "$root/scripts"
+echo 'print("the hash the labels: carries")' > "$root/scripts/recipe.py"
+computed_input "$root" ".github/workflows/image.yaml" "docker" "scripts/recipe.py"
+run_check "$root"
+check "the trigger owes it coverage once listed" "$(is "$status" 1)"
+check "  and names the file the trigger leaves out" \
+  "$(contains "$out" "does not cover scripts/recipe.py (computed into this build's inputs): scripts/recipe.py is built into the image")"
+
+root=$(fixture computed-input-covered)
+mkdir -p "$root/scripts"
+echo 'print("the hash the labels: carries")' > "$root/scripts/recipe.py"
+sed -i 's|      - "docker/\*\*"|      - "docker/**"\n      - "scripts/recipe.py"|' \
+  "$root/.github/workflows/image.yaml"
+computed_input "$root" ".github/workflows/image.yaml" "docker" "scripts/recipe.py"
+run_check "$root"
+check "and goes green once the trigger covers it" "$(is "$status" 0)"
+check "  counting it among the inputs" \
+  "$(contains "$out" 'docker/Dockerfile: checked 6 inputs (8 files)')"
+check "  and printing the entry with the argument for it" \
+  "$(contains "$out" "listed in COMPUTED_BUILD_INPUTS: .github/workflows/image.yaml: jobs.docker reads scripts/recipe.py - the argument a reviewer read")"
+
+# An entry that reached no build fails rather than standing for nothing, as the gate list's
+# does: a job renamed or no longer building would otherwise stop asking the trigger for a path.
+root=$(fixture computed-input-other-job)
+mkdir -p "$root/scripts"
+echo 'print("the hash the labels: carries")' > "$root/scripts/recipe.py"
+computed_input "$root" ".github/workflows/image.yaml" "changes" "scripts/recipe.py"
+run_check "$root"
+check "an entry naming a job that builds nothing fails" "$(is "$status" 1)"
+check "  and says which entry" \
+  "$(contains "$out" 'COMPUTED_BUILD_INPUTS names .github/workflows/image.yaml job changes, which builds no image there, as the reader of scripts/recipe.py')"
+
+root=$(fixture computed-input-path-gone)
+computed_input "$root" ".github/workflows/image.yaml" "docker" "scripts/gone.py"
+run_check "$root"
+check "an entry naming a file this tree has not got fails" "$(is "$status" 1)"
+check "  and says which path" \
+  "$(contains "$out" 'COMPUTED_BUILD_INPUTS names scripts/gone.py, which this tree has not got')"
+
 # V5: an action that builds an image and is not the one this check reads.
 root=$(fixture tripwire-bake-action)
 python3 - "$root/.github/workflows/image.yaml" <<'PYEOF'
@@ -1334,26 +1492,38 @@ open(path, "w").write(text.replace(marker, marker + f"        id: {identifier}\n
 PYEOF
 }
 
-# allowlist <root> <step id> <hits> <reason>: replaces the symlinked checker with a copy whose
-# NOT_A_BUILD_STEPS names one step of the fixture's docker job, pinned to <hits> - the reviewed
-# edit a refusal asks for. Editing the script is the point: the hatch is data in a reviewed
-# file, not something a step can claim for itself.
-allowlist() {
+# list_step <root> <table> <step id> <texts> <reason>: replaces the symlinked checker with a copy
+# whose <table> - NOT_A_BUILD_STEPS or BUILD_PLUMBING_STEPS, which carry the same five fields -
+# names one step of the fixture's docker job, pinned to <texts> and carrying <reason>. Editing the
+# script is the point: each list is data in a reviewed file, not something a step can claim for
+# itself.
+list_step() {
   local root=$1
   rm -f "$root/.github/scripts/check-image-trigger-paths.sh"
-  python3 - "$check_script" "$root/.github/scripts/check-image-trigger-paths.sh" "$2" "$3" "$4" <<'PYEOF'
+  python3 - "$check_script" "$root/.github/scripts/check-image-trigger-paths.sh" "$2" "$3" "$4" "$5" <<'PYEOF'
 import sys
-source, destination, identifier, hits, reason = sys.argv[1:6]
+source, destination, table, identifier, texts, reason = sys.argv[1:7]
 text = open(source).read()
-anchor = "NOT_A_BUILD_STEPS: list[tuple[str, str, str, tuple[str, ...], str]] = [\n"
+anchor = f"{table}: list[tuple[str, str, str, tuple[str, ...], str]] = [\n"
 entry = (
-    f"    ('.github/workflows/image.yaml', 'docker', {identifier!r}, ({hits},), {reason!r}),\n"
+    f"    ('.github/workflows/image.yaml', 'docker', {identifier!r}, ({texts},), {reason!r}),\n"
 )
 assert anchor in text
 open(destination, "w").write(text.replace(anchor, anchor + entry, 1))
 PYEOF
   chmod +x "$root/.github/scripts/check-image-trigger-paths.sh"
 }
+
+# allowlist <root> <step id> <hits> <reason>: NOT_A_BUILD_STEPS naming one step of the fixture's
+# docker job as building nothing, pinned to <hits> - the reviewed edit a refusal asks for.
+allowlist() {
+  list_step "$1" NOT_A_BUILD_STEPS "$2" "$3" "$4"
+}
+
+# The reason the three BUILD_PLUMBING_STEPS cases below write into their entry: the reviewed
+# edit that says a step is the image build's own plumbing, so a job holding it still reads as
+# building only.
+plumbing_reason="the fixture pins it as plumbing of the image build"
 
 echo "case: every build shape is refused, and only a listed step is excused"
 # A table, not single literals: every row is a real invocation, asserting the refusal, that the
@@ -2111,6 +2281,105 @@ runs:
 run_check "$root"
 check "a JavaScript action is admitted, so zero builds is what fails" "$(contains "$out" 'this check covered 0 image builds')"
 
+echo "case: a ./ action under a second checkout of this repository is that action here"
+# base_action <root> <checkout path, or empty for none> <uses>: the fixture's build moved into a
+# local composite action, and a job that runs it through a second checkout of this same
+# repository — one checkout at the root, one at <checkout path>, and <uses> in place of the
+# build step.
+base_action() {
+  local root=$1 path=$2 uses=$3 repository=${4:-} second=""
+  mkdir -p "$root/.github/actions/builder"
+  cat > "$root/.github/actions/builder/action.yml" <<'ACTION'
+name: Builder
+runs:
+  using: composite
+  steps:
+    - uses: docker/build-push-action@v6
+      with:
+        context: .
+        file: docker/Dockerfile
+ACTION
+  # A command substitution drops the trailing newline, so `second` is the step's lines with
+  # none, and the heredoc gives it a line of its own. Empty, it leaves a blank line there.
+  # A fourth argument gives that checkout a `repository:`, which is the one way the directory
+  # it writes holds a tree other than this one's.
+  if [ -n "$path" ]; then
+    second=$(printf '      - uses: actions/checkout@v5\n        with:\n          path: %s' "$path")
+    [ -z "$repository" ] || second=$(printf '%s\n          repository: %s' "$second" "$repository")
+  fi
+  cat > "$root/.github/workflows/image.yaml" <<YAML
+name: Image
+on:
+  push:
+    branches: [main]
+    paths:
+      - "package.json"
+      - "packages/app/**"
+      - "docker/**"
+      - ".dockerignore"
+      - ".github/workflows/image.yaml"
+  workflow_dispatch:
+jobs:
+  docker:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+$second
+      - uses: $uses
+YAML
+}
+
+root=$(fixture base-checkout-action)
+base_action "$root" base ./base/.github/actions/builder
+run_check "$root"
+check "a uses under the job's checkout at base is read as this tree's action" "$(is "$status" 0)"
+check "  and its build counts" "$(contains "$out" '(1 image build(s))')"
+check "  and its image inputs are checked" "$(contains "$out" 'docker/Dockerfile: checked 5 inputs')"
+# Read, not skipped: the trigger is still held to the inputs of the image that action builds.
+drop_path "$root" "packages/app/**"
+run_check "$root"
+check "an input that action's build reads is still owed" "$(is "$status" 1)"
+check "  and the uncovered file is named" "$(contains "$out" 'does not cover packages/app (docker/Dockerfile:3)')"
+
+for written in ./base base/; do
+  root=$(fixture "base-checkout-path-$(echo "$written" | tr './' '--')")
+  base_action "$root" "$written" ./base/.github/actions/builder
+  run_check "$root"
+  check "a checkout path written $written resolves the same way" "$(is "$status" 0)"
+done
+
+root=$(fixture base-no-checkout)
+base_action "$root" "" ./base/.github/actions/builder
+run_check "$root"
+check "the same uses with no second checkout is refused" "$(is "$status" 1)"
+check "  with today's message" "$(contains "$out" 'uses ./base/.github/actions/builder, which has no action.yml this check can read')"
+
+root=$(fixture base-checkout-elsewhere)
+base_action "$root" vendor ./base/.github/actions/builder
+run_check "$root"
+check "the same uses under a checkout at another path is refused" "$(is "$status" 1)"
+check "  with today's message" "$(contains "$out" 'uses ./base/.github/actions/builder, which has no action.yml this check can read')"
+
+root=$(fixture base-checkout-missing-action)
+base_action "$root" base ./base/.github/actions/absent
+run_check "$root"
+check "a name no action of this tree has is refused under the checkout too" "$(is "$status" 1)"
+check "  with today's message" "$(contains "$out" 'uses ./base/.github/actions/absent, which has no action.yml this check can read')"
+
+# A checkout of another repository writes that repository's tree at `base`, so `./base/<rest>`
+# is a file of that repository and not this tree's `<rest>`, whatever this tree keeps there.
+root=$(fixture base-checkout-foreign)
+base_action "$root" base ./base/.github/actions/builder acme/other
+run_check "$root"
+check "a checkout of another repository at that path is refused" "$(is "$status" 1)"
+check "  with the message a missing action gets" \
+  "$(contains "$out" 'uses ./base/.github/actions/builder, which has no action.yml this check can read')"
+
+root=$(fixture base-checkout-this-repository)
+base_action "$root" base ./base/.github/actions/builder '${{ github.repository }}'
+run_check "$root"
+check "a checkout that names this repository is read as this tree, as one naming none is" "$(is "$status" 0)"
+
 echo "case: a job that calls a workflow outside this repository is refused"
 root=$(fixture job-uses-foreign)
 python3 - "$root/.github/workflows/image.yaml" <<'PYEOF'
@@ -2443,6 +2712,52 @@ printf "  test:\n    needs: changes\n    if: needs.changes.outputs.worker_image 
 run_check "$root"
 check "a filter that also gates a job doing more than build is left alone" "$(is "$status" 0)"
 check "  and says why" "$(contains "$out" 'not checked for files no image build reads, since jobs.changes filter worker_image gates jobs.test, which does more than build an image')"
+
+echo "case: a called workflow whose job builds and then runs a step of its own"
+# A job is the same job wherever its steps are: ci.yaml's jobs each hold theirs in a workflow of
+# their own, so one that builds an image and then runs a suite against it does more than build,
+# and the filter gating its caller owes the suite's files.
+root=$(fixture router-called-does-more)
+ci_router "$root" "$excluding_inputs" some-with-excludes
+printf '      - run: echo test\n' >> "$root/.github/workflows/image.yaml"
+run_check "$root"
+check "a caller of a workflow whose job does more is left alone" "$(is "$status" 0)"
+check "  and says why" "$(contains "$out" 'not checked for files no image build reads, since jobs.changes filter worker_image gates jobs.worker-image, which does more than build an image')"
+
+root=$(fixture router-called-builds-only)
+ci_router "$root" "$excluding_inputs" some-with-excludes
+run_check "$root"
+check "the same called file without that step is read as building only" "$(is "$status" 0)"
+check "  and the filter is held to the files the build reads" "$(contains "$out" 'jobs.changes filter worker_image): matches only files its image builds read')"
+
+echo "case: BUILD_PLUMBING_STEPS is held to the step it pins"
+# The list is how a `run:` step of such a job says it is the build's own plumbing, and it is
+# held to that step: a step that runs something else, or is gone, must not go on being excused.
+root=$(fixture plumbing-pinned)
+ci_router "$root" "$excluding_inputs" some-with-excludes
+extra_step "$root" 'echo "tag=v1" >> "$GITHUB_OUTPUT"'
+step_id "$root" "Extra" "tag"
+list_step "$root" BUILD_PLUMBING_STEPS "tag" "'echo \"tag=v1\" >> \"\$GITHUB_OUTPUT\"'" "$plumbing_reason"
+run_check "$root"
+check "a pinned run step leaves its job building only" "$(is "$status" 0)"
+check "  and the filter is held to the files the build reads" "$(contains "$out" 'jobs.changes filter worker_image): matches only files its image builds read')"
+
+root=$(fixture plumbing-text-moved)
+ci_router "$root" "$excluding_inputs" some-with-excludes
+extra_step "$root" 'echo "tag=v2" >> "$GITHUB_OUTPUT"'
+step_id "$root" "Extra" "tag"
+list_step "$root" BUILD_PLUMBING_STEPS "tag" "'echo \"tag=v1\" >> \"\$GITHUB_OUTPUT\"'" "$plumbing_reason"
+run_check "$root"
+check "an entry whose step runs something else is refused" "$(is "$status" 1)"
+check "  and names the entry, the pinned text and the step's" \
+  "$(contains "$out" "BUILD_PLUMBING_STEPS pins .github/workflows/image.yaml job docker step id 'tag' to \['echo \"tag=v1\" >> \"\$GITHUB_OUTPUT\"'\], and it runs \['echo \"tag=v2\" >> \"\$GITHUB_OUTPUT\"'\]")"
+
+root=$(fixture plumbing-step-gone)
+ci_router "$root" "$excluding_inputs" some-with-excludes
+list_step "$root" BUILD_PLUMBING_STEPS "tag" "'echo \"tag=v1\" >> \"\$GITHUB_OUTPUT\"'" "$plumbing_reason"
+run_check "$root"
+check "an entry matching no step is refused" "$(is "$status" 1)"
+check "  and says the key names none" "$(contains "$out" "step id 'tag', which matches 0 run steps; an entry must name exactly one")"
 
 root=$(fixture router-push-only)
 ci_router "$root" "$all_inputs"

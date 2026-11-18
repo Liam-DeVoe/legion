@@ -32,6 +32,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
+	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -53,7 +54,12 @@ func sharedAgentTokens(t testing.TB, setting string) *auth.SharedAgentTokens {
 // testServerOptions configure the server an API test drives.
 type testServerOptions struct {
 	defaultProject string
-	testHooks      bool
+	// newIssueLabel and newIssueSession are the two settings the dashboard's search bar reads
+	// before it files a person's typed words as an issue (GET /api/v1/settings/new-issue); both
+	// empty is the deployment that configured neither.
+	newIssueLabel   string
+	newIssueSession string
+	testHooks       bool
 	// store is the database the server runs on; nil opens one of its own (storetest.Open). A
 	// test that counts a read's round trips passes a traced store (storetest.Traced).
 	store *store.Store
@@ -128,6 +134,13 @@ type testServerOptions struct {
 	// dashboardEntry is the entry chunk of the dashboard build the server serves; empty is a
 	// server with no dashboard, as the Go test rigs are.
 	dashboardEntry string
+	// buildCommit is the commit the server says it was built from (Deps.BuildCommit), which its
+	// list validators name; empty is a build nothing stamped, as every `go test` binary is.
+	buildCommit string
+	// duplicateBound is the near-copy gate's bound (server.duplicateBound); zero keeps
+	// production's duplicateGateTimeout. A case that reads the gate's verdict passes
+	// nearCopyVerdictBound, so whether the machine met 500 ms is not what it measures.
+	duplicateBound time.Duration
 }
 
 // testTakeoverWindow is the listener take-over window of a test server that sets none. A send to
@@ -141,6 +154,10 @@ const testTakeoverWindow = 750 * time.Millisecond
 // testServerURL is the public origin every test server serves under: what a link a handler
 // writes names, and what a DPoP proof's 'htu' is checked against (broker_token_test.go).
 const testServerURL = "https://dispatch.example"
+
+// testServerBuild is the build every test server runs as: what the day rows its eval readings
+// writes keep record as their writer (eval_days.built_by).
+const testServerBuild = "api-test-build"
 
 // testSigningKey is the one-key set the package's session cookies are signed with.
 var testSigningKey = auth.SingleSigningKey("signing-key")
@@ -235,6 +252,8 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		Identity:               people,
 		AgentTokens:            sharedAgentTokens(t, "agent-token"),
 		DefaultProject:         options.defaultProject,
+		NewIssueLabel:          options.newIssueLabel,
+		NewIssueSession:        options.newIssueSession,
 		ServerURL:              testServerURL,
 		Docs:                   documentService,
 		Events:                 broker,
@@ -246,13 +265,20 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		EnvoyTimeout:           options.envoyTimeout,
 		ListenerTakeoverWindow: cmp.Or(options.takeoverWindow, testTakeoverWindow),
 		TestHookTimeout:        options.testHookTimeout,
-		OIDC:                   options.oidc,
-		BrokerTokens:           brokerTokens,
-		AgentStream:            options.agentStream,
-		Embedder:               options.embedder,
-		Answerer:               options.answerer,
-		Files:                  options.files,
-		DashboardEntry:         options.dashboardEntry,
+		// A wait on the event feed keys on the horizon's stall warning (eventFeedFrame), so the
+		// warning must arrive inside that wait's patience rather than at the production five and
+		// thirty seconds.
+		HorizonStallAfter: horizontest.StallWarning,
+		HorizonWarnEvery:  horizontest.StallWarning,
+		OIDC:              options.oidc,
+		BrokerTokens:      brokerTokens,
+		AgentStream:       options.agentStream,
+		Embedder:          options.embedder,
+		Answerer:          options.answerer,
+		Files:             options.files,
+		DashboardEntry:    options.dashboardEntry,
+		BuildCommit:       options.buildCommit,
+		Build:             testServerBuild,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
@@ -264,6 +290,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if options.agentWatchInterval != 0 {
 		served.agentWatchInterval = options.agentWatchInterval
 	}
+	served.duplicateBound = options.duplicateBound
 	// waitBackground, as production's shutdown calls it: every keyed handler and every delivery a
 	// handler detached from its request, then the sockets, the hub, the relay and the test hooks'
 	// listener. A broadcast's deliveries and a keyed handler outlive the client that started them,
@@ -670,6 +697,38 @@ func TestCreateIssueRejectsSpecOutsideProofSchema(t *testing.T) {
 		t.Fatalf("create invalid issue spec: status=%d body=%s", response.Code, response.Body.String())
 	}
 }
+
+// A quoted closing tag a tab ends opens a block of HTML in the browser editor's parser and none
+// in goldmark, and that block swallows the line under it, so nothing the document could be
+// stored as reads back as written and the create is refused, naming the line as written
+// (pmdoc's htmlFlowRefusal).
+func TestCreateIssueRejectsASpecLineTheBrowserReadsAsBlockHTML(t *testing.T) {
+	handler := newTestHandler(t)
+	project := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+		"key": "TEST", "name": "Test project",
+	}, "alice")
+	if project.Code != http.StatusCreated {
+		t.Fatalf("create project: status=%d body=%s", project.Code, project.Body.String())
+	}
+	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
+		"project": "TEST", "title": "A closing tag a tab ends", "spec": "> </a\t>\n> text\n",
+	}, "alice")
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"INVALID_MARKDOWN"`) {
+		t.Fatalf("create a spec line the browser reads as block HTML: status=%d body=%s", response.Code, response.Body.String())
+	}
+	refusal := decodeBody[struct {
+		Error string `json:"error"`
+	}](t, response).Error
+	if !strings.Contains(refusal, `line 1, "> </a\t>"`) {
+		t.Fatalf("refusal names no line as written: %q", refusal)
+	}
+	// The clause of pmdoc's browserBlockHTML naming what the two parsers read apart, which this
+	// package cannot import and no other refusal of this route carries.
+	if !strings.Contains(refusal, "reads as a block of HTML where goldmark reads the text of a paragraph") {
+		t.Fatalf("refusal carries none of the browser-block-HTML wording: %q", refusal)
+	}
+}
+
 func TestDocumentTextReportsUnavailableService(t *testing.T) {
 	database := storetest.Open(t)
 	broker := events.NewBroker()
@@ -789,6 +848,7 @@ func TestEventNotifyRules(t *testing.T) {
 		{name: "user state", event: model.Event{Type: "user_state.updated", Actor: user}, want: false},
 		{name: "user thread state", event: model.Event{Type: "user_thread_state.updated", Actor: user}, want: false},
 		{name: "user decision kept", event: model.Event{Type: "decision.kept", Actor: user}, want: false},
+		{name: "user priority write", event: model.Event{Type: "priority.updated", Actor: user, Payload: model.PriorityEventPayload{ID: "ship-the-daemon", Change: model.PriorityChanged}}, want: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if got := broker.Notify(test.event); got != test.want {
@@ -1061,7 +1121,7 @@ func TestArtifactVersions(t *testing.T) {
 	}](t, first)
 	blob := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+image.Artifact.ID+"/versions/1", nil, "alice")
 	checksum := sha256.Sum256([]byte("first image"))
-	if blob.Code != http.StatusOK || blob.Body.String() != "first image" || blob.Header().Get("Content-Type") != "image/png" || blob.Header().Get("ETag") != hex.EncodeToString(checksum[:]) || blob.Header().Get("Content-Disposition") != "attachment" || blob.Header().Get("X-Content-Type-Options") != "nosniff" {
+	if blob.Code != http.StatusOK || blob.Body.String() != "first image" || blob.Header().Get("Content-Type") != "image/png" || blob.Header().Get("ETag") != hex.EncodeToString(checksum[:]) || blob.Header().Get("Content-Disposition") != `attachment; filename="a.png"; filename*=UTF-8''a.png` || blob.Header().Get("X-Content-Type-Options") != "nosniff" {
 		t.Fatalf("stream first blob: status=%d headers=%v body=%s", blob.Code, blob.Header(), blob.Body.String())
 	}
 
@@ -1948,6 +2008,10 @@ func newCookieServerOn(t *testing.T, database *store.Store, heartbeat time.Durat
 	if err != nil {
 		t.Fatalf("establish alice's session: %v", err)
 	}
+	// A session cookie is issued at sign-in, and a sign-in records the person (people.Record, as
+	// the sign-in callback does), so alice is somebody who has signed in: a project she creates
+	// defaults to her, and that default is held to the people table like every other.
+	seedPeople(t, database, "alice@d.example")
 	cookie, err := http.ParseSetCookie(auth.IssueSessionCookie("alice@d.example", generation, testSigningKey, true))
 	if err != nil {
 		t.Fatalf("parse session cookie: %v", err)

@@ -38,6 +38,11 @@ type userAskSnooze struct {
 	SnoozedUntil string `json:"snoozed_until"`
 }
 
+// askSnoozeInput is the body of PUT /api/v1/me/asks/{id}/snooze.
+type askSnoozeInput struct {
+	SnoozedUntil *string `json:"snoozed_until" required:"true"`
+}
+
 // PUT /api/v1/me/asks/{id}/snooze
 func (s *server) putAskSnooze(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
@@ -49,9 +54,7 @@ func (s *server) putAskSnooze(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	var input struct {
-		SnoozedUntil *string `json:"snoozed_until"`
-	}
+	var input askSnoozeInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -165,7 +168,7 @@ func (s *server) announceAskSnooze(w http.ResponseWriter, r *http.Request, tx pg
 		s.writeHandlerError(w, err)
 		return false
 	}
-	s.publish(event)
+	s.publish(r.Context(), event)
 	return true
 }
 

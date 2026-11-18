@@ -71,7 +71,9 @@ async function dumpGoroutines(dispatch: HarnessProcess): Promise<void> {
   const tail = readFileSync(dispatch.log, "utf8").split("\n").slice(-40).join("\n");
   console.error(`--- dispatch's last lines when the run stopped:\n${tail}`);
   const { child } = dispatch;
-  if (child.exitCode !== null || child.signalCode !== null) return;
+  // `pid` is undefined for a child whose spawn itself failed (`node:child_process`), which is a
+  // process there is nothing to signal and no stack to ask for.
+  if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
   process.kill(child.pid, "SIGQUIT");
   await Promise.race([dispatch.drained, Bun.sleep(10_000)]);
   console.error(`--- dispatch's goroutines at that moment end ${relative(REPO, dispatch.log)}`);
@@ -189,7 +191,10 @@ export async function seedDispatchWorkspace(): Promise<DispatchWorkspace> {
     "../../../packages/dispatch/e2e/delivery-seed"
   );
   const { createComment, editArtifact, getIssue, getIssueCoverage } = await dispatchApi();
-  const seeded = await seedWorkspace();
+  // The e2e suite's 15 s for the seed's two waits: a seed that never settles fails naming what it
+  // waited for, well inside the STEP_TIMEOUT_MS a shot set's reset and seed run under.
+  const seedBoundMs = 15_000;
+  const seeded = await seedWorkspace({ boundMs: seedBoundMs });
   await seedMeasuresFixture();
   await seedPipelineRows();
   // The requirements go between the summary and the open question, where a spec states them,
@@ -208,7 +213,7 @@ export async function seedDispatchWorkspace(): Promise<DispatchWorkspace> {
   // The Spec tab reads the requirements out of the block index, which the accepted write
   // fills, so the seed waits for them rather than leaving the first shot to find none.
   await expect
-    .poll(async () => (await getIssueCoverage(seeded.issues.workflow)).requirements.length)
+    .poll(async () => (await getIssueCoverage(seeded.issues.workflow)).requirements?.length ?? 0)
     .toBe(3);
   const comment = await createComment(
     seeded.issues.workflow,

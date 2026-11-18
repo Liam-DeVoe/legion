@@ -46,7 +46,7 @@ func TestMentionedCommentDeliversAndProjectsResolvedMention(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	handler, _ := newTargetedMessageHandler(t, listener.URL)
+	handler, database := newTargetedMessageHandler(t, listener.URL)
 	issue := createInteractionIssue(t, handler, "TEST", "Comment mentions", "before")
 
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
@@ -76,8 +76,12 @@ func TestMentionedCommentDeliversAndProjectsResolvedMention(t *testing.T) {
 		t.Fatalf("created mentions = %#v, want the resolved default-steer session mention", created.Mentions)
 	}
 	if len(created.Deliveries) != 1 || created.Deliveries[0].Target != "session:s1" ||
-		created.Deliveries[0].State != "sent" {
-		t.Fatalf("created deliveries = %#v, want one sent session:s1 attempt", created.Deliveries)
+		created.Deliveries[0].State != "pending" {
+		t.Fatalf("created deliveries = %#v, want one pending session:s1 attempt", created.Deliveries)
+	}
+	if settled := settledCommentDeliveries(t, database, created.ID); len(settled) != 1 ||
+		settled[0].Target != "session:s1" || settled[0].State != "sent" {
+		t.Fatalf("settled deliveries = %#v, want one sent session:s1 attempt", settled)
 	}
 	if len(sent) != 1 {
 		t.Fatalf("listener sends = %#v, want exactly one mention delivery", sent)
@@ -543,7 +547,7 @@ func TestResolveRecordsWhoAndWhen(t *testing.T) {
 	if accepted.Code != http.StatusOK {
 		t.Fatalf("accept suggestion: status=%d body=%s", accepted.Code, accepted.Body.String())
 	}
-	assertResolution("accept", decodeBody[model.Comment](t, accepted), model.Actor{Kind: "user", ID: "alice"})
+	assertResolution("accept", decodeBody[model.Comment](t, accepted), model.Actor{Kind: "user", ID: "alice", Proven: true})
 
 	rejectedSuggestion := createThreadComment(t, handler, issue.Key, map[string]any{
 		"body": "reject", "suggestion": map[string]string{"replace_with": "ignored"}, "actor": sessionActor(),
@@ -552,7 +556,7 @@ func TestResolveRecordsWhoAndWhen(t *testing.T) {
 	if rejected.Code != http.StatusOK {
 		t.Fatalf("reject suggestion: status=%d body=%s", rejected.Code, rejected.Body.String())
 	}
-	assertResolution("reject", decodeBody[model.Comment](t, rejected), model.Actor{Kind: "user", ID: "bob"})
+	assertResolution("reject", decodeBody[model.Comment](t, rejected), model.Actor{Kind: "user", ID: "bob", Proven: true})
 }
 
 // What the API writes for a stored instant is the same text whatever zone the host runs in. The

@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/approval"
 	"github.com/sjawhar/envoy/internal/broker/enroll"
 	"github.com/sjawhar/envoy/internal/broker/machine"
@@ -23,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/requests"
+	"github.com/sjawhar/envoy/internal/broker/wire"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
@@ -78,6 +80,11 @@ type Deps struct {
 	// (BROKER_SECRETS_KMS_KEY_ARN), with its region and account, or the GCP store's Cloud KMS key
 	// name (BROKER_SECRETS_KMS_KEY_NAME).
 	SecretsKMSKey string
+	// GoogleExchangeAudience is BROKER_GOOGLE_OIDC_AUDIENCE where BROKER_VM_SERVICES lists a
+	// machine that may trade a Google identity token at the token exchange, and empty otherwise.
+	// GET /v1/settings answers it, so a machine's `agent-secrets` mints a token for the right
+	// audience with no setting of its own.
+	GoogleExchangeAudience string
 	// LauncherLimits bounds POST /v1/oauth/device_authorization and POST
 	// /v1/launcher-credentials/token; nil means DefaultLauncherLimits.
 	LauncherLimits *LauncherLimits
@@ -124,9 +131,9 @@ type Deps struct {
 	// TokenHooks are the broker's steps around each token the provider issues.
 	TokenHooks oauth.TokenHooks
 	// Approval is the broker's own approval page and its sign-in (internal/broker/approval),
-	// which cmd/broker always builds, since config.Load requires BROKER_SIGNIN_*. Its routes,
-	// every one under /approve and /signin/, are mounted only when it is set, which leaves them
-	// off the mux of a test rig that wires no page.
+	// which cmd/broker builds from BROKER_SIGNIN_* unless BROKER_SIGNIN=off, when it builds none.
+	// Its routes, every one under /approve and /signin/, are mounted only when it is set, so a
+	// broker that signs nobody in, and a test rig that wires no page, answer each of them 404.
 	Approval *approval.Page
 	// Draining reports whether this process has begun stopping, which GET /healthz answers 503
 	// SHUTTING_DOWN for while every other route goes on being served; nil means it never does.
@@ -220,10 +227,14 @@ func Register(mux *http.ServeMux, deps Deps) {
 			continue
 		}
 		mux.HandleFunc(route.Method+" "+route.Pattern, func(w http.ResponseWriter, r *http.Request) {
+			recorder := answer.FromContext(r.Context())
 			who, ok := s.authenticate(w, r, route)
 			if !ok {
+				// A refusal raised in authentication, before any caller was established.
+				recorder.NoteCaller(answer.CallerUnauthenticated, "")
 				return
 			}
+			recorder.NoteCaller(who.answerCaller(route.Handler))
 			route.Handler.serve(s, w, r, who)
 		})
 	}
@@ -233,7 +244,8 @@ func Register(mux *http.ServeMux, deps Deps) {
 const oauthRoutes = "/v1/oauth/"
 
 // approvalRoutes and signInRoutes prefix the approval page's routes, which Register mounts only
-// with the page: every broker has one, and a rig that wires none serves those paths not at all.
+// with the page: a broker with BROKER_SIGNIN=off has none, nor does a rig that wires none, and
+// either serves those paths not at all.
 const (
 	approvalRoutes = "/approve"
 	signInRoutes   = "/signin/"
@@ -308,8 +320,22 @@ func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiR
 			writeError(w, http.StatusUnauthorized, "LAUNCHER_INVALID", "this route needs a launcher proof, not a session proof")
 			return caller{}, false
 		}
-		cred, err := s.deps.Enroll.Credential(r.Context(), subject.LauncherID)
-		if err != nil {
+		// By the key the proof proved and not by the launcher id alone: a login writes its
+		// own key and pod uid onto the credential row (enroll.Service.IssueTokenLoginTx),
+		// so a login landing between the proof's own lookup and this read moves the row out
+		// from under the proof, and a read by id alone would hand the handler whatever
+		// identity the row then holds. A login bound to no pod takes one row per subject on
+		// either schema, and a pod's own re-login moves its own row under the same id, so
+		// the pair is right on either (enroll.Service.CredentialForKey).
+		cred, err := s.deps.Enroll.CredentialForKey(r.Context(), subject.LauncherID, subject.Thumbprint)
+		switch {
+		case errors.Is(err, enroll.ErrNoCredential):
+			// The key that proved this request holds the row no longer, so it authenticates
+			// nothing — the same answer this call site gives every credential that is not
+			// valid, rather than the 503 of a store that cannot answer.
+			writeError(w, http.StatusUnauthorized, "LAUNCHER_INVALID", "the launcher credential is not valid")
+			return caller{}, false
+		case err != nil:
 			writeUnavailable(w, "DATABASE_UNAVAILABLE", "read launcher credential", err)
 			return caller{}, false
 		}
@@ -321,6 +347,37 @@ func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiR
 	}
 	writeInternal(w, "authenticate", fmt.Errorf("route has unknown authentication %d", auth))
 	return caller{}, false
+}
+
+// answerCaller is the caller class and identity the answer's record names for a request
+// authenticate let through on route (answer.Recorder.NoteCaller): the launcher credential, the
+// enrollment, the listed account, the service and the account it presented, or the signed-in
+// person. A route that takes no credential is public, and a route of the approval page reached
+// with no live sign-in unauthenticated; a handler that authenticates its own caller notes its
+// class over this one (tokenLogin, accountAuthAfterRecordKind).
+func (c caller) answerCaller(route routeHandler) (class, id string) {
+	switch route.auth {
+	case authLauncher:
+		return answer.CallerLauncher, c.launcher.ID.String()
+	case authProof, authRenewProof:
+		return answer.CallerSession, c.enrollment
+	case authAccount:
+		return answer.CallerAccount, c.account.Name
+	case authService:
+		return answer.CallerService, serviceIdentity(c.service)
+	case authSignIn:
+		if c.signIn.Login == "" {
+			return answer.CallerUnauthenticated, ""
+		}
+		return answer.CallerSignIn, c.signIn.Login
+	}
+	return answer.CallerPublic, ""
+}
+
+// serviceIdentity is a service's identity in the answer's record: the service it logs in as and
+// the account whose token it presented, <service>@<namespace>/<name>.
+func serviceIdentity(account machine.ServiceAccount) string {
+	return account.Service + "@" + account.Host
 }
 
 // refuseWithoutPower writes 403 ACCOUNT_LACKS_POWER and reports true when the listed caller who
@@ -440,14 +497,14 @@ func (s *server) listedCaller(w http.ResponseWriter, err error, account string, 
 }
 
 // serviceCaller authenticates a service's own projected ServiceAccount token for authenticate,
-// the credential serviceAuth's routes take, and answers the service BROKER_SERVICE_LOGINS lets
-// that account log in as. It is the token login's own check
-// (machine.Service.VerifyServiceToken), so a route of this class and a daemon's token
-// login accept exactly the same credential: the same verifier, the same hour-from-issue bound on a
-// copied token, and the same list. An account that list does
-// not name is 403 ACCOUNT_NOT_LISTED, the credential being sound and the broker's list refusing; a
-// broker that trusts no Kubernetes token issuer answers 401 ACCOUNT_TOKENS_OFF, as this class's
-// routes then authenticate no one. No refusal repeats the token.
+// the credential serviceAuth's routes take, and answers the login that token made as one
+// machine.ServiceAccount, which serviceAuth hands the handler. It is the token login's own
+// check (machine.Service.VerifyServiceToken), so a route of this class and a daemon's token
+// login accept exactly the same credential: the same verifier, the same hour-from-issue bound
+// on a copied token, and the same list. An account the list does not name is 403
+// ACCOUNT_NOT_LISTED, the credential being sound and the broker's list refusing; a broker that
+// trusts no Kubernetes token issuer answers 401 ACCOUNT_TOKENS_OFF, as this class's routes then
+// authenticate no one. No refusal repeats the token.
 func (s *server) serviceCaller(w http.ResponseWriter, r *http.Request) (caller, bool) {
 	account, err := s.deps.MachineLogin.VerifyServiceToken(r.Context(), bearer(r))
 	switch {
@@ -467,7 +524,7 @@ func (s *server) serviceCaller(w http.ResponseWriter, r *http.Request) (caller, 
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the ServiceAccount token does not verify")
 		return caller{}, false
 	}
-	return caller{service: account.Service}, true
+	return caller{service: account}, true
 }
 
 // proofSubject verifies r's Proof header and returns who it authenticates, unwrapped: authLauncher
@@ -549,26 +606,35 @@ func writeError(w http.ResponseWriter, status int, code, msg string) {
 }
 
 // pageRefusal is the body of a refusal that names the approval page where a person decides the
-// record instead, beside the code and error every refusal carries.
+// record instead, beside the code and error every refusal carries. On a broker with
+// BROKER_SIGNIN=off, which serves no page, it names none and says why.
 type pageRefusal struct {
 	// The refusal's code.
 	Code string `json:"code"`
-	// What was refused, naming the page.
+	// What was refused, naming the page, or, on a broker with BROKER_SIGNIN=off, saying that it
+	// serves none.
 	Error string `json:"error"`
-	// The record's page on the broker's own approval page, <BROKER_PUBLIC_URL>/approve/<record>.
-	ApproveURL string `json:"approve_url"`
+	// The record's page on the broker's own approval page, <BROKER_PUBLIC_URL>/approve/<record>;
+	// absent on a broker with BROKER_SIGNIN=off, where that page is a 404.
+	ApproveURL string `json:"approve_url,omitempty"`
 }
 
 // writePageRefusal is writeError for a refusal naming the record's approval page, approveURL,
-// which its body carries as approve_url (pageRefusal) for a caller to link.
+// which its body carries as approve_url (pageRefusal) for a caller to link; an empty approveURL,
+// a broker that serves no page, leaves approve_url out.
 func writePageRefusal(w http.ResponseWriter, status int, code, msg, approveURL string) {
 	writeJSON(w, status, pageRefusal{Code: code, Error: msg, ApproveURL: approveURL})
 }
 
 // approveURL is recordID's page on the broker's own approval page (GET /approve/{record}), on the
 // public URL the broker resolved at boot: the one place a person signed in to the broker decides
-// a secret request, which every answer naming a pending one links.
+// a secret request, which every answer naming a pending one links. A broker with
+// BROKER_SIGNIN=off builds no page (Deps.Approval nil), where that path is a 404, so it answers
+// "" and every answer leaves approve_url out.
 func (s *server) approveURL(recordID string) string {
+	if s.deps.Approval == nil {
+		return ""
+	}
 	return s.deps.PublicURL + "/approve/" + recordID
 }
 
@@ -604,11 +670,11 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
-// stateResponse is what a denial, a cancel or a revoke answers.
-type stateResponse struct {
-	// The state the call left the request, record or grant in: "denied", "cancelled" or "revoked".
-	State string `json:"state"`
-}
+// stateResponse is what a denial, a cancel or a revoke answers: wire.StateResponse itself, named
+// here because the broker's generated HTTP reference documents a route's answer from a type this
+// package declares, as introspectionResponse names oauthwire.Introspection
+// (handlers_introspect.go).
+type stateResponse = wire.StateResponse
 
 // healthResponse is GET /healthz's answer while the broker is not draining and can reach
 // Postgres. Neither refusal has a type of its own: both are the ordinary broker error object

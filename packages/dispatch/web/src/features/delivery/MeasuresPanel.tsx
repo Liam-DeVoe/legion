@@ -1,16 +1,19 @@
 // The prototype's web/src/components/DoraPanel.tsx, ported as it is: the six KPI cards, the
 // headline strip, and the "Definitions & alternatives" fold with its eight definition cards and
 // per-day table. Every number, every target and whether each is met come from
-// GET /api/v1/delivery/measures; nothing is computed here. Three differences, each from LEGION-567's
-// slice 2 plan: the change-failure-rate card says flags arrive with flag confirmation while the
-// server stores none; the P0 card links each issue inside Dispatch and dates its count by the
-// response's computed_at; and the cards and the strip lay themselves out for the panel's own
-// width, since Dispatch's sidebar leaves it narrower than the prototype's page and a phone
-// narrower still, where the prototype is desktop-only.
+// GET /api/v1/delivery/measures; nothing is computed here but a day's tone, which the answer
+// gives no verdict of and which follows the eval's own rule over the statistics its target judges
+// (`lib/target.ts`). Each card's caption names those statistics, so it reads as the verdict beside
+// it is judged (dispatch://INFRA-2916, R5). Three differences, each from LEGION-567's slice 2
+// plan: the change-failure-rate card says flags arrive with flag confirmation while the server
+// stores none; the P0 card links each issue inside Dispatch and dates its count by the response's
+// computed_at; and the cards and the strip lay themselves out for the panel's own width, since
+// Dispatch's sidebar leaves it narrower than the prototype's page and a phone narrower still,
+// where the prototype is desktop-only.
 import { type ReactNode, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
-import type { DeliveryMeasuresResponse } from "../../api/types";
+import type { DeliveryDailyPoint, DeliveryMeasuresResponse } from "../../api/types";
 import { DisclosureToggle } from "../../components/DisclosureToggle";
 import {
   borderDefault,
@@ -26,7 +29,17 @@ import {
   textPrimaryOnSurfaceMuted,
 } from "../../theme/classes";
 import { buildIssuePath } from "../refs/routes";
-import { formatMinutes, pct } from "./lib/format";
+import { formatMinutes, NO_VALUE, pct } from "./lib/format";
+import {
+  DEPLOY_BARS,
+  dailyValue,
+  dayMeets,
+  RUN_SUCCESS_BARS,
+  showsAnyJudge,
+  type Target,
+  targetLabel,
+  targetLine,
+} from "./lib/target";
 import { Sparkbars } from "./Sparkbars";
 import { TargetBadge } from "./TargetBadge";
 
@@ -101,6 +114,18 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
     data === undefined ? PENDING : format(data);
   const toneOf = (met: (response: DeliveryMeasuresResponse) => boolean | null): string =>
     data === undefined ? textMutedOnSurface : tone(met(data));
+  // A lead-time card shows two figures of its eval, and its verdict is of the statistics its
+  // target judges: a figure takes the verdict's tone where it is one the card names
+  // (`shownJudges`) and reads plain where it is not, so a card judged by its p90, or by a longest
+  // change that implies its median, does not colour its median by that verdict.
+  const judgedTone = (
+    judge: string,
+    target: (response: DeliveryMeasuresResponse) => Target,
+    met: (response: DeliveryMeasuresResponse) => boolean | null
+  ): string => {
+    if (data === undefined) return textMutedOnSurface;
+    return showsAnyJudge(target(data), [judge]) ? tone(met(data)) : textPrimaryOnSurface;
+  };
   const targets = data?.targets;
   const status = data?.status;
   const measures = data?.measures;
@@ -114,7 +139,14 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
       label: "Lead time (merge\u2192prod)",
       value: show((d) => formatMinutes(d.measures.lead_time.merge_to_production.median_minutes)),
     },
-    { label: "CFR (per PR)", value: show((d) => pct(d.measures.change_failure_rate.per_pr.rate)) },
+    {
+      label: "CFR (per PR)",
+      value: show((d) =>
+        d.measures.change_failure_rate === null
+          ? NO_VALUE
+          : pct(d.measures.change_failure_rate.per_pr.rate)
+      ),
+    },
     {
       label: "Time to restore",
       value: show((d) => formatMinutes(d.measures.time_to_restore.median_minutes)),
@@ -134,7 +166,7 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
       >
         <KpiCard
           met={status?.deploys_per_day}
-          target={targets === undefined ? PENDING : `\u2265 ${targets.deploys_per_day}/day`}
+          target={targets === undefined ? PENDING : targetLabel(targets.deploys_per_day)}
           title="Deploys a day"
         >
           <div className="flex items-baseline gap-2">
@@ -150,33 +182,40 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
           {measures === undefined || targets === undefined ? null : (
             <Sparkbars
               format={(v) => `${v} deploys`}
-              max={targets.deploys_per_day}
-              met={(v) => v >= targets.deploys_per_day}
-              points={measures.daily.map((d) => ({
+              max={
+                targetLine(targets.deploys_per_day, DEPLOY_BARS) ??
+                Math.max(1, ...(measures.daily ?? []).map((d) => d.deploys))
+              }
+              points={(measures.daily ?? []).map((d) => ({
                 label: d.day,
                 value: d.deploys,
                 partial: d.partial,
+                met: dayMeets(targets.deploys_per_day, (judge) => dailyValue(d, judge)),
               }))}
-              target={targets.deploys_per_day}
+              target={targetLine(targets.deploys_per_day, DEPLOY_BARS)}
             />
           )}
         </KpiCard>
 
         <KpiCard
           met={status?.change_failure_rate}
-          target={
-            targets === undefined ? PENDING : `< ${pct(targets.change_failure_rate, 0)} per deploy`
-          }
+          target={targets === undefined ? PENDING : targetLabel(targets.change_failure_rate)}
           title="Change failure rate"
         >
           <div className="flex items-baseline gap-2">
             {/* Two decimals: 4.96% meets the target, 5.00% does not. */}
             <BigNumber className={toneOf((d) => d.status.change_failure_rate)}>
-              {show((d) => pct(d.measures.change_failure_rate.per_deploy.rate, 2))}
+              {show((d) =>
+                d.measures.change_failure_rate === null
+                  ? NO_VALUE
+                  : pct(d.measures.change_failure_rate.per_deploy.rate, 2)
+              )}
             </BigNumber>
-            <span className={`text-xs ${textMutedOnSurface}`}>confirmed</span>
+            {measures?.change_failure_rate === null ? null : (
+              <span className={`text-xs ${textMutedOnSurface}`}>confirmed</span>
+            )}
           </div>
-          {data === undefined ? null : data.flags_source === "none" ? (
+          {data === undefined ? null : data.measures.change_failure_rate === null ? (
             <div className={`text-xs ${textMutedOnCanvas}`}>
               Flags arrive with flag confirmation
             </div>
@@ -204,9 +243,7 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
         <KpiCard
           met={status?.merge_to_production}
           target={
-            targets === undefined
-              ? PENDING
-              : `< ${targets.merge_to_production_minutes}m for every change`
+            targets === undefined ? PENDING : targetLabel(targets.merge_to_production_minutes)
           }
           title={"Merge \u2192 production"}
         >
@@ -220,7 +257,13 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
               <span className={`text-xs ${textMutedOnSurface}`}>median</span>
             </span>
             <span className="flex items-baseline gap-1">
-              <BigNumber className={toneOf((d) => d.status.merge_to_production)}>
+              <BigNumber
+                className={judgedTone(
+                  "minutes.max",
+                  (d) => d.targets.merge_to_production_minutes,
+                  (d) => d.status.merge_to_production
+                )}
+              >
                 {show((d) => formatMinutes(d.measures.lead_time.merge_to_production.max_minutes))}
               </BigNumber>
               <span className={`text-xs ${textMutedOnSurface}`}>max</span>
@@ -234,19 +277,31 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
         <KpiCard
           met={status?.opened_to_merge}
           target={
-            targets === undefined ? PENDING : `median < ${targets.opened_to_merge_median_minutes}m`
+            targets === undefined ? PENDING : targetLabel(targets.opened_to_merge_median_minutes)
           }
           title={"PR open \u2192 merge"}
         >
           <div className="flex flex-wrap items-baseline gap-x-3">
             <span className="flex items-baseline gap-1">
-              <BigNumber className={toneOf((d) => d.status.opened_to_merge)}>
+              <BigNumber
+                className={judgedTone(
+                  "minutes.median",
+                  (d) => d.targets.opened_to_merge_median_minutes,
+                  (d) => d.status.opened_to_merge
+                )}
+              >
                 {show((d) => formatMinutes(d.measures.lead_time.opened_to_merge.median_minutes))}
               </BigNumber>
               <span className={`text-xs ${textMutedOnSurface}`}>median</span>
             </span>
             <span className="flex items-baseline gap-1">
-              <BigNumber className={textPrimaryOnSurface}>
+              <BigNumber
+                className={judgedTone(
+                  "minutes.p90",
+                  (d) => d.targets.opened_to_merge_median_minutes,
+                  (d) => d.status.opened_to_merge
+                )}
+              >
                 {show((d) => formatMinutes(d.measures.lead_time.opened_to_merge.p90_minutes))}
               </BigNumber>
               <span className={`text-xs ${textMutedOnSurface}`}>p90</span>
@@ -257,16 +312,14 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
 
         <KpiCard
           met={status?.deploy_run_success}
-          target={
-            targets === undefined ? PENDING : `\u2265 ${pct(targets.deploy_run_success_rate, 0)}`
-          }
+          target={targets === undefined ? PENDING : targetLabel(targets.deploy_run_success_rate)}
           title="Deploy runs reaching production"
         >
           <div className="flex items-baseline gap-2">
             <BigNumber className={toneOf((d) => d.status.deploy_run_success)}>
               {show((d) =>
                 d.measures.deploy_run_success.rate === null
-                  ? "n/a"
+                  ? NO_VALUE
                   : pct(d.measures.deploy_run_success.rate)
               )}
             </BigNumber>
@@ -282,13 +335,13 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
               <Sparkbars
                 format={pct}
                 max={1}
-                met={(v) => v >= targets.deploy_run_success_rate}
-                points={measures.daily.map((d) => ({
+                points={(measures.daily ?? []).map((d) => ({
                   label: d.day,
                   value: d.run_success_rate,
                   partial: d.partial,
+                  met: dayMeets(targets.deploy_run_success_rate, (judge) => dailyValue(d, judge)),
                 }))}
-                target={targets.deploy_run_success_rate}
+                target={targetLine(targets.deploy_run_success_rate, RUN_SUCCESS_BARS)}
               />
               <div className={`text-[11px] ${textMutedOnSurface}`}>
                 {measures.deploy_run_success.cancelled} cancelled runs not counted
@@ -299,12 +352,12 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
 
         <KpiCard
           met={status?.unowned_p0}
-          target={targets === undefined ? PENDING : `${targets.unowned_p0}`}
+          target={targets === undefined ? PENDING : targetLabel(targets.unowned_p0)}
           title="P0 issues with no owner"
         >
           <div className="flex items-baseline gap-2">
             <BigNumber className={toneOf((d) => d.status.unowned_p0)}>
-              {show((d) => `${d.unowned_p0.length}`)}
+              {show((d) => `${(d.unowned_p0 ?? []).length}`)}
             </BigNumber>
             {data === undefined ? null : (
               <span className={`text-xs ${textMutedOnSurface}`}>
@@ -318,7 +371,7 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
           </div>
           {data === undefined ? null : (
             <div className="flex flex-wrap gap-x-2 text-xs">
-              {data.unowned_p0.slice(0, UNOWNED_P0_SHOWN).map((issue) => (
+              {(data.unowned_p0 ?? []).slice(0, UNOWNED_P0_SHOWN).map((issue) => (
                 <Link
                   className={`hover:underline ${linkText}`}
                   key={issue.key}
@@ -328,15 +381,15 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
                   {issue.key}
                 </Link>
               ))}
-              {data.unowned_p0.length > UNOWNED_P0_SHOWN ? (
+              {(data.unowned_p0 ?? []).length > UNOWNED_P0_SHOWN ? (
                 <span
                   className={textMutedOnSurface}
-                  title={data.unowned_p0
+                  title={(data.unowned_p0 ?? [])
                     .slice(UNOWNED_P0_SHOWN)
                     .map((issue) => issue.key)
                     .join(", ")}
                 >
-                  +{data.unowned_p0.length - UNOWNED_P0_SHOWN} more
+                  +{(data.unowned_p0 ?? []).length - UNOWNED_P0_SHOWN} more
                 </span>
               ) : null}
             </div>
@@ -377,11 +430,18 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
 function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
   const { measures, targets } = data;
   // Newest first, copied once per answer rather than on every render of the open fold.
-  const newestFirst = useMemo(() => [...measures.daily].reverse(), [measures.daily]);
+  const newestFirst = useMemo(() => [...(measures.daily ?? [])].reverse(), [measures.daily]);
+  // A day's cell takes the tone of its eval's verdict of that day where the target judges the
+  // statistic the cell shows, and none where it judges another: that verdict is of a figure the
+  // cell does not show. An off target judges nothing, which reads muted.
+  const cellTone = (d: DeliveryDailyPoint, target: Target, shown: readonly string[]): string =>
+    target !== null && !showsAnyJudge(target, shown)
+      ? ""
+      : tone(dayMeets(target, (judge) => dailyValue(d, judge)));
   const frequency = measures.deploy_frequency;
   const lead = measures.lead_time;
-  const perPR = measures.change_failure_rate.per_pr;
-  const perDeploy = measures.change_failure_rate.per_deploy;
+  // Null while no failure source exists (flags_source `none`): a rate nothing measured is no 0.
+  const failures = measures.change_failure_rate;
   return (
     <>
       <div
@@ -414,15 +474,32 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
           p90 {formatMinutes(lead.opened_to_production.p90_minutes)}
         </DefinitionCard>
 
-        <DefinitionCard title="Change failure rate (per PR)" value={pct(perPR.rate)}>
-          {perPR.confirmed} confirmed ({perPR.reverts} reverts), {perPR.pending} pending,{" "}
-          {perPR.rejected} rejected of {perPR.total} PRs. Incidents: no source yet.
-        </DefinitionCard>
+        {failures === null ? (
+          <>
+            <DefinitionCard title="Change failure rate (per PR)" value={NO_VALUE}>
+              No failure source yet: flags arrive with flag confirmation. Incidents: no source yet.
+            </DefinitionCard>
+            <DefinitionCard title="Change failure rate (per deploy)" value={NO_VALUE}>
+              No failure source yet: flags arrive with flag confirmation.
+            </DefinitionCard>
+          </>
+        ) : (
+          <>
+            <DefinitionCard title="Change failure rate (per PR)" value={pct(failures.per_pr.rate)}>
+              {failures.per_pr.confirmed} confirmed ({failures.per_pr.reverts} reverts),{" "}
+              {failures.per_pr.pending} pending, {failures.per_pr.rejected} rejected of{" "}
+              {failures.per_pr.total} PRs. Incidents: no source yet.
+            </DefinitionCard>
 
-        <DefinitionCard title="Change failure rate (per deploy)" value={pct(perDeploy.rate)}>
-          {perDeploy.confirmed} of {perDeploy.total} deploys; {pct(perDeploy.upper_bound_rate)} if
-          every pending flag is confirmed
-        </DefinitionCard>
+            <DefinitionCard
+              title="Change failure rate (per deploy)"
+              value={pct(failures.per_deploy.rate)}
+            >
+              {failures.per_deploy.confirmed} of {failures.per_deploy.total} deploys;{" "}
+              {pct(failures.per_deploy.upper_bound_rate)} if every pending flag is confirmed
+            </DefinitionCard>
+          </>
+        )}
 
         <DefinitionCard
           title="Time to restore"
@@ -463,7 +540,7 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
                     {d.partial ? " (partial)" : ""}
                   </td>
                   <td
-                    className={`px-2 py-0.5 text-right ${d.partial ? "" : tone(d.deploys >= targets.deploys_per_day)}`}
+                    className={`px-2 py-0.5 text-right ${d.partial ? "" : cellTone(d, targets.deploys_per_day, DEPLOY_BARS)}`}
                   >
                     {d.deploys}
                   </td>
@@ -473,10 +550,10 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
                     className={`px-2 py-0.5 text-right ${
                       d.partial || d.run_success_rate === null
                         ? ""
-                        : tone(d.run_success_rate >= targets.deploy_run_success_rate)
+                        : cellTone(d, targets.deploy_run_success_rate, RUN_SUCCESS_BARS)
                     }`}
                   >
-                    {d.run_success_rate === null ? "n/a" : pct(d.run_success_rate)}
+                    {d.run_success_rate === null ? NO_VALUE : pct(d.run_success_rate)}
                   </td>
                   <td className="px-2 py-0.5 text-right">{d.cancelled}</td>
                 </tr>

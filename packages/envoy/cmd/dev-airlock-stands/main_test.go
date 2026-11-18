@@ -22,18 +22,13 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/airlock/airlocktest"
+	"github.com/sjawhar/envoy/internal/cmdtest"
 )
 
 // buildStands builds the command into a directory of the test's own and returns its path.
 func buildStands(t *testing.T) string {
 	t.Helper()
-	binary := filepath.Join(t.TempDir(), "dev-airlock-stands")
-	build := exec.Command("go", "build", "-o", binary, ".")
-	build.Env = append(os.Environ(), "GOTOOLCHAIN=go1.27.3")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("go build ./cmd/dev-airlock-stands: %v\n%s", err, out)
-	}
-	return binary
+	return cmdtest.BuildCommand(t, cmdtest.Command{Name: "dev-airlock-stands", Env: append(os.Environ(), "GOTOOLCHAIN=go1.27.3")})
 }
 
 // TestTheStandsServeTheirRecordsAndStopOnASignal is the whole of what a check script does with
@@ -172,4 +167,206 @@ func recordsOf(t *testing.T, url string) []airlocktest.Request {
 		t.Fatalf("%s answered no JSON array of records: %v\n%s", url, err, body)
 	}
 	return records
+}
+
+// startStands starts the command with args, answers the report it printed, and stops it when
+// the row ends. The row above starts and stops the command itself, since the start and the stop
+// are what it is about; this is for a row about what the stands answer once they are up.
+func startStands(t *testing.T, args ...string) report {
+	t.Helper()
+	cmd := exec.Command(buildStands(t), args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start the command: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		_ = cmd.Wait()
+	})
+	var out report
+	if err := json.NewDecoder(bufio.NewReader(stdout)).Decode(&out); err != nil {
+		t.Fatalf("read the command's JSON: %v\n%s", err, stderr.String())
+	}
+	return out
+}
+
+// TestTheModelStandsAnswerIsSetWhileItRuns is the command's own half of the model stand: the
+// route the report names sets what the stand answers from then on, which is how one check
+// drives several cases against one running stack, and a body that sets no answer is refused
+// rather than quietly leaving the last one in place.
+func TestTheModelStandsAnswerIsSetWhileItRuns(t *testing.T) {
+	out := startStands(t, "--dir", t.TempDir())
+	if out.ModelAnswerURL != out.RecordsURL+"/answers/model" {
+		t.Fatalf("the report names the answer route %q; want it on the recording server at %s", out.ModelAnswerURL, out.RecordsURL)
+	}
+	if out.DispatchOpenIssue == "" || out.DispatchDoneIssue == "" {
+		t.Errorf("the report names the issues %q and %q; want the open one and the done one",
+			out.DispatchOpenIssue, out.DispatchDoneIssue)
+	}
+
+	// Until a check sets anything the model approves, so a stack nothing called this route
+	// on still judges a request through to a grant.
+	if reply := askTheModel(t, out.Stands[standModel].URL); !strings.Contains(reply, "approve") {
+		t.Errorf("the first answer is %q; want the approving one it starts with", reply)
+	}
+	for _, c := range []struct {
+		name, answer, want, unwanted string
+	}{
+		{name: "a referring verdict", answer: `{"verdict":"refer","reason":"the reason names no issue"}`, want: "refer", unwanted: "approve"},
+		{name: "a reply that is no object", answer: `{"text":"I would rather not say."}`, want: "I would rather not say."},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if status, body := setTheAnswer(t, out.ModelAnswerURL, c.answer); status != http.StatusOK {
+				t.Fatalf("setting %s answered %d %s; want 200", c.answer, status, body)
+			}
+			reply := askTheModel(t, out.Stands[standModel].URL)
+			if !strings.Contains(reply, c.want) || (c.unwanted != "" && strings.Contains(reply, c.unwanted)) {
+				t.Errorf("the answer is %q; want %q in it", reply, c.want)
+			}
+		})
+	}
+	if status, body := setTheAnswer(t, out.ModelAnswerURL, `{}`); status != http.StatusBadRequest {
+		t.Errorf("an answer naming nothing was answered %d %s; want 400", status, body)
+	}
+
+	records := recordsOf(t, out.Stands[standModel].Records)
+	if len(records) != 3 {
+		t.Fatalf("the model stand recorded %d calls; want the three the row made", len(records))
+	}
+	if records[0].Path != "/v1/messages" || records[0].Method != http.MethodPost {
+		t.Errorf("the model stand recorded %s %s; want the Messages API call", records[0].Method, records[0].Path)
+	}
+}
+
+// setTheAnswer posts one answer to the model stand's answer route.
+func setTheAnswer(t *testing.T, url, answer string) (int, string) {
+	t.Helper()
+	reply, err := http.Post(url, "application/json", strings.NewReader(answer))
+	if err != nil {
+		t.Fatalf("POST %s: %v", url, err)
+	}
+	defer reply.Body.Close()
+	body, err := io.ReadAll(reply.Body)
+	if err != nil {
+		t.Fatalf("read %s: %v", url, err)
+	}
+	return reply.StatusCode, strings.TrimSpace(string(body))
+}
+
+// askTheModel makes one Messages API call against the model stand and answers the event stream
+// it got, which is where the answer the route set rides.
+func askTheModel(t *testing.T, url string) string {
+	t.Helper()
+	reply, err := http.Post(url+"/v1/messages", "application/json",
+		strings.NewReader(`{"model":"the-judge-model","max_tokens":1024,"stream":true,"messages":[{"role":"user","content":"decide this"}]}`))
+	if err != nil {
+		t.Fatalf("call the model stand: %v", err)
+	}
+	defer reply.Body.Close()
+	body, err := io.ReadAll(reply.Body)
+	if err != nil {
+		t.Fatalf("read the model stand's answer: %v", err)
+	}
+	if reply.StatusCode != http.StatusOK {
+		t.Fatalf("the model stand answered %d %s; want 200", reply.StatusCode, body)
+	}
+	return string(body)
+}
+
+// TestTheGitHubStandsAnswerIsSetWhileItRuns is the command's own half of the GitHub stand's
+// six answers: the route the report names sets what the stand answers each token request from
+// then on, which is how one check drives the ordinary mint, each refusal, the widened token and
+// the one outage a retry rides out against one running stack. The two answers that refuse one
+// part of a request are read by what the request names - the repository the answer named, and
+// any permissions at all - so each is driven with a request it refuses and one it mints. The
+// outage is the next token request's alone: the request after it is answered as ordinary with no
+// call to the route. A mode outside the six, and a refuse-repository naming no repository, are
+// refused rather than quietly leaving the last answer in place. What each answer holds is the
+// stand-in package's own rows.
+func TestTheGitHubStandsAnswerIsSetWhileItRuns(t *testing.T) {
+	out := startStands(t, "--dir", t.TempDir())
+	if out.GitHubAnswerURL != out.RecordsURL+"/answers/github" {
+		t.Fatalf("the report names the answer route %q; want it on the recording server at %s", out.GitHubAnswerURL, out.RecordsURL)
+	}
+	for _, c := range []struct {
+		name, mode, asked string
+		want              int
+		all               bool
+	}{
+		{name: "the answer it starts on", want: http.StatusCreated},
+		{name: "the refusal", mode: `{"mode":"refuse"}`, want: http.StatusUnprocessableEntity},
+		{name: "the token wider than asked", mode: `{"mode":"widen"}`, want: http.StatusCreated, all: true},
+		{name: "the one outage", mode: `{"mode":"fail-once"}`, want: http.StatusServiceUnavailable},
+		{name: "the answer after the outage", want: http.StatusCreated},
+		{name: "the ordinary answer again", mode: `{"mode":"ordinary"}`, want: http.StatusCreated},
+		{name: "the repository the refusing answer names", mode: `{"mode":"refuse-repository","repository":"missing"}`,
+			asked: `{"repositories":["missing"]}`, want: http.StatusUnprocessableEntity},
+		{name: "another repository, under that same answer", want: http.StatusCreated},
+		{name: "no repository at all, under that same answer", asked: `{}`, want: http.StatusCreated, all: true},
+		{name: "the permissions a body names", mode: `{"mode":"refuse-permissions"}`,
+			asked: `{"repositories":["proofs"],"permissions":{"contents":"read"}}`, want: http.StatusUnprocessableEntity},
+		{name: "the repositories a body names alone, under that same answer", want: http.StatusCreated},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if c.mode != "" {
+				if status, body := setTheAnswer(t, out.GitHubAnswerURL, c.mode); status != http.StatusOK {
+					t.Fatalf("setting %s answered %d %s; want 200", c.mode, status, body)
+				}
+			}
+			status, body := askForAToken(t, out.Stands[standGitHub].URL, c.asked)
+			if status != c.want {
+				t.Fatalf("the token request answered %d %s; want %d", status, body, c.want)
+			}
+			if c.want != http.StatusCreated {
+				return
+			}
+			// The widened answer and a request that named no repository are the two that reach
+			// every repository of the account; every other row's token is a selection of the
+			// ones its request named.
+			if all := strings.Contains(body, `"repository_selection":"all"`); all != c.all {
+				t.Errorf("the token of %s is %s; want one reaching every repository: %t", c.name, body, c.all)
+			}
+		})
+	}
+	if status, body := setTheAnswer(t, out.GitHubAnswerURL, `{"mode":"sometimes"}`); status != http.StatusBadRequest ||
+		!strings.Contains(body, "ordinary") || !strings.Contains(body, "refuse-repository") ||
+		!strings.Contains(body, "refuse-permissions") || !strings.Contains(body, "widen") ||
+		!strings.Contains(body, "fail-once") {
+		t.Errorf("a mode outside the six was answered %d %s; want 400 naming the six", status, body)
+	}
+	if status, body := setTheAnswer(t, out.GitHubAnswerURL, `{"mode":"refuse-repository"}`); status != http.StatusBadRequest ||
+		!strings.Contains(body, "repository") {
+		t.Errorf("refuse-repository naming no repository was answered %d %s; want 400 naming what it is missing", status, body)
+	}
+}
+
+// askForAToken makes one access_tokens request against the GitHub stand, the call the broker's
+// minter makes, and answers its status and body. asked is the body it sends, and "" the
+// repository narrowing most rows drive, so a row names one only where it refuses or mints by
+// what the body holds.
+func askForAToken(t *testing.T, url, asked string) (int, string) {
+	t.Helper()
+	if asked == "" {
+		asked = `{"repositories":["proofs"]}`
+	}
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+		url+"/app/installations/7/access_tokens", strings.NewReader(asked))
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	if err != nil {
+		t.Fatalf("ask the GitHub stand for a token: %v", err)
+	}
+	defer answer.Body.Close()
+	body, err := io.ReadAll(answer.Body)
+	if err != nil {
+		t.Fatalf("read the GitHub stand's answer: %v", err)
+	}
+	return answer.StatusCode, strings.TrimSpace(string(body))
 }

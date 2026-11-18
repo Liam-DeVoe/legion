@@ -28,7 +28,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/listenfd"
@@ -38,6 +37,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -275,8 +275,10 @@ func quietLogger() *slog.Logger {
 	return slog.New(slog.NewJSONHandler(io.Discard, nil))
 }
 
-// stillClock is time that never moves: the machines' timers are armed and never fire, so a test
-// sees only what it drove.
+// stillClock is a clock whose timers never fire: the machines arm them and nothing calls them
+// back, and a Sleep returns at once, so a test sees only what it drove. Its Now is the wall
+// clock, so what is due by the time of day — an outbox row's next_at — still comes due as the
+// run goes on.
 type stillClock struct{}
 
 func (stillClock) Now() time.Time { return time.Now() }
@@ -296,7 +298,7 @@ type built struct {
 	mu         sync.Mutex
 	conns      runtime.Conns
 	address    string
-	apps       appauth.Tokens
+	apps       appauth.Source
 	repository func(context.Context, string) (ghrepo.Repository, string, error)
 	store      *store.Store
 	mapped     func() []ghrepo.Repository
@@ -306,7 +308,7 @@ type built struct {
 // real stream listener, store, and machines, with nothing launched for real.
 func fakeRuntime(rt runtime.Runtime, record *built) overrides {
 	return overrides{
-		runtime: func(_ context.Context, listener *stream.Listener, address string, apps appauth.Tokens,
+		runtime: func(_ context.Context, listener *stream.Listener, address string, apps appauth.Source,
 			repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error) {
 			record.mu.Lock()
 			defer record.mu.Unlock()
@@ -500,7 +502,7 @@ func TestRunServesTheStateOfItsOwnBoot(t *testing.T) {
 func TestTheStateCarriesTheDaemonsSettingsAndNoSecret(t *testing.T) {
 	const privateKey = "-----BEGIN PRIVATE KEY-----\nfixture\n-----END PRIVATE KEY-----"
 	cfg := testConfig(t)
-	cfg.MaxFixAttempts = 5
+	cfg.ReviewRoundCap = 5
 	cfg.GitHubApps = config.GitHubApps{
 		Implement: config.GitHubApp{AppID: "1001", PrivateKey: privateKey, Installations: map[string]string{"sjawhar": "2001"}},
 		Review:    config.GitHubApp{AppID: "1002", PrivateKey: privateKey, Installations: map[string]string{"sjawhar": "2002"}},
@@ -516,9 +518,9 @@ func TestTheStateCarriesTheDaemonsSettingsAndNoSecret(t *testing.T) {
 		t.Fatalf("decode the state %s: %v", body, err)
 	}
 	settings := state.Settings
-	if settings.MaxFixAttempts != 5 || settings.WorkerBootTimeoutSeconds != 120 || settings.Runtime.Name != "tmux" {
-		t.Errorf("settings max_fix_attempts %d, worker_boot_timeout_seconds %d, runtime.name %q; want the configured 5, 120, tmux",
-			settings.MaxFixAttempts, settings.WorkerBootTimeoutSeconds, settings.Runtime.Name)
+	if settings.ReviewRoundCap != 5 || settings.WorkerBootTimeoutSeconds != 120 || settings.Runtime.Name != "tmux" {
+		t.Errorf("settings review_round_cap %d, worker_boot_timeout_seconds %d, runtime.name %q; want the configured 5, 120, tmux",
+			settings.ReviewRoundCap, settings.WorkerBootTimeoutSeconds, settings.Runtime.Name)
 	}
 	if settings.GitHubApps == nil || settings.GitHubApps.Implement.AppID != "1001" || settings.GitHubApps.Review.AppID != "1002" {
 		t.Errorf("settings.github_apps = %+v, want both configured Apps by id", settings.GitHubApps)
@@ -580,9 +582,9 @@ func TestTheStateListsTheHeldLifecycleRowBehindItsIssuesRunningOne(t *testing.T)
 	if err != nil || result.Refusal != nil {
 		t.Fatalf("apply the retry = %+v, %v; want it accepted", result.Refusal, err)
 	}
-	// A phase worker's start is two outbox rows (workflow.StartOrOwe): the relaunch, which brings
-	// the held role's session back carrying no task, and the row that carries its task. Both are
-	// lifecycle rows of the issue, so the suspend under a live lease holds both of them.
+	// A phase worker's start is one outbox row, which brings the held role's session back and
+	// carries its task (workflow.StartOrOwe). It is a lifecycle row of the issue, so the suspend
+	// under a live lease holds it.
 	var starts []int64
 	rows, err := st.Pool().Query(ctx, "select id from outbox where issue = $1 and kind = $2 and payload->>'op' = 'start' order by id", issue, string(record.OutboxKindSupervise))
 	if err != nil {
@@ -599,14 +601,14 @@ func TestTheStateListsTheHeldLifecycleRowBehindItsIssuesRunningOne(t *testing.T)
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate the retry's start rows: %v", err)
 	}
-	if len(starts) != 2 {
-		t.Fatalf("the retry queued %d start rows, want its relaunch and its task", len(starts))
+	if len(starts) != 1 {
+		t.Fatalf("the retry queued %d start rows, want the one that carries its task", len(starts))
 	}
 
 	d := startDaemon(t, cfg, fakeRuntime(fake.NewRuntime(), &built{}))
 	got := d.state().HeldOutboxRows
 	if len(got) != len(starts) {
-		t.Fatalf("heldOutboxRows = %+v, want the retry's two start rows alone", got)
+		t.Fatalf("heldOutboxRows = %+v, want the retry's one start row alone", got)
 	}
 	for i, id := range starts {
 		if got[i].WaitedSeconds < 0 {
@@ -733,7 +735,7 @@ func TestTheStateNamesThePacedCatchUpWaitingOnItsOutboxRow(t *testing.T) {
 		if err := records.PutIssue(ctx, tx, root); err != nil {
 			return err
 		}
-		return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), root, 1, now, due)
+		return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), root, 1, "", now, due)
 	}); err != nil {
 		t.Fatalf("record the running root and the catch-up its re-admission's start wrote: %v", err)
 	}
@@ -870,26 +872,27 @@ func startDaemonWithin(t *testing.T, cfg config.Config, o overrides, log *slog.L
 	// Each poll is bounded by a second, so within bounds the wait whatever a poll meets: until the
 	// daemon serves, the held listener queues the connection unanswered.
 	poll := &http.Client{Transport: transport, Timeout: time.Second}
-	deadline := time.Now().Add(within)
-	for {
-		response, err := poll.Get(d.base + "/healthz")
+	var err error
+	if !testwait.Holds(within, 20*time.Millisecond, func() bool {
+		var response *http.Response
+		response, err = poll.Get(d.base + "/healthz")
 		if err == nil {
 			response.Body.Close()
 			if response.StatusCode == http.StatusOK {
-				return d
+				return true
 			}
 		}
 		select {
-		case err := <-d.done:
+		case exited := <-d.done:
 			d.stopped = true
-			t.Fatalf("the daemon exited before it answered /healthz: %v", err)
+			t.Fatalf("the daemon exited before it answered /healthz: %v", exited)
 		default:
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the daemon did not answer /healthz on %s within %s: %v", d.base, within, err)
-		}
-		time.Sleep(20 * time.Millisecond)
+		return false
+	}) {
+		t.Fatalf("the daemon did not answer /healthz on %s within %s: %v", d.base, within, err)
 	}
+	return d
 }
 
 // repositoriesGitHub is GitHub's REST API answering a read of any repository,
@@ -898,7 +901,7 @@ func startDaemonWithin(t *testing.T, cfg config.Config, o overrides, log *slog.L
 // unanswered reaches github.com.
 func repositoriesGitHub(t *testing.T) string {
 	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		rest, isRepository := strings.CutPrefix(r.URL.Path, "/repos/")
 		parts := strings.Split(rest, "/")
 		if r.Method != http.MethodGet || !isRepository || len(parts) != 2 {
@@ -907,12 +910,16 @@ func repositoriesGitHub(t *testing.T) string {
 			return
 		}
 		_, _ = io.WriteString(w, `{"full_name":"`+parts[0]+"/"+parts[1]+`","default_branch":"main"}`)
-	}))
-	t.Cleanup(server.Close)
-	return server.URL
+	}})
 }
 
-// stop cancels the daemon and requires it to return cleanly.
+// stop cancels the daemon and requires it to return cleanly. What it waits for is a run that
+// never returns, not a measurement of how long the stop took: no row of its callers reads the
+// elapsed time, so the wait is stopHangGuard(stopBudget) rather than the contract itself,
+// stopBound(stopBudget) — the budget, then the NATS close's, the stamp's and the store close's
+// bounds (daemon.go, stopBudget). Held to that contract a row reds on a machine that spends a
+// few milliseconds more than the budget on a stop that waited for nothing, 3.005826798 s
+// against 3 s, which is what INFRA-985 was filed for (stopHangGuard, inflight_test.go).
 func (d *daemon) stop() {
 	d.t.Helper()
 	if d.stopped {
@@ -926,7 +933,7 @@ func (d *daemon) stop() {
 		if err != nil {
 			d.t.Fatalf("run: %v", err)
 		}
-	case <-time.After(15 * time.Second):
+	case <-time.After(stopHangGuard(stopBudget)):
 		d.t.Fatal("run did not return after its context was cancelled")
 	}
 }
@@ -1166,7 +1173,8 @@ func TestWorkflowBootServingNoRepositoryReportsWhatItLeftOut(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	want := api.RepositoriesView{Refused: []api.RefusedRepositoryView{{Repo: "acme/widgets", Reason: "the review App is not installed on acme/widgets"}}}
+	want := api.RepositoriesView{Refused: []api.RefusedRepositoryView{{Repo: "acme/widgets", Reason: "the review App is not installed on acme/widgets",
+		Apps: &api.AppInstallationsView{Implement: true}}}}
 	if len(state.Repositories.Owners) != 0 || len(state.Repositories.Mapped) != 0 || !reflect.DeepEqual(state.Repositories.Refused, want.Refused) {
 		t.Fatalf("state's repositories = %+v, want none served and acme/widgets left out for its review App", state.Repositories)
 	}
@@ -1615,11 +1623,7 @@ func workflowConfig(t *testing.T, natsURL string) config.Config {
 
 func workflowJetStream(t *testing.T, natsURL string) jetstream.JetStream {
 	t.Helper()
-	conn, err := nats.Connect(natsURL, nats.Timeout(time.Second))
-	if err != nil {
-		t.Fatalf("connect NATS: %v", err)
-	}
-	t.Cleanup(conn.Close)
+	conn := testnats.Connect(t, natsURL)
 	js, err := jetstream.New(conn)
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
@@ -1636,7 +1640,7 @@ type workflowTokenRecorder struct {
 	failing map[string]error
 }
 
-func (r *workflowTokenRecorder) Token(_ context.Context, role appauth.AppRole, _ ghrepo.Repository) (appauth.Lease, error) {
+func (r *workflowTokenRecorder) Token(_ context.Context, role appauth.AppRole, _ string) (appauth.Lease, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.roles = append(r.roles, role)
@@ -1662,19 +1666,42 @@ func (r *workflowTokenRecorder) InstalledOn(_ context.Context, role appauth.AppR
 	return !r.missing[key], nil
 }
 
+// InstalledOwners answers no owner list: the recorder knows which repositories each App is
+// installed on (InstalledOn) and not the accounts, and no rig builds a gh bundle over it, since
+// each replaces the runtime that would. A rig that builds one names its owners itself.
+func (r *workflowTokenRecorder) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+	return nil, errors.New("the workflow token recorder lists no owner accounts, which a gh bundle holds one directory per owner of")
+}
+
 // servedBootCall answers the calls every boot makes of Dispatch, whatever the test is about:
 // the repository mapping, acme/widgets the default of project; the webhook App check, Dispatch's
 // GitHub App installed on every repository; the publish of the project's gated design steps,
 // which the boot queues for its own project (daemon.queueGatedStepsPublish) and the outbox's
-// first sweep sends; and the read of a gate's own document, which the boot's catch-up makes for
-// every root it reads (bindGateRequest through dispatch.Client.Approval). It reports whether it
-// answered r. A board that leaves one of these to its own default arm fails the test with an
-// unexpected request, which is what this helper exists to stop: none of them belongs to a test
-// here.
+// first sweep sends; the publish of the documents a gated issue's own gates record, which the
+// boot queues for every recorded issue Dispatch has not closed (daemon.queueRecordedGatesPublish)
+// and that same sweep sends; the publish of an issue's role sessions, which the boot queues for
+// every issue with a recent claim (daemon.queueRoleHoldersPublish) and each boot ready and each
+// change of a claim's role holder queues again (roleHoldersChanged, the store's putClaim); and the
+// read of a gate's own document, which the boot's catch-up makes for every root it reads
+// (bindGateRequest through dispatch.Client.Approval). It reports whether it answered r. A board
+// that leaves one of these to its own default arm fails the test with an unexpected request,
+// which is what this helper exists to stop: none of them belongs to a test here.
+// role_holder_publish_test.go and TestRoleHoldersLandInScratchDispatch are the tests of the
+// role-holder publication.
 func servedBootCall(t *testing.T, w http.ResponseWriter, r *http.Request, project string) bool {
 	t.Helper()
 	if r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/api/v1/projects/") &&
 		strings.HasSuffix(r.URL.Path, "/gated-steps") {
+		w.WriteHeader(http.StatusNoContent)
+		return true
+	}
+	if r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/api/v1/issues/") &&
+		strings.HasSuffix(r.URL.Path, "/design-gates") {
+		w.WriteHeader(http.StatusNoContent)
+		return true
+	}
+	if r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/api/v1/issues/") &&
+		strings.HasSuffix(r.URL.Path, "/role-holders") {
 		w.WriteHeader(http.StatusNoContent)
 		return true
 	}
@@ -1707,8 +1734,8 @@ func servedBootCall(t *testing.T, w http.ResponseWriter, r *http.Request, projec
 	return true
 }
 
-func (r *workflowTokenRecorder) ReadToken(ctx context.Context, role appauth.AppRole, _ string, _ []string) (appauth.Lease, error) {
-	lease, err := r.Token(ctx, role, ghrepo.Repository{})
+func (r *workflowTokenRecorder) ReadToken(ctx context.Context, role appauth.AppRole, _ string) (appauth.Lease, error) {
+	lease, err := r.Token(ctx, role, "")
 	lease.Token += "-read"
 	return lease, err
 }
@@ -1722,11 +1749,7 @@ func (r *workflowTokenRecorder) Roles() []appauth.AppRole {
 func workflowNATS(t *testing.T) string {
 	t.Helper()
 	url := testnats.URL(t)
-	conn, err := nats.Connect(url, nats.Timeout(time.Second))
-	if err != nil {
-		t.Fatalf("connect NATS: %v", err)
-	}
-	t.Cleanup(conn.Close)
+	conn := testnats.Connect(t, url)
 	js, err := jetstream.New(conn)
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)

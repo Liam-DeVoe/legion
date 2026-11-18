@@ -82,8 +82,9 @@
 # (under aws-private-ip, a port the devbox's security group admits from the Legion nodes; under
 # bridge, forwarded through the same tunnel); LEGION_E2E_REPO_SECOND_OWNER (required) `<owner>/<name>`,
 # a repository under an owner other than sjawhar on which both Legion Apps are installed, where
-# second-owner provisions an issue and proves its pod's gh and git read sjawhar/legion-smoke with
-# read-only tokens (nothing is pushed to it); LEGION_E2E_IMPLEMENT_APP_ID and
+# second-owner provisions an issue and proves its pod's gh and git read sjawhar/legion-smoke and
+# that GitHub serves its credential for it the receive-pack advertisement, the answer a token that
+# may write gets (nothing is pushed to either repository); LEGION_E2E_IMPLEMENT_APP_ID and
 # LEGION_E2E_IMPLEMENT_APP_SECRET (this deployment's implement App by default) the App's numeric
 # id and the secrets broker github-app secret the `agent-secrets` client releases its installation
 # tokens from (agent tier: no person's grant), which prerequisites proves is that id's App from its
@@ -104,15 +105,16 @@
 # fresh /tmp directory, kept and printed).
 #
 # The secrets-* checks are optional and print CHECK <name>: SKIPPED-BLOCKED when
-# unconfigured: LEGION_E2E_AGENT_SECRETS_URL, LEGION_E2E_AGENT_SECRETS_OPERATOR (the email of the
-# person who approves secrets-approval-ask's credential request on the Dispatch credential page
-# during the run), LEGION_E2E_AGENT_SECRETS_AUTO_SHA256, and LEGION_E2E_AGENT_SECRETS_ACCOUNT
+# unconfigured: LEGION_E2E_AGENT_SECRETS_URL, LEGION_E2E_AGENT_SECRETS_AUTO_SHA256, and
+# LEGION_E2E_AGENT_SECRETS_ACCOUNT
 # (<namespace>/<name> of a ServiceAccount of the proof's own, which the broker's
 # BROKER_SERVICE_LOGINS lets log in as legion-daemon and no pod runs as: each account holds one
 # launcher credential, so logging in as a running daemon's account would take that daemon's). The
 # run logs in as the daemon does, with that account's token, which the operator context mints with
 # `kubectl create token` for the broker's audience, an hour long, and mints again every half hour
-# while the run lasts; no person approves it. See scripts/e2e/README.md's Stage 4a section.
+# while the run lasts; no person approves it. The run asks nothing of a person: secrets-approval-ask
+# cancels the one request it makes rather than waiting for an approval. See
+# scripts/e2e/README.md's Stage 4a section.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -141,7 +143,6 @@ pod_reachability=${LEGION_E2E_POD_REACHABILITY:-}
 model_route=${LEGION_E2E_MODEL_ROUTE:-}
 storage_class=${LEGION_E2E_STORAGE_CLASS:-}
 agent_secrets_url=${LEGION_E2E_AGENT_SECRETS_URL:-}
-agent_secrets_operator=${LEGION_E2E_AGENT_SECRETS_OPERATOR:-}
 agent_secrets_auto_sha=${LEGION_E2E_AGENT_SECRETS_AUTO_SHA256:-}
 agent_secrets_account=${LEGION_E2E_AGENT_SECRETS_ACCOUNT:-}
 from=${STAGE4A_FROM:-}
@@ -236,7 +237,7 @@ case "$pod_reachability" in
 aws-private-ip)
   imds=$(curl -sf -m 5 -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60') ||
     fail "instance metadata is unreachable; the harness binds the devbox's private address, read from it"
-  bind_host=$(curl -sf -m 5 -H "X-aws-ec2-metadata-token: $imds" http://169.254.169.254/latest/meta-data/local-ipv4) ||
+  bind_host=$(printf 'X-aws-ec2-metadata-token: %s' "$imds" | curl -sf -m 5 -H @- http://169.254.169.254/latest/meta-data/local-ipv4) ||
     fail "instance metadata has no local-ipv4"
   unset imds
   advertise_host=$bind_host
@@ -257,7 +258,10 @@ esac
 [ "$session_db_port" != "$port" ] || fail "LEGION_E2E_SESSION_DB_PORT is the worker stream's port $port"
 [ -n "$second_owner_repo" ] ||
   fail "LEGION_E2E_REPO_SECOND_OWNER is unset: the second-owner check provisions an issue on a repository of another owner (owner/name, never a literal here)"
-[[ $second_owner_repo =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$ ]] || fail "LEGION_E2E_REPO_SECOND_OWNER must be <owner>/<name>, not '$second_owner_repo'"
+# The owner half is ghrepo's grammar for an account: a letter or digit, then up to 38 letters,
+# digits, hyphens and underscores, a managed user's `_<shortcode>` among them, so an operator may
+# name a repository of such an account here as the daemon may record one.
+[[ $second_owner_repo =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,38}/[A-Za-z0-9._-]+$ ]] || fail "LEGION_E2E_REPO_SECOND_OWNER must be <owner>/<name>, not '$second_owner_repo'"
 [ "$(tr '[:upper:]' '[:lower:]' <<<"${second_owner_repo%%/*}")" != "$(tr '[:upper:]' '[:lower:]' <<<"${repo%%/*}")" ] ||
   fail "LEGION_E2E_REPO_SECOND_OWNER $second_owner_repo is under ${repo%%/*}, $repo's owner: the check needs a repository of another owner"
 case "$previous_image" in *@sha256:*) ;; *) fail "LEGION_E2E_PREVIOUS_IMAGE must be a worker image of main from before one container, pinned by digest (…@sha256:…), not '$previous_image'" ;; esac
@@ -517,7 +521,6 @@ env \
   LEGION_E2E_OPERATOR_POD="$work/pod.yml" \
   LEGION_E2E_OPERATOR_CONFIGMAP="$route_configmap" \
   LEGION_E2E_AGENT_SECRETS_URL="$agent_secrets_url" \
-  LEGION_E2E_AGENT_SECRETS_OPERATOR="$agent_secrets_operator" \
   LEGION_E2E_AGENT_SECRETS_AUTO_SHA256="$agent_secrets_auto_sha" \
   LEGION_E2E_AGENT_SECRETS_BIN="$work/agent-secrets" \
   LEGION_E2E_AGENT_SECRETS_TOKEN_FILE="$agent_secrets_token_file" \

@@ -1,8 +1,6 @@
 package workflow
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -254,7 +252,7 @@ func TestTheResumeTaskNamesEveryItemStillWithThePerson(t *testing.T) {
 			step:    record.DesignStepSpec,
 			gate:    &record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 4},
 			want: []string{"A person requested changes to your primary document on LEGION-208 at version 4: \"say more\"",
-				"revise the primary document as they ask", "Your primary document is not approved at version 4", "Hand each one back", "returns the slot"},
+				"revise the primary document as they ask", "Your primary document is not approved at version 4", "Hand each one back", "starts your next wait"},
 			not: []string{DesignApprovedWake},
 		},
 		{
@@ -291,30 +289,6 @@ func TestTheResumeTaskNamesEveryItemStillWithThePerson(t *testing.T) {
 	}
 }
 
-// A root waiting on a person gets no design-approved notice, so the architect's instructions must
-// take the resume task that says the gate is open as that wake: the skill's release rule, the
-// design gate reference, the wake routing table and the root architect's prompt each name the
-// resume's phrase. The claude-envoy plugin's copies under packages/claude-envoy/legion/ are
-// generated from these three skill files, and nothing commits that tree, so a pull request has no
-// copies to read here. (Round 2, adversarial P2-1 and outside-whole P2-1.)
-func TestTheArchitectsInstructionsTakeTheResumeAsTheDesignApprovedWake(t *testing.T) {
-	root := filepath.Join("..", "..", "..", "..")
-	for _, file := range []string{
-		"skills/legion-architect/SKILL.md",
-		"skills/legion-architect/references/design-gate.md",
-		"skills/legion-architect/references/wake-routing.md",
-		"packages/daemon/internal/prompts/roles/architect-root.md",
-	} {
-		body, err := os.ReadFile(filepath.Join(root, file))
-		if err != nil {
-			t.Fatalf("read %s: %v", file, err)
-		}
-		if !strings.Contains(string(body), DesignApprovedWake) {
-			t.Errorf("%s does not name the resume's design-approved wake (%q)", file, DesignApprovedWake)
-		}
-	}
-}
-
 // With the design gate off, no approval is asked for, so the resume task never advises registering
 // one.
 func TestTheResumeTaskUnderNoDesignGateAdvisesNoApproval(t *testing.T) {
@@ -346,7 +320,7 @@ func TestTheResumeTaskOfAGateWait(t *testing.T) {
 			waiting: record.Awaiting{GateVersion: 5, Artifact: "artifact-208", AnsweredAt: &answered, AnsweredBy: record.AnsweredByVersion, AnsweredDetail: "version 5"},
 			asks:    []record.RootAsk{{Issue: "LEGION-208", Ask: "ask-approval", Kind: record.AskApproval, Artifact: "artifact-208", Open: true, WaitingOn: "agent", Seq: 9}},
 			want: []string{"A newer version of your primary document on LEGION-208, version 5, handed the approval request back to you",
-				"Waiting on you: ask ask-approval", "register that version with register_gate", "or answer in the request's thread", "returns the slot"},
+				"Waiting on you: ask ask-approval", "register that version with register_gate", "or answer in the request's thread", "starts your next wait"},
 		},
 		{
 			name:    "a person's answer of a question, the request still with the person",

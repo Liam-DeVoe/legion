@@ -161,11 +161,10 @@ func secretChecksum(secret *corev1.Secret) pulumi.StringOutput {
 
 // answersProbe is a startup or liveness probe of the HTTP server on the container's loopback port:
 // it fails only when the process does not answer at all. It asks /livez, which runs no dependency
-// check: envoy-dispatch answers it 204 with no I/O, and envoy-listener, which has no such route,
-// answers it 404 from its mux, outside the /v1 routes its bearer guards, with no I/O either. curl
-// without -f exits 0 whatever the status, so any HTTP answer passes, and neither a dependency
-// outage nor a slow Postgres or NATS restarts every pod; --max-time 8 makes curl give up inside the
-// probe's 9 s timeout.
+// check: envoy-dispatch and envoy-listener each answer it 204 with no I/O. curl without -f exits 0
+// whatever the status, so any HTTP answer passes, and neither a dependency outage nor a slow
+// Postgres or NATS restarts every pod; --max-time 8 makes curl give up inside the probe's 9 s
+// timeout.
 func answersProbe(port, periodSeconds, failureThreshold int) *corev1.ProbeArgs {
 	return &corev1.ProbeArgs{
 		Exec: &corev1.ExecActionArgs{Command: pulumi.StringArray{
@@ -277,10 +276,10 @@ func refuseDispatchSeedInSecret(value pulumi.StringInput, dispatch, input string
 // the URL names a local server, which the pod's NATS clients can never reach through the tailnet
 // proxy. With natsInCluster there is no proxy, and core refuses a local URL only beside one, so a
 // local URL is refused here instead, before the config is built, and both call sites refuse alike:
-// the pods dial the URL themselves, and a loopback URL has them dial themselves. natsReplicas and
-// streamMaxBytes reach no refusal of core's own, since newDispatchSettings bounds them more
-// tightly (1 to bus.MaxReplicas, and at least 1) before anything registers, which is why every
-// refusal that is not socks5Proxy's is natsUrl's.
+// the pods dial the URL themselves, and a loopback URL has them dial themselves. natsReplicas,
+// streamMaxBytes and the sender limit reach no refusal of core's own, since newDispatchSettings
+// bounds them more tightly (1 to bus.MaxReplicas, at least 1, and core.CheckSenderLimit) before
+// anything registers, which is why every refusal that is not socks5Proxy's is natsUrl's.
 // The listener serves on every address of its pod, and its API refuses to start on a non-loopback
 // listen host without a bearer (packages/envoy/cmd/listener/apiauth.go), so the environment names
 // the bearer in Secret listenerSecret.
@@ -289,12 +288,14 @@ func dispatchListenerEnv(s dispatchSettings, listenerSecret, url string) (corev1
 		return nil, core.InputErrorf("natsUrl", "natsUrl names a local NATS server; with natsInCluster the pods dial it directly, so the URL must name the hub's in-cluster Service")
 	}
 	env, err := (core.ListenerConfig{
-		MachineID:      s.hostname,
-		Port:           core.DefaultListenerPort,
-		ListenHost:     "0.0.0.0",
-		SOCKS5Proxy:    s.socks5Proxy(),
-		NATSReplicas:   s.natsReplicas,
-		StreamMaxBytes: s.streamMaxBytes,
+		MachineID:               s.hostname,
+		Port:                    core.DefaultListenerPort,
+		ListenHost:              "0.0.0.0",
+		SOCKS5Proxy:             s.socks5Proxy(),
+		NATSReplicas:            s.natsReplicas,
+		StreamMaxBytes:          s.streamMaxBytes,
+		SenderMessagesPerMinute: s.senderMessagesPerMinute,
+		SenderMessageBurst:      s.senderMessageBurst,
 	}).Env([]string{url})
 	if err != nil {
 		var input *core.InputError
@@ -604,10 +605,18 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// killed holder's lease is taken over in about six. Readiness is /healthz, which answers within
 	// 5 s, so the probe allows 6; startup and liveness only ask that the listener answers
 	// (answersProbe). The pre-stop wait keeps a stopping pod answering /v1 while its removal from
-	// the Service propagates, and the 35 s grace period covers those 5 s, the listener's own stop
-	// of about 26 s, and a margin.
+	// the Service propagates, and the 40 s grace period covers those 5 s and the listener's own
+	// stop of 28 s, with the margin listenerGraceMargin names. That 28 s is three hard deadlines
+	// the listener sets itself and holds as constants, stopHTTPGrace, stopLaneGrace and
+	// stopClientDrain, summed as stopBudget (packages/envoy/cmd/listener/main.go), whose own test
+	// holds this pod's golden to that sum and that margin. They cannot overrun, so the margin
+	// covers the kubelet's own latency between the pre-stop hook's return and SIGTERM, the
+	// container's teardown and a late tick on a loaded node, and not a listener that runs over.
+	// This pod and the clustered hub's listener pod run the same binary at the same budget, and
+	// what holds the two graces equal is
+	// TestDispatchAndClusteredHubListenerPodsStopInsideTheirGrace, which reads both.
 	if _, err := deployment(listenerName, s.listenerReplicas, s.disruption.listenerPDBMinAvailable, map[string]*corev1.Secret{listenerName: listenerSecret}, corev1.PodSpecArgs{
-		ServiceAccountName: pulumi.String(s.hostname), TerminationGracePeriodSeconds: pulumi.Int(35), EnableServiceLinks: pulumi.Bool(false),
+		ServiceAccountName: pulumi.String(s.hostname), TerminationGracePeriodSeconds: pulumi.Int(40), EnableServiceLinks: pulumi.Bool(false),
 		Containers: corev1.ContainerArray{
 			corev1.ContainerArgs{
 				Name: pulumi.String("envoy-listener"), Image: pulumi.String(s.images.envoy), Resources: resources("500m", "512Mi"), Env: listenerEnv, VolumeMounts: seedMount,
@@ -649,13 +658,23 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// The four sign-in variables render together or not at all, in the place they always held, so
 	// a deployment with sign-in on renders what it always rendered (gcp/testdata/dispatch-pod.golden)
 	// and one without it names no client, no issuer and no domain: Dispatch then asks nobody to
-	// sign in. DISPATCH_SERVER_URL is the address a reader is sent back to, so it is the url
-	// output's own derivation (serverURL) and never a second spelling of it.
+	// sign in. DISPATCH_SIGNIN_OUTSIDE follows the domain only with signInOutside, which needs
+	// sign-in on. DISPATCH_SERVER_URL is the address a reader is sent back to, so it is the url
+	// output's own derivation (serverURL) and never a second spelling of it, and
+	// DISPATCH_OUTSIDE_ORIGIN follows it only with outsideOrigin, so a deployment that sets neither
+	// outside input renders byte for byte what it always rendered.
 	if s.signInOn {
 		appEnv = append(appEnv, secretEnv("DISPATCH_SIGNIN_CLIENT_SECRET", dispatchSecretName, "DISPATCH_SIGNIN_CLIENT_SECRET"),
 			valueEnv("DISPATCH_SIGNIN_ISSUER", "https://accounts.google.com"), valueEnv("DISPATCH_SIGNIN_CLIENT_ID", s.signIn.clientID), valueEnv("DISPATCH_SIGNIN_DOMAIN", s.signIn.domain))
+		if s.signInOutside {
+			appEnv = append(appEnv, valueEnv("DISPATCH_SIGNIN_OUTSIDE", "1"))
+		}
 	}
-	appEnv = append(appEnv, valueEnv("DISPATCH_SERVER_URL", s.serverURL()), valueEnv("DISPATCH_LISTEN_HOST", "0.0.0.0"),
+	appEnv = append(appEnv, valueEnv("DISPATCH_SERVER_URL", s.serverURL()))
+	if s.outsideOrigin != "" {
+		appEnv = append(appEnv, valueEnv("DISPATCH_OUTSIDE_ORIGIN", s.outsideOrigin))
+	}
+	appEnv = append(appEnv, valueEnv("DISPATCH_LISTEN_HOST", "0.0.0.0"),
 		corev1.EnvVarArgs{Name: pulumi.String("NATS_URLS"), Value: natsURL}, valueEnv("ENVOY_ALLOW_REMOTE_NATS", "1"), valueEnv("NATS_NKEY_SEED_FILE", "/var/run/secrets/envoy/nats-seed"))
 	// The proxy renders only in the SOCKS5 mode, and each JetStream number only when it is set,
 	// in the proxy's place in the list, so a deployment that sets neither renders byte for byte
@@ -685,6 +704,19 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		appVolumes = append(appVolumes, corev1.VolumeArgs{Name: pulumi.String("agent-secrets-account-token"), Projected: &corev1.ProjectedVolumeSourceArgs{Sources: corev1.VolumeProjectionArray{
 			corev1.VolumeProjectionArgs{ServiceAccountToken: &corev1.ServiceAccountTokenProjectionArgs{Audience: pulumi.String(s.agentSecretsAudience), ExpirationSeconds: pulumi.Int(agentSecretsTokenSeconds), Path: pulumi.String("agent-secrets-account-token")}},
 		}}})
+	}
+	if s.oidcAudience != "" {
+		// Dispatch verifies a caller's projected ServiceAccount token itself, which is how the
+		// secrets broker's judge reads Dispatch. The issuer is this cluster's own unless
+		// oidcIssuer names another, so a token minted in this cluster needs the audience alone;
+		// it is an Output there, rendered once the cluster's project, location and name resolve.
+		// Dispatch refuses half the pair at boot (oidc.ConfigFromEnv), so both render together.
+		issuer := cloud.issuer
+		if s.oidcIssuer != "" {
+			issuer = pulumi.String(s.oidcIssuer).ToStringOutput()
+		}
+		appEnv = append(appEnv, corev1.EnvVarArgs{Name: pulumi.String("DISPATCH_OIDC_ISSUER"), Value: issuer},
+			valueEnv("DISPATCH_OIDC_AUDIENCE", s.oidcAudience))
 	}
 	if s.appClientID != "" {
 		// The App key is one key of a Kubernetes Secret this component never creates: it exists at

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, test as bunTest, expect, spyOn } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -17,7 +17,7 @@ import type {
   DeliveryMeasuresResponse,
   DeliveryPR,
   DeliverySettings,
-  DeliveryTimelineResponse,
+  DeliveryTimelineWithMeasures,
   LiveServerFrame,
   LiveSubscribe,
 } from "../../api/types";
@@ -42,7 +42,7 @@ const emptyCounts = {
   deployed: {},
 };
 
-const emptyFreshness: DeliveryTimelineResponse["freshness"] = {
+const emptyFreshness: DeliveryTimelineWithMeasures["freshness"] = {
   last_error: null,
   last_event_at: null,
   last_reconcile_at: null,
@@ -71,19 +71,8 @@ const emptyMeasures: DeliveryMeasuresResponse = {
       opened_to_production: { median_minutes: null, p90_minutes: null, max_minutes: null },
       opened_to_merge: { median_minutes: null, p90_minutes: null, max_minutes: null },
     },
-    change_failure_rate: {
-      per_pr: { confirmed: 0, pending: 0, rejected: 0, reverts: 0, total: 0, rate: 0 },
-      per_deploy: {
-        confirmed: 0,
-        pending: 0,
-        rejected: 0,
-        reverts: 0,
-        total: 0,
-        rate: 0,
-        confirmed_or_pending: 0,
-        upper_bound_rate: 0,
-      },
-    },
+    // Null, as the server answers it while no failure source exists (`flags_source: "none"`).
+    change_failure_rate: null,
     time_to_restore: { median_minutes: null },
     rework_share: 0,
     deploy_run_success: { concluded: 0, reached_production: 0, cancelled: 0, rate: null },
@@ -92,12 +81,37 @@ const emptyMeasures: DeliveryMeasuresResponse = {
   flags_source: "none",
   unowned_p0: [],
   targets: {
-    deploys_per_day: 20,
-    change_failure_rate: 0.05,
-    merge_to_production_minutes: 45,
-    opened_to_merge_median_minutes: 60,
-    deploy_run_success_rate: 0.9,
-    unowned_p0: 0,
+    deploys_per_day: {
+      value: 20,
+      inclusive: true,
+      direction: "higher_better",
+      judges: ["deploys.per_day"],
+    },
+    change_failure_rate: {
+      value: 0.05,
+      inclusive: false,
+      direction: "lower_better",
+      judges: ["per_deploy.rate"],
+    },
+    merge_to_production_minutes: {
+      value: 45,
+      inclusive: false,
+      direction: "lower_better",
+      judges: ["minutes.max", "minutes.median"],
+    },
+    opened_to_merge_median_minutes: {
+      value: 60,
+      inclusive: false,
+      direction: "lower_better",
+      judges: ["minutes.median"],
+    },
+    deploy_run_success_rate: {
+      value: 0.9,
+      inclusive: true,
+      direction: "higher_better",
+      judges: ["runs.rate"],
+    },
+    unowned_p0: { value: 0, inclusive: true, direction: "lower_better", judges: ["issues.value"] },
   },
   status: {
     deploys_per_day: false,
@@ -112,7 +126,7 @@ const emptyMeasures: DeliveryMeasuresResponse = {
   freshness: emptyFreshness,
 };
 
-const emptyTimeline: DeliveryTimelineResponse = {
+const emptyTimeline: DeliveryTimelineWithMeasures = {
   color_counts: { repo: {}, author: {}, priority: {}, component: {}, parent_agent: {} },
   components: {},
   facet_counts: emptyCounts,
@@ -157,9 +171,25 @@ beforeEach(() => {
   sockets = installFakeLiveSockets();
 });
 afterEach(() => {
-  cleanup();
   sockets.restore();
 });
+
+/**
+ * A row of this file: `bun:test`'s own, but its body ends by unmounting the page inside act
+ * (`cleanup`), not in `afterEach`. DeliveryPage's search debounce (`useSettled`, 250 ms from
+ * mount) and SourceFreshness's 1 s tick are real timers, and Bun gives the event loop a turn
+ * between a row's body and its `afterEach`: a timer due then fires with the act environment on
+ * and no act scope open, and React reports its setState as an update outside act. The unmount
+ * clears both timers before that turn.
+ */
+const test = (name: string, body: () => Promise<void>): void =>
+  bunTest(name, async () => {
+    try {
+      await body();
+    } finally {
+      cleanup();
+    }
+  });
 
 /** The page's live socket, once the page has opened one, as Dispatch accepts it. */
 async function openSocket(): Promise<FakeLiveSocket> {
@@ -192,7 +222,7 @@ function serve(socket: FakeLiveSocket, frame: LiveServerFrame): void {
 }
 
 /** The page subscribed its timeline, and Dispatch answered with `body`. */
-async function answered(body: DeliveryTimelineResponse): Promise<FakeLiveSocket> {
+async function answered(body: DeliveryTimelineWithMeasures): Promise<FakeLiveSocket> {
   const socket = await openSocket();
   const { sub } = await subscription(socket, "timeline");
   serve(socket, snapshotFrame(sub, body));
@@ -402,7 +432,7 @@ const listedPR: DeliveryPR = {
 
 test("the facet column offers each value with its count, subscribes a pick and keeps the view in the URL", async () => {
   const user = userEvent.setup();
-  const timeline: DeliveryTimelineResponse = {
+  const timeline: DeliveryTimelineWithMeasures = {
     ...emptyTimeline,
     components: { "ACME/api": { parent: null, title: "Public API" } },
     facet_counts: {
@@ -500,7 +530,10 @@ test("while a facet pick waits for its snapshot, the header and freshness keep t
   expect(row.querySelector('[data-source="dispatch"]')?.textContent).toMatch(
     /^Dispatch \d+ s ago$/
   );
-  serve(socket, snapshotFrame(picked.sub, { ...emptyTimeline, prs: [listedPR] }));
+  // The snapshot's answer lands a few microtasks after the frame: inside `act`, before the row ends.
+  await act(async () => {
+    serve(socket, snapshotFrame(picked.sub, { ...emptyTimeline, prs: [listedPR] }));
+  });
 });
 
 test("the list sorts by its headers and a row opens the PR's details", async () => {
@@ -546,7 +579,7 @@ test("the list sorts by its headers and a row opens the PR's details", async () 
 
 test("the measures panel sits between the freshness row and the view controls and shows the timeline's own measures, subscribing no second view", async () => {
   const user = userEvent.setup();
-  const withP0 = (key: string): DeliveryTimelineResponse => ({
+  const withP0 = (key: string): DeliveryTimelineWithMeasures => ({
     ...emptyTimeline,
     facet_counts: { ...emptyCounts, repo: { "acme/widgets": 1 } },
     prs: [listedPR],

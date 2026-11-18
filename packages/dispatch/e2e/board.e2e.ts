@@ -1,17 +1,11 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import { createIssue, createProject, getIssue, listIssues, patchIssue, putIssueState } from "./api";
 import { pickFilterOption } from "./filters";
 import { nextFrames } from "./frames";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { centerOf, pressFinger, touchDrag, touchHold } from "./touch";
 import { asUser } from "./users";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** The visible priority tag inside a card or row - the `<select>` options carry the same text. */
 function priorityBadge(scope: Locator, label: string): Locator {
@@ -80,6 +74,7 @@ async function mouseDrag(page: Page, source: Locator, target: Locator, yOffset?:
   // `hover` presses only once the card holds still and is the element under the pointer; a bare
   // `mouse.move` to a measured box would press on whatever is painted there.
   await source.hover();
+  // The hover above waited for the card to be visible and still, so its box is there.
   const sourceBox = await source.boundingBox();
   if (sourceBox === null) {
     throw new Error("drag source is not visible");
@@ -87,6 +82,7 @@ async function mouseDrag(page: Page, source: Locator, target: Locator, yOffset?:
   await page.mouse.down();
   await page.mouse.move(sourceBox.x + sourceBox.width / 2 + 10, sourceBox.y + sourceBox.height / 2);
   await target.scrollIntoViewIfNeeded();
+  // The scroll above waited for the target to be visible and still, so its box is there.
   const targetBox = await target.boundingBox();
   if (targetBox === null) {
     throw new Error("drag target is not visible");
@@ -102,7 +98,8 @@ async function mouseDrag(page: Page, source: Locator, target: Locator, yOffset?:
 
 // SLOW(>=2s): four whole-card drags, each paying dnd-kit's own 200 ms landing, plus the board's
 // two fresh renders.
-test("the board is the kanban: whole-card drag orders List and Board alike, Icebox and Done collapse behind a toggle", async ({
+// @pr: Create through answer to close: the board is where a person moves an issue's status, and the drag has to order List and Board alike.
+test("the board is the kanban: whole-card drag orders List and Board alike, Icebox and Done collapse behind a toggle @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -149,9 +146,8 @@ test("the board is the kanban: whole-card drag orders List and Board alike, Iceb
     await page.reload();
     await expect(triage.getByRole("article")).toHaveText([/Third card/, /Second card/]);
     await page.getByRole("button", { name: "List" }).click();
-    await expect(
-      page.getByRole("list", { name: "Triage issues" }).getByRole("listitem")
-    ).toHaveText([/Third card/, /Second card/]);
+    await page.getByRole("button", { name: "Triage 2", exact: true }).click();
+    await expect(page.locator("[data-issue-row]")).toHaveText([/Third card/, /Second card/]);
     expect((await listIssues("CORE")).map((issue) => issue.key)).toEqual([
       third.key,
       second.key,
@@ -467,7 +463,7 @@ test("board cards carry the unread dot the project list shows", async ({ browser
   const page = await context.newPage();
   try {
     await page.goto("/projects/CORE");
-    const unreadRow = page.getByRole("listitem", { name: `${unread.key} Unread card` });
+    const unreadRow = page.getByRole("row", { name: `${unread.key} Unread card`, exact: true });
     await expect(unreadRow.locator('[title="Unread"]')).toHaveCount(1);
     await page.getByRole("button", { name: "Board" }).click();
     const unreadCard = page.getByRole("article", { name: `${unread.key} Unread card` });
@@ -492,7 +488,7 @@ test("project list rows and board cards set an issue's priority in place", async
   try {
     const page = await context.newPage();
     await page.goto("/projects/CORE");
-    const listRow = page.getByRole("listitem", { name: `${issue.key} Prioritized card` });
+    const listRow = page.getByRole("row", { name: `${issue.key} Prioritized card`, exact: true });
     const listControl = listRow.getByLabel(`Priority of ${issue.key}`);
     await expect(priorityBadge(listRow, "P1")).toBeVisible();
     // The badge stays small; the tap target around it is 32 px from md.
@@ -712,6 +708,8 @@ async function scrollerAtRest(scroller: Locator): Promise<void> {
 
 /** Puts the `index`-th column's start edge at the scroller's start and waits for the scroll to end. */
 async function scrollToColumn(scroller: Locator, index: number): Promise<void> {
+  await scrollerAtRest(scroller);
+  // The scroller came to rest above, so the offsets read here are the ones it holds still at.
   const target = await scroller.evaluate((element, index) => {
     const section = element.querySelectorAll("section")[index];
     if (section === undefined) {
@@ -734,10 +732,9 @@ async function scrollToColumn(scroller: Locator, index: number): Promise<void> {
 
 // SLOW(>=2s): a real finger: per-frame touch steps, two snap-scroll flings, the sensor's own
 // 150 ms activation twice over, an issue opened and left, and a carried card.
-test("on the phone a finger drives the board: hold lifts, tap opens, swipes scroll and snap @phone", async ({
+test("on the phone a finger drives the board: hold lifts, tap opens, swipes scroll and snap @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "touch gestures exercise the phone project");
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   const cards = [];
   for (const title of ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf"]) {
@@ -768,6 +765,8 @@ test("on the phone a finger drives the board: hold lifts, tap opens, swipes scro
     // K5: a horizontal swipe lands on a column or rail edge (snap-x snap-mandatory).
     const start = await snapOffsets(scroller);
     expect(start.scrollLeft).toBe(0);
+    await expect(scroller).toBeVisible();
+    // The wait above drew the scroller, and a drawn element has a box, so the box is there.
     const box = await scroller.boundingBox();
     if (box === null) {
       throw new Error("board scroller is not visible");
@@ -850,6 +849,8 @@ test("on the phone a finger drives the board: hold lifts, tap opens, swipes scro
     const movePatch = patchOf(page, bravo.key);
     const finger = await pressFinger(page, from);
     await expect(bravoCard).toHaveClass(/opacity-50/);
+    await expect(scroller).toBeVisible();
+    // The wait above drew the scroller, and a drawn element has a box, so the box is there.
     const scrollerBox = await scroller.boundingBox();
     if (scrollerBox === null) {
       throw new Error("board scroller is not visible");
@@ -868,6 +869,7 @@ test("on the phone a finger drives the board: hold lifts, tap opens, swipes scro
     const drop = scrollerBox.x + scrollerBox.width / 2;
     await finger.moveTo({ x: drop, y: from.y }, 1);
     await scrollerAtRest(scroller);
+    // The scroller came to rest above, so the column's box read now is where the drop lands.
     const landing = await inProgress.boundingBox();
     if (landing === null || landing.x > drop - 40 || landing.x + landing.width < drop + 40) {
       throw new Error(
@@ -891,7 +893,7 @@ test("on the phone a finger drives the board: hold lifts, tap opens, swipes scro
   }
 });
 
-test("one URL-backed filter strip drives List and Board alike and survives a reload", async ({
+test("URL-backed labels drive the List table and Board strip and survive a reload", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -905,10 +907,9 @@ test("one URL-backed filter strip drives List and Board alike and survives a rel
   try {
     await page.goto("/projects/CORE");
     await expect(page.getByText("Plain card")).toBeVisible();
-    // Apply the label from the List's strip's Labels multi-select: the filter lands in the URL.
-    await page.getByRole("button", { name: "Filters · 0 active" }).click();
+    // Pick a label from the table header; the Board reads the same label parameter.
     await pickFilterOption(page, "Labels", "frontend");
-    await expect(page).toHaveURL(/\/projects\/CORE\/issues\?label=frontend$/);
+    await expect(page).toHaveURL(/[?&]label=frontend(?:&|$)/);
     await expect(page.getByText("Labelled card")).toBeVisible();
     await expect(page.getByText("Plain card")).toBeHidden();
 
@@ -916,7 +917,7 @@ test("one URL-backed filter strip drives List and Board alike and survives a rel
     await page.getByRole("button", { name: "Board" }).click();
     const board = page.getByRole("region", { name: "Project board" });
     await expect(board.getByRole("article")).toHaveText([/Labelled card/]);
-    await expect(page).toHaveURL(/\/projects\/CORE\/issues\?label=frontend$/);
+    await expect(page).toHaveURL(/[?&]label=frontend(?:&|$)/);
 
     // A reload keeps the filter, on the Board.
     await page.reload();
@@ -926,7 +927,7 @@ test("one URL-backed filter strip drives List and Board alike and survives a rel
     // Removing the chip on the Board shows every card again.
     await page.getByRole("button", { name: "Remove Label: frontend filter" }).click();
     await expect(board.getByRole("article")).toHaveCount(3);
-    await expect(page).toHaveURL(/\/projects\/CORE\/issues$/);
+    await expect(page).not.toHaveURL(/[?&]label=/);
   } finally {
     await context.close();
   }
@@ -934,8 +935,7 @@ test("one URL-backed filter strip drives List and Board alike and survives a rel
 
 test("a filtered drag names the visible neighbours and the hidden card interleaves without error", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the mouse drag exercises a desktop viewport");
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   // Todo ranks Alpha < Bravo < Charlie < Delta (creation order); the filter hides Bravo -
   // every other Todo card carries the label.
@@ -1074,10 +1074,9 @@ test("the board groups into priority swimlanes on a toggle that persists per sig
 
 // The board's own toggles are controls a finger presses, so on a phone each holds the 44 px
 // touch target; what the toggles do is the two walks above, which assert it at any width.
-test("the board's view, lanes and edge toggles keep touch-sized targets @phone", async ({
+test("the board's view, lanes and edge toggles keep touch-sized targets @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "the 44 px touch rule applies below 1280 px");
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   await createIssue({ project: "CORE", title: "Toggle card" });
 

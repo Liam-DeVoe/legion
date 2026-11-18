@@ -17,6 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -68,7 +69,7 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // the ServiceAccount it runs as, the role's overlays, the secrets broker's enrollment, the session
 // store or the GitHub owners its gh volume projects a directory for (PodDrift) — is kept,
 // and this role is started in it.
-// Such a pod is replaced by an update round, which first tasks every worker in it to push its work
+// Such a pod is replaced by an update round, which first asks every role in it to push its work
 // and answer, and then ends the pod (ReplacePod): replacing it at a launch would end every role's
 // turn in it and delete the issue's disk with everything unpushed on it (INFRA-484). A launch into
 // a drifted pod is therefore an ordinary launch, the install of a stale-plugin pair (spec.Plugins,
@@ -178,7 +179,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// it.
 	replace := !live || (accountDrifted && !covered) || migrate ||
 		slices.ContainsFunc(l.roles, func(role claim.Role) bool { return len(r.movedInPod(pod, role)) > 0 }) ||
-		(!installing && !covered && len(r.shapeDrift(s, l.kind)) > 0)
+		(!installing && !covered && len(r.shapeDrift(s, l.shapeKey())) > 0)
 	if !replace {
 		bound, err := r.launcherBound(bounded, s, pod, &l)
 		if err != nil {
@@ -284,16 +285,25 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	if err := r.recordAddresses(starting, s, spec.Role, spec.Generation, l.enrolls(r)); err != nil {
 		return fail("record the addresses its generation is handed", err)
 	}
-	if err := r.launchers.start(starting, spec.Claim, string(pod.UID), launcherCommand(l, r)); err != nil {
+	// The start sent carries what this launch learned from the cluster since prepare measured it,
+	// so it is measured again here: a frame no launcher reads is refused as the prompt it is, which
+	// supervise charges nothing, rather than failing in the writer as a charged launch failure.
+	command := launcherCommand(l, r)
+	if err := l.checkStartFrame(command); err != nil {
+		return fail("measure its start frame", err)
+	}
+	if err := r.launchers.start(starting, spec.Claim, string(pod.UID), command); err != nil {
 		return fail("start through its authenticated launcher", errors.Join(err, r.stopIssuedChild(ctx, spec.Claim, string(pod.UID), spec.Generation, err)))
 	}
+	r.nameSession(loc, l)
 	r.join(loc)
 	return loc, nil
 }
 
 // keptBy is what the live pod of the Sandbox read as s was built with, for the role l starts in
 // it: the enrollment decision for that role in that pod (enrollsIn, which reads the broker's
-// volumes the pod carries), which of the role's own overlays and of the project's memory overlays
+// volumes the pod carries), which of the role's own overlays and of every declared variant's
+// overlays
 // its container holds (heldRoleOverlays), the skills repository its recorded pod shape names, and
 // the session store it was built under (heldSessionStore, the URL file its generation is pointed
 // at). A launch that keeps such a pod
@@ -314,7 +324,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 // the daemon then cannot tell what the pod carries, and relaunch replaces the pod.
 func (r *Runtime) keptBy(s *sandbox, l launch) (keptPod, bool) {
 	spec := s.Spec.PodTemplate.Spec
-	overlays, memory, readable := r.heldRoleOverlays(spec, l.spec.Role)
+	overlays, variantFiles, readable := r.heldRoleOverlays(spec, l.spec.Role)
 	if !readable {
 		return keptPod{}, false
 	}
@@ -333,18 +343,20 @@ func (r *Runtime) keptBy(s *sandbox, l launch) (keptPod, bool) {
 		}
 	}
 	kind, _, _ := heldSessionStore(spec)
-	return keptPod{enrolled: r.enrollsIn(&spec, l.spec.Role), overlays: overlays, memory: memory, store: kind, skills: skills}, true
+	return keptPod{enrolled: r.enrollsIn(&spec, l.spec.Role), trades: r.tradesIn(&spec, l.spec.Role), overlays: overlays, variantFiles: variantFiles, store: kind, skills: skills}, true
 }
 
 // stopIssuedChild stops generation of token's launcher in podUID after its Start returned startErr,
-// unless the launcher answered that Start with a refusal (startRefusal), which started nothing.
+// unless the launcher answered that Start with a refusal (startRefusal), which started nothing, or
+// the start was refused before its Start was sent because the pod's shared public leak check could
+// not be installed (runtime.LeakCheckRefusal, launchers.serveLeakCheck).
 // Any other error leaves the Start's outcome unknown: the launcher may have received it and begun
 // the generation while its answer was still on its way. The Stop travels after the Start on the
 // same connection, so the launcher handles it once it has handled the Start. It runs with its own
 // bound, since the start's own deadline may be what ended it.
 func (r *Runtime) stopIssuedChild(ctx context.Context, token claim.Token, podUID string, generation uint64, startErr error) error {
 	var refused startRefusal
-	if errors.As(startErr, &refused) {
+	if errors.As(startErr, &refused) || runtime.LeakCheckCause(startErr) != "" {
 		return nil
 	}
 	stopping, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.bootTimeout+r.terminationGrace)
@@ -432,11 +444,15 @@ func launcherBackstop(boot, bound time.Duration) time.Duration {
 // has ended, reporting true, and returns the deadline the wait stood at when it stopped. The
 // launcher starts only once every init container of the pod has finished, however many the
 // deployment gives it, and the three steps whose duration follows the repository's size —
-// workspace-fetch's whole fetch with its retries, then workspace-init's shared clone of the feed
+// workspace-fetch's whole fetch — its stream from the repository cache, which no clock ends
+// while it keeps receiving (workspace.CacheStreamLowSpeedBytes), its transfers with their
+// retries, and the restarts the grace covers (fetchRestartGrace) — then workspace-init's
+// shared clone of the feed
 // and the issue's own checkout of it — may take up to ProvisionBound from the fetch's own start,
 // a sum that counts no term for the commands which keep CommandTimeout, skills-fetch's one
 // shallow clone among them (ProvisionBound, manifest.go). So until the wait
-// first sees the pod provisioning (an init container running, provisioning) it gives the pod the
+// first sees the pod provisioning (an init container running, or a fetch between those restarts:
+// provisioning) it gives the pod the
 // boot timeout, the image pull's; from then on, the boot timeout from the last moment it saw the
 // pod provisioning, never past the boot timeout plus ProvisionBound from the first
 // (launcherDeadline). A pod that never provisions past the boot timeout waits it alone.
@@ -496,29 +512,26 @@ func launcherDeadline(first, last time.Time, boot, bound time.Duration) time.Tim
 	return deadline
 }
 
-// stillFetching is what a launch that gives up on pod says of it while its workspace-fetch still
-// runs: so, with the state of the repository cache that fetch fills a fresh feed from
-// (fetchCacheState), since the fetch's own failure, which names why it ran so long, has not come.
-// Nothing for a pod past its fetch.
+// stillFetching is what a launch that gives up on pod says of it while its workspace-fetch is
+// still running, or coming back from one of the restarts the grace covers (fetchRestartGrace):
+// so, with the state of the repository cache that fetch fills a fresh feed from (fetchCacheState),
+// since the fetch's own failure, which names why it ran so long, has not come. Nothing for a pod
+// past its fetch.
 func (r *Runtime) stillFetching(pod *corev1.Pod) string {
-	if status := initContainerStatus(pod, fetchContainer); status == nil || status.State.Running == nil {
+	status := initContainerStatus(pod, fetchContainer)
+	if status == nil {
 		return ""
 	}
-	return "; its " + fetchContainer + " is still running" + r.fetchCacheState(pod)
-}
-
-// provisioning is whether pod is running any of its init containers, whichever they are:
-// workspace-fetch, then skills-fetch where the deployment names a skills repository, then
-// workspace-init. It names none of them, reading each status for its own state, so a pod whose
-// init containers differ needs nothing here. It is the rule the liveness mapping reads such a pod
-// alive by (evaluate).
-func provisioning(pod *corev1.Pod) bool {
-	if phaseOf(pod) != corev1.PodPending {
-		return false
+	doing := ""
+	switch {
+	case status.State.Running != nil:
+		doing = " is still running"
+	case initEnd(*status) != nil && startingAgain(pod, *status):
+		doing = fmt.Sprintf(" is starting again, restarted %d times", status.RestartCount)
+	default:
+		return ""
 	}
-	return slices.ContainsFunc(pod.Status.InitContainerStatuses, func(status corev1.ContainerStatus) bool {
-		return status.State.Running != nil
-	})
+	return "; its " + fetchContainer + doing + r.fetchCacheState(pod)
 }
 
 // suspendFailedLaunch sets the Sandbox of a launch that failed once its Running patch was sent
@@ -852,7 +865,8 @@ func (r *Runtime) waitedOut(ctx context.Context, s *sandbox) string {
 // authenticate with tokens no earlier pod held; a role's launch credentials travel in its
 // launcher's start command instead (launcherCommand). The Secret also carries the role's GitHub
 // credential, its gh bundle (gitHubBundles): each directory of that role's own bundle as its
-// hosts.yml and config.yml (GitHubHostsKey, GitHubConfigKey) and the default owner
+// hosts.yml and config.yml (GitHubHostsKey, GitHubConfigKey), the bundle's configured renames
+// (GitHubPairsKey, empty where the project has none that resolve) and the default owner
 // (GitHubDefaultKey), which its container projects at GHConfigDir.
 //
 // The Secret holds the role's own directories, where the pod projects only the ones every role
@@ -870,7 +884,11 @@ func (r *Runtime) writeLauncherSecrets(ctx context.Context, s *sandbox, l *launc
 			return err
 		}
 		bundle := bundles[role]
-		data := map[string][]byte{LauncherTokenFile: []byte(token), GitHubDefaultKey: []byte(bundle.Default)}
+		data := map[string][]byte{
+			LauncherTokenFile: []byte(token),
+			GitHubDefaultKey:  []byte(bundle.Default),
+			GitHubPairsKey:    []byte(ghconfig.RenderPairs(bundle.Pairs)),
+		}
 		for _, dir := range bundle.DirNames() {
 			rendered := bundle.Dirs[dir]
 			data[GitHubHostsKey(dir)], data[GitHubConfigKey(dir)] = []byte(rendered.Hosts), []byte(rendered.Config)
@@ -913,18 +931,29 @@ func (r *Runtime) writeLauncherSecrets(ctx context.Context, s *sandbox, l *launc
 // bundles' default, an empty set included — GH_CONFIG_DIR would then name a directory the pod
 // does not carry — and where a role's own default is not the pod's, which would leave that
 // role's Secret recording a directory its container never reads from (refreshGitHubCredential).
-// A refused write lease still fails its own bundle (appauth's mintBundle), so every role that
-// reaches here holds the directory it writes to.
+// A lease GitHub refuses costs that owner's directory alone (appauth's mintBundle). The bundle
+// fails only where the directory left out is the one it was asked for, the default that
+// GH_CONFIG_DIR names (appauth's bundleDefault). Every role that reaches here therefore holds
+// the directory it works its issue's repository in.
 //
 // The controller's bundle is asked for by owner (Options.ControllerCredential), the one function
 // a controller's bundle is made from here, by this launch and by the refresh of the pod it makes
-// (refreshGitHubCredential). The launch asks for no owner, which takes the first owner the
-// project serves that the mint answered for, sorted, and records it as the pod's default; a
-// controller works no repository, so its every directory is read-only.
+// (refreshGitHubCredential). The launch asks for no owner, which takes the first DIRECTORY of the
+// bundle, sorted (appauth's bundleDefault), and records it as the pod's default. That is usually
+// an owner the review App is installed on that the mint answered for, but a configured rename
+// also puts the pair's `from` owner in the bundle as an alias directory (bundleDirs), and such a
+// name can sort first and be taken; a controller works no repository, so its every directory is
+// read-only.
+//
+// The launch's roles run as two Apps and work the one repository, and a bundle is that pair and
+// nothing else, so the six roles of an issue pod are two bundles built once each (appauth.Bundles):
+// the launch opens with two live reads of the Apps' installations rather than six serial round
+// trips to GitHub before its first role starts.
 func (r *Runtime) gitHubBundles(ctx context.Context, l *launch) (map[claim.Role]ghconfig.Bundle, error) {
 	l.gitHubDirs, l.gitHubDefault = nil, ""
 	bundles := make(map[claim.Role]ghconfig.Bundle, len(l.roles))
 	held := make(map[claim.Role][]string, len(l.roles))
+	memo := appauth.NewBundles(r.gitHubCredential)
 	for i, role := range l.roles {
 		minting, cancel := call(ctx)
 		var bundle ghconfig.Bundle
@@ -932,7 +961,7 @@ func (r *Runtime) gitHubBundles(ctx context.Context, l *launch) (map[claim.Role]
 		if role == claim.RoleController {
 			bundle, err = r.controllerCredential(minting, "")
 		} else {
-			bundle, err = r.gitHubCredential(minting, role, l.spec.Repository)
+			bundle, err = memo.Bundle(minting, role, l.spec.Repository)
 		}
 		cancel()
 		switch {
