@@ -47,9 +47,11 @@ func TestASendRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy(t *testing.T) {
 		const sender, target = "ses_repeat_send", "ses_repeat_send_target"
 		rig.live(t, target, nil)
 		key := map[string]any{"idempotency_key": uuid.NewString()}
-		rig.sendFrom(t, sender, target, key).requireStatus(t, "the first send", http.StatusOK)
+		first := held(t, rig.sendFrom(t, sender, target, key))
 		repeat := held(t, rig.sendFrom(t, sender, target, map[string]any{"idempotency_key": key["idempotency_key"], "message": "the repeat's own body"}))
-		repeat.requireHeld(t, "the repeated send", heldCopy(t, rig.harness.client, contracts.LegacyAgentSubject(target)), true)
+		kept := heldCopy(t, rig.harness.client, contracts.LegacyAgentSubject(target))
+		first.requireHeld(t, "the first send", kept, false)
+		repeat.requireHeld(t, "the repeated send", kept, true)
 		repeat.requireUnnamed(t, "the repeated send")
 		rig.requireCount(t, sender, true)
 	})
@@ -89,9 +91,11 @@ func TestAPublishRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy(t *testing.T
 		const sender = "ses_repeat_publish"
 		subject := topic()
 		key := map[string]any{"idempotency_key": uuid.NewString()}
-		rig.publishFrom(t, sender, subject, key).requireStatus(t, "the first publish", http.StatusOK)
+		first := held(t, rig.publishFrom(t, sender, subject, key))
 		repeat := held(t, rig.publishFrom(t, sender, subject, map[string]any{"idempotency_key": key["idempotency_key"], "message": "the repeat's own body"}))
-		repeat.requireHeld(t, "the repeated publish", heldCopy(t, rig.harness.client, subject), true)
+		kept := heldCopy(t, rig.harness.client, subject)
+		first.requireHeld(t, "the first publish", kept, false)
+		repeat.requireHeld(t, "the repeated publish", kept, true)
 	})
 
 	t.Run("case: a repeat under a sender limit that counts the session answers 200 with the stored copy and duplicate, and costs nothing", func(t *testing.T) {
@@ -99,9 +103,11 @@ func TestAPublishRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy(t *testing.T
 		const sender = "ses_repeat_limited_publish"
 		subject := topic()
 		key := map[string]any{"idempotency_key": uuid.NewString()}
-		rig.publishFrom(t, sender, subject, key).requireStatus(t, "the first publish", http.StatusOK)
+		first := held(t, rig.publishFrom(t, sender, subject, key))
 		repeat := held(t, rig.publishFrom(t, sender, subject, map[string]any{"idempotency_key": key["idempotency_key"], "message": "the repeat's own body"}))
-		repeat.requireHeld(t, "the repeated publish", heldCopy(t, rig.harness.client, subject), true)
+		kept := heldCopy(t, rig.harness.client, subject)
+		first.requireHeld(t, "the first publish", kept, false)
+		repeat.requireHeld(t, "the repeated publish", kept, true)
 		repeat.requireUnnamed(t, "the repeated publish")
 		rig.requireCount(t, sender, true)
 	})
