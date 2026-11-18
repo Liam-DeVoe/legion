@@ -37,24 +37,26 @@ reader, and names neither the reader's session id nor its role, apart from a Dis
 names the sender's session and title (`from`), each role the sender holds once (`role`, or `roles`
 where it holds more than one), the time (`at`) and the message id (`id`). It carries no reply
 command: the `envoy_send` and `envoy_publish` descriptions say how to reply from those fields. The
-message's words follow the fields in a `<message>` block; an object a session sends shows as
-fields under `message`. A notice or role message of the Legion daemon (`from: agent`) keeps its
-`<kind> on <KEY>` summary and shows its payload's fields as lines under `message`, in the
-payload's order. It leaves out a `role` that names the reader, whose topic ends in `-<role>`.
-Each field that the
-payload's `words` object names, by its path in the payload, is drawn in a block with the author
-and the time `words` gives, and `words` itself is not shown; a payload with no `words` shows every
-field. A role message the daemon publishes as text (the hook prompt) follows the fields in a
-`<message>` block. Unknown sources or fields are marked with `unrecognised`.
+message's words follow the fields whole in a `<message>` block, JSON text too, so no key of the
+message reads as a field of the card. A notice or role message of the Legion daemon
+(`from: agent`) keeps its `<kind> on <KEY>` summary and shows its payload's fields as lines under
+`message`, in the payload's order. It leaves out a `role` that names the reader, whose topic ends
+in `-<role>`. Each field that the payload's `words` object names, by its path in the payload, is
+drawn in a block with the author and the time `words` gives, and `words` itself is not shown; a
+payload with no `words` shows every field. A role message the daemon publishes as text (the hook
+prompt) follows the fields in a `<message>` block. A card notes `body names session <id>` for a
+session that its summary or payload names and its fields do not, other than the sender, the
+reader and the author of an ask. Unknown sources or fields are marked with `unrecognised`.
 
 A block (`@legion/envoy-client/words-block`) applies the rule of the daemon's `texts.Block`
 (`packages/daemon/internal/texts/words.go`): an opening tag, the words exactly as written, and the
 closing tag, each on lines of their own. The tag is the name of the field that holds the words,
-or the first of `name-1`, `name-2` and on where the words hold `</name`, so no words close their
-own block. The opening tag carries `by`, `at`, `field`, `rest` and `more`, in that order and
-escaped, each only where it is set; a card sets `by` and `at` only where its own fields do not
-name the author and the time. `splitWordsBlocks` splits a card, or a daemon text, into the part
-before its blocks, which TOON's `decode` reads, and the blocks.
+or, where the words hold `<name` or `</name`, the first of `name-1`, `name-2` and on whose opening
+tag `<tag` and closing tag `</tag` the words hold neither, so no words open or close an element
+of their block's tag. The opening tag carries `by`, `at`, `field`, `rest` and `more`, in that
+order and escaped, each only where it is set; a card sets `by` and `at` only where its own fields
+do not name the author and the time. `splitWordsBlocks` splits a card, or a daemon text, into the
+part before its blocks, which TOON's `decode` reads, and the blocks.
 
 Malformed input is safe: a non-JSON frame becomes a TOON block naming its topic and an
 `unrecognised` parse failure. The renderer never emits raw frame bytes. Dispatch envelopes
@@ -62,7 +64,8 @@ Malformed input is safe: a non-JSON frame becomes a TOON block naming its topic 
 parsed event under `dispatch: { owner, type, actor, payload }` with `payload` typed per event
 type; a payload whose shape disagrees with its event type's schema is preserved as its raw parsed
 value under `dispatch`, never dropped or reduced to prose. A Dispatch card keeps its reply command
-(`reply_with`). The body of a comment, a suggestion, a reply or a message, an ask's answer and its
+(`reply_with`). The body of a comment, a suggestion, a reply or a message, the text a suggestion
+proposes (`suggestion.replace_with`, in a `<replace_with>` block), an ask's answer and its
 previous answer, and a resolution's reason leave the fields for blocks after them; the options an
 answer chose, a resolution's kind and the words Dispatch writes beside a decline
 (`dispatch_words`) stay fields, and so do the heads of the item a card is about (`question`,

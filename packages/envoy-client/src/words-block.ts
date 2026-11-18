@@ -1,20 +1,23 @@
 /**
  * A words block: the words of another author, drawn after a text's fields in a block of their
  * own. The block names the author and the time where the fields of the text do not, nothing else
- * shares it, and its words cannot close it. The Legion daemon draws the blocks of its texts by the
- * same rule (`Block`, `packages/daemon/internal/texts/words.go`), so one reader reads the blocks
- * of a card and of a daemon text:
+ * shares it, and its words can neither open nor close an element of its tag. The Legion daemon
+ * draws the blocks of its texts by the same rule (`Block`,
+ * `packages/daemon/internal/texts/words.go`), so one reader reads the blocks of a card and of a
+ * daemon text:
  *
  *     <answer by="user:sami" at="2026-11-14T22:44:10Z">
  *     Use a structured message here, not prose.
  *     </answer>
  *
- * The tag is the name of the field that holds the words. Where the words hold `</name`, the tag is
- * the first of `name-1`, `name-2` and on whose closing tag the words do not hold. The opening tag
- * carries the attributes `by`, `at`, `field`, `rest` and `more`, in that order, each only where it
- * is set. Each value escapes `&`, `<`, `>`, `"` and each control character below U+0020 as an XML
- * character reference, so no value ends its attribute or its tag. A new line, the words exactly as
- * given, a new line and the closing tag follow the opening tag.
+ * The tag is the name of the field that holds the words. Where the words hold `<name` or `</name`,
+ * the tag is the first of `name-1`, `name-2` and on whose opening tag `<tag` and closing tag
+ * `</tag` the words hold neither. The test is on the plain text, so words that hold `<answers` or
+ * `<answer-1` also move the tag of `answer` on. The opening tag carries the attributes `by`, `at`,
+ * `field`, `rest` and `more`, in that order, each only where it is set. Each value escapes `&`,
+ * `<`, `>`, `"` and each control character below U+0020 as an XML character reference, so no
+ * value ends its attribute or its tag. A new line, the words exactly as given, a new line and the
+ * closing tag follow the opening tag.
  */
 
 /** The words of one block, and what its opening tag says of them. */
@@ -65,13 +68,12 @@ export function wordsBlock(name: string, words: Words): string {
   return `${open}>\n${words.text}\n</${tag}>`;
 }
 
-/** The first of `name`, `name-1`, `name-2` and on whose closing tag `text` does not hold. */
+/** The first of `name`, `name-1`, `name-2` and on whose opening tag `<tag` and closing tag `</tag`
+ *  `text` holds neither. */
 function blockTag(name: string, text: string): string {
-  if (!text.includes(`</${name}`)) return name;
-  for (let n = 1; ; n++) {
-    const tag = `${name}-${n}`;
-    if (!text.includes(`</${tag}`)) return tag;
-  }
+  let tag = name;
+  for (let n = 1; text.includes(`<${tag}`) || text.includes(`</${tag}`); n++) tag = `${name}-${n}`;
+  return tag;
 }
 
 /** One attribute of an opening tag, with its value escaped. */

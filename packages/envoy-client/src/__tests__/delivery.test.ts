@@ -1340,7 +1340,7 @@ describe("renderInbound dispatch events", () => {
 
   // A comment's, a suggestion's or a message's body is its author's words, so it leaves the
   // payload for a block after the card's fields, and so does the author where the event's actor
-  // names them.
+  // names them. The text a suggestion proposes is its author's words too, in a block of its own.
   test("types each Dispatch event's nested payload by its wire-contract schema", () => {
     const cases: Array<{ type: string; payload: object; expectedPayload: object; body?: string }> =
       [
@@ -1424,19 +1424,6 @@ describe("renderInbound dispatch events", () => {
           body: "Please update this.",
         },
         {
-          type: "suggestion.accepted",
-          payload: { ...comment, suggestion: { replace_with: "new line", accepted: true } },
-          expectedPayload: {
-            id: "comment-1",
-            artifact_name: "spec.md",
-            reply_to: "comment-0",
-            anchor: { quote: "old line" },
-            suggestion: { replace_with: "new line" },
-            created_at: "2026-09-09T00:00:00Z",
-          },
-          body: "Please update this.",
-        },
-        {
           type: "message.created",
           payload: {
             id: "message-1",
@@ -1489,6 +1476,35 @@ describe("renderInbound dispatch events", () => {
         body === undefined ? [] : [["body", body]]
       );
     }
+
+    const accepted = cardOf<{ dispatch: { payload: object } }>(
+      renderInbound(
+        dispatchEvent("suggestion.accepted", {
+          ...comment,
+          suggestion: { replace_with: "new line", accepted: true },
+        }),
+        reader
+      ).content
+    );
+    expect(accepted.envoy.dispatch).toMatchObject({
+      owner: "DSP-1",
+      type: "suggestion.accepted",
+      actor: { kind: "session", id: "session-1" },
+      payload: {
+        id: "comment-1",
+        artifact_name: "spec.md",
+        reply_to: "comment-0",
+        anchor: { quote: "old line" },
+        created_at: "2026-09-09T00:00:00Z",
+      },
+    });
+    for (const moved of ["body", "author", "suggestion"]) {
+      expect(accepted.envoy.dispatch.payload).not.toHaveProperty(moved);
+    }
+    expect(accepted.blocks.map(({ name, text, field }) => [name, text, field])).toEqual([
+      ["body", "Please update this.", undefined],
+      ["replace_with", "new line", "suggestion.replace_with"],
+    ]);
   });
 
   test("surfaces the comment id before the body, and the message id, in rendered dispatch payloads", () => {

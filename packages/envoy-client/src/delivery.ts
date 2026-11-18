@@ -754,16 +754,18 @@ interface CompactDispatch {
 
 /** The block of the words `text` of the field `name`, which `author` wrote at `at`; none where the
  *  event carried no words. The block names the author only where the event's actor is not that
- *  author (`authorBy`). */
+ *  author (`authorBy`), and gives the words' `field` path where the field is inside an object of
+ *  the payload. */
 function said(
   name: string,
   text: string | null | undefined,
   author: unknown,
   at: string | undefined,
-  actor: DispatchEvent["actor"]
+  actor: DispatchEvent["actor"],
+  field?: string
 ): CardWords[] {
   if (text === null || text === undefined || text === "") return [];
-  return [{ name, words: { text, by: authorBy(author, actor), at } }];
+  return [{ name, words: { text, by: authorBy(author, actor), at, field } }];
 }
 
 function dispatchCompact(
@@ -924,10 +926,11 @@ function dispatchPayloadForReader(event: DispatchEvent, sessionID: string): unkn
 }
 
 /**
- * The payload a card prints of a comment, a suggestion or a message, and the block of its body,
- * which is its author's words. The body leaves the payload, and so does the author, whom the block
- * names where the event's actor is someone else (`authorBy`). The block gives the time of the
- * event where the payload gives none: a message payload carries none.
+ * The payload a card prints of a comment, a suggestion or a message, and the blocks of its author's
+ * words: its body, and the text a suggestion proposes (`suggestion.replace_with`). Those words
+ * leave the payload, and so does a suggestion that holds nothing else. The author leaves it too,
+ * and each block names the author where the event's actor is someone else (`authorBy`). A block
+ * gives the time of the event where the payload gives none: a message payload carries none.
  */
 function payloadWords(
   event: DispatchEvent,
@@ -938,15 +941,32 @@ function payloadWords(
     event.type.startsWith(prefix)
   );
   if (!carriesBody || !isObject(payload) || Array.isArray(payload)) return { payload, words: [] };
-  const body = payload["body"];
-  if (typeof body !== "string" || body === "") return { payload, words: [] };
-  const author = payload["author"];
+  const { author, body, suggestion } = payload;
+  const suggested: Readonly<Record<string, unknown>> =
+    isObject(suggestion) && !Array.isArray(suggestion) ? suggestion : {};
+  const { replace_with: proposed } = suggested;
+  const drawsBody = typeof body === "string" && body !== "";
+  const drawsProposed = typeof proposed === "string" && proposed !== "";
+  if (!drawsBody && !drawsProposed) return { payload, words: [] };
   const named = actorOf(author) !== undefined;
   const rest = Object.fromEntries(
-    Object.entries(payload).filter(([key]) => key !== "body" && (key !== "author" || !named))
+    Object.entries(payload).flatMap(([key, value]): [string, unknown][] => {
+      if ((key === "body" && drawsBody) || (key === "author" && named)) return [];
+      if (key !== "suggestion" || !drawsProposed) return [[key, value]];
+      const left = Object.entries(suggested).filter(([field]) => field !== "replace_with");
+      return left.length === 0 ? [] : [[key, Object.fromEntries(left)]];
+    })
   );
   const at = typeof rest["created_at"] === "string" ? undefined : createdAt;
-  return { payload: rest, words: said("body", body, author, at, event.actor) };
+  return {
+    payload: rest,
+    words: [
+      ...(drawsBody ? said("body", body, author, at, event.actor) : []),
+      ...(drawsProposed
+        ? said("replace_with", proposed, author, at, event.actor, "suggestion.replace_with")
+        : []),
+    ],
+  };
 }
 
 // A comment.created reply to an ask carries the question text (ask_question) alongside
@@ -1123,18 +1143,19 @@ function daemonFields(
 ): { readonly fields: unknown; readonly words: readonly CardWords[] } {
   const named = payload["words"];
   const paths = isObject(named) && !Array.isArray(named) ? named : undefined;
-  const root: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(payload)) {
-    if (key === "words" && paths !== undefined) continue;
-    if (
-      key === "role" &&
-      typeof value === "string" &&
-      topics.some((topic) => topic?.endsWith(`-${value}`) === true)
-    ) {
-      continue;
-    }
-    root[key] = value;
-  }
+  // `Object.fromEntries` defines each key as an own field, `__proto__` too: JSON.parse makes it an
+  // own key, and an assignment would take it as the object's prototype.
+  const root = Object.fromEntries(
+    Object.entries(payload).filter(
+      ([key, value]) =>
+        !(key === "words" && paths !== undefined) &&
+        !(
+          key === "role" &&
+          typeof value === "string" &&
+          topics.some((topic) => topic?.endsWith(`-${value}`) === true)
+        )
+    )
+  );
   if (paths === undefined) return { fields: root, words: [] };
   const taken: TakenWords[] = [];
   const fields = withoutWords(root, "", paths, [], taken);
@@ -1198,7 +1219,13 @@ function withoutWords(
     if (typeof item === "string" && Object.hasOwn(paths, at)) {
       taken.push({ path: at, name: key, text: item, holders: chain });
     } else {
-      kept[key] = withoutWords(item, at, paths, chain, taken);
+      // Defined, not assigned: an assignment of `__proto__` would set the prototype of `kept`.
+      Object.defineProperty(kept, key, {
+        value: withoutWords(item, at, paths, chain, taken),
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
     }
   }
   return kept;
@@ -1227,12 +1254,13 @@ function summaryOpens(text: string, summary: string | undefined): boolean {
  * One inbound envelope's JSON as a card for the agent, with what the host does with it.
  *
  * The card is TOON under `envoy:`, each field once, and then a block (`wordsBlock`) for each part
- * of it that another author wrote: a session's message, the body, reply, answer or reason of a
- * Dispatch event, and each field a daemon notice names in its `words` object. A person's edit of a
- * document has its diff after the card as a fenced block instead. A card from another session
- * names the sender's session and title, each role the sender holds, the time and the message id,
- * and carries no reply command: the descriptions of `envoy_send` and `envoy_publish` say how to
- * reply from those fields. A Dispatch card keeps its reply command.
+ * of it that another author wrote: a session's message, JSON text too, the body, reply, answer or
+ * reason of a Dispatch event and the text a suggestion proposes, and each field a daemon notice
+ * names in its `words` object. A person's edit of a document has its diff after the card as a
+ * fenced block instead. A card from another session names the sender's session and title, each
+ * role the sender holds, the time and the message id, and carries no reply command: the
+ * descriptions of `envoy_send` and `envoy_publish` say how to reply from those fields. A Dispatch
+ * card keeps its reply command.
  *
  * A body is bounded block by block, so one event can carry its first part alone, or none of it, and
  * the result names that item as `cutItem`: a host that reads it whole (`wholeCarriedBody`) renders
@@ -1473,15 +1501,21 @@ export function renderInbound(
   }
 
   // What a card shows of a payload that is not a Dispatch event's. A message of another session is
-  // its sender's words, so it goes in a block; an object a session sends (a plugin's report of
-  // facts) shows as fields. A notice or a role message of the Legion daemon (`agent`, with no
-  // session) shows its fields as lines (`daemonFields`), and one it publishes as text (the hook
-  // prompt) goes in a block. Every other source shows its payload as one `message` field.
+  // its sender's words, so it goes in a block whole, JSON text too: no key of it reads as a field
+  // of the card. A notice or a role message of the Legion daemon (`agent`, with no session) shows
+  // its fields as lines (`daemonFields`), and one it publishes as text (the hook prompt) goes in a
+  // block. Every other source shows its payload as one `message` field.
   const sessionSent = envelope.source !== "dispatch" && (envelope.source_session ?? "") !== "";
   const fromDaemon = daemonSent(envelope);
   let message: unknown;
   let messageText: string | undefined;
-  if (
+  if (sessionSent) {
+    // The listener carries a message of one line as its summary alone.
+    messageText =
+      envelope.payload === undefined || envelope.payload === envelope.payload_summary
+        ? envelope.payload_summary
+        : envelope.payload;
+  } else if (
     !dispatchRendered &&
     envelope.payload !== undefined &&
     envelope.payload !== envelope.payload_summary
@@ -1492,10 +1526,7 @@ export function renderInbound(
     } catch {
       parsedPayload = envelope.payload;
     }
-    if (sessionSent) {
-      if (isObject(parsedPayload)) message = parsedPayload;
-      else messageText = envelope.payload;
-    } else if (fromDaemon && isObject(parsedPayload) && !Array.isArray(parsedPayload)) {
+    if (fromDaemon && isObject(parsedPayload) && !Array.isArray(parsedPayload)) {
       const shown = daemonFields(parsedPayload, [envelope.topic, subject]);
       message = shown.fields;
       for (const { name, words } of shown.words) blocks.push(wordsBlock(name, words));
@@ -1504,29 +1535,20 @@ export function renderInbound(
     } else {
       message = parsedPayload;
     }
-  } else if (sessionSent) {
-    // The listener carries a message of one line as its summary alone.
-    messageText = envelope.payload_summary;
   }
   if (messageText !== undefined) blocks.push(wordsBlock("message", { text: messageText }));
   const payloadSummary = envelope.payload_summary ?? "unknown";
   const headText = messageText ?? (typeof message === "string" ? message : undefined);
   const summaryIsHead = headText !== undefined && summaryOpens(headText, envelope.payload_summary);
-  // The summary is scanned before the payload, in index order, and the pattern spans no
-  // newline, so this sees the same matches as scanning the two joined by "\n".
-  let foreignSession: string | undefined;
+  // Each session that the summary or the payload names, other than the sender, the reader and the
+  // ask's author, in the order they come: the summary's first.
+  const namedSessions: string[] = [];
   for (const part of [envelope.payload_summary ?? "", envelope.payload ?? ""]) {
-    for (const match of part.matchAll(FOREIGN_SESSION_ID)) {
-      if (
-        match[0] !== envelope.source_session &&
-        match[0] !== sessionID &&
-        match[0] !== askAuthor
-      ) {
-        foreignSession = match[0];
-        break;
+    for (const [id] of part.matchAll(FOREIGN_SESSION_ID)) {
+      if (id !== envelope.source_session && id !== sessionID && id !== askAuthor) {
+        namedSessions.push(id);
       }
     }
-    if (foreignSession !== undefined) break;
   }
   const roles = [...new Set(envelope.sender?.roles ?? [])].filter((role) => role !== "");
   // A Dispatch card that says the sender wants nothing back prints no reply command. The two are
@@ -1546,7 +1568,7 @@ export function renderInbound(
       ...(sourceIssue === undefined ? [] : [sourceIssue]),
       ...(dispatchIssue === undefined ? [] : [dispatchIssue]),
     ].join(", ") || undefined;
-  const rendered = {
+  const shownFields = {
     // The session's inbox in either form, the session alone or under a project, names it the
     // recipient: every form of such a topic holds the old one (`topicForms`), no other session's.
     ...(envelope.topic !== undefined &&
@@ -1573,11 +1595,17 @@ export function renderInbound(
           ...(message === undefined ? {} : { message }),
         }),
     ...(bodyNote === undefined ? {} : { body_note: bodyNote }),
-    ...(foreignSession === undefined ? {} : { note: `body names session ${foreignSession}` }),
-    ...(unrecognised === undefined ? {} : { unrecognised }),
   };
-
-  const fields = encode({ envoy: rendered });
+  const issues = unrecognised === undefined ? {} : { unrecognised };
+  let fields = encode({ envoy: { ...shownFields, ...issues } });
+  // The note names a session that the card's words name and its fields do not, as a message sent
+  // to the wrong session names the one it was for. A session that a field names already, such as
+  // the `session` of a daemon notice, is not named twice.
+  const foreignSession = namedSessions.find((id) => !fields.includes(id));
+  if (foreignSession !== undefined) {
+    const note = `body names session ${foreignSession}`;
+    fields = encode({ envoy: { ...shownFields, note, ...issues } });
+  }
   const card = blocks.length === 0 ? fields : `${fields}\n${blocks.join("\n")}`;
   return {
     skip: false,
