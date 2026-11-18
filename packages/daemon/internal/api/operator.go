@@ -916,8 +916,9 @@ func (s *server) closeTree(w http.ResponseWriter, r *http.Request) {
 // operatorDone logs the one Info line every operator request on a claim that succeeded writes: its
 // route, the claim and the caller's address. The operator's bearer names nobody, so the address is
 // what the line can say of the caller; with it, a day's operator requests are counted from the log
-// alone. A request that fails logs its failure instead (operationFailure), and that line names who
-// asked in its `by` field, so the operator's failed requests are counted there, apart from the
+// alone. A request the claim's machine refused (409) writes its answer and logs no line. One that
+// fails otherwise logs its failure instead (operationFailure), and that line names who asked in
+// its `by` field, so the operator's failed requests are counted there, apart from the
 // controller's and the architects', whose requests the claim door fails through the same line.
 func (s *server) operatorDone(r *http.Request, token claim.Token) {
 	s.log.Info("api: operator request", "route", r.Pattern, "claim", token, "caller", r.RemoteAddr)
@@ -989,6 +990,6 @@ func (s *server) operationFailure(w http.ResponseWriter, by supervise.SuspendSou
 		writeJSON(w, http.StatusConflict, errorBody(refused.Error()))
 		return
 	}
-	s.logFailure("api: a claim request failed", "by", string(by), "request", request, "claim", token, "error", err)
+	s.logFailure("api: a claim operation failed", "by", string(by), "request", request, "claim", token, "error", err)
 	writeJSON(w, http.StatusInternalServerError, errorBody(fmt.Sprintf("%s %s: %v", request, token, err)))
 }

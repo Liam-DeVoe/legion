@@ -439,7 +439,7 @@ func embeddedMigration(t *testing.T, version int) string {
 // this migration's header and 20261113181500_architect_stalled_notices.up.sql's both carry — and
 // internal/daemon's upgrade_phase_entry_way_back_test.go reads the phase entry's the same way.
 const (
-	wayBackHeredoc    = "psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'"
+	wayBackHeredoc    = "PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'"
 	wayBackTerminator = "SQL"
 )
 

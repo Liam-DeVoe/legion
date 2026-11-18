@@ -426,7 +426,7 @@ test("a root architect's ladder that stops short tells the controller role", asy
 // session holds, and answers 202 kept. That has told no owner yet, and the teller does not send a
 // kept notice again, so it logs that no owner has taken the notice, and an overdue notice reports
 // `ownerTold: false`. That holds for the architect's notice, and for the controller's, which hears
-// of a root architect's own call once its ladder stops short (the stall spec's rule R6).
+// of a root architect's own call once its ladder stops short (the kept-role-message spec's rule R6).
 test("the owner notice is kept", async () => {
   const architect = tellerRig();
   const controller = rootArchitectRig();

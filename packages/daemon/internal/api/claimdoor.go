@@ -29,10 +29,11 @@ type ClaimRequest struct {
 // which no role names (claimDoor). request is the word for the request the stop, the
 // suspension and the resume each make as a single event to the claim's machine, which the
 // daemon's stop and the machine's refusals name it by (claimEventOperation, postClaimEvent,
-// operationFailure), and did is what the log line of one of the operator's four that ran says
-// the caller did to the claim (answerClaimOperation). The retry starts the claim through the
-// operator's retry rather than one event, so it leaves request empty (claimRetry, retryStart);
-// the two recoveries write their own answers and log lines, and leave both empty.
+// operationFailure), and did is what the log line of a stop, a retry, a suspension or a resume
+// that ran says the caller did to the claim (answerClaimOperation). The retry starts the claim
+// through retryStart, the start the operator's own retry route makes too, rather than one event,
+// so it leaves request empty (claimRetry, retryStart); the two recoveries write their own
+// answers and log lines, and leave both empty.
 //
 // refusesATurn is whether the machine's refusal of one of those three events in state working
 // is answered as a claim in a turn (refuseClaimOperation, refuseClaimInATurn): the resume's
@@ -100,11 +101,12 @@ type claimTarget struct {
 const ownClaim = "OWN_CLAIM"
 
 // claimDoor is the door all six claim operations come through — the two recoveries
-// (claimFreshSession, claimCompact) and the operator's four (claimStop, claimRetry,
-// claimSuspend, claimResume): the claim is named by its issue and role rather than by a token the
-// caller never sees, and the caller is its project's controller or an architect rather than the
-// operator. It answers every refusal of the body, the grant and the lookup itself, and reports
-// false when it has; only the effect behind it differs between the six.
+// (claimFreshSession, claimCompact) and the four that stop, retry, suspend and resume a claim
+// (claimStop, claimRetry, claimSuspend, claimResume): the claim is named by its issue and role
+// rather than by a token the caller never sees, and the caller is its project's controller or an
+// architect rather than the operator. It answers every refusal of the body, the grant and the
+// lookup itself, and reports false when it has; only the effect behind it differs between the
+// six.
 //
 // The controller reaches every claim of its project. An architect reaches the claims of the
 // issues it owns alone, by the rule sign_off, retry_or_escalate and request_backward_move hold it

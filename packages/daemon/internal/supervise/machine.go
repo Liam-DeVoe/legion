@@ -469,8 +469,9 @@ type Claim struct {
 	// branch at origin, and "" when it reported none (a planner before its first push). It is the
 	// worker's word, which nothing verifies.
 	UpdateHead string
-	// UpdateToldAt is when this round was last reported to the operator's side, so one round is
-	// not reported again at every sweep that finds it open.
+	// UpdateToldAt is when this round was last told to the controller, or to the architect that
+	// owns each hold an architect placed, so one round is not told again at every sweep that
+	// finds it open.
 	UpdateToldAt *time.Time
 	// UpdateLeftRound is the pod round this claim left, and "" when it has left none: the daemon
 	// started the claim's process again in another pod than the one that round was opened over
@@ -1763,10 +1764,11 @@ func (m *Machine) ReleaseUncertainLaunch(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-// PodUpdateTold marks this claim's open update round as reported to the operator's side, so the
-// daemon's sweep (internal/daemon's reconcilePodUpdates) tells one round once however many ticks
-// find it still open. It is no event: the sweep is what decides a round is stalled, and the mark
-// is bookkeeping of that decision, as StartedBy is of the row running against the claim.
+// PodUpdateTold marks this claim's open update round as told to the controller, or to the
+// architect that owns each hold an architect placed, so the daemon's sweep (internal/daemon's
+// reconcilePodUpdates) tells one round once however many ticks find it still open. It is no
+// event: the sweep is what decides a round is stalled, and the mark is bookkeeping of that
+// decision, as StartedBy is of the row running against the claim.
 //
 // It stamps nothing and reports false when the claim is no longer in round — the round ended, or
 // another opened — or when this round was already told: both are decisions already taken, not

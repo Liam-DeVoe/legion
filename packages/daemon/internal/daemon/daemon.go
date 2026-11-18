@@ -706,9 +706,11 @@ type plan struct {
 	// ensureWorkspace provisions an issue's workspace on the daemon's host when a launch finds it
 	// missing or not checked out (workflowRuntime.ensureWorkspace); nil without a workflow.
 	ensureWorkspace func(ctx context.Context, issue string, repo ghrepo.Repository, defaultBranch string) error
-	// owner is the architect that owns a claim on an issue that is not its tree's root, read from
-	// the claims the store records at each launch (workflowRuntime.owningArchitect), which the
-	// launch's addressing names; nil without a workflow.
+	// owner is the architect that owns a claim, read from the claims the store records now
+	// (workflowRuntime.owningArchitect): at each launch for a claim on an issue that is not its
+	// tree's root, which the launch's addressing names, and for the claim an architect's hold is
+	// over in an update round held past its bound, on the root or not, where an answer that is
+	// the claim itself names no architect above it (architectHears); nil without a workflow.
 	owner func(ctx context.Context, project string, c supervise.Claim) (claim.Token, error)
 	// repositories is the project's repository mapping as the workflow serves it, empty until the
 	// workflow reads it at boot: the rename rule every gh bundle resolves a configured pair

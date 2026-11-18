@@ -163,7 +163,8 @@ const RoleTopicPrefix = "notifications.role."
 // session store could not answer (`session-store-fault`, workflow's sessionStoreFault); and a
 // claim whose turns keep ending in a provider error (`provider-errors`, supervise's
 // tellControllerOfProviderErrors), which the issue's architect is told as well, unless the run is
-// an architect's own. A free slot alone is no reason for the controller to take an issue: work
+// the tree root's architect's own; a child's own architect's run is told to the architect above
+// that child. A free slot alone is no reason for the controller to take an issue: work
 // reaches Legion only when a person hands it over or a role reports a clear defect the controller
 // files (skill://legion-controller, "Free slots"). It sits among the issue topics, where no issue
 // key (`[A-Z][A-Z0-9]*-[0-9]+`) can be `controller`, and the plugin's controller registers it as

@@ -644,8 +644,10 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // ReplacePod the runtime refused, no claim recording a process in the round's pod (or in any
 // pod), or claims recording two pods. It is told once per round (the daemon's
 // reconcilePodUpdates). The holds an architect placed are told instead to the architect that
-// owns the held claim, in a notice row of the same kind, unless that architect's claim has failed
-// or there is none (validNoticeKinds, the daemon's tellUpdateStalled). A provider-errors notice
+// owns the held claim, in a notice row of the same kind, unless no architect can act on one:
+// that architect's claim has failed or retired or is one this daemon does not supervise, or the
+// hold is over the tree root's own architect, which no architect stands above
+// (validNoticeKinds, the daemon's tellUpdateStalled and architectHears). A provider-errors notice
 // names an issue whose role has ended six turns in a row in a provider error: its Role is that
 // role, and its Reason the model and the HTTP status the provider answered, where it answered
 // one, in words built from structured fields alone
@@ -653,7 +655,8 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // no error puts that run back to zero; nothing is held and nothing is bounded, because a chain's
 // bottom refusing deterministically costs one request every ten minutes. It is the one kind of
 // these that the issue's architect is told as well, in a notice row of its own, unless the run is
-// an architect's own (validNoticeKinds, the daemon's providerErrorRunReached). A tree-stalled
+// the tree root's architect's own; a child's own architect's run goes to the architect above
+// that child (validNoticeKinds, the daemon's providerErrorRunReached). A tree-stalled
 // notice names a root of the daemon's own whose tree has stopped: nothing of the tree has moved
 // for longer than `stalled_tree_notice_hours`, no claim of it is at work, and it does not wait by
 // design (admit's tellStalledTrees says which trees are told). Its issue is that root, and its
@@ -1921,10 +1924,11 @@ func validateOutboxPayload(payload OutboxPayload) error {
 // of the round in a row of its own (ControllerNotice) for every reason that holds it, except the
 // holds an architect placed over claims of the round: those are told in a notice row (Notice) to
 // the architect that owns the held claim, which can resume them, and to the controller only where
-// that architect's claim has failed or there is none (internal/daemon's tellUpdateStalled). A
-// hold over a child's own architect claim is told to the architect above that child
-// (NoticeStartsAtParent). A row of either kind carries the round's account
-// (validateNoticeUpdate), so a controller's row an older daemon queued decodes as it did.
+// no architect can act on one: that architect's claim has failed or retired or is one the daemon
+// does not supervise, or the hold is over the tree root's own architect (internal/daemon's
+// tellUpdateStalled and architectHears). A hold over a child's own architect claim is told to the
+// architect above that child (NoticeStartsAtParent). A row of either kind carries the round's
+// account (validateNoticeUpdate), so a controller's row an older daemon queued decodes as it did.
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",

@@ -86,7 +86,7 @@ const (
 	sessionLeftBehind      = "went no further than leaving behind the session the claim recorded, which that suspension took the claim over after, so the claim starts in a new session once it is started"
 )
 
-// The operator's four claim operations in the words their refusals name them by (claimOp), with
+// The four lifecycle operations on a claim in the words their refusals name them by (claimOp), with
 // what the log line of each says it did (answerClaimOperation) and, for the three that are a
 // single event to the claim's machine, the request that event makes (claimEventOperation). Each
 // takes the name and the refusal of the role `controller` its door gives (claimDoor); the two

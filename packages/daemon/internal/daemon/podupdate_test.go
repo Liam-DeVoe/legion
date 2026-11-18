@@ -954,10 +954,11 @@ func TestPodUpdateToldOnceAtTheBoundOfARoundAnOperatorsSuspensionHolds(t *testin
 // A round the controller's suspension of one claim and an architect's suspension of another hold
 // past the bound is told once, at the bound, and the notice names each holder and who resumes
 // each claim. The issue has no architect claim, so no architect can be told of the architect's
-// hold, and the controller reads both (tellUpdateStalled): the hold of its own and the
-// architect's are resumes it makes itself, where a notice that called both the operator's would
-// send it to the operator with a finding ask. Nothing in it says "operator", since no operator
-// holds either claim. The walk's line names each holder the same way.
+// hold: the sweep writes no architect notice row, and the controller reads both
+// (tellUpdateStalled): the hold of its own and the architect's are resumes it makes itself, where
+// a notice that called both the operator's would send it to the operator with a finding ask.
+// Nothing in it says "operator", since no operator holds either claim. The walk's line names each
+// holder the same way.
 //
 // The negative control is the notice's old text, "An operator suspended … until the operator
 // resumes each of them" for every hold, which this test refuses.
@@ -985,6 +986,9 @@ func TestPodUpdateNamesTheControllersAndAnArchitectsHoldInTheNotice(t *testing.T
 	notices := rig.notices()
 	if len(notices) != 1 {
 		t.Fatalf("at the bound %s the controller was told %d times, want once", podUpdateBound, len(notices))
+	}
+	if rows := rig.rows(record.OutboxKindNotice); len(rows) != 0 {
+		t.Fatalf("the sweep wrote %d architect notices, want none: the issue has no architect claim to tell of the architect's hold", len(rows))
 	}
 	reason := notices[0].Reason
 	for _, want := range []string{
@@ -1325,7 +1329,7 @@ func TestPodUpdateEndsTheRoundAtTheFirstReadOfAGonePod(t *testing.T) {
 // The same first read of a gone pod, over a round every worker had already answered: the workers
 // pushed everything they wanted kept before the pod went, so nothing was lost and the issue is
 // told nothing. The round still ends there — its pod is gone, and no replacement it could make
-// would be of that pod — and the operator's side is told nothing either: a round that ends with
+// would be of that pod — and nobody is told of it either: a round that ends with
 // nothing lost is nobody's business.
 func TestPodUpdateEndsAGonePodsRoundWithNoMessageWhenEveryWorkerAnswered(t *testing.T) {
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
@@ -2680,8 +2684,8 @@ func (r *podUpdateRig) envoyTurn(role claim.Role) {
 //
 // So the round is decided here rather than held: the claims record the pod that replaced the
 // round's own, which ends the round at that sweep before anything waits on a turn
-// (reconcileIssuePodUpdate), the turn in the new pod is left running, and the operator's side is
-// told nothing, however long past the round's bound the sweep runs.
+// (reconcileIssuePodUpdate), the turn in the new pod is left running, and nobody is
+// told anything, however long past the round's bound the sweep runs.
 func TestPodUpdateDecidesAGonePodsRoundRatherThanWaitForATurnInThePodThatReplacedIt(t *testing.T) {
 	const held = "supervise: every worker of this update round has answered; the replacement waits for the turns still running"
 	const overAGonePod = "supervise: the pod this issue's update round was opened over is gone; the round is over"
@@ -2704,7 +2708,7 @@ func TestPodUpdateDecidesAGonePodsRoundRatherThanWaitForATurnInThePodThatReplace
 	rig.envoyTurn(claim.RoleImplementer)
 	rig.settleAll()
 	// Long past the bound the round's own stall is told at, so a sweep that waited for that
-	// turn would tell the operator's side of a pod that is gone.
+	// turn would tell the controller or an architect of a pod that is gone.
 	rig.clock.advance(podUpdateGrace + time.Hour)
 
 	rig.tick()
