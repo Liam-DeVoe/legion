@@ -149,6 +149,60 @@ func TestACreateThatWaitedOnARemovalDatesItsDocumentAfterIt(t *testing.T) {
 	requireProjectsComplete(t, database)
 }
 
+// This build removes a document, stating its node gone, and a build before this one makes another
+// at its address, which writes no node and dates its row at its transaction's start, here before
+// the gone statement. When this build removes that second document, its node is gone already and
+// the removal leaves it gone: it states nothing, rather than first moving the node live at the
+// second row's created_at, before the gone statement it would then follow. The node's state
+// history is the first document's live and gone, in time order, and the census names nothing.
+//
+// Its control is the removal's first-node write made whatever the store holds: the history then
+// gains a live statement dated before the gone one it follows.
+func TestARemovalLeavesTheGoneNodeOfAnEarlierBuildsDocumentGone(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	ctx := context.Background()
+	issue := createInteractionIssue(t, handler, "GNE", "A document an earlier build made where one was removed", "The spec.\n")
+	first := emptyDocument(t, handler, issue.Key, "Scratch.md")
+	removedDocument(t, handler, first.ID)
+	history, err := graphstore.History(ctx, database.Pool, graphstore.KindArtifact, first.RefKey, graphstore.AttributeState)
+	if err != nil || len(history) != 2 || history[1].ToID != graphstore.StateGone {
+		t.Fatalf("after the first removal the state history of %s is %+v, %v; want live then gone", first.RefKey, history, err)
+	}
+	goneAt := history[1].At
+	var second, ref string
+	if err := database.Pool.QueryRow(ctx, `
+		insert into artifacts (issue_key, project_key, slug, name, kind, created_by, created_at)
+		select a.issue_key, i.project_key, 'scratch-md', 'Scratch.md', 'doc', '{"kind":"user","id":"bob"}', $2
+		from (select $1::text as issue_key) a join issues i on i.key = a.issue_key
+		returning id::text, ref_key
+	`, issue.Key, goneAt.Add(-time.Second)).Scan(&second, &ref); err != nil {
+		t.Fatalf("make the second document as an earlier build does: %v", err)
+	}
+	if ref != first.RefKey {
+		t.Fatalf("the second document took the address %q, want the removed one's %q, so this test proves nothing", ref, first.RefKey)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into artifact_versions (artifact_id, number, markdown, authors) values ($1, 1, '', '[{"kind":"user","id":"bob"}]')
+	`, second); err != nil {
+		t.Fatalf("store the second document's empty first version: %v", err)
+	}
+	removedDocument(t, handler, second)
+	after, err := graphstore.History(ctx, database.Pool, graphstore.KindArtifact, first.RefKey, graphstore.AttributeState)
+	if err != nil {
+		t.Fatalf("read the state history of %s: %v", first.RefKey, err)
+	}
+	if len(after) != 2 {
+		t.Errorf("after the second removal the state history of %s holds %d statement(s), want the first document's two: %+v", first.RefKey, len(after), after)
+	}
+	for index := 1; index < len(after); index++ {
+		if after[index].At.Before(after[index-1].At) {
+			t.Errorf("the state history of %s is out of time order at %d: %s at %s after %s at %s", first.RefKey, index,
+				after[index].ToID, after[index].At, after[index-1].ToID, after[index-1].At)
+		}
+	}
+	requireProjectsComplete(t, database)
+}
+
 // removeAsAnEarlierBuild removes the untouched document as a build before this one does: the rows
 // removeArtifact clears and the artifact row, in one transaction, and no node written.
 func removeAsAnEarlierBuild(t *testing.T, database *store.Store, artifactID string) {
