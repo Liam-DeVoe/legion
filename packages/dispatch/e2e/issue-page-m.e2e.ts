@@ -2902,7 +2902,7 @@ test("a pin's link to an agents' turn lands the outline on its nearest drawn anc
   });
 });
 
-// `t o`, and a load of `/collaborators`, put the focus on the Collaborators control (R4): Details
+// `t o`, and a load of `/collaborators`, put the focus on the Collaborators control: Details
 // brings the control's row into its view, then focuses it. A row above it that reads what it
 // shows once Details opens - Blocked by, which reads the titles of the issues it names - grows
 // when that read lands, after the focus, and pushes the focused control down out of Details'
