@@ -87,7 +87,7 @@ permissions: {}
 
 jobs:
   pr-title:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # Budget (the Budgets note of .github/ci-budgets.md): 600 s, the 10 minutes
     # this job carried, plus its slowest retried step alone — check-pr-text.sh's five `gh api`
     # ladders, 5 x (5 x 30 + 150) = 1500 s, a whole number of minutes, so that step's own budget
