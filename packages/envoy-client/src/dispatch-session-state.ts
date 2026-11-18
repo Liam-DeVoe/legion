@@ -16,7 +16,7 @@ import {
 import { join } from "node:path";
 import { askgateState, recordNamesStore, sweepStores } from "./askgate-marker";
 import { adviceMemory } from "./dispatch-execute";
-import { keyedLayerMemory, rememberKeyedLayer } from "./dispatch-http";
+import { keyedLayerMemory, rememberKeyedLayer, type SentWrite } from "./dispatch-http";
 import { shownPictures } from "./dispatch-picture-tools";
 import type { PictureType, ToolImage } from "./dispatch-pictures";
 import { writeAtomically } from "./dispatch-session-directory";
@@ -254,6 +254,114 @@ export function writeLongOutput(dir: string, text: string): string {
   const path = join(out, `${new Date().toISOString().replaceAll(":", "-")}-${process.pid}.md`);
   writeFileSync(path, text, { mode: PRIVATE_FILE });
   return path;
+}
+
+/**
+ * Keeps one input of a call whose write may have landed, `text`, at
+ * `resend/<key>.<place>.<digest>`, and returns its path: what the call read from stdin or a file,
+ * or a value too long for the command line the CLI prints, which that command then reads from the
+ * file. Named by its content too, so a later call under the same key never replaces a copy an
+ * earlier printed command reads, and the same text is the same file. Written atomically and
+ * owner-only.
+ */
+export function writeResendInput(dir: string, key: string, place: number, text: string): string {
+  const resend = join(dir, "resend");
+  ensureDirectory(resend);
+  const digest = createHash("sha256").update(text).digest("hex").slice(0, 16);
+  const path = join(resend, `${key}.${place}.${digest}`);
+  if (readIfPresent(path) !== text) writeAtomically(path, text);
+  return path;
+}
+
+/** The record `writeResendRecord` keeps under a key: each write with its body as text or bytes. */
+interface RecordedWrite {
+  readonly key: string;
+  readonly method: string;
+  readonly path: string;
+  readonly type?: string;
+  readonly text?: string;
+  readonly base64?: string;
+}
+
+function resendRecordPath(dir: string, key: string): string {
+  return join(dir, "resend", `${key}.json`);
+}
+
+/** A recorded field: a string, or absent. */
+function optionalString(value: unknown): value is string | undefined {
+  return value === undefined || typeof value === "string";
+}
+
+/** One recorded write, read back as a `SentWrite`; undefined when it is not one. */
+function recordedWrite(value: unknown): SentWrite | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const { key, method, path, type, text, base64 } = value as Partial<Record<string, unknown>>;
+  if (typeof key !== "string" || typeof method !== "string" || typeof path !== "string") {
+    return undefined;
+  }
+  if (!optionalString(type) || !optionalString(text) || !optionalString(base64)) return undefined;
+  let content: SentWrite["content"];
+  if (text !== undefined) content = text;
+  else if (base64 !== undefined) content = new Uint8Array(Buffer.from(base64, "base64"));
+  return {
+    key,
+    method,
+    path,
+    ...(type === undefined ? {} : { type }),
+    ...(content === undefined ? {} : { content }),
+  };
+}
+
+/**
+ * The writes a call under `key` sent, as `writeResendRecord` kept them, in order: none when the
+ * session holds no record of the key. A record that is not one is an error, naming the file.
+ */
+export function readResendRecord(dir: string, key: string): SentWrite[] {
+  const path = resendRecordPath(dir, key);
+  const text = readIfPresent(path);
+  if (text === undefined) return [];
+  let record: unknown;
+  try {
+    record = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`the resend record ${path} is not JSON (${(error as Error).message})`);
+  }
+  const writes =
+    typeof record === "object" && record !== null && "writes" in record ? record.writes : undefined;
+  const read = Array.isArray(writes) ? writes.map(recordedWrite) : [undefined];
+  if (read.some((write) => write === undefined)) {
+    throw new Error(`the resend record ${path} holds a write that is not one`);
+  }
+  return read.filter((write): write is SentWrite => write !== undefined);
+}
+
+/**
+ * Keeps `writes`, the requests a call under `key` sent, at `resend/<key>.json`, for a call sent
+ * again under the key to send each as it was first sent (`CommandKey`). The record never changes
+ * what it holds: a write it already holds a request for keeps it, and only the writes it holds none
+ * of are added, so a later call under the key never replaces what an earlier call sent. Written
+ * atomically and owner-only.
+ */
+export function writeResendRecord(dir: string, key: string, writes: readonly SentWrite[]): void {
+  ensureDirectory(join(dir, "resend"));
+  const held = readResendRecord(dir, key);
+  const keys = new Set(held.map((write) => write.key));
+  const added = writes.filter((write) => !keys.has(write.key));
+  if (added.length === 0 && held.length > 0) return;
+  const record = [...held, ...added].map(
+    (write): RecordedWrite => ({
+      key: write.key,
+      method: write.method,
+      path: write.path,
+      ...(write.type === undefined ? {} : { type: write.type }),
+      ...(write.content === undefined
+        ? {}
+        : typeof write.content === "string"
+          ? { text: write.content }
+          : { base64: Buffer.from(write.content).toString("base64") }),
+    })
+  );
+  writeAtomically(resendRecordPath(dir, key), `${JSON.stringify({ writes: record })}\n`);
 }
 
 /** Writes the session's title to `title`, atomically: a concurrent read sees the old or the new. */

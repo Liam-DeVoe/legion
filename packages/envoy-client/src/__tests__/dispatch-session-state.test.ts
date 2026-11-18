@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  statSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -18,12 +19,15 @@ import {
   appendResult,
   loadSessionMemory,
   pruneSessions,
+  readResendRecord,
   readResultsSince,
   readSessionTitle,
   recordOutcome,
   resultsEnd,
   saveSessionMemory,
   writePicture,
+  writeResendInput,
+  writeResendRecord,
 } from "../dispatch-session-state";
 
 const root = temporaryDirectories("dispatch-state");
@@ -86,6 +90,52 @@ describe("per-session state", () => {
     expect(a.path).toBe(b.path);
     expect(a.path.endsWith(".png")).toBe(true);
     expect(readFileSync(a.path).subarray(0, 4).toString("hex")).toBe("89504e47");
+  });
+
+  // A write that may have landed is sent again by a command the CLI prints. What it read from
+  // stdin, or a value too long to print, is kept here for that command to read, named by the key
+  // the command is sent with, its place, and its content: a later call under the same key never
+  // replaces a copy an earlier printed command reads.
+  test("a resend's input is kept whole and owner-only, by its key, place and content", () => {
+    const dir = sessionDirectory({ DISPATCH_STATE_DIR: root() }, "s10");
+    const key = "0b9c1e7a-55f4-4d2e-9a6b-3c2f1d0e8a71";
+    const text = "line one\nEOF\n$HOME `pwd`\n";
+    const path = writeResendInput(dir, key, 2, text);
+    expect(path).toMatch(new RegExp(`/resend/${key}\\.2\\.[0-9a-f]{16}$`));
+    expect(readFileSync(path, "utf-8")).toBe(text);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    expect(writeResendInput(dir, key, 2, text)).toBe(path);
+    const other = writeResendInput(dir, key, 2, "another text\n");
+    expect(other).not.toBe(path);
+    expect(readFileSync(path, "utf-8")).toBe(text);
+  });
+
+  // The requests a call whose write may have landed sent, by key: a call sent again under that key
+  // sends each as it was first sent. A record never changes what it holds; a later call adds only
+  // the writes it holds none of.
+  test("a call's requests are kept under its key, each as first sent", () => {
+    const dir = sessionDirectory({ DISPATCH_STATE_DIR: root() }, "s11");
+    const key = "0b9c1e7a-55f4-4d2e-9a6b-3c2f1d0e8a71";
+    expect(readResendRecord(dir, key)).toEqual([]);
+    const message = {
+      key,
+      method: "POST",
+      path: "/api/v1/issues/DSP-1/messages",
+      type: "application/json",
+      content: '{"body":"as first sent"}',
+    };
+    const upload = {
+      key: `${key}.2`,
+      method: "POST",
+      path: "/api/v1/issues/DSP-1/artifacts",
+      type: "multipart/form-data; boundary=x",
+      content: new Uint8Array([0, 1, 255]),
+    };
+    writeResendRecord(dir, key, [message, upload]);
+    const third = { ...message, key: `${key}.3` };
+    writeResendRecord(dir, key, [{ ...message, content: '{"body":"another"}' }, third]);
+    expect(readResendRecord(dir, key)).toEqual([message, upload, third]);
+    expect(statSync(join(dir, "resend", `${key}.json`)).mode & 0o777).toBe(0o600);
   });
 
   test("pruning removes sessions idle for 14 days and keeps the rest", () => {

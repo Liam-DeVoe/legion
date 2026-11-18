@@ -700,7 +700,7 @@ describe("executeDispatchTool", () => {
         "- --body is required (string)",
         "- unknown flag --message",
         "- in_reply_to must be a full message id (uuid), a dispatch://KEY/message/<id> reference, or a block of one (dispatch://KEY/message/<id>#b-<block id>)",
-        "- Allowed flags: --issue, --issue-file, --body, --body-file, --in-reply-to, --in-reply-to-file, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --body, --body-file, --in-reply-to, --in-reply-to-file, --image, --clear-images, --help, --dry-run, --idempotency-key",
         "- Example: dispatch message --issue DSP-1 --body 'Implementation started.'",
       ].join("\n")
     );
@@ -5342,10 +5342,10 @@ describe("executeDispatchTool", () => {
       "like a proxy or gateway page rather than Dispatch's own answer";
     const unknown =
       "; the reason may or may not have been posted, and the close was not sent: read the " +
-      "issue's messages before retrying, since retrying this call posts its reason again";
+      "issue's messages before retrying, since running this call again under a new key posts its reason again";
     const unknownSentence =
       " The reason may or may not have been posted, and the close was not sent: read the " +
-      "issue's messages before retrying, since retrying this call posts its reason again";
+      "issue's messages before retrying, since running this call again under a new key posts its reason again";
     const notPosted = "; the reason was not posted, so the close was not sent";
     const retry = ", so the write did not reach Dispatch, and a retry may succeed";
     // Bun's messages for a refused connection and a reset one; the second ends with no stop.
@@ -5431,9 +5431,9 @@ describe("executeDispatchTool", () => {
 
     await expect(closeCall(server.fetchImpl)).rejects.toThrow(
       "ISSUE_CLAIMED: claimed by session other; the reason already landed as message message-7 " +
-        "(dispatch://ACME-175/message/message-7) but the issue did not close. Retrying this call " +
-        "posts its reason again, so fix what refused the close, then retry with a reason that " +
-        "points at message message-7"
+        "(dispatch://ACME-175/message/message-7) but the issue did not close. Running this call " +
+        "again under a new key posts its reason again, so fix what refused the close, then retry " +
+        "with a reason that points at message message-7"
     );
     expect(server.requests.map(({ method }) => method)).toEqual(["GET", "POST", "PATCH"]);
 
@@ -5447,8 +5447,8 @@ describe("executeDispatchTool", () => {
         "gateway page rather than Dispatch's own answer, so a retry gets the same answer until the " +
         "Dispatch URL, or whatever answers in its place, is fixed; the reason already landed as " +
         "message message-7 (dispatch://ACME-175/message/message-7) but the issue did not close. " +
-        "Retrying this call posts its reason again, so fix what refused the close, then retry with " +
-        "a reason that points at message message-7"
+        "Running this call again under a new key posts its reason again, so fix what refused the " +
+        "close, then retry with a reason that points at message message-7"
     );
   });
 
@@ -5477,8 +5477,8 @@ describe("executeDispatchTool", () => {
           "which looks like a proxy or gateway page rather than Dispatch's own answer, so the write " +
           "did not reach Dispatch, and a retry may succeed; the reason already landed as message " +
           "message-7 (dispatch://ACME-175/message/message-7) but the issue did not close. " +
-          "Retrying this call posts its reason again, so retry with a reason that points at " +
-          "message message-7"
+          "Running this call again under a new key posts its reason again, so retry with a reason " +
+          "that points at message message-7"
       );
       expect(server.requests.map(({ method }) => method)).toEqual([
         "GET",
@@ -5498,12 +5498,12 @@ describe("executeDispatchTool", () => {
       "; the reason already landed as message message-7 (dispatch://ACME-175/message/message-7), " +
       "and the close may or may not have taken effect. Read the issue's status before retrying: " +
       "done means it closed; otherwise retry with a reason that points at message message-7, " +
-      "since retrying this call posts its reason again";
+      "since running this call again under a new key posts its reason again";
     const unknownSentence =
       " The reason already landed as message message-7 (dispatch://ACME-175/message/message-7), " +
       "and the close may or may not have taken effect. Read the issue's status before retrying: " +
       "done means it closed; otherwise retry with a reason that points at message message-7, " +
-      "since retrying this call posts its reason again";
+      "since running this call again under a new key posts its reason again";
     for (const [patch, expected, attempts] of [
       ...unanswered.map(
         ([fail, told, tries]) =>
@@ -5568,7 +5568,7 @@ describe("executeDispatchTool", () => {
         "lost on the way back (KEY_COMMITTED), so this command cannot print what it made: read it " +
         "back with `dispatch read`, or with the matching list for something it created. That was " +
         "the closing reason, so the close was not sent: read the issue's messages for it, then " +
-        "close with a reason that points at it, since retrying this call posts its reason again."
+        "close with a reason that points at it, since running this call again under a new key posts its reason again."
     );
     expect(reasoned.requests.map(({ method }) => method)).toEqual(["GET", "POST"]);
   });
@@ -5582,7 +5582,7 @@ describe("executeDispatchTool", () => {
       " The reason already landed as message message-7 (dispatch://ACME-175/message/message-7), " +
       "and the close may or may not have taken effect. Read the issue's status before retrying: " +
       "done means it closed; otherwise retry with a reason that points at message message-7, " +
-      "since retrying this call posts its reason again";
+      "since running this call again under a new key posts its reason again";
     // This Dispatch runs the keyed layer, so each message also says that it finishes the close.
     const keyedTail =
       ". Dispatch finishes an attempt it received whatever this command does, so read the write " +
