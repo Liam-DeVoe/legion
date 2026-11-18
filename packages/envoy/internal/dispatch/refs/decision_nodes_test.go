@@ -200,7 +200,7 @@ func TestTheReconcilerMovesNoRowTheTypedPassWrote(t *testing.T) {
 		if err != nil {
 			return graphstore.Uncaused{}, err
 		}
-		_, _, write, err := IndexBlocks(ctx, tx, document.artifact, OneVersion(document.artifact, 1, firstRecord.at), first.markdown, first.blocks, first.located, first.pointers, facts)
+		_, _, write, _, err := IndexBlocks(ctx, tx, document.artifact, OneVersion(document.artifact, 1, firstRecord.at), first.markdown, first.blocks, first.located, first.pointers, facts)
 		return write, err
 	}, firstRecord.event)
 	if got := mentionRows(t, database.Pool, document.artifact); got != 1 {
@@ -280,7 +280,7 @@ func TestTheReconcilerMovesNoRowTheTypedPassWrote(t *testing.T) {
 		if own, all := pairKeys(facts.typedPairs()), pairKeys(full); !reflect.DeepEqual(own, all) {
 			t.Fatalf("the typed pass's pairs\n\t%v\ndiffer from the reconciler's typed pairs\n\t%v", own, all)
 		}
-		_, won, write, err := IndexBlocks(ctx, tx, document.artifact, OneVersion(document.artifact, 2, secondRecord.at), second.markdown, second.blocks, second.located, second.pointers, facts)
+		_, won, write, _, err := IndexBlocks(ctx, tx, document.artifact, OneVersion(document.artifact, 2, secondRecord.at), second.markdown, second.blocks, second.located, second.pointers, facts)
 		if err == nil && !won {
 			err = fmt.Errorf("the reconciler lost the revision fence over version 2")
 		}
@@ -328,7 +328,7 @@ func TestAOneWordEditWritesOnlyTheNodesOfTheBlocksItMoved(t *testing.T) {
 			if err != nil {
 				return graphstore.Uncaused{}, err
 			}
-			_, won, write, err := IndexBlocks(ctx, tx, document.artifact, OneVersion(document.artifact, number, record.at), version.markdown, version.blocks, version.located, version.pointers, facts)
+			_, won, write, _, err := IndexBlocks(ctx, tx, document.artifact, OneVersion(document.artifact, number, record.at), version.markdown, version.blocks, version.located, version.pointers, facts)
 			if err == nil && !won {
 				err = fmt.Errorf("version %d lost the revision fence", number)
 			}

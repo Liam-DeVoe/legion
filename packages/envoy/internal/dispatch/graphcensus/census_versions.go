@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -191,7 +192,7 @@ func readVersionBatch(ctx context.Context, database *store.Store, after versionK
 // writeVersionBatch writes one batch's version nodes in one transaction, in the store's lock order
 // (api/inbox_read.go's markInboxReadThreads): the owner rows the batch's documents stand under first
 // (lockObjectOwners), then it reads the batch's rows again under them, with what each one's node
-// needs of its document (graphstore.VersionOwnerColumns), and writes the nodes and facts of the rows
+// needs of its document (owedVersionNodes), and writes the nodes and facts of the rows
 // still there and still with no present node, and no others (graphstore.Write takes their rows in
 // ascending (kind, id)). A row the removal of its document deleted meanwhile is gone, since the
 // removal takes its issue's row first (api's removeArtifact) and states the node gone in the
@@ -227,52 +228,10 @@ func writeVersionBatch(ctx context.Context, database *store.Store, batch []versi
 		if err := lockObjectOwners(ctx, tx, graphstore.KindArtifact, refKeys); err != nil {
 			return err
 		}
-		rows, err := tx.Query(ctx, `
-			select v.number, v.created_at, v.authors->0,
-			       case when a.kind <> 'doc' and v.number = (select max(newest.number) from artifact_versions newest where newest.artifact_id = v.artifact_id)
-			            then v.mime end,
-			       v.size, v.sha256, `+graphstore.VersionOwnerColumns("v.artifact_id")+`
-			from artifact_versions v
+		nodes, tuples, err := owedVersionNodes(ctx, tx, `
 			join unnest($1::uuid[], $2::int[]) as batch (artifact_id, number)
-			  on batch.artifact_id = v.artifact_id and batch.number = v.number
-			join artifacts a on a.id = v.artifact_id
-			where not `+presentVersionNode+`
-			order by v.artifact_id, v.number
-		`, artifactIDs, numbers)
+			  on batch.artifact_id = v.artifact_id and batch.number = v.number`, artifactIDs, numbers)
 		if err != nil {
-			return fmt.Errorf("read the batch's versions again under their owners: %w", err)
-		}
-		var nodes []graphstore.Node
-		var tuples []graphstore.Tuple
-		for rows.Next() {
-			var number int
-			var createdAt time.Time
-			var authorJSON []byte
-			var mime, digest *string
-			var size *int64
-			var owner graphstore.VersionOwner
-			if err := rows.Scan(append([]any{&number, &createdAt, &authorJSON, &mime, &size, &digest}, owner.Targets()...)...); err != nil {
-				rows.Close()
-				return fmt.Errorf("read the batch's versions again under their owners: %w", err)
-			}
-			who := backfillActor
-			if len(authorJSON) > 0 {
-				if err := json.Unmarshal(authorJSON, &who); err != nil {
-					rows.Close()
-					return fmt.Errorf("read the first author of version %d of %s: %w", number, owner.RefKey, err)
-				}
-			}
-			node, facts, ok := graphstore.VersionFacts(tuples, owner, number, who, createdAt)
-			if !ok {
-				continue
-			}
-			nodes, tuples = append(nodes, node), facts
-			if mime != nil && size != nil && digest != nil {
-				tuples = graphstore.ArtifactBytes(tuples, owner.RefKey, *mime, *size, *digest, who, createdAt)
-			}
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
 			return fmt.Errorf("read the batch's versions again under their owners: %w", err)
 		}
 		if len(nodes) == 0 {
@@ -287,4 +246,115 @@ func writeVersionBatch(ctx context.Context, database *store.Store, batch []versi
 		return 0, 0, fmt.Errorf("write a batch of version nodes: %w", err)
 	}
 	return written, stated, nil
+}
+
+// WriteMissingVersionNodes writes, in tx, the node of each version of the documents artifactIDs
+// names that holds no present node, as the version pass writes one (owedVersionNodes): dated at
+// its row's created_at, made by its first author or by the run where the row names none, a node
+// held gone at its address restated live, and an image's or a file's newest bytes stated on its
+// document's node. except names, by document, the version whose node the caller writes itself,
+// which is left out; a document it does not name leaves none out.
+//
+// It is the write of the block-index pass that drains this build's mark (store_owed_at;
+// refs.IndexBlocks' marked, docs' indexRenderedVersion), over that document or, for an issue
+// room, every document of the room the pass covers a version of. The release before this one
+// writes no version node, so a version it writes during a roll holds none, and once the mark is
+// cleared no later pass reaches it: the reconciliation's drain writes every such node, so it
+// stands at the next tick and the census needs no second backfill, and a request's version write
+// that drains the mark first writes every such node but its own version's, which it writes after
+// the pass (docs.WriteVersionNode). Its read is the anti-join of those documents' versions alone,
+// through artifact_versions' unique key, and never of the table.
+//
+// It takes no lock of its own. Its caller holds the owner row the documents stand under (docs'
+// lockArtifactOwner: their issue's row, or the document's own where no issue owns it; for an issue
+// room the tree artifact's issue row, which every document of the room stands under), and every
+// writer of a version node of theirs takes that row before it: a version's insert
+// (docs.WriteVersionNode, under the owner row its write holds), the version pass
+// (writeVersionBatch, through lockObjectOwners, the same row), a removal (api's removeArtifact,
+// the issue's row) and the erase (the owner rows it takes first). So while the caller holds the
+// row no other transaction holds one of these version node rows or waits to take one: a row the
+// read finds with no present node keeps none until the caller commits, and the node rows the
+// write takes after the nodes of the caller's own pass wait on no transaction that waits on the
+// caller.
+func WriteMissingVersionNodes(ctx context.Context, tx pgx.Tx, artifactIDs []string, except refs.Versions) error {
+	left := make([]int32, len(artifactIDs))
+	for index, id := range artifactIDs {
+		left[index] = int32(except[id].Number)
+	}
+	// Version numbers start at 1, so 0 leaves no version out.
+	nodes, tuples, err := owedVersionNodes(ctx, tx, `
+		join unnest($1::uuid[], $2::int[]) as drained (artifact_id, left_out)
+		  on drained.artifact_id = v.artifact_id and v.number <> drained.left_out`, artifactIDs, left)
+	if err != nil {
+		return fmt.Errorf("read the versions of %v with no node under their owner: %w", artifactIDs, err)
+	}
+	if len(nodes) == 0 {
+		return nil
+	}
+	if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
+		return fmt.Errorf("write the version nodes of %v: %w", artifactIDs, err)
+	}
+	return nil
+}
+
+// owedVersionNodes reads, in tx, the artifact_versions rows v the join rows names, bound to args,
+// that still hold no present version node (presentVersionNode), each with what its node needs of
+// its document a (graphstore.VersionOwnerColumns), in the order of the table's unique key, and
+// answers the nodes and the facts the version pass writes of them: each node and its facts
+// (graphstore.VersionFacts), dated at the row's own created_at and made by the version's first
+// author, or by the run (backfillActor) where the row names none, and for an image's or a file's
+// newest version its bytes on its document's node (graphstore.ArtifactBytes). A version past the
+// store's address bound is no node, and nothing of it is answered. It reads each row's number,
+// created_at, first author and those bytes, and never its markdown.
+//
+// It is the one definition of that read and of those nodes, for the version pass's batches
+// (writeVersionBatch) and the block-index drain (WriteMissingVersionNodes). Each caller holds the
+// owner rows the versions stand under before it calls this, and writes what it answers.
+func owedVersionNodes(ctx context.Context, tx pgx.Tx, rows string, args ...any) ([]graphstore.Node, []graphstore.Tuple, error) {
+	read, err := tx.Query(ctx, `
+		select v.number, v.created_at, v.authors->0,
+		       case when a.kind <> 'doc' and v.number = (select max(newest.number) from artifact_versions newest where newest.artifact_id = v.artifact_id)
+		            then v.mime end,
+		       v.size, v.sha256, `+graphstore.VersionOwnerColumns("v.artifact_id")+`
+		from artifact_versions v
+		`+rows+`
+		join artifacts a on a.id = v.artifact_id
+		where not `+presentVersionNode+`
+		order by v.artifact_id, v.number
+	`, args...)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer read.Close()
+	var nodes []graphstore.Node
+	var tuples []graphstore.Tuple
+	for read.Next() {
+		var number int
+		var createdAt time.Time
+		var authorJSON []byte
+		var mime, digest *string
+		var size *int64
+		var owner graphstore.VersionOwner
+		if err := read.Scan(append([]any{&number, &createdAt, &authorJSON, &mime, &size, &digest}, owner.Targets()...)...); err != nil {
+			return nil, nil, err
+		}
+		who := backfillActor
+		if len(authorJSON) > 0 {
+			if err := json.Unmarshal(authorJSON, &who); err != nil {
+				return nil, nil, fmt.Errorf("read the first author of version %d of %s: %w", number, owner.RefKey, err)
+			}
+		}
+		node, facts, ok := graphstore.VersionFacts(tuples, owner, number, who, createdAt)
+		if !ok {
+			continue
+		}
+		nodes, tuples = append(nodes, node), facts
+		if mime != nil && size != nil && digest != nil {
+			tuples = graphstore.ArtifactBytes(tuples, owner.RefKey, *mime, *size, *digest, who, createdAt)
+		}
+	}
+	if err := read.Err(); err != nil {
+		return nil, nil, err
+	}
+	return nodes, tuples, nil
 }

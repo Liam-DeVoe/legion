@@ -1090,6 +1090,11 @@ func (s *Service) reindexScope(ctx context.Context, doc string) error {
 //
 // A pair the index inserts takes the version's created_at, and the source_seq of the event that
 // recorded the version (stampVersionEvent).
+//
+// A document that holds this build's mark (store_owed_at) is the mark's drain, and the pass also
+// writes the node of each version of the document that holds none (indexRenderedVersion, with no
+// version of its own left out, since this tick writes none): a version the release before wrote
+// during a roll stands at this tick rather than at the next run of the backfill.
 func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument) (indexed, liveAhead bool, err error) {
 	if document.version == 0 {
 		return false, false, nil
@@ -1161,7 +1166,7 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument) 
 	if err != nil {
 		return false, false, err
 	}
-	_, write, err := s.indexRenderedVersion(ctx, tx, document.id, refs.OneVersion(document.id, version, versionAt), markdown, blocks, nil, nil)
+	_, write, err := s.indexRenderedVersion(ctx, tx, document.id, refs.OneVersion(document.id, version, versionAt), nil, markdown, blocks, nil, nil)
 	if err != nil {
 		return false, false, err
 	}
@@ -1280,6 +1285,11 @@ func (s *Service) indexOwed(ctx context.Context, document owedDocument) owedOutc
 // artifact of the room, the tree's own included: the pass's fence (refs.IndexBlocks) clears the
 // marks of the documents it indexes, and a document holding no version is cleared here.
 //
+// A room any document of which the pass covers holds this build's mark (store_owed_at) is the
+// mark's drain, and the pass also writes the node of each version of every document of the room
+// it covers that holds none (indexRenderedVersion, with no version of its own left out), as for
+// one document.
+//
 // A room no document has joined yet is the tree artifact alone, one fragment, a room that is its
 // own document: its tree is indexed as one, through indexOwedDocument, at its newest version,
 // which the room's revision then is (roomRevisionSQL).
@@ -1385,7 +1395,7 @@ func (s *Service) indexOwedRoom(ctx context.Context, document owedDocument) (ind
 				return false, false, false, err
 			}
 		}
-		index, err := s.indexRoom(ctx, tx, room, versions, markdown, blocks, joined, nil)
+		index, err := s.indexRoom(ctx, tx, room, versions, nil, markdown, blocks, joined, nil)
 		if err != nil {
 			return false, false, false, err
 		}
@@ -1434,9 +1444,11 @@ func (s *Service) roomTree(ctx context.Context, room string, layout roomLayout) 
 
 // indexRoom is indexRenderedVersion over an issue room, under its tree artifact room, at the
 // version of each fragment's document (versions): the room's own pass, which a settlement of the
-// room and its reconciliation run alike. It answers what the pass stated, parted by the document
-// each fact is of (roomFacts), and the reference changes the pass moved.
-func (s *Service) indexRoom(ctx context.Context, tx pgx.Tx, room string, versions refs.Versions, markdown string, blocks []model.ArtifactBlock, tree *pmdoc.Node, settled *askBlockSources) (roomIndex, error) {
+// room and its reconciliation run alike. written is the versions of those this transaction wrote,
+// whose nodes its caller writes after the pass (indexRenderedVersion). It answers what the pass
+// stated, parted by the document each fact is of (roomFacts), and the reference changes the pass
+// moved.
+func (s *Service) indexRoom(ctx context.Context, tx pgx.Tx, room string, versions, written refs.Versions, markdown string, blocks []model.ArtifactBlock, tree *pmdoc.Node, settled *askBlockSources) (roomIndex, error) {
 	var refKey string
 	var heldBlocks, heldDocuments []string
 	if err := tx.QueryRow(ctx, `
@@ -1456,7 +1468,7 @@ func (s *Service) indexRoom(ctx context.Context, tx pgx.Tx, room string, version
 			documents[block.ID] = block.Document
 		}
 	}
-	changes, write, err := s.indexRenderedVersion(ctx, tx, room, versions, markdown, blocks, tree, settled)
+	changes, write, err := s.indexRenderedVersion(ctx, tx, room, versions, written, markdown, blocks, tree, settled)
 	if err != nil {
 		return roomIndex{}, err
 	}

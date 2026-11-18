@@ -1161,7 +1161,9 @@ func (st *settlement) blockVersions(ctx context.Context, fragments []roomFragmen
 // next version.
 func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFragment, markdown string, offsets []pmdoc.BlockOffset, keptEditor *model.Actor) (int64, error) {
 	s, room, tx, ledger := st.service, st.room, st.tx, st.ledger
-	versions := refs.Versions{}
+	// versions is the version of each document the room's pass covers, and inserted those of them
+	// this settlement writes, whose nodes it writes after the pass.
+	versions, inserted := refs.Versions{}, refs.Versions{}
 	type written struct {
 		fragment roomFragment
 		result   versionWriteResult
@@ -1190,6 +1192,7 @@ func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFr
 			return graphstore.NoEvent, err
 		}
 		versions[fragment.document] = refs.Version{Number: result.version.Number, At: result.version.CreatedAt}
+		inserted[fragment.document] = versions[fragment.document]
 		writes = append(writes, written{fragment: fragment, result: result, actor: actor})
 		listed[fragment.document] = st.credit.listed[fragment.document]
 	}
@@ -1199,7 +1202,7 @@ func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFr
 		parts[index] = fragment.tree
 	}
 	indexed := withoutSilentFragments(offsets, parts, func(index int) bool { return fragments[index].markdown == "" })
-	index, err := s.indexRoom(ctx, tx, room, versions, markdown, offsetBlocks(indexed, st.layout.blockDocuments(room, st.versioned, st.versionedCounts)),
+	index, err := s.indexRoom(ctx, tx, room, versions, inserted, markdown, offsetBlocks(indexed, st.layout.blockDocuments(room, st.versioned, st.versionedCounts)),
 		st.versioned, &st.reconciliation.sources)
 	if err != nil {
 		return graphstore.NoEvent, err

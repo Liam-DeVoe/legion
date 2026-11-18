@@ -69,7 +69,7 @@ func TestAPassOverSeveralVersionsDatesATextChangeToTheVersionThatMadeIt(t *testi
 	artifact, _ := createReferenceArtifact(t, tx, "WIND-1", "WIND", "spec-md")
 	first, firstBlocks := documentOf([]part{{"b1", "paragraph", "One."}, {"b2", "paragraph", "Two."}})
 	firstAt := writeStoredVersion(t, tx, artifact, 1, first)
-	if _, _, _, err := IndexBlocks(ctx, tx, artifact, OneVersion(artifact, 1, firstAt), first, firstBlocks, nil, nil, TypedFacts{}); err != nil {
+	if _, _, _, _, err := IndexBlocks(ctx, tx, artifact, OneVersion(artifact, 1, firstAt), first, firstBlocks, nil, nil, TypedFacts{}); err != nil {
 		t.Fatalf("index version 1: %v", err)
 	}
 	second, _ := documentOf([]part{{"b1", "paragraph", "One, rewritten."}, {"b2", "paragraph", "Two."}})
@@ -79,7 +79,7 @@ func TestAPassOverSeveralVersionsDatesATextChangeToTheVersionThatMadeIt(t *testi
 	if !secondAt.Before(thirdAt) {
 		t.Fatalf("version 2 was written at %s and version 3 at %s, want two times of the database's clock in order", secondAt, thirdAt)
 	}
-	if _, won, _, err := IndexBlocks(ctx, tx, artifact, OneVersion(artifact, 3, thirdAt), third, thirdBlocks, nil, nil, TypedFacts{}); err != nil || !won {
+	if _, won, _, _, err := IndexBlocks(ctx, tx, artifact, OneVersion(artifact, 3, thirdAt), third, thirdBlocks, nil, nil, TypedFacts{}); err != nil || !won {
 		t.Fatalf("index version 3 in one pass over versions 2 and 3: won %t, %v", won, err)
 	}
 
@@ -149,7 +149,7 @@ func TestIndexBlocksRecordsARoomBlockMovedIntoAnotherFragmentAtItsNewDocumentsVe
 	verificationAt := writeStoredVersion(t, tx, verification, 1, "Check.")
 	first, firstBlocks := documentOf([]part{{"y", "paragraph", "Check."}, {"x", "paragraph", "Moved words."}})
 	firstBlocks[0].Document, firstBlocks[1].Document = verification, spec
-	if _, won, _, err := IndexBlocks(ctx, tx, tree, Versions{
+	if _, won, _, _, err := IndexBlocks(ctx, tx, tree, Versions{
 		tree: {Number: 1, At: treeAt}, spec: {Number: 4, At: specAt}, verification: {Number: 1, At: verificationAt},
 	}, first, firstBlocks, nil, nil, TypedFacts{}); err != nil || !won {
 		t.Fatalf("index the room with x in the spec's fragment: won %t, %v", won, err)
@@ -158,7 +158,7 @@ func TestIndexBlocksRecordsARoomBlockMovedIntoAnotherFragmentAtItsNewDocumentsVe
 	verificationNext := writeStoredVersion(t, tx, verification, 2, "Check.\n\nMoved words.")
 	second, secondBlocks := documentOf([]part{{"y", "paragraph", "Check."}, {"x", "paragraph", "Moved words."}})
 	secondBlocks[0].Document, secondBlocks[1].Document = verification, verification
-	if _, won, _, err := IndexBlocks(ctx, tx, tree, Versions{
+	if _, won, _, _, err := IndexBlocks(ctx, tx, tree, Versions{
 		tree: {Number: 1, At: treeAt}, spec: {Number: 5, At: specNext}, verification: {Number: 2, At: verificationNext},
 	}, second, secondBlocks, nil, nil, TypedFacts{}); err != nil || !won {
 		t.Fatalf("index the room with x in the Verification document's fragment: won %t, %v", won, err)
@@ -203,7 +203,7 @@ func TestARoomBlocksNodeReadsAsABlockOfItsOwnDocument(t *testing.T) {
 	verificationAt := writeStoredVersion(t, tx, verification, 1, "Check.")
 	markdown, blocks := documentOf([]part{{"y", "paragraph", "Check."}, {"x", "paragraph", "Room words."}})
 	blocks[0].Document, blocks[1].Document = verification, spec
-	_, won, write, err := IndexBlocks(ctx, tx, tree, Versions{
+	_, won, write, _, err := IndexBlocks(ctx, tx, tree, Versions{
 		tree: {Number: 1, At: treeAt}, spec: {Number: 4, At: specAt}, verification: {Number: 1, At: verificationAt},
 	}, markdown, blocks, nil, nil, TypedFacts{})
 	if err != nil || !won {

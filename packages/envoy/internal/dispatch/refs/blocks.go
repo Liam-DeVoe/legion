@@ -211,6 +211,13 @@ func (v Versions) Newest(artifactID string) (string, Version) {
 // what that release leaves, and a pass that named a row's node only when it inserted the row
 // would leave it naming none until someone ran the backfill again.
 //
+// Its fourth result is that same marked: true where this pass drained the mark of artifactID, or
+// of any document of an issue room the pass covers a version of. The release before this one
+// writes no version node either, so a version it wrote while the mark stood holds none, and the
+// caller, which knows which version it is writing itself, writes the nodes those documents' other
+// versions are owed in this same transaction (docs' indexRenderedVersion), since no later pass
+// reaches them once the mark is cleared.
+//
 // Where another release indexed the document after the store last stated its blocks
 // (standsAtVersion's stale, read of artifactID's own row), the rows the pass compares the render
 // with are that release's, and
@@ -238,12 +245,12 @@ func IndexBlocks(
 	located []text.Located,
 	pointers []Pointer,
 	typed TypedFacts,
-) ([]Target, bool, graphstore.Uncaused, error) {
+) ([]Target, bool, graphstore.Uncaused, bool, error) {
 	// The fence is the pass's first write, so a pass that loses it has written nothing to undo
 	// and waits at that one row rather than at a projection row further in.
 	won, stale, marked, indexedBefore, err := standsAtVersions(ctx, tx, artifactID, versions)
 	if err != nil || !won {
-		return nil, won, graphstore.Uncaused{}, err
+		return nil, won, graphstore.Uncaused{}, false, err
 	}
 	// The version the facts that name no block of their own are stated in the name of: the one
 	// version of a document, or the newest of an issue room's.
@@ -251,12 +258,12 @@ func IndexBlocks(
 	version, versionAt := newest.Number, newest.At
 	document, err := indexedVersionRecord(ctx, tx, artifactID, lead, version)
 	if err != nil {
-		return nil, false, graphstore.Uncaused{}, err
+		return nil, false, graphstore.Uncaused{}, false, err
 	}
 	refKey, writer := document.refKey, document.writer
 	stored, err := storedBlocks(ctx, tx, artifactID, len(blocks))
 	if err != nil {
-		return nil, false, graphstore.Uncaused{}, err
+		return nil, false, graphstore.Uncaused{}, false, err
 	}
 	firstIndexing := len(stored) == 0
 	nodes, long, longest := uniqueBlocks(blocks)
@@ -274,7 +281,7 @@ func IndexBlocks(
 	// document, and its rank stands in that document's band (dispatch://INFRA-1253 R5).
 	fragments, err := fragmentDocuments(ctx, tx, artifactID, nodes)
 	if err != nil {
-		return nil, false, graphstore.Uncaused{}, err
+		return nil, false, graphstore.Uncaused{}, false, err
 	}
 	var holders map[string]model.ArtifactBlock
 	if len(fragments) > 0 {
@@ -377,7 +384,7 @@ func IndexBlocks(
 	dropped := deleted
 	if stale {
 		if storeLinks, err = heldDocumentBlocks(ctx, tx, refKey); err != nil {
-			return nil, false, graphstore.Uncaused{}, err
+			return nil, false, graphstore.Uncaused{}, false, err
 		}
 		dropped = slices.Concat(deleted, goneSinceStated(storeLinks, nodes, deleted))
 	}
@@ -393,14 +400,14 @@ func IndexBlocks(
 	authors := map[documentVersion][]model.Actor{{document: lead, number: version}: document.authors}
 	if len(ids) > 0 {
 		if since, sinceAt, err = textSinceIn(ctx, tx, versions, indexedBefore, ids, texts[:len(ids)], documentOf, versionIn); err != nil {
-			return nil, false, graphstore.Uncaused{}, err
+			return nil, false, graphstore.Uncaused{}, false, err
 		}
 		wanted := make([]documentVersion, len(ids))
 		for index, id := range ids {
 			wanted[index] = documentVersion{document: documentOf(id), number: int(since[index])}
 		}
 		if authors, err = versionAuthors(ctx, tx, authors, wanted); err != nil {
-			return nil, false, graphstore.Uncaused{}, err
+			return nil, false, graphstore.Uncaused{}, false, err
 		}
 	}
 	authorsOf := func(index int) []model.Actor {
@@ -445,7 +452,7 @@ func IndexBlocks(
 	}
 	authorNodes, authored, err := blockAuthors(ctx, tx, artifactID, document, recording, func(id string) []model.Actor { return firstWritten[id] })
 	if err != nil {
-		return nil, false, graphstore.Uncaused{}, err
+		return nil, false, graphstore.Uncaused{}, false, err
 	}
 	blockNodes = append(blockNodes, authorNodes...)
 	// A block the version no longer holds has its node stated gone, whatever state it held: a
@@ -458,7 +465,7 @@ func IndexBlocks(
 	// not.
 	held, err := heldSupertags(ctx, tx, refKey, dropped)
 	if err != nil {
-		return nil, false, graphstore.Uncaused{}, err
+		return nil, false, graphstore.Uncaused{}, false, err
 	}
 	gone := make([]string, 0, len(dropped))
 	for index, id := range dropped {
@@ -510,13 +517,13 @@ func IndexBlocks(
 	// no legacy row states a node's visibility or its state.
 	write, err := graphstore.WriteUncaused(ctx, tx, blockNodes, nil)
 	if err != nil {
-		return nil, false, graphstore.Uncaused{}, fmt.Errorf("write the block nodes of version %d of %s: %w", version, artifactID, err)
+		return nil, false, graphstore.Uncaused{}, false, fmt.Errorf("write the block nodes of version %d of %s: %w", version, artifactID, err)
 	}
 	write.Tuples = append(write.Tuples, memberships...)
 	write.Tuples = append(write.Tuples, authored...)
 	retracted, err := retractGonePointers(ctx, tx, gone, versionAt, writer)
 	if err != nil {
-		return nil, false, graphstore.Uncaused{}, fmt.Errorf("retract the pointers at the blocks version %d of %s no longer holds: %w", version, artifactID, err)
+		return nil, false, graphstore.Uncaused{}, false, fmt.Errorf("retract the pointers at the blocks version %d of %s no longer holds: %w", version, artifactID, err)
 	}
 	write.Tuples = append(write.Tuples, retracted...)
 
@@ -524,7 +531,7 @@ func IndexBlocks(
 		if _, err := tx.Exec(ctx, `
 			delete from document_blocks where artifact_id = $1 and block_id = any($2)
 		`, artifactID, deleted); err != nil {
-			return nil, false, graphstore.Uncaused{}, fmt.Errorf("delete the blocks version %d of %s no longer holds: %w", version, artifactID, err)
+			return nil, false, graphstore.Uncaused{}, false, fmt.Errorf("delete the blocks version %d of %s no longer holds: %w", version, artifactID, err)
 		}
 	}
 	var textVersions []int32
@@ -550,7 +557,7 @@ func IndexBlocks(
 			returning block_id, created_at, xmax = 0
 		`, artifactID, ids, types, sums, excerpts, since, sinceAt, BlockNodeKind, MaxBlockNodeBytes))
 		if err != nil {
-			return nil, false, graphstore.Uncaused{}, fmt.Errorf("record the blocks version %d of %s changed: %w", version, artifactID, err)
+			return nil, false, graphstore.Uncaused{}, false, fmt.Errorf("record the blocks version %d of %s changed: %w", version, artifactID, err)
 		}
 		textVersions = since
 		for _, id := range ids {
@@ -578,32 +585,32 @@ func IndexBlocks(
 			select $1::uuid, t.id, t.version, t.text from unnest($2::text[], $3::text[], $4::int[]) as t (id, text, version)
 			on conflict (artifact_id, block_id, version) do update set text = excluded.text
 		`, artifactID, textIDs, texts, textVersions); err != nil {
-			return nil, false, graphstore.Uncaused{}, fmt.Errorf("record the block texts of version %d of %s: %w", version, artifactID, err)
+			return nil, false, graphstore.Uncaused{}, false, fmt.Errorf("record the block texts of version %d of %s: %w", version, artifactID, err)
 		}
 	}
 	// An issue room's blocks name their documents in issue_room_blocks, beside their
 	// document_blocks rows under the tree artifact, in this transaction (D16).
 	moves, err := reconcileRoomBlocks(ctx, tx, artifactID, document, nodes, fits, fragments, deleted)
 	if err != nil {
-		return nil, false, graphstore.Uncaused{}, err
+		return nil, false, graphstore.Uncaused{}, false, err
 	}
 	write.Tuples = append(write.Tuples, moves...)
 	sources := authoredSourcesOf(markdown, nodes, located, pointers)
 	placement, parents, err := reconcileBlockParents(ctx, tx, artifactID, document, nodes, fits, typed.askParents, nil, sources)
 	if err != nil {
-		return nil, false, graphstore.Uncaused{}, err
+		return nil, false, graphstore.Uncaused{}, false, err
 	}
 	write.Tuples = append(write.Tuples, parents...)
 	values, err := reconcileBlockValues(ctx, tx, document, markdown, nodes, placement, changed, stale, fragments)
 	if err != nil {
-		return nil, false, graphstore.Uncaused{}, err
+		return nil, false, graphstore.Uncaused{}, false, err
 	}
 	write.Tuples = append(write.Tuples, values...)
 
 	pairs := typed.pairs(blockPairs(nodes, located, typed.withTies(pointers)))
 	moved, links, err := replaceBlockRefs(ctx, tx, artifactID, refKey, versionOf, writer, firstIndexing, marked, pairs, nil)
 	if err != nil {
-		return nil, false, graphstore.Uncaused{}, err
+		return nil, false, graphstore.Uncaused{}, false, err
 	}
 	write.Tuples = append(write.Tuples, links...)
 	// Where the store's statement is stale, the links another release's version dropped have
@@ -623,7 +630,7 @@ func IndexBlocks(
 	// textIDs is every block this version changed, restored or deleted.
 	cited, err := citedBlocks(ctx, tx, artifactID, textIDs)
 	if err != nil {
-		return nil, false, graphstore.Uncaused{}, err
+		return nil, false, graphstore.Uncaused{}, false, err
 	}
 	moved = append(moved, cited...)
 	// Each version is recorded indexed under its own document, which that table keys by.
@@ -637,9 +644,9 @@ func IndexBlocks(
 		select i.artifact_id, i.version from unnest($1::uuid[], $2::int[]) as i (artifact_id, version)
 		on conflict (artifact_id, version) do nothing
 	`, documents, numbers); err != nil {
-		return nil, false, graphstore.Uncaused{}, fmt.Errorf("record the versions of %s indexed: %w", artifactID, err)
+		return nil, false, graphstore.Uncaused{}, false, fmt.Errorf("record the versions of %s indexed: %w", artifactID, err)
 	}
-	return moved, true, write, nil
+	return moved, true, write, marked, nil
 }
 
 // retractGonePointers is the retraction of every pointer tuple a block the version no longer holds

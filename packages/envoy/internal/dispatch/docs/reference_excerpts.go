@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -157,6 +158,10 @@ func (s *Service) indexDeferredVersion(ctx context.Context, tx pgx.Tx, artifactI
 // reconciliation then indexes the version after it, names every row's node and states what each
 // projects (refs.IndexBlocks). A version whose blocks the write deferred takes it in
 // indexDeferredVersion.
+//
+// versions is what its writer wrote in this transaction, whose nodes that writer writes after the
+// index (WriteVersionNode), so a pass that drains this build's mark leaves them out of the version
+// nodes it writes (indexRenderedVersion's written).
 func (s *Service) indexDocument(ctx context.Context, tx pgx.Tx, artifactID string, versions refs.Versions, markdown string, rendered renderedTree, settled *askBlockSources) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	if rendered.tree == nil {
 		if err := oweVersionsIndex(ctx, tx, versions); err != nil {
@@ -166,7 +171,7 @@ func (s *Service) indexDocument(ctx context.Context, tx pgx.Tx, artifactID strin
 		changes, err := s.indexUnrenderedVersion(ctx, tx, artifactID, versions[artifactID].Number, newest.At, markdown)
 		return changes, graphstore.Uncaused{}, err
 	}
-	return s.indexRenderedVersion(ctx, tx, artifactID, versions, markdown, offsetBlocks(rendered.offsets, rendered.documents), rendered.tree, settled)
+	return s.indexRenderedVersion(ctx, tx, artifactID, versions, versions, markdown, offsetBlocks(rendered.offsets, rendered.documents), rendered.tree, settled)
 }
 
 // oweVersionsIndex owes each document of versions this build's block index (oweDocumentIndex), in
@@ -216,7 +221,9 @@ func (s *Service) indexVersion(ctx context.Context, tx pgx.Tx, artifactID string
 // (IndexDocumentReferences) - and the room holds more blocks than a write indexes in its own
 // request (deferBlockIndexBlocks), the blocks are left to the block-index reconciliation, which
 // indexes the room whole (indexOwedRoom), and the room's references and typed nodes are indexed
-// here, as one document's deferred version's are (indexDeferredVersion).
+// here, as one document's deferred version's are (indexDeferredVersion). document's latest version
+// is the one its writer just wrote, whose node that writer writes after the index, so it is the
+// version a pass that drains this build's mark leaves out (indexRenderedVersion's written).
 func (s *Service) indexDocumentInRoom(ctx context.Context, tx pgx.Tx, room string, layout roomLayout, document string, rendered renderedTree, settled *askBlockSources, deferLarge bool) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	documents := layout.documents(room)
 	latest, err := readRoomVersions(ctx, tx, documents)
@@ -270,7 +277,7 @@ func (s *Service) indexDocumentInRoom(ctx context.Context, tx pgx.Tx, room strin
 		return s.indexDeferredVersion(ctx, tx, room, versions, markdown,
 			renderedTree{tree: joined, markdown: markdown, offsets: offsets, documents: layout.blockDocuments(room, joined, counts)})
 	}
-	index, err := s.indexRoom(ctx, tx, room, versions, markdown, blocks, joined, settled)
+	index, err := s.indexRoom(ctx, tx, room, versions, refs.Versions{document: versions[document]}, markdown, blocks, joined, settled)
 	if err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
@@ -320,7 +327,15 @@ func offsetBlocks(offsets []pmdoc.BlockOffset, documents map[string]string) []mo
 // document's own references - artifactID's, an issue room's tree artifact's, which belong to no
 // one document of the room - take artifactID's own version and its time: for an issue room whose
 // tree holds no version yet, no number and the newest time the pass covers.
-func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactID string, versions refs.Versions, markdown string, blocks []model.ArtifactBlock, tree *pmdoc.Node, settled *askBlockSources) (model.ReferenceChanges, graphstore.Uncaused, error) {
+//
+// A pass that drains this build's mark (refs.IndexBlocks' marked) also writes, in this
+// transaction, the node of each version of the documents it covers that holds none
+// (graphcensus.WriteMissingVersionNodes), after the pass's own nodes: the release before this one
+// writes no version node, and once the mark is cleared no later pass reaches such a version.
+// written is the versions of versions this transaction wrote, which are left out: each one's
+// node is its writer's, written after the index with the version's own writer, time and event
+// (WriteVersionNode). The reconciliation writes no version and leaves none out.
+func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactID string, versions, written refs.Versions, markdown string, blocks []model.ArtifactBlock, tree *pmdoc.Node, settled *askBlockSources) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	own, held := versions[artifactID]
 	if !held {
 		_, newest := versions.Newest(artifactID)
@@ -336,7 +351,7 @@ func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactI
 	// The blocks are indexed before the document's own references are reconciled: a first
 	// indexing dates a block's mention from the document's refs row for its target, which a
 	// surviving target already holds and a new one gets with this same time.
-	moved, won, write, err := refs.IndexBlocks(ctx, tx, artifactID, versions, markdown, blocks, located, pointers, facts)
+	moved, won, write, marked, err := refs.IndexBlocks(ctx, tx, artifactID, versions, markdown, blocks, located, pointers, facts)
 	if err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
@@ -347,6 +362,11 @@ func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactI
 		}
 		write.Nodes = append(write.Nodes, typed.Nodes...)
 		write.Tuples = append(write.Tuples, typed.Tuples...)
+	}
+	if marked {
+		if err := graphcensus.WriteMissingVersionNodes(ctx, tx, slices.Sorted(maps.Keys(versions)), written); err != nil {
+			return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+		}
 	}
 	changes, err := replaceVersionRefs(ctx, tx, artifactID, own.Number, own.At, located, moved, refs.MentionExcerpts(markdown, blocks, located))
 	return changes, write, err

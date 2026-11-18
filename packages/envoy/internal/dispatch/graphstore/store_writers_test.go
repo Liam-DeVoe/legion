@@ -283,6 +283,13 @@ var storeWriteCallSites = []string{
 	// rows read again under them, then the version nodes and their facts, in one graphstore.Write
 	// per batch (graphcensus' TestTheVersionBatchTakesTheStoreLockOrder).
 	"graphcensus/census_versions.go#writeVersionBatch",
+	// The same nodes written by the block-index pass that drains this build's mark, for the versions
+	// of the documents it covers that hold none (docs' indexRenderedVersion: the reconciliation's
+	// drain, and a request's version write that drains the mark first, leaving out its own version):
+	// under the owner row its caller took first, which every writer of a version node takes, after
+	// the nodes of the pass, the version rows read again, then the version nodes and their facts in
+	// one graphstore.Write at the sentinel, the same read and the same write as the batch above.
+	"graphcensus/census_versions.go#WriteMissingVersionNodes",
 	// The backfill's pass over the waits a process of the release before wrote with no node
 	// (dispatch://INFRA-1253): the issue rows the batch's links stand under first, then the links
 	// read again under them, then their needs tuples through Write, then the rows naming the issue's

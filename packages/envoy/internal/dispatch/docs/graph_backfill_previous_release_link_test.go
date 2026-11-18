@@ -4,11 +4,14 @@ import (
 	"context"
 	"io"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // A link the release before this one adds after the backfill marked its document reaches the
@@ -31,15 +34,149 @@ import (
 // The stand-in for that release is indexAsThePreviousRelease, as in
 // TestTheBlockAndTheLinkThePreviousReleaseDroppedAreGoneAfterTheBackfill, run here after the
 // backfill rather than before it.
-//
-// That release writes its version 2 with no version node, as it writes every version, and this
-// build's reconciliation writes none either: a version an older build stored with no node is the
-// backfill's to write (graphcensus' backfillVersions, by an anti-join, since artifact_versions
-// takes no marker column), and the command's README has it run after a rollback to the release
-// before and back, before `census --store`. The test runs it after the drain and holds that run
-// to writing the version's node and nothing of the document's blocks or links, so the census
-// still reads what the drain alone left of them.
 func TestALinkThePreviousReleaseAddsAfterTheBackfillReachesTheStore(t *testing.T) {
+	link := writePreviousReleaseLink(t)
+	database, document, refKey, middle, added := link.database, link.document, link.refKey, link.middle, link.added
+	ctx := context.Background()
+
+	// This build serves again and drains the mark.
+	drainBlockIndex(t, link.service, "after the previous release's version")
+
+	middleAddress := refKey + "#" + middle
+	var named bool
+	if err := database.Pool.QueryRow(ctx, `
+		select node_kind is not null from block_refs
+		where artifact_id = $1 and block_id = $2 and kind = $3 and to_kind = $4 and to_id = $5
+	`, document, middle, added.kind, added.toKind, added.toID).Scan(&named); err != nil {
+		t.Fatalf("read the middle paragraph's link row: %v", err)
+	}
+	if !named {
+		t.Errorf("the block_refs row of %s %s %s:%s names no node after this build drained the backfill's mark",
+			middleAddress, added.kind, added.toKind, added.toID)
+	}
+	held, err := graphstore.CurrentOut(ctx, database.Pool, refs.BlockNodeKind, middleAddress, []string{added.kind})
+	if err != nil {
+		t.Fatalf("read the links the store states out of %s: %v", middleAddress, err)
+	}
+	if len(held) != 1 || held[0].ToKind != added.toKind || held[0].ToID != added.toID {
+		t.Errorf("the store states %#v out of %s, want the %s %s:%s the version holds", held, middleAddress, added.kind, added.toKind, added.toID)
+	}
+	// The previous release wrote its version 2 with no version node, as it writes every version,
+	// and the drain of the mark writes it (graphcensus.WriteMissingVersionNodes), so the census
+	// below reads zero with no second backfill.
+	requirePresentVersionNode(t, database, refKey, previousReleaseVersion, "after this build drained the backfill's mark")
+	requireNoCensusDifference(t, database, "after this build drained the backfill's mark over a link the previous release added")
+}
+
+// A version write of this build that drains the mark gives the previous release's version its node
+// beside its own, with no tick between them.
+//
+// The order is TestALinkThePreviousReleaseAddsAfterTheBackfillReachesTheStore's up to the previous
+// release's version 2, which holds no version node and leaves the document holding the backfill's
+// mark. A person then writes version 3 through this build before any tick reaches the document:
+// that write's index pass is the one that drains the mark, and once the mark is cleared no tick
+// reaches the document again, so version 2 would hold no node and the census would refuse until
+// someone ran the backfill again. The write gives version 2 its node in its own transaction, and
+// leaves version 3's to the version write itself (WriteVersionNode), so version 3's node is the
+// one every version write states: dated at its own row, made by its writer, its facts stated once,
+// under the event that recorded it.
+func TestAVersionWriteThatDrainsTheMarkGivesThePreviousReleasesVersionItsNode(t *testing.T) {
+	link := writePreviousReleaseLink(t)
+	database, service, document, refKey := link.database, link.service, link.document, link.refKey
+	ctx := context.Background()
+
+	// This build's version 3, as the route that snapshots a document writes it: a live edit, then
+	// the version write in the route's transaction, the version's artifact.version event, and what
+	// the write stated appended under that event.
+	editLiveTree(t, service, document, func(tree *pmdoc.Node) *pmdoc.Node {
+		replaceText(tree, "Outer of linked.", "Outer of linked, edited through this build.")
+		return tree
+	})
+	waitForLandedAppends(t, service, document)
+	writer := model.Actor{Kind: "user", ID: "bob"}
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the version write: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	joined, ledger := service.Join(ctx, tx)
+	defer ledger.Discard()
+	written, err := service.SnapshotVersion(joined, document, writer)
+	if err != nil {
+		t.Fatalf("write version 3 through this build: %v", err)
+	}
+	const ownVersion = previousReleaseVersion + 1
+	if !written.Wrote || written.Version.Number != ownVersion {
+		t.Fatalf("the version write wrote %t at version %d, want version %d", written.Wrote, written.Version.Number, ownVersion)
+	}
+	var event int64
+	if err := tx.QueryRow(ctx, `
+		insert into events (issue_key, seq, type, actor, payload, notify)
+		select 'CORE-1', coalesce(max(seq), 0) + 1, 'artifact.version', '{"kind":"user","id":"bob"}',
+		       jsonb_build_object('artifact_id', $1::text, 'name', 'linked.md', 'version', jsonb_build_object('number', $2::int)), false
+		from events where issue_key = 'CORE-1'
+		returning id
+	`, document, ownVersion).Scan(&event); err != nil {
+		t.Fatalf("append version 3's event: %v", err)
+	}
+	if err := graphstore.Caused(ctx, tx, written.Blocks, event); err != nil {
+		t.Fatalf("append what version 3's write stated: %v", err)
+	}
+	if err := ledger.Commit(ctx); err != nil {
+		t.Fatalf("commit version 3: %v", err)
+	}
+	var marked int
+	if err := database.Pool.QueryRow(ctx,
+		`select count(*) from document_block_versions where artifact_id = $1 and store_owed_at is not null`, document).Scan(&marked); err != nil || marked != 0 {
+		t.Fatalf("the document holds the backfill's mark %d time(s) (%v) after this build's version write, want it drained by that write's pass: this test proves nothing", marked, err)
+	}
+
+	requirePresentVersionNode(t, database, refKey, previousReleaseVersion, "after this build's version write drained the backfill's mark")
+	own := requirePresentVersionNode(t, database, refKey, ownVersion, "after this build's version write")
+	var ownAt time.Time
+	if err := database.Pool.QueryRow(ctx, `select created_at from artifact_versions where artifact_id = $1 and number = $2`,
+		document, ownVersion).Scan(&ownAt); err != nil {
+		t.Fatalf("read the row of version %d: %v", ownVersion, err)
+	}
+	if !own.MadeAt.Equal(ownAt) || !own.MadeBy.SameAs(writer) || own.SourceEvent != event {
+		t.Errorf("the node of version %d was made at %s by %+v under event %d, want at its row's %s by its writer %+v under its event %d",
+			ownVersion, own.MadeAt, own.MadeBy, own.SourceEvent, ownAt, writer, event)
+	}
+	var partOf int
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from graph_tuples where from_kind = $1 and from_id = $2 and kind = $3
+	`, graphstore.KindVersion, own.ID, graphstore.TuplePartOf).Scan(&partOf); err != nil {
+		t.Fatalf("read the part_of tuples of version %d: %v", ownVersion, err)
+	}
+	if partOf != 1 {
+		t.Errorf("the node of version %d states %d part_of tuple(s), want one: a write other than the version's own stated it", ownVersion, partOf)
+	}
+	requireNoCensusDifference(t, database, "after this build's version write drained the backfill's mark over a link the previous release added")
+}
+
+// previousReleaseVersion is the version the release before this one writes of the document of
+// writePreviousReleaseLink, with no version node.
+const previousReleaseVersion = 2
+
+// previousReleaseLink is the fixture this file's tests share (writePreviousReleaseLink): the
+// document, its ref_key, the middle paragraph the previous release's version adds a link to, and
+// that link.
+type previousReleaseLink struct {
+	database *store.Store
+	service  *Service
+	document string
+	refKey   string
+	middle   string
+	added    blockLinkRow
+}
+
+// writePreviousReleaseLink writes the document as a build before the store wrote it, with rows of
+// every other kind the census reads, runs the backfill, which names its nodes and marks it
+// (store_owed_at), and then writes the previous release's version 2 of it
+// (indexAsThePreviousRelease), which holds no version node, adds the middle paragraph's link
+// naming no node, and leaves the mark standing.
+func writePreviousReleaseLink(t *testing.T) previousReleaseLink {
+	t.Helper()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 
@@ -98,45 +235,30 @@ func TestALinkThePreviousReleaseAddsAfterTheBackfillReachesTheStore(t *testing.T
 		`select count(*) from document_block_versions where artifact_id = $1 and store_owed_at is not null`, document).Scan(&marked); err != nil || marked != 1 {
 		t.Fatalf("the document holds the backfill's mark %d time(s) (%v) after the previous release's version, want it kept", marked, err)
 	}
+	return previousReleaseLink{database: database, service: service, document: document, refKey: refKey, middle: middle, added: added}
+}
 
-	// This build serves again and drains the mark.
-	drainBlockIndex(t, service, "after the previous release's version")
+// requirePresentVersionNode answers the node of version number of the document refKey addresses,
+// read through the store, and fails the test, naming the version, unless the store holds it
+// present.
+func requirePresentVersionNode(t *testing.T, database *store.Store, refKey string, number int, when string) graphstore.Node {
+	t.Helper()
+	address := graphstore.VersionID(refKey, number)
+	node, stands, err := graphstore.ReadNode(context.Background(), database.Pool, graphstore.KindVersion, address)
+	if err != nil {
+		t.Fatalf("read the node of version %d (%s): %v", number, address, err)
+	}
+	if !stands || node.State == graphstore.StateGone {
+		t.Errorf("the store holds no present node of version %d (%s) %s (held %t, state %q): the drain left the version with no node",
+			number, address, when, stands, node.State)
+	}
+	return node
+}
 
-	middleAddress := refKey + "#" + middle
-	var named bool
-	if err := database.Pool.QueryRow(ctx, `
-		select node_kind is not null from block_refs
-		where artifact_id = $1 and block_id = $2 and kind = $3 and to_kind = $4 and to_id = $5
-	`, document, middle, added.kind, added.toKind, added.toID).Scan(&named); err != nil {
-		t.Fatalf("read the middle paragraph's link row: %v", err)
-	}
-	if !named {
-		t.Errorf("the block_refs row of %s %s %s:%s names no node after this build drained the backfill's mark",
-			middleAddress, added.kind, added.toKind, added.toID)
-	}
-	held, err := graphstore.CurrentOut(ctx, database.Pool, refs.BlockNodeKind, middleAddress, []string{added.kind})
-	if err != nil {
-		t.Fatalf("read the links the store states out of %s: %v", middleAddress, err)
-	}
-	if len(held) != 1 || held[0].ToKind != added.toKind || held[0].ToID != added.toID {
-		t.Errorf("the store states %#v out of %s, want the %s %s:%s the version holds", held, middleAddress, added.kind, added.toKind, added.toID)
-	}
-	// The previous release wrote version 2 with no version node, and neither the drain nor the
-	// boot's backfill (graphcensus.BackfillAsks: issues, documents, asks and messages) writes one.
-	// The backfill run after the rollback writes it, and nothing of the blocks or links the drain
-	// brought to the store.
-	again, err := graphcensus.Backfill(ctx, database, io.Discard)
-	if err != nil {
-		t.Fatalf("backfill the store after this build drained the mark: %v", err)
-	}
-	for _, kind := range []string{refs.BlockNodeKind, "block_ref"} {
-		if done := backfilledKind(t, again, kind); done.Rows != 0 || done.Owed != 0 {
-			t.Errorf("the backfill after the drain wrote %#v for kind %s, want nothing: the drain left a row of it to the backfill", done, kind)
-		}
-	}
-	if versions := backfilledKind(t, again, graphstore.KindVersion); versions.Rows != 1 || !versions.Complete {
-		t.Errorf("the backfill after the drain wrote %#v for the versions, want the previous release's version 2 alone", versions)
-	}
+// requireNoCensusDifference takes the store census and fails the test on each difference it
+// reads, and on its refusal.
+func requireNoCensusDifference(t *testing.T, database *store.Store, when string) {
+	t.Helper()
 	census := takeStoreCensus(t, database)
 	for _, kind := range census.Kinds {
 		for _, difference := range append(append([]graphcensus.Difference{}, kind.ReportedRows...), kind.ReportedNodes...) {
@@ -144,7 +266,6 @@ func TestALinkThePreviousReleaseAddsAfterTheBackfillReachesTheStore(t *testing.T
 		}
 	}
 	if census.Refused() {
-		t.Fatalf("the census refused with %d difference(s) after this build drained the backfill's mark over a link the previous release added, want zero",
-			census.Differences())
+		t.Fatalf("the census refused with %d difference(s) %s, want zero", census.Differences(), when)
 	}
 }
