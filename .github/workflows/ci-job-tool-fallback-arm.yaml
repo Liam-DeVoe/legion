@@ -33,9 +33,9 @@ jobs:
     # The budget (.github/ci-budgets.md, "The tool-fallback-arm job", adds up its first term
     # part by part and says what this job measures against it): 1140 s, the slowest run this
     # job can have, plus its slowest retried step alone - either setup-bun step's two
-    # `ci_tools_fetch` calls, 2562 s, above the rig steps' one of 1281 s each.
-    # 1140 + 2562 = 3702 s -> 62 min.
-    timeout-minutes: 62
+    # `ci_tools_fetch` calls, 3416 s, above the rig steps' one of 1708 s each.
+    # 1140 + 3416 = 4556 s -> 76 min.
+    timeout-minutes: 76
     # Why this job's install bounds are loud and its own limit does not reach them first:
     # .github/ci-budgets.md, "The tool-fallback-arm job".
     steps:
@@ -54,30 +54,30 @@ jobs:
       # The healthy path, with nothing faulted: the release asset serves Bun, and the action's
       # setup-bun step holds what it installed to the row its bun-pin step read out of `uname -m`.
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
       - uses: ./.github/actions/setup-bun
-        timeout-minutes: 43
+        timeout-minutes: 57
 
-      # One `ci_tools_fetch`, 1281 s: the rig sources .github/scripts/ci-tools.sh
-      # (ci-budgets.md's Budgets note) -> 22 min.
+      # One `ci_tools_fetch`, 1708 s: the rig sources .github/scripts/ci-tools.sh
+      # (ci-budgets.md's Budgets note) -> 29 min.
       - name: Read the Bun the release asset served
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh installed-bun bun-linux-aarch64
 
       # The fault and the routing of every later step through it, as in the tool-fallback job:
       # the rig starts the proxy over the release hosts its own FAULT_HOSTS names and writes the
       # four spellings of the two proxy variables and the two emptied bypass lists to
       # $GITHUB_ENV, so neither the hosts nor the variables are written in this file.
-      # One `ci_tools_fetch`, 1281 s: the rig sources .github/scripts/ci-tools.sh
-      # (ci-budgets.md's Budgets note) -> 22 min.
+      # One `ci_tools_fetch`, 1708 s: the rig sources .github/scripts/ci-tools.sh
+      # (ci-budgets.md's Budgets note) -> 29 min.
       - name: Start the fault in front of GitHub's release assets
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh start-fault
 
-      # One `ci_tools_fetch`, 1281 s: the rig sources .github/scripts/ci-tools.sh
-      # (ci-budgets.md's Budgets note) -> 22 min.
+      # One `ci_tools_fetch`, 1708 s: the rig sources .github/scripts/ci-tools.sh
+      # (ci-budgets.md's Budgets note) -> 29 min.
       - name: Read the fault before any install meets it
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh probe github.com
 
       # Both names, because the action's refusal takes both: what must be read again is an
@@ -88,17 +88,17 @@ jobs:
       # The npm path on arm64: the release asset answers nothing behind the fault, so the
       # action's bun-second-source step reads the @oven/bun-linux-aarch64 package the row names.
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
       - uses: ./.github/actions/setup-bun
-        timeout-minutes: 43
+        timeout-minutes: 57
 
       # --expect-refused is this half's own reading of the source: the proxy's 504 for
       # github.com after the probe is the refusal that sent this install to npm, and the
       # version and the digest cannot say it, since both sources serve one binary.
-      # One `ci_tools_fetch`, 1281 s: the rig sources .github/scripts/ci-tools.sh
-      # (ci-budgets.md's Budgets note) -> 22 min.
+      # One `ci_tools_fetch`, 1708 s: the rig sources .github/scripts/ci-tools.sh
+      # (ci-budgets.md's Budgets note) -> 29 min.
       - name: Read the Bun npm served
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh installed-bun bun-linux-aarch64 --expect-refused github.com
 
       # `always()`, because the reading a reader wants most is the one from a job that failed.
@@ -110,11 +110,11 @@ jobs:
       # it: the ci-ok-report step below runs actions/upload-artifact, which would otherwise
       # upload through a proxy that is about to go. The rig writes the emptied variables, as it
       # wrote the proxy ones.
-      # One `ci_tools_fetch`, 1281 s: the rig sources .github/scripts/ci-tools.sh
-      # (ci-budgets.md's Budgets note) -> 22 min.
+      # One `ci_tools_fetch`, 1708 s: the rig sources .github/scripts/ci-tools.sh
+      # (ci-budgets.md's Budgets note) -> 29 min.
       - name: Stop routing this job through the fault
         if: always()
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh stop-fault
 
       - name: Report ci-ok when this job decides a merge-group run

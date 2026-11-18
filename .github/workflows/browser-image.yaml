@@ -61,7 +61,7 @@ jobs:
     # are that 134 s measured maximum and its slowest retried step alone — the ci-ok report at
     # 2160 s (ci-budgets.md's Budgets note, "The ci-ok report"), above the build's longest
     # single ladder, the package set's `apt-get install` at 5 x 300 + 150 = 1650 s, and
-    # install-crane's one `ci_tools_fetch`, 1281 s, which is above the record step's two `crane
+    # install-crane's one `ci_tools_fetch`, 1708 s, which is above the record step's two `crane
     # manifest` reads at 2 x (5 x 60 + 150) = 900 s and the decide step's one `crane config`
     # read of 450 s. The job holds that step AND the 134 s measured above it, so its key is
     # the two together, 134 + 2160 = 2294 s -> 39 min, which is also one minute above the
@@ -115,10 +115,10 @@ jobs:
 
       # crane reads the published image's label for the publish decision below and writes the
       # pushed image's tag.
-      # install-crane's own retry arithmetic: one `ci_tools_fetch`, 1281 s
-      # (the Budgets note of .github/ci-budgets.md) -> 22 min.
+      # install-crane's own retry arithmetic: one `ci_tools_fetch`, 1708 s
+      # (the Budgets note of .github/ci-budgets.md) -> 29 min.
       - uses: ./.github/actions/install-crane
-        timeout-minutes: 22
+        timeout-minutes: 29
 
       # Where this image lives and what the package already holds for it, read from
       # .github/ci-images.yaml at run time rather than written here: that file is where this

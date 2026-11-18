@@ -34,12 +34,14 @@
 #      this check computes is the sum of those waits with the attempts themselves taking no time,
 #      which is the longest one the options allow; a curl whose longest ladder is under 120 s is
 #      refused with the figure. `--retry 7 --retry-delay 1` is 7 s and `--retry 7
-#      --retry-max-time 5` is 7 s, and both pass every other test of this floor. One site in
-#      the tree writes one of the two: .github/scripts/ci-tools.sh's ci_tools_curl carries
-#      `--retry-max-time 300`, which keeps its eighth attempt — the seventh wait is decided
-#      with the timer at 63 s, inside that limit — so its ladder is the full 127 s against a
-#      host that refuses at once, and five attempts over 256 s against one that stalls, each
-#      clearing the floor; that file derives the 300 itself. No site writes `--retry-delay`.
+#      --retry-max-time 5` is 7 s, and both pass every other test of this floor. Two sites in
+#      the tree write one of the two, both in .github/scripts/ci-tools.sh: ci_tools_curl and
+#      ci_tools__curl_held, its ladder for a request that carries a credential and follows no
+#      redirect, each carry `--retry-max-time 300`, which keeps the eighth attempt — the
+#      seventh wait is decided with the timer at 63 s, inside that limit — so each ladder is
+#      the full 127 s against a host that refuses at once, and five attempts over 256 s
+#      against one that stalls, each clearing the floor; that file derives the 300 itself. No
+#      site writes `--retry-delay`.
 #      Rule 8 reads this same ladder when it prices the curl's
 #      attempts against the step's budget, so a curl's floor and its arithmetic are one
 #      computation rather than two that can drift apart.
@@ -234,7 +236,7 @@
 #      (dispatch://INFRA-1545, round 37). Until round 37's class search it was charged once and
 #      refused nothing. This tree writes it once, as ci-job-tool-fallback.yaml's 'Seed mise's
 #      install of jj with the staged binary, one byte changed' runs ci-tools-proof.sh three
-#      times, whose entry writes the rig's one `ci_tools_fetch`, 1281 s: none of the three runs
+#      times, whose entry writes the rig's one `ci_tools_fetch`, 1708 s: none of the three runs
 #      calls a function that fetches.
 #   4. A DECLARATION, keyed as the tree keys it: a DECLARED_LOOPS entry names a workflow step by
 #      its file, its name and the verb, or a script by its file and the verb, with no step; a
@@ -263,7 +265,7 @@
 #      the wrapper cannot run a shell function — and is refused by name and charged nothing;
 #      seconds written as a variable are refused as no number this check reads. And a curl's own
 #      `--max-time <seconds>`, written once as two words after no option taking a value, which
-#      this tree writes outside a Dockerfile as ci-tools.sh's `--max-time "$max_time"`,
+#      this tree writes outside a Dockerfile as ci-tools.sh's two `--max-time "$max_time"`,
 #      declared. Every other spelling is refused by name, at a site an exception leaves
 #      unretried too (curl_bound_refusal): a bound written more than once, since curl takes the
 #      last; `-m<s>` or a cluster of short options ending in `m`; `--max-time=<s>`, which curl
@@ -716,10 +718,11 @@
 #      figure this rule would ask its author for is the one rule 4 is already asking them to
 #      write. The call is a wait all the same and not an absence of one, so a script holding it
 #      is a script whatever runs it waits for, and a loop this check cannot count around a call
-#      of that script is refused rather than dropped. .github/scripts/ci-tools.sh's
-#      ci_tools_curl is the one such site in this tree — the helper every tool install of
-#      .github/ci-tools.yaml fetches through — and rule 8 priced it, and so those installs, at
-#      nothing until the declaration below priced it (review round 9 of dispatch://INFRA-1545).
+#      of that script is refused rather than dropped. .github/scripts/ci-tools.sh's two curls,
+#      ci_tools_curl's and ci_tools__curl_held's, are the sites of that kind in this tree — the
+#      helper every tool install of .github/ci-tools.yaml fetches through — and rule 8 priced
+#      ci_tools_curl, and so those installs, at nothing until the declaration below priced it
+#      (review round 9 of dispatch://INFRA-1545).
 #
 #      WHAT IT COUNTS ONCE OR MISCOUNTS, which is the other half of this rule and the half a
 #      reader is owed plainly. Round 37 took off this list every shape it named that priced a
@@ -754,7 +757,7 @@
 #          step is refused unless a DECLARED_LIBRARIES entry writes what the library
 #          contributes to it, which then replaces that charge. The tool-fallback steps that
 #          source .github/scripts/ci-tools.sh and run ci-tools-proof.sh's `version-answers`,
-#          which fetches nothing, are declared at 1281 s, the library's one `ci_tools_fetch`,
+#          which fetches nothing, are declared at 1708 s, the library's one `ci_tools_fetch`,
 #          and so is the step 'Seed mise's install of jj with the staged binary, one byte
 #          changed', which runs ci-tools-proof.sh three times, none of the runs calling a
 #          function that fetches. The ci-ok-report action, which reaches runner-shutdown.sh
@@ -766,10 +769,11 @@
 #          charge (library_functions). The body is refused unless a DECLARED_LIBRARIES entry,
 #          for the step or for the file whose calls they are, writes what the library
 #          contributes. ci-tools-proof.sh's `stage`, which calls ci_tools_fetch once for each
-#          of its five staged rows, is declared for the staging step at the 5124 s its budget
-#          writes and for every other step running that script at 1281 s; the blob check's
-#          loop of ci_tools_curl_status calls at its own 2015 s; mirror-ci-tools.sh's fill at a
-#          cold fill, 427 + 4 x 3633 = 14959 s, which .github/ci-budgets.md derives; and
+#          of its five staged rows, is declared for the staging step at the 6832 s its budget
+#          writes and for every other step running that script at 1708 s; the blob check's
+#          loop of ci_tools_registry_head calls at its own 4397 s; mirror-ci-tools.sh's fill at
+#          a cold fill of the five ghcr-mirror rows, 427 + 5 x 3633 = 18592 s, which
+#          .github/ci-budgets.md derives; and
 #          ci-ok-report.sh's two calls of shutdown_killed, of which a run makes one, at 780 s.
 #
 #      What is read correctly, though a reader may expect otherwise: a retried call written
@@ -3856,37 +3860,44 @@ DECLARED_LOOPS: list[DeclaredArithmetic] = [
                        "for the row the package already holds and once for the row it is about "
                        "to copy — two written calls of which a pass runs one, so the figure is "
                        "twice what a row costs: 2 x (5 x 60 + 150) = 900 s"),
-    # Not a loop. ci_tools_curl writes `--max-time "$max_time"`, the row's own field, so one
-    # call of this one curl has no figure and rule 8 priced every tool install of this tree at
-    # nothing without this entry (review round 9 of dispatch://INFRA-1545).
-    DeclaredArithmetic(".github/scripts/ci-tools.sh", None, "curl", 1281,
-                       "the three fetches one failing `ci_tools_fetch` of a ghcr-mirror row "
-                       "with a release asset of its own makes: the asset, then the anonymous "
-                       "pull token and then the blob of the copy (ci_tools_fetch, "
+    # Not a loop. ci_tools_curl and ci_tools__curl_held each write `--max-time "$max_time"`, the
+    # caller's own bound, so one call of either curl has no figure and rule 8 priced every tool
+    # install of this tree at nothing without this entry (review round 9 of
+    # dispatch://INFRA-1545). The entry covers both, and each is charged its figure.
+    DeclaredArithmetic(".github/scripts/ci-tools.sh", None, "curl", 854,
+                       "each of this file's two curls, of which one failing `ci_tools_fetch` of "
+                       "a ghcr-mirror row with a release asset of its own runs each twice: "
+                       "ci_tools_curl's for the asset and then for the store the package's "
+                       "redirect points at, and ci_tools__curl_held's, which carries a "
+                       "credential and follows no redirect, for the anonymous pull token and "
+                       "then the blob request to the package (ci_tools_fetch, "
                        "ci_tools_ghcr_token, ci_tools__fetch_ghcr). What one of those ladders "
-                       "costs is decided by `--retry-max-time 300`, which that file writes "
-                       "beside `--retry 7`, and its own block on that option is where the "
+                       "costs is decided by `--retry-max-time 300`, which both write beside "
+                       "`--retry 7`, and that file's own block on that option is where the "
                        "per-ladder ceiling is derived: a mixture of quick failures and one "
                        "stalled attempt is the expensive shape, and 427 s is the ceiling it "
-                       "reaches. This entry reads that figure rather than deriving it again, "
-                       "and 3 x 427 = 1281 s. "
+                       "reaches at a row's `max_time` of 60 s. This entry reads that figure "
+                       "rather than deriving it again: 2 x 427 = 854 s for each curl, and the "
+                       "file's one charge is its two curls, 2 x 854 = 1708 s, the four ladders "
+                       "of one `ci_tools_fetch`. "
                        "One figure cannot be true of every caller of one helper, and this one "
                        "is written for the worst of the installs: .github/actions/install-crane "
                        "and .github/actions/install-changie each fetch such a row, and "
                        ".github/actions/install-jj's mise step fetches the mise row the same "
                        "way. A row whose `primary` is empty costs the second source alone - "
-                       "2 x 427 = 854 s for the jj row's token and blob, and one npm tarball, "
-                       "427 s, for a bun row - and a step that sources this file twice is "
-                       "charged this figure twice, so an install of one row is over-priced. "
+                       "3 x 427 = 1281 s for the jj row's token, blob request and store, and "
+                       "one npm tarball, 427 s, for a bun row - and a step that sources this "
+                       "file twice is charged its 1708 s twice, so an install of one row is "
+                       "over-priced. "
                        "Two callers loop over it, and each is priced by a DECLARED_LIBRARIES "
                        "entry instead. .github/scripts/mirror-ci-tools.sh makes nine of these "
                        "requests for each ghcr-mirror row it fills, and its entry is a cold "
-                       "fill, 14959 s, which .github/ci-budgets.md's \"The ci-images job's "
+                       "fill, 18592 s, which .github/ci-budgets.md's \"The ci-images job's "
                        "ceiling and the tool copy\" derives. "
                        ".github/scripts/ci-tools-proof.sh's `stage` calls ci_tools_fetch once "
                        "per row of its STAGED_ROWS, a call of a function this file defines, "
-                       "which this check charges as the file's one charge: the twelve ladders "
-                       "those five rows make are the staging step's entry, 5124 s, derived "
+                       "which this check charges as the file's one charge: the sixteen ladders "
+                       "those five rows make are the staging step's entry, 6832 s, derived "
                        "from this entry's figures"),
 ]
 
@@ -3928,38 +3939,38 @@ RUNNER_SHUTDOWN = ".github/scripts/runner-shutdown.sh"
 DECLARED_LIBRARIES: list[DeclaredLibrary] = [
     DeclaredLibrary(TOOL_FALLBACK,
                     "Stage the correct bytes of every row a case serves, before the fault",
-                    CI_TOOLS, 5124,
+                    CI_TOOLS, 6832,
                     "`stage` loops over ci-tools-proof.sh's STAGED_ROWS - crane, changie, mise, jj "
                     "and bun-linux-x64 - and calls ci_tools_fetch once for each, the figures of "
                     "the DECLARED_LOOPS entry for ci-tools.sh's curl: a row whose primary is a "
-                    "release asset of its own costs 1281 s, which is crane, changie and mise; the "
-                    "jj row's primary is empty, 854 s; and bun-linux-x64 costs its one npm "
-                    "tarball, 427 s. 3 x 1281 + 854 + 427 = 5124 s, the sum the step's own "
-                    "comment writes for its 86 minutes"),
-    DeclaredLibrary(".github/scripts/ci-tools-proof.sh", None, CI_TOOLS, 1281,
+                    "release asset of its own costs 1708 s, which is crane, changie and mise; the "
+                    "jj row's primary is empty, 1281 s; and bun-linux-x64 costs its one npm "
+                    "tarball, 427 s. 3 x 1708 + 1281 + 427 = 6832 s, the sum the step's own "
+                    "comment writes for its 114 minutes"),
+    DeclaredLibrary(".github/scripts/ci-tools-proof.sh", None, CI_TOOLS, 1708,
                     "ci_tools_fetch and ci_tools_fetch_primary are called in `stage`'s loop and "
                     "nowhere else in this script, and only the staging step passes `stage`, "
                     "which its own entry prices; every other subcommand reaches the library's "
                     "fetches through nothing it calls, so a step running one is charged the "
-                    "library once, as it sources it: 1 x 1281 s, the figure each such step's "
-                    "comment writes for its 22 minutes"),
+                    "library once, as it sources it: 1 x 1708 s, the figure each such step's "
+                    "comment writes for its 29 minutes"),
     DeclaredLibrary(TOOL_FALLBACK, "Check every tool is the version its row pins", CI_TOOLS,
-                    1281,
+                    1708,
                     "the step sources ci-tools.sh and runs ci-tools-proof.sh `version-answers` "
                     "for each of eight rows, and `version-answers` compares a printed version "
                     "with the row and fetches nothing, so the library's fetches are the step's "
-                    "once: 1 x 1281 s, the figure the step's comment writes for its 22 minutes"),
-    DeclaredLibrary(TOOL_FALLBACK, "Print what every tool answers now", CI_TOOLS, 1281,
+                    "once: 1 x 1708 s, the figure the step's comment writes for its 29 minutes"),
+    DeclaredLibrary(TOOL_FALLBACK, "Print what every tool answers now", CI_TOOLS, 1708,
                     "the step sources ci-tools.sh and runs ci-tools-proof.sh `version-answers` "
                     "for crane, changie and jj, which fetches nothing, and calls "
-                    "ci_tools_verify, a digest read off disk: 1 x 1281 s, the figure the step's "
-                    "comment writes for its 22 minutes"),
+                    "ci_tools_verify, a digest read off disk: 1 x 1708 s, the figure the step's "
+                    "comment writes for its 29 minutes"),
     # A script that sources the library, run three times by one step, each run a shell of its
     # own: the one tree instance of that shape, counted at b5aba1e5 with this check's own
     # survey instrumented (dispatch://INFRA-1545, round 37).
     DeclaredLibrary(TOOL_FALLBACK,
                     "Seed mise's install of jj with the staged binary, one byte changed",
-                    CI_TOOLS, 1281,
+                    CI_TOOLS, 1708,
                     "the step runs ci-tools-proof.sh three times, each run a shell of its own "
                     "that sources ci-tools.sh: `payload-path jj` reads the row's second source "
                     "and its digest off .github/ci-tools.yaml (ci_tools_field, ci_tools_digest), "
@@ -3967,22 +3978,25 @@ DECLARED_LIBRARIES: list[DeclaredLibrary] = [
                     "`seed-mise-jj` installs that copy in mise's directory. None of the three "
                     "calls a function that fetches, so the runs fetch 0 + 0 + 0 = 0 s, and the "
                     "step is charged the library once, as it sources it, the charge every step "
-                    "running a subcommand of the rig but `stage` carries: 1 x 1281 s, the figure "
-                    "the step's comment writes for its 22 minutes"),
+                    "running a subcommand of the rig but `stage` carries: 1 x 1708 s, the figure "
+                    "the step's comment writes for its 29 minutes"),
     DeclaredLibrary(TOOL_FALLBACK, "Check the package holds the blob of every mirrored row",
-                    CI_TOOLS, 2015,
+                    CI_TOOLS, 4397,
                     "the anonymous pull token at 60 s an attempt, 427 s, and one HEAD per "
-                    "ghcr-mirror row of .github/ci-tools.yaml at 30 s an attempt, 397 s each over "
-                    "the four such rows, 1588 s, both per-ladder figures ci-tools.sh's own "
-                    "`--retry-max-time` block writes: 427 + 1588 = 2015 s, the sum the step's "
-                    "comment writes for its 34 minutes"),
-    DeclaredLibrary(".github/scripts/mirror-ci-tools.sh", None, CI_TOOLS, 14959,
+                    "ghcr-mirror row of .github/ci-tools.yaml through ci_tools_registry_head, "
+                    "whose two requests - the package's answer and the read of the store a "
+                    "redirect points at - take 30 s an attempt each, 2 x 397 = 794 s each over "
+                    "the five such rows, 3970 s, both per-ladder figures ci-tools.sh's own "
+                    "`--retry-max-time` block writes: 427 + 3970 = 4397 s, the sum the step's "
+                    "comment writes for its 74 minutes"),
+    DeclaredLibrary(".github/scripts/mirror-ci-tools.sh", None, CI_TOOLS, 18592,
                     "a cold fill, which .github/ci-budgets.md's \"The ci-images job's ceiling "
-                    "and the tool copy\" derives: a ghcr-mirror row costs nine requests, the "
-                    "two of them carrying the asset's bytes at 427 s and seven at 397 s, the "
-                    "per-ladder figures ci-tools.sh's own `--retry-max-time` block writes, "
-                    "2 x 427 + 7 x 397 = 3633 s; the four ghcr-mirror rows with the one token "
-                    "request are 427 + 4 x 3633 = 14959 s"),
+                    "and the tool copy\" derives: a ghcr-mirror row costs nine requests, none "
+                    "of its HEADs following a redirect, the two of them carrying the asset's "
+                    "bytes at 427 s and seven at 397 s, the per-ladder figures ci-tools.sh's "
+                    "own `--retry-max-time` block writes, 2 x 427 + 7 x 397 = 3633 s; the five "
+                    "ghcr-mirror rows .github/ci-tools.yaml holds (crane, changie, mise, jj and "
+                    "elan) with the one token request are 427 + 5 x 3633 = 18592 s"),
     DeclaredLibrary(".github/actions/ci-ok-report/action.yml", None, RUNNER_SHUTDOWN, 1560,
                     "two calls of runner_shutdown_kills, each a check-run read, 5 x 30 + 150 = "
                     "300 s, and the annotations loop runner-shutdown.sh's DECLARED_LOOPS entry "

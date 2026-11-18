@@ -43,9 +43,9 @@ jobs:
     # hung connection rather than waiting out the runner's own limit.
     #
     # Budget (ci-budgets.md's Budgets note): those ten minutes, 600 s, plus its slowest retried
-    # step alone — setup-bun's two `ci_tools_fetch` calls, 2562 s, above the ci-ok report's
-    # 2160 s. 600 + 2562 = 3162 s -> 53 min.
-    timeout-minutes: 53
+    # step alone — setup-bun's two `ci_tools_fetch` calls, 3416 s, above the ci-ok report's
+    # 2160 s. 600 + 3416 = 4016 s -> 67 min.
+    timeout-minutes: 67
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml),
@@ -71,9 +71,9 @@ jobs:
           persist-credentials: false
 
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
       - name: Setup Bun
-        timeout-minutes: 43
+        timeout-minutes: 57
         uses: ./.github/actions/setup-bun
 
       - name: Test the session message-wait script

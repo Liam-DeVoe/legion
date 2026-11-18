@@ -70,10 +70,10 @@ jobs:
     #
     # Budget (ci-budgets.md's Budgets note): those 30 minutes, 1800 s, plus its slowest retried
     # step alone — install-jj, whose two `ci_tools_fetch` calls and whose `mise install` of the
-    # jj release are 2562 + 450 = 3012 s, above setup-bun's two calls at 2562 s, the workspace
+    # jj release are 3416 + 450 = 3866 s, above setup-bun's two calls at 3416 s, the workspace
     # install's and the Go module download's 1050 s each, the ci-ok report's 2160 s and
-    # install-omp's `mise install` of 450 s. 1800 + 3012 = 4812 s -> 81 min.
-    timeout-minutes: 81
+    # install-omp's `mise install` of 450 s. 1800 + 3866 = 5666 s -> 95 min.
+    timeout-minutes: 95
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -83,9 +83,9 @@ jobs:
       # The pack: `bun pm pack` runs each plugin's prepack, which builds its bundle from the
       # installed workspace and t.Fatal rather than skips when the pack fails.
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
       - name: Setup Bun
-        timeout-minutes: 43
+        timeout-minutes: 57
         uses: ./.github/actions/setup-bun
 
       # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
@@ -128,9 +128,9 @@ jobs:
       # Only for the mise it leaves at ~/.local/bin/mise, which install-omp installs the pin
       # through: no test of this job runs jj.
       # install-jj's own retry arithmetic: two `ci_tools_fetch` calls and its `mise install`
-      # of the jj release, 2562 + 450 = 3012 s (ci-budgets.md's Budgets note) -> 51 min.
+      # of the jj release, 3416 + 450 = 3866 s (ci-budgets.md's Budgets note) -> 65 min.
       - uses: ./.github/actions/install-jj
-        timeout-minutes: 51
+        timeout-minutes: 65
 
       # The tests run the Oh My Pi the worker image ships and refuse on GitHub Actions without
       # one (internal/testbin's OMP). The pin is read from .omp-pin, the repository's one copy of

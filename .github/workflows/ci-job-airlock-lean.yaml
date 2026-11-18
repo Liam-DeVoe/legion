@@ -35,7 +35,7 @@ jobs:
     # Budget (ci-budgets.md's Budgets note): 1200 s, the 20 minutes this job carried, above the
     # 185 s maximum of the four runs made of it on this branch — it was selected by no main push
     # in the window that note names — plus its slowest retried step alone: install-elan's one
-    # `ci_tools_fetch` of the elan tarball, 1281 s, below the ci-ok report, 2160 s (ci-budgets.md's Budgets note, "The ci-ok report"), which is this job's slowest
+    # `ci_tools_fetch` of the elan tarball, 1708 s, below the ci-ok report, 2160 s (ci-budgets.md's Budgets note, "The ci-ok report"), which is this job's slowest
     # retried step now. 1200 + 2160 = 3360 s, a whole number of minutes, so the budget is the
     # next one strictly above it -> 57 min.
     timeout-minutes: 57
@@ -67,10 +67,10 @@ jobs:
         with:
           path: ${{ runner.temp }}/elan
           key: elan-${{ runner.os }}-${{ hashFiles('packages/envoy/internal/broker/airlock/lean/lean-toolchain') }}
-      # install-elan's own retry arithmetic: one `ci_tools_fetch` of the release tarball, 1281 s
-      # (ci-budgets.md's Budgets note) -> 22 min.
+      # install-elan's own retry arithmetic: one `ci_tools_fetch` of the release tarball, 1708 s
+      # (ci-budgets.md's Budgets note) -> 29 min.
       - uses: ./.github/actions/install-elan
-        timeout-minutes: 22
+        timeout-minutes: 29
       - name: Build the Lean model
         run: |
           lake build

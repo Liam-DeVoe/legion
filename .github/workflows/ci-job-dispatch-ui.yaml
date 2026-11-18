@@ -25,17 +25,17 @@ jobs:
     runs-on: ubuntu-24.04
     # Budget (ci-budgets.md's Budgets note): 900 s, the 15 minutes this job was written with, plus
     # its slowest retried step alone — the setup-bun step's two `ci_tools_fetch` calls,
-    # 2562 s, above the workspace install's 5 x 180 + 150 = 1050 s, the zsh install's two apt
-    # phases at 625 + 775 = 1400 s and the ci-ok report's 2160 s. 900 + 2562 = 3462 s -> 58 min.
-    timeout-minutes: 58
+    # 3416 s, above the workspace install's 5 x 180 + 150 = 1050 s, the zsh install's two apt
+    # phases at 625 + 775 = 1400 s and the ci-ok report's 2160 s. 900 + 3416 = 4316 s -> 72 min.
+    timeout-minutes: 72
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
       - uses: ./.github/actions/setup-bun
-        timeout-minutes: 43
+        timeout-minutes: 57
       # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
       - name: bun install --frozen-lockfile
         # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.

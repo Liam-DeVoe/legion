@@ -24,19 +24,19 @@ jobs:
   claude-envoy:
     runs-on: ubuntu-24.04
     # Budget (the Budgets note of .github/ci-budgets.md): 600 s, the 10 minutes this job carried, above its 99 s measured maximum,
-    # plus its slowest retried step alone - the leak-guard fetch of the release-push.sh
-    # steps, 6 call sites of one 450 s fetch = 2700 s, above every other retried step here.
-    # 600 + 2700 = 3300 s -> 56 min, which carries the whole minute that
-    # note gives a step whose own arithmetic is a whole number of minutes (46 min here).
-    timeout-minutes: 56
+    # plus its slowest retried step alone - the setup-bun step's two `ci_tools_fetch` calls,
+    # 2 x 1708 = 3416 s, above the leak-guard fetch of the release-push.sh steps, 6 call sites
+    # of one 450 s fetch = 2700 s, and every other retried step here.
+    # 600 + 3416 = 4016 s -> 67 min.
+    timeout-minutes: 67
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
       - uses: ./.github/actions/setup-bun
-        timeout-minutes: 43
+        timeout-minutes: 57
       # tests/answers-claude.test.ts runs the pinned Claude Code against a stand-in Messages
       # endpoint and Dispatch, and refuses on GitHub Actions without one. The pin is read from
       # .claude-code-pin, the repository's one copy of it (.github/actions/install-claude-code).

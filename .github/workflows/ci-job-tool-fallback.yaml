@@ -34,12 +34,13 @@ jobs:
     # part by part". The rule below is what that sum has to fit inside.
 
     # How this key was built, and why the staging step's ladder, its slowest retried step at
-    # 5124 s, ends inside it: .github/ci-budgets.md, "The tool-fallback job's budget, part by
-    # part". The construction there gives 86 + 18 = 104, and the key carried that with the ten
-    # minutes it always had, 114, until review round 29 of dispatch://INFRA-1545 read it 6 s
-    # under the Budgets note's sum. It now clears that sum too, this job's 28.7-minute run of
-    # job 129478173535 plus the staging step's ladder: 1722 + 5124 = 6846 s -> 115 min.
-    timeout-minutes: 115
+    # 6832 s, ends inside it: .github/ci-budgets.md, "The tool-fallback job's budget, part by
+    # part". The construction there gives 114 + 18 = 132, and the key carries that with the ten
+    # minutes it always had, 142, and the one minute review round 29 of dispatch://INFRA-1545
+    # added when it read the key 6 s under the Budgets note's sum. It clears that sum too, this
+    # job's 28.7-minute run of job 129478173535 plus the staging step's ladder:
+    # 1722 + 6832 = 8554 s -> 143 min.
+    timeout-minutes: 143
     # What the eleven minutes those installs carry is derived from, and why a bound would have
     # changed nothing in the incident that asked for it: .github/ci-budgets.md, "What the
     # tool-fallback job's eleven-minute installs are derived from".
@@ -70,16 +71,18 @@ jobs:
       # Its own retry arithmetic, read off the loop below rather than taken as one ladder: the
       # anonymous pull token, at the 60 s an attempt .github/scripts/ci-tools.sh's token
       # helper defaults to, 427 s; and one HEAD per ghcr-mirror row of .github/ci-tools.yaml,
-      # at the 30 s an attempt this step gives it, 397 s each over the four such rows, 1588 s.
+      # through ci_tools_registry_head, whose two requests - the package's answer and the read
+      # of the store a redirect points at - each take 30 s an attempt, 2 x 397 = 794 s each
+      # over the five such rows (crane, changie, mise, jj and elan), 3970 s.
       # Both per-ladder figures come from one place, .github/scripts/ci-tools.sh's own
       # `--retry-max-time` block, which writes them as 427 s at 60 and 397 s at 30; neither is
       # derived here.
-      # 427 + 1588 = 2015 s -> 34 min. Rule 8 charges this step that sum: a loop of calls of a
+      # 427 + 3970 = 4397 s -> 74 min. Rule 8 charges this step that sum: a loop of calls of a
       # function the sourced file defines is a reading it refuses unless declared, and its
-      # DECLARED_LIBRARIES entry for this step writes these 2015 s in place of the one
-      # `ci_tools_fetch` of 1281 s it charged before.
+      # DECLARED_LIBRARIES entry for this step writes these 4397 s in place of the one
+      # `ci_tools_fetch`, 1708 s, it would charge otherwise.
       - name: Check the package holds the blob of every mirrored row
-        timeout-minutes: 34
+        timeout-minutes: 74
         run: |
           set -euo pipefail
           # shellcheck source=.github/scripts/ci-tools.sh
@@ -90,19 +93,20 @@ jobs:
           cold=""
           for row in $rows; do
             url=$(ci_tools_blob_url "$row")
-            # One ladder per row, through the helper an install reads the copy with, so this
-            # read retries where an install's read of the same blob retries and this step holds
-            # no attempts of its own (dispatch://INFRA-1545, R2). It reads the status itself,
-            # which is the question here: a 404 is this step's answer about a cold row, not a
-            # fetch that failed. 30 s per attempt, the bound
-            # .github/scripts/mirror-ci-tools.sh gives this same HEAD, which carries no bytes
-            # in either direction.
-            status=$(ci_tools_curl_status 30 "$url" -I -H "Authorization: Bearer $token")
+            # The HEAD every reader of the package makes (ci_tools_registry_head): the bearer on
+            # standard input, in no process's command line, and with the first request alone; with
+            # `--follow` a redirect to the store that holds the blob is read with no token, since
+            # an install reads the blob there too. Each of its
+            # requests rides the ladder an install's read of the same blob rides, so this step
+            # holds no attempts of its own (dispatch://INFRA-1545, R2). It reads the status
+            # itself, which is the question here: a 404 is this step's answer about a cold row,
+            # not a fetch that failed.
+            status=$(ci_tools_registry_head --follow "$token" /dev/null "$url")
             echo "$row: $registry answers $status for $url"
             [ "$status" = 200 ] || cold="$cold $row"
           done
           if [ -n "$cold" ]; then
-            echo "::error::the package holds no blob for$cold, so this job would record a pass for a second source that is not there; the ci-images job this one needs fills it with .github/scripts/mirror-ci-tools.sh, where a cold row stays green on purpose" >&2
+            echo "::error::the package answered no 200 for the blob of$cold (each answer is above), so this job would record a pass for a second source that is not there; the ci-images job this one needs fills it with .github/scripts/mirror-ci-tools.sh, where a cold row stays green on purpose" >&2
             exit 1
           fi
 
@@ -114,13 +118,13 @@ jobs:
       # `ci_tools_field` read .github/ci-tools.yaml off this checkout, and the two greps read
       # this tree. Its arithmetic is the file it sources and the file its grep names —
       # .github/scripts/ci-tools.sh and the rig — so rule 8 charges it one `ci_tools_fetch`,
-      # 1281 s (ci-budgets.md's Budgets note) -> 22 min. The grep of the rig's path is
+      # 1708 s (ci-budgets.md's Budgets note) -> 29 min. The grep of the rig's path is
       # written outside the row loop, which is also one walk of those trees instead of one per
       # row: written inside it, .github/scripts/check-download-retry.sh read it as a run of
       # that script once per pass of a loop whose passes it cannot count, and could put no
       # figure on the step at all.
       - name: Print every row beside the two call sites that read its digest
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: |
           set -euo pipefail
           # shellcheck source=.github/scripts/ci-tools.sh
@@ -155,23 +159,23 @@ jobs:
       # Its own retry arithmetic, counted over the rows the rig stages rather than taken as
       # one ladder: `stage` loops over its own STAGED_ROWS — crane, changie, mise, jj and
       # bun-linux-x64 — and calls ci_tools_fetch once for each of the five. A row whose
-      # primary is a release asset of its own costs the three ladders the DECLARED_LOOPS entry
-      # for .github/scripts/ci-tools.sh prices at 1281 s, which is crane, changie and mise; the
-      # jj row's `primary` is empty, so it costs the token and the blob alone, 854 s; and
-      # bun-linux-x64 costs its one npm tarball, 427 s. Those last two are that same entry's
-      # own figures for a row with no primary. 3 x 1281 + 854 + 427 = 5124 s, which is twelve
-      # ladders of at most 427 s -> 86 min.
+      # primary is a release asset of its own costs the four ladders the DECLARED_LOOPS entry
+      # for .github/scripts/ci-tools.sh prices at 1708 s, which is crane, changie and mise; the
+      # jj row's `primary` is empty, so it costs the token, the blob request and the store
+      # alone, 1281 s; and bun-linux-x64 costs its one npm tarball, 427 s. Those last two are
+      # that same entry's own figures for a row with no primary.
+      # 3 x 1708 + 1281 + 427 = 6832 s, which is sixteen ladders of at most 427 s -> 114 min.
       # Rule 8 charges this step that sum through its DECLARED_LIBRARIES entry for this step, and
-      # holds the 86 minutes above it: .github/ci-budgets.md, "The tool-fallback job's budget,
+      # holds the 114 minutes above it: .github/ci-budgets.md, "The tool-fallback job's budget,
       # part by part".
       - name: Stage the correct bytes of every row a case serves, before the fault
-        timeout-minutes: 86
+        timeout-minutes: 114
         run: .github/scripts/ci-tools-proof.sh stage
 
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - id: origin
         name: Start the origin that stands in for all four sources
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh origin-start
 
       # What the machine had, every second from here to the report below: free disk, the memory
@@ -206,14 +210,14 @@ jobs:
       # it staged, so a release-asset outage, which is what this whole job is about, leaves this
       # case exactly as it is. api.github.com is not a release-asset host and does not go down
       # with one.
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Corrupt nothing at the origin for the jj-primary case
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh corrupt
 
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Seed mise's install of jj with the staged binary, one byte changed
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: |
           set -euo pipefail
           corrupted="$RUNNER_TEMP/jj-one-byte-changed"
@@ -223,17 +227,17 @@ jobs:
           rm -f "$corrupted"
 
       # install-jj's own retry arithmetic: two `ci_tools_fetch` calls and its `mise install`
-      # of the jj release, 2562 + 450 = 3012 s (ci-budgets.md's Budgets note) -> 51 min.
+      # of the jj release, 3416 + 450 = 3866 s (ci-budgets.md's Budgets note) -> 65 min.
       - id: jj-primary
         continue-on-error: true
-        timeout-minutes: 51
+        timeout-minutes: 65
         uses: ./.github/actions/install-jj
         env:
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
 
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Read the jj-primary case
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh report jj-primary --outcome ${{ steps.jj-primary.outcome }} --row jj --expect-source github-release
 
       # What that case seeded goes, so nothing of it reaches the installs below: the head's own
@@ -251,8 +255,8 @@ jobs:
       # arranged to fail, and the one case that keeps the pinned ladder:
       # .github/ci-budgets.md, "The stand-in curl, and the one case that keeps the pinned ladder".
       - name: Shorten the ladder of every fetch this job arranges to fail
-        # Its own retry arithmetic: one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
-        timeout-minutes: 22
+        # Its own retry arithmetic: one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh shorten-ladder
 
       # The fault, and the routing of every later step through it, in one step: the rig starts
@@ -263,14 +267,14 @@ jobs:
       # The runner resolves and downloads an action with its own environment rather than a
       # step's, so every action this job uses is already on disk when the fault starts, and the
       # fault is met only by what an action fetches.
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Start the fault in front of GitHub's release assets
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh start-fault
 
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Read the fault before any install meets it
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh probe github.com
 
       # The negative control, under the same fault: eight installs with nowhere to go, every one
@@ -378,11 +382,11 @@ jobs:
       # comment above names in the controls that lean on the merge base: it reads nothing of the
       # base tree, and the property it states — an install whose primary is faulted and whose
       # second source cannot be reached fails — is a property of the head itself.
-      # install-docker-plugin's own retry arithmetic: one `ci_tools_fetch`, 1281 s
-      # (ci-budgets.md's Budgets note) -> 22 min.
+      # install-docker-plugin's own retry arithmetic: one `ci_tools_fetch`, 1708 s
+      # (ci-budgets.md's Budgets note) -> 29 min.
       - id: nowhere-pulumi-docker
         continue-on-error: true
-        timeout-minutes: 22
+        timeout-minutes: 29
         uses: ./.github/actions/install-docker-plugin
         env:
           CI_TOOLS_URL_BASE: http://127.0.0.1:1
@@ -514,29 +518,29 @@ jobs:
       # fault: its `mise install` must reach the release asset mise fetches jj from, which the
       # fault holds, so that install fails and the action reads the copy. This step is therefore
       # the proof of jj's second source itself, rather than a warm directory answering for it.
-      # install-crane's own retry arithmetic: one `ci_tools_fetch`, 1281 s (ci-budgets.md's
-      # Budgets note) -> 22 min.
+      # install-crane's own retry arithmetic: one `ci_tools_fetch`, 1708 s (ci-budgets.md's
+      # Budgets note) -> 29 min.
       # This install is the one case that keeps the pinned ladder, and the ladder-report step
       # at the end of this job reads the measurement it leaves.
       - uses: ./.github/actions/install-crane
-        timeout-minutes: 22
+        timeout-minutes: 29
         env:
           CI_TOOLS_PROOF_FULL_LADDER: crane-head
 
-      # install-changie's own retry arithmetic: one `ci_tools_fetch`, 1281 s
-      # (ci-budgets.md's Budgets note) -> 22 min.
+      # install-changie's own retry arithmetic: one `ci_tools_fetch`, 1708 s
+      # (ci-budgets.md's Budgets note) -> 29 min.
       - uses: ./.github/actions/install-changie
-        timeout-minutes: 22
+        timeout-minutes: 29
 
       # install-jj's own retry arithmetic: two `ci_tools_fetch` calls and its `mise install`
-      # of the jj release, 2562 + 450 = 3012 s (ci-budgets.md's Budgets note) -> 51 min.
+      # of the jj release, 3416 + 450 = 3866 s (ci-budgets.md's Budgets note) -> 65 min.
       - uses: ./.github/actions/install-jj
-        timeout-minutes: 51
+        timeout-minutes: 65
 
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
       - uses: ./.github/actions/setup-bun
-        timeout-minutes: 43
+        timeout-minutes: 57
 
       # elan's release asset is behind the fault, so this install must read the copy its row
       # names. The removal before it is the one every elan step carries, for the reason the
@@ -544,26 +548,26 @@ jobs:
       - name: Take elan away, so the faulted install must read the copy
         run: rm -rf "$RUNNER_TEMP/elan" "$RUNNER_TEMP/elan-init"
 
-      # install-elan's own retry arithmetic: one `ci_tools_fetch`, 1281 s (ci-budgets.md's
-      # Budgets note) -> 22 min.
+      # install-elan's own retry arithmetic: one `ci_tools_fetch`, 1708 s (ci-budgets.md's
+      # Budgets note) -> 29 min.
       - uses: ./.github/actions/install-elan
-        timeout-minutes: 22
+        timeout-minutes: 29
 
       # uv's release tarball is behind the fault, so this install must read the wheel PyPI
       # serves, which packages the same binary. Another provider and not another GitHub host is
       # the whole reason that row's second source is PyPI.
-      # install-uv's own retry arithmetic: one `ci_tools_fetch`, 1281 s (ci-budgets.md's
-      # Budgets note) -> 22 min.
+      # install-uv's own retry arithmetic: one `ci_tools_fetch`, 1708 s (ci-budgets.md's
+      # Budgets note) -> 29 min.
       - uses: ./.github/actions/install-uv
-        timeout-minutes: 22
+        timeout-minutes: 29
 
       # The docker provider plugin's release asset is behind the fault, so this install must
       # read get.pulumi.com, which serves that tarball byte for byte. The step carries an id
       # because the reading below is of the tarball it hands back.
-      # install-docker-plugin's own retry arithmetic: one `ci_tools_fetch`, 1281 s
-      # (ci-budgets.md's Budgets note) -> 22 min.
+      # install-docker-plugin's own retry arithmetic: one `ci_tools_fetch`, 1708 s
+      # (ci-budgets.md's Budgets note) -> 29 min.
       - id: docker-plugin
-        timeout-minutes: 22
+        timeout-minutes: 29
         uses: ./.github/actions/install-docker-plugin
 
       # The Pulumi CLI's own fallback, which is a case rather than a plain install: its primary
@@ -575,18 +579,18 @@ jobs:
       # every step after the fault started: inside this job the origin is what can serve a
       # `github-release` second source at all, and what it serves is that release's own bytes,
       # staged and verified.
-      # install-pulumi's own retry arithmetic: one `ci_tools_fetch`, 1281 s (ci-budgets.md's
-      # Budgets note) -> 22 min.
+      # install-pulumi's own retry arithmetic: one `ci_tools_fetch`, 1708 s (ci-budgets.md's
+      # Budgets note) -> 29 min.
       - uses: ./.github/actions/install-pulumi
-        timeout-minutes: 22
+        timeout-minutes: 29
         env:
           CI_TOOLS_URL_BASE: http://127.0.0.1:1
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
 
-      # One `ci_tools_fetch`, 1281 s, from the rig this step runs (ci-budgets.md's Budgets
-      # note) -> 22 min.
+      # One `ci_tools_fetch`, 1708 s, from the rig this step runs (ci-budgets.md's Budgets
+      # note) -> 29 min.
       - name: Check every tool is the version its row pins
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: |
           set -euo pipefail
           # shellcheck source=.github/scripts/ci-tools.sh
@@ -641,86 +645,86 @@ jobs:
       #
       # Case 1 of 16: crane's primary serves one byte changed, and the second source must stay
       # untried — a digest mismatch is a supply-chain signal, never a reason to read elsewhere.
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Corrupt crane for its primary case
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh corrupt crane
 
-      # install-crane's own retry arithmetic: one `ci_tools_fetch`, 1281 s (ci-budgets.md's
-      # Budgets note) -> 22 min.
+      # install-crane's own retry arithmetic: one `ci_tools_fetch`, 1708 s (ci-budgets.md's
+      # Budgets note) -> 29 min.
       - id: crane-primary
         continue-on-error: true
-        timeout-minutes: 22
+        timeout-minutes: 29
         uses: ./.github/actions/install-crane
         env:
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
 
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Read the crane-primary case
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh report crane-primary --outcome ${{ steps.crane-primary.outcome }} --row crane --expect-source github-release --expect-untried ghcr-mirror
 
       # Case 2 of 16: crane's second source serves one byte changed, after the primary — the real
       # host, which the fault holds — did not serve them at all.
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Corrupt crane for its second-source case
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh corrupt crane
 
-      # install-crane's own retry arithmetic: one `ci_tools_fetch`, 1281 s (ci-budgets.md's
-      # Budgets note) -> 22 min.
+      # install-crane's own retry arithmetic: one `ci_tools_fetch`, 1708 s (ci-budgets.md's
+      # Budgets note) -> 29 min.
       - id: crane-second-source
         continue-on-error: true
-        timeout-minutes: 22
+        timeout-minutes: 29
         uses: ./.github/actions/install-crane
         env:
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
 
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Read the crane-second-source case
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh report crane-second-source --outcome ${{ steps.crane-second-source.outcome }} --row crane --expect-source ghcr-mirror
 
       # Case 3 of 16: changie's primary serves one byte changed.
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Corrupt changie for its primary case
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh corrupt changie
 
-      # install-changie's own retry arithmetic: one `ci_tools_fetch`, 1281 s
-      # (ci-budgets.md's Budgets note) -> 22 min.
+      # install-changie's own retry arithmetic: one `ci_tools_fetch`, 1708 s
+      # (ci-budgets.md's Budgets note) -> 29 min.
       - id: changie-primary
         continue-on-error: true
-        timeout-minutes: 22
+        timeout-minutes: 29
         uses: ./.github/actions/install-changie
         env:
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
 
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Read the changie-primary case
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh report changie-primary --outcome ${{ steps.changie-primary.outcome }} --row changie --expect-source github-release --expect-untried ghcr-mirror
 
       # Case 4 of 16: changie's second source serves one byte changed.
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Corrupt changie for its second-source case
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh corrupt changie
 
-      # install-changie's own retry arithmetic: one `ci_tools_fetch`, 1281 s
-      # (ci-budgets.md's Budgets note) -> 22 min.
+      # install-changie's own retry arithmetic: one `ci_tools_fetch`, 1708 s
+      # (ci-budgets.md's Budgets note) -> 29 min.
       - id: changie-second-source
         continue-on-error: true
-        timeout-minutes: 22
+        timeout-minutes: 29
         uses: ./.github/actions/install-changie
         env:
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
 
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Read the changie-second-source case
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh report changie-second-source --outcome ${{ steps.changie-second-source.outcome }} --row changie --expect-source ghcr-mirror
 
       # Case 6 of 16: the copy of the jj binary serves one byte changed, with mise unable to
@@ -731,9 +735,9 @@ jobs:
       # Case 5, which ran before the fault, left ~/.local/bin/jj as it found it: install-jj
       # verifies the binary where mise put it and copies only after that passes, so a refused
       # jj never reaches that path.
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Corrupt the jj copy for its second-source case
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh corrupt jj
 
       - name: Remove mise's data directory, so its install must reach the faulted host
@@ -743,17 +747,17 @@ jobs:
           echo "$HOME/.local/share/mise is gone, so mise must install jj rather than find it installed"
 
       # install-jj's own retry arithmetic: two `ci_tools_fetch` calls and its `mise install`
-      # of the jj release, 2562 + 450 = 3012 s (ci-budgets.md's Budgets note) -> 51 min.
+      # of the jj release, 3416 + 450 = 3866 s (ci-budgets.md's Budgets note) -> 65 min.
       - id: jj-second-source
         continue-on-error: true
-        timeout-minutes: 51
+        timeout-minutes: 65
         uses: ./.github/actions/install-jj
         env:
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
 
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Read the jj-second-source case
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh report jj-second-source --outcome ${{ steps.jj-second-source.outcome }} --row jj --expect-source ghcr-mirror
 
       # Case 7 of 16: the installed Bun is one byte changed and still answers the pinned revision,
@@ -766,14 +770,14 @@ jobs:
       # branch this case needs is the branch it takes. The step below reads that answer again
       # and refuses the case rather than proving another one, should a later Bun read its own
       # last byte.
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Corrupt nothing at the origin for the bun-primary case
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh corrupt
 
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Change the last byte of the installed Bun
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: |
           set -euo pipefail
           .github/scripts/ci-tools-proof.sh flip-last-byte "$HOME/.bun/bin/bun"
@@ -786,15 +790,15 @@ jobs:
           fi
 
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
       - id: bun-primary
         continue-on-error: true
-        timeout-minutes: 43
+        timeout-minutes: 57
         uses: ./.github/actions/setup-bun
 
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Read the bun-primary case
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh report bun-primary --outcome ${{ steps.bun-primary.outcome }} --row bun-linux-x64 --expect-source github-release
 
       # Case 8 of 16: with no Bun of the pinned version on this runner, setup-bun's
@@ -807,47 +811,47 @@ jobs:
       - name: Take any Bun away, so the second source must serve this case
         run: rm -f "$HOME/.bun/bin/bun" "$HOME/.bun/bin/bunx"
 
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Corrupt the Bun package for its second-source case
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh corrupt bun-linux-x64
 
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
       - id: bun-second-source
         continue-on-error: true
-        timeout-minutes: 43
+        timeout-minutes: 57
         uses: ./.github/actions/setup-bun
         env:
           CI_TOOLS_NPM_BASE: ${{ steps.origin.outputs.npm }}
 
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Read the bun-second-source case
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh report bun-second-source --outcome ${{ steps.bun-second-source.outcome }} --row bun-linux-x64 --expect-source npm
 
       # Case 9 of 16: elan's primary serves one byte changed, and the copy must stay untried.
       - name: Take elan away for its primary case
         run: rm -rf "$RUNNER_TEMP/elan" "$RUNNER_TEMP/elan-init"
 
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Corrupt elan for its primary case
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh corrupt elan
 
-      # install-elan's own retry arithmetic: one `ci_tools_fetch`, 1281 s (ci-budgets.md's
-      # Budgets note) -> 22 min.
+      # install-elan's own retry arithmetic: one `ci_tools_fetch`, 1708 s (ci-budgets.md's
+      # Budgets note) -> 29 min.
       - id: elan-primary
         continue-on-error: true
-        timeout-minutes: 22
+        timeout-minutes: 29
         uses: ./.github/actions/install-elan
         env:
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
 
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Read the elan-primary case
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh report elan-primary --outcome ${{ steps.elan-primary.outcome }} --row elan --expect-source github-release --expect-untried ghcr-mirror
 
       # Case 10 of 16: elan's copy serves one byte changed, after the primary — the real host,
@@ -855,23 +859,23 @@ jobs:
       - name: Take elan away for its second-source case
         run: rm -rf "$RUNNER_TEMP/elan" "$RUNNER_TEMP/elan-init"
 
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Corrupt elan for its second-source case
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh corrupt elan
 
-      # install-elan's own retry arithmetic: one `ci_tools_fetch`, 1281 s (ci-budgets.md's
-      # Budgets note) -> 22 min.
+      # install-elan's own retry arithmetic: one `ci_tools_fetch`, 1708 s (ci-budgets.md's
+      # Budgets note) -> 29 min.
       - id: elan-second-source
         continue-on-error: true
-        timeout-minutes: 22
+        timeout-minutes: 29
         uses: ./.github/actions/install-elan
         env:
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
 
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Read the elan-second-source case
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh report elan-second-source --outcome ${{ steps.elan-second-source.outcome }} --row elan --expect-source ghcr-mirror
 
       # Case 11 of 16: uv's primary serves one byte changed, and PyPI must stay untried.
@@ -879,24 +883,24 @@ jobs:
       # tarball GitHub serves, which is read before the binary is taken out of it: the row's own
       # `digest` is of that binary, so the archive carries a digest of its own and this is the
       # refusal this case is about.
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Corrupt uv for its primary case
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh corrupt uv
 
-      # install-uv's own retry arithmetic: one `ci_tools_fetch`, 1281 s (ci-budgets.md's
-      # Budgets note) -> 22 min.
+      # install-uv's own retry arithmetic: one `ci_tools_fetch`, 1708 s (ci-budgets.md's
+      # Budgets note) -> 29 min.
       - id: uv-primary
         continue-on-error: true
-        timeout-minutes: 22
+        timeout-minutes: 29
         uses: ./.github/actions/install-uv
         env:
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
           CI_TOOLS_URL_BASE: ${{ steps.origin.outputs.url }}
 
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Read the uv-primary case
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh report uv-primary --outcome ${{ steps.uv-primary.outcome }} --row uv --expect-source github-release --expect-untried pypi
 
       # Case 12 of 16: PyPI's wheel serves one byte changed, after the primary — the real host,
@@ -916,68 +920,68 @@ jobs:
       # that filled up with one exit, so that refusal names no cause at all — it names the
       # member and the archive and leaves tar's own words on stderr to say why.
       # Either way nothing unverified is installed, which is what the case is for.
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Corrupt uv for its second-source case
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh corrupt uv
 
-      # install-uv's own retry arithmetic: one `ci_tools_fetch`, 1281 s (ci-budgets.md's
-      # Budgets note) -> 22 min.
+      # install-uv's own retry arithmetic: one `ci_tools_fetch`, 1708 s (ci-budgets.md's
+      # Budgets note) -> 29 min.
       - id: uv-second-source
         continue-on-error: true
-        timeout-minutes: 22
+        timeout-minutes: 29
         uses: ./.github/actions/install-uv
         env:
           CI_TOOLS_URL_BASE: ${{ steps.origin.outputs.url }}
 
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Read the uv-second-source case
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh report uv-second-source --outcome ${{ steps.uv-second-source.outcome }} --row uv --expect-source pypi
 
       # Case 13 of 16: the docker provider plugin's release asset serves one byte changed, and
       # get.pulumi.com must stay untried.
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Corrupt the docker provider plugin for its primary case
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh corrupt pulumi-docker
 
-      # install-docker-plugin's own retry arithmetic: one `ci_tools_fetch`, 1281 s
-      # (ci-budgets.md's Budgets note) -> 22 min.
+      # install-docker-plugin's own retry arithmetic: one `ci_tools_fetch`, 1708 s
+      # (ci-budgets.md's Budgets note) -> 29 min.
       - id: pulumi-docker-primary
         continue-on-error: true
-        timeout-minutes: 22
+        timeout-minutes: 29
         uses: ./.github/actions/install-docker-plugin
         env:
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
           CI_TOOLS_URL_BASE: ${{ steps.origin.outputs.url }}
 
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Read the pulumi-docker-primary case
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh report pulumi-docker-primary --outcome ${{ steps.pulumi-docker-primary.outcome }} --row pulumi-docker --expect-source github-release --expect-untried pulumi-releases
 
       # Case 14 of 16: get.pulumi.com serves the plugin's tarball with one byte changed, after
       # the release asset — the real host, which the fault holds — did not serve it at all.
       # Pulumi serves one file at both addresses, so the origin serves one payload under one
       # name on its two routes, and which route a case read is what its report prints.
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Corrupt the docker provider plugin for its second-source case
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh corrupt pulumi-docker
 
-      # install-docker-plugin's own retry arithmetic: one `ci_tools_fetch`, 1281 s
-      # (ci-budgets.md's Budgets note) -> 22 min.
+      # install-docker-plugin's own retry arithmetic: one `ci_tools_fetch`, 1708 s
+      # (ci-budgets.md's Budgets note) -> 29 min.
       - id: pulumi-docker-second-source
         continue-on-error: true
-        timeout-minutes: 22
+        timeout-minutes: 29
         uses: ./.github/actions/install-docker-plugin
         env:
           CI_TOOLS_URL_BASE: ${{ steps.origin.outputs.url }}
 
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Read the pulumi-docker-second-source case
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh report pulumi-docker-second-source --outcome ${{ steps.pulumi-docker-second-source.outcome }} --row pulumi-docker --expect-source pulumi-releases
 
       # Case 15 of 16: the Pulumi CLI's primary serves one byte changed, and the release asset
@@ -987,24 +991,24 @@ jobs:
       # origin can serve this row's second source, and what the case says is that it was never
       # asked to. Without it that source would be the faulted real host, which answers nothing
       # whether the rule holds or not.
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Corrupt the Pulumi CLI for its primary case
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh corrupt pulumi-cli
 
-      # install-pulumi's own retry arithmetic: one `ci_tools_fetch`, 1281 s (ci-budgets.md's
-      # Budgets note) -> 22 min.
+      # install-pulumi's own retry arithmetic: one `ci_tools_fetch`, 1708 s (ci-budgets.md's
+      # Budgets note) -> 29 min.
       - id: pulumi-cli-primary
         continue-on-error: true
-        timeout-minutes: 22
+        timeout-minutes: 29
         uses: ./.github/actions/install-pulumi
         env:
           CI_TOOLS_URL_BASE: ${{ steps.origin.outputs.url }}
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
 
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Read the pulumi-cli-primary case
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh report pulumi-cli-primary --outcome ${{ steps.pulumi-cli-primary.outcome }} --row pulumi-cli --expect-source pulumi-releases --expect-untried github-release
 
       # Case 16 of 16: the Pulumi CLI's second source, the pulumi/pulumi release asset, serves
@@ -1012,24 +1016,24 @@ jobs:
       # The dead port and not the fault, because this job leaves get.pulumi.com alone; the
       # origin stands in for the release asset, as it does in the install that must succeed
       # above, and here it serves those bytes with one changed.
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Corrupt the Pulumi CLI for its second-source case
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh corrupt pulumi-cli
 
-      # install-pulumi's own retry arithmetic: one `ci_tools_fetch`, 1281 s (ci-budgets.md's
-      # Budgets note) -> 22 min.
+      # install-pulumi's own retry arithmetic: one `ci_tools_fetch`, 1708 s (ci-budgets.md's
+      # Budgets note) -> 29 min.
       - id: pulumi-cli-second-source
         continue-on-error: true
-        timeout-minutes: 22
+        timeout-minutes: 29
         uses: ./.github/actions/install-pulumi
         env:
           CI_TOOLS_URL_BASE: http://127.0.0.1:1
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
 
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Read the pulumi-cli-second-source case
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh report pulumi-cli-second-source --outcome ${{ steps.pulumi-cli-second-source.outcome }} --row pulumi-cli --expect-source github-release
 
       # What this runner holds after the sixteen refusals, said plainly: no corrupted byte was
@@ -1046,10 +1050,10 @@ jobs:
       # crane and changie are held to the version they answer, because their rows pin the release
       # tarball rather than the binary inside it; jj is held to its row's own digest, which is of
       # the installed binary.
-      # One `ci_tools_fetch`, 1281 s, from the .github/scripts/ci-tools.sh this step
-      # sources and the rig it runs (ci-budgets.md's Budgets note) -> 22 min.
+      # One `ci_tools_fetch`, 1708 s, from the .github/scripts/ci-tools.sh this step
+      # sources and the rig it runs (ci-budgets.md's Budgets note) -> 29 min.
       - name: Print what every tool answers now
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: |
           set -euo pipefail
           # shellcheck source=.github/scripts/ci-tools.sh
@@ -1085,8 +1089,8 @@ jobs:
       # shorten-ladder step at its position. Every run of it that reads the log through prints
       # that count beside the bound, whether the reading passes or refuses.
       - name: Read what the stand-in curl measured of every fetch
-        # Its own retry arithmetic: one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
-        timeout-minutes: 22
+        # Its own retry arithmetic: one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh ladder-report
 
       # `always()`, because the reading a reader wants most is the one from a job that failed.
@@ -1098,10 +1102,10 @@ jobs:
       # it: the ci-ok-report step below runs actions/upload-artifact, which would otherwise
       # upload through a proxy that is about to go. The rig writes the emptied variables, as it
       # wrote the proxy ones.
-      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
+      # The rig's one `ci_tools_fetch`, 1708 s (ci-budgets.md's Budgets note) -> 29 min.
       - name: Stop routing this job through the fault
         if: always()
-        timeout-minutes: 22
+        timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh stop-fault
 
       - name: Report ci-ok when this job decides a merge-group run

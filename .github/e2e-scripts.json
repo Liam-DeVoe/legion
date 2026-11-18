@@ -13,8 +13,8 @@
     "header gives it, plus the retry arithmetic of the slowest retried step the row selects, as",
     "ci-budgets.md's Budgets note sets it out. Which retried step that is, is the row's own: a row",
     "whose `jj` is true carries install-jj's two `ci_tools_fetch` calls and its `mise install`",
-    "of the jj release, 2562 + 450 = 3012 s; a row whose `jj` is false and whose `bun` is true",
-    "carries setup-bun's two `ci_tools_fetch` calls, 2 x 1281 = 2562 s; and a row with neither,",
+    "of the jj release, 3416 + 450 = 3866 s; a row whose `jj` is false and whose `bun` is true",
+    "carries setup-bun's two `ci_tools_fetch` calls, 2 x 1708 = 3416 s; and a row with neither,",
     "which is a row carrying `apt` alone, carries the apt steps' 625 + 775 = 1400 s. The",
     "workspace install a `bun` row also runs, 5 x 180 + 150 = 1050 s, is under all three, so it",
     "sizes no row. Each figure is the one e2e.yaml writes beside that step's own",
@@ -31,7 +31,7 @@
       "apt": [],
       "bun": false,
       "evidence_variable": "BEHIND_ENTRY_FENCE_EVIDENCE_DIR",
-      "timeout_minutes": 76,
+      "timeout_minutes": 90,
       "why_hosted": "Run it from a checkout on a Linux host with go, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/behind-entry-fence.sh; CI's service satisfies it, and the script starts no container, installing the nats-server it needs with go install",
       "jj": true
     },
@@ -41,7 +41,7 @@
       "apt": [],
       "bun": false,
       "evidence_variable": "CHILD_ADOPTION_EVIDENCE_DIR",
-      "timeout_minutes": 76,
+      "timeout_minutes": 90,
       "why_hosted": "Run it from a checkout on a Linux host with go and awk, as LEGION_TEST_PG_DSN=... bash scripts/e2e/child-adoption.sh; CI's service satisfies it, and this script starts none",
       "jj": true
     },
@@ -51,7 +51,7 @@
       "apt": [],
       "bun": false,
       "evidence_variable": "CONFLICT_NO_TAKEOVER_EVIDENCE_DIR",
-      "timeout_minutes": 76,
+      "timeout_minutes": 90,
       "why_hosted": "Run it from a checkout on a Linux host with go, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/conflict-no-takeover.sh; CI's service satisfies it, and this script starts none",
       "jj": true
     },
@@ -61,7 +61,7 @@
       "apt": ["postgresql-client"],
       "bun": true,
       "evidence_variable": "",
-      "timeout_minutes": 68,
+      "timeout_minutes": 82,
       "why_hosted": "DATABASE_URL is required and must name a loopback host; its prerequisite loop takes go, bun, curl, psql and openssl, and it starts no container",
       "jj": false
     },
@@ -71,7 +71,7 @@
       "apt": [],
       "bun": true,
       "evidence_variable": "HANDOFF_RECORDS_EVIDENCE_DIR",
-      "timeout_minutes": 76,
+      "timeout_minutes": 90,
       "why_hosted": "Run it from a checkout on a Linux host with go, bun (after bun install) and awk, as LEGION_TEST_PG_DSN=... bash scripts/e2e/handoff-records.sh; CI's pgvector service is the server it needs, its role creates Dispatch's database there, it builds and starts Dispatch and the daemon itself, and it reaches no outside service; a run takes two to four minutes",
       "jj": true
     },
@@ -81,7 +81,7 @@
       "apt": [],
       "bun": false,
       "evidence_variable": "MERGE_WAIT_READABLE_EVIDENCE_DIR",
-      "timeout_minutes": 76,
+      "timeout_minutes": 90,
       "why_hosted": "Run it from a checkout on a Linux host with go, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/merge-wait-readable.sh; CI's service satisfies it, and the script starts no container, installing the nats-server it needs with go install",
       "jj": true
     },
@@ -91,7 +91,7 @@
       "apt": [],
       "bun": false,
       "evidence_variable": "PHASE_ENTRY_CONVERGE_EVIDENCE_DIR",
-      "timeout_minutes": 71,
+      "timeout_minutes": 85,
       "why_hosted": "Run it from a checkout on a Linux host with go, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/phase-entry-converge.sh; the proof needs a real PostgreSQL, which CI's service is, and a real nats-server, which it installs with go install, and it starts no container; a measured run took 88 seconds, most of it building the driver",
       "jj": true
     },
@@ -111,7 +111,7 @@
       "apt": [],
       "bun": false,
       "evidence_variable": "SUB_ARCHITECT_EVIDENCE_DIR",
-      "timeout_minutes": 76,
+      "timeout_minutes": 90,
       "why_hosted": "Run it from a checkout on a Linux host with go, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/sub-architect.sh; CI's service satisfies it, and the script starts no container, installing the nats-server it needs with go install",
       "jj": true
     },
@@ -121,7 +121,7 @@
       "apt": ["postgresql-client"],
       "bun": true,
       "evidence_variable": "",
-      "timeout_minutes": 63,
+      "timeout_minutes": 77,
       "why_hosted": "DATABASE_URL is required and must name a loopback host; its prerequisite loop takes go, bun, curl, psql and openssl, and it starts no container",
       "jj": false
     }

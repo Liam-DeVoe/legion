@@ -376,10 +376,10 @@ jobs:
           path: assets/
           if-no-files-found: error
 
-      # install-changie's own retry arithmetic: one `ci_tools_fetch`, 1281 s
-      # (ci-budgets.md's Budgets note) -> 22 min.
+      # install-changie's own retry arithmetic: one `ci_tools_fetch`, 1708 s
+      # (ci-budgets.md's Budgets note) -> 29 min.
       - uses: ./.github/actions/install-changie
-        timeout-minutes: 22
+        timeout-minutes: 29
         if: steps.version.outputs.skip != 'true'
 
       # This release's own changelog entries, as in pi_envoy_build and for the reasons given
@@ -420,11 +420,11 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     # Budget (the Budgets note of .github/ci-budgets.md): 600 s, the measured 10 minutes this job carried,
-    # plus its slowest retried step alone - the leak-guard fetch of the release-push.sh
-    # steps, 6 call sites of one 450 s fetch = 2700 s, above every other retried step here.
-    # 600 + 2700 = 3300 s -> 56 min, which carries the whole minute that
-    # note gives a step whose own arithmetic is a whole number of minutes (46 min here).
-    timeout-minutes: 56
+    # plus its slowest retried step alone - the setup-bun step's two `ci_tools_fetch` calls,
+    # 2 x 1708 = 3416 s, above the leak-guard fetch of the release-push.sh steps, 6 call sites
+    # of one 450 s fetch = 2700 s, and every other retried step here.
+    # 600 + 3416 = 4016 s -> 67 min.
+    timeout-minutes: 67
     # contents: read is for the checkout; nothing here writes to the repository, a registry or a
     # release.
     permissions:
@@ -456,9 +456,9 @@ jobs:
 
       - uses: ./.github/actions/install-changie
         if: steps.version.outputs.skip != 'true'
-        # install-changie's own retry arithmetic: one `ci_tools_fetch`, 1281 s
-        # (the Budgets note of .github/ci-budgets.md) -> 22 min.
-        timeout-minutes: 22
+        # install-changie's own retry arithmetic: one `ci_tools_fetch`, 1708 s
+        # (the Budgets note of .github/ci-budgets.md) -> 29 min.
+        timeout-minutes: 29
 
       # This release's own changelog entries, which publish writes into the GitHub release's body.
       # A fragment stays under packages/pi-envoy/.changes/unreleased/ after the release that ships
@@ -485,10 +485,10 @@ jobs:
           if-no-files-found: error
 
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 1281 = 2562 s (the Budgets note of .github/ci-budgets.md) -> 43 min.
+      # 2 x 1708 = 3416 s (the Budgets note of .github/ci-budgets.md) -> 57 min.
       - uses: ./.github/actions/setup-bun
         if: steps.version.outputs.skip != 'true'
-        timeout-minutes: 43
+        timeout-minutes: 57
 
       # The install retries: five bounded attempts through .github/scripts/ci-retry.sh, the last
       # starting 150 s after the first. 180 s per attempt, the bound every Bun install of this
@@ -578,11 +578,11 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     # Budget (the Budgets note of .github/ci-budgets.md): 600 s, the measured 10 minutes this job carried,
-    # plus its slowest retried step alone - the leak-guard fetch of the release-push.sh
-    # steps, 6 call sites of one 450 s fetch = 2700 s, above every other retried step here.
-    # 600 + 2700 = 3300 s -> 56 min, which carries the whole minute that
-    # note gives a step whose own arithmetic is a whole number of minutes (46 min here).
-    timeout-minutes: 56
+    # plus its slowest retried step alone - the setup-bun step's two `ci_tools_fetch` calls,
+    # 2 x 1708 = 3416 s, above the leak-guard fetch of the release-push.sh steps, 6 call sites
+    # of one 450 s fetch = 2700 s, and every other retried step here.
+    # 600 + 3416 = 4016 s -> 67 min.
+    timeout-minutes: 67
     # contents: read is for the checkout; nothing here writes to the repository, a registry or a
     # release.
     permissions:
@@ -609,9 +609,9 @@ jobs:
 
       - uses: ./.github/actions/install-changie
         if: steps.version.outputs.skip != 'true'
-        # install-changie's own retry arithmetic: one `ci_tools_fetch`, 1281 s
-        # (the Budgets note of .github/ci-budgets.md) -> 22 min.
-        timeout-minutes: 22
+        # install-changie's own retry arithmetic: one `ci_tools_fetch`, 1708 s
+        # (the Budgets note of .github/ci-budgets.md) -> 29 min.
+        timeout-minutes: 29
 
       # This release's own changelog entries, as in pi_envoy_build and for the reasons given
       # there: the fragments this release's own commits first added, and the `notes` line
@@ -635,10 +635,10 @@ jobs:
           if-no-files-found: error
 
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 1281 = 2562 s (the Budgets note of .github/ci-budgets.md) -> 43 min.
+      # 2 x 1708 = 3416 s (the Budgets note of .github/ci-budgets.md) -> 57 min.
       - uses: ./.github/actions/setup-bun
         if: steps.version.outputs.skip != 'true'
-        timeout-minutes: 43
+        timeout-minutes: 57
 
       # Retried as pi_envoy_build's install is, and bounded as it is: 180 s per attempt, against
       # 20.70 s cold on a pod and a measured maximum of 11 s over 180 observations.
@@ -726,11 +726,11 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     # Budget (the Budgets note of .github/ci-budgets.md): 900 s, the measured 15 minutes this job carried,
-    # plus its slowest retried step alone - the leak-guard fetch of the release-push.sh
-    # steps, 6 call sites of one 450 s fetch = 2700 s, above every other retried step here.
-    # 900 + 2700 = 3600 s -> 61 min, which carries the whole minute that
-    # note gives a step whose own arithmetic is a whole number of minutes (46 min here).
-    timeout-minutes: 61
+    # plus its slowest retried step alone - the setup-bun step's two `ci_tools_fetch` calls,
+    # 2 x 1708 = 3416 s, above the leak-guard fetch of the release-push.sh steps, 6 call sites
+    # of one 450 s fetch = 2700 s, and every other retried step here.
+    # 900 + 3416 = 4316 s -> 72 min.
+    timeout-minutes: 72
     # contents: read is for the checkout; nothing here writes to the repository, a registry or a
     # release.
     permissions:
@@ -757,9 +757,9 @@ jobs:
 
       - uses: ./.github/actions/install-changie
         if: steps.version.outputs.skip != 'true'
-        # install-changie's own retry arithmetic: one `ci_tools_fetch`, 1281 s
-        # (the Budgets note of .github/ci-budgets.md) -> 22 min.
-        timeout-minutes: 22
+        # install-changie's own retry arithmetic: one `ci_tools_fetch`, 1708 s
+        # (the Budgets note of .github/ci-budgets.md) -> 29 min.
+        timeout-minutes: 29
 
       # This release's own changelog entries, as in pi_envoy_build and for the reasons given
       # there: the fragments this release's own commits first added, and the `notes` line
@@ -783,10 +783,10 @@ jobs:
           if-no-files-found: error
 
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 1281 = 2562 s (the Budgets note of .github/ci-budgets.md) -> 43 min.
+      # 2 x 1708 = 3416 s (the Budgets note of .github/ci-budgets.md) -> 57 min.
       - uses: ./.github/actions/setup-bun
         if: steps.version.outputs.skip != 'true'
-        timeout-minutes: 43
+        timeout-minutes: 57
 
       # Retried as pi_envoy_build's install is, and bounded as it is: 180 s per attempt, against
       # 20.70 s cold on a pod and a measured maximum of 11 s over 180 observations.

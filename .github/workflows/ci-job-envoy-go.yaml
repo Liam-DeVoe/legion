@@ -47,10 +47,10 @@ jobs:
     #
     # Budget (ci-budgets.md's Budgets note): 4200 s, the 70 minutes this job carried, above the 64
     # the paragraph above derives and its 1376 s measured maximum, plus its slowest retried step
-    # alone — the setup-bun step's two `ci_tools_fetch` calls, 2562 s, above packages/envoy's
+    # alone — the setup-bun step's two `ci_tools_fetch` calls, 3416 s, above packages/envoy's
     # `go mod download` and the workspace install at 5 x 180 + 150 = 1050 s each and the ci-ok
-    # report's 2160 s. 4200 + 2562 = 6762 s -> 113 min.
-    timeout-minutes: 113
+    # report's 2160 s. 4200 + 3416 = 7616 s -> 127 min.
+    timeout-minutes: 127
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -76,9 +76,9 @@ jobs:
         with:
           persist-credentials: false
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
       - uses: ./.github/actions/setup-bun
-        timeout-minutes: 43
+        timeout-minutes: 57
       # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
       - name: bun install --frozen-lockfile
         # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.

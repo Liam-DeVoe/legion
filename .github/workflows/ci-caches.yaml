@@ -489,9 +489,9 @@ jobs:
     # Budget (the Budgets note of .github/ci-budgets.md): 1800 s, the 30 minutes
     # this job was written with — one toolchain download and one build of the model on a miss,
     # and a run that finds the key costs the checkout alone — plus its slowest retried step
-    # alone: install-elan's one `ci_tools_fetch` of the elan release tarball, 1281 s, this job's
-    # only retried call. 1800 + 1281 = 3081 s -> 52 min.
-    timeout-minutes: 52
+    # alone: install-elan's one `ci_tools_fetch` of the elan release tarball, 1708 s, this job's
+    # only retried call. 1800 + 1708 = 3508 s -> 59 min.
+    timeout-minutes: 59
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -505,10 +505,10 @@ jobs:
           lookup-only: true
 
       # install-elan's own retry arithmetic: one `ci_tools_fetch` of the release tarball,
-      # 1281 s (the Budgets note of .github/ci-budgets.md) -> 22 min.
+      # 1708 s (the Budgets note of .github/ci-budgets.md) -> 29 min.
       - if: steps.elan-cache.outputs.cache-hit != 'true'
         uses: ./.github/actions/install-elan
-        timeout-minutes: 22
+        timeout-minutes: 29
 
       # The build is what downloads the toolchain lean-toolchain names, so the entry holds what
       # airlock-lean will find rather than elan alone.

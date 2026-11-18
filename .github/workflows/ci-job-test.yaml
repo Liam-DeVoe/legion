@@ -263,13 +263,13 @@ jobs:
     # dispatch://INFRA-1545 added to the end of the list, which that 325 s does not hold because
     # each waits out a time bound rather than computing: the retry helper's test, 362 s
     # measured, and the fault proxy's test, 15 s measured (job 130805958692) — 2177 s, the
-    # unretried term. To it the budget adds its slowest retried step alone: the changelog
-    # render, whose run of release-push.sh carries that script's retried calls, 2700 s as
-    # .github/scripts/check-download-retry.sh's rule 8 sums them, above setup-bun's two
-    # `ci_tools_fetch` calls at 2562 s, install-changie's one at 1281 s, the workspace install's
-    # and the Go module download's 1050 s each and the ci-ok report's 2160 s.
-    # 2177 + 2700 = 4877 s -> 82 min.
-    timeout-minutes: 82
+    # unretried term. To it the budget adds its slowest retried step alone: setup-bun's two
+    # `ci_tools_fetch` calls at 3416 s, above the changelog render, whose run of release-push.sh
+    # carries that script's retried calls, 2700 s as .github/scripts/check-download-retry.sh's
+    # rule 8 sums them, install-changie's one at 1708 s, the workspace install's and the Go
+    # module download's 1050 s each and the ci-ok report's 2160 s.
+    # 2177 + 3416 = 5593 s -> 94 min.
+    timeout-minutes: 94
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -277,9 +277,9 @@ jobs:
           persist-credentials: false
 
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
       - name: Setup Bun
-        timeout-minutes: 43
+        timeout-minutes: 57
         uses: ./.github/actions/setup-bun
 
       # Retried like every install in this workflow (ci-budgets.md's Retries note); 180 s per
@@ -310,10 +310,10 @@ jobs:
       # release-push.test.sh renders its fold-notes cases with the real changie, and the step
       # below renders this checkout's own fragments with it; where changie is absent, as on a
       # developer's machine, those cases print a SKIP line and count nothing.
-      # install-changie's own retry arithmetic: one `ci_tools_fetch`, 1281 s
-      # (ci-budgets.md's Budgets note) -> 22 min.
+      # install-changie's own retry arithmetic: one `ci_tools_fetch`, 1708 s
+      # (ci-budgets.md's Budgets note) -> 29 min.
       - uses: ./.github/actions/install-changie
-        timeout-minutes: 22
+        timeout-minutes: 29
 
       # Nothing renders a changelog fragment between the merge and the release that first ships
       # it, so a fragment changie refuses would fail that release's build job, and every run

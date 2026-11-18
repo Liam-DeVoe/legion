@@ -44,15 +44,15 @@ jobs:
     # render-nats.sh and so holds that script's three retried fetches: the chart index and the
     # chart archive at 5 x 60 + 150 = 450 s each and the helm install at 5 x 180 + 150 = 1050 s,
     # 1950 s together. THAT IS NO LONGER THIS JOB'S SLOWEST STEP: setup-bun's two
-    # `ci_tools_fetch` calls are 2562 s at this change's bound, where they were 1482 s when this
+    # `ci_tools_fetch` calls are 3416 s at this change's bound, where they were 1482 s when this
     # comment was written, so the step that sizes the job is setup-bun again, above those
     # 1950 s, above the Go module download and the workspace install at 1050 s each and above
     # the ci-ok report's 2160 s.
-    # 1800 + 2562 = 4362 s -> 73 min. The gate reads no script outside .github/scripts/, so it
+    # 1800 + 3416 = 5216 s -> 87 min. The gate reads no script outside .github/scripts/, so it
     # prices none of render-nats.sh's three sites into that step: that 1950 is a reader's figure
-    # and dispatch://INFRA-2899 owns the reach that would make it the check's. The 2562 is the
+    # and dispatch://INFRA-2899 owns the reach that would make it the check's. The 3416 is the
     # check's own, and rule 8's job-derivation clause refused this key until it carried it.
-    timeout-minutes: 73
+    timeout-minutes: 87
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -119,9 +119,9 @@ jobs:
           fi
           echo "The spec-check action read $COUNT statements."
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
       - uses: ./.github/actions/setup-bun
-        timeout-minutes: 43
+        timeout-minutes: 57
       # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
       - name: bun install --frozen-lockfile
         # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.

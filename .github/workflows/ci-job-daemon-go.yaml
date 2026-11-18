@@ -79,10 +79,10 @@ jobs:
     #
     # Budget (ci-budgets.md's Budgets note): those 70 minutes, 4200 s, plus its slowest retried
     # step alone — install-jj, whose two `ci_tools_fetch` calls and whose `mise install` of the
-    # jj release are 2562 + 450 = 3012 s, above the tmux step's 625 + 775 = 1400 s, install-uv's
-    # one call of 1281 s, the Go module download's 1050 s, the ci-ok report's 2160 s and
-    # install-omp's `mise install` of 450 s. 4200 + 3012 = 7212 s -> 121 min.
-    timeout-minutes: 121
+    # jj release are 3416 + 450 = 3866 s, above the tmux step's 625 + 775 = 1400 s, install-uv's
+    # one call of 1708 s, the Go module download's 1050 s, the ci-ok report's 2160 s and
+    # install-omp's `mise install` of 450 s. 4200 + 3866 = 8066 s -> 135 min.
+    timeout-minutes: 135
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -175,9 +175,9 @@ jobs:
       # working-copy filters are among what they plant), and the daemon resolves jj at boot and
       # refuses to start without it.
       # install-jj's own retry arithmetic: two `ci_tools_fetch` calls and its `mise install`
-      # of the jj release, 2562 + 450 = 3012 s (ci-budgets.md's Budgets note) -> 51 min.
+      # of the jj release, 3416 + 450 = 3866 s (ci-budgets.md's Budgets note) -> 65 min.
       - uses: ./.github/actions/install-jj
-        timeout-minutes: 51
+        timeout-minutes: 65
 
       # internal/podsafety's baseline test and the pod agent's argv test run the Oh My Pi the worker
       # image ships, and refuse on GitHub Actions without one. The pin is read from
@@ -191,10 +191,10 @@ jobs:
       # ships, and refuses on GitHub Actions without one (.github/actions/install-uv). The action
       # takes that uv from the `uv` row of .github/ci-tools.yaml, which check-ci-tools.sh holds to
       # the image's own ARG UV_VERSION; main's #3280 moved the address and the checksum there.
-      # install-uv's own retry arithmetic: one `ci_tools_fetch` of the release tarball, 1281 s
-      # (ci-budgets.md's Budgets note) -> 22 min.
+      # install-uv's own retry arithmetic: one `ci_tools_fetch` of the release tarball, 1708 s
+      # (ci-budgets.md's Budgets note) -> 29 min.
       - uses: ./.github/actions/install-uv
-        timeout-minutes: 22
+        timeout-minutes: 29
 
       # The daemon's NATS tests start testnats.Image (the hub's 2.15.1) and SkippingImage (nats:2.10,
       # for the one test of its refusal), and, for its grant test, Envoy's HubImage

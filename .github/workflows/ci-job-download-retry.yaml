@@ -41,15 +41,15 @@ jobs:
   # the unfaulted install the stalled Playwright site needs and the 31 rig steps. That is
   # 14430 s. Every faulted site runs its retries out inside its own
   # report budget above, so the term the rule adds is this job's slowest download that is not a
-  # faulted site: install-jj, whose two `ci_tools_fetch` calls are 2562 s and whose
-  # `mise install` of the jj release is 5 x 60 + 150 = 450 s, 3012 s together (ci-budgets.md's
-  # Budgets note) — above setup-bun's 2562 s, the unfaulted workspace install's 1050 s and the
-  # ci-ok report's 2160 s. So 14430 + 3012 = 17442 s -> 291 min, the whole minute above the
-  # 290.7 that sum gives. What this key read before, and why each site's budget carries the
+  # faulted site: install-jj, whose two `ci_tools_fetch` calls are 3416 s and whose
+  # `mise install` of the jj release is 5 x 60 + 150 = 450 s, 3866 s together (ci-budgets.md's
+  # Budgets note) — above setup-bun's 3416 s, the unfaulted workspace install's 1050 s and the
+  # ci-ok report's 2160 s. So 14430 + 3866 = 18296 s -> 305 min, the whole minute above the
+  # 304.9 that sum gives. What this key read before, and why each site's budget carries the
   # probe's 20 s: .github/ci-budgets.md, "The download-retry job's rig".
   download-retry:
     runs-on: ubuntu-24.04
-    timeout-minutes: 291
+    timeout-minutes: 305
     steps:
       # The bypass, emptied for every step of this job, which the job's comment derives: a
       # `no_proxy` or `NO_PROXY` of `*` sends every host past the proxy, and a fault nothing
@@ -65,16 +65,16 @@ jobs:
         with:
           persist-credentials: false
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
       - uses: ./.github/actions/setup-bun
-        timeout-minutes: 43
+        timeout-minutes: 57
       # Only for the mise it leaves at ~/.local/bin/mise, which install-omp installs the pin
       # through: nothing here drives jj. Unfaulted, because it is this job's prerequisite rather
       # than one of its sites.
       # install-jj's own retry arithmetic: two `ci_tools_fetch` calls and its `mise install`
-      # of the jj release, 2562 + 450 = 3012 s (ci-budgets.md's Budgets note) -> 51 min.
+      # of the jj release, 3416 + 450 = 3866 s (ci-budgets.md's Budgets note) -> 65 min.
       - uses: ./.github/actions/install-jj
-        timeout-minutes: 51
+        timeout-minutes: 65
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
@@ -101,12 +101,12 @@ jobs:
       - id: recover-changie
         continue-on-error: true
         # install-changie's own retry arithmetic, which rule 8 reads from the declaration for
-        # .github/scripts/ci-tools.sh: one `ci_tools_fetch`, three ladders, 1281 s (ci-budgets.md's
-        # Budgets note) -> 22 min. What this fault costs is far less, and the report below reads
+        # .github/scripts/ci-tools.sh: one `ci_tools_fetch`, four ladders, 1708 s (ci-budgets.md's
+        # Budgets note) -> 29 min. What this fault costs is far less, and the report below reads
         # it: this proxy answers 504 at once and then serves, so the release asset's own ladder
         # makes its attempts for nothing but their waits and one of them lands inside the
         # recovery window - the second source is never reached, and the step succeeds.
-        timeout-minutes: 22
+        timeout-minutes: 29
         uses: ./.github/actions/install-changie
         env:
           http_proxy: ${{ steps.recover-changie-proxy.outputs.proxy }}
@@ -297,9 +297,9 @@ jobs:
           .github/scripts/download-retry-proof.sh probe stall-changie
       - id: stall-changie
         continue-on-error: true
-        # install-changie's own retry arithmetic: one `ci_tools_fetch`, 1281 s
-        # (ci-budgets.md's Budgets note) -> 22 min.
-        timeout-minutes: 22
+        # install-changie's own retry arithmetic: one `ci_tools_fetch`, 1708 s
+        # (ci-budgets.md's Budgets note) -> 29 min.
+        timeout-minutes: 29
         uses: ./.github/actions/install-changie
         env:
           http_proxy: ${{ steps.stall-changie-proxy.outputs.proxy }}

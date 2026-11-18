@@ -38,9 +38,10 @@
 # two must agree on the row, the digest and the address, and this script holds no second copy of
 # any of that: it reads the rows with `ci_tools_rows`, each row's second source with
 # `ci_tools_source_name` and their fields with `ci_tools_field`, fetches the asset with
-# `ci_tools_curl` and asks the package every question of its own with `ci_tools_curl_status`,
-# so every request this run makes rides the one retry ladder and none of them is written here
-# a second time; it holds the bytes to the row with `ci_tools_verify`, names the package with
+# `ci_tools_curl`, reads the package's blobs and tags with `ci_tools_registry_head` and opens and
+# closes every upload and puts every manifest with `ci_tools_curl_status`, so every request this
+# run makes rides the one retry ladder and none of them is written here a second time; it holds
+# the bytes to the row with `ci_tools_verify`, names the package with
 # `ci_tools_registry`, addresses that package with `ci_tools_registry_url` and the row's blob in
 # it with `ci_tools_blob_url`, and mints its token with `ci_tools_ghcr_token`.
 # What is this script's own is what no install does: the state of the copy — `held`, `filled` or
@@ -172,31 +173,41 @@ origin="$origin_scheme://$origin_host"
 # The push token: the helper's one token request, asked for `pull,push` with the credential
 # ci.yaml's ci-images job holds, where an install asks the same request for an anonymous
 # `pull`. The empty first argument takes the helper's own per-attempt bound.
-# Every request below carries this token, because the same run writes to the package it reads.
+# Every request below carries this token, because the same run writes to the package it reads,
+# and each reads it on standard input from printf, a shell builtin, so it is in no process's
+# command line. None follows a redirect, so neither the token nor the credential it is minted
+# with reaches an origin a redirect names.
 if ! token=$(ci_tools_ghcr_token "" pull,push "$GITHUB_ACTOR:$GITHUB_TOKEN"); then
   error "the registry would not answer a pull,push token request for $registry ($token), so this run reads nothing and fills nothing."
   exit 1
 fi
 
-# registry_head <url> [curl argument…]: the HTTP status of one HEAD of the package, with that
-# answer's headers left in $headers. A registry may answer a read of a blob with a redirect to
-# the store that holds it, so curl follows it and this reads the status of the last hop. A
-# request the service did not answer at all reads 000, which is no status this script admits, so
-# it is refused like any other.
-# The request is made with `ci_tools_curl_status`, the one ladder .github/scripts/ci-tools.sh
-# holds, so a flap of the package costs a retry here as it costs one in an install, and this
-# file writes no second copy of that ladder (dispatch://INFRA-1545, R2). That helper reads the
-# status rather than failing on it, which is what this function is for: the 404 that says the
-# package holds no such blob is this run's answer and not its error.
-# 30 s per attempt: a HEAD carries no body in either direction, so what an attempt waits for is
-# the package's own answer, and 30 s is the bound this repository gives such a request (the
-# ci-ok report's `gh api` reads). A row's own `max_time` bounds the transfers of its bytes
-# below, which is what that field is about.
+# registry_head <url> [curl argument…]: the HTTP status of one HEAD of the package with the push
+# token, its answer's headers left in $headers: the helper's ci_tools_registry_head, which hands
+# the token to curl on standard input and follows no redirect. A request the service did not
+# answer at all reads 000, which is no status this script admits, so it is refused like any
+# other.
+# A redirect is refused by name, as a status this script does not admit, and never followed:
+# ghcr.io answers a HEAD of a blob and of a manifest itself, 200 for every ghcr-mirror row
+# (measured 2026-11-17, as .github/scripts/ci-tools.sh writes above ci_tools_registry_head), so
+# a 3xx here is a package that answers otherwise, and it fails this run loudly rather than being
+# read in silence as a state of the copy. Following it would cost a second ladder for each HEAD
+# and three for each row this run fills, which would put a cold fill past the 360 minutes a
+# GitHub-hosted job may run (.github/ci-budgets.md, "The ci-images job's ceiling and the tool
+# copy").
+# The request rides the one ladder .github/scripts/ci-tools.sh holds, at 30 s an attempt, so a
+# flap of the package costs a retry here as it costs one in an install, and this file writes no
+# second copy of that ladder (dispatch://INFRA-1545, R2). That helper reads the status rather
+# than failing on it, which is what this function is for: the 404 that says the package holds
+# no such blob is this run's answer and not its error. A row's own `max_time` bounds the
+# transfers of its bytes below, which is what that field is about.
 registry_head() {
   local url=$1 status
   shift
-  status=$(ci_tools_curl_status 30 "$url" -D "$headers" -I \
-    -H "Authorization: Bearer $token" "$@") || status=000
+  status=$(ci_tools_registry_head "$token" "$headers" "$url" "$@")
+  case $status in
+    3*) error "a HEAD of $url answered $status, a redirect, which this run does not follow: ghcr.io answers a HEAD of a blob and of a tag itself, so this run admits no redirect as the state of a copy." ;;
+  esac
   printf '%s\n' "$status"
 }
 
@@ -213,17 +224,19 @@ header_value() {
 # copy, in the two steps the registry API takes. The upload's location may be absolute or
 # path-only, and it may already carry a query, so the digest is appended with the separator
 # that location needs.
-# Both requests go through `ci_tools_curl_status` as the reads above do, so every request this
-# run makes retries under the one ladder and the push of a copy rides out the flap an install
-# of it would ride out.
+# Both requests go through `ci_tools_curl_status`, the ladder the reads above ride too, so every
+# request this run makes retries under the one ladder and the push of a copy rides out the flap
+# an install of it would ride out. Each hands the token to curl on standard input, and neither
+# follows a redirect.
 # The POST that opens the upload carries no body, so it is bounded at 30 s like the HEADs; the
 # PUT that carries the bytes is bounded by the caller, which passes the row's own `max_time`
 # for the layer — the bound .github/scripts/ci-tools.sh reads those same bytes under — and
 # 30 s for the config document this run wrote itself.
 push_blob() {
   local row=$1 file=$2 digest=$3 what=$4 max_time=$5 status location separator
-  status=$(ci_tools_curl_status 30 "$registry_url/blobs/uploads/" -X POST -D "$headers" \
-    -H "Authorization: Bearer $token" -H 'Content-Length: 0') || status=000
+  status=$(printf 'Authorization: Bearer %s' "$token" |
+    ci_tools_curl_status 30 "$registry_url/blobs/uploads/" -X POST -D "$headers" \
+      -H @- -H 'Content-Length: 0') || status=000
   if [ "$status" != 202 ]; then
     error "$row: the upload of the $what started with POST $registry_url/blobs/uploads/, and the package answered $status where the registry API answers 202. The copy of this row is unchanged."
     return 1
@@ -241,9 +254,10 @@ push_blob() {
     *\?*) separator='&' ;;
     *) separator='?' ;;
   esac
-  status=$(ci_tools_curl_status "$max_time" "${location}${separator}digest=sha256:$digest" \
-    -X PUT -H "Authorization: Bearer $token" -H 'Content-Type: application/octet-stream' \
-    --data-binary "@$file") || status=000
+  status=$(printf 'Authorization: Bearer %s' "$token" |
+    ci_tools_curl_status "$max_time" "${location}${separator}digest=sha256:$digest" \
+      -X PUT -H @- -H 'Content-Type: application/octet-stream' \
+      --data-binary "@$file") || status=000
   if [ "$status" != 201 ]; then
     error "$row: the $what was PUT to $location and the package answered $status where the registry API answers 201. The copy of this row is unchanged."
     return 1
@@ -256,7 +270,8 @@ push_blob() {
 # decides a byte of either.
 # Both are small documents this run wrote itself — the config is three keys and the manifest
 # four — so each is pushed at 30 s per attempt, the bound the requests that carry no asset
-# bytes take here, through the same `ci_tools_curl_status` ladder as every other request.
+# bytes take here, through the same `ci_tools_curl_status` ladder as the uploads above, with
+# the token on standard input.
 push_copy() {
   local row=$1 digest=$2 size=$3 media=$4 title=$5 tag=$6
   local config="$work/config.json" document="$work/manifest.json" config_digest config_size status
@@ -313,9 +328,10 @@ document = {
 with open(path, "w") as handle:
     handle.write(json.dumps(document, separators=(",", ":")))
 PY
-  status=$(ci_tools_curl_status 30 "$registry_url/manifests/$tag" -X PUT \
-    -H "Authorization: Bearer $token" -H "Content-Type: $MANIFEST_TYPE" \
-    --data-binary "@$document") || status=000
+  status=$(printf 'Authorization: Bearer %s' "$token" |
+    ci_tools_curl_status 30 "$registry_url/manifests/$tag" -X PUT \
+      -H @- -H "Content-Type: $MANIFEST_TYPE" \
+      --data-binary "@$document") || status=000
   if [ "$status" != 201 ]; then
     error "$row: the manifest was PUT to $registry_url/manifests/$tag and the package answered $status where the registry API answers 201. The blob is in the package and the tag $tag names nothing, so re-run the ci-images job."
     return 1
