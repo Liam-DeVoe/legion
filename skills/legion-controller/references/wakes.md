@@ -465,7 +465,7 @@ out of the workflow, so the `todo` after it starts a new generation whatever pha
 in. The release is a `todo` written on a root that still stands at `phase: held`, with no park
 before it.
 
-## `worker-stalled on <KEY>` (`{kind: "worker-stalled", role: "architect", last_step, silent_for, bound, end, stop?, launch_failures, …}`)
+## `worker-stalled on <KEY>` (`{kind: "worker-stalled", role: "architect", last_step, silent_for, bound, end, stop?, launch_failures?, …}`)
 
 The daemon's stall backstop acted on a stalled turn of the tree's architect: its agent had not
 stepped for longer than the `worker_stall_backstop_hours` the deployment gives that role, and most
@@ -512,7 +512,7 @@ Its `stop` says what became of the stalled process itself:
 A stop the runtime would not make is a finding to put to a person, with the notice in it, because
 the daemon stops that process again only at its next launch of that claim or at its next restart.
 
-Nothing was charged to the claim for the stall itself, and `launch_failures` counts what the
+Nothing was charged to the claim for the stall itself, and `launch_failures`, absent where it is 0, counts what the
 replacement charged. On every end but `failed` nothing failed either: the task that architect was
 serving is still owed to it, and the notice names what its return waits on — the parked launch's
 turn, the retried launch, or a resume — no issue was held, and no status moved.

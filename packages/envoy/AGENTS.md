@@ -5094,13 +5094,15 @@ a cleanup that failed is logged at WARN (`registry role claim old holder cleanup
 
 `send` and `publish` accept optional `in_reply_to`, `supersedes`, `urgency`, `expects_reply`, and `expires_at`, and `publish` additionally `dedupe_key`; empty optional fields are omitted.
 `urgency` is `low`, `med`, `high`, or `blocking`; `expects_reply` is `false`, `optional`, or `required`, and the ingress also reads the old string `none` as `false`, which the comment at the parser in `internal/contracts/expects_reply.go` says what removes.
-The listener reads `urgency` in one place: a publish at `low` that names no `source_session`, to a role that no live session holds, raises no wake report (`roleSend.noHolder`, `wakesItsRole`).
-That holds for the 202 kept answer and for the 404 alike, and the sweep raises no report for such a kept copy.
+The listener reads `urgency` in three places.
+Its validation refuses a value outside those four (`api.go`).
+A publish at `low` that names no `source_session`, to a role that no live session holds, raises no wake report (`roleSend.noHolder`, `wakesItsRole`), for the 202 kept answer and for the 404 alike.
+The sweep of kept copies raises no report for such a copy either (`role_keep_sweep.go`, `wakesItsRole`).
 The Legion daemon sends a text that its reader can act on at its next turn this way.
 An agent session always names its own session, so a `low` message from a session still wakes the role.
 Apart from that, the listener orders, holds and delivers no message by `urgency`, and the renderers show it to the reader.
 An Oh My Pi host stores a `low` card of the Legion daemon, one that names no `source_session`, in the session's context with no turn, so the session reads it at its next turn (`packages/pi-envoy/AGENTS.md`).
-Every other card from a session starts a turn as before, whatever its urgency.
+Every other card from a session starts a turn, whatever its urgency.
 A session id or role that becomes a KV key NATS would refuse (`bus.EnsureKeyValue`) is a 413 naming its size when too long and a 400 naming the key when it holds an empty token or whitespace, or a character outside nats.go's key alphabet (`ses:bad`, `bus.ErrInvalidKey`), on every route that reads or writes one.
 Every `/v1` 4xx/5xx response, including the startup gate's 503, is JSON: `{"error":"<message>","expected":["field"]}`.
 `expected` appears when the caller must provide a field.

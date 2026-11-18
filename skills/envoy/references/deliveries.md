@@ -28,7 +28,9 @@ Then publish the release.
 </message>
 ```
 
-A card of the Legion daemon names its head summary (`<kind> on <KEY>`) and gives the fields of its notice or role message as lines under `message:`, each once; the words of another author follow in a block named by their field, with `by` and `at`.
+A card of the Legion daemon names its head summary (`<kind> on <KEY>`) and gives the fields of its notice or role message as lines under `message:`, each once.
+The words of another author follow in a block named by their field.
+The block's `by` and `at` name the author and the time of the words, each only where no field of the message, or of the item in it that holds the words, already names it.
 
 - `to`: present on a card sent to your session directly, as `to: you`.
   A card with no `to` came through a role you hold or a topic you follow.
@@ -56,13 +58,14 @@ A card of the Legion daemon names its head summary (`<kind> on <KEY>`) and gives
 
 - `id`: the delivery id; pass it as `in_reply_to` when you reply.
 
-- `role`: each role the sender holds, once each, where it holds one.
+- `role` or `roles`: the roles the sender holds, each once.
+  A card writes `role` where the sender holds one role, and `roles` where it holds several.
 
 - `by`: the expiry deadline, when the sender set one.
 
 - `urgency`: how soon the sender asks you to act: `low`, `med`, `high` or `blocking`.
   On an Oh My Pi host, a `low` card of the Legion daemon (one that names no sender session) or a `low` card of a Dispatch event (not an `ask.*` card, and not a message or mention that Dispatch delivers to your session) goes into your stored context with no turn: you read it at your next turn, whatever starts that turn.
-  Every other card is delivered as before and starts a turn: a card of `med`, `high` or `blocking` urgency or none, and a message from another session whatever urgency its sender set.
+  Every other card starts a turn: a card of `med`, `high` or `blocking` urgency or none, and a message from another session whatever urgency its sender set.
   On a message from another session, `urgency` is for you to read only: it does not change when that message reaches you, or its place among others.
 
 - `expects_reply`: what the sender wants back.
@@ -79,8 +82,8 @@ A card of the Legion daemon names its head summary (`<kind> on <KEY>`) and gives
 
 - How to reply: a card from another session carries no reply command, so reply from its fields.
   A direct reply is `envoy_send` to the session in `from`, with `in_reply_to` set to the card's `id`.
-  A reply to a role the sender holds is `envoy_publish` to `notifications.role.<role>`, with `<role>` one of the card's `role` values, and `in_reply_to` set to the card's `id`.
-  A Dispatch frame keeps its reply command: `command:`, the `dispatch` command line that answers it, with `...` where your text goes.
+  A reply to a role the sender holds is `envoy_publish` to `notifications.role.<role>`, with `<role>` the card's `role`, or one of its `roles`, and `in_reply_to` set to the card's `id`.
+  A Dispatch card keeps its reply command in its `reply_with` block, as the card prints it: the block's `command:` line is the `dispatch` command line that answers the frame, with `...` where your text goes.
   It is absent when `expects_reply` is `false`: a delivery that wants nothing back offers no way to send something.
   Where you answer one anyway, the card still names what you need — a Dispatch frame names its comment, message or ask, and an agent's delivery names its `id` and its sender.
   A card of the Legion daemon wants no reply: act on its fields as your role prompt or skill says.

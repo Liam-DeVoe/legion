@@ -271,7 +271,7 @@ it, or the sessions that follow the ask whose thread it is. The reply then does 
 that only wrote the spec or the document the thread is on. A session that the reply names and
 whose mention failed still gets it directly. When every session of the thread is gone or stopped,
 or Dispatch cannot read Envoy's registry, the reply reaches the sessions of the spec and of the
-document as before.
+document.
 
 Two exceptions. When a mention's receipt times out, or its send is stranded for over a minute,
 Dispatch records it as failed though it may have reached you, so the comment can arrive twice:

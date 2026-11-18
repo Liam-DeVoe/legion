@@ -1385,11 +1385,12 @@ These arrive as messages on the Dispatch issue:
 - **A red check.** Nothing moves for it. The daemon names each check that failed or was cancelled,
   with the conclusion GitHub gave it, counts the checks that passed and names the `gh pr checks`
   command that lists them, in one message each to the architect that owns the issue, the worker
-  of the issue's current phase and the implementer, and judges none of them. That message is `low`
-  to each of those readers that does not work the issue's current phase, so it reads the message
-  at its next turn. Re-run a check that failed on itself, have the implementer fix code that is
-  at fault, or leave it to GitHub, which holds the merge under the base branch's own required
-  checks.
+  of the issue's current phase and the implementer, and judges none of them. That message is `med`
+  for the worker that holds the issue's current phase, and `low` for each other reader, which
+  reads it at its next turn. Where no worker holds the phase (`admitted`, `accepting`, `held`,
+  `awaiting_person`), it is `med` for the architect. Re-run a check that failed on itself, have
+  the implementer fix code that is at fault, or leave it to GitHub, which holds the merge under
+  the base branch's own required checks.
 - **A review round that no review decides.** Legion's reviewer must approve the head or request
   changes; a plain comment leaves the issue in `needs_review`, and the architect asks the reviewer
   for the decision. Only the review App or an account with write access to the repository decides a

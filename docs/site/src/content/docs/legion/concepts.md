@@ -383,8 +383,9 @@ Legion uses GitHub's own review mechanisms rather than labels:
   the checks that passed and names the `gh pr checks` command that lists them, and judges none of
   them: it sends one message each to the architect that owns the issue, the worker of the issue's
   current phase and the implementer whose code the checks ran on, and moves the issue nowhere. The
-  message is `low` to each of those readers that does not work the issue's current phase, so that
-  reader reads it at its next turn, and the reader that works the phase gets it at once. A red is
+  message is `med` for the worker that holds the issue's current phase, which gets it at once, and
+  `low` for each other reader, which reads it at its next turn. Where no worker holds the phase
+  (`admitted`, `accepting`, `held`, `awaiting_person`), it is `med` for the architect. A red is
   for those roles to decide on — re-run a check that failed on itself, fix code that is at fault,
   or wait — and for GitHub to hold the merge over, under the base branch's own required
   checks, which Legion neither reads nor re-implements. The reviewer reads the head's checks on

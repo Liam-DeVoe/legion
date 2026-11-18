@@ -14,14 +14,15 @@ person, a child's own architect sends the question to the architect above it ins
 A wake of a `low` kind is read at your next turn: it wakes no released pod and starts no turn, since its act can wait.
 The `low` kinds are the rows below that say so:
 
-- A `phase-finished` that the daemon has already moved on from.
+- A `phase-finished` that the daemon has already moved on from: an implementer's, a tester's or a merger's, a reviewer's request for changes, the design gate's opening, or your own move back out of `accepting`.
+  A planner's `phase-finished` and a reviewer's approval are `med`.
 - A `held` that records your own escalation (`hold: escalation`).
 - A `child-status` with `change: todo`, `change: joined` or `change: started`.
 - A `checks-red` notice.
 - A `pr-merged` notice.
 - A `ci-settled` message while a worker holds the phase.
 
-A Dispatch event that the Legion daemon's own session wrote is `low` too.
+A Dispatch event that the Legion daemon's own session wrote comes at `low` as well, and its card waits for your next turn.
 An `ask.*`, an `issue.released` and an `issue.closed` event are not.
 Every other wake is `med` and starts a turn.
 

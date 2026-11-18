@@ -147,7 +147,7 @@ All of them are kept in the stream. Some are also delivered straight to an agent
   is. The reply then reaches no session that only wrote the spec or the document the thread is
   on. A session that the reply names and whose mention failed still gets it. When every session
   of the thread is gone or stopped, or Envoy's registry does not answer, the reply reaches the
-  spec's sessions and the document's sessions as before.
+  spec's sessions and the document's sessions.
 
 A session reached more than one of these ways gets one copy. A new comment that mentions a session
 arrives there once, as the mention, when the mention reached it; when the mention's send fails,

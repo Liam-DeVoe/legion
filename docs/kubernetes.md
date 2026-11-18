@@ -2124,7 +2124,7 @@ Upgrade, and roll back, every daemon of one database in the same change.
 This release writes each daemon text from a record of facts.
 A text about a person's act carries the person's words, which the daemon takes from the Dispatch event of that act: the answer of an ask, a reply in its thread, the note of a decline, and the reason of a changes request.
 The daemon keeps these words whole and cuts them only when it writes a text.
-Its migration `20261118092930_person_words` adds three `jsonb` columns:
+Its migration `20261118092930_person_words` adds four columns, three `jsonb` columns of words and one `text` column of an author:
 
 - `root_asks.person_answer_words`: the words of the person's answer of the ask.
 
@@ -2132,22 +2132,30 @@ Its migration `20261118092930_person_words` adds three `jsonb` columns:
 
 - `parked_decisions.words`: the words of a decision that the daemon keeps for the next start or catch-up of a tree.
 
+- `design_gates.told_changes_by`: the person who made the changes request that a gate records as told.
+  The resume of a root that waited on the person names that person beside the reason of the request.
+
 **The earlier release ignores the new columns.**
-An earlier image names none of the three columns in its reads or its writes.
+An earlier image names none of the four columns in its reads or its writes.
 So it reads every row, and the rollback needs no statement for the columns.
-Its writes also do not clear the words.
+Its writes also do not clear the columns.
 When it records a newer act on a `root_asks` row, or replaces a `parked_decisions` row with a newer decision, the row keeps the words of the older act.
-After a roll forward, this release can then give those older words beside the newer act.
+When it records a newer changes request as told on a `design_gates` row, it writes the version and the reason of that request, and the row keeps the author of the older request.
+After a roll forward, this release can then give those older words, or that older author, beside the newer act.
 To prevent this, run these statements with the daemon stopped, before the roll forward:
 
 ```sql
 -- The words that an earlier daemon's writes can leave on a row of a newer act.
 update root_asks set person_answer_words = null, person_words = null;
 update parked_decisions set words = null;
+-- The author that an earlier daemon's writes can leave beside a newer changes request.
+update design_gates set told_changes_by = null;
 ```
 
-A cleared row costs one thing: a text about that act gives the act and its reference with no words, as the earlier release did.
+A row whose words are cleared costs one thing: a text about that act gives the act and its reference with no words, as the earlier release did.
 The reader then reads the words in Dispatch.
+A gate row whose author is cleared costs the author of its changes request.
+The resume then takes the author from the person's answer of the gate's approval request where that answer holds the same reason, and otherwise it gives the reason with no author.
 
 **The update round's drift items need no statement.**
 The migration `20261118101218_update_drift_items` adds one `jsonb` column, `claims.update_drift`.
@@ -3881,26 +3889,22 @@ For a process of a role, the watch also gives a report to that role's part of th
   ```
 
 A process of no role has its `ended` line and no report, whether the classifier protects it or not.
-The daemon chooses the note by the report's cause (`memoryGuardKill`, `packages/daemon/internal/workflow/engine.go`) and queues it to the role's topic with the sizes in binary units.
+The daemon tells the role in the same `memory-kill` message as for the guard's kill (`memoryGuardKill` and `MemoryKillMessage`, `packages/daemon/internal/workflow/engine.go`), with these differences:
 
-For `cause: kernel` the note is `kernelKillNote`'s, and the daemon logs `workflow: the role whose process the pod's kernel stopped is told why` with the report's `cause`:
+- `cause` is `kernel` for `cause: kernel`, and `kernel-protected` for `cause: kernel-protected`.
 
-```text
-The pod's kernel stopped one of your processes because the pod ran out of memory: `<name>` (pid <pid>) held <size> when the pod's memory read <counter> of its <limit> limit. The pod's other processes and your session go on. Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: read skill://legion-worker/references/tools.md before you run it again.
-```
+- `pod_memory` is the report's `counter`, the cgroup's usage, where the guard's kill gives its `reading`.
 
-For `cause: kernel-protected` the note is `kernelProtectedKillNote`'s, and the daemon logs `workflow: the role whose session's own process the pod's kernel stopped is told why` with the report's `cause`:
+For `cause: kernel` the daemon logs `workflow: the role whose process the pod's kernel stopped is told why`, and for `cause: kernel-protected` it logs `workflow: the role whose session's own process the pod's kernel stopped is told why`, each with the report's `cause`.
 
-```text
-The pod's kernel stopped one of your processes because the pod ran out of memory: `<name>` (pid <pid>) held <size> when the pod's memory read <counter> of its <limit> limit. It was one of the processes that run your session, not a command you ran. If it was your agent, your turn ended with it, and so did every other process of your role. The daemon then starts the same session again and sends again any task that the turn was running. It counts each such exit of a role's process as a failed launch, and at the limit of failed launches it fails your claim instead. Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: read skill://legion-worker/references/tools.md before you run it again.
-```
-
-That note does not say that the session goes on.
+The role's prompt says what each cause means (`packages/daemon/internal/prompts/roles/mechanics/headless.md` for a phase worker, `go/architect-common.md` for an architect).
+With `cause: kernel`, the pod's other processes and the role's session go on.
+With `cause: kernel-protected`, the process was one of the processes that run the role's session, and the prompt does not say that the session goes on.
 The end of a role's agent ends its shim and its `role-init`, and with them every process of the role, so the role's turn ends.
 The daemon reads that as the role's process gone (`died`, `packages/daemon/internal/supervise/machine.go`).
 It takes back the task that the turn was running, counts one failed launch, and starts the same session again.
 At the limit of failed launches it fails the claim instead.
-One of Oh My Pi's helpers can end alone, so the note says what follows only for the agent.
+One of Oh My Pi's helpers can end alone, so the prompt says what follows only for the agent.
 
 A note can be lost in each case in which the guard's note can, and in each of them the `ended` line stays in the container's log.
 The `kernel-protected` note of an agent's end may reach nobody.
@@ -4290,8 +4294,9 @@ The roles share the pod's network namespace, the workspace path and the Oh My Pi
 Each role is judged by its own launcher connection's state: one role's process exiting is that role's `gone` alone.
 The `roles` container ending — its PID 1 exiting, `OOMKilled`, an eviction
 — ends every role of the issue: each is `gone`, its detail naming the container's reason and exit code and quoting that role's own last 20 prefixed lines, then the container's last 20 unprefixed lines, which are no role's (`roleLog`, `observe.go`), and the supervisor relaunches each as it relaunches any `gone` role.
-When that reason is `OOMKilled`, each role whose turn the end cut off gets its task again behind a note that its pod ran out of memory and a pointer to `skill://legion-worker/references/tools.md` (`Observation.OutOfMemory`, then `outOfMemoryTask` in `internal/supervise/delivery.go`, kept on the delivery across a daemon restart);
-a role that was in no turn gets nothing, and neither an init container's end nor the controller's pod gives the note.
+When that reason is `OOMKilled`, each role whose turn the end cut off gets its task again behind an `out-of-memory-note` with `reason: OOMKilled` (`Observation.OutOfMemory`, then `texts.NewOutOfMemoryNote`, which `Delivery.message` in `internal/supervise/delivery.go` puts in front of the task while the delivery's mark, kept across a daemon restart, holds);
+the step that points the role to `skill://legion-worker/references/tools.md` is in its prompt (`go/worker-common.md`).
+A role that was in no turn gets nothing, and neither an init container's end nor the controller's pod gives the note.
 
 Every container carries a reservation, a cpu and memory limit with a request no greater than it, and an ephemeral-storage limit over a smaller request:
 the `roles` container and both init containers the issue pod's one reservation (`runtime.kubernetes.resources.issue`, or the daemon's default), and the third init container, where the deployment names a `skills_repository`, that same reservation.
@@ -5694,12 +5699,25 @@ Up to 32 reports wait while the role has no connection, and a 33rd drops the old
 A process of no role has its `ended` line and no report.
 The daemon applies each report once, under the event id `memory-guard-kill:<guard>:<sequence>`, so a report sent twice tells the role once.
 It credits the report to the issue, the role and the pod that the connection authenticated as, and never to anything the report says.
-It then queues one message to that role's topic, `notifications.role.<role token>` (`memoryGuardNote`, `packages/daemon/internal/workflow/engine.go`), with the sizes in binary units (`3.13 GiB`).
-The message names the process as the lines do, by its executable's base name or its `comm`, escaped and cut, and prints no argument, since an argument may hold a credential that no masking rule names, and the role that started the process already has its arguments:
+It then queues one `memory-kill` message to that role's topic, `notifications.role.<role token>` (`memoryGuardKill` and `MemoryKillMessage`, `packages/daemon/internal/workflow/engine.go`).
+The message is a record of fields, which the role's card gives as lines:
 
-```text
-The launcher's memory guard stopped one of your processes with SIGKILL because the pod was near its memory limit: `<name>` (pid <pid>) held <size> of anonymous memory while the pod's anonymous memory read <reading> of its <limit> limit. The pod's other processes and your session go on. Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: read skill://legion-worker/references/tools.md before you run it again.
-```
+- `kind: memory-kill`, and `issue`, the issue's key.
+
+- `cause: guard`, for the guard's own kill.
+
+- `process` and `pid`: the process as the lines name it, by its executable's base name or its `comm`, escaped and cut.
+  The message names no argument, since an argument may hold a credential that no masking rule names, and the role that started the process already has its arguments.
+
+- `size`: the process's anonymous memory.
+
+- `pod_memory`: the pod's anonymous memory reading.
+
+- `limit`: the pod's limit.
+
+Each size is in binary units (`3.13 GiB`).
+The role's prompt says what the message means (`packages/daemon/internal/prompts/roles/mechanics/headless.md` for a phase worker, `go/architect-common.md` for an architect):
+the pod's other processes and the role's session go on, and the role reads `skill://legion-worker/references/tools.md` before it runs heavy work again, since heavy work runs where the deployment's instructions say, not in the pod.
 
 A note can be lost in each of these cases, and in each the `ended` line stays in the container's log:
 

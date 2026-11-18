@@ -69,18 +69,18 @@ envoy_send(session_id="<id>", message="Review complete: <url>", in_reply_to="<id
   A card that reads `to: you` came to your session directly.
   A card with no `to` came through a role you hold or a topic you follow.
 
-- A Dispatch card keeps its reply command: run its `command:` line with your text in place of `...`.
+- A Dispatch card keeps its reply command: run the `command:` line of its `reply_with` block with your text in place of `...`.
   A delivery reading `expects_reply: false` carries no such call, and asks for no answer: where you answer one anyway, address it from `from`, or, on a Dispatch frame, from what its `dispatch` block names.
 
 - A card of the Legion daemon (a notice or a role message) names its kind and its issue, and its fields follow as lines.
   It wants no reply: act on its fields as your role prompt or skill says.
-  Another author's words in it come in a block of their own after the fields, named by their field, with their author and time.
+  Another author's words in it come in a block of their own after the fields, named by their field, with their author and time where no field already names them.
 
 - A card's `urgency` decides when an Oh My Pi host hands it to you.
   A `low` card of the Legion daemon, or a `low` card of a Dispatch event, goes into your stored context with no turn: you read it at your next turn, whatever starts that turn.
-  Such a card wakes no released Legion pod either.
+  A `low` text of the Legion daemon also wakes no released Legion pod.
   A session's own message is delivered whatever urgency it sets.
-  Every other card starts a turn as before:
+  Every other card starts a turn:
   - A card of `med`, `high` or `blocking` urgency, or of no urgency.
   - A message from another session, whatever its urgency.
   - A message or mention that Dispatch delivers to your session.
@@ -129,8 +129,9 @@ Every topic starts with `notifications.`.
 | Your own inbox | `agent.<session_id>` |
 | Slack, Ghost Wispr, WhatsApp | `skill://envoy/references/sources.md` |
 
-A Dispatch issue's events that the Legion daemon's own session writes, such as a status move of a Legion issue, come at urgency `low`, so you read them at your next turn.
-An `ask.*`, an `issue.released` and an `issue.closed` event come at the default urgency.
+A Dispatch issue's events that the Legion daemon's own session writes, such as a status move of a Legion issue, come at urgency `low`.
+An `ask.*` event, a close (`issue.closed`) and a release (`issue.released`) come at the default urgency.
+An Oh My Pi host holds each `low` card for your next turn.
 
 - Write the owner, the repository, a branch or tag name and a workflow file as one token each, with every dot written `_`:
   `acme/site.io` is `github.acme.site_io`, and `ci.yml` is `workflow.ci_yml`.

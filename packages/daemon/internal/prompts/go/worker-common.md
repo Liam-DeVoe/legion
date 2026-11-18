@@ -13,12 +13,12 @@ A task of the kind `pod-wake` says that a wake brought your released pod back. Y
 
 These waits wake you. The daemon wakes you with a task, a notice, a phase start, a backward move, a phase-ended message, a production-check look or a slot resume. A message published to your role topic wakes you, and so does an Envoy direct message or a person's answer, comment or message that Dispatch routes to your session. A CI settlement that the daemon records for the head of your issue's pull request wakes you while you work the issue's phase. A wait that raises none of those events wakes you only at the backstop, 60 minutes after the release at the default of `runtime.kubernetes.idle_release`, and only while your phase is open. Such a wait is a Dispatch topic you subscribed to with `envoy_subscribe`, CI of a repository that is not your issue's, a deploy run, or a Kubernetes Job you started. Name the wait in your `WAITING` line, and expect up to that hour before you look at it again.
 
-A text that the daemon or Dispatch sends at urgency `low` is one you can act on at your next turn. A `low` text wakes no released pod and starts no turn: you read it at your next turn, whatever starts that turn. Two kinds come to you at `low`:
+A text that the daemon or Dispatch sends at urgency `low` is one you can act on at your next turn. A `low` card starts no turn: it waits for your next turn, whatever starts that turn. A `low` text of the daemon also wakes no released pod. Two kinds come to you at `low`:
 
 - The `ci-settled` message while you do not work the issue's phase.
 - Each Dispatch event that the Legion daemon's own session wrote, such as a status move of your issue. An `ask.*`, an `issue.released` and an `issue.closed` event are not `low`.
 
-Every other task, notice and message starts a turn as before.
+Every other task, notice and message starts a turn.
 
 End a reply that waits with a line that starts `WAITING` and names what you wait on. A turn that ends with background work of your own still running keeps the pod, because your session reports that work to the daemon. A named Oh My Pi `bash` service does not keep the pod: it runs outside your session's job manager, so your session reports nothing about it, and the release ends it. A release keeps your unpushed tracked work, which is every commit no remote branch holds, your working-copy change and the local bookmarks that point at them. It keeps nothing else of the disk: `$TMPDIR` and all of its contents, every ignored file, every file larger than jj's `snapshot.max-new-file-size`, each role's home with its `local://` files, a test Postgres with its databases and the CodeGraph index are gone with the pod, and the next pod starts without them. So put work you must keep on the branch, in a tracked file or in Dispatch.
 

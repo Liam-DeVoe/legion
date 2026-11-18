@@ -1260,7 +1260,8 @@ The first boot of this release queues, once, a start for each merger that the `a
 That merger starts when its tree's design gate allows it, since `merging` holds no admission slot.
 A head that starts conflicting with its base (GitHub computes no merge ref for such a head and runs no checks on it at all) sends the issue back to `implementing` from `testing`, `reviewing`, `accepting`, `retro` or `merging` alike, and its architect is told with a `checks-red` notice.
 A red check sends nothing back from anywhere: the daemon names each check that failed or was cancelled, with the conclusion GitHub gave it, counts the checks that passed and names the `gh pr checks` command that lists them, in one message to the architect that owns the issue, the worker of the issue's current phase and the implementer, and judges none of them.
-That message is `low` to each of those readers that does not work the issue's current phase, so that reader reads it at its next turn, and the reader that works the phase gets it at once.
+That message is `med` for the worker that holds the issue's current phase, which gets it at once, and `low` for each other reader, which reads it at its next turn.
+Where no worker holds the phase (`admitted`, `accepting`, `held`, `awaiting_person`), it is `med` for the architect (`ciSettledUrgency`, `packages/daemon/internal/texts/rules.go`).
 GitHub's own merge queue (`merge_group` trigger) is a repository setting Legion does not modify.
 No lifecycle labels exist; GitHub issues are never read or written by Legion.
 
