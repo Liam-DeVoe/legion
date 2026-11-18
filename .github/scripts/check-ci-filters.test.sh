@@ -2435,7 +2435,7 @@ root, lane = sys.argv[1], sys.argv[2].split()
 reads.ENVOY_RACE_LANE = (reads.RaceJob("a-race-job", "Race-test the packages", "30m", tuple(
     reads.RacePackage(p.removesuffix("/..."), tree=p.endswith("/...")) for p in lane)),)
 try:
-    print(reads.race_impossible_script(reads.race_impossible_tests(root)))
+    print(reads.race_impossible_call(reads.race_impossible_tests(root)))
 except ValueError as refusal:
     print("RAISED:", refusal)
 ' "$1" "$2")
