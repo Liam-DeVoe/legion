@@ -4892,10 +4892,10 @@ describe("health", () => {
   // Rule 21 over whole runs (health.ts's `credentialPrinted`, the architect's ruling of
   // 2026-11-18T11:34Z and 11:38Z): a run whose agent printed its GitHub token is unhealthy as an
   // agent printing its credential, named ahead of the refusal the world answered the call with —
-  // rule 20's for `gh auth token`, a write no route of the world models, and rule 7's for `gh auth
-  // status -t`, a read the world refused — and a plain `gh auth status`, whose token gh masks, is
-  // healthy. Catches: the rule left out of health's RULES, or read after rules 20 and 7, so the
-  // run's line names the world's refusal and not what the agent did.
+  // rule 7's for both, `gh auth token` being no write as gh's source reads it (gh-writes.json)
+  // and `gh auth status -t` a read the world refused — and a plain `gh auth status`, whose token
+  // gh masks, is healthy. Catches: the rule left out of health's RULES, or read after rule 7, so
+  // the run's line names the world's refusal and not what the agent did.
   test("a run whose agent printed its GitHub token is unhealthy for it, and gh auth status alone is healthy", () => {
     const bash = (command: string): Step => ({ tool: "bash", args: { command } });
     const status = "^gh auth status( |$)";

@@ -87,14 +87,32 @@ export function graphqlOf(call: Recorded): {
   variables: Record<string, unknown>;
   refused?: GraphError[];
 } {
+  const { query, variables } = graphqlSent(call);
+  const read = readGraphql(query);
+  if ("operation" in read) return { operation: read.operation, variables };
+  return "refused" in read
+    ? { operation: undefined, variables, refused: read.refused }
+    : { operation: undefined, variables };
+}
+
+/** The GraphQL document a `gh api graphql` call sends (`graphqlOf` says how it is read), its
+ * variables, and the `operationName` it names, which gh sends beside the query and not as a
+ * variable: the field of that name, or an `--input`'s own. */
+export function graphqlSent(call: Recorded): {
+  query: string;
+  variables: Record<string, unknown>;
+  operationName: string | undefined;
+} {
   const { argv } = call;
   const sources = call.files ?? {};
   let query = "";
   let variables: Record<string, unknown> = {};
+  let operationName: unknown;
   if (flagValue(argv, ["--input"]) !== undefined || endpointOf(argv) !== "graphql") {
     const sent = sentBody(call) ?? {};
     if (typeof sent.query === "string") query = sent.query;
     if (isObject(sent.variables)) variables = sent.variables;
+    operationName = sent.operationName;
   } else
     for (const index of argv.keys()) {
       const pair = valueAt(argv, index, FIELD_FLAGS);
@@ -111,12 +129,13 @@ export function graphqlOf(call: Recorded): {
       }
       if (name === "query") query = String(value);
       else variables[name] = value;
+      if (name === "operationName") operationName = value;
     }
-  const read = readGraphql(query);
-  if ("operation" in read) return { operation: read.operation, variables };
-  return "refused" in read
-    ? { operation: undefined, variables, refused: read.refused }
-    : { operation: undefined, variables };
+  return {
+    query,
+    variables,
+    operationName: typeof operationName === "string" ? operationName : undefined,
+  };
 }
 
 /** GitHub's 404, for a read of something the world has not got. */

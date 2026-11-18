@@ -1943,6 +1943,48 @@ describe("health: rule 20, unmodelled write", () => {
         ]
       );
   });
+
+  // The architect's ruling of 2026-11-18T15:05Z: what a write is comes from production's side,
+  // gh's own commands at the tag the worker image pins (gh-writes.json, read out of gh's source),
+  // the method gh sends a `gh api` call with, and a GraphQL document's own operation, never from
+  // the world's router. Catches: a write test read off gh-routes.ts's `routeOf`, whose `kind`
+  // called no command outside `gh pr`, `gh run` and `gh auth` a write and no GraphQL its parser
+  // cannot read a mutation, so each refused write below read healthy; and, the other way, one
+  // that called `gh pr checkout`, `gh pr ls` (an alias of `pr list`) and `gh auth token` writes,
+  // which read GitHub or nothing, and which rule 7 reads as the refusals they are.
+  test("a write of gh's own that no route of the world has is unmodelled, as gh's source reads it", () => {
+    const refused = (argv: string[]) => call(argv, { route: null, handler: "unrouted", exit: 1 });
+    const two =
+      'query=query Q { viewer { login } } mutation M { addStar(input: {starrableId: "x"}) { clientMutationId } }';
+    const fragment =
+      'query=mutation { addComment(input: {subjectId: "x", body: "y"}) { ...F } } fragment F on AddCommentPayload { clientMutationId }';
+    const writes: string[][] = [
+      ["issue", "comment", "1001", "--body", "a note"],
+      ["label", "create", "bug"],
+      ["cs", "delete", "-c", "x"],
+      ["pr", "-R", "example/widgets", "merge", "1001"],
+      ["api", "graphql", "-f", two, "-f", "operationName=M"],
+      ["api", "graphql", "-f", fragment],
+    ];
+    for (const [index, argv] of writes.entries())
+      expect([argv, unmodelledWrite({ dir: run(`gh-write-${index}`, [refused(argv)]) })]).toEqual([
+        argv,
+        `unmodelled write: calls.jsonl:2, \`gh ${argv.join(" ")}\` of the reviewer, exited 1: no route or answer of the world models it, so it was refused 404 where GitHub takes it`,
+      ]);
+    const reads: string[][] = [
+      ["pr", "checkout", "1001"],
+      ["pr", "ls"],
+      ["auth", "token"],
+      ["issue", "frobnicate"],
+      ["api", "graphql", "-f", two, "-f", "operationName=Q"],
+      ["api", "graphql", "-f", two],
+    ];
+    for (const [index, argv] of reads.entries())
+      expect([argv, unmodelledWrite({ dir: run(`gh-read-${index}`, [refused(argv)]) })]).toEqual([
+        argv,
+        undefined,
+      ]);
+  });
 });
 
 // The architect's ruling of 2026-11-18T11:34Z and 11:38Z: production's `gh auth status -t` and
