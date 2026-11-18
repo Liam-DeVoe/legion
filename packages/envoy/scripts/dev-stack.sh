@@ -635,6 +635,7 @@ start_broker() {
     BROKER_VM_EXCHANGE_ACCOUNTS="$PERSON_FLEET_ACCOUNT=$EXCHANGE_PROJECT=$APPROVER_LOGIN" \
     BROKER_SIGNIN_DEVICE_AUDIENCE="$DEVICE_CLIENT_ID" \
     BROKER_SERVICE_LOGINS="legion-daemon=$REGISTRAR_ACCOUNT" \
+    BROKER_POD_REGISTRARS="$REGISTRAR_ACCOUNT=$EXCHANGE_ACCOUNT" \
     "${callout_broker_env[@]}" \
     "$BIN_DIR/broker" >"$1" 2>&1 &
   started_pid=$!
@@ -652,7 +653,10 @@ callout_after_first_broker
 # session name to the listed account and never to a pod, so what keeps two pods of one account
 # apart is this row, which a deployment's daemon writes as it starts a pod; here the registrar
 # account stands in for that daemon, and the body carries the pod's own broker-audience token.
-# Without it the exchange is refused invalid_grant, naming the session. ---
+# Every broker of the run lists that account as the registrar of the pod's account
+# (BROKER_POD_REGISTRARS, in start_broker), and a broker with no such entry refuses the write 403
+# POD_REGISTRAR_NOT_LISTED. Without the row the exchange is refused invalid_grant, naming the
+# session. ---
 if ! curl -sf -X POST "$BROKER_URL/v1/oauth/exchange/pod-sessions" \
   -H "Authorization: Bearer $(cat "$REGISTRAR_TOKEN_FILE")" \
   -H 'Content-Type: application/json' \

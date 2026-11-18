@@ -81,7 +81,8 @@ const (
 
 // The second account every Rig's BROKER_EXCHANGE_ACCOUNTS lists: its entry fixes no session, as
 // a Legion issue pod's does, so each pod of it trades only for a session a registrar registered for
-// that pod (POST /v1/oauth/exchange/pod-sessions), with the key the registration names.
+// that pod (POST /v1/oauth/exchange/pod-sessions), with the key the registration names. Every
+// Rig's BROKER_POD_REGISTRARS lists DaemonAccount as a registrar of its pods.
 const ExchangeRolesAccount = "system:serviceaccount:example-ns:example-roles"
 
 // The one workflow every Rig's BROKER_EXCHANGE_WORKFLOWS lists and what a run of it may write. It
@@ -213,6 +214,15 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	// service DaemonAccount logs in as, which is what lets that login enrol those pods
 	// (enroll.Service.podUnderTokenLogin).
 	servicesByAccount := map[string]string{WorkerAccount: "legion-daemon"}
+	// BROKER_POD_REGISTRARS: DaemonAccount, the one registrar, listed for WorkerAccount and both
+	// accounts BROKER_EXCHANGE_ACCOUNTS lists, so a registration a test makes as that daemon reaches
+	// the step it is about rather than 403 POD_REGISTRAR_NOT_LISTED: the exchange policy's refusal
+	// of a WorkerAccount pod (POD_ACCOUNT_NOT_LISTED) or of an ExchangeAccount pod, whose entry
+	// fixes its session (SESSION_FIXED), and the write itself for an ExchangeRolesAccount pod.
+	podRegistrars := api.PodRegistrars{}
+	for _, pod := range []string{WorkerAccount, ExchangeRolesAccount, ExchangeAccount} {
+		podRegistrars[api.PodRegistrar{Registrar: DaemonAccount, Pod: pod}] = struct{}{}
+	}
 	enr := &enroll.Service{Store: st, Lease: config.lease, Pod: enroll.K8sPodVerifier{Verifier: podVerifier}, ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
 	// A session name belongs to one principal here as it does on the real broker: the binder is
@@ -242,7 +252,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		// The one verifier serves both, as the broker's own wiring does: a pod enrolling and a
 		// listed caller present tokens of the same issuer for the same audience.
 		AccountTokens: enroll.K8sPodVerifier{Verifier: podVerifier},
-		Enroll:        enr, Machine: reqMachine, MachineLogin: mach,
+		Enroll:        enr, Machine: reqMachine, MachineLogin: mach, PodRegistrars: podRegistrars,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
 		Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
@@ -477,12 +487,16 @@ func (r *Rig) MintPodToken(t *testing.T, podUID string) string {
 
 // DaemonAccount is the ServiceAccount every Rig's BROKER_SERVICE_LOGINS lets log in as
 // legion-daemon with its token (POST /v1/launcher-credentials/token), as a Legion daemon's own
-// account does.
+// account does, and the one registrar every Rig's BROKER_POD_REGISTRARS lists: for WorkerAccount,
+// ExchangeRolesAccount and ExchangeAccount, so its token registers a pod of any of the three at
+// POST /v1/oauth/exchange/pod-sessions and no other account's does.
 const DaemonAccount = "system:serviceaccount:legion-system:legion-daemon-test"
 
 // WorkerAccount is the ServiceAccount the pods MintPodToken mints tokens for run as, which every
 // Rig's BROKER_SERVICES binds to the service DaemonAccount logs in as, as a Legion worker pod's
-// account is bound to legion-daemon.
+// account is bound to legion-daemon. BROKER_POD_REGISTRARS lists DaemonAccount for it and no
+// BROKER_EXCHANGE_ACCOUNTS entry lists it, so a registration of one of its pods is refused by the
+// exchange policy (403 POD_ACCOUNT_NOT_LISTED), past the route's own checks.
 const WorkerAccount = "system:serviceaccount:legion:worker"
 
 // MintAccountToken mints a projected ServiceAccount token for account, expiring lifetime from now

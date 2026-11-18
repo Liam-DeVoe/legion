@@ -42,8 +42,9 @@ const (
 	// with the project and the person its entry gives it; listedAccount is listed too, for another
 	// project and another person; otherAccount is listed nowhere; apiAccount is the listed caller
 	// of the introspection route, BROKER_API_ACCOUNTS' own; registrarAccount is the deployment's
-	// own daemon, which BROKER_SERVICE_LOGINS lets log in as legion-daemon and which registers the
-	// pods it starts under their session names.
+	// own daemon, which BROKER_SERVICE_LOGINS lets log in as legion-daemon, which
+	// BROKER_POD_REGISTRARS lists as the registrar of podAccount's and listedAccount's pods, and
+	// which registers the pods it starts under their session names.
 	podAccount       = "system:serviceaccount:example-ns:example-worker"
 	listedAccount    = "system:serviceaccount:other-ns:example-worker"
 	otherAccount     = "system:serviceaccount:example-ns:example-other"
@@ -1068,8 +1069,8 @@ func TestTheProjectsClaimSurvivesTheStore(t *testing.T) {
 // exchanges with, the GitHub issuer, the two listed accounts with their projects and persons, the
 // read entry with its service and the session it fixes, the two listed callers — dispatch, which
 // reads a token back and ends one, and listener, which only reads one back — the registrar that
-// logs in as the deployment's daemon and registers its pods' session names, and how long an
-// access token it mints lasts.
+// logs in as the deployment's daemon and registers its pods' session names, listed for the pods
+// of both listed accounts (BROKER_POD_REGISTRARS), and how long an access token it mints lasts.
 func exchangeEnv(t *testing.T, databaseURL string, cluster, github *oidctest.Issuer, accessSeconds int, extraSecrets ...string) []string {
 	t.Helper()
 	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
@@ -1099,6 +1100,7 @@ func exchangeEnv(t *testing.T, databaseURL string, cluster, github *oidctest.Iss
 		"BROKER_EXCHANGE_GITHUB_AUDIENCE=" + workflowAudience,
 		"BROKER_API_ACCOUNTS=dispatch=" + apiAccount + " listener=" + listenerAccount,
 		"BROKER_SERVICE_LOGINS=legion-daemon=" + registrarAccount,
+		"BROKER_POD_REGISTRARS=" + registrarAccount + "=" + podAccount + " " + registrarAccount + "=" + listedAccount,
 		"BROKER_ACCESS_TOKEN_SECONDS=" + strconv.Itoa(accessSeconds),
 	}
 }
