@@ -141,7 +141,9 @@ the same session. Under the Kubernetes runtime the pod is shorter-lived than the
 daemon releases an issue's pod once no role of it has a turn in progress or a turn due for ten
 minutes, after saving the workspace's unpushed work, and the next wake for one of its roles — a
 task, a notice, a message to the role or to its session, or a CI settlement on the pull request's
-head — brings the pod back and resumes the same sessions where they stopped.
+head — brings the pod back and resumes the same sessions where they stopped. A `low` notice or
+role message of the daemon, one its reader can act on at its next turn, brings no pod back: its
+reader reads it at the first turn that something else starts.
 
 | Phase | Worker | What it does | GitHub identity |
 | --- | --- | --- | --- |
@@ -162,8 +164,8 @@ reviewer's approval of the head ends the round whatever CI says at that commit, 
 reviewer reads the code commit's checks on GitHub before it approves
 ([review signalling](#review-signalling)). What a red check does is reach the architect that owns
 the issue, the worker of the issue's current phase and the implementer, as one message naming each
-check and its conclusion; and hold the merge, where GitHub applies the base branch's own required
-checks.
+check that failed or was cancelled with its conclusion and counting the checks that passed; and
+hold the merge, where GitHub applies the base branch's own required checks.
 
 ## Admission and the `legion` label
 
@@ -377,11 +379,14 @@ Legion uses GitHub's own review mechanisms rather than labels:
   issue may advance on. A head GitHub holds blocked, on a check or a review the repository
   requires, leaves the issue in `reviewing` until that merge state comes clean.
 - **CI** on the pull request's head is information, not a verdict. When GitHub's checks settle, the
-  daemon names every check GitHub reported, with the conclusion GitHub gave it, and judges none of
+  daemon names each check that failed or was cancelled, with the conclusion GitHub gave it, counts
+  the checks that passed and names the `gh pr checks` command that lists them, and judges none of
   them: it sends one message each to the architect that owns the issue, the worker of the issue's
-  current phase and the implementer whose code the checks ran on, and moves the issue nowhere. A
-  red is for those roles to decide on — re-run a check that failed on itself, fix code that is at
-  fault, or wait — and for GitHub to hold the merge over, under the base branch's own required
+  current phase and the implementer whose code the checks ran on, and moves the issue nowhere. The
+  message is `low` to each of those readers that does not work the issue's current phase, so that
+  reader reads it at its next turn, and the reader that works the phase gets it at once. A red is
+  for those roles to decide on — re-run a check that failed on itself, fix code that is at fault,
+  or wait — and for GitHub to hold the merge over, under the base branch's own required
   checks, which Legion neither reads nor re-implements. The reviewer reads the head's checks on
   GitHub itself before it approves, and the architect before it accepts; those reads are the ones
   that decide anything. Two settlements of the same head that name the same checks tell nobody
@@ -450,8 +455,10 @@ Legion uses GitHub's own review mechanisms rather than labels:
   entry of `hooks:` in [legion.yaml](/legion/legion/running-legion/#legionyaml): the moves it
   selects, how many of them fire it, the roles it writes to, and the words. A move back the hook
   selects fires it when the counts of the moves it selects, added up, are then a whole multiple
-  of that number. The daemon writes the words to each role the hook names, between its own
-  header — the hook and the move — and its own counts of the moves back, and posts
+  of that number. The daemon writes the words to each role the hook names, below its own first
+  line, which names the hook, the issue and the move, and above its own facts as `key: value`
+  lines: the count of the move that fired the hook (`count`), every move back counted by kind
+  (`counts`) and the pull request (`pull_request`). It posts
   `Legion hook <name> fired at <N> moves back: <from> to <to>. Prompted: <role>, <role>.` on the
   issue. It gates nothing: the phase the move opened starts its worker whether a hook fired or
   not, and a role that reads the words answers in its own turn. A deployment that writes no

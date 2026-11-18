@@ -6004,6 +6004,12 @@ The wakes are these:
   It stands in for a wait that raises no event of its own: a Dispatch topic the role subscribed to, CI of a repository that is not the issue's, a deploy run, a Kubernetes Job.
   An architect gets no backstop, since every wake of an architect is a daemon task or notice or a message.
 
+A `low` text of the daemon wakes no released pod: its reader can act on it at its next turn.
+A notice or a role message is `low` for the readers the daemon's list of kinds names (`packages/daemon/internal/texts`), and `med` for every other reader.
+A `low` notice to a released architect waits until that architect is ready again, and it is published then, whatever woke the pod.
+A `low` role message is published as any other, and the Envoy listener keeps it for a role that no live session holds, but reports no wake for it.
+The reader reads it at the first turn that something else starts.
+
 The merge-queue removal message tells a merger that GitHub took its pull request out of the merge queue at the head the record holds, and that the daemon's read of the pull request found no merge, or that no read of it succeeded.
 While the root's design gate is closed, that message wakes no released merger, and it waits for the gate to open.
 The message can also wait for a merger that has no claim yet, because the merger's start is still owed.

@@ -1259,7 +1259,8 @@ The merger's completion records its phase row and moves nothing; what closes the
 The first boot of this release queues, once, a start for each merger that the `awaiting_merge` cutover left stopped, whose pod the idle release of a build before `legion-v20.5.0` took while its issue waited in `awaiting_merge`.
 That merger starts when its tree's design gate allows it, since `merging` holds no admission slot.
 A head that starts conflicting with its base (GitHub computes no merge ref for such a head and runs no checks on it at all) sends the issue back to `implementing` from `testing`, `reviewing`, `accepting`, `retro` or `merging` alike, and its architect is told with a `checks-red` notice.
-A red check sends nothing back from anywhere: the daemon names every check GitHub reported, with the conclusion GitHub gave it, in one message to the architect that owns the issue, the worker of the issue's current phase and the implementer, and judges none of them.
+A red check sends nothing back from anywhere: the daemon names each check that failed or was cancelled, with the conclusion GitHub gave it, counts the checks that passed and names the `gh pr checks` command that lists them, in one message to the architect that owns the issue, the worker of the issue's current phase and the implementer, and judges none of them.
+That message is `low` to each of those readers that does not work the issue's current phase, so that reader reads it at its next turn, and the reader that works the phase gets it at once.
 GitHub's own merge queue (`merge_group` trigger) is a repository setting Legion does not modify.
 No lifecycle labels exist; GitHub issues are never read or written by Legion.
 

@@ -1290,11 +1290,20 @@ reviewer_decision() {
 }
 
 # planning_tasks ISSUE counts the planning tasks in ISSUE's planner session: the user messages the
-# daemon's deliveries leave, `Issue: <ISSUE>. Phase: planning.` among their words, never a line the
-# agent wrote itself.
+# daemon's deliveries leave that hold the task record of ISSUE's planning phase, never a line the
+# agent wrote itself. The record opens with its kind and issue on two lines of their own,
+# `kind: phase-assignment` (or `kind: phase-resume`) and `issue: <ISSUE>`, and its `title` and
+# `phase: planning` lines follow; a note the delivery puts in front of the task (a relaunch's, say)
+# is a record of another kind.
 planning_tasks() {
-  claim_session_text "$1" planner | jq -R -s -r --arg issue "$1" \
-    '[split("\n")[] | fromjson? | select(.type == "message" and .message.role == "user" and (.message.content | tostring | contains("Issue: " + $issue + ". Phase: planning.")))] | length'
+  claim_session_text "$1" planner | jq -R -s -r --arg issue "$1" '
+    def task_of($phase):
+      split("\n") as $l | any(range(0; $l | length);
+        ($l[.] | IN("kind: phase-assignment", "kind: phase-resume"))
+          and $l[. + 1] == "issue: " + $issue and $l[. + 3] == "phase: " + $phase);
+    [split("\n")[] | fromjson? | select(.type == "message" and .message.role == "user"
+      and (.message.content | if type == "string" then . else ([.[]? | .text? // empty] | join("\n")) end
+        | task_of("planning")))] | length'
 }
 workspace_jj() {
   local issue=$1 pod
@@ -3543,15 +3552,16 @@ starts its tree from the task its start carries and the daemon's `catch-up` noti
 says: it writes the spec in the issue's own primary document and registers the gate, then waits.
 Apart from that, do not act until
 a targeted human Dispatch message gives the next exact proof operation. A phase worker's first
-message is the daemon's task line (`Continue <title>. Issue: <key>. Phase: <phase>.`): it names your
+message is the daemon's task (its first lines `kind: phase-assignment`, or `kind: phase-resume`,
+and `issue: <key>`, then its `title` and `phase: <phase>` lines): it names your
 phase and is not that message. Read what your role says to read, then reply WAITING and wait for
-the targeted message. An implementer, on the daemon's task line and on a new task for the same
+the targeted message. An implementer, on the daemon's task and on a new task for the same
 phase (one that says its previous process was ended), runs `sleep 300` as one bash call (its
 timeout set to 600 seconds) before it replies WAITING: the proof holds a tree by ending an
 implementer's launches while its task is outstanding, an end that lands after the task's turn is
 over charges nothing, and the end takes up to a minute to land on a loaded host, so that turn must
 last long enough to be ended inside. A production check's task (its first line `Production check of
-<key>: …`, handed to the tester once the merge closed its issue) is no phase's task line and
+<key>: …`, handed to the tester once the merge closed its issue) is no phase's task and
 waits for no targeted message, since the proof sends none to it. Run no
 `sleep 300` on it; act on the task as it is written. This proof has no production and no deploy
 role: no production carries the merge, so the look leaves `Production: pending deploy of <merge
@@ -4699,10 +4709,12 @@ note "the proof human committed a conflicting $conflict_path to $pr_base as $con
 on_tree "$tree1" wait_for_phase "$tree1" implementing 900
 # The start acting is read where production reads it: the daemon's own record that the implementer
 # the conflict started took its task — its claim working on a delivery of the implementing phase it
-# has confirmed — and the task in its session. The tester's process list and its witness file are
-# read in the same breath, so what they say is what held while the start acted.
+# has confirmed — and the task in its session, whose `conflicts_with` line names the base the head
+# conflicts with. The session holds the task as a JSON string, so each of its line breaks is the
+# two characters `\n` there. The tester's process list and its witness file are read in the same
+# breath, so what they say is what held while the start acted.
 on_tree "$tree1" until_true 900 "the implementer to be in a turn of the task the conflict handed it" conflict_task_taken "$tree1"
-on_tree "$tree1" until_true 300 "the implementer's conflict task to reach its session" session_contains "$tree1" implementer "Reason: the head conflicts with"
+on_tree "$tree1" until_true 300 "the implementer's conflict task to reach its session" session_contains "$tree1" implementer "\\nconflicts_with: $pr_base\\n"
 witness_commands=$(pod_commands "$tester_pod" tester) || fail "the tester's container's process list could not be read while the implementer took its task"
 grep -qF -- "/usr/bin/sleep 600" <<<"$witness_commands" ||
   fail "the tester's witness job is gone from its pod's process list while the implementer takes its task: the conflict stopped work it must leave alone"
@@ -4718,10 +4730,13 @@ no_aborted_turn "$tester_session" ||
 resident_kept "$tree1" tester || fail "tree 1's tester lost its first process or session across the conflict: $(resident_lost "$tree1" tester)"
 note "the tester's session holds no aborted turn and its claim is the one it registered with ($tester_session)"
 # The role the conflict left with no phase is told so on its own Envoy role topic, which is also
-# what ends the `wait` it is in (record.PhaseEnded, the outbox's role-message lane).
+# what ends the `wait` it is in (record.PhaseEnded, the outbox's role-message lane). Its card holds
+# the head `summary: phase-ended on <tree 1>` and, under `message:`, the record's fields: its kind,
+# its issue and the phase that ended, `from: testing`.
+phase_ended_needle="$(notice_needle phase-ended "$tree1")"'\n  message:\n    kind: phase-ended\n    issue: '"$tree1"'\n    from: testing\n'
 on_tree "$tree1" until_true 600 "the phase-ended message to reach tree 1's tester" \
-  session_contains "$tree1" tester "the daemon ended your testing phase"
-note "the tester was told on its own role topic: $(claim_session_text "$tree1" tester | grep -o 'the daemon ended your testing phase[^"]*' | head -n 1)"
+  session_contains "$tree1" tester "$phase_ended_needle"
+note "the tester was told on its own role topic: $(notice_line "$tree1" tester "$phase_ended_needle" | grep -o 'kind: phase-ended[^"]*' | head -n 1)"
 # The negative control mutates the evidence alone: the same reader over a copy of the tester's
 # session with one aborted assistant turn appended must refuse it, so the pass above is the
 # session's own and not a reader that never looks.
@@ -4794,7 +4809,7 @@ asked_unprompted=$(architect_messages "$tree1" reviewer)
 send_agent "$tree1" architect "Stage 4b proof review-stuck operation: handle the daemon's review-stuck notice on $tree1 now, exactly as your role says to handle a review-stuck notice."
 architect_asked() { [ "$(architect_messages "$tree1" reviewer)" -gt "$asked_before" ]; }
 on_tree "$tree1" until_true 900 "$tree1's architect, sent the review-stuck operation, to ask the reviewer for the round's decision" architect_asked
-notice_line "$tree1" reviewer "notifications.role.$(claim_token "$tree1" architect)" | tail -n +"$((asked_before + 1))" >"$evidence/architect-ask.jsonl"
+architect_message_lines "$tree1" reviewer | tail -n +"$((asked_before + 1))" >"$evidence/architect-ask.jsonl"
 [ "$asked_unprompted" -le "$asked_before" ] || note "the architect asked the reviewer before the driver's message"
 on_tree "$tree1" until_true 1800 "$review_app's round 1 decision on pull request #$pr_number" reviewer_decision 1
 [ "$(<"$work/review-decision")" = changes ] || fail "the reviewer approved pull request #$pr_number in round 1, which the proof asked to request changes"
@@ -4853,6 +4868,9 @@ note "the reviewer approved pull request #$pr_number at its head; its thread the
 # architect keeps its pod.
 on_tree "$tree1" until_true 900 "$tree1 to leave reviewing for accepting" issue_phase "$tree1" accepting
 state_file accepting
+# The card prints the notice's head, `summary: <kind> on <KEY>`, and then its record under
+# `message:`, in the payload's key order: `kind`, `role` and `phase` come first there
+# (record.Notice's order), so the needle reads them on consecutive lines.
 until_true 180 "the architect to receive the reviewer's phase-finished notice, its acceptance cue" notice_delivered "$tree1" architect \
   "$(notice_needle phase-finished "$tree1")"'\n  message:\n    kind: phase-finished\n    role: reviewer\n    phase: reviewing'
 # No worker starts at accepting: the implementer's claim holds no retro task (a start row's task is
@@ -5856,13 +5874,15 @@ note "the controller session $controller_session received the held notice for $t
 # controller's profile (make_omp_home, lib/omp-home.sh).
 [ ! -e "$HOME/.omp/profiles/$profile" ] || fail "the run wrote the operator's profile root: $HOME/.omp/profiles/$profile exists"
 note "the controller's session is under $profile_agent/sessions; $HOME/.omp/profiles/$profile does not exist"
-# The tick's payload is `{kind: "tick", openCapabilities: [...]}` (record.ControllerNotice;
-# admit.Admission.wakeController puts the deployment's open rows on a tick alone, and none on a tick
-# with no gap), the one notice that carries the daemon's capability report to the controller
-# (skill://legion-controller). The pi-envoy plugin renders a delivery into the session as TOON
-# (envoy-client's renderInbound): the payload, parsed, is the card's `message` block, where a list
-# of one reads `openCapabilities[1]: secrets` and a list of two `openCapabilities[2]: a,b`, so the
-# list is read from that line, and a tick without it names no gap (lib/controller-ticks.jq). This
+# The tick's payload is `{kind: "tick", issue: "<project>", openCapabilities: [...]}` beside its
+# blocked, held and silent lists (texts.TickRecord; admit.Admission.wakeController puts the
+# deployment's open rows on a tick alone, and none on a tick with no gap), the one notice that
+# carries the daemon's capability report to the controller (skill://legion-controller). The
+# pi-envoy plugin renders a delivery into the session as TOON (envoy-client's renderInbound): the
+# card's head is `summary: tick on <project>`, and the payload, parsed, is its `message` block,
+# where a list of one reads `openCapabilities[1]: secrets` and a list of two
+# `openCapabilities[2]: a,b`, so the list is read from that line, and a tick without it names no
+# gap (lib/controller-ticks.jq). This
 # window is before full-agent-negative, the first checkpoint that opens a live row (web-search on
 # tree 3's planner), so every tick the controller has received so far names secrets, and
 # pool-capacity when the sending daemon's probe found the pool cold, and nothing else;
@@ -6303,12 +6323,14 @@ until [ -n "$planner_killed" ]; do
   if hold_end_charged "$(claim_token "$tree4" planner)"; then planner_killed=$ended_incarnation; fi
 done
 note "killed $tree4's planner mid-turn (process $planner_killed in pod $ended_pod_uid)"
-# The task goes again behind the sentence the claim's record of the kill composes
-# (packages/daemon/internal/supervise/relaunch.go, relaunchSentence): its first statement says the
-# turn was interrupted, and the next names the death as its cause. Both are read, each as a fixed
-# string of the planner's session, because neither alone says the kill was what it told.
-interrupted_needle="Your previous turn on this task was interrupted."
-death_needle="ended because the process died: "
+# The task goes again behind the note the claim's record of the kill composes
+# (packages/daemon/internal/supervise/relaunch.go, RelaunchNote): a `relaunch-note` record whose
+# `cause` names the death and whose `task_turn: true` says the turn of this task was cut off.
+# Both are read, each as a fixed string of the planner's session, because neither alone says the
+# kill was what it told. The session holds the prompt as a JSON string, so each line break of the
+# note is the two characters `\n` there, and the quotes of its quoted `cause` are `\"`.
+death_needle='kind: relaunch-note\nissue: '"$tree4"'\ncause: \"the process died: '
+interrupted_needle='\ntask_turn: true\n'
 # One read of the session serves both needles, since each poll reads the whole session text.
 planner_resent() {
   local text
