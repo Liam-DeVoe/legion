@@ -49,10 +49,14 @@ function keyOf(event: Event): string | undefined {
   return event instanceof KeyboardEvent ? event.key : undefined;
 }
 
-/** Whether a scroll is the page's own place-keeping - a keeper's correction, a landing's - which
- *  only the module that writes those scrolls can answer (`thePageLeftItThere`,
- *  `readers-place.ts`, which says so when it loads). A held press whose box the page itself
- *  moves has not moved anybody. */
+/** Whether a scroll is the page's own: its box stands where the page's own place-keeping last
+ *  left it - a keeper's correction, a placement, a put-back, or a landing correction's focus,
+ *  which the Proof editor scrolls and the landing records after it - which only that record can
+ *  answer (`thePageLeftItThere` and `thePageLeftIt`, `readers-place.ts`, which tells the table
+ *  so when it loads). A held press whose box the page itself moves has not moved anybody. The
+ *  browser's own scroll anchoring leaves no record: the landing correction reads it for itself
+ *  before it asks the table (`scrolled()`, `refocus-when-settled.ts`), and the keepers, whose
+ *  window it opens while a press is held, take the place afresh from where it left them. */
 let thePagesOwnScroll: (scroll: Event) => boolean = () => false;
 
 /** Tells the table how to know the page's own scroll from a press's. */
@@ -135,9 +139,12 @@ const INPUTS_SPACE_PRESSES: Record<string, true> = {
  * tester's row with a `touchstart` in place of the key read 1,250 where it expects 1,582. So a
  * press waits for its first movement. A finger's is its first `touchmove`, a drag; a mouse's or
  * a pen's is a scroll while it is held down, a drag on the scroll bar or a selection dragged past
- * the box's edge (`followThePress`). What a press does to the focus is the landing correction's
- * own stop - a focus moving out of the document, or a selection changing inside it
- * (`refocus-when-settled.ts`) - and moves nobody's place for the keepers to give up. A wheel or
+ * the box's edge (`followThePress`), and not a scroll the page made itself while it was held
+ * (`thePagesOwnScroll`). A landing correction with a document of its own asks this of a scroll
+ * only once that scroll is none of its own readings - its correction, a keeper's write, the
+ * browser's scroll anchoring (`scrolled()`, `refocus-when-settled.ts`). What a press does to
+ * the focus is the landing correction's own stop - a focus moving out of the document, or a
+ * selection changing inside it - and moves nobody's place for the keepers to give up. A wheel or
  * a trackpad's stroke asks to scroll; held with Control it zooms, and at the end of a page it
  * scrolls nothing, which the keepers learn when their window closes having seen no scroll
  * (`watchTheReadersScroll`).
@@ -203,7 +210,11 @@ const INPUTS_SPACE_PRESSES: Record<string, true> = {
  * pressed as a panel landed above a reader, the keepers stood down and the reader's words moved
  * the panel's 88 px in 3 runs of 6 (`e2e/large-documents-first-screen.e2e.ts`, scroll anchoring
  * off); pressed while the editor was built over the draw, it ended the put-back and left the
- * reader 924.6 px from their place in 5 runs of 8 (`e2e/large-documents-build.e2e.ts`).
+ * reader 924.6 px from their place in 5 runs of 8 (`e2e/large-documents-build.e2e.ts`). With the
+ * key read, the panel row moved the reader's words 0.00 to 0.48 px in 18 runs of 18 - no key,
+ * Shift every 30 ms and every 120 ms, a copy every 30 ms, Shift held, and a `keydown` of Shift
+ * every 4 ms, the last two of which moved them 88 px in 5 runs of 6 before - and the build left a
+ * reader who pressed Shift through it 0.1 to 0.7 px from their place in 6 runs of 6.
  */
 export const THE_READERS_INPUTS: readonly ReadersInput[] = [
   {

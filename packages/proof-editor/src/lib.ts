@@ -792,8 +792,9 @@ async function theConstruction(
       // The editor's own focus scroll, which does move the box carrying the document: it is the
       // Proof editor placing its own selection inside its own DOM, and a host that keeps a
       // reader's place records it as the page's own doing rather than as the reader taking that
-      // box over - Dispatch arms its landing correction around this call and stamps the scroll
-      // it makes (`focusInEditor` in `features/doc/ProofDocument.tsx`, `corrected()` in
+      // box over - Dispatch arms its landing correction around this call and, once the correction
+      // has run, records the box it moved as the page's own (`focusInEditor` in
+      // `features/doc/ProofDocument.tsx`, `thePageLeftIt` after `refocus()` in
       // `features/doc/refocus-when-settled.ts`).
       elements[0].scrollIntoView(FOCUS_SCROLL);
       pulseHighlight(view, 'mark', markId);

@@ -135,7 +135,10 @@ function scrollOffset(within: HTMLElement): number {
  *  taking the page over (`refocus-when-settled.ts`) has to tell the two apart. It is recorded
  *  in the calls the page scrolls through rather than by a flag each caller raises around its
  *  own write: a caller that moves a box through this module cannot forget to say that it did,
- *  and a caller that moves one any other way is not the page's place-keeping. */
+ *  and a caller that moves one any other way is not the page's place-keeping. The one scroll
+ *  the page asks of another package is the exception: a landing's focus, which the Proof
+ *  editor scrolls itself (`focusBlock` and `focusMark`), and which the landing correction that
+ *  asked for it records after it (`refocusWhenSettled`). */
 const thePageLeftBoxesAt = new WeakMap<HTMLElement, number>();
 let thePageLeftTheWindowAt: number | undefined;
 
@@ -157,8 +160,9 @@ knowThePagesOwnScroll((scroll) =>
 /** Records that the page's own place-keeping has just left `scroller` - the page itself where
  *  null - standing where it stands now. The one place either record is written: every call
  *  below writes its scroll and then says so here, after the write, so what a box clamped the
- *  write to is what is recorded. */
-function thePageLeftIt(scroller: HTMLElement | null): void {
+ *  write to is what is recorded; and so does the landing correction, after the editor's own
+ *  focus scroll has moved the box (`refocusWhenSettled`). */
+export function thePageLeftIt(scroller: HTMLElement | null): void {
   if (scroller === null) {
     thePageLeftTheWindowAt = whereTheReaderIs(null);
     return;
@@ -406,8 +410,16 @@ function whereItStands(drawn: HTMLElement, place: TheirPlace): number {
  * it down, and the line that has to stay put is the one its last block ends on
  * (`features/refs/useRenderedMarkdown.tsx`). A run the reader can see, or one still below
  * them, is theirs to watch land and is held by neither rule.
+ *
+ * Nor is a document drawn with no box anywhere on their screen - one in a tab they have switched
+ * away from, whose panel is hidden while its editor stays bound - and it holds no place: read
+ * as its all-zero rectangle, it was a run wholly above them, and showing the tab again moved the
+ * page by the whole document's height.
  */
 function theirPlace(drawn: HTMLElement): TheirPlace | undefined {
+  if (drawn.getClientRects().length === 0) {
+    return undefined;
+  }
   const where = readersBlock(drawn);
   if (where === undefined) {
     const under = drawn.getBoundingClientRect().bottom - scrollportTop(whatScrolls(drawn));
@@ -461,7 +473,9 @@ function theirPlace(drawn: HTMLElement): TheirPlace | undefined {
  * A reader still at the document's first block and above its top is not kept, as `readersBlock`
  * says: they are at the top of a page, where what arrives is theirs to see land. Nor is one
  * who can see the whole of a run that is an item of a longer page: `theirPlace` says which of
- * the two edges holds them.
+ * the two edges holds them. Nor is one whose document is drawn with no box, in a tab they have
+ * switched away from: the place is taken afresh once it is drawn again, and nothing is written
+ * meanwhile, as `putTheReaderBack` writes nothing for it.
  */
 export function keepTheReadersPlace(drawn: HTMLElement): () => void {
   let place = theirPlace(drawn);
@@ -474,9 +488,17 @@ export function keepTheReadersPlace(drawn: HTMLElement): () => void {
   const check = () => {
     const offset = scrollOffset(drawn);
     const kept = place;
-    // No place to keep, or somebody else's scroll: the place is taken afresh and nothing is
-    // written.
-    if (kept === undefined || !drawn.contains(kept.block) || offset !== left) {
+    // No place to keep, somebody else's scroll, or a place that no longer stands anywhere on
+    // the reader's screen: the place is taken afresh and nothing is written. A block drawn with
+    // no box is the document in a tab the reader has switched away from, and measured as its
+    // all-zero rectangle against their place it moved the tab they switched to by that place's
+    // own offset (1,040 to 1,080 in the review's harness).
+    if (
+      kept === undefined ||
+      !drawn.contains(kept.block) ||
+      offset !== left ||
+      kept.block.getClientRects().length === 0
+    ) {
       take();
       return;
     }

@@ -6,7 +6,15 @@
  * column that scrolls by its own `scrollTop`, a `ResizeObserver` the rows fire, the listeners the
  * modules register on the window held here for the rows to call, and animation frames that pass
  * when a row says so. A file that uses it calls `restoreTheBrowser` after each row.
+ *
+ * It also holds what both watches over the reader's place are read against - the keepers'
+ * (`readers-scroll.test.ts`) and the landing correction's (`refocus-when-settled.test.ts`): one
+ * input of each entry of the table of the reader's inputs (`THE_READERS_CASES`) and the page's
+ * own shortcuts that table reads (`bindTheIssuePagesKeys`). Each suite delivers those inputs its
+ * own way: through the listeners this harness holds (`hearTheReader`), or dispatched on the page.
  */
+
+import { appKeymap } from "../features/shell/keymap";
 
 export const BLOCK_HEIGHT = 100;
 
@@ -35,6 +43,19 @@ export interface Page {
   readonly scrollY: () => number;
 }
 
+/** A document drawn on its own page, which can also be drawn with no box at all. */
+export interface DocumentPage extends Page {
+  /** Takes the document's box away, or gives it back, as the issue page does when the reader
+   *  switches to another tab and back: the panel the document is drawn in is `hidden` while
+   *  its editor stays bound. Drawn with no box, the document and every block in it report no
+   *  client rects and an all-zero rectangle, as a browser reports for `display: none`. Nothing
+   *  is told: the row fires what the change would set off. */
+  hide(hidden: boolean): void;
+}
+
+/** The rectangle a browser reports for an element it draws no box for. */
+const NO_BOX = { bottom: 0, height: 0, top: 0 } as DOMRect;
+
 const observers = new Set<() => void>();
 let restoreObserver: (() => void) | undefined;
 let scrollListeners: ((event: Event) => void)[] = [];
@@ -46,8 +67,9 @@ let frames = new Map<number, FrameRequestCallback>();
  *  document page, the column carrying it in a reading pane. */
 let mounted: HTMLElement | undefined;
 
-export function pageOf(blocks: number, documentTop: number): Page {
+export function pageOf(blocks: number, documentTop: number): DocumentPage {
   let scrollY = 0;
+  let hidden = false;
   // How much taller than `BLOCK_HEIGHT` each block is, which is what a panel landing in it adds.
   const grown = new Map<number, number>();
   const topOf = (index: number) => {
@@ -61,12 +83,21 @@ export function pageOf(blocks: number, documentTop: number): Page {
   for (let index = 0; index < blocks; index += 1) {
     const block = document.createElement("section");
     block.getBoundingClientRect = () =>
-      ({
-        bottom: topOf(index) + BLOCK_HEIGHT + (grown.get(index) ?? 0),
-        top: topOf(index),
-      }) as DOMRect;
+      hidden
+        ? NO_BOX
+        : ({
+            bottom: topOf(index) + BLOCK_HEIGHT + (grown.get(index) ?? 0),
+            top: topOf(index),
+          } as DOMRect);
+    block.getClientRects = () =>
+      (hidden ? [] : [block.getBoundingClientRect()]) as unknown as DOMRectList;
     drawn.append(block);
   }
+  // The document's own box: from its first block's top to its last block's bottom.
+  drawn.getBoundingClientRect = () =>
+    hidden ? NO_BOX : ({ bottom: topOf(blocks), top: topOf(0) } as DOMRect);
+  drawn.getClientRects = () =>
+    (hidden ? [] : [drawn.getBoundingClientRect()]) as unknown as DOMRectList;
   document.body.append(drawn);
   // How tall the page stands, which is what tells a scroll made to answer for a growth from
   // one the reader made (`pageHeight`).
@@ -74,11 +105,14 @@ export function pageOf(blocks: number, documentTop: number): Page {
     configurable: true,
     get: () => topOf(blocks) + scrollY,
   });
-  const page: Page = {
+  const page: DocumentPage = {
     drawn,
     frame,
     grow(index, pixels) {
       grown.set(index, (grown.get(index) ?? 0) + pixels);
+    },
+    hide(next) {
+      hidden = next;
     },
     resized() {
       for (const fire of [...observers]) fire();
@@ -267,3 +301,316 @@ export function restoreTheBrowser(): void {
   frames = new Map();
   thePagePort.height = window.innerHeight;
 }
+
+/** The page's own shortcuts, as the issue page registers them (`IssuePage.tsx`): `s` focuses the
+ *  issue's Status, which scrolls the page to it, `1` writes the priority, and `t c` switches to
+ *  the Conversation tab. Registered in the application's registry, which is the one the table of
+ *  the reader's inputs reads (`effectOf`, `features/shell/keymap.ts`); no binding runs anything,
+ *  as no row needs one to. Returns the unregister, which a suite calls after its last row. */
+export function bindTheIssuePagesKeys(): () => void {
+  return appKeymap.register("global", [
+    { effect: "moves the reader", id: "status", keys: "s", label: "Focus the status", run() {} },
+    { effect: "moves nothing", id: "set-priority", keys: "1", label: "Set priority", run() {} },
+    {
+      effect: "moves the reader",
+      id: "tab-conversation",
+      keys: "t c",
+      label: "Conversation tab",
+      run() {},
+    },
+  ]);
+}
+
+/**
+ * One event of a reader's input, as a browser reports it.
+ *
+ * A key names the box it is pressed into: the page itself where `into` names none, and `into`
+ * is given the suite's own editor - a box that takes what is typed into it - for a key typed
+ * there. A key pressed `onThePage` is heard by the page's key registry after the watches, as the
+ * browser hands a key on (`KeymapProvider`): the registry takes a shortcut's key and moves a
+ * chord on, which is what makes the second key of a chord its binding's. A `keydown` that names
+ * no `key` is one no keyboard made, which a script dispatched with no key to name.
+ */
+export type ReadersStep =
+  | {
+      readonly held?: KeyboardEventInit;
+      readonly into?: (editor: HTMLElement) => HTMLElement;
+      readonly key?: string;
+      readonly onThePage?: true;
+      readonly type: "keydown";
+    }
+  | { readonly pointerType: "mouse" | "pen" | "touch"; readonly type: "pointerdown" }
+  | { readonly type: "scroll" | "touchmove" | "touchstart" | "wheel" };
+
+/** One input of an entry of the table of the reader's inputs (`THE_READERS_INPUTS`,
+ *  `features/doc/readers-scroll.ts`), named by the entry it is, and whether it moves the reader -
+ *  stated here rather than read from the table, so an entry reverted to the other effect turns
+ *  every suite's rows for it red. An entry whose effect is unknown until it moves is read as
+ *  moving nothing at its start, which is the whole of what that effect asks of either watch: a
+ *  press or a finger that has gone down and not moved leaves them at work. */
+export interface ReadersCase {
+  readonly entry: string;
+  readonly input: readonly ReadersStep[];
+  readonly moves: boolean;
+  readonly name: string;
+}
+
+/** A box that takes what is typed into it, as the editor does. */
+export function anEditor(): HTMLElement {
+  const editor = document.createElement("div");
+  editor.contentEditable = "true";
+  return editor;
+}
+
+/** An `<input>` of `type`: a decision block's options are checkboxes and radios
+ *  (`features/inbox/AskOptionRow.tsx`). */
+export function anInput(type: string): HTMLInputElement {
+  const input = document.createElement("input");
+  input.type = type;
+  return input;
+}
+
+/** A link the reader has tabbed to. */
+export function aLink(): HTMLAnchorElement {
+  const link = document.createElement("a");
+  link.href = "#b-block";
+  return link;
+}
+
+/** The event a browser reports for `step`, built afresh, since an event is heard once: a key
+ *  bubbles and may be cancelled, as a browser's does, and a press names its kind of pointer. */
+export function eventOf(step: ReadersStep): Event {
+  switch (step.type) {
+    case "keydown":
+      return step.key === undefined
+        ? new Event("keydown")
+        : new KeyboardEvent("keydown", {
+            ...step.held,
+            bubbles: true,
+            cancelable: true,
+            key: step.key,
+          });
+    case "pointerdown": {
+      const event = new Event("pointerdown", { bubbles: true });
+      Object.defineProperty(event, "pointerType", { value: step.pointerType });
+      return event;
+    }
+    default:
+      return new Event(step.type, { bubbles: true });
+  }
+}
+
+/** A key going down, pressed into `into` - the page itself where nothing has the focus - as this
+ *  harness hands it to the modules' listeners: it calls them itself, so the target a browser's
+ *  dispatch would give the event is stated on it. */
+export function keydown(
+  key: string,
+  held?: KeyboardEventInit,
+  into: Element = document.body
+): KeyboardEvent {
+  const event = eventOf({ held, key, type: "keydown" }) as KeyboardEvent;
+  Object.defineProperty(event, "target", { value: into });
+  return event;
+}
+
+/** A pointer going down, of the kind `pointerType` names. */
+export function pointerdown(pointerType: "mouse" | "pen" | "touch"): Event {
+  return eventOf({ pointerType, type: "pointerdown" });
+}
+
+/** The reader does `input`, which every listener the modules hold hears through this harness
+ *  (`hear`): a key pressed into the box it names - a fresh `anEditor()` where it is typed into
+ *  the editor - and handed on to the page's key registry where it is pressed on the page. */
+export function hearTheReader(input: readonly ReadersStep[]): void {
+  for (const step of input) {
+    if (step.type !== "keydown" || step.key === undefined) {
+      hear(eventOf(step));
+      continue;
+    }
+    const event = keydown(step.key, step.held, step.into?.(anEditor()));
+    hear(event);
+    if (step.onThePage === true) {
+      appKeymap.handleKeyDown(event);
+    }
+  }
+}
+
+/** The editor itself, for a key typed into it. */
+const theEditor = (editor: HTMLElement): HTMLElement => editor;
+
+/** One input of each entry of the table of the reader's inputs, in the table's own order, and
+ *  some entries more than once where the box a key is pressed in decides what it does. Both
+ *  watches read every one, each delivering it its own way. */
+export const THE_READERS_CASES: readonly ReadersCase[] = [
+  {
+    entry: "a press of a mouse, a pen or a finger",
+    input: [{ pointerType: "touch", type: "pointerdown" }],
+    moves: false,
+    name: "a finger's pointerdown",
+  },
+  {
+    entry: "a press of a mouse, a pen or a finger",
+    input: [{ pointerType: "mouse", type: "pointerdown" }],
+    moves: false,
+    name: "a click that moves neither the place nor the focus",
+  },
+  {
+    entry: "a scroll while a press is held",
+    input: [{ pointerType: "mouse", type: "pointerdown" }, { type: "scroll" }],
+    moves: true,
+    name: "a press that has begun to scroll",
+  },
+  {
+    entry: "a finger going down",
+    input: [{ type: "touchstart" }],
+    moves: false,
+    name: "a touchstart",
+  },
+  {
+    entry: "a finger moving",
+    input: [{ type: "touchstart" }, { type: "touchmove" }],
+    moves: true,
+    name: "a finger that moves",
+  },
+  { entry: "a wheel", input: [{ type: "wheel" }], moves: true, name: "a wheel" },
+  {
+    entry: "a keydown no keyboard made",
+    input: [{ type: "keydown" }],
+    moves: false,
+    name: "a keydown a script dispatched",
+  },
+  {
+    entry: "a key the page binds to move the reader",
+    input: [{ key: "s", onThePage: true, type: "keydown" }],
+    moves: true,
+    name: "a shortcut that focuses a header control",
+  },
+  {
+    entry: "a key the page binds to move the reader",
+    input: [
+      { key: "t", onThePage: true, type: "keydown" },
+      { key: "c", onThePage: true, type: "keydown" },
+    ],
+    moves: true,
+    name: "a tab chord",
+  },
+  {
+    entry: "a key the page binds to move nothing",
+    input: [{ key: "1", onThePage: true, type: "keydown" }],
+    moves: false,
+    name: "a shortcut that writes the priority",
+  },
+  {
+    // Not handed on to the registry, which would hold the chord open for the rows after it.
+    entry: "a key the page binds to move nothing",
+    input: [{ key: "t", type: "keydown" }],
+    moves: false,
+    name: "the first key of a chord",
+  },
+  { entry: "Tab", input: [{ key: "Tab", type: "keydown" }], moves: true, name: "Tab" },
+  {
+    entry: "PageUp or PageDown",
+    input: [{ key: "PageDown", type: "keydown" }],
+    moves: true,
+    name: "a scroll key",
+  },
+  {
+    entry: "PageUp or PageDown",
+    input: [{ into: theEditor, key: "PageDown", type: "keydown" }],
+    moves: true,
+    name: "PageDown in the editor",
+  },
+  {
+    entry: "Enter on a link",
+    input: [{ into: aLink, key: "Enter", type: "keydown" }],
+    moves: true,
+    name: "Enter on a link",
+  },
+  {
+    entry: "Space, an arrow, Home or End in a field",
+    input: [{ into: theEditor, key: " ", type: "keydown" }],
+    moves: false,
+    name: "Space typed into the editor",
+  },
+  {
+    entry: "Space, an arrow, Home or End in a field",
+    input: [{ into: () => document.createElement("textarea"), key: "ArrowDown", type: "keydown" }],
+    moves: false,
+    name: "an arrow in a comment box",
+  },
+  {
+    entry: "Space on a button, a checkbox or a radio",
+    input: [{ into: () => document.createElement("button"), key: " ", type: "keydown" }],
+    moves: false,
+    name: "Space on a button",
+  },
+  {
+    entry: "Space on a button, a checkbox or a radio",
+    input: [{ into: () => anInput("checkbox"), key: " ", type: "keydown" }],
+    moves: false,
+    name: "Space on a checkbox",
+  },
+  {
+    entry: "Space on a button, a checkbox or a radio",
+    input: [{ into: () => anInput("radio"), key: " ", type: "keydown" }],
+    moves: false,
+    name: "Space on a radio",
+  },
+  {
+    entry: "Space, an arrow, Home or End anywhere else",
+    input: [{ key: "ArrowDown", type: "keydown" }],
+    moves: true,
+    name: "an arrow on the page",
+  },
+  {
+    entry: "Space, an arrow, Home or End anywhere else",
+    input: [{ into: () => anInput("checkbox"), key: "ArrowUp", type: "keydown" }],
+    moves: true,
+    name: "an arrow from a checkbox",
+  },
+  {
+    entry: "Space, an arrow, Home or End anywhere else",
+    input: [{ into: () => anInput("radio"), key: "Home", type: "keydown" }],
+    moves: true,
+    name: "Home from a radio",
+  },
+  {
+    entry: "Space, an arrow, Home or End anywhere else",
+    input: [{ into: () => anInput("button"), key: "End", type: "keydown" }],
+    moves: true,
+    name: "End from an input button",
+  },
+  {
+    entry: "Space, an arrow, Home or End anywhere else",
+    input: [{ into: () => document.createElement("button"), key: "ArrowDown", type: "keydown" }],
+    moves: true,
+    name: "an arrow from a button",
+  },
+  {
+    entry: "every other key",
+    input: [{ held: { shiftKey: true }, key: "Shift", type: "keydown" }],
+    moves: false,
+    name: "a modifier",
+  },
+  {
+    entry: "every other key",
+    input: [{ into: theEditor, key: "e", type: "keydown" }],
+    moves: false,
+    name: "a letter typed into the editor",
+  },
+  {
+    entry: "every other key",
+    input: [
+      { held: { ctrlKey: true }, key: "Control", type: "keydown" },
+      { held: { ctrlKey: true }, key: "c", type: "keydown" },
+    ],
+    moves: false,
+    name: "a copy",
+  },
+  {
+    entry: "every other key",
+    input: [{ key: "Escape", type: "keydown" }],
+    moves: false,
+    name: "Escape",
+  },
+];

@@ -1,6 +1,12 @@
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { waitFor } from "@testing-library/react";
 
+import {
+  bindTheIssuePagesKeys,
+  eventOf,
+  type ReadersStep,
+  THE_READERS_CASES,
+} from "../../__tests__/readers-place-harness";
 import { appKeymap } from "../shell/keymap";
 // This watch's own windows are read on the real clock: the correction it makes is made in an
 // animation frame, and the window in which the movement that correction started is still its own
@@ -8,6 +14,7 @@ import { appKeymap } from "../shell/keymap";
 // (`CORRECTION_SCROLL_MS`, `refocus-when-settled.ts`). So the rows below wait those windows out
 // rather than moving a fake clock across them.
 import { moveTheScroll, placeInView, putTheBoxAt, putTheReaderBack } from "./readers-place";
+import { theReaderIsScrolling, watchTheReadersScroll } from "./readers-scroll";
 import { refocusWhenSettled } from "./refocus-when-settled";
 import { scrollElementToTop } from "./scroll-block";
 
@@ -89,12 +96,18 @@ function toldTheListeners(): Promise<void> {
   });
 }
 
+/** The page's own scroll, as a row that moves it holds it. */
+interface ThePage {
+  /** Scrolls the page to `top`, and tells the listeners in a later turn, as a browser does. */
+  to(top: number): Promise<void>;
+}
+
 /** The page's own scroll, which is what carries a document that no column of its own carries:
  *  happy-dom lays nothing out, so `whatScrolls` finds no scrolling ancestor and the watch reads
  *  `window.scrollY`, as it does on a document page. `window.scrollBy` moves it too, so a row
  *  can call the page's own place-keeping (`moveTheScroll`) and have it land here, as it does in
  *  a browser. */
-function pageScroll(): { to(top: number): Promise<void> } {
+function pageScroll(): ThePage {
   let top = 0;
   const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
   const scrollBy = window.scrollBy;
@@ -366,6 +379,75 @@ test("a scroll answering a growth above the document leaves it watching", async 
   }
 });
 
+// A link's landing corrects through the editor's own focus scroll (`focusBlock` and `focusMark`,
+// `@legion/proof-editor`), which no call of `readers-place.ts` makes. A press held across it - a
+// click outside the document that takes no focus, a finger resting on a phone - read that scroll
+// as the press's first movement: the landing ended at its first correction, and the keepers'
+// window opened on the same scroll and closed having seen one, taking whatever grew meanwhile as
+// the reader's place (the review's harness: two growths ran the landing once, and the keepers'
+// watch reported a window closed `scrolled: true`).
+test("a press held across a landing's correction leaves the landing correcting and opens no keepers' window", async () => {
+  const page = pageScroll();
+  const drawn = drawnRoot();
+  document.body.append(drawn.element);
+  // The keepers' watch of the reader's own scroll, told each time one of its windows closes.
+  const windows: boolean[] = [];
+  const releaseTheKeepers = watchTheReadersScroll((scrolled) => {
+    windows.push(scrolled);
+  });
+  let landed = 0;
+  // The editor's own focus scroll: the page brought to the target, which each growth pushes
+  // 300 px further down, and the listeners told in a later turn, as a browser tells them.
+  const stop = refocusWhenSettled(() => {
+    landed += 1;
+    void page.to(1_000 + 300 * landed);
+  }, drawn.element);
+  try {
+    await Bun.sleep(AFTER_THE_CORRECTION);
+    // A mouse button held down on the page: a click on nothing that takes the focus.
+    document.body.dispatchEvent(eventOf({ pointerType: "mouse", type: "pointerdown" }));
+    drawn.grow(300);
+    await Bun.sleep(AFTER_THE_QUIET);
+    drawn.grow(300);
+    await Bun.sleep(AFTER_THE_QUIET);
+
+    expect({ landed, scrolling: theReaderIsScrolling(), windows }).toEqual({
+      landed: 2,
+      scrolling: false,
+      windows: [],
+    });
+  } finally {
+    document.body.dispatchEvent(new Event("pointerup", { bubbles: true }));
+    stop();
+    releaseTheKeepers();
+    drawn.element.remove();
+  }
+});
+
+// The same press held across the browser's own scroll anchoring, which answers a growth above
+// the document by scrolling the page by exactly what grew: the document stands on the line of
+// the screen it stood on, which this watch reads as the page moving what it draws. Read as the
+// press's movement first, it ended the landing before that reading was made.
+test("a press held across a scroll answering a growth above the document leaves the landing correcting", async () => {
+  const page = pageScroll();
+  const drawn = drawnRoot();
+  let landed = 0;
+  const stop = refocusWhenSettled(() => (landed += 1), drawn.element);
+  try {
+    await Bun.sleep(AFTER_THE_CORRECTION);
+    document.body.dispatchEvent(eventOf({ pointerType: "mouse", type: "pointerdown" }));
+    drawn.growAbove(64);
+    await page.to(64);
+    drawn.grow(300);
+    await Bun.sleep(AFTER_THE_QUIET);
+
+    expect(landed).toBe(1);
+  } finally {
+    document.body.dispatchEvent(new Event("pointerup", { bubbles: true }));
+    stop();
+  }
+});
+
 test("the reading column's own placement leaves the watch watching", async () => {
   const { column, drawn, heading } = readingColumn();
   let focused = 0;
@@ -466,74 +548,76 @@ test("a reader scrolling the reading column ends the watch", async () => {
  *  document, which the page's own keeper answers. */
 type Situation = "a panel's arrival" | "the editor's build";
 
-/** A key going down as a browser reports it: the key named, the modifiers held with it, and the
- *  box it was pressed into - the page itself where nothing has the focus. */
-function press(key: string, held: KeyboardEventInit = {}, into: Element = document.body): void {
-  into.dispatchEvent(new KeyboardEvent("keydown", { ...held, bubbles: true, key }));
-}
-
-/** That key pressed into `control`, standing on the page for as long as the press takes. */
-function pressInto(key: string, control: HTMLElement): void {
-  document.body.append(control);
-  try {
-    press(key, {}, control);
-  } finally {
-    control.remove();
-  }
-}
-
 /** The reader presses that key on the page, which hears it as the browser hands it on: the
  *  watches on the capture phase first, then the registry's own listener, which takes a
  *  shortcut's key, runs its binding and moves a chord on (`KeymapProvider`). */
 function pressOnThePage(key: string): void {
-  const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key });
+  const event = eventOf({ key, onThePage: true, type: "keydown" }) as KeyboardEvent;
   document.body.dispatchEvent(event);
   appKeymap.handleKeyDown(event);
 }
 
-/** The reader's pointer or finger going down on the page, of the kind `pointerType` names. */
-function pointerdown(pointerType: "mouse" | "touch"): void {
-  const event = new Event("pointerdown", { bubbles: true });
-  Object.defineProperty(event, "pointerType", { value: pointerType });
-  document.body.dispatchEvent(event);
+/** How far the reader's drag on the scroll bar carries the page. */
+const A_DRAG_PX = 333;
+
+/**
+ * The reader does `input` on the page, which hears each event as a browser hands it on: a key at
+ * the box it is pressed into - put on the page for as long as the press takes, where it is not
+ * on it already - and then at the registry's own listener where it is pressed on the page, a
+ * press at the page, and any other event at the window. `editor` is the drawn root itself, which
+ * takes what is typed into it.
+ *
+ * A scroll while a press is held is a drag on the scroll bar of the box carrying the document,
+ * and moves that box: this watch reads a scroll by where it left the box before it asks the
+ * table (`scrolled()`, `refocus-when-settled.ts`), and a scroll that moved nothing is nobody's
+ * drag. The editor's build drags it inside the window in which the movement the put-back's own
+ * scroll started is still that scroll's (`CORRECTION_SCROLL_MS`), which does not excuse a drag.
+ */
+async function deliver(
+  input: readonly ReadersStep[],
+  editor: HTMLElement,
+  page: ThePage
+): Promise<void> {
+  for (const step of input) {
+    if (step.type === "scroll") {
+      await page.to(window.scrollY + A_DRAG_PX);
+    } else if (step.type === "pointerdown") {
+      document.body.dispatchEvent(eventOf(step));
+    } else if (step.type !== "keydown" || step.key === undefined) {
+      window.dispatchEvent(eventOf(step));
+    } else {
+      const into = step.into?.(editor) ?? document.body;
+      const placed = !into.isConnected;
+      if (placed) document.body.append(into);
+      const event = eventOf(step) as KeyboardEvent;
+      try {
+        into.dispatchEvent(event);
+      } finally {
+        if (placed) into.remove();
+      }
+      if (step.onThePage === true) appKeymap.handleKeyDown(event);
+    }
+  }
 }
 
-/** An `<input>` of `type`: a decision block's options are checkboxes and radios. */
-function anInput(type: string): HTMLInputElement {
-  const input = document.createElement("input");
-  input.type = type;
-  return input;
-}
-
-// The page's own shortcuts, as the issue page registers them (`IssuePage.tsx`): `s` focuses the
-// issue's Status, `1` writes the priority, and `t c` switches to the Conversation tab. The table
-// of the reader's inputs reads them from the application's registry, where they are bound.
+// The page's own shortcuts, as the issue page registers them, in the application's registry:
+// the one the table reads (`bindTheIssuePagesKeys`, the harness).
 let unregister: (() => void) | undefined;
 beforeAll(() => {
-  unregister = appKeymap.register("global", [
-    { effect: "moves the reader", id: "status", keys: "s", label: "Focus the status", run() {} },
-    { effect: "moves nothing", id: "set-priority", keys: "1", label: "Set priority", run() {} },
-    {
-      effect: "moves the reader",
-      id: "tab-conversation",
-      keys: "t c",
-      label: "Conversation tab",
-      run() {},
-    },
-  ]);
+  unregister = bindTheIssuePagesKeys();
 });
 afterAll(() => unregister?.());
 
 /**
  * Whether the watch still puts the reader back after `act` in `situation`: whether a growth of
  * the drawn document after it is answered by the put-back running again. `act` is given the
- * editor, which is the drawn root itself and takes what is typed into it.
+ * editor, which is the drawn root itself and takes what is typed into it, and the page's scroll.
  */
 async function stillPutsThemBack(
   situation: Situation,
-  act: (editor: HTMLElement) => void
+  act: (editor: HTMLElement, page: ThePage) => Promise<void>
 ): Promise<boolean> {
-  pageScroll();
+  const page = pageScroll();
   const drawn = drawnRoot();
   drawn.element.contentEditable = "true";
   document.body.append(drawn.element);
@@ -545,12 +629,12 @@ async function stillPutsThemBack(
       // acts, and the page's keeper answers it through the one call that says who scrolled
       // (`moveTheScroll`), which the browser reports in a later turn.
       await Bun.sleep(AFTER_THE_CORRECTION);
-      act(drawn.element);
+      await act(drawn.element, page);
       drawn.growAbove(88);
       moveTheScroll(drawn.element, 88);
       await Bun.sleep(0);
     } else {
-      act(drawn.element);
+      await act(drawn.element, page);
     }
     drawn.grow(300);
     const until = Date.now() + AFTER_THE_QUIET;
@@ -572,164 +656,13 @@ function reference(situation: Situation, act: "a wheel" | "nothing"): Promise<bo
   const name = `${act} in ${situation}`;
   let read = references.get(name);
   if (read === undefined) {
-    read = stillPutsThemBack(situation, () => {
+    read = stillPutsThemBack(situation, async () => {
       if (act === "a wheel") window.dispatchEvent(new Event("wheel"));
     });
     references.set(name, read);
   }
   return read;
 }
-
-/** One input of each entry of the table of the reader's inputs (`THE_READERS_INPUTS`,
- *  `readers-scroll.ts`, which the page's keepers read too), named by the entry it is, and
- *  whether it moves the reader - stated here rather than read from the table, so an entry
- *  reverted to the other effect turns its rows red. A press or a finger that has gone down and
- *  not moved is unknown until it moves, and leaves the put-back as an input that moves nothing
- *  does. A focus moved out of the document is the watch's own stop rather than an entry of the
- *  table, and is read the same way. */
-const INPUTS: readonly {
-  entry: string;
-  moves: boolean;
-  name: string;
-  press(editor: HTMLElement): void;
-}[] = [
-  {
-    entry: "a press of a mouse, a pen or a finger",
-    moves: false,
-    name: "a finger's pointerdown",
-    press: () => pointerdown("touch"),
-  },
-  {
-    entry: "a press of a mouse, a pen or a finger",
-    moves: false,
-    name: "a click that moves neither the place nor the focus",
-    press: () => pointerdown("mouse"),
-  },
-  {
-    entry: "a scroll while a press is held",
-    moves: true,
-    name: "a press that has begun to scroll",
-    press: () => {
-      pointerdown("mouse");
-      window.dispatchEvent(new Event("scroll"));
-    },
-  },
-  {
-    entry: "the focus moving out of the document",
-    moves: true,
-    name: "a focus moved to a control outside the document",
-    press: () => {
-      const control = document.createElement("button");
-      document.body.append(control);
-      control.focus();
-      control.remove();
-    },
-  },
-  {
-    entry: "a finger going down",
-    moves: false,
-    name: "a touchstart",
-    press: () => window.dispatchEvent(new Event("touchstart")),
-  },
-  {
-    entry: "a finger moving",
-    moves: true,
-    name: "a finger that moves",
-    press: () => {
-      window.dispatchEvent(new Event("touchstart"));
-      window.dispatchEvent(new Event("touchmove"));
-    },
-  },
-  {
-    entry: "a keydown no keyboard made",
-    moves: false,
-    name: "a keydown a script dispatched",
-    press: () => window.dispatchEvent(new Event("keydown")),
-  },
-  {
-    entry: "a key the page binds to move the reader",
-    moves: true,
-    name: "a shortcut that focuses a header control",
-    press: () => pressOnThePage("s"),
-  },
-  {
-    entry: "a key the page binds to move the reader",
-    moves: true,
-    name: "a tab chord",
-    press: () => {
-      pressOnThePage("t");
-      pressOnThePage("c");
-    },
-  },
-  {
-    entry: "a key the page binds to move nothing",
-    moves: false,
-    name: "a shortcut that writes the priority",
-    press: () => pressOnThePage("1"),
-  },
-  { entry: "Tab", moves: true, name: "Tab", press: () => press("Tab") },
-  {
-    entry: "PageUp or PageDown",
-    moves: true,
-    name: "a scroll key",
-    press: () => press("PageDown"),
-  },
-  {
-    entry: "Enter on a link",
-    moves: true,
-    name: "Enter on a link",
-    press: () => {
-      const link = document.createElement("a");
-      link.href = "#b-block";
-      pressInto("Enter", link);
-    },
-  },
-  {
-    entry: "Space, an arrow, Home or End in a field",
-    moves: false,
-    name: "Space typed into the editor",
-    press: (editor) => press(" ", {}, editor),
-  },
-  {
-    entry: "Space on a button, a checkbox or a radio",
-    moves: false,
-    name: "Space on a checkbox",
-    press: () => pressInto(" ", anInput("checkbox")),
-  },
-  {
-    entry: "Space, an arrow, Home or End anywhere else",
-    moves: true,
-    name: "an arrow from a checkbox",
-    press: () => pressInto("ArrowUp", anInput("checkbox")),
-  },
-  {
-    entry: "Space, an arrow, Home or End anywhere else",
-    moves: true,
-    name: "Home from a radio",
-    press: () => pressInto("Home", anInput("radio")),
-  },
-  {
-    entry: "every other key",
-    moves: false,
-    name: "a modifier",
-    press: () => press("Shift", { shiftKey: true }),
-  },
-  {
-    entry: "every other key",
-    moves: false,
-    name: "a letter typed into the editor",
-    press: (editor) => press("e", {}, editor),
-  },
-  {
-    entry: "every other key",
-    moves: false,
-    name: "a copy",
-    press: () => {
-      press("Control", { ctrlKey: true });
-      press("c", { ctrlKey: true });
-    },
-  },
-];
 
 // A reader whose input moves nothing is still where the page put them, so the put-back goes on;
 // one whose input scrolls or moves the focus has the page. Pressed through the editor's build
@@ -750,16 +683,33 @@ for (const situation of ["the editor's build", "a panel's arrival"] as const) {
     expect(await reference(situation, "a wheel")).not.toBe(untouched);
   });
 
-  for (const input of INPUTS) {
-    const outcome = input.moves
+  // Every input of the table, delivered on the page (`deliver`).
+  for (const row of THE_READERS_CASES) {
+    const outcome = row.moves
       ? "is the reader moving on, as a wheel is"
       : "leaves the put-back as no act at all leaves it";
-    test(`${input.entry}: ${input.name} during ${situation} ${outcome}`, async () => {
-      const read = await stillPutsThemBack(situation, input.press);
+    test(`${row.entry}: ${row.name} during ${situation} ${outcome}`, async () => {
+      const read = await stillPutsThemBack(situation, (editor, page) =>
+        deliver(row.input, editor, page)
+      );
 
-      expect(read).toBe(await reference(situation, input.moves ? "a wheel" : "nothing"));
+      expect(read).toBe(await reference(situation, row.moves ? "a wheel" : "nothing"));
     });
   }
+
+  // The focus moving out of the document is no entry of the table but this watch's own stop
+  // (`focused`, `refocus-when-settled.ts`), and is read as one: a press on a control outside the
+  // document, a tap into a field outside it, a dialog that took the focus.
+  test(`the focus moving out of the document: a focus moved to a control outside the document during ${situation} is the reader moving on, as a wheel is`, async () => {
+    const read = await stillPutsThemBack(situation, async () => {
+      const control = document.createElement("button");
+      document.body.append(control);
+      control.focus();
+      control.remove();
+    });
+
+    expect(read).toBe(await reference(situation, "a wheel"));
+  });
 }
 
 /** A document drawn as the editor draws one after the swap: twenty blocks a hundred pixels

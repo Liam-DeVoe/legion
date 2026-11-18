@@ -4,10 +4,13 @@ import {
   COLUMN_HEIGHT,
   COLUMN_TOP,
   columnOf,
+  hear,
+  hearTheReader,
   pageOf,
   restoreTheBrowser,
   thePagePort,
 } from "../../__tests__/readers-place-harness";
+import { appKeymap } from "../shell/keymap";
 import {
   keepTheReadersPlace,
   keepWhatStandsUnder,
@@ -136,14 +139,87 @@ test("the reader is put back on a drawn document, and a document drawn with no b
   expect(page.scrollY()).toBe(1_040);
 
   page.scrollTo(1_000);
-  for (const block of page.drawn.children) {
-    (block as HTMLElement).getClientRects = () => [] as unknown as DOMRectList;
-    (block as HTMLElement).getBoundingClientRect = () =>
-      ({ bottom: 0, height: 0, top: 0 }) as DOMRect;
-  }
+  page.hide(true);
   putTheReaderBack(page.drawn, place);
 
   expect(page.scrollY()).toBe(1_000);
+});
+
+// The keeper stays on a document in a tab the reader has switched away from: the issue page
+// hides the tab's panel and leaves its editor bound. Measured as its all-zero rectangle, the
+// block the reader was on moved the tab they switched to by their place's own offset - once the
+// chord's window closed having seen no scroll, in a tab tall enough that the browser clamps
+// nothing, and at once for a click on the tab's own button or the palette's row, which opens no
+// window (1,040 to 1,080 in the review's harness).
+test("a tab chord that hides the document under the reader scrolls nothing", () => {
+  const page = pageOf(40, 0);
+  page.scrollTo(1_040);
+  const release = keepTheReadersPlace(page.drawn);
+  // `t v`, the Activity tab's chord, which hides the Spec's panel.
+  const tabs = appKeymap.register("global", [
+    {
+      effect: "moves the reader",
+      id: "tab-activity",
+      keys: "t v",
+      label: "Activity tab",
+      run: () => {
+        page.hide(true);
+        page.resized();
+      },
+    },
+  ]);
+  try {
+    hearTheReader([
+      { key: "t", onThePage: true, type: "keydown" },
+      { key: "v", onThePage: true, type: "keydown" },
+    ]);
+    // The chord's own frame, then the two still frames that close its window with no scroll.
+    page.frame();
+    page.frame();
+    page.frame();
+
+    expect(page.scrollY()).toBe(1_040);
+  } finally {
+    tabs();
+    release();
+  }
+});
+
+test("a click that hides the document under the reader scrolls nothing", () => {
+  const page = pageOf(40, 0);
+  page.scrollTo(1_040);
+  const release = keepTheReadersPlace(page.drawn);
+  try {
+    hearTheReader([{ pointerType: "mouse", type: "pointerdown" }]);
+    hear(new Event("pointerup"));
+    page.hide(true);
+    page.resized();
+
+    expect(page.scrollY()).toBe(1_040);
+  } finally {
+    release();
+  }
+});
+
+// Nor is a hidden document a run wholly above the reader, held by its own bottom edge: read so,
+// its all-zero bottom was the line the keeper held them on, and the tab shown again moved the
+// page by the whole document's height.
+test("a document shown again after the reader read another tab leaves the page where it stood", () => {
+  const page = pageOf(40, 0);
+  page.scrollTo(1_040);
+  const release = keepTheReadersPlace(page.drawn);
+  try {
+    page.hide(true);
+    page.resized();
+    // The reader scrolls the tab they switched to, and then switches back.
+    page.scrollTo(500);
+    page.hide(false);
+    page.resized();
+
+    expect(page.scrollY()).toBe(500);
+  } finally {
+    release();
+  }
 });
 
 test("the page is left alone once the document has gone", () => {

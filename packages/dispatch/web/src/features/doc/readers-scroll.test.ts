@@ -1,29 +1,28 @@
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 
-import { hear, pageOf, restoreTheBrowser } from "../../__tests__/readers-place-harness";
-import { appKeymap } from "../shell/keymap";
+import {
+  aLink,
+  anEditor,
+  anInput,
+  bindTheIssuePagesKeys,
+  hear,
+  hearTheReader,
+  keydown,
+  pageOf,
+  pointerdown,
+  restoreTheBrowser,
+  THE_READERS_CASES,
+} from "../../__tests__/readers-place-harness";
 import { keepTheReadersPlace, keepWhatStandsUnder, moveTheBox } from "./readers-place";
 import { followThePress, movesTheReader, whatItDoes } from "./readers-scroll";
 
 afterEach(restoreTheBrowser);
 
-// The page's own shortcuts, as the issue page registers them: `s` focuses the issue's Status,
-// which scrolls the page to it, `1` writes the priority, and `t c` switches to the Conversation
-// tab. Registered in the application's registry, which is the one the table reads
-// (`effectOf`, `features/shell/keymap.ts`); no listener runs them here, as none needs to.
+// The page's own shortcuts, as the issue page registers them, in the application's registry:
+// the one the table reads (`bindTheIssuePagesKeys`, the harness).
 let unregister: (() => void) | undefined;
 beforeAll(() => {
-  unregister = appKeymap.register("global", [
-    { effect: "moves the reader", id: "status", keys: "s", label: "Focus the status", run() {} },
-    { effect: "moves nothing", id: "set-priority", keys: "1", label: "Set priority", run() {} },
-    {
-      effect: "moves the reader",
-      id: "tab-conversation",
-      keys: "t c",
-      label: "Conversation tab",
-      run() {},
-    },
-  ]);
+  unregister = bindTheIssuePagesKeys();
 });
 afterAll(() => unregister?.());
 
@@ -100,9 +99,11 @@ test("a box kept above a reader whose own scroll is still moving leaves that scr
   }
 });
 
-/** The reader presses a key, which every listener the module holds for it hears. */
+/** The reader's keyboard sends a keydown no keyboard made, which a script dispatched with no key
+ *  to name: that entry's input (`THE_READERS_CASES`), heard by every listener the module holds
+ *  for a key. */
 function key(): void {
-  hear(new Event("keydown"));
+  hearTheReader([{ type: "keydown" }]);
 }
 
 // The rows of the table's entry for a keydown no keyboard made: a script's `keydown`, with no key
@@ -151,243 +152,21 @@ test("a box kept above a reader who pressed a key that scrolled nothing is answe
   }
 });
 
-/** A key going down as a browser reports it: the key named, the modifiers held with it, and the
- *  box it was pressed into - the page itself where nothing has the focus. This harness holds the
- *  module's listeners and calls them itself, so the target a browser gives the event is stated. */
-function keydown(key: string, held: KeyboardEventInit = {}, into: Element = document.body): Event {
-  const event = new KeyboardEvent("keydown", { ...held, key });
-  Object.defineProperty(event, "target", { value: into });
-  return event;
-}
-
-/** The reader presses that key, which every listener the module holds for a key hears. */
-function press(key: string, held?: KeyboardEventInit, into?: Element): void {
-  hear(keydown(key, held, into));
-}
-
-/** The reader presses that key on the page, which hears it as the browser hands it on: the
- *  watches on the capture phase first, then the registry's own listener (`KeymapProvider`),
- *  which takes a shortcut's key and moves a chord on. */
-function pressOnThePage(key: string): void {
-  const event = keydown(key);
-  hear(event);
-  appKeymap.handleKeyDown(event as KeyboardEvent);
-}
-
-/** A pointer going down as a browser reports it, of the kind `pointerType` names. */
-function pointerdown(pointerType: "mouse" | "pen" | "touch"): Event {
-  const event = new Event("pointerdown");
-  Object.defineProperty(event, "pointerType", { value: pointerType });
-  return event;
-}
-
-/** A box that takes what is typed into it, as the editor does. */
-function anEditor(): HTMLElement {
-  const editor = document.createElement("div");
-  editor.contentEditable = "true";
-  return editor;
-}
-
-/** An `<input>` of `type`: a decision block's options are checkboxes and radios
- *  (`features/inbox/AskOptionRow.tsx`). */
-function anInput(type: string): HTMLInputElement {
-  const input = document.createElement("input");
-  input.type = type;
-  return input;
-}
-
-/** A link the reader has tabbed to. */
-function aLink(): HTMLAnchorElement {
-  const link = document.createElement("a");
-  link.href = "#b-block";
-  return link;
-}
-
-/**
- * One input of each entry of the table of the reader's inputs (`THE_READERS_INPUTS`,
- * `readers-scroll.ts`), named by the entry it is, and whether it moves the reader - stated here
- * rather than read from the table, so an entry reverted to the other effect turns its rows red.
- * An entry whose effect is unknown until it moves is read as moving nothing at its start, which
- * is the whole of what that effect asks of the keepers: a press or a finger that has gone down
- * and not moved leaves them at work.
- */
-const INPUTS: readonly { entry: string; moves: boolean; name: string; act(): void }[] = [
-  {
-    act: () => hear(pointerdown("touch")),
-    entry: "a press of a mouse, a pen or a finger",
-    moves: false,
-    name: "a finger's pointerdown",
-  },
-  {
-    act: () => hear(pointerdown("mouse")),
-    entry: "a press of a mouse, a pen or a finger",
-    moves: false,
-    name: "a click",
-  },
-  {
-    act: () => {
-      hear(pointerdown("mouse"));
-      hear(new Event("scroll"));
-    },
-    entry: "a scroll while a press is held",
-    moves: true,
-    name: "a press that has begun to scroll",
-  },
-  {
-    act: () => hear(new Event("touchstart")),
-    entry: "a finger going down",
-    moves: false,
-    name: "a touchstart",
-  },
-  {
-    act: () => {
-      hear(new Event("touchstart"));
-      hear(new Event("touchmove"));
-    },
-    entry: "a finger moving",
-    moves: true,
-    name: "a finger that moves",
-  },
-  { act: () => hear(new Event("wheel")), entry: "a wheel", moves: true, name: "a wheel" },
-  {
-    act: () => press("s"),
-    entry: "a key the page binds to move the reader",
-    moves: true,
-    name: "a shortcut that focuses a header control",
-  },
-  {
-    act: () => {
-      pressOnThePage("t");
-      pressOnThePage("c");
-    },
-    entry: "a key the page binds to move the reader",
-    moves: true,
-    name: "a tab chord",
-  },
-  {
-    act: () => press("1"),
-    entry: "a key the page binds to move nothing",
-    moves: false,
-    name: "a shortcut that writes the priority",
-  },
-  {
-    act: () => press("t"),
-    entry: "a key the page binds to move nothing",
-    moves: false,
-    name: "the first key of a chord",
-  },
-  { act: () => press("Tab"), entry: "Tab", moves: true, name: "Tab" },
-  { act: () => press("PageDown"), entry: "PageUp or PageDown", moves: true, name: "a scroll key" },
-  {
-    act: () => press("PageDown", {}, anEditor()),
-    entry: "PageUp or PageDown",
-    moves: true,
-    name: "PageDown in the editor",
-  },
-  {
-    act: () => press("Enter", {}, aLink()),
-    entry: "Enter on a link",
-    moves: true,
-    name: "Enter on a link",
-  },
-  {
-    act: () => press(" ", {}, anEditor()),
-    entry: "Space, an arrow, Home or End in a field",
-    moves: false,
-    name: "Space typed into the editor",
-  },
-  {
-    act: () => press("ArrowDown", {}, document.createElement("textarea")),
-    entry: "Space, an arrow, Home or End in a field",
-    moves: false,
-    name: "an arrow in a comment box",
-  },
-  {
-    act: () => press(" ", {}, document.createElement("button")),
-    entry: "Space on a button, a checkbox or a radio",
-    moves: false,
-    name: "Space on a button",
-  },
-  {
-    act: () => press(" ", {}, anInput("checkbox")),
-    entry: "Space on a button, a checkbox or a radio",
-    moves: false,
-    name: "Space on a checkbox",
-  },
-  {
-    act: () => press(" ", {}, anInput("radio")),
-    entry: "Space on a button, a checkbox or a radio",
-    moves: false,
-    name: "Space on a radio",
-  },
-  {
-    act: () => press("ArrowDown"),
-    entry: "Space, an arrow, Home or End anywhere else",
-    moves: true,
-    name: "an arrow on the page",
-  },
-  {
-    act: () => press("ArrowUp", {}, anInput("checkbox")),
-    entry: "Space, an arrow, Home or End anywhere else",
-    moves: true,
-    name: "an arrow from a checkbox",
-  },
-  {
-    act: () => press("Home", {}, anInput("radio")),
-    entry: "Space, an arrow, Home or End anywhere else",
-    moves: true,
-    name: "Home from a radio",
-  },
-  {
-    act: () => press("End", {}, anInput("button")),
-    entry: "Space, an arrow, Home or End anywhere else",
-    moves: true,
-    name: "End from an input button",
-  },
-  {
-    act: () => press("ArrowDown", {}, document.createElement("button")),
-    entry: "Space, an arrow, Home or End anywhere else",
-    moves: true,
-    name: "an arrow from a button",
-  },
-  {
-    act: () => press("Shift", { shiftKey: true }),
-    entry: "every other key",
-    moves: false,
-    name: "a modifier",
-  },
-  {
-    act: () => press("e", {}, anEditor()),
-    entry: "every other key",
-    moves: false,
-    name: "a letter typed into the editor",
-  },
-  {
-    act: () => {
-      press("Control", { ctrlKey: true });
-      press("c", { ctrlKey: true });
-    },
-    entry: "every other key",
-    moves: false,
-    name: "a copy",
-  },
-  { act: () => press("Escape"), entry: "every other key", moves: false, name: "Escape" },
-];
-
-for (const input of INPUTS) {
-  const outcome = input.moves ? "waits for the movement it begins" : "is answered";
+// Every input of the table, delivered through the listeners the harness holds (`hearTheReader`).
+for (const row of THE_READERS_CASES) {
+  const outcome = row.moves ? "waits for the movement it begins" : "is answered";
 
   // A panel's arrival: the document's own keeper, and a panel landing above the reader.
-  test(`${input.entry}: a panel landing above a reader after ${input.name} ${outcome}`, () => {
+  test(`${row.entry}: a panel landing above a reader after ${row.name} ${outcome}`, () => {
     const page = pageOf(40, 0);
     page.scrollTo(1_250);
     const release = keepTheReadersPlace(page.drawn);
     try {
-      input.act();
+      hearTheReader(row.input);
       page.grow(3, 332);
       page.resized();
 
-      expect(page.scrollY()).toBe(input.moves ? 1_250 : 1_582);
+      expect(page.scrollY()).toBe(row.moves ? 1_250 : 1_582);
     } finally {
       release();
     }
@@ -395,7 +174,7 @@ for (const input of INPUTS) {
 
   // The editor's build: the keeper of the box the page holds for its chrome until the editor's
   // first batch (`AfterTheFirstBatch.tsx`), and the chrome landing in it taller than the box.
-  test(`${input.entry}: the chrome landing in the editor's build above a reader after ${input.name} ${outcome}`, () => {
+  test(`${row.entry}: the chrome landing in the editor's build above a reader after ${row.name} ${outcome}`, () => {
     const page = pageOf(40, 0);
     page.scrollTo(1_250);
     let height = 120;
@@ -404,11 +183,11 @@ for (const input of INPUTS) {
     document.body.append(held);
     const release = keepWhatStandsUnder(held);
     try {
-      input.act();
+      hearTheReader(row.input);
       height = 180;
       page.resized();
 
-      expect(page.scrollY()).toBe(input.moves ? 1_250 : 1_310);
+      expect(page.scrollY()).toBe(row.moves ? 1_250 : 1_310);
     } finally {
       release();
       held.remove();
@@ -425,7 +204,7 @@ test("a growth above a reader whose key-driven scroll is still moving leaves tha
   page.scrollTo(1_250);
   const release = keepTheReadersPlace(page.drawn);
   try {
-    press("PageDown");
+    hear(keydown("PageDown"));
     page.frame();
     // The first frame of the scroll the engine animates for that key, a frame after the key,
     // and a block above the reader drawn at its own height in it.
@@ -546,7 +325,7 @@ test("a panel landing above a reader whose key scrolled nothing is answered once
   page.scrollTo(1_250);
   const release = keepTheReadersPlace(page.drawn);
   try {
-    press("PageDown");
+    hear(keydown("PageDown"));
     page.grow(3, 332);
     page.resized();
     expect(page.scrollY()).toBe(1_250);

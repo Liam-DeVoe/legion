@@ -1,5 +1,11 @@
 import { mermaidDrawsSettled, mermaidDrawsWaiting } from "../refs/mermaid-diagrams";
-import { scrollportTop, thePageLeftItThere, whatScrolls, whereTheReaderIs } from "./readers-place";
+import {
+  scrollportTop,
+  thePageLeftIt,
+  thePageLeftItThere,
+  whatScrolls,
+  whereTheReaderIs,
+} from "./readers-place";
 import { followThePress, movesTheReader, THE_READERS_EVENTS } from "./readers-scroll";
 
 /** How long a correction is made at all. A drawing that never settles - a card that re-measures
@@ -76,14 +82,14 @@ const STILL_PX = 1;
  * reader who moved on is never pulled back. Five things end it, and the first four are all "the
  * reader has the page now": an input that moves them, by the table of the reader's inputs the
  * page's keepers read too (`THE_READERS_INPUTS`, `readers-scroll.ts`) - a wheel, a finger that
- * moves, a press that has begun to scroll, a key whose own action scrolls or moves the focus, a
- * shortcut of the page's that moves them, such as one that focuses a header control or switches
- * a tab; a scroll of the box carrying the document that neither this watch's own corrections
- * nor the page's own place-keeping left there, which is how a scrollbar drag, a find-in-page
- * jump, an assistive tool and a scroll made over the automation protocol end it though they are
- * none of those inputs; a selection change inside the document, a reader working in the page
- * rather than waiting for a link to land; and the focus moving anywhere the document is not - a
- * click on a control outside it, a tap into a field outside it, a dialog that took the focus.
+ * moves, a key whose own action scrolls or moves the focus, a shortcut of the page's that moves
+ * them, such as one that focuses a header control or switches a tab; a scroll of the box
+ * carrying the document that neither this watch's own corrections nor the page's own
+ * place-keeping left there, which is how a scrollbar drag, a find-in-page jump, an assistive
+ * tool and a scroll made over the automation protocol end it though they are none of those
+ * inputs; a selection change inside the document, a reader working in the page rather than
+ * waiting for a link to land; and the focus moving anywhere the document is not - a click on a
+ * control outside it, a tap into a field outside it, a dialog that took the focus.
  * The fifth is the limit. An input that moves nothing is not among them, and nor is a press
  * that has moved neither the place nor the focus - a click on empty space, a tap that lands on
  * nothing: this watch is also what puts a reader back on their own place once the editor is
@@ -105,6 +111,16 @@ const STILL_PX = 1;
  * watching from where they left the page; a reader who moves the page moves what it draws with
  * them, so neither reading ever excuses one of their moves.
  *
+ * A press held down changes none of that. A scroll of the box is read by where it left the box
+ * before the table is asked, so this watch's own correction, a keeper's write and the browser's
+ * scroll anchoring stay what they are while a mouse button or a finger rests on the page, and
+ * only a scroll none of them made is the press's own movement - a drag on the scroll bar, which
+ * ends this at once. Each correction's own scroll is recorded as the page's own, where the
+ * keepers read it too (`thePageLeftIt`): the editor's focus scrolls the box through no call of
+ * `readers-place.ts`, and read as the press's movement, a press held across a correction ended
+ * this at that correction and opened the keepers' window on it, which took whatever grew
+ * meanwhile as the reader's place.
+ *
  * Returns the dispose, which removes the listeners and drops any correction still to come;
  * they also go once the limit has passed.
  */
@@ -121,6 +137,16 @@ export function refocusWhenSettled(refocus: () => void, drawn?: Element): () => 
   // column whose own box keeps its size) names neither, and keeps the reader's own actions and
   // the limit as its only stops.
   const root = drawn instanceof HTMLElement ? drawn : undefined;
+  /** The events this watch reads by the table of the reader's inputs. A watch with a drawn root
+   *  reads a scroll for itself (`scrolled`, below): where its own correction, a keeper's write
+   *  or the browser's scroll anchoring left the box is no press's movement, and the table is
+   *  asked of a scroll only once none of those is what it is. One with no root has no box of
+   *  its own to read, and reads a scroll as the table does: a scroll while a press is held is
+   *  the press's first movement. */
+  const heard =
+    root === undefined
+      ? THE_READERS_EVENTS
+      : THE_READERS_EVENTS.filter((type) => type !== "scroll");
   /** The box carrying the document - a column in a reading pane, the page itself (`null`)
    *  where no column carries it. How far down it the reader is, and where its top stands, are
    *  the readers' own readings of a reader's place (`whereTheReaderIs` and `scrollportTop`,
@@ -156,7 +182,7 @@ export function refocusWhenSettled(refocus: () => void, drawn?: Element): () => 
     window.clearTimeout(limit);
     window.clearTimeout(correcting);
     sizes?.disconnect();
-    for (const type of THE_READERS_EVENTS) window.removeEventListener(type, acted, true);
+    for (const type of heard) window.removeEventListener(type, acted, true);
     window.removeEventListener("focusin", focused, true);
     window.removeEventListener("scroll", scrolled, true);
     document.removeEventListener("selectionchange", selected);
@@ -186,7 +212,7 @@ export function refocusWhenSettled(refocus: () => void, drawn?: Element): () => 
       remember(whereTheReaderIs(carryingBox()));
     }, CORRECTION_SCROLL_MS);
   };
-  const scrolled = () => {
+  const scrolled = (event: Event) => {
     const box = carryingBox();
     const at = whereTheReaderIs(box);
     // The box stands where this watch's last scroll left it: this is that scroll's own event,
@@ -201,16 +227,6 @@ export function refocusWhenSettled(refocus: () => void, drawn?: Element): () => 
       corrected(at);
       return;
     }
-    // The movement this watch's own scroll started is still arriving (above), or a correction
-    // is already due this frame and the page is answering the very growth that correction is
-    // for - the browser's own scroll anchoring, which moves the page for that growth wherever
-    // it finds an anchor above it. Neither is somebody taking the page over, and reading
-    // either as that would leave the growth uncorrected, which is the whole of what this
-    // module is.
-    if (correcting !== undefined || frame !== undefined) {
-      remember(at);
-      return;
-    }
     // The page re-laid itself under the reader: what stands above the document grew, and the
     // browser's own scroll anchoring moved the box by exactly that growth, so the document is
     // on the line of the box it was already on and nothing moved on the reader's screen. That
@@ -221,6 +237,25 @@ export function refocusWhenSettled(refocus: () => void, drawn?: Element): () => 
     // diagram above it draws"). A reader who moves the page moves what it draws with it, so no
     // move of theirs is excused here.
     if (Math.abs(whereTheDocumentStands() - stood) < STILL_PX) {
+      remember(at);
+      return;
+    }
+    // A scroll none of those made, while a press is held: the press's first movement, a drag on
+    // the box's scroll bar, by the table of the reader's inputs (`THE_READERS_INPUTS`). It ends
+    // this even inside the windows below, which read the positions of a movement nobody's
+    // hand is on: a drag read as a correction's own would be pulled back to the target at the
+    // next growth, and every correction it fought would open the window again.
+    if (movesTheReader(event)) {
+      stop();
+      return;
+    }
+    // The movement this watch's own scroll started is still arriving (above), or a correction
+    // is already due this frame and the page is answering the very growth that correction is
+    // for - the browser's own scroll anchoring, which moves the page for that growth wherever
+    // it finds an anchor above it. Neither is somebody taking the page over, and reading
+    // either as that would leave the growth uncorrected, which is the whole of what this
+    // module is.
+    if (correcting !== undefined || frame !== undefined) {
       remember(at);
       return;
     }
@@ -246,14 +281,22 @@ export function refocusWhenSettled(refocus: () => void, drawn?: Element): () => 
     frame = window.requestAnimationFrame(() => {
       frame = undefined;
       if (done) return;
+      const box = carryingBox();
+      const from = whereTheReaderIs(box);
       refocus();
-      corrected();
+      const at = whereTheReaderIs(box);
+      // The editor's own focus scroll (`focusBlock`, `focusMark`) moves the box through no call
+      // of `readers-place.ts`, so where it left the box is recorded there as the page's own:
+      // the table of the reader's inputs reads the scroll by that record, and read as a held
+      // press's movement it opened the keepers' window on this very correction.
+      if (root !== undefined && at !== from) thePageLeftIt(box);
+      corrected(at);
     });
   };
   // `capture`, so an input is read before the page answers it: the registry's own listener
   // takes a shortcut's key and moves its chord on, and the table reads the key as the registry
   // stands before that (`effectOf`, `features/shell/keymap.ts`).
-  for (const type of THE_READERS_EVENTS) {
+  for (const type of heard) {
     window.addEventListener(type, acted, { capture: true, passive: true });
   }
   // `focusin`, which bubbles from wherever the focus went, on the capture phase like the rest.
