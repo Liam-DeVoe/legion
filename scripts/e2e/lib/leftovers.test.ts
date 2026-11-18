@@ -145,6 +145,11 @@ describe("refuse_leftovers", () => {
     chmodSync(join(bin, "docker"), 0o755);
   });
 
+  // refuse_leftovers also reads every process of this PID namespace, with three child processes
+  // each, so a row's time grows with the machine's processes: 14 s alone on a dev box of 840,
+  // where Bun's default of 5 s a row stopped both rows before refuse_leftovers ended.
+  const walkBound = 120_000;
+
   // refuse_leftovers PREFIX run with the fake docker; the prefix is this row's, so no process of
   // the machine carries its work directory.
   function refuse(prefix: string, lines: string[]) {
@@ -166,33 +171,41 @@ describe("refuse_leftovers", () => {
     return run.stdout.toString();
   }
 
-  test("a dead run's NATS container is refused under main's name and under the pid and random name; a marked Postgres is the removal's, and a live run's container is no leftover", () => {
-    const prefix = `legion-e2erow${process.pid}`;
-    const dead = deadPid();
-    const live = process.pid;
-    const out = refuse(prefix, [
-      `${prefix}-nats-${dead}|`,
-      `${prefix}-nats-${dead}-0123456789abcdef|`,
-      `${prefix}-pg-${dead}-0123456789abcdef|{"owner":{"pid":${dead}}}`,
-      `${prefix}-nats-${live}-fedcba9876543210|`,
-    ]);
-    expect(out).toStartWith(
-      `FAIL: an earlier ${prefix} run whose driver is gone left these running:`
-    );
-    expect(out).toContain(
-      `container ${prefix}-nats-${dead} (docker rm -f -v ${prefix}-nats-${dead})`
-    );
-    expect(out).toContain(`container ${prefix}-nats-${dead}-0123456789abcdef (`);
-    expect(out).not.toContain(`${prefix}-pg-`);
-    expect(out).not.toContain(`${prefix}-nats-${live}-fedcba9876543210`);
-  });
+  test(
+    "a dead run's NATS container is refused under main's name and under the pid and random name; a marked Postgres is the removal's, and a live run's container is no leftover",
+    () => {
+      const prefix = `legion-e2erow${process.pid}`;
+      const dead = deadPid();
+      const live = process.pid;
+      const out = refuse(prefix, [
+        `${prefix}-nats-${dead}|`,
+        `${prefix}-nats-${dead}-0123456789abcdef|`,
+        `${prefix}-pg-${dead}-0123456789abcdef|{"owner":{"pid":${dead}}}`,
+        `${prefix}-nats-${live}-fedcba9876543210|`,
+      ]);
+      expect(out).toStartWith(
+        `FAIL: an earlier ${prefix} run whose driver is gone left these running:`
+      );
+      expect(out).toContain(
+        `container ${prefix}-nats-${dead} (docker rm -f -v ${prefix}-nats-${dead})`
+      );
+      expect(out).toContain(`container ${prefix}-nats-${dead}-0123456789abcdef (`);
+      expect(out).not.toContain(`${prefix}-pg-`);
+      expect(out).not.toContain(`${prefix}-nats-${live}-fedcba9876543210`);
+    },
+    walkBound
+  );
 
-  test("a run whose every container is a live run's, or marked, passes", () => {
-    const prefix = `legion-e2erow${process.pid}`;
-    const out = refuse(prefix, [
-      `${prefix}-nats-${process.pid}-fedcba9876543210|`,
-      `${prefix}-pg-${deadPid()}|{"owner":null}`,
-    ]);
-    expect(out).toBe("passed\n");
-  });
+  test(
+    "a run whose every container is a live run's, or marked, passes",
+    () => {
+      const prefix = `legion-e2erow${process.pid}`;
+      const out = refuse(prefix, [
+        `${prefix}-nats-${process.pid}-fedcba9876543210|`,
+        `${prefix}-pg-${deadPid()}|{"owner":null}`,
+      ]);
+      expect(out).toBe("passed\n");
+    },
+    walkBound
+  );
 });
