@@ -37,9 +37,10 @@ import (
 // the store holds, so no chain anybody writes makes the read of its node slow. A cycle is no
 // reason for it: the walk's visited set lists each lens once, bound or none.
 //
-// The depth counts lenses rather than steps away from the lens the walk began at, because a walk
-// begins at each lens on the node: a chain whose every lens stands on the node is one step from
-// a beginning wherever it is cut, and is as long as the lenses it holds.
+// The depth counts lenses rather than steps away from the lens the walk began at, because a lens
+// may trigger as many lenses as anybody writes: a chain one step deep may hold any number of
+// lenses, and only a count of the lenses listed holds the read to its bound whatever the chain's
+// shape.
 const lensChainDepth = 50
 
 // lensStandsOnKinds are the kinds of node a lens may stand on, as decodeNodeAddress names them:
@@ -270,16 +271,18 @@ var lensRisksQuery = `
 	order by placed.to_id, placed.seq`
 
 // lensRow is one lens the read loaded: its answer but for its place and its children, the seq of
-// its current part_of tuple and that tuple's far end (placed, where it holds one), and the ids of
-// the lenses its triggered_by tuples join it to - those that triggered it, then those it
-// triggered - which are the steps of a walk from it.
+// its current part_of tuple and that tuple's far end (placed, where it holds one), the ids of the
+// lenses its triggered_by tuples point at, and the ids of the lenses its triggered_by tuples join
+// it to - those that triggered it, then those it triggered - which are the steps of a walk from
+// it.
 type lensRow struct {
-	id     string
-	read   lensRead
-	seq    int64
-	placed bool
-	parent storedEnd
-	linked []string
+	id          string
+	read        lensRead
+	seq         int64
+	placed      bool
+	parent      storedEnd
+	triggeredBy []string
+	linked      []string
 }
 
 // invokedBefore orders two lenses as they were invoked: by the seq of their part_of tuples, a
@@ -335,7 +338,8 @@ func scanLensRows(rows pgx.Rows, err error) ([]lensRow, error) {
 			row.read.Author = &reasoningAuthor{Kind: *authorKind, ID: *authorID}
 		}
 		row.read.TriggeredBy, row.read.Triggered = lensAddresses(triggeredBy), lensAddresses(triggered)
-		row.linked = append(slices.Clip(triggeredBy), triggered...)
+		row.triggeredBy = slices.Clip(triggeredBy)
+		row.linked = append(row.triggeredBy, triggered...)
 		lenses = append(lenses, row)
 	}
 	if err := rows.Err(); err != nil {
@@ -384,34 +388,54 @@ type walkedChain struct {
 	stoppedAt *string
 }
 
-// chains walks the chains of triggered lenses from seeds, the lenses the read answers in their
-// own right - the node itself where it is a lens, then the lenses on the node in the order they
-// were invoked - each already loaded. A chain is the lenses joined to one another by triggered_by
+// chains walks the chains of triggered lenses the read's own lenses stand in. seeds are those
+// lenses - the node itself where it is a lens, then the lenses on the node in the order they were
+// invoked - each already loaded. A chain is the lenses joined to one another by triggered_by
 // tuples the reader may see, walked in both directions, which is what lets either end of a
 // trigger read the other.
 //
-// Each seed that no chain has listed begins a chain, and the walk lists from it, breadth first,
-// each lens it reaches that no chain has listed, the visited set being the lenses listed so far,
-// so a lens is in one chain at most and a cycle is read once. The walk steps only along the
-// triggered_by tuples a lens's row answers, each of which binds the reader's predicate: it passes
-// through no lens the reader may not see, so a lens reached only through a hidden one is in no
-// chain of that reader's, and a lens on the node that only a hidden lens joins to another is in
-// none either, the lenses list answering it all the same. A chain stops at lensChainDepth lenses
-// and names the next lens it reached; a lens on the node past that cut is a seed no chain listed,
-// and begins a chain of its own. A chain is answered only where it holds two lenses or more: a
-// lens no tuple the reader may see joins to another is in no chain.
+// A chain starts only at a root: a seed that holds no triggered_by tuple the reader may see to
+// another seed (R8, dispatch://INFRA-1950/spec#b-r-lens-trigger). The roots begin their chains in
+// the order of the seeds. A chain of the seeds that holds no root - each of its seeds triggered by
+// another, so its triggers close in a cycle - then begins at its first seed in that order that no
+// walk visited, so a cycle is read all the same. The walk lists from each beginning, breadth first,
+// each lens it reaches that no walk has visited, so a lens is in one chain at most and a cycle is
+// read once. It steps only along the triggered_by tuples a lens's row answers, each of which binds
+// the reader's predicate: it passes through no lens the reader may not see, so a lens reached only
+// through a hidden one is in no chain of that reader's, and a lens on the node that only a hidden
+// lens joins to another is in none either, the lenses list answering it all the same.
+//
+// A chain stops at lensChainDepth lenses and names the next lens it reached. A walk that does not
+// stop visits every lens joined to its beginning, so a later walk that reaches a lens an earlier
+// one visited stands past that earlier walk's cut: it answers no chain, and the lenses it visited
+// are visited, so none of them begins one. So a lens past the cut begins no chain of its own, and
+// the read of a chain of 60 lenses on the node answers 50 of them in all and names the 51st. The
+// chains come in the order the walks began. A chain is answered only where it holds two lenses or
+// more: a lens no tuple the reader may see joins to another is in no chain.
 func (w *lensWalk) chains(seeds []string) ([]walkedChain, error) {
-	listed := map[string]bool{}
-	var chains []walkedChain
+	own := make(map[string]bool, len(seeds))
 	for _, seed := range seeds {
-		if listed[seed] || w.rows[seed] == nil {
+		own[seed] = true
+	}
+	var roots []string
+	for _, seed := range seeds {
+		if row := w.rows[seed]; row != nil && !slices.ContainsFunc(row.triggeredBy, func(id string) bool { return own[id] }) {
+			roots = append(roots, seed)
+		}
+	}
+	visited := map[string]bool{}
+	var chains []walkedChain
+	// The roots, and then each seed no walk has visited: a seed of a chain that holds no root, or
+	// one past a cut, whose walk reaches a lens an earlier walk visited.
+	for _, seed := range append(roots, seeds...) {
+		if visited[seed] || w.rows[seed] == nil {
 			continue
 		}
-		chain, err := w.chainFrom(seed, listed)
+		chain, past, err := w.chainFrom(seed, visited)
 		if err != nil {
 			return nil, err
 		}
-		if len(chain.ids) < 2 {
+		if past || len(chain.ids) < 2 {
 			continue
 		}
 		slices.SortStableFunc(chain.ids, func(a, b string) int { return invokedBefore(w.rows[a], w.rows[b]) })
@@ -420,9 +444,10 @@ func (w *lensWalk) chains(seeds []string) ([]walkedChain, error) {
 	return chains, nil
 }
 
-// chainFrom walks the chain seed stands in (chains), marking each lens it lists in listed.
-func (w *lensWalk) chainFrom(seed string, listed map[string]bool) (walkedChain, error) {
-	var chain walkedChain
+// chainFrom walks the chain seed stands in (chains), marking in visited each lens it lists and
+// the lens it stopped at. past is whether it reached a lens an earlier walk visited, where it
+// stops: its chain stands past that walk's cut, and is none to answer.
+func (w *lensWalk) chainFrom(seed string, visited map[string]bool) (chain walkedChain, past bool, err error) {
 	queued := map[string]bool{seed: true}
 	for level := []string{seed}; len(level) > 0; {
 		var next []string
@@ -431,21 +456,25 @@ func (w *lensWalk) chainFrom(seed string, listed map[string]bool) (walkedChain, 
 				// This lens and the ones after it at this depth, as many as the chain may still
 				// list and one more to tell whether it stops, in one statement.
 				if err := w.load(level[index:min(len(level), index+lensChainDepth-len(chain.ids)+1)]); err != nil {
-					return walkedChain{}, err
+					return walkedChain{}, false, err
 				}
 			}
 			row := w.rows[id]
 			if row == nil {
 				continue
 			}
+			visited[id] = true
 			if len(chain.ids) == lensChainDepth {
 				chain.stoppedAt = &row.read.Address
-				return chain, nil
+				return chain, false, nil
 			}
 			chain.ids = append(chain.ids, id)
-			listed[id] = true
 			for _, linked := range row.linked {
-				if !queued[linked] && !listed[linked] {
+				switch {
+				case queued[linked]:
+				case visited[linked]:
+					return chain, true, nil
+				default:
 					queued[linked] = true
 					next = append(next, linked)
 				}
@@ -453,7 +482,7 @@ func (w *lensWalk) chainFrom(seed string, listed map[string]bool) (walkedChain, 
 		}
 		level = next
 	}
-	return chain, nil
+	return chain, false, nil
 }
 
 // lensChildren is the findings and the risks of the lenses whose ids are ids, by lens, each one
