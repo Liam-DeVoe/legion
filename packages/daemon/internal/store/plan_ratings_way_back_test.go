@@ -139,8 +139,9 @@ func TestThePlanRatingsWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 	}
 	// waitingError is the error each of those runs stores, as the daemon writes it of the row that
 	// met it: the wait its outbox raises (its execute, "outbox row %d (%s) of %s waits for a
-	// Dispatch that serves the route: %v") over the executor's error ("write the step record %s of
-	// %s: %w"), which wraps Dispatch's own refusal of a route it does not serve.
+	// Dispatch that serves the route: %v") over its executor's error ("write the plan record %s of
+	// %s: %w" or "write the step record %s of %s: %w", as writeOf names the write), which wraps
+	// Dispatch's own refusal of a route it does not serve.
 	waitingError := func(id int64, kind record.OutboxKind, key string, payload record.OutboxPayload) string {
 		what, route := writeOf(payload)
 		return fmt.Sprintf("outbox row %d (%s) of %s waits for a Dispatch that serves the route: write the %s of %s: NOT_FOUND: no route for PUT /api/v1/issues/%s/%s",
