@@ -44,10 +44,8 @@ import { RefusableButton } from "../../components/RefusableButton";
 import { withoutEllipsis } from "../../components/tooltips";
 import {
   borderDefault,
-  focusBorder,
   focusVisibleRing,
   inputClasses,
-  PAGE_COLORS,
   pageFailedText,
   pageHairBorder,
   pageHeaderControl,
@@ -97,12 +95,14 @@ import {
   DECISIONS_ID,
   doc,
   draw,
+  FOCUS_VARIANTS,
   GONE_SESSION,
   holdsItsLine,
   idlePriorityWrite,
   LIVE_SESSION,
   listed,
   minutesFromNow,
+  offPageColours,
   openAsk,
   priorities,
   proofDocument,
@@ -111,6 +111,7 @@ import {
   type Surface,
   settleReads,
   specRequest,
+  splitToken,
   threadOf,
   tokens,
   undraw,
@@ -1494,7 +1495,6 @@ test("inside NoTooltips a label chip wraps a long label and is never cut", () =>
   const mainChip =
     "inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300";
   const wraps = ["[overflow-wrap:anywhere]", "max-w-full"];
-  const cuts = ["shrink-0", "whitespace-nowrap"];
 
   for (const chipClassName of [undefined, given]) {
     for (const variant of ["default", "rail"] as const) {
@@ -1519,7 +1519,7 @@ test("inside NoTooltips a label chip wraps a long label and is never cut", () =>
           if (surface === "inside") {
             expect({
               ...which,
-              cuts: drawn.filter((token) => cuts.includes(token)),
+              cuts: holdsItsLine(chip),
               wraps: drawn.filter((token) => wraps.includes(token)).sort(),
             }).toEqual({ ...which, cuts: [], wraps });
           } else {
@@ -3678,11 +3678,8 @@ test("inside NoTooltips a repository row draws a long repository as text that wr
       const row = caseOf(view, "row");
       const holding: string[] = [];
       for (let outer = text().parentElement; outer !== null && outer !== row; ) {
-        holding.push(
-          ...classOf(outer).filter((token) =>
-            ["shrink-0", "w-[200px]", "whitespace-nowrap"].includes(token)
-          )
-        );
+        holding.push(...holdsItsLine(outer));
+        expect(classOf(outer)).not.toContain("w-[200px]");
         outer = outer.parentElement;
       }
       expect(holding).toEqual([]);
@@ -3818,11 +3815,8 @@ test("inside NoTooltips the repository box fills its row's value and keeps no ro
       const held: string[] = [];
       for (let outer: Element | null = box(); outer !== null && outer !== value; ) {
         if (!classOf(outer).includes("w-full")) narrower.push(outer.tagName);
-        held.push(
-          ...classOf(outer).filter((token) =>
-            ["shrink-0", "w-[200px]", "whitespace-nowrap"].includes(token)
-          )
-        );
+        held.push(...holdsItsLine(outer));
+        expect(classOf(outer)).not.toContain("w-[200px]");
         outer = outer.parentElement;
       }
       expect(narrower).toEqual([]);
@@ -6190,48 +6184,6 @@ test("an Escape that ends an IME composition leaves each open control and its dr
   }
 });
 
-/** `main`'s focus indicator, which the page keeps, since its palette holds no focus colour: the
- *  ring and a field's focus rule. */
-const MAIN_FOCUS: readonly string[] = [...tokens(focusVisibleRing), ...tokens(focusBorder)];
-
-/** The colour a class token names after its variants, or `undefined` for a token that names none
- *  (`text-sm`, `border`, `ring-2`, `outline-none`): what follows a colour's property, as
- *  `shared-controls.tooltips.test.tsx` reads it, an opacity dropped - a palette shade
- *  (`slate-300`), a keyword colour (`white`, `transparent`), an arbitrary colour, or a colour of
- *  the page's palette by its own name (`page-ink`), which `PAGE_COLORS` must then hold. */
-function colourNamed(token: string): string | undefined {
-  const utility = /^(?:[^:[\]]+:)*(.+)$/.exec(token)?.[1] ?? token;
-  const named =
-    /^-?(?:text|bg|border(?:-[xytrblse])?|outline|ring(?:-offset)?|placeholder|decoration|divide|caret|accent|fill|stroke|shadow|from|via|to)-(.+)$/
-      .exec(utility)?.[1]
-      ?.replace(/\/(?:\d+|\[[^\]]*\])$/, "");
-  if (named === undefined) return undefined;
-  return /^(?:[a-z]+-\d{2,3}|white|black|transparent|\[(?:#|rgba?\(|hsla?\(|oklch\(|oklab\(|color:|var\(--color-).*|(?:page|icon-rail)(?:-[a-z]+)*)$/.test(
-    named
-  )
-    ? named
-    : undefined;
-}
-
-/** Each class token of `root` and of every element inside it that names a colour the page's
- *  palette (`PAGE_COLORS`) does not hold and that is no token of `main`'s focus indicator, and
- *  how many of their tokens name a colour at all. */
-function offPageTokens(root: Element): { readonly colours: number; readonly offenders: string[] } {
-  const offenders: string[] = [];
-  let colours = 0;
-  for (const element of [root, ...root.querySelectorAll("*")]) {
-    for (const token of classOf(element)) {
-      const colour = colourNamed(token);
-      if (colour === undefined) continue;
-      colours += 1;
-      if (!Object.hasOwn(PAGE_COLORS, colour) && !MAIN_FOCUS.includes(token)) {
-        offenders.push(`<${element.tagName.toLowerCase()}> ${token}`);
-      }
-    }
-  }
-  return { colours, offenders };
-}
-
 /** The form an editor's box sits in. */
 function formOf(box: HTMLElement): HTMLFormElement {
   const form = box.closest("form");
@@ -6248,7 +6200,9 @@ function formOf(box: HTMLElement): HTMLFormElement {
 // refusal of a draft Dispatch would not take among them, is the page's or that focus indicator.
 test("the route and parent editors draw the page's field, with a border and a focus ring", async () => {
   const user = userEvent.setup();
-  const mainField = tokens(inputClasses(true)).filter((token) => !MAIN_FOCUS.includes(token));
+  const mainField = tokens(inputClasses(true)).filter(
+    (token) => !splitToken(token).variants.some((variant) => FOCUS_VARIANTS.includes(variant))
+  );
   for (const [field, label, saveLabel] of FIELD_EDITORS) {
     const view = draw(<OpenFieldForm field={field} onClose={() => undefined} />, "inside");
     try {
@@ -6292,7 +6246,8 @@ test("the route and parent editors draw the page's field, with a border and a fo
         if (refusal === null) throw new Error("the route box names no description");
         expect(classOf(refusal)).toEqual(expect.arrayContaining(tokens(pageFailedText)));
       }
-      const read = offPageTokens(formOf(box));
+      const form = formOf(box);
+      const read = offPageColours(`the ${field} editor`, [form, ...form.querySelectorAll("*")]);
       expect(read.offenders).toEqual([]);
       // A walk that found no colour would pass with nothing read.
       expect(read.colours).toBeGreaterThan(0);
