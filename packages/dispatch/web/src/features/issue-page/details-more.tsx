@@ -3,6 +3,7 @@ import {
   type FocusEvent,
   type ReactNode,
   type Ref,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -44,6 +45,16 @@ const HISTORY = '[data-testid="issue-history"]';
 /** How many frames a key or an address waits for Details to draw what it opened before it gives
  *  up on reaching it, as the view row's chords wait (`useIssueKeymap.ts`). */
 const DRAWING_FRAMES = 20;
+
+/** How many frames past the two the opener takes to focus the row's control (`useOpenDetailsAt`)
+ *  the hold of the landed place waits for that focus to arrive before it holds nothing. */
+const FOCUS_FRAMES = 4;
+
+/** The collaborators' row inside Details, which `t o` and its address open Details at. */
+const COLLABORATORS_ROW = `aside[${DETAILS_ATTRIBUTE}] [${DETAILS_ROW_ATTRIBUTE}="collaborators"]`;
+
+/** What a reader does that names a place of their own: the hold of the landed place ends at it. */
+const READER_ACTS = ["keydown", "pointerdown", "touchmove", "wheel"] as const;
 
 /**
  * The people of the issue, under Opened by in Details' People section: the sessions subscribed
@@ -264,6 +275,7 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
   const drawer = useMarginDrawer();
   const openDetails = drawer?.setOpen;
   const openDetailsAt = useOpenDetailsAt();
+  const holdLandedPlace = useLandedPlaceHold(drawer?.open);
   const panelAddress = opensCollaborators || opensHistory ? `${pathname}${search}` : undefined;
   // Details opens once per arrival at such an address (`arrivalAt`), so a link the reader
   // follows to the address they are on opens it again.
@@ -278,14 +290,20 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
     openedFor.current = arrival;
     openDetails(true);
     // At the collaborators' row, its control focused, with the People section that holds it
-    // opened if the reader closed it. The panel hears that request only once it is placed in
+    // opened if the reader closed it, and the control kept where it lands while the rows above it
+    // grow (`useLandedPlaceHold`). The panel hears that request only once it is placed in
     // Details - on a fresh load, a commit or more after this one - so it is sent once Details
     // draws this history, which stands in the same panel; and a frame on, outside this effect,
     // where the section's own synchronous open could not run.
     if (opensCollaborators) {
-      requestAnimationFrame(() => onceInDetails(HISTORY, () => openDetailsAt("collaborators")));
+      requestAnimationFrame(() =>
+        onceInDetails(HISTORY, () => {
+          openDetailsAt("collaborators");
+          holdLandedPlace();
+        })
+      );
     }
-  }, [arrival, openDetails, openDetailsAt, opensCollaborators]);
+  }, [arrival, holdLandedPlace, openDetails, openDetailsAt, opensCollaborators]);
   const drawsHistory = drawer?.open === true || opensHistory;
   // The reader's read mark for this visit, where the history draws the line that says what is
   // new: where it stood when the history first drew for this issue, and lower once it has
@@ -316,6 +334,7 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
       run: () => {
         navigate(buildIssuePath({ key: issue.key, kind: "collaborators" }));
         openDetailsAt("collaborators");
+        holdLandedPlace();
       },
     },
   ]);
@@ -367,6 +386,101 @@ function reachInDetails(selector: string): void {
     found.focus({ preventScroll: true });
     found.scrollIntoView({ block: "nearest" });
   });
+}
+
+/**
+ * What starts the hold of the place the Collaborators control lands at in Details
+ * (`holdLandedPlace`), called right after Details is asked to open at the collaborators' row. A
+ * hold already running ends first, and Details closing or the page going ends it too. `open` is
+ * whether Details is open, undefined where the page draws no Details drawer - every page but the
+ * new issue page - where nothing is held.
+ */
+function useLandedPlaceHold(open: boolean | undefined): () => void {
+  const release = useRef<(() => void) | undefined>(undefined);
+  useEffect(() => {
+    if (open === false) release.current?.();
+  }, [open]);
+  useEffect(() => () => release.current?.(), []);
+  const drawn = open !== undefined;
+  return useCallback(() => {
+    release.current?.();
+    release.current = drawn ? holdLandedPlace() : undefined;
+  }, [drawn]);
+}
+
+/**
+ * Keeps the focused Collaborators control where it landed in Details' view. `t o`, and an address
+ * that opens Details at the collaborators' row, bring that row into Details' view and then focus
+ * its control, two frames on (`useOpenDetailsAt`). A row above it that reads what it shows once
+ * Details opens - Blocked by, which reads the titles of the issues it names - grows when that
+ * read lands, after the focus, and would push the focused control down out of the view, where
+ * the reader no longer sees the focus; a focused control keeps its own place. So once the focus
+ * has arrived on the control - a few frames are waited for it, and nothing is held if it never
+ * arrives - each change of height of what Details' scrolling box holds scrolls the box by as far
+ * as the control then stands from the top it had when the focus arrived. That top is measured
+ * afresh each time, so a move anything else made, the browser's own scroll anchoring among them,
+ * is made good rather than added to.
+ *
+ * The reader's first act ends the hold: a turn of the wheel, a touch that moves, a key or a
+ * press anywhere on the page, heard before anything under it can stop it. So does the focus
+ * leaving the control, and (`useLandedPlaceHold`) Details closing, the page going and the next
+ * landing. A scroll the hold makes is no act of the reader's and never ends it. Returns what ends
+ * the hold.
+ */
+function holdLandedPlace(): () => void {
+  let frame = 0;
+  let held: { readonly control: HTMLElement; readonly sizes: ResizeObserver } | undefined;
+  function release(): void {
+    cancelAnimationFrame(frame);
+    if (held === undefined) return;
+    held.sizes.disconnect();
+    held.control.removeEventListener("focusout", release);
+    for (const act of READER_ACTS) window.removeEventListener(act, release, true);
+    held = undefined;
+  }
+  const arrive = (left: number): void => {
+    const control = document.activeElement;
+    if (
+      !(control instanceof HTMLElement) ||
+      document.querySelector(COLLABORATORS_ROW)?.contains(control) !== true
+    ) {
+      if (left > 0) frame = requestAnimationFrame(() => arrive(left - 1));
+      return;
+    }
+    // The box that scrolls the control: the nearest element around it, inside Details' own
+    // `aside`, whose content scrolls.
+    const details = control.closest(`aside[${DETAILS_ATTRIBUTE}]`);
+    let box = control.parentElement;
+    while (
+      box !== null &&
+      box !== details &&
+      !/^(auto|scroll)$/.test(getComputedStyle(box).overflowY)
+    ) {
+      box = box.parentElement;
+    }
+    if (box === null || box === details) return;
+    const scroller = box;
+    const kept = control.getBoundingClientRect().top;
+    const sizes = new ResizeObserver(() => {
+      if (document.activeElement !== control) {
+        release();
+        return;
+      }
+      const drift = control.getBoundingClientRect().top - kept;
+      if (drift !== 0) scroller.scrollTop += drift;
+    });
+    for (const content of scroller.children) sizes.observe(content);
+    control.addEventListener("focusout", release);
+    for (const act of READER_ACTS) {
+      window.addEventListener(act, release, { capture: true, passive: true });
+    }
+    held = { control, sizes };
+  };
+  // The opener focuses the control in its second frame, and this looks in that frame, after it.
+  frame = requestAnimationFrame(() => {
+    frame = requestAnimationFrame(() => arrive(FOCUS_FRAMES));
+  });
+  return release;
 }
 
 /** One row of Details that its own control names, as `IssueMargin.tsx`'s `Row wide` draws it

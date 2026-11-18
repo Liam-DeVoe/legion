@@ -22,10 +22,12 @@ import type {
 import { answeredWithErrorGuidance, queuedWait } from "../conversation/delivery";
 import { conversationItemId, pinnedItemMarker } from "../issue/pins";
 import { buildIssuePath } from "../refs/routes";
+import { KeymapProvider } from "../shell/KeymapProvider";
+import { useKeymapScope } from "../shell/keymap";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
 import { type FocusedNode, FocusedNodeProvider, useSetFocusedNode } from "./focused-node";
-import { type MarginDrawer, MarginSlotProvider } from "./margin-slot";
+import { DETAILS_ATTRIBUTE, type MarginDrawer, MarginSlotProvider } from "./margin-slot";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
 import { PROPERTY_LABELS } from "./page-structure";
 import {
@@ -1176,5 +1178,295 @@ test("the line that says what is new holds across a close and an open of Details
     view.unmount();
     getIssueEvents.mockRestore();
     for (const read of outlineReads) read.mockRestore();
+  }
+});
+
+/** Where Details' box stands in the window and how tall its view is, in CSS pixels. */
+const BOX_TOP = 50;
+const BOX_HEIGHT = 850;
+/** How tall each row of Details is that a case does not size. */
+const ROW_HEIGHT = 40;
+/** How far a row grows when the read of what it shows lands, as Blocked by grows once the
+ *  titles of the issues it names are in. */
+const GROWTH = 300;
+
+/** Pushes the `issue` scope, which the page's view row pushes (`useIssueKeymap.ts`) and `t o`
+ *  is bound in. */
+function IssueScope(): null {
+  useKeymapScope("issue");
+  return null;
+}
+
+const READ_THROUGH_TWO = readTo(2);
+
+/** Details as the new page draws it around its People rows: a drawer, shut, whose box scrolls
+ *  what Details holds - a row above the People rows, the People rows, a row below them, and the
+ *  history, which an address that opens Details waits for. */
+function PeopleInDrawer(): ReactNode {
+  const [open, setOpen] = useState(false);
+  const drawer: MarginDrawer = { open, setOpen, setPage: () => undefined };
+  return (
+    <MarginSlotProvider drawer={drawer}>
+      <IssueScope />
+      <aside hidden={!open} {...{ [DETAILS_ATTRIBUTE]: "" }}>
+        <div data-testid="details-box" style={{ overflowY: "auto" }}>
+          <div>
+            <div data-testid="row-above" />
+            <DetailsPeople issue={issue} state={READ_THROUGH_TWO} />
+            <div data-testid="row-below" />
+            <DetailsHistory issue={issue} state={READ_THROUGH_TWO} />
+          </div>
+        </div>
+      </aside>
+    </MarginSlotProvider>
+  );
+}
+
+/**
+ * `PeopleInDrawer` at `path`, laid out as Details stacks its rows: each row of the box's content
+ * under the one before, from the box's top, moved up by the box's scroll, and each element as
+ * the row it stands in. happy-dom lays nothing out and never calls a resize observer back, so
+ * `grow` sets a row's height and `resized` calls every observer back, as the browser does once
+ * a row's height has changed.
+ */
+function drawPeopleInDrawer(path: string) {
+  const heights = new Map([
+    ["row-above", 200],
+    ["row-below", 100],
+  ]);
+  const observing = new Set<{
+    readonly callback: ResizeObserverCallback;
+    readonly observer: ResizeObserver;
+  }>();
+  const RealResizeObserver = globalThis.ResizeObserver;
+  globalThis.ResizeObserver = class {
+    readonly #held: {
+      readonly callback: ResizeObserverCallback;
+      readonly observer: ResizeObserver;
+    };
+    constructor(callback: ResizeObserverCallback) {
+      this.#held = { callback, observer: this as unknown as ResizeObserver };
+    }
+    observe() {
+      observing.add(this.#held);
+    }
+    unobserve() {}
+    disconnect() {
+      observing.delete(this.#held);
+    }
+  } as unknown as typeof ResizeObserver;
+  const rectOf = (top: number, height: number) =>
+    ({
+      bottom: top + height,
+      height,
+      left: 0,
+      right: 100,
+      toJSON: () => ({}),
+      top,
+      width: 100,
+      x: 0,
+      y: top,
+    }) as DOMRect;
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    const box = document.querySelector<HTMLElement>('[data-testid="details-box"]');
+    if (box === null) return rectOf(0, 0);
+    if (this === box) return rectOf(BOX_TOP, BOX_HEIGHT);
+    const start = BOX_TOP - box.scrollTop;
+    let top = start;
+    for (const row of box.firstElementChild?.children ?? []) {
+      const height = heights.get(row.getAttribute("data-testid") ?? "") ?? ROW_HEIGHT;
+      if (row.contains(this)) return rectOf(top, height);
+      top += height;
+    }
+    return rectOf(start, top - start);
+  });
+  const reads = [
+    spyOn(api, "getIssueSubscribers").mockResolvedValue([]),
+    spyOn(api, "getIssueCollaborators").mockResolvedValue({
+      agents: [],
+      issue_key: KEY,
+      legion_registry: "ok",
+      people: [],
+    }),
+    spyOn(api, "getIssueEvents").mockResolvedValue([]),
+  ];
+  const view = render(
+    <MemoryRouter initialEntries={[path]}>
+      <QueryClientProvider client={readsHeld()}>
+        <KeymapProvider>
+          <PeopleInDrawer />
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const box = screen.getByTestId("details-box");
+  const control = () => {
+    const found = box.querySelector<HTMLElement>('[data-details-row="collaborators"] button');
+    if (found === null) throw new Error("Details drew no Collaborators control");
+    return found;
+  };
+  return {
+    box,
+    control,
+    /** Waits for the focus to land on the Collaborators control, and the frames after it. */
+    async focused(how: string): Promise<void> {
+      await waitFor(() =>
+        expect(document.activeElement, `${how} did not focus the Collaborators control`).toBe(
+          control()
+        )
+      );
+      for (let frame = 0; frame < 2; frame += 1) {
+        await act(async () => {
+          const { promise, resolve } = Promise.withResolvers<void>();
+          requestAnimationFrame(() => resolve());
+          await promise;
+        });
+      }
+    },
+    grow(row: string, by: number): void {
+      heights.set(row, (heights.get(row) ?? ROW_HEIGHT) + by);
+    },
+    resized(): void {
+      act(() => {
+        for (const { callback, observer } of [...observing]) callback([], observer);
+      });
+    },
+    restore(): void {
+      view.unmount();
+      globalThis.ResizeObserver = RealResizeObserver;
+      rect.mockRestore();
+      for (const read of reads) read.mockRestore();
+    },
+  };
+}
+
+// `t o` brings the collaborators' row into Details' view and focuses its control; a row above it
+// that reads what it shows once Details opens - Blocked by, which reads the titles of the issues
+// it names - grows when that read lands, after the focus, and pushed the focused control down out
+// of Details' view. The control keeps its own place: Details scrolls by as much as the row grew.
+// The browser row "t o and a load of /collaborators keep the focused Collaborators control in
+// Details' view when a row above it grows" (`e2e/issue-page-m.e2e.ts`) draws the real rows.
+test("after t o, a row above the focused Collaborators control that grows scrolls Details by as much, and the control keeps its place", async () => {
+  const page = drawPeopleInDrawer(`/issues/${KEY}`);
+  try {
+    await userEvent.keyboard("to");
+    await page.focused("t o");
+    const top = page.control().getBoundingClientRect().top;
+    const scrolled = page.box.scrollTop;
+
+    page.grow("row-above", GROWTH);
+    page.resized();
+    expect(page.box.scrollTop, "the row above grew and Details did not scroll by as much").toBe(
+      scrolled + GROWTH
+    );
+    expect(
+      page.control().getBoundingClientRect().top,
+      "the row above grew and moved the focused Collaborators control"
+    ).toBe(top);
+
+    // The browser's own scroll anchoring may have moved the box for a growth already: the place
+    // is measured afresh, so that move is made good and not added to.
+    page.grow("row-above", GROWTH);
+    page.box.scrollTop += GROWTH;
+    page.resized();
+    expect(
+      page.box.scrollTop,
+      "a growth the browser had already scrolled for was scrolled for again"
+    ).toBe(scrolled + 2 * GROWTH);
+    expect(page.control().getBoundingClientRect().top).toBe(top);
+  } finally {
+    page.restore();
+  }
+});
+
+// A load of `/issues/<key>/collaborators` lands the same way as `t o`, and holds the focused
+// control's place in the same way.
+test("a load of /collaborators keeps the focused Collaborators control's place as a row above it grows", async () => {
+  const page = drawPeopleInDrawer(buildIssuePath({ key: KEY, kind: "collaborators" }));
+  try {
+    await page.focused("a load of /collaborators");
+    const top = page.control().getBoundingClientRect().top;
+    const scrolled = page.box.scrollTop;
+
+    page.grow("row-above", GROWTH);
+    page.resized();
+    expect(page.box.scrollTop, "the row above grew and Details did not scroll by as much").toBe(
+      scrolled + GROWTH
+    );
+    expect(
+      page.control().getBoundingClientRect().top,
+      "the row above grew and moved the focused Collaborators control"
+    ).toBe(top);
+  } finally {
+    page.restore();
+  }
+});
+
+// The place is held only until the reader names one of their own: once they press a key or turn
+// the wheel, a row above that grows moves what is in view, as it does anywhere else.
+test("a key or a turn of the wheel of the reader's ends the hold, and a later growth above the control scrolls nothing", async () => {
+  const acts: readonly (readonly [string, (box: HTMLElement) => Promise<void>])[] = [
+    ["a key", () => userEvent.keyboard("{Shift}")],
+    [
+      "a turn of the wheel",
+      async (box) => {
+        await act(async () => {
+          box.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: 40 }));
+        });
+      },
+    ],
+  ];
+  for (const [how, readerActs] of acts) {
+    const page = drawPeopleInDrawer(`/issues/${KEY}`);
+    try {
+      await userEvent.keyboard("to");
+      await page.focused("t o");
+      const scrolled = page.box.scrollTop;
+      page.grow("row-above", GROWTH);
+      page.resized();
+      expect(
+        page.box.scrollTop,
+        `before ${how}, the row above grew and Details did not scroll by as much`
+      ).toBe(scrolled + GROWTH);
+
+      await readerActs(page.box);
+      const top = page.control().getBoundingClientRect().top;
+      page.grow("row-above", GROWTH);
+      page.resized();
+      expect(page.box.scrollTop, `after ${how}, a growth above the control scrolled Details`).toBe(
+        scrolled + GROWTH
+      );
+      expect(page.control().getBoundingClientRect().top).toBe(top + GROWTH);
+    } finally {
+      page.restore();
+    }
+  }
+});
+
+// A row below the focused control that grows moves nothing in view, held or not; a growth above
+// it afterwards shows the hold was there all along.
+test("a row below the focused Collaborators control that grows scrolls nothing", async () => {
+  const page = drawPeopleInDrawer(`/issues/${KEY}`);
+  try {
+    await userEvent.keyboard("to");
+    await page.focused("t o");
+    const top = page.control().getBoundingClientRect().top;
+    const scrolled = page.box.scrollTop;
+
+    page.grow("row-below", GROWTH);
+    page.resized();
+    expect(page.box.scrollTop, "a growth below the control scrolled Details").toBe(scrolled);
+    expect(page.control().getBoundingClientRect().top).toBe(top);
+
+    page.grow("row-above", GROWTH);
+    page.resized();
+    expect(page.box.scrollTop, "the row above grew and Details did not scroll by as much").toBe(
+      scrolled + GROWTH
+    );
+    expect(page.control().getBoundingClientRect().top).toBe(top);
+  } finally {
+    page.restore();
   }
 });
