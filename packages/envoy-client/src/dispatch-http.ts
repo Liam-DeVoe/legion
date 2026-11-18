@@ -2162,7 +2162,6 @@ export class DispatchClient {
     const limit = signal === undefined ? this.#signal : AbortSignal.any([this.#signal, signal]);
     let presented = await this.#credential.headers(method, url, undefined, limit);
     if (body !== undefined) headers["Content-Type"] = body.type;
-    const request = `${method} ${withoutUserinfo(url)}`;
     if (key === undefined) {
       const init: RequestInit = {
         method,
@@ -2171,6 +2170,7 @@ export class DispatchClient {
         ...(body === undefined ? {} : { body: body.content }),
       };
       if (method === "GET") return this.fetchImpl(url, init);
+      const request = `${method} ${withoutUserinfo(url)}`;
       let response: Response;
       try {
         response = await this.fetchImpl(url, init);
@@ -2184,6 +2184,7 @@ export class DispatchClient {
     headers[IDEMPOTENCY_KEY_HEADER] = key;
     const { pausesMs, withinMs, silenceMs, inFlightPauseMs, inFlightWithinMs } = this.writeRetry;
     const pause = this.writeRetry.pause ?? pauseFor;
+    const request = `${method} ${withoutUserinfo(url)}`;
     const started = this.#now();
     // An upload, a body of `STREAMED_BODY_MIN` or more that goes out as a stream (`attemptBody`),
     // sends that whole body again on every repeat, so it keeps the schedule alone and never enters

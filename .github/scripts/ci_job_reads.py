@@ -2598,16 +2598,9 @@ GATES = [
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts:48, whose path is the new URL at :44, by the three suites this job runs over the one table: features/refs/fixture-table-readings.test.ts, markdown-engine.test.ts and markdown-surfaces.test.tsx"),
         (f"{ENVOY}/internal/dispatch/pmdoc/heavybodies/testdata/shared-bodies.json", "packages/dispatch/e2e/__tests__/heavy-bodies-digests.test.ts:44-50, which this job runs: the digest table holding e2e/heavy-bodies.ts's bodies to the Go shapes that spell the same bytes"),
         (f"{ENVOY}/scripts/fixtures/shell-quote.json", "packages/dispatch/e2e/__tests__/local-instance-support.test.ts:358-360, the new URL at :359"),
-        ("packages/contracts/schemas/dispatch-openapi.json",
-         "packages/dispatch/e2e/__tests__/stub-recordings.test.ts:50-53, the new URL at :51: the generated API "
-         "document every committed recording's body is held to, which this job's test step runs"),
-        # The /api/v2 document beside it. At this head no step of this job reads it:
-        # stub-recordings.test.ts:50-53 reads the /api/v1 document above alone, and the dashboard
-        # does not yet import the module gen-api.ts renders from it. It is declared, and named in
-        # the filter, beside the /api/v1 one, so a change to it starts this job.
         ("packages/contracts/schemas/dispatch-openapi-v2.json",
-         "declared beside packages/contracts/schemas/dispatch-openapi.json: stub-recordings.test.ts:50-53 reads "
-         "the /api/v1 document alone at this head, and no other step of this job reads the /api/v2 one"),
+         "packages/dispatch/e2e/__tests__/stub-recordings.test.ts:50-53, the new URL at :51: the generated /api/v2 "
+         "document every committed recording's body is held to, which this job's test step runs"),
         (f"{ENVOY}/going/testdata/**", "packages/proof-editor/tests/going-answer-no-link.test.ts:128-129"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:12 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
         ("packages/envoy-client/test/fake-dispatch.ts", f"packages/dispatch/e2e/__tests__/delivery-live-probe.test.ts:6-9 and local-instance-support.test.ts:4-7 import @legion/envoy-client/test/fake-dispatch, and {at('dispatch-ui', 'Test dispatch dashboard')} runs both"),

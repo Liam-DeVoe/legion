@@ -576,16 +576,19 @@ export async function waitForRouteSettled(page: Page, route: ReviewedRoute): Pro
 const INBOX_COUNT_QUIET_MS = 500;
 
 /** Whether `request` feeds the shell's one Inbox number (`web/src/features/inbox/useInboxCount.ts`)
- *  or moves it. The reads are the asks (`GET /api/v2/asks`) counted for the viewer
- *  `/auth/whoami` names, the pending credential requests, and the unread total of
- *  `GET /api/v2/me/threads`. The writes are the viewer's own read state under `/api/v2/me/`: the
- *  broadcast page's read mark (`PATCH /api/v2/me/marks/agent/{session_id}`,
- *  `useMarkShownRepliesRead` in `web/src/features/agents/unread.ts`) is one, and the reads under
- *  that prefix answer the number too. */
+ *  or moves it. The reads are the Inbox's own read of the asks (`GET /api/v2/asks?include=thread`,
+ *  as `INBOX_READ` in e2e/inbox.e2e.ts matches it; a read of the asks that names no thread is some
+ *  other list's) counted for the viewer `/auth/whoami` names, the pending credential requests,
+ *  and the unread total of `GET /api/v2/me/threads`. The writes are the viewer's own read state
+ *  under `/api/v2/me/`: the broadcast page's read mark
+ *  (`PATCH /api/v2/me/marks/agent/{session_id}`, `useMarkShownRepliesRead` in
+ *  `web/src/features/agents/unread.ts`) is one, and the reads under that prefix answer the number
+ *  too. */
 function feedsInboxCount(request: Request): boolean {
-  const { pathname } = new URL(request.url());
+  const url = new URL(request.url());
+  const { pathname } = url;
   return (
-    pathname === "/api/v2/asks" ||
+    (pathname === "/api/v2/asks" && url.searchParams.getAll("include").includes("thread")) ||
     pathname === "/api/v2/credential-requests" ||
     pathname === "/auth/whoami" ||
     pathname.startsWith("/api/v2/me/")

@@ -274,7 +274,7 @@ export const realStackReasons: Record<string, string> = {
   "visual.e2e.ts":
     "it compares a page against a committed baseline inside the pinned Playwright image, which is its own pair of projects",
   "whole-lists.e2e.ts":
-    "it reads the server's own access log for the pages the page asked for, which a recording has no server to write",
+    "it reads the server's own access log for the requests the page sent, which a recording has no server to write",
   "workspace.e2e.ts": "it asserts the counts and the titles the server groups a workspace into",
   "writer-spelling.e2e.ts": "asserts the readings inside the live document editor",
   "writes.e2e.ts":

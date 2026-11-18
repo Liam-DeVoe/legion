@@ -11,9 +11,10 @@
  *  reporter for the run's status. `e2e/run-outcome.ts` is where the answer comes from, and says
  *  why it answers "did this run pass" rather than "did a row fail": the logs are kept unless the
  *  run SHOWED that it passed, so a run no reporter of ours loaded for keeps them. What is kept
- *  is each stack's log directory, the only record of what its servers said, which a run of more
- *  than one stack writes and a run of one does not have at all; the data directories, which are
- *  the bulk of what the run wrote, go either way (`e2e/harness-pool.ts`).
+ *  is each stack's log directory, which every stack has: for a run of more than one stack it is
+ *  the only record of what its servers said, and a run of one copied the same output to this
+ *  process's stderr as it went. The data directories, which are the bulk of what the run wrote,
+ *  go either way (`e2e/harness-pool.ts`).
  *
  *  It also removes the manifest `e2e/global-setup.ts` wrote, because a second setup in this same
  *  process must read the environment the first one found. Playwright's UI mode is that process:

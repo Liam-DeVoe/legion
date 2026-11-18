@@ -1,10 +1,12 @@
 import {
+  baseUrl,
   createComment,
   createIssue,
   createProject,
   getIssueEvents,
   listComments,
   patchIssue,
+  userHeaders,
 } from "./api";
 import { accessLines, accessLogReadable } from "./harness-logs";
 import { expect, test } from "./test";
@@ -13,8 +15,7 @@ import { asUser } from "./users";
 // A list the page reads whole is read a page at a time at the route's own default limit, until it
 // holds every row the route counts (`readWholeList`, web/src/api/client.ts): an issue's comments
 // at 50 a page, so 250 of them are five reads, and its Activity a page of 200 at a time behind
-// Load older. Before /api/v2 the page read each list in one answer, which a long issue made the
-// heaviest read it had.
+// Load older.
 
 const COMMENTS = 250;
 const EVENTS = 450;
@@ -63,6 +64,20 @@ test("an issue with 250 comments and 450 events shows every one, its comments re
     const path = `/api/v2/issues/${encodeURIComponent(issue.key)}/comments`;
     const logged = () =>
       accessLines().filter((line) => line.method === "GET" && line.path === path);
+    // The log is written behind the server, by the process that started the stack, so the line of
+    // a request this row already has the answer to - the comment reads above among them - can
+    // still be on its way to the file. A request's line is written before its answer ends
+    // (`accesslog.Handler`) and the file keeps the server's order, so once the line of a GET sent
+    // after all of them is in it, theirs are too: `before` is counted only then, and the GET is
+    // to a path nothing else reads, an issue no project holds.
+    const marker = "/api/v2/issues/NOSUCH-1";
+    await (await fetch(new URL(marker, baseUrl), { headers: await userHeaders("alice") })).text();
+    await expect
+      .poll(() => accessLines().some((line) => line.path === marker), {
+        message: `the access line of GET ${marker}`,
+        timeout: 10_000,
+      })
+      .toBe(true);
     const before = logged().length;
     const sent: URL[] = [];
     page.on("request", (request) => {
@@ -84,12 +99,12 @@ test("an issue with 250 comments and 450 events shows every one, its comments re
     expect(whole.map((url) => Number(url.searchParams.get("offset") ?? "0"))).toEqual(
       Array.from({ length: COMMENTS / COMMENT_PAGE }, (_, index) => index * COMMENT_PAGE)
     );
-    // And the server's own record agrees: one access line for each of those reads and no other,
-    // so it served the issue's 250 comments as five pages of 50.
+    // And the server's own record agrees: one access line for each read the page sent, each a
+    // 200, and no other. A line holds no query, so which page each read asked for is the browser's
+    // record above; the log says that the server answered those reads and nothing more.
     await expect.poll(() => logged().length - before, { timeout: 10_000 }).toBe(sent.length);
     const served = logged().slice(before);
     expect(served.map((line) => line.status)).toEqual(sent.map(() => 200));
-    expect(served.length - (sent.length - whole.length)).toBe(COMMENTS / COMMENT_PAGE);
 
     // Every event of the issue is a row of its Activity, newest first, 200 at a time behind
     // Load older.

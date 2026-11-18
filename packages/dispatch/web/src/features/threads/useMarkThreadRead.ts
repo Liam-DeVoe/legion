@@ -87,9 +87,12 @@ export function useMarkThreadRead({
   const row = watching
     ? (rows?.items ?? []).find((candidate) => candidate.thread_id === threadId)
     : undefined;
-  // Whether this thread is one the mark watches at all.
+  // Whether this thread is one the mark watches at all. The owner's unread set always answers its
+  // total (only `state=dismissed` answers null); a null is read as a set that may hold more rows.
   const watched =
-    watching && rows !== undefined && (rows.total > (rows.items ?? []).length || row !== undefined);
+    watching &&
+    rows !== undefined &&
+    (rows.total === null || rows.total > (rows.items ?? []).length || row !== undefined);
   // The newest reply this surface saw dwell, for the thread it saw it in.
   const [seen, setSeen] = useState<{ readonly at: string; readonly threadId: string }>();
   const ref = useDwell({

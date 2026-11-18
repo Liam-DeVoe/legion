@@ -16,8 +16,8 @@ import (
 
 const requestTimeout = 10 * time.Second
 
-// unstampedRelease is what a build no release stamped names itself, as `legion version` prints
-// such a build.
+// unstampedRelease is the release the client names when its caller names none: a build linked
+// with neither a release nor a revision (cmd/legion's dispatchRelease), and a test.
 const unstampedRelease = "(devel)"
 
 // HTTPClient calls Dispatch's native /api/v1 routes with the daemon's bearer token.
@@ -32,7 +32,7 @@ type HTTPClient struct {
 // New creates a client for one Dispatch server. The token is sent only as a bearer header.
 // Every request names the daemon and release, the build it runs, in its User-Agent
 // (`legion-daemon/<release>`), so Dispatch's access log tells the daemon's calls from every
-// other client's; a caller that names no release (a test) sends `legion-daemon/(devel)`.
+// other client's; a caller that names no release sends `legion-daemon/(devel)`.
 func New(baseURL, token, release string) *HTTPClient {
 	if release == "" {
 		release = unstampedRelease

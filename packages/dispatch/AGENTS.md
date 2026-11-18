@@ -1927,11 +1927,13 @@ a fixture server. `bun run dispatch:local` runs the same harness by hand,
 seeded and signed in, and leaves it running (below, after the port rules).
 
 The driver (`e2e/api.ts`, `e2e/seed.ts`) and the specs call `/api/v2` alone, as the page does: the
-test hooks at `/api/v2/_test/…`, every route glob as `**/api/v2/…`. One row tagged `@pr` seeds an
-issue with 250 comments and 450 events, opens its page, asserts that it shows all of them, and
-reads the server's access log to assert the comments were read in pages of 50; the harness writes
-that log when it is given a log directory (`e2e/harness-start.ts`, `<id>.log` under `logDir`),
-and the row gives it one when the run has none.
+test hooks at `/api/v2/_test/…`, every route glob as `**/api/v2/…`. One row, untagged so that it
+runs on the full lane and not the pull-request one (`e2e/whole-lists.e2e.ts`), seeds an issue with
+250 comments and 450 events, opens its page, asserts that it shows all of them and that the
+comments were read in pages of 50, and reads the server's access log to assert one answered line
+for each of those reads; the harness writes that log when it is given a log directory
+(`e2e/harness-start.ts`, `<id>.log` under `logDir`), `e2e/harness-pool.ts` gives every stack one,
+and the row skips where the run has none.
 
 Three commands, each copied as it stands and run from this package:
 

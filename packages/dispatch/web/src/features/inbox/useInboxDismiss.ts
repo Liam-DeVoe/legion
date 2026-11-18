@@ -170,7 +170,11 @@ function withoutRows<T extends ThreadsRead>(
   });
   if (dropped.length === 0) return { answer, dropped };
   return {
-    answer: { ...answer, items, total: Math.max(0, answer.total - dropped.length) },
+    answer: {
+      ...answer,
+      items,
+      total: answer.total === null ? null : Math.max(0, answer.total - dropped.length),
+    },
     dropped,
   };
 }
@@ -191,7 +195,9 @@ function withRows<T extends ThreadsRead>(answer: T, dropped: readonly DroppedRow
     items.splice(Math.min(at, items.length), 0, row);
     back += 1;
   }
-  return back === 0 ? answer : { ...answer, items, total: answer.total + back };
+  return back === 0
+    ? answer
+    : { ...answer, items, total: answer.total === null ? null : answer.total + back };
 }
 
 /** What a press rolls back to: the unread count as it stood, and the rows it took out of the view

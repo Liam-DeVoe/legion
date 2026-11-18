@@ -918,9 +918,10 @@ export class DispatchApiClient {
    * Every row of a list route, read a page at a time: each page asks for no `limit`, so it is the
    * route's own default (50 for most lists), and the next one starts where the rows read so far
    * end (`offset`), until the rows read are the `total` the route counts or a page comes back
-   * short of its limit - which is also how the one route that counts no total ends. Answers the
-   * first page's members beside the rows - its counts, and the `as_of` it was read at, which no
-   * later page's rows can be older than - with every page's rows in the route's own order.
+   * short of its limit - which is also how a route that counts no total ends (the global event
+   * log, and the caller's dismissed threads). Answers the first page's members beside the rows -
+   * its counts, and the `as_of` it was read at, which no later page's rows can be older than -
+   * with every page's rows in the route's own order.
    */
   private async readWholeList<P extends ListPattern>(
     pattern: P,

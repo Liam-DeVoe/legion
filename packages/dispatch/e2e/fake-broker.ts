@@ -1,5 +1,5 @@
-// The broker's own answers, which `@legion/contracts` holds beside the Dispatch routes that once
-// relayed them whole; the rows inside them are the shapes `/api/v2` answers too.
+// The broker's own answers, in the shapes `@legion/contracts` declares for them; the rows inside
+// them are the shapes `/api/v2` answers too.
 import type {
   ApproverGrantsResponse,
   CredentialPendingResponse,

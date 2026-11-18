@@ -86,8 +86,8 @@ var release string
 var piLegionVersion, piEnvoyVersion string
 
 // dispatchRelease is the build the daemon names itself by to Dispatch (`legion-daemon/<release>`,
-// daemon.Run): the release a release binary was built for, else the commit a worker image's build
-// links, else none, which the daemon's Dispatch client sends as `(devel)`.
+// daemon.Run): `release`, which `legion version` prints as its version, else `revision`, which it
+// prints after `commit`, else none, which the daemon's Dispatch client sends as `(devel)`.
 func dispatchRelease() string {
 	if release != "" {
 		return release

@@ -1082,8 +1082,9 @@ test("the editor keeps a cited passage's id through move, reword, split, delete 
         [start, end] as const
       );
 
-    /** Opens the editor on the comment once the blocks route has answered (the ids it carries),
-     *  makes `change`, checks the field holds `edited`, saves, and answers the `blocks` Save sent. */
+    /** Opens the editor on the comment once its `?include=blocks` read has answered (the ids it
+     *  carries), makes `change`, checks the field holds `edited`, saves, and answers the `blocks`
+     *  Save sent. */
     const saveEdit = async (change: () => Promise<void>, edited: string) => {
       const blocksRead = page.waitForResponse(
         (response) =>
@@ -1110,7 +1111,8 @@ test("the editor keeps a cited passage's id through move, reword, split, delete 
       expect(sent.body).toBe(edited);
       return sent.blocks;
     };
-    /** The comment's blocks as the blocks route lists them, and the reply's cited block. */
+    /** The comment's blocks as its `?include=blocks` read lists them, and the reply's cited
+     *  block. */
     const expectBlocks = async (
       blocks: readonly { id: string; text: string }[],
       cited: { removed: boolean; text: string }

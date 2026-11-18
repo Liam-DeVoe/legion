@@ -1,4 +1,13 @@
-import { expect, jest, type Mock, spyOn, test } from "bun:test";
+import {
+  afterEach,
+  beforeEach,
+  expect,
+  jest,
+  type Mock,
+  setSystemTime,
+  spyOn,
+  test,
+} from "bun:test";
 import { RECEIPT_TIMEOUT_CAUSE } from "@legion/contracts";
 import {
   focusManager,
@@ -83,6 +92,15 @@ async function refuseBroadcast(): Promise<never> {
 const recentAttemptAt = new Date(Date.now() - 60_000).toISOString();
 
 const now = Date.now();
+// Every row runs at the instant the fixtures below are dated from, read once as this file loads:
+// `agents[0]` was last active a minute before it and counts as Active for two minutes
+// (`ACTIVE_WITHIN_MS`, agent-groups.ts), so on the wall clock a row that starts a minute or more
+// after the file loaded - a long file on a loaded machine - finds it Idle. `setSystemTime` holds
+// `Date` at `now` through each row and leaves the timers real; a row that installs the fake
+// clock starts that clock at `now` as well (`jest.useFakeTimers({ now })`).
+beforeEach(() => setSystemTime(now));
+afterEach(() => setSystemTime());
+
 const agents = [
   {
     capabilities: ["aside", "btw"],
@@ -3221,7 +3239,7 @@ test("a broadcast Dispatch has not confirmed is tried again under its key until 
     .mockRejectedValueOnce(
       new NetworkError("/api/v2/broadcasts", new TypeError("Failed to fetch"))
     );
-  jest.useFakeTimers();
+  jest.useFakeTimers({ now });
 
   try {
     await broadcastToPlanner(region, "Status?");
@@ -3263,7 +3281,7 @@ test("Stop trying ends a late broadcast, and Retry sends it again under the same
   page.createBroadcast.mockRejectedValue(
     new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" })
   );
-  jest.useFakeTimers();
+  jest.useFakeTimers({ now });
   const user = userOnFakeClock();
 
   try {
@@ -3654,7 +3672,7 @@ test("a refused send's row shows its message formatted on one line, with its who
 // expanded in there. Nobody can see it, so a reply that arrives then must stay unread - in the
 // navigation and on the row - until the group opens and puts the conversation back on screen.
 test("an open row a collapsed group hides marks nothing read, and opening the group reads it", async () => {
-  jest.useFakeTimers();
+  jest.useFakeTimers({ now });
   const user = userOnFakeClock();
   const asked = exchange("m1", "Still there?", "2026-09-14T01:00:00Z");
   // The session's own question waits on the reader, so it is under Needs you before the reply
@@ -4239,7 +4257,7 @@ async function sendFromLiveView(user: UserEvent, body: string): Promise<void> {
 // reader stops it.
 test("a live-view send that keeps failing outlives the view, under one key, until Stop trying", async () => {
   const page = await renderPlannerLiveView();
-  jest.useFakeTimers();
+  jest.useFakeTimers({ now });
   const user = userOnFakeClock();
 
   try {
@@ -4301,7 +4319,7 @@ test("a live-view send that keeps failing outlives the view, under one key, unti
 // surfaces.
 test("the session's Agents row shows a live-view send as its own turn and can stop and retry it", async () => {
   const page = await renderPlannerLiveView();
-  jest.useFakeTimers();
+  jest.useFakeTimers({ now });
   const user = userOnFakeClock();
 
   try {
@@ -4359,7 +4377,7 @@ test("the Agents row's Retry of a live-view send re-sends it as it was", async (
   // The pick is made before the clock is held still, so a plain user makes it.
   await userEvent.setup().selectOptions(mode, "aside");
   await screen.findByPlaceholderText(/delivered as Aside/);
-  jest.useFakeTimers();
+  jest.useFakeTimers({ now });
   const user = userOnFakeClock();
 
   try {
@@ -4578,7 +4596,7 @@ test("a send pressed offline goes late with Stop trying, and lands when the netw
   page.createAgentMessage.mockRejectedValue(
     new NetworkError("/api/v2/agents/planner-session/messages", new TypeError("Failed to fetch"))
   );
-  jest.useFakeTimers();
+  jest.useFakeTimers({ now });
   const user = userOnFakeClock();
 
   try {

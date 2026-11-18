@@ -969,7 +969,11 @@ test("a bulk action keeps at most eight writes in flight", async () => {
   });
   restores.push(() => send.mockRestore());
   const keys = Array.from({ length: 20 }, (_, index) => `CORE-${index + 1}`);
-  table(keys.map((key) => issue(key, { parent: null })));
+  // No row carries a creation time, so the table draws no `<Timestamp>`: every mounted one
+  // re-renders on a 30 s tick of the real clock that they all share (features/refs/Timestamp.tsx),
+  // and a tick landing while this slow row waits is a React update outside act, which fails the
+  // row whenever the machine is slow enough. The writes the row counts read no time.
+  table(keys.map((key) => issue(key, { created_at: undefined, parent: null })));
   await screen.findByRole("checkbox", { name: "Select CORE-1" });
   await user.click(screen.getByRole("checkbox", { name: "Select every row on this page" }));
   await user.click(screen.getByRole("button", { name: "Take out of epic" }));

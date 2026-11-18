@@ -144,25 +144,18 @@ function itemsByRow(body: DismissBody): Record<string, MarkItemV2> {
   );
 }
 
-/** What the reader has dismissed out of their Inbox, read back from the route a page at a time
- *  (`offset`) until a page comes back short of its limit. */
+/** What the reader has dismissed out of their Inbox, counted row by row from the whole list
+ *  (`listMyReplies` reads it a page at a time until a page comes back short): the route answers
+ *  the dismissed threads with no `total`. */
 async function dismissedThreads(): Promise<number> {
-  let counted = 0;
-  for (;;) {
-    const page = await listMyReplies({
-      kind: ["reply", "agent"],
-      offset: counted,
-      state: "dismissed",
-    });
-    const rows = page.items ?? [];
-    counted += rows.length;
-    if (rows.length < page.limit) return counted;
-  }
+  return ((await listMyReplies({ kind: ["reply", "agent"], state: "dismissed" })).items ?? [])
+    .length;
 }
 
-/** What the reader's Inbox holds, read or not, read back from the route. */
+/** What the reader's Inbox holds, read or not, counted row by row from the whole list as the
+ *  dismissed threads are: the route's `total` is a number only for some of its states. */
 async function inboxThreads(): Promise<number> {
-  return (await listMyReplies({ kind: ["reply", "agent"], state: "inbox" })).total;
+  return ((await listMyReplies({ kind: ["reply", "agent"], state: "inbox" })).items ?? []).length;
 }
 
 /** What the page drew in each Inbox row, read out of the same list route the page reads and

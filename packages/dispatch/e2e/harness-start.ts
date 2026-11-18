@@ -61,7 +61,7 @@ export interface HarnessProcess {
    *  `exitCode` and `signalCode` say how it ended. */
   readonly child: ChildProcess;
   /** The file its output goes to under `logDir`, or undefined when it goes to this process's
-   *  stderr. */
+   *  stderr alone. */
   readonly log: string | undefined;
   /** Settles once the process has closed its output and all of it is written. */
   readonly drained: Promise<void>;
@@ -90,6 +90,9 @@ export interface HarnessOptions {
   /** A directory for each process's output, as `<id>.log`; unset, it goes to this process's
    *  stderr. */
   readonly logDir?: string;
+  /** With `logDir`, each process's output goes to this process's stderr as well as to its file:
+   *  a run of one stack, whose reader has its servers' output there (`e2e/harness-pool.ts`). */
+  readonly stderrToo?: boolean;
   /** Aborting it while the harness starts stops every process started so far, and the start
    *  rejects with `Interrupted`. */
   readonly signal?: AbortSignal;
@@ -102,9 +105,14 @@ interface Watched extends HarnessProcess {
   readonly tail: readonly string[];
 }
 
-/** Copies the process's output to `logDir` or this process's stderr, and reads each line for the
- *  listener's report. */
-function watch(running: PipedRunning, listener: HarnessListener, logDir?: string): Watched {
+/** Copies the process's output to `logDir`, this process's stderr or both, and reads each line for
+ *  the listener's report. */
+function watch(
+  running: PipedRunning,
+  listener: HarnessListener,
+  logDir: string | undefined,
+  stderrToo: boolean
+): Watched {
   const log = logDir === undefined ? undefined : join(logDir, `${listener.id}.log`);
   const file = log === undefined ? undefined : createWriteStream(log);
   const tail: string[] = [];
@@ -115,16 +123,16 @@ function watch(running: PipedRunning, listener: HarnessListener, logDir?: string
     const match = port === undefined ? listener.report.exec(line) : null;
     if (match !== null) port = Number(match[1]);
   };
-  // The process's own bytes reach the log file or this process's stderr unchanged, and the same
-  // bytes are cut into lines for `see`, which is what finds the listener's reported port. The
+  // The process's own bytes reach the log file, this process's stderr or both unchanged, and the
+  // same bytes are cut into lines for `see`, which is what finds the listener's reported port. The
   // stream is `node:child_process`'s, so it is iterated rather than read through a web reader;
   // its chunks are Buffers, which `write` and `TextDecoder` both take as they are.
   const pump = async (stream: Readable) => {
     const decoder = new TextDecoder();
     let partial = "";
     for await (const chunk of stream as AsyncIterable<Uint8Array>) {
-      if (file === undefined) process.stderr.write(chunk);
-      else file.write(chunk);
+      if (file === undefined || stderrToo) process.stderr.write(chunk);
+      file?.write(chunk);
       const lines = (partial + decoder.decode(chunk, { stream: true })).split("\n");
       partial = lines.pop() ?? "";
       for (const line of lines) see(line);
@@ -287,7 +295,7 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
         ...listener.env,
         ...heldInputs,
       });
-      const watched = watch(running, listener, options.logDir);
+      const watched = watch(running, listener, options.logDir, options.stderrToo === true);
       processes.push(watched);
       env[harnessVariables[listener.key]] = String(
         await serving(watched, given[listener.key].port, supervisor)

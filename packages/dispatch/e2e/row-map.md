@@ -344,7 +344,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/typed-blocks.e2e.ts` | asserts inside the live project-document editor |
 | `e2e/verification.e2e.ts` | opens the document's live room; where a result's commit stands is the server's comparison with the PR head |
 | `e2e/visual.e2e.ts` | it compares a page against a committed baseline inside the pinned Playwright image, which is its own pair of projects |
-| `e2e/whole-lists.e2e.ts` | it reads the server's own access log for the pages the page asked for, which a recording has no server to write |
+| `e2e/whole-lists.e2e.ts` | it reads the server's own access log for the requests the page sent, which a recording has no server to write |
 | `e2e/workspace.e2e.ts` | it asserts the counts and the titles the server groups a workspace into |
 | `e2e/writer-spelling.e2e.ts` | asserts the readings inside the live document editor |
 | `e2e/writes.e2e.ts` | a failed pin's retry, one comment from a double Submit, and a pin removed from Pinned |

@@ -1238,11 +1238,12 @@ jobs:
               # src/*.test.ts import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
               # `bun run check:api` renders schemas/dispatch-openapi.json into
-              # src/dispatch-api.generated.ts and compares, and reads no Go at all
-              # (scripts/gen-api.ts:6), so the Go that document is emitted from is not named here:
-              # a change to it is judged by envoy-go-checks' `openapi --check`, whose filter
-              # (envoy_go_checks) selects both that Go and this document, so either one alone
-              # starts the job.
+              # src/dispatch-api.generated.ts and schemas/dispatch-openapi-v2.json into
+              # src/dispatch-api-v2.generated.ts (scripts/gen-api.ts:49-60) and compares each,
+              # and reads no Go at all (scripts/gen-api.ts:6), so the Go those documents are
+              # emitted from is not named here: a change to it is judged by envoy-go-checks'
+              # `openapi --check`, whose filter (envoy_go_checks) selects both that Go and these
+              # documents, so any one of them alone starts the job.
             # The five guides scripts/semantic-line-breaks.guides.test.ts reads, the checker it
             # spawns and the test itself: the guide-layout step's filter below is them, and the
             # test job's filter names them too, since a job's `if:` tests one changes output and
@@ -2375,6 +2376,8 @@ jobs:
               - 'packages/contracts/src/dispatch-api-sessions.ts'
               - 'packages/contracts/src/dispatch-api-targeted.ts'
               - 'packages/contracts/src/dispatch-api-user.ts'
+              - 'packages/contracts/src/dispatch-api-v2.generated.ts'
+              - 'packages/contracts/src/dispatch-api-v2.ts'
               - 'packages/contracts/src/dispatch-api.generated.ts'
               - 'packages/contracts/src/dispatch-api.ts'
               - 'packages/contracts/src/dispatch-block-ref.ts'
@@ -2420,14 +2423,11 @@ jobs:
               # e2e/__tests__/local-instance-support.test.ts:158-160 reads this table (the new URL
               # at :159) and holds shellQuote to it.
               - 'packages/envoy/scripts/fixtures/shell-quote.json'
-              # The generated API document, read at e2e/__tests__/stub-recordings.test.ts:36-39
-              # (the new URL at :37), which holds every committed recording's body to the shape
+              # The generated /api/v2 document, read at e2e/__tests__/stub-recordings.test.ts:50-53
+              # (the new URL at :51), which holds every committed recording's body to the shape
               # that document declares. The document is generated from the Go route table, so a
               # change to it is a change to a shape the recordings carry, and this job's test
-              # step is where that test runs.
-              - 'packages/contracts/schemas/dispatch-openapi.json'
-              # The /api/v2 document beside it, which no step of this job reads yet: named here
-              # with the /api/v1 one, as ci_job_reads.py declares it.
+              # step is where that test runs. No step of this job reads the /api/v1 document.
               - 'packages/contracts/schemas/dispatch-openapi-v2.json'
               # The answers packages/envoy/going's filter emitted for every probe of its own
               # suite, which packages/proof-editor/tests/going-answer-no-link.test.ts:111-112
@@ -2492,6 +2492,8 @@ jobs:
               - 'packages/contracts/src/dispatch-api-sessions.ts'
               - 'packages/contracts/src/dispatch-api-targeted.ts'
               - 'packages/contracts/src/dispatch-api-user.ts'
+              - 'packages/contracts/src/dispatch-api-v2.generated.ts'
+              - 'packages/contracts/src/dispatch-api-v2.ts'
               - 'packages/contracts/src/dispatch-api.generated.ts'
               - 'packages/contracts/src/dispatch-api.ts'
               - 'packages/contracts/src/dispatch-block-ref.ts'
@@ -3100,6 +3102,8 @@ jobs:
               - 'packages/contracts/src/dispatch-api-sessions.ts'
               - 'packages/contracts/src/dispatch-api-targeted.ts'
               - 'packages/contracts/src/dispatch-api-user.ts'
+              - 'packages/contracts/src/dispatch-api-v2.generated.ts'
+              - 'packages/contracts/src/dispatch-api-v2.ts'
               - 'packages/contracts/src/dispatch-api.generated.ts'
               - 'packages/contracts/src/dispatch-api.ts'
               - 'packages/contracts/src/dispatch-block-ref.ts'

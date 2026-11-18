@@ -321,7 +321,7 @@ test("no request to Dispatch stays open while the page idles", async ({ browser 
 // Each window counts that page's reads of its own issue, by path, because a count of every
 // `/api/` request counted two different things: in CI job 127925489549 the control's window held
 // its tab's lazy first reads of `/comments` and `/asks?state=all` and a periodic
-// `/api/v2/agents`, which no comment event invalidates, while the rotating page had made those
+// `/api/v1/agents`, which no comment event invalidates, while the rotating page had made those
 // reads long before its own window opened - 5 reads against 4, and job 127873213156 counted 6
 // against 4 the same way. So both windows now open only once that page's own first reads have
 // gone out and settled, and the two lists are compared read for read.

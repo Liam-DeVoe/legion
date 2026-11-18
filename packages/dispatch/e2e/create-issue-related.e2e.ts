@@ -5,8 +5,9 @@ import { createIssue, createProject } from "./api";
 import { expect, type Locator, type Page, type Request, test } from "./test";
 import { asUser } from "./users";
 
-/** The no-write check the dialog asks, for any project. A glob would read `?` as a wildcard. */
-const relatedRoute = /\/api\/v2\/projects\/[^/]+\/related-searches(\?|$)/u;
+/** The no-write check the dialog asks, for any project: a `POST` with the title in its body and
+ *  no query, so the path ends the URL. */
+const relatedRoute = /\/api\/v2\/projects\/[^/]+\/related-searches$/u;
 
 /** The title a related-items check asks about: the body of `POST .../related-searches`. */
 function checkedTitle(request: Request): string {
@@ -21,8 +22,7 @@ const zeppelinTitle = "Zeppelin ballast valve sticks in the cold";
 function checkFor(page: Page, word: string): Promise<unknown> {
   return page.waitForResponse(
     (response) =>
-      relatedRoute.test(response.url()) &&
-      checkedTitle(response.request()).includes(word)
+      relatedRoute.test(response.url()) && checkedTitle(response.request()).includes(word)
   );
 }
 

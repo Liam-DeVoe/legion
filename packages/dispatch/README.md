@@ -58,8 +58,8 @@ its `globalSetup`, starts one stack per worker (`e2e/harness-pool.ts`:
 the fakes, then `e2e/run-server.sh`, then the
 plain-HTTP proxy) unless `PLAYWRIGHT_BASE_URL` selects a deployed server, and
 `e2e/global-teardown.ts` stops them. It keeps the stacks' logs unless the run
-showed that it passed. A run of one stack writes none, since that stack's
-servers write to the run's own stderr.
+showed that it passed. Every stack writes its servers' output to a log
+directory of its own, and a run of one stack copies it to the run's stderr too.
 Playwright runs under Node, which reads `@legion/contracts` from that package's
 built `dist/`, and a fresh checkout has no `dist/`: `bun install` makes none.
 The hook does not build it and cannot. Playwright loads
@@ -381,7 +381,7 @@ block's changed version, every block `part_of` its document, a link in a list it
 every node carries (`made_by`, `made_at`, `changed_by`, `changed_at`, `parent`, `parent_version`)
 for an issue, a document, a file, a picture, a block, a removed pinned block, an ask, a comment, a
 message, a session and a component, read by its own reference, as an edge's other end and on the
-`Node:` line of `dispatch read`, and the older `GET /api/v2/artifacts/{id}/references` route. It
+`Node:` line of `dispatch read`, and the `GET /api/v2/artifacts/{id}/references` route. It
 also covers the blocks of comments and messages: a mention in a comment starts at the comment's
 block holding it, a node of kind `block`, id `comment/<uuid>#b<n>`, whose `parent` is the comment
 (A10);

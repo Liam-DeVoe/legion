@@ -737,8 +737,9 @@ export async function listIssueArtifacts(issue: string, options: ApiOptions = {}
     .items;
 }
 
-/** The one document `query` names out of a list of documents, which a slug names at most one of;
- *  a read that names none is the 404 the slug's own route answered. */
+/** The one document a list of documents holds where a slug names it, which a slug names at most
+ *  one of; `named` says what was read, and a list that holds none is the 404 the slug's own route
+ *  answered. */
 function theDocument<T>(answered: { items: T[] | null }, named: string): T {
   const [document] = answered.items ?? [];
   if (document === undefined) throw new Error(`${named} names no document`);

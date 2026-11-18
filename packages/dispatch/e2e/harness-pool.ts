@@ -41,7 +41,8 @@ import { Interrupted } from "./local-instance-support";
 const named = "e2e/harness-pool.ts";
 
 /** One started stack as its callers read it: the index a worker selects it by, and every variable
- *  it carries - its ports, its `DATABASE_URL`, its file-store bucket. */
+ *  it carries - its ports, its `DATABASE_URL`, its file-store bucket, its log directory
+ *  (`stackLogDirVariable`) and how many stacks share the machine. */
 export interface Stack {
   readonly index: number;
   readonly env: Readonly<Record<string, string>>;
@@ -60,9 +61,10 @@ export interface StackPoolOptions {
 interface Running extends Stack {
   readonly database: StackDatabase | undefined;
   readonly harness: Harness;
-  /** Where its processes write their output (`e2e/harness-logs.ts`). A run of one stack has one
-   *  too, since a row reads its own server's access log from there; the output is the file's,
-   *  and this process's stderr carries the stack lines below rather than the servers' own. */
+  /** Where its processes write their output (`e2e/harness-logs.ts`), which is where a row reads
+   *  its own server's access log. A run of one stack copies the same output to this process's
+   *  stderr, where its reader - a person's terminal, a CI job's log - looks for it; a run of more
+   *  leaves stderr to the stack lines below rather than mixing every stack's servers there. */
   readonly logDir: string;
 }
 
@@ -284,7 +286,12 @@ async function startPool(count: number, options: StackPoolOptions): Promise<read
         if (url !== "") own.DATABASE_URL = url;
         const bucket = await stackBucket(index, count, env);
         if (bucket !== undefined) own.DISPATCH_E2E_FILE_STORE_BUCKET = bucket;
-        const harness = await startHarness({ env: own, logDir, signal: stopping.signal });
+        const harness = await startHarness({
+          env: own,
+          logDir,
+          signal: stopping.signal,
+          stderrToo: count === 1,
+        });
         stacks.push({
           database,
           env: { ...own, ...harness.env, [stackLogDirVariable]: logDir },

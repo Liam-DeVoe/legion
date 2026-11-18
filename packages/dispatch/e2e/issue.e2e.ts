@@ -598,9 +598,9 @@ test("pinning survives an immediate full navigation", async ({ browser }) => {
     const queueState = page.waitForResponse(
       (response) => issueMarksRead(new URL(response.url())) && response.ok()
     );
-    const putIntercepted = Promise.withResolvers<void>();
-    const releasePut = Promise.withResolvers<void>();
-    let firstPut = true;
+    const patchIntercepted = Promise.withResolvers<void>();
+    const releasePatch = Promise.withResolvers<void>();
+    let firstPatch = true;
     await page.route(issueMarksRead, async (route) => {
       getIntercepted.resolve();
       await releaseGet.promise;
@@ -610,7 +610,7 @@ test("pinning survives an immediate full navigation", async ({ browser }) => {
       const body = route.request().postDataJSON();
       if (
         route.request().method() !== "PATCH" ||
-        !firstPut ||
+        !firstPatch ||
         body === null ||
         typeof body !== "object" ||
         !("pinned_items" in body)
@@ -618,9 +618,9 @@ test("pinning survives an immediate full navigation", async ({ browser }) => {
         await route.continue();
         return;
       }
-      firstPut = false;
-      putIntercepted.resolve();
-      await releasePut.promise;
+      firstPatch = false;
+      patchIntercepted.resolve();
+      await releasePatch.promise;
       await route.continue();
     });
     await page
@@ -632,14 +632,14 @@ test("pinning survives an immediate full navigation", async ({ browser }) => {
     await getIntercepted.promise;
     releaseGet.resolve();
     await queueState;
-    await putIntercepted.promise;
+    await patchIntercepted.promise;
     const navigated = page.waitForEvent(
       "framenavigated",
       (frame) => frame === page.mainFrame() && new URL(frame.url()).pathname === "/"
     );
     const navigation = page.goto("/");
     await navigated;
-    releasePut.resolve();
+    releasePatch.resolve();
     await navigation;
     await page.unroute(issueMarksRead);
     await page.unroute("**/api/v2/me/marks/issue/*");

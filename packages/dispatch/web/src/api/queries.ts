@@ -180,12 +180,13 @@ export const askThreadQuery = (threadId: string) =>
 
 /** The viewer's count of unread threads, from the one-row page's `total`: the sidebar's and the
  *  compact header's one Inbox number counts it beside the work waiting on them. One request per
- *  page load, never the whole read below. */
+ *  page load, never the whole read below. The Inbox state always answers its total (only
+ *  `state=dismissed` answers `total: null`), so a null is read as no thread. */
 export const myRepliesCountQuery = () =>
   queryOptions({
     queryKey: [...myRepliesKey, "count"],
     queryFn: async () =>
-      (await api.listMyThreads({ kind: [...INBOX_THREAD_KINDS], limit: 1 })).total,
+      (await api.listMyThreads({ kind: [...INBOX_THREAD_KINDS], limit: 1 })).total ?? 0,
   });
 
 /** The prefix both of the Inbox's thread reads share - its own list and what the reader has

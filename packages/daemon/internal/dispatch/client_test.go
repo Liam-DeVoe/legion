@@ -86,9 +86,9 @@ func TestGetIssueReturnsWorkflowFields(t *testing.T) {
 }
 
 // Every request names the daemon and the build it runs in its User-Agent, a read and a write
-// alike, so Dispatch's access log tells the daemon's calls apart; a client that names no release
-// sends `(devel)`, as `legion version` names a build no release stamped. Its paths stay on
-// /api/v1.
+// alike, so Dispatch's access log tells the daemon's calls apart: the release or the commit the
+// caller names, and `(devel)` where it names neither, which is what a build linked with neither
+// a release nor a revision hands it. Its paths stay on /api/v1.
 func TestTheClientNamesItself(t *testing.T) {
 	for _, tc := range []struct {
 		release string

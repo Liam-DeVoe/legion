@@ -2,12 +2,15 @@
  *  server logged there.
  *
  *  `e2e/harness-pool.ts` gives every stack a log directory under the run's own, a run of one
- *  stack included, and `e2e/harness-start.ts` writes each process's output to `<id>.log` in it.
- *  The directory rides in the stack's record of the manifest under `stackLogDirVariable`, so a
- *  worker finds its own stack's through `stackValue` (e2e/harness-ports.ts), as it finds its
- *  ports. A run the pool started no stack for - a deployed server, or a harness a person left
- *  listening (`DISPATCH_E2E_REUSE_SERVERS`) - carries none, and a row that reads the log skips
- *  there rather than reading nothing and passing.
+ *  stack included, and `e2e/harness-start.ts` writes each process's output to `<id>.log` in it
+ *  (a run of one stack copies it to stderr as well). The directory rides in the stack's record
+ *  of the manifest under `stackLogDirVariable`, so a worker finds its own stack's through
+ *  `stackValue` (e2e/harness-ports.ts), as it finds its ports; a run against the stack
+ *  `e2e/harness-up.ts` holds up reads it from the variables that script exports. A run against
+ *  servers the pool did not start - a deployed server, or servers a person started some other
+ *  way - carries none, and a process that cannot see the path, such as the container
+ *  e2e/visual-run.sh runs Playwright in, finds no file there: a row that reads the log skips in
+ *  both rather than reading nothing and passing.
  *
  *  The access log is Dispatch's one line per served request
  *  (`packages/envoy/internal/dispatch/accesslog`): slog's text form of `msg="dispatch: request"`
@@ -77,7 +80,10 @@ export function accessLines(env: NodeJS.ProcessEnv = process.env): AccessLine[] 
   }
   const lines: AccessLine[] = [];
   for (const file of files) {
-    for (const line of readFileSync(file, "utf8").split("\n")) {
+    // The file is written behind the server, by the process that started the stack, so its last
+    // line can be one that process has not finished writing: only the lines a newline ends count.
+    const text = readFileSync(file, "utf8");
+    for (const line of text.slice(0, text.lastIndexOf("\n") + 1).split("\n")) {
       if (!line.includes(accessMessage)) continue;
       const method = attribute(line, "method");
       const path = attribute(line, "path");
