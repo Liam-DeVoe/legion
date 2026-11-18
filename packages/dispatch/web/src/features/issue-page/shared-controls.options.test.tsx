@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, type Mock, mock, spyOn, test } from "bun
 import { type ArtifactRebuildReport, MAX_ISSUE_ADVANCES } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import {
+  act,
   type BoundFunctions,
   type queries,
   type RenderResult,
@@ -68,7 +69,7 @@ import { KeymapProvider } from "../shell/KeymapProvider";
 import { useDialog } from "../shell/useDialog";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { FormActions, type IssueField, IssueFieldForms } from "./IssueFieldForms";
-import { PAGE_CHROME_ATTRIBUTE, PROPERTY_LABELS } from "./page-structure";
+import { AUTHOR_TEXT_ATTRIBUTE, PAGE_CHROME_ATTRIBUTE, PROPERTY_LABELS } from "./page-structure";
 import { ANSWER_LINES, AUTHOR_KIND_WORDS, CONTROL_LABELS } from "./page-words";
 import {
   architecture,
@@ -1014,7 +1015,8 @@ test("inRow draws no label and the words of Details", async () => {
 
     // With nothing resolved the row reads "None", as every empty row of Details does: the page's
     // word, with its mark and in its quiet words, on a control named by that word and by what it
-    // sets. No box is drawn until it is pressed.
+    // sets. With a repository the row draws it as text, on a control named by the repository and
+    // by what it sets. No box is drawn until one of them is pressed.
     const noRepository = within(caseOf(view, "no repository"));
     const none = noRepository.getByRole("button", {
       name: `${CONTROL_LABELS.none}, Repository of CORE-1`,
@@ -1023,9 +1025,11 @@ test("inRow draws no label and the words of Details", async () => {
     expect(none.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
     expect(classOf(none)).toEqual(expect.arrayContaining(tokens(pageQuietText)));
     expect(noRepository.queryByRole("combobox")).toBeNull();
+    const repository = within(caseOf(view, "repository"));
     expect(
-      within(caseOf(view, "repository")).getByRole("combobox", { name: "Repository of CORE-2" })
-    ).toBeInTheDocument();
+      repository.getByRole("button", { name: "acme/api, Repository of CORE-2" }).textContent
+    ).toBe("acme/api");
+    expect(repository.queryByRole("combobox")).toBeNull();
 
     const components = within(caseOf(view, "components")).getByTestId("issue-components");
     expect(within(components).getByText("Dispatch server")).toBeInTheDocument();
@@ -1362,18 +1366,27 @@ test("in Details' row every word of the claim wraps, and none is held whole agai
 });
 
 // Inside `NoTooltips` the priority's add control in a row of Details is, from `md`, as tall as the
-// controls beside it there (the repository's box, `main`'s input, read from the box drawn in a
-// row of Details), and keeps the 44 px below `md`. Outside, its class is `main`'s.
+// controls beside it there (the repository's text and the box it opens, `main`'s input, read from
+// a row of Details), and keeps the 44 px below `md`. Outside, its class is `main`'s.
 test("the priority's add control has the height of its siblings in Details", async () => {
+  const user = userEvent.setup();
   const repository = draw(
     <RepoControl inRow issueKey="CORE-1" project="CORE" repo="acme/api" resolvedRepo="acme/api" />,
     "inside"
   );
-  const siblings = (() => {
+  const siblings = await (async () => {
     try {
-      return classOf(
-        within(repository.container).getByRole("combobox", { name: "Repository of CORE-1" })
+      const scope = within(repository.container);
+      const text = scope.getByRole("button", { name: "acme/api, Repository of CORE-1" });
+      const textHeight = classOf(text).filter((token) => token.startsWith("md:min-h-"));
+      await user.click(text);
+      // The focus in the box starts the mappings' read, which lands before the box is taken off.
+      await settleReads();
+      const boxHeight = classOf(
+        scope.getByRole("combobox", { name: "Repository of CORE-1" })
       ).filter((token) => token.startsWith("md:min-h-"));
+      expect(textHeight).toEqual(boxHeight);
+      return boxHeight;
     } finally {
       undraw(repository);
     }
@@ -3536,6 +3549,252 @@ test("inside NoTooltips the repository row with no repository reads None and ope
     } finally {
       written.resolve({} as Issue);
       patchIssue.mockRestore();
+      undraw(view);
+    }
+  }
+});
+
+/** A repository of 45 characters with no space in it, which a text box cuts at a phone's width. */
+const LONG_REPOSITORY = "acme/a-repository-name-of-exactly-forty-chars";
+
+/** CORE-1's repository row in Details, on the issue as `read` answers it: a write's optimistic
+ *  pick and the read after it lands draw the row again, as the page's Details does. */
+function ReadRepositoryRow({
+  read,
+}: {
+  read: () => Promise<Pick<Issue, "key" | "repo" | "resolved_repo">>;
+}): ReactNode {
+  const issue = useQuery({ queryFn: read, queryKey: ["issue", "CORE-1"] });
+  return issue.data === undefined ? null : (
+    <RepoControl
+      inRow
+      issueKey={issue.data.key}
+      project="CORE"
+      repo={issue.data.repo}
+      resolvedRepo={issue.data.resolved_repo}
+    />
+  );
+}
+
+// Inside `NoTooltips` a row of Details draws the issue's repository as text that wraps, so a long
+// one is whole at every width where a box cuts it: in a row of a phone's 390 px, read by its
+// classes, the name breaks anywhere and nothing between it and the row keeps its width or its
+// line. The text is a button named by the repository and by what it sets, with no title and the
+// author's mark, described as the box is; a press of it by the pointer, by Enter or by Space
+// draws the box in its place at the row's full width with the focus in it. Escape draws the text
+// again with the focus on it, and leaving the box with nothing typed draws it again with the
+// focus where the reader put it. A repository written with Enter is written once, the box stays
+// while the write is out, and once it lands the row draws the new repository as text, which
+// takes the focus the box held. An inherited repository is text in the quiet words, with the
+// page's inherited words beside it. Outside, the row is `main`'s box.
+test("inside NoTooltips a repository row draws a long repository as text that wraps and opens the box at the row's width", async () => {
+  const user = userEvent.setup();
+  const textName = `${LONG_REPOSITORY}, Repository of CORE-1`;
+  for (const surface of ["inside", "outside"] as const) {
+    const stored = { repo: LONG_REPOSITORY };
+    const read = mock(async () => ({
+      key: "CORE-1",
+      repo: stored.repo,
+      resolved_repo: stored.repo,
+    }));
+    const written = Promise.withResolvers<Issue>();
+    const patchIssue = answerIssuePatches().mockImplementation(() => written.promise);
+    const view = draw(
+      <>
+        <div data-case="row" style={{ width: "390px" }}>
+          <ReadRepositoryRow read={read} />
+        </div>
+        <button type="button">Elsewhere</button>
+      </>,
+      surface
+    );
+    try {
+      const scope = within(view.container);
+      const box = () =>
+        scope.getByRole("combobox", { name: "Repository of CORE-1" }) as HTMLInputElement;
+      const text = () => scope.getByRole("button", { name: textName });
+      if (surface === "outside") {
+        await scope.findByRole("combobox", { name: "Repository of CORE-1" });
+        await settleReads();
+        expect(box().value).toBe(LONG_REPOSITORY);
+        expect(scope.queryByRole("button", { name: textName })).toBeNull();
+        expect(scope.getByText("Repository:")).toBeInTheDocument();
+        continue;
+      }
+      await scope.findByRole("button", { name: textName });
+      await settleReads();
+
+      // The text is the whole repository, in the ink with the author's mark and no title, and
+      // the box's one description describes it. No box is drawn.
+      expect(text().textContent).toBe(LONG_REPOSITORY);
+      expect(text().getAttribute("title")).toBeNull();
+      expect(text().hasAttribute(AUTHOR_TEXT_ATTRIBUTE)).toBe(true);
+      expect(classOf(text())).toEqual(expect.arrayContaining(tokens(pageInkText)));
+      expect(text()).toHaveAccessibleDescription(LONG_REPOSITORY);
+      const described = text().getAttribute("aria-describedby");
+      expect(document.querySelectorAll(`[id="${described}"]`)).toHaveLength(1);
+      expect(scope.queryByRole("combobox")).toBeNull();
+      // It breaks anywhere and keeps within its line, and nothing up to the row holds it whole.
+      expect(classOf(text())).toEqual(
+        expect.arrayContaining(["[overflow-wrap:anywhere]", "min-w-0", "max-w-full"])
+      );
+      const row = caseOf(view, "row");
+      const holding: string[] = [];
+      for (let outer = text().parentElement; outer !== null && outer !== row; ) {
+        holding.push(
+          ...classOf(outer).filter((token) =>
+            ["shrink-0", "w-[200px]", "whitespace-nowrap"].includes(token)
+          )
+        );
+        outer = outer.parentElement;
+      }
+      expect(holding).toEqual([]);
+
+      // A click draws the box in its place at the row's full width, with the focus in it and the
+      // same one description.
+      await user.click(text());
+      expect(document.activeElement).toBe(box());
+      expect(box().value).toBe(LONG_REPOSITORY);
+      expect(classOf(parentOf(box()))).toContain("w-full");
+      expect(classOf(parentOf(box()))).not.toContain("w-[200px]");
+      expect(box().getAttribute("aria-describedby")).toBe(described);
+      expect(document.querySelectorAll(`[id="${described}"]`)).toHaveLength(1);
+      expect(scope.queryByRole("button", { name: textName })).toBeNull();
+      // The focus in the box starts the mappings' read, which lands before what follows.
+      await settleReads();
+
+      // Escape draws the text again, with the focus on it.
+      await user.keyboard("{Escape}");
+      expect(scope.queryByRole("combobox")).toBeNull();
+      expect(document.activeElement).toBe(text());
+
+      // Enter on the text draws the box; leaving it with nothing typed draws the text again, and
+      // the focus stays where the reader put it.
+      await user.keyboard("{Enter}");
+      expect(document.activeElement).toBe(box());
+      await user.click(scope.getByRole("button", { name: "Elsewhere" }));
+      expect(scope.queryByRole("combobox")).toBeNull();
+      expect(document.activeElement).toBe(scope.getByRole("button", { name: "Elsewhere" }));
+
+      // Space on the text draws the box too. A repository typed in it and written with Enter is
+      // written once; the box stays while the write is out, and once it lands the row draws the
+      // new repository as text, which takes the focus the box held.
+      await user.tab({ shift: true });
+      expect(document.activeElement).toBe(text());
+      await user.keyboard(" ");
+      expect(document.activeElement).toBe(box());
+      await user.clear(box());
+      await user.keyboard("acme/api{Enter}");
+      await waitFor(() =>
+        expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "acme/api" }, keyedAttempt)
+      );
+      expect(document.activeElement).toBe(box());
+      stored.repo = "acme/api";
+      written.resolve({} as Issue);
+      await settleReads();
+      expect(scope.queryByRole("combobox")).toBeNull();
+      const landed = scope.getByRole("button", { name: "acme/api, Repository of CORE-1" });
+      expect(landed.textContent).toBe("acme/api");
+      expect(document.activeElement).toBe(landed);
+      expect(patchIssue).toHaveBeenCalledTimes(1);
+    } finally {
+      written.resolve({} as Issue);
+      patchIssue.mockRestore();
+      undraw(view);
+    }
+  }
+
+  // An inherited repository is text in the quiet words, with the page's inherited words beside
+  // it, hidden from a reader since the text's description says them.
+  const inherited = draw(
+    <RepoControl inRow issueKey="CORE-2" project="CORE" repo={null} resolvedRepo="acme/web" />,
+    "inside"
+  );
+  try {
+    const scope = within(inherited.container);
+    const text = scope.getByRole("button", { name: "acme/web, Repository of CORE-2" });
+    expect(text.textContent).toBe("acme/web");
+    expect(classOf(text)).toEqual(expect.arrayContaining(tokens(pageQuietText)));
+    expect(classOf(text)).not.toContain(pageInkText);
+    expect(document.getElementById(text.getAttribute("aria-describedby") ?? "")?.textContent).toBe(
+      `acme/web, ${CONTROL_LABELS.repository_inherited}`
+    );
+    const words = scope.getByText(CONTROL_LABELS.repository_inherited);
+    expect(words.getAttribute("aria-hidden")).toBe("true");
+    expect(words.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
+    expect(parentOf(words).contains(text)).toBe(true);
+    expect(scope.queryByRole("combobox")).toBeNull();
+  } finally {
+    undraw(inherited);
+  }
+});
+
+/** A repository row's two texts in Details, each by the name its button answers to and the
+ *  repository the issue holds and resolves to: "None", and the repository. */
+const ROW_TEXTS = [
+  [`${CONTROL_LABELS.none}, Repository of CORE-1`, null],
+  ["acme/api, Repository of CORE-1", "acme/api"],
+] as const;
+
+// The row's text and the box that takes its place hand the focus on only where it fell to the
+// document with the one that left: a press of "None" or of the repository's text by a click that
+// focuses no button, as a click does in some browsers, with the focus then moved to another
+// control before the box is drawn, leaves the focus on that control.
+test("inside NoTooltips a focus moved elsewhere as a repository row opens its box stays there", async () => {
+  for (const [name, repo] of ROW_TEXTS) {
+    const view = draw(
+      <>
+        <RepoControl inRow issueKey="CORE-1" project="CORE" repo={repo} resolvedRepo={repo} />
+        <button type="button">Elsewhere</button>
+      </>,
+      "inside"
+    );
+    try {
+      await settleReads();
+      const scope = within(view.container);
+      const pressed = scope.getByRole("button", { name });
+      const elsewhere = scope.getByRole("button", { name: "Elsewhere" });
+      await act(async () => {
+        pressed.click();
+        elsewhere.focus();
+      });
+      expect(scope.getByRole("combobox", { name: "Repository of CORE-1" })).toBeInTheDocument();
+      expect(document.activeElement).toBe(elsewhere);
+    } finally {
+      undraw(view);
+    }
+  }
+});
+
+// The box opened from the row's text stays while it holds a draft of the reader's: a value that
+// is not owner/name, typed in the box opened from "None" or from the repository's text, is refused
+// as the box is left, and the box stays with the draft in it and the refusal beside it.
+test("inside NoTooltips a repository row keeps the box and its refused draft when the box is left", async () => {
+  const user = userEvent.setup();
+  for (const [name, repo] of ROW_TEXTS) {
+    const view = draw(
+      <>
+        <RepoControl inRow issueKey="CORE-1" project="CORE" repo={repo} resolvedRepo={repo} />
+        <button type="button">Elsewhere</button>
+      </>,
+      "inside"
+    );
+    try {
+      await settleReads();
+      const scope = within(view.container);
+      await user.click(scope.getByRole("button", { name }));
+      const box = scope.getByRole("combobox", { name: "Repository of CORE-1" }) as HTMLInputElement;
+      expect(document.activeElement).toBe(box);
+      await user.clear(box);
+      await user.keyboard("nope");
+      await user.click(scope.getByRole("button", { name: "Elsewhere" }));
+      await settleReads();
+      expect(scope.getByRole("combobox", { name: "Repository of CORE-1" })).toBe(box);
+      expect(box.value).toBe("nope");
+      expect(scope.getByRole("alert").textContent).toBe("Write the repository as owner/name.");
+      expect(scope.queryByRole("button", { name })).toBeNull();
+      expect(document.activeElement).toBe(scope.getByRole("button", { name: "Elsewhere" }));
+    } finally {
       undraw(view);
     }
   }
