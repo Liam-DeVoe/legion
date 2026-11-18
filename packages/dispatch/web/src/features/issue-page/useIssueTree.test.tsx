@@ -5280,6 +5280,31 @@ const EVENT_SOON_AFTER_COMMENTS_READ: RuleWay = {
   },
 };
 
+/** An event of the issue that posts a comment 200 ms after the comments were read again, while
+ *  that read is still out: Dispatch answers each comments read `latency` ms after it was sent,
+ *  with the comments it holds as it answers. The scheduler owes the comments one more read once
+ *  the one out lands, and that read begins after the tree read the event asked for. One event,
+ *  read once. */
+function eventWhileCommentsOut(latency: number): RuleWay {
+  return {
+    words: `an event of the issue that posts a comment 200 ms into a read of the comments again, which Dispatch answers ${latency} ms after it was sent`,
+    does: async (rig) => {
+      (api.listComments as Mock<typeof api.listComments>).mockImplementation(async () => {
+        const answered = Promise.withResolvers<void>();
+        setTimeout(answered.resolve, latency);
+        await answered.promise;
+        return [rig.held, ...rig.posted];
+      });
+      await act(async () => {
+        void rig.client.refetchQueries({ queryKey: ["comments", KEY] });
+      });
+      await tick(200, 10);
+      rig.posted.push(postedComment);
+      await commentsEvent(rig);
+    },
+  };
+}
+
 const WAYS = {
   mount: {
     words: "a new surface mounting",
@@ -5479,6 +5504,8 @@ const WAYS = {
   ),
   marginSendPastDeadlineAway: MARGIN_SEND_PAST_DEADLINE_AWAY,
   eventSoonAfterCommentsRead: EVENT_SOON_AFTER_COMMENTS_READ,
+  eventWhileCommentsOut600: eventWhileCommentsOut(600),
+  eventWhileCommentsOut1500: eventWhileCommentsOut(1_500),
 } satisfies Record<string, RuleWay>;
 
 /** How many reads of a query a way starts: a count, or the least and the most. */
@@ -6251,6 +6278,10 @@ const READ_RULES: readonly ReadRule[] = [
   // One event, read once.
   { read: "tree", state: "answered", observed: true, way: "eventSoonAfterCommentsRead", now: 1 },
   { read: "spec", state: "answered", observed: true, way: "eventSoonAfterCommentsRead", now: 1 },
+  // One event, read once, while a read of the comments is out as it lands.
+  { read: "tree", state: "answered", observed: true, way: "eventWhileCommentsOut600", now: 1 },
+  { read: "spec", state: "answered", observed: true, way: "eventWhileCommentsOut600", now: 1 },
+  { read: "tree", state: "answered", observed: true, way: "eventWhileCommentsOut1500", now: 1 },
 ];
 
 describe("the rule for when a read of the tree or of a view starts", () => {
