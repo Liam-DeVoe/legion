@@ -21,7 +21,7 @@ func TestABoardEntrysRatesAreTheGrowthOfTheFactsItCarries(t *testing.T) {
 	}
 	rates := growth.Rates()
 	wantPhase := map[string]float64{"implementing": 1}
-	if rates.WorkHours != 1 || rates.SlotHours != 2 || rates.WorkLastAt != 1 || !maps.Equal(rates.PhaseHours, wantPhase) || !rates.Grows() {
+	if rates.WorkHours != 1 || rates.SlotHours != 2 || rates.WorkLastAt != 1 || !maps.Equal(rates.HoursByPhase, wantPhase) || !rates.Grows() {
 		t.Errorf("%v reads as %+v, grows %t; want work hours 1, slot hours 2, work_last_at 1 and the phase hours %v, which grow",
 			growth, rates, rates.Grows(), wantPhase)
 	}
@@ -40,7 +40,7 @@ func TestABoardEntrysRatesAreTheGrowthOfTheFactsItCarries(t *testing.T) {
 		},
 	} {
 		rates := still.Rates()
-		if rates.Grows() || rates.WorkHours != 0 || rates.SlotHours != 0 || rates.WorkLastAt != 0 || rates.PhaseHours != nil {
+		if rates.Grows() || rates.WorkHours != 0 || rates.SlotHours != 0 || rates.WorkLastAt != 0 || rates.HoursByPhase != nil {
 			t.Errorf("%s, %v, reads as %+v, grows %t; want no rate at all", name, still, rates, rates.Grows())
 		}
 	}

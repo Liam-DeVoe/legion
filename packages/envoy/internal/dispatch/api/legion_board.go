@@ -152,8 +152,8 @@ type legionBoardFacts struct {
 // field names: hours an hour for the work time, the slot hours and the hours of each column (a
 // column whose hours stand still left out), and for the last moment of measured work how fast it
 // moves with the clock, 1 while a bar is still open and 0 where it stands. It is
-// metrics.GrowthRates field by field, and an entry carries one only where a rate is not 0
-// (legionBoardGrowthOf).
+// metrics.GrowthRates with JSON names, converted from it, and an entry carries one only where a
+// rate is not 0 (legionBoardGrowthOf).
 type legionBoardGrowth struct {
 	HoursByPhase map[string]float64 `json:"hours_by_phase"`
 	WorkHours    float64            `json:"work_hours"`
@@ -170,15 +170,12 @@ func legionBoardGrowthOf(row legionfacts.Row) (*time.Time, *legionBoardGrowth) {
 	if !rates.Grows() {
 		return nil, nil
 	}
-	asOf := row.AsOf.UTC()
-	hours := rates.PhaseHours
-	if hours == nil {
+	growth := legionBoardGrowth(rates)
+	if growth.HoursByPhase == nil {
 		// {} rather than null, as the entry's own hours by column, so a page reads one shape.
-		hours = map[string]float64{}
+		growth.HoursByPhase = map[string]float64{}
 	}
-	return &asOf, &legionBoardGrowth{
-		HoursByPhase: hours, WorkHours: rates.WorkHours, SlotHours: rates.SlotHours, WorkLastAt: rates.WorkLastAt,
-	}
+	return legionFactTime(&row.AsOf), &growth
 }
 
 // legionBoardHeader is what the view's header shows: the slots in use against the cap, the live

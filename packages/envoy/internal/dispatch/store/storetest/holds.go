@@ -55,9 +55,8 @@ func SampleAdvisoryHolds(t testing.TB, pool *store.Pool, key1, key2 int32) (stop
 	}
 	// pg_locks and pg_stat_activity are two views read at slightly different moments, so a sample
 	// can find the lock still granted to a backend whose activity already shows no transaction
-	// (xact_start null) once its commit has let the lock go: that row is no hold, and the hold it
-	// ended was read by the samples before it. Kept, it scanned -infinity into a time.Time, which
-	// pgx refuses, and failed the reading.
+	// once its commit has let the lock go. That row's xact_start is null, which pgx cannot scan
+	// into a time.Time, and it is no hold: the hold it ended was read by the samples before it.
 	query := fmt.Sprintf(`
 		select l.pid, a.xact_start, coalesce(a.query, '')
 		from pg_locks l join pg_stat_activity a on a.pid = l.pid

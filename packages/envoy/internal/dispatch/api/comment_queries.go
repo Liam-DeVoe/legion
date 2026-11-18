@@ -68,13 +68,13 @@ func (s *server) listComments(w http.ResponseWriter, r *http.Request) {
 // name is the owner as the request spells it: the key the kept answer is filed under beside its
 // ETag, and the subject the display tree read is logged against.
 func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner owner, artifactFilter, name string) {
-	watermark, lastSeq, createdAt, ownerHeld, err := s.commentListWatermark(r.Context(), owner)
+	basis, err := s.commentListWatermark(r.Context(), owner)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	trees := wantsDisplayTrees(r)
-	etag := s.commentListETag(owner, artifactFilter, createdAt, watermark, lastSeq, trees)
+	etag := s.commentListETag(owner, artifactFilter, basis, trees)
 	if answerNotModified(w, r, etag) {
 		return
 	}
@@ -95,28 +95,34 @@ func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.writeListAnswer(w, key, encoded, ownerHeld)
+	s.writeListAnswer(w, key, encoded, basis.ownerHeld)
 }
 
-// commentListWatermark is what a comment list's validator is built on, read in one statement with
-// whether the owner holding it is there at all: the list's own watermark, the newest event
-// sequence of its owner and, for an issue, the issue's created_at, which tells it from every other
-// issue to hold its key. Each counter reads 0 and the stamp the zero time where no row answers -
-// an owner nothing has written carries no counter, a document reads no stamp, and a key no issue
-// holds answers the empty list rather than a refusal, as this route has always done - so a list
-// that has never been written and one whose owner does not exist are one case in the answer, as
-// they have always been. They are two cases for the server's own keeping: the empty list of an
-// owner no row holds is kept under no key, since that key is the path the caller spelled
-// (writeListAnswer).
-func (s *server) commentListWatermark(ctx context.Context, owner owner) (int64, int64, time.Time, bool, error) {
+// commentListBasis is what a comment list's validator is built on (commentListETag), with whether
+// a row holds the list's owner at all.
+type commentListBasis struct {
+	watermark int64     // the list's own counter, which every write the list shows raises
+	lastSeq   int64     // the newest event sequence of the list's owner
+	createdAt time.Time // an issue's, which tells it from every other issue to hold its key
+	ownerHeld bool
+}
+
+// commentListWatermark reads a comment list's basis in one statement. Each counter reads 0 and
+// the stamp the zero time where no row answers - an owner nothing has written carries no counter,
+// a document has no stamp, and a key no issue holds answers the empty list rather than a refusal,
+// as this route has always done - so a list never written and one whose owner does not exist are
+// one case in the answer. They are two for the server's own keeping: the empty list of an owner no
+// row holds is kept under no key, since that key is the path the caller spelled
+// (writeListAnswer). The issue's row is read once, joined to a one-row table so that a key no
+// issue holds still answers a row.
+func (s *server) commentListWatermark(ctx context.Context, owner owner) (commentListBasis, error) {
 	var query, value string
 	switch {
 	case owner.IssueKey != nil:
 		query, value = `
 			select coalesce((select seq from comment_watermarks where issue_key = $1), 0),
-			       coalesce((select last_seq from issues where key = $1), 0),
-			       (select created_at from issues where key = $1),
-			       exists(select 1 from issues where key = $1)
+			       coalesce(i.last_seq, 0), i.created_at, i.key is not null
+			from (values (1)) as one(x) left join issues i on i.key = $1
 		`, *owner.IssueKey
 	case owner.ArtifactID != nil:
 		query, value = `
@@ -126,33 +132,27 @@ func (s *server) commentListWatermark(ctx context.Context, owner owner) (int64, 
 			       exists(select 1 from artifacts where id = $1)
 		`, *owner.ArtifactID
 	default:
-		return 0, 0, time.Time{}, false, errorf(http.StatusBadRequest, "OWNER_INVALID", "owner requires exactly one issue or artifact")
+		return commentListBasis{}, errorf(http.StatusBadRequest, "OWNER_INVALID", "owner requires exactly one issue or artifact")
 	}
-	var watermark, lastSeq int64
+	var basis commentListBasis
 	var createdAt *time.Time
-	var ownerHeld bool
-	if err := s.deps.Store.Pool.QueryRow(ctx, query, value).Scan(&watermark, &lastSeq, &createdAt, &ownerHeld); err != nil {
-		return 0, 0, time.Time{}, false, fmt.Errorf("read the comment list's watermark: %w", err)
+	if err := s.deps.Store.Pool.QueryRow(ctx, query, value).Scan(&basis.watermark, &basis.lastSeq, &createdAt, &basis.ownerHeld); err != nil {
+		return commentListBasis{}, fmt.Errorf("read the comment list's watermark: %w", err)
 	}
-	if createdAt == nil {
-		return watermark, lastSeq, time.Time{}, ownerHeld, nil
-	}
-	return watermark, lastSeq, *createdAt, ownerHeld, nil
+	basis.createdAt = timeOrZero(createdAt)
+	return basis, nil
 }
 
-// commentListETag is a comment list answer's validator: the list it is of, the watermark every
-// write the list shows raises, the owner's event sequence and, for an issue, its created_at,
-// closed with the lines both lists' ETags carry (listETag). It is referencesETag's shape - one
-// line per part, then the hash of them - and, unlike the feed's, it names its owner, so two lists
-// standing at one count never share a validator. An issue's key alone does not name it, since a
-// new issue takes the key of one gone and stands at the counts that one stood at
-// (answerCommentList), so the stamp is written beside the key as eventFeedETag writes it. A
-// document's id is a uuid that never comes back and an owner no row holds has no stamp, so both
-// hash the zero time.
-func (s *server) commentListETag(owner owner, artifactFilter string, createdAt time.Time, watermark, lastSeq int64, trees bool) string {
+// commentListETag is a comment list answer's validator: the list it is of and its basis
+// (commentListBasis), closed with the lines both lists' ETags carry (listETag). It is
+// referencesETag's shape - one line per part, then the hash of them - and, unlike the feed's, it
+// names its owner, so two lists standing at one count never share a validator. An issue's key
+// alone does not name it, since a new issue takes the key of one gone (answerCommentList), so its
+// created_at is written beside the key as eventFeedETag writes it.
+func (s *server) commentListETag(owner owner, artifactFilter string, basis commentListBasis, trees bool) string {
 	hash := sha256.New()
 	_, _ = fmt.Fprintf(hash, "issue=%s\ncreated=%d\nartifact=%s\nfilter=%s\nwatermark=%d\nlast_seq=%d\n",
-		deref(owner.IssueKey), createdAt.UnixMicro(), deref(owner.ArtifactID), artifactFilter, watermark, lastSeq)
+		deref(owner.IssueKey), basis.createdAt.UnixMicro(), deref(owner.ArtifactID), artifactFilter, basis.watermark, basis.lastSeq)
 	return s.listETag(hash, trees)
 }
 
