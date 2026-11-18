@@ -242,13 +242,16 @@ type seedWrite struct {
 // catalogue, in one statement and in the byte order of their ids (lockEvals), the order the zero
 // fill takes several evals' locks in, before it reads what the project holds, so a second seed of
 // the project, a register write, a readings write and the fill of one of those evals each wait for
-// it and then read what it wrote, and none of them waits for it in a cycle. It then reads the
-// newest version of each eval, the version the seed last wrote, the current series and the series
-// as the seed last wrote them, the first version of an eval it takes over, and the blocks of
-// `evals-md`; writes the missing sections and the methods it takes over in one write of the
-// document; and writes the versions, as one batch of statements sent in one round trip and run in
-// the order it was queued: a project's first seed writes 20 versions and 95 of series, which one
-// statement each would make 115 round trips.
+// it and then read what it wrote, and none of them waits for it in a cycle. It then queues behind
+// the project's other registry writes of `evals-md` (lockDocumentWrites), as each of those takes
+// that lock after its eval locks, and reads the newest version of each eval, the version the seed
+// last wrote, the current series and the series as the seed last wrote them, the first version of
+// an eval it takes over, and the blocks of `evals-md`, a read that takes the document's owner row
+// (docs' joinRead) before the document's write takes its writer slot (ApplyOps); writes the
+// missing sections and the methods it takes over in one write of the document; and writes the
+// versions, as one batch of statements sent in one round trip and run in the order it was queued:
+// a project's first seed writes 20 versions and 95 of series, which one statement each would make
+// 115 round trips.
 func (s *Store) ensure(ctx context.Context, w *writeTx) (Seeded, error) {
 	ids := make([]string, len(catalogue))
 	for i, entry := range catalogue {
@@ -256,6 +259,9 @@ func (s *Store) ensure(ctx context.Context, w *writeTx) (Seeded, error) {
 	}
 	if err := lockEvals(ctx, w.Tx, ids); err != nil {
 		return Seeded{}, fmt.Errorf("lock the seeded evals of %s: %w", w.project, err)
+	}
+	if err := lockDocumentWrites(ctx, w.Tx, w.project); err != nil {
+		return Seeded{}, err
 	}
 	newest, err := readDefinitions(ctx, w.Tx, `
 		select `+definitionColumns+` from evals_current where project_key = $1 and eval_id = any($2)
@@ -354,9 +360,6 @@ func (s *Store) ensure(ctx context.Context, w *writeTx) (Seeded, error) {
 			return Seeded{}, err
 		}
 	case len(sections) > 0 || len(replaced) > 0:
-		if err := lockDocumentOwner(ctx, w, document); err != nil {
-			return Seeded{}, err
-		}
 		ops := replaced
 		if len(sections) > 0 {
 			ops = append(ops, model.EditOp{Op: "insert", After: "end", Markdown: strings.Join(sections, "\n")})

@@ -1405,6 +1405,40 @@ func (s *Service) JoinWrite(ctx context.Context, artifactID string) error {
 	return err
 }
 
+// WarmRoom loads the room of artifactID where this process holds none, for a caller that is about
+// to write the document in a transaction and has taken none of the document's locks yet: the
+// registry, before a write of a project's `evals-md` (evals.Store's readyDocumentWrite). The
+// write's read of the document, made under the owner row and the writer slot it takes first
+// (joinLiveWrite), then clones the resident room (warmFork) rather than loading and decoding the
+// stored document while it holds them (coldFork). It takes no lock of the document's and waits
+// for no writer, so it adds no lock to the order the document's writers take theirs in
+// (liveWrite): its check that the document's issue is open reads through the transaction ctx is
+// joined to (queryFrom), a read that takes no lock, since a caller inside a transaction takes no
+// second connection of the shared pool (store's ErrNestedAcquire); and the load reads the store on
+// the rooms' own pool (onLoadDocument), as a version's capture loads its room
+// (captureLiveTextAndAuthors). The room it loads is resident as any room a read loads is, until it
+// has been idle for roomIdleTimeout; a write that comes after it has gone forks from the store, as
+// one with no room always has.
+//
+// A load that fails fails the room (servicePersistenceAdapter.LoadDoc, onLoadDocument), as the
+// write's own read of a document no room holds would have failed it (coldFork), and WarmRoom
+// answers what that read answers: a stored history that does not decode is ErrDocumentUnloadable,
+// which a rebuild repairs, and any other failure of the load's read of the store is
+// ErrServiceUnavailable. A refusal of the room's admission (allowInject: a document shutting down,
+// being rebuilt, or whose room has failed) is answered as the read meets it (readFork).
+func (s *Service) WarmRoom(ctx context.Context, artifactID string) error {
+	err := s.warmLiveDocument(ctx, artifactID)
+	switch {
+	case err == nil, errors.Is(err, websocket.ErrInjectRefused), errors.Is(err, ErrServiceUnavailable),
+		errors.Is(err, ErrDocumentUnloadable), errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return err
+	case errors.Is(err, crdt.ErrInvalidUpdate), errors.Is(err, ErrDocumentTooLarge):
+		return fmt.Errorf("%w: decode live document: %w", ErrDocumentUnloadable, err)
+	default:
+		return fmt.Errorf("%w: %w", ErrServiceUnavailable, err)
+	}
+}
+
 // SnapshotVersion returns the current immutable version, adding an unnamed version only when the
 // live content has changed since the previous one. The version a comment's anchor is pinned to
 // under WithCommentMarks is taken on a closed issue's document too.

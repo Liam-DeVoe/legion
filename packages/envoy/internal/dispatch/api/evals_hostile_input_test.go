@@ -1,16 +1,20 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // The tester's rows for INFRA-2916: inputs a careless or hostile agent can send to the eval
@@ -291,6 +295,77 @@ func TestAMinNPastWhatTheStoreHoldsIsRefusedNamingItsField(t *testing.T) {
 		case !eval.ranked && (held.Code != http.StatusBadRequest || refusal.Code != evals.CodeFieldInvalid || refusal.Field != "series[0].min_n" || versions() != before):
 			t.Errorf("%s's series %s with min_n 2147483647: status %d, body %.300s, versions %d to %d; want 400 %s naming series[0].min_n and no version",
 				eval.slug, eval.series, held.Code, held.Body.String(), before, versions(), evals.CodeFieldInvalid)
+		}
+	}
+}
+
+// TestAFirstRegistrationIntoAnUnloadableEvalsMdIsRefusedAsTheDocumentIs: a project's evals-md whose
+// stored history does not decode (every stored update replaced by bytes no document takes, with no
+// room holding it and no settlement owed, makeDocumentUnloadable), and a first registration of an
+// eval into it: by a reading, and by a register write, each into a project of its own. Each is
+// refused 409 DOCUMENT_UNLOADABLE, what a write that meets that history answers (handler_errors.go,
+// docs.ErrDocumentUnloadable), stores no version, and leaves the document's room as a write's own
+// read of the history leaves it: failed once, and no room resident.
+func TestAFirstRegistrationIntoAnUnloadableEvalsMdIsRefusedAsTheDocumentIs(t *testing.T) {
+	database := storetest.Open(t)
+	// Settlement is an hour away, so no background settlement loads the document while the test
+	// reads its room; the test hooks count the room's failures.
+	documents := docs.New(docs.Deps{Store: database, Identity: headerIdentity(database), Settle: time.Hour, TestHooks: true})
+	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
+	seedPeople(t, database, "alice", "bob")
+	deps, err := NewDeps(DepsInput{
+		Store: database, Identity: headerIdentity(database), AgentTokens: sharedAgentTokens(t, "agent-token"),
+		Docs: documents, ServerURL: "https://dispatch.example", Build: testServerBuild,
+	})
+	if err != nil {
+		t.Fatalf("new API dependencies: %v", err)
+	}
+	mux := http.NewServeMux()
+	t.Cleanup(Register(mux, t.Context(), deps).Wait)
+	fixture := repairFixture{handler: mux, database: database, documents: documents, deps: deps}
+	for _, write := range []struct {
+		project, slug string
+		send          func() *httptest.ResponseRecorder
+	}{
+		{"EVR", "cache-hits", func() *httptest.ResponseRecorder {
+			return evalRequest(t, mux, http.MethodPost, "/api/v1/projects/EVR/evals/cache-hits/readings",
+				map[string]any{"readings": []any{reading("share", 0.8, time.Now().UTC())}}, "unloadable-reading")
+		}},
+		{"EVG", "review-time", func() *httptest.ResponseRecorder {
+			return evalRequest(t, mux, http.MethodPost, "/api/v1/projects/EVG/evals",
+				map[string]any{"slug": "review-time", "name": "Review time"}, "unloadable-register")
+		}},
+	} {
+		createTestProject(t, mux, write.project)
+		var document string
+		if err := database.Pool.QueryRow(t.Context(), `
+			select id::text from artifacts where project_key = $1 and issue_key is null and slug = $2
+		`, write.project, evals.DocumentSlug).Scan(&document); err != nil {
+			t.Fatalf("find %s's %s: %v", write.project, evals.DocumentSlug, err)
+		}
+		if corrupted := makeDocumentUnloadable(t, fixture, document); corrupted == 0 {
+			t.Fatalf("%s's %s holds no stored update to corrupt", write.project, evals.DocumentSlug)
+		}
+		response := write.send()
+		refusal := decodeBody[evalRefusal](t, response)
+		counters, err := documents.RoomCounters(document)
+		if err != nil {
+			t.Fatalf("read the room counters of %s's %s: %v", write.project, evals.DocumentSlug, err)
+		}
+		resident := slices.Contains(documents.ResidentRooms(), document)
+		var versions int
+		if err := database.Pool.QueryRow(t.Context(), `select count(*) from eval_versions where eval_id = $1`,
+			evals.EvalID(write.project, write.slug)).Scan(&versions); err != nil {
+			t.Fatalf("count the versions of %s: %v", write.slug, err)
+		}
+		t.Logf("%s's first registration into an unloadable %s: status %d, body %.300s; room failures %d, resident %t, versions %d",
+			write.slug, evals.DocumentSlug, response.Code, response.Body.String(), counters.RoomFailures, resident, versions)
+		if response.Code != http.StatusConflict || refusal.Code != codeDocumentUnloadable {
+			t.Errorf("%s: status %d, body %.300s; want 409 %s", write.slug, response.Code, response.Body.String(), codeDocumentUnloadable)
+		}
+		if counters.RoomFailures != 1 || resident || versions != 0 {
+			t.Errorf("%s: the room failed %d times, resident %t, and the eval holds %d versions; want one failure, no resident room and no version",
+				write.slug, counters.RoomFailures, resident, versions)
 		}
 	}
 }

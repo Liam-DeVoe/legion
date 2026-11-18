@@ -255,7 +255,9 @@ type Registered struct {
 // field of its computation is refused, and stores nothing (computationField, R5), and so is a
 // write of a min_n no read ranks by (rankedByMinN). A version that lists or unlists a logged
 // eval's series lists or unlists that series' stored day rows in the same transaction
-// (relistDays).
+// (relistDays). A write that may write the eval's section, one carrying doc_text or the first of
+// an eval, queues behind the project's other registry writes of `evals-md` before it stores
+// anything (readyDocumentWrite), and writes the section last, after its versions (writeMethod).
 func (s *Store) Register(ctx context.Context, change Registration) (Registered, error) {
 	if err := validateRegistration(change); err != nil {
 		return Registered{}, err
@@ -295,6 +297,14 @@ func (s *Store) Register(ctx context.Context, change Registration) (Registered, 
 		}
 		change.applyTo(&next, w.now)
 		next.WrittenVia, next.WrittenBy = ViaRegister, change.Caller.Recorded()
+		if change.DocText.Set || (!found && next.DocBlock == "") {
+			if err := s.readyDocumentWrite(ctx, w); err != nil {
+				return err
+			}
+		}
+		// section writes the method the new version's doc_block names, once the versions are
+		// stored: nil where the write leaves the eval's section as it is.
+		var section func() error
 		switch {
 		case change.DocText.Set:
 			held, err := s.holdsMethod(ctx, w, current.DocBlock, change.DocText.Value)
@@ -305,14 +315,14 @@ func (s *Store) Register(ctx context.Context, change Registration) (Registered, 
 			// definition stand as they are.
 			if !held {
 				next.DocBlock = uuid.NewString()
-				if err := s.writeMethod(ctx, w, next.Slug, current.DocBlock, next.DocBlock, change.DocText.Value, change.Caller); err != nil {
-					return err
+				section = func() error {
+					return s.writeMethod(ctx, w, next.Slug, current.DocBlock, next.DocBlock, change.DocText.Value, change.Caller)
 				}
 			}
 		case !found && next.DocBlock == "":
 			next.DocBlock = uuid.NewString()
-			if err := s.writeMethod(ctx, w, next.Slug, "", next.DocBlock, registrationSentence(ViaRegister, change.Caller, w.now), RegistryActor); err != nil {
-				return err
+			section = func() error {
+				return s.writeMethod(ctx, w, next.Slug, "", next.DocBlock, registrationSentence(ViaRegister, change.Caller, w.now), RegistryActor)
 			}
 		}
 		answer.Definition = current
@@ -350,6 +360,9 @@ func (s *Store) Register(ctx context.Context, change Registration) (Registered, 
 			series[stored.Series], answer.Wrote = stored, true
 		}
 		answer.Series = sortedSeries(series)
+		if section != nil {
+			return section()
+		}
 		return nil
 	})
 	if err != nil {
