@@ -140,7 +140,11 @@ request() {
   local -a auth data=()
   case "$1" in
     person:*) auth=(-b "$work/jar.${1#person:}" -H "Origin: $origin") ;;
-    token:*) auth=(-H "Authorization: Bearer ${1#token:}") ;;
+    token:*)
+      # From a file, as $work/auth is: a header on the command line is read by every process.
+      printf 'Authorization: Bearer %s\n' "${1#token:}" >"$work/auth.token"
+      auth=(-H "@$work/auth.token")
+      ;;
     *) auth=(-H "@$work/auth") ;;
   esac
   [[ $# -lt 4 ]] || data=(-H 'Content-Type: application/json' --data-binary "$4")

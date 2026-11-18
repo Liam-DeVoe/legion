@@ -467,7 +467,11 @@ read_production_series() {
   production_series=0
   while :; do
     local -a paging=()
-    [[ -z "$page" ]] || paging=(--data-urlencode "pageToken=$page")
+    if [[ -n "$page" ]]; then
+      # From a file: curl reads name@file and encodes it, so no command line carries the token.
+      printf '%s' "$page" >"$work/page-token"
+      paging=(--data-urlencode "pageToken@$work/page-token")
+    fi
     status="$(curl -sS -m 60 -G -H "@$work/google-auth" \
       --data-urlencode "filter=metric.type=\"$production_metric\" AND resource.labels.database_id=\"$production_database_id\"" \
       --data-urlencode "interval.startTime=$production_start" \
