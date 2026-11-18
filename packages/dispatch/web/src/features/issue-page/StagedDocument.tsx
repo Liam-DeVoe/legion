@@ -27,7 +27,6 @@ import { EDITOR_BOX_ATTRIBUTE } from "./node-caret";
  */
 export function StagedDocument({
   artifact,
-  highlightTerm,
   isClosed,
   issueKey,
   onEditorHandle,
@@ -35,11 +34,8 @@ export function StagedDocument({
   onVersionChange,
   resting = true,
   showDiff,
-  version,
 }: {
   artifact: Artifact;
-  /** What a `?q=` search term marks in the document's text. */
-  highlightTerm?: string;
   isClosed: boolean;
   issueKey: string;
   /** Takes the document's live editor as it is made, and `undefined` as it is torn down. */
@@ -48,8 +44,6 @@ export function StagedDocument({
   onVersionChange: (version: number | null) => void;
   resting?: boolean;
   showDiff: boolean;
-  /** The version the address pins, or undefined for the document as it stands. */
-  version?: number;
 }): ReactNode {
   const stage = useDocumentStage(artifact.id, STAGE_IN_PANEL);
   const user = useQuery(whoAmIQuery());
@@ -64,7 +58,7 @@ export function StagedDocument({
             <ProofDocument
               artifact={artifact}
               highlight={undefined}
-              highlightTerm={highlightTerm}
+              highlightTerm={undefined}
               isClosed={isClosed}
               key={artifact.id}
               onEditorHandle={onEditorHandle}
@@ -73,7 +67,7 @@ export function StagedDocument({
               owner={{ key: issueKey, kind: "issue" }}
               showDiff={showDiff}
               user={user.data}
-              version={version}
+              version={undefined}
             />
           )}
         </EditorBox>

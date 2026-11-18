@@ -294,6 +294,11 @@ async function primarySlug(key: string): Promise<string> {
   return primary?.slug ?? "";
 }
 
+/** The markdown the server stores for the document `artifactId`. */
+async function storedMarkdown(artifactId: string): Promise<string> {
+  return (await getArtifactText(artifactId)).markdown;
+}
+
 /** The kinds a row draws no tag for, because they are the conversation's own words rather than
  *  a kind it revealed: one tag where the node has a typed kind. */
 const UNTYPED_KINDS: readonly string[] = ["comment", "message"];
@@ -2970,7 +2975,7 @@ test("Enter puts the caret in a node, and Escape gives the row back", async ({ b
     // pressed in it removed the spec's first heading. The page is slowed here as a busy page is,
     // the CPU throttled four times, and Delete pressed at once and again, without waiting on
     // anything, until the caret has stood in the statement for three presses.
-    const before = (await getArtifactText(seeded.specArtifactId)).markdown;
+    const before = await storedMarkdown(seeded.specArtifactId);
     const words = requirementText(2);
     const at = before.indexOf(words);
     expect(at, "the stored spec does not hold the statement's words").toBeGreaterThan(-1);
@@ -2987,11 +2992,12 @@ test("Enter puts the caret in a node, and Escape gives the row back", async ({ b
       await cpu.send("Emulation.setCPUThrottlingRate", { rate: 1 });
       await cpu.detach();
     }
-    const storedSpec = async () => (await getArtifactText(seeded.specArtifactId)).markdown;
     await expect
-      .poll(storedSpec, { message: "no Delete pressed after Enter reached the statement" })
+      .poll(() => storedMarkdown(seeded.specArtifactId), {
+        message: "no Delete pressed after Enter reached the statement",
+      })
       .not.toBe(before);
-    const after = await storedSpec();
+    const after = await storedMarkdown(seeded.specArtifactId);
     const above = before.slice(0, at);
     const below = before.slice(at + words.length);
     expect(
@@ -3074,7 +3080,6 @@ test("the keys of a row's editor move its caret and edit inside the node's own b
     await expectTreeDrawn(page);
     const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
     const decisionsSlug = (await getArtifact(seeded.decisionsArtifactId)).slug;
-    const stored = async (artifactId: string) => (await getArtifactText(artifactId)).markdown;
     const statementBlock = requirementBlockId(2);
     const statement = blockNodeId(specSlug, statementBlock);
     const words = requirementText(2);
@@ -3109,7 +3114,7 @@ test("the keys of a row's editor move its caret and edit inside the node's own b
       undo: () => Promise<void>;
       words: string;
     }) => {
-      const before = await stored(edit.artifactId);
+      const before = await storedMarkdown(edit.artifactId);
       const at = before.indexOf(edit.words);
       expect(
         at > -1 && before.lastIndexOf(edit.words) === at,
@@ -3130,9 +3135,9 @@ test("the keys of a row's editor move its caret and edit inside the node's own b
       await page.keyboard.type("Y");
       await page.keyboard.press("Escape");
       await expect
-        .poll(() => stored(edit.artifactId), { message: `${edit.name}: no Y was stored` })
+        .poll(() => storedMarkdown(edit.artifactId), { message: `${edit.name}: no Y was stored` })
         .not.toBe(before);
-      const after = await stored(edit.artifactId);
+      const after = await storedMarkdown(edit.artifactId);
       expect(
         after,
         `${edit.name} then Y edited other than the block's words: ${changeIn(before, after)}`
@@ -3142,7 +3147,7 @@ test("the keys of a row's editor move its caret and edit inside the node's own b
       await edit.undo();
       await page.keyboard.press("Escape");
       await expect
-        .poll(() => stored(edit.artifactId), {
+        .poll(() => storedMarkdown(edit.artifactId), {
           message: `${edit.name}: the block was not put back`,
         })
         .toBe(before);
@@ -3254,8 +3259,7 @@ test("Tab and Shift+Tab from a row's editor pass over the controls of an ask ano
     const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
     const statementBlock = requirementBlockId(2);
     const statement = blockNodeId(specSlug, statementBlock);
-    const stored = async () => (await getArtifactText(seeded.specArtifactId)).markdown;
-    const before = await stored();
+    const before = await storedMarkdown(seeded.specArtifactId);
     const row = nodeRow(page, statement).first();
     const editable = row.locator('[contenteditable="true"]');
     const below = await standInControlBelow(page);
@@ -3319,7 +3323,10 @@ test("Tab and Shift+Tab from a row's editor pass over the controls of an ask ano
       0
     );
     await expect(row, "the row lost the focus as the editing ended").toBeFocused();
-    expect(await stored(), "Tab or Shift+Tab from the row's editor changed the spec").toBe(before);
+    expect(
+      await storedMarkdown(seeded.specArtifactId),
+      "Tab or Shift+Tab from the row's editor changed the spec"
+    ).toBe(before);
   } finally {
     await context.close();
   }

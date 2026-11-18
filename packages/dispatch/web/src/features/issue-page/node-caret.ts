@@ -58,20 +58,17 @@ export const EDITOR_BOX_ATTRIBUTE = "data-editor-box";
  * itself (`useNodeEditing.ts`), in the node's block and nowhere else.
  */
 export function caretInBlock(host: HTMLElement, blockId: string | undefined): boolean {
-  const editable = host.querySelector<HTMLElement>('[contenteditable="true"]');
-  const block = editable === null ? null : blockIn(editable, blockId);
-  if (editable === null || block === null) return false;
-  editable.focus({ preventScroll: true });
-  const [start, offset] = firstPlace(block);
-  selectInEditor(start, offset, start, offset);
+  const drawn = drawnBlock(host, blockId);
+  if (drawn === null) return false;
+  drawn.editable.focus({ preventScroll: true });
+  selectInEditor(firstPlace(drawn.block));
   return true;
 }
 
 /** Whether the editor in `host` draws `blockId`'s block, which is when a caret can go in it
  *  (`caretInBlock`). */
 export function drawsBlock(host: HTMLElement, blockId: string | undefined): boolean {
-  const editable = host.querySelector<HTMLElement>('[contenteditable="true"]');
-  return editable !== null && blockIn(editable, blockId) !== null;
+  return drawnBlock(host, blockId) !== null;
 }
 
 /**
@@ -90,13 +87,8 @@ export function drawsBlock(host: HTMLElement, blockId: string | undefined): bool
  * selection is reported the moment it is made (happy-dom), the emptied one reads as a caret out
  * of the block (`caretOutOfBlock`), which places it again, and again.
  */
-export function selectInEditor(
-  anchor: Node,
-  anchorOffset: number,
-  focus: Node,
-  focusOffset: number
-): void {
-  window.getSelection()?.setBaseAndExtent(anchor, anchorOffset, focus, focusOffset);
+export function selectInEditor(anchor: Point, focus: Point = anchor): void {
+  window.getSelection()?.setBaseAndExtent(anchor[0], anchor[1], focus[0], focus[1]);
   document.dispatchEvent(new Event("selectionchange"));
 }
 
@@ -107,13 +99,10 @@ export function selectInEditor(
  * puts no caret either.
  */
 export function caretOutOfBlock(host: HTMLElement, blockId: string | undefined): boolean {
-  const editable = host.querySelector<HTMLElement>('[contenteditable="true"]');
-  const block = editable === null ? null : blockIn(editable, blockId);
-  if (editable === null || block === null || !editable.contains(document.activeElement)) {
-    return false;
-  }
+  const drawn = drawnBlock(host, blockId);
+  if (drawn === null || !drawn.editable.contains(document.activeElement)) return false;
   const anchor = window.getSelection()?.anchorNode;
-  return anchor === null || anchor === undefined || !block.contains(anchor);
+  return anchor === null || anchor === undefined || !drawn.block.contains(anchor);
 }
 
 /** The keys `confineKey` leaves to a row's editor wherever its selection stands, and has it read
@@ -155,10 +144,10 @@ const EDITING_CHORDS: Readonly<Record<string, true>> = {
 };
 
 /** The platforms ProseMirror reads as a Mac (`prosemirror-keymap`). */
-const MAC_PLATFORM = /Mac|iP(hone|[oa]d)/;
+export const MAC_PLATFORM = /Mac|iP(hone|[oa]d)/;
 
 /** A place in the page, as each end of a selection is one. */
-type Point = readonly [node: Node, offset: number];
+export type Point = readonly [node: Node, offset: number];
 
 /**
  * Keeps a key pressed in the editor in `host` from taking its caret out of `blockId`'s block,
@@ -242,7 +231,7 @@ export function confineKey(
     return;
   }
   event.preventDefault();
-  if (taken !== null) selectInEditor(taken[0][0], taken[0][1], taken[1][0], taken[1][1]);
+  if (taken !== null) selectInEditor(...taken);
 }
 
 /** Whether the editor `view` holds the selection from `anchor` to `focus` the page shows as its
@@ -306,9 +295,9 @@ export function tabStopsFrom(
   back: boolean
 ): HTMLElement[] | null {
   const box = row.querySelector<HTMLElement>(`[${EDITOR_BOX_ATTRIBUTE}]`);
-  const editable = box?.querySelector<HTMLElement>('[contenteditable="true"]') ?? null;
-  const block = editable === null ? null : blockIn(editable, blockId);
-  if (box === null || editable === null || block === null || !box.contains(from)) return null;
+  const drawn = box === null ? null : drawnBlock(box, blockId);
+  if (box === null || drawn === null || !box.contains(from)) return null;
+  const { editable, block } = drawn;
   const bar = box.querySelector<HTMLElement>(ACTION_BAR);
   const shownBar = bar !== null && bar.style.display !== "none" ? bar : null;
   // An ancestor of `from` stands before it in the page's order, and a descendant after it.
@@ -565,31 +554,28 @@ function headingBreaks(node: ProseMirrorNode): number {
  * so the report of the move this makes, which calls this again, changes nothing.
  */
 export function selectionIntoBlock(host: HTMLElement, blockId: string | undefined): void {
-  const editable = host.querySelector<HTMLElement>('[contenteditable="true"]');
-  const block = editable === null ? null : blockIn(editable, blockId);
+  const drawn = drawnBlock(host, blockId);
   const selection = window.getSelection();
   const anchor = selection?.anchorNode ?? null;
   const focus = selection?.focusNode ?? null;
   if (
-    editable === null ||
-    block === null ||
+    drawn === null ||
     selection === null ||
     anchor === null ||
     focus === null ||
-    !editable.contains(document.activeElement) ||
-    (block.contains(anchor) && block.contains(focus))
+    !drawn.editable.contains(document.activeElement) ||
+    (drawn.block.contains(anchor) && drawn.block.contains(focus))
   ) {
     return;
   }
+  const { block } = drawn;
   const start = firstPlace(block);
   const end = lastPlace(block);
   const inside = (point: Point): Point => {
     if (block.contains(point[0])) return point;
     return compare(point, start) < 0 ? start : end;
   };
-  const [anchorNode, anchorOffset] = inside([anchor, selection.anchorOffset]);
-  const [focusNode, focusOffset] = inside([focus, selection.focusOffset]);
-  selectInEditor(anchorNode, anchorOffset, focusNode, focusOffset);
+  selectInEditor(inside([anchor, selection.anchorOffset]), inside([focus, selection.focusOffset]));
 }
 
 /**
@@ -701,6 +687,17 @@ function blockIn(root: HTMLElement, blockId: string | undefined): HTMLElement | 
   return blockId === undefined
     ? null
     : root.querySelector<HTMLElement>(`[${BLOCK_ID_ATTRIBUTE}="${CSS.escape(blockId)}"]`);
+}
+
+/** The editable of the editor in `host`, and `blockId`'s block of it, or null where it draws no
+ *  such block. */
+function drawnBlock(
+  host: HTMLElement,
+  blockId: string | undefined
+): { readonly editable: HTMLElement; readonly block: HTMLElement } | null {
+  const editable = host.querySelector<HTMLElement>('[contenteditable="true"]');
+  const block = editable === null ? null : blockIn(editable, blockId);
+  return editable === null || block === null ? null : { editable, block };
 }
 
 /** The editable of the editor in `host`, where it holds `target`: the element a key or an input
