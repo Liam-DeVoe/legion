@@ -337,16 +337,17 @@ class AuditedScript:
 # one `go test` it runs.
 AUDITED_SCRIPTS = {
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and, called with no argument, runs
-    # `go list ./internal/broker/... | grep -Ev '/internal/broker/natscallout$' | xargs go test
-    # -json -count=1 -timeout "${GO_TEST_TIMEOUT:-15m}"` once, with no -tags, -race, -run or -skip:
-    # the broker's packages less the race lane's under them (ci_job_reads.DATABASE_SKIPS_PATTERN),
-    # then counts the skips in its report. With `--report FILE` it reads a report and runs no
-    # test; a step that passes an argument is not read through here.
+    # one `go test -json -count=1 -timeout "${GO_TEST_TIMEOUT:-15m}"` over the packages `go list
+    # ./internal/broker/... | grep -Ev '/internal/broker/natscallout$'` prints, with no -tags,
+    # -race, -run or -skip: the broker's packages less the race lane's under them
+    # (ci_job_reads.DATABASE_SKIPS_PATTERN), then counts the skips in its report. The command below
+    # is that same run in the listing form this script reads. With `--report FILE` it reads a
+    # report and runs no test; a step that passes an argument is not read through here.
     "packages/envoy/scripts/database-skips.sh": AuditedScript(
         module="packages/envoy",
         command="go list ./internal/broker/... | grep -Ev '/internal/broker/natscallout$' | "
                 "xargs go test -json -count=1 -timeout 15m",
-        sha256="04de3fe6bf954c96083bd89c81ece349ce28a18c7492fd506862ffb3192368ff",
+        sha256="0cef526fe61fd24304ee2f24ccf6c0689fc6a2ef03a4757b0fce0a80167d3693",
     ),
 }
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.

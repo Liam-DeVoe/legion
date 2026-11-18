@@ -106,7 +106,10 @@ func reconnectingSession(t *testing.T, url string, s *session, giveUpOnRefusal b
 // reconnects, which load makes likely, puts the give-ups of the requests sent just before it among
 // the lines written after any moment the test picks. The nonces are exact instead: the server
 // takes one answer per request, so an admission it had stopped waiting for leaves no client
-// connected on that nonce.
+// connected on that nonce. And every client signs the nonce of each connection the server opens
+// for it, so a nonce signed after the restarted service subscribed is a request the server sent
+// that service: one it never decided is one it dropped without a word, which neither its log nor
+// its decided nonces could show.
 func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 	connections := 500
 	if raceEnabled {
@@ -169,6 +172,8 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 	// The service is off the bus for heldOff, so every client is refused for that long and must
 	// still be there when it returns. back keeps the nonce of every request it decides, and its
 	// reporter, which logs every request it drops, refuses or cannot answer, writes to backLog.
+	// backUp is taken once back's subscription has reached the server (startService), so the
+	// server sends back every request on a nonce signed after it.
 	service.Close()
 	restarted := len(server.Log())
 	server.Restart(t, testnats.CalloutConfig(keys))
@@ -178,6 +183,7 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 	backDeps := deps
 	backDeps.Log = slog.New(slog.NewTextHandler(backLog, nil))
 	back := startService(t, url, keys, backDeps, backDecided.wrap(timed))
+	backUp := time.Now()
 	testwait.WithinPolling(t, 60*time.Second, 50*time.Millisecond, "every connection admitted again", allConnected(conns))
 	closed := 0
 	for _, nc := range conns {
@@ -201,6 +207,8 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 	unheld, held := backDecided.unheld(clients)
 	require.Equal(t, connections, held, "only %d of %d clients are connected on a request back decided: the nonces do not show the connections", held, connections)
 	require.Empty(t, unheld, "the server gave up on %d requests back admitted: no client is connected on their nonces", len(unheld))
+	undecided := backDecided.undecidedSince(clients, backUp)
+	require.Empty(t, undecided, "back did not decide %d requests the server sent it after it subscribed: it dropped them without answering, refusing or counting them", len(undecided))
 
 	t.Run("control: admissions the server stopped waiting for", func(t *testing.T) {
 		// Each client's first request is decided half a second past the server's authorization
@@ -347,15 +355,19 @@ func allConnected(conns []*nats.Conn) func() bool {
 	}
 }
 
-// lastNonces keeps the nonce each client signed last. A client signs the nonce of every connection
-// the server opens for it (sessionOption), and one the server refuses is followed by another, so
-// once a client is connected its last nonce is the one its connection was admitted on.
+// lastNonces keeps the nonce each client signed last, and when each nonce was signed. A client
+// signs the nonce of every connection the server opens for it (sessionOption), and one the server
+// refuses is followed by another, so once a client is connected its last nonce is the one its
+// connection was admitted on.
 type lastNonces struct {
-	mu   sync.Mutex
-	last map[string]string
+	mu     sync.Mutex
+	last   map[string]string
+	signed map[string]time.Time
 }
 
-func newLastNonces() *lastNonces { return &lastNonces{last: map[string]string{}} }
+func newLastNonces() *lastNonces {
+	return &lastNonces{last: map[string]string{}, signed: map[string]time.Time{}}
+}
 
 // signer is what client id tells each nonce it signs.
 func (l *lastNonces) signer(id string) func(nonce string) {
@@ -363,6 +375,7 @@ func (l *lastNonces) signer(id string) func(nonce string) {
 		l.mu.Lock()
 		defer l.mu.Unlock()
 		l.last[id] = nonce
+		l.signed[nonce] = time.Now()
 	}
 }
 
@@ -412,6 +425,24 @@ func (d *decidedNonces) unheld(clients *lastNonces) (unheld []string, held int) 
 		}
 	}
 	return unheld, held
+}
+
+// undecidedSince is every nonce clients signed at or after since that the service did not decide,
+// read once the service has closed. A client signs a nonce as the server opens a connection for
+// it, before the server sends the request, so when since follows the service's subscribing, each
+// such nonce is a request the server sent the service; one the service did not decide is one it
+// dropped unanswered, or refused, or erred on.
+func (d *decidedNonces) undecidedSince(clients *lastNonces, since time.Time) (undecided []string) {
+	clients.mu.Lock()
+	defer clients.mu.Unlock()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for nonce, at := range clients.signed {
+		if !at.Before(since) && !d.nonces[nonce] {
+			undecided = append(undecided, nonce)
+		}
+	}
+	return undecided
 }
 
 // hubGaveUp is what nats-server logs, at debug level only, for an authorization request no service

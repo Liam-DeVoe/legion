@@ -405,20 +405,21 @@ BROKER_TEST_DATABASE_URL=postgres://… packages/envoy/scripts/database-skips.sh
 packages/envoy/scripts/database-skips.sh --report REPORT.json
 ```
 
-With no argument it runs `go list ./internal/broker/... | grep -Ev
-'/internal/broker/natscallout$' | xargs go test -json -count=1 -timeout 15m`: every broker
+With no argument it runs one `go test -json -count=1 -timeout 15m` over the packages `go list
+./internal/broker/... | grep -Ev '/internal/broker/natscallout$'` prints: every broker
 package but the ones the race lane runs, of which the auth service's `natscallout`, which opens no
 database, is the one today (`DATABASE_SKIPS_PATTERN` in `.github/scripts/ci_job_reads.py`, which
 refuses the script when its `grep` names anything else). It reads that report; `--report`
 reads a `go test -json` report instead and runs nothing. It prints `SKIP PACKAGE TEST` for
-each skip, then `database_skips=N` and, for a run of its own, `go_test_exit=E`. A report that
-is missing, empty or holds no broker test prints `database_skips=UNKNOWN`, names what it
-could not read, and exits 1. It exits 0 only when broker tests ran, none skipped and go test
-passed. The tests `EXPECTED_SKIPS` names in the script skip by their own design in every run,
-and are not counted. `GO_TEST_TIMEOUT` replaces the 15-minute `-timeout`, which bounds each
-package's test binary and not the run: the packages run several at a time, so one that starts
-late ends later. `ci.yaml`'s `envoy-go` job runs it as "Count the database broker suites'
-skips", with a step limit of its own (`timeout-minutes: 25`) that its time budget counts.
+each skip, then `database_skips=N` and, for a run of its own, `go_test_exit=E`, go test's own
+exit status. A report that is missing, empty or holds no broker test prints
+`database_skips=UNKNOWN`, names what it could not read, and exits 1. It exits 0 only when
+broker tests ran, none skipped and go test passed. The tests `EXPECTED_SKIPS` names in the
+script skip by their own design in every run, and are not counted. `GO_TEST_TIMEOUT` replaces
+the 15-minute `-timeout`, which bounds each package's test binary and not the run: the packages
+run several at a time, so one that starts late ends later. `ci.yaml`'s `envoy-go` job runs it
+as "Count the database broker suites' skips", with a step limit of its own (`timeout-minutes:
+25`) that its time budget counts.
 
 ## aws-moto-check.sh
 

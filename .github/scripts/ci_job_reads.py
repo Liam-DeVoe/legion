@@ -1510,12 +1510,12 @@ DATABASE_SKIPS_PATTERN = "|".join(
 
 
 def database_skips_script() -> str:
-    """database-skips.sh's path, once its one `go test` is shown to list the broker's tree less
-    exactly DATABASE_SKIPS_PATTERN, the lane's packages under it."""
-    want = f"go list ./{DATABASE_SKIPS_TREE}/... | grep -Ev '{DATABASE_SKIPS_PATTERN}' |"
+    """database-skips.sh's path, once the packages its one `go test` runs are shown to be the
+    broker's tree less exactly DATABASE_SKIPS_PATTERN, the lane's packages under it."""
+    want = f"go list ./{DATABASE_SKIPS_TREE}/... | grep -Ev '{DATABASE_SKIPS_PATTERN}'"
     text = Path(DATABASE_SKIPS_SCRIPT).read_text()
     if text.count(want) != 2:
-        raise ValueError(f"{DATABASE_SKIPS_SCRIPT} must run, and its comment show, `{want} xargs go test -json ...`: "
+        raise ValueError(f"{DATABASE_SKIPS_SCRIPT} must list its packages with, and its comment show, `{want}`: "
                          f"the broker's tree less the race lane's packages under it (DATABASE_SKIPS_PATTERN)")
     return DATABASE_SKIPS_SCRIPT
 

@@ -628,9 +628,14 @@ func TestARequestTheHubHasGivenUpOnIsDroppedWhateverTheBrokersClockReads(t *test
 			// Close waits until the released request is answered or dropped, then moves what the
 			// replica counted into the metric and has the reporter write its last line, so the read
 			// below needs no time bound however late the replica's goroutines run. Close waits for
-			// that line for drainBound at most, so the read waits for the reporter to end.
+			// that line for drainBound at most, so the read waits for the reporter to end, and fails
+			// rather than hangs if it never does.
 			service.Close()
-			<-service.reported
+			select {
+			case <-service.reported:
+			case <-time.After(2 * drainBound):
+				t.Fatalf("the reporter had not ended %s after Close, which waits for it %s at most:\n%s", 2*drainBound, drainBound, log.String())
+			}
 			require.Contains(t, scrape(t, registry), `broker_nats_callout_dropped_total{reason="hub_gave_up"} 1`,
 				"the drop was not counted under its reason:\n%s", log.String())
 			require.Contains(t, log.String(), "hub_gave_up=1", "the drop was not logged")
