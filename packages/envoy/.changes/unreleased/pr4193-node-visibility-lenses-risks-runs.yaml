@@ -20,7 +20,9 @@ body: |-
   `POST /api/v1/issues/{key}/nodes/{id}/state` moves a node's state, `GET
   /api/v1/issues/{key}/proposed` lists the proposed nodes of an issue, and
   `POST /api/v1/issues/{key}/nodes/{id}/settle` lets a person or the node's author settle a proposed
-  node. A requirement's coverage counts no proposed check or plan task.
+  node. A move of a node out of settled, or into proposed, takes the same rule: any other caller is
+  refused with `403 STATE_NOT_PERMITTED`, so the shared agent token makes neither move. A
+  requirement's coverage counts no proposed check or plan task.
   `GET /api/v1/issues/{key}/decisions` lists a decision, an ask and a reading at every state but
   gone, and each entry and each reading carries its node's `state`.
 

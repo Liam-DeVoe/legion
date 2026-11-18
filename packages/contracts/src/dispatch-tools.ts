@@ -2620,7 +2620,11 @@ export const dispatchToolSpecs = [
       "block of a document, an issue, a document, an ask, a comment or a message, any state " +
       "on a gone node, and any state on a block of an ask, a comment or a message, which the " +
       "store keeps no node of and every read answers live. Settle a proposal with dispatch " +
-      "settle. The result names the node's state before and after. " +
+      "settle. A move out of settled, and a move into proposed, take the settle's rule: a " +
+      "person makes either on any node, and an agent only on a node whose author is the " +
+      "author its credential proves; any other is refused with 403 STATE_NOT_PERMITTED, so " +
+      "the deployment's shared agent token makes neither. The result names the node's state " +
+      "before and after. " +
       `${REASONING_WRITE_RULE} ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),
