@@ -2254,18 +2254,22 @@ func keepsStartTask(held supervise.Claim, payload record.SuperviseRequest) bool 
 	return pending != nil && payload.Phase != "" && pending.StillWorked(payload.Generation, payload.Phase, held.State)
 }
 
-// issueRoles is every role whose claim issue may hold (record.IssueRoles: Legion's six and each
-// role of the deployment that ran on it), read in a transaction of its own.
-func (r *outbox) issueRoles(ctx context.Context, issue string) ([]claim.Role, error) {
-	var roles []claim.Role
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		var err error
-		roles, err = record.IssueRoles(ctx, tx, r.records, issue)
-		return err
-	}); err != nil {
-		return nil, fmt.Errorf("read the roles of %s: %w", issue, err)
+// claimsOfIssue is the machine of every claim of issue the daemon supervises, whatever its role
+// (one of Legion's six or a role the deployment defines), in token order, read from each claim's
+// view, which waits on no decision a claim has in flight and reads no store. A claim that can
+// still run a process is a supervised one, so this is every claim a start or a removal of the
+// issue's workspace waits on.
+func (r *outbox) claimsOfIssue(issue string) []*supervise.Machine {
+	var machines []*supervise.Machine
+	for _, machine := range r.supervisor.supervised() {
+		if machine.View().Claim.Issue == issue {
+			machines = append(machines, machine)
+		}
 	}
-	return roles, nil
+	slices.SortFunc(machines, func(a, b *supervise.Machine) int {
+		return strings.Compare(string(a.View().Claim.Token), string(b.View().Claim.Token))
+	})
+	return machines
 }
 
 // stopElsewhere suspends, as the daemon and keeping its session, every claim of issue that still
@@ -2283,20 +2287,13 @@ func (r *outbox) issueRoles(ctx context.Context, issue string) ([]claim.Role, er
 // (runtime/sandbox's ensureSandbox). A claim already in the issue's tree is skipped on its view,
 // which only Retree changes, so a start waits on no decision a sibling claim has in flight.
 func (r *outbox) stopElsewhere(ctx context.Context, issue record.Issue) error {
-	roles, err := r.issueRoles(ctx, issue.Key)
-	if err != nil {
-		return err
-	}
 	var running []string
-	for _, role := range roles {
-		token, err := claim.NewToken(r.project, issue.Key, role)
-		if err != nil {
-			return fmt.Errorf("derive the %s claim of %s: %w", role, issue.Key, err)
-		}
-		machine, found := r.supervisor.Machine(token)
-		if !found || machine.View().Claim.Tree == issue.Tree {
+	for _, machine := range r.claimsOfIssue(issue.Key) {
+		view := machine.View().Claim
+		if view.Tree == issue.Tree {
 			continue
 		}
+		token := view.Token
 		held := machine.Claim()
 		if held.Tree == issue.Tree || held.RunsNothing() {
 			continue
@@ -2309,7 +2306,7 @@ func (r *outbox) stopElsewhere(ctx context.Context, issue record.Issue) error {
 		}); err != nil {
 			return fmt.Errorf("read the root of tree %s, which claim %s still runs in: %w", held.Tree, token, err)
 		}
-		err = machine.Handle(ctx, supervise.RequestSuspend{Claim: token, By: supervise.SuspendedByDaemon,
+		err := machine.Handle(ctx, supervise.RequestSuspend{Claim: token, By: supervise.SuspendedByDaemon,
 			Deadline: carriedStopDeadline(oldRoot, r.now(), r.supervisor.deps.Timeouts.Stop),
 			Reason:   fmt.Sprintf("%s moved from tree %s to tree %s", issue.Key, held.Tree, issue.Tree)})
 		var refused *supervise.RefusedError
@@ -3109,19 +3106,11 @@ func (r *outbox) removeWorkspace(ctx context.Context, row record.OutboxRow, payl
 	// The workspace goes only once the close has retired every claim of the issue: a claim whose
 	// release the runtime refused still runs there, and one that is re-admitted before its close
 	// lands goes on in it. A retired claim's relaunch provisions the workspace again. The claims are
-	// those of each role the issue may hold (record.IssueRoles), a role of the deployment's among
-	// them.
-	roles, err := r.issueRoles(ctx, row.Issue)
-	if err != nil {
-		return err
-	}
-	for _, role := range roles {
-		token, err := claim.NewToken(r.project, row.Issue, role)
-		if err != nil {
-			return fmt.Errorf("derive claim for outbox row %d: %w", row.ID, err)
-		}
-		if machine, found := r.supervisor.Machine(token); found && machine.Claim().State != supervise.StateRetired {
-			return wait.Errorf("workspace removal of %s waits for the tree's close to retire claim %s (%s)", row.Issue, token, machine.Claim().State)
+	// every claim of the issue the daemon supervises (claimsOfIssue), a role of the deployment's
+	// among them.
+	for _, machine := range r.claimsOfIssue(row.Issue) {
+		if held := machine.Claim(); held.State != supervise.StateRetired {
+			return wait.Errorf("workspace removal of %s waits for the tree's close to retire claim %s (%s)", row.Issue, held.Token, held.State)
 		}
 	}
 	repo, err := issue.Repository()

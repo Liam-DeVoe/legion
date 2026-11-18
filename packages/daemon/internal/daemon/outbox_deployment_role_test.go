@@ -8,8 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -17,22 +15,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-// putCheckerRow records that the checker, a role the deployment defines, ran on issue: its
-// phases row, which a start writes and which the roles an issue may hold are read from
-// (record.IssueRoles).
-func putCheckerRow(t *testing.T, pool interface {
-	Begin(context.Context) (pgx.Tx, error)
-}, records record.Store, issue string) {
-	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-		return records.PutPhase(context.Background(), tx, record.PhaseRow{Issue: issue, Role: "checker", Claim: "checker", Entry: 1})
-	}); err != nil {
-		t.Fatalf("record the checker's row of %s: %v", issue, err)
-	}
-}
-
 // The claim of a role the deployment defines is one of the issue's claims wherever the daemon
-// walks them: a carried child whose checker still runs in its old tree waits for that claim to stop
+// walks them (claimsOfIssue, every claim of the issue it supervises): a carried child whose checker still runs in its old tree waits for that claim to stop
 // before its new tree starts (stopElsewhere), and a tmux workspace removal waits for the tree's
 // close to retire the checker's claim before it removes the workspace (removeWorkspace).
 func TestTheOldTreeAndTheWorkspaceTakeADeploymentRolesClaim(t *testing.T) {
@@ -44,7 +28,6 @@ func TestTheOldTreeAndTheWorkspaceTakeADeploymentRolesClaim(t *testing.T) {
 		child := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208",
 			Parent: &parent, Title: "child", Phase: phase.Step, Generation: 2, Status: "in_progress"}
 		putOutboxIssue(t, pool, records, child)
-		putCheckerRow(t, pool, records, child.Key)
 		sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 		checker := mustClaimToken(t, child.Key, "checker")
 		if _, _, err := sup.Create(ctx, supervise.Claim{Token: checker, Project: "legion", Tree: parent, Issue: child.Key, Role: "checker", Generation: 2,
@@ -68,7 +51,6 @@ func TestTheOldTreeAndTheWorkspaceTakeADeploymentRolesClaim(t *testing.T) {
 		issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208",
 			Title: "Workflow", Phase: phase.Done, Generation: 2, Status: "done", LingerUntil: &until}
 		putOutboxIssue(t, pool, records, issue)
-		putCheckerRow(t, pool, records, issue.Key)
 		sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 		checker := mustClaimToken(t, issue.Key, "checker")
 		if _, _, err := sup.Create(context.Background(), supervise.Claim{Token: checker, Project: "legion", Tree: issue.Tree, Issue: issue.Key, Role: "checker",
