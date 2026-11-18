@@ -142,10 +142,12 @@ function partOrder(part: string, rows: readonly string[]): readonly string[] {
 }
 
 /** The text `waitingCount` draws where something waits on alice, and null where it draws the
- *  agents' turn or nothing. */
+ *  agents' turn or nothing. Each caller reads it inside `expect.poll`, never once. */
 async function waitingOnYou(page: Page): Promise<string | null> {
   const count = waitingCount(page);
+  // Every caller polls this read, which asks again until the count settles: one answer, one try.
   if ((await count.count()) === 0) return null;
+  // The same poll reads these words again until they settle, so one answer here is one try too.
   const text = ((await count.textContent()) ?? "").replace(/\s+/g, " ").trim();
   return text.startsWith(PROPERTY_LABELS.waiting_on_you) ? text : null;
 }
@@ -357,6 +359,8 @@ async function readRowOne(
     ),
   });
   const foot = decisionsFoot(page);
+  // `readFilter` above read the view once its rows and count held still with the network quiet,
+  // so its foot is drawn by now or not at all, and one read says which.
   if ((await foot.count()) > 0) {
     await expect(foot, "the Decisions view's foot draws its control").toBeVisible();
     await foot.click();
@@ -479,10 +483,12 @@ async function readRowOne(
     "the Spec column equals the values row 1 expects"
   ).toEqual(departure.column.map(({ decision, statements }) => ({ decision, statements })));
   const review = parts.find((part) => part.part === "review")?.rows.length ?? 0;
-  expect(
-    await waitingOnYou(page),
-    "the header's count equals the open questions that wait on alice and the review part's entries"
-  ).toBe(waitingWords(asks + review));
+  await expect
+    .poll(() => waitingOnYou(page), {
+      message:
+        "the header's count equals the open questions that wait on alice and the review part's entries",
+    })
+    .toBe(waitingWords(asks + review));
 }
 
 /** Row 1 on one seed, by the name the rows fixture records it under. */
