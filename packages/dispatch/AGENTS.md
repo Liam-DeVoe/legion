@@ -1410,7 +1410,9 @@ internal word.
 The page's typeface file holds only the characters its `unicode-range` lists, so a character
 outside them is drawn in a face of the reader's machine, at that face's width: the page draws
 such a glyph as an inline `<svg>`, as `features/issue-page/StatusGlyph.tsx` draws a status's
-shape.
+shape and `IssuePriorityLine.tsx` a priority's Remove.
+`features/issue-page/shared-controls.tooltips.test.tsx` refuses a shared control that draws,
+inside `NoTooltips`, a character outside that list.
 
 ## Document editor
 

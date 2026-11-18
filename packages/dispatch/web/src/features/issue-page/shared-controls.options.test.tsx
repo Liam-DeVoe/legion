@@ -5509,6 +5509,48 @@ test("inside NoTooltips the Remove of a middle priority hands its focus to the e
   }
 });
 
+// Inside `NoTooltips` a priority's Remove draws its cross as an inline svg in its own text size
+// and colour, since the page's typeface lacks "✕", and keeps its name; it draws no text. Outside,
+// it draws "✕" as on `main`.
+test("inside NoTooltips a priority's Remove draws its cross as an inline svg and keeps its name", async () => {
+  for (const surface of ["inside", "outside"] as const) {
+    const view = draw(
+      <IssuePriorityLine
+        disabled={false}
+        issue={{
+          advances: [{ id: "rocq-lean", inherited: false }],
+          advances_revision: 1,
+          key: "CORE-1",
+        }}
+      />,
+      surface
+    );
+    try {
+      const remove = await within(view.container).findByRole("button", {
+        name: "Remove P2 Rocq and Lean speed work restarted from CORE-1",
+      });
+      const crosses = [...remove.querySelectorAll("svg")];
+      if (surface === "inside") {
+        expect(remove.textContent).toBe("");
+        expect(crosses).toHaveLength(1);
+        const [cross] = crosses;
+        if (cross === undefined) throw new Error("the Remove draws no svg");
+        expect(cross.getAttribute("aria-hidden")).toBe("true");
+        expect(cross.hasAttribute("data-remove-glyph")).toBe(true);
+        expect(classOf(cross)).toContain("size-[1em]");
+        const paths = [...cross.querySelectorAll("path")];
+        expect(paths).toHaveLength(1);
+        expect(paths[0]?.getAttribute("stroke")).toBe("currentColor");
+      } else {
+        expect(remove.textContent).toBe("✕");
+        expect(crosses).toEqual([]);
+      }
+    } finally {
+      undraw(view);
+    }
+  }
+});
+
 /** What Dispatch answers a rebuild that restored the document's latest saved version. */
 const rebuiltReport: ArtifactRebuildReport = {
   head: 1,
