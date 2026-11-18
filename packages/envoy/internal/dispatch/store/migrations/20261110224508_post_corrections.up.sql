@@ -1,9 +1,10 @@
 -- 20261110224508_post_corrections.up.sql
 --
 -- The author of a comment or of an issue message replaces its body, or deletes it, and every
--- body a replacement took the place of is kept. Three things the schema has no room for today:
+-- body a replacement took the place of is kept. Four things the schema has no room for today:
 -- a comment carries edited_at (0021) but no record of who withdrew it, a message carries
--- neither, and no table holds a body a write replaced.
+-- neither, no table holds a body a write replaced, and no version records that a delete renamed
+-- it.
 --
 -- comments.deleted_at and comments.deleted_by, and messages.edited_at, messages.deleted_at and
 -- messages.deleted_by, are plain nullable adds with no default: a catalog change that reads and
@@ -26,6 +27,15 @@
 -- (0100_delivery_changes.up.sql:21 takes it for the same reason), and the id breaks a tie
 -- within one clock reading.
 --
+-- artifact_versions.renamed_by_delete names the comment whose delete renamed the version: an
+-- accept names the version it makes after the suggestion's body, and the delete of that comment
+-- gives the version the name a suggestion with no body takes, setting this in the same update. A
+-- keyed repeat whose kept answer holds that version by its document and number is never
+-- replayed, since the name the answer holds is the deleted body's. It is a plain nullable add
+-- with no default too, so every version stored before this migration reads null, as every
+-- version no delete renamed does. It carries no foreign key: it records what a delete did to the
+-- version, which stands whatever becomes of the comment's row.
+--
 -- The two partial indexes are the two reads: GET /api/v1/comments/{id}/history and
 -- GET /api/v1/messages/{id}/history each answer one post's rows newest first, with ?before= for
 -- the page after. Each holds only the rows of its own kind, since a row carries exactly one
@@ -38,15 +48,17 @@
 -- no release before this one updates a message's body. `create or replace trigger` keeps the
 -- trigger's own lock, SHARE ROW EXCLUSIVE on messages, which blocks that table's writers for
 -- the catalogue write and no reader, and reads no row; the column adds above hold the stronger
--- ACCESS EXCLUSIVE on comments and on messages for the same transaction, each for the moment a
--- catalog row is written.
+-- ACCESS EXCLUSIVE on comments, on messages and on artifact_versions for the same transaction,
+-- each for the moment a catalog row is written.
 --
 -- The release before this one names none of the new columns and none of the new table in any
--- statement, and every statement it sends to comments and to messages goes on working, so the
--- deploy is a rolling one (cmd/dispatch/README.md, "Database migrations").
+-- statement, and every statement it sends to comments, to messages and to artifact_versions goes
+-- on working, so the deploy is a rolling one (cmd/dispatch/README.md, "Database migrations").
 alter table comments add column deleted_at timestamptz, add column deleted_by jsonb;
 
 alter table messages add column edited_at timestamptz, add column deleted_at timestamptz, add column deleted_by jsonb;
+
+alter table artifact_versions add column renamed_by_delete uuid;
 
 create table post_body_history (
     id bigint generated always as identity primary key,

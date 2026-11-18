@@ -167,23 +167,24 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 // renameAcceptedVersion renames the document version comment's accepted suggestion made to the
 // name an accept gives a suggestion with no body (acceptedVersionName), in the delete's own
 // transaction, so no read of the document's versions serves any part of the deleted body as a
-// version's name. The artifact.version event the accept appended keeps the name it carried: no
-// delete rewrites a stored event, and only the deleted comment's own events are read without its
-// body (attachPostMarks).
+// version's name, and marks it renamed by this comment's delete in the same update
+// (artifact_versions.renamed_by_delete, which answerEndedByDelete reads). The artifact.version
+// event the accept appended keeps the name it carried: no delete rewrites a stored event, and
+// only the deleted comment's own events are read without its body (attachPostMarks).
 //
-// No row links the version to the comment, so the version is found by the time the accept wrote
-// it. The accept writes the version (Docs.NamedVersion), the version's artifact.version event and
-// the comment's suggestion.accepted event in one transaction, and the version's created_at and
-// each event's take their column's default, now(), the time that transaction began; nothing
-// updates either afterwards. (The comment's own resolved_at is no such mark: a later resolve
-// moves it and a reopen clears it.) The version is therefore the named version of the anchor's
-// document whose created_at is the time of the comment's suggestion.accepted event, read within
-// the comment's owner, as loadCommentCreatedEvent reads its comment.created event. Another
-// named version of that document carries the same time only when a transaction that began in
-// the same microsecond wrote it, and the accept's own transaction writes no other: a lookup that
-// finds more than one version renames none, and one that finds none - an accept whose event or
-// version is not where this reads them - renames none either, each logged with the comment and
-// the document.
+// Until that mark no row links the version to the comment, so the version is found by the time
+// the accept wrote it. The accept writes the version (Docs.NamedVersion), the version's
+// artifact.version event and the comment's suggestion.accepted event in one transaction, and the
+// version's created_at and each event's take their column's default, now(), the time that
+// transaction began; nothing updates either afterwards. (The comment's own resolved_at is no
+// such mark: a later resolve moves it and a reopen clears it.) The version is therefore the
+// named version of the anchor's document whose created_at is the time of the comment's
+// suggestion.accepted event, read within the comment's owner, as loadCommentCreatedEvent reads
+// its comment.created event. Another named version of that document carries the same time only
+// when a transaction that began in the same microsecond wrote it, and the accept's own
+// transaction writes no other: a lookup that finds more than one version renames none, and one
+// that finds none - an accept whose event or version is not where this reads them - renames none
+// either, each logged with the comment and the document.
 func renameAcceptedVersion(ctx context.Context, tx pgx.Tx, comment model.Comment) error {
 	ownerColumn, ownerID := commentEventOwner(comment)
 	artifactID := comment.Anchor.ArtifactID
@@ -207,7 +208,7 @@ func renameAcceptedVersion(ctx context.Context, tx pgx.Tx, comment model.Comment
 		return nil
 	}
 	_, err = tx.Exec(ctx, `
-		update artifact_versions set summary = $3 where artifact_id = $1 and number = $2
-	`, artifactID, numbers[0], acceptedVersionName("", comment.Anchor.Quote, comment.Suggestion.ReplaceWith))
+		update artifact_versions set summary = $3, renamed_by_delete = $4 where artifact_id = $1 and number = $2
+	`, artifactID, numbers[0], acceptedVersionName("", comment.Anchor.Quote, comment.Suggestion.ReplaceWith), comment.ID)
 	return err
 }
