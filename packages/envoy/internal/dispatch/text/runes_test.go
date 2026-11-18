@@ -77,14 +77,41 @@ func shapeOf(value string, limit int) string {
 // character outside the BMP; and C3 A9, the two bytes of é, each of which alone is not UTF-8.
 const headRunesAlphabet = "a\xef\xbf\xbd\xff\xe7\x95\x8c\xf0\x9f\xc3\xa9"
 
-// headRunesCharacters are the characters that the bytes of the alphabet make. A seeded value is
-// built of them and of single bytes of the alphabet, so it holds runs of whole characters as well
-// as bytes that are not UTF-8.
+// headRunesCharacters are the five characters that the alphabet's comment names: a, é, 界,
+// U+FFFD and U+1F54C. The twelve bytes make 259 characters of one to four bytes; these five are
+// the ones a seeded value is built of, with single bytes of the alphabet, so it holds runs of
+// whole characters as well as bytes that are not UTF-8.
 var headRunesCharacters = []string{"a", "é", "界", "\uFFFD", "\U0001F54C"}
 
 // sink keeps each answer of an allocation row, so an answer that the cut copied lives on the heap
 // and is counted.
 var sink string
+
+// pair is a value and the limit it is cut to.
+type pair struct {
+	value string
+	limit int
+}
+
+// copiesNothing fails t when HeadRunes makes an allocation for any of pairs, each of which has an
+// answer that is, by the reference, a slice of its value. It counts all of them at once, then one
+// at a time to name the pair that copied.
+func copiesNothing(t *testing.T, pairs []pair) {
+	t.Helper()
+	if testing.AllocsPerRun(10, func() {
+		for _, p := range pairs {
+			sink = HeadRunes(p.value, p.limit)
+		}
+	}) == 0 {
+		return
+	}
+	for _, p := range pairs {
+		if allocations := testing.AllocsPerRun(10, func() { sink = HeadRunes(p.value, p.limit) }); allocations != 0 {
+			t.Fatalf("HeadRunes(%.70q, %d) made %v allocations, want a slice of the value and none (the value is %d bytes)", p.value, p.limit, allocations, len(p.value))
+		}
+	}
+	t.Fatalf("the %d pairs made allocations together and none alone", len(pairs))
+}
 
 // HeadRunes counts a rune of any script as one, and a document edit's read-back cuts its last
 // block with it. The first row compares it with headRunesReference on every value of 0 to 5 bytes
@@ -93,16 +120,28 @@ var sink string
 // what HeadRunes does: it copies the cut of a letter, U+FFFD and a letter, and it keeps as it is a
 // byte that is not UTF-8 after a U+FFFD that starts the value.
 //
-// The second row compares the two on seeded values of 6 to 64 bytes, to each limit from 0 to 70,
-// so a fault that needs a longer value fails it too, such as a guard that reads only the first six
-// runes it keeps. The seed is fixed, so a failure repeats.
+// The second row compares the two on seeded values of 6 to 64 bytes, to each limit from 0 to 70.
+// The seed is fixed, so a failure repeats. The third puts a byte that is not UTF-8 at each place
+// of a value of 2,001 characters, and cuts the value at each limit from one character before that
+// place to two after it, and at 2,000. A guard that reads only the first N runes or the first N
+// bytes of the value fails the third row for each N under 2,000; the second row fails the first
+// guard only for N up to 24, and the second for N up to 61. Both rows also want no allocation for
+// each of their pairs whose answer is, by the reference, the value's own first bytes, a value
+// returned unchanged among them, as the shape rows below want for the pairs of the first row.
+//
+// The fourth row cuts before each code point but the surrogates, after each of seven characters:
+// a letter, the same code point, and five that a rule of grapheme clusters joins with what
+// follows (an emoji that takes a skin-tone modifier, that emoji with a zero-width joiner, a
+// regional indicator, a Hangul leading consonant, and a Devanagari consonant with its virama). So
+// a count that keeps a code point with one of these seven before it fails the row, whatever the
+// code point and its length: a character is one code point, not a grapheme cluster.
 //
 // An answer that is, by the reference, the value's own first bytes is a slice of the value, and
 // HeadRunes copies nothing for it. One row for each shape of such a pair (shapeOf) cuts every
 // pair of that shape and wants no allocation, so a copy of any one pair fails its row. The last
 // rows hold values longer than five bytes, each cut to a slice with no copy. Among them, a cut
 // after characters outside the BMP fails a count of UTF-16 units, and a cut before a combining
-// mark fails a count that keeps a mark with its letter: a character is one code point.
+// mark fails a count that keeps a mark with its letter.
 func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 	const longest, limits = 5, 6
 	var values []string
@@ -139,7 +178,7 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 		}
 	})
 
-	t.Run("every seeded value of 6 to 64 bytes agrees with the reference", func(t *testing.T) {
+	t.Run("every seeded value of 6 to 64 bytes agrees with the reference, and copies nothing where its answer is a slice", func(t *testing.T) {
 		const seeded, longLimits = 20000, 70
 		for _, character := range headRunesCharacters {
 			for i := range len(character) {
@@ -150,6 +189,7 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 		}
 		random := rand.New(rand.NewPCG(1, 6))
 		differ := 0
+		var sliced []pair
 		for range seeded {
 			length := 6 + random.IntN(59)
 			built := make([]byte, 0, length+3)
@@ -163,6 +203,9 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 			value := string(built[:length])
 			for limit := 0; limit <= longLimits; limit++ {
 				got, want := HeadRunes(value, limit), headRunesReference(value, limit)
+				if strings.HasPrefix(value, want) {
+					sliced = append(sliced, pair{value, limit})
+				}
 				if got == want {
 					continue
 				}
@@ -175,12 +218,70 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 		if differ > 0 {
 			t.Errorf("%d of %d seeded pairs differ from the reference", differ, seeded*(longLimits+1))
 		}
+		copiesNothing(t, sliced)
 	})
 
-	type pair struct {
-		value string
-		limit int
-	}
+	t.Run("a byte that is not UTF-8 at each place of 2,001 characters agrees with the reference, and copies nothing where its answer is a slice", func(t *testing.T) {
+		const characters = 2001
+		differ, cuts := 0, 0
+		var sliced []pair
+		for place := range characters {
+			value := strings.Repeat("a", place) + "\xff" + strings.Repeat("a", characters-1-place)
+			around := []int{place - 1, place, place + 1, place + 2, characters - 1}
+			for i, limit := range around {
+				if limit < 0 || slices.Contains(around[:i], limit) {
+					continue
+				}
+				cuts++
+				got, want := HeadRunes(value, limit), headRunesReference(value, limit)
+				if strings.HasPrefix(value, want) {
+					sliced = append(sliced, pair{value, limit})
+				}
+				if got == want {
+					continue
+				}
+				if differ < 10 {
+					from := min(max(0, place-5), len(got), len(want))
+					t.Errorf("a byte that is not UTF-8 at character %d, cut to %d: HeadRunes kept %d bytes, %.20q... from byte %d, want %d bytes, %.20q...", place, limit, len(got), got[from:], from, len(want), want[from:])
+				}
+				differ++
+			}
+		}
+		if differ > 0 {
+			t.Errorf("%d of %d cuts differ from the reference", differ, cuts)
+		}
+		copiesNothing(t, sliced)
+	})
+
+	t.Run("a cut before each code point leaves it out, after each of seven characters", func(t *testing.T) {
+		// Six of the seven characters; the seventh is the code point itself, which the first cut
+		// of each code point puts before it.
+		befores := []string{"a", "\U0001F44D", "\U0001F44D\u200D", "\U0001F1E6", "\u1100", "\u0915\u094D"}
+		differ, cuts := 0, 0
+		cut := func(value string, limit int) {
+			cuts++
+			if got, want := HeadRunes(value, limit), headRunesReference(value, limit); got != want {
+				if differ < 10 {
+					t.Errorf("HeadRunes(%+q, %d) = %+q, want %+q", value, limit, got, want)
+				}
+				differ++
+			}
+		}
+		for r := rune(0); r <= utf8.MaxRune; r++ {
+			if !utf8.ValidRune(r) {
+				continue
+			}
+			character := string(r)
+			cut(character+character+character, 2)
+			for _, before := range befores {
+				cut(before+character+"a", utf8.RuneCountInString(before))
+			}
+		}
+		if differ > 0 {
+			t.Errorf("%d of %d cuts before a code point differ from the reference", differ, cuts)
+		}
+	})
+
 	shapes := map[string][]pair{}
 	for _, value := range values {
 		for limit := 0; limit <= limits; limit++ {
@@ -192,21 +293,7 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 	}
 	for _, shape := range slices.Sorted(maps.Keys(shapes)) {
 		pairs := shapes[shape]
-		t.Run(shape+" copies nothing", func(t *testing.T) {
-			if testing.AllocsPerRun(10, func() {
-				for _, p := range pairs {
-					sink = HeadRunes(p.value, p.limit)
-				}
-			}) == 0 {
-				return
-			}
-			for _, p := range pairs {
-				if allocations := testing.AllocsPerRun(10, func() { sink = HeadRunes(p.value, p.limit) }); allocations != 0 {
-					t.Fatalf("HeadRunes(%q, %d) made %v allocations, want a slice of the value and none", p.value, p.limit, allocations)
-				}
-			}
-			t.Fatalf("the %d pairs made allocations together and none alone", len(pairs))
-		})
+		t.Run(shape+" copies nothing", func(t *testing.T) { copiesNothing(t, pairs) })
 	}
 
 	for _, row := range []struct {
