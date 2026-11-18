@@ -216,6 +216,7 @@ func TestADecisionGoesOnceToTheRunningArchitectElseToTheController(t *testing.T)
 	}{
 		{name: "the tree's architect holds its role", architect: supervise.StateWorking, to: "LEGION-1"},
 		{name: "the child's own architect holds its role", architect: supervise.StateWorking, child: supervise.StateWorking, to: "LEGION-4"},
+		{name: "the child's own architect holds its role and the tree's is suspended", architect: supervise.StateSuspended, child: supervise.StateWorking, to: "LEGION-4"},
 		{name: "the child's own architect is suspended and the tree's holds its role", architect: supervise.StateWorking, child: supervise.StateSuspended, to: "LEGION-1"},
 		{name: "the tree's architect is suspended", architect: supervise.StateSuspended},
 		{name: "no architect of the tree is supervised"},
