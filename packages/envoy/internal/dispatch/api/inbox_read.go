@@ -487,8 +487,10 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 //     block index reconciliation tick and the backfill) takes the document's owner row, through
 //     lockArtifactOwner or events.LockOwnerRows, then the document's document_block_versions row
 //     `for no key update` (indexOwedDocument, refs.standsAtVersion, graphcensus's
-//     lockBlockDocuments), before it writes a node, a tuple or a projection row, so two passes
-//     over one document queue at the fence and the one that loses it has written nothing.
+//     lockBlockDocuments, and a document settlement's lockSettlementFence, which takes it before
+//     the asks the settlement opens are followed), before it writes a node, a tuple or a
+//     projection row, so two passes over one document queue at the fence and the one that loses
+//     it has written nothing.
 //
 // Appending a tuple locks no row of another table: graph_tuples has no foreign key and nothing
 // updates or deletes a tuple, so where the append falls in a writer's sequence moves no lock,

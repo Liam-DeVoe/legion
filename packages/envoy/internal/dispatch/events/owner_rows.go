@@ -23,7 +23,8 @@ const (
 // lockOwners keys the owner of an event - "issue:<key>", or "artifact:<id>" for a document no
 // issue owns - with the first thing read standing under it, which an error or a refusal names.
 // The erase takes the owner rows it writes under through them (grapherase's lockInStoreOrder), and
-// a backfill batch the owners of its documents (graphcensus's lockBlockDocuments).
+// a backfill batch the owners of its documents (graphcensus's lockBlockDocuments and
+// lockObjectOwners).
 type OwnerRows map[string]string
 
 // Add records the owner of what: issue when an issue owns it, and otherwise the document artifact
@@ -50,7 +51,8 @@ func (o OwnerRows) Add(issue, artifact, what string) {
 //
 // A row gone since its key was read, or a document an issue has taken since, locks nothing and is
 // no error: the caller read its owners before it locked them, and it reads again under its locks
-// what it stands under now (the erase's read, the backfill batch's heldBlockRows).
+// what it stands under now (the erase's read, the backfill batches' heldBlockRows and
+// writeObjectBatch).
 func LockOwnerRows(ctx context.Context, tx pgx.Tx, owners OwnerRows) error {
 	for _, key := range slices.Sorted(maps.Keys(owners)) {
 		if issue, ok := strings.CutPrefix(key, issueOwnerPrefix); ok {

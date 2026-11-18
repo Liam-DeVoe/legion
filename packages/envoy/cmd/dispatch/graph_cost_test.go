@@ -12,11 +12,11 @@ package main
 //
 // # The two arms, and why each has a database of its own
 //
-// One arm is this working copy's build, the other the build of the commit this branch forked
-// from (`git merge-base origin/main HEAD`, baseBuild). Each serves a database of its own and
-// migrates it at boot, so each arm runs its own code over its own schema: the older build has
-// no graph_nodes and no graph_tuples, and this build's graph_edges reads the tuple arm over
-// them. One database cannot be both schemas at once, and an
+// One arm is this working copy's build, the other the build of the commit BASELINE_SHA names
+// (baseBuild, testbaseline.Commit), which is the fork point with main for this branch. Each
+// serves a database of its own and migrates it at boot, so each arm runs its own code over its
+// own schema: the older build has no graph_nodes and no graph_tuples, and this build's
+// graph_edges reads the tuple arm over them. One database cannot be both schemas at once, and an
 // older build serving this schema would be measured reading this child's view, which is neither
 // arm. The corpus is therefore written twice, by one seeding pass issuing the same requests to
 // each arm, and both arms are measured in one run, reading by reading, so the pod's load falls
@@ -334,12 +334,18 @@ func costShapeName(shape string) string {
 
 // costBlockIndexDrained waits until the arm's block-index reconciliation has nothing owed, so
 // that no tick of its own runs inside a measured window. It is the same read
-// store_census_test.go's waitForTheBlockIndex takes, over the three queues a tick serves.
+// store_census_test.go's waitForTheBlockIndex takes: a document is owed while its version is
+// null, and on this child's arm also while it holds the backfill's own mark (store_owed_at),
+// which only this child's schema has and only its reconciliation clears.
 func costBlockIndexDrained(t *testing.T, arm *costArm, within time.Duration) {
 	t.Helper()
+	owedRead := `select count(*) from document_block_versions where version is null`
+	if arm.head {
+		owedRead += ` or store_owed_at is not null`
+	}
 	deadline := time.Now().Add(within)
 	for {
-		owed := arm.count(t, `select count(*) from document_block_versions where version is null`)
+		owed := arm.count(t, owedRead)
 		if owed == 0 {
 			return
 		}
@@ -402,14 +408,16 @@ func costHoldBlockIndex(t *testing.T, arm *costArm) func() {
 // the block index the backfill marks owed, so that the store holds a node and its tuples for
 // every projection row the seed wrote and every one of those rows names its node, which is
 // when the store's own arm of graph_edges answers them. It is what a deployment runs once the
-// new binary serves (store_census_test.go's runBackfill).
+// new binary serves (store_census_test.go's runBackfill). The mark sends every document whose
+// blocks the backfill named through this child's index pass again, which states each block's
+// parent, so the wait is the one a whole corpus takes to index rather than one tick's.
 func costRunBackfill(t *testing.T, arm *costArm) {
 	t.Helper()
 	if !arm.head {
 		return
 	}
 	runBackfill(t, arm.databaseURL)
-	costBlockIndexDrained(t, arm, 10*time.Minute)
+	costBlockIndexDrained(t, arm, 30*time.Minute)
 	nameless := arm.count(t, `
 		select (select count(*) from comments where node_kind is null)
 		     + (select count(*) from document_blocks where node_kind is null)

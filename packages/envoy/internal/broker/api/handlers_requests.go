@@ -77,7 +77,8 @@ type createRequestResponse struct {
 	// cannot name. A session reads it to learn that asking for that secret again will not help.
 	Detail *string `json:"detail"`
 	// While it is pending, its record's page on the broker, <BROKER_PUBLIC_URL>/approve/<record>,
-	// where a person signed in to the broker decides it; absent when the policy decided it at once.
+	// where a person signed in to the broker decides it; absent when the policy decided it at once,
+	// and on a broker with BROKER_SIGNIN=off, which serves no page.
 	ApproveURL string `json:"approve_url,omitempty"`
 }
 
@@ -116,6 +117,11 @@ func (s *server) createRequest(w http.ResponseWriter, r *http.Request, enrollmen
 		return
 	case errors.Is(err, policy.ErrUnknownSecret):
 		writeError(w, http.StatusBadRequest, "UNKNOWN_SECRET", err.Error())
+		return
+	case errors.Is(err, policy.ErrPendingValue):
+		// A secret `agent-secrets secret create` made and has not yet filled: not final, unlike
+		// UNKNOWN_SECRET, so the caller may ask again once the owner stores the value.
+		writeError(w, http.StatusBadRequest, "PENDING_VALUE", err.Error())
 		return
 	case writeNarrowingRefusal(w, err):
 		// Create refused the narrowing the request carries, before anybody was asked to approve
@@ -195,8 +201,8 @@ type requestStatusResponse struct {
 	// Null when the broker recorded none, a request it did not deny among them.
 	Detail *string `json:"detail"`
 	// While it is pending, its record's page on the broker, <BROKER_PUBLIC_URL>/approve/<record>,
-	// where a person signed in to the broker decides it; absent once it is no longer pending, and
-	// when the policy decided it at once.
+	// where a person signed in to the broker decides it; absent once it is no longer pending, when
+	// the policy decided it at once, and on a broker with BROKER_SIGNIN=off, which serves no page.
 	ApproveURL string `json:"approve_url,omitempty"`
 }
 
@@ -211,6 +217,21 @@ type grantValuesBody struct {
 	// proxy spends that grant's values and mints them owner-wide. It
 	// narrows this release alone: the grant's next release without it is owner-wide.
 	GitHubApp *githubNarrowing `json:"github_app"`
+	// Optional: the command this release starts, as its argument vector. The broker logs it with
+	// the grant's reason: its first 32 arguments, each cut to 256 bytes, with `[redacted]` in place
+	// of each value of 8 bytes or more that the release hands out, each string of 8 bytes or more
+	// in a stored JSON value, and each credential of a well-known shape. Any other secret in it is
+	// logged as sent. It decides nothing about the release. A broker from before this field
+	// refuses a body that holds it, as INVALID_NARROWING naming the unknown field, and releases
+	// nothing.
+	Command []string `json:"command"`
+	// Optional: the reason this call of the session gave, which can differ from the reason of the
+	// request the grant came of when the call got a live grant back. The broker logs it beside the
+	// grant's reason where the two differ, held to a request's rules: the runes a request's
+	// reason may not carry dropped and the rest cut to 400 runes. It decides nothing about the
+	// release. A broker from before this field refuses a body that holds it, as
+	// INVALID_NARROWING naming the unknown field, and releases nothing.
+	Reason string `json:"reason"`
 }
 
 // githubNarrowing is one release's narrowing of its GitHub App tokens: as the request names it,
@@ -483,7 +504,7 @@ func (s *server) grantValues(w http.ResponseWriter, r *http.Request, enrollmentI
 	if narrowing != nil {
 		applied = &githubNarrowing{Owner: narrowing.Owner, Repositories: narrowing.Repositories, ReadOnly: narrowing.ReadOnly}
 	}
-	release, err := s.deps.Machine.Values(r.Context(), id, enrollmentID, narrowing)
+	release, err := s.deps.Machine.Values(r.Context(), id, enrollmentID, narrowing, requests.ReleaseCall{Command: body.Command, Reason: body.Reason})
 	switch {
 	case errors.Is(err, requests.ErrNotYours):
 		writeError(w, http.StatusForbidden, "NOT_YOURS", err.Error())
@@ -498,7 +519,7 @@ func (s *server) grantValues(w http.ResponseWriter, r *http.Request, enrollmentI
 		writeError(w, http.StatusNotFound, "SECRET_NOT_IN_STORE", err.Error())
 		return
 	case errors.Is(err, requests.ErrMintFailed):
-		// The kind's upstream (GitHub or Google) refused or failed a mint the narrowing, if any, is
+		// The type's upstream (GitHub or Google) refused or failed a mint the narrowing, if any, is
 		// not at fault: an App with no installation, a Google login that needs a new sign-in, an
 		// upstream that could not be asked. Its message says why and never holds the stored value.
 		writeError(w, http.StatusBadGateway, "MINT_FAILED", err.Error())

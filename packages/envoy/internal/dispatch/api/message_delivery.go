@@ -1044,8 +1044,8 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// So the session that attempt names is a node of the store from this write on, as a
-		// settle's is. This child writes no message node, so the answer states the node alone
-		// and no delivered_to (recordAnsweredDelivery).
+		// settle's is. The store records no delivery of a message yet, though a message is a node,
+		// so the answer states the session's node alone and no delivered_to (recordAnsweredDelivery).
 		if err := recordAnsweredDelivery(r.Context(), tx, answeredDelivery{
 			session: attempt.SessionID, was: attempt.State,
 		}, actor, answered.CreatedAt, answered.ID); err != nil {
