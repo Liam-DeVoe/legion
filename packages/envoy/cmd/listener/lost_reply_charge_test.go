@@ -89,55 +89,69 @@ func TestATopicPublishWhoseAckTheDropLostCostsOne(t *testing.T) {
 // answers 200 naming the stored copy's event, as the route answered it before this change: the
 // route reads no duplicate verdict for it, so it publishes it through PublishWithin, which the bus
 // sends again on the new connection after the loss (sendStored), and the stream, which holds the
-// first send's copy under the message's key, answers the second as that copy's duplicate. So the
-// stream holds one copy, and the answer's event_id is that copy's. The hold withholds the first
-// send's acknowledgement, so that send reached the stream, and then drops the connection, which the
-// client reconnects through (testnats.ReplyHold.Drop): the second send is answered inside the
-// route's own budget (sendRequestBudget) once the client has reconnected, about a second after the
-// drop.
+// first send's copy under the message's id, answers the second as that copy's duplicate. So the
+// stream holds one copy, and the answer's event_id is that copy's. That holds for each id form: a
+// key the route mints for the request (publish.<id>), which names its event and is the id, and a
+// dedupe_key the caller chose that names no event (caller.<name>), whose id is the envelope's own
+// event id (bus.envelopeMsgID). The hold withholds the first send's acknowledgement, so that send
+// reached the stream, and then drops the connection, which the client reconnects through
+// (testnats.ReplyHold.Drop): the second send is answered inside the route's own budget
+// (sendRequestBudget) once the client has reconnected, about a second after the drop.
 //
-// The control is this row with the route publishing every message through PublishAckWithin, as it
-// publishes one its sender limit counts: the publish is sent once and answers 503.
+// The controls: this row with the route publishing every message through PublishAckWithin, as it
+// publishes one its sender limit counts, where the publish is sent once and answers 503; and the
+// caller-key row with envelopeMsgID giving such a key no id, where the second send stores a second
+// copy.
 func TestATopicPublishNoLimitCountsAnswersItsStoredCopyAcrossALostAck(t *testing.T) {
-	client, hold := heldListenerClient(t)
-	rig := newSenderLimitRigOn(t, client, testnats.URL(t))
-	if rig.deps.senderLimit != nil {
-		t.Fatal("the rig counts senders, want no sender limit")
-	}
-	const sender = "ses_uncounted_publish_lost"
-	topic := "notifications.team.uncounted-lost-" + id.New()
+	for _, row := range []struct {
+		name   string
+		fields map[string]any
+	}{
+		{"under the key the route mints", nil},
+		{"under a dedupe_key that names no event", map[string]any{"dedupe_key": "caller.uncounted-" + id.New()}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			client, hold := heldListenerClient(t)
+			rig := newSenderLimitRigOn(t, client, testnats.URL(t))
+			if rig.deps.senderLimit != nil {
+				t.Fatal("the rig counts senders, want no sender limit")
+			}
+			const sender = "ses_uncounted_publish_lost"
+			topic := "notifications.team.uncounted-lost-" + id.New()
 
-	dropped := dropWhenWithheld(t, hold, hold.Hold(topic))
-	answer := rig.publishFrom(t, sender, topic, nil)
-	if !<-dropped {
-		t.Fatalf("the hold withheld no acknowledgement of the publish, so no drop took it; body %s", answer.raw)
-	}
-	answer.requireStatus(t, "the uncounted publish whose acknowledgement the drop lost", http.StatusOK)
-	var published contracts.Envelope
-	if err := json.Unmarshal([]byte(answer.raw), &published); err != nil || published.EventID == "" {
-		t.Fatalf("the publish's answer %s names no event (%v)", answer.raw, err)
-	}
-	observer, err := testnats.Connect(t, testnats.URL(t)).JetStream()
-	if err != nil {
-		t.Fatalf("open the observer's JetStream context: %v", err)
-	}
-	info, err := observer.StreamInfo(bus.Stream, &natsgo.StreamInfoRequest{SubjectsFilter: topic})
-	if err != nil {
-		t.Fatalf("read what the stream holds on %s: %v", topic, err)
-	}
-	if held := info.State.Subjects[topic]; held != 1 {
-		t.Fatalf("the stream holds %d messages on %s, want the one copy of the publish sent twice", held, topic)
-	}
-	last, err := observer.GetLastMsg(bus.Stream, topic)
-	if err != nil {
-		t.Fatalf("read the stored copy on %s: %v", topic, err)
-	}
-	var stored contracts.Envelope
-	if err := json.Unmarshal(last.Data, &stored); err != nil {
-		t.Fatalf("decode the stored copy: %v", err)
-	}
-	if stored.EventID != published.EventID {
-		t.Fatalf("the 200 names event %s, and the stream's one copy is event %s", published.EventID, stored.EventID)
+			dropped := dropWhenWithheld(t, hold, hold.Hold(topic))
+			answer := rig.publishFrom(t, sender, topic, row.fields)
+			if !<-dropped {
+				t.Fatalf("the hold withheld no acknowledgement of the publish, so no drop took it; body %s", answer.raw)
+			}
+			answer.requireStatus(t, "the uncounted publish whose acknowledgement the drop lost", http.StatusOK)
+			var published contracts.Envelope
+			if err := json.Unmarshal([]byte(answer.raw), &published); err != nil || published.EventID == "" {
+				t.Fatalf("the publish's answer %s names no event (%v)", answer.raw, err)
+			}
+			observer, err := testnats.Connect(t, testnats.URL(t)).JetStream()
+			if err != nil {
+				t.Fatalf("open the observer's JetStream context: %v", err)
+			}
+			info, err := observer.StreamInfo(bus.Stream, &natsgo.StreamInfoRequest{SubjectsFilter: topic})
+			if err != nil {
+				t.Fatalf("read what the stream holds on %s: %v", topic, err)
+			}
+			if held := info.State.Subjects[topic]; held != 1 {
+				t.Fatalf("the stream holds %d messages on %s, want the one copy of the publish sent twice", held, topic)
+			}
+			last, err := observer.GetLastMsg(bus.Stream, topic)
+			if err != nil {
+				t.Fatalf("read the stored copy on %s: %v", topic, err)
+			}
+			var stored contracts.Envelope
+			if err := json.Unmarshal(last.Data, &stored); err != nil {
+				t.Fatalf("decode the stored copy: %v", err)
+			}
+			if stored.EventID != published.EventID {
+				t.Fatalf("the 200 names event %s, and the stream's one copy is event %s", published.EventID, stored.EventID)
+			}
+		})
 	}
 }
 

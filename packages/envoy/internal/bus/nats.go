@@ -1904,11 +1904,13 @@ func (c *Client) PublishWithin(ctx context.Context, item contracts.Envelope) err
 }
 
 // PublishReportingDuplicate publishes as Publish does and reports whether
-// JetStream recognised the message as one the stream already holds. That is only
-// ever possible for an envelope whose dedupe key names the upstream event
-// (contracts.DedupeKeyNamesTheUpstreamEvent), the only one published under a
-// MsgId, and only within the stream's duplicate window; a core-transport topic
-// has no acknowledgement at all and always reports false.
+// JetStream recognised the message as one the stream already holds, by the
+// envelope's message id (envelopeMsgID) and only within the stream's duplicate
+// window: for an envelope whose dedupe key names the upstream event
+// (contracts.DedupeKeyNamesTheUpstreamEvent), a copy of that event under any
+// envelope, and for any other, a copy of this very envelope, its own event id. An
+// envelope with no event id, and a core-transport topic, which has no
+// acknowledgement at all, always report false.
 //
 // True means "the stream already held this MsgId" before this call's one send: a publish under a
 // MsgId is not sent again after a connection lost or closed under it (sendStored), since a second
@@ -2000,10 +2002,11 @@ func (c *Client) PublishStoredAs(ctx context.Context, subject string, item contr
 }
 
 // publishJetStream publishes item to the notification stream within ctx's bound, and returns the
-// stream's acknowledgement (StoredAck). The MsgId, where the envelope earns one, is the dedupe key
-// and the topic together, because one upstream event can be published on several topics under one
-// key - a GitHub comment that mentions the trigger is published on its mention topic beside its
-// comment topic - and each of those must be retained. The bound publishJetStreamOn sets is the
+// stream's acknowledgement (StoredAck). Its Nats-Msg-Id is envelopeMsgID's: the dedupe key and the
+// topic together for a key that names the upstream event, because one upstream event can be
+// published on several topics under one key - a GitHub comment that mentions the trigger is
+// published on its mention topic beside its comment topic - and each of those must be retained,
+// and the envelope's own event id and the topic for any other. The bound publishJetStreamOn sets is the
 // earlier of the caller's own deadline and publishBound, since WithTimeout keeps the parent's
 // deadline when that is the earlier one; publishBound is what bounds a caller that passed none.
 // The acknowledgement wait is still taken from publishAcknowledgementClock, the seam a test uses
@@ -2030,14 +2033,31 @@ func (c *Client) PublishStoredAs(ctx context.Context, subject string, item contr
 // TestAPublishWithAnEndedContextSendsNothing pins it, so either change fails that test instead of
 // reaching the wire. What a context that ends during the acknowledgement wait leaves is a message
 // the stream may hold while the caller is answered failure; that is the acknowledgement's own
-// ambiguity, which the MsgId's duplicate window absorbs for an envelope that earns one, and which
-// the failure names (ErrUnacknowledged, sendStored).
+// ambiguity, which the MsgId's duplicate window absorbs, and which the failure names
+// (ErrUnacknowledged, sendStored).
 func (c *Client) publishJetStream(ctx context.Context, item contracts.Envelope, verdict bool) (StoredAck, error) {
-	msgID := ""
+	return c.publishJetStreamOn(ctx, item.Topic, item, envelopeMsgID(item), verdict)
+}
+
+// envelopeMsgID is the Nats-Msg-Id an envelope is stored under on its own topic (publishJetStream,
+// a publish window's PublishAsync). A dedupe key that names the upstream event
+// (contracts.DedupeKeyNamesTheUpstreamEvent) names it with the topic, so the same event arriving
+// again in another envelope is stored once. Any other key is its caller's choice, which two
+// distinct envelopes can share, so it names nothing: the envelope's own event id names it with the
+// topic instead, the role lane's rule for its forwards (cmd/listener's roleForward.msgID). Distinct
+// envelopes never share an event id, so only a second send of this very envelope repeats it - the
+// bus's own after a lost answer, or its caller's retry of the same envelope - and the stream keeps
+// one copy of it. An envelope with no event id, which no producer that validates its envelope
+// publishes (contracts.Envelope.Validate) but which the bus does not refuse, gets none, and the bus
+// sends it once (sendStored).
+func envelopeMsgID(item contracts.Envelope) string {
 	if contracts.DedupeKeyNamesTheUpstreamEvent(item) {
-		msgID = ForwardMsgID(item.DedupeKey, item.Topic)
+		return ForwardMsgID(item.DedupeKey, item.Topic)
 	}
-	return c.publishJetStreamOn(ctx, item.Topic, item, msgID, verdict)
+	if strings.TrimSpace(item.EventID) == "" {
+		return ""
+	}
+	return ForwardMsgID(item.EventID, item.Topic)
 }
 
 // publishJetStreamOn is publishJetStream to subject under Nats-Msg-Id msgID, none when it is
@@ -2046,14 +2066,14 @@ func (c *Client) publishJetStream(ctx context.Context, item contracts.Envelope, 
 // of the envelope's own topic passes item.Topic; a kept role message passes the subject it is
 // stored on (PublishStoredAck), which leaves item.Topic the role topic it was published on.
 //
-// verdict says the caller reads the acknowledgement's duplicate verdict. A publish under a message
-// id whose caller does is sent once (sendStored): a second send of one that landed is stored once
-// but answered as a duplicate of the first send's copy, which that caller would read as another
-// writer's copy - the send route hands it to Dispatch as no envelope and its sender limit charges
-// it nothing, the wake logs it as already stored. A caller that reads the copy a duplicate names,
-// as the keep does (PublishStoredAck), sends it again itself after the loss. One whose caller
-// reads no verdict is sent again here, since the stream settles all it is asked: it stores the
-// message once.
+// verdict says the caller reads the acknowledgement's duplicate verdict. A publish whose caller
+// does is sent once (sendStored): a second send of one that landed is stored once but answered as
+// a duplicate of the first send's copy, which that caller would read as another writer's copy -
+// the send route hands it to Dispatch as no envelope and its sender limit charges it nothing, the
+// wake logs it as already stored. A caller that reads the copy a duplicate names, as the keep does
+// (PublishStoredAck), sends it again itself after the loss. One whose caller reads no verdict is
+// sent again here, since the stream settles all it is asked: it stores the message once under its
+// id. One with no message id is sent once whoever its caller is (sendStored).
 func (c *Client) publishJetStreamOn(ctx context.Context, subject string, item contracts.Envelope, msgID string, verdict bool) (StoredAck, error) {
 	if err := checkSubject(subject); err != nil {
 		return StoredAck{}, err
@@ -2067,11 +2087,7 @@ func (c *Client) publishJetStreamOn(ctx context.Context, subject string, item co
 	if err := c.ensureConnWithContext(ctx); err != nil {
 		return StoredAck{}, err
 	}
-	options := []nats.PubOpt{nats.Context(ctx)}
-	if msgID != "" {
-		options = append(options, nats.MsgId(msgID))
-	}
-	return c.sendStored(ctx, subject, data, msgID != "" && verdict, options...)
+	return c.sendStored(ctx, subject, data, msgID, verdict, nats.Context(ctx))
 }
 
 // ErrUnacknowledged is wrapped by the error of a stored publish that failed and may still have put
@@ -2126,28 +2142,32 @@ func unacknowledged(err error, mayHold bool) error {
 	return fmt.Errorf("%w: %w", ErrUnacknowledged, err)
 }
 
-// sendStored publishes data to subject on the notification stream under options, and names a
-// refusal as the ErrPublishDenied, ErrTooLarge, ErrStreamFull or ErrDuplicateInProcess it is. It is
-// the one send of the stored path: its callers (publishJetStreamOn, publishStoredRaw) bound ctx,
-// connected first and pass nats.Context(ctx) among the options, so the acknowledgement wait ends
-// with that bound.
+// sendStored publishes data to subject on the notification stream under options, and under msgID
+// as its Nats-Msg-Id when that is not empty, and names a refusal as the ErrPublishDenied,
+// ErrTooLarge, ErrStreamFull or ErrDuplicateInProcess it is. It is the one send of the stored path:
+// its callers (publishJetStreamOn, publishStoredRaw) bound ctx, connected first and pass
+// nats.Context(ctx) among the options, so the acknowledgement wait ends with that bound.
 //
 // A publish whose connection was lost under it before its acknowledgement came may have been
 // stored. On a client still running that loss answers ErrConnectionLost, a close of the connection
-// among the losses (boundJetStream, closedUnder). One that is not once is sent again on the
-// connection that replaces it, within ctx (Reconnected): a publish under a message id whose caller
-// reads no verdict, which the stream stores once, and one with no precondition, which may be stored
-// twice, as a publish sent again after a closed connection always could; on a client every caller
-// of which retries a lost request itself (withLossAtOnce) it answers the loss instead. The closed
+// among the losses (boundJetStream, closedUnder). A publish under a message id whose caller reads no
+// verdict (once false) is sent again on the connection that replaces it, within ctx
+// (Reconnected), since the stream stores it once under that id; on a client every caller of which
+// retries a lost request itself (withLossAtOnce) it answers the loss instead. The closed
 // connection's own error comes back from a client that was stopped (lostOrClosed), and from the
-// JetStream context of a connection the client replaced as the send began, and is sent again on
-// the connection ensureConnWithContext serves: the replacement, or the one Drain still drains.
-// One that is once is sent once and answers the error, since a second send of a write that landed
-// answers what the first send's landing made true, not what its caller asks: a write under an
-// expected last sequence (PublishCursorAt) would be refused as the cursor having moved, and one
-// under a Nats-Msg-Id whose caller reads the duplicate verdict (publishJetStreamOn) would be
-// answered as a duplicate of its own copy. Its caller reads the state again instead and decides
-// from what is stored, or answers the loss as a request the bus did not answer.
+// JetStream context of a connection the client replaced as the send began, and such a publish is
+// sent again on the connection ensureConnWithContext serves: the replacement, or the one Drain
+// still drains.
+//
+// Every other publish is sent once and answers the error. One with no message id, whatever its
+// caller asks, since nothing would let the stream tell a second send of one that landed from a
+// second message: it would store a second copy (a raw write, publishStoredRaw, and an envelope with
+// no event id, envelopeMsgID). And one its caller asks to be sent once, since a second send of a
+// write that landed answers what the first send's landing made true, not what its caller asks: a
+// write under an expected last sequence (PublishCursorAt) would be refused as the cursor having
+// moved, and one under a Nats-Msg-Id whose caller reads the duplicate verdict (publishJetStreamOn)
+// would be answered as a duplicate of its own copy. Its caller reads the state again instead and
+// decides from what is stored, or answers the loss as a request the bus did not answer.
 //
 // A failure after a send that may have reached the stream wraps ErrUnacknowledged: ctx was live
 // as the send was made, read just before it, and what came back was no answer (sendUnanswered).
@@ -2155,7 +2175,11 @@ func unacknowledged(err error, mayHold bool) error {
 // may hold. Once one send of the call is such a send, every failure after it wraps it too, the
 // resend's and that of the reconnect before the resend, since the first send may have stored the
 // message.
-func (c *Client) sendStored(ctx context.Context, subject string, data []byte, once bool, options ...nats.PubOpt) (StoredAck, error) {
+func (c *Client) sendStored(ctx context.Context, subject string, data []byte, msgID string, once bool, options ...nats.PubOpt) (StoredAck, error) {
+	if msgID != "" {
+		options = append(options, nats.MsgId(msgID))
+	}
+	once = once || msgID == ""
 	sentAt := time.Now()
 	live := ctx.Err() == nil
 	ack, err := c.JS().Publish(subject, data, options...)
@@ -2226,10 +2250,12 @@ func (c *Client) PublishCursorAt(ctx context.Context, subject string, data []byt
 // the caller's own rather than an envelope - under precondition, the write's one precondition, or
 // none when it is nil, and returns the server's acknowledgement. It is the body of every raw write
 // of the stored path: the subject check, the acknowledgement bound, the connect and the send
-// (sendStored), which sends a write with a precondition once. Its callers name their own failures,
-// since what a refusal means is theirs: PublishCursorAt, which writes under a precondition and
-// reads a refused one as ErrCursorMoved, and SessionConsumers.recordResumeFloorAt, which writes a
-// record whose one writer keeps no sequence to write against, so the newest write stands.
+// (sendStored). A raw write carries no message id, so it is sent once, with a precondition or
+// without: a second send of one with none would store a second copy. Its callers name their own
+// failures, since what a refusal means is theirs: PublishCursorAt, which writes under a
+// precondition and reads a refused one as ErrCursorMoved, and SessionConsumers.recordResumeFloorAt,
+// which writes a record whose one writer keeps no sequence to write against, so the newest write
+// stands, and whose client answers a loss to the caller that retries it (withLossAtOnce).
 //
 // precondition is one option rather than a variadic list because each caller has exactly one or
 // none: a list would have the caller build a slice and this method append to it, where the two
@@ -2244,9 +2270,9 @@ func (c *Client) publishStoredRaw(ctx context.Context, subject string, data []by
 		return StoredAck{}, err
 	}
 	if precondition == nil {
-		return c.sendStored(ctx, subject, data, false, nats.Context(ctx))
+		return c.sendStored(ctx, subject, data, "", true, nats.Context(ctx))
 	}
-	return c.sendStored(ctx, subject, data, true, nats.Context(ctx), precondition)
+	return c.sendStored(ctx, subject, data, "", true, nats.Context(ctx), precondition)
 }
 
 // cursorMoved names the server's refusal of a publish whose expected last sequence per subject did

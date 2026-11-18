@@ -59,21 +59,26 @@ func TestARequestOnAStoppedClientAnswersConnectionClosed(t *testing.T) {
 
 // A stored write whose acknowledgement the connection's drop lost, the write itself stored, is sent
 // again on the new connection only when a second send answers its caller what the first would have
-// (sendStored). A publish under a Nats-Msg-Id whose caller reads the duplicate verdict
-// (PublishStoredAck) and a cursor write under an expected last sequence (PublishCursorAt) answer
-// ErrConnectionLost and are not sent again, so the stream holds the one copy the first send
-// stored; their callers read the state again (the cursor, roleKeepLaneCursor.confirm) or answer the
-// loss. A publish under a Nats-Msg-Id whose caller reads no verdict (PublishStoredAs) is sent again
-// and acknowledged, the stream still holding one copy, and a raw write with no precondition is
-// sent again and held twice. Each is sent again within the publish's own bound, publishBound (5 s,
-// publishJetStreamOn and publishStoredRaw cap the row's longer context to it). The hold drops the
-// connection and lets it reconnect (testnats.ReplyHold.Drop), so a write sent again would be: a cut
-// would end the publish's bound first.
+// and the stream stores it once (sendStored). A publish under a Nats-Msg-Id whose caller reads the
+// duplicate verdict (PublishStoredAck) and a cursor write under an expected last sequence
+// (PublishCursorAt) answer ErrConnectionLost and are not sent again, so the stream holds the one
+// copy the first send stored; their callers read the state again (the cursor,
+// roleKeepLaneCursor.confirm) or answer the loss. A publish under a Nats-Msg-Id whose caller reads
+// no verdict (PublishStoredAs, and PublishWithin of an envelope under a key its caller chose, whose
+// id is its event id: envelopeMsgID) is sent again and acknowledged, the stream still holding one
+// copy. A write with no message id - a raw write with no precondition, a PublishStoredAs given none,
+// and an envelope with no event id under a key its caller chose - answers ErrConnectionLost and is
+// not sent again, since a second send would be a second copy. Each is sent again within the
+// publish's own bound, publishBound (5 s, publishJetStreamOn and publishStoredRaw cap the row's
+// longer context to it). The hold drops the connection and lets it reconnect
+// (testnats.ReplyHold.Drop), so a write sent again would be: a cut would end the publish's bound
+// first.
 //
-// The control is the same rows at 7a49d38c1c, which sent every such write again: the message-id
+// The controls: the same rows at 7a49d38c1c, which sent every such write again: the message-id
 // write whose caller reads the verdict answered the stream's acknowledgement as a duplicate of its
 // own first copy, and the cursor write answered ErrCursorMoved, the stream refusing the second send
-// because the first had landed.
+// because the first had landed; and the no-id rows with sendStored sending a write with no id again,
+// and the event-id row with envelopeMsgID giving it none, each of which stores a second copy.
 func TestAStoredWriteWhoseAckTheDropLostIsSentAgainOnlyWhenASecondSendAnswersAlike(t *testing.T) {
 	for _, row := range []struct {
 		name, subject string
@@ -102,7 +107,17 @@ func TestAStoredWriteWhoseAckTheDropLostIsSentAgainOnlyWhenASecondSendAnswersAli
 		{"a raw write with no precondition", SessionResumeSubject("ses_lost_raw"), func(ctx context.Context, c *Client, subject string) error {
 			_, err := c.publishStoredRaw(ctx, subject, []byte(`{"floor":3}`), nil)
 			return err
-		}, false, 2},
+		}, true, 1},
+		{"a publish given no message id whose caller reads no verdict", contracts.AgentSubject(contracts.NoProject, "ses_lost_no_id"), func(ctx context.Context, c *Client, subject string) error {
+			item := contracts.Envelope{EventID: "lost-no-id", Topic: subject, Source: "test", DedupeKey: "lost-no-id"}
+			return c.PublishStoredAs(ctx, subject, item, "")
+		}, true, 1},
+		{"an envelope with no event id under a key its caller chose", contracts.AgentSubject(contracts.NoProject, "ses_lost_no_event"), func(ctx context.Context, c *Client, subject string) error {
+			return c.PublishWithin(ctx, contracts.Envelope{Topic: subject, Source: "agent", DedupeKey: "caller.no-event"})
+		}, true, 1},
+		{"an envelope under a key its caller chose, its id its event id", contracts.AgentSubject(contracts.NoProject, "ses_lost_event_id"), func(ctx context.Context, c *Client, subject string) error {
+			return c.PublishWithin(ctx, contracts.Envelope{EventID: "lost-event-id", Topic: subject, Source: "agent", DedupeKey: "caller.event-id"})
+		}, false, 1},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			client, hold := heldClient(t)
@@ -128,7 +143,7 @@ func TestAStoredWriteWhoseAckTheDropLostIsSentAgainOnlyWhenASecondSendAnswersAli
 			}
 			switch {
 			case row.lost && !errors.Is(err, ErrConnectionLost):
-				t.Fatalf("the write answered %v %s after the drop, want ErrConnectionLost: a write with a precondition is sent once", err, time.Since(dropped))
+				t.Fatalf("the write answered %v %s after the drop, want ErrConnectionLost: it is sent once, so a nil answer is a second send", err, time.Since(dropped))
 			case !row.lost && err != nil:
 				t.Fatalf("the write answered %v %s after the drop, want it sent again and acknowledged", err, time.Since(dropped))
 			}

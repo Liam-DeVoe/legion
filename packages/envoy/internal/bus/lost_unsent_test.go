@@ -35,7 +35,7 @@ func TestAStoredPublishItsLostConnectionKeptFromBeingSentIsNoErrUnacknowledged(t
 	ctx, cancel := context.WithTimeout(context.Background(), ownWait(t))
 	defer cancel()
 	subject := contracts.AgentSubject(contracts.NoProject, "ses_lost_unsent")
-	_, err := client.sendStored(ctx, subject, []byte(`{"unsent":true}`), true, nats.Context(ctx), nats.MsgId("lost-unsent"))
+	_, err := client.sendStored(ctx, subject, []byte(`{"unsent":true}`), "lost-unsent", true, nats.Context(ctx))
 	if !errors.Is(err, ErrConnectionLost) || errors.Is(err, ErrUnacknowledged) {
 		t.Fatalf("a publish made after its connection was lost answered %v, want ErrConnectionLost and no ErrUnacknowledged: it was never sent", err)
 	}

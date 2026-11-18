@@ -154,12 +154,11 @@ type window struct {
 	reconnects uint64
 }
 
+// PublishAsync sends item on its own topic under envelopeMsgID's Nats-Msg-Id, the one a publish of
+// it through the client carries, so the stream keeps one copy of it however often the window's
+// caller sends it again.
 func (w *window) PublishAsync(item contracts.Envelope) <-chan error {
-	msgID := ""
-	if contracts.DedupeKeyNamesTheUpstreamEvent(item) {
-		msgID = ForwardMsgID(item.DedupeKey, item.Topic)
-	}
-	return outcomeOf(w.send(item.Topic, item, msgID))
+	return outcomeOf(w.send(item.Topic, item, envelopeMsgID(item)))
 }
 
 func (w *window) PublishStoredAsync(subject string, item contracts.Envelope, msgID string) <-chan error {
