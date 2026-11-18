@@ -22,7 +22,7 @@
 //                                           rig.sh's launch asks before every agent starts, and
 //                                           starts none of a world that names one or that it
 //                                           cannot read whole
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, type Stats, statSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 
@@ -145,6 +145,22 @@ export type RunRecord = z.infer<typeof RunRecord>;
 /** The record of the run whose directory is `runDir`: beside it, `<run dir>.json`. */
 export function recordFile(runDir: string): string {
   return `${path.resolve(runDir)}.json`;
+}
+
+/** The kind of a directory entry, by its own type, a symlink never followed: what a refusal of an
+ * entry that is no run directory names it as (score.ts's `runsOf`, health's run directories). */
+export function entryKind(
+  entry: Pick<
+    Stats,
+    "isSymbolicLink" | "isFile" | "isDirectory" | "isFIFO" | "isSocket" | "isBlockDevice"
+  >
+): string {
+  if (entry.isSymbolicLink()) return "symlink";
+  if (entry.isFile()) return "file";
+  if (entry.isDirectory()) return "directory";
+  if (entry.isFIFO()) return "fifo";
+  if (entry.isSocket()) return "socket";
+  return entry.isBlockDevice() ? "block device" : "character device";
 }
 
 /** What a run is: its scenario, case, label and number, the name a person reads it by, and where

@@ -1,11 +1,13 @@
 import { beforeAll, expect, test } from "bun:test";
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
   renameSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
@@ -22,6 +24,9 @@ import { sharedRuns } from "./score";
 // Every run here is built from /checkouts/head, as its built-from records (rig.sh's cmd_profile),
 // which is where judge.ts reads the checkouts a run's agent can reach (score.ts's `checkouts`).
 const work = temporaryDirectory("skill-scenarios-judge");
+/** A work directory of its own for the row whose runs directory holds an entry that is no run, so
+ * no other row's runs sit beside it. */
+const strayWork = temporaryDirectory("skill-scenarios-judge-stray");
 
 const sessionId = "01a16640-8259-71ed-bb68-1e4927b77a01";
 const spec = (problem: string) =>
@@ -770,6 +775,31 @@ test("a second answer of a turn is refused before any judge starts, and the firs
   );
   expect(again).toEqual([]);
   expect(readFileSync(answers, "utf8")).toBe(kept);
+});
+
+// An entry beside a run that is neither a run nor its record (score.ts's `runsOf`) is no state the
+// rig writes, and judging past it would read the reach of a smaller archive than the one given:
+// `judge.ts run` names it on stderr and exits 2 before any judge starts, as `rig.sh score` does.
+// Catches: judge.ts letting the refusal through as an uncaught error (exit 1, a stack trace).
+test("a run beside an entry that is no run is not judged, and judge.ts exits 2 naming the entry", () => {
+  const other = path.join(strayWork, "runs");
+  const run = path.join(other, "spec-writing-head-46");
+  cpSync(runDir("spec-writing-head-46"), run, { recursive: true });
+  const stray = path.join(other, "stray");
+  symlinkSync(run, stray);
+  const judged = Bun.spawnSync(["bun", path.join(import.meta.dir, "judge.ts"), "run", run], {
+    env: { ...process.env, SKILL_SCENARIOS_WORK: path.dirname(other) },
+  });
+  expect({
+    code: judged.exitCode,
+    stdout: judged.stdout.toString(),
+    stderr: judged.stderr.toString(),
+  }).toEqual({
+    code: 2,
+    stdout: "",
+    stderr: `judge: ${stray} is a symlink, neither a run directory nor a run's record (<id>.json)\n`,
+  });
+  expect(existsSync(path.join(path.dirname(other), "judging"))).toBe(false);
 });
 
 // A judge directory that appears after the check, while an earlier judge of the judging runs, is

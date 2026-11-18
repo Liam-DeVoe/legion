@@ -46,6 +46,7 @@ import {
   SharedRunsFile,
   sharedRunPrompt,
 } from "./judge-prompts";
+import { Refused } from "./run-records";
 import {
   approval,
   checkouts,
@@ -356,7 +357,15 @@ if (import.meta.main) {
     await answerTurn(rest[0] ?? "", Number(rest[1]), { parallel });
   } else if (command === "run" && rest.length >= 1) {
     for (const runDir of rest) {
-      await judgeRun(runDir, { parallel });
+      try {
+        await judgeRun(runDir, { parallel });
+      } catch (error) {
+        // A refusal (an entry beside the run that is no run, an input the run did not record) is
+        // no judgment: it names the cause and exits 2, as `rig.sh health` and `rig.sh score` do.
+        if (!(error instanceof Refused)) throw error;
+        console.error(`judge: ${error.message}`);
+        process.exit(2);
+      }
       console.log(`${path.basename(path.resolve(runDir))}: judged`);
     }
   } else {

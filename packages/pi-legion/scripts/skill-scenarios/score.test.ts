@@ -10,6 +10,7 @@ import {
   renameSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -7583,22 +7584,73 @@ fixRun("threads-closed-head-9", {
  *  read in a hook, below the one that stages that world. */
 let out = "";
 let scoredExitCode: number | null = null;
+/** Every arm the runs of this file make, and how many runs it holds, scored or rig errors, as a
+ * batch runner names each with `--arm` (score.ts holds each arm to the count it is given). A
+ * fixture run added to an arm moves its count here. */
+const FIXTURE_ARMS: readonly (readonly [arm: string, runs: number])[] = [
+  ["ask-on-message:apart", 2],
+  ["ask-on-message:archived", 1],
+  ["ask-on-message:batches", 2],
+  ["ask-on-message:head", 2],
+  ["ask-on-message:shared", 2],
+  ["ask-on-message:unrecorded", 1],
+  ["askgate:facts:off", 3],
+  ["askgate:facts:on", 10],
+  ["askgate:facts:unrecorded", 1],
+  ["askgate:link:off", 1],
+  ["askgate:link:on", 9],
+  ["askgate:nochange-block:on", 2],
+  ["askgate:nochange-rebuttal:on", 3],
+  ["askgate:nochange:on", 3],
+  ["askgate:nochange:recorded", 1],
+  ["askgate:nochange:unrecorded", 1],
+  ["askgate:on", 1],
+  ["askgate:tried:on", 4],
+  ["askgate:untried:on", 2],
+  ["askgate:upload:on", 4],
+  ["brainstorm:head", 4],
+  ["measure-before-ask:head", 3],
+  ["reviewer-text-findings:defect:head", 15],
+  ["reviewer-text-findings:head", 1],
+  ["reviewer-text-findings:text-only:base", 3],
+  ["reviewer-text-findings:text-only:head", 83],
+  ["spec-rewrite:head", 1],
+  ["spec-rewrite:older", 1],
+  ["spec-writing:base", 3],
+  ["spec-writing:flagged", 2],
+  ["spec-writing:head", 106],
+  ["spec-writing:older", 1],
+  ["tester-proof:base", 2],
+  ["tester-proof:cross", 5],
+  ["tester-proof:head", 2],
+  ["tester-proof:lines", 2],
+  ["tester-proof:ran", 2],
+  ["tester-proof:rec", 4],
+  ["threads-closed:code-defect:head", 17],
+  ["threads-closed:head", 1],
+  ["threads-closed:text-fixes:base", 2],
+  ["threads-closed:text-fixes:head", 108],
+];
 // Bun's default hook bound is 5s, and this one runs the whole scorer over every run of the file:
 // three audit runs and two pods saw it killed at that bound, which reads as "0 pass, a
 // beforeEach/afterEach hook timed out" and says nothing about the scorer. 120s is this file's
 // own staging bound.
 beforeAll(() => {
-  const scored = spawnChecked(["bun", SCORE, "runs", runs, "--repo", LABEL_REPO]);
+  const scored = spawnChecked([
+    ...["bun", SCORE, "runs", runs, "--repo", LABEL_REPO],
+    ...FIXTURE_ARMS.flatMap(([arm, count]) => ["--arm", `${arm}=${count}`]),
+  ]);
   out = scored.stdout.toString();
   scoredExitCode = scored.exitCode;
 }, 120_000);
 
 /** The summary line `score.ts runs` prints for one scenario key and label, built from the run
  * rows of that same output: `<scenario>\t<label>\t<passed>/<scored>\t<with ref>/<scored>\t<rig
- * errors>\t<flagged>`. The counts are what the summary is for — the table read against the rows
- * it aggregates — and the alternative is a line written by hand that every fixture added to this
- * file makes wrong. `flagged` is no part of a run row and no scenario summarised this way flags
- * one, so it is 0 here. */
+ * errors>\t<flagged>\t<expected>\t<found>`. The counts are what the summary is for — the table
+ * read against the rows it aggregates — and the alternative is a line written by hand that every
+ * fixture added to this file makes wrong. `flagged` is no part of a run row and no scenario
+ * summarised this way flags one, so it is 0 here; the arm's expected and found counts are both
+ * the rows it holds, as the score stops where they differ. */
 function summaryLine(scenario: string, label: string): string {
   const prefix = `${scenario.replace(":", "-")}-${label}-`;
   const rows = out.split("\n").filter((line) => line.startsWith(prefix));
@@ -7606,7 +7658,7 @@ function summaryLine(scenario: string, label: string): string {
   const passed = scored.filter((line) => line.includes("\tpass=true\t"));
   const withRef = passed.filter((line) => line.includes("\tref=true\t"));
   const errors = rows.length - scored.length;
-  return `${scenario}\t${label}\t${passed.length}/${scored.length}\t${withRef.length}/${scored.length}\t${errors}\t0\n`;
+  return `${scenario}\t${label}\t${passed.length}/${scored.length}\t${withRef.length}/${scored.length}\t${errors}\t0\t${rows.length}\t${rows.length}\n`;
 }
 
 test("a run whose agent never got a model turn is a rig error, not a failure", () => {
@@ -7616,8 +7668,8 @@ test("a run whose agent never got a model turn is a rig error, not a failure", (
     expect(out).not.toContain(`${name}\tpass=`);
   }
   // Pass counts over the one run that got a turn; the other is counted only as a rig error.
-  expect(out).toContain("tester-proof\thead\t0/1\t0/1\t1\t0\n");
-  expect(out).toContain("ask-on-message\thead\t0/1\t0/1\t1\t0\n");
+  expect(out).toContain("tester-proof\thead\t0/1\t0/1\t1\t0\t2\t2\n");
+  expect(out).toContain("ask-on-message\thead\t0/1\t0/1\t1\t0\t2\t2\n");
 });
 
 test("a run whose agent got a turn and did nothing is a failure", () => {
@@ -7641,7 +7693,7 @@ test("a tester passes when its completion names the test record its own session 
   expect(out).toMatch(
     /tester-proof-rec-1\tpass=true\tref=false\tran=true record=v1 proof=true pushes=0 complete=true refusedCompletions=1 ordered=true testerLine=true ownHead=true editBeforeRecord=false /
   );
-  expect(out).toContain("tester-proof\trec\t1/4\t0/4\t0\t0\n");
+  expect(out).toContain("tester-proof\trec\t1/4\t0/4\t0\t0\t4\t4\n");
 });
 
 test("a record another session wrote fails the proof, even when the stand-in accepted it", () => {
@@ -9202,7 +9254,11 @@ test("a run whose label's daemon cannot be rebuilt from its recorded commit stop
     path.join(refused, "reviewer-text-findings-text-only-head-127", "built-from"),
     `checkout ${CHECKOUT}\n`
   );
-  const stopped = spawnChecked(["bun", SCORE, "runs", refused, "--repo", LABEL_REPO]);
+  const stopped = spawnChecked([
+    ...["bun", SCORE, "runs", refused, "--repo", LABEL_REPO],
+    ...["--arm", "reviewer-text-findings:text-only:head=1"],
+    ...["--arm", "reviewer-text-findings:defect:head=1"],
+  ]);
   expect({ code: stopped.exitCode, stdout: stopped.stdout.toString() }).toEqual({
     code: 2,
     stdout: "",
@@ -9214,12 +9270,147 @@ test("a run whose label's daemon cannot be rebuilt from its recorded commit stop
     "reviewer-text-findings-text-only-head-126",
     "reviewer-text-findings-text-only-head-126",
   ]);
-  const none = spawnChecked(["bun", SCORE, "runs", unnamed]);
+  const none = spawnChecked([
+    ...["bun", SCORE, "runs", unnamed],
+    ...["--arm", "reviewer-text-findings:text-only:head=1"],
+  ]);
   expect({ code: none.exitCode, stdout: none.stdout.toString() }).toEqual({ code: 2, stdout: "" });
   expect(none.stderr.toString()).toContain(
     `score: no score on reviewer-text-findings-text-only-head-126: its label's daemon sources are rebuilt from commit ${sourcesCommit(LABEL_REPO, CHECKOUT)}, which its built-from records, out of a repository the caller names (--repo <git dir>), and none was named\n`
   );
 });
+
+/** `score.ts runs` over `dir`, `args` after it: its exit, stdout and stderr. */
+function scoreOf(dir: string, ...args: string[]): unknown[] {
+  const made = spawnChecked(["bun", SCORE, "runs", dir, ...args]);
+  return [made.exitCode, made.stdout.toString(), made.stderr.toString()];
+}
+/** The runs/ of a work directory `at` of its own under the file's, holding a copy of each run
+ * `names` names. */
+function workOf(at: string, ...names: string[]): string {
+  const dir = path.join(work, at, "runs");
+  mkdirSync(dir, { recursive: true });
+  for (const name of names)
+    cpSync(path.join(runs, name), path.join(dir, name), { recursive: true });
+  return dir;
+}
+
+// The tester's finding of 2026-11-18: a score that read no run printed the counts' header alone
+// and exited 0, so a mistyped work directory, or a scenario none of its runs is of, read as a
+// clean score of nothing. A score that reads no run is no score: it names the directories it
+// read, and the scenario where one is named, prints nothing and exits 2. Catches: either read
+// as a score.
+test("a score that reads no run stops, naming the directories it read and the scenario", () => {
+  const empty = workOf("no-runs");
+  expect(scoreOf(empty)).toEqual([
+    2,
+    "",
+    `score: no run under ${path.join(work, "no-runs", "archive", "runs")} or ${empty}\n`,
+  ]);
+  const other = workOf("no-run-of", "tester-proof-head-2");
+  expect(
+    scoreOf(other, "--repo", LABEL_REPO, "--arm", "tester-proof:head=1", "ask-on-message")
+  ).toEqual([
+    2,
+    "",
+    `score: no run of ask-on-message under ${path.join(work, "no-run-of", "archive", "runs")} or ${other}\n`,
+  ]);
+}, 60_000);
+
+// The architect's ruling A of 2026-11-18: a runs directory holds what the rig writes there,
+// each run's directory and its `<id>.json` record (cmd_run, archive_run), and nothing else. Any
+// other entry is no state of the rig's: read past, it dropped a run with no word (an archive of
+// symlinked runs scored no row, and exited 0), and followed, a run would be judged by what the
+// archive does not hold. Catches: a symlinked run or a stray file read past or followed, and a
+// run's record taken for such an entry.
+test("an entry of a runs directory that is neither a run nor its record stops the score, naming its kind", () => {
+  const archive = path.join(work, "linked", "archive", "runs");
+  mkdirSync(archive, { recursive: true });
+  cpSync(path.join(runs, "tester-proof-head-2"), path.join(archive, "tester-proof-head-2"), {
+    recursive: true,
+  });
+  const linked = path.join(archive, "tester-proof-head-1");
+  symlinkSync(path.join(runs, "tester-proof-head-1"), linked);
+  const refused = (entry: string, kind: string) => [
+    2,
+    "",
+    `score: ${entry} is a ${kind}, neither a run directory nor a run's record (<id>.json)\n`,
+  ];
+  const scored = (count: number) =>
+    scoreOf(archive, "--repo", LABEL_REPO, "--arm", `tester-proof:head=${count}`);
+  expect(scored(2)).toEqual(refused(linked, "symlink"));
+  rmSync(linked);
+  const stray = path.join(archive, "notes.txt");
+  writeFileSync(stray, "");
+  expect(scored(1)).toEqual(refused(stray, "file"));
+  rmSync(stray);
+  writeFileSync(path.join(archive, "0123456789ab.json"), "{}");
+  expect(scored(1)[0]).toBe(0);
+}, 60_000);
+
+// The architect's ruling B of 2026-11-18: each arm holds the runs its caller made of it, which
+// `--arm <scenario>[:<case>]:<label>=<n>` names (score's own key, `:` for its tab): every run
+// read under the arm, scored or a rig error, since what is held is which runs are there, not how
+// they came out. There is no default: an arm no `--arm` names, an `--arm` whose arm holds no run
+// and an arm of another count stop the score, each named with the runs found and expected; an
+// `n` that is no whole number of 1 or more, and an arm that is no key, are refused by name. With
+// a scenario named, only its arms are read. Catches: an arm one run short scored as it stands;
+// an arm no `--arm` names scored; an `--arm` whose arm holds no run passed; an `--arm` of 0, of
+// a negative or of no number taken; and the counts left off the arm's row.
+test("each arm holds the runs its --arm names, and the score stops where one does not", () => {
+  const dir = workOf("arms", "tester-proof-head-1", "tester-proof-head-2", "ask-on-message-head-2");
+  // The tester's runner's own form: rig.sh score --repo <dir> --arm <arm>=<n> <scenario>.
+  const rig = (...args: string[]) => {
+    const made = spawnChecked(["bash", path.join(import.meta.dir, "rig.sh"), "score", ...args], {
+      env: { ...process.env, SKILL_SCENARIOS_WORK: path.dirname(dir) },
+    });
+    return [made.exitCode, made.stdout.toString(), made.stderr.toString()];
+  };
+  const stopped = (...lines: string[]) => [
+    2,
+    "",
+    [...lines, `${lines.length} arms do not hold the runs expected, so nothing is scored`]
+      .map((line) => `score: ${line}\n`)
+      .join(""),
+  ];
+  expect(rig("--repo", LABEL_REPO, "--arm", "tester-proof:head=3", "tester-proof")).toEqual(
+    stopped("arm tester-proof:head: found 2 runs, expected 3 (--arm tester-proof:head=3)")
+  );
+  const [code, held, err] = rig(
+    "--arm",
+    "tester-proof:head=2",
+    "--repo",
+    LABEL_REPO,
+    "tester-proof"
+  );
+  expect([code, err]).toEqual([0, ""]);
+  expect(held).toContain("\ntester-proof\thead\t0/1\t0/1\t1\t0\t2\t2\n");
+  expect(scoreOf(dir, "--repo", LABEL_REPO, "--arm", "tester-proof:head=2")).toEqual(
+    stopped("arm ask-on-message:head: found 1 runs, and no --arm names it")
+  );
+  expect(
+    scoreOf(
+      dir,
+      ...["--repo", LABEL_REPO, "--arm", "tester-proof:head=2", "--arm", "ask-on-message:head=1"],
+      ...["--arm", "tester-proof:base=1"]
+    )
+  ).toEqual(stopped("arm tester-proof:base: found 0 runs, expected 1 (--arm tester-proof:base=1)"));
+  for (const [arm, why] of [
+    ["tester-proof:head=0", "0 is no whole number of 1 or more"],
+    ["tester-proof:head=-1", "-1 is no whole number of 1 or more"],
+    ["tester-proof:head=two", "two is no whole number of 1 or more"],
+  ])
+    expect(scoreOf(dir, "--arm", arm, "tester-proof")).toEqual([
+      2,
+      "",
+      `score: --arm ${arm}: ${why}\n`,
+    ]);
+  expect(scoreOf(dir, "--arm", "tester-proof=2", "tester-proof")).toEqual([
+    2,
+    "",
+    "score: --arm tester-proof=2 names no arm: <scenario>[:<case>]:<label>=<n>\n",
+  ]);
+}, 60_000);
 
 // The architect's ruling of 2026-11-18: an environment the scorer reads decides no score. The
 // same archived runs — one that reads the base label's checkout, which only a base run's
@@ -9262,7 +9453,11 @@ test.skipIf(withoutGo)(
       const cwd = path.join(work, `${at}-cwd`);
       for (const dir of [tmp, cwd]) mkdirSync(dir, { recursive: true });
       const scored = spawnChecked(
-        ["bash", path.join(import.meta.dir, "rig.sh"), "score", "--repo", LABEL_REPO],
+        [
+          ...["bash", path.join(import.meta.dir, "rig.sh"), "score", "--repo", LABEL_REPO],
+          ...["--arm", "tester-proof:cross=1", "--arm", "tester-proof:base=1"],
+          ...["--arm", "reviewer-text-findings:text-only:base=1"],
+        ],
         { cwd, env: { ...process.env, SKILL_SCENARIOS_WORK: where, TMPDIR: tmp } }
       );
       return { code: scored.exitCode, stdout: scored.stdout.toString() };
@@ -9584,7 +9779,7 @@ test("the rig's own harness under another label's checkout is scored, and that l
   expect(out).toContain(
     "tester-proof-base-2\trig error: a bash call reads head's checkout: /checkouts/head/skills/legion-worker/references/review-threads.md"
   );
-  expect(out).toContain("tester-proof\tbase\t0/1\t0/1\t1\t0\n");
+  expect(out).toContain("tester-proof\tbase\t0/1\t0/1\t1\t0\t2\t2\n");
 });
 
 test("a skill file outside the label's own is a rig error when read, and a flag when only named", () => {
@@ -9638,7 +9833,7 @@ test("two runs of one batch that name one Dispatch database are rig errors, sayi
   expect(out).toContain(
     "ask-on-message-shared-2\trig error: it shares Dispatch database run_shared of Postgres pg-7 with ask-on-message-shared-1, so each could read the other's issue and asks"
   );
-  expect(out).toContain("ask-on-message\tshared\t0/0\t0/0\t2\t0\n");
+  expect(out).toContain("ask-on-message\tshared\t0/0\t0/0\t2\t0\t2\t2\n");
 });
 
 test("runs on databases of their own are scored, and one name in two batches is two databases", () => {
@@ -9665,7 +9860,7 @@ test("a rules-case askgate run with no dispatch.json is a rig error", () => {
     "askgate-nochange-unrecorded-1\trig error: it records no Dispatch of its own (no dispatch.json)"
   );
   expect(out).not.toContain("askgate-nochange-unrecorded-1\tpass=");
-  expect(out).toContain("askgate:nochange\tunrecorded\t0/0\t0/0\t1\t0\n");
+  expect(out).toContain("askgate:nochange\tunrecorded\t0/0\t0/0\t1\t0\t1\t1\n");
 });
 
 test("a rules-case askgate run with the dispatch.json own_dispatch writes is scored", () => {
@@ -9674,7 +9869,7 @@ test("a rules-case askgate run with the dispatch.json own_dispatch writes is sco
   );
   expect(rowOf("askgate-nochange-recorded-1")).not.toContain("no dispatch.json");
   expect(out).not.toContain("askgate-nochange-recorded-1\trig error");
-  expect(out).toContain("askgate:nochange\trecorded\t1/1\t0/1\t0\t0\n");
+  expect(out).toContain("askgate:nochange\trecorded\t1/1\t0/1\t0\t0\t1\t1\n");
 });
 
 test("an older spec run with no dispatch.json is scored, with a note that it ran on its batch's Dispatch, alone in its batch", () => {
@@ -9685,8 +9880,8 @@ test("an older spec run with no dispatch.json is scored, with a note that it ran
     );
     expect(out).not.toContain(`${name}\trig error`);
   }
-  expect(out).toContain("spec-writing\tolder\t1/1\t1/1\t0\t0\n");
-  expect(out).toContain("spec-rewrite\tolder\t1/1\t1/1\t0\t0\n");
+  expect(out).toContain("spec-writing\tolder\t1/1\t1/1\t0\t0\t1\t1\n");
+  expect(out).toContain("spec-rewrite\tolder\t1/1\t1/1\t0\t0\t1\t1\n");
   // A spec run that records its own Dispatch gets no such note.
   expect(rowOf("spec-writing-head-1")).not.toContain("no dispatch.json");
 });
@@ -9856,17 +10051,17 @@ test("askgate: a first attempt no review stands behind is no review of the case'
 });
 
 test("askgate: the counts are per case and label", () => {
-  expect(out).toContain("askgate:facts\ton\t7/10\t0/10\t0\t0\n");
-  expect(out).toContain("askgate:link\ton\t2/9\t0/9\t0\t0\n");
-  expect(out).toContain("askgate:upload\ton\t1/3\t0/3\t1\t0\n");
-  expect(out).toContain("askgate:nochange\ton\t1/3\t0/3\t0\t0\n");
-  expect(out).toContain("askgate:nochange-block\ton\t1/2\t0/2\t0\t0\n");
-  expect(out).toContain("askgate:untried\ton\t1/2\t0/2\t0\t0\n");
-  expect(out).toContain("askgate:nochange-rebuttal\ton\t2/3\t0/3\t0\t0\n");
-  expect(out).toContain("askgate:tried\ton\t2/4\t0/4\t0\t0\n");
-  expect(out).toContain("askgate:facts\toff\t1/3\t0/3\t0\t0\n");
-  expect(out).toContain("askgate:link\toff\t0/0\t0/0\t1\t0\n");
-  expect(out).toContain("askgate\ton\t0/0\t0/0\t1\t0\n");
+  expect(out).toContain("askgate:facts\ton\t7/10\t0/10\t0\t0\t10\t10\n");
+  expect(out).toContain("askgate:link\ton\t2/9\t0/9\t0\t0\t9\t9\n");
+  expect(out).toContain("askgate:upload\ton\t1/3\t0/3\t1\t0\t4\t4\n");
+  expect(out).toContain("askgate:nochange\ton\t1/3\t0/3\t0\t0\t3\t3\n");
+  expect(out).toContain("askgate:nochange-block\ton\t1/2\t0/2\t0\t0\t2\t2\n");
+  expect(out).toContain("askgate:untried\ton\t1/2\t0/2\t0\t0\t2\t2\n");
+  expect(out).toContain("askgate:nochange-rebuttal\ton\t2/3\t0/3\t0\t0\t3\t3\n");
+  expect(out).toContain("askgate:tried\ton\t2/4\t0/4\t0\t0\t4\t4\n");
+  expect(out).toContain("askgate:facts\toff\t1/3\t0/3\t0\t0\t3\t3\n");
+  expect(out).toContain("askgate:link\toff\t0/0\t0/0\t1\t0\t1\t1\n");
+  expect(out).toContain("askgate\ton\t0/0\t0/0\t1\t0\t1\t1\n");
 });
 
 // live-read: the pinned Oh My Pi answers a `read` of skill://<name>[/<path>] with one header line,
@@ -9969,7 +10164,7 @@ test("a spec-writing run that follows every rule passes every score", () => {
 
 test("a spec-rewrite run is scored by the same rules", () => {
   expect(scoresOf("spec-rewrite-head-1")).toEqual(allPass);
-  expect(out).toContain("spec-rewrite\thead\t1/1\t1/1\t0\t0\n");
+  expect(out).toContain("spec-rewrite\thead\t1/1\t1/1\t0\t0\t1\t1\n");
 });
 
 test("outline: the spec's ## headings are exactly the outline's, in order", () => {
@@ -10485,7 +10680,9 @@ test("score spec-writing prints each source and label's median fault count", () 
 });
 
 test("the summary tables print how many counted runs carry a flag", () => {
-  expect(out).toContain("\nscenario\tlabel\tpass\tpass+ref\trig errors\tflagged\n");
-  expect(out).toContain("spec-writing\tflagged\t2/2\t2/2\t0\t1\n");
+  expect(out).toContain(
+    "\nscenario\tlabel\tpass\tpass+ref\trig errors\tflagged\texpected\tfound\n"
+  );
+  expect(out).toContain("spec-writing\tflagged\t2/2\t2/2\t0\t1\t2\t2\n");
   expect(out).toContain("\nacme-1\tspec-writing\tflagged\t2\t0\t0\t1\n");
 });

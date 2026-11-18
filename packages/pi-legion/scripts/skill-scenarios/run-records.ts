@@ -23,9 +23,10 @@ export function openingLine(record: string): string {
  * call, a push or a move. */
 export const Opened = z.looseObject({ at: z.string(), opened: z.string() });
 
-/** A reader's refusal to judge a run: an input the run did not record, or one it recorded that
+/** A reader's refusal to judge a run: an input the run did not record, one it recorded that
  * cannot be rebuilt from what the caller named (the architect's ruling of 2026-11-18: a reader
  * judges a run from its archive and the provenance it recorded alone, never from what the pod
- * holds now). No verdict: `rig.sh health` names the run and the input and exits 2, and `rig.sh
- * score` makes it the run's rig error. */
+ * holds now), or an entry of a runs directory that is neither a run nor its record. No verdict:
+ * `rig.sh health`, `rig.sh score` and judge.ts each name the cause and exit 2, and none counts or
+ * replaces the run. */
 export class Refused extends Error {}

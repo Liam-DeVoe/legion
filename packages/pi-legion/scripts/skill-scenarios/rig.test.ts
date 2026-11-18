@@ -3349,6 +3349,27 @@ describe("health", () => {
     );
   });
 
+  // The architect's ruling A of 2026-11-18: a run is a directory the rig made, and a symlink to
+  // one, read through, is judged by what the run given does not hold, as score.ts's `runsOf`
+  // refuses one in a runs directory. The run linked is healthy, read as itself. Catches: a
+  // symlinked run judged through its link.
+  test("a run given as a symlink gets no verdict, and health exits 2 naming its kind", () => {
+    const dir = run("reviewer-text-findings-text-only-head-13", [
+      [complete(200, undefined, "reviewer")],
+    ]);
+    expect(verdict(health(dir).stdout, dir)).toBe(
+      "reviewer-text-findings-text-only-head-13  healthy"
+    );
+    const link = path.join(freshDir("health-link"), path.basename(dir));
+    symlinkSync(dir, link);
+    const { code, stdout, stderr } = health(link);
+    expect([code, stdout, stderr.split("\n")[0]]).toEqual([
+      2,
+      "",
+      `health: ${link} is a symlink, not a run directory`,
+    ]);
+  }, 60_000);
+
   // Catches: a daemon of a shape pair ANSWERS gives no answers judged by some other pair's. This
   // checkout's engine beside an older daemon's route is a daemon no checkout the rig has read pairs
   // them in, so what its world answers a late reviewer is unknown, and health says so, naming the

@@ -92,7 +92,7 @@ import {
 import { byCreatedAt, parseInstant } from "./production-dispatch";
 // A run's scenario, case and label, read from its record (run-names.ts), and the cases each
 // scenario takes.
-import { casesOf, labelInstall, RUN_ID, recordFile, runIdentity } from "./run-names";
+import { casesOf, entryKind, labelInstall, RUN_ID, recordFile, runIdentity } from "./run-names";
 // The calls record's name and the line each record is opened with, read from the module the
 // stand-ins write that line by (run-records.ts).
 import { CALLS, Opened, Refused } from "./run-records";
@@ -2188,20 +2188,38 @@ export function workOfRuns(runsDir: string): string {
   return path.basename(parent) === "archive" ? path.dirname(parent) : parent;
 }
 
+/** The directories the runs of `runsDir` are read from (`runsOf`): an archive's runs/ alone, or,
+ * for a work directory's own runs/, its archive/runs/ and then runs/ itself. */
+function runsDirsOf(runsDir: string): string[] {
+  return path.basename(path.dirname(path.resolve(runsDir))) === "archive"
+    ? [runsDir]
+    : [path.join(workOfRuns(runsDir), "archive", "runs"), runsDir];
+}
+
 /** Every run directory of `runsDir` by its name, and, for a work directory's own runs/, every
- * run its archive/runs/ holds: rig.sh's archive_run moves a run there once it has ended, so a
- * batch's runs are in the archive by the time it is scored. A name in both is a run cmd_run made
- * again after its archived one, and the one in runs/ stands. An archive read on its own is the
- * archive alone. A run's record beside its directory (run-names.ts's `recordFile`) is no run. */
+ * run its archive/runs/ holds (`runsDirsOf`): rig.sh's archive_run moves a run there once it has
+ * ended, so a batch's runs are in the archive by the time it is scored. A name in both is a run
+ * cmd_run made again after its archived one, and the one in runs/ stands. A run's record beside
+ * its directory (run-names.ts's `recordFile`) is no run. Those two are all the rig writes there —
+ * cmd_run makes `<id>` and `<id>.json` in runs/, and archive_run moves both to archive/runs/ — so
+ * any other entry, a symlink, a fifo or a stray file, is no state of the rig's, and is refused,
+ * naming its path and kind: read past, it would drop a run with no word (a symlinked run scored
+ * no row), and followed, a run would be judged by what the archive does not hold. */
 export function runsOf(runsDir: string): Map<string, string> {
-  const dirs =
-    path.basename(path.dirname(path.resolve(runsDir))) === "archive"
-      ? [runsDir]
-      : [path.join(workOfRuns(runsDir), "archive", "runs"), runsDir];
+  const dirs = runsDirsOf(runsDir);
   const runs = new Map<string, string>();
   for (const dir of dirs)
-    for (const run of existsSync(dir) ? readdirSync(dir, { withFileTypes: true }) : [])
-      if (run.isDirectory()) runs.set(run.name, path.join(dir, run.name));
+    for (const entry of existsSync(dir) ? readdirSync(dir, { withFileTypes: true }) : []) {
+      if (entry.isDirectory()) runs.set(entry.name, path.join(dir, entry.name));
+      else if (
+        !entry.isFile() ||
+        !entry.name.endsWith(".json") ||
+        !RUN_ID.test(entry.name.slice(0, -".json".length))
+      )
+        throw new Refused(
+          `${path.join(dir, entry.name)} is a ${entryKind(entry)}, neither a run directory nor a run's record (<id>.json)`
+        );
+    }
   return runs;
 }
 
@@ -4965,15 +4983,37 @@ function ranAt(dir: string, entries: SessionEntry[], recorded: string | undefine
     ? path.dirname(cwd)
     : dir;
 }
-function scoreRuns(runsDir: string, only: string | undefined, repos: readonly string[]) {
+/** The key a run whose record cannot be read is counted under: it is of no arm, so the arm it
+ * was run for holds one run fewer. */
+const NO_ARM = "?\t?";
+/** An arm as `--arm` names it: the score's key of a scenario (with its case) and a label, `:` in
+ * place of the tab (`tester-proof:head`, `askgate:facts:on`). */
+const armOf = (key: string) => key.replace("\t", ":");
+/** Ends the score: each of `lines` on stderr after `score: `, no row and no count, and exit 2. */
+function stop(lines: readonly string[]): never {
+  for (const line of lines) console.error(`score: ${line}`);
+  process.exit(2);
+}
+function scoreRuns(
+  runsDir: string,
+  only: string | undefined,
+  repos: readonly string[],
+  arms: ReadonlyMap<string, number>
+) {
   const rows: Row[] = [];
   const errors: { run: string; key: string; reason: string }[] = [];
   // The runs no score is given on, each with why: an input the run did not record, or one the
   // caller's repositories cannot rebuild (run-records.ts's Refused). Any one stops the score.
   const refused: string[] = [];
   // Every run of the work directory, by its name: each in `runsDir`, and, for a work directory's
-  // own runs/, each archive_run moved to its archive/runs/ once it ended (`runsOf`).
-  const runs = runsOf(runsDir);
+  // own runs/, each archive_run moved to its archive/runs/ once it ended (`runsOf`), which
+  // refuses an entry there that is neither a run nor its record.
+  let runs: Map<string, string>;
+  try {
+    runs = runsOf(runsDir);
+  } catch (error) {
+    stop([error instanceof Error ? error.message : String(error)]);
+  }
   // Every run's PR head, to tell another run's line from a wrong one (`testerProof`, which is
   // the one reader). A world.json that does not parse is its own run's rig error, below.
   const heads = [...runs.values()].flatMap((dir) => {
@@ -5023,7 +5063,7 @@ function scoreRuns(runsDir: string, only: string | undefined, repos: readonly st
       const identity =
         existsSync(recordFile(dir)) || RUN_ID.test(run) ? runIdentity(dir) : undefined;
       if (typeof identity === "string") {
-        if (!only) errors.push({ run, key: "?\t?", reason: identity });
+        if (!only) errors.push({ run, key: NO_ARM, reason: identity });
         return [];
       }
       const match = identity === undefined ? name.exec(run) : null;
@@ -5166,14 +5206,43 @@ function scoreRuns(runsDir: string, only: string | undefined, repos: readonly st
   // batch runner replace it, on a reading that never happened (the architect's condition of
   // 2026-11-18T18:56Z). So the score stops, naming each and the input it lacks, prints no row and
   // no count, and exits 2.
-  if (refused.length > 0) {
-    for (const why of refused) console.error(`score: no score on ${why}`);
-    console.error(`score: ${refused.length} runs refused, so nothing is scored`);
-    process.exit(2);
-  }
+  if (refused.length > 0)
+    stop([
+      ...refused.map((why) => `no score on ${why}`),
+      `${refused.length} runs refused, so nothing is scored`,
+    ]);
+  // A score that read no run is no score: an empty or mistyped work directory, or a scenario no
+  // run is of, would otherwise read as a clean score of nothing.
+  if (rows.length === 0 && errors.length === 0)
+    stop([
+      `no run${only === undefined ? "" : ` of ${only}`} under ${runsDirsOf(runsDir).join(" or ")}`,
+    ]);
+  // Each arm holds the runs the caller made of it, no more and no fewer (the architect's ruling
+  // of 2026-11-18): every run score read under its key, scored or a rig error, since what is
+  // held is which runs are there, not how they came out. An arm no `--arm` names, an `--arm`
+  // whose arm holds no run, and an arm holding another number stop the score, as a refusal does.
+  const found = new Map<string, number>();
+  for (const key of [
+    ...rows.map((row) => `${row.scenario}\t${row.label}`),
+    ...errors.map((e) => e.key),
+  ])
+    if (key !== NO_ARM) found.set(key, (found.get(key) ?? 0) + 1);
+  const unheld = [
+    ...[...found]
+      .filter(([key]) => !arms.has(key))
+      .map(([key, count]) => `arm ${armOf(key)}: found ${count} runs, and no --arm names it`),
+    ...[...arms]
+      .filter(([key, n]) => (found.get(key) ?? 0) !== n)
+      .map(
+        ([key, n]) =>
+          `arm ${armOf(key)}: found ${found.get(key) ?? 0} runs, expected ${n} (--arm ${armOf(key)}=${n})`
+      ),
+  ];
+  if (unheld.length > 0)
+    stop([...unheld, `${unheld.length} arms do not hold the runs expected, so nothing is scored`]);
   for (const row of rows) console.log(`${row.run}\tpass=${row.pass}\tref=${row.ref}\t${row.notes}`);
   for (const error of errors) console.log(`${error.run}\trig error: ${error.reason}`);
-  console.log("\nscenario\tlabel\tpass\tpass+ref\trig errors\tflagged");
+  console.log("\nscenario\tlabel\tpass\tpass+ref\trig errors\tflagged\texpected\tfound");
   const keys = [
     ...new Set([
       ...rows.map((row) => `${row.scenario}\t${row.label}`),
@@ -5187,7 +5256,7 @@ function scoreRuns(runsDir: string, only: string | undefined, repos: readonly st
     const failed = errors.filter((error) => error.key === key).length;
     const flagged = group.filter((row) => row.flagged).length;
     console.log(
-      `${key}\t${passed.length}/${group.length}\t${withRef.length}/${group.length}\t${failed}\t${flagged}`
+      `${key}\t${passed.length}/${group.length}\t${withRef.length}/${group.length}\t${failed}\t${flagged}\t${arms.get(key) ?? "-"}\t${group.length + failed}`
     );
   }
   // For each source and label, the median fault count of its spec runs (faults.json): the count
@@ -5232,6 +5301,8 @@ function scoreRuns(runsDir: string, only: string | undefined, repos: readonly st
       "           in the counts and medians, and its notes say what to read before trusting it",
       "ran=false  a tester-proof run the bun stand-in saw no greet.ts run in: read its transcript",
       "           before believing it, since the stand-in sees only a bun reached through PATH",
+      "expected   the runs the arm's --arm names (- for runs of no arm, whose record is unread)",
+      "found      the runs read under the arm, scored and rig errors, which equals expected",
     ].join("\n")
   );
 }
@@ -5243,15 +5314,28 @@ if (import.meta.main) {
     liveRead(rest[0] ?? "", rest[1] ?? "", rest[2] ?? "");
   } else if (command === "runs" && rest.length >= 1) {
     // The git directories each run's label sources are rebuilt from by the commit its built-from
-    // records (daemon-pane.ts's `recordedCheckout`): every `--repo <git dir>` after the runs
-    // directory, then the scenario, if one is named.
+    // records (daemon-pane.ts's `recordedCheckout`), every `--repo <git dir>`, and the runs each
+    // arm holds, every `--arm <scenario>[:<case>]:<label>=<n>`, in any order after the runs
+    // directory; then the scenario, if one is named.
     const [runsDir = "", ...after] = rest;
     const repos: string[] = [];
-    while (after[0] === "--repo" && after[1] !== undefined) {
-      repos.push(path.resolve(after[1]));
-      after.splice(0, 2);
+    const arms = new Map<string, number>();
+    while ((after[0] === "--repo" || after[0] === "--arm") && after[1] !== undefined) {
+      const [flag, value = ""] = after.splice(0, 2);
+      if (flag === "--repo") {
+        repos.push(path.resolve(value));
+        continue;
+      }
+      const [, arm, label, n = ""] =
+        /^([a-z][a-z-]*(?::[a-z0-9-]+)?):([a-z0-9][a-z0-9-]*)=(.*)$/.exec(value) ?? [];
+      if (arm === undefined || label === undefined)
+        stop([`--arm ${value} names no arm: <scenario>[:<case>]:<label>=<n>`]);
+      if (!/^[1-9]\d*$/.test(n)) stop([`--arm ${value}: ${n} is no whole number of 1 or more`]);
+      if (arms.has(`${arm}\t${label}`))
+        stop([`--arm ${value}: arm ${arm}:${label} is named twice`]);
+      arms.set(`${arm}\t${label}`, Number(n));
     }
-    scoreRuns(runsDir, after[0], repos);
+    scoreRuns(runsDir, after[0], repos, arms);
   } else if (command === "published" && rest.length === 2) {
     // The harness's own reader of a publish, so the rig and the score read one: rig.sh's
     // reviewer_wake asks for every message a role's topic was sent, in Envoy's own order, and
@@ -5279,7 +5363,7 @@ if (import.meta.main) {
     }
   } else {
     console.error(
-      "usage: score.ts live-read <run dir> <skills dir> <omp logs dir> | runs <runs dir> [--repo <git dir>]... [<scenario>] | published <run dir> <role>"
+      "usage: score.ts live-read <run dir> <skills dir> <omp logs dir> | runs <runs dir> [--repo <git dir> | --arm <scenario>[:<case>]:<label>=<n>]... [<scenario>] | published <run dir> <role>"
     );
     process.exit(2);
   }

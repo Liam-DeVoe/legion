@@ -342,7 +342,8 @@ LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic ./rig.sh profile head <checkout
 #   LEGION_E2E_MODEL_ROUTE=provider LEGION_E2E_MODEL_PROVIDER_FILE=<models.yml> LEGION_E2E_MODEL_PROVIDER=<block>
 ./rig.sh batch ask-on-message 5 head base   # starts and stops Postgres, NATS, one listener per label, and each run's own scratch Dispatch
 ./rig.sh batch tester-proof 5 head base
-./rig.sh score
+./rig.sh score --arm ask-on-message:head=5 --arm ask-on-message:base=5 \
+  --arm tester-proof:head=5 --arm tester-proof:base=5
 ```
 
 A batch numbers each label's runs from one above that label's highest run of the scenario (and
@@ -371,7 +372,7 @@ bun fetch-spec-sources.ts --out "$SKILL_SCENARIOS_WORK/sources" <issue key | dis
 SKILL_SCENARIOS_SUPERPOWERS=<superpowers plugin> ./rig.sh profile main <checkout>
 SKILL_SCENARIOS_SOURCE=<directory under sources/> ./rig.sh batch spec-writing 1 main
 ./rig.sh judge "$SKILL_SCENARIOS_WORK"/archive/runs/<id>   # the run whose record names spec-writing-main-<n>
-./rig.sh score spec-writing
+./rig.sh score --arm spec-writing:main=1 spec-writing
 ```
 
 The scenarios and every input are in the script's header (`./rig.sh` with no arguments prints it),
@@ -784,6 +785,27 @@ missing input on stderr (`health: no verdict on <run>: …`), counts it in no ru
 on <run>: …`) and exits 2. A batch runner must stop on exit 2, and neither count the run nor
 replace it. `rig.sh batch` reads no health and replaces nothing.
 
+A score that reads no run is no score either: `rig.sh score` with no run under
+`<work>/archive/runs` or `<work>/runs`, or none of the scenario it is given, names the
+directories it read (`score: no run under <dir>/archive/runs or <dir>/runs`, with `of <scenario>`
+when one is named), prints nothing and exits 2. A runs directory holds what the rig writes there,
+each run's directory and its `<id>.json` record, so any other entry (a symlink, a fifo, a stray
+file) stops `rig.sh score`, exit 2, and `rig.sh judge`, both of which list runs through
+`score.ts`'s `runsOf`, naming its path and kind; `rig.sh health` refuses a run it is given that is
+no directory the same way, exit 2. Such an entry is no state the rig writes, and reading past it
+would drop a run with no word.
+
+`rig.sh score` holds each arm to the runs its caller made of it. `--arm <arm>=<n>`, repeatable and
+in any order with `--repo` before the scenario, names an arm and its count, `n` a whole number of
+1 or more, and there is no default. An arm is written as the key of its count row with `:` for
+the tab (`tester-proof:head`, `askgate:facts:on`). Its count is every run the score read under
+that key, scored or a rig error, since what is held is which runs are there, not how they came
+out. A run whose record cannot be read (key `?`) is of no arm and keeps its rig-error row, so the
+arm it was run for comes up a run short. An arm no `--arm` names, an `--arm` whose arm holds no
+run, and an arm holding another count stop the score as a refusal does, each named with the count
+found and the count expected, with nothing on stdout and exit 2; with a scenario named, only its
+arms are read. The count row of each arm prints both counts (`expected`, `found`).
+
 The facts cache (`<work>/daemon-facts`, or `$TMPDIR/legion-daemon-cache`) is keyed by the bytes
 of the program and of each source it reads, so it decides no verdict.
 
@@ -942,7 +964,7 @@ and error texts, never production's values:
 
 | Pin | What it holds | Read from | Made by |
 | --- | --- | --- | --- |
-| `production-shapes.json` | the exit, stderr and answer shape of 173 reads, and the line shapes of the 20 whose answer is text: the 5 reads of a branch a ruleset alone protects, the 90 distinct reads INFRA-764's round 25 made, the `read_record` record, the tester's 68 reads of each read the world served with no pin, and the implementer's 9 reads that set does not hold | cybermonklabs/legion `main` at 2026-11-17T15:59:18Z, its pull request #2827 at about 15:40Z, and a Legion issue pod's own record at 16:49Z that day; the open #2827, the merged #4326 and the repository at about 08:45Z (the tester) and 08:55Z (the implementer) on 2026-11-18 | `production-shapes.ts` |
+| `production-shapes.json` | the exit, stderr and answer shape of 176 reads, and the line shapes of the 23 whose answer is text: the 5 reads of a branch a ruleset alone protects, the 90 distinct reads INFRA-764's round 25 made, the `read_record` record, the tester's 68 reads of each read the world served with no pin, the implementer's 9 reads that set does not hold, and 3 of the tester's 21 readings again, whole, of every text read, whose other 18 replace the earlier readings of their reads | cybermonklabs/legion `main` at 2026-11-17T15:59:18Z, its pull request #2827 at about 15:40Z, and a Legion issue pod's own record at 16:49Z that day; the open #2827, the merged #4326 and the repository at about 08:45Z (the tester) and 08:55Z (the implementer) on 2026-11-18, and every text read again at about 17:22Z (the tester) | `production-shapes.ts` |
 | `rest-required.json` | the required field tree of the success answer of each REST operation the world serves | github/rest-api-description at `DESCRIPTION_COMMIT` (`c9c95fe34ced`) | `rest-required.ts` |
 | `graphql-schema.json` | the field and return type of each GraphQL type the world serves, which the world's query check reads | GitHub's introspection at 2026-11-17T21:20:23Z | `graphql-schema.ts` |
 | each label's own `LegionStateResponse` | every state body the daemon stand-in can serve, parsed before the label starts | the label's own checkout | `services_up`'s `label_contract` |
@@ -956,11 +978,14 @@ chosen by the read's command. Each line keeps gh's and git's own words: a `<key>
 A row is its field count (`<5 tab-separated fields>`), and the body after a view's `--` is one
 `<body>`. The shapes are a set, so how many lines of one shape a text holds is no shape. A
 production line no rule reads fails the derivation, and so does a value of production's in a
-line. Round 25's text answers were kept cut at 600 characters: their cut line is left out and
-their shapes end in `<cut line>`. A world's line shape those readings do not hold is not
-compared, since production's lines after the cut were never read. The rows read the world's
-text as gh wrote it, untrimmed, and name each difference of state with its reason: the world's
-diff adds files and removes no line, where #2827's and #4326's remove lines.
+line. Each text answer is pinned from a reading of it whole: the tester read every text read
+again on 2026-11-18 (`prod-text-reads.json`), and a reading again of a read an earlier set holds
+replaces that reading, under its name. The derivation refuses a text answer cut short: one its
+set's README says was cut, or one of 600 characters with no line end, the length round 25's
+store cut its text answers at. The rows read the world's text as gh wrote it, untrimmed, and
+name each difference of state with its reason: the world's diff adds files and removes no line,
+where #4326's removes lines, and #2827's diff, past GitHub's 20000-line limit when read whole,
+is refused (HTTP 406), so the world's is held to #4326's.
 
 The issue workspace's git configuration is held line for line to a Legion issue pod's clone, as
 read on 2026-11-17 (the paragraph on a worker world's issue workspace, above), and the base's
@@ -969,7 +994,7 @@ measurement each, named where the answer is described: a reply to a reply filed 
 one App's update of another's review, GitHub's 404 body for an endpoint it does not serve, and
 the merge state of an approved, green head on a merge-queue base. A few are stated as
 unmeasured: GitHub's 404 for another App's read of a pending review by id, and the
-rule-violation lines of a refused push beyond the three measured. Three differences are named
+rule-violation lines of a refused push beyond the three measured. Four differences are named
 residuals rather than defects, each an answer the world cannot give as production gives it:
 
 - `remote.origin.vcs`, the key that carries the world's remote. No production clone has it. The
@@ -980,6 +1005,10 @@ residuals rather than defects, each an answer the world cannot give as productio
   No stand-in reads a token, so the world refuses both calls (`gh: Not Found (HTTP 404)`, exit 1).
   A run that makes either is unhealthy (`rig.sh health`'s rule 21, `credential printed`), and the
   tester reports it as an agent printing its credential.
+- GitHub's `406 PullRequest.diff too_large` for a pull request whose diff is over 20,000 lines,
+  which production gives `gh pr diff` on #2827. The world's pull request is small, as #4326 is, so
+  its diff reads are held to #4326's readings with the state difference named
+  (`PINNED_GH_STATE`), and no scenario reaches the refusal.
 
 **A read with no pin, and an answer this section and the sections below do not name, is not
 claimed to answer as production does.**
@@ -1037,7 +1066,7 @@ read, the command it was made with (production's values written as placeholders:
 `<repo>`, `<number>`, `<head>`, `<base>`, `<review>`, `<comment>`, `<path>`, `<id>`, `<branch>`,
 `<app>`), when it was read, its exit, its stderr and its answer's shape — each JSON path and the
 kind of the value there, a list's items read per variant (a rule's `type`) where they differ — and
-no value of it. It pins 173 reads, each made in an issue pod, a gh read with the role App token
+no value of it. It pins 176 reads, each made in an issue pod, a gh read with the role App token
 its gh gives:
 
 - the five reads of a branch a ruleset alone protects (`rules/branches/main`, `rulesets`,
@@ -1053,11 +1082,30 @@ its gh gives:
   `implementer-r26-w10-state-tgz-b64`), read at about 08:55Z that day: a commit by its SHA and a
   commit's pull requests, as Dispatch reads them, `gh run view` and `gh run watch` naming no run,
   the viewer by the implement App's token, and GraphQL sent to `gh api /graphql` and `gh api
-  'graphql?…'`.
+  'graphql?…'`;
+- the tester's 21 readings again, whole, of every text read (`prod-text-reads.json`, in version
+  3 of the `infra-764-production-reads-tgz-b64` upload), read at about 17:22Z that day. 18 read
+  again a read pinned above, and replace its reading under its name: the five round 25 kept cut
+  at 600 characters, #2827's two text views and its three diff reads, which GitHub now refuses
+  as past its 20000-line limit; the twelve text reads of `prod-reads-19.json`; and round 25's
+  GraphQL query that is no document. 3 are new: `gh pr diff --color never` and the two text
+  views of #4326, a pull request with no comment on its conversation.
 
 `production-shapes.ts` derives it from those reads' own files, which stay out of the tree, and
-refuses to write a value of theirs into it: `bun production-shapes.ts <ruleset reads dir>
-<production reads json> <read_record json> [<later reads json>...] production-shapes.json`
+refuses to write a value of theirs into it. With the uploads
+`infra-764-production-ruleset-reads-tgz-b64`, version 3 of `infra-764-production-reads-tgz-b64`
+and `implementer-r26-evidence-tgz-b64` (which holds `implementer-reads.json` too) each unpacked
+in `<uploads>`, this, run in `packages/pi-legion/scripts/skill-scenarios` so that biome reads the
+repository's configuration,
+
+```sh
+bun production-shapes.ts <uploads>/infra-764-production-ruleset-reads \
+  <uploads>/infra-764-production-reads/infra-764-production-reads.json \
+  <uploads>/production-read-record.json \
+  <uploads>/infra-764-production-reads/prod-reads-19.json <uploads>/implementer-reads.json \
+  <uploads>/infra-764-production-reads/prod-text-reads.json production-shapes.json
+```
+
 writes it and formats it with the repository's biome. A row holds a world's answer to a pinned
 read with `shapeDiff`, which reports the paths production has that the world lacks, the paths
 the world has that production does not, and the paths whose kinds differ, none of them below a
@@ -1071,8 +1119,9 @@ values in it:
 
 - the five ruleset reads, each with no difference, and each of production's seven rules to
   production's rule of its type, none of them absent from the world (`gh-standin.test.ts`);
-- the 114 reads of gh's own commands, `gh pr view`, `list`, `diff` and `checks` and `gh run view`
-  and `watch`, 55 of round 25 and 59 of 2026-11-18 (`gh-standin.test.ts`'s `PINNED_GH`);
+- the 117 reads of gh's own commands, `gh pr view`, `list`, `diff` and `checks` and `gh run view`
+  and `watch`, 55 of round 25 and 62 of 2026-11-18 (`gh-standin.test.ts`'s `PINNED_GH`), and
+  #4326's two text views again in a world no agent has commented in;
 - the 28 GraphQL reads, 20 of round 25 and 8 of 2026-11-18 (`PINNED_GRAPHQL`);
 - the 22 REST reads, 15 of round 25 and 7 of 2026-11-18 (`PINNED_REST`);
 - `gh auth status`, in its own row;
@@ -1097,6 +1146,12 @@ A difference of state is named in its row, with the reason production's reading 
   rollup was empty and `gh pr checks` refused it (`no checks reported on the '<branch>' branch`,
   exit 1). Every world's head reports its checks, so the world's answers are held to the tester's
   readings of the same commands on #4326, whose head had them.
+- #2827's diff, read whole: it had grown past GitHub's 20000-line limit, so GitHub refused it
+  (`HTTP 406`) and gh printed nothing, exit 1. The world's pull request changes a few files, so
+  its three diff reads are held to the tester's readings of the same commands on #4326, less the
+  difference below.
+- A diff's lines: #4326's changes files that were there and removes lines of them, and the
+  world's adds its files (`new file mode`) and removes no line.
 - A commit's pull requests: the implementer read #4326's head, whose pull request was merged, so
   its `closed_at` and `merged_at` were times. The world's pull request is open, and GitHub answers
   an open one's null, as the REST read of the open #2827 holds them.

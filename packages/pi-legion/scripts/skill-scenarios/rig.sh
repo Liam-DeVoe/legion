@@ -12,13 +12,19 @@
 #                                                  label (SKILL_SCENARIOS_PARALLEL at once), each
 #                                                  label's numbered from one above its highest
 #                                                  run, live or archived, and stops the services
-#   rig.sh score     [--repo <git dir>]... [<scenario>]
+#   rig.sh score     [--repo <git dir> | --arm <scenario>[:<case>]:<label>=<n>]... [<scenario>]
 #                                                  one row per run, then counts per label: the runs
 #                                                  of <work>/runs and <work>/archive/runs, each
 #                                                  read from its own record alone; a run whose
 #                                                  label's daemon sources the --repo git
 #                                                  directories cannot rebuild stops the score,
-#                                                  named, exit 2
+#                                                  named, exit 2, and so do no run at all (or none
+#                                                  of <scenario>), an entry of a runs directory
+#                                                  that is neither a run nor its <id>.json record,
+#                                                  and an arm (score's key, `tester-proof:head`,
+#                                                  `askgate:facts:on`) that no --arm names, or
+#                                                  that holds other than the <n> runs, scored or
+#                                                  rig errors, its --arm names
 #   rig.sh health    [--tmp-snapshot <file>] [--repo <git dir>]... <run dir>...
 #                                                  (each --repo a git directory the daemon sources
 #                                                  of a run's label are rebuilt from, by the commit

@@ -230,7 +230,7 @@
  * refusal after a turn included; and 2 for a usage error. boot-refusal.ts answers it
  * (`askBootRefusal`).
  */
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { dispatchToolSpecs } from "@legion/contracts/dispatch-tools";
 import { z } from "zod";
@@ -265,6 +265,7 @@ import { FIELD_REFUSED, PULL_NOT_FOUND } from "./gh-view";
 import { callWrites } from "./gh-writes";
 import { githubRouteOf } from "./github-routes";
 import {
+  entryKind,
   holds,
   proseNames,
   RUN_ID,
@@ -388,9 +389,14 @@ interface Run {
   readonly before: readonly string[] | undefined;
 }
 
-/** The run directory `dir` names, with its scenario and label, or why it is none. */
+/** The run directory `dir` names, with its scenario and label, or why it is none: a run is a
+ * directory the rig made, so a symlink, read through, would be judged by what the run does not
+ * hold, and is refused as score.ts's `runsOf` refuses one, naming its kind. */
 function runOf(dir: string): { scenario: string; label: string } | string {
-  if (!existsSync(dir) || !statSync(dir).isDirectory()) return `${dir} is not a directory`;
+  const stats = lstatSync(dir, { throwIfNoEntry: false });
+  if (stats === undefined) return `${dir} is not a directory`;
+  const kind = entryKind(stats);
+  if (kind !== "directory") return `${dir} is a ${kind}, not a run directory`;
   try {
     const scenario = scenarioOf(dir);
     if (scenario === undefined)

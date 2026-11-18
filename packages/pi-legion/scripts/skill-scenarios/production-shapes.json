@@ -1,5 +1,5 @@
 {
-  "made_by": "production-shapes.ts (bun production-shapes.ts <ruleset reads dir> <production reads json> <read_record json> [<later reads json>...] <out json>), from INFRA-764's production reads of a branch a ruleset alone protects, of every distinct read round 25's runs made, of one issue's record as the legion tool's read_record answers it, and of each read the world served with no pin, each read from a Legion issue pod with the role App token its gh gives",
+  "made_by": "production-shapes.ts (bun production-shapes.ts <ruleset reads dir> <production reads json> <read_record json> [<later reads json>...] <out json>), from INFRA-764's production reads of a branch a ruleset alone protects, of every distinct read round 25's runs made, of one issue's record as the legion tool's read_record answers it, of each read the world served with no pin, and of every text read again whole, each read from a Legion issue pod with the role App token its gh gives",
   "reads": [
     {
       "name": "branches-main",
@@ -1134,22 +1134,13 @@
     {
       "name": "gh pr diff -",
       "command": ["gh", "pr", "diff", "<number>", "--repo", "<owner>/<repo>"],
-      "read_at": "2026-11-17 about 15:40Z",
-      "exit": 0,
-      "stderr": "",
+      "read_at": "2026-11-18T17:22:33Z",
+      "exit": 1,
+      "stderr": "could not find pull request diff: HTTP 406: Sorry, the diff exceeded the maximum number of lines (20000) (https://api.github.com/repos/<owner>/<repo>/pulls/<number>)\nPullRequest.diff too_large\n",
       "shape": {
         ".": "string"
       },
-      "lines": [
-        "diff --git a/<path> b/<path>",
-        "index <blob>..<blob>",
-        "--- <path>",
-        "+++ <path>",
-        "@@ -<line> +<line> @@",
-        " <text>",
-        "-<text>",
-        "<cut line>"
-      ]
+      "lines": []
     },
     {
       "name": "gh pr view baseRefName",
@@ -1354,8 +1345,8 @@
     },
     {
       "name": "gh pr view -",
-      "command": ["gh", "pr", "view", "<number>"],
-      "read_at": "2026-11-17 about 15:40Z",
+      "command": ["gh", "pr", "view", "<number>", "--repo", "<owner>/<repo>"],
+      "read_at": "2026-11-18T17:22:29Z",
       "exit": 0,
       "stderr": "",
       "shape": {
@@ -1376,8 +1367,7 @@
         "deletions:\t<value>",
         "auto-merge:\t<value>",
         "--",
-        "<body>",
-        "<cut line>"
+        "<body>"
       ]
     },
     {
@@ -2352,22 +2342,13 @@
     {
       "name": "gh pr diff ---color",
       "command": ["gh", "pr", "diff", "<number>", "--color", "never", "--repo", "<owner>/<repo>"],
-      "read_at": "2026-11-17 about 15:40Z",
-      "exit": 0,
-      "stderr": "",
+      "read_at": "2026-11-18T17:22:35Z",
+      "exit": 1,
+      "stderr": "could not find pull request diff: HTTP 406: Sorry, the diff exceeded the maximum number of lines (20000) (https://api.github.com/repos/<owner>/<repo>/pulls/<number>)\nPullRequest.diff too_large\n",
       "shape": {
         ".": "string"
       },
-      "lines": [
-        "diff --git a/<path> b/<path>",
-        "index <blob>..<blob>",
-        "--- <path>",
-        "+++ <path>",
-        "@@ -<line> +<line> @@",
-        " <text>",
-        "-<text>",
-        "<cut line>"
-      ]
+      "lines": []
     },
     {
       "name": "gh pr view body,title,url",
@@ -2384,8 +2365,8 @@
     },
     {
       "name": "gh pr view ---comments",
-      "command": ["gh", "pr", "view", "<number>", "--comments"],
-      "read_at": "2026-11-17 about 15:40Z",
+      "command": ["gh", "pr", "view", "<number>", "--repo", "<owner>/<repo>", "--comments"],
+      "read_at": "2026-11-18T17:22:32Z",
       "exit": 0,
       "stderr": "",
       "shape": {
@@ -2397,8 +2378,7 @@
         "edited:\t<value>",
         "status:\t<value>",
         "--",
-        "<body>",
-        "<cut line>"
+        "<body>"
       ]
     },
     {
@@ -2819,13 +2799,13 @@
     {
       "name": "gh pr diff ---name-only",
       "command": ["gh", "pr", "diff", "<number>", "--repo", "<owner>/<repo>", "--name-only"],
-      "read_at": "2026-11-17 about 15:40Z",
-      "exit": 0,
-      "stderr": "",
+      "read_at": "2026-11-18T17:22:37Z",
+      "exit": 1,
+      "stderr": "could not find pull request diff: HTTP 406: Sorry, the diff exceeded the maximum number of lines (20000) (https://api.github.com/repos/<owner>/<repo>/pulls/<number>)\nPullRequest.diff too_large\n",
       "shape": {
         ".": "string"
       },
-      "lines": ["<path>", "<cut line>"]
+      "lines": []
     },
     {
       "name": "gh pr view headRefName,headRefOid,number,state",
@@ -3147,7 +3127,7 @@
         "-f",
         "query=query{repository(owner:\"<owner>\",name:\"<repo>\"){pullRequest(number:<number>){reviewThreads(first:20){nodes{id isResolved path comments(first:5){nodes{body author{login}}}}}}}"
       ],
-      "read_at": "2026-11-17 about 15:40Z",
+      "read_at": "2026-11-18T17:22:54Z",
       "exit": 1,
       "stderr": "gh: Expected NAME, actual: (none) (\"\") at [1, 176]\n",
       "shape": {
@@ -4255,7 +4235,7 @@
         "-H",
         "Accept: application/vnd.github.v3.diff"
       ],
-      "read_at": "2026-11-18T08:43:12Z",
+      "read_at": "2026-11-18T17:22:42Z",
       "exit": 0,
       "stderr": "",
       "shape": {
@@ -4359,7 +4339,7 @@
     {
       "name": "gh auth status",
       "command": ["gh", "auth", "status"],
-      "read_at": "2026-11-18T08:43:16Z",
+      "read_at": "2026-11-18T17:22:43Z",
       "exit": 0,
       "stderr": "",
       "shape": {
@@ -4376,7 +4356,7 @@
     {
       "name": "gh pr list (text)",
       "command": ["gh", "pr", "list", "--repo", "<owner>/<repo>", "--limit", "3"],
-      "read_at": "2026-11-18T08:43:17Z",
+      "read_at": "2026-11-18T17:22:44Z",
       "exit": 0,
       "stderr": "",
       "shape": {
@@ -4387,7 +4367,7 @@
     {
       "name": "gh pr list --base main (text)",
       "command": ["gh", "pr", "list", "--repo", "<owner>/<repo>", "--base", "main", "--limit", "3"],
-      "read_at": "2026-11-18T08:43:18Z",
+      "read_at": "2026-11-18T17:22:45Z",
       "exit": 0,
       "stderr": "",
       "shape": {
@@ -4408,7 +4388,7 @@
         "--limit",
         "3"
       ],
-      "read_at": "2026-11-18T08:43:19Z",
+      "read_at": "2026-11-18T17:22:47Z",
       "exit": 0,
       "stderr": "",
       "shape": {
@@ -4419,7 +4399,7 @@
     {
       "name": "gh pr list --state all (text)",
       "command": ["gh", "pr", "list", "--repo", "<owner>/<repo>", "--state", "all", "--limit", "3"],
-      "read_at": "2026-11-18T08:43:20Z",
+      "read_at": "2026-11-18T17:22:48Z",
       "exit": 0,
       "stderr": "",
       "shape": {
@@ -4430,7 +4410,7 @@
     {
       "name": "gh pr diff",
       "command": ["gh", "pr", "diff", "<number>", "--repo", "<owner>/<repo>"],
-      "read_at": "2026-11-18T08:43:22Z",
+      "read_at": "2026-11-18T17:22:38Z",
       "exit": 0,
       "stderr": "",
       "shape": {
@@ -4450,7 +4430,7 @@
     {
       "name": "gh pr diff --name-only",
       "command": ["gh", "pr", "diff", "<number>", "--repo", "<owner>/<repo>", "--name-only"],
-      "read_at": "2026-11-18T08:43:23Z",
+      "read_at": "2026-11-18T17:22:41Z",
       "exit": 0,
       "stderr": "",
       "shape": {
@@ -4461,7 +4441,7 @@
     {
       "name": "gh pr checks (merged, all concluded)",
       "command": ["gh", "pr", "checks", "<number>", "--repo", "<owner>/<repo>"],
-      "read_at": "2026-11-18T08:43:25Z",
+      "read_at": "2026-11-18T17:22:50Z",
       "exit": 0,
       "stderr": "",
       "shape": {
@@ -4472,7 +4452,7 @@
     {
       "name": "gh pr checks (open)",
       "command": ["gh", "pr", "checks", "<number>", "--repo", "<owner>/<repo>"],
-      "read_at": "2026-11-18T08:43:26Z",
+      "read_at": "2026-11-18T17:22:52Z",
       "exit": 1,
       "stderr": "no checks reported on the '<branch>' branch\n",
       "shape": {
@@ -4483,7 +4463,7 @@
     {
       "name": "gh run view (missing id)",
       "command": ["gh", "run", "view", "1", "--repo", "<owner>/<repo>"],
-      "read_at": "2026-11-18T08:43:27Z",
+      "read_at": "2026-11-18T17:22:52Z",
       "exit": 1,
       "stderr": "failed to get run: HTTP 404: Not Found (https://api.github.com/repos/<owner>/<repo>/actions/runs/1?exclude_pull_requests=true)\n",
       "shape": {
@@ -4494,7 +4474,7 @@
     {
       "name": "gh run watch (missing id)",
       "command": ["gh", "run", "watch", "1", "--repo", "<owner>/<repo>"],
-      "read_at": "2026-11-18T08:43:28Z",
+      "read_at": "2026-11-18T17:22:53Z",
       "exit": 1,
       "stderr": "failed to get run: HTTP 404: Not Found (https://api.github.com/repos/<owner>/<repo>/actions/runs/1?exclude_pull_requests=true)\n",
       "shape": {
@@ -5914,6 +5894,71 @@
         ".errors[].locations[].column": "number",
         ".errors[].message": "string"
       }
+    },
+    {
+      "name": "gh pr diff --color never (small)",
+      "command": ["gh", "pr", "diff", "<number>", "--color", "never", "--repo", "<owner>/<repo>"],
+      "read_at": "2026-11-18T17:22:39Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "string"
+      },
+      "lines": [
+        "diff --git a/<path> b/<path>",
+        "index <blob>..<blob>",
+        "--- <path>",
+        "+++ <path>",
+        "@@ -<line> +<line> @@",
+        " <text>",
+        "+<text>",
+        "-<text>"
+      ]
+    },
+    {
+      "name": "gh pr view (text, small)",
+      "command": ["gh", "pr", "view", "<number>", "--repo", "<owner>/<repo>"],
+      "read_at": "2026-11-18T17:22:56Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "string"
+      },
+      "lines": [
+        "title:\t<value>",
+        "state:\t<value>",
+        "author:\t<value>",
+        "labels:\t<value>",
+        "assignees:\t<value>",
+        "reviewers:\t<value>",
+        "projects:\t<value>",
+        "milestone:\t<value>",
+        "number:\t<value>",
+        "url:\t<value>",
+        "additions:\t<value>",
+        "deletions:\t<value>",
+        "auto-merge:\t<value>",
+        "--",
+        "<body>"
+      ]
+    },
+    {
+      "name": "gh pr view --comments (text, small)",
+      "command": ["gh", "pr", "view", "<number>", "--repo", "<owner>/<repo>", "--comments"],
+      "read_at": "2026-11-18T17:22:58Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "string"
+      },
+      "lines": [
+        "author:\t<value>",
+        "association:\t<value>",
+        "edited:\t<value>",
+        "status:\t<value>",
+        "--",
+        "<body>"
+      ]
     },
     {
       "name": "legion read_record",
