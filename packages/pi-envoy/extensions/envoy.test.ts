@@ -6549,7 +6549,9 @@ console.log(JSON.stringify(args));
         );
         expect(stdout).toContain("dispatch comment was not called: AskGate is on for this session");
         expect(code).toBe(1);
-        expect(sent).toEqual([]);
+        // The written rules are read before AskGate's marker (dispatch-cli.ts), so the CLI asks
+        // Dispatch whether they refuse, and posts nothing.
+        expect(sent).toEqual(["http://dispatch.test/api/v1/settings/writing-rules"]);
         await fixture.handlers.get("session_shutdown")?.({}, gateContext([]));
       } finally {
         delete process.env.OMP_ASKGATE;
