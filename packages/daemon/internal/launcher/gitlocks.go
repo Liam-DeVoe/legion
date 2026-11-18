@@ -62,10 +62,11 @@ var gitLockRemove = os.Remove
 // gitLockProc is the /proc newGitLockSweep gives the sweep (gitLockSweep.proc): the container's
 // own, where PID 1 of the container sees every process that may hold a lock. It is a variable for
 // the rows that drive a real launcher, which builds its sweep here and so takes no field of its
-// own. Such a row points it at a /proc of its own (useSweepingLauncher), as it points the memory
-// guard at a pod of its own: the /proc of the machine a test runs on lists processes the row knows
-// nothing of, and on a machine several users share, any git or jj of another user is one whose
-// open files the test cannot read, which keeps every lock the row planted (holders).
+// own. Every row that stands its process in for PID 1 points it at a /proc of its own
+// (useContainerInit), as it points the memory guard at a pod of its own: the /proc of the machine
+// a test runs on lists processes the row knows nothing of, and on a machine several users share,
+// any git or jj of another user is one whose open files the test cannot read, which keeps every
+// lock the row planted (holders).
 var gitLockProc = "/proc"
 
 // gitLockFirstPassBound is how long the launcher's first pass may spend between the locks it

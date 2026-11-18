@@ -23,11 +23,22 @@ import (
 // PID 1, so every other test's launcher runs no memory guard and no git lock sweep at all; a test
 // of the guard stands its process in for PID 1, and points the guard at a pod of its own
 // (useGuardPod), and a test of the sweep does the same (useSweepingLauncher).
+//
+// A launcher that takes its process for the container's first reads the container's /proc twice
+// over: the memory guard reads the pod each caller gives it, and the git lock sweep reads the
+// /proc this gives it, one whose only process is the test's (useGitLockProc). The /proc of the
+// machine a test runs on lists processes the test knows nothing of, and on a machine several
+// users share, a git or jj of another user is one whose open files the test cannot read, which
+// the sweep counts as a holder of every lock. A test that wants the sweep to read another /proc
+// points it there after this.
 func useContainerInit(t *testing.T, first bool) {
 	t.Helper()
 	previous := containerInit
 	containerInit = func() bool { return first }
 	t.Cleanup(func() { containerInit = previous })
+	if first {
+		useGitLockProc(t, procRoot(t, os.Getpid()))
+	}
 }
 
 const (

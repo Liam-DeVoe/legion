@@ -106,7 +106,10 @@ func TestARoleRunsInNamespacesOfItsOwn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan := stagePlan{Self: self, Mount: stageMountPoint(t), Role: "a", Sibling: "b", Owner: "acme", Detached: "987654"}
+	// The detached process sleeps for Detached seconds, and the stage looks for that number on the
+	// machine's /proc (detachedProcess). It is this test process's pid after a 9, so a detached
+	// sleep of another run on the same machine is never taken for this run's.
+	plan := stagePlan{Self: self, Mount: stageMountPoint(t), Role: "a", Sibling: "b", Owner: "acme", Detached: fmt.Sprintf("9%010d", os.Getpid())}
 	encoded, err := json.Marshal(plan)
 	if err != nil {
 		t.Fatal(err)

@@ -353,14 +353,13 @@ func shortGitLockClock(t *testing.T, interval, recheck time.Duration) {
 // sweeps (serveGitLockSweep) and no test of this package runs as PID 1. Such a launcher runs the
 // memory guard too, so the guard is pointed at an empty pod of its own (useGuardPod), whose
 // reading is far below the mark and whose signal ends nothing of the machine's, and its sweep
-// reads a /proc of the row's own whose one process is the test's (useGitLockProc), rather than
+// reads a /proc of the row's own whose one process is the test's (useContainerInit), rather than
 // either reading this machine's /proc, whose processes the row knows nothing of. It is called
 // before the launcher starts, so its restore runs after the launcher's own cleanup, which waits
 // for Run.
 func useSweepingLauncher(t *testing.T) {
 	t.Helper()
 	useGuardPod(t, newGuardPod(t), nil)
-	useGitLockProc(t, procRoot(t, os.Getpid()))
 }
 
 // useGitLockProc points the sweep of every launcher this row starts (newGitLockSweep) at proc
@@ -2391,6 +2390,10 @@ func TestTheDerivationRefusesACloneThatIsASymlinkBeforeTheSweepStarts(t *testing
 	t.Chdir(c.dir)
 	log := &lockedBuffer{}
 	s := newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef)
+	// A /proc of the row's own, as every other row's sweep reads: were the derivation to take the
+	// clone, the pass below would remove both locks, where over this machine's /proc any git or jj
+	// of another user whose open files cannot be read would keep them and hide that.
+	s.proc = procRoot(t, os.Getpid())
 	refusal := fmt.Sprintf("launcher: the git lock sweep's working directory %q is no jj workspace it can sweep (%q); it takes its workspace from the first role start",
 		c.dir, fmt.Sprintf("refusing workspace operation in %s: %s is a symlink, and no directory of the workspace layout below the state directory is one", c.dir, c.clone))
 	requireLine(t, log, refusal)
