@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -74,6 +75,12 @@ type podShapeRecord struct {
 	Mounts           []corev1.VolumeMount        `json:"mounts,omitempty"`
 	Disk             string                      `json:"disk"`
 	SkillsRepository string                      `json:"skills_repository,omitempty"`
+	// Roles are the kind's roles beyond Legion's six, by name: each role the deployment defines,
+	// for an issue pod (podKind.roles), and none for the controller's pod or for a deployment
+	// that defines none, whose annotation is then the one a release before the roles of a
+	// deployment wrote, so no pod drifts for the field itself. A role added makes every issue
+	// pod's annotation differ, so PodDrift reads its Sandbox (rolesDrift).
+	Roles []string `json:"roles,omitempty"`
 }
 
 // podShape is the configuration a pod of kind is built from now, as its template's annotation
@@ -91,6 +98,12 @@ func podShape(r *Runtime, kind podKind) string {
 	if repository := kind.skillsRepository(r); !repository.IsZero() {
 		skills = repository.String()
 	}
+	var roles []string
+	for _, role := range kind.roles(r) {
+		if role != claim.RoleController && !claim.IsBuiltin(role) {
+			roles = append(roles, string(role))
+		}
+	}
 	encoded, err := json.Marshal(podShapeRecord{
 		Image:            r.image,
 		Resources:        kind.resources(r),
@@ -98,6 +111,7 @@ func podShape(r *Runtime, kind podKind) string {
 		Mounts:           r.pod.VolumeMounts,
 		Disk:             r.volumeSize.String(),
 		SkillsRepository: skills,
+		Roles:            roles,
 	})
 	if err != nil {
 		r.log.Error("sandbox runtime: the pod shape cannot be encoded; pods will be compared by image alone", "error", err)
@@ -291,7 +305,7 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 		if err != nil {
 			return nil, fmt.Errorf("sandbox runtime: pod drift %s: %w", k.Claim, err)
 		}
-		drifted = r.shapeDrift(s, kind)
+		drifted = append(r.shapeDrift(s, kind), rolesDrift(s, kind.roles(r))...)
 	}
 	// The account the pod runs as is read from the live pod this call already holds, and both
 	// sides go through serviceAccountOr, so a configured account left unset matches a pod on
@@ -378,4 +392,58 @@ func podKindFor(role claim.Role) podKind {
 		return controllerPod{}
 	}
 	return issuePod{}
+}
+
+// templateRoles are the roles the stored template of the Sandbox read as s builds its pod with:
+// the --role values its launcher container's command names (issuePod.launcherContainer writes
+// one for each role of the launch, controllerPod.launcherContainer the controller's). It reads
+// every pod this layout builds, its template recording a shape or none, so a pod is judged by
+// the roles it was built with, never by the roles the runtime has now. None is a template no
+// launcher of this layout wrote.
+func templateRoles(s *sandbox) []claim.Role {
+	var roles []claim.Role
+	for _, container := range s.Spec.PodTemplate.Spec.Containers {
+		for i := 0; i+1 < len(container.Command); i++ {
+			if container.Command[i] == "--role" {
+				roles = append(roles, claim.Role(container.Command[i+1]))
+				i++
+			}
+		}
+	}
+	return roles
+}
+
+// rolesDrift is the one reason a pod built before a role of the deployment drifts by: where
+// roles (the kind's roles now, podKind.roles) hold one that the Sandbox s's template was built
+// without, `roles <the template's>, now <the runtime's>`. A pod built with a role the deployment
+// no longer defines gets no reason: it runs every role there is.
+func rolesDrift(s *sandbox, roles []claim.Role) []string {
+	held := templateRoles(s)
+	if !slices.ContainsFunc(roles, func(role claim.Role) bool { return !slices.Contains(held, role) }) {
+		return nil
+	}
+	return []string{"roles " + runtime.JoinRoles(held) + ", now " + runtime.JoinRoles(roles)}
+}
+
+// PodLacksRole satisfies runtime.IssuePodRoles: the uid of the issue's live pod (livePod) whose
+// template was built without role (templateRoles), and true; "" and false where the issue has
+// no Sandbox, no live pod, or a pod built with role. It reads the informers' stores alone and
+// makes no API call.
+func (r *Runtime) PodLacksRole(issue string, role claim.Role) (string, bool) {
+	name, err := issueSandboxName(r.project, issue)
+	if err != nil {
+		return "", false
+	}
+	s, err := r.storedSandbox(name)
+	if err != nil || s == nil {
+		return "", false
+	}
+	pod := r.storedPod(name)
+	if !livePod(s, pod) {
+		return "", false
+	}
+	if held := templateRoles(s); len(held) == 0 || slices.Contains(held, role) {
+		return "", false
+	}
+	return string(pod.UID), true
 }

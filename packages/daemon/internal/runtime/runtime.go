@@ -203,6 +203,20 @@ type IssuePodReader interface {
 	IssuePod(issue string) (pod string, read bool)
 }
 
+// ErrAwaitsPodUpdate is a launch of a role into its issue's live pod that was built before the
+// deployment defined that role: the pod has no launcher, Secret or volume of the role, and a
+// launch that replaced it would end every role in it and delete the issue's disk with everything
+// a role did not push. The launch writes nothing and answers this; the pod's update round, which
+// asks each role in it to push first, or its release replaces it, and the role starts in the new
+// pod (IssuePodRoles).
+var ErrAwaitsPodUpdate = errors.New("the issue's pod was built before this role, and only its update round or its release replaces it")
+
+// IssuePodRoles answers whether the issue's Sandbox holds a live pod whose launcher was built
+// without role, and that pod's uid. A runtime with no pods (tmux) does not implement it.
+type IssuePodRoles interface {
+	PodLacksRole(issue string, role claim.Role) (pod string, lacks bool)
+}
+
 // IssueSuspender stops an issue's pod once authorize, called under the runtime's issue launch
 // lock, says the issue's durable close and its complete stored role population allow it (false
 // finishes the close without acting). Once the pod is stopped, the issue's Sandbox is deleted
