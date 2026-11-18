@@ -132,16 +132,20 @@
 #      `.` or `source` handed any file there this check does not read as a script, a `.py`, a
 #      `.jq` or a `.pyc` among them, is refused at that run, in the text of a shell's `-c` too,
 #      and so is a command word naming such a file with no `#!` line, which the shell runs as
-#      shell text, where one whose `#!` line names python3 runs as Python and passes
-#      (unread_operand, text_operand, unread_command; dispatch://INFRA-1545, round 38).
+#      shell text, where one whose `#!` line names python3 runs as Python and passes. Such a
+#      file is named by its path from the repository's root, and where a `cd` or a `pushd` in the
+#      text, or a `working-directory` the step or its job's or workflow's defaults set, may move
+#      the shell away from there, a literal path that names no file of the tree is read by its
+#      name, as a variable directory is (unread_operand, text_operand, unread_command,
+#      unread_file; dispatch://INFRA-1545, round 38).
 #      THE REACH OF THIS READING: rule 8 reads literal paths. It names a script by the path a run
 #      or a source writes, and refuses a run whose target is built from data as the step runs
 #      rather than guess what that data holds (unnamed_runs; dispatch://INFRA-1545, round 37).
-#      The target is the operand of `bash`, `sh`, `dash`, `zsh`, `ksh`, `.` or `source`, or a
-#      command word, and it is refused where it could be a script under .github/scripts/ this
-#      check cannot name: its last path element is wholly an expansion (`"$p"`, `$(cmd)`), that
-#      element holds an expansion and ends in `.sh` (`"$dir/$name.sh"`), its literal directory
-#      is .github/scripts/ and that element holds an expansion, it names a script with no
+#      The target is the operand of `bash`, `sh`, `dash`, `zsh`, `ksh`, `ash`, `.` or `source`,
+#      or a command word, and it is refused where it could be a script under .github/scripts/
+#      this check cannot name: its last path element is wholly an expansion (`"$p"`, `$(cmd)`),
+#      that element holds an expansion and ends in `.sh` (`"$dir/$name.sh"`), its literal
+#      directory is .github/scripts/ and that element holds an expansion, it names a script with no
 #      directory (`bash x.sh`, `x.sh`), which bash finds through the working directory or PATH,
 #      so after a `cd` into .github/scripts/ or with PATH reaching it, or it is a file the same
 #      text writes (written_files): as the operand of a shell, `.` or `source`, any file it
@@ -1085,7 +1089,7 @@ ACTIONS = Path(".github/actions")
 SCRIPTS = Path(".github/scripts")
 # The files of .github/scripts/ that are no script, and that this check leaves unread where they
 # sit directly in that directory: its Python programs and its jq filter, but one whose first line
-# runs a shell (SHEBANG_SHELLS), which is refused as the shell program it is. A shell, `.` or
+# runs a shell (INTERPRETERS), which is refused as the shell program it is. A shell, `.` or
 # `source` handed one, or any other file under that directory this check does not read as a
 # script, is refused (unread_operand), and so is every other file there that it does not read
 # (the reading set; dispatch://INFRA-1545, round 38).
@@ -1236,13 +1240,18 @@ WRAPPER_OPTIONS = {
     "sudo": {"-E": 0},
 }
 # Transparent, but the command they run is inside the script string behind `-c`, which rule 8
-# reads in one form, `bash -c '<text>'` (sites_of_command). `ksh` is one of them since round 37,
-# so that a run of a file under .github/scripts/ by it is read as by the others (unread_operand;
-# dispatch://INFRA-1545, round 37); the tree writes none.
-INTERPRETERS = {"bash", "sh", "dash", "zsh", "ksh"}
-# The shells a file's `#!` line may name, by any path or through `env` (shell_shebang): a `.py`
-# or a `.jq` whose first line names one is a shell program (dispatch://INFRA-1545, round 38).
-SHEBANG_SHELLS = INTERPRETERS | {"ash"}
+# reads in one form, `bash -c '<text>'` (sites_of_command). The one list of shells this check
+# reads, here and in unread_heredocs's pipe into a shell, and the shells a file's `#!` line may
+# name (shell_shebang). `ksh` is one of them since round 37 and `ash` since round 38, so that a
+# run of a file under .github/scripts/ by either is read as by the others (unread_operand):
+# until round 38 `ash` named a shell program in a `#!` line, while `ash .github/scripts/x.py` was
+# read as a command named `ash` and no run of that file (dispatch://INFRA-1545, rounds 37 and
+# 38). The tree writes neither.
+INTERPRETERS = {"bash", "sh", "dash", "zsh", "ksh", "ash"}
+# A pipe into one of them, on a heredoc's operator line: what a command prints there is run as
+# shell text (unread_heredocs). Until round 38 it was its own spelling of four of them, so here a
+# heredoc a `cat` piped into `ksh` or `ash` was read as data (dispatch://INFRA-1545, round 38).
+PIPE_INTO_SHELL = re.compile(r"\|&?\s*(?:\S*/)?(?:" + "|".join(sorted(INTERPRETERS)) + r")\b")
 # Transparent, and the verb is what they run: a package runner resolves a binary the workspace's
 # own install already provides.
 RUNNERS = {"bunx", "npx", "pnpx", "pnpm-dlx"}
@@ -1385,7 +1394,7 @@ def unread_heredocs(text: str) -> list[tuple[int, str, str]]:
             sentence = HEREDOC_UNREAD.format(
                 consumer=f"`{words[0]}`" if words else "no command",
                 cure="Write the body's commands in the step itself")
-        elif re.search(r"\|&?\s*(?:\S*/)?(?:bash|sh|dash|zsh)\b", match.string[match.end():]):
+        elif PIPE_INTO_SHELL.search(match.string[match.end():]):
             sentence = HEREDOC_UNREAD.format(
                 consumer=f"`{words[0]}`, whose output a pipe on the operator's line hands to a "
                          "shell",
@@ -1954,6 +1963,11 @@ class Loops:
         self.commands: list[Command] = []
         self.text = ""
         self.first_line = 1
+        # Whether a step runs this body in another directory than the repository's root, its
+        # own `working-directory` or its job's or its workflow's default one (runs_elsewhere),
+        # which moves where a path of the tree a run names is read from (unread_file;
+        # dispatch://INFRA-1545, round 38). A script's text and a Dockerfile RUN set none.
+        self.elsewhere = False
 
     def enclosing(self, line: int) -> list[int]:
         """The loops around one line of this body, outermost first. A command carries its own
@@ -4071,7 +4085,7 @@ scripts = [
 
 
 def shell_shebang(path: str) -> str | None:
-    """The first line of the file at `path` where it is a `#!` line naming one of SHEBANG_SHELLS,
+    """The first line of the file at `path` where it is a `#!` line naming one of INTERPRETERS,
     by any path or through `env` with or without options, `#!/bin/sh` and `#!/usr/bin/env -S
     bash -e` alike, or None (dispatch://INFRA-1545, round 38)."""
     with open(path, "rb") as handle:
@@ -4089,7 +4103,7 @@ def shell_shebang(path: str) -> str | None:
                 words.insert(0, option[2:])
             elif option.startswith("--split-string="):
                 words.insert(0, option.partition("=")[2])
-    return first if words and words[0].rsplit("/", 1)[-1] in SHEBANG_SHELLS else None
+    return first if words and words[0].rsplit("/", 1)[-1] in INTERPRETERS else None
 
 
 script_data = {path for path in files
@@ -4126,7 +4140,8 @@ for path in files:
 # that `scripts` does not hold, at any depth, but a `*.test.sh` harness directly in that
 # directory. A harness is not read, as TEST_HARNESS says, and a run of one by a shell is left as
 # that reading leaves it (dispatch://INFRA-1545, round 38).
-unread_files = {path for path in set(files) - set(scripts)
+tree_files = set(files)
+unread_files = {path for path in tree_files - set(scripts)
                 if SCRIPTS in Path(path).parents
                 and not (Path(path).parent == SCRIPTS and path.endswith(TEST_HARNESS))}
 unread_names = {Path(path).name for path in unread_files}
@@ -4258,6 +4273,18 @@ def defaults_shell(holder: object) -> object:
     defaults = holder.get("defaults")
     run = defaults.get("run") if isinstance(defaults, Mapping) else None
     return run.get("shell") if isinstance(run, Mapping) else None
+
+
+def runs_elsewhere(step: Mapping, holder: object, document: object) -> bool:
+    """Whether a step runs in another directory than the repository's root: it writes a
+    `working-directory`, as a workflow's step and a composite action's step can, or its job or
+    its workflow sets `defaults.run.working-directory` (dispatch://INFRA-1545, round 38)."""
+    def defaulted(owner: object) -> bool:
+        defaults = owner.get("defaults") if isinstance(owner, Mapping) else None
+        run = defaults.get("run") if isinstance(defaults, Mapping) else None
+        return isinstance(run, Mapping) and "working-directory" in run
+
+    return "working-directory" in step or defaulted(holder) or defaulted(document)
 
 
 def sets_pipefail(shell: object) -> bool:
@@ -4471,6 +4498,7 @@ for path in workflows + actions:
                 first_line += 1
             found, loops_read = sites_of(path, step["run"], first_line, name,
                                          sets_pipefail(shell))
+            loops_read.elsewhere = runs_elsewhere(step, holder, document)
             commands = loops_read.commands
             occurrences = occurrences_of(step["run"], first_line, loops_read)
             called = recognised(occurrences)
@@ -5731,59 +5759,76 @@ def target_parts(word: str, action: str | None) -> tuple[str, list[tuple[int, in
     return word, spans, cut
 
 
-def unread_operand(word: str, action: str | None) -> str | None:
+def unread_operand(word: str, action: str | None, elsewhere: bool) -> str | None:
     """UNREAD_RUN where `word`, what a shell, `.` or `source` runs, is or may be one of
     unread_files, a file under .github/scripts/ this check does not read as a script, which that
     shell runs as shell text, or None (dispatch://INFRA-1545, round 38). A word whose path is
-    literal names one where, normalised, it reaches such a file through .github/scripts/, as
-    `../../.github/scripts/x.py` does from a step's working directory; one whose directory holds
-    an expansion, `"$script_dir/x.py"`, or that has none, which the shell finds through the
-    working directory or PATH, where its last element is the name of such a file, read by its
-    name as SCRIPT_CALL reads a script's; and one whose last element holds an expansion may be
-    one where it ends as such a file the reading set leaves standing does, UNREAD_SUFFIXES.
-    `python3 .github/scripts/x.py` and `jq -f .github/scripts/x.jq` hand the file to no shell,
-    and are not read here. Until round 38 only a top-level `.py` or `.jq` was refused here, and
-    `bash .github/scripts/__pycache__/x.pyc` ran shell text no rule read."""
+    literal names one as unread_file reads it, `elsewhere` being whether the shell may run it
+    from another directory than the repository's root; one whose directory holds an expansion,
+    `"$script_dir/x.py"`, or that has none, which the shell finds through the working directory
+    or PATH, where its last element is the name of such a file, read by its name as SCRIPT_CALL
+    reads a script's; and one whose last element holds an expansion may be one where it ends as
+    such a file the reading set leaves standing does, UNREAD_SUFFIXES. `python3
+    .github/scripts/x.py` and `jq -f .github/scripts/x.jq` hand the file to no shell, and are
+    not read here. Until round 38 only a top-level `.py` or `.jq` was refused here, and `bash
+    .github/scripts/__pycache__/x.pyc` ran shell text no rule read."""
     word, spans, cut = target_parts(word, action)
     last = word[cut + 1:]
     if expansions_in(last):
         return UNREAD_RUN if last.endswith(UNREAD_SUFFIXES) else None
     if cut >= 0 and not spans:
-        return UNREAD_RUN if unread_file(word) else None
+        return UNREAD_RUN if unread_file(word, elsewhere) else None
     return UNREAD_RUN if last in unread_names else None
 
 
-def unread_file(word: str) -> str | None:
-    """The one of unread_files a literal path, `word`, reaches through .github/scripts/ once
-    normalised, `../../.github/scripts/x.py` from a step's working directory among them, or
-    None."""
-    named = f"/{os.path.normpath(word)}"
+def unread_file(word: str, elsewhere: bool) -> list[str]:
+    """The files of unread_files a literal path, `word`, may name (dispatch://INFRA-1545, round
+    38): the one it reaches through .github/scripts/ once normalised, as
+    `../../.github/scripts/x.py` does from a step's working directory; and, where the shell may
+    run it from another directory than the repository's root, `elsewhere`, every one of its
+    name, read as a path whose directory is a variable is read, unless the path normalises to a
+    file of the tree. A `cd` or a `pushd` in the text, or a `working-directory` the step runs
+    in (runs_elsewhere), is such a move, which this check does not follow: until round 38 `cd
+    .github/scripts/lib && bash ../x.py` and `cd .github/scripts && ./x.py` read as files no
+    tree holds and ran one this check does not read."""
+    path = os.path.normpath(word)
+    named = f"/{path}"
     at = named.find(f"/{SCRIPTS}/")
-    return named[at + 1:] if at >= 0 and named[at + 1:] in unread_files else None
+    if at >= 0 and named[at + 1:] in unread_files:
+        return [named[at + 1:]]
+    if elsewhere and path not in tree_files:
+        return sorted(file for file in unread_files if Path(file).name == Path(path).name)
+    return []
 
 
-def unread_command(word: str, action: str | None) -> str | None:
-    """UNREAD_COMMAND where `word`, a command word, is a literal path to one of unread_files
-    whose first line is no `#!` line, or None (dispatch://INFRA-1545, round 38). The shell runs
-    such a file as shell text, which no rule reads: until round 38 `.github/scripts/x.py`, a
-    `.py` of shell commands with no `#!` line, ran them unread. One whose `#!` line names
-    python3 runs as Python, and one naming a shell is refused where it stands (shell_shebang).
-    A word holding an expansion, or no `/`, is read as unnamed_target and unseen read it."""
+def unread_command(word: str, action: str | None, elsewhere: bool) -> str | None:
+    """UNREAD_COMMAND where `word`, a command word, is a literal path that may name one of
+    unread_files whose first line is no `#!` line, read as unread_file reads it, or None
+    (dispatch://INFRA-1545, round 38). The shell runs such a file as shell text, which no rule
+    reads: until round 38 `.github/scripts/x.py`, a `.py` of shell commands with no `#!` line,
+    ran them unread. One whose `#!` line names python3 runs as Python, and one naming a shell is
+    refused where it stands (shell_shebang). A word holding an expansion, or no `/`, is read as
+    unnamed_target and unseen read it."""
     word, spans, cut = target_parts(word, action)
-    path = unread_file(word) if cut >= 0 and not spans else None
-    if path is None:
-        return None
-    with open(path, "rb") as handle:
-        return None if handle.read(2) == b"#!" else UNREAD_COMMAND
+    for path in unread_file(word, elsewhere) if cut >= 0 and not spans else []:
+        with open(path, "rb") as handle:
+            if handle.read(2) != b"#!":
+                return UNREAD_COMMAND
+    return None
 
 
-def text_operand(text: str, action: str | None, depth: int = 0) -> tuple[str, str] | None:
+def text_operand(text: str, action: str | None, elsewhere: bool,
+                 depth: int = 0) -> tuple[str, str] | None:
     """The shell, `.` or `source` the text of a shell's `-c` runs, and the file it hands it,
     where unread_operand refuses that file, read through the `-c` text of a shell the text runs
     in turn, or None (dispatch://INFRA-1545, round 38). The text is read as sites_of_command
-    reads it for its fetches, a command at a time: until round 38 `bash -c '.
+    reads it for its fetches, a command at a time, and runs elsewhere where the text around it
+    does or it holds a `cd` or a `pushd` of its own: until round 38 `bash -c '.
     .github/scripts/x.py'` ran a file no rule read and was refused by none."""
-    for command in Scanner(1).scan(text):
+    commands = Scanner(1).scan(text)
+    elsewhere = elsewhere or any(reduce_words(command.words)[0][:1] in (["cd"], ["pushd"])
+                                 for command in commands)
+    for command in commands:
         reduced = reduce_words(command.words)[0]
         if not reduced or expansions_in(reduced[0]):
             continue
@@ -5791,10 +5836,10 @@ def text_operand(text: str, action: str | None, depth: int = 0) -> tuple[str, st
         if head not in INTERPRETERS | {".", "source"}:
             continue
         kind, target = shell_operand(reduced)
-        if kind == "script" and unread_operand(target, action):
+        if kind == "script" and unread_operand(target, action, elsewhere):
             return head, target
         if kind == "text" and depth < 3:
-            inner = text_operand(target, action, depth + 1)
+            inner = text_operand(target, action, elsewhere, depth + 1)
             if inner is not None:
                 return inner
     return None
@@ -5883,8 +5928,8 @@ def unnamed_runs(path: str, loops: Loops, sees_fetching: bool,
     first and the last line of its command, what the command does, why it is refused, the form
     to write instead), UNNAMED_RUN's three parts (dispatch://INFRA-1545, round 37). One class,
     refused by its route rather than modelled shape by shape:
-      - a target, the operand of `bash`, `sh`, `dash`, `zsh`, `ksh`, `.` or `source`, the text
-        of a shell's `-c` where it is no single-quoted text, or a command word, refused where
+      - a target, the operand of a shell (INTERPRETERS), `.` or `source`, the text of a
+        shell's `-c` where it is no single-quoted text, or a command word, refused where
         unnamed_target says it could be such a script; where it names a script with no
         directory, `bash x.sh` or `x.sh`, which bash finds through the working directory or
         PATH, so after a `cd` into .github/scripts/ or with PATH reaching it; and where it is a
@@ -5938,6 +5983,10 @@ def unnamed_runs(path: str, loops: Loops, sees_fetching: bool,
     written = written_files(scanner, commands, action)
     moved = any(reduce_words(command.words)[0][:1] in (["cd"], ["pushd"])
                 for command in commands)
+    # A file this text writes is run from where it was written, so a step's working directory
+    # moves nothing for it; a file of the tree is named from the repository's root, which a
+    # working directory moves as a `cd` does (unread_file; dispatch://INFRA-1545, round 38).
+    elsewhere = moved or loops.elsewhere
     # The names the text sets, or writes as a word, `s=…`, `s+=…`, `s[…]=…`, `read -r s`, `for s
     # in`, and those each function's body sets to one of its positional parameters.
     named: set[str] = set()
@@ -6043,7 +6092,7 @@ def unnamed_runs(path: str, loops: Loops, sees_fetching: bool,
                 does = f"runs `{head}`"
                 why = f"which reads the program it runs from {STDIN_PROGRAM[command.input]}"
             elif kind == "text" and target:
-                inner = text_operand(target, action)
+                inner = text_operand(target, action, elsewhere)
                 if inner is not None:
                     does = f"runs `{head} -c` on text that hands `{inner[1]}` to `{inner[0]}`"
                     why = UNREAD_RUN
@@ -6054,7 +6103,7 @@ def unnamed_runs(path: str, loops: Loops, sees_fetching: bool,
                 does = (f"sources `{target}`" if head in (".", "source")
                         else f"runs `{target}` with `{head}`")
                 why = (unnamed_target(target, action) or unseen(target, True)
-                       or unread_operand(target, action))
+                       or unread_operand(target, action, elsewhere))
         elif not (VARIABLE_CALL.fullmatch(reduced[0])
                   and (sees_fetching or handed_in(command, reduced[0]))):
             target = reduced[0]
@@ -6062,7 +6111,7 @@ def unnamed_runs(path: str, loops: Loops, sees_fetching: bool,
             why = (HANDED_ON_RUN if (HANDED_ON.fullmatch(target) or POSITIONAL.fullmatch(target))
                    and loops.function_of(command.line) is None
                    else unnamed_target(target, action) or unseen(target, False)
-                   or unread_command(target, action))
+                   or unread_command(target, action, elsewhere))
         ends = [span[1] for span in command.spans if span]
         last = loops.first_line + text.count("\n", 0, max(ends)) if ends else command.line
         if why:

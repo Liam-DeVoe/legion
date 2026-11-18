@@ -12623,6 +12623,86 @@ check "passes the RUN that reads go env behind env -u" \
   "$(is "$(contains "$out" "worker.Dockerfile,line=4")" false)"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 9)"
 
+# W15. Four routes the Spec draft's review drove past the gate at a856bb35, each exit 0 under a
+# one-minute key (dispatch://INFRA-1545, round 38). A literal path names a file of the tree from
+# the repository's root, and a `cd`, a `pushd` or a working directory moves the shell away from
+# it: `cd .github/scripts/lib && bash ../r38-tool.py`, the same `bash ../r38-tool.py` under a
+# step's `working-directory` and under a job's default one, and `cd .github/scripts &&
+# ./r38-plain.py`, a `.py` of shell commands with no `#!` line, each read a path no file of the
+# tree has and passed. Where the directory may have moved, such a path is read by its name, as
+# a variable directory is, and refused at the run. And `ash`, a shell the `#!` reading named and
+# the run reading did not, now runs a file and reads a heredoc piped into it as every other
+# shell does. A cd that leaves a path naming another file of the tree, and a run by its name of
+# a `.py` whose first line names python3, pass.
+echo "case: r37 W15 a run of an unread file after a cd or under a working-directory, and ash, are refused by name"
+root=$(fixture r37-w15-moved)
+mkdir -p "$root/scripts"
+printf '#!/usr/bin/env python3\nprint("quiet")\n' > "$root/.github/scripts/r38-tool.py"
+cp "$root/.github/scripts/r38-tool.py" "$root/scripts/r38-tool.py"
+printf '. .github/scripts/ci-retry.sh\nretry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b\n' \
+  > "$root/.github/scripts/r38-plain.py"
+chmod +x "$root/.github/scripts/r38-tool.py" "$root/scripts/r38-tool.py" "$root/.github/scripts/r38-plain.py"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run the Python program with bash after a cd
+        timeout-minutes: 1
+        run: cd .github/scripts/lib && bash ../r38-tool.py
+      - name: Run the Python program with bash under a working directory
+        timeout-minutes: 1
+        working-directory: .github/scripts/lib
+        run: bash ../r38-tool.py
+      - name: Run the plain Python file as a command after a cd
+        timeout-minutes: 1
+        run: cd .github/scripts && ./r38-plain.py
+      - name: Run the Python program with ash
+        timeout-minutes: 1
+        run: ash .github/scripts/r38-tool.py
+      - name: Pipe a heredoc into ash
+        timeout-minutes: 1
+        run: |
+          cat <<'EOF' | ash
+          curl -fsSL -o b https://example.com/b
+          EOF
+      - name: Run what a cd leaves standing
+        run: |
+          cd .github/scripts && ./r38-tool.py
+          cd /tmp && bash scripts/r38-tool.py
+  nested:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: .github/scripts/lib
+    steps:
+      - name: Run the Python program with bash under the job's working directory
+        timeout-minutes: 1
+        run: bash ../r38-tool.py
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+for refusal in "9	build	Run the Python program with bash after a cd	runs .\.\./r38-tool.py. with .bash." \
+  "13	build	Run the Python program with bash under a working directory	runs .\.\./r38-tool.py. with .bash." \
+  "19	build	Run the Python program with ash	runs ..github/scripts/r38-tool.py. with .ash." \
+  "38	nested	Run the Python program with bash under the job's working directory	runs .\.\./r38-tool.py. with .bash."; do
+  IFS=$'\t' read -r line job step says <<<"$refusal"
+  check "refuses '$step' by name at its run" \
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job '$job' $says, which is or may be a file under .github/scripts/ that this check does not read as a script, so this check cannot name the script that runs there")"
+done
+check "refuses the plain Python file run as a command after a cd, at the run" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=16::step 'Run the plain Python file as a command after a cd' of job 'build' runs .\./r38-plain.py. as a command, which is a file under .github/scripts/ that this check does not read as a script, and has no .#!. line")"
+check "refuses the heredoc piped into ash as one a shell runs" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=23::step 'Pipe a heredoc into ash' of job 'build' feeds a heredoc to .cat., whose output a pipe on the operator's line hands to a shell, and the body holds a fetch")"
+check "tells each run to run the program with python3 or put a shell script in a .sh" \
+  "$(is "$(printf '%s\n' "$out" | grep -c "this check does not read as a script.*Run a Python program with .python3 .github/scripts/<name>.py .*.; a shell script goes in .github/scripts/<name>.sh")" 5)"
+check "passes a cd that leaves a path naming another file of the tree, and a python3 program run by its name" \
+  "$(is "$(contains "$out" "step 'Run what a cd leaves standing'")" false)"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 6)"
+
 # F2. A heredoc line reading `timeout-minutes: 20` is text, no key: it took the block's one key,
 # so the job's own key went unpaired and the job passed under the 1200 s its block states. The
 # line is refused by name, and the block is paired with the key below it.
