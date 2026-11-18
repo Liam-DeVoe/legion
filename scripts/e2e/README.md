@@ -1568,7 +1568,8 @@ The answers to the asker and the controller notices land in `inbox.jsonl` under 
   GitHub's listing holds the control's own comment and no comment carrying that marker, the agent's reply quotes the check's own reason, and one of that answer's `answers: gh call refused by the leak guard` lines names the issue, the role, the repository and that reason.
   Both halves are read, since a case reading the reply alone passes with the guard wired to nothing;
   and the listing is read for the control's comment, since jq's `all` over an empty array is true, so a listing of nothing, or of another pull request, would otherwise pass the half that is meant to show the write was never made.
-  The pre-change reviewer asked to write a workflow file to the second owner's repository gets GitHub's refusal and says so.
+  The pre-change reviewer, asked by the proof person's Dispatch message on its own issue to write a workflow file to the second owner's repository, gets GitHub's refusal and says so: the daemon's log names the review App and the second owner for the call, and the reply says GitHub refused it.
+  The ask is a person's because A17's is ("A person asks") and because the agent judges what a message asks: in proof run 44278025821 the reviewer declined this same write when an Envoy message from another session asked for it, which is its own sound judgement and no failure of the loop.
   A workflow file because the review App's lease holds no `workflows` permission: every gh directory of a role's bundle holds that role's own lease on its owner, contents write included, so a plain file could land there, and GitHub refuses a workflow file to an App without that permission.
 
   The stand-in is the run's own `$work/bin/public-leak-check.sh`, written before the first boot (`install_leak_check`), since the real shared check is a private script no clone of this repository holds and the guard refuses every call it can run no check for:

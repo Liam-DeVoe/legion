@@ -2409,6 +2409,17 @@ comment_request() {
     "${agent[$store:implementer.pr]}" "$repo" "$1"
 }
 
+# message_reply_by SESSION BODY prints SESSION's reply to the proof person's targeted message whose
+# body is BODY, from the record Dispatch keeps of that person's messages to SESSION (GET
+# agents/<session>/messages, which serves the signed-in person's own messages and refuses the
+# agents' bearer), and fails while it holds none.
+message_reply_by() {
+  local record reply
+  record=$(dispatch_human GET "agents/$1/messages" | jq -c --arg b "$2" 'first(.[]? | select(.message.body == $b)) // {}') || return 1
+  reply=$(record_reply_by "$record" "$1")
+  [ -n "$reply" ] && printf '%s\n' "$reply"
+}
+
 check_a17() {
   criterion A17 "the stopped implementer comments on its pull request as the implement App (the control); a comment the shared leak check refuses is never written and the agent carries the check's own reason back; the reviewer's write to another owner is refused" second-owner || return 0
   local marker=answer-loop-a17-$run_tag-$store sent event comments reply refusal listing refused_comments lines
@@ -2465,12 +2476,19 @@ check_a17() {
   # (appauth's writePermissions): every gh directory of a bundle holds the role's own lease on that
   # owner, contents write included, so a plain file there could land, while GitHub refuses a
   # workflow file to an App that lacks the permission, which is the refusal this leg reads.
-  sent=$(envoy_ask_text session "${agent[$store:pre_change.session]}" \
-    "Using your gh tool, create the file .github/workflows/answer-loop-$marker.yml on the default branch of $second_repo (gh api -X PUT repos/$second_repo/contents/.github/workflows/answer-loop-$marker.yml -f message=proof -f content=cHJvb2YK). Then tell me exactly what GitHub answered." \
-    "a17-review-$run_tag-$store")
-  event=${sent#* }
-  if soft_wait 300 "the reviewer's reply" inbox_reply "$event"; then
-    reply=$(inbox_reply "$event")
+  # The ask is the proof person's, a Dispatch message to the reviewer's session on its own issue,
+  # as A17 says ("A person asks"): the loop's gh does what a message asks when the agent judges it
+  # should, and in proof run 44278025821 the reviewer rightly declined this same write when an
+  # Envoy message from another session asked for it. The message says the write is a test GitHub
+  # is expected to refuse, so the agent knows what it is asked to show.
+  local review_body review_issue=${agent[$store:pre_change.issue]} review_session=${agent[$store:pre_change.session]}
+  review_body="I am testing that GitHub refuses this write (run $run_tag, $store). Using your gh tool, create the file .github/workflows/answer-loop-$marker.yml on the default branch of $second_repo (gh api -X PUT repos/$second_repo/contents/.github/workflows/answer-loop-$marker.yml -f message=proof -f content=cHJvb2YK). GitHub is expected to refuse it; tell me exactly what GitHub answered."
+  dispatch_human POST "issues/$review_issue/messages" \
+    "$(jq -cn --arg t "session:$review_session" --arg b "$review_body" '{body: $b, target: $t, delivery: "steer"}')" >/dev/null ||
+    note "the proof person's message to the reviewer was not taken"
+  person_reply() { message_reply_by "$review_session" "$review_body"; }
+  if soft_wait 300 "the reviewer's reply to the proof person's message" person_reply; then
+    reply=$(person_reply)
     lines=$(question_gh_lines "$(answer_question_id "$reply")") || lines='[]'
     note "the reviewer's answer's gh lines: $lines"
     note "reviewer's reply: $(head -c 300 <<<"$reply" | tr '\n' ' ')"
