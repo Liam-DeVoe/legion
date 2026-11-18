@@ -512,6 +512,29 @@ describe("the dispatch command surface", () => {
     }
   });
 
+  // Only a URL path has steps: `dispatch issue` sends --project as a member of its body, and
+  // `dispatch search` and the project filter of `issues`, `open-asks` and `priorities` as a value
+  // of the query (`createIssue`, `search`, `listAllIssues`, `openAsksForProject`, `priorities` in
+  // `dispatch-http.ts`). `./` names no project there either, so it is refused, and the refusal
+  // names the flag and what the command sends it as, and no URL path.
+  test("a value of only dots and slashes that a command sends in its body or its query is refused, naming the flag and that use", () => {
+    for (const [argv, use] of [
+      [["issue", "--project", "./", "--title", "A title"], "body"],
+      [["search", "--project", "./", "--query", "ship it"], "query"],
+      [["issues", "--project", "./"], "query"],
+      [["open-asks", "--project", "./"], "query"],
+      [["priorities", "--project", "./"], "query"],
+    ] as const) {
+      const parsed = parseCommand(argv, noFiles);
+      expect(parsed.kind, argv.join(" ")).toBe("refused");
+      const problems = parsed.kind === "refused" ? parsed.problems : [];
+      expect(problems, argv.join(" ")).toHaveLength(1);
+      expect(problems[0], argv.join(" ")).toStartWith('--project is "./"');
+      expect(problems[0], argv.join(" ")).toContain(use);
+      expect(problems[0], argv.join(" ")).not.toContain("URL path");
+    }
+  });
+
   // A document of a project is found by its reference in `GET /api/v1/projects/{key}/artifacts/
   // {ref}`, so an empty --artifact reached the client's own refusal of the path, which names the
   // route and not the flag. Each command that takes a document refuses it here, as it does an
