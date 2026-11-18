@@ -50,8 +50,8 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-envoy-{0}-', runner.os) }}
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
       - name: Two-process and two-build tests of the listener
         run: go test -tags multiprocess -count=1 -timeout 20m -v -run '^Test(TwoPods|TwoBuilds)' ./cmd/listener
         working-directory: packages/envoy

@@ -87,9 +87,9 @@ func processConnections(budget int) int {
 // (FullSizeServerConnections, which internal/dispatch/store/cmd/connections prints, plus the
 // server's reserve), runs every process at production's sizes: PoolBudget answers 0 there.
 //
-// Before the threshold counted the hooks' listener, PoolBudget answered 0 at 471, and four
-// processes at production's sizes, 113 connections each with that listener, and the suite's 20
-// needed 472 of the 468 the server leaves beside its reserve.
+// A threshold that did not count the hooks' listener would answer 0 at 475, and four processes at
+// production's sizes, 114 connections each with that listener, and the suite's 20 would need 476
+// of the 472 the server leaves beside its reserve.
 func TestAPodsTestServerScalesEachProcessByTheHooksListener(t *testing.T) {
 	const reserve = postgresSuperuserReserve
 	pod := ServerConnections + reserve
