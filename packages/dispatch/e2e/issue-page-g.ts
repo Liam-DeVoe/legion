@@ -1306,8 +1306,10 @@ export interface WideNoteSeed {
 }
 
 /**
- * One issue whose notes document holds one note - a `callout` block, which the page names "note"
- * - whose body is a table of `WIDE_NOTE_COLUMNS` columns: a line of heads and a line of values.
+ * One issue whose spec holds one note - a `callout` block, which the page names "note" - whose
+ * body is a table of `WIDE_NOTE_COLUMNS` columns: a line of heads and a line of values. The note
+ * is in the spec because the page draws no block of a `notes.md`: written there, the note is
+ * drawn nowhere and the row has no table to read.
  * A row cuts words taller than six lines (ruling 1), and the table is two lines tall, so its row
  * draws it whole. It is an issue of its own, so no seed another row reads changes,
  * and no row that reads every row of `seedRows` - c-row-layout reads where each typed row's first
@@ -1327,9 +1329,12 @@ export async function seedWideNote(): Promise<WideNoteSeed> {
     line(columns.map(() => "---")),
     line(columns.map((column) => `value${column}`)),
   ].join("\n");
-  const notes = await createIssueArtifact(issue.key, {
-    content: `:::callout{#n-wide kind="note"}\n${table}\n:::\n`,
-    name: "notes.md",
+  await editArtifact(issue.primary_artifact_id, {
+    ops: [
+      { after: "end", markdown: `:::callout{#n-wide kind="note"}\n${table}\n:::\n`, op: "insert" },
+    ],
   });
-  return { key: issue.key, note: blockNode(notes.artifact.slug, "n-wide") };
+  const specSlug =
+    ((await getIssue(issue.key)).artifacts ?? []).find((artifact) => artifact.primary)?.slug ?? "";
+  return { key: issue.key, note: blockNode(specSlug, "n-wide") };
 }
