@@ -3,12 +3,46 @@
 // $SKILL_SCENARIO_RUN/calls.jsonl (argv, the contents of any file or stdin it hands GitHub a body
 // through, its exit status, the pull request body it kept, if any, and what became of any
 // settlement it published), then answered from the first route in $SKILL_SCENARIO_RUN/fixtures.json
-// whose regex matches "gh <argv...>". A call no route matches answers `gh: Not Found (HTTP 404)`
-// and exits 1. Nothing is sent anywhere but the settlement below.
-// `--json a,b` picks fields and `--jq`/`-q` runs jq, as gh does. A pull request body edit (`gh pr
+// whose regex matches "gh <argv...>". A call no route matches is a request the rig does not
+// model: it answers `rig: request not modeled: gh <argv...>` on stderr, exits 1, and its record
+// carries `unmodeled: true`, so the run is the rig's error rather than the role's (score.ts). A
+// 404 GitHub really answers is a route of its own. Nothing is sent anywhere but the settlement
+// below. `--json a,b` picks fields, of an object or of each object of a list, and `--jq`/`-q`
+// runs jq, as gh does. A pull request body edit (`gh pr
 // edit --body`, `--body-file`, or a PATCH through `gh api`) is kept: every route answering with an
 // object that has a `body` then answers with the new one, as GitHub's next read would, and the
 // call's record carries it as `body`.
+// A review the role sends is kept: `gh api -X POST .../pulls/<n>/reviews` with an `--input` JSON
+// object or `-f`/`-F` fields, or `gh pr review` with `--approve`, `--request-changes` or `--comment`
+// and `-b/--body` or `-F/--body-file`, through a route that carries `review`, the template of each
+// review it keeps. GitHub records it so: the state its event names (APPROVE is APPROVED,
+// REQUEST_CHANGES is CHANGES_REQUESTED, COMMENT is COMMENTED, and no event is PENDING), the body
+// exactly as sent, and the template's commit (the head), user and pull request, under the next id
+// counted from the template's. A route that carries `reviews` answers from what was kept: `list`
+// every review in the order the role sent them, `one` the review whose id the match's named group
+// `id` took, or GitHub's 404 for an id no review the role sent has, and `pr` the object its own
+// answer is with `reviews` and `latestReviews` beside it, in the fields gh 2.98.0 prints for
+// `gh pr view --json` (measured): the review's node id, author's login, association, body,
+// submission time, state and commit, the latest review with no id and no commit, since gh asks
+// none for it. A pending review is in the list: GitHub shows a pending review to its author alone,
+// and the rig's reader is the login that sent it. Which review GitHub answers as the latest once a
+// pending or comment-only review is kept is not measured, so a call that asks `latestReviews` then
+// is refused as unmodeled. A `pr` route's `comments` names the route that posts a comment on the
+// pull request: its `comments` field is none until that route has answered a call, and since the
+// stand-in keeps no comment, a call that asks it after is refused as unmodeled. The inline
+// `comments` a review carries are kept with it, each as GitHub records a review comment: its path,
+// line and side, its body exactly as sent, the head as its commit, the reviewer, and its review's
+// id, under the next id counted from the template's `comment_id`. `comments` reads every one in
+// the order sent, and `review_comments` those of the review whose id the match's `id` took, or
+// GitHub's 404 for an id no review the role sent has. A route's own reply that is unmodeled (a
+// read that follows a write the stand-in does not keep) is refused before any of these reads.
+// `threads` answers the GraphQL review threads of the pull request in the fields the reviewer's
+// prompt asks (a thread's id, whether it is resolved, and its last comment's author and body):
+// each kept inline comment opens a thread of its own, unresolved, in the order sent, on one page,
+// whose end cursor is an opaque one of the rig's. A review whose answer the rig cannot state (an
+// event GitHub refuses, REQUEST_CHANGES or COMMENT with no body, a second pending review, a commit
+// other than the template's, flags gh refuses, an inline comment on a path or line the template's
+// `added_lines` does not hold, or on the left side) is kept nowhere and refused as unmodeled.
 // A route answers a sequence rather than the one answer, and stops matching once it has answered
 // its share, so one head reads red before a re-run and green after it:
 //   `replies` is a list of {stdout?, stderr?, exit?}, served in order: the first call matching the
@@ -22,6 +56,10 @@
 //   that names no route's `match` is refused, with the rest of a file Fixtures does not parse.
 //   `spends` is how many matching calls the route answers. After that many it matches nothing, and
 //   the call falls through to the next route whose pattern matches it, or to the 404.
+// A route's `stderr` can name what the call asked for: `$<name>` in it is the text the route's named
+// group `name` matched in "gh <argv...>", so one route refuses each commit the rig does not know by
+// the name the call gave it, as GitHub's `No commit found for SHA: <ref>` does. A `$<name>` that
+// names no group of the match, or a group the match did not reach, is printed as it stands.
 // The stand-in is a fresh process per call, so the count of calls a route has answered outlives it
 // in fixtures.json, as the route's `answered`, written back with the body keep's own
 // read-modify-write on every call a route answers. Each call holds an exclusive flock(2) on
@@ -63,17 +101,66 @@ import {
 } from "node:fs";
 import { z } from "zod";
 
-/** One answer: what a route serves a call, and what each entry of a route's `replies` serves. */
+/** One answer: what a route serves a call, and what each entry of a route's `replies` serves. A
+ * reply marked `unmodeled` is a state of the world the rig cannot state truthfully, such as the
+ * comments a role posted, which the stand-in does not keep: the call is refused as one no route
+ * models, and recorded so. */
 const Reply = z.object({
   stdout: z.unknown().optional(),
   stderr: z.string().optional(),
   exit: z.number().optional(),
+  unmodeled: z.boolean().optional(),
 });
+/** The template of each review a route keeps: the first review's id (each next review takes the
+ * next number) and the first inline comment's, the commit every review is on, the reviewer and its
+ * association with the repository, the pull request's page (a review's own is it with
+ * `#pullrequestreview-<id>`, a comment's with `#discussion_r<id>`) and its API URL, and the lines
+ * of each file the diff adds whole, which are the lines an inline comment can be on. */
+const ReviewTemplate = z.object({
+  id: z.number(),
+  comment_id: z.number(),
+  commit_id: z.string(),
+  user: z.looseObject({ login: z.string() }),
+  author_association: z.string(),
+  html_url: z.string(),
+  pull_request_url: z.string(),
+  added_lines: z.record(z.string(), z.number()),
+});
+/** A review as the stand-in keeps it: GitHub's REST object for it, its fields in GitHub's order. */
+const KeptReview = z.looseObject({
+  id: z.number(),
+  node_id: z.string(),
+  user: z.looseObject({ login: z.string() }),
+  body: z.string(),
+  state: z.string(),
+  html_url: z.string(),
+  pull_request_url: z.string(),
+  author_association: z.string(),
+  _links: z.unknown(),
+  submitted_at: z.string().optional(),
+  commit_id: z.string(),
+});
+type KeptReview = z.infer<typeof KeptReview>;
+/** An inline comment of a kept review: GitHub's REST object for a review comment. */
+const KeptComment = z.looseObject({
+  id: z.number(),
+  pull_request_review_id: z.number(),
+  user: z.looseObject({ login: z.string() }),
+  body: z.string(),
+});
+type KeptComment = z.infer<typeof KeptComment>;
 /** rig.sh's worker_fixture writes each route as {match, stdout?, stderr?, exit?}, and a route that
  * answers a sequence, follows another route's calls, spends itself or publishes a settlement adds
  * `replies`, `follows`, `spends` and `publish`. A `follows` names the `match` of a route of the
- * same file. `answered` is the stand-in's own: the count of calls the route has answered. A route
- * is parsed loosely, as the file is, so a key of the rig's own outlives the write back. */
+ * same file, and so does a `counts_as`: each call the route answers counts as a call of that route
+ * as well, so a press of the re-run through another command moves every read that follows the
+ * re-run. A `program` is jq the stand-in runs over the answer's stdout, with the call's arguments
+ * as `$argv`, before `--json` and `--jq`: a route answers a list filtered by the call's own flags
+ * or query with it. A route that keeps the reviews the role sends carries `review`, and one that
+ * reads them `reviews` (the header). `answered`, `reviews` and `review_comments` at the top of the
+ * file are the stand-in's own: the count of calls the route has answered, and the reviews and the
+ * inline comments kept, in the order the role sent them. A route is parsed loosely, as the file
+ * is, so a key of the rig's own outlives the write back. */
 const Fixtures = z
   .looseObject({
     routes: z.array(
@@ -82,21 +169,34 @@ const Fixtures = z
         match: z.string(),
         replies: z.array(Reply).optional(),
         follows: z.string().optional(),
+        counts_as: z.string().optional(),
+        program: z.string().optional(),
         spends: z.number().optional(),
         answered: z.number().optional(),
         publish: z.unknown().optional(),
+        review: ReviewTemplate.optional(),
+        reviews: z.enum(["list", "one", "pr", "comments", "review_comments", "threads"]).optional(),
+        comments: z.string().optional(),
       })
     ),
+    reviews: z.array(KeptReview).optional(),
+    review_comments: z.array(KeptComment).optional(),
   })
   .superRefine(({ routes }, ctx) => {
     const matches = new Set(routes.map((route) => route.match));
     routes.forEach((route, index) => {
-      if (route.follows !== undefined && !matches.has(route.follows))
-        ctx.addIssue({
-          code: "custom",
-          path: ["routes", index, "follows"],
-          message: `route "${route.match}" follows "${route.follows}", which is no route's match`,
-        });
+      for (const [key, named] of [
+        ["follows", route.follows],
+        ["counts_as", route.counts_as],
+        ["comments", route.comments],
+      ] as const) {
+        if (named !== undefined && !matches.has(named))
+          ctx.addIssue({
+            code: "custom",
+            path: ["routes", index, key],
+            message: `route "${route.match}" ${{ follows: "follows", counts_as: "counts as", comments: "reads the comments posted by" }[key]} "${named}", which is no route's match`,
+          });
+      }
     });
   });
 
@@ -155,6 +255,7 @@ const readSource = async (source: string) =>
 // A pull request body edit: `gh pr edit` takes it from `-b/--body` or `-F/--body-file`, a
 // `gh api -X PATCH repos/<o>/<r>/pulls/<n>` from a `body` field or an `--input` JSON object.
 const prEdit = as === "gh" && args[0] === "pr" && args[1] === "edit";
+const prReview = as === "gh" && args[0] === "pr" && args[1] === "review";
 const prPatch =
   as === "gh" &&
   args[0] === "api" &&
@@ -166,14 +267,20 @@ let kept: string | undefined;
 /** What became of the settlement a route publishes, where it names one. */
 type Published = { status: number; body: string } | { error: string };
 let published: Published | undefined;
+/** The `-f`/`-F` fields of a `gh api` call, each as gh sends it (a `-F key=@file` the file's text). */
+const apiFields: Record<string, string> = {};
+/** The body of a `gh pr review`, from `-b/--body` or `-F/--body-file`. */
+let reviewBody: string | undefined;
 for (let index = 0; index < args.length; index += 1) {
   const arg = args[index] ?? "";
   const next = args[index + 1];
   if (!next) continue;
   if (prEdit && (arg === "-b" || arg === "--body")) body = next;
-  else if (prEdit && (arg === "-F" || arg === "--body-file")) {
+  else if (prReview && (arg === "-b" || arg === "--body")) reviewBody = next;
+  else if ((prEdit || prReview) && (arg === "-F" || arg === "--body-file")) {
     files[next] = await readSource(next);
-    body = files[next];
+    if (prEdit) body = files[next];
+    else reviewBody = files[next];
   } else if (arg === "--input" || arg === "--body-file") files[next] = await readSource(next);
   else if (arg === "-F" || arg === "--field" || arg === "-f" || arg === "--raw-field") {
     const [key = "", ...rest] = next.split("=");
@@ -182,6 +289,7 @@ for (let index = 0; index < args.length; index += 1) {
       files[value.slice(1)] = await readSource(value.slice(1));
       value = files[value.slice(1)] ?? "";
     }
+    apiFields[key] = value;
     if (prPatch && key === "body") body = value;
   }
 }
@@ -211,11 +319,12 @@ const routes = fixtures.routes.filter(
 );
 const joined = `${as} ${args.join(" ")}`;
 const route = routes.find((candidate) => new RegExp(candidate.match, "s").test(joined));
-/** Records the call with the status it exits with, then exits. */
-function exit(status: number): never {
+/** Records the call with the status it exits with, then exits. A call no route models is recorded
+ * `unmodeled`, which the scorer takes for a rig error. */
+function exit(status: number, unmodeled = !route): never {
   appendFileSync(
     `${run}/calls.jsonl`,
-    `${JSON.stringify({ at, as, argv: args, files, stdin, route: route?.match ?? null, body: kept, published, exit: status })}\n`
+    `${JSON.stringify({ at, as, argv: args, files, stdin, route: route?.match ?? null, ...(unmodeled ? { unmodeled: true } : {}), body: kept, published, exit: status })}\n`
   );
   process.exit(status);
 }
@@ -250,10 +359,19 @@ async function publish(envelope: unknown): Promise<Published> {
     return { error: error instanceof Error ? error.message : String(error) };
   }
 }
+// A call no route models is refused by name rather than answered with a GitHub error it might
+// never have met: the rig has no answer for it, and a run that met one is the rig's to fix.
 if (!route) {
-  console.error(as === "gh" ? "gh: Not Found (HTTP 404)" : `unknown command: ${args.join(" ")}`);
+  console.error(
+    as === "gh"
+      ? `rig: request not modeled: gh ${args.join(" ")}`
+      : `unknown command: ${args.join(" ")}`
+  );
   exit(1);
 }
+/** The text each named group of the route's match took in this call, which `$<name>` in the
+ * route's stderr stands for. */
+const groups = new RegExp(route.match, "s").exec(joined)?.groups ?? {};
 /** The answer this call takes: the reply its route's sequence has reached — the first call takes
  * the first reply, a call past the end takes the last again — or the route's own answer. A route
  * that follows another reaches its sequence by that route's answered calls rather than its own, so
@@ -263,12 +381,217 @@ const followed =
   route.follows === undefined
     ? route
     : fixtures.routes.find((candidate) => candidate.match === route.follows);
-const answer = replies[Math.min(followed?.answered ?? 0, replies.length - 1)] ?? route;
+/** The fields a `--json` call names, which gh prints and no other. */
+const jsonIndex = args.findIndex((arg) => arg === "--json" || arg.startsWith("--json="));
+const fields = (
+  args[jsonIndex]?.startsWith("--json=") ? args[jsonIndex].slice(7) : (args[jsonIndex + 1] ?? "")
+).split(",");
+/** The reviews the role has sent, and their inline comments, in the order it sent them. */
+const reviewsKept = fixtures.reviews ?? [];
+const commentsKept = fixtures.review_comments ?? [];
+/** A read of what the role sent (the header): the reviews, the review the match's `id` names, the
+ * inline comments, those of the review the `id` names, or the review threads they open; GitHub's
+ * 404 for a review id no review the role sent has. */
+function keptRead(): z.infer<typeof Reply> | undefined {
+  if (route?.reviews === "list") return { stdout: reviewsKept };
+  if (route?.reviews === "comments") return { stdout: commentsKept };
+  if (route?.reviews === "threads") {
+    const last = commentsKept.at(-1);
+    const threads = commentsKept.map((comment) => ({
+      id: `PRRT_${comment.id}`,
+      isResolved: false,
+      comments: { nodes: [{ author: { login: comment.user.login }, body: comment.body }] },
+    }));
+    const endCursor = last === undefined ? null : btoa(`cursor:v2:${last.id}`);
+    const pageInfo = { hasNextPage: false, endCursor };
+    return {
+      stdout: {
+        data: { repository: { pullRequest: { reviewThreads: { pageInfo, nodes: threads } } } },
+      },
+    };
+  }
+  if (route?.reviews !== "one" && route?.reviews !== "review_comments") return undefined;
+  const one = reviewsKept.find((review) => String(review.id) === groups.id);
+  if (one === undefined) return { stderr: "gh: Not Found (HTTP 404)\n", exit: 1 };
+  return route.reviews === "one"
+    ? { stdout: one }
+    : { stdout: commentsKept.filter((comment) => comment.pull_request_review_id === one.id) };
+}
+/** Refuses this call as one the rig does not model, and records it so. */
+function refuse(): never {
+  closeSync(lock);
+  console.error(`rig: request not modeled: gh ${args.join(" ")}`);
+  exit(1, true);
+}
+const sequenced = replies[Math.min(followed?.answered ?? 0, replies.length - 1)] ?? route;
+if (sequenced.unmodeled) refuse();
+const answer = keptRead() ?? sequenced;
+/** The time GitHub stamps on what this call sends, to the second. */
+const sentAt = at.replace(/\.\d+Z$/, "Z");
+/** The inline comments a review sends, each as GitHub records a review comment, under the next
+ * ids; `null` where one is on a path or line the template's `added_lines` does not hold, on the
+ * left side, or has no body, which GitHub refuses or the rig cannot state. */
+function inlineComments(
+  template: z.infer<typeof ReviewTemplate>,
+  reviewId: number,
+  comments: unknown[]
+): KeptComment[] | null {
+  const kept: KeptComment[] = [];
+  for (const [index, comment] of comments.entries()) {
+    if (typeof comment !== "object" || comment === null || Array.isArray(comment)) return null;
+    const {
+      path: file,
+      line,
+      side = "RIGHT",
+      start_line: start = null,
+      start_side: startSide = "RIGHT",
+      body: text,
+    } = comment as Record<string, unknown>;
+    const lines = typeof file === "string" ? template.added_lines[file] : undefined;
+    if (lines === undefined || typeof text !== "string" || text === "") return null;
+    if (side !== "RIGHT" || startSide !== "RIGHT") return null;
+    if (typeof line !== "number" || !Number.isInteger(line) || line < 1 || line > lines)
+      return null;
+    if (
+      start !== null &&
+      (typeof start !== "number" || !Number.isInteger(start) || start < 1 || start >= line)
+    )
+      return null;
+    const id = template.comment_id + commentsKept.length + index;
+    const url = template.pull_request_url.replace(/\/\d+$/, `/comments/${id}`);
+    const html_url = `${template.html_url}#discussion_r${id}`;
+    kept.push({
+      url,
+      pull_request_review_id: reviewId,
+      id,
+      node_id: `PRRC_${id}`,
+      path: file,
+      commit_id: template.commit_id,
+      original_commit_id: template.commit_id,
+      user: template.user,
+      body: text,
+      created_at: sentAt,
+      updated_at: sentAt,
+      html_url,
+      pull_request_url: template.pull_request_url,
+      author_association: template.author_association,
+      _links: {
+        self: { href: url },
+        html: { href: html_url },
+        pull_request: { href: template.pull_request_url },
+      },
+      start_line: start,
+      original_start_line: start,
+      start_side: start === null ? null : "RIGHT",
+      line,
+      original_line: line,
+      side: "RIGHT",
+      subject_type: "line",
+    });
+  }
+  return kept;
+}
+/** The review this call sends through a route that keeps one, as GitHub records it, with its
+ * inline comments; `null` where the rig cannot state GitHub's answer to it (the header). A
+ * `gh pr review` takes its event from its one flag and its body from `-b` or `-F`; a `gh api` call
+ * takes them from its `--input` JSON object, else from its `-f`/`-F` fields. */
+function sentReview(
+  template: z.infer<typeof ReviewTemplate>
+): { review: KeptReview; comments: KeptComment[] } | null {
+  let sent: Record<string, unknown> = apiFields;
+  if (prReview) {
+    const events = [
+      ["-a", "--approve", "APPROVE"],
+      ["-r", "--request-changes", "REQUEST_CHANGES"],
+      ["-c", "--comment", "COMMENT"],
+    ].filter(([short = "", long = ""]) => args.includes(short) || args.includes(long));
+    if (events.length !== 1) return null;
+    sent = { event: events[0]?.[2], body: reviewBody };
+  } else if (input !== undefined) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(files[input] ?? "");
+    } catch {
+      return null;
+    }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+    sent = { ...parsed };
+  }
+  const { event, body: text = "", commit_id: commit, comments = [] } = sent;
+  const states: Record<string, string> = {
+    APPROVE: "APPROVED",
+    REQUEST_CHANGES: "CHANGES_REQUESTED",
+    COMMENT: "COMMENTED",
+  };
+  const state = event === undefined || event === "" ? "PENDING" : states[String(event)];
+  if (state === undefined || typeof text !== "string") return null;
+  if ((state === "CHANGES_REQUESTED" || state === "COMMENTED") && text === "") return null;
+  if (state === "PENDING" && reviewsKept.some((review) => review.state === "PENDING")) return null;
+  if (commit !== undefined && commit !== template.commit_id) return null;
+  // A pending review's comments are pending too, which the rig does not state.
+  if (!Array.isArray(comments) || (state === "PENDING" && comments.length > 0)) return null;
+  const id = template.id + reviewsKept.length;
+  const inline = inlineComments(template, id, comments);
+  if (inline === null) return null;
+  const html_url = `${template.html_url}#pullrequestreview-${id}`;
+  return {
+    review: {
+      id,
+      node_id: `PRR_${id}`,
+      user: template.user,
+      body: text,
+      state,
+      html_url,
+      pull_request_url: template.pull_request_url,
+      author_association: template.author_association,
+      _links: { html: { href: html_url }, pull_request: { href: template.pull_request_url } },
+      ...(state === "PENDING" ? {} : { submitted_at: sentAt }),
+      commit_id: template.commit_id,
+    },
+    comments: inline,
+  };
+}
+const sent = route.review === undefined ? undefined : sentReview(route.review);
+if (sent === null) refuse();
+/** `latestReviews` as gh prints it: the latest review of each author, and the rig's reviewer is
+ * the one author; unknown once a pending or comment-only review is kept (the header). */
+const latest = reviewsKept.some(
+  (review) => review.state === "PENDING" || review.state === "COMMENTED"
+)
+  ? undefined
+  : reviewsKept.slice(-1).map((review) => ({ ...ghReview(review), id: "", commit: { oid: "" } }));
+/** Whether the role has posted a comment on the pull request, which the stand-in does not keep. */
+const commented =
+  (fixtures.routes.find((candidate) => candidate.match === route.comments)?.answered ?? 0) > 0;
+if (
+  route.reviews === "pr" &&
+  jsonIndex >= 0 &&
+  ((fields.includes("latestReviews") && !latest) || (fields.includes("comments") && commented))
+)
+  refuse();
+/** A kept review in the fields gh 2.98.0 prints for `gh pr view --json reviews` (measured). */
+function ghReview(review: KeptReview) {
+  return {
+    id: review.node_id,
+    author: { login: review.user.login },
+    authorAssociation: review.author_association,
+    body: review.body,
+    submittedAt: review.submitted_at ?? null,
+    includesCreatedEdit: false,
+    reactionGroups: [],
+    state: review.state,
+    commit: { oid: review.commit_id },
+  };
+}
 // The count of calls each route has answered outlives this process in fixtures.json, with the body
-// where this call edited the pull request's: one read-modify-write of the file carries both.
+// where this call edited the pull request's and the review it sent with its inline comments: one
+// read-modify-write of the file carries them all.
 const edited = fixtures.routes.map((candidate) => ({
   ...candidate,
-  answered: candidate === route ? (candidate.answered ?? 0) + 1 : candidate.answered,
+  answered:
+    candidate === route || (route.counts_as !== undefined && candidate.match === route.counts_as)
+      ? (candidate.answered ?? 0) + 1
+      : candidate.answered,
   ...(body === undefined
     ? {}
     : {
@@ -282,19 +605,58 @@ const edited = fixtures.routes.map((candidate) => ({
 // The rename is what makes the write atomic: the temporary file is a sibling, in the run
 // directory, so the rename is within one filesystem.
 const temporary = `${run}/fixtures.${process.pid}.json`;
-writeFileSync(temporary, JSON.stringify({ ...fixtures, routes: edited }));
+writeFileSync(
+  temporary,
+  JSON.stringify({
+    ...fixtures,
+    routes: edited,
+    ...(sent === undefined
+      ? {}
+      : {
+          reviews: [...reviewsKept, sent.review],
+          review_comments: [...commentsKept, ...sent.comments],
+        }),
+  })
+);
 renameSync(temporary, `${run}/fixtures.json`);
 closeSync(lock);
 if (body !== undefined) kept = body;
-let output: unknown = answer.stdout ?? "";
-const jsonIndex = args.indexOf("--json");
-if (jsonIndex >= 0 && typeof output === "object" && output !== null && !Array.isArray(output)) {
-  const record: Record<string, unknown> = { ...output };
-  const fields = (args[jsonIndex + 1] ?? "").split(",");
-  output = Object.fromEntries(
+// A route that keeps the review and writes no answer of its own answers the review, as GitHub's
+// POST does.
+let output: unknown =
+  sent !== undefined && answer.stdout === undefined ? sent.review : (answer.stdout ?? "");
+if (
+  route.reviews === "pr" &&
+  jsonIndex >= 0 &&
+  typeof output === "object" &&
+  output !== null &&
+  !Array.isArray(output)
+)
+  output = {
+    ...output,
+    reviews: reviewsKept.map(ghReview),
+    latestReviews: latest ?? [],
+    comments: [],
+  };
+if (route.program !== undefined) {
+  const program = Bun.spawnSync(
+    ["jq", "-c", "--argjson", "argv", JSON.stringify(args), route.program],
+    { stdin: new TextEncoder().encode(JSON.stringify(output)) }
+  );
+  if (program.exitCode !== 0) {
+    process.stderr.write(`gh-standin: the route's program failed: ${program.stderr.toString()}`);
+    exit(2);
+  }
+  output = JSON.parse(program.stdout.toString());
+}
+const picked = (value: unknown) => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return value;
+  const record: Record<string, unknown> = { ...value };
+  return Object.fromEntries(
     fields.filter((field) => field in record).map((field) => [field, record[field]])
   );
-}
+};
+if (jsonIndex >= 0) output = Array.isArray(output) ? output.map(picked) : picked(output);
 let text = typeof output === "string" ? output : JSON.stringify(output);
 const jqIndex = args.findIndex((arg) => arg === "--jq" || arg === "-q");
 const filter = jqIndex >= 0 ? args[jqIndex + 1] : undefined;
@@ -307,6 +669,9 @@ if (filter !== undefined) {
   }
 }
 if (text !== "") process.stdout.write(text.endsWith("\n") ? text : `${text}\n`);
-if (answer.stderr) process.stderr.write(answer.stderr);
+if (answer.stderr)
+  process.stderr.write(
+    answer.stderr.replace(/\$<(\w+)>/g, (named, name: string) => groups[name] ?? named)
+  );
 if (route.publish !== undefined) published = await publish(route.publish);
 exit(answer.exit ?? 0);

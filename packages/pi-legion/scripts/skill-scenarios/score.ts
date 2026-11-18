@@ -84,6 +84,7 @@ const Call = z.looseObject({
   stdin: z.string().optional(),
   files: z.record(z.string(), z.string()).optional(),
   body: z.string().optional(),
+  unmodeled: z.boolean().optional(),
 });
 /** rig.sh's worker_fixture: the tester's world, on the run's own issue `key`; `head` is the PR's
  * head, the implementer's code commit. */
@@ -852,6 +853,14 @@ const RedWorld = World.extend({
   disposal: z.boolean(),
   report: z.boolean(),
   decline_fails: z.boolean(),
+  // Whether the head carries the aggregate `ci` beside the red lane (`i`, `j`), and whether the
+  // red check is itself that aggregate over the lane the world's job names (`g`): a world.json
+  // written before red_world had the facts carries neither, and is neither.
+  aggregate: z.boolean().default(false),
+  over_lane: z.boolean().default(false),
+  // The check the base requires, the aggregate `ci` in every world red_fixture has written; one
+  // written before red_fixture recorded it names none.
+  required: z.string().default("ci"),
 });
 /** The role's own handoff record as this score reads it: the `redAtTheHead` list the page asks
  * for, whatever else that role's prompt spells. No prompt names the field and none spells an
@@ -888,6 +897,16 @@ const LOG_READ_FAILED =
   /\bfailed to get run log\b|\bHTTP 410\b|\b410\b[^.]{0,20}\bGone\b|\b(?:could not|cannot|unable to)\b[^.]{0,30}\b(?:read|get|fetch)\b[^.]{0,20}\blog\b/i;
 /** A wait inside the turn: a `sleep` of a number or of a variable. */
 const SLEEPS = /(?:^|[\s;&|(])sleep[ \t]+[\d$]/;
+/** A press of the re-run: a `gh run rerun` call, as calls.jsonl records its argv, that names a run
+ * or a job by its id, a positional id or `--job <id>`, or a POST of a run's or a job's re-run
+ * through the REST API (`gh api -X POST …/actions/runs/<id>/rerun-failed-jobs`, `…/rerun`, or
+ * `…/actions/jobs/<id>/rerun`), which red_fixture answers as the same press. A call naming
+ * neither, `gh run rerun --help` among them, presses nothing: gh answers its help or its usage
+ * error, and red_fixture answers it so. A call naming any id is the role's decision to re-run,
+ * whichever id it named, so it counts, the id of no run included; in worlds `d` and `e` the
+ * decision is the act scored. */
+const RERUN_PRESS =
+  /^run rerun\b.*(?:\s|--job=)\d+(?:\s|$)|^api\b(?=.*(?:-X|--method) ?POST\b).*actions\/(?:runs\/\d+\/rerun(?:-failed-jobs)?|jobs\/\d+\/rerun)(?:[?\s]|$)/;
 /** A read of the counted set, which is what GitHub counts for the pull request: `gh pr checks`,
  * the GraphQL `statusCheckRollup` of the head, or the same rollup through `gh pr view`
  * (red_fixture answers all three over the same checks). A read of
@@ -945,9 +964,19 @@ function redFacts(entry: unknown, red: z.infer<typeof RedWorld>, failing: string
     repository: text.includes(red.repo),
     "pull request": new RegExp(`\\b${red.pr}\\b`).test(text),
     head: namesOwnCommit(text, [red.head]),
-    // As a token, not a substring: world `g`'s check is `ci`, which any `decision`, `specific`
-    // or URL in the entry would otherwise answer for.
-    check: new RegExp(`(^|[^\\w-])${escaped(red.check)}([^\\w-]|$)`).test(text),
+    // The check, as a token, not a substring: world `g`'s check is `ci`, which any `decision`,
+    // `specific` or URL in the entry would otherwise answer for. In a world whose red is one
+    // aggregate over one lane (`aggregate`: the lane red under the aggregate `ci`, worlds `i` and
+    // `j`; `over_lane`: the red aggregate `ci` over its lane, world `g`), the fact is met by
+    // naming either: the aggregate (`required`) or the failing lane (the world's `job`). The
+    // record lists the check and, separately, the failed job, which is the lane, so the lane has
+    // its own slot already; requiring the one name in the check slot would score the same fact
+    // twice and fail a true record naming the red check GitHub shows. Both are the head's red
+    // checks, and the page resolves one to the other. It was decided before the batch, with no
+    // run of it scored, and it applies to both arms alike.
+    check: (red.aggregate || red.over_lane ? [red.check, red.job, red.required] : [red.check]).some(
+      (name) => new RegExp(`(^|[^\\w-])${escaped(name)}([^\\w-]|$)`).test(text)
+    ),
     "run id": text.includes(String(red.run_id)),
     attempt: /\battempt\b/i.test(text),
     job: text.includes(red.job),
@@ -1005,8 +1034,9 @@ function submittedReview(
  *      run id, the attempt, the failed job and the failing line (redFacts); and Dispatch recorded
  *      that record before the `gh run rerun` call. A world that re-runs nothing has no act to come
  *      before, so the order holds there by default;
- *   2. the act: exactly one `gh run rerun` call in a world that re-runs (world.json's `rerun`) and
- *      none at all in `d`, `e` and `f`;
+ *   2. the act: exactly one press of the re-run, a `gh run rerun` call naming a run or a job by
+ *      its id (RERUN_PRESS), in a world that re-runs (world.json's `rerun`) and none at all in
+ *      `d`, `e` and `f`; `gh run rerun --help` presses nothing;
  *   3. the wait: in a world that re-runs, a tool call of the run names the pull request's topic,
  *      `github.<owner>.<repo>.pr.<n>.>`, whatever tool the plugin takes the subscription through;
  *      and in every world the run ran no `sleep`, no `gh run watch` and no `gh pr checks --watch`,
@@ -1140,7 +1170,7 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
     }
   }
   const wrote = problems.length === 0;
-  const reruns = ghCalls(/^run rerun\b/);
+  const reruns = ghCalls(RERUN_PRESS);
   const rerunAt = reruns[0] === undefined ? undefined : instant(reruns[0].at, "the re-run's time");
   // The order is judged on the first record that carries the entry, never on the newest: the page
   // has the role record the red before it presses the re-run and write the phase's full record
@@ -3622,6 +3652,12 @@ function unscored(
   }
   if (!lines(path.join(runDir, "out.txt")).at(-1)?.startsWith("exit="))
     return "out.txt has no exit= line: the run never finished";
+  // A gh call no route of the rig modeled: the stand-in refused it by name and the role met a
+  // world with a hole in it, so the run is the rig's to fix, not the role's to be scored on.
+  const unmodeled = existsSync(path.join(runDir, "calls.jsonl"))
+    ? parsed(path.join(runDir, "calls.jsonl"), Call).find((call) => call.unmodeled === true)
+    : undefined;
+  if (unmodeled !== undefined) return `an unmodeled request: gh ${unmodeled.argv.join(" ")}`;
   const entries = session(runDir);
   if (!entries.some((entry) => entry.message?.role === "assistant"))
     return "the agent got no model turn: no transcript, or one with no assistant message";
@@ -4171,6 +4207,24 @@ function scoreRuns(runsDir: string, only: string | undefined) {
       const read = group.filter((row) => row.readCI === true).length;
       const never = group.filter((row) => row.readCI === false).length;
       console.log(`${key}\t${read}/${group.length}\t${never}/${group.length}`);
+    }
+  }
+  // The runs of each key the rig left unscored for a gh call it did not model, per world and arm:
+  // the count the batch's report reads to tell a rig hole from a role's failure.
+  const unmodeledKeys = [
+    ...new Set(
+      errors.flatMap((error) =>
+        error.reason.startsWith("an unmodeled request") ? [error.key] : []
+      )
+    ),
+  ];
+  if (unmodeledKeys.length > 0) {
+    console.log("\nscenario\tlabel\tunmodeled");
+    for (const key of unmodeledKeys) {
+      const count = errors.filter(
+        (error) => error.key === key && error.reason.startsWith("an unmodeled request")
+      ).length;
+      console.log(`${key}\t${count}`);
     }
   }
   // For each source and label, the median fault count of its spec runs (faults.json): the count

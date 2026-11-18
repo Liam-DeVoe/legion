@@ -4684,6 +4684,18 @@ redRun("trial-a-head-14", {}, [
 ]);
 // Wrote the red down and re-ran nothing, in a world whose red is not the change's.
 redRun("trial-a-head-15", { "calls.jsonl": calls([redLogCall]) });
+// `gh run rerun --help` alone, before the record: gh answers its help and presses nothing.
+const redRerunHelpCall = {
+  at: "2026-09-30T17:27:50.000Z",
+  as: "gh",
+  argv: ["run", "rerun", "--help"],
+  exit: 0,
+};
+redRun("trial-a-head-108", { "calls.jsonl": calls([redLogCall, redRerunHelpCall]) });
+// `gh run rerun --help` before the record, and the head's re-run after it.
+redRun("trial-a-head-109", {
+  "calls.jsonl": calls([redLogCall, redRerunHelpCall, redRerunCall()]),
+});
 // Never read the head's CI: the gh stand-in recorded no call of this run's, and it opened no
 // page. It met no red, so the rule never applied to it, and it wrote the phase's ordinary record
 // and completed. A third of the tester's live runs on both arms did this.
@@ -4759,6 +4771,45 @@ function redWorldRun(
 ) {
   redRun(name, { "world.json": redWorldFile({ world, ...fields }), ...files }, transcript);
 }
+
+// Worlds whose red is one aggregate over one lane: `g`, whose check is the aggregate `ci` over the
+// lane `test (notify)`, and `i` and `j`, whose check is the lane under the aggregate `ci`. Each
+// gets a record naming the aggregate alone in its check slot, one naming the lane alone, one
+// naming neither and no job, and one naming the aggregate and no job.
+for (const [world, check, phase] of [
+  ["g", "ci", "test"],
+  ["i", "test (notify)", "review"],
+  ["j", "test (notify)", "review"],
+] as const) {
+  for (const [n, entry] of [
+    [91, redEntry({ check: "ci" })],
+    [92, redEntry({ check: "test (notify)" })],
+    [93, redEntry({ check: "lint", job: undefined })],
+    [94, redEntry({ check: "ci", job: undefined })],
+  ] as const)
+    redWorldRun(
+      `trial-${world}-head-${n}`,
+      world,
+      { check },
+      {
+        "handoffs.json": handoffs(redRecord({ phase, red: [entry] })),
+      }
+    );
+}
+// A run that met a gh call the rig does not model: the stand-in refused it by name.
+redRun("trial-a-head-110", {
+  "calls.jsonl": calls([
+    redLogCall,
+    {
+      at: "2026-09-30T17:28:10.000Z",
+      as: "gh",
+      argv: ["api", "repos/example/widgets/pulls/1001/files"],
+      exit: 1,
+      unmodeled: true,
+    },
+    redRerunCall(),
+  ]),
+});
 
 /** World `b`: the notify test red again on the re-run, so the round fails and names the check. */
 const redFailed = (summary: string) => redTurn(redComplete("fail", summary));
@@ -5177,6 +5228,54 @@ test("a run that re-ran before Dispatch recorded the record fails the world", ()
 
 test("a run that re-ran twice fails the world", () => {
   redFails("trial-a-head-3", "before=true pressed=false", "reruns=2/1");
+});
+
+// Catches: `gh run rerun --help` scored as the press, which gh answers with its help and which
+// presses nothing (red_fixture): the run that asked for help and re-ran nothing would read as
+// having re-run, and the one that asked before its record and re-ran after it as having pressed
+// before Dispatch recorded the red. trial-i-nos1-1 and trial-j-nos1-1 of the tester's round-9 batch
+// each ran it.
+test("gh run rerun --help is no press: alone it re-runs nothing, and the press after it is the one timed", () => {
+  redFails("trial-a-head-108", "pressed=false", "reruns=0/1");
+  const row = rowOf("trial-a-head-109");
+  expect(row.split("\t").slice(0, 2)).toEqual(["trial-a-head-109", "pass=true"]);
+  expect(row).toContain("before=true pressed=true");
+  expect(row).toContain("reruns=1/1");
+});
+
+// Catches: a check fact that takes one name alone in a world whose red is one aggregate over one
+// lane, which fails a true record naming the other of the two red checks GitHub shows; one that
+// takes any text, which passes a record naming neither; and a check fact that stands in for the
+// job fact, which stays required on its own.
+test("in g, i and j the check fact takes the aggregate or the lane, and the job fact stays required", () => {
+  for (const world of ["g", "i", "j"]) {
+    const named = (n: number) => !rowOf(`trial-${world}-head-${n}`).includes("names no check");
+    expect({
+      world,
+      aggregate: named(91),
+      lane: named(92),
+      neither: named(93),
+      jobMissing: rowOf(`trial-${world}-head-94`).includes("names no job"),
+      aggregateWithoutJob: named(94),
+    }).toEqual({
+      world,
+      aggregate: true,
+      lane: true,
+      neither: false,
+      jobMissing: true,
+      aggregateWithoutJob: true,
+    });
+  }
+});
+
+// Catches: a run that met a request the rig does not model scored as the role's own result,
+// whatever it did after the refusal, and a batch whose report does not count those runs per world
+// and arm.
+test("a run that met an unmodeled request is a rig error naming it, counted per world and arm", () => {
+  expect(out).toContain(
+    "trial-a-head-110\trig error: an unmodeled request: gh api repos/example/widgets/pulls/1001/files\n"
+  );
+  expect(out).toContain("\nscenario\tlabel\tunmodeled\nred-at-the-head:a\thead\t1\n");
 });
 
 test("a record another session wrote is not the role's own", () => {

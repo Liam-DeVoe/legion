@@ -254,7 +254,7 @@ test("a follows that names no route's match is refused, naming it, and answers n
   expect((await spelled.gh("pr", "checks")).exit).toBe(1);
 });
 
-test("a spent route falls through to the next route that matches, and to the 404 when none does", async () => {
+test("a spent route falls through to the next route that matches, and to the refusal when none does", async () => {
   const { gh, calls } = world([
     { match: "^gh run rerun \\d+ --failed", stdout: RERUN, spends: 1 },
     { match: "^gh run rerun", stderr: "gh: the head's re-run is spent\n", exit: 1 },
@@ -274,9 +274,210 @@ test("a spent route falls through to the next route that matches, and to the 404
   expect((await alone.gh("pr", "checks")).stdout).toBe(`${GREEN.stdout}\n`);
   const spent = await alone.gh("pr", "checks");
 
-  expect([spent.stderr, spent.exit]).toEqual(["gh: Not Found (HTTP 404)\n", 1]);
+  expect([spent.stderr, spent.exit]).toEqual(["rig: request not modeled: gh pr checks\n", 1]);
   expect(alone.calls().map((call) => call.route)).toEqual(["^gh pr checks", null]);
+  expect(
+    readFileSync(path.join(alone.run, "calls.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line).unmodeled)
+  ).toEqual([undefined, true]);
 });
+
+// Catches: a press of the re-run through another command (a REST POST) that moves no read that
+// follows the re-run, so the head stays red after it; and a counts_as naming no route, which
+// would press nothing for good.
+test("a route that counts as another advances every route that follows that one", async () => {
+  const { gh } = world([
+    { match: "^gh pr checks", replies: [RED, GREEN], follows: "^gh run rerun" },
+    { match: "^gh run rerun", stdout: RERUN },
+    { match: "^gh api -X POST", stdout: {}, counts_as: "^gh run rerun" },
+  ]);
+  const before = await gh("pr", "checks");
+  await gh("api", "-X", "POST", "repos/example/widgets/actions/runs/17420/rerun-failed-jobs");
+  const after = await gh("pr", "checks");
+  expect([before.exit, after.exit]).toEqual([1, 0]);
+  const typo = world([{ match: "^gh api", stdout: {}, counts_as: "^gh run rerunn" }]);
+  expect((await typo.check()).exit).toBe(2);
+});
+
+// Catches: a list answered whole whatever the call's flags asked of it, and --json fields picked
+// from an object but not from each object of a list, as gh picks them.
+test("a route's program filters its answer by the call's own arguments, and --json picks from a list", async () => {
+  const { gh } = world([
+    {
+      match: "^gh run list",
+      stdout: [
+        { databaseId: 1, status: "completed", conclusion: "failure" },
+        { databaseId: 2, status: "completed", conclusion: "success" },
+      ],
+      program:
+        '([range(0; ($argv|length) - 1) as $i | select($argv[$i] == "--status") | $argv[$i + 1]] | first) as $s | map(select($s == null or .conclusion == $s))',
+    },
+  ]);
+  expect((await gh("run", "list", "--status", "success", "--json", "databaseId")).stdout).toBe(
+    '[{"databaseId":2}]\n'
+  );
+});
+
+/** The template of each review the routes below keep. */
+const REVIEW = {
+  id: 7001,
+  comment_id: 7101,
+  commit_id: HEAD,
+  user: { login: "rig[bot]" },
+  author_association: "NONE",
+  html_url: "https://github.com/example/widgets/pull/1000",
+  pull_request_url: "https://api.github.com/repos/example/widgets/pulls/1000",
+  added_lines: { "a.ts": 3 },
+};
+/** Routes that keep the reviews a role sends and read them back with their inline comments, and
+ * take the comments it posts on a line or on the pull request, which they do not keep. */
+const LINE_COMMENT = "^gh api -X POST \\S+/pulls/\\d+/comments";
+const UNTIL_LINE_COMMENT = {
+  follows: LINE_COMMENT,
+  replies: [{ stdout: [] }, { unmodeled: true }],
+};
+const REVIEW_ROUTES = [
+  { match: "^gh api -X POST \\S+/reviews(?:\\s|$)", review: REVIEW },
+  { match: LINE_COMMENT, stdout: { id: 1 } },
+  { match: "^gh api -X POST \\S+/issues/\\d+/comments", stdout: { id: 2 } },
+  { match: "^gh api \\S+/pulls/\\d+/comments", reviews: "comments", ...UNTIL_LINE_COMMENT },
+  {
+    match: "^gh api \\S+/reviews/(?<id>\\d+)/comments",
+    reviews: "review_comments",
+    ...UNTIL_LINE_COMMENT,
+  },
+  { match: "^gh api \\S+/reviews/(?<id>\\d+)", reviews: "one", ...UNTIL_LINE_COMMENT },
+  { match: "^gh api \\S+/reviews", reviews: "list", ...UNTIL_LINE_COMMENT },
+  { match: "^gh pr review", stdout: "", review: REVIEW },
+  {
+    match: "^gh pr view",
+    stdout: { number: 1000 },
+    reviews: "pr",
+    comments: "^gh api -X POST \\S+/issues/\\d+/comments",
+  },
+];
+const REVIEWS = "repos/example/widgets/pulls/1000/reviews";
+
+/** A file in the run directory holding `body` as JSON, for a call's `--input`. */
+function inputFile(run: string, body: object): string {
+  const file = path.join(run, `input-${Math.random().toString(36).slice(2)}.json`);
+  writeFileSync(file, JSON.stringify(body));
+  return file;
+}
+
+// Catches: a review sent with no event kept as anything but GitHub's pending review, or hidden
+// from its author; a second pending review, a review on another commit than the head, a body-less
+// changes request, an inline comment off the diff and flags gh refuses kept rather than refused;
+// a review's inline comments missing from the review-comment reads; a review read by an id no
+// review has; and the reads still answering once the role posts a line comment of its own.
+test("the reviews a role sends are kept as GitHub records them, and those the rig cannot state are refused", async () => {
+  const { gh, run, calls } = world(REVIEW_ROUTES);
+  const pending = JSON.parse((await gh("api", "-X", "POST", REVIEWS, "-f", "body=draft")).stdout);
+  const refused = [
+    await gh("api", "-X", "POST", REVIEWS, "-f", "body=again"),
+    await gh(
+      "api",
+      "-X",
+      "POST",
+      REVIEWS,
+      "-f",
+      "event=APPROVE",
+      "-f",
+      `commit_id=${"0".repeat(40)}`
+    ),
+    await gh("api", "-X", "POST", REVIEWS, "-f", "event=REQUEST_CHANGES"),
+    await gh("pr", "review", "1000"),
+    await gh("pr", "review", "1000", "--comment"),
+    await gh("pr", "view", "1000", "--json", "latestReviews"),
+    await gh(
+      "api",
+      "-X",
+      "POST",
+      REVIEWS,
+      "--input",
+      inputFile(run, {
+        event: "COMMENT",
+        body: "x",
+        comments: [{ path: "b.ts", line: 1, body: "y" }],
+      })
+    ),
+  ];
+  const before = await gh("api", "repos/example/widgets/pulls/1000/comments");
+  const commented = JSON.parse(
+    (
+      await gh(
+        "api",
+        "-X",
+        "POST",
+        REVIEWS,
+        "--input",
+        inputFile(run, {
+          event: "COMMENT",
+          body: "See the line.",
+          comments: [{ path: "a.ts", line: 3, side: "RIGHT", body: "here" }],
+        })
+      )
+    ).stdout
+  );
+  const after = await gh("api", "repos/example/widgets/pulls/1000/comments");
+  const ofReview = await gh("api", `${REVIEWS}/7002/comments`);
+  const list = JSON.parse((await gh("api", REVIEWS)).stdout);
+  const one = JSON.parse((await gh("api", `${REVIEWS}/7002`)).stdout);
+  const none = await gh("api", `${REVIEWS}/7003`);
+  const view = JSON.parse((await gh("pr", "view", "1000", "--json", "reviews,comments")).stdout);
+
+  expect([pending.id, pending.state, pending.body, "submitted_at" in pending]).toEqual([
+    7001,
+    "PENDING",
+    "draft",
+    false,
+  ]);
+  expect(
+    refused.map((call) => [call.stderr.startsWith("rig: request not modeled: gh "), call.exit])
+  ).toEqual(Array(7).fill([true, 1]));
+  expect([commented.id, commented.state, commented.commit_id]).toEqual([7002, "COMMENTED", HEAD]);
+  const line = JSON.parse(after.stdout);
+  expect([before.stdout, ofReview.stdout]).toEqual(["[]\n", after.stdout]);
+  expect(
+    line.map((comment: Record<string, unknown>) => [
+      comment.id,
+      comment.pull_request_review_id,
+      comment.path,
+      comment.line,
+      comment.body,
+      comment.commit_id,
+    ])
+  ).toEqual([[7101, 7002, "a.ts", 3, "here", HEAD]]);
+  expect(list.map((review: { id: number; state: string }) => [review.id, review.state])).toEqual([
+    [7001, "PENDING"],
+    [7002, "COMMENTED"],
+  ]);
+  expect(one).toEqual(commented);
+  expect([none.stderr, none.exit]).toEqual(["gh: Not Found (HTTP 404)\n", 1]);
+  expect(
+    view.reviews.map((review: { state: string; submittedAt: string | null }) => [
+      review.state,
+      review.submittedAt === null,
+    ])
+  ).toEqual([
+    ["PENDING", true],
+    ["COMMENTED", false],
+  ]);
+  expect(view.comments).toEqual([]);
+  // A line comment posted on its own opens a review GitHub keeps and the stand-in does not.
+  await gh("api", "-X", "POST", "repos/example/widgets/pulls/1000/comments", "-f", "body=z");
+  const unstated = [
+    await gh("api", REVIEWS),
+    await gh("api", "repos/example/widgets/pulls/1000/comments"),
+  ];
+  expect(unstated.map((call) => call.exit)).toEqual([1, 1]);
+  expect(calls().filter((call) => "unmodeled" in call).length).toBe(9);
+  const typo = world([{ match: "^gh pr view", reviews: "pr", comments: "^gh api nothing" }]);
+  expect((await typo.check()).exit).toBe(2);
+  // Twenty stand-in processes one after another: past bun's 5 s default on a loaded machine.
+}, 60_000);
 
 test("the re-run and the failed-log read are each recorded with the route that answered them", async () => {
   const log = "--- FAIL: TestSettlesTheHead (0.12s)";
@@ -294,6 +495,37 @@ test("the re-run and the failed-log read are each recorded with the route that a
     { argv: "run rerun 17420 --failed", route: "^gh run rerun \\d+ --failed", exit: 0 },
     { argv: "run view 17420 --log-failed", route: "^gh run view \\d+ --log-failed", exit: 0 },
   ]);
+});
+
+// Catches: a refusal that names a fixed ref, or none, where GitHub names the one the call asked
+// for, so a role that read a commit by a wrong name (`null`, a branch nobody made) cannot tell
+// which of its reads was refused; and a `$<name>` the route's match has no group for that is
+// dropped rather than printed as the fixture wrote it.
+test("a route's stderr names the text each named group of its match took in the call", async () => {
+  const { gh } = world([
+    {
+      match: "^gh api .*commits/(?<commit>[^\\s?]*)/check-runs",
+      stderr: "gh: No commit found for SHA: $<commit> (HTTP 422)\n",
+      exit: 1,
+    },
+    { match: "^gh run view", stderr: "gh: no run $<run>\n", exit: 1 },
+  ]);
+
+  expect(await gh("api", "repos/example/widgets/commits/null/check-runs")).toEqual({
+    stdout: "",
+    stderr: "gh: No commit found for SHA: null (HTTP 422)\n",
+    exit: 1,
+  });
+  expect(await gh("api", "repos/example/widgets/commits/trunk/check-runs?filter=all")).toEqual({
+    stdout: "",
+    stderr: "gh: No commit found for SHA: trunk (HTTP 422)\n",
+    exit: 1,
+  });
+  expect(await gh("run", "view", "17420")).toEqual({
+    stdout: "",
+    stderr: "gh: no run $<run>\n",
+    exit: 1,
+  });
 });
 
 test("a route's publish posts the envelope the fixture wrote, with the bearer, to the listener", async () => {

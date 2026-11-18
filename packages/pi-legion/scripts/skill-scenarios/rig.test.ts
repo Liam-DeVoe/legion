@@ -1612,18 +1612,20 @@ type RedWorld = (typeof RED_WORLDS)[number];
 /** Each world's red check, the job that carries it, and what the head settles at once the re-run
  * is pressed (red_fixture). The reviewer holds the phase in i and j, the tester in the rest. In i
  * and j the head also carries `aggregate`, the aggregate check the base requires, red over the
- * failing lane and settled with it; world.json's `check` stays the lane. */
+ * failing lane and settled with it; world.json's `check` stays the lane. In g the red check is
+ * that aggregate, and its failing lane is a red check run of its own beside it (`aggregate` names
+ * the lane there). World c's check is named as its job is, as GitHub names a job's check run. */
 const RED_WORLD: Record<
   RedWorld,
   { check: string; job: string; after: "green" | "red"; aggregate?: string }
 > = {
   a: { check: "test (notify)", job: "test (notify)", after: "green" },
   b: { check: "test (notify)", job: "test (notify)", after: "red" },
-  c: { check: "build", job: "build (linux-x64)", after: "green" },
+  c: { check: "build (linux-x64)", job: "build (linux-x64)", after: "green" },
   d: { check: "test (widgets)", job: "test (widgets)", after: "red" },
   e: { check: "test (notify)", job: "test (notify)", after: "red" },
   f: { check: "title", job: "title", after: "red" },
-  g: { check: "ci", job: "test (notify)", after: "green" },
+  g: { check: "ci", job: "test (notify)", after: "green", aggregate: "test (notify)" },
   h: { check: "test (notify)", job: "test (notify)", after: "green" },
   i: { check: "test (notify)", job: "test (notify)", after: "green", aggregate: "ci" },
   j: { check: "test (notify)", job: "test (notify)", after: "red", aggregate: "ci" },
@@ -1635,6 +1637,9 @@ const RED_KEY = "LWEVAL-9";
 const RED_REPO = "example/widgets";
 const RED_PR = 1003;
 const RED_HEAD = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
+/** The base commit, main's one commit: the sha trial-j-nos1-4 of the tester's round-9 batch read
+ * main's check runs at. */
+const RED_BASE = "77671688867919aea744e874c2f9560e82e03569";
 const RED_TITLE = `feat: greet() (${RED_KEY})`;
 /** red_fixture's ids for this pull request: the run that failed, its job, and the check runs —
  * lint, typecheck, the world's red, and the attempt the re-run makes. */
@@ -1648,12 +1653,18 @@ const RED_RUN_URL = `https://github.com/${RED_REPO}/actions/runs/${RED_RUN_ID}`;
 const ghStandin = path.join(import.meta.dir, "gh-standin.ts");
 
 /** worker_fixture's green head as red_fixture reads it: the `gh pr view` answer with its rollup
- * and its base, the `gh pr checks` rows and the generic check-runs read, which red_fixture
- * rewrites, and the catch-all past them, which it leaves alone. The repository it also builds,
- * and the handoff it writes, are no part of what red_fixture reads. */
+ * and its base, the `gh pr checks` rows, the GraphQL rollup of the head and the generic
+ * check-runs read, which red_fixture rewrites; ahead of the last two, the routes for a read of any
+ * other commit, as the rig's own other_commit_routes writes them; and the catch-all past them,
+ * which red_fixture leaves alone. The repository it also builds, and the handoff it writes, are no
+ * part of what red_fixture reads. */
 function greenRun(name: string): string {
   const run = freshDir(name);
   const url = `https://github.com/${RED_REPO}/pull/${RED_PR}`;
+  const statusCheckRollup = [
+    { name: "test", status: "COMPLETED", conclusion: "SUCCESS" },
+    { name: "lint", status: "COMPLETED", conclusion: "SUCCESS" },
+  ];
   const pullRequest = {
     number: RED_PR,
     url,
@@ -1665,11 +1676,22 @@ function greenRun(name: string): string {
     body: `Dispatch: ${RED_KEY}`,
     head: { sha: RED_HEAD, ref: `legion/${RED_KEY}` },
     base: { ref: "main" },
-    statusCheckRollup: [
-      { name: "test", status: "COMPLETED", conclusion: "SUCCESS" },
-      { name: "lint", status: "COMPLETED", conclusion: "SUCCESS" },
-    ],
+    statusCheckRollup,
   };
+  const others = bash(
+    `${fn("route_defs")}\n${fn("other_commit_routes")}\nother_commit_routes "$@"`,
+    [RED_HEAD, `legion/${RED_KEY}`, String(RED_PR), "main", RED_BASE]
+  );
+  if (others.code !== 0) throw new Error(`other_commit_routes failed: ${others.stderr}`);
+  const {
+    heads,
+    rest,
+    graphql,
+  }: {
+    heads: { rollup: string; "check-runs": string; status: string; statuses: string };
+    rest: unknown[];
+    graphql: unknown[];
+  } = JSON.parse(others.stdout);
   writeFileSync(
     path.join(run, "fixtures.json"),
     JSON.stringify({
@@ -1680,8 +1702,34 @@ function greenRun(name: string): string {
           stdout:
             "lint\tpass\t10s\thttps://example.invalid/1\ntest\tpass\t20s\thttps://example.invalid/2",
         },
+        ...graphql,
         {
-          match: "^gh api .*(check-runs|status)",
+          match: heads.rollup,
+          head_read: "rollup",
+          stdout: {
+            data: {
+              repository: {
+                object: {
+                  statusCheckRollup: {
+                    state: "SUCCESS",
+                    contexts: {
+                      totalCount: statusCheckRollup.length,
+                      pageInfo: { hasNextPage: false },
+                      nodes: statusCheckRollup.map((check) => ({
+                        __typename: "CheckRun",
+                        ...check,
+                      })),
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        ...rest,
+        {
+          match: heads["check-runs"],
+          head_read: "check-runs",
           stdout: {
             total_count: 2,
             check_runs: [
@@ -1690,6 +1738,11 @@ function greenRun(name: string): string {
             ],
           },
         },
+        {
+          match: heads.status,
+          stdout: { state: "pending", statuses: [], total_count: 0, sha: RED_HEAD },
+        },
+        { match: heads.statuses, stdout: [] },
         { match: "^gh (api user|auth status)", stdout: { login: "rig[bot]" } },
       ],
     })
@@ -1711,7 +1764,7 @@ function greenRun(name: string): string {
 function redFixture(world: string): string {
   const run = greenRun(`red-${world}`);
   const result = bash(
-    `${fn("fail")}\n${fn("red_world_table")}\n${fn("red_world")}\n${fn("red_fixture")}\n${fn("required_set_fixture")}\nR=$1 worker_key=$2 worker_repo=$3\nred_fixture "$4"`,
+    `${fn("fail")}\n${fn("route_defs")}\n${fn("red_world_table")}\n${fn("red_world")}\n${fn("red_fixture")}\n${fn("required_set_fixture")}\nR=$1 worker_key=$2 worker_repo=$3\nred_fixture "$4"`,
     [run, RED_KEY, RED_REPO, world]
   );
   if (result.code !== 0) throw new Error(`red_fixture ${world} failed: ${result.stderr}`);
@@ -1977,6 +2030,8 @@ describe("red_fixture", () => {
     expect(seen).toEqual({
       ...Object.fromEntries(RED_WORLDS.map((world) => [world, [red]])),
       e: [red, `${RED_RUN_ID - 1}\te2e\t2\tsuccess`],
+      // The title check runs in a workflow of its own; lint and typecheck in the `ci` run beside.
+      f: [`${RED_RUN_ID}\ttitle\t1\tfailure`, `${RED_RUN_ID + 2}\tci\t1\tsuccess`],
     });
   });
 
@@ -2049,6 +2104,204 @@ describe("red_fixture", () => {
     }
   });
 
+  // Catches: a route for other commits that takes a read of the head by another of its names, its
+  // short sha or its branch, or a `status` read of it, each of which answered the head's red
+  // before those routes and must answer it still; a base whose status or statuses read as
+  // anything but GitHub's for a commit nothing ran on; and a commit the rig does not know that is
+  // answered rather than refused, or refused under another name than the one the call gave it.
+  test("the head keeps its red under every name, the base reads as no check, another commit is refused", async () => {
+    const run = redFixture("a");
+    const failing = async (ref: string, endpoint: string) =>
+      outputLines(
+        (
+          await gh(run, [
+            "api",
+            `repos/${RED_REPO}/commits/${ref}/${endpoint}`,
+            "--jq",
+            '.check_runs[] | select(.conclusion == "failure") | .name',
+          ])
+        ).stdout
+      );
+    // A `status` read of the head answers its combined status, GitHub's for a commit no status was
+    // posted to: no check run is in it, so it names no failure.
+    expect({
+      short: await failing(RED_HEAD.slice(0, 7), "check-runs"),
+      branch: await failing(`legion/${RED_KEY}`, "check-runs"),
+      ref: await failing(`refs/heads/legion/${RED_KEY}`, "check-runs?filter=all"),
+      status: await failing(RED_HEAD, "status"),
+    }).toEqual({
+      short: ["test (notify)"],
+      branch: ["test (notify)"],
+      ref: ["test (notify)"],
+      status: [],
+    });
+    const status = await gh(run, ["api", `repos/${RED_REPO}/commits/main/status`]);
+    const statuses = await gh(run, [
+      "api",
+      `repos/${RED_REPO}/commits/${RED_BASE.slice(0, 7)}/statuses`,
+    ]);
+    expect([JSON.parse(status.stdout), JSON.parse(statuses.stdout)]).toEqual([
+      { state: "pending", statuses: [], total_count: 0, sha: RED_BASE },
+      [],
+    ]);
+    expect(await gh(run, ["api", `repos/${RED_REPO}/commits/trunk/check-runs`])).toEqual({
+      stdout: "",
+      stderr: "gh: No commit found for SHA: trunk (HTTP 422)\n",
+      exit: 1,
+    });
+  });
+
+  // Catches: a GraphQL rollup read of another commit answered with the head's counted set, the
+  // defect of the check-runs row above through the read the page gives for the counted set at a
+  // named head (RED_ROLLUP_QUERY), whether the call names the commit in its `oid` field or inline.
+  // The base's rollup reads as GitHub's for a commit with no check, a commit the rig does not know
+  // as no object at all, and the head's own read, by oid or by its branch, keeps the head's red.
+  test("a GraphQL rollup read of a commit other than the head answers none of the head's red", async () => {
+    const unknown = "0123456789abcdef0123456789abcdef01234567";
+    const inline =
+      'query{repository(owner:"example",name:"widgets"){object(expression:"<commit>"){' +
+      "... on Commit{statusCheckRollup{state}}}}}";
+    // Each read as a role sends it: the page's query with the commit in its `oid` field, or a
+    // query that names the commit inline.
+    const reads: Record<string, string[]> = {
+      base: ["-F", `oid=${RED_BASE}`, "-f", `query=${RED_ROLLUP_QUERY}`],
+      main: ["-f", `query=${inline.replace("<commit>", "main")}`],
+      unknown: ["-F", `oid=${unknown}`, "-f", `query=${RED_ROLLUP_QUERY}`],
+      head: ["-F", `oid=${RED_HEAD}`, "-f", `query=${RED_ROLLUP_QUERY}`],
+      branch: ["-f", `query=${inline.replace("<commit>", `legion/${RED_KEY}`)}`],
+    };
+    for (const world of ["a", "i", "j"]) {
+      const run = redFixture(world);
+      const objects: Record<string, { statusCheckRollup: { state: string } | null } | null> = {};
+      for (const [read, args] of Object.entries(reads)) {
+        const answer = await gh(run, [
+          "api",
+          "graphql",
+          ...args,
+          "--jq",
+          ".data.repository.object",
+        ]);
+        objects[read] = JSON.parse(answer.stdout);
+      }
+      expect({
+        world,
+        base: objects.base,
+        main: objects.main,
+        unknown: objects.unknown,
+        head: objects.head?.statusCheckRollup?.state,
+        branch: objects.branch?.statusCheckRollup?.state,
+      }).toEqual({
+        world,
+        base: { statusCheckRollup: null },
+        main: { statusCheckRollup: null },
+        unknown: null,
+        head: "FAILURE",
+        branch: "FAILURE",
+      });
+    }
+  });
+
+  // Catches: a read of the runs of another commit or branch, the base's among them, answered with
+  // the runs of the head, through the REST read of the runs or `gh run list`, so the base reads as
+  // failing the red of the head; and a route for those reads that takes the head's own read, by
+  // its sha or by its branch.
+  test("a read of the runs of another commit or branch answers no run, and the head's keeps its run", async () => {
+    const run = redFixture("a");
+    const runs = `repos/${RED_REPO}/actions/runs`;
+    const conclusions = async (args: string[]) => outputLines((await gh(run, args)).stdout);
+    expect({
+      baseSha: await conclusions([
+        "api",
+        `${runs}?head_sha=${RED_BASE}&per_page=100`,
+        "--jq",
+        ".workflow_runs[] | .conclusion",
+      ]),
+      main: await conclusions([
+        "api",
+        `${runs}?branch=main`,
+        "--jq",
+        ".workflow_runs[] | .conclusion",
+      ]),
+      listMain: await conclusions([
+        "run",
+        "list",
+        "--branch",
+        "main",
+        "--json",
+        "conclusion",
+        "--jq",
+        ".[] | .conclusion",
+      ]),
+      listBase: await gh(run, ["run", "list", "--commit", RED_BASE]),
+      head: await conclusions([
+        "api",
+        `${runs}?head_sha=${RED_HEAD}&event=pull_request&per_page=100`,
+        "--jq",
+        ".workflow_runs[] | .conclusion",
+      ]),
+      headBranch: await conclusions([
+        "api",
+        `${runs}?branch=legion/${RED_KEY}`,
+        "--jq",
+        ".workflow_runs[] | .conclusion",
+      ]),
+      listHead: await conclusions([
+        "run",
+        "list",
+        "--commit",
+        RED_HEAD,
+        "--json",
+        "conclusion",
+        "--jq",
+        ".[] | .conclusion",
+      ]),
+    }).toEqual({
+      baseSha: [],
+      main: [],
+      listMain: [],
+      listBase: { stdout: "", stderr: "", exit: 0 },
+      head: ["failure"],
+      headBranch: ["failure"],
+      listHead: ["failure"],
+    });
+  });
+
+  // Catches: a `gh run rerun` that names no run of the head pressing the head's re-run. A re-run
+  // of the red's check run id, which trial-d-head-5, trial-e-head-2 and trial-g-head-2 made,
+  // settled the head and published its settlement, where GitHub answers the 404 of a run it has
+  // not got; `gh run rerun --help`, which trial-i-nos1-1 and trial-j-nos1-1 ran, did the same,
+  // where gh prints its help. Neither may move the head, and the re-run of the head's own run
+  // still settles it.
+  test("a re-run of a check run id is refused and leaves the head red; the head's own run settles it", async () => {
+    const run = redFixture("a");
+    const refused = await gh(run, ["run", "rerun", String(RED_RED_ID), "--failed"]);
+    const help = await gh(run, ["run", "rerun", "--help"]);
+    const before = await readHead(run);
+    const pressed = await gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
+    const after = await readHead(run);
+    // Each of the four reads of the head as a verdict per check: the rollup of `gh pr view`, the
+    // GraphQL rollup, `gh pr checks` and the check runs of the commit.
+    expect({
+      refused,
+      help: [help.stdout.split("\n")[0], help.stderr, help.exit],
+      before: [before.rollup, before.graphql, before.checks, before.checkRuns],
+      pressed: [pressed.stdout, pressed.exit],
+      after: [after.rollup, after.graphql, after.checks, after.checkRuns],
+    }).toEqual({
+      refused: {
+        stdout: "",
+        stderr:
+          `failed to get run: HTTP 404: Not Found (https://api.github.com/repos/${RED_REPO}` +
+          `/actions/runs/${RED_RED_ID}?exclude_pull_requests=true)\n`,
+        exit: 1,
+      },
+      help: ["Rerun an entire run, only failed jobs, or a specific job from a run.", "", 0],
+      before: Array(4).fill(headIs("a", "before")),
+      pressed: ["✓ Requested rerun of failed jobs\n", 0],
+      after: Array(4).fill(headIs("a", "after")),
+    });
+  });
+
   // Catches: a title check whose output names another title than the pull request's own, which
   // the role reads as a red of some other change.
   test("the title check's output names the pull request's own title", async () => {
@@ -2072,7 +2325,10 @@ describe("red_fixture", () => {
     const said = `The title "${RED_TITLE}" has no scope: the pattern is <type>(<scope>): <subject>.`;
     expect(title.stdout).toBe(`${RED_TITLE}\n`);
     expect(summary.stdout).toBe(`${said}\n`);
-    expect(log.stdout).toBe(`${said}\n`);
+    // gh prints a log line as `<job>\t<step>\t<time> <line>`.
+    expect(log.stdout).toBe(
+      `title\tCheck the pull request title\t2026-03-04T10:00:00.0000000Z ${said}\n`
+    );
   });
 
   // Catches: a world h whose log read answers a line like every other world's, which the page's
@@ -2086,7 +2342,10 @@ describe("red_fixture", () => {
         "(https://api.github.com/repos/example/widgets/actions/runs)\n"
     );
     expect([read.exit, read.stderr]).toEqual([0, ""]);
-    expect(read.stdout).toBe("(fail) notify > retries a refused send [3.00ms]\n");
+    expect(read.stdout).toBe(
+      "test (notify)\tRun bun test packages/notify\t2026-03-04T10:00:00.0000000Z " +
+        "(fail) notify > retries a refused send [3.00ms]\n"
+    );
   });
 
   // Catches: a counted set in a shape of the rig's own, which a role that reads it as GitHub
@@ -2108,6 +2367,7 @@ describe("red_fixture", () => {
             databaseId: RED_ID.lint,
             status: "COMPLETED",
             conclusion: "SUCCESS",
+            detailsUrl: `${RED_RUN_URL}/job/${RED_JOB_ID + 1}`,
             checkSuite: { workflowRun: { event: "pull_request", databaseId: RED_RUN_ID } },
           },
           {
@@ -2116,6 +2376,7 @@ describe("red_fixture", () => {
             databaseId: RED_RED_ID,
             status: "COMPLETED",
             conclusion: "FAILURE",
+            detailsUrl: `${RED_RUN_URL}/job/${RED_JOB_ID}`,
             checkSuite: { workflowRun: { event: "pull_request", databaseId: RED_RUN_ID } },
           },
           {
@@ -2124,6 +2385,7 @@ describe("red_fixture", () => {
             databaseId: RED_ID.typecheck,
             status: "COMPLETED",
             conclusion: "SUCCESS",
+            detailsUrl: `${RED_RUN_URL}/job/${RED_JOB_ID + 2}`,
             checkSuite: { workflowRun: { event: "pull_request", databaseId: RED_RUN_ID } },
           },
         ],
@@ -2154,15 +2416,15 @@ describe("red_fixture", () => {
     );
     expect(JSON.parse(counted.stdout)).toEqual([1, RED_RED_ID]);
     // The by-hand run is a run of its own at that head, which is what puts it outside the set
-    // GitHub counts for the pull request.
+    // GitHub counts for the pull request: its check run links to the job of that run.
     const byHand = await gh(run, [
       "api",
       `repos/${RED_REPO}/commits/${RED_HEAD}/check-runs?filter=all`,
       "--jq",
-      `.check_runs[] | select(.id == ${RED_RED_ID + 2}) | [.html_url, .output.summary] | @tsv`,
+      `.check_runs[] | select(.id == ${RED_RED_ID + 2}) | [.details_url, .output.summary] | @tsv`,
     ]);
     expect(byHand.stdout).toBe(
-      `https://github.com/${RED_REPO}/actions/runs/${RED_RUN_ID + 1}\t` +
+      `https://github.com/${RED_REPO}/actions/runs/${RED_RUN_ID + 1}/job/${RED_JOB_ID + 6}\t` +
         "A by-hand workflow_dispatch run of test (notify) failed.\n"
     );
     // The re-run clears the counted run and leaves the by-hand one, which is why a role that
@@ -2285,22 +2547,45 @@ describe("red_fixture", () => {
         "--jq",
         ".check_runs[] | [.id,.name,.conclusion] | @tsv",
       ]);
-      seen.push({ world, routes: ghCalls(run).map((call) => call.route), jobs: jobs.stdout });
+      // Each route by the read it answers: its match is a long regex anchored on the endpoint.
+      const label = (route: string | null) =>
+        route === null
+          ? "unmodeled"
+          : route.includes("graphql") && route.includes("statusCheckRollup")
+            ? "rollup"
+            : route.includes(`actions/runs/${RED_RUN_ID}/jobs`)
+              ? "jobs"
+              : route.includes("actions/runs")
+                ? "runs"
+                : route.includes("check-runs")
+                  ? "check-runs"
+                  : route;
+      seen.push({
+        world,
+        routes: ghCalls(run).map((call) => label(call.route)),
+        jobs: jobs.stdout,
+      });
     }
     expect(seen).toEqual(
       RED_WORLDS.map((world) => ({
         world,
         routes: [
-          "^gh api .*actions/runs",
-          "^gh api .*graphql.*statusCheckRollup",
-          `^gh api .*actions/runs/${RED_RUN_ID}/jobs`,
+          "runs",
+          "rollup",
+          "jobs",
           "^gh run view .*--log-failed",
           "^gh run rerun",
-          `^gh api .*commits/${RED_HEAD}/check-runs`,
+          "check-runs",
         ],
+        // The jobs of the run of the red: the failing lane, and beside it lint and typecheck (in
+        // `f` the title check runs alone in a run of its own), and in `g`, `i` and `j` the
+        // aggregate `ci` over the lane.
         jobs:
           `${RED_JOB_ID}\t${RED_WORLD[world].job}\tfailure\n` +
-          `${RED_JOB_ID + 1}\tlint\tsuccess\n`,
+          (world === "f"
+            ? ""
+            : `${RED_JOB_ID + 1}\tlint\tsuccess\n${RED_JOB_ID + 2}\ttypecheck\tsuccess\n`) +
+          (["g", "i", "j"].includes(world) ? `${RED_JOB_ID + 3}\tci\tfailure\n` : ""),
       }))
     );
   });
@@ -2318,9 +2603,14 @@ describe("red_fixture", () => {
       stderr: `no required checks reported on the 'legion/${RED_KEY}' branch\n`,
       exit: 1,
     };
-    /** The id of the check run of `ci` a head first reports, in the worlds whose head reports
-     * one: world g's red, and the aggregate over the red lane of i and j. */
-    const ciId: Partial<Record<RedWorld, number>> = { g: RED_RED_ID, i: RED_CI_ID, j: RED_CI_ID };
+    /** The job of the check run of `ci` a head first reports, in the worlds whose head reports
+     * one: world g's red, and the aggregate over the red lane of i and j, the aggregate job of the
+     * run of the red in each; its attempt 2 is the job the re-run makes. */
+    const ciJob: Partial<Record<RedWorld, number>> = {
+      g: RED_JOB_ID + 3,
+      i: RED_JOB_ID + 3,
+      j: RED_JOB_ID + 3,
+    };
     const seen: unknown[] = [];
     for (const world of RED_WORLDS) {
       const run = redFixture(world);
@@ -2344,8 +2634,8 @@ describe("red_fixture", () => {
     }
     expect(seen).toEqual(
       RED_WORLDS.map((world) => {
-        const ci = ciId[world];
-        const url = `https://github.com/${RED_REPO}/runs`;
+        const ci = ciJob[world];
+        const url = `${RED_RUN_URL}/job`;
         // The attempt the re-run made of `ci`, which settles as the world settles.
         const settled = headIs(world, "after").ci;
         return {
@@ -2361,7 +2651,7 @@ describe("red_fixture", () => {
             ci === undefined
               ? none
               : {
-                  stdout: `ci\t${settled}\t20s\t${url}/${ci + 1}\n`,
+                  stdout: `ci\t${settled}\t20s\t${url}/${ci + 2}\n`,
                   stderr: "",
                   exit: settled === "fail" ? 1 : 0,
                 },
@@ -2656,6 +2946,8 @@ describe("red_fixture", () => {
       aggregate: false,
       spent: false,
       by_hand: false,
+      over_lane: true,
+      required: "ci",
     });
   });
 
@@ -2674,6 +2966,7 @@ describe("red_fixture", () => {
       aggregate: false,
       spent: false,
       by_hand: false,
+      over_lane: false,
     };
     const facts: Record<RedWorld, object> = {
       a: { after: "green", ...tester, ...reruns, round: "goes-on", disposal: true, ...plain },
@@ -2689,7 +2982,15 @@ describe("red_fixture", () => {
       d: { after: "red", ...tester, ...none, round: "fails", ...plain },
       e: { after: "red", ...tester, ...none, round: "fails-spent", ...plain, spent: true },
       f: { after: "red", ...tester, ...none, round: "fails", ...plain },
-      g: { after: "green", ...tester, ...reruns, round: "goes-on", disposal: true, ...plain },
+      g: {
+        after: "green",
+        ...tester,
+        ...reruns,
+        round: "goes-on",
+        disposal: true,
+        ...plain,
+        over_lane: true,
+      },
       h: { after: "green", ...tester, ...reruns, round: "goes-on", disposal: false, ...plain },
       i: {
         after: "green",
@@ -2757,15 +3058,16 @@ describe("red_fixture", () => {
   // pressed before the report writes it, as a pull request body edit does), which would leave
   // world l's counted set unreported for good, and a mark in a world the rig reports nothing in.
   test("world l marks the routes red_report trims, and the mark outlives the stand-in's writes", async () => {
-    const counted = [
-      "^gh api .*graphql.*statusCheckRollup",
-      "^gh pr view",
-      "^gh pr checks\\b.*\\s--required\\b",
-      "^gh pr checks",
-    ];
+    // In the order the routes stand in fixtures.json: worker_fixture's own, each turned red where
+    // it stands.
+    const run = redFixture("l");
+    const written: { routes: { match: string; head_read?: string }[] } = JSON.parse(
+      readFileSync(path.join(run, "fixtures.json"), "utf8")
+    );
+    const rollup = written.routes.find((route) => route.head_read === "rollup")?.match;
+    const counted = ["^gh pr view", "^gh pr checks\\b.*\\s--required\\b", "^gh pr checks", rollup];
     expect(RED_WORLDS.filter((world) => marked(redFixture(world)).length > 0)).toEqual(["l"]);
 
-    const run = redFixture("l");
     expect(marked(run)).toEqual(counted.map((match) => [match, 3]));
     await gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
     expect(marked(run)).toEqual(counted.map((match) => [match, 3]));
@@ -2815,6 +3117,551 @@ describe("red_fixture", () => {
       reported: existsSync(path.join(run, "reported-at")),
     }).toEqual({ marked: 0, reported: true });
   });
+});
+
+// worker_fixture's reads of the repository and the pull request, which the rig answers from what
+// the world holds: the remote it pushes, the pull request object, and the jobs red_fixture writes.
+// A world here is built as a run builds it, worker_fixture then red_fixture, with jj stood in for.
+describe("the reads of the repository and the pull request", () => {
+  const rig = readFileSync(path.join(import.meta.dir, "rig.sh"), "utf8");
+  const workerFixture = rig.slice(
+    rig.indexOf("\nworker_fixture() {\n") + 1,
+    rig.indexOf("\n# worker_world INDEX START")
+  );
+  /** A run directory whose world worker_fixture and red_fixture built over `world`. */
+  function builtWorld(world: string): string {
+    const run = freshDir(`built-${world}`);
+    const names = ["fail", "route_defs", "other_commit_routes", "red_world_table", "red_world"];
+    const result = bash(
+      [
+        ...[...names, "red_fixture", "required_set_fixture"].map((name) => fn(name)),
+        workerFixture,
+        "jj() { :; }",
+        "R=$1 worker_key=$2 worker_repo=$3",
+        'worker_fixture 3 1740000000 && red_fixture "$4"',
+      ].join("\n"),
+      [run, RED_KEY, RED_REPO, world]
+    );
+    if (result.code !== 0) throw new Error(`the world ${world} failed: ${result.stderr}`);
+    return run;
+  }
+  // The commits the world holds, read from the checkout worker_fixture made them in (its push to
+  // the bare remote passes through whatever git is first on PATH).
+  const git = (run: string, ...args: string[]) =>
+    Bun.spawnSync(["git", "-C", path.join(run, "src"), ...args]).stdout.toString();
+
+  // Catches: a `gh pr list` that answers nothing, or every pull request whatever its filters ask,
+  // or in a format gh does not print, which a role reading the head's pull request by its branch
+  // takes for none.
+  test("gh pr list answers the one open pull request its filters admit, as gh prints it", async () => {
+    const run = builtWorld("a");
+    const json = await gh(run, ["pr", "list", "--head", `legion/${RED_KEY}`, "--json", "number"]);
+    const closed = await gh(run, ["pr", "list", "--state", "closed", "--json", "number"]);
+    const text = await gh(run, ["pr", "list"]);
+    expect([json.stdout, closed.stdout, text.stdout.split("\t").slice(0, 4)]).toEqual([
+      `[{"number":${RED_PR}}]\n`,
+      "[]\n",
+      [String(RED_PR), RED_TITLE, `legion/${RED_KEY}`, "OPEN"],
+    ]);
+  });
+
+  // Catches: a diff or a list of files the remote does not hold between the base and the head.
+  test("gh pr diff, its names and the files read answer the base..head diff of the remote", async () => {
+    const run = builtWorld("a");
+    const head = JSON.parse(readFileSync(path.join(run, "world.json"), "utf8")).head;
+    const diff = await gh(run, ["pr", "diff", String(RED_PR)]);
+    const names = await gh(run, ["pr", "diff", String(RED_PR), "--name-only"]);
+    const files = await gh(run, [
+      "api",
+      `repos/${RED_REPO}/pulls/${RED_PR}/files`,
+      "--jq",
+      ".[].filename",
+    ]);
+    expect({ diff: diff.stdout, names: names.stdout, files: files.stdout }).toEqual({
+      diff: git(run, "diff", "main", head),
+      names: git(run, "diff", "--name-only", "main", head),
+      files: git(run, "diff", "--name-only", "main", head),
+    });
+  });
+
+  // Catches: a job log through the API that names another failure than the world's, a log for a
+  // job the world has none of, and a passing job whose log claims a failure.
+  test("the job log through the API holds the failing line of a failed job, and 404s another id", async () => {
+    const run = builtWorld("a");
+    const failing = await gh(run, ["api", `repos/${RED_REPO}/actions/jobs/${RED_JOB_ID}/logs`]);
+    const passing = await gh(run, ["api", `repos/${RED_REPO}/actions/jobs/${RED_JOB_ID + 1}/logs`]);
+    const other = await gh(run, ["api", `repos/${RED_REPO}/actions/jobs/${RED_RED_ID}/logs`]);
+    expect({
+      failing: failing.stdout.includes("(fail) notify > retries a refused send"),
+      passing: passing.stdout.includes("(fail)") || passing.stdout.includes("##[error]"),
+      other: [other.stderr, other.exit],
+    }).toEqual({ failing: true, passing: false, other: ["gh: Not Found (HTTP 404)\n", 1] });
+  });
+
+  // Catches: a list of comments that answers empty after the role posted one, which the stand-in
+  // does not keep, through the REST list or `gh pr view --json comments`.
+  test("comments answer none until the role posts one, and are unmodeled after", async () => {
+    const run = builtWorld("a");
+    const list = ["api", `repos/${RED_REPO}/issues/${RED_PR}/comments`];
+    const view = ["pr", "view", String(RED_PR), "--json", "comments"];
+    const before = [await gh(run, list), await gh(run, view)];
+    await gh(run, ["pr", "comment", String(RED_PR), "--body", "Re-ran the red check."]);
+    const after = [await gh(run, list), await gh(run, view)];
+    expect({
+      before: before.map((read) => [read.stdout, read.exit]),
+      after: after.map((read) => [read.stderr, read.exit]),
+    }).toEqual({
+      before: [
+        ["[]\n", 0],
+        ['{"comments":[]}\n', 0],
+      ],
+      after: [
+        [`rig: request not modeled: gh api repos/${RED_REPO}/issues/${RED_PR}/comments\n`, 1],
+        [`rig: request not modeled: gh pr view ${RED_PR} --json comments\n`, 1],
+      ],
+    });
+  });
+
+  /** The review a role sends through `gh api`, its body handed over in an --input file. */
+  async function postReview(run: string, review: object) {
+    const file = path.join(run, `review-${Date.now()}-${Math.random()}.json`);
+    writeFileSync(file, JSON.stringify(review));
+    return gh(run, [
+      "api",
+      "--method",
+      "POST",
+      `repos/${RED_REPO}/pulls/${RED_PR}/reviews`,
+      "--input",
+      file,
+    ]);
+  }
+  const reviewsOf = async (run: string) =>
+    JSON.parse((await gh(run, ["api", `repos/${RED_REPO}/pulls/${RED_PR}/reviews`])).stdout);
+
+  // Catches: a review the reviewer submitted that reads back as none, as another state, on
+  // another commit than the head, or under an id the list and the by-id read do not agree on.
+  // Before the keep, every reviewer of the round-6, 8 and 9 batches that read back its own review
+  // met a list the rig could not answer (72 calls in 29 runs).
+  test("a posted APPROVE reads back APPROVED at the head, by the list, by its id and in gh pr view", async () => {
+    const run = builtWorld("i");
+    const head = JSON.parse(readFileSync(path.join(run, "world.json"), "utf8")).head;
+    const posted = await postReview(run, {
+      event: "APPROVE",
+      body: "Looks right.",
+      commit_id: head,
+    });
+    const sent = JSON.parse(posted.stdout);
+    const byId = await gh(run, ["api", `repos/${RED_REPO}/pulls/${RED_PR}/reviews/${sent.id}`]);
+    const view = await gh(run, ["pr", "view", String(RED_PR), "--json", "reviews,latestReviews"]);
+    const shown = { state: "APPROVED", body: "Looks right.", commit_id: head };
+    expect({
+      posted: { state: sent.state, body: sent.body, commit_id: sent.commit_id, user: sent.user },
+      list: (await reviewsOf(run)).map((review: { id: number }) => review.id),
+      byId: JSON.parse(byId.stdout),
+      view: JSON.parse(view.stdout),
+    }).toEqual({
+      posted: { ...shown, user: { login: "rig[bot]" } },
+      list: [sent.id],
+      byId: sent,
+      view: {
+        reviews: [
+          {
+            id: sent.node_id,
+            author: { login: "rig[bot]" },
+            authorAssociation: "NONE",
+            body: "Looks right.",
+            submittedAt: sent.submitted_at,
+            includesCreatedEdit: false,
+            reactionGroups: [],
+            state: "APPROVED",
+            commit: { oid: head },
+          },
+        ],
+        latestReviews: [
+          {
+            id: "",
+            author: { login: "rig[bot]" },
+            authorAssociation: "NONE",
+            body: "Looks right.",
+            submittedAt: sent.submitted_at,
+            includesCreatedEdit: false,
+            reactionGroups: [],
+            state: "APPROVED",
+            commit: { oid: "" },
+          },
+        ],
+      },
+    });
+  });
+
+  // Catches: a changes request that reads back as an approval, or as no review, through `gh api`
+  // fields or `gh pr review`.
+  test("a REQUEST_CHANGES reads back CHANGES_REQUESTED, through gh api fields and gh pr review", async () => {
+    const run = builtWorld("j");
+    await gh(run, [
+      "api",
+      "-X",
+      "POST",
+      `repos/${RED_REPO}/pulls/${RED_PR}/reviews`,
+      "-f",
+      "event=REQUEST_CHANGES",
+      "-f",
+      "body=test (notify) is red at the head.",
+    ]);
+    await gh(run, ["pr", "review", String(RED_PR), "--request-changes", "-b", "Still red."]);
+    expect(
+      (await reviewsOf(run)).map((review: { state: string; body: string }) => [
+        review.state,
+        review.body,
+      ])
+    ).toEqual([
+      ["CHANGES_REQUESTED", "test (notify) is red at the head."],
+      ["CHANGES_REQUESTED", "Still red."],
+    ]);
+  });
+
+  // Catches: a second review that replaces the first, or reads back before it.
+  test("two posted reviews read back as two, in the order sent, each under its own id", async () => {
+    const run = builtWorld("i");
+    const first = JSON.parse(
+      (await postReview(run, { event: "REQUEST_CHANGES", body: "Red." })).stdout
+    );
+    const second = JSON.parse((await postReview(run, { event: "APPROVE", body: "Green." })).stdout);
+    expect(
+      (await reviewsOf(run)).map((review: { id: number; state: string }) => [
+        review.id,
+        review.state,
+      ])
+    ).toEqual([
+      [first.id, "CHANGES_REQUESTED"],
+      [second.id, "APPROVED"],
+    ]);
+    expect(second.id).not.toBe(first.id);
+  });
+
+  // Catches: a review by an id the role never sent answered with one it did send, or with any
+  // review at all, before or after the role sends one.
+  test("a review by an id no review the role sent has answers GitHub's 404", async () => {
+    const run = builtWorld("i");
+    const unknown = () => gh(run, ["api", `repos/${RED_REPO}/pulls/${RED_PR}/reviews/6999`]);
+    const before = await unknown();
+    await postReview(run, { event: "APPROVE", body: "Looks right." });
+    const after = await unknown();
+    expect([before, after].map((read) => [read.stdout, read.stderr, read.exit])).toEqual([
+      ["", "gh: Not Found (HTTP 404)\n", 1],
+      ["", "gh: Not Found (HTTP 404)\n", 1],
+    ]);
+  });
+
+  /** The inline comments of the pull request, or of one review, as `path line body` rows. */
+  const commentRows = async (run: string, endpoint: string) => {
+    const read = await gh(run, [
+      "api",
+      `repos/${RED_REPO}/pulls/${RED_PR}/${endpoint}`,
+      "--jq",
+      ".[] | [.path, .line, .body, .commit_id, .user.login, .pull_request_review_id] | @tsv",
+    ]);
+    return [read.stdout, read.exit];
+  };
+
+  // Catches: a reviewer's inline comments that read back as none, as fewer, out of order, on
+  // another path, line or commit, or under no review, from the pull request's review comments, from
+  // the review's own, or as the review threads the reviewer's prompt reads. Three reviewers of the
+  // 158 archived runs read their inline comments back (trial-i-ablate-1, trial-j-head-4,
+  // trial-j-nos1-3) and one the threads after them (round 8's trial-i-head-5).
+  test("a review posted with two inline comments reads back both, from the pull request and the review", async () => {
+    const run = builtWorld("j");
+    const head = JSON.parse(readFileSync(path.join(run, "world.json"), "utf8")).head;
+    const review = JSON.parse(
+      (
+        await postReview(run, {
+          event: "REQUEST_CHANGES",
+          body: "test (notify) is red at the head.",
+          commit_id: head,
+          comments: [
+            { path: "greet.ts", line: 2, side: "RIGHT", body: "Trim before the greeting." },
+            { path: "greet.test.ts", line: 10, side: "RIGHT", body: "Cover an empty name too." },
+          ],
+        })
+      ).stdout
+    );
+    const rows =
+      `greet.ts\t2\tTrim before the greeting.\t${head}\trig[bot]\t${review.id}\n` +
+      `greet.test.ts\t10\tCover an empty name too.\t${head}\trig[bot]\t${review.id}\n`;
+    expect([
+      await commentRows(run, "comments"),
+      await commentRows(run, `reviews/${review.id}/comments`),
+    ]).toEqual([
+      [rows, 0],
+      [rows, 0],
+    ]);
+    const threads = await gh(run, [
+      "api",
+      "graphql",
+      "-f",
+      'query=query($n:Int!){repository(owner:"example",name:"widgets"){pullRequest(number:$n){reviewThreads(first:100){pageInfo{hasNextPage endCursor} nodes{id isResolved comments(last:1){nodes{author{login} body}}}}}}}',
+      "-F",
+      `n=${RED_PR}`,
+      "--jq",
+      ".data.repository.pullRequest.reviewThreads.nodes[] | [.isResolved, .comments.nodes[0].author.login, .comments.nodes[0].body] | @tsv",
+    ]);
+    expect([threads.stdout, threads.exit]).toEqual([
+      "false\trig[bot]\tTrim before the greeting.\nfalse\trig[bot]\tCover an empty name too.\n",
+      0,
+    ]);
+    // A query that asks less is answered no more than it asks, whatever its --jq names.
+    const counted = await gh(run, [
+      "api",
+      "graphql",
+      "-f",
+      'query=query($n:Int!){repository(owner:"example",name:"widgets"){pullRequest(number:$n){reviewThreads(first:100){totalCount nodes{id isResolved}}}}}',
+      "-F",
+      `n=${RED_PR}`,
+      "--jq",
+      '.data.repository.pullRequest.reviewThreads | [.totalCount, (.nodes[0] | keys), has("pageInfo")]',
+    ]);
+    expect(JSON.parse(counted.stdout)).toEqual([2, ["id", "isResolved"], false]);
+  });
+
+  // Catches: a review with no inline comment whose comments read back another review's, or are
+  // refused.
+  test("a review posted with no inline comment reads back none", async () => {
+    const run = builtWorld("i");
+    const review = JSON.parse(
+      (await postReview(run, { event: "APPROVE", body: "Looks right." })).stdout
+    );
+    expect([
+      await commentRows(run, "comments"),
+      await commentRows(run, `reviews/${review.id}/comments`),
+    ]).toEqual([
+      ["", 0],
+      ["", 0],
+    ]);
+  });
+
+  // Catches: the comments of a review the role never sent answered with another review's, or
+  // with none, where GitHub answers its 404; trial-j-ablate-4 of round 9 read review 6001's.
+  test("the comments of a review id no review the role sent has answer GitHub's 404", async () => {
+    const run = builtWorld("j");
+    await postReview(run, {
+      event: "COMMENT",
+      body: "One line.",
+      comments: [{ path: "greet.ts", line: 1, body: "Here." }],
+    });
+    const unknown = await gh(run, [
+      "api",
+      `repos/${RED_REPO}/pulls/${RED_PR}/reviews/6001/comments`,
+    ]);
+    expect([unknown.stdout, unknown.stderr, unknown.exit]).toEqual([
+      "",
+      "gh: Not Found (HTTP 404)\n",
+      1,
+    ]);
+  });
+
+  /** A GraphQL read of the review threads of the world's pull request whose threads ask `nodes`. */
+  const threadsRead = (run: string, nodes: string) =>
+    gh(run, [
+      "api",
+      "graphql",
+      "-f",
+      `query=query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100){pageInfo{hasNextPage endCursor} nodes{${nodes}}}}}}`,
+      "-F",
+      "o=example",
+      "-F",
+      "r=widgets",
+      "-F",
+      `n=${RED_PR}`,
+    ]);
+  const PROMPT_NODES = "id isResolved comments(last:1){nodes{author{login} body}}";
+
+  // Catches: a thread read back where the reviewer opened none, which a reviewer whose prompt
+  // reads the threads before it approves would take for a conversation left open.
+  test("a review with no inline comment reads back no review thread", async () => {
+    const run = builtWorld("i");
+    await postReview(run, { event: "APPROVE", body: "Looks right." });
+    const read = await threadsRead(run, PROMPT_NODES);
+    expect([JSON.parse(read.stdout), read.exit]).toEqual([
+      {
+        data: {
+          repository: {
+            pullRequest: {
+              reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] },
+            },
+          },
+        },
+      },
+      0,
+    ]);
+  });
+
+  // Catches: inline comments that open no thread, one thread for both, a thread read back as
+  // resolved, or a thread whose last comment is another than the one the reviewer wrote. Round
+  // 8's trial-i-head-5 read the threads after its inline review.
+  test("a review with two inline comments reads back two unresolved threads, each with its comment", async () => {
+    const run = builtWorld("j");
+    await postReview(run, {
+      event: "REQUEST_CHANGES",
+      body: "test (notify) is red at the head.",
+      comments: [
+        { path: "greet.ts", line: 2, body: "Trim before the greeting." },
+        { path: "greet.test.ts", line: 10, body: "Cover an empty name too." },
+      ],
+    });
+    const read = await threadsRead(run, PROMPT_NODES);
+    const threads = JSON.parse(read.stdout).data.repository.pullRequest.reviewThreads;
+    expect([
+      read.exit,
+      threads.pageInfo.hasNextPage,
+      threads.nodes.map((thread: { isResolved: boolean; comments: unknown }) => [
+        thread.isResolved,
+        thread.comments,
+      ]),
+      new Set(threads.nodes.map((thread: { id: string }) => thread.id)).size,
+    ]).toEqual([
+      0,
+      false,
+      [
+        [false, { nodes: [{ author: { login: "rig[bot]" }, body: "Trim before the greeting." }] }],
+        [false, { nodes: [{ author: { login: "rig[bot]" }, body: "Cover an empty name too." }] }],
+      ],
+      2,
+    ]);
+  });
+
+  // Catches: a threads query asking fields the route does not state (a thread's path and line)
+  // answered with the fields it does state, a trimmed guess, where the rig has no answer.
+  test("a threads query asking any other field set is refused as unmodeled", async () => {
+    const run = builtWorld("j");
+    const read = await threadsRead(run, "id isResolved path line");
+    expect([
+      read.stdout,
+      read.stderr.startsWith("rig: request not modeled: gh api graphql "),
+      read.exit,
+    ]).toEqual(["", true, 1]);
+  });
+
+  // Catches: a reviewer that reads its own login through GraphQL and is answered another than
+  // the one `gh api user` answers, the login every kept review carries, or is refused.
+  test("the GraphQL viewer's login is the login gh api user answers", async () => {
+    const run = builtWorld("i");
+    const viewer = await gh(run, [
+      "api",
+      "graphql",
+      "-f",
+      "query={viewer{login}}",
+      "--jq",
+      ".data.viewer.login",
+    ]);
+    const user = await gh(run, ["api", "user", "--jq", ".login"]);
+    expect([viewer.stdout, viewer.exit]).toEqual([user.stdout, 0]);
+    expect(user.stdout).toBe("rig[bot]\n");
+  });
+
+  // Catches: `gh --version` refused, and a version other than the one the rig measured gh by.
+  test("gh --version answers gh 2.98.0", async () => {
+    expect((await gh(builtWorld("a"), ["--version"])).stdout).toBe(
+      "gh version 2.98.0 (2026-08-20)\nhttps://github.com/cli/cli/releases/tag/v2.98.0\n"
+    );
+  });
+
+  // Catches: a GraphQL read of the pull request answered from fields the object does not hold,
+  // and one that asks a field the rig cannot state (its reviews) answered at all.
+  test("a GraphQL read of the pull request answers the fields its object holds, and no other", async () => {
+    const run = builtWorld("a");
+    const query = (fields: string) =>
+      `query=query{repository(owner:"example",name:"widgets"){pullRequest(number:${RED_PR}){${fields}}}}`;
+    const held = await gh(run, [
+      "api",
+      "graphql",
+      "-f",
+      query("headRefName reviewDecision"),
+      "--jq",
+      ".data.repository.pullRequest | [.headRefName, .reviewDecision]",
+    ]);
+    const reviews = await gh(run, [
+      "api",
+      "graphql",
+      "-f",
+      query("reviews(last:10){nodes{state}}"),
+    ]);
+    expect([
+      JSON.parse(held.stdout),
+      reviews.exit,
+      reviews.stderr.startsWith("rig: request not modeled"),
+    ]).toEqual([[`legion/${RED_KEY}`, null], 1, true]);
+  });
+
+  // Catches: a read of the base, the repository, a tree, a ref or the root contents answered from
+  // anything but the remote the fixture pushed, and a branch the remote has not got answered.
+  test("the base, the repository, its trees, refs and contents answer the remote", async () => {
+    const run = builtWorld("a");
+    const read = async (endpoint: string, filter: string) =>
+      (await gh(run, ["api", `repos/${RED_REPO}/${endpoint}`, "--jq", filter])).stdout.trim();
+    const trunk = await gh(run, ["api", `repos/${RED_REPO}/branches/trunk`]);
+    expect({
+      base: await read("commits/main", ".sha"),
+      branch: await read("", ".default_branch"),
+      tree: await read("git/trees/main?recursive=1", ".tree[].path"),
+      ref: await read("git/ref/heads/main", ".object.sha"),
+      contents: await read("contents/?ref=main", ".[].name"),
+      rules: await read("rules/branches/trunk", "length"),
+      trunk: [trunk.stderr, trunk.exit],
+    }).toEqual({
+      base: git(run, "rev-parse", "main").trim(),
+      branch: "main",
+      tree: git(run, "ls-tree", "-r", "--name-only", "main").trim(),
+      ref: git(run, "rev-parse", "main").trim(),
+      contents: git(run, "ls-tree", "--name-only", "main").trim(),
+      rules: "0",
+      trunk: ["gh: Branch not found (HTTP 404)\n", 1],
+    });
+  });
+
+  // Catches: a read of another repository answered with this world's, which a role that named the
+  // wrong repository takes for its own, and that refusal counted as unmodeled.
+  test("a repository other than the world's is refused as GitHub and gh refuse it", async () => {
+    const run = builtWorld("a");
+    const rest = await gh(run, ["api", "repos/skills-rig/project/branches/main"]);
+    const list = await gh(run, ["pr", "list", "--repo", "skills-rig/project"]);
+    const view = await gh(run, [
+      "run",
+      "view",
+      String(RED_RUN_ID),
+      "--repo",
+      "skills-rig/project",
+      "--log-failed",
+    ]);
+    expect([rest, list, view].map((read) => [read.stderr, read.exit])).toEqual([
+      ["gh: Not Found (HTTP 404)\n", 1],
+      [
+        "GraphQL: Could not resolve to a Repository with the name 'skills-rig/project'. (repository)\n",
+        1,
+      ],
+      [
+        `failed to get run: HTTP 404: Not Found (https://api.github.com/repos/skills-rig/project/actions/runs/${RED_RUN_ID}?exclude_pull_requests=true)\n`,
+        1,
+      ],
+    ]);
+    expect(ghCalls(run).some((call) => "unmodeled" in call)).toBe(false);
+  });
+});
+
+// Catches: a wake the rig gives for a re-run nobody pressed. `gh run rerun --help` presses nothing
+// (red_fixture answers it with gh's help), so a rerun_pressed that took it for the press would
+// start the role's second turn on a settlement that never came.
+test("rerun_pressed takes a re-run that names a run or a job, and not gh run rerun --help", () => {
+  const outcomes = [
+    ["run", "rerun", "--help"],
+    ["run", "rerun", "--failed"],
+    ["run", "rerun", String(RED_RUN_ID), "--failed"],
+    ["run", "rerun", "--job", String(RED_JOB_ID)],
+  ].map((argv) => {
+    const run = freshDir("rerun-pressed");
+    writeFileSync(path.join(run, "calls.jsonl"), `${JSON.stringify({ as: "gh", argv })}\n`);
+    return bash(`${fn("rerun_pressed")}\nR=$1\nrerun_pressed 0`, [run]).code;
+  });
+  expect(outcomes).toEqual([1, 1, 0, 0]);
 });
 
 // run_red_at_the_head with every process it starts stood in for: the run's Dispatch, the seeds,
