@@ -469,8 +469,8 @@ func TestGatedStepsCarryEveryStepToAHandedOverChild(t *testing.T) {
 		t.Fatalf("the catch-up says handed over %t, carried %t; want both of a root whose gate came with it", caught.HandedOver, caught.Carried)
 	}
 	want := []record.CatchUpGate{
-		{Step: record.DesignStepCriteria, Gated: true, Artifact: criteriaDoc, Version: 2, Approved: 1},
-		{Step: record.DesignStepSpec, Gated: true, Artifact: gateDoc, Version: 4, Approved: 4, Open: true},
+		{Step: record.DesignStepCriteria, Gated: true, Document: "dispatch://LEGION-209/artifact/verification-md", Artifact: criteriaDoc, Version: 2, Approved: 1},
+		{Step: record.DesignStepSpec, Gated: true, Document: "dispatch://LEGION-209/spec", Artifact: gateDoc, Version: 4, Approved: 4, Open: true},
 	}
 	if fmt.Sprint(caught.Gates) != fmt.Sprint(want) {
 		t.Fatalf("the catch-up states %#v, want one entry for each carried step: %#v", caught.Gates, want)

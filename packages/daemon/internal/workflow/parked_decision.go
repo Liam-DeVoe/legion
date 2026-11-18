@@ -136,10 +136,10 @@ func KeptDecisionsTask(root string, kept record.KeptDecisions) string {
 // carries its words, else the time the daemon kept it), the options an answer chose, and the
 // person's words in a block of their own, as the act's event carried them (record.DecisionMark):
 // cut to texts.OneAct where the task names one decision and to texts.EachOfSeveral each where it
-// names several (texts.Carry), with the count of the rest or the mark that more follows where the
-// event did not carry them all. The approval is the root's own, so it is named whenever kept
-// carries one — the gate was read where it was first kept — by its step, the version a person
-// approved and the version the document has reached since, which the architect requests
+// names several (record.DecisionMark.Carry), with the count of the rest or the mark that more
+// follows where the event did not carry them all. The approval is the root's own, so it is named
+// whenever kept carries one — the gate was read where it was first kept — by its step, the version
+// a person approved and the version the document has reached since, which the architect requests
 // approval of.
 func KeptDecisionsOf(root string, kept record.KeptDecisions) texts.KeptDecisionsRecord {
 	task := texts.KeptDecisionsRecord{TaskHead: texts.TaskHead{Kind: texts.KeptDecisions, Issue: root}}
@@ -154,7 +154,7 @@ func KeptDecisionsOf(root string, kept record.KeptDecisions) texts.KeptDecisions
 			decided.At = mark.AnswerAt.UTC()
 		}
 		if mark.Answer != "" || mark.More {
-			words := texts.Carry(mark.Answer, bound, mark.More)
+			words := mark.Carry(bound)
 			decided.Answer = &words
 		}
 		task.Kept = append(task.Kept, decided)

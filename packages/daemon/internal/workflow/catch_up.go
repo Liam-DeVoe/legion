@@ -112,8 +112,9 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 // telling's to settle, so this one names only what nobody claims. A child's names no decision: what
 // a person decided while nobody could hear it is kept for the tree (ParkedDecisionTask keys it by
 // tree) and stays the root architect's, so a child's catch-up carries no Kept. Each decision it
-// names carries the person's words cut to texts.EachOfSeveral, since a catch-up can name several,
-// named in the words object by their path with the person and the time; the row keeps them whole.
+// names carries the person's words cut to texts.OneAct where it names one and to
+// texts.EachOfSeveral each where it names several (keptFacts), named in the words object by their
+// path with the person and the time; the row keeps them whole.
 // The notice goes through the outbox like any other, so it is held and re-held as they are.
 //
 // paced is the moment the daemon's wake pacing reserved for this catch-up, which is both the
@@ -164,21 +165,26 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 }
 
 // keptFacts is kept as a catch-up names it: each decision with the person's words cut to
-// texts.EachOfSeveral, and the words object that names each one by its path with the person, the
-// time they wrote it and the count of the rest, or that more follows than the act's event carried.
-// A kept approval names its step as the kept-decisions task does (KeptDecisionsOf): the spec where
-// an older daemon kept the approval with no step.
+// texts.OneAct where it names one decision and to texts.EachOfSeveral each where it names several,
+// as the kept-decisions task cuts them (KeptDecisionsOf), and the words object that names each one
+// by its path with the person, the time they wrote it and the count of the rest, or that more
+// follows than the act's event carried. A kept approval names its step as the kept-decisions task
+// does: the spec where an older daemon kept the approval with no step.
 func keptFacts(kept record.KeptDecisions) (*texts.KeptFacts, map[string]texts.WordsMeta) {
 	facts := &texts.KeptFacts{}
 	if kept.Approved > 0 {
 		facts.KeptApproval = texts.KeptApproval{Step: string(kept.Step.OrSpec()), Approved: kept.Approved, Latest: kept.Latest}
+	}
+	bound := texts.OneAct
+	if len(kept.Decisions) > 1 {
+		bound = texts.EachOfSeveral
 	}
 	var words map[string]texts.WordsMeta
 	for i, mark := range kept.Decisions {
 		named := texts.DecisionMark{Ref: mark.Ref, At: mark.At, Issue: mark.Issue, Decision: string(mark.Decision), Actor: mark.Actor,
 			Options: mark.Options, AnswerAt: mark.AnswerAt, More: mark.More}
 		if mark.Answer != "" {
-			carried := texts.Carry(mark.Answer, texts.EachOfSeveral, mark.More)
+			carried := mark.Carry(bound)
 			named.Answer, named.More = carried.Text, carried.More
 			if words == nil {
 				words = map[string]texts.WordsMeta{}
@@ -309,8 +315,9 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 
 // treeCatchUp is what issue's architect owns as the record holds it. A tree root's architect owns
 // its whole tree: the catch-up says whether a hand-over created the root at this generation, and
-// whether its old root's gate came with it, and each design-gate step the root must hold open and
-// how it stands. A child's architect owns the child and every issue whose recorded parent chain
+// whether its old root's gate came with it, and each design-gate step the root must hold open, its
+// document as a dispatch:// link (stepRef, as the start task's gateSteps names it) and how it
+// stands. A child's architect owns the child and every issue whose recorded parent chain
 // reaches it (record.Beneath), at the child's own generation: a child registers no gate and no
 // hand-over creates one, so its catch-up states no step and is neither handed over nor carried.
 //
@@ -340,7 +347,7 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 		required := classify.RequiredSteps(steps)
 		catchUp.Gates = make([]texts.CatchUpGate, 0, len(required))
 		for _, step := range required {
-			stated := texts.CatchUpGate{Step: string(step), Gated: slices.Contains(steps, step)}
+			stated := texts.CatchUpGate{Step: string(step), Gated: slices.Contains(steps, step), Document: stepRef(issue.Key, step)}
 			if recorded, ok := gates[step]; ok {
 				stated.Artifact, stated.Version, stated.Open = recorded.ArtifactID, recorded.LatestVersion, classify.DesignGateOpen(recorded)
 				if recorded.ApprovedVersion != nil {

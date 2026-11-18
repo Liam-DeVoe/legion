@@ -99,15 +99,17 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 // noticeWords are the person's words a design-changes-requested notice carries, as the decision
 // it parks keeps them (record.ParkedDecision.Words): the reason, by the reviewer, at the review's
 // own time. The notice carries the reason already cut to texts.OneAct (workflow's
-// ChangesRequestedNotice), so the kept words say that more follows where the notice's words object
-// counts a rest or marks one; nil for a decision that carries no reason, an approval and a carried
-// gate's opening.
+// ChangesRequestedNotice), and its words object counts what the cut left off from the review's
+// event, which carried the whole reason. So the kept words carry that count (Rest), and every text
+// that names the decision later gives the count of the rest; they say that more follows only
+// where the notice's words object says so. Nil for a decision that carries no reason, an approval
+// and a carried gate's opening.
 func noticeWords(notice record.Notice) *record.ActWords {
 	if notice.Reason == "" || notice.Kind != texts.DesignChangesRequested {
 		return nil
 	}
 	meta := notice.Words["reason"]
-	return &record.ActWords{Text: notice.Reason, By: notice.Actor, At: notice.At, More: meta.Rest > 0 || meta.More}
+	return &record.ActWords{Text: notice.Reason, By: notice.Actor, At: notice.At, More: meta.More, Rest: meta.Rest}
 }
 
 // settleKept settles what an architect start row's task named of what its tree is owed, once the

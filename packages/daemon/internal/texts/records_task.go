@@ -1,6 +1,7 @@
 package texts
 
 import (
+	"strings"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -97,14 +98,16 @@ type PhaseResumeRecord struct {
 //
 // The gate of that step now: its latest version, whether it is open, and whether the design gate
 // is armed. LaterChangesVersion is a changes request made after the wait began that did not answer
-// it, whose reason goes in the later_reason block with its author and time.
+// it, whose reason goes in the later_reason block with its author and time; Document then names
+// the document it was made on, whatever the act.
 //
 // What is still with the person: the asks (dispatch:// links), and ApprovalRequest, the version of
 // the document whose approval request is with the person. What waits on the architect: the asks
 // (dispatch:// links), and RequestOpen, that the approval request's thread is open.
 //
 // The words of the act go in blocks: the answer, the reply, the reason of a changes request and
-// the note of a decline, each bounded at OneAct. Where the gate is open, the task keeps
+// the note of a decline, each bounded at OneAct, or at EachOfSeveral each where the task also
+// carries a later changes request's reason. Where the gate is open, the task keeps
 // DesignApprovedWake word for word.
 type RootResumeRecord struct {
 	TaskHead
@@ -172,9 +175,25 @@ type CheckLookRecord struct {
 	Summary     *Words    `json:"summary"`
 }
 
-// Lead is the first line of the look task: Production check of <KEY>: <title>.
+// Lead is the first line of the look task: Production check of <KEY>: <title>. The title is a
+// person's or a session's, and Dispatch keeps a line break inside a title, so the lead writes each
+// line break of it as a space (oneLine): the lead stays one line, and no part of a title starts a
+// line of the task, such as a second field or the opening tag of a block.
 func (r CheckLookRecord) Lead() string {
-	return "Production check of " + r.Issue + ": " + r.Title + "."
+	return "Production check of " + r.Issue + ": " + oneLine(r.Title) + "."
+}
+
+// oneLine is text with each character that breaks a line written as a space: the line feed, the
+// carriage return, the vertical tab, the form feed, the next line (U+0085), and the line and
+// paragraph separators (U+2028, U+2029). Text with none is returned as it is.
+func oneLine(text string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '\n', '\v', '\f', '\r', '\u0085', '\u2028', '\u2029':
+			return ' '
+		}
+		return r
+	}, text)
 }
 
 // The shapes of a root architect's start task (ArchitectStartRecord.Shape), one for each shape of

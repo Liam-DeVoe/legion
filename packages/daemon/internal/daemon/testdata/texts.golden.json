@@ -3782,6 +3782,7 @@
             {
               "step": "spec",
               "gated": true,
+              "document": "dispatch://ALPHA-4000/spec",
               "artifact": "f897e0c5-5713-77b8-968f-162cbdefed7a",
               "version": 4,
               "open": false
@@ -4057,6 +4058,7 @@
             {
               "step": "spec",
               "gated": true,
+              "document": "dispatch://BRAVO-5000/spec",
               "artifact": "caa34b23-250e-4137-8cbb-4768081370b6",
               "version": 5,
               "open": false

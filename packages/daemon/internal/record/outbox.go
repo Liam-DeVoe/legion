@@ -666,21 +666,23 @@ type CatchUp struct {
 }
 
 // CatchUpGate is one design-gate step as a catch-up states it: the step, whether a person must
-// approve its document (Gated) and, once the architect has registered it, the document, its
-// latest version, the version a person approved, if any, and whether the step is open.
-// Unregistered says the root holds no record of the step at all, which is the step its architect
-// has still to register.
+// approve its document (Gated), the document as a dispatch:// link (Document, workflow's stepRef:
+// the reference the start task names it by too) and, once the architect has registered it, the
+// artifact it is registered as, its latest version, the version a person approved, if any, and
+// whether the step is open. Unregistered says the root holds no record of the step at all, which
+// is the step its architect has still to register.
 //
 // A catch-up carries one entry for each step the root must hold open before its tree works
 // (classify.RequiredSteps), so a deployment that gates nothing carries the one spec entry with
 // Gated false: that registration opens the step at once and asks no person, which is what the
 // policy word `off` said. The list replaced that word, because one word cannot name a list and
 // each entry now says its own step's part of it. Its JSON is texts.CatchUpGate's, with the step
-// a DesignStep here.
+// a DesignStep here. A catch-up an older daemon queued names no Document.
 type CatchUpGate struct {
 	Step         DesignStep `json:"step"`
 	Gated        bool       `json:"gated"`
 	Unregistered bool       `json:"unregistered,omitempty"`
+	Document     string     `json:"document,omitempty"`
 	Artifact     string     `json:"artifact,omitempty"`
 	Version      int        `json:"version,omitempty"`
 	Approved     int        `json:"approved,omitempty"`

@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -394,7 +395,7 @@ type ParkedDecision struct {
 func (d ParkedDecision) Mark() DecisionMark {
 	mark := DecisionMark{Ref: d.Ref, At: d.At, Issue: d.Issue, Decision: d.Decision, Actor: d.Actor}
 	if words := d.Words; words != nil {
-		mark.Options, mark.Answer, mark.AnswerAt, mark.More = words.Options, words.Text, words.At, words.More
+		mark.Options, mark.Answer, mark.AnswerAt, mark.More, mark.Rest = words.Options, words.Text, words.At, words.More, words.Rest
 	}
 	return mark
 }
@@ -1374,10 +1375,14 @@ type AskDecline struct {
 // itself, read through its reference, holds the rest.
 //
 // The words are never cut where they are kept: a text that carries them cuts them when it is
-// written (internal/texts' Carry), so an act read twice is kept equal. They travel whole, from the
-// Dispatch event (intake's DispatchAskClosed and DispatchAskReply) through the ask's mirror row
-// (RootAsk) and the kept decision (ParkedDecision, DecisionMark) to the text that carries them.
-// The JSON is the shape the store keeps them in (root_asks.person_answer_words and person_words,
+// written (Carry), so an act read twice is kept equal. They travel whole, from the Dispatch event
+// (intake's DispatchAskClosed and DispatchAskReply) through the ask's mirror row (RootAsk) and the
+// kept decision (ParkedDecision, DecisionMark) to the text that carries them. One act reaches the
+// daemon only through a text of its own that cut it: a changes request's reason, which a
+// design-changes-requested notice carries (the daemon's noticeWords). Text is then what that
+// notice carried, and Rest the count of the UTF-16 units it cut off, which its words object gives;
+// Rest is 0 for words that are whole, and for words whose count is not known (More). The JSON is
+// the shape the store keeps them in (root_asks.person_answer_words and person_words,
 // parked_decisions.words).
 type ActWords struct {
 	Text    string    `json:"text,omitempty"`
@@ -1385,6 +1390,23 @@ type ActWords struct {
 	By      string    `json:"by,omitempty"`
 	At      time.Time `json:"at,omitzero"`
 	More    bool      `json:"more,omitempty"`
+	Rest    int       `json:"rest,omitempty"`
+}
+
+// Carry is w as a text carries it, bounded to limit: texts.Carry of Text, with Rest added to the
+// count of the rest, since those units followed Text before any bound cut it.
+func (w ActWords) Carry(limit int) texts.Words {
+	return carryWords(w.Text, w.Rest, limit, w.More)
+}
+
+// carryWords is texts.Carry of text, whose own text had rest more UTF-16 units after it, which
+// the count of the rest adds where it is known (not more).
+func carryWords(text string, rest, limit int, more bool) texts.Words {
+	carried := texts.Carry(text, limit, more)
+	if !more {
+		carried.Rest += rest
+	}
+	return carried
 }
 
 // The ask kinds the mirror knows (RootAsk.Kind): an ordinary question, and the approval request

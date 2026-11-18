@@ -149,9 +149,9 @@ func RelayParkedDecision(ctx context.Context, tx pgx.Tx, store Store, issue stri
 // ParkedDecisionNoticeOf is the parked-decision notice of decision, made on issue of root's tree:
 // what the person did, the tree's root, the decision's reference, who and when (the act's own
 // time where its words carry one, else the time the daemon kept it), a spec decision's version,
-// and the person's words, cut to texts.OneAct and named in the words object with the person and
-// the time: a changes request's reason, or an ask's answer, resolution or reply as its answer with
-// the options it chose. The reference is where the rest of the words is read.
+// and the person's words, cut to texts.OneAct (ActWords.Carry) and named in the words object with
+// the person and the time: a changes request's reason, or an ask's answer, resolution or reply as
+// its answer with the options it chose. The reference is where the rest of the words is read.
 func ParkedDecisionNoticeOf(issue, root string, decision ParkedDecision, version int) texts.ParkedDecisionRecord {
 	notice := texts.ParkedDecisionRecord{NoticeHead: texts.NoticeHead{Kind: texts.ParkedDecision, Issue: issue}, Decision: string(decision.Decision),
 		Root: root, Ref: decision.Ref, Actor: decision.Actor, At: decision.At, Version: version}
@@ -166,7 +166,7 @@ func ParkedDecisionNoticeOf(issue, root string, decision ParkedDecision, version
 	if words.Text == "" {
 		return notice
 	}
-	carried := texts.Carry(words.Text, texts.OneAct, words.More)
+	carried := words.Carry(texts.OneAct)
 	field := "answer"
 	if decision.Decision == DecisionDesignChangesRequested {
 		field, notice.Reason = "reason", carried.Text
@@ -187,11 +187,11 @@ func ParkedDecisionNoticeOf(issue, root string, decision ParkedDecision, version
 // narrowed at send time (supervise's Deps.RootTask). The issue is also what says which tree the
 // decision is owed to now, which is what that narrowing and the telling both read. Options are
 // the options a person's answer chose, and Answer the words of the act, which a catch-up names
-// as words by the person (Actor), AnswerAt when the person wrote them and More that more follows
-// than the act's event carried (ActWords, ParkedDecision.Mark); a mark an older daemon wrote has
-// none of the four. The words are whole, as the row keeps them: a text that carries them cuts
-// them when it is written. Its JSON is texts.DecisionMark's, with the decision a DecisionKind
-// here.
+// as words by the person (Actor), AnswerAt when the person wrote them, More that more follows
+// than the act's event carried and Rest the count a text had cut off them already (ActWords,
+// ParkedDecision.Mark); a mark an older daemon wrote has none of the five. The words are as the
+// row keeps them: a text that carries them cuts them when it is written (Carry). Its JSON is
+// texts.DecisionMark's, with the decision a DecisionKind here.
 type DecisionMark struct {
 	Ref      string       `json:"ref"`
 	At       time.Time    `json:"at"`
@@ -202,6 +202,12 @@ type DecisionMark struct {
 	Answer   string       `json:"answer,omitempty"`
 	AnswerAt time.Time    `json:"answer_at,omitzero"`
 	More     bool         `json:"more,omitempty"`
+	Rest     int          `json:"rest,omitempty"`
+}
+
+// Carry is the words of m as a text carries them, bounded to limit (ActWords.Carry).
+func (m DecisionMark) Carry(limit int) texts.Words {
+	return carryWords(m.Answer, m.Rest, limit, m.More)
 }
 
 // KeptApproval is the approval a root's re-admission kept for its next architect start

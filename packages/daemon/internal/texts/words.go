@@ -156,10 +156,11 @@ func Carry(text string, limit int, more bool) Words {
 }
 
 // Block draws w in a block of its own, the block that carries another author's words after a
-// text's fields (dispatch://INFRA-3686/spec R1). The tag is name, or, where the words hold
-// </name, the first of name-1, name-2 and on whose closing tag the words do not hold. The opening
-// tag carries the attributes by, at, field, rest and more, in that order, each only where it is
-// set. Then come a new line, the words exactly as given, a new line and the closing tag.
+// text's fields (dispatch://INFRA-3686/spec R1). The tag is name, or, where the words hold <name
+// or </name, the first of name-1, name-2 and on whose opening and closing tags the words do not
+// hold, so the words can neither open nor close an element of the block's tag. The opening tag
+// carries the attributes by, at, field, rest and more, in that order, each only where it is set.
+// Then come a new line, the words exactly as given, a new line and the closing tag.
 func Block(name string, w Words) string {
 	tag := blockTag(name, w.Text)
 	var b strings.Builder
@@ -194,16 +195,30 @@ func (w Words) empty() bool {
 	return w.Text == "" && w.Rest == 0 && !w.More
 }
 
-// blockTag is the first name of name, name-1, name-2 and on whose closing tag text does not
-// hold.
+// blockTag is the first name of name, name-1, name-2 and on such that text holds neither <tag
+// nor </tag. A plain substring test: words that hold <name-1 or <names also step past name.
 func blockTag(name, text string) string {
-	if !strings.Contains(text, "</"+name) {
+	if !holdsTag(text, name) {
 		return name
 	}
 	for n := 1; ; n++ {
 		tag := name + "-" + strconv.Itoa(n)
-		if !strings.Contains(text, "</"+tag) {
+		if !holdsTag(text, tag) {
 			return tag
+		}
+	}
+}
+
+// holdsTag says whether text holds <tag or </tag.
+func holdsTag(text, tag string) bool {
+	for {
+		i := strings.IndexByte(text, '<')
+		if i < 0 {
+			return false
+		}
+		text = text[i+1:]
+		if strings.HasPrefix(strings.TrimPrefix(text, "/"), tag) {
+			return true
 		}
 	}
 }

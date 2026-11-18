@@ -562,7 +562,7 @@ func (b *goldenBuild) catchUps(r goldenRendering) {
 		}
 		if variant == "root" {
 			want["catch_up.gates[0].step"], want["catch_up.gates[0].version"] = "spec", fmt.Sprint(tree.gate.LatestVersion)
-			want["catch_up.gates[0].open"] = "false"
+			want["catch_up.gates[0].open"], want["catch_up.gates[0].document"] = "false", "dispatch://"+tree.owner.Key+"/spec"
 			want["relaunch.cause"] = ended.Cause
 			for i, decision := range tree.kept {
 				want[fmt.Sprintf("catch_up.kept.decisions[%d].ref", i)] = decision.Ref

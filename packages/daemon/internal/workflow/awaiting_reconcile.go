@@ -664,9 +664,11 @@ func gateInQuestion(steps []record.DesignStep, gates map[record.DesignStep]recor
 // gate records the request with, changesWords), a resolution's reason, and a
 // decline's note beside the sentences Dispatch wrote for the asking agent. The words are cut to
 // texts.OneAct with the count of the rest, or with the mark that more follows where the event did
-// not carry all of them (texts.Carry). gateArtifacts are the documents the root's gates are
-// registered on, whose approval requests are answered by a review rather than by a person's act
-// on the ask (record.RootAsk.PersonActSeq), which says which act's words those are.
+// not carry all of them (texts.Carry); where the resume carries the words of two acts, the act's
+// and a later changes request's reason, each is cut to texts.EachOfSeveral (eachOfSeveral).
+// gateArtifacts are the documents the root's gates are registered on, whose approval requests are
+// answered by a review rather than by a person's act on the ask (record.RootAsk.PersonActSeq),
+// which says which act's words those are.
 //
 // How the document of step stands at the resume, read from that step's gate now, so an approval
 // a newer version superseded, or a gate closed again since, is said as it is: its latest version,
@@ -675,8 +677,8 @@ func gateInQuestion(steps []record.DesignStep, gates map[record.DesignStep]recor
 // (applyArtifact, gateRegistered), so this resume is that root's design-approved wake. A wait the
 // gates.design: off rule answered (gateOffAnswer) says so (GateOffAtAnswer), so it is never read as
 // a person's approval. A changes request the gate records as told after the wait began that did
-// not answer it, which no notice told (tellChangesOnce), is named with its version and its reason
-// in a block of its own.
+// not answer it, which no notice told (tellChangesOnce), is named with its version, the document
+// of step it was made on (stepRef) and its reason in a block of its own.
 //
 // What is still with the person (withHuman): the asks as dispatch:// links, and the version whose
 // approval request is with them. What waits on the architect: the asks on its turn, a tree
@@ -728,11 +730,12 @@ func RootResume(key string, waiting record.Awaiting, step record.DesignStep, gat
 		gate.ToldChangesMark.After(waiting.Since) {
 		detail := changesDetail(*gate.ToldChangesVersion, gate.ToldChangesReason)
 		if waiting.AnsweredBy != record.AnsweredByChanges || waiting.AnsweredDetail != detail {
-			task.LaterChangesVersion = *gate.ToldChangesVersion
+			task.LaterChangesVersion, task.Document = *gate.ToldChangesVersion, stepRef(key, step)
 			later := changesWords(*gate.ToldChangesVersion, gate.ToldChangesReason, gate, gateArtifactOf(gate), asks)
 			task.LaterReason = &later
 		}
 	}
+	eachOfSeveral(task.Answer, task.Reply, task.Reason, task.Note, task.LaterReason)
 	requestOf := ""
 	if gate != nil {
 		requestOf = gateRequestOf(*gate, armed)
@@ -819,7 +822,7 @@ func changesWords(version int, reason string, gate *record.DesignGate, artifact 
 	for _, ask := range asks {
 		answer := ask.PersonAnswerWords
 		if answer != nil && ask.GateRequestOf(artifact) && strings.TrimSpace(answer.Text) == reason {
-			words = texts.Carry(answer.Text, texts.OneAct, answer.More)
+			words = answer.Carry(texts.OneAct)
 			words.By, words.At = answer.By, utc(answer.At)
 			return words
 		}
@@ -882,8 +885,36 @@ func carryWords(task *texts.RootResumeRecord, words *record.ActWords) *texts.Wor
 	if words.Text == "" && !words.More {
 		return nil
 	}
-	carried := texts.Carry(words.Text, texts.OneAct, words.More)
+	carried := words.Carry(texts.OneAct)
 	return &carried
+}
+
+// eachOfSeveral cuts each of blocks that is set to texts.EachOfSeveral where more than one is set:
+// a resume that carries the words of several acts carries up to that much of each
+// (dispatch://INFRA-3686/spec R1). Each block was cut to texts.OneAct, which is a head of the act's
+// words, so its head of texts.EachOfSeveral is the act's own, and the units the second cut leaves
+// off add to the count of the rest. A block whose count is not known keeps its mark that more
+// follows.
+func eachOfSeveral(blocks ...*texts.Words) {
+	set := 0
+	for _, words := range blocks {
+		if words != nil {
+			set++
+		}
+	}
+	if set < 2 {
+		return
+	}
+	for _, words := range blocks {
+		if words == nil {
+			continue
+		}
+		head, rest := texts.Bound(words.Text, texts.EachOfSeveral)
+		words.Text = head
+		if !words.More {
+			words.Rest += rest
+		}
+	}
 }
 
 // utc is t in UTC, the zero time as it is.

@@ -398,11 +398,14 @@ type CatchUpFacts struct {
 	Kept       *KeptFacts        `json:"kept,omitempty"`
 }
 
-// CatchUpGate is one design-gate step as a catch-up states it (the shape of record.CatchUpGate).
+// CatchUpGate is one design-gate step as a catch-up states it (the shape of record.CatchUpGate):
+// the step, whether a person must approve its document, and the document as a dispatch:// link,
+// with the artifact it is registered as, its latest version and the version approved.
 type CatchUpGate struct {
 	Step         string `json:"step"`
 	Gated        bool   `json:"gated"`
 	Unregistered bool   `json:"unregistered,omitempty"`
+	Document     string `json:"document,omitempty"`
 	Artifact     string `json:"artifact,omitempty"`
 	Version      int    `json:"version,omitempty"`
 	Approved     int    `json:"approved,omitempty"`
@@ -445,8 +448,11 @@ type KeptApproval struct {
 
 // DecisionMark is one kept decision (the shape of record.DecisionMark): its reference, the time of
 // the decision, the issue it was made on, what the person did, who, the options the answer chose,
-// the words of the act (bounded at EachOfSeveral where a catch-up names several), when the person
-// wrote them, and whether more follows than the act's event carried (Carry's more).
+// the words of the act (bounded at OneAct where a catch-up names one decision and at
+// EachOfSeveral each where it names several), when the person wrote them, and whether more follows
+// than the act's event carried (Carry's more). A catch-up gives the count of the rest in its words
+// object, so it leaves Rest, the record's count of what a text had cut off the words before they
+// were kept, empty.
 type DecisionMark struct {
 	Ref      string    `json:"ref"`
 	At       time.Time `json:"at"`
@@ -457,6 +463,7 @@ type DecisionMark struct {
 	Answer   string    `json:"answer,omitempty" texts:"words"`
 	AnswerAt time.Time `json:"answer_at,omitzero"`
 	More     bool      `json:"more,omitempty"`
+	Rest     int       `json:"rest,omitempty"`
 }
 
 // ChecksRedRecord is the notice that the head conflicts with its base and the daemon moved the
