@@ -153,6 +153,24 @@ test("every other completion reports the commit the workspace stands on, and rea
   }
 });
 
+// Contract 161: a role of the deployment completes the step it works, `step`, which ends with no
+// handoff record, so it reports the commit its workspace stands on wherever its issue stands.
+test("a role of the deployment reports the commit the workspace stands on, and reads no record", async () => {
+  for (const [phase, role] of [
+    ["step", "checker"],
+    ["step", "code-checker"],
+    ["testing", "checker"],
+  ] as const) {
+    const { jj, calls } = fakeJj();
+    const { latestHandoff, reads } = recordingDispatch();
+    await expect(findHandoffReport({ phase, role, env, jj, latestHandoff })).resolves.toEqual({
+      commit: STANDING,
+    });
+    expect(calls).toEqual([["log", "-r", "@-", "--no-graph", "-T", "commit_id"]]);
+    expect(reads).toEqual([]);
+  }
+});
+
 test("a reviewer whose review moved its issue on reports its own newest review record and the head it names", async () => {
   // A request for changes moves the issue to implementing at once, an approval to accepting once
   // the pull request is mergeable, and the reviewer completes after it: the daemon records that
