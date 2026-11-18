@@ -1,0 +1,8 @@
+kind: Changed
+custom:
+  Issue: pr4392
+body: |-
+  The controller skill reads each route of Dispatch's API with `dispatch api --path <route>` and
+  the session's own credential, in place of a `curl` that read `DISPATCH_TOKEN_FILE`, which a pod
+  under `dispatch_token_broker` does not carry. A `dispatch api` read that prints no JSON array is
+  a failed read, and the controller acts on nothing it would decide.

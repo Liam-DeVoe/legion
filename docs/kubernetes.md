@@ -4239,7 +4239,8 @@ the `roles` container's own spec carries a single variable, `POD_UID` from the d
 So a `printenv` run by `kubectl exec` into the container finds none of them but `PATH`, which the worker image's own `ENV` sets (`packages/daemon/docker/worker.Dockerfile`) to the value the row below documents, so every process of the container carries it however it was started;
 one the role's own agent runs prints each of them the runtime sets, and exits 1 for the four it does not.
 They are an issue pod's role's; `<generation>` is the role's own generation counter, which differs between the roles of one pod and rises on each relaunch of that role in it, and every path under `/var/run/legion` is the role's own directory, bound there in its namespaces.
-`DISPATCH_TOKEN_FILE` and `ENVOY_TOKEN_FILE` are stated without condition because configuration load refuses a `runtime: kubernetes` daemon that sets no `envoy_token_file` and one that sets no `dispatch_url` (`packages/daemon/internal/config/kubernetes.go`), and refuses a configured `dispatch_url` with no `dispatch_token_file` (`missingDispatchTokenFile`, `packages/daemon/internal/config/stage3.go`), so every pod carries both.
+`ENVOY_TOKEN_FILE` is stated without condition because configuration load refuses a `runtime: kubernetes` daemon that sets no `envoy_token_file` (`packages/daemon/internal/config/kubernetes.go`), and so is `DISPATCH_TOKEN_FILE`, because it refuses one that sets no `dispatch_url` and a configured `dispatch_url` with no `dispatch_token_file` (`missingDispatchTokenFile`, `packages/daemon/internal/config/stage3.go`) unless `dispatch_token_broker` is true.
+Under that setting a role in a pod that carries the exchange identity is told `DISPATCH_TOKEN_BROKER=1` and no `DISPATCH_TOKEN_FILE` ([The daemon's own Dispatch credential](#the-daemons-own-dispatch-credential-dispatch_token_broker)).
 
 | variable | value | renderer |
 | :--- | :--- | :--- |
@@ -4265,6 +4266,8 @@ The token behind `DISPATCH_TOKEN_FILE` is the daemon's own, not the role's.
 The daemon reads it once at boot from `dispatch_token_file` (`readBoot`, `packages/daemon/internal/daemon/bootreads.go`) and puts it in every launch's secrets as `DISPATCH_TOKEN` (`secrets[dispatchTokenKey]`, `packages/daemon/internal/runtime/sandbox/manifest.go`, the key from `names.go`), and the role's launcher writes it into the generation's `g<generation>` directory beside the generation's other launch credentials.
 The daemon-launched controller takes the same path, because `prepare` adds that secret to every launch it builds, whichever kind of pod the role names.
 So every role of every issue of the project, and that controller, present the same bytes.
+Under `dispatch_token_broker: true` this holds only for a launch into a live pod built before the setting, whose `DISPATCH_TOKEN_FILE` holds the shared token `dispatch_token_transition_file` names.
+Every other launch carries no Dispatch token, and its role trades its pod's exchange identity for a token of its own session ([The daemon's own Dispatch credential](#the-daemons-own-dispatch-credential-dispatch_token_broker)).
 
 When `dispatch_token_file` holds one of the deployment's shared agent tokens (`DISPATCH_AGENT_TOKEN`), Dispatch matches the bytes against them (`MatchesSharedAgentToken`, `packages/envoy/internal/dispatch/auth/agent_token.go`) and reads no person, no service and no project from them.
 Whatever the bearer, the acting session is the one the request body names (`bearerSessionActor`, `packages/envoy/internal/dispatch/api/server.go`), which for the daemon's own writes is `legion-daemon:<PROJECT>` (`DaemonSession`, `packages/daemon/internal/dispatch/client.go`), so a shared agent token names nobody.
@@ -4327,7 +4330,7 @@ The namespaces keep a role's tokens and private files out of a sibling's own rea
 One credential is the pod's and not a role's: the exchange token of `runtime.kubernetes.agent_secrets.exchange_audience` ([Operator configuration](#operator-configuration)), which every role of the pod reads at the same path, and every role's session is registered for that one pod.
 Each role's session is registered bound to that role's own key: the thumbprint of the key the role's shim names at its hello, which the daemon sends with every write of the registration.
 The broker refuses a trade for a session proved with any other key, so a sibling role that holds the pod's exchange token and its own key is refused another role's session.
-Set no `exchange_audience` until three more changes of plan E are in your daemon, its pods and its broker: t-e-53, which makes a role trade with its own key, since until then a role's own trade is refused; t-e-41, which binds each session name registered at `POST /v1/oauth/exchange/pod-sessions` to the daemon that registered it, not only each registrar to the pods of its own daemon, since until then any `BROKER_SERVICE_LOGINS` account can register a pod, its own daemon's among them, for another claim's session; and t-e-39, which has the daemon choose each role's session id rather than take its agent's report.
+Set `exchange_audience` only as [Operator configuration](#operator-configuration) says under that key: once your daemon, its worker image and its broker run a release that holds plan E's t-e-53, t-e-39 and t-e-41, as this release does, and once the broker's `BROKER_POD_REGISTRARS` lists the daemon as a registrar of its pods.
 The daemon already holds each session id to the claim of its project that first recorded it (t-e-54) and registers no session another of its claims holds.
 That closes a direct mint only: the roles of one issue are no boundary against code a sibling plants in another role's process, which then runs with that role's key as it runs with that role's tokens ([Trust model](#trust-model-the-provisioning-token) lists what a plant reaches).
 Through the helper, every git a role runs, the setup command's ([Configuration](#configuration)) and an agent's own clone of another repository included, answers `https://github.com/<owner>/…` from the role's own files when `<owner>` is an owner the bundle holds a directory for (one of the project's) and the role's App is installed on that repository;
@@ -7064,8 +7067,9 @@ each issue's pod (every role of it alike) and the image probe's.
   The broker holds a pod's grants to the pair of its account and the account its daemon logs in as, so a pod of another project's daemon enrolled under the same session id takes none of that session's grants.
   The session name itself is still bound under the pod's account alone (`namePrincipal`), so such a pod is admitted under the name.
   That leaves one gap, which this release does not widen: a pod of another project's daemon that runs as the same account can be registered under the same session id at `POST /v1/oauth/exchange/pod-sessions`, and can then trade under the name, because the name stays bound to the shared account.
-  Plan E's t-e-41 closes it: the broker binds each session name to the daemon that registered it.
-  Until then leave `exchange_audience` unset: without it no pod carries the exchange token a trade needs, and the daemon registers no pod session.
+  Plan E's t-e-41 (dispatch://INFRA-4424), which this release's broker holds, closes it: the broker binds each session name to the registrar that registered it, which is the daemon's login account.
+  The broker refuses another registrar's registration of a name that a live registration holds (`409 SESSION_HELD_BY_ANOTHER_REGISTRAR`), so it keeps one project's names from another project's daemon while each daemon logs in as an account of its own.
+  Until your broker runs that release with `BROKER_POD_REGISTRARS` set, leave `exchange_audience` unset: without it no pod carries the exchange token a trade needs, and the daemon registers no pod session.
 
 - The broker keys a pod's grants on the account its daemon logs in as, the one `BROKER_SERVICE_LOGINS` names for `legion-daemon` (below), beside the pod's own account.
   So it keeps one project's session grants from another project's pods only while each project's daemon logs in as an account of its own.
@@ -7096,6 +7100,7 @@ each issue's pod (every role of it alike) and the image probe's.
 - **`runtime.kubernetes.agent_secrets.exchange_audience`** gives every enrolled pod an identity the broker's exchange trades for a broker token of a session's own (dispatch://INFRA-840).
   Each pod then also carries a projected token of its ServiceAccount for that audience, an hour long, in a volume of its own (`agent-secrets-exchange`), mounted read-only at `/var/run/legion/agent-secrets-exchange/token` in the container its roles run in, and every role is told `AGENT_SECRETS_MACHINE_IDENTITY=kubernetes` and `AGENT_SECRETS_MACHINE_TOKEN_FILE` naming that file, beside the enrollment it already holds.
   The pod's broker clients (`packages/broker-client`, `packages/envoy/internal/brokerclient`) read those two and trade the token at the broker's `BROKER_EXCHANGE_K8S_AUDIENCE`, which must be this same audience: production's is `legion-broker-exchange` (agent-infra `shared/broker.ExchangeAudience`).
+  A trade of `packages/broker-client`'s proves the role's own agent-secrets identity, the `key.pem` in the directory `AGENT_SECRETS_KEY_DIR` names, which the role's registration below is bound to (t-e-53), and a trade whose `key.pem` cannot be read fails, naming its path, rather than prove a fresh one.
   The key lives in the block, so a file that sets it and names no broker is refused for the `url` it lacks;
   it may not be empty, and it may not equal `audience`, since the cluster projects one volume per audience and the broker verifies the enrollment's token and the exchange's at different routes.
   Nor may it equal `runtime.kubernetes.sandbox.microvm.metadata.workload_pool` while that `metadata` is set and an issue pod runs in a microVM, since the pool's token is the pod's launcher's alone ([Issue pods in microVMs](#issue-pods-in-microvms) lists this refusal with the loader's others).
@@ -7111,12 +7116,17 @@ each issue's pod (every role of it alike) and the image probe's.
   - A registration's thumbprint is the one its process's first hello names: a later hello of the same process that names another key is logged, and the registration keeps the first key.
 
   - The registration needs a broker that binds it to the key and orders it by generation: a broker before this release refuses the `thumbprint` and `generation` fields as `400 INVALID_REQUEST`, which the daemon logs and does not write again.
-    Set no `exchange_audience` until three more changes of plan E are in your daemon, its pods and its broker: t-e-53, which makes a role trade with its own key, since until then a role's own trade is refused; t-e-41, which binds each session name registered at `POST /v1/oauth/exchange/pod-sessions` to the daemon that registered it, not only each registrar to the pods of its own daemon, since until then any `BROKER_SERVICE_LOGINS` account can register a pod, its own daemon's among them, for another claim's session; and t-e-39, which has the daemon choose each role's session id rather than take its agent's report.
+    Set `exchange_audience` only once your daemon, its worker image and its broker run a release that holds three more changes of plan E, as this release does.
+    In the daemon and the worker image, t-e-53 makes a role trade with its own key, and t-e-39 has the daemon choose each Oh My Pi role's session id rather than take its agent's report.
+    Before t-e-53, a role's own trade is refused.
+    In the broker, t-e-41 (dispatch://INFRA-4424) binds each session name registered at `POST /v1/oauth/exchange/pod-sessions` to the daemon that registered it.
+    Before t-e-41, any `BROKER_SERVICE_LOGINS` account can register a pod, its own daemon's among them, for another claim's session.
+    Set `BROKER_POD_REGISTRARS` on the broker first, with an entry that pairs the daemon's login account with its pods' account: with the list unset, the broker refuses every registration `403 POD_REGISTRAR_NOT_LISTED` (`docs/site/src/content/docs/broker/operate.md`, "What to run").
     The daemon already holds each session id to the claim of its project that first recorded it (t-e-54) and registers no session another of its claims holds.
 
-  - An Oh My Pi role's session is registered when its agent registers, before the daemon answers it;
-    a Claude Code role's, whose id the daemon chose for the launch, at its shim's hello, before its agent registers;
-    and a role relaunched into a new pod is registered for the session it resumes at that pod's first hello.
+  - A role whose session id the daemon chose for the launch is registered at its shim's hello, before its agent registers: a Claude Code role's, and an Oh My Pi role's in a pod that carries the exchange identity, which the daemon starts with `--session-id <id>`, or with `--resume <id>` when it resumes the role (t-e-39).
+    An Oh My Pi role in a live pod built before that identity names its own session, which is registered when its agent registers, before the daemon answers it.
+    A role relaunched into a new pod is registered for the session it resumes at that pod's first hello.
 
   - The broker honours a registration for 24 hours past its last write, and every renewal of a session's broker token is a fresh exchange that checks it, so the daemon writes each live role's registration again every 6 hours, with the same thumbprint, and stops when the role's process ends.
 
@@ -7135,7 +7145,9 @@ each issue's pod (every role of it alike) and the image probe's.
   - Unset, the daemon makes no registration call.
 
   - The exchange token is the pod's, not a role's: every role reads it at the same path, and every role's session is registered for the same pod, each bound to the key of the role whose registration it is, so the broker refuses a trade for that session proved with any other key.
-    Which session a role registers is held to its claim (t-e-54) and is still its agent's word until t-e-39, and until t-e-41 binds session names to the daemon that registered them, any `BROKER_SERVICE_LOGINS` account can register a pod, its own daemon's among them, for another claim's session (the gate above), so this does not yet keep a role out of another claim's session ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod) says what that closes and what it does not).
+    Which session a role registers is held to its claim (t-e-54), and in a pod that carries the exchange identity it is the id the daemon chose (t-e-39), never its agent's report.
+    A broker of this release binds each session name to the registrar that registered it (t-e-41), so it refuses another registrar's registration of that session, and a broker before it lets any `BROKER_SERVICE_LOGINS` account register a pod, its own daemon's among them, for another claim's session (the gate above).
+    [Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod) says what that closes and what it does not.
 
 - **`provider_keys`** (top-level) maps each variable Oh My Pi reads to a key of the providers Secret, `legion-<project>-providers`, which the operator creates.
   Every pod mounts the keys `provider_keys` names and no other key of the Secret, each at a file named for its variable, and the shim exports each into Oh My Pi's environment, never its own.
@@ -7261,14 +7273,99 @@ With any one of them set it logs `token exchange state=on`, naming which issuers
 A machine login's access token is exchanged in both cases, because its subject type is always registered (`ExchangeConfig.tokenTypes`, `packages/envoy/internal/broker/oauth/exchange.go`).
 For the settings themselves, read the broker's generated configuration reference, which `docs/site/generators/broker-reference.sh` writes from the doc comments in `packages/envoy/internal/broker/config/config.go`, and the walk-through in `docs/site/src/content/docs/broker/guides/run-locally.md`, its section "Exchange a pod's token".
 
-Of what Legion runs, the operator-launched controller is the one process that can present such a token.
-A pod, the daemon, a tmux pane and the daemon-launched controller present the daemon's shared bearer that [Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod) describes.
+Of what Legion runs, the operator-launched controller can present such a token, and under `dispatch_token_broker: true` so can the daemon and each role it starts in a pod that carries the exchange identity ([The daemon's own Dispatch credential](#the-daemons-own-dispatch-credential-dispatch_token_broker)).
+Without that setting, a pod, the daemon and the daemon-launched controller present the daemon's shared bearer that [Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod) describes, and a tmux pane always does, since a tmux daemon is refused the setting.
 An operator-launched controller presents the token its own file names, or, under `dispatch_token_broker: true`, a token it trades for at this exchange.
 Dispatch decides a broker token wherever `DISPATCH_AGENT_SECRETS_URL` names the broker (`brokerTokenVerifier`, `packages/envoy/cmd/dispatch/main.go`): it acts as the session and the person or the service the token names, and holds a `named` token's writes to the one project it names, where its entry names one (`packages/envoy/internal/dispatch/api/broker_token.go`, `packages/envoy/cmd/dispatch/README.md`).
 A `person` token's list of projects limits no Dispatch write at this release.
 It serves a read entry's token on the routes its read list names (`readScopeRoutes` in `packages/envoy/internal/dispatch/api/routes_table.go`), today `GET /api/v1/projects/{key}/architecture` alone, and answers it `403 READ_ONLY_TOKEN` on every other route of its route table and on `GET /ws/live`.
 The Envoy listener answers that token `401`, because a verifier accepts it only where its service asks for it (`brokertoken.Options.ServesReadOnly`), and the listener does not ask.
 `dispatch://INFRA-267` is where Legion's pods and its daemon get tokens of their own, and the daemon hands none out.
+
+#### The daemon's own Dispatch credential: `dispatch_token_broker`
+
+`dispatch_token_broker: true` in `legion.yaml` ends the one Dispatch token that the daemon and every role it starts share (dispatch://INFRA-4425).
+The daemon trades its own pod identity at the secrets broker for a token of its own, and each role in a pod that carries the exchange identity trades that identity for a token of its own session, so a launch into such a pod carries no Dispatch token.
+Without the setting nothing changes: the daemon and every launch carry the bearer `dispatch_token_file` names, and each request is the same byte for byte as before.
+The setting changes the Dispatch credential alone: the daemon and every pod present the Envoy bearer `envoy_token_file` names, as before.
+
+The loader takes the setting only under `runtime: kubernetes`, beside `dispatch_url` and `runtime.kubernetes.agent_secrets.exchange_audience`, and never beside `dispatch_token_file` (`resolveDispatchTokenBroker`, `packages/daemon/internal/config/stage3.go`).
+Each refusal names the setting.
+`legion start --check-config` reads the configuration file, and the transition token's file where one is named, and needs none of the variables below, because the trade is the boot's alone.
+
+A deployment that sets it also gives the daemon these:
+
+- **The daemon's own pod** carries a projected token of the daemon's ServiceAccount for the broker's exchange audience, `BROKER_EXCHANGE_K8S_AUDIENCE`, which is the audience `exchange_audience` names.
+  The pod sets `AGENT_SECRETS_URL` to the secrets broker's URL, `AGENT_SECRETS_MACHINE_IDENTITY` to `kubernetes`, and `AGENT_SECRETS_MACHINE_TOKEN_FILE` to the path of that projected token.
+  The daemon reads the three from its own environment, as every machine client of the broker reads them (`brokerclient.MachineIdentity`, `packages/envoy/internal/brokerclient/environment.go`), and does not read `runtime.kubernetes.agent_secrets.url` for its own trade.
+
+- **The secrets broker** lists the daemon's ServiceAccount in `BROKER_EXCHANGE_ACCOUNTS` with an entry that names the daemon's project, a person and the fixed session `legion-daemon:<PROJECT>`:
+  `<the daemon's ServiceAccount>=<PROJECT>=<person>=legion-daemon:<PROJECT>`.
+  Dispatch refuses every write of a token that names no person (`SIGN_IN_REQUIRED`), every write to an issue of another project (`403 PROJECT_SCOPE`), and every write the daemon makes as `legion-daemon:<PROJECT>` with a token of another session (`403 ACTOR_SESSION_MISMATCH`).
+  An entry that fixes its session needs no pod-session registration.
+
+- **Dispatch** decides broker tokens (`DISPATCH_AGENT_SECRETS_URL`, [The Dispatch identity the broker can issue](#the-dispatch-identity-the-broker-can-issue)), and its `DISPATCH_PROOF_ORIGINS` names the in-cluster address that every daemon and pod calls it at, where that address is not the origin of `DISPATCH_SERVER_URL`.
+  A client signs each DPoP proof for the URL it calls, and Dispatch refuses a proof for an origin that neither setting names (`packages/envoy/cmd/dispatch/README.md`).
+
+- **No providers Secret key gives a pod a Dispatch token**: `provider_keys` names neither `DISPATCH_TOKEN` nor `DISPATCH_TOKEN_FILE`.
+  A role in a pod that carries the exchange identity is told `DISPATCH_TOKEN_BROKER=1`, and its `legion worker-shim` then refuses to start, naming the key and its file, when its `--provider-env-dir` holds either key (`ReadProviderEnv`, `packages/daemon/internal/shim/config.go`).
+  Without that refusal the shim would export the key into the agent's environment as the shared bearer the setting takes away.
+
+- **A project at work keeps the shared token** mounted in the daemon's pod, and `dispatch_token_transition_file` names that file (below).
+
+**The boot.**
+The daemon makes its first trade at boot, before it opens its store, for a token of the session `legion-daemon:<PROJECT>` (`dispatchCredential`, `packages/daemon/internal/daemon/daemon.go`).
+Then it reads `GET /api/v1/whoami` with that token.
+It waits out a broker or a Dispatch that does not answer, and no boot budget bounds that wait.
+From then on every Dispatch call of the daemon carries `Authorization: DPoP <token>` and a proof of the call's URL.
+The daemon trades a new token before the old one expires, with no restart, and after a Dispatch answer of `401 BROKER_TOKEN_NOT_ACTIVE` it drops that token, so the next call trades again (`brokerclient.NewTokenTransport`).
+After the boot, a failed trade is a failed Dispatch call that sent nothing, and the outbox waits it out as it waits out a Dispatch outage.
+The boot refuses, in words that name the cause:
+
+- an identity variable that is missing: `AGENT_SECRETS_MACHINE_IDENTITY` unset, `AGENT_SECRETS_MACHINE_TOKEN_FILE` unset beside it, or `AGENT_SECRETS_URL` unset;
+
+- a trade the broker refuses for good (`brokerclient.RefusedError.Permanent`), in the broker's words.
+  The boot logs any other failed trade and tries it again;
+
+- a `whoami` answer whose session is not `legion-daemon:<PROJECT>`, whose project is not the daemon's, or whose owner is `null`.
+  Each of these refusals names the `403` or the `SIGN_IN_REQUIRED` that Dispatch would answer every write of the daemon's with, and says to fix the daemon's `BROKER_EXCHANGE_ACCOUNTS` entry.
+
+The boot logs one line that names the credential, and never a token: `legion daemon's Dispatch credential`, with `credential=broker`, the `session` and, where one is named, `transitionFile`.
+Without the setting the line carries `credential=file` and the `file`.
+
+**The launches.**
+A launch into a pod that carries the exchange identity carries no Dispatch token: not in the launch's Secret, not in the start command its launcher gets, and not in the environment of a role or of the daemon-launched controller.
+Its role is told `DISPATCH_TOKEN_BROKER=1` and no `DISPATCH_TOKEN_FILE`, and its `dispatch` command and plugins trade the pod's exchange identity at the broker for a token of the role's own session (`dispatchSettings`, `packages/envoy-client/src/dispatch-config.ts`).
+The trade proves the role's own agent-secrets key, `$AGENT_SECRETS_KEY_DIR/key.pem`, which the role's pod-session registration names.
+A key file that cannot be read fails the trade, naming its path, and no fresh key takes its place (`packages/broker-client/src/environment.ts`).
+An Oh My Pi role in such a pod runs under a session id the daemon chose, as a Claude Code role does ([Operator configuration](#operator-configuration), under `exchange_audience`).
+The worker image's half of this is daemon API contract 165, so the boot gate and `legion probe-image` refuse a worker image built from an earlier contract.
+
+**The transition file.**
+A pod's volumes are fixed when the pod is created, so a pod built before the setting carries no exchange identity, and its roles have nothing to trade until its update round replaces it.
+`dispatch_token_transition_file` names a file that holds the shared Dispatch token for those roles, and the loader takes it only beside `dispatch_token_broker: true`.
+The daemon reads the file at boot and never calls Dispatch with it.
+A launch into such a live pod carries the transition token as every launch carried the shared token before: as `DISPATCH_TOKEN` in its start command, which its role reads through `DISPATCH_TOKEN_FILE`, and with no `DISPATCH_TOKEN_BROKER`.
+A launch into a pod that carries the exchange identity never carries it, with the file named or not.
+The daemon replaces such a pod with its update round, as it replaces every pod whose configuration drifted, and a launch never replaces it.
+
+With no transition file named, a launch into a live pod that carries no exchange identity is refused before anything of the pod is touched: `pod <name> carries no exchange identity and dispatch_token_transition_file is not set; its update round replaces it` (`runtime.ErrAwaitingPodRound`).
+The supervisor charges the claim nothing.
+It logs `supervise: this start waits for its pod's update round; trying it again every minute, charging nothing` at Warn at the first refusal, and starts the same launch again every minute until the pod it finds carries the identity.
+An update round can take hours, so a project at work names the transition file for the move.
+
+Each launch that carries the transition token logs `sandbox: a launch into a pod with no exchange identity carries the transition Dispatch token` at Warn, naming the claim, the pod, `transitionLaunches` and `liveLaunchesWithDispatchToken`.
+Under the setting the daemon also logs `sandbox: live launches carrying a Dispatch token`, with its `count`, each time that number moves.
+`legion state --json` carries the same numbers under `dispatchCredential`, which a daemon serves only under the setting:
+
+- `session`, the session of the daemon's own Dispatch calls, `legion-daemon:<PROJECT>`;
+
+- `transitionLaunches`, the launches since this boot that carried the transition token, and `lastTransitionLaunchAt`, when the latest of them was sent, `null` before the first;
+
+- `liveLaunchesWithDispatchToken`, the live generations whose start carried a Dispatch token, whichever daemon started them.
+
+Remove `dispatch_token_transition_file` once `liveLaunchesWithDispatchToken` is `0`, and keep `dispatch_token_broker: true`.
+A generation started with the shared token keeps it until the generation ends, whether or not a new launch goes into its pod, and the launcher deletes the token's file with the generation.
 
 #### Network shares
 

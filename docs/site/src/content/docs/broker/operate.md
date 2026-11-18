@@ -319,15 +319,16 @@ are registered for one pod, so this is what keeps one role from trading for anot
 session; the Legion daemon names each role's key. A later write by the same registrar that names
 no key keeps the one the registration names, unless that registrar released the registration
 (below), and a registration that names none, as a session pod's is, admits any key of that pod.
-Set no `exchange_audience` until three more changes of plan E are in your daemon, its
-pods and its broker: t-e-53, which makes a role trade with its own key, since until then a role's
-own trade is refused; t-e-41, which binds each session name registered at
-`POST /v1/oauth/exchange/pod-sessions` to the daemon that registered it, not only each registrar to
-the pods of its own daemon, since until then any `BROKER_SERVICE_LOGINS` account can register a
-pod, its own daemon's among them, for another claim's session; and t-e-39, which has the daemon
-choose each role's session id rather than take its agent's report. The daemon already holds each
-session id to the claim of its project that first recorded it (t-e-54) and registers no session
-another of its claims holds.
+A Legion daemon's `exchange_audience` waits for three changes of plan E, and this release holds all
+three. In the daemon and its worker image, t-e-53 makes a role trade with its own key, and t-e-39
+has the daemon choose each Oh My Pi role's session id rather than take its agent's report. Before
+t-e-53, a role's own trade is refused. In this broker, t-e-41 (dispatch://INFRA-4424) is the
+registrar list above, and the session-name binding and the release below. Before t-e-41, any
+`BROKER_SERVICE_LOGINS` account can register a pod, its own daemon's among them, for another
+claim's session. So a deployment sets `exchange_audience` only once its daemon, the daemon's worker
+image and this broker run this release or a later one, and only once `BROKER_POD_REGISTRARS` is
+set. The daemon already holds each session id to the claim of its project that first recorded it
+(t-e-54) and registers no session another of its claims holds.
 
 A registration may also name its `generation` (0 or more, 0 when absent; a negative one is
 `400 GENERATION_INVALID`), the registrar's own order of its writes for that pod and session. The

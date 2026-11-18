@@ -1,0 +1,8 @@
+kind: Changed
+custom:
+  Issue: pr4392
+body: |-
+  The dispatch skill says that a read of a route no command reads goes through
+  `dispatch api --path <route>`, with the session's own credential. The generated Legion plugin's
+  controller skill reads Dispatch's API that way, in place of a `curl` that read
+  `DISPATCH_TOKEN_FILE`, which a pod under `dispatch_token_broker` does not carry.

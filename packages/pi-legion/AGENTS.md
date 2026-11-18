@@ -80,7 +80,10 @@ installation serves its issue's repository;
 `GH_HOST` set empty: read by the pane's `gh` and `git`, by nothing here), the Envoy
 variables (`ENVOY_URL`, `ENVOY_NATS_URL`, `ENVOY_TOKEN_FILE`, read by `@legion/envoy-client`),
 `NATS_NKEY_SEED_FILE` when the daemon has a NATS nkey seed, and `DISPATCH_URL`/`DISPATCH_TOKEN_FILE`
-when the daemon has `dispatch_url` configured — and, beside the pane, the environment of a pod's
+when the daemon has `dispatch_url` configured, or, under `dispatch_token_broker` in a pod that
+carries the exchange identity, `DISPATCH_URL` with `DISPATCH_TOKEN_BROKER=1` and no
+`DISPATCH_TOKEN_FILE` (contract 165; read by `@legion/envoy-client`) — and, beside the pane, the
+environment of a pod's
 `workspace-init provision` init container (`initEnvironment`, `internal/runtime/sandbox/manifest.go`:
 the image's `PATH` and the XDG base directories, and nothing of a disk carried forward — the pod's
 disk is created with the pod and empty, so every provision is the first), which the image's own
