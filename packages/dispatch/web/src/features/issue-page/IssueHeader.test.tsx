@@ -1,6 +1,7 @@
 import { beforeEach, expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: the title's right-press case needs a press of the right button that moves no focus and is never released, as when the context menu takes its mouseup, and user-event moves the focus as its pointer goes down.
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { http } from "msw";
 import type { ReactNode } from "react";
@@ -1055,6 +1056,35 @@ test.each([
     await waitFor(() => expect(issueActions).toHaveFocus());
     expect(chip).toBeInTheDocument();
     expect(chip).not.toHaveFocus();
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// A press of the right button opens the context menu, which can take its mouseup, so the page sees
+// the press go down and never sees it released. Such a press makes no click, so nothing waits on
+// it: an edit a key then ends draws the title clamped to two lines again at once, not whole until
+// the reader next releases a mouse button somewhere. The key is Enter, which ends the edit with the
+// editor's blur, and the blur is what reads whether a press is down.
+test("a right press the page never sees released leaves the title clamped once Enter ends the edit", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const view = renderHeader();
+
+  try {
+    const heading = await screen.findByRole("heading", { level: 1, name: issue.title });
+    expect(heading.className).toContain("line-clamp-2");
+    await user.click(heading);
+    const editor = await screen.findByRole("textbox", { name: "Issue title" });
+    await waitFor(() => expect(editor).toHaveFocus());
+    // A right press whose mouseup the context menu takes: it goes down with the focus still in the
+    // editor and is never released. user-event moves the focus as its pointer goes down.
+    fireEvent.mouseDown(document.body, { button: 2 });
+    expect(editor).toHaveFocus();
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(heading).toHaveFocus());
+    expect(heading.className).toContain("line-clamp-2");
   } finally {
     view.unmount();
     restore();

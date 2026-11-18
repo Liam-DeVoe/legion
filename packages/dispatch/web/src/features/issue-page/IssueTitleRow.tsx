@@ -45,13 +45,16 @@ export function IssueTitleRow({
   isClosed: boolean;
 }): ReactNode {
   const [editing, setEditing] = useState(false);
-  // Whether a mouse button is down right now, read by the editor's blur: a blur a press caused
-  // keeps the heading at the editor's height until that press is released and its click has
-  // been dispatched. A tap's mousedown comes after its pointerup, so the mouse's own events are
-  // the ones that bracket the press on every input. They are listened to while the row is
-  // drawn, not only while it edits: the blur a press causes ends the edit inside the press's
-  // mousedown, so a listener taken away with the editor missed the mouseup, and the next edit a
-  // key ended read a press that was over and held the title unclamped.
+  // Whether the primary mouse button is down right now, read by the editor's blur: a blur a
+  // press caused keeps the heading at the editor's height until that press is released and its
+  // click has been dispatched. A tap's mousedown comes after its pointerup, so the mouse's own
+  // events are the ones that bracket the press on every input. They are listened to while the
+  // row is drawn, not only while it edits: the blur a press causes ends the edit inside the
+  // press's mousedown, so a listener taken away with the editor missed the mouseup, and the next
+  // edit a key ended read a press that was over and held the title unclamped. Only a press of
+  // the primary button is counted: a press of another button makes no click, so nothing waits
+  // on it, and its release may never reach the page - the menu a right press opens can take the
+  // mouseup - which left the next edit a key ended holding the title unclamped.
   const pressing = useRef(false);
   const [held, setHeld] = useState(false);
   const heading = useRef<HTMLHeadingElement>(null);
@@ -64,8 +67,8 @@ export function IssueTitleRow({
     returning.current = false;
   }, [editing]);
   useEffect(() => {
-    const down = () => {
-      pressing.current = true;
+    const down = (event: MouseEvent) => {
+      pressing.current = event.button === 0;
     };
     const up = () => {
       pressing.current = false;
