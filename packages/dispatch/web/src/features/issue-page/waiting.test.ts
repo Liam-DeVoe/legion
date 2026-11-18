@@ -340,7 +340,7 @@ function parentsOf(root: TreeNode, id: string): string[] {
   ]);
 }
 
-// R7, R13, R35, and the tester's F4 and F6: what waits on the reader is each open question whose
+// R7, R13, R35: what waits on the reader is each open question whose
 // turn is theirs, each decision of the review list - an agent's decision that waits, that a tie
 // names a statement for, and that the reader has not asked to change since it changed - and each
 // open approval request whose turn is theirs. The tree marks the same question and the same

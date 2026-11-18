@@ -804,8 +804,6 @@ function watchTree(
     // A read begun in the turn the change was seen in answers it already, since what a turn
     // hears of changed before the turn began and the read reaches the server after it: a
     // whole-cache refresh reads the tree and the open view itself, and they are not asked again.
-    // A tree or view read the writes held counts as begun in the turn they settled in, which is
-    // the held refresh's (`unmutate`).
     const targets = [tree, ...views].filter((target) => {
       const query = cache.find(target);
       return query === undefined || beganIn.get(query.queryHash) !== changedIn;
