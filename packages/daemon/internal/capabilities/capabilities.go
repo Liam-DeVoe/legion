@@ -43,7 +43,6 @@ const (
 	ClaudeCode           Name = "claude-code"
 	ResourceLimits       Name = "resource-limits"
 	PoolCapacity         Name = "pool-capacity"
-	KnivesPushGate       Name = "knives-push-gate"
 	Network              Name = "network"
 	OperatorSetup        Name = "operator-setup"
 	ProductionIdentities Name = "production-identities"
@@ -100,7 +99,6 @@ var Table = []Capability{
 	{Name: ClaudeCode, Site: SiteImage, Summary: "runs a phase worker on Claude Code: the claude-envoy plugin that worker loads, which the image carries, and the pin a pod installs Claude Code from at launch and verifies it against"},
 	{Name: ResourceLimits, Site: SiteDeployment, Summary: "runs within the CPU and memory the deployment's pod resources give it"},
 	{Name: PoolCapacity, Site: SiteDeployment, Summary: "starts in a Legion pool with room for the image probe's reservation at boot"},
-	{Name: KnivesPushGate, Site: SiteDeployment, Summary: "has every push it makes to a repository GitHub reports public, or to one the leak guard cannot name, scanned for the knives forbidden list of the repository it pushes to, read from the registries leak_guard.knives_registries names"},
 	{Name: Network, Site: SiteWithheld, Summary: "reaches beyond the pod's own network: the pod is the boundary, except a workload a role starts where its deployment's cluster admits it, carrying the pod label that deployment's declaration names for a workload asking to be reachable, and the Service fronting that workload", Citation: "dispatch://LEGION-5"},
 	{Name: OperatorSetup, Site: SiteWithheld, Summary: "installs or configures its own dependencies in the pod: Legion owns its dependencies", Citation: "dispatch://LEGION-200"},
 	{Name: ProductionIdentities, Site: SiteWithheld, Summary: "acts under a production identity of its own", Citation: "dispatch://LEGION-551, dispatch://LEGION-205"},

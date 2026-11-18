@@ -79,13 +79,7 @@ It carries:
   The jj wrapper adds one check, and only before a `jj git push`:
   that the git jj would run is that wrapper, by `PATH` and by jj's own `git.executable-path`, refusing in the shared check's own setup-error words where it is not.
   `legion leak-check` is the shell door to `packages/daemon/internal/leakguard`, and the engine the rules run through, gitleaks, is linked into the `legion` binary as a library with this repository's rule file (`private-names.toml`) embedded beside it, so no pod can meet an absent engine or an absent rule file.
-  Where `leak_guard.knives_registries` in `legion.yaml` names a knives registry ([Operator configuration](#operator-configuration)), a push to a repository GitHub reports public, or to one the leak guard cannot name, such as a local path, has a third pass, after the shared check and the rule file (`Guard.knives`, `internal/leakguard/knives.go`).
-  It reads each row's file with the role's own gh, the first row as the registry and each later row as an overlay that adds forbidden terms to the registry's entries, and it refuses the push when a line or a path a pushed commit adds holds a forbidden term of an entry whose origin or release names the push's destination, matched as `knives audit` matches one (case aside, as a substring); a ref name, an identity and a message are not read, as knives reads none.
-  It also skips a commit that a branch or a tag of the entry's upstream reaches, as the rule file's pass does, read only for a push one of the two would otherwise refuse (below).
-  The role keeps the list of its last good read for 10 minutes and reads no file meanwhile, in a file under `$XDG_STATE_HOME/legion-gh/knives/` only its user can read, since it holds the terms.
-  A file it cannot read, or one that is not knives' TOML, refuses as a setup error a push whose destination the kept list names, whatever the list's age, and lets any other go on with a notice on standard error; with no good read kept, it refuses every push the pass runs on.
-  The refusal names the file, with any path component that holds a term written `<forbidden>`, the line and the term's number in its entry's list, and never the term.
-  The second and third passes read a push alike:
+  The rule file's pass reads a push this way:
 
   - every file as text, whatever `.gitattributes` says of it, the pushed commit's own included, and no line of a file whose blob holds a zero byte in its first 8000 bytes, which is how git's own diff tells a binary file (`commitFiles`, `internal/leakguard/commitfiles.go`).
     A commit of one parent has its files classed by their blobs before any is diffed, so the guard holds no more of a binary file, the commit's or its parent's, than those bytes, passing over the rest that git writes, and the file is in no diff.
@@ -100,20 +94,14 @@ It carries:
     A merge reads no parent's file at a path where its own file is binary or where earlier parents' files already hold every line of it, and a commit reads nothing of a file it renames or changes the mode of and leaves as it is;
 
   - and no commit that a branch or a tag of the destination already reaches, as one `git ls-remote --heads --tags` of the URL git hands the hook reads them (`Guard.advertised`, `internal/leakguard/held.go`).
-    Each push with an update that is not a deletion, to a destination the guard scans, costs that one read, which both passes share, and a read that fails refuses the push as a setup error that names the remote and the URL.
-    The knives pass reads the upstream's refs the same way, with the same failure, naming the upstream's URL.
-    Where an entry names the destination as a fork and names an upstream, a commit a branch or a tag of that upstream reaches is held for the rule file's pass as well (`Guard.upstreamHeld`, `internal/leakguard/knives.go`): it is upstream's public text, which leaks nothing by reaching the fork.
-    The rule file's pass reads the registries and that upstream only for a push it would otherwise refuse, each read made once for both passes (`knivesRead`).
-    A registry it cannot read, with no fresh kept list, leaves its refusal standing, and an upstream it cannot read refuses the push with the same failure.
+    Each push with an update that is not a deletion, to a destination the guard scans, costs that one read, and a read that fails refuses the push as a setup error that names the remote and the URL.
     The URL such an error names, and git's own message it quotes, carry no user and no token (`withoutUserinfo`).
     A push made to a URL rather than to a remote is named by that URL in every refusal and setup failure, and that name carries no user and no token either (`PushName`).
-    A branch or a tag at a commit the clone does not have reaches nothing, so an upstream's line is read where the clone lacks the commit the upstream's ref is at.
+    A branch or a tag at a commit the clone does not have holds nothing, so where that commit is ahead of the clone's, the clone's commits it reaches are read, which fails closed.
     Both reads that ask whether the clone has a commit run with `GIT_NO_LAZY_FETCH=1`: the batch check of the shas `git ls-remote` prints (`Guard.advertised`), and the check of the commit the update says the destination's ref is at now (`Guard.holds`).
     So a partial clone fetches none it lacks from its promisor remote, and such a commit holds nothing there either.
     No ref of the clone's own counts: git moves a remote's `refs/remotes/<remote>/` for a push to whatever URL the remote pushes to at that time, a local bare one that a role points it at for one run (`git remote set-url --push origin <bare>`) included, and a ref can be written by hand.
-    A remote whose push URL names no GitHub repository is matched by its URL as well, so the knives pass reads such a rehearsal as a push to the fork.
 
-  With no row the push has no third pass, and the capability report's `knives-push-gate` row is open ([The deployment's capability report](#the-deployments-capability-report)).
   The build's last step asserts that each wrapper is first on `PATH` with the real binary behind it and that the hook is root's and executable;
 
 - the shared public leak check those wrappers and that hook run, which is not in the image:
@@ -2839,7 +2827,7 @@ advertise_host: <optional: a stable Service name, e.g. legion-daemon-<project>.<
 worker_stream_port: <the port advertise_host or bind serves it on>
 daemon_url: http://<the address pods reach the daemon at>:<the daemon's own port>
 capabilities:                   # optional: the deployment capabilities decided by name, with the reason (The deployment's capability report, below); a gap is reported, never refused
-  decided: { secrets: "<reason>", model-fallback: "<reason>", resource-limits: "<reason>", pool-capacity: "<reason>", knives-push-gate: "<reason>" }
+  decided: { secrets: "<reason>", model-fallback: "<reason>", resource-limits: "<reason>", pool-capacity: "<reason>" }
 ```
 
 Every container of every Legion pod carries a cpu and memory limit and a request no greater than it, and an ephemeral-storage limit, its bound on the node's disk, over a smaller ephemeral-storage request.
@@ -3942,7 +3930,7 @@ Read a pod's hourly lines with `kubectl logs <pod> -c roles | grep '^launcher: g
 ### The deployment's capability report
 
 `packages/daemon/internal/capabilities` is the one list of what a Legion worker can do (LEGION-578:
-every worker is a full agent), 22 rows, each checked at one site.
+every worker is a full agent), 21 rows, each checked at one site.
 The image rows (`eval-js`, `eval-python`, `browser`, `lsp`, `codegraph`, `skills`, `toolchain`, `claude-code`) are `legion probe-image`'s ([The image is probed before it publishes](#the-image-is-probed-before-it-publishes)), `present` once the probe passed;
 the live rows (`subagents`, `web-search`, `mcp`, `repository-extensions`, `dispatch-envoy-tools`, `github`) are measured by each claimed session while it runs, inside its own Oh My Pi, and reported on a `claims/ready` of its own, and the daemon renders each from what its live sessions reported (LEGION-663, INFRA-927;
 the paragraphs after the deployment rows);
@@ -3950,7 +3938,7 @@ the withheld rows carry the decision that keeps them from every worker (`network
 dispatch://LEGION-5, the pod is the boundary, except a workload a role starts where its deployment's cluster admits it and the Service fronting it ([Running a workload in the cluster from a role](#running-a-workload-in-the-cluster-from-a-role));
 `operator-setup`: dispatch://LEGION-200, Legion owns its dependencies;
 `production-identities`: dispatch://LEGION-551 and dispatch://LEGION-205);
-and the five deployment rows are the daemon's to measure from its own configuration and its own boot, since no image or pod can show them:
+and the four deployment rows are the daemon's to measure from its own configuration and its own boot, since no image or pod can show them:
 
 - `secrets`: `runtime.kubernetes.agent_secrets` is configured and the daemon's broker token login is `issued`.
   Under tmux it is open unless decided: no process is enrolled with the broker.
@@ -3980,15 +3968,9 @@ and the five deployment rows are the daemon's to measure from its own configurat
   The daemon measures it from the probe's own run (`bootprobe.ImageReport.CapacityWaits`), so `legion start --check-config` never prints it.
   Under tmux it is present: no probe pod runs.
 
-- `knives-push-gate`: `leak_guard.knives_registries` names a knives registry, so a push from a role to a repository GitHub reports public, or to one the leak guard cannot name, is scanned for the knives forbidden list of the repository it pushes to ([Worker image](#worker-image), the leak guard).
-  Open, the detail begins `leak_guard.knives_registries names no knives registry, so a push from a role is not scanned for a knives forbidden list`.
-  The daemon measures it from the configuration alone, so `legion start --check-config` prints it and the boot logs it.
-  A role is told the rows only when it launches, and nothing relaunches a running role when they change, so under Kubernetes the open detail and the present one both end `a role reads the rows from its next launch, so a role launched before they changed scans by the rows it was launched with, or by none`.
-  Under tmux it is open unless decided, whatever the rows name: a pane's push runs no leak guard, and the detail reads `the tmux runtime runs no push guard in a pane's git or jj, so a pane's push is not scanned for a knives forbidden list`.
-
 A deployment row is `present` when the deployment satisfies it, `decided` when `legion.yaml`'s `capabilities.decided.<name>: "<reason>"` records a decision on it (the report shows the reason in the gap's place;
 a decision on a satisfied row is moot and the row reads present), and `open` otherwise, carrying the line that records one.
-A name that is not one of the five is refused at load naming them; a blank reason too.
+A name that is not one of the four is refused at load naming them; a blank reason too.
 
 A live row is measured by each claimed session while it runs.
 The Legion extension measures the six inside Oh My Pi (`packages/pi-legion/src/capability-report.ts`) on the 5 s interval that session already runs, under the rule in `packages/pi-legion/src/capability-schedule.ts`: at a tick at which it is idle and no measurement of its own is running, first at the sixth tick for the architect and one tick later for each following role of `LEGION_ROLES` (the merger's is the eleventh, 55 s), so one pod's six roles start their attempts on different ticks;
@@ -7075,22 +7057,6 @@ each issue's pod (every role of it alike) and the image probe's.
 
   - The exchange token is the pod's, not a role's: every role reads it at the same path, and every role's session is registered for the same pod, each bound to the key of the role whose registration it is, so the broker refuses a trade for that session proved with any other key.
     Which session a role registers is still its agent's word until t-e-54 (the gate above), so this does not yet keep a role out of another claim's session ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod) says what that closes and what it does not).
-
-- **`leak_guard.knives_registries`** names the knives registry files a role's push to a repository GitHub reports public, or to one the leak guard cannot name, is scanned against ([Worker image](#worker-image), the leak guard's third pass).
-  Each row is a `repo` (`<owner>/<name>`), a `path` in it and a `ref`, a branch or tag:
-  the first row is the registry, and each later row an overlay that adds forbidden terms to entries the registry already has, as knives' `repos.local.toml` does.
-  The daemon tells every role it launches the rows, in their order, as `LEGION_KNIVES_REGISTRIES`, a JSON list:
-  every role of an issue pod and the controller it launches under `controller: daemon`, each through its generation's start command, so no pod is replaced.
-  The name is the runtime's own, so neither `pod.env` nor a launch may set it.
-  Each file is read with the role's own gh at a push to a repository GitHub reports public, or to one the leak guard cannot name, such as a local path, so every role's GitHub credential must read each repository the rows name.
-  A role keeps the list of its last good read for 10 minutes and reads no file in that time, so a change to a file reaches every role's pushes within 10 minutes.
-  A file that cannot be read refuses a push whose destination the kept list names and lets any other go on with a notice, and a role with no good read kept refuses every push the pass runs on, a push to a local bare repository included.
-  A change to the rows themselves reaches each role at its next launch: the rows are no part of a role's address record, so a daemon restarted with other rows relaunches nothing for them.
-  A row may name a private repository, so the rows never reach the `settings` of `legion state`.
-  Load refuses a repo that is no `<owner>/<name>`, a path with a leading `/` or a `..` component, an unknown or missing field, and two rows naming one file of one repository, under either name of a `repository_renames` pair.
-  With no row, the default, a push is not scanned for a knives forbidden list, and the capability report's `knives-push-gate` row is open until the rows name a registry or `capabilities.decided.knives-push-gate` records a reason.
-  `legion controller start` reads no `legion.yaml`, so a controller the operator launches is told no registry, and its pushes have no third pass.
-  Under `runtime: tmux` no pane is told the rows, since a pane's push runs no leak guard (`docs/deployment.md`), and the row stays open.
 
 - **`provider_keys`** (top-level) maps each variable Oh My Pi reads to a key of the providers Secret, `legion-<project>-providers`, which the operator creates.
   Every pod mounts the keys `provider_keys` names and no other key of the Secret, each at a file named for its variable, and the shim exports each into Oh My Pi's environment, never its own.

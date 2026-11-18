@@ -18,7 +18,7 @@ import (
 var names = []Name{
 	Subagents, EvalJS, EvalPython, Browser, LSP, CodeGraph, WebSearch, Skills, MCP, RepositoryExtensions,
 	DispatchEnvoyTools, GitHub, Secrets, ModelFallback, Toolchain, ClaudeCode, ResourceLimits, PoolCapacity,
-	KnivesPushGate, Network, OperatorSetup, ProductionIdentities,
+	Network, OperatorSetup, ProductionIdentities,
 }
 
 // The table is the one declared list: every Name constant appears in it exactly once, and no row
@@ -55,7 +55,7 @@ func TestEveryRowHasASite(t *testing.T) {
 
 // The deployment rows are what a legion.yaml decided line may name, in the table's order.
 func TestDecidableIsTheDeploymentRowsInTableOrder(t *testing.T) {
-	if got, want := Decidable(), []Name{Secrets, ModelFallback, ResourceLimits, PoolCapacity, KnivesPushGate}; !slices.Equal(got, want) {
+	if got, want := Decidable(), []Name{Secrets, ModelFallback, ResourceLimits, PoolCapacity}; !slices.Equal(got, want) {
 		t.Errorf("Decidable() = %v, want %v", got, want)
 	}
 }

@@ -1458,12 +1458,6 @@ worker_stream_port: $port_worker_stream
 daemon_url: http://$host:$port_daemon
 postgres_dsn: postgres://legion:$(cat "$work/postgres-password")@127.0.0.1:$port_pg/legion?sslmode=disable
 state_dir: $state
-# The knives push gate decided (lib/controller-ticks.jq): the proof pushes to no fork, so it names
-# no knives registry and reads none from GitHub, and every tick's open list stays the two the
-# checkpoint allows.
-capabilities:
-  decided:
-    knives-push-gate: "the proof pushes to no fork"
 operator_token_file: $work/operator-token
 envoy_url: $handed_envoy_url
 envoy_token_file: $work/envoy-token
@@ -3624,8 +3618,8 @@ note "image probe: $(jq -c '{image, model, sandbox}' <<<"$probe")"
 # Postgres, so no session has reported here; the first report comes with the first admitted root's
 # architect (deployment-pod-block, or admitted-issue-cap), and full-agent reads the rows it renders.
 # The open rows are secrets, and pool-capacity when the pool scaled for the probe: the proof's
-# legion.yaml (write_legion_config) configures no runtime.kubernetes.agent_secrets and decides
-# knives-push-gate alone, while model-fallback and resource-limits are present, since the operator
+# legion.yaml (write_legion_config) configures no runtime.kubernetes.agent_secrets and no
+# capabilities.decided, while model-fallback and resource-limits are present, since the operator
 # fixture's overlay turns retry.modelFallback on and its pod gives every role a reservation.
 # pool-capacity is the pool's to decide, not the configuration's: the row is open when the image
 # probe pod was Unschedulable before a node came up for it, which a run that starts on an empty pool

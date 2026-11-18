@@ -1,29 +1,24 @@
 // Package leakguard is the one check a Legion write to a public GitHub repository passes before
-// it writes. Up to three checks run, in this order, and any one of them refuses the write:
+// it writes. Two checks run, in this order, and either one refuses the write:
 //
 //   - The shared public leak check, a script this repository does not hold, found at each call
 //     (Resolve) and run in the shape the write has: a push, a gh call, or a piece of text.
 //   - This repository's own private-name rules, the embedded private-names.toml, run in process
 //     over the records the write is made of, and only when the destination repository is one
 //     GitHub reports public, or one the guard cannot name, such as a local path (scanThrough).
-//   - For a push to such a destination, the forbidden lists of the knives registry entries that
-//     name it (KnivesRegistriesVar), matched over the files the push adds as `knives audit`
-//     matches them; Guard.Push says why it is a pass of the push.
 //
 // A call site reaches the guard through one of four entry points — Push, GhCall, Text and Rules —
 // and reads one of two answers from a refused write: a *Refusal, which is about the text the write
 // carries, and a *SetupFailure, which is the check missing, the check failing, the engine failing,
-// a destination whose visibility cannot be read, or a knives registry that cannot be. Both refuse
-// the write; they are two types so that a call site can say which one it met, the way the shared
-// check itself keeps "LEAK CHECK: refusing" apart from "LEAK CHECK SETUP ERROR".
+// a destination whose visibility cannot be read, or a push whose destination's refs cannot be.
+// Both refuse the write; they are two types so that a call site can say which one it met, the way
+// the shared check itself keeps "LEAK CHECK: refusing" apart from "LEAK CHECK SETUP ERROR".
 //
 // What the guard reports is the record and the class: never the text that matched, never the
 // component of a path that matched, and never anything the detection engine itself printed. The
 // classes are the descriptions of the rules in private-names.toml, and a path in a report has
 // every component the repository and company rules match replaced by "<name>", the masking
-// .github/scripts/check-private-names.sh does (its lines 145-154). The knives pass reports a
-// term by its number in its entry's list, and writes a path component that holds a term as
-// "<forbidden>".
+// .github/scripts/check-private-names.sh does (its lines 145-154).
 //
 // The guard sets neither PUBLIC_LEAK_CHECK_REPO_NAMES nor PUBLIC_LEAK_CHECK_INTERNAL for the
 // shared check. That is a decision of this issue's approved spec, not an omission: with those two
@@ -64,30 +59,22 @@ type Options struct {
 	// read alone: a read it refuses for a spent rate limit still goes on to the GraphQL read and
 	// ls-remote (Guard.Visibility), which a test stands gh and git in for on Env's PATH.
 	Visibility func(ctx context.Context, slug string) (Visibility, error)
-	// Clock supplies the time and bounded wait of a rate-limited visibility read, and the time a
-	// push's knives pass keeps its read under and ages its kept list by (Guard.knives). Nil is
-	// wall time.
+	// Clock supplies the time and bounded wait of a rate-limited visibility read. Nil is wall time.
 	Clock Clock
 	// OnVisibility observes the source of a successful visibility answer. A caller uses it for
 	// audit logging and leaves it nil when it has no audit record of its own.
 	OnVisibility func(VisibilitySource)
-	// Notice is told, one whole line at a time, what a person should know of a write the guard
-	// lets go on: today, a push the knives pass lets through on its kept list while a registry
-	// cannot be read (Guard.knives). A line carries no repository, path, ref or term. Nil says
-	// nothing; `legion leak-check pre-push` writes each line to standard error, which git shows.
-	Notice func(string)
 	// Env is the environment the guard's children start from: the shared check, the visibility
-	// reads, the git commands a push's records, remote URLs and the refs of its destination and
-	// an upstream are read with, and the gh reads of the knives registries. It is also where the
-	// guard reads KnivesRegistriesVar. Nil means this process's own (os.Environ()). Every child
-	// keeps all of it but the read with no credential (Guard.lsRemote), which keeps only the names
-	// lsRemoteInherits allows. The guard adds to it the names that make a credential prompt fail
-	// closed (promptsNothing), and each child's own names on top of those.
+	// reads, and the git commands a push's records and the refs of its destination are read with.
+	// Nil means this process's own (os.Environ()). Every child keeps all of it but the read with
+	// no credential (Guard.lsRemote), which keeps only the names lsRemoteInherits allows. The guard
+	// adds to it the names that make a credential prompt fail closed (promptsNothing), and each
+	// child's own names on top of those.
 	Env []string
 }
 
-// Guard runs the checks. It holds no answer of an earlier call: every call site builds a guard of
-// its own for the one write it is about to make (cmd/legion's gh and leak-check,
+// Guard runs the two checks. It holds no answer of an earlier call: every call site builds a
+// guard of its own for the one write it is about to make (cmd/legion's gh and leak-check,
 // internal/ghbranch), and each entry point reads a destination's visibility at most once, so
 // there is nothing a shared answer would spare.
 type Guard struct {
@@ -113,13 +100,6 @@ func (g *Guard) base() []string {
 		return g.opts.Env
 	}
 	return os.Environ()
-}
-
-// notice gives line to the caller's Notice, where it named one.
-func (g *Guard) notice(line string) {
-	if g.opts.Notice != nil {
-		g.opts.Notice(line)
-	}
 }
 
 // env is the environment a child of this guard starts from: base, the names that make a
@@ -159,10 +139,6 @@ type Record struct {
 	// Line is the 1-based number of the line a record of an added line is, in the pushed
 	// commit's version of File, and 0 for a record of a path.
 	Line int
-	// Commit is the full sha of the pushed commit a record is of (pushRecords), and "" for a
-	// record of anything else: a ref name, a gh call, a text. The rule pass and the knives pass
-	// read it to leave out a commit an upstream's refs reach (Guard.upstreamHeld).
-	Commit string
 }
 
 // RefRecord is the record of a ref name, the whole of what the daemon's branch create has to

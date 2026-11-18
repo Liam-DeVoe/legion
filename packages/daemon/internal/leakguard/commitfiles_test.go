@@ -122,7 +122,7 @@ func TestAFileIsBinaryByItsOwnContentAlone(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			repo, base, head := pushOf(t, tc.held, tc.side, tc.added, nil)
 			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-			err := guard.Push(bound(t), knivesPush(repo, base, head, "origin", theURL))
+			err := guard.Push(bound(t), mainPush(repo, base, head, "origin", theURL))
 			if tc.want == nil {
 				if err != nil {
 					t.Fatalf("a push whose one named line is in a binary file: %v", err)
@@ -256,7 +256,7 @@ func TestACommitsFileAboveTheBoundRefusesThePush(t *testing.T) {
 			repo, base, head := pushOf(t, tc.held, nil, tc.added, tc.edit)
 			path, record := diffRecord(t)
 			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, path)
-			err := guard.Push(bound(t), knivesPush(repo, base, head, "origin", theURL))
+			err := guard.Push(bound(t), mainPush(repo, base, head, "origin", theURL))
 			// Read first, so that a binary file a diff read is said whatever the push's answer.
 			patches, read := os.ReadFile(record)
 			if read != nil && !errors.Is(read, fs.ErrNotExist) {

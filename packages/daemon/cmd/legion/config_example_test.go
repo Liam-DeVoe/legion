@@ -12,7 +12,6 @@ import (
 	"testing"
 
 	configpkg "github.com/sjawhar/legion/daemon/internal/config"
-	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
 
 // The legion.yaml example the repository ships (deploy/kubernetes/daemon/legion.yaml.example, the
@@ -155,44 +154,6 @@ func TestShippedLegionYAMLExamplesCommitIssueTrailerReposPassesCheckConfig(t *te
 	stamped := cfg.Projects["WIDGETS"].CommitIssueTrailerRepos
 	if len(stamped) != 1 || stamped[0].String() != "acme/widgets" {
 		t.Errorf("the WIDGETS commit_issue_trailer_repos = %v, want acme/widgets alone", stamped)
-	}
-}
-
-// The example's commented leak_guard block, uncommented, passes the same check and settles the
-// knives registry and its overlay in the file's order. It needs no volume and no mount: the rows
-// name files in GitHub repositories, which a role's gh reads at a push it scans and the check reads
-// not at all. With a registry named the knives-push-gate row is present, so the check prints the
-// shipped example's stdout less that row's gap line, which the example as shipped prints.
-func TestShippedLegionYAMLExamplesLeakGuardPassesCheckConfig(t *testing.T) {
-	config := stageShippedExample(t, func(example string) string {
-		return uncommentExample(t, example,
-			"# leak_guard:",
-			"#   knives_registries:",
-			"#     - repo: sjawhar/dotfiles",
-			"#       path: knives/repos.toml",
-			"#       ref: main",
-			"#     - repo: acme/private-knives",
-			"#       path: knives/repos.local.toml",
-			"#       ref: main",
-		)
-	})
-	var out, errb bytes.Buffer
-	code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
-	want := strings.Replace(shippedExampleCheckOK, knivesGap, "", 1)
-	if want == shippedExampleCheckOK {
-		t.Fatal("the shipped example's stdout carries no knives-push-gate line: the check below would prove nothing")
-	}
-	if code != 0 || out.String() != want || errb.Len() != 0 {
-		t.Fatalf("legion start --check-config = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
-	}
-	cfg, err := configpkg.LoadForValidation(config, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want = `[{"repo":"sjawhar/dotfiles","path":"knives/repos.toml","ref":"main"},` +
-		`{"repo":"acme/private-knives","path":"knives/repos.local.toml","ref":"main"}]`
-	if got := leakguard.KnivesRegistriesValue(cfg.LeakGuard.KnivesRegistries); got != want {
-		t.Errorf("the example's knives registries = %s, want %s", got, want)
 	}
 }
 
@@ -438,11 +399,9 @@ current-context: legion-daemon
 }
 
 // shippedExampleCheckOK is the whole stdout of `legion start --check-config` on the shipped
-// example, the same under either session store the example shows. The example names no knives
-// registry and decides no knives-push-gate row, so the check prints that gap (knivesGap).
+// example, the same under either session store the example shows.
 const shippedExampleCheckOK = "Config OK: project=WIDGETS design-gate-steps=spec\n" +
 	"projects.WIDGETS.production_check: tester — a merge that closes one of its issues opens a production check the tester works\n" +
-	knivesGap +
 	defaultCacheLine +
 	"plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none relaunches no process on another plugin contract\n"
 

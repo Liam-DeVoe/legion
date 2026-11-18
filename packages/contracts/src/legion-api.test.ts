@@ -1654,7 +1654,6 @@ test("the state golden carries the deployment's capability report", () => {
     rows["model-fallback"],
     rows["resource-limits"],
     rows["pool-capacity"],
-    rows["knives-push-gate"],
   ];
   for (const row of deploymentRows) {
     expect(["configuration", "boot"]).toContain(row.source ?? "");

@@ -40,11 +40,11 @@ steps, then the parked-root walk (`skill://legion-controller/references/parked-d
 
 `openCapabilities`, when present, names the open capability rows; `read_state`'s `capabilities`
 gives each one's `detail`. A deployment row (the secrets broker, model fallback, a role's CPU and
-memory limits, the pool's capacity at boot, the knives scan of a role's push) has a `configLine`,
-the `legion.yaml` line (`capabilities.decided.<name>`) that would record a decision. A live row
-(`subagents`, `web-search`, `mcp`, `repository-extensions`, `dispatch-envoy-tools`, `github`) is a
-running session's failed check: its `detail` names the session (pod or pane), role, issue and fact,
-and it has no `configLine`. The next daily report names each row still open; take no other action,
+memory limits, the pool's capacity at boot) has a `configLine`, the `legion.yaml` line
+(`capabilities.decided.<name>`) that would record a decision. A live row (`subagents`,
+`web-search`, `mcp`, `repository-extensions`, `dispatch-envoy-tools`, `github`) is a running
+session's failed check: its `detail` names the session (pod or pane), role, issue and fact, and it
+has no `configLine`. The next daily report names each row still open; take no other action,
 because the operator closes or decides a deployment row, and the operator or the issue's architect
 fixes a live row's session.
 

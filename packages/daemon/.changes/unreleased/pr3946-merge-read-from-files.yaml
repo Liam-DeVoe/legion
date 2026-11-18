@@ -10,10 +10,6 @@ body: |-
   URL a remote pushes to at the time, so a commit pushed first to a local bare remote named
   `origin/rehearsal`, or to a local bare push URL of `origin`, was not read at its push to
   `origin`. This replaces the rule by which the private-name pass skipped a commit that a
-  remote-tracking ref holds: a remote-tracking ref of the clone no longer holds a commit.
-  Where a knives registry entry names the destination as a fork, a commit that a branch or a tag
-  of the entry's upstream advertises is held for the private-name pass as well, as it is for the
-  knives push gate: it is upstream's public text. The upstream is read only when the rules would
-  refuse the push, and a read that fails refuses the push as a setup failure naming the
-  upstream's URL. A branch on upstream's newer main pushed to a fork whose main was behind was
-  refused for a private name in one of upstream's own commits.
+  remote-tracking ref holds: a remote-tracking ref of the clone no longer holds a commit. Each
+  push with an update that is not a deletion costs that one `git ls-remote`, and a read that
+  fails refuses the push as a setup failure naming the remote and the URL.

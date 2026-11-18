@@ -3,7 +3,6 @@ package leakguard
 import (
 	"bufio"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -115,40 +114,22 @@ func PushName(remote string) string {
 	return "the push to " + withoutUserinfo(remote)
 }
 
-// Push checks a push before it is made, in three passes, and the first that refuses it is the
-// answer. The shared check runs in its pre-push shape — the update lines on its standard input,
-// the repository as its working directory. Then, for a destination GitHub reports public, or one
-// the guard cannot name, such as a local path (scanThrough), two passes read the push's records
-// (pushRecords): this repository's own private-name rules, and,
-// over the records of the files the push adds, the forbidden lists of the knives registry entries
-// that name the push's destination (Guard.knives). A refusal of the rules is the answer before the
-// knives pass runs.
+// Push checks a push before it is made. The shared check runs in its pre-push shape — the update
+// lines on its standard input, the repository as its working directory — and then, for a
+// destination GitHub reports public, or one the guard cannot name, such as a local path
+// (scanThrough), this repository's own private-name rules read the push's records (pushRecords):
+// each ref name, and for each commit the destination does not already hold, the author, the
+// committer, the message, each added or renamed path, and each added line.
 //
-// Neither pass reads a commit the destination already holds, which is a commit one of its
-// branches or tags reaches as the destination itself reports them at the push: one git ls-remote
-// of the URL git hands the hook (Guard.advertised), made where an update moves a ref to a commit
-// and read by both passes. A read that fails refuses the push as a setup failure naming the URL.
-// No ref of the repository's own says what the destination holds: git moves a remote's
-// refs/remotes/<remote>/* for a push to whatever URL the remote pushes to at the time, a local
-// bare one a role points it at for one run (`git remote set-url --push origin <bare>`) included,
-// and a ref can be written by hand, so a commit only such a ref reaches is still one the push
-// publishes (the architect's rule of 2026-11-17).
-//
-// Where a knives registry entry names the destination as a fork (knivesApplying) and names an
-// upstream, a commit that a branch or a tag the upstream advertises at the push reaches is held
-// for the rules as well as for the knives pass (Guard.upstreamHeld): it is upstream's public
-// text, which leaks nothing by reaching the fork. A tester's push of a branch on upstream's newer
-// main to cybermonklabs/oh-my-pi, whose main was 195 commits behind, had the rules read 196 of
-// upstream's own commits and refuse it for a file of one of them (measured 2026-11-17; the
-// architect's rule of 2026-11-17, 21:51Z). The registries and the upstreams are read for the
-// rules only where the rules would refuse the push, each once for both passes (knivesRead), and
-// the rules then read what is left (rulesPastUpstream). A registry that cannot be read leaves the
-// rules' refusal standing, and an upstream whose read fails refuses the push as a setup failure
-// naming its URL.
-//
-// The third pass is the check knives makes before a push to a fork, `knives audit`, which was a
-// step an agent had to remember to run: the records of the oh-my-pi fork's pushes on 2026-11-17
-// show most of them went out without one. As a pass of the push, it needs nobody to remember it.
+// The rules read no commit the destination already holds, which is a commit one of its branches
+// or tags reaches as the destination itself reports them at the push: one git ls-remote of the
+// URL git hands the hook (Guard.advertised), made where an update moves a ref to a commit. A read
+// that fails refuses the push as a setup failure naming the URL. No ref of the repository's own
+// says what the destination holds: git moves a remote's refs/remotes/<remote>/* for a push to
+// whatever URL the remote pushes to at the time, a local bare one a role points it at for one run
+// (`git remote set-url --push origin <bare>`) included, and a ref can be written by hand, so a
+// commit only such a ref reaches is still one the push publishes (the architect's rule of
+// 2026-11-17).
 func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 	what := PushName(req.Remote)
 	check, err := g.Resolve()
@@ -176,8 +157,8 @@ func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 	if !public {
 		return nil
 	}
-	// held are the commits the destination holds, read once for both passes, and not at all for a
-	// push of deletions alone, which adds no commit.
+	// held are the commits the destination holds, not read at all for a push of deletions alone,
+	// which adds no commit.
 	var held []string
 	if slices.ContainsFunc(req.Updates, func(update Update) bool { return !update.deletion() }) {
 		if held, err = g.advertised(ctx, req.Dir, req.URL); err != nil {
@@ -188,54 +169,17 @@ func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 	if err != nil {
 		return &SetupFailure{What: what, Why: "the push's commits could not be read", Err: err}
 	}
-	// The knives registries and the upstreams of the entries that name the destination, each read
-	// once for both passes and only where a pass asks (knivesRead).
-	read := g.knivesReadOf(ctx, what, req, records)
-	if refused := g.rules(ctx, what, records); refused != nil {
-		if err := g.rulesPastUpstream(ctx, what, read, records, refused); err != nil {
-			return err
-		}
-	}
-	return g.knives(what, read, records)
+	return g.rules(ctx, what, records)
 }
 
-// rulesPastUpstream is the rules' answer for a push whose records they refused, refused being
-// that answer: where an upstream of a knives registry entry that names the destination holds
-// commits of the push (read.upstreamHeld), the rules' answer over the records of the other
-// commits, ref names and every other record of no commit included, and refused otherwise. A setup
-// failure of the rules stands, and so does a refusal where the registries could not be read (a
-// failure or a notice of read.named), where no entry names the destination, where no entry that
-// does names an upstream, and where the upstreams hold none of the push's commits: each of those
-// is a refusal already, so a read that fails fails closed. An upstream whose read fails refuses
-// the push as a setup failure naming the upstream's URL (Guard.upstreamHeld).
-func (g *Guard) rulesPastUpstream(ctx context.Context, what string, read knivesRead, records []Record, refused error) error {
-	var refusal *Refusal
-	if !errors.As(refused, &refusal) {
-		return refused
-	}
-	named := read.named()
-	if named.failure != nil || len(named.applying) == 0 {
-		return refused
-	}
-	reached, err := read.upstreamHeld()
-	if err != nil {
-		return err
-	}
-	if len(reached) == 0 {
-		return refused
-	}
-	return g.rules(ctx, what, unheld(records, reached))
-}
-
-// pushRecords is everything a push would publish, as records, which the second and the third of
-// Push's passes both read, the third the records of files alone: one per ref name, and for each
+// pushRecords is everything a push would publish, as records: one per ref name, and for each
 // commit the push would add, one for the author identity, one for the committer identity, one for
-// the message, one for each added or renamed path and one for each added line, each carrying the
-// commit's sha (Record.Commit). The commits an update adds are those its local side reaches and
-// neither its remote side nor any of held does (Guard.commits), held being the commits the
-// destination holds at its branches and tags (Guard.advertised), which are written as rev-list
-// reads them once for every update of the push (notLines). A commit reached by two of the push's
-// refs is read once, and a deletion adds no commit.
+// the message, one for each added or renamed path and one for each added line. The commits an
+// update adds are those its local side reaches and neither its remote side nor any of held does
+// (Guard.commits), held being the commits the destination holds at its branches and tags
+// (Guard.advertised), which are written as rev-list reads them once for every update of the push
+// (notLines). A commit reached by two of the push's refs is read once, and a deletion adds no
+// commit.
 func (g *Guard) pushRecords(ctx context.Context, req PushRequest, held []string) ([]Record, error) {
 	var records []Record
 	read := map[string]bool{}
@@ -259,9 +203,6 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest, held []string)
 			of, err := g.commitRecords(ctx, req.Dir, commit)
 			if err != nil {
 				return nil, err
-			}
-			for i := range of {
-				of[i].Commit = commit
 			}
 			records = append(records, of...)
 		}

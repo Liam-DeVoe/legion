@@ -871,16 +871,15 @@ func populatedState(t *testing.T) State {
 			RegisteredAt: time.Date(2026, 9, 22, 9, 16, 40, 0, time.UTC),
 		},
 		AgentSecretsLogin: &AgentSecretsLoginView{State: "issued"},
-		// A kubernetes deployment whose image passed the probe, with the broker gap decided, one
-		// role unreserved and a knives registry and its overlay named, and no session's report
-		// yet, so the fixture carries a decided row and an open row beside the present, unchecked
-		// and withheld ones, rendered by the report itself: a wording change there rewrites the
-		// fixture rather than leaving the pinned words stale.
+		// A kubernetes deployment whose image passed the probe, with the broker gap decided and
+		// one role unreserved, and no session's report yet, so the fixture carries a decided row and
+		// an open row beside the present, unchecked and withheld ones, rendered by the report
+		// itself: a wording change there rewrites the fixture rather than leaving the pinned words
+		// stale.
 		Capabilities: CapabilityStatesOf(capabilities.Deployment{
 			Runtime: "kubernetes", Probed: true, ModelFallback: "on",
-			Decided:          map[capabilities.Name]string{capabilities.Secrets: "pods are enrolled with the secrets broker once dispatch://LEGION-205 lands; until then no pod reads a secret"},
-			UnreservedPods:   []capabilities.Pod{capabilities.PodIssue},
-			KnivesRegistries: 2,
+			Decided:        map[capabilities.Name]string{capabilities.Secrets: "pods are enrolled with the secrets broker once dispatch://LEGION-205 lands; until then no pod reads a secret"},
+			UnreservedPods: []capabilities.Pod{capabilities.PodIssue},
 		}.Report()),
 		// The project maps three repositories of two owners; the review App is not installed on one,
 		// which the daemon leaves out. acme/widgets' cache is Ready and its last health read

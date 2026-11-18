@@ -20,14 +20,14 @@ import (
 )
 
 // Deployment is the deployment's capabilities as the configuration alone states them
-// (capabilities.Deployment): the decisions, the runtime, how many knives registries
-// leak_guard.knives_registries names, whether a broker is configured, the pods that reserve no CPU
-// and memory (config.Reservation.Reserved) and the pods that request less cpu or memory than their
-// limit (config.Reservation.Burstable) — the issue pod, and the controller's pod when the daemon
-// launches it. What boot learns (the broker login, the probe, model fallback) is the supervision's
-// to add (supervision.deployment); `legion start --check-config` reports from this alone.
+// (capabilities.Deployment): the decisions, the runtime, whether a broker is configured, the pods
+// that reserve no CPU and memory (config.Reservation.Reserved) and the pods that request less cpu
+// or memory than their limit (config.Reservation.Burstable) — the issue pod, and the controller's
+// pod when the daemon launches it. What boot learns (the broker login, the probe, model fallback)
+// is the supervision's to add (supervision.deployment); `legion start --check-config` reports from
+// this alone.
 func Deployment(cfg config.Config) capabilities.Deployment {
-	d := capabilities.Deployment{Decided: cfg.Capabilities.Decided, Runtime: cfg.Runtime.Name, KnivesRegistries: len(cfg.LeakGuard.KnivesRegistries)}
+	d := capabilities.Deployment{Decided: cfg.Capabilities.Decided, Runtime: cfg.Runtime.Name}
 	k := cfg.Runtime.Kubernetes
 	if k == nil {
 		return d

@@ -51,7 +51,7 @@ func TestAMergesOwnResolutionIsRead(t *testing.T) {
 	}
 	destinationAt(t, fixture, repo, theURL, base+":refs/heads/main")
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-	err := guard.Push(bound(t), knivesPush(repo, base, head, "origin", theURL))
+	err := guard.Push(bound(t), mainPush(repo, base, head, "origin", theURL))
 	want := []string{"resolution.md: " + theClass}
 	if refused := refusal(t, err); !slices.Equal(refused.Lines, want) {
 		t.Errorf("the report is %q, want %q", refused.Lines, want)
@@ -111,7 +111,7 @@ func TestAMergesFileAboveTheBoundRefusesThePush(t *testing.T) {
 			}
 			repo, base, head := pushOf(t, nil, side, tc.added, nil)
 			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-			err := guard.Push(bound(t), knivesPush(repo, base, head, "origin", theURL))
+			err := guard.Push(bound(t), mainPush(repo, base, head, "origin", theURL))
 			switch {
 			case tc.failure != nil:
 				setupFailure(t, err)
@@ -160,7 +160,7 @@ func TestAnOctopusMergeIsReadFromItsFiles(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-			err := guard.Push(bound(t), knivesPush(repo, base, tc.head, "origin", theURL))
+			err := guard.Push(bound(t), mainPush(repo, base, tc.head, "origin", theURL))
 			if tc.want == nil {
 				if err != nil {
 					t.Fatalf("a merge that adds nothing of its own: %v", err)

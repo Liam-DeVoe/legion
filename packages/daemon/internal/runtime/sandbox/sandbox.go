@@ -102,30 +102,28 @@ type Runtime struct {
 	sessionStore            ompsessions.Store
 	agentSecrets            *AgentSecrets
 	controllerSlackChannels []string
-	// knivesRegistries is Options.KnivesRegistries, every role's leakguard.KnivesRegistriesVar.
-	knivesRegistries      string
-	agent                 []string
-	setup                 []string
-	skills                ghrepo.Repository
-	testPostgres          bool
-	bootTimeout           time.Duration
-	registrationIntervals int
-	busyBackoff           time.Duration
-	provisionBound        time.Duration
-	launchBound           time.Duration
-	terminationGrace      time.Duration
-	probeInterval         time.Duration
-	adoptTimeout          time.Duration
-	tokens                ProvisionTokens
-	gitHubCredential      runtime.GitHubCredential
-	controllerCredential  runtime.ControllerCredential
-	gitHubDirs            func(repo ghrepo.Repository, roles []appauth.AppRole) []string
-	store                 Store
-	conns                 runtime.Conns
-	launchers             *launchers
-	launcherAuth          launcherCredentials
-	now                   func() time.Time
-	log                   *slog.Logger
+	agent                   []string
+	setup                   []string
+	skills                  ghrepo.Repository
+	testPostgres            bool
+	bootTimeout             time.Duration
+	registrationIntervals   int
+	busyBackoff             time.Duration
+	provisionBound          time.Duration
+	launchBound             time.Duration
+	terminationGrace        time.Duration
+	probeInterval           time.Duration
+	adoptTimeout            time.Duration
+	tokens                  ProvisionTokens
+	gitHubCredential        runtime.GitHubCredential
+	controllerCredential    runtime.ControllerCredential
+	gitHubDirs              func(repo ghrepo.Repository, roles []appauth.AppRole) []string
+	store                   Store
+	conns                   runtime.Conns
+	launchers               *launchers
+	launcherAuth            launcherCredentials
+	now                     func() time.Time
+	log                     *slog.Logger
 	// memoryGuard is Options.MemoryGuard: the memory guard settings an issue pod's launcher is
 	// handed on the answer to each hello (LauncherResolver), nil for a deployment that turned the
 	// guard off.
@@ -402,7 +400,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		pod: opts.Pod, roleConfigFiles: opts.RoleConfigFiles, experimentVariants: opts.ExperimentVariants,
 		variantFiles: runtime.VariantOverlays(opts.ExperimentVariants),
 		providerKeys: opts.ProviderKeys, providersSecrets: slices.Sorted(slices.Values(opts.ProvidersSecrets)), natsUser: opts.NATSUser,
-		sessionStore: opts.SessionStore, controllerSlackChannels: slices.Clone(opts.ControllerSlackChannels), knivesRegistries: opts.KnivesRegistries,
+		sessionStore: opts.SessionStore, controllerSlackChannels: slices.Clone(opts.ControllerSlackChannels),
 		bootTimeout: opts.BootTimeout, registrationIntervals: opts.RegistrationIntervals,
 		busyBackoff: opts.BusyBackoff, provisionBound: provisionBound, terminationGrace: opts.TerminationGrace,
 		launchBound:   launchBound(opts.BootTimeout, provisionBound, opts.TerminationGrace),

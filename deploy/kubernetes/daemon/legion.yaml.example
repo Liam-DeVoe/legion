@@ -184,38 +184,6 @@ projects:
 #                                      # refuses acme/a -> acme/b beside acme/c -> d/c.
 #                                      # --check-config prints one line
 #                                      # per pair, to read the equivalence back before a transfer.
-# leak_guard:                          # optional: the knives registries the push guard of
-#   knives_registries:                 # every role's git push reads besides the shared public
-#     - repo: sjawhar/dotfiles         # leak check. Each row is one knives registry file in a
-#       path: knives/repos.toml        # GitHub repository, at a branch or tag: the first row is
-#       ref: main                      # the registry, and each later row an overlay that adds
-#     - repo: acme/private-knives      # forbidden terms to entries the registry already has, as
-#       path: knives/repos.local.toml  # knives' repos.local.toml does. A push to a public
-#       ref: main                      # repository an entry names is refused when a file it
-#                                      # adds holds one of that entry's terms; the refusal names
-#                                      # the file, the line and the term's number, never the
-#                                      # term. Every file is read with the role's own gh at a
-#                                      # push to a repository GitHub reports public, or to one
-#                                      # the leak guard cannot name, such as a local path, so
-#                                      # every role's GitHub credential must read it. A role
-#                                      # keeps the list of its last good read for 10 minutes
-#                                      # and reads no file in that time, so a change to a file
-#                                      # reaches every role's pushes within 10 minutes. A file
-#                                      # that cannot be read refuses a push whose destination
-#                                      # the kept list names and lets any other go on with a
-#                                      # notice; with no good read kept, every push the gate
-#                                      # runs on is refused, a push to a local bare repository
-#                                      # included. A row may name a private repository (the
-#                                      # overlay above stands in for one), which is why the rows
-#                                      # never reach legion state's settings. A change to the
-#                                      # rows reaches each role at its next launch. With no row a
-#                                      # push is not scanned for a knives forbidden list, and the
-#                                      # capability report's knives-push-gate row is open
-#                                      # (capabilities, below).
-#                                      # Refused: a repo that is no <owner>/<name>, a path with
-#                                      # a leading / or a .. component, and two rows naming one
-#                                      # file of a repository, under either name a
-#                                      # repository_renames pair gives it.
 # hooks:                               # optional: the words the daemon puts in front of an
 #   - name: work-back                  # issue's workers when its work keeps going back to an
 #     on: work_back                    # earlier phase. A file that names no hooks key runs this
@@ -528,13 +496,11 @@ runtime:
 # The daemon reports, at boot, in `legion state` and to the controller on every tick, each worker
 # capability the deployment's own configuration closes or leaves open (LEGION-578): the secrets
 # broker (runtime.kubernetes.agent_secrets), model fallback (retry.modelFallback in the operator's
-# overlay, read by the image probe), every pod's reservation (resources above, which the daemon's
-# defaults fill for every pod, so that row is present on every Kubernetes deployment) and the
-# knives push gate (leak_guard above). A gap never stops the daemon; it is yours to close, or to
-# decide here, by name and with the reason, which the report then shows in the gap's place. This
-# example configures no broker, so it decides that one. It names no knives registry and leaves
-# that gap open, so `legion start --check-config` prints it until you name a registry or decide
-# it here.
+# overlay, read by the image probe) and every pod's reservation (resources above, which the
+# daemon's defaults fill for every pod, so that row is present on every Kubernetes deployment). A
+# gap never stops the daemon; it is yours to close, or to decide here, by name and with the reason,
+# which the report then shows in the gap's place. This example configures no broker, so it decides
+# that one.
 capabilities:
   decided:
     secrets: "pods are enrolled with the secrets broker once dispatch://LEGION-205 lands; until then no pod reads a secret"

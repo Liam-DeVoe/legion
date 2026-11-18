@@ -157,18 +157,16 @@ func TestTheControllersPodIsOneLauncherOnAVolumeOfItsOwn(t *testing.T) {
 
 // The controller's agent runs the way every role's does — its launcher starts the shim on the pod
 // baseline, and the shim Oh My Pi in RPC mode with its prompt — and is told it is the controller,
-// where its gh reads its own credential, how it reaches the secrets broker and the knives
-// registries its pushes to a public repository are scanned against, like a workflow role's, and
-// the project's Slack channels, and nothing of a tree, an issue or a workspace: of the variables
-// the runtime owns (runtimeOwned), it is told exactly those every agent is told, its own marker,
-// its gh files, the broker's, the knives registries and its channels, so a variable the runtime
-// comes to tell any agent fails here until it is decided for the controller.
+// where its gh reads its own credential, how it reaches the secrets broker, like a workflow role's,
+// and the project's Slack channels, and nothing of a tree, an issue or a workspace: of the variables
+// the runtime owns (runtimeOwned), it is told exactly those every agent is told, its own marker, its
+// gh files, the broker's and its channels, so a variable the runtime comes to tell any agent fails
+// here until it is decided for the controller.
 func TestTheControllersAgentIsToldItIsTheControllerAndNothingOfATree(t *testing.T) {
 	opts := goldenOptions()
 	opts.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
 	opts.DispatchURL, opts.DispatchToken = "https://dispatch.internal.example", "dispatch-bearer"
 	opts.ControllerSlackChannels = []string{"C00000000", "G00000001"}
-	opts.KnivesRegistries = testKnivesRegistries
 	r, err := configure(opts)
 	if err != nil {
 		t.Fatal(err)
@@ -185,7 +183,7 @@ func TestTheControllersAgentIsToldItIsTheControllerAndNothingOfATree(t *testing.
 		"GH_CONFIG_DIR": GHConfigDir + "/sjawhar", "GH_TOKEN": "", "GITHUB_TOKEN": "", "GH_HOST": "",
 		"LEGION_GH_OWNERS_DIR": GHConfigDir, "LEGION_GH_PATH": opts.Tools.GH,
 		"AGENT_SECRETS_URL": opts.AgentSecrets.URL, "AGENT_SECRETS_KEY_DIR": AgentSecretsKeyDir,
-		"LEGION_SLACK_CHANNELS": "C00000000,G00000001", "LEGION_KNIVES_REGISTRIES": testKnivesRegistries,
+		"LEGION_SLACK_CHANNELS": "C00000000,G00000001",
 	} {
 		if env[name] != want {
 			t.Errorf("%s = %q, want %q", name, env[name], want)
@@ -204,7 +202,7 @@ func TestTheControllersAgentIsToldItIsTheControllerAndNothingOfATree(t *testing.
 		"GITHUB_TOKEN", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_KEY_1", "GIT_CONFIG_KEY_2", "GIT_CONFIG_KEY_3", "GIT_CONFIG_KEY_4",
 		"GIT_CONFIG_VALUE_0", "GIT_CONFIG_VALUE_1", "GIT_CONFIG_VALUE_2", "GIT_CONFIG_VALUE_3", "GIT_CONFIG_VALUE_4", "GIT_TERMINAL_PROMPT", "GOCACHE", "GOMODCACHE",
 		"LEGION_BOOT_TOKEN_FILE", "LEGION_CONTROLLER", "LEGION_DAEMON_URL",
-		"LEGION_GENERATION", "LEGION_GH_OWNERS_DIR", "LEGION_GH_PATH", "LEGION_KNIVES_REGISTRIES", "LEGION_PROJECT", "LEGION_ROLE", "LEGION_SLACK_CHANNELS", "LEGION_STATE_DIR",
+		"LEGION_GENERATION", "LEGION_GH_OWNERS_DIR", "LEGION_GH_PATH", "LEGION_PROJECT", "LEGION_ROLE", "LEGION_SLACK_CHANNELS", "LEGION_STATE_DIR",
 		"OMP_SESSION_SQL_DSN_FILE", "OMP_SESSION_STORAGE", "PATH", "PI_SHELL_PREFIX", "POD_UID", "PUBLIC_LEAK_CHECK", "TMPDIR",
 		"XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME",
 	}; !slices.Equal(told, want) {

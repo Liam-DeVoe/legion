@@ -23,9 +23,8 @@ import (
 
 const rateLimitWaitBound = 2 * time.Minute
 
-// Clock supplies the time and waits visibility reads use, and the time the knives pass keeps its
-// list by (Guard.knives). Tests replace it so retrying a near rate-limit reset does not sleep for
-// wall-clock time, and so a kept list ages without waiting.
+// Clock supplies the time and waits visibility reads use. Tests replace it so retrying a near
+// rate-limit reset does not sleep for wall-clock time.
 type Clock interface {
 	Now() time.Time
 	Sleep(context.Context, time.Duration) error
@@ -225,8 +224,7 @@ func (g *Guard) keptVisibility(slug string) (Visibility, bool) {
 // this user may have written: its directory opened without following a link, a directory owned
 // by the current user and readable by no one else, and the file opened in it without following a
 // link, regular and readable by no one else. Anything else is no content. A kept answer may only
-// spare the guard a read, so one another user could have planted is never read (keptVisibility,
-// keptKnives).
+// spare the guard a read, so one another user could have planted is never read (keptVisibility).
 //
 // The directory is opened with O_NOFOLLOW and without O_DIRECTORY, and found to be a directory
 // after: under the gVisor kernel of an issue pod (4.19.0-gvisor, measured 2026-11-17), an open
@@ -273,18 +271,6 @@ func (g *Guard) keepVisibility(slug string, visibility Visibility) {
 	if path == "" {
 		return
 	}
-	encoded, err := json.Marshal(visibilityCacheEntry{Visibility: visibility})
-	if err != nil {
-		return
-	}
-	writePrivateState(path, ".visibility-", append(encoded, '\n'))
-}
-
-// writePrivateState writes content to the file at path, a file of the guard's state that only
-// this user may read (readPrivateState): its directory made, and set to 0700, and content written
-// to a temporary file in it named from prefix, set to 0600 before a byte is written, then renamed
-// over path. Where the directory cannot be made private, or any step fails, nothing is written.
-func writePrivateState(path, prefix string, content []byte) {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return
@@ -296,7 +282,11 @@ func writePrivateState(path, prefix string, content []byte) {
 	if err != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
 		return
 	}
-	tmp, err := os.CreateTemp(dir, prefix)
+	encoded, err := json.Marshal(visibilityCacheEntry{Visibility: visibility})
+	if err != nil {
+		return
+	}
+	tmp, err := os.CreateTemp(dir, ".visibility-")
 	if err != nil {
 		return
 	}
@@ -305,7 +295,7 @@ func writePrivateState(path, prefix string, content []byte) {
 		tmp.Close()
 		return
 	}
-	if _, err := tmp.Write(content); err != nil {
+	if _, err := tmp.Write(append(encoded, '\n')); err != nil {
 		tmp.Close()
 		return
 	}
@@ -362,20 +352,14 @@ func VisibilityGraphQLArgs(slug string) []string {
 		"-f", "query=" + visibilityQuery, "-f", "owner=" + owner, "-f", "name=" + name}
 }
 
-// ghPlainEnv is what each of the guard's gh calls carries beyond the guard's own names: GH_HOST,
-// which names the host for a gh that has no configuration of its own to read it from, and
-// NO_COLOR=1 with CLICOLOR_FORCE=0, which keep gh's output plain. A caller's CLICOLOR_FORCE=1 makes
-// gh 2.98.0 colour the --include headers and the JSON body of the two visibility reads, and neither
-// could then be read.
-func ghPlainEnv() []string {
-	return []string{"GH_HOST=github.com", "NO_COLOR=1", "CLICOLOR_FORCE=0"}
-}
-
-// ghReadEnv is what each of the guard's visibility reads of slug carries: VisibilityReadVar, which
-// `legion gh` lets exactly these reads through by, and then ghPlainEnv's names, GH_HOST beside
-// the --hostname the argv already carries.
+// ghReadEnv is what each of the guard's gh reads of slug carries beyond the guard's own names:
+// VisibilityReadVar, which `legion gh` lets exactly these reads through by; GH_HOST, which names
+// the host for a gh that has no configuration of its own to read it from, beside the --hostname
+// the argv already carries; and NO_COLOR=1 with CLICOLOR_FORCE=0, which keep gh's output plain. A
+// caller's CLICOLOR_FORCE=1 makes gh 2.98.0 colour the --include headers and the JSON body, and
+// neither read could then be read.
 func ghReadEnv(slug string) []string {
-	return append([]string{VisibilityReadVar + "=" + slug}, ghPlainEnv()...)
+	return []string{VisibilityReadVar + "=" + slug, "GH_HOST=github.com", "NO_COLOR=1", "CLICOLOR_FORCE=0"}
 }
 
 // ghVisibility is the gh read itself, the guard's answer where a caller named no reader of its

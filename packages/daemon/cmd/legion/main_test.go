@@ -688,23 +688,12 @@ github_apps:
 	return path, marker
 }
 
-// tmuxCapabilityGaps are the three lines `legion start --check-config` prints after Config OK for a
-// tmux configuration that decides none of them: the tmux runtime enrolls nothing with the secrets
-// broker, sets no requests or limits and runs no push guard in a pane, so all three deployment
-// capabilities are open, whatever leak_guard names, until the file records a decision
-// (TestStartCheckConfigReportsTheConfigurationsCapabilityGaps).
+// tmuxCapabilityGaps are the two lines `legion start --check-config` prints after Config OK for a
+// tmux configuration that decides neither: the tmux runtime enrolls nothing with the secrets broker
+// and sets no requests or limits, so both deployment capabilities are open until the file records
+// a decision (TestStartCheckConfigReportsTheConfigurationsCapabilityGaps).
 const tmuxCapabilityGaps = "capability secrets is open: the tmux runtime enrolls no process with the secrets broker; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n" +
-	"capability resource-limits is open: the tmux runtime sets no requests or limits on a pane; to record a decision, add to legion.yaml: capabilities.decided.resource-limits: \"<reason>\"\n" +
-	"capability knives-push-gate is open: the tmux runtime runs no push guard in a pane's git or jj, so a pane's push is not scanned for a knives forbidden list; to record a decision, add to legion.yaml: capabilities.decided.knives-push-gate: \"<reason>\"\n"
-
-// knivesGap is the line `legion start --check-config` prints after Config OK for a Kubernetes
-// configuration whose leak_guard.knives_registries names no knives registry and that does not
-// decide the row: it comes last of the capability lines, in the table's order.
-const knivesGap = "capability knives-push-gate is open: leak_guard.knives_registries names no knives registry, so a push from a role is not scanned for a knives forbidden list; a role reads the rows from its next launch, so a role launched before they changed scans by the rows it was launched with, or by none; to record a decision, add to legion.yaml: capabilities.decided.knives-push-gate: \"<reason>\"\n"
-
-// knivesRegistryBlock is a leak_guard block that names one knives registry, which closes the
-// knives-push-gate row of a Kubernetes configuration and closes nothing under tmux.
-const knivesRegistryBlock = "leak_guard:\n  knives_registries:\n    - {repo: sjawhar/dotfiles, path: knives/repos.toml, ref: main}\n"
+	"capability resource-limits is open: the tmux runtime sets no requests or limits on a pane; to record a decision, add to legion.yaml: capabilities.decided.resource-limits: \"<reason>\"\n"
 
 // productionCheckTesterLine is the production-check line `legion start --check-config` prints
 // for a project that names no `production_check` and so gets the tester, and deploysIgnoredLine
@@ -1334,10 +1323,9 @@ func kubernetesCheckConfig(t *testing.T, extra string) string {
 }
 
 // After Config OK, --check-config prints one line per deployment capability the file alone leaves
-// open (daemon.Deployment: secrets with no broker configured, knives-push-gate with no knives
-// registry named), each in the words boot logs it with and naming the legion.yaml line that
-// records a decision — and exits 0, because a gap is reported, never refused. A decision quiets its
-// row, a named knives registry closes its row, and a configured broker's secrets row is boot's to
+// open (daemon.Deployment: secrets with no broker configured), each in the words boot logs it with
+// and naming the legion.yaml line that records a decision — and exits 0, because a gap is reported,
+// never refused. A decision quiets its row, and a configured broker's secrets row is boot's to
 // measure, so the check says nothing of it. The resource-limits row is never open on a Kubernetes
 // file: the loader fills both pods' reservations from the daemon's defaults, with or without a
 // `resources` block and whatever fields it sets (config.Reservation.Reserved); the tmux cases
@@ -1349,20 +1337,17 @@ func TestStartCheckConfigReportsTheConfigurationsCapabilityGaps(t *testing.T) {
 	const secretsGap = "capability secrets is open: runtime.kubernetes.agent_secrets is not configured; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n"
 	const pluginsGap = "plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none relaunches no process on another plugin contract\n"
 	for _, tc := range []struct{ name, extra, want string }{
-		{"no resources block, no broker: both pods at the defaults", "", secretsGap + knivesGap},
-		{"the issue pod with one field set, the other the default", "    resources: {issue: {memory: 12Gi}}\n", secretsGap + knivesGap},
-		{"the issue pod's disk bound set, its request the default", "    resources: {issue: {ephemeral_storage: 40Gi}}\n", secretsGap + knivesGap},
-		{"the issue pod set", issueSet, secretsGap + knivesGap},
-		{"the controller at its default under controller: daemon", issueSet + "controller: daemon\n", secretsGap + knivesGap},
-		{"a broker configured, whose login is boot's", issueSet + "    agent_secrets: {url: https://secrets.internal.example, token_file: /var/run/legion/agent-secrets-token/token}\n", knivesGap},
-		{"secrets decided", "capabilities:\n  decided:\n    secrets: \"dispatch://LEGION-205 enrolls pods later\"\n", knivesGap},
-		{"a knives registry named", knivesRegistryBlock, secretsGap},
-		{"the knives push gate decided", "capabilities:\n  decided:\n    knives-push-gate: \"no role pushes to a fork\"\n", secretsGap},
-		{"a broker configured and a knives registry named", issueSet + "    agent_secrets: {url: https://secrets.internal.example, token_file: /var/run/legion/agent-secrets-token/token}\n" + knivesRegistryBlock, ""},
+		{"no resources block, no broker: both pods at the defaults", "", secretsGap},
+		{"the issue pod with one field set, the other the default", "    resources: {issue: {memory: 12Gi}}\n", secretsGap},
+		{"the issue pod's disk bound set, its request the default", "    resources: {issue: {ephemeral_storage: 40Gi}}\n", secretsGap},
+		{"the issue pod set", issueSet, secretsGap},
+		{"the controller at its default under controller: daemon", issueSet + "controller: daemon\n", secretsGap},
+		{"a broker configured, whose login is boot's", issueSet + "    agent_secrets: {url: https://secrets.internal.example, token_file: /var/run/legion/agent-secrets-token/token}\n", ""},
+		{"secrets decided", "capabilities:\n  decided:\n    secrets: \"dispatch://LEGION-205 enrolls pods later\"\n", ""},
 		{"the issue pod requesting less memory than its limit", "    resources: {issue: {memory: 32Gi, memory_request: 8Gi}}\n",
-			secretsGap + knivesGap + "resources: Burstable (a request below the limit): the issue pod; every other pod is Guaranteed\n"},
+			secretsGap + "resources: Burstable (a request below the limit): the issue pod; every other pod is Guaranteed\n"},
 		{"the controller requesting less cpu than its limit", "    resources: {controller: {cpu: 2, cpu_request: 500m}}\ncontroller: daemon\n",
-			secretsGap + knivesGap + "resources: Burstable (a request below the limit): the controller's pod; every other pod is Guaranteed\n"},
+			secretsGap + "resources: Burstable (a request below the limit): the controller's pod; every other pod is Guaranteed\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			config := kubernetesCheckConfig(t, tc.extra)
@@ -1374,19 +1359,6 @@ func TestStartCheckConfigReportsTheConfigurationsCapabilityGaps(t *testing.T) {
 				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 			}
 		})
-	}
-}
-
-// Under tmux a named knives registry closes nothing: a pane's push runs no leak guard and no pane
-// is told the rows, so the check prints the knives-push-gate gap in its tmux words whatever
-// leak_guard names, until the file decides it.
-func TestStartCheckConfigReportsTheKnivesGapUnderTmuxWhateverTheRows(t *testing.T) {
-	legionState(t)
-	config, _ := workflowConfig(t, 13370, knivesRegistryBlock)
-	var out, errb bytes.Buffer
-	code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
-	if want := demoCheckConfigOK + tmuxCapabilityGaps; code != 0 || out.String() != want || errb.Len() != 0 {
-		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
 }
 
@@ -1446,7 +1418,7 @@ func TestStartCheckConfigNamesTheResolvedPluginPair(t *testing.T) {
 			code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
 
 			secretsGap := "capability secrets is open: runtime.kubernetes.agent_secrets is not configured; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n"
-			want := demoCheckConfigOK + secretsGap + knivesGap + defaultCacheLine + tc.want
+			want := demoCheckConfigOK + secretsGap + defaultCacheLine + tc.want
 			if code != 0 || out.String() != want || errb.Len() != 0 {
 				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 			}
@@ -1476,7 +1448,7 @@ func TestStartCheckConfigNamesTheDerivedProbeBudget(t *testing.T) {
 		}
 		var out, errb bytes.Buffer
 		code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
-		if want := demoCheckConfigOK + secretsGap + knivesGap + budgetLine + defaultCacheLine + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
+		if want := demoCheckConfigOK + secretsGap + budgetLine + defaultCacheLine + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
 			t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 		}
 	})
@@ -1485,7 +1457,7 @@ func TestStartCheckConfigNamesTheDerivedProbeBudget(t *testing.T) {
 		config := kubernetesCheckConfig(t, "")
 		var out, errb bytes.Buffer
 		code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
-		if want := demoCheckConfigOK + secretsGap + knivesGap + defaultCacheLine + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
+		if want := demoCheckConfigOK + secretsGap + defaultCacheLine + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
 			t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 		}
 	})
@@ -1515,18 +1487,18 @@ func TestStartCheckConfigNamesTheRepositoryCache(t *testing.T) {
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
 	cache := "repository cache: a 50Gi volume per mapped repository, fetched from GitHub every 5 minutes, kept 24 hours after its repository leaves the mapping; its container reserves cpu 2, memory 4Gi under 8Gi, ephemeral storage 1Gi under 2Gi\n"
-	if want := demoCheckConfigOK + secretsGap + knivesGap + cache + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
+	if want := demoCheckConfigOK + secretsGap + cache + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
 }
 
 // A decision may name only a capability the daemon measures from the deployment: anything else is
-// refused as an unknown key naming the five, and a blank reason records nothing, so it is refused
+// refused as an unknown key naming the four, and a blank reason records nothing, so it is refused
 // too — each with exit 1 and no Config OK.
 func TestStartCheckConfigRefusesAnUnknownCapabilityDecision(t *testing.T) {
 	legionState(t)
 	for _, tc := range []struct{ name, extra, want string }{
-		{"a name that is no deployment capability", "capabilities: {decided: {nonsense: \"because\"}}\n", "legion start: unknown key capabilities.decided.nonsense: a decision may name secrets, model-fallback, resource-limits, pool-capacity or knives-push-gate\n"},
+		{"a name that is no deployment capability", "capabilities: {decided: {nonsense: \"because\"}}\n", "legion start: unknown key capabilities.decided.nonsense: a decision may name secrets, model-fallback, resource-limits or pool-capacity\n"},
 		{"a blank reason", "capabilities: {decided: {secrets: \"\"}}\n", "legion start: capabilities.decided.secrets must not be empty\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

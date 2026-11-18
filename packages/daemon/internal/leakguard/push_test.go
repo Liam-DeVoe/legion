@@ -13,10 +13,9 @@ import (
 )
 
 // reach points url at the bare repository bare in repo's configuration, as
-// url.<file URL of bare>.insteadOf. The guard reads what a push's destination, or a knives
-// entry's upstream, holds with git ls-remote of its URL, run in the repository
-// (Guard.advertised), so a test can name a repository on github.com and have the read reach a
-// bare of its own, never the network.
+// url.<file URL of bare>.insteadOf. The guard reads what a push's destination holds with git
+// ls-remote of its URL, run in the repository (Guard.advertised), so a test can name a repository
+// on github.com and have the read reach a bare of its own, never the network.
 func reach(t *testing.T, fixture fixturegit.Runner, repo, url, bare string) {
 	t.Helper()
 	fixture.Run(repo, "git", "config", "url.file://"+bare+".insteadOf", url)
@@ -230,6 +229,16 @@ func pushOf(t *testing.T, held, side, added map[string]string, edit func(t *test
 	return repo, base, head
 }
 
+// mainPush is the push of head to main, where the destination holds base, to remote at url.
+func mainPush(repo, base, head, remote, url string) PushRequest {
+	return PushRequest{
+		Dir:     repo,
+		Remote:  remote,
+		URL:     url,
+		Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: head, RemoteRef: "refs/heads/main", RemoteSHA: base}},
+	}
+}
+
 // What git answers is read from its standard output alone, and a warning git writes to its
 // standard error is no part of it. git writes a warning at once and its output in blocks, so a
 // warning can land in the middle of a line of the patch a commit's lines are read from, and read
@@ -254,7 +263,7 @@ exec "$git" "$@"
 `)
 	repo, base, head := pushOf(t, map[string]string{"notes.md": "one\n"}, nil, map[string]string{"notes.md": "one\nthe runner answers at " + theHost + "\n"}, nil)
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, pathWith(bin))
-	err := guard.Push(bound(t), knivesPush(repo, base, head, "origin", theURL))
+	err := guard.Push(bound(t), mainPush(repo, base, head, "origin", theURL))
 	want := []string{"notes.md: " + theClass}
 	if refused := refusal(t, err); !slices.Equal(refused.Lines, want) {
 		t.Errorf("the report is %q, want %q", refused.Lines, want)

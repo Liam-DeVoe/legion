@@ -250,12 +250,6 @@ type Config struct {
 	// records keep the name each was written under. The zero value, which answers as
 	// strings.EqualFold does, while the file configures none.
 	RepositoryRenames ghrepo.Renames
-	// LeakGuard is `leak_guard`: the knives registries the push guard of every role process the
-	// Kubernetes runtime launches reads (leakguard.KnivesRegistriesVar, which that runtime sets
-	// to leakguard.KnivesRegistriesValue of LeakGuard.KnivesRegistries). The tmux runtime tells a
-	// pane nothing of it, since a pane's push runs no leak guard. The zero value while the file
-	// configures none.
-	LeakGuard LeakGuard
 	// Hooks is `hooks`: the deployment's own prompts, each put in front of named roles every
 	// Every moves back of the moves it selects. DefaultHooks() while the file names no key, and
 	// empty where it writes `hooks: []`, which runs none. A `prompt_file` is resolved against
@@ -425,7 +419,6 @@ type fileConfig struct {
 	RoleConfigFiles          map[claim.Role][]string
 	WorkerStallBackstops     map[claim.Role]time.Duration
 	RepositoryRenames        []ghrepo.Rename
-	LeakGuard                LeakGuard
 	// Hooks is `hooks`, a pointer so the settle tells a file that names no key, which runs
 	// DefaultHooks(), from one that writes the empty list, which runs no hook.
 	Hooks *[]Hook
@@ -1102,10 +1095,6 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		return Config{}, err
 	}
 	if err := checkCommitIssueTrailerRenames(&cfg); err != nil {
-		return Config{}, err
-	}
-	cfg.LeakGuard = file.LeakGuard
-	if err := checkKnivesRegistryRenames(&cfg); err != nil {
 		return Config{}, err
 	}
 	cfg.Hooks = settleHooks(file.Hooks, configDir)

@@ -195,14 +195,6 @@ type Options struct {
 	// running controller's address record is compared with (environmentAddresses), so a daemon
 	// restarted with another list relaunches it, resuming its session.
 	ControllerSlackChannels []string
-	// KnivesRegistries is legion.yaml's leak_guard.knives_registries as the push guard reads it
-	// (leakguard.KnivesRegistriesValue of config.LeakGuard's rows): every role process this
-	// runtime launches, an issue pod's and the controller's, is told it as
-	// leakguard.KnivesRegistriesVar (mainEnvironment), and "" tells none. It travels in each
-	// generation's start command, so a changed list reaches a role at its next launch and replaces
-	// no pod; the files the rows name are read at every push to a repository GitHub reports public,
-	// or to one the leak guard cannot name, such as a local path.
-	KnivesRegistries string
 	// Pod is the operator's pod configuration, added to every worker pod and to the probe pod.
 	Pod Pod
 	// RoleConfigFiles is the operator's `role_config_files`: absolute paths of Oh My Pi settings

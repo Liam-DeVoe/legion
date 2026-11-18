@@ -117,21 +117,22 @@ func TestTheReadOfWhatTheDestinationHoldsFetchesNothing(t *testing.T) {
 	}
 }
 
-// A failure that names a URL carries no credential. The URL git hands a pre-push hook, and the
-// upstream a knives registry entry names, can hold a user and a token
-// (https://user:token@host/...), and a read of either that fails names the URL and quotes git,
-// which names it too: both are written without the user and the token. The upstream is read for
-// a push the knives pass would refuse and for one the private-name rules would. A push made to a
-// URL rather than to a remote, `git push https://user:token@host/...`, hands the hook that URL as
-// the remote's name too, which every failure of the push names (PushName). The stand-in git here
-// fails every call with a URL that holds a user, as a git that cannot reach the host does, and
-// runs the real git for every other call.
+// A read of what the destination holds that fails refuses the push as a setup failure, never a
+// push read as one whose destination holds nothing, and the failure names the remote and the URL
+// without its credential. The URL git hands a pre-push hook can hold a user and a token
+// (https://user:token@host/...), and the failure names the URL and quotes git, which names it
+// too: both are written without the user and the token. A push made to a URL rather than to a
+// remote, `git push https://user:token@host/...`, hands the hook that URL as the remote's name
+// too, which every failure of the push names (PushName). The pushed commit adds a line the rules
+// refuse, so a read that held the commit or read nothing would answer otherwise. The stand-in git
+// here fails every call with a URL that holds a user, as a git that cannot reach the host does,
+// and runs the real git for every other call.
 func TestAFailedReadNamesItsURLWithoutItsCredential(t *testing.T) {
 	// The userinfo is built apart from the scheme, so no line of this file is a URL that carries
 	// one, which the shared check would refuse at the push.
 	const user, token = "invented-user", "invented-token"
 	userinfo := user + ":" + token + "@"
-	credentialed := func(url string) string { return strings.Replace(url, "https://", "https://"+userinfo, 1) }
+	credentialed := strings.Replace(theURL, "https://", "https://"+userinfo, 1)
 	bin := t.TempDir()
 	writeProgram(t, bin, "git", `for arg; do
   case "$arg" in
@@ -140,60 +141,28 @@ func TestAFailedReadNamesItsURLWithoutItsCredential(t *testing.T) {
 done
 exec `+shQuote(fixturegit.CompiledGit(t))+` "$@"
 `)
-	unreachable := func(url string) string {
-		return " exited 128: fatal: unable to access '" + url + "/': Could not resolve host: github.com"
-	}
+	unreachable := " exited 128: fatal: unable to access '" + theURL + "/': Could not resolve host: github.com"
 	for _, tc := range []struct {
 		name string
-		// remote is the remote's name git hands the hook, "origin" where the case leaves it empty;
-		// url is the URL it hands it, and upstream the one the registry entry names. line is the
-		// line the pushed commit adds, one holding a knives term where the case leaves it empty.
-		remote, url, upstream, line string
-		want                        string
+		// remote is the remote's name git hands the hook.
+		remote string
+		want   string
 	}{
 		{
-			name:     "the destination",
-			url:      credentialed(knivesOrigin),
-			upstream: knivesUpstream,
-			want:     "LEAK CHECK SETUP ERROR: the push to origin: the destination's refs could not be read: git ls-remote " + knivesOrigin + unreachable(knivesOrigin),
+			name:   "a push to a remote",
+			remote: "origin",
+			want:   "LEAK CHECK SETUP ERROR: the push to origin: the destination's refs could not be read: git ls-remote " + theURL + unreachable,
 		},
 		{
-			name:     "the destination named by its URL",
-			remote:   credentialed(knivesOrigin),
-			url:      credentialed(knivesOrigin),
-			upstream: knivesUpstream,
-			want:     "LEAK CHECK SETUP ERROR: the push to " + knivesOrigin + ": the destination's refs could not be read: git ls-remote " + knivesOrigin + unreachable(knivesOrigin),
-		},
-		{
-			name:     "the registry entry's upstream",
-			url:      knivesOrigin,
-			upstream: credentialed(knivesUpstream),
-			want:     "LEAK CHECK SETUP ERROR: the push to origin: the refs of the registry entry's upstream could not be read: git ls-remote " + knivesUpstream + unreachable(knivesUpstream),
-		},
-		{
-			name:     "the registry entry's upstream, for a push the private-name rules would refuse",
-			url:      knivesOrigin,
-			upstream: credentialed(knivesUpstream),
-			line:     upstreamNamesAHost,
-			want:     "LEAK CHECK SETUP ERROR: the push to origin: the refs of the registry entry's upstream could not be read: git ls-remote " + knivesUpstream + unreachable(knivesUpstream),
+			name:   "a push to a URL",
+			remote: credentialed,
+			want:   "LEAK CHECK SETUP ERROR: the push to " + theURL + ": the destination's refs could not be read: git ls-remote " + theURL + unreachable,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			line := tc.line
-			if line == "" {
-				line = "the QUILLWORTHY build\n"
-			}
-			_, repo, base, head := knivesCommit(t, map[string]string{"notes.md": line})
-			registry := theKnivesRow
-			registry.file = strings.ReplaceAll(theKnivesRegistry, knivesUpstream, tc.upstream)
-			path, listed, _ := servingKnives(t, registry)
-			path = pathFirst(bin, path)
-			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, path, listed)
-			remote := tc.remote
-			if remote == "" {
-				remote = "origin"
-			}
-			err := guard.Push(bound(t), knivesPush(repo, base, head, remote, tc.url))
+			repo, base, head := pushOf(t, nil, nil, map[string]string{"notes.md": "the runner answers at " + theHost + "\n"}, nil)
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, pathWith(bin))
+			err := guard.Push(bound(t), mainPush(repo, base, head, tc.remote, credentialed))
 			setupFailure(t, err)
 			if err.Error() != tc.want {
 				t.Errorf("the failure is\n  %s\nwant\n  %s", err, tc.want)
@@ -383,6 +352,76 @@ func TestACommitARehearsalHoldsIsReadAtThePushToTheDestination(t *testing.T) {
 				if refused := refusal(t, err); !slices.Equal(refused.Lines, push.want) {
 					t.Errorf("%s: the report is %q, want %q", push.name, refused.Lines, push.want)
 				}
+			}
+		})
+	}
+}
+
+// What holds a commit for the rules is a branch or a tag of the destination, as the destination
+// reports them at the push, an annotated tag by the commit it peels to (Guard.advertised). No ref
+// of the repository's own holds one, whatever remote it is under: a ref written by hand under
+// origin's remote-tracking refs, and the one git writes for a push to origin made while origin
+// named a local bare repository and then pointed at the destination with `git remote set-url`,
+// say nothing of what the destination holds (Guard.Push). The commit here adds a line the rules
+// refuse, and the destination's main is at the commit before it.
+func TestOnlyWhatTheDestinationAdvertisesHoldsACommit(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// hold makes a ref of the repository's, or of the destination's, reach head.
+		hold func(t *testing.T, run func(dir string, argv ...string) string, repo, head string)
+		// tracked is the remote-tracking ref hold writes at head, "" where it writes none.
+		tracked string
+		// want is the report, and nil where the push passes.
+		want []string
+	}{
+		{
+			name: "a ref written by hand under origin's remote-tracking refs",
+			hold: func(_ *testing.T, run func(string, ...string) string, repo, head string) {
+				run(repo, "git", "remote", "add", "origin", theURL)
+				run(repo, "git", "update-ref", "refs/remotes/origin/x", head)
+			},
+			tracked: "refs/remotes/origin/x",
+			want:    []string{"notes.md: " + theClass},
+		},
+		{
+			name: "origin made at a local bare, pushed to, and pointed at the destination",
+			hold: func(t *testing.T, run func(string, ...string) string, repo, _ string) {
+				rehearsal := filepath.Join(t.TempDir(), "rehearsal.git")
+				run(repo, fixturegit.InitBare(rehearsal, "main")...)
+				run(repo, "git", "remote", "add", "origin", rehearsal)
+				run(repo, "git", "push", "--quiet", "origin", "HEAD:refs/heads/main")
+				run(repo, "git", "remote", "set-url", "origin", theURL)
+			},
+			tracked: "refs/remotes/origin/main",
+			want:    []string{"notes.md: " + theClass},
+		},
+		{
+			name: "an annotated tag of the destination's",
+			hold: func(_ *testing.T, run func(string, ...string) string, repo, head string) {
+				run(repo, "git", "tag", "--annotate", "--message", "a release", "v1", head)
+				run(repo, "git", "push", "--quiet", theURL, "refs/tags/v1")
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, base, head := pushOf(t, nil, nil, map[string]string{"notes.md": "the runner answers at " + theHost + "\n"}, nil)
+			fixture := fixturegit.Isolated(t, t.TempDir())
+			tc.hold(t, fixture.Run, repo, head)
+			if tc.tracked != "" {
+				if at := fixture.Run(repo, "git", "rev-parse", tc.tracked); at != head {
+					t.Fatalf("%s is at %s, want the commit %s: the case would prove nothing", tc.tracked, at, head)
+				}
+			}
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+			err := guard.Push(bound(t), mainPush(repo, base, head, "origin", theURL))
+			if tc.want == nil {
+				if err != nil {
+					t.Fatalf("the push of a commit the destination holds: %v", err)
+				}
+				return
+			}
+			if refused := refusal(t, err); !slices.Equal(refused.Lines, tc.want) {
+				t.Errorf("the report is %q, want %q", refused.Lines, tc.want)
 			}
 		})
 	}

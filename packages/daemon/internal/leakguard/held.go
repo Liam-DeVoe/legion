@@ -19,12 +19,13 @@ import (
 // held counts for a ref the destination has as much as for a new one: without it, a forward
 // merge (the default branch merged onto an older tip of the branch) would read every commit of
 // the default branch since that tip, not only the merge and the branch's own commits. One
-// rev-list answers (Guard.revList), fed the local side, then ^<sha> for the remote side where the
-// repository has it and for each of held:
+// rev-list answers, fed on its standard input the local side, then ^<sha> for the remote side
+// where the repository has it and for each of held:
 //
 //	git rev-list --reverse --stdin
 //
-// which is `git rev-list --reverse <local> --not [<remote>] <held...>`.
+// which is `git rev-list --reverse <local> --not [<remote>] <held...>` with the shas off the
+// command line, since a repository can advertise thousands of refs. A git that fails is an error.
 func (g *Guard) commits(ctx context.Context, dir string, held []string, excluded string, update Update) ([]string, error) {
 	has := slices.Contains(held, update.RemoteSHA)
 	if !has {
@@ -33,32 +34,16 @@ func (g *Guard) commits(ctx context.Context, dir string, held []string, excluded
 			return nil, err
 		}
 	}
-	remote := ""
-	if has {
-		remote = "^" + update.RemoteSHA + "\n"
-	}
-	return g.revList(ctx, dir, []string{"--reverse"}, []string{update.LocalSHA}, remote, excluded)
-}
-
-// revList are the commits one of tips reaches that no commit of excluded reaches, as one rev-list
-// lists them, fed on its standard input the tips, a line each, and then excluded, each of which
-// is lines ^<sha> (notLines):
-//
-//	git rev-list [<args>...] --stdin
-//
-// which is `git rev-list [<args>...] <tips...> --not <shas...>` with the shas off the command
-// line, since a repository can advertise thousands of refs (Guard.commits, Guard.reachedFrom). A
-// git that fails is an error.
-func (g *Guard) revList(ctx context.Context, dir string, args, tips []string, excluded ...string) ([]string, error) {
 	var fed strings.Builder
-	for _, tip := range tips {
-		fed.WriteString(tip)
+	fed.WriteString(update.LocalSHA)
+	fed.WriteString("\n")
+	if has {
+		fed.WriteString("^")
+		fed.WriteString(update.RemoteSHA)
 		fed.WriteString("\n")
 	}
-	for _, lines := range excluded {
-		fed.WriteString(lines)
-	}
-	out, err := g.gitFed(ctx, dir, fed.String(), append(append([]string{"rev-list"}, args...), "--stdin")...)
+	fed.WriteString(excluded)
+	out, err := g.gitFed(ctx, dir, fed.String(), "rev-list", "--reverse", "--stdin")
 	if err != nil {
 		return nil, err
 	}
@@ -66,7 +51,7 @@ func (g *Guard) revList(ctx context.Context, dir string, args, tips []string, ex
 }
 
 // notLines are the lines ^<sha> of each of shas, which rev-list reads on its standard input as
-// `--not <shas...>` (Guard.revList).
+// `--not <shas...>` (Guard.commits).
 func notLines(shas []string) string {
 	var lines strings.Builder
 	for _, sha := range shas {
@@ -102,9 +87,9 @@ func (g *Guard) holds(ctx context.Context, dir, sha string) (bool, error) {
 var fetchesNothing = []string{"GIT_NO_LAZY_FETCH=1"}
 
 // advertised are the commits the repository at url holds at its branches and tags, of those the
-// repository at dir has: what a push to url, or a fork's push of url's own commits, need not
-// publish again (Guard.commits, Guard.upstreamHeld). The read is of url itself, never of a ref of
-// dir's own, which says nothing reliable of what url holds (Guard.Push says why):
+// repository at dir has: what a push to url need not publish again (Guard.commits). The read is
+// of url itself, never of a ref of dir's own, which says nothing reliable of what url holds
+// (Guard.Push says why):
 //
 //	git ls-remote --heads --tags -- <url>
 //
@@ -171,9 +156,9 @@ var userinfo = regexp.MustCompile(`://[^/?#\s'"]*@`)
 
 // withoutUserinfo is text with the user and password of each URL in it taken out, so that
 // https://user:token@host/path reads https://host/path. It is what a failure that names a URL, or
-// that quotes git's own account of one, prints: the URL git hands a pre-push hook, and an upstream
-// a registry names, can carry a token, and a failure is printed for whoever reads the log. A URL
-// in git's scp form (user@host:path) names a user and no password, and is left as it is.
+// that quotes git's own account of one, prints: the URL git hands a pre-push hook can carry a
+// token, and a failure is printed for whoever reads the log. A URL in git's scp form
+// (user@host:path) names a user and no password, and is left as it is.
 func withoutUserinfo(text string) string {
 	return userinfo.ReplaceAllLiteralString(text, "://")
 }
