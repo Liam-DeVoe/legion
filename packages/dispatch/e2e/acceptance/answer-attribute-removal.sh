@@ -22,6 +22,13 @@
 # the corpus holds (seed-decisions.sh's corpus_* lines), printing both. The third count may be
 # anything, zero included; the corpus's own is printed beside it.
 #
+# BASELINE_SHA, the commit of the release this branch lands after, is required and has no
+# default: only the caller knows which release that is. Once the base server has booted, and
+# before the seed writes a row, the commit it is stamped with (the `commit` of its /healthz, the
+# one it registers in server_processes) must be the commit BASELINE_SHA names in this checkout, or
+# the run fails naming both, so that a binary built from another commit never stands in for that
+# release.
+#
 # It then runs TestTheTablesThisChildsMigrationsTouch in packages/envoy, requires its
 # `--- PASS:` line, and prints the tables it names (`touched: <table>` each, or `touched: none`)
 # and the limit it prints, pgmigrate.CensusTableLimit as this branch holds it. For each table it
@@ -60,11 +67,14 @@ set +x
 usage() {
   cat >&2 <<'USAGE'
 Usage: DATABASE_URL=${LEGION_TEST_PG_DSN%/*}/infra_1150_answer_attribute_removal?sslmode=disable \
+         BASELINE_SHA=<the commit of the release this branch lands after> \
          [BASELINE_BINARY=$TMPDIR/base-dispatch] [PR_BODY_FILE=<file holding the body>] \
          [MEASURE_ONLY=1] bash e2e/acceptance/answer-attribute-removal.sh
        (run from packages/dispatch; DATABASE_URL names a database on this machine whose name
        begins infra_1150_, which this run drops and creates again; without PR_BODY_FILE the
-       body is read with gh; MEASURE_ONLY=1 prints the body's lines and reads no body)
+       body is read with gh; MEASURE_ONLY=1 prints the body's lines and reads no body.
+       BASELINE_SHA is required and has no default; BASELINE_BINARY must be the server built
+       from it and stamped with it)
 USAGE
 }
 
@@ -75,8 +85,8 @@ USAGE
 # shellcheck source-path=SCRIPTDIR source=seed-decisions.sh
 . "$(dirname "${BASH_SOURCE[0]}")/seed-decisions.sh"
 
-require_env DATABASE_URL
-require_commands date go grep jq psql sed tr
+require_env DATABASE_URL BASELINE_SHA
+require_commands curl date git go grep jq psql sed tr
 # Not readonly until baseline_start has booted: lib-baseline.sh's baseline_boot holds a local of
 # this name.
 # shellcheck disable=SC2031 # the run's own DATABASE_URL: only a server's subshell in
@@ -98,6 +108,12 @@ if [[ -z "${BASELINE_BINARY:-}" ]]; then
 fi
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly script_dir
+# The commit BASELINE_SHA names, in full: the one the base server booted below must be stamped with.
+base_sha="$(git -C "$script_dir" rev-parse --verify --quiet "${BASELINE_SHA}^{commit}")" || {
+  printf 'BASELINE_SHA %s names no commit of this checkout\n' "$BASELINE_SHA" >&2
+  exit 2
+}
+readonly base_sha
 readonly envoy_dir="$script_dir/../../../envoy"
 readonly test_name=TestTheTablesThisChildsMigrationsTouch
 # A time as `date -u +%FT%TZ` writes it.
@@ -122,6 +138,17 @@ DISPATCH_TOKEN=e2e-token
 baseline_start
 unset DISPATCH_TOKEN DATABASE_URL
 readonly database_url
+# The base server is the release BASELINE_SHA names, as the commit it is stamped with says, before
+# it writes a row.
+base_status="$(curl -sS -o "$work/body" -w '%{http_code}' "$baseline_url/healthz" 2>"$work/curl")" ||
+  base_status="curl failed: $(<"$work/curl")"
+[[ "$base_status" == 200 ]] || fail base "read the base release's /healthz" "HTTP $base_status: $(body)"
+base_commit="$(jq -r '.commit // ""' "$work/body")"
+readonly base_commit
+[[ "$base_commit" == "$base_sha" ]] ||
+  fail base "the base release is stamped with the commit BASELINE_SHA names" \
+    "it serves '$base_commit', and BASELINE_SHA $BASELINE_SHA is $base_sha"
+pass base "the base release serves $base_commit, the commit BASELINE_SHA names"
 seed_decisions
 # Nothing writes while the statements read.
 baseline_stop_server

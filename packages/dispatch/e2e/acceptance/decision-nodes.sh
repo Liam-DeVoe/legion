@@ -14,6 +14,12 @@
 # holds a decisions.md, with the ask node each section names or holds, the author of the version
 # each section last changed in, and stops the server.
 #
+# BASELINE_SHA, the commit of the release this branch lands after, is required and has no
+# default: only the caller knows which release that is. Once the base server has booted, the
+# commit it is stamped with (the `commit` of its /healthz, the one it registers in
+# server_processes) must be the commit BASELINE_SHA names in this checkout, or the run fails
+# naming both, so that a binary built from another commit never stands in for that release.
+#
 # It boots this head, HEAD_BINARY (default $TMPDIR/bin/envoy-dispatch), with the hold setting, and
 # reads graph_edges over two asks rows the base wrote: the old anchored_to, owned_by and followed_by
 # arms answer them and the tuple arm does not (the rows are unmarked and their nodes state no such
@@ -60,10 +66,12 @@ set +x
 usage() {
   cat >&2 <<'USAGE'
 Usage: DATABASE_URL=${LEGION_TEST_PG_DSN%/*}/infra_1150_decision_nodes?sslmode=disable \
+         BASELINE_SHA=<the commit of the release this branch lands after> \
          [BASELINE_BINARY=$TMPDIR/base-dispatch] [HEAD_BINARY=$TMPDIR/bin/envoy-dispatch] \
          bash e2e/acceptance/decision-nodes.sh
        (run from packages/dispatch; DATABASE_URL names a database on this machine whose name
-       begins infra_1150_, which this run drops and creates again)
+       begins infra_1150_, which this run drops and creates again. BASELINE_SHA is required and
+       has no default; BASELINE_BINARY must be the server built from it and stamped with it)
 USAGE
 }
 
@@ -74,8 +82,8 @@ USAGE
 # shellcheck source-path=SCRIPTDIR source=seed-decisions.sh
 . "$(dirname "${BASH_SOURCE[0]}")/seed-decisions.sh"
 
-require_env DATABASE_URL TMPDIR
-require_commands cmp curl date diff jq psql sed sort tr
+require_env DATABASE_URL TMPDIR BASELINE_SHA
+require_commands cmp curl date diff git jq psql sed sort tr
 # shellcheck disable=SC2031 # the run's own DATABASE_URL: only a server's subshell sets another
 database_url="$DATABASE_URL"
 if [[ -z "${BASELINE_BINARY:-}" ]]; then
@@ -89,6 +97,12 @@ head_binary="${HEAD_BINARY:-$TMPDIR/bin/envoy-dispatch}"
   exit 2
 }
 readonly head_binary
+# The commit BASELINE_SHA names, in full: the one the base server booted below must be stamped with.
+base_sha="$(git -C "$(dirname -- "${BASH_SOURCE[0]}")" rev-parse --verify --quiet "${BASELINE_SHA}^{commit}")" || {
+  printf 'BASELINE_SHA %s names no commit of this checkout\n' "$BASELINE_SHA" >&2
+  exit 2
+}
+readonly base_sha
 readonly project=SEED nodes_project=NODES
 # The kinds of this child the census holds to their projections.
 readonly -a kinds=(shaped from_ask decided_by followed_by reading_parent ask_parent ask_anchor ask_answer)
@@ -237,13 +251,19 @@ DISPATCH_TOKEN=e2e-token
 BASELINE_EXTRA_ENV=$'DISPATCH_TEST_HOOKS=1\nDISPATCH_TEST_HOLD_DECISIONS_STEP=1'
 baseline_start
 unset DISPATCH_TOKEN DATABASE_URL BASELINE_EXTRA_ENV
+printf 'Authorization: Bearer %s\n' "$baseline_token" >"$work/auth"
+server="$baseline_url"
+# The base server is the release BASELINE_SHA names, as the commit it is stamped with says, before
+# it writes a row.
+commit_of capture
+readonly base_commit="$value"
+[[ "$base_commit" == "$base_sha" ]] ||
+  fail capture "the base release is stamped with the commit BASELINE_SHA names" \
+    "it serves '$base_commit', and BASELINE_SHA $BASELINE_SHA is $base_sha"
+pass capture "the base release serves $base_commit, the commit BASELINE_SHA names"
 # database_url stays writable: lib-baseline.sh's baseline_boot, which boots this head, holds a
 # local of that name.
 seed_decisions
-printf 'Authorization: Bearer %s\n' "$baseline_token" >"$work/auth"
-server="$baseline_url"
-commit_of capture
-readonly base_commit="$value"
 
 readonly issue_a="${seed_ids[issue_a]}" issue_b="${seed_ids[issue_b]}" issue_c="${seed_ids[issue_c]}"
 readonly spec_a="${seed_ids[spec_a]}" spec_b="${seed_ids[spec_b]}"

@@ -11,6 +11,12 @@
 # boots), and has seed-decisions.sh write the corpus through that server's own API. Through the
 # same server it closes issue D, so one issue the restore owes is closed.
 #
+# BASELINE_SHA, the commit of the release this branch lands after, is required and has no
+# default: only the caller knows which release that is. Once the base server has booted, the
+# commit it is stamped with (the `commit` of its /healthz, the one it registers in
+# server_processes) must be the commit BASELINE_SHA names in this checkout, or the run fails
+# naming both, so that a binary built from another commit never stands in for that release.
+#
 # Before this head boots it captures, through the base server: each restored ask's id, question,
 # options, answer and answerer (GET /api/v1/asks/{id}); the spec blocks the base's Decisions read
 # links each ask's section to (`links[].to`); every version of the spec and the decisions document
@@ -58,10 +64,12 @@ set +x
 usage() {
   cat >&2 <<'USAGE'
 Usage: DATABASE_URL=${LEGION_TEST_PG_DSN%/*}/infra_1150_answered_decisions?sslmode=disable \
+         BASELINE_SHA=<the commit of the release this branch lands after> \
          [BASELINE_BINARY=$TMPDIR/base-dispatch] [HEAD_BINARY=$TMPDIR/bin/envoy-dispatch] \
          bash e2e/acceptance/answered-decisions.sh
        (run from packages/dispatch; DATABASE_URL names a database on this machine whose name
-       begins infra_1150_, which this run drops and creates again)
+       begins infra_1150_, which this run drops and creates again. BASELINE_SHA is required and
+       has no default; BASELINE_BINARY must be the server built from it and stamped with it)
 USAGE
 }
 
@@ -72,8 +80,8 @@ USAGE
 # shellcheck source-path=SCRIPTDIR source=seed-decisions.sh
 . "$(dirname "${BASH_SOURCE[0]}")/seed-decisions.sh"
 
-require_env DATABASE_URL TMPDIR
-require_commands cmp curl jq psql sed sort
+require_env DATABASE_URL TMPDIR BASELINE_SHA
+require_commands cmp curl git jq psql sed sort
 # shellcheck disable=SC2031 # the run's own DATABASE_URL: only a server's subshell sets another
 database_url="$DATABASE_URL"
 if [[ -z "${BASELINE_BINARY:-}" ]]; then
@@ -87,6 +95,12 @@ head_binary="${HEAD_BINARY:-$TMPDIR/bin/envoy-dispatch}"
   exit 2
 }
 readonly head_binary
+# The commit BASELINE_SHA names, in full: the one the base server booted below must be stamped with.
+base_sha="$(git -C "$(dirname -- "${BASH_SOURCE[0]}")" rev-parse --verify --quiet "${BASELINE_SHA}^{commit}")" || {
+  printf 'BASELINE_SHA %s names no commit of this checkout\n' "$BASELINE_SHA" >&2
+  exit 2
+}
+readonly base_sha
 readonly project=SEED
 # The eight server-owned ask attributes R10 takes out of markdown.
 readonly -a server_attributes=(state answered_by answered_at selected answer invalid copied_from copied_from_document)
@@ -283,11 +297,21 @@ DISPATCH_TOKEN=e2e-token
 BASELINE_EXTRA_ENV=$'DISPATCH_TEST_HOOKS=1\nDISPATCH_TEST_HOLD_DECISIONS_STEP=1'
 baseline_start
 unset DISPATCH_TOKEN DATABASE_URL BASELINE_EXTRA_ENV
+printf 'Authorization: Bearer %s\n' "$baseline_token" >"$work/auth"
+server="$baseline_url"
+# The base server is the release BASELINE_SHA names, as the commit it is stamped with says, before
+# it writes a row.
+send agent GET /healthz
+want_status 200 capture "read the base release's /healthz"
+base_commit="$(jq -r '.commit // ""' "$work/body")"
+readonly base_commit
+[[ "$base_commit" == "$base_sha" ]] ||
+  fail capture "the base release is stamped with the commit BASELINE_SHA names" \
+    "it serves '$base_commit', and BASELINE_SHA $BASELINE_SHA is $base_sha"
+pass capture "the base release serves $base_commit, the commit BASELINE_SHA names"
 # database_url stays writable: lib-baseline.sh's baseline_boot, which boots this head, holds a
 # local of that name.
 seed_decisions
-printf 'Authorization: Bearer %s\n' "$baseline_token" >"$work/auth"
-server="$baseline_url"
 
 readonly issue_a="${seed_ids[issue_a]}" issue_b="${seed_ids[issue_b]}" issue_d="${seed_ids[issue_d]}"
 readonly spec_a="${seed_ids[spec_a]}" spec_b="${seed_ids[spec_b]}" spec_d="${seed_ids[spec_d]}"
@@ -312,12 +336,6 @@ declare -A collides=([ask_left_store]=1 [ask_doc_collide]=1)
 send agent PATCH "/api/v1/issues/$issue_d" "$(jq -cn --argjson a "$(seed_actor)" '{status: "done", actor: $a}')"
 want_status 200 capture "close issue $issue_d through the base release"
 expect capture "issue $issue_d is closed" '"done"' '.status'
-
-send agent GET /healthz
-want_status 200 capture "read the base release's /healthz"
-base_commit="$(jq -r '.commit // ""' "$work/body")"
-readonly base_commit
-printf 'base release commit: %s\n' "${base_commit:-<none>}"
 
 # Each restored ask, and q-kept, as the base release's ask read answers them.
 for key in "${restored[@]}" ask_kept; do
@@ -352,7 +370,7 @@ done
   fail capture "the section restating ask_left_store links spec blocks" "the base read links none"
 
 # Every version of the spec and the decisions document of each issue the restore owes.
-versions=0
+captured_versions=0
 for document in "$spec_a" "$decisions_a" "$spec_b" "$decisions_b" "$spec_d"; do
   send agent GET "/api/v1/artifacts/$document"
   want_status 200 capture "read document $document"
@@ -360,10 +378,10 @@ for document in "$spec_a" "$decisions_a" "$spec_b" "$decisions_b" "$spec_d"; do
     send agent GET "/api/v1/artifacts/$document/versions/$number"
     want_status 200 capture "read version $number of $document"
     jq -j '.markdown' "$work/body" >"$work/capture/version.$document.$number.md"
-    versions=$((versions + 1))
+    captured_versions=$((captured_versions + 1))
   done
 done
-pass capture "captured $versions versions of the five documents"
+pass capture "captured $captured_versions versions of the five documents"
 
 # What the old addresses of the colliding blocks answer: the second shape's block in the
 # decisions document, and the callout of the spec that holds the main shape's old id.
@@ -563,7 +581,7 @@ for captured in "$work"/capture/version.*.md; do
   cmp -s "$captured" "$work/version.md" ||
     fail history "version $number of $document answers the bytes captured before the upgrade" "it differs"
 done
-pass history "every one of the $versions captured versions answers the bytes captured before the upgrade"
+pass history "every one of the $captured_versions captured versions answers the bytes captured before the upgrade"
 
 # The two documents of the second shape move together.
 for key in ask_doc_plain ask_doc_collide; do
