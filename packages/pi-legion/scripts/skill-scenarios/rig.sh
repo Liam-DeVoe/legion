@@ -1831,21 +1831,27 @@ run_tester_proof() {
 #   aggregate     whether the head carries, beside the failing lane and in the same run, the
 #                 aggregate check `ci` the base requires, red over the lane and settled with it:
 #                 `i` and `j`
+#   spent         whether the head's one re-run is already spent: the head's runs carry a second
+#                 attempt of the e2e run somebody already pressed, and the commit endpoint carries
+#                 the superseded e2e failure and its passing re-run: `e`
+#   by_hand       whether the commit endpoint carries, beside the counted failure, a by-hand
+#                 `workflow_dispatch` run's failure of the same check name, which no counted set
+#                 and none of the head's `pull_request` runs hold: `k`
 red_world_table() {
   printf '%s\n' '
     {
-      a: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:false, aggregate:false},
-      b: {after:"red",   role:"tester",   rerun:true,  round:"fails-naming-check", disposal:false, report:false, decline_fails:false, aggregate:false},
-      c: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:false, report:false, decline_fails:false, aggregate:false},
-      d: {after:"red",   role:"tester",   rerun:false, round:"fails",              disposal:false, report:false, decline_fails:false, aggregate:false},
-      e: {after:"red",   role:"tester",   rerun:false, round:"fails-spent",        disposal:false, report:false, decline_fails:false, aggregate:false},
-      f: {after:"red",   role:"tester",   rerun:false, round:"fails",              disposal:false, report:false, decline_fails:false, aggregate:false},
-      g: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:false, aggregate:false},
-      h: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:false, report:false, decline_fails:false, aggregate:false},
-      i: {after:"green", role:"reviewer", rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:false, aggregate:true},
-      j: {after:"red",   role:"reviewer", rerun:true,  round:"fails-naming-check", disposal:false, report:false, decline_fails:false, aggregate:true},
-      k: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:true,  aggregate:false},
-      l: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:true,  decline_fails:false, aggregate:false}
+      a: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false},
+      b: {after:"red",   role:"tester",   rerun:true,  round:"fails-naming-check", disposal:false, report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false},
+      c: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:false, report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false},
+      d: {after:"red",   role:"tester",   rerun:false, round:"fails",              disposal:false, report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false},
+      e: {after:"red",   role:"tester",   rerun:false, round:"fails-spent",        disposal:false, report:false, decline_fails:false, aggregate:false, spent:true,  by_hand:false},
+      f: {after:"red",   role:"tester",   rerun:false, round:"fails",              disposal:false, report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false},
+      g: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false},
+      h: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:false, report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false},
+      i: {after:"green", role:"reviewer", rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:false, aggregate:true,  spent:false, by_hand:false},
+      j: {after:"red",   role:"reviewer", rerun:true,  round:"fails-naming-check", disposal:false, report:false, decline_fails:false, aggregate:true,  spent:false, by_hand:false},
+      k: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:true,  aggregate:false, spent:false, by_hand:true},
+      l: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:true,  decline_fails:false, aggregate:false, spent:false, by_hand:false}
     }'
 }
 red_world() {
@@ -1993,7 +1999,7 @@ red_fixture() {
   world_log=$log
   [ -z "$log_err" ] || world_log=''
   jq --arg head "$head" --argjson pr "$pr" --arg repo "$worker_repo" --arg branch "$branch" \
-    --arg world "$world" --arg check "$check" --arg job "$job" --arg step "$step" \
+    --arg check "$check" --arg job "$job" --arg step "$step" \
     --arg summary "$summary" --arg log "$log" --arg log_err "$log_err" --argjson facts "$facts" \
     --arg lanes "$lanes" --arg required "$required" \
     --argjson run_id "$run_id" --argjson job_id "$job_id" --argjson red_id "$red_id" '
@@ -2052,11 +2058,12 @@ red_fixture() {
     | "2026-03-04T10:00:00Z" as $t0
     | "2026-03-04T10:15:00Z" as $t_hand
     | "2026-03-04T10:31:08Z" as $t1
-    # The superseded runs the commit endpoint of world `e` carries: an earlier run of another
-    # check that failed, and the run that replaced it, both of them at this head, as `filter=all`
-    # lists them. They decide nothing — the page lets no role judge the spend on that endpoint —
-    # and the spend itself is in the runs of the head ($spent, below).
-    | (if $world == "e" then
+    # The superseded runs the commit endpoint carries in a world where the one re-run of the head
+    # is spent (`spent`, world `e`): an earlier run of another check that failed, and the run that
+    # replaced it, both of them at this head, as `filter=all` lists them. They decide nothing — the
+    # page lets no role judge the spend on that endpoint — and the spend itself is in the runs of
+    # the head ($spent, below).
+    | (if $facts.spent then
          [entry($red_id - 4; "e2e"; "failure";
                 {title:"e2e", summary:"The e2e lane ended with no result."}; $t0),
           entry($red_id - 3; "e2e"; "success";
@@ -2066,8 +2073,8 @@ red_fixture() {
     # base requires, red over the failing lane, in the same run as that lane and in the words of
     # world `g` ($lanes). It is the shape of the base of cybermonklabs/legion itself, which
     # requires the aggregate `ci-ok` over its test lanes, so the red the reviewer meets there is a
-    # red the base requires. Its ids come after the id of the by-hand run of world `k`, so no two
-    # checks of one head share an id.
+    # red the base requires. Its ids come after the id of the by-hand run (`by_hand`, world `k`),
+    # so no two checks of one head share an id.
     | (if $facts.aggregate
        then [entry($red_id + 3; $required; "failure"; {title:$required, summary:$lanes}; $t0)]
        else [] end) as $aggregates
@@ -2090,12 +2097,12 @@ red_fixture() {
        + ($aggregates | map(attempt(.id + 1; .name; .output.summary)))) as $settled_checks
     | ($settled_checks | group_by(.name) | map(max_by(.id))) as $latest
     | (($red_checks | group_by(.name) | map(max_by(.id)))) as $shown
-    # The run at that head the pull request counts no check of: the by-hand `workflow_dispatch`
-    # run of world `k`, whose own failure of the same check name the commit endpoint answers
-    # beside the counted one and the counted set never holds. It is the later run of that name
-    # there, so a role that reads the spend from the commit endpoint reads the one re-run of the
-    # head as already spent.
-    | (if $world == "k" then
+    # The run at that head the pull request counts no check of, in a world whose commit endpoint
+    # carries a by-hand run (`by_hand`, world `k`): the by-hand `workflow_dispatch` run, whose own
+    # failure of the same check name the commit endpoint answers beside the counted one and the
+    # counted set never holds. It is the later run of that name there, so a role that reads the
+    # spend from the commit endpoint reads the one re-run of the head as already spent.
+    | (if $facts.by_hand then
          [entry($red_id + 2; $check; "failure";
                 {title:$check,
                  summary:("A by-hand workflow_dispatch run of " + $check + " failed.")}; $t_hand)
@@ -2127,13 +2134,13 @@ red_fixture() {
        jobs_url:($api + "/actions/runs/" + ($run_id|tostring) + "/jobs"),
        created_at:$t0, updated_at:$t0,
        pull_requests:[{number:$pr, head:{sha:$head, ref:$branch}}]} as $run
-    # The spend as the page reads it, in world `e` alone: a run of this head whose `run_attempt`
-    # is 2, the re-run of the e2e lane somebody already pressed. The rollup of GitHub carries the
-    # latest run of each check name, so a superseded failure cannot appear in the counted set at
-    # all, which is why the page judges the spend on the `pull_request` runs of the head. In every
-    # other world this read answers the run of the red alone, whose attempt is 1, so no other head
-    # reads as spent.
-    | (if $world == "e" then
+    # The spend as the page reads it, in a world where the one re-run of the head is spent
+    # (`spent`, world `e`) alone: a run of this head whose `run_attempt` is 2, the re-run of the e2e
+    # lane somebody already pressed. The rollup of GitHub carries the latest run of each check
+    # name, so a superseded failure cannot appear in the counted set at all, which is why the page
+    # judges the spend on the `pull_request` runs of the head. In every other world this read
+    # answers the run of the red alone, whose attempt is 1, so no other head reads as spent.
+    | (if $facts.spent then
          [$run + {id:($run_id - 1), name:"e2e", run_attempt:2, conclusion:"success",
                   html_url:("https://github.com/" + $repo + "/actions/runs/"
                             + (($run_id - 1)|tostring)),
@@ -2158,10 +2165,11 @@ red_fixture() {
        {match:("^gh api .*actions/runs/" + ($run_id|tostring) + "/jobs"),
         stdout:{total_count:($jobs|length), jobs:$jobs}},
        # The spend as the page reads it on each earlier attempt of a run whose `run_attempt` is
-       # above 1, in world `e` alone: attempt 1 of the e2e run ($spent) is the superseded e2e
-       # failure the commit endpoint carries ($earlier), so the spend still reads as spent. No
-       # other world has a run with an earlier attempt, so no other world answers one.
-       (if $world == "e" then
+       # above 1, in a world where the one re-run of the head is spent (`spent`, world `e`) alone:
+       # attempt 1 of the e2e run ($spent) is the superseded e2e failure the commit endpoint
+       # carries ($earlier), so the spend still reads as spent. No other world has a run with an
+       # earlier attempt, so no other world answers one.
+       (if $facts.spent then
           {match:("^gh api .*actions/runs/" + (($run_id - 1)|tostring) + "/attempts/1/jobs"),
            stdout:{total_count:1,
                    jobs:[{id:($job_id - 1), run_id:($run_id - 1), run_attempt:1, name:"e2e",

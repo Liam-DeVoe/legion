@@ -2623,6 +2623,8 @@ describe("red_fixture", () => {
       report: false,
       decline_fails: false,
       aggregate: false,
+      spent: false,
+      by_hand: false,
     });
   });
 
@@ -2635,7 +2637,13 @@ describe("red_fixture", () => {
     const reviewer = { role: "reviewer", phase: "reviewing", handoff: "review" };
     const reruns = { rerun: true, turns: 2 };
     const none = { rerun: false, turns: 1, disposal: false };
-    const plain = { report: false, decline_fails: false, aggregate: false };
+    const plain = {
+      report: false,
+      decline_fails: false,
+      aggregate: false,
+      spent: false,
+      by_hand: false,
+    };
     const facts: Record<RedWorld, object> = {
       a: { after: "green", ...tester, ...reruns, round: "goes-on", disposal: true, ...plain },
       b: {
@@ -2648,7 +2656,7 @@ describe("red_fixture", () => {
       },
       c: { after: "green", ...tester, ...reruns, round: "goes-on", disposal: false, ...plain },
       d: { after: "red", ...tester, ...none, round: "fails", ...plain },
-      e: { after: "red", ...tester, ...none, round: "fails-spent", ...plain },
+      e: { after: "red", ...tester, ...none, round: "fails-spent", ...plain, spent: true },
       f: { after: "red", ...tester, ...none, round: "fails", ...plain },
       g: { after: "green", ...tester, ...reruns, round: "goes-on", disposal: true, ...plain },
       h: { after: "green", ...tester, ...reruns, round: "goes-on", disposal: false, ...plain },
@@ -2679,6 +2687,8 @@ describe("red_fixture", () => {
         report: false,
         decline_fails: true,
         aggregate: false,
+        spent: false,
+        by_hand: true,
       },
       l: {
         after: "green",
@@ -2689,6 +2699,8 @@ describe("red_fixture", () => {
         report: true,
         decline_fails: false,
         aggregate: false,
+        spent: false,
+        by_hand: false,
       },
     };
     expect(
