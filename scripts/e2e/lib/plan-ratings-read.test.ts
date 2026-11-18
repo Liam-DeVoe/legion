@@ -171,7 +171,7 @@ describe("plan-ratings-read.sh", () => {
     expect(calls).toBe(`plans --project ${project}\n`);
     expect(stdout).toContain(whole[0]);
     expect(stdout).toContain(
-      `PASS: ${key}: plan default (1 tasks: planner implementer tester reviewer acceptance:owner), ratings 4/5 "The plan fit the work; the review sent it back once.", time 2h20m, failed steps 1`
+      `PASS: ${key}: ${plan}, ratings 4/5 "The plan fit the work; the review sent it back once.", time 2h20m, failed steps 1`
     );
     expect(code).toBe(0);
   });
