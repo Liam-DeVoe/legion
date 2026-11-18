@@ -424,7 +424,7 @@ const legionMergeWaitView = z.object({
 
 /** `api.GateView` — the design gate; `approvedVersion` is null until a human approves one, and
  * the gate is open exactly when it equals `currentVersion`. A spec step that stands open on an
- * ancestor's approval (contract 158) holds the version its root registered there, which no person
+ * ancestor's approval (contract 162) holds the version its root registered there, which no person
  * approved: the step's entry in `gatedSteps` reads `open_on_basis` and names that approval, so a
  * reader that names a person's approval reads `gatedSteps`, not this. */
 const legionGateView = z.object({
@@ -439,7 +439,7 @@ const legionGateView = z.object({
 const legionDesignStep = z.enum(GATED_STEPS);
 
 /** `api.GatedStepBasis` — the ancestor's approval a step stands open on, or the ancestor's open
- * approval request it waits on (contract 158): the ancestor `issue`, its document's `artifactId`
+ * approval request it waits on (contract 162): the ancestor `issue`, its document's `artifactId`
  * and the `version` a person approved or is asked to approve; for an approval, `approver`, who
  * gave it as Dispatch names an actor (`user:<login>`), and `approvedAt`, Dispatch's time of it
  * where Dispatch gave one; for a request, its `askId`. */
@@ -460,7 +460,7 @@ const legionGatedStepBasis = z.object({
  * tree's work), `waiting` (registered, and no person has reviewed its current version),
  * `approved` (a person approved its current version, which lets the work past the step) or
  * `changes_requested` (its reviewer asked for changes at its current version, with
- * `changesReason` the reason they gave; absent under every other status). Contract 158 adds two
+ * `changesReason` the reason they gave; absent under every other status). Contract 162 adds two
  * words and `basis` beside them: `open_on_basis`, a step its architect registered on a person's
  * approval of an ancestor's document, which lets the work past the step as an approval does and is
  * no person's approval of the root, its `approvedVersion` being the root's version registered; and
@@ -729,12 +729,12 @@ const legionIssue = z.object({
    * the body the route serves a caller before 51 (`api.stateFor`, `withoutTrees`). */
   tree: issueKey.optional(),
   /** Whether the tree this root roots runs under the workflow, as the daemon's own rule answers it
-   * (`record.TreeRuns`, contract 158): its lifecycle stands open under the workflow, the root does
+   * (`record.TreeRuns`, contract 162): its lifecycle stands open under the workflow, the root does
    * not linger, and the root does not wait in the line for that tree to be opened. On every root
    * the daemon records and on no other issue, since no other field decides it in every case: a
    * root a re-admission left at `todo` waiting for a slot runs nothing whatever its architect's
    * claim reads, and a root a person answered runs while it waits in the line for its resume.
-   * Absent from every issue of the body the route serves a caller before 158
+   * Absent from every issue of the body the route serves a caller before 162
    * (`api.stateFor`, `withoutGateBasis`), which is why a reader takes it as optional. */
   treeRuns: z.boolean().optional(),
   /** The repository (`owner/name`) the issue targets and that repository's default branch, taken
@@ -1094,24 +1094,55 @@ const legionCacheView = z.object({
   retainedUntil: timestamp.optional(),
 });
 
-/** `api.RepositoriesView` — the project's repository mapping as the daemon serves it: the owners
- * its roles' credentials span, each repository it serves (as GitHub names it, `default` the
- * project's default in Dispatch, `cache` its repository cache under the Kubernetes runtime), each
- * mapped repository it leaves out with `reason`, a GitHub App not installed on it, each served
- * repository Dispatch's GitHub App is not known to be installed on (`withoutWebhookApp`, as
- * Dispatch maps it, with `reason`: not installed, the check failed, or Dispatch does not answer
- * the check; served all the same, contract 43), and the `caches` of repositories the mapping no
- * longer names. Every list sorted and never null (contracts 31, 32). */
+/** `api.AppInstallationsView` — each role App's installation on one repository (contract 152):
+ * the implement App a worker pushes and opens pull requests with, and the review App a reviewer
+ * approves with. */
+const legionAppInstallations = z.object({ implement: z.boolean(), review: z.boolean() });
+
+/** `api.RepositoriesView` — every repository the daemon works in, as it serves them (contract 152):
+ * the owner accounts of the repositories Dispatch maps to the project, each repository it serves (as GitHub names it,
+ * `default` the project's default in Dispatch, `apps` each role App's installation on it, `cache`
+ * its repository cache under the Kubernetes runtime), each repository it leaves out with
+ * `reason`, a role App not installed on it or an installation it could not read, and `apps`,
+ * what GitHub answered of each App on it, each served repository Dispatch's GitHub App is not
+ * known to be installed on (`withoutWebhookApp`, with
+ * `reason`: not installed, the check failed, or Dispatch does not answer the check; served all
+ * the same, contract 43), and the `caches` of repositories the daemon no longer serves.
+ *
+ * The mapping decides the project's default repository and the repositories the daemon prepares
+ * before an issue names one, and no longer decides where the project may work: the App
+ * installation does, so `mapped` holds the repositories the project's own records name beside
+ * the mapped ones and no repository is refused for want of a mapping. Every list sorted and never
+ * null (contracts 31, 32).
+ *
+ * A served entry's `apps` is both Apps installed, since the daemon serves no repository either
+ * App is missing from, so the entries where the two differ are the refused ones. A refused
+ * entry carries `apps` wherever GitHub answered both Apps' reads of its `repo` (both true for one
+ * left out for its default-branch read alone), and none where a read of it failed or `repo` is
+ * no `<owner>/<name>`, which its `reason` then names.
+ *
+ * `apps` is optional on both and is written by every daemon of contract 152 and above wherever it
+ * holds the answer. It is read as absent rather than refused so that a plugin of this contract
+ * reading a daemon of an earlier one — the window a roll of the daemon and the worker image opens,
+ * since the two ship apart — loses that one answer and keeps the rest of the state, where a
+ * required key would refuse the whole body. */
 const legionRepositories = z.object({
   owners: z.array(nonEmptyString),
   mapped: z.array(
     z.object({
       repo: nonEmptyString,
       default: z.boolean(),
+      apps: legionAppInstallations.optional(),
       cache: legionCacheView.optional(),
     })
   ),
-  refused: z.array(z.object({ repo: nonEmptyString, reason: nonEmptyString })),
+  refused: z.array(
+    z.object({
+      repo: nonEmptyString,
+      reason: nonEmptyString,
+      apps: legionAppInstallations.optional(),
+    })
+  ),
   withoutWebhookApp: z.array(z.object({ repo: nonEmptyString, reason: nonEmptyString })),
   caches: z.array(legionCacheView),
 });
@@ -1440,10 +1471,17 @@ export const LegionControllerSecretResponse = z.object({
 });
 
 /** `api.ControllerCredentialResponse`, the answer of `POST /legion/v1/controller/github-credential`:
- * the review App's read-only token for every GitHub owner of the project, each rendered as the two
+ * the review App's read-only token for every GitHub owner that App is installed on, and for each
+ * owner a configured rename moved a repository away from, each rendered as the two
  * files gh reads (`ghconfig.Rendered`) and keyed by lowercased owner, the owner whose directory
- * `GH_CONFIG_DIR` names, and the soonest of the tokens' expiries. `legion controller start` writes
- * them under `<state_dir>/gh/<owner>` and refreshes them every minute. The plugin never reads it. */
+ * `GH_CONFIG_DIR` names, the soonest of the tokens' expiries, `renames`, the configured pairs the
+ * bundle routes a moved repository by, each `<owner>/<name>` as GitHub spells it, which a project
+ * configuring none answers without, and `installed`, the owner accounts the review App is
+ * installed on, lowercased and sorted, read with the bundle (contract 152).
+ * `legion controller start` writes the files under `<state_dir>/gh/<owner>`, refreshes them every
+ * minute, and tells its controller which owners its App is installed on from `installed`: `owners`
+ * cannot say it, since a bundle also holds a directory for an owner a configured rename moved a
+ * repository away from. The plugin never reads it. */
 export const LegionControllerCredentialResponse = z.object({
   owners: z.record(
     nonEmptyString,
@@ -1455,6 +1493,8 @@ export const LegionControllerCredentialResponse = z.object({
   default: nonEmptyString,
   app: z.enum(["implement", "review"]),
   expiresAt: timestamp,
+  renames: z.array(z.object({ from: nonEmptyString, to: nonEmptyString })).optional(),
+  installed: z.array(nonEmptyString),
 });
 
 /** Claim routes refuse with only a sentence; credential and workflow routes add a stable code.
@@ -1702,7 +1742,7 @@ export const LegionIssueStatusRequest = z.strictObject({
  * architect (`GATE_ROOT_ONLY`). `step` is the step the document is for; a deployment
  * that gates one step alone takes a request that leaves it out, and one that gates several
  * refuses it (`GATE_STEP_REQUIRED`). `basisArtifactId`, `basisVersion` and `reason` name a basis
- * (contract 158): the same step's document of an ancestor on the issue's Dispatch `child_of`
+ * (contract 162): the same step's document of an ancestor on the issue's Dispatch `child_of`
  * chain, the version of it a person approved or an open approval request asks a person to
  * approve, and the architect's reason, 1 to 1,000 characters with no decision block, which the
  * daemon posts on the issue. The three come together or not at all (`BASIS_INCOMPLETE`), and the
@@ -1730,7 +1770,7 @@ export const LegionWaveReleaseRequest = z.strictObject({
  * on its own issue, or an architect's on an issue it owns, from `accepting`. An architect may own
  * more issues than its own, so its request names `issue` (required for that grant); a phase
  * worker's grant names its own issue, so `issue` may be left out and, when given, must be the
- * grant's (`ISSUE_NOT_GRANTS`). Since contract 158 the daemon refuses it on an issue in
+ * grant's (`ISSUE_NOT_GRANTS`). Since contract 162 the daemon refuses it on an issue in
  * `awaiting_children` (`WAITING_ON_CHILDREN`, naming its open Dispatch children and the start it
  * holds), which stands in no phase a move back acts on (dispatch://INFRA-3320, R11). */
 export const LegionPhaseBackwardRequest = z.strictObject({
@@ -1764,7 +1804,7 @@ export const LegionEscalateRequest = z.strictObject({
  * it to `retro`; the daemon refuses it in every other phase (`SIGNOFF_OUTSIDE_ACCEPTING`). Since
  * contract 51 it is also refused while an issue beneath that one is still in the workflow
  * (`SIGNOFF_CHILD_IN_WORKFLOW`, naming them): children are accepted and merged before their
- * parent, whose own head proves their merged work (dispatch://INFRA-980). Since contract 158 it
+ * parent, whose own head proves their merged work (dispatch://INFRA-980). Since contract 162 it
  * is refused after that while a root whose design-gate step rests on the issue's approval is still
  * in the workflow (`SIGNOFF_RESTING_ROOT_IN_WORKFLOW`, naming each), and last while a Dispatch
  * child of the issue is open (`SIGNOFF_CHILD_OPEN`, naming each with its Dispatch status): the
