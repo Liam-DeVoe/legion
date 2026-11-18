@@ -90,23 +90,46 @@ type form struct {
 // kind but none must carry text — its descriptions say to the model, parseReply checks after,
 // and a reply parseReply refuses is asked for once again (answer).
 func finalSchema(mayAskNothing bool) json.RawMessage {
-	kinds := []Kind{Answered, NotAnswered, NeedsWork}
-	text := "What the asker reads. Never empty."
-	needs := "For not_answered, what you would need to answer, such as your working copy; for needs_work, the work the message asks for. Never empty for those two kinds; empty for answered."
+	var schema replySchema
+	schema.Type = "object"
+	schema.Properties.Kind.Type = "string"
+	schema.Properties.Kind.Enum = []Kind{Answered, NotAnswered, NeedsWork}
+	schema.Properties.Text.Type = "string"
+	schema.Properties.Text.Description = "What the asker reads. Never empty."
+	schema.Properties.Needs.Type = "string"
+	schema.Properties.Needs.Description = "For not_answered, what you would need to answer, such as your working copy; for needs_work, the work the message asks for. Never empty for those two kinds; empty for answered."
 	if mayAskNothing {
-		kinds = append(kinds, None)
-		text = "What the asker reads. Never empty, but for none, where it is empty."
-		needs = "For not_answered, what you would need to answer, such as your working copy; for needs_work, the work the message asks for. Never empty for those two kinds; empty for answered and for none."
+		schema.Properties.Kind.Enum = append(schema.Properties.Kind.Enum, None)
+		schema.Properties.Text.Description = "What the asker reads. Never empty, but for none, where it is empty."
+		schema.Properties.Needs.Description = "For not_answered, what you would need to answer, such as your working copy; for needs_work, the work the message asks for. Never empty for those two kinds; empty for answered and for none."
 	}
-	quoted := make([]string, len(kinds))
-	for i, kind := range kinds {
-		quoted[i] = `"` + string(kind) + `"`
-	}
-	return json.RawMessage(`{"type":"object","properties":` +
-		`{"kind":{"type":"string","enum":[` + strings.Join(quoted, ",") + `]},` +
-		`"text":{"type":"string","description":"` + text + `"},` +
-		`"needs":{"type":"string","description":"` + needs + `"}},` +
-		`"required":["kind","text","needs"],"additionalProperties":false}`)
+	schema.Required = []string{"kind", "text", "needs"}
+	encoded, _ := json.Marshal(schema)
+	return encoded
+}
+
+// replySchema is the shape of the reply form (finalSchema): kind, one of the request's kinds, and
+// text and needs, two strings, all three required and no other property. Its fields are structs
+// rather than maps so the keys keep the order the model has always been offered, and the schema
+// is one Go value marshalled once, so no text is joined into JSON by hand.
+type replySchema struct {
+	Type       string `json:"type"`
+	Properties struct {
+		Kind struct {
+			Type string `json:"type"`
+			Enum []Kind `json:"enum"`
+		} `json:"kind"`
+		Text  describedString `json:"text"`
+		Needs describedString `json:"needs"`
+	} `json:"properties"`
+	Required             []string `json:"required"`
+	AdditionalProperties bool     `json:"additionalProperties"`
+}
+
+// describedString is a string property of the reply form with the description the model reads.
+type describedString struct {
+	Type        string `json:"type"`
+	Description string `json:"description"`
 }
 
 // parseReply reads the reply agentloop checked against finalSchema: its kind one the request
