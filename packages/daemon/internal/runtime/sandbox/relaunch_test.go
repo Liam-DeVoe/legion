@@ -1954,6 +1954,10 @@ func (s *supervisedSandboxStore) PutClaim(_ context.Context, c supervise.Claim) 
 	return nil
 }
 
+func (s *supervisedSandboxStore) ReleaseHolds(ctx context.Context, c supervise.Claim, holds []supervise.Hold) ([]supervise.Hold, error) {
+	return s.Holds.ReleaseWith(ctx, s.PutClaim, c, holds)
+}
+
 func (*supervisedSandboxStore) PutDelivery(context.Context, claim.Token, supervise.Delivery) error {
 	return nil
 }
