@@ -12,6 +12,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -428,5 +430,138 @@ func TestAFirstReadingAndTheSeedNeverDeadlock(t *testing.T) {
 	restored, _ := r.currentOf(t, SlugDeployFrequency)
 	if !hasBlock(blocks, restored.DocBlock) || restored.DocBlock == definition.DocBlock || headings(text, "deploy-wait") != 1 {
 		t.Errorf("deploy-frequency's doc_block %s is no block of evals-md, or is the deleted one, or deploy-wait has no one section:\n%s", restored.DocBlock, text)
+	}
+}
+
+// TestFirstRegistrationsBesideAnEditOfEvalsMdNeitherDeadlockNorLoseASection: five first
+// registrations of one project, three by a reading and two by a register write, and a person's
+// edit of the project's evals-md, at once. A registration takes its eval's lock, queues behind the
+// project's other registry writes of the document (lockDocumentWrites), stores its rows and then
+// takes the document's locks in the docs package's order (the owner row, the writer slot, the
+// advisory lock), and the edit takes the owner row first, as the edit route does
+// (requireOpenOwnerStatus), then the rest in that same order. The first registration is paused
+// inside its write of the document, at the insert of the document's version, holding all of them;
+// the edit then waits on the owner row; and the four other registrations each wait on the
+// registry's queue, holding their eval's lock and no transaction id, so none of them holds back
+// the event horizon while it waits (requireQueuedWithNoTransactionID). Each writer runs on a
+// context marked as a route marks its request (store.WithTransactionTracking), so a second
+// connection of the pool asked for inside its transaction is refused, as the server refuses it.
+// Let on, every write lands: evals-md holds the edit's paragraph and one section of each eval,
+// which its doc_block names.
+func TestFirstRegistrationsBesideAnEditOfEvalsMdNeitherDeadlockNorLoseASection(t *testing.T) {
+	r := newRig(t)
+	reading := func(slug string) func(ctx context.Context) error {
+		return func(ctx context.Context) error {
+			written, err := r.registry.WriteReadings(store.WithTransactionTracking(ctx), Batch{Project: r.project, Slug: slug, Caller: alice, BuiltBy: testBuild,
+				Rows: []json.RawMessage{row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "a", "value": 3, "measured_at": at(5, 9, 0)})}})
+			if err == nil && !written.Registered {
+				err = fmt.Errorf("the first reading under %s registered no eval", slug)
+			}
+			return err
+		}
+	}
+	register := func(slug string) func(ctx context.Context) error {
+		return func(ctx context.Context) error {
+			_, err := r.registry.Register(store.WithTransactionTracking(ctx), Registration{Project: r.project, Slug: slug, Caller: alice, Name: Set("Registered " + slug)})
+			return err
+		}
+	}
+	r.write(t, "deploy-wait", alice, row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "a", "value": 1, "measured_at": at(4, 9, 0)}))
+	documentID := r.documentID(t, r.project)
+	const note = "Alice's note: every eval of this project is measured on the main branch."
+	edit := func(ctx context.Context) error {
+		ctx = store.WithTransactionTracking(ctx)
+		tx, err := r.database.Pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback(context.Background())
+		if _, err := tx.Exec(ctx, `select true from artifacts where id = $1 and issue_key is null for no key update`, documentID); err != nil {
+			return fmt.Errorf("lock the document's owner row: %w", err)
+		}
+		joined, ledger := r.documents.Join(ctx, tx)
+		defer ledger.Discard()
+		applied, err := r.documents.ApplyOps(joined, documentID, []model.EditOp{{Op: "insert", After: "end", Markdown: note}}, alice, nil)
+		if err != nil {
+			return err
+		}
+		if !applied.Changed {
+			return errors.New("the edit changed nothing")
+		}
+		if _, err := r.documents.SnapshotVersion(joined, documentID, alice); err != nil {
+			return err
+		}
+		return ledger.Commit(ctx)
+	}
+	queued := []struct {
+		slug  string
+		write func(ctx context.Context) error
+	}{
+		{"review-time", register("review-time")},
+		{"build-minutes", reading("build-minutes")},
+		{"merge-wait", register("merge-wait")},
+		{"flaky-reruns", reading("flaky-reruns")},
+	}
+	answers := make(chan error, len(queued))
+	holder := pauseInserts(t, r, "artifact_versions", "true")
+	firstErr, editErr := race(t, holder, reading("cache-hits"), edit, func() {
+		ctx, cancel := context.WithTimeout(t.Context(), lockOrderBound)
+		t.Cleanup(cancel)
+		for _, registration := range queued {
+			go func() { answers <- registration.write(ctx) }()
+		}
+		if waiting := storetest.WaitForLockWaiters(t, holder, 2+len(queued), lockOrderBound); waiting < 2+len(queued) {
+			t.Errorf("%d writers wait behind the paused registration, want the edit and the %d registrations", waiting, len(queued))
+		}
+		requireQueuedWithNoTransactionID(t, holder, r.project, len(queued))
+	})
+	requireNoDeadlock(t, "the paused registration", firstErr)
+	requireNoDeadlock(t, "the edit", editErr)
+	for range queued {
+		requireNoDeadlock(t, "a queued registration", <-answers)
+	}
+	if t.Failed() {
+		return
+	}
+	text, blocks := r.document(t)
+	if !strings.Contains(text, note) {
+		t.Errorf("evals-md lost the edit's paragraph:\n%s", text)
+	}
+	for _, slug := range []string{"deploy-wait", "cache-hits", "review-time", "build-minutes", "merge-wait", "flaky-reruns"} {
+		definition, _ := r.currentOf(t, slug)
+		if headings(text, slug) != 1 || !hasBlock(blocks, definition.DocBlock) {
+			t.Errorf("evals-md holds %d sections of %s, and its doc_block %q names a block of it: %t; want one, naming one",
+				headings(text, slug), slug, definition.DocBlock, hasBlock(blocks, definition.DocBlock))
+		}
+	}
+}
+
+// requireQueuedWithNoTransactionID fails the test unless want backends wait, not granted, on the
+// registry's lock of project's evals-md (lockDocumentWrites: hashtext('evals-md:' || project) as a
+// bigint, which pg_locks shows as requireQueuedOnTheEvalLock reads the eval's), each holding an
+// advisory lock, its eval's (lockEval), and no transaction id: a backend that has one holds the
+// lock on it, which pg_locks shows as a granted transactionid lock. It reads pg_locks through
+// holder's own connection, as storetest.WaitForLockWaiters does, and only the test database's.
+func requireQueuedWithNoTransactionID(t *testing.T, holder pgx.Tx, project string, want int) {
+	t.Helper()
+	var queued, withID, withNoEvalLock int
+	if err := holder.QueryRow(context.Background(), `
+		select count(*),
+			count(*) filter (where exists (
+				select 1 from pg_locks own where own.pid = waiter.pid and own.locktype = 'transactionid' and own.granted)),
+			count(*) filter (where not exists (
+				select 1 from pg_locks own where own.pid = waiter.pid and own.locktype = 'advisory' and own.granted))
+		from pg_locks waiter
+		where waiter.locktype = 'advisory' and not waiter.granted
+		  and waiter.database = (select oid from pg_database where datname = current_database())
+		  and waiter.classid = ((hashtext('evals-md:' || $1)::bigint >> 32) & 4294967295)::oid
+		  and waiter.objid = (hashtext('evals-md:' || $1)::bigint & 4294967295)::oid
+		  and waiter.objsubid = 1
+	`, project).Scan(&queued, &withID, &withNoEvalLock); err != nil {
+		t.Fatalf("read the waits on the registry's lock of %s's evals-md: %v", project, err)
+	}
+	if queued != want || withID != 0 || withNoEvalLock != 0 {
+		t.Errorf("%d writes wait on the registry's lock of %s's evals-md, %d of them holding a transaction id and %d no eval lock; want %d, none holding an id, each its eval's lock",
+			queued, project, withID, withNoEvalLock, want)
 	}
 }

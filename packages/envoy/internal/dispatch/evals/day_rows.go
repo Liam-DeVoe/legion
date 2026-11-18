@@ -187,33 +187,36 @@ func upsertDays(ctx context.Context, tx pgx.Tx, rows []DayRow, builtBy string) e
 		on conflict (project_key, eval_id, writer, series, repo, day) do update
 		set listed = excluded.listed, n = excluded.n, sum = excluded.sum, num = excluded.num, den = excluded.den,
 			max = excluded.max, samples = excluded.samples, last_value = excluded.last_value, last_at = excluded.last_at,
+			last_recorded_at = excluded.last_recorded_at, last_reading = excluded.last_reading,
 			counts = excluded.counts, via_repository = excluded.via_repository, built_by = excluded.built_by,
 			updated_at = case
 				when (eval_days.listed, eval_days.n, eval_days.sum, eval_days.num, eval_days.den, eval_days.max,
-						eval_days.samples, eval_days.last_value, eval_days.last_at, eval_days.counts, eval_days.via_repository)
+						eval_days.samples, eval_days.last_value, eval_days.last_at, eval_days.last_recorded_at,
+						eval_days.last_reading, eval_days.counts, eval_days.via_repository)
 					is distinct from (excluded.listed, excluded.n, excluded.sum, excluded.num, excluded.den, excluded.max,
-						excluded.samples, excluded.last_value, excluded.last_at, excluded.counts, excluded.via_repository)
+						excluded.samples, excluded.last_value, excluded.last_at, excluded.last_recorded_at,
+						excluded.last_reading, excluded.counts, excluded.via_repository)
 				then now() else eval_days.updated_at end
 		where (eval_days.listed, eval_days.n, eval_days.sum, eval_days.num, eval_days.den, eval_days.max,
-				eval_days.samples, eval_days.last_value, eval_days.last_at, eval_days.counts,
-				eval_days.via_repository, eval_days.built_by)
+				eval_days.samples, eval_days.last_value, eval_days.last_at, eval_days.last_recorded_at,
+				eval_days.last_reading, eval_days.counts, eval_days.via_repository, eval_days.built_by)
 			is distinct from (excluded.listed, excluded.n, excluded.sum, excluded.num, excluded.den, excluded.max,
-				excluded.samples, excluded.last_value, excluded.last_at, excluded.counts,
-				excluded.via_repository, excluded.built_by)`)
+				excluded.samples, excluded.last_value, excluded.last_at, excluded.last_recorded_at,
+				excluded.last_reading, excluded.counts, excluded.via_repository, excluded.built_by)`)
 }
 
 // zeroStaleDays writes each of the computation's stored rows of project's day of the evals evalIDs
 // names that held is not among as a zero row, in one statement, recording builtBy: n 0, a zero
 // sum, numerator and denominator where the row holds one, an empty sample list where it holds
-// one, no maximum and no last value, each named count 0 and via_repository 0, the zero row the day
-// builders build for a day with no input. Such a row had input once (no write creates a row of a
-// series and repository with none), so its series has a first input day and 0 is that day's
-// value; deleting it would leave the day with no row, which reads as no data, and would log no
-// eval_days change, so a view of the row's numbers would never wake to the change. A row already
-// zero, built_by included, is left as it is and logs nothing; a row already zero under another
-// build takes builtBy and keeps its updated_at, as upsertDays keeps it where no value moved.
-// The readings write's rows of those evals (an eval a register write made logged for a while)
-// are its own, and stay as they are.
+// one, no maximum and no last value (nor the write that stored one), each named count 0 and
+// via_repository 0, the zero row the day builders build for a day with no input. Such a row had
+// input once (no write creates a row of a series and repository with none), so its series has a
+// first input day and 0 is that day's value; deleting it would leave the day with no row, which
+// reads as no data, and would log no eval_days change, so a view of the row's numbers would never
+// wake to the change. A row already zero, built_by included, is left as it is and logs nothing; a
+// row already zero under another build takes builtBy and keeps its updated_at, as upsertDays
+// keeps it where no value moved. The readings write's rows of those evals (an eval a register
+// write made logged for a while) are its own, and stay as they are.
 func zeroStaleDays(ctx context.Context, tx pgx.Tx, project string, day time.Time, evalIDs []string, held []DayRow, builtBy string) error {
 	evals, series, repos := make([]string, len(held)), make([]string, len(held)), make([]string, len(held))
 	for i, row := range held {
@@ -232,20 +235,23 @@ func zeroStaleDays(ctx context.Context, tx pgx.Tx, project string, day time.Time
 		)
 		update eval_days
 		set n = 0, sum = stale.sum, num = stale.num, den = stale.den, max = null, samples = stale.samples,
-			last_value = null, last_at = null, counts = stale.counts, via_repository = 0, built_by = $7,
+			last_value = null, last_at = null, last_recorded_at = null, last_reading = null, counts = stale.counts,
+			via_repository = 0, built_by = $7,
 			updated_at = case
 				when (eval_days.n, eval_days.sum, eval_days.num, eval_days.den, eval_days.max, eval_days.samples,
-						eval_days.last_value, eval_days.last_at, eval_days.counts, eval_days.via_repository)
+						eval_days.last_value, eval_days.last_at, eval_days.last_recorded_at, eval_days.last_reading,
+						eval_days.counts, eval_days.via_repository)
 					is distinct from (0, stale.sum, stale.num, stale.den, null::double precision, stale.samples,
-						null::double precision, null::timestamptz, stale.counts, 0)
+						null::double precision, null::timestamptz, null::timestamptz, null::uuid, stale.counts, 0)
 				then now() else eval_days.updated_at end
 		from stale
 		where eval_days.project_key = stale.project_key and eval_days.eval_id = stale.eval_id and eval_days.writer = stale.writer
 			and eval_days.series = stale.series and eval_days.repo = stale.repo and eval_days.day = stale.day
 			and (eval_days.n, eval_days.sum, eval_days.num, eval_days.den, eval_days.max, eval_days.samples,
-				eval_days.last_value, eval_days.last_at, eval_days.counts, eval_days.via_repository, eval_days.built_by)
+				eval_days.last_value, eval_days.last_at, eval_days.last_recorded_at, eval_days.last_reading,
+				eval_days.counts, eval_days.via_repository, eval_days.built_by)
 			is distinct from (0, stale.sum, stale.num, stale.den, null::double precision, stale.samples,
-				null::double precision, null::timestamptz, stale.counts, 0, $7::text)
+				null::double precision, null::timestamptz, null::timestamptz, null::uuid, stale.counts, 0, $7::text)
 	`, project, day, evalIDs, evals, series, repos, builtBy, writerComputation); err != nil {
 		return fmt.Errorf("write the day rows %s no longer holds on %s as zero rows: %w", project, day.Format(time.DateOnly), err)
 	}
@@ -270,15 +276,16 @@ func writeDayRows(ctx context.Context, tx pgx.Tx, rows []DayRow, builtBy, confli
 	}
 	count := len(rows)
 	projects, evals, series, repos := make([]string, count), make([]string, count), make([]string, count), make([]string, count)
-	days, lastAts := make([]time.Time, count), make([]*time.Time, count)
+	days, lastAts, lastRecordedAts := make([]time.Time, count), make([]*time.Time, count), make([]*time.Time, count)
 	listed := make([]bool, count)
 	ns, via := make([]int32, count), make([]int32, count)
 	sums, nums, dens, maxes, lastValues := make([]*float64, count), make([]*float64, count), make([]*float64, count), make([]*float64, count), make([]*float64, count)
-	samples, counts := make([]*string, count), make([]string, count)
+	samples, counts, lastReadings := make([]*string, count), make([]string, count), make([]string, count)
 	for i, row := range rows {
 		projects[i], evals[i], series[i], repos[i], days[i], listed[i] = row.ProjectKey, row.EvalID, row.Series, row.Repo, measures.Midnight(row.Day), row.Listed
 		ns[i], via[i] = int32(row.N), int32(row.ViaRepository)
 		sums[i], nums[i], dens[i], maxes[i], lastValues[i], lastAts[i] = row.Sum, row.Num, row.Den, row.Max, row.LastValue, row.LastAt
+		lastRecordedAts[i], lastReadings[i] = row.LastRecordedAt, row.LastReading
 		samples[i] = floatArray(row.Samples)
 		encoded, err := json.Marshal(NonNilCounts(row.Counts))
 		if err != nil {
@@ -288,16 +295,17 @@ func writeDayRows(ctx context.Context, tx pgx.Tx, rows []DayRow, builtBy, confli
 	}
 	if _, err := tx.Exec(ctx, `
 		insert into eval_days (project_key, eval_id, writer, series, repo, day, listed, n, sum, num, den, max, samples,
-			last_value, last_at, counts, via_repository, built_by)
+			last_value, last_at, last_recorded_at, last_reading, counts, via_repository, built_by)
 		select project_key, eval_id, $18, series, repo, day, listed, n, sum, num, den, max, samples::double precision[],
-			last_value, last_at, counts::jsonb, via_repository, $17
+			last_value, last_at, last_recorded_at, nullif(last_reading, '')::uuid, counts::jsonb, via_repository, $17
 		from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::date[], $6::bool[], $7::int[],
 			$8::double precision[], $9::double precision[], $10::double precision[], $11::double precision[], $12::text[],
-			$13::double precision[], $14::timestamptz[], $15::text[], $16::int[])
+			$13::double precision[], $14::timestamptz[], $19::timestamptz[], $20::text[], $15::text[], $16::int[])
 			as given(project_key, eval_id, series, repo, day, listed, n, sum, num, den, max, samples,
-				last_value, last_at, counts, via_repository)
+				last_value, last_at, last_recorded_at, last_reading, counts, via_repository)
 		order by given.project_key collate "C", given.eval_id collate "C", given.series collate "C", given.repo collate "C", given.day
-		`+conflict, projects, evals, series, repos, days, listed, ns, sums, nums, dens, maxes, samples, lastValues, lastAts, counts, via, builtBy, writerComputation); err != nil {
+		`+conflict, projects, evals, series, repos, days, listed, ns, sums, nums, dens, maxes, samples, lastValues, lastAts, counts, via, builtBy,
+		writerComputation, lastRecordedAts, lastReadings); err != nil {
 		return fmt.Errorf("write the day rows of %s: %w", rows[0].ProjectKey, err)
 	}
 	return nil

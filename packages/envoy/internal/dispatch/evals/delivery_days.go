@@ -560,11 +560,10 @@ func (d DeliveryDay) buildFamilies(project, repo string, rows familyRows, every 
 		}
 		for _, part := range parts {
 			part.ViaRepository = via[part.Series]
-			row := DayRow{
+			built = append(built, DayRow{
 				ProjectKey: project, EvalID: EvalID(project, slug), Repo: repo,
-				Listed: !strings.HasPrefix(part.Series, measures.JobSeriesPrefix),
-			}
-			built = append(built, row.WithPart(part))
+				Listed: !strings.HasPrefix(part.Series, measures.JobSeriesPrefix), DayPart: part,
+			})
 		}
 	}
 	if every || len(rows.prs) > 0 {
@@ -631,12 +630,14 @@ func (s *Store) WriteProjectDay(ctx context.Context, day ProjectDay, builtBy str
 // open P0 issues with no owner now (delivery.CountUnownedP0, the rule delivery.ListUnownedP0 lists
 // by, read through the issues_open_p0 index) as the row's one value and its last_value, last_at
 // the moment the count last moved, so the day's row is the count at its last refresh and the
-// `last` fold of a window reads its newest day's. A write that counts what the row holds keeps the
-// row's time, so it rewrites nothing (built_by aside) and logs no change: the refresher writes the
-// row on every change that can move the count, most of which move nothing. builtBy is the running
-// build. Its change row waits in the change log's outbox, so the transaction takes no change log
-// lock, and is moved into the log once it has committed (drainChanges), as every writer of the day
-// rows does.
+// `last` fold of a window reads its newest day's. Its last_recorded_at is that moment too, the
+// write that stored the count, and it names no reading: the later write of a value is the later
+// moment, the rule a logged eval's `last` breaks a tie by (aggStatistics). A write that counts
+// what the row holds keeps the row's time, so it rewrites nothing (built_by aside) and logs no
+// change: the refresher writes the row on every change that can move the count, most of which
+// move nothing. builtBy is the running build. Its change row waits in the change log's outbox,
+// so the transaction takes no change log lock, and is moved into the log once it has committed
+// (drainChanges), as every writer of the day rows does.
 func (s *Store) WriteUnownedP0Day(ctx context.Context, project string, day time.Time, builtBy string) error {
 	unowned, err := delivery.CountUnownedP0(ctx, s.database.Pool, project)
 	if err != nil {
@@ -664,8 +665,9 @@ func (s *Store) WriteUnownedP0Day(ctx context.Context, project string, day time.
 		at = storedAt.UTC()
 	}
 	row := DayRow{
-		ProjectKey: project, EvalID: evalID, Series: SeriesUnownedP0, Day: date, Listed: true,
-		N: 1, Sum: &count, Max: &count, LastValue: &count, LastAt: &at,
+		ProjectKey: project, EvalID: evalID, Listed: true, DayPart: measures.DayPart{
+			Series: SeriesUnownedP0, Day: date, N: 1, Sum: &count, Max: &count, LastValue: &count, LastAt: &at, LastRecordedAt: &at,
+		},
 	}
 	if err := upsertDays(ctx, tx, []DayRow{row}, builtBy); err != nil {
 		return err

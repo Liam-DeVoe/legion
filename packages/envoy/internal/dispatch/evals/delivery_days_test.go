@@ -428,7 +428,8 @@ func TestTheZeroDayIsTheBuildersDayWithNoRow(t *testing.T) {
 		t.Errorf("the zero day:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 	built := ProjectDay{Project: "ALPHA", Day: day, Rows: []DayRow{{
-		ProjectKey: "ALPHA", EvalID: EvalID("ALPHA", SlugDeployFrequency), Series: measures.SeriesDeploys, Day: day, Listed: true, N: 4, Sum: new(4.0),
+		ProjectKey: "ALPHA", EvalID: EvalID("ALPHA", SlugDeployFrequency), Listed: true,
+		DayPart: measures.DayPart{Series: measures.SeriesDeploys, Day: day, N: 4, Sum: new(4.0)},
 	}}}
 	merged := built.WithZeros(zero.Rows)
 	if len(merged.Rows) != len(zero.Rows) || !slices.Contains(allFacts(merged.Rows), "deploy-frequency deploys all: n=4 via=0 sum=4") {

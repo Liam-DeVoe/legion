@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -258,27 +259,23 @@ func scanReading(row pgx.Row) (Reading, error) {
 
 // dayColumns is the column list scanDay reads from eval_days.
 const dayColumns = `project_key, eval_id, series, repo, day, listed, n, sum, num, den, max, samples,
-	last_value, last_at, counts, via_repository, built_by, updated_at`
+	last_value, last_at, last_recorded_at, coalesce(last_reading::text, ''), counts, via_repository, built_by, updated_at`
 
 func scanDay(row pgx.Row) (DayRow, error) {
 	var day DayRow
 	var counts []byte
 	if err := row.Scan(
 		&day.ProjectKey, &day.EvalID, &day.Series, &day.Repo, &day.Day, &day.Listed, &day.N, &day.Sum,
-		&day.Num, &day.Den, &day.Max, &day.Samples, &day.LastValue, &day.LastAt, &counts,
-		&day.ViaRepository, &day.BuiltBy, &day.UpdatedAt,
+		&day.Num, &day.Den, &day.Max, &day.Samples, &day.LastValue, &day.LastAt, &day.LastRecordedAt, &day.LastReading,
+		&counts, &day.ViaRepository, &day.BuiltBy, &day.UpdatedAt,
 	); err != nil {
 		return DayRow{}, err
 	}
 	if err := json.Unmarshal(counts, &day.Counts); err != nil {
 		return DayRow{}, fmt.Errorf("decode the counts of a day row of %s: %w", day.EvalID, err)
 	}
-	day.Day = day.Day.UTC()
 	day.UpdatedAt = day.UpdatedAt.UTC()
-	if day.LastAt != nil {
-		lastAt := day.LastAt.UTC()
-		day.LastAt = &lastAt
-	}
+	utcPart(&day.DayPart)
 	return day, nil
 }
 
@@ -289,20 +286,32 @@ func scanWindowRow(row pgx.CollectableRow) (WindowRow, error) {
 	var day WindowRow
 	part := &day.Part
 	if err := row.Scan(&inWindow, &day.EvalID, &part.Series, &part.Day, &part.N, &part.Sum, &part.Num, &part.Den, &part.Max,
-		&part.Samples, &part.LastValue, &part.LastAt, &part.Counts, &part.ViaRepository, &day.UpdatedAt); err != nil {
+		&part.Samples, &part.LastValue, &part.LastAt, &part.LastRecordedAt, &part.LastReading, &part.Counts, &part.ViaRepository,
+		&day.UpdatedAt); err != nil {
 		return WindowRow{}, err
 	}
 	day.Range = RangeCompare
 	if inWindow {
 		day.Range = RangeWindow
 	}
-	part.Day = part.Day.UTC()
 	day.UpdatedAt = day.UpdatedAt.UTC()
-	if part.LastAt != nil {
-		lastAt := part.LastAt.UTC()
-		part.LastAt = &lastAt
-	}
+	utcPart(part)
 	return day, nil
+}
+
+// utcPart sets each time of part, as a row is read back, in UTC.
+func utcPart(part *measures.DayPart) {
+	part.Day = part.Day.UTC()
+	part.LastAt, part.LastRecordedAt = utcTime(part.LastAt), utcTime(part.LastRecordedAt)
+}
+
+// utcTime is at in UTC, nil where at is.
+func utcTime(at *time.Time) *time.Time {
+	if at == nil {
+		return nil
+	}
+	utc := at.UTC()
+	return &utc
 }
 
 // utcLinks answers links with each recorded time in UTC, so links read from JSON and links

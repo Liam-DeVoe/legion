@@ -114,6 +114,17 @@ func documentIntroduction(project, name string) string {
 // then the old block deleted. An eval with no such block in the document (none yet, or one a
 // person deleted) gets a new section at the document's end. A project with no `evals-md` gets
 // one, created holding that section.
+//
+// It is the last write of its transaction (WriteReadings, Register), made once the write has
+// queued behind the project's other registry writes of the document (readyDocumentWrite) and
+// stored its versions, readings and day rows, so a first registration takes the document's owner
+// row here and holds it for the document's write and the commit alone. It takes the document's
+// locks in the order every writer of the document takes them (docs' liveWrite): ApplyOps first has
+// the other processes' rooms of the document stored, then takes the owner row, the writer slot
+// and the advisory lock (joinLiveWrite, readFork). A method that replaces a block reads the
+// document's blocks first, which takes the owner row before the edit, as the edit route takes it
+// (requireOpenOwnerStatus) before its ApplyOps; a register write of a method holds it from its
+// read of the section already (holdsMethod).
 func (s *Store) writeMethod(ctx context.Context, w *writeTx, slug, oldBlock, blockID, method string, actor model.Actor) error {
 	document, found, err := existingDocument(ctx, w)
 	if err != nil {
@@ -121,9 +132,6 @@ func (s *Store) writeMethod(ctx context.Context, w *writeTx, slug, oldBlock, blo
 	}
 	if !found {
 		return s.createDocument(ctx, w, sectionMarkdown(slug, blockID, method), actor)
-	}
-	if err := lockDocumentOwner(ctx, w, document); err != nil {
-		return err
 	}
 	present := false
 	if oldBlock != "" {
@@ -190,12 +198,44 @@ func canonicalMethod(method string) (string, error) {
 	return pmdoc.Render(tree)
 }
 
-// lockDocumentOwner locks the document's owner row before an edit takes its room, as the edit
-// route locks it (requireOpenOwnerStatus), so a registry write takes the two in the order every
-// other writer of the document does.
-func lockDocumentOwner(ctx context.Context, w *writeTx, document evalsDocument) error {
-	if _, err := w.Exec(ctx, `select true from artifacts where id = $1 and issue_key is null for no key update`, document.id); err != nil {
-		return fmt.Errorf("lock the %s document of %s: %w", DocumentSlug, w.project, err)
+// readyDocumentWrite readies a registry write that writes the project's `evals-md`, a first
+// registration or a register write of a method, before it writes anything. It loads the
+// document's room (docs' WarmRoom), so that the write's fork of the document, made once it holds
+// the document's owner row and writer slot (writeMethod), clones the resident room rather than
+// loading and decoding the stored document while it holds them. It then queues the write behind
+// every other registry write of the document (lockDocumentWrites). The room is loaded outside
+// that queue, so writes that queue together share one load. A project with no `evals-md` yet has
+// no room to load. The seed queues without loading the room (ensure): a refresher pass seeds every
+// project, and most seeds write no section.
+func (s *Store) readyDocumentWrite(ctx context.Context, w *writeTx) error {
+	document, found, err := findDocument(ctx, w)
+	if err != nil {
+		return err
+	}
+	if found {
+		if err := s.documents.WarmRoom(ctx, document.id); err != nil {
+			return fmt.Errorf("load the room of the %s document of %s: %w", DocumentSlug, w.project, err)
+		}
+	}
+	return lockDocumentWrites(ctx, w.Tx, w.project)
+}
+
+// lockDocumentWrites queues tx, for the rest of it, behind every other registry write of project's
+// `evals-md`: a first registration (WriteReadings, Register), a register write of a method and the
+// seed (ensure). Each takes it after its eval locks (lockEval, lockEvals) and before it stores
+// anything, and no other writer of the document takes it, so registry writes hold the document's
+// owner row one after another, each for its own document write, and the order every writer takes
+// its locks in stays one: the eval locks, this lock, then the document's own (the owner row, the
+// writer slot and the advisory lock, docs' liveWrite), which no document writer holds while it
+// waits for an eval lock or this one.
+//
+// It is an advisory lock, which assigns tx no transaction id, and so is every eval lock; a write
+// queued here has stored nothing yet, so it holds no transaction id while it waits, and holds back
+// no reader of the event log (events.Horizon), whose horizon waits only for running transaction
+// ids. A write queued on the owner row instead holds the id of every row it stored before it.
+func lockDocumentWrites(ctx context.Context, tx pgx.Tx, project string) error {
+	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('evals-md:' || $1))`, project); err != nil {
+		return fmt.Errorf("queue for the %s document of %s: %w", DocumentSlug, project, err)
 	}
 	return nil
 }

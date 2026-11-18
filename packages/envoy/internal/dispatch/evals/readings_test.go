@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -782,4 +783,56 @@ func TestATieOfOneMomentKeepsTheDaysLastAcrossACorrection(t *testing.T) {
 	}
 	r.write(t, "queue-depth", alice, corrections...)
 	check("after the correction", []float64{1, 2, 4})
+}
+
+// TestALastWindowOverRepositoriesTakesTheLaterWriteOfATie: two repositories' day rows of one
+// `last` series and day, each holding a reading measured at the same moment, are a tie the
+// window fold breaks as the project's own row breaks it (writtenBefore): by the later write of the
+// two values, the write that began later (recorded_at) and within one write the later row (id),
+// whatever order the rows come in and whichever repository's key sorts first. On the 1st acme/b's
+// reading is written first and acme/a's in a later write; on the 2nd acme/a's first and acme/b's
+// later; on the 3rd one batch holds acme/b's and then acme/a's. Each day's window over both
+// repositories, its two rows folded in the order DayWindow answered them and reversed, answers
+// the later write's value, which the project's row of that day holds as its last.
+func TestALastWindowOverRepositoriesTakesTheLaterWriteOfATie(t *testing.T) {
+	r := newRig(t)
+	reading := func(repo string, value float64, day int) json.RawMessage {
+		return row(t, map[string]any{"series": "depth", "row_kind": "queue", "row_key": fmt.Sprintf("%s-%d", repo, day),
+			"value": value, "measured_at": at(day, 12, 0), "attributes": map[string]any{"repo": repo}})
+	}
+	r.write(t, "tied-depth", alice, reading("acme/b", 2, 1))
+	r.write(t, "tied-depth", alice, reading("acme/a", 1, 1))
+	r.write(t, "tied-depth", alice, reading("acme/a", 1, 2))
+	r.write(t, "tied-depth", alice, reading("acme/b", 2, 2))
+	written := r.write(t, "tied-depth", alice, reading("acme/b", 2, 3), reading("acme/a", 1, 3))
+	evalID := written.Definition.EvalID
+	entry := r.entries(t, evalID)[0]
+	for _, want := range []struct {
+		day   int
+		value float64
+	}{{1, 1}, {2, 2}, {3, 1}} {
+		window := Range{From: at(want.day, 0, 0), To: at(want.day+1, 0, 0)}
+		if project := r.day(t, evalID, "depth", "", window.From); project.LastValue == nil || *project.LastValue != want.value {
+			t.Fatalf("the project's row of the %d. holds the last value %s, want %g, the later write's", want.day, showValue(project.LastValue), want.value)
+		}
+		rows, err := r.registry.DayWindow(t.Context(), []string{r.project}, []Entry{entry}, []string{"acme/a", "acme/b"}, window, nil)
+		if err != nil {
+			t.Fatalf("read the window of the %d.: %v", want.day, err)
+		}
+		if len(rows) != 2 {
+			t.Fatalf("the window of the %d. over acme/a and acme/b answers %d rows, want one of each", want.day, len(rows))
+		}
+		for _, order := range []struct {
+			name string
+			rows []WindowRow
+		}{{"as read", rows}, {"reversed", []WindowRow{rows[1], rows[0]}}} {
+			parts := []measures.DayPart{order.rows[0].Part, order.rows[1].Part}
+			got := FoldStatistics(entry.Definition, entry.Series, parts, window)["depth"]["value"]
+			t.Logf("the %d., rows %s: value %s", want.day, order.name, showValue(got))
+			if got == nil || *got != want.value {
+				t.Errorf("the window of the %d. over acme/a and acme/b, its rows %s, answers %s; want %g, the later write's, as the project's row holds",
+					want.day, order.name, showValue(got), want.value)
+			}
+		}
+	}
 }

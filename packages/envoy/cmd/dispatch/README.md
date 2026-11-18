@@ -933,7 +933,11 @@ What the two processes share, and what each keeps to itself:
 - A send waits out a listener take-over.
   While the active Envoy listener pod is replaced, its successor refuses connections, answers 502, 503 or 504, or does not hold the session yet;
   a send that meets one of those (or a receipt timeout) is tried again under the attempt it holds and the same idempotency key, renewing its claim before each try, for up to 12 seconds from its first try, and only then settles `failed` (`api/envoy_resolve.go`, `listenerTakeoverWindow`).
-  A request that sends during a take-over answers up to 12 seconds later, and a send to a session that is really gone reads `failed: no live session` about 12 seconds after it was made.
+  A request that sends during a take-over answers up to 12 seconds later, and a mention of a session that is really gone reads `failed: no live session` about 12 seconds after it was made.
+  A targeted message to such a session is queued instead at that moment:
+  when neither the listener's registry nor its known-session store holds the session, Dispatch publishes the message on the session's own subject, `notifications.agent.<session>`, under the dedupe key the listener's send would have used, and records the attempt `queued` (`api/message_queue_publish.go`).
+  The listener gives that copy up after its retry window with the agent wake, and the session reads it when it registers again under its id within the stream's 72 hours.
+  A process with no NATS (`DISPATCH_NATS_DISABLED=1` without test hooks), a failed publish, a role target, a send whose request set `connected_only`, and a model or thinking switch, which is sent `connected_only` whatever its request says, still settle `failed`.
   A process killed during the wait leaves the attempt to the delivery sweep.
 
 - Times that one process writes and another compares come from the database's clock, never a host's:
@@ -3733,6 +3737,14 @@ Each item below names a path with its method and identity, then its purpose.
   A browser test reads the bar with a label and a session configured and then with the session cleared, which no deployment setting can change while the server runs.
   Not mounted otherwise.
 
+- `/api/v1/messages/_test/queued` (GET; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
+
+  List the targeted messages this process queued itself for a session that neither the listener's registry nor its known-session store held, oldest first, each as the envelope that session's own subject would hold:
+  `{"queued": [{subject, dedupe_key, event_id, source, payload_summary, payload, urgency}]}`.
+  A process with `DISPATCH_NATS_DISABLED=1` keeps them in its own memory, where this route reads them.
+  A process with NATS publishes them to the stream, and answers `404 QUEUED_ON_BUS` here.
+  Not mounted otherwise.
+
 - `/ws/live` (GET; cookie, trusted header, or bearer)
 
   One WebSocket per browser tab, serving delivery, events, and agent subscriptions.
@@ -3889,12 +3901,14 @@ Each item below names a path with its method and identity, then its purpose.
   A series with no day row reads every statistic `null`, never 0, and a range that starts before a series' first day (`data_since`) reads `null` too, its per-day array still answering the days that exist.
   A figure the fold of a range takes past what a float holds (two days each summing 1e308) reads `null` too, as does a change between two such figures: each day row is finite, since the readings write refuses one that would not be, but their sum need not be.
   `kind` keeps one kind, and `repo`, repeated, folds those repositories' rows in place of the project's own; `freshness` is the oldest `updated_at` of the rows folded and the day-row refresher's age.
+  A `last` series answers the value measured last, and of two rows' values measured at one moment (the rows of two repositories on one day) the one written later, by the write that began later and then the later reading of one write (`eval_days.last_recorded_at`, `last_reading`), the order the project's own row breaks a tie of its readings by, so a read of repositories breaks the tie as the project's read does.
   `400 INVALID_QUERY` names a malformed key, and a key the route does not take (any but those above and the global `session` parameter, so a caller still sending the old `scope=` is told rather than answered every issue), `404 PROJECT_NOT_FOUND` an unknown project, and a project-scoped credential of another project is `403 PROJECT_SCOPE`.
 
 - `/api/v1/projects/{key}/evals` (POST; cookie, trusted header, or bearer)
 
   POST registers an eval or writes the next version of its definition, `{slug, ...}` with each field it sets, every other copied forward from the newest version (`target: null` turns the target off), and `doc_text` replacing the eval's method in its section of the project's `evals-md`; it answers `201` with the version written, or `200` where the body changed nothing.
   A version that lists or unlists a logged eval's series lists or unlists the series' stored day rows in the same transaction, so a window that spans the change folds every day of it.
+  A write that writes the eval's section, one carrying `doc_text` or the first write of an eval, writes it in the same transaction, so the section exists once the version commits; it first queues behind the project's other registry writes of `evals-md` (`evals.lockDocumentWrites`, an advisory lock, which assigns no transaction id, so a queued write holds back no live event reader, `events.Horizon`), and writes the section last, after its versions, so it holds the document's owner row only for the section's write, the document's version and the commit.
   `source` is `logged`: only the seeded catalogue makes an eval computed, so another source is `400 EVAL_FIELD_INVALID` naming `source`, and no write leaves a logged eval computed with no builder of its rows.
   A series' `min_n` is the fewest timed results a job needs before pr-ci ranks it among its slowest jobs (`sort=median`, and the Pipeline's table), the one read that reads a `min_n`, so it is taken on pr-ci's job series (`job:*`) alone and is `400 EVAL_FIELD_INVALID` naming `series[i].min_n` on any other series, a logged eval's included, rather than stored and ignored.
   On a computed eval the write sets only how the number is judged and who answers for it: `target`, `target_inclusive` and `target_judges`, the `min_n` of pr-ci's job series, `owner_role`, `person`, `issue_key`, `links`, `state`, `replaced_by` and the method (`doc_text`, or `doc_block`), each of which the seed carries forward rather than reverts.
@@ -3923,6 +3937,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   Log one batch of readings of one eval, `{readings, actor?}`, stored in one transaction or not at all; an `Idempotency-Key` is required (`400 IDEMPOTENCY_KEY_REQUIRED`), and a repeat under it is answered the first write's answer.
   A slug no eval holds registers its eval with the caller as owner, no target and state `active`; a reading under a computed eval's slug is stored and answered by its items, and never folded into its value.
+  The write that registers its eval writes the eval's section of `evals-md` as a register write does (above): queued behind the project's other registry writes of the document, and last, after its readings and day rows.
   The server sets `recorded_by` and `recorded_at`, and a row carrying either is refused; a row whose value would take a sum of its day row (its values, or each weighted by its `n`) past what a float holds is refused `READING_DAY_OVERFLOW`, since no read could answer it; a refused batch stores nothing and answers `400 {code, error, rows}`, each refused row named by its index and field with its own code.
   A row's `measured_at` lies from 2025-01-01T00:00:00Z (`evals.MeasuredAtFloor`) to 24 hours after the server's time, else the row is refused `MEASURED_AT_OUT_OF_RANGE`: the refresher writes a logged eval's zero rows from its first day on, and one reading at 0001-01-01 made it write 739,934 rows.
   A row's `series`, `row_kind`, `row_key` and `attributes.repo`, and the slug, hold at most 512 bytes each (`EVAL_KEY_TOO_LONG`), and a link's `href` is an absolute `http` or `https` URL (`LINK_HREF_NOT_ABSOLUTE`, `LINK_HREF_NOT_HTTP`).

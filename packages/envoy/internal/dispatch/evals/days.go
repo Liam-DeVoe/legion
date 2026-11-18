@@ -30,7 +30,10 @@ import (
 //   - last_value and last_at, the value measured last and when, which the `last` fold reads: a
 //     reading measured after last_at takes its place, and of readings measured at one moment the
 //     one written last holds it: the one of the later write (recorded_at, the time its
-//     transaction began) and within one write the later row (id), whichever path writes the row.
+//     transaction began) and within one write the later row (id), whichever path writes the row;
+//   - last_recorded_at and last_reading, that reading's recorded_at and id, so an append orders a
+//     reading against the row's last as a refold does, and a read that folds several
+//     repositories' rows of one day breaks a tie of their last_at by the same order.
 //
 // The readings a row folds are the standing readings of its day (superseded_at is null) that have
 // a value and were written while the eval was logged (writtenWhileLogged): a reading written while
@@ -49,12 +52,11 @@ import (
 // fold of the readings it holds, so the row it leaves is the fold of those readings and the new
 // ones, in the order they were written.
 //
-// A row whose last a reading of the write ties, one measured at the row's last_at, is folded
-// again too: the row holds the moment of its last value and not which reading holds it, so only
-// the standing readings tell whether that reading was written before this write's or after it. A
-// write that began later can take the row's lock and commit first, and the row's last is then the
-// later written reading, which an append would replace by this write's and a later refold would
-// put back.
+// A row whose last a reading of the write ties, one measured at the row's last_at, is appended to
+// as any other: the row holds which reading holds its last value (last_recorded_at,
+// last_reading), so the append orders the two by when they were written, as a refold of the
+// standing readings does. A write that began later can take the row's lock and commit first, and
+// its reading then stays the row's last when this write appends its own.
 //
 // A row whose readings are all taken away stays, as the zero row its day then is: n 0, sum, num and
 // den 0, no maximum, no sample and no last value.
@@ -96,10 +98,30 @@ type dayPart struct {
 // writtenBefore reports whether p's reading was written before q's: by an earlier write (its
 // recorded_at, the time its transaction began) or, within one write, earlier in the batch (its
 // id, a UUIDv7 parseRows mints in the batch's order, whose text sorts as the uuid does). It is the
-// order standingParts reads the readings in, and it breaks a tie of moments for a row's last value
-// (addParts) on every path that writes the row.
+// order standingParts reads the readings in, and it breaks a tie of moments for a last value on
+// every path that writes a row (addParts) and in the `last` fold of a window (aggStatistics).
 func (p dayPart) writtenBefore(q dayPart) bool {
 	return cmp.Or(p.recordedAt.Compare(q.recordedAt), cmp.Compare(p.id, q.id)) < 0
+}
+
+// lastBefore reports whether p's value comes before q's as a last value: measured earlier, or at
+// one moment written earlier (writtenBefore).
+func (p dayPart) lastBefore(q dayPart) bool {
+	return p.at.Before(q.at) || p.at.Equal(q.at) && p.writtenBefore(q)
+}
+
+// lastOf is part's last value as the part of the reading that holds it: the value, its moment
+// and the write that stored it (LastRecordedAt, LastReading; the zero time and "" where the part
+// records no write, which every write orders after), and false where part holds no last value.
+func lastOf(part measures.DayPart) (dayPart, bool) {
+	if part.LastValue == nil || part.LastAt == nil {
+		return dayPart{}, false
+	}
+	last := dayPart{value: *part.LastValue, at: *part.LastAt, id: part.LastReading, row: -1}
+	if part.LastRecordedAt != nil {
+		last.recordedAt = *part.LastRecordedAt
+	}
+	return last, true
 }
 
 // dayKeysOf is the day rows a reading counts in, and its part of each as the batch's row row, or
@@ -198,15 +220,9 @@ func writeDays(ctx context.Context, w *writeTx, definition Definition, series ma
 	if len(rows) != len(keys) {
 		return fmt.Errorf("the write touches %d day rows of %s and locked %d", len(keys), definition.EvalID, len(rows))
 	}
-	// A row whose last a part of this write ties is folded again, as a row a correction touches
-	// is: the row cannot tell which reading holds its last value.
 	var refolded []dayKey
 	for _, row := range rows {
-		key := dayKey{series: row.Series, repo: row.Repo, day: row.Day}
-		if row.LastAt != nil && slices.ContainsFunc(parts[key], func(part dayPart) bool { return part.at.Equal(*row.LastAt) }) {
-			refold[key] = true
-		}
-		if refold[key] {
+		if key := (dayKey{series: row.Series, repo: row.Repo, day: row.Day}); refold[key] {
 			refolded = append(refolded, key)
 		}
 	}
@@ -221,7 +237,8 @@ func writeDays(ctx context.Context, w *writeTx, definition Definition, series ma
 	// flat list, each row's the n of them from its first's position on.
 	counts, firsts := make([]int, len(rows)), make([]int, len(rows))
 	sums, nums, dens, maxes := make([]*float64, len(rows)), make([]*float64, len(rows)), make([]*float64, len(rows)), make([]*float64, len(rows))
-	lastValues, lastAts := make([]*float64, len(rows)), make([]*time.Time, len(rows))
+	lastValues, lastAts, lastRecordedAts := make([]*float64, len(rows)), make([]*time.Time, len(rows)), make([]*time.Time, len(rows))
+	lastReadings := make([]string, len(rows))
 	// Empty rather than nil, which pgx would send as null, and a slice of null is null where a row
 	// with no value holds the empty list.
 	samples := []float64{}
@@ -231,7 +248,8 @@ func writeDays(ctx context.Context, w *writeTx, definition Definition, series ma
 		key := dayKey{series: row.Series, repo: row.Repo, day: row.Day}
 		base, given := row, parts[key]
 		if refold[key] {
-			base.Samples, base.Num, base.Den, base.LastValue, base.LastAt = nil, nil, nil, nil, nil
+			base.Samples, base.Num, base.Den = nil, nil, nil
+			base.LastValue, base.LastAt, base.LastRecordedAt, base.LastReading = nil, nil, nil, ""
 			given = append(standing[key], given...)
 		}
 		next, overflow := addParts(base, given, first[key])
@@ -245,7 +263,7 @@ func writeDays(ctx context.Context, w *writeTx, definition Definition, series ma
 		}
 		listed[index], counts[index], firsts[index] = series[row.Series].Listed, next.N, len(samples)+1
 		sums[index], nums[index], dens[index], maxes[index] = next.Sum, next.Num, next.Den, next.Max
-		lastValues[index], lastAts[index] = next.LastValue, next.LastAt
+		lastValues[index], lastAts[index], lastRecordedAts[index], lastReadings[index] = next.LastValue, next.LastAt, next.LastRecordedAt, next.LastReading
 		samples = append(samples, next.Samples...)
 	}
 	if len(refused) > 0 {
@@ -254,14 +272,15 @@ func writeDays(ctx context.Context, w *writeTx, definition Definition, series ma
 	if _, err := w.Exec(ctx, `
 		update eval_days d set listed = given.listed, n = given.n, sum = given.sum, num = given.num, den = given.den,
 			max = given.max, samples = ($15::float8[])[given.first : given.first + given.n - 1],
-			last_value = given.last_value, last_at = given.last_at, built_by = $4, updated_at = now()
+			last_value = given.last_value, last_at = given.last_at, last_recorded_at = given.last_recorded_at,
+			last_reading = nullif(given.last_reading, '')::uuid, built_by = $4, updated_at = now()
 		from unnest($5::text[], $6::text[], $7::date[], $8::bool[], $9::int[], $10::float8[], $11::float8[],
-			$12::float8[], $13::float8[], $14::float8[], $16::timestamptz[], $17::int[])
-			as given(series, repo, day, listed, n, sum, num, den, max, last_value, last_at, first)
+			$12::float8[], $13::float8[], $14::float8[], $16::timestamptz[], $18::timestamptz[], $19::text[], $17::int[])
+			as given(series, repo, day, listed, n, sum, num, den, max, last_value, last_at, last_recorded_at, last_reading, first)
 		where d.project_key = $1 and d.eval_id = $2 and d.writer = $3
 		  and d.series = given.series and d.repo = given.repo and d.day = given.day
 	`, definition.ProjectKey, definition.EvalID, writerReadings, builtBy, seriesNames, repos, days, listed, counts, sums, nums,
-		dens, maxes, lastValues, samples, lastAts, firsts); err != nil {
+		dens, maxes, lastValues, samples, lastAts, firsts, lastRecordedAts, lastReadings); err != nil {
 		return fmt.Errorf("write the day rows of %s: %w", definition.EvalID, err)
 	}
 	return nil
@@ -272,11 +291,11 @@ func writeDays(ctx context.Context, w *writeTx, definition Definition, series ma
 // within it. A part of a reading stored before the write (row -1) that makes it so is answered
 // for by blame, the first row of the batch that touches the row. The row's sum and maximum are
 // read off its samples, in their order, as every write of the row reads them. Its last value is
-// the part measured last, and of parts measured at one moment the one written last
-// (writtenBefore), in whatever order they come: a refold's standing parts come first and the
-// write's own after them, though a write that began later may have stored some of them. Against
-// the row's own last value a part counts by its moment alone; writeDays folds a row again rather
-// than append a part measured at the row's last_at, which nothing here could order.
+// the part measured last, and of parts measured at one moment the one written last (lastBefore),
+// the row's own last value among them as the part of the reading the row records holding it
+// (lastOf), in whatever order they come: a refold's standing parts come first and the write's own
+// after them, though a write that began later may have stored some of them, and the row an append
+// adds to may hold the reading of a write that began after this one and committed first.
 func addParts(row DayRow, parts []dayPart, blame int) (DayRow, int) {
 	samples := slices.Clone(row.Samples)
 	num, den := measures.ValueOrZero(row.Num), measures.ValueOrZero(row.Den)
@@ -285,9 +304,9 @@ func addParts(row DayRow, parts []dayPart, blame int) (DayRow, int) {
 		sum += value
 		largest = max(largest, value)
 	}
-	lastValue, lastAt := row.LastValue, row.LastAt
-	// holder is the part whose value is the last, nil while the row's own last value is.
-	var holder *dayPart
+	lastValue, lastAt, lastRecordedAt, lastReading := row.LastValue, row.LastAt, row.LastRecordedAt, row.LastReading
+	// holder is the part whose value is the last: the row's own, until a part comes after it.
+	holder, held := lastOf(row.DayPart)
 	overflow := -1
 	for _, part := range parts {
 		samples = append(samples, part.value)
@@ -295,9 +314,10 @@ func addParts(row DayRow, parts []dayPart, blame int) (DayRow, int) {
 		largest = max(largest, part.value)
 		num += part.value * part.weight
 		den += part.weight
-		if lastAt == nil || part.at.After(*lastAt) || part.at.Equal(*lastAt) && (holder == nil || holder.writtenBefore(part)) {
-			value, at, held := part.value, part.at, part
-			lastValue, lastAt, holder = &value, &at, &held
+		if !held || holder.lastBefore(part) {
+			value, at, recordedAt := part.value, part.at, part.recordedAt
+			lastValue, lastAt, lastRecordedAt, lastReading = &value, &at, &recordedAt, part.id
+			holder, held = part, true
 		}
 		if overflow < 0 && !finite(part.value, sum, num, den) {
 			overflow = part.row
@@ -311,12 +331,13 @@ func addParts(row DayRow, parts []dayPart, blame int) (DayRow, int) {
 	next.Samples = samples
 	if next.N == 0 {
 		zero := 0.0
-		next.Sum, next.Num, next.Den, next.Max, next.LastValue, next.LastAt = &zero, &zero, &zero, nil, nil, nil
+		next.Sum, next.Num, next.Den, next.Max = &zero, &zero, &zero, nil
+		next.LastValue, next.LastAt, next.LastRecordedAt, next.LastReading = nil, nil, nil, ""
 		next.Samples = []float64{}
 		return next, overflow
 	}
 	next.Sum, next.Num, next.Den, next.Max = &sum, &num, &den, &largest
-	next.LastValue, next.LastAt = lastValue, lastAt
+	next.LastValue, next.LastAt, next.LastRecordedAt, next.LastReading = lastValue, lastAt, lastRecordedAt, lastReading
 	return next, overflow
 }
 

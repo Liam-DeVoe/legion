@@ -200,11 +200,18 @@ func rewritten(before, after map[string]DayRow) ([]string, []string) {
 // latestSeq is the newest delivery change's seq.
 func (r *refresherRig) latestSeq(t *testing.T) int64 {
 	t.Helper()
-	seq, err := delivery.LatestChangeSeq(t.Context(), r.database.Pool)
+	return r.changesHead(t).Seq
+}
+
+// changesHead is the change cursor at the newest delivery change: its seq and when it was
+// recorded.
+func (r *refresherRig) changesHead(t *testing.T) delivery.ChangeCursor {
+	t.Helper()
+	head, err := delivery.ChangesHead(t.Context(), r.database.Pool)
 	if err != nil {
 		t.Fatalf("read the newest delivery change: %v", err)
 	}
-	return seq
+	return head
 }
 
 // evalDayChanges is every eval_days change logged after seq, as `<eval id> <first day>..<last
@@ -386,13 +393,9 @@ func TestTheFirstPassWalksEveryFamilyFromItsFirstInputDayWithZeroRows(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	head := r.latestSeq(t)
-	headAt, err := delivery.ChangeAt(t.Context(), r.database.Pool, head)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := cursors[changesCursor]; got.Seq != head || got.At == nil || headAt == nil || !got.At.Equal(*headAt) {
-		t.Errorf("the changes cursor stands at %d recorded %v, want the log's head %d recorded %v", got.Seq, got.At, head, headAt)
+	head := r.changesHead(t)
+	if got := cursors[changesCursor]; got.Seq != head.Seq || got.At == nil || head.At == nil || !got.At.Equal(*head.At) {
+		t.Errorf("the changes cursor stands at %d recorded %v, want the log's head %d recorded %v", got.Seq, got.At, head.Seq, head.At)
 	}
 	age, found, err := r.registry.RefresherAge(t.Context(), r.now.Add(time.Minute))
 	if err != nil || !found || age != time.Minute {
