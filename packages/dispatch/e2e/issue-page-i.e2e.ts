@@ -1606,9 +1606,12 @@ test("the caret Enter puts in a statement deep in its document stays on screen w
 // the caret there, and the row is no taller than the window, with a scroll of its own, so the
 // page around it stays where it was. At e3136741 Enter on the first requirement of a real issue
 // of some 160 rows drew the whole spec in that row, 35,635 px high, and the rows under it
-// went down by as much.
-// SLOW(>=2s): a whole seeded issue and a long spec of its own, a load waited on until the
-// statement takes the focus, then Enter waited on until the editor opens and settles at the block.
+// went down by as much. At 861adff1 the editor's box is no taller than the room under it, but
+// the row's body stands under the box, so a long statement the reader moved to and edited made a
+// row of 971 px at 1440 by 900 on a spec of long statements like this one's, and of 927 px at
+// 1440 by 900 and 745 px at 390 by 664 on that real issue, its last lines below the window.
+// SLOW(>=2s): a whole seeded issue and two long specs of its own, a load of each waited on until
+// the statement takes the focus, then Enter waited on until the editor opens and settles.
 test("a row that edits a statement is no taller than the window, and the page around it stays put", async ({
   browser,
 }) => {
@@ -1659,6 +1662,52 @@ test("a row that edits a statement is no taller than the window, and the page ar
       Math.abs(after.scroll - before.scroll) + Math.abs(after.top - before.top),
       "the page around the row that edits the statement moved at 1440x900"
     ).toBeLessThanOrEqual(1);
+
+    // A statement the reader moved to, on a spec of long statements an agent wrote: the row's
+    // body - its facts and its controls - stands under the editor's box.
+    const long = await createIssue(
+      {
+        force: true,
+        project: PROJECT,
+        spec: [
+          "# Long statements an agent wrote",
+          "",
+          ...Array.from({ length: 12 }, (_, index) => [
+            `:::requirement{#r-long-${index + 1}}`,
+            `Statement ${index + 1} says ${Array.from({ length: 500 }, (_, word) => `word${word}`).join(" ")}.`,
+            ":::",
+            "",
+          ]).flat(),
+        ].join("\n"),
+        title: "An issue of long statements an agent wrote",
+      },
+      asPlanner
+    );
+    const last = blockNodeId(await primarySlug(long.key), "r-long-12");
+    await gotoIssue(page, `/issues/${long.key}`);
+    await expectIssuePageDrawn(page);
+    await expect
+      .poll(async () => (await focusedRow(page)) !== null, {
+        message: "the page opens with the focus on no row",
+      })
+      .toBe(true);
+    await page.keyboard.press("End");
+    await expect
+      .poll(() => focusedRow(page), { message: "End did not reach the last statement" })
+      .toBe(last);
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(() => caretInNode(page), { message: "Enter did not put the caret in the statement" })
+      .toBe(true);
+    await expect
+      .poll(
+        () =>
+          nodeRow(page, last)
+            .first()
+            .evaluate((element) => element.getBoundingClientRect().height),
+        { message: "the row that edits a statement the reader moved to is taller than the window" }
+      )
+      .toBeLessThanOrEqual(DESKTOP.height);
   });
 });
 
