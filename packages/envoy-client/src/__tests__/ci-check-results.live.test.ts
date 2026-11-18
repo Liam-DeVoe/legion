@@ -228,17 +228,25 @@ describe.skipIf(!dispatchStackEnabled)(
         compared: [],
         heads: [{ kind: "branch_head", branch: branch(), commit: at }],
       });
-      // The branch head is the issue's one subject, and a pass stands there.
+      const [job, ...others] = jobResultsAt(c1, at);
+      expect({ job: job?.role, others: others.length }).toEqual({ job: "ci", others: 0 });
+      // The branch head is the issue's one subject, and a pass stands there: the subject names the
+      // role whose pass counts at it and the result that is that pass.
       expect(c1.pass_stands).toEqual({
         answer: "yes",
         roles: ["ci"],
-        subjects: [{ basis: { kind: "branch_head", branch: branch(), commit: at }, answer: "yes" }],
+        subjects: [
+          {
+            basis: { kind: "branch_head", branch: branch(), commit: at },
+            answer: "yes",
+            roles: ["ci"],
+            results: [job?.id],
+          },
+        ],
       });
       // Dispatch holds no pull request of the issue: the check run is read at no head.
       expect(c1.ci?.case).toBe("no_head");
 
-      const [job, ...others] = jobResultsAt(c1, at);
-      expect({ job: job?.role, others: others.length }).toEqual({ job: "ci", others: 0 });
       const statement = job?.attestation;
       expect(statement?._type).toBe("https://in-toto.io/Statement/v1");
       expect(statement?.predicateType).toBe(
