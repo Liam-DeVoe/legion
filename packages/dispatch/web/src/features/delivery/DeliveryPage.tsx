@@ -45,12 +45,14 @@ import {
   type ColorFacet,
 } from "./lib/colorScale";
 import {
+  DEPLOYED_LABELS,
   type DeployedFacet,
   FACET_KEYS,
   FACET_PARAMS,
   type FacetKey,
   type Filters,
   PLACEHOLDER_LABELS,
+  REWORK_LABELS,
   type ReworkFacet,
 } from "./lib/facets";
 import { parentAgentLabel } from "./lib/parentAgent";
@@ -203,11 +205,17 @@ function useDeliveryUrlState(): [DeliveryUrlState, (next: DeliveryUrlState) => v
   const sortText = SORT_PARAM.read(searchParams, "sort");
   const sorting = useMemo(() => readSorting(sortText), [sortText]);
   const arrayParams = useRepeatableAddressParams(FACET_KEYS);
+  // `?rework=` and `?deployed=` keep only the values their labels name, in the address's order,
+  // so an unknown one reaches neither the request nor a chip.
   const filters: Filters = useMemo(
     () => ({
       ...arrayParams,
-      rework: arrayParams.rework as ReworkFacet[],
-      deployed: arrayParams.deployed as DeployedFacet[],
+      rework: arrayParams.rework.filter((value): value is ReworkFacet =>
+        Object.hasOwn(REWORK_LABELS, value)
+      ),
+      deployed: arrayParams.deployed.filter((value): value is DeployedFacet =>
+        Object.hasOwn(DEPLOYED_LABELS, value)
+      ),
       search,
     }),
     [arrayParams, search]

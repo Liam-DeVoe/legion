@@ -1041,12 +1041,14 @@ function AgentFilterBar({
 /**
  * The list's select-all checkbox. Its 13 px inset lines it up with the rows' checkboxes (their
  * 1 px border plus 12 px padding). Matching means every row the filters match, folded sections
- * included, and `Clear selection` also empties the selected rows the filters hide. Clear
- * selection goes with the selection it empties, and the focus it held goes to the select-all
- * checkbox before it, else, while no row matches and that checkbox is disabled, to the search
- * box (`useFocusPlace`).
+ * included, and `Clear selection` also empties the selected rows the filters hide. A selected
+ * session missing from a list that is not `current` is counted as of unknown state, not as gone,
+ * as the composer's chip names it. Clear selection goes with the selection it empties, and the
+ * focus it held goes to the select-all checkbox before it, else, while no row matches and that
+ * checkbox is disabled, to the search box (`useFocusPlace`).
  */
 function SelectionHeader({
+  current,
   listed,
   matching,
   onClear,
@@ -1054,6 +1056,8 @@ function SelectionHeader({
   searchInputRef,
   selected,
 }: {
+  /** Whether the latest read of `listed` succeeded, so that it says who is absent (`useAgents`). */
+  current: boolean;
   listed: readonly Agent[];
   matching: readonly Agent[];
   onClear: () => void;
@@ -1061,7 +1065,7 @@ function SelectionHeader({
   searchInputRef: RefObject<HTMLInputElement | null>;
   selected: ReadonlySet<string>;
 }): ReactNode {
-  const selection = matchingSelection(listed, matching, selected);
+  const selection = matchingSelection(listed, matching, selected, current);
   const { state } = selection;
   const checkbox = useRef<HTMLInputElement>(null);
   const header = useRef<HTMLDivElement>(null);
@@ -1792,6 +1796,7 @@ export function AgentsPage(): ReactNode {
             searchInputRef={searchInputRef}
           />
           <SelectionHeader
+            current={current}
             listed={agents}
             matching={matching}
             onClear={() => setSelected(() => new Set())}
