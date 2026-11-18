@@ -964,9 +964,10 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 			ConfirmedAt: orZero(confirmed),
 			Interrupted: orFalse(interrupted),
 			OutOfMemory: orFalse(outOfMemory),
-			// The three the send failures are diagnosed from: a count, the moment of the last
-			// failure — null until a send has failed, which the delivery holds as the zero
-			// time — and that failure's error.
+			// The record of the takes whose adoption of the working copy failed (supervise's
+			// refusedAdoption): a count, the moment of the last failure — null until an
+			// adoption has failed, which the delivery holds as the zero time — and that
+			// failure's error.
 			SendFailures:         int(orZeroInt(sendFailures)),
 			LastSendFailureAt:    orZero(lastSendFailure),
 			LastSendError:        *lastSendError,

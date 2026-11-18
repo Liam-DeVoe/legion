@@ -108,7 +108,7 @@ func TestADecisionASupersededTaskNamedIsToldToTheReadmittedArchitect(t *testing.
 	sent := len(r.prompts())
 	r.bringUp()
 	if prompts := r.prompts()[sent:]; len(prompts) == 0 || prompts[0].DeliveryID != pending.ID {
-		t.Fatalf("the re-admitted architect was prompted %+v, want generation 2's task %s first", prompts, pending.ID)
+		t.Fatalf("the re-admitted architect took %+v, want generation 2's task %s first", prompts, pending.ID)
 	}
 	ready := r.machine().Claim()
 	w := &workflowRuntime{pool: r.pool, records: r.records, handlers: r.runner.handlers}

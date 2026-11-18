@@ -393,7 +393,7 @@
               "phase": "implementing",
               "queuedAt": "2026-09-22T08:54:20Z",
               "sendFailures": 2,
-              "lastSendError": "post the prompt: dial tcp 10.42.0.17:13371: connect: connection refused"
+              "lastSendError": "worker-stream: legion-legion-legion-211-implementer refused adopt-working-copy: Command failed (exit 1): jj metaedit: the git lock /legion/workspaces/acme/widgets/legion-211/.git/index.lock was last written 31m ago"
             }
           },
           "pass": 0,

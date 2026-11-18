@@ -278,7 +278,7 @@ func TestAStartReleasesTheHeldTaskUnlessItsOwnTaskSupersedesIt(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		task *RequestDeliver
-		// first is the delivery the start's own work leaves the agent prompted with.
+		// first is the delivery of the worker's one accepted take once the start's own work is done.
 		first string
 	}{
 		{"a start of a newer entry", &newer, newer.ID},

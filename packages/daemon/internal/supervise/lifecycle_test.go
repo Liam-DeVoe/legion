@@ -480,7 +480,7 @@ func TestARetirementWhoseRelaunchTheStoreDoesNotWriteKeepsItsTaskAndRelaunchesAt
 	}
 	h.relaunched()
 	if prompts := h.prompts(); len(prompts) == 0 || !strings.Contains(prompts[len(prompts)-1].Message, "the task") {
-		t.Errorf("the relaunched agent was prompted %+v, want the phase's task", prompts)
+		t.Errorf("the relaunched agent took %+v, want the phase's task", prompts)
 	}
 }
 

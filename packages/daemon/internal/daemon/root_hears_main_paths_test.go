@@ -564,7 +564,7 @@ func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
 					}
 				}
 				if len(prompts) == 0 || carried != 1 || !strings.Contains(prompts[len(prompts)-1].Message, want) {
-					t.Fatalf("RootHears wired=%t: the architect was prompted %d times with %+v, want its last prompt, and only it, carrying %q",
+					t.Fatalf("RootHears wired=%t: the architect took %d tasks, %+v, want its last take, and only it, carrying %q",
 						wired, len(prompts), prompts, want)
 				}
 				sent[wired] = len(prompts)
@@ -576,7 +576,7 @@ func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
 				}
 				asked := rig.asked.about(prompts[len(prompts)-1].DeliveryID)
 				if len(asked) == 0 {
-					t.Fatalf("the task prompted as %s was never put to RootHears; every root architect's task of a run is",
+					t.Fatalf("the task taken as %s was never put to RootHears; every root architect's task of a run is",
 						prompts[len(prompts)-1].DeliveryID)
 				}
 				for _, call := range asked {
@@ -586,8 +586,8 @@ func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
 				}
 			}
 			if sent[true] != sent[false] {
-				t.Fatalf("the architect was prompted %d times with RootHears wired and %d times with main's own behaviour; "+
-					"a task of a root that has an architect to hear it is sent either way", sent[true], sent[false])
+				t.Fatalf("the architect took %d tasks with RootHears wired and %d with main's own behaviour; "+
+					"a task of a root that has an architect to hear it is taken either way", sent[true], sent[false])
 			}
 		})
 	}
@@ -608,7 +608,7 @@ func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
 			t.Fatalf("the parked root's task = %#v, want it pending and untaken on the ready claim", pending)
 		}
 		if got := rig.prompts(); len(got) != 0 {
-			t.Fatalf("the architect of a parked root was prompted %+v, want nothing: no run of the root owns it", got)
+			t.Fatalf("the architect of a parked root took %+v, want nothing: no run of the root owns it", got)
 		}
 		refused := rig.asked.about(pending.ID)
 		if len(refused) == 0 {
@@ -623,9 +623,9 @@ func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
 		// A person hands the root back. The re-admission's start carries the root's task of
 		// generation 2 at a newer entry: the first act again, since the architect took nothing of
 		// generation 1 (workflow.ArchitectStartTask's last rule). That task supersedes the held one
-		// (supervise's supersedes), so the start does not send the held task first
-		// (supervise.Machine.StartedBy), its delivery retires the held task unsent, and the
-		// architect's first prompt is the re-admission's own task (dispatch://INFRA-2614 R3, R4).
+		// (supervise's supersedes), so the start does not offer the held task first
+		// (supervise.Machine.StartedBy), its delivery retires the held task untaken, and the
+		// architect's first take is of the re-admission's own task (dispatch://INFRA-2614 R3, R4).
 		// The decision the held task named is released with it, so no delivery holds it, and the
 		// catch-up the start writes for the running architect (the outbox's start, workflow's
 		// claimReady) names it and claims it.
@@ -634,7 +634,7 @@ func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
 		prompts := rig.prompts()
 		if len(prompts) != 1 || prompts[0].DeliveryID == pending.ID ||
 			!strings.Contains(prompts[0].Message, workflow.ArchitectFreshTreeLabel+" 2") || strings.Contains(prompts[0].Message, ref) {
-			t.Fatalf("after the re-admission the architect was prompted %+v, want generation 2's own task alone, not the held task %s",
+			t.Fatalf("after the re-admission the architect took %+v, want generation 2's own task alone, not the held task %s",
 				prompts, pending.ID)
 		}
 		if now := rig.machine().Claim().Pending; now == nil || now.ID != prompts[0].DeliveryID || now.Generation != 2 {

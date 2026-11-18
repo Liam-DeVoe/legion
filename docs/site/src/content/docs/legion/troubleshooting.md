@@ -1024,18 +1024,18 @@ The daemon writes the same record to its own log, as `workflow: a phase worker n
 
 The rule measures silence from the claim's last recorded step alone.
 A daemon that was itself down for longer than the bound comes back and reads every live worker as silent.
-Each of those gets one prompt and one notice, nothing is stopped, and the floor under `worker_silence_minutes` is what keeps an ordinary restart out of it.
+Each of those is given its work again once and gets one notice, nothing is stopped, and the floor under `worker_silence_minutes` is what keeps an ordinary restart out of it.
 
 A merged root's merger is never named silent.
 The merge ends the merger's work, but the root stands in `merging` until the rest of its tree leaves the workflow, which can take days, so the daemon reads the issue's pull request and leaves alone a merger whose pull request the record holds as merged, as its own resume paths do.
 
 A worker whose own session — the process the claim runs now — reports background work of its own running, an async job, a subagent or a background task, is left alone, however long it has been quiet.
-No bound can tell a forty-minute job from a worker that stopped, so the daemon prompts no such worker at all.
+No bound can tell a forty-minute job from a worker that stopped, so the daemon gives no such worker its work again at all.
 When that report has stood past `worker_background_hours`, four hours by default, the daemon writes one `worker-background-stalled` notice to the architect that owns the issue, naming the kinds the session reported and how long they have stood, and sends the worker nothing, because a background job can hang.
 The architect reads what the session says it is waiting on and decides.
 The report counts for the process the claim runs now and for no other.
-A worker whose pod was replaced while a background task of its own ran left that report behind, and the work it names died with the pod, so the daemon reads such a worker as one that has reported nothing: it is prompted at the silence bound like any other, and it earns no `worker-background-stalled` notice.
-That is why the daemon clears a worker's report when it launches the worker again, and why a worker on the Claude Code backend is repaired at all: that session reports at the end of a turn alone, and a worker nothing prompts has no turn to end.
+A worker whose pod was replaced while a background task of its own ran left that report behind, and the work it names died with the pod, so the daemon reads such a worker as one that has reported nothing: it is given its work again at the silence bound like any other, and it earns no `worker-background-stalled` notice.
+That is why the daemon clears a worker's report when it launches the worker again, and why a worker on the Claude Code backend is repaired at all: that session reports at the end of a turn alone, and a worker nothing gives a task has no turn to end.
 
 ## Which role made a commit
 

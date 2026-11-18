@@ -536,14 +536,16 @@ func populatedState(t *testing.T) State {
 				DefaultBranch: "main",
 				Workers: map[claim.Role]PhaseView{
 					// A released claim keeps the task it was holding through its suspension, and
-					// the two sends that never reached a turn are on it: the diagnosis record a
-					// stalled claim is read by, with no budget spent on either.
+					// the two takes of it whose adoption of the working copy the shim refused are
+					// on it: the diagnosis record that says why the task has not run.
 					claim.RoleImplementer: {Claim: ClaimView{
 						Session: "ses_implementer_211",
 						State:   "suspended",
 						PendingTask: &PendingTaskView{
 							Phase: phase.Implementing, QueuedAt: time.Date(2026, 9, 22, 8, 54, 20, 0, time.UTC),
-							SendFailures: 2, LastSendError: "post the prompt: dial tcp 10.42.0.17:13371: connect: connection refused",
+							SendFailures: 2, LastSendError: "worker-stream: legion-legion-legion-211-implementer refused adopt-working-copy: " +
+								"Command failed (exit 1): jj metaedit: the git lock /legion/workspaces/acme/widgets/legion-211/.git/index.lock " +
+								"was last written 31m ago",
 						},
 					}, Rounds: 1},
 				},
@@ -1409,7 +1411,9 @@ func operatorClaim() OperatorClaim {
 			// accept).
 			SendFailures:      2,
 			LastSendFailureAt: &lastSendFailure,
-			LastSendError:     "prompt the agent: context deadline exceeded",
+			LastSendError: "worker-stream: legion-legion-legion-209-implementer refused adopt-working-copy: " +
+				"Command failed (exit 1): jj metaedit: the git lock /legion/workspaces/acme/widgets/legion-209/.git/index.lock " +
+				"was last written 31m ago",
 		},
 		SuspensionHeld: true,
 		// A plugin round an earlier daemon opened over this claim, whose process speaks a plugin

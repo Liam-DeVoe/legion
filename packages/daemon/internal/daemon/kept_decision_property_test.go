@@ -3167,10 +3167,11 @@ func keptRefs(decisions []record.ParkedDecision) string {
 	return strings.Join(refs, ", ")
 }
 
-// observe reads what each architect was told since the last step — the prompts its connection
-// received and the catch-ups the publisher delivered to its role topic — and holds each telling to
-// the invariant: no reference twice, a catch-up naming the generation its root stood at when the
-// daemon decided to send it, and a start task reaching a root that has an architect to hear it.
+// observe reads what each architect was told since the last step — the texts of the takes the
+// daemon accepted for it and the catch-ups the publisher delivered to its role topic — and holds
+// each telling to the invariant: no reference twice, a catch-up naming the generation its root
+// stood at when the daemon decided to send it, and a start task reaching a root that has an
+// architect to hear it.
 //
 // The generation a catch-up is held to is the one the publisher read as the listener took it
 // (generationAtPublish), not the one the root stands at once the publish has returned: the daemon
@@ -3191,7 +3192,7 @@ func keptRefs(decisions []record.ParkedDecision) string {
 // not name; or the task of that same row told a second time, where the earlier take's turn
 // started, which is the one extra telling the invariant accepts (retold, held).
 //
-// One prompt comes from no row at all: the daemon's own delivery of what a relaunch ended, which a
+// One take comes from no row at all: the daemon's own delivery of what a relaunch ended, which a
 // claim holding no task is given at its ready (supervise's queueRelaunch, dispatch://INFRA-3276
 // R3). Its text is the relaunch's sentence alone, so it tells no decision, and the invariant holds
 // it to that: a reference in it is a telling no row accounts for.

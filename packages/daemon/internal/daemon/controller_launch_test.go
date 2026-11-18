@@ -35,7 +35,7 @@ func controllerLaunched(t *testing.T, rt *fake.Runtime, token claim.Token) runti
 }
 
 // registeredLaunch connects launch's shim to the daemon and registers its agent as session, as the
-// controller's pod does, and returns the shim the daemon prompts it on and the registration the
+// controller's pod does, and returns the shim the agent's turns run on and the registration the
 // agent is answered with.
 func registeredLaunch(t *testing.T, d *daemon, record *built, launch runtime.SpawnSpec, session string) (*shim, api.ControllerRegisterResponse) {
 	t.Helper()

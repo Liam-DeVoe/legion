@@ -858,7 +858,7 @@ func TestPodUpdateTheRoundsAsksAdoptNothingWhileTheImplementerIsInATurn(t *testi
 			t.Fatalf("%s's %s holds %+v once its round opened, want nothing queued for the round", fleetIssueA, role, c.Pending)
 		}
 		if prompts := rig.prompts(fleetIssueA, role); len(prompts) != 0 {
-			t.Errorf("%s's %s was prompted %+v once its round opened, want no prompt: the round's ask is no task", fleetIssueA, role, prompts)
+			t.Errorf("%s's %s took %+v once its round opened, want no take: the round's ask is no task", fleetIssueA, role, prompts)
 		}
 		if made := adoptionsOf(rig.rt, rig.token(fleetIssueA, role)); len(made) != 0 {
 			t.Errorf("%s's %s adopted the working copy as %v while the implementer was in a turn; the round's ask adopts nothing",
@@ -887,7 +887,7 @@ func TestPodUpdateTheRoundsAsksAdoptNothingWhileTheImplementerIsInATurn(t *testi
 		return c.Pending == nil && c.State != supervise.StateWorking
 	})
 	if prompts := rig.prompts(fleetIssueA, claim.RoleImplementer); len(prompts) != 1 || prompts[0].DeliveryID != phaseTask {
-		t.Errorf("the implementer was prompted %+v by the end of its turn, want its phase task alone", prompts)
+		t.Errorf("the implementer took %+v by the end of its turn, want its phase task alone", prompts)
 	}
 	if made := adoptionsOf(rig.rt, implementer); len(made) != 1 {
 		t.Errorf("the implementer adopted the working copy as %v by the end of its turn, want only the one adoption its phase task made",

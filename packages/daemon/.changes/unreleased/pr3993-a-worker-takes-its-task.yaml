@@ -3,8 +3,9 @@ body: |-
   The daemon no longer pushes a task to a worker as a prompt. It writes the number of each claim's
   task to the task bucket `legion_tasks` on Envoy's NATS, the Envoy listener relays it to the
   worker's session, and the worker takes the task once it is idle. A worker is charged only when it
-  saw a task and did not take it within `worker_take_timeout_seconds` (300 by default), or took it
-  and started no turn within `worker_turn_start_timeout_seconds` (1500 by default). A daemon that
+  saw a task and did not take it within `worker_take_timeout_seconds` (300 by default), took it and
+  started no turn within `worker_turn_start_timeout_seconds` (1500 by default), or asked to take it
+  and the shim refused to adopt the working copy, a refusal charged at the shim's answer. A daemon that
   cannot open or create the bucket refuses to boot and names the missing grant, and so does one that
   connects as the agents' shared NATS user; `legion probe-boot` makes the same check, and
   `legion config check` prints the refusal of a daemon that would connect as that user.

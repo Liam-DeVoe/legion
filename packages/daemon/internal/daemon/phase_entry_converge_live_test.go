@@ -434,11 +434,11 @@ func (r *phaseEntryConvergeLive) phaseChangesWhileTheStartWaits() {
 
 	// The first phase change inside that wait: the held read runs and answers the head
 	// conflicting with its base, which sends the issue back to implementing, and the
-	// implementer, which is live, is prompted its merge-forward task at once.
+	// implementer, which is live, takes its merge-forward task at once.
 	releaseRead()
 	r.waitFor("the issue back in implementing", func(got api.Issue) bool { return got.Phase == phase.Implementing })
 	fix := r.imp.awaitTask("the implementer's merge-forward task after the conflict", convergeOwedBound)
-	r.note("let the held read of #%d run, with GitHub answering %s conflicting with %s: %s is in implementing and the implementer was prompted its merge-forward task (%s)",
+	r.note("let the held read of #%d run, with GitHub answering %s conflicting with %s: %s is in implementing and the implementer took its merge-forward task (%s)",
 		r.number, convergeFirstHead, convergeBase, r.key, firstLine(fix.Text))
 
 	// The second: the implementer's merge forward at a head of its own hands testing out again,

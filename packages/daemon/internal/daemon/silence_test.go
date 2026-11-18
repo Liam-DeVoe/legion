@@ -274,10 +274,10 @@ func (r *podUpdateRig) takesRelaunchSentence(role claim.Role, says string) {
 // Beside the silent worker stands one the sweep must leave alone: the issue's tester, which
 // went through the same round and stepped inside the bound, so it is a worker of the same pod,
 // up, between turns and holding nothing, differing from the silent one in the silence itself
-// and in the phase its role works. It is prompted nothing, which is what holds the sweep to the
-// one claim it is owed: a pass that read a pod and prompted the workers in it — for the drift
-// that pod carried, or for the silence of the one worker beside them — would prompt this one
-// too, and its architect would get a task for work no worker of its phase is doing.
+// and in the phase its role works. It is given nothing to take, which is what holds the sweep to
+// the one claim it is owed: a pass that read a pod and gave the workers in it a task — for the
+// drift that pod carried, or for the silence of the one worker beside them — would give this one
+// a task too, and its architect would get a task for work no worker of its phase is doing.
 //
 // The silence itself is read at the end, put to the one claim of this issue it can decide,
 // which is the issue's own phase worker. The sweep judges the silence before it mints anything
@@ -1054,7 +1054,7 @@ func TestSilentPhaseWorkerWhoseDeadProcessLeftABackgroundReportGetsItsTaskAgain(
 	rig.sweepForSilence()
 
 	if got := rig.starts(); len(got) != 1 || got[0].Op != "start" || got[0].Task != workflow.ResumePhaseTask(rig.issue()) {
-		t.Fatalf("the supervise rows of %s = %+v, want one start row carrying the phase's resume task: the background work the dead process reported died with its pod, so nothing will prompt this worker",
+		t.Fatalf("the supervise rows of %s = %+v, want one start row carrying the phase's resume task: the background work the dead process reported died with its pod, so without that row nothing gives this worker a task",
 			podUpdateIssue, got)
 	}
 	rig.drain()

@@ -388,7 +388,7 @@ func TestARegisteredAgentThatNeverSaysReadyIsRelaunchedAtTheDeadline(t *testing.
 
 			h.relaunched()
 			if prompts := h.wantPrompts(1); prompts[0].Message != "implement the plan" {
-				t.Errorf("the relaunched agent was prompted %q, want the task the claim held", prompts[0].Message)
+				t.Errorf("the relaunched agent took %q, want the task the claim held", prompts[0].Message)
 			}
 			h.wantBudgets(Budgets{})
 		})
@@ -461,7 +461,7 @@ func TestAgentsThatNeverSayReadyFailTheClaimAtTheLaunchFailureLimit(t *testing.T
 	h.wantCalls("Suspend", testLimits().LaunchFailures)
 }
 
-// Ready ends the boot watch: from it the claim is prompted, and no deadline remains.
+// Ready ends the boot watch: from it the worker takes the claim's task, and no deadline remains.
 func TestReadyEndsTheBootWatch(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)

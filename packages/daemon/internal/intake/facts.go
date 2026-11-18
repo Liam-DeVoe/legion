@@ -1140,8 +1140,8 @@ type ClaimReady struct {
 	// (supervise's forgetSession). The first source alone sets it, from the claim its ready wrote
 	// (the daemon's applyTerminal): an architect's catch-up opens with it (workflow's
 	// QueueCatchUp), because the first turn of a relaunched architect can be that catch-up's
-	// rather than its prompt's. The catch-up's copy tells nothing: the record is told by the
-	// prompt the claim's machine sends, at that prompt's confirmation.
+	// rather than its take's. The catch-up's copy tells nothing: the record is told by the
+	// accepted take whose text carries the sentence (supervise's accept).
 	Relaunch string
 }
 

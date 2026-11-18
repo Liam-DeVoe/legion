@@ -1109,12 +1109,14 @@ test("a claim and an issue carry the fields the record decides they serve", () =
     updateReasons: "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved",
     pendingTask: { phase: "implementing", queuedAt: "2026-09-22T09:16:58Z" },
   });
-  // The sends that never reached a turn ride the task a released claim still holds.
+  // The takes whose adoption of the working copy the shim refused ride the task a released claim
+  // still holds.
   expect(released.pendingTask).toEqual({
     phase: "implementing",
     queuedAt: "2026-09-22T08:54:20Z",
     sendFailures: 2,
-    lastSendError: "post the prompt: dial tcp 10.42.0.17:13371: connect: connection refused",
+    lastSendError:
+      "worker-stream: legion-legion-legion-211-implementer refused adopt-working-copy: Command failed (exit 1): jj metaedit: the git lock /legion/workspaces/acme/widgets/legion-211/.git/index.lock was last written 31m ago",
   });
   // The cause of the death whose relaunch the runtime refused, which stands beside `failure`.
   expect(failed.pendingCause).toBe("died");
