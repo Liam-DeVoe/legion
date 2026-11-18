@@ -107,11 +107,11 @@ func (s *server) putIssuePlan(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, planRecord(written))
 }
 
-// document is the owner's document input states as the store's one value: nil where the body
-// names neither its artifact_id nor its version (each left out, null, "" or 0), and else both,
-// the one the body leaves out "" or 0, which the store refuses, naming it, after it has checked
-// the plan's generation and source.
-func (input planRecordInput) document() *workflowstore.PlanDocument {
+// document is the owner's document input states as the store's one value: each half the body
+// leaves out, or sends null, "" or 0, is "" or 0, which states nothing. The store refuses a half an
+// owner's plan leaves out, and a half a default plan names, naming it, after it has checked the
+// plan's generation and source.
+func (input planRecordInput) document() workflowstore.PlanDocument {
 	var document workflowstore.PlanDocument
 	if input.ArtifactID != nil {
 		document.ArtifactID = *input.ArtifactID
@@ -119,10 +119,7 @@ func (input planRecordInput) document() *workflowstore.PlanDocument {
 	if input.Version != nil {
 		document.Version = *input.Version
 	}
-	if document == (workflowstore.PlanDocument{}) {
-		return nil
-	}
-	return &document
+	return document
 }
 
 // listProjectPlans is each finished issue of one project, newest close first:

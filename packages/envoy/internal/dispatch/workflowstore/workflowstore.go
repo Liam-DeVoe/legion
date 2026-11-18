@@ -207,13 +207,14 @@ type PlanDocument struct {
 }
 
 // PlanWrite is one write of a plan: the id and the issue it writes, and each field it states. A
-// plan write names its generation, its source and its tasks, and an owner's plan its document; the
-// project is set once, never required.
+// plan write names its generation, its source and its tasks, and an owner's plan its document; a
+// Document left zero states none, as a default plan's does. The project is set once, never
+// required.
 type PlanWrite struct {
 	ID, Issue       string
 	Project, Source *string
 	Generation      *int64
-	Document        *PlanDocument
+	Document        PlanDocument
 	Tasks           []PlanTask
 }
 

@@ -114,7 +114,7 @@ func TestAPlanWriteKeepsTheFirst(t *testing.T) {
 	id, document := uuid.NewString(), uuid.NewString()
 	owner := PlanWrite{
 		ID: id, Issue: "LEG-1", Generation: new(int64(2)), Source: new(PlanSourceOwner),
-		Document: &PlanDocument{ArtifactID: document, Version: 3},
+		Document: PlanDocument{ArtifactID: document, Version: 3},
 		Tasks:    []PlanTask{{ID: "api", Steps: []string{"implementer", "reviewer:fresh"}}, {ID: "docs", Steps: []string{"implementer"}}},
 	}
 	first := putPlan(t, pool, owner, minute(0))
@@ -150,7 +150,7 @@ func TestADefaultPlanTakesNoDocumentFromALaterWrite(t *testing.T) {
 
 	owner := putPlan(t, pool, PlanWrite{
 		ID: id, Issue: "LEG-1", Generation: new(int64(1)), Source: new(PlanSourceOwner),
-		Document: &PlanDocument{ArtifactID: uuid.NewString(), Version: 3},
+		Document: PlanDocument{ArtifactID: uuid.NewString(), Version: 3},
 		Tasks:    []PlanTask{{ID: "ui", Steps: []string{"implementer"}}, {ID: "api", Steps: []string{"implementer", "reviewer"}}},
 	}, minute(1))
 	if planText(owner) != planText(want) {
@@ -187,14 +187,14 @@ func TestAPlanWriteRefusesAValueOutsideItsForm(t *testing.T) {
 		"steps empty":               func(write *PlanWrite) { write.Tasks[0].Steps = nil },
 		"steps Planner":             func(write *PlanWrite) { write.Tasks[0].Steps[0] = "Planner" },
 		"steps with a blank key":    func(write *PlanWrite) { write.Tasks[0].Steps[4] = "acceptance:" },
-		"artifact_id of default":    func(write *PlanWrite) { write.Document = &PlanDocument{ArtifactID: uuid.NewString()} },
-		"version of default":        func(write *PlanWrite) { write.Document = &PlanDocument{Version: 1} },
-		"artifact_id of owner none": func(write *PlanWrite) { write.Source, write.Document = new(PlanSourceOwner), &PlanDocument{Version: 1} },
+		"artifact_id of default":    func(write *PlanWrite) { write.Document = PlanDocument{ArtifactID: uuid.NewString()} },
+		"version of default":        func(write *PlanWrite) { write.Document = PlanDocument{Version: 1} },
+		"artifact_id of owner none": func(write *PlanWrite) { write.Source, write.Document = new(PlanSourceOwner), PlanDocument{Version: 1} },
 		"artifact_id not a uuid": func(write *PlanWrite) {
-			write.Source, write.Document = new(PlanSourceOwner), &PlanDocument{ArtifactID: "plan-md", Version: 1}
+			write.Source, write.Document = new(PlanSourceOwner), PlanDocument{ArtifactID: "plan-md", Version: 1}
 		},
 		"version of owner none": func(write *PlanWrite) {
-			write.Source, write.Document = new(PlanSourceOwner), &PlanDocument{ArtifactID: uuid.NewString()}
+			write.Source, write.Document = new(PlanSourceOwner), PlanDocument{ArtifactID: uuid.NewString()}
 		},
 		"id":    func(write *PlanWrite) { write.ID = "not-a-uuid" },
 		"issue": func(write *PlanWrite) { write.Issue = "" },
@@ -469,7 +469,7 @@ func TestProjectPlansListsTwoIssuesClosedAtOneMomentWhole(t *testing.T) {
 	ownersPlan := Plan{ID: planTwo, Issue: "LEG-2", Source: PlanSourceOwner, Generation: 2, Document: &PlanDocument{ArtifactID: document, Version: 1},
 		Tasks: []PlanTask{{ID: "ui", Steps: []string{"implementer", "tester"}}, {ID: "api", Steps: []string{"implementer"}}, {ID: "docs", Steps: []string{"writer", "implementer"}}}}
 	written := putPlan(t, pool, PlanWrite{
-		ID: planTwo, Issue: "LEG-2", Generation: new(int64(2)), Source: new(PlanSourceOwner), Document: &PlanDocument{ArtifactID: document, Version: 1},
+		ID: planTwo, Issue: "LEG-2", Generation: new(int64(2)), Source: new(PlanSourceOwner), Document: PlanDocument{ArtifactID: document, Version: 1},
 		Tasks: []PlanTask{{ID: "ui", Steps: []string{"implementer", "tester"}}, {ID: "api", Steps: []string{"implementer"}}, {ID: "docs", Steps: []string{"writer", "implementer"}}},
 	}, minute(20))
 	if planText(written) != planText(ownersPlan) {
@@ -524,16 +524,16 @@ func TestProjectPlansTakesTheNewestPlanAndEveryRating(t *testing.T) {
 	newestID := "50000000-0000-4000-8000-000000000000"
 	putPlan(t, pool, PlanWrite{
 		ID: "30000000-0000-4000-8000-000000000000", Issue: "LEG-1", Generation: new(int64(10)), Source: new(PlanSourceOwner),
-		Document: &PlanDocument{ArtifactID: uuid.NewString(), Version: 3}, Tasks: []PlanTask{{ID: "docs", Steps: []string{"writer"}}},
+		Document: PlanDocument{ArtifactID: uuid.NewString(), Version: 3}, Tasks: []PlanTask{{ID: "docs", Steps: []string{"writer"}}},
 	}, minute(75))
 	putPlan(t, pool, defaultPlan(newestID, "LEG-1", 40), minute(50))
 	putPlan(t, pool, PlanWrite{
 		ID: "90000000-0000-4000-8000-000000000000", Issue: "LEG-1", Generation: new(int64(2)), Source: new(PlanSourceOwner),
-		Document: &PlanDocument{ArtifactID: uuid.NewString(), Version: 1}, Tasks: []PlanTask{{ID: "api", Steps: []string{"implementer"}}},
+		Document: PlanDocument{ArtifactID: uuid.NewString(), Version: 1}, Tasks: []PlanTask{{ID: "api", Steps: []string{"implementer"}}},
 	}, minute(100))
 	putPlan(t, pool, PlanWrite{
 		ID: "10000000-0000-4000-8000-000000000000", Issue: "LEG-1", Generation: new(int64(9)), Source: new(PlanSourceOwner),
-		Document: &PlanDocument{ArtifactID: uuid.NewString(), Version: 2},
+		Document: PlanDocument{ArtifactID: uuid.NewString(), Version: 2},
 		Tasks:    []PlanTask{{ID: "ui", Steps: []string{"implementer", "reviewer"}}, {ID: "api", Steps: []string{"implementer"}}},
 	}, minute(0))
 	third := ratedRetro(t, pool, "LEG-1", 9, minute(200), minute(201), 4, "Two tasks were one.")
