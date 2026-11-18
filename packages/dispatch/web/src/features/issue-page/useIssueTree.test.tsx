@@ -4045,3 +4045,74 @@ test("a refused tree read is read again when the live feed comes back while the 
     client.clear();
   }
 });
+
+// With the live feed down, a window focus while a write is out waits until the write settles
+// before it reads a refused tree. The feed comes back before that, with its gap replayed whole,
+// and reads the refused tree itself. Once the write settles the feed is up, and a focus while
+// the feed is up reads no refused tree: the focus that waited reads nothing, so the tree is read
+// once, not twice.
+test("a focus held for a write reads no refused tree once the live feed came back and read it", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockRejectedValue(
+    new Error("the tree read was refused")
+  );
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const sockets = installFakeLiveSockets();
+  // Signed in at event head 1, as the app's sign-in gate holds it before the page.
+  client.setQueryData(["whoami"], { event_head: "1", kind: "user", login: "alice" });
+  const answered = Promise.withResolvers<void>();
+  try {
+    const view = renderHook(() => useIssueTree(issue), {
+      wrapper: fedStage(client, { preset: "conversation" }),
+    });
+    startFeedOn(sockets, true);
+    await waitFor(() => expect(client.getQueryState(issueTreeKey(KEY))?.status).toBe("error"));
+    await act(async () => {
+      await Bun.sleep(1_100);
+    });
+    // Dispatch restarts under the page's socket; the page opens its next one and sends the feed
+    // there, which Dispatch has not started yet: the feed is down.
+    const lost = sockets.latest();
+    act(() => lost.restart());
+    await act(async () => {
+      await Bun.sleep(200);
+    });
+    const next = sockets.latest();
+    expect(next, "the page opened its next socket").not.toBe(lost);
+    act(() => next.open());
+    const before = treeReadsOf();
+
+    const write = new MutationObserver(client, { mutationFn: () => answered.promise });
+    const settled = write.mutate();
+    await act(async () => {
+      focusWindow();
+      await Bun.sleep(300);
+    });
+    expect(treeReadsOf() - before, "no tree read while the write is out").toBe(0);
+
+    const { sub } = next.subscribed("events");
+    act(() => next.receive({ type: "events_start", sub, since: "1", replay_complete: true }));
+    await act(async () => {
+      await Bun.sleep(1_500);
+    });
+    expect(treeReadsOf() - before, "the feed coming back reads the refused tree").toBe(1);
+
+    await act(async () => {
+      answered.resolve();
+      await settled;
+      await Bun.sleep(1_500);
+    });
+    expect(
+      treeReadsOf() - before,
+      "the focus that waited for the write reads nothing once the feed is up"
+    ).toBe(1);
+    view.unmount();
+  } finally {
+    answered.resolve();
+    focusManager.setFocused(undefined);
+    liveSocketFor(client).close();
+    sockets.restore();
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
