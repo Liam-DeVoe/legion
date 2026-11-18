@@ -32,16 +32,19 @@ env:
 jobs:
   envoy-go-race-api:
     runs-on: ubuntu-24.04-arm
-    # The step's -timeout 30m must fire before the runner cancels the job, so a hung test prints
+    # The step's -timeout 70m must fire before the runner cancels the job, so a hung test prints
     # the dump that names it: about 1 minute of setup, up to 5 minutes to compile the race
-    # binaries, then the step's own 30 minutes, which is 36.
+    # binaries, then the step's own 70 minutes, which is 76, under the job's 90. 70 minutes is
+    # twice the longest measured run: the package took 32.6 minutes under the race detector on a
+    # dev box, and this job took 32 minutes 48 seconds, past the 30 minutes it had.
     #
-    # Budget (ci-budgets.md's Budgets note): 2700 s, the 45 minutes this job carried, above both
-    # the 36 the sentence above derives and its 1273 s measured maximum, plus its slowest
-    # retried step alone — the ci-ok report, 2160 s (ci-budgets.md's Budgets note, "The ci-ok report"), above
-    # packages/envoy's `go mod download` at 5 x 180 + 150 = 1050 s. 2700 + 2160 = 4860 s, a whole number of
-    # minutes, so the budget is the next one strictly above it -> 82 min.
-    timeout-minutes: 82
+    # Budget (ci-budgets.md's Budgets note): 5400 s, the 90 minutes main's #4444 gives this job,
+    # above both the 76 the sentence above derives and its 32 minutes 48 seconds measured, plus
+    # its slowest retried step alone — the ci-ok report, 2160 s (ci-budgets.md's Budgets note,
+    # "The ci-ok report"), above packages/envoy's `go mod download` at 5 x 180 + 150 = 1050 s.
+    # 5400 + 2160 = 7560 s, a whole number of minutes, so the budget is the next one strictly
+    # above it -> 127 min.
+    timeout-minutes: 127
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -80,7 +83,7 @@ jobs:
           . .github/scripts/ci-retry.sh
           retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
       - name: Race-test the Dispatch API
-        run: go test -count=1 -race -timeout 30m ./internal/dispatch/api/
+        run: go test -count=1 -race -timeout 70m ./internal/dispatch/api/
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run
