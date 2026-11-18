@@ -12,6 +12,7 @@ import {
   pagePaperBg,
 } from "../../theme/classes";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
+import { chipOfLostAction } from "./approval-chip-box";
 import { type FocusFallback, useFocusKeeper } from "./focus-keeper";
 import type { IssueAction } from "./IssueActionsMenu";
 import type { IssueField } from "./IssueFieldForms";
@@ -21,7 +22,6 @@ import { IssueTitleRow } from "./IssueTitleRow";
 import { useIdentityBlock } from "./identity-block";
 import { pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, STATE_LINES } from "./page-words";
-import { chipOfLostAction } from "./useHeaderKeys";
 import { type IssueHeaderWrites, statusPickOnly } from "./useIssueHeaderWrites";
 import { useIssuePalette } from "./useIssuePalette";
 
@@ -29,13 +29,14 @@ import { useIssuePalette } from "./useIssuePalette";
  * Where the header's keeper puts the focus once a write takes away the control that held it -
  * a close that disables the status, an answered request that removes Approve, a refusal line
  * that goes once its write lands - in this order (decision 216). When the lost control is one of
- * an approval chip's two actions, that chip comes first (`chipOfLostAction`): Approve is
- * disabled while its review is written, and both actions go once the request is answered, so
- * the reader stays on the document they just reviewed rather than being sent to the top of the
- * header. "Issue actions" comes next: the header draws it in every state and no write disables
- * it, and it opens the actions a reader goes on with. The title's heading comes last, as the
- * field the issue's refusal line stands for, which is the place the decision names; it stands in
- * the same block as "Issue actions", so it is reached only should that control ever be missing.
+ * an approval chip's two actions, or a control of the Request changes dialog the chip opened,
+ * that chip comes first (`chipOfLostAction`): both actions go once the request is answered, and
+ * the dialog shuts once its change request is read, so the reader stays on the document they
+ * just reviewed rather than being sent to the top of the header. "Issue actions" comes next: the
+ * header draws it in every state and no write disables it, and it opens the actions a reader
+ * goes on with. The title's heading comes last, as the field the issue's refusal line stands for,
+ * which is the place the decision names; it stands in the same block as "Issue actions", so it
+ * is reached only should that control ever be missing.
  */
 const HEADER_FOCUS_FALLBACKS: readonly FocusFallback[] = [
   chipOfLostAction,

@@ -92,7 +92,7 @@ function priority(id: string, title: string): PriorityRow {
     id,
     made_at: "2026-11-01T00:00:00Z",
     made_by: { id: "alice", kind: "user" },
-    owner: "INFRA controller",
+    owner: "ACME controller",
     rank: id,
     state: "live",
     title,

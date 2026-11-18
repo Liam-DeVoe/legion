@@ -1,3 +1,4 @@
+import { ACTION_WORDS } from "../web/src/features/issue-page/approval-chip-box";
 import { statusGlyph } from "../web/src/features/issue-page/issue-status";
 import { CONTROL_LABELS, STATE_LINES } from "../web/src/features/issue-page/page-words";
 import {
@@ -34,6 +35,7 @@ import {
   headerLabels,
   headerParts,
   holdClipboard,
+  holdLabelsAtTheirChips,
   holdReviewReads,
   IPHONE_13,
   identityBand,
@@ -41,7 +43,7 @@ import {
   issueHeader,
   LONGEST_LABEL,
   labelFillingTheRoom,
-  labelsCutAsTheLineNarrows,
+  labelsAgainstTheCount,
   labelsLeft,
   lineOrder,
   MEASURED_TITLE,
@@ -96,9 +98,11 @@ function writesField(request: Request, key: string, field: string): boolean {
 }
 
 /** The review actions of an approval inside `scope`: Approve (`Approve v2` on a stale approval)
- *  and Request changes. The chip itself (`Approved v1`) is none of them. */
+ *  and Request changes, by the words the header itself finds them by (`ACTION_WORDS`). The chip
+ *  itself (`Approved v1`) is none of them. */
 function reviewActions(scope: Locator): Locator {
-  return scope.getByRole("button", { name: /^(Approve( v\d+)?|Request changes)$/ });
+  const sources = Object.values(ACTION_WORDS).map((pattern) => pattern.source);
+  return scope.getByRole("button", { name: new RegExp(sources.join("|")) });
 }
 
 /** The words the labels' count reads with `left` labels it does not draw: `+3 labels`. */
@@ -393,7 +397,7 @@ test("the header holds its list and its limits at every width @phone", async ({ 
       // again before the next step.
       if (width === DESKTOP.width || width === IPHONE_13.width) {
         expect(
-          await labelsCutAsTheLineNarrows(page, 60),
+          (await labelsAgainstTheCount(page, 60)).cut,
           `a label is cut in the frame after the line narrowed at ${width} px`
         ).toEqual([]);
         await propertiesLine(page).evaluate((line) => line.style.removeProperty("max-width"));
@@ -793,9 +797,6 @@ test("the header holds its limits when the typeface does not load @phone", async
       `the header's text is not drawn in ${TYPEFACE} first`
     ).toBe(TYPEFACE);
     const address = await typefaceAddress(page);
-    if (address === null) {
-      throw new Error(`the page's stylesheet declares no @font-face for ${TYPEFACE}`);
-    }
 
     // With no request waiting and then one, the header holds its limits in the typeface at
     // 1440 px and 390 px; and with every request for its file refused, in the fallback, where
@@ -1750,34 +1751,12 @@ test("the labels' count names every label the line leaves out, at every width of
           element.style.maxWidth = `${at}px`;
         }, full - by);
         await framesDrawn(page, 4);
-        const reading = await line.evaluate((element, total) => {
-          const box = element.querySelector('[data-testid="issue-header-labels"]');
-          if (box === null) return "no labels' box";
-          const outer = box.getBoundingClientRect();
-          let whole = 0;
-          let cut = 0;
-          for (const chip of box.querySelectorAll("[data-header-label]")) {
-            const rect = chip.getBoundingClientRect();
-            const inside =
-              rect.left >= outer.left - 0.5 &&
-              rect.right <= outer.right + 0.5 &&
-              rect.top >= outer.top - 0.5 &&
-              rect.bottom <= outer.bottom + 0.5;
-            const outside =
-              rect.right <= outer.left + 0.5 ||
-              rect.left >= outer.right - 0.5 ||
-              rect.bottom <= outer.top + 0.5 ||
-              rect.top >= outer.bottom - 0.5;
-            if (inside) whole += 1;
-            else if (!outside) cut += 1;
-          }
-          const count = element.querySelector('[data-testid="issue-labels-left"]');
-          const left = Number(/\d+/.exec(count?.textContent ?? "")?.[0] ?? "0");
-          return whole + left === total && cut === 0
-            ? null
-            : `${whole} drawn whole, ${cut} cut, the count names ${left}, of ${total}`;
-        }, TWENTY_LABELS.length);
-        if (reading !== null) wrong.push(`${(full - by).toFixed(0)} px: ${reading}`);
+        const { cut, left, whole } = await labelsAgainstTheCount(page);
+        if (whole + left !== TWENTY_LABELS.length || cut.length > 0) {
+          wrong.push(
+            `${(full - by).toFixed(0)} px: ${whole} drawn whole, ${cut.length} cut, the count names ${left}, of ${TWENTY_LABELS.length}`
+          );
+        }
       }
       await line.evaluate((element) => {
         element.style.maxWidth = "";
@@ -1785,6 +1764,83 @@ test("the labels' count names every label the line leaves out, at every width of
       expect
         .soft(wrong, `the labels' count does not name the labels left out at ${width} px`)
         .toEqual([]);
+    }
+  });
+});
+
+// The labels are read in script, and the typeface (`font-display: swap`, `web/src/styles.css`)
+// can arrive after that reading and draw the chips wider while the labels' box keeps its width,
+// which the box's resize observer never sees: a chip then wraps onto the line the box clips away,
+// and the count, which is a count of the rest, does not name it. At this seed the swap widens the
+// line's other items as well - on a 1440 px line the status, the approval control and the labels'
+// count each by 5 to 7 px - so the box narrows, and that resize alone has the labels read again.
+// The row therefore holds the box at one width across the swap, as a line whose other items keep
+// their whole-pixel widths holds it, so the chips are all the swap changes; and that width is the
+// one the chips drawn in the fallback fill, so a chip any wider no longer fits.
+test("the labels' count names every label the line does not draw whole after the typeface loads", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    await patchIssue(seeded.key, { labels: [...TWENTY_LABELS], title: MEASURED_TITLE });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectHeaderDrawn(page);
+    const address = await typefaceAddress(page);
+
+    // A context of its own, with nothing of the file in hand, whose requests for it wait until
+    // the row lets them go.
+    const held = await asUser(browser, "alice");
+    try {
+      await withIssuePage(held, "alice");
+      const file = Promise.withResolvers<void>();
+      await held.route(address, async (route) => {
+        await file.promise;
+        await route.fallback();
+      });
+      const swapping = await held.newPage();
+      await swapping.setViewportSize(DESKTOP);
+      await gotoIssue(swapping, `/issues/${seeded.key}`);
+      await expectHeaderDrawn(swapping);
+      await expect(labelsLeft(swapping)).toBeVisible();
+      await expect
+        .poll(() => typefaceStatuses(swapping), {
+          message: `the ${TYPEFACE} face is not waiting for its file`,
+        })
+        .toEqual(["loading"]);
+
+      // In the fallback, the box held at the width its chips fill, and the line read again there.
+      await holdLabelsAtTheirChips(swapping);
+      await framesDrawn(swapping, 4);
+      const inTheFallback = await labelsAgainstTheCount(swapping);
+      expect(inTheFallback.whole, "the line draws no label in the fallback").toBeGreaterThan(0);
+      expect(inTheFallback.cut, "a label is cut in the fallback").toEqual([]);
+      expect(
+        inTheFallback.whole + inTheFallback.left,
+        `in the fallback ${inTheFallback.whole} labels are drawn whole and the count names ${inTheFallback.left}`
+      ).toBe(TWENTY_LABELS.length);
+
+      // The file arrives, and the face draws the chips.
+      file.resolve();
+      await expect
+        .poll(() => typefaceStatuses(swapping), {
+          message: `the ${TYPEFACE} face did not load once its file was let go`,
+        })
+        .toEqual(["loaded"]);
+      await framesDrawn(swapping, 4);
+      const inTheFace = await labelsAgainstTheCount(swapping);
+      expect(inTheFace.cut, `a label is cut once ${TYPEFACE} has loaded`).toEqual([]);
+      expect(
+        inTheFace.whole + inTheFace.left,
+        `once ${TYPEFACE} has loaded ${inTheFace.whole} labels are drawn whole and the count names ${inTheFace.left}`
+      ).toBe(TWENTY_LABELS.length);
+      // A face whose chips came out no wider than the fallback's would leave every label where it
+      // was, and the row would pass with the typeface's listener taken out.
+      expect(
+        inTheFace.left,
+        `the face pushed no label off the line: the count names ${inTheFace.left} once ${TYPEFACE} has loaded and ${inTheFallback.left} in the fallback`
+      ).toBeGreaterThan(inTheFallback.left);
+    } finally {
+      await held.close();
     }
   });
 });
@@ -2130,6 +2186,84 @@ test("the header's menu gives the focus back to its control on Escape and after 
       await triggerFocused(),
       "the menu's Close issue by Enter left the focus off its control"
     ).toBe(true);
+  });
+});
+
+/** What `focusNow` reads with the focus on the header's "Issue actions", the first place the
+ *  header's keeper puts a focus whose control has gone. */
+const ON_ISSUE_ACTIONS = {
+  inHeader: true,
+  onBody: false,
+  what: `button ${CONTROL_LABELS.issue_actions}`,
+} as const;
+
+// Details gives the focus back to the control it was opened from as it closes, but a write made
+// while it is open can take that control off the header: the labels' count goes once every label
+// fits, and the parent link once the parent is cleared. Details then had nothing to give the
+// focus back to and left it on the page's body, from which the next Tab starts again at the top
+// of the page; the header's keeper had stopped watching once the focus left the header. The
+// keeper now waits for Details to close and places that focus by the header's own fallbacks, the
+// first of which is "Issue actions" (decision 237). The focus is read once, after Details has
+// closed and two frames are drawn, so a focus that only passes through a control is not taken
+// for one that stays there.
+test("Details closed after a write removed the labels' count leaves the focus in the header", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    await patchIssue(seeded.key, { labels: [...TWENTY_LABELS] });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectHeaderDrawn(page);
+    const count = labelsLeft(page);
+    await expect(count, "twenty labels draw no labels' count").toBeVisible();
+    await count.focus();
+    await page.keyboard.press("Enter");
+    await expect(details(page), "Enter on the labels' count opened no Details").toBeVisible();
+    await expect
+      .poll(() => details(page).evaluate((drawer) => drawer.contains(document.activeElement)), {
+        message: "Details took no focus as it opened",
+      })
+      .toBe(true);
+    await patchIssue(seeded.key, { labels: ["dispatch"] });
+    await expect(count, "one label still draws the labels' count").toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(details(page), "Escape left Details open").toBeHidden();
+    await framesDrawn(page, 2);
+    expect(
+      await focusNow(page),
+      "Details, closed after its labels' count went, left the focus off Issue actions"
+    ).toEqual(ON_ISSUE_ACTIONS);
+  });
+});
+
+// The same, opened by Shift+M from the header's parent link, which goes once the parent is
+// cleared while Details is open.
+test("Details closed after a write removed the parent link leaves the focus in the header", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectHeaderDrawn(page);
+    const parent = issueHeader(page).getByRole("link", { exact: true, name: seeded.parentKey });
+    await parent.focus();
+    await expect(parent, "the header's parent link took no focus").toBeFocused();
+    await page.keyboard.press("Shift+M");
+    await expect(details(page), "Shift+M on the parent link opened no Details").toBeVisible();
+    await expect
+      .poll(() => details(page).evaluate((drawer) => drawer.contains(document.activeElement)), {
+        message: "Details took no focus as it opened",
+      })
+      .toBe(true);
+    await patchIssue(seeded.key, { parent: null });
+    await expect(parent, "a cleared parent still draws the parent link").toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(details(page), "Escape left Details open").toBeHidden();
+    await framesDrawn(page, 2);
+    expect(
+      await focusNow(page),
+      "Details, closed after its parent link went, left the focus off Issue actions"
+    ).toEqual(ON_ISSUE_ACTIONS);
   });
 });
 
@@ -2527,12 +2661,12 @@ test("a change request sent from the header leaves the focus in the header", asy
   });
 });
 
-// Approve pressed by Enter on the header's chip is disabled while its review is written, which
-// drops the focus to the page's body, and the approval then takes it away. The focus goes to the
-// chip of the document the reader approved, not to another control of the header, both while the
-// review is written and once the approval lands. The review's write is held open with a route so
-// the row can read the focus while Approve is disabled: once the write lands, Approve takes the
-// focus back and the chip's own restore puts it on the chip, wherever the header had put it.
+// Approve pressed by Enter on the header's chip keeps the focus while its review is written:
+// it is `aria-disabled` then and a press of it does nothing, so nothing moves the focus off it
+// (decision 223). Once the approval is read the header draws no Approve, and the focus goes to
+// the chip of the document the reader approved, not to another control of the header. The
+// review's write is held open with a route so the row can read the focus while Approve refuses
+// a press.
 test("Approve by Enter on the header's chip leaves the focus on the approved chip", async ({
   browser,
 }) => {
@@ -2552,12 +2686,15 @@ test("Approve by Enter on the header's chip leaves the focus on the approved chi
     await expect(approve).toBeFocused();
     await page.keyboard.press("Enter");
     await expect.poll(() => review.posts(), { message: "Approve by Enter sent no review" }).toBe(1);
-    await expect(approve, "Approve is not disabled while its review is written").toBeDisabled();
+    await expect(
+      approve,
+      "Approve is not aria-disabled while its review is written"
+    ).toHaveAttribute("aria-disabled", "true");
     await framesDrawn(page, 2);
     const written = await focusNow(page);
     await expect(
-      chip,
-      `while the review was written the focus was on ${written.what}, not on the spec's chip`
+      approve,
+      `while the review was written the focus was on ${written.what}, not on Approve`
     ).toBeFocused();
 
     review.release();
@@ -2617,6 +2754,64 @@ test("a change request sent from the header's Request changes leaves the focus o
   });
 });
 
+// A change request sent from the header's Request changes after its request was answered while
+// the dialog was open: the header drew neither action by then, so the dialog has no Request
+// changes to give the focus back to as it shuts, and the focus falls from the dialog's own
+// Request changes, which reads "Submitting…" while the change request is written. The focus goes
+// to the chip of the document the reader reviewed. Bob answers the request through the API while
+// the dialog is open; Dispatch then takes the change request as a review with no request open.
+test("a change request sent after the header's actions went leaves the focus on its chip", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    await requestApproval(seeded.specArtifactId, { summary: "Read it." });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectHeaderDrawn(page);
+    const header = issueHeader(page);
+    const requestChanges = header.getByRole("button", { exact: true, name: "Request changes" });
+    await expect(
+      requestChanges,
+      "the chip carries no Request changes while its request waits"
+    ).toBeVisible();
+    await requestChanges.focus();
+    await expect(requestChanges).toBeFocused();
+    await page.keyboard.press("Enter");
+    const dialog = page.getByRole("dialog", { name: "Request changes" });
+    await expect(dialog, "Enter on Request changes opened no dialog").toBeVisible();
+    await page.keyboard.type("One change.");
+
+    await reviewArtifact(seeded.specArtifactId, { state: "approved" }, { login: "bob" });
+    // The dialog stands inside the header, so its own Request changes is one of the header's
+    // buttons: the chip's actions are the header's actions outside every dialog.
+    await expect(
+      reviewActions(header).and(
+        header.locator('xpath=.//button[not(ancestor::*[@role="dialog"])]')
+      ),
+      "the header still draws an action once bob answered the request"
+    ).toHaveCount(0);
+    await expect(dialog, "bob's answer shut the Request changes dialog").toBeVisible();
+
+    const submit = dialog.getByRole("button", { exact: true, name: "Request changes" });
+    await submit.focus();
+    await expect(submit).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(dialog, "the change request left its dialog open").toHaveCount(0);
+    await expect
+      .poll(async () => (await getArtifact(seeded.specArtifactId)).approval?.state, {
+        message: "the change request was not recorded",
+      })
+      .toBe("changes_requested");
+    await expect(reviewActions(header), "the header draws an action again").toHaveCount(0);
+    await framesDrawn(page, 2);
+    const focus = await focusNow(page);
+    await expect(
+      approvalChip(page, seeded.specArtifactId),
+      `the change request left the focus on ${focus.what}, not on the spec's chip`
+    ).toBeFocused();
+  });
+});
+
 // Approve pressed by Enter, and then by Enter again after its review has landed but before the
 // page has drawn the approval it reads back, sends one review: a shared control's write is out,
 // and a press of it does nothing, until the new read is drawn (decision 223). The reads that
@@ -2630,10 +2825,6 @@ test("a change request sent from the header's Request changes leaves the focus o
 test("Approve pressed again by Enter before its approval is drawn sends no second review", async ({
   browser,
 }) => {
-  test.fail(
-    true,
-    "Approve still sends a second review in the gap until the shared controls' sweep (decision 223) is under this branch"
-  );
   test.setTimeout(120_000);
   await phase(browser, seedHeader, async (page, seeded) => {
     await requestApproval(seeded.specArtifactId, { summary: "Read it." });
@@ -2702,10 +2893,6 @@ test("Approve pressed again by Enter before its approval is drawn sends no secon
 test("Request changes in its dialog pressed again by Enter before the change request is drawn sends no second review", async ({
   browser,
 }) => {
-  test.fail(
-    true,
-    "The dialog shuts when its review lands and the header's Request changes opens it again in the gap until the shared controls' sweep (decision 223) is under this branch"
-  );
   test.setTimeout(120_000);
   await phase(browser, seedHeader, async (page, seeded) => {
     await requestApproval(seeded.specArtifactId, { summary: "Read it." });
@@ -2793,10 +2980,6 @@ test("Request changes in its dialog pressed again by Enter before the change req
 test("Copy issue key pressed again by Enter while its write is out makes no second write", async ({
   browser,
 }) => {
-  test.fail(
-    true,
-    "Copy issue key writes to the clipboard again while its write is out until the shared controls' sweep (decision 223) is under this branch"
-  );
   test.setTimeout(120_000);
   await phase(browser, seedHeader, async (page, seeded) => {
     const clipboard = await holdClipboard(page);
@@ -2833,14 +3016,23 @@ test("Copy issue key pressed again by Enter while its write is out makes no seco
     const landed = await focusNow(page);
     await expect(copy, `once Copied was drawn the focus was on ${landed.what}`).toBeFocused();
 
+    // A press made while Copied shows is a copy of its own (decision 255): Copied describes the
+    // newest copy only, so it goes while that write is held and is drawn again once it lands.
+    expect(await copied.isVisible(), "the press made for Copied's time came after it").toBe(true);
     await page.keyboard.press("Enter");
     await expect
       .poll(() => clipboard.writes(), {
-        message: "Copy issue key, pressed inside Copied's time, wrote nothing",
+        message: "Copy issue key, pressed while Copied showed, wrote nothing",
       })
       .toBe(2);
-    expect(await copied.isVisible(), "the press made for Copied's time came after it").toBe(true);
+    await expect(copied, "Copy issue key drew Copied while its second write was held").toHaveCount(
+      0
+    );
     await clipboard.land();
+    await expect(
+      copied,
+      "Copy issue key drew no Copied once its second write landed"
+    ).toBeVisible();
     await framesDrawn(page, 2);
     const after = await focusNow(page);
     await expect(
