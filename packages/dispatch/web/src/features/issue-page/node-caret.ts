@@ -204,8 +204,9 @@ export function confineKey(
       // goes no further than the element this is called at in the capture phase, the row's box
       // (`useNodeEditing.ts`): ProseMirror's listener on the editable never hears it. The
       // listeners that hear a key before the box - the window's and the document's in the
-      // capture phase, and the box's own for Escape - hear it as before; the page's keymap, which
-      // hears it after, binds no Tab in an editable (`shell/keymap.ts`'s `isEditableTarget`).
+      // capture phase, and the box's own for Escape - hear it as before. The page's keymap
+      // listens on the window in the bubble phase, so it no longer hears this Tab, and it binds
+      // no Tab in an editable anyway (`shell/keymap.ts`'s `isEditableTarget`).
       event.stopPropagation();
     } else if (couldEdit(event)) {
       event.preventDefault();
