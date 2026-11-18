@@ -36,6 +36,7 @@ import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import {
   settingsFieldLabel,
+  settingsListText,
   settingsListTrigger,
   settingsMonoInput,
   settingsSubmitButton,
@@ -526,6 +527,7 @@ function PersonSelect({
         options={options}
         searchLabel="Search people"
         triggerClassName={className}
+        triggerTextClassName={settingsListText}
         value={value}
       />
     </span>

@@ -323,7 +323,9 @@ test("AssigneeControl keeps focus while a save is in flight and saves a pick mad
     .mockImplementationOnce(() => second.promise);
   const { queryClient, unmount, user } = renderControl();
   try {
-    trigger().focus();
+    act(() => {
+      trigger().focus();
+    });
     await pick(user, ASSIGNEE, "bob");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { assignee: "bob" }, keyedAttempt)

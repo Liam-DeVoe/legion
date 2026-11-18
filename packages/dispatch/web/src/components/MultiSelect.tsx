@@ -98,6 +98,10 @@ interface SharedProps {
    *  name starts with it in place of `label`, before what the trigger shows. */
   readonly triggerAriaLabel?: string;
   readonly triggerClassName?: string;
+  /** Classes for the element that holds the trigger's text, beside the chevron: where a trigger
+   *  stands in a `<select>`'s place and has to take its box, the text's line is the place to
+   *  say so (`features/settings/classes.ts`, `settingsListText`). */
+  readonly triggerTextClassName?: string;
 }
 
 /** Any number of values: a row ticks or unticks its value, and a `Clear` foot empties them. */
@@ -165,6 +169,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     size = "comfortable",
     triggerAriaLabel,
     triggerClassName = `rounded-lg border text-sm font-semibold ${controlPadding[size]} ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`,
+    triggerTextClassName = "",
   } = props;
   const single = props.mode === "single";
   // What is picked now, a single pick's value as a list of one, so both modes read it alike.
@@ -346,7 +351,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
           // (a single pick's whole value is its `title`), and the chevron stays whole at the
           // trigger's end, at the right edge of a trigger as wide as its box.
           <span className="flex min-w-0 grow items-center gap-1" id={single ? shownId : undefined}>
-            <TruncatedText className="min-w-0 grow" title={pickedLabel}>
+            <TruncatedText className={`min-w-0 grow ${triggerTextClassName}`} title={pickedLabel}>
               {triggerText}
             </TruncatedText>
             <ChevronIcon expanded={open} />

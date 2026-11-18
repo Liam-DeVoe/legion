@@ -366,7 +366,9 @@ test("a failed project listing can be retried without navigating away", async ()
   const { client, listing } = table([issue("CORE-1")]);
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
   listing.mockRejectedValueOnce(new Error("unreachable"));
-  await client.invalidateQueries({ queryKey: ["issues"] });
+  await act(async () => {
+    await client.invalidateQueries({ queryKey: ["issues"] });
+  });
   await screen.findByRole("alert");
   await user.click(screen.getByRole("button", { name: "Retry loading issues" }));
   expect(await screen.findByRole("row", { name: "CORE-1 Work CORE-1" })).toBeDefined();
@@ -822,8 +824,10 @@ test("a scroll alone does no layout reads for the table's own box", async () => 
     return new DOMRect(0, 0, 1000, 600);
   });
   restores.push(() => rect.mockRestore());
-  box.dispatchEvent(new Event("scroll", { bubbles: false }));
-  window.dispatchEvent(new Event("scroll"));
+  act(() => {
+    box.dispatchEvent(new Event("scroll", { bubbles: false }));
+    window.dispatchEvent(new Event("scroll"));
+  });
   expect(measured.filter((name) => name === "issues-table-scroll" || name === "THEAD")).toEqual([]);
 });
 
@@ -868,7 +872,9 @@ test("the box is measured through an observer over itself and the content above 
     return new DOMRect(0, 0, 1000, 600);
   });
   restores.push(() => rect.mockRestore());
-  watching.fire();
+  act(() => {
+    watching.fire();
+  });
   expect(measured).toContain("issues-table-scroll");
 });
 
@@ -1706,7 +1712,9 @@ test("Finish completes when a refused write was retried from Pending changes", a
     .find((write) => write.status === "refused");
   if (!refused) throw new Error("The rank write was not refused");
   // The reader retries it themselves, so Finish finds a write already on its way.
-  writesOf(client).retry(refused.id);
+  act(() => {
+    writesOf(client).retry(refused.id);
+  });
   const recovery = await screen.findByRole("region", { name: "Interrupted table action" });
   await user.click(within(recovery).getByRole("button", { name: "Finish" }));
   await waitFor(() =>

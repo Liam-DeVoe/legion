@@ -328,6 +328,14 @@ function renderAgents({
   };
 }
 
+/** Reads the agent list again, as the poller's next tick would, inside `act`: the read's answer
+ *  re-renders the page, and the update lands where the test can see it. */
+async function refetchAgents(queryClient: QueryClient): Promise<void> {
+  await act(async () => {
+    await queryClient.refetchQueries({ queryKey: ["agents"] });
+  });
+}
+
 function card(region: HTMLElement, name: string): HTMLElement {
   const result = within(region).getByRole("heading", { name }).closest("article");
   if (result === null) throw new Error(`${name} card missing`);
@@ -868,7 +876,7 @@ test("Agents lists each session in its group, orders the rows inside one, and ke
     expect(groupCount(region, "active")).toBe("(1)");
     expect(groupCount(region, "idle")).toBe("(2)");
     expect(groupCount(region, "quiet")).toBe("(0)");
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     expect(titles()).toEqual(["Planner", "Alpha", "Zulu", "None"]);
 
     // Collapsing a group hides its rows and no others, and opening it puts them back.
@@ -2724,7 +2732,7 @@ test("a restored broadcast shows the mode it re-sends, even after the selection'
 
     // The Reviewer now takes BTW too, so the selection's own mode would be BTW.
     page.listAgents.mockResolvedValue([planner, { ...reviewer, capabilities: ["aside", "btw"] }]);
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     const sends = await screen.findByRole("region", { name: "Sends" });
     await within(sends).findByText(`Could not send to 1 agent: ${BROADCAST_REFUSED}`);
     await user.click(within(sends).getByRole("button", { name: "Restore draft" }));
@@ -2767,7 +2775,7 @@ test("a selected agent that went away does not change what Restore draft re-send
     expect(posted(page, 0).session_ids).toEqual(["planner-session", "reviewer-session"]);
 
     page.listAgents.mockResolvedValue([planner]);
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     await waitFor(() =>
       expect(
         within(region).queryByRole("checkbox", { name: "Select Reviewer for broadcast" })
@@ -2854,7 +2862,7 @@ test("a selected agent that came back is shown as not in the restored send, and 
 
     // The Reviewer now takes BTW: the live plan would reach it, the refused request does not.
     page.listAgents.mockResolvedValue([planner, { ...reviewer, capabilities: ["aside", "btw"] }]);
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     await restoreDraft(1);
     expect(within(composer()).getByRole("heading", { level: 2 }).textContent).toBe(
       "Broadcast to 1 of 2 selected"
@@ -3107,7 +3115,7 @@ test("the broadcast composer shows a selected agent missing from a refilling lis
     // A current read without the Planner keeps it a recipient, named by its id with no reason:
     // it may be stopped rather than ended, which the server decides (INFRA-626).
     page.listAgents.mockResolvedValue([reviewer]);
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     await waitFor(() => expect(chips()[0]).toBe("session:planner-… ✕"));
     expect(chips()[1]).toBe("Reviewer ✕");
     expect(within(composer()).getByRole("heading", { level: 2 }).textContent).toBe(
@@ -3116,7 +3124,7 @@ test("the broadcast composer shows a selected agent missing from a refilling lis
 
     // A refilling read keeps the Reviewer's row and says nothing of the Planner's absence.
     page.listAgents.mockRejectedValue(refillingError());
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     await screen.findByTestId("agent-list-refilling");
     expect(chips()[0]).toEndWith(
       ` · couldn't check whether it is running. ${AGENT_LIST_REFILLING} ✕`
@@ -3628,7 +3636,9 @@ test("Clear selection hands its focus to the select-all checkbox, or to the sear
     const clear = () => within(region).getByRole("button", { name: "Clear selection" });
 
     await user.click(header);
-    clear().focus();
+    act(() => {
+      clear().focus();
+    });
     await user.keyboard("{Enter}");
     expect(
       within(region).queryByRole("button", { name: "Clear selection" })
@@ -3639,7 +3649,9 @@ test("Clear selection hands its focus to the select-all checkbox, or to the sear
     await user.click(header);
     await type(user, search, "nothing matches this");
     await waitFor(() => expect(header).toBeDisabled());
-    clear().focus();
+    act(() => {
+      clear().focus();
+    });
     await user.keyboard("{Enter}");
     expect(
       within(region).queryByRole("button", { name: "Clear selection" })
@@ -3767,7 +3779,9 @@ test("an open row a collapsed group hides marks nothing read, and opening the gr
       },
     ]);
     page.getMyAgentState.mockResolvedValue({ "stale-session": { unread_replies: 1 } });
-    await page.queryClient.invalidateQueries();
+    await act(async () => {
+      await page.queryClient.invalidateQueries();
+    });
     await within(staleCard).findByText("Yes, still here.");
     // A mark the hidden row sent would go out from an effect a few microtasks on; give it a
     // task, so the assertion below is not merely early.
@@ -3848,7 +3862,9 @@ test("i on a row whose Issue list is open goes into its text box rather than shu
     await user.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "true");
 
-    planner.focus();
+    act(() => {
+      planner.focus();
+    });
     // The key goes to the focused row; clicking it would be a press outside the list.
     await user.keyboard("i");
     const box = within(issueList(planner)).getByRole("combobox", { name: "Issue" });
@@ -3875,7 +3891,7 @@ test("a registry poll that fails keeps every row and what it holds, and says so"
     await type(user, field, "Half a thought");
 
     page.listAgents.mockRejectedValue(new Error("Envoy listener unreachable"));
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     expect((await screen.findByRole("alert")).textContent).toBe(
       "Could not refresh agents: Envoy listener unreachable"
     );
@@ -3905,7 +3921,7 @@ test("a refilling registry keeps every row, says it is refilling, and ends no se
     await screen.findByRole("region", { name: "Replied, no longer connected" });
 
     page.listAgents.mockRejectedValue(refillingError());
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     expect((await screen.findByTestId("agent-list-refilling")).textContent).toBe(
       AGENT_LIST_REFILLING
     );
@@ -3927,7 +3943,7 @@ test("a refilling registry never says no agents are connected", async () => {
   try {
     await screen.findByText("No agents are connected.");
     page.listAgents.mockRejectedValue(refillingError());
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     await screen.findByTestId("agent-list-refilling");
     expect(screen.queryByText("No agents are connected.")).toBeNull();
     expect(screen.queryByText(/Could not (load|refresh) agents/)).toBeNull();
@@ -3980,12 +3996,12 @@ test("a row back after its session left mid-send holds the send it left until it
     );
 
     page.listAgents.mockResolvedValue([agents[1]]);
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     await waitFor(() =>
       expect(within(region).queryByRole("heading", { name: "Planner" })).not.toBeInTheDocument()
     );
     page.listAgents.mockResolvedValue(agents);
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     const back = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
     expect(back).not.toBe(planner);
     // A new row for the same session, open where the reader left it: the page holds which rows
@@ -4739,7 +4755,9 @@ test("a send alice left behind is not resumed for bob, and is dropped", async ()
   reloadTab();
   const bob = renderAgents();
   bob.whoAmI.mockResolvedValue({ event_head: "0", kind: "user", login: "bob" });
-  bob.queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "bob" });
+  act(() => {
+    bob.queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "bob" });
+  });
   try {
     const region = await screen.findByRole("region", { name: "Agents" });
     const planner = card(region, "Planner");

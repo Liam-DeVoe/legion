@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, test as bunTest, expect, spyOn } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
@@ -187,11 +187,27 @@ beforeEach(() => {
   sockets = installFakeLiveSockets();
 });
 afterEach(() => {
-  cleanup();
   sockets.restore();
   restoreLayout?.();
   restoreLayout = undefined;
 });
+
+/**
+ * A row of this file: `bun:test`'s own, but its body ends by unmounting the page inside act
+ * (`cleanup`), not in `afterEach`. DeliveryPage's search debounce (`useSettled`, 250 ms from
+ * mount) and SourceFreshness's 1 s tick are real timers, and Bun gives the event loop a turn
+ * between a row's body and its `afterEach`: a timer due then fires with the act environment on
+ * and no act scope open, and React reports its setState as an update outside act. The unmount
+ * clears both timers before that turn.
+ */
+const test = (name: string, body: () => Promise<void>): void =>
+  bunTest(name, async () => {
+    try {
+      await body();
+    } finally {
+      cleanup();
+    }
+  });
 
 /** The page's live socket, once the page has opened one, as Dispatch accepts it. */
 async function openSocket(): Promise<FakeLiveSocket> {
@@ -534,7 +550,10 @@ test("while a facet pick waits for its snapshot, the header and freshness keep t
   expect(row.querySelector('[data-source="dispatch"]')?.textContent).toMatch(
     /^Dispatch \d+ s ago$/
   );
-  serve(socket, snapshotFrame(picked.sub, { ...emptyTimeline, prs: [listedPR] }));
+  // The snapshot's answer lands a few microtasks after the frame: inside `act`, before the row ends.
+  await act(async () => {
+    serve(socket, snapshotFrame(picked.sub, { ...emptyTimeline, prs: [listedPR] }));
+  });
 });
 
 test("the list sorts by its headers and a row opens the PR's details", async () => {
@@ -1351,17 +1370,20 @@ test("the count says it is counting while a new filter's read is out, and shows 
 });
 
 // F2 item 4: `?ws=x&we=y` was kept as written, `Date.parse` gave NaN and every pull request was
-// filtered out of the chart, the list and the count.
-test.each([
+// filtered out of the chart, the list and the count. One row per window, through this file's own
+// `test`, which unmounts inside act and has no `.each`.
+for (const [what, bad] of [
   ["two words", "ws=x&we=y"],
   ["one end alone", "ws=2024-06-01T06%3A00%3A00Z"],
   ["an end before its start", "ws=2024-06-01T18%3A00%3A00Z&we=2024-06-01T06%3A00%3A00Z"],
-])("a brush window that is %s is dropped, and the page shows its whole window", async (_, bad) => {
-  renderPage(`${DELIVERY_URL}&${bad}`);
-  await answered(everyFacet);
-  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
-  await waitFor(() => expect(currentSearch().has("ws")).toBe(false));
-  expect(currentSearch().has("we")).toBe(false);
-  // A window that was never brushed draws no control to clear one.
-  expect(screen.queryByRole("button", { name: "clear brush window" })).toBeNull();
-});
+] as const) {
+  test(`a brush window that is ${what} is dropped, and the page shows its whole window`, async () => {
+    renderPage(`${DELIVERY_URL}&${bad}`);
+    await answered(everyFacet);
+    expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+    await waitFor(() => expect(currentSearch().has("ws")).toBe(false));
+    expect(currentSearch().has("we")).toBe(false);
+    // A window that was never brushed draws no control to clear one.
+    expect(screen.queryByRole("button", { name: "clear brush window" })).toBeNull();
+  });
+}
