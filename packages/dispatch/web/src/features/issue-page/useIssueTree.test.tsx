@@ -5266,6 +5266,20 @@ const MARGIN_SEND_PAST_DEADLINE_AWAY: RuleWay = {
   },
 };
 
+/** An event of the issue 200 ms after the comments were read again, the tree's last read past its
+ *  second: the scheduler holds the comments read the event owes to a second after the last one
+ *  began, and the tree read the event asks for is not held. One event, read once. */
+const EVENT_SOON_AFTER_COMMENTS_READ: RuleWay = {
+  words: "an event of the issue 200 ms after the comments were read again, no write out",
+  does: async (rig) => {
+    await act(async () => {
+      await rig.client.refetchQueries({ queryKey: ["comments", KEY] });
+    });
+    await tick(200, 10);
+    await commentsEvent(rig);
+  },
+};
+
 const WAYS = {
   mount: {
     words: "a new surface mounting",
@@ -5464,6 +5478,7 @@ const WAYS = {
     1
   ),
   marginSendPastDeadlineAway: MARGIN_SEND_PAST_DEADLINE_AWAY,
+  eventSoonAfterCommentsRead: EVENT_SOON_AFTER_COMMENTS_READ,
 } satisfies Record<string, RuleWay>;
 
 /** How many reads of a query a way starts: a count, or the least and the most. */
@@ -6233,6 +6248,9 @@ const READ_RULES: readonly ReadRule[] = [
   },
   // A send of the margin pressed on the page is one write of the issue past its deadline too.
   { read: "tree", state: "answered", observed: true, way: "marginSendPastDeadlineAway", now: 1 },
+  // One event, read once.
+  { read: "tree", state: "answered", observed: true, way: "eventSoonAfterCommentsRead", now: 1 },
+  { read: "spec", state: "answered", observed: true, way: "eventSoonAfterCommentsRead", now: 1 },
 ];
 
 describe("the rule for when a read of the tree or of a view starts", () => {
