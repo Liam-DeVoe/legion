@@ -160,6 +160,8 @@ export function tabNames(page: Page): Promise<string[]> {
 
 /** The count a tab's name gives, or undefined where it shows none. */
 export async function tabCount(page: Page, name: string): Promise<number | undefined> {
+  // This helper reads the tab names at one instant, by design. Each caller polls it or calls it
+  // after a wait for the page.
   const named = (await tabNames(page)).find((tab) => tab === name || tab.startsWith(`${name},`));
   const count = named?.match(/^[^,]+, (\d+) issues?/)?.[1];
   return count === undefined ? undefined : Number(count);
@@ -335,6 +337,7 @@ export async function mouseDrag(
 ): Promise<void> {
   await boardAtRest(page);
   await source.hover();
+  // The hover above waited for the card to be visible and still, so its box is there.
   const from = await source.boundingBox();
   if (from === null) throw new Error("the card dragged is not drawn");
   await page.mouse.down();
@@ -354,6 +357,8 @@ export async function mouseDrag(
     const edges = box.getBoundingClientRect();
     box.scrollLeft += drawn.left + drawn.width / 2 - (edges.left + edges.width / 2);
   });
+  // The scrollIntoViewIfNeeded above waited for the target to be visible and still, so its box
+  // is there.
   const to = await target.boundingBox();
   if (to === null) throw new Error("the place a card is dropped on is not drawn");
   await page.mouse.move(

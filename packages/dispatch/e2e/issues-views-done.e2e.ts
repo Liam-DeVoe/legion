@@ -348,6 +348,7 @@ test("a fresh load of Done reads the open count, one page of its rows, the board
       await expect(issuesTable(second).locator("tbody tr[data-issue-row]").first()).toBeVisible();
       listed += (await rowKeys(issuesTable(second))).length;
       const next = second.getByRole("button", { name: "Next ›" });
+      // The pager draws Next from the rows it draws, and the row wait above drew this page.
       if ((await next.getAttribute("aria-disabled")) === "true") break;
       const before = (await rowKeys(issuesTable(second)))[0];
       await next.click();

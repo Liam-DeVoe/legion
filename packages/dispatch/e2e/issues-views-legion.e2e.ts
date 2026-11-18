@@ -50,6 +50,7 @@ import {
   startFakeLegionDaemon,
 } from "./legion-seed";
 import { sql } from "./psql";
+import { expandedState, settledState } from "./settled";
 import { expect, type Locator, type Page, test, type WebSocketRoute } from "./test";
 import { asUser } from "./users";
 
@@ -533,8 +534,8 @@ async function columnCount(page: Page, id: string): Promise<number> {
 /** The (i) hint's terms and values, opened from its trigger, with the moment its read time names. */
 async function readHint(page: Page): Promise<{ terms: string[]; values: string[]; at: string }> {
   const hint = page.getByRole("dialog", { name: "Legion daemon" });
-  if ((await hint.count()) === 0)
-    await page.getByRole("button", { exact: true, name: "Legion daemon" }).click();
+  const trigger = page.getByRole("button", { exact: true, name: "Legion daemon" });
+  if ((await expandedState("the Legion daemon hint", trigger)) === "shut") await trigger.click();
   await expect(hint).toBeVisible();
   return {
     terms: await hint.locator("dt").allTextContents(),
@@ -570,8 +571,11 @@ async function readFilter(page: Page, name: string): Promise<FilterRead> {
   await trigger.click();
   const list = page.getByRole("listbox", { name: `${name} options` });
   const panel = page.getByRole("dialog", { name: `Filter ${name}` });
-  await expect(list.or(panel)).toBeVisible();
-  if ((await list.count()) === 0) {
+  const opened = await settledState(`the ${name} filter`, [
+    ["list", list],
+    ["panel", panel],
+  ]);
+  if (opened === "panel") {
     await page.keyboard.press("Escape");
     await expect(panel).toHaveCount(0);
     return { opens: "dialog", options: [] };
@@ -676,6 +680,8 @@ test("Open's Legion queue lists the Queue column's cards in the board's order, a
       .toEqual(routeColumns);
     expect(routeColumns, "the board route's columns").toEqual(BOARD_COLUMNS);
     const openKeys = new Set(open.map((issue) => issue.key));
+    // The poll above settled the columns this loop walks, and the Board draws their cards with
+    // them.
     for (const drawn of await boardColumns(page)) {
       const expected = columnKeys(board, drawn.id).filter((key) => openKeys.has(key));
       if (drawn.id === "queue") expect(drawn.cards, "the Queue column's cards").toEqual(expected);
@@ -810,6 +816,8 @@ test("a Board card draws the Legion fields the board route gives it and no slot 
       await expect(card.locator("[data-queue-place]")).toHaveCount(0);
       await expect(card).not.toContainText(`#${slot}`);
     }
+    // The card waits and the facts poll above drew the Board, which draws all of its cards at
+    // once.
     for (const text of await page.locator("[data-board-card]").allTextContents())
       expect(text).not.toMatch(/\bslots?\b/i);
   } finally {
@@ -976,6 +984,8 @@ test("the (i) hint reads the board's capacity, trees and read time, a failed rea
           );
         })
         .toBe(true);
+      // The alert poll above settled the alert, and the tabs poll at the top drew both tabs this
+      // reads.
       const placed = await page.evaluate(() => {
         const tabs = document.querySelector('[role="tablist"][aria-label="Views"]');
         const line = [...document.querySelectorAll('[role="alert"]')].find((node) =>
@@ -1040,6 +1050,8 @@ test("the (i) hint reads the board's capacity, trees and read time, a failed rea
       await expect(hint).toHaveText(/^(?:Dispatch has not read the daemon yet\.|Capacity.*)$/, {
         timeout: 30_000,
       });
+      // The toHaveText wait above settled the hint on one of its two texts, and the page holds
+      // every later frame.
       if ((await hint.textContent())?.startsWith("Capacity")) {
         await other.close();
         continue;

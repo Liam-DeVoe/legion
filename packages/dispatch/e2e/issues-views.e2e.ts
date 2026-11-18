@@ -42,6 +42,7 @@ import {
   seedLegionMetricsCorpus,
   startFakeLegionDaemon,
 } from "./legion-seed";
+import { settledState } from "./settled";
 import { drawnControlNames, straysBetween, surfaceControls, topOf } from "./table-controls";
 import {
   type BrowserContext,
@@ -407,8 +408,11 @@ async function readFilter(page: Page, name: string): Promise<(readonly [string, 
     .click();
   const list = page.getByRole("listbox", { name: `${name} options` });
   const panel = page.getByRole("dialog", { name: `Filter ${name}` });
-  await expect(list.or(panel)).toBeVisible();
-  if ((await list.count()) === 0) {
+  const opened = await settledState(`the ${name} filter`, [
+    ["list", list],
+    ["panel", panel],
+  ]);
+  if (opened === "panel") {
     await page.keyboard.press("Escape");
     await expect(panel).toHaveCount(0);
     return [];
@@ -448,6 +452,8 @@ async function columnsMenu(page: Page): Promise<{ name: string; line: string | n
  *  fails after `most` presses. */
 async function tabTo(page: Page, target: Locator, most = 120): Promise<void> {
   for (let press = 0; press < most; press++) {
+    // A Tab press moves the focus before the press resolves, so this read sees where the focus
+    // is now.
     if (await target.evaluate((node) => node === document.activeElement)) return;
     await page.keyboard.press("Tab");
   }
@@ -644,6 +650,7 @@ test("at 1440 by 900 with the sidebar open both of ACME's views scroll sideways 
       await expect(page.getByRole("tablist", { name: "Views" })).toBeVisible();
       await expect(page.getByRole("navigation", { name: "Navigation" })).toBeVisible();
       await expect(table.locator("tbody tr[data-issue-row]").first()).toBeVisible();
+      // The row wait above drew the table, and the table draws its whole head with its rows.
       const read = await boxHeaders(box);
       expect(read.scrollWidth, `${view}: the table does not scroll sideways`).toBeGreaterThan(
         read.clientWidth
@@ -677,9 +684,11 @@ test("at 1440 by 900 with the sidebar open both of ACME's views scroll sideways 
     await expectSortedAsksWhole(page, table, "open at 1440");
     await page.getByRole("tab", { name: /^Open/ }).click();
     await expect.poll(() => new URL(page.url()).searchParams.has("sort")).toBe(false);
+    await expect(header(table, "Open asks")).not.toHaveAttribute("aria-sort");
     await box.evaluate((node) => {
       node.scrollLeft = 0;
     });
+    // The aria-sort wait above drew Open's own sort, and the head draws every header with it.
     const own = await boxHeaders(box);
     for (const drawn of own.headers)
       expect(drawn.cut, `open in its own sort: ${drawn.label} is cut`).toBe(false);
@@ -1194,9 +1203,11 @@ test("the Issues tab's tabs, headers and words are short, the Legion headers are
                 tabs.map((tab) => (tab.firstElementChild?.firstChild?.textContent ?? "").trim())
               );
           await expect.poll(names, { message: where }).toEqual(["Open", "Done"]);
+          // The poll above settled the tab names on Open and Done, so this loop reads both.
           for (const name of await names()) expect(name.length).toBeLessThanOrEqual(14);
           if (layout === "table") {
             await expect(table.locator("tbody tr[data-issue-row]").first()).toBeVisible();
+            // The row wait above drew the table, and the table draws its whole head with its rows.
             const labels = await headerLabels(table);
             for (const label of labels)
               expect(label.length, `${where}: ${label}`).toBeLessThanOrEqual(20);
@@ -1212,6 +1223,8 @@ test("the Issues tab's tabs, headers and words are short, the Legion headers are
           ]);
           expect(await hint.locator("p").count(), `${where}: the hint holds prose`).toBe(0);
           await page.keyboard.press("Escape");
+          // The waits above drew the tabs, the table or the Board and the hint, so these words
+          // are drawn.
           const texts = await visibleTexts(page);
           for (const text of texts) {
             expect(text, `${where}: a sentence`).not.toMatch(/\.$/);
@@ -1324,6 +1337,7 @@ test("no choice of a filter, the Columns menu, the display menus, the selection 
       ]) {
         await page.goto(`/projects/${ACME}/issues?group=${group}`);
         await expect(table.locator("tbody tr[data-issue-row]").first()).toBeVisible();
+        // The row wait above drew the grouped table, which draws its group headings with its rows.
         const headings = await table
           .locator("tbody tr:not([data-issue-row]):not([aria-hidden])")
           .evaluateAll((lines) => lines.map((line) => (line.textContent ?? "").trim()));
@@ -1512,6 +1526,8 @@ test("a Board card's Time in Legion phase, Work time, open asks and claim say wh
     expect(headerLines[0]).toContain(holder);
     expect(headerLines.join(" ")).toContain(CLAIM_SENTENCE);
     expect(await header.getAttribute("title")).toBeNull();
+    // The chip was waited for above, and this one read only picks the words of a note that no
+    // check reads.
     const cut = await header
       .locator("[data-agent-name]")
       .first()
@@ -1531,6 +1547,9 @@ test("a Board card's Time in Legion phase, Work time, open asks and claim say wh
 async function expectSortHints(page: Page, where: string): Promise<void> {
   const tables = page.locator('[data-control="data-table"] table');
   await expect(tables.first()).toBeVisible();
+  await expect(page.getByRole("status", { name: "Loading issues" })).toHaveCount(0);
+  // The waits above drew the first table and ended the loading of each issue table, so every
+  // table of the page is drawn.
   const count = await tables.count();
   for (let index = 0; index < count; index++) {
     const buttons = tables.nth(index).locator("thead th button[draggable]");
@@ -1538,6 +1557,7 @@ async function expectSortHints(page: Page, where: string): Promise<void> {
       (all) => all.filter((button) => button.hasAttribute("title")).length
     );
     expect(titled, `${where}: a sort button of table ${index + 1} carries a title`).toBe(0);
+    // A table draws its whole head when it draws, so this count of its sort buttons is whole.
     if ((await buttons.count()) === 0) continue;
     const lines = await hoverLines(page, buttons.first());
     expect(lines.join(" "), `${where}: table ${index + 1}`).toContain(SORT_HINT);
@@ -1648,6 +1668,7 @@ test("a missing measure draws an empty cell, sorts last and counts under None, a
           }
       const issues = board.issues ?? {};
       const facts = (key: string) => issues[key] as Record<string, unknown> | null | undefined;
+      // facts reads an entry of the issues map this rewrite is handed, and it reads no page.
       const mFacts = facts(m);
       if (mFacts != null)
         Object.assign(mFacts, {
@@ -1657,6 +1678,7 @@ test("a missing measure draws an empty cell, sorts last and counts under None, a
           work_first_at: null,
           work_hours: 0,
         });
+      // facts reads an entry of the issues map this rewrite is handed, and it reads no page.
       const zFacts = facts(z);
       if (zFacts != null) zFacts.review_rounds = 0;
     };
@@ -1697,6 +1719,8 @@ test("a missing measure draws an empty cell, sorts last and counts under None, a
         [c]: [expect.any(String), expect.any(String), expect.any(String), "", ""],
         [n]: ["", "", "", "", ""],
       });
+    // The poll above waited for the rewritten frame, and one frame draws the measure cells of
+    // every row.
     const cells = await readCells(table);
     for (const [key, row] of Object.entries(cells))
       for (const measure of MEASURES)
@@ -1897,6 +1921,8 @@ test("on a desktop a Title width the reader drags is the width drawn after a rel
     const table = page.getByRole("table", { name: "Project issues table" });
     await expect(table.locator("tbody tr[data-issue-row]").first()).toBeVisible();
     const title = header(table, "Title");
+    await expect(title).toBeVisible();
+    // The wait above drew the Title header, and a drawn element has a box, so the box is there.
     const before = await title.boundingBox();
     if (before === null) throw new Error("the Title header has no box");
     await page.mouse.move(before.x + before.width - 2, before.y + before.height / 2);

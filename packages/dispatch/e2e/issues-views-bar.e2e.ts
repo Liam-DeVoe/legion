@@ -33,6 +33,7 @@ import {
   seedMeasuredAcme,
 } from "./issues-views-shared";
 import { pushLegionObservation, seedFailedLegionRead } from "./legion-seed";
+import { expandedState } from "./settled";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -264,9 +265,9 @@ test("Open's bar counts the rows the table lists by status from its left edge in
       .toEqual([]);
     const inProgress = narrowed.filter((issue) => issue.status === "in_progress");
     expect(inProgress.map((issue) => issue.key)).toEqual(expect.arrayContaining(["ACME-1", bare]));
-    expect(
-      (await readBar(page))?.legend.find((entry) => entry.status === "in_progress")?.text
-    ).toBe(`In progress ${inProgress.length}`);
+    // The barDiffers poll above settled the legend on these rows, so one read gives its words.
+    const entry = (await readBar(page))?.legend.find((one) => one.status === "in_progress");
+    expect(entry?.text).toBe(`In progress ${inProgress.length}`);
 
     // Open: every open status that lists a row, Triage first.
     const open = await listIssuesWhere({ open: true, project: ACME });
@@ -294,6 +295,8 @@ test("Open's bar counts the rows the table lists by status from its left edge in
     await page.goto(`/projects/${ACME}/issues?group=assignee`);
     const heading = page.getByRole("button", { name: /^Collapse alice, \d+ issues?$/ });
     await expect(heading).toBeVisible();
+    // The heading wait above drew the grouped table, which draws each heading and its bar from
+    // all of its rows at once.
     const grouped = await heading.evaluate((button, scale: Record<string, string>) => {
       const slot = button.nextElementSibling;
       const bar = slot?.querySelector("span[aria-hidden]");
@@ -339,6 +342,7 @@ test("Open's bar counts the rows the table lists by status from its left edge in
       await page.setViewportSize({ height: 900, width });
       await page.goto(`/projects/${ACME}/issues`);
       await expect.poll(async () => (await rowKeys(table)).length).toBe(open.length);
+      // The row poll above drew every row, and the bar draws from those rows in the same render.
       const read = await readBar(page);
       const where = `at ${width} px`;
       if (read === undefined) throw new Error(`${where}: no bar is drawn`);
@@ -393,6 +397,8 @@ test("Open's bar counts the rows the table lists by status from its left edge in
       await expect(page.locator("[data-board-card]").first()).toBeVisible();
       await expect(page.locator("[data-bar-segment], [data-bar-legend]")).toHaveCount(0);
       await expect(page.locator('section[aria-label="Issues by status"]')).toHaveCount(0);
+      // The card wait above drew the whole Board, which draws every column at once. Each column
+      // draws its count from the cards it draws.
       for (const column of await drawnColumns(page))
         if (!column.rail)
           expect(column.count, `${address}: ${column.title}'s count`).toBe(column.cards.length);
@@ -554,8 +560,11 @@ test("the display menu reads Group by on the Issues tab in both layouts and on b
     for (const path of ["/priorities", `/priorities/${priority.id}`]) {
       await page.goto(path);
       await expect(page.locator("tr[data-issue-row]").first()).toBeVisible();
+      await expect(page.getByRole("status", { name: "Loading issues" })).toHaveCount(0);
       const triggers = page.locator('button[data-control="display-menu"]');
       expect(await triggers.count(), `${path}: its display menus`).toBeGreaterThan(0);
+      // The waits above drew the page and ended the loading of each issue table, so every
+      // display menu of the page is drawn.
       for (const words of await triggers.allTextContents())
         expect(words.trim(), `${path}: a display menu`).toBe("Group by");
     }
@@ -627,6 +636,7 @@ test("the Board of a view draws the table's rows in the view's sort, its status 
     const openStatuses = STATUS_ORDER.filter((status) => status !== "done");
     await page.goto(`/projects/${ACME}/issues?layout=board`);
     await expect(page.locator("[data-board-card]").first()).toBeVisible();
+    // The card wait above drew the whole Board, which draws every column and rail at once.
     const statusBoard = await drawnColumns(page);
     expect(statusBoard.map((column) => [column.id, column.rail])).toEqual([
       ...openStatuses.map((status) => [status, status === "icebox"]),
@@ -694,6 +704,7 @@ test("the Board of a view draws the table's rows in the view's sort, its status 
     // The project with no Legion setting: status columns only.
     await page.goto(`/projects/${PLAIN}/issues?layout=board`);
     await expect(page.locator("[data-board-card]").first()).toBeVisible();
+    // The card wait above drew the whole Board, which draws every column of the project at once.
     for (const column of await drawnColumns(page))
       expect(STATUS_ORDER, `${PLAIN}: a column that is no status`).toContain(column.id);
   } finally {
@@ -946,7 +957,7 @@ test("under a sort by Created a drop within Todo is refused naming the sort and 
     // The Filters panel's Labels pick writes label=, shows a chip, and the cards are the
     // table's rows of that address.
     const trigger = page.locator('[data-control="control-row"] [data-control="panel-trigger"]');
-    if ((await trigger.getAttribute("aria-expanded")) !== "true") await trigger.click();
+    if ((await expandedState("the Filters trigger", trigger)) === "shut") await trigger.click();
     const panel = page.getByRole("dialog", { name: "Filters" });
     await expect(panel).toBeVisible();
     await panel.getByRole("button", { name: /^Labels/ }).click();
@@ -969,7 +980,7 @@ test("under a sort by Created a drop within Todo is refused naming the sort and 
     // open.
     await page.goto(`${base}&needs-you=1`);
     await expect(page.locator('section[data-board-column="todo"]')).toBeVisible();
-    if ((await trigger.getAttribute("aria-expanded")) === "true") {
+    if ((await expandedState("the Filters trigger", trigger)) === "open") {
       await trigger.click();
     }
     await expect(trigger).toHaveAttribute("aria-expanded", "false");

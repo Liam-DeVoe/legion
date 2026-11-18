@@ -282,6 +282,10 @@ test("Time per phase opens on Share, its tooltip names each of P's eleven parts 
     const pTotal = totalOf(pHours);
     await cell.hover();
     await expect(page.getByRole("tooltip")).toBeVisible();
+    await expect(page.getByRole("tooltip").locator("[data-phase-hours-line]")).toHaveCount(
+      PHASES.length
+    );
+    // The count wait above drew all eleven lines of the tooltip that this loop walks.
     const lines = await tooltipLines(page);
     expect(lines.map((line) => line.phase)).toEqual(PHASES.map(([phase]) => phase));
     expect(lines.map((line) => line.name)).toEqual(PHASES.map(([, name]) => name));
@@ -303,6 +307,8 @@ test("Time per phase opens on Share, its tooltip names each of P's eleven parts 
     // On focus, and closed by Escape.
     await table.locator(`tr[data-issue-row="${P}"] a`).last().focus();
     for (let press = 0; press < 40; press++) {
+      // A Tab press moves the focus before the press resolves, so this read sees where the
+      // focus is now.
       if (await cell.evaluate((node) => node === document.activeElement)) break;
       await page.keyboard.press("Tab");
     }
@@ -360,6 +366,8 @@ test("Time per phase opens on Share, its tooltip names each of P's eleven parts 
     ).toBeGreaterThan(placed.visible + 0.5);
     await cell.hover();
     await expect(page.getByRole("tooltip")).toBeVisible();
+    // The wait above showed the tooltip, which takes its place before it paints, so its box is
+    // where it opens.
     const wide = await boxes(cell);
     expect(wide.cell.bottom, "P's row is not whole in the window").toBeLessThanOrEqual(
       wide.window.height
@@ -389,6 +397,8 @@ test("Time per phase opens on Share, its tooltip names each of P's eleven parts 
     await cell.scrollIntoViewIfNeeded();
     await cell.hover();
     await expect(page.getByRole("tooltip")).toBeVisible();
+    // The wait above showed the tooltip, which takes its place before it paints, so its box is
+    // where it opens.
     const phone = await boxes(cell);
     if (phone.tip === undefined) throw new Error("no tooltip box");
     for (const [edge, value] of [
@@ -410,6 +420,9 @@ test("Time per phase opens on Share, its tooltip names each of P's eleven parts 
       ["dark", 3],
     ] as const) {
       await page.emulateMedia({ colorScheme: scheme });
+      await expect(cell.locator("[data-phase-segment]")).toHaveCount(PHASES.length);
+      // The count wait above drew P's eleven segments, and emulateMedia set the scheme's fills
+      // before it resolved.
       const segments = await cell.evaluate((node) =>
         [...node.querySelectorAll("[data-phase-segment]")].map((segment) => {
           const rect = segment.getBoundingClientRect();

@@ -607,6 +607,8 @@ test("on the Board at the window's top with no hand a card written to the top of
       await page.evaluate(() => window.scrollTo(0, 0));
       await handsOff(page);
       const column = await middleColumn(page);
+      // middleColumn picked a column that holds a card, and the page holds every later board
+      // frame, so the column still holds it.
       const [firstCard] = await columnCards(page, column);
       if (firstCard === undefined) throw new Error(`${where}: the middle column is empty`);
       await expect(

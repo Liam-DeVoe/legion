@@ -1339,6 +1339,8 @@ test("on /priorities at 1280 and 390 px each heading reads its name and one coun
 
       // No heading or column header names the four statuses In progress or running, and no
       // label uses Active for anything else.
+      // The table reads and the two menus asserted above drew every heading, chip and button of
+      // the page, so one read of their labels is the whole list.
       const labels = await main.evaluate((node) =>
         [...node.querySelectorAll("h1, h2, th, legend, [data-control='chip'], button")].map((one) =>
           (one.textContent ?? "").replace(/\s+/g, " ").trim()
@@ -1348,6 +1350,8 @@ test("on /priorities at 1280 and 390 px each heading reads its name and one coun
         expect(label, `${where}: a label uses Active`).toMatch(
           /^(?:Active|Active under no priority \d+|Active(?:Filter)?|Filter Active)$/
         );
+      // The heading waits and the table reads asserted above drew every heading and every table
+      // of the page, so this list is whole.
       const headings = await main.locator("h1, h2, th").allTextContents();
       for (const one of headings)
         expect(one, `${where}: a heading`).not.toMatch(/running|In progress/);
@@ -1356,6 +1360,8 @@ test("on /priorities at 1280 and 390 px each heading reads its name and one coun
       await page.getByRole("button", { name: `Open P3 ${seed.titles[2]}` }).click();
       const work = section(page, `Work advancing ${seed.titles[2]}`);
       await expect(work.locator("tr[data-issue-row]").first()).toBeVisible();
+      // The row wait above drew the work table, which draws all of its rows and group headings
+      // at once.
       const opened = (await readTables(page)).find((one) => one.label === "Priority issues table");
       if (opened === undefined) throw new Error(`${where}: the opened row draws no work table`);
       expect([...issueTableDiffers(opened, where), ...embeddedDiffers(opened, where)]).toEqual([]);
@@ -1399,6 +1405,7 @@ test("a priority's own page at 1280 and 390 px has no line of counts or of order
       await expect(header).not.toContainText(/dragged|·|In flight|waiting/);
       await expect(page.getByRole("link", { name: "Open in WEB" })).toBeVisible();
       await expect(page.getByText(/Leave this scope/)).toHaveCount(0);
+      // The row wait above drew the one table of this page, which draws all of its rows at once.
       const [read] = await readTables(page);
       if (read === undefined) throw new Error(`${where}: no work table`);
       // A priority's page draws its table in a box under 640 px at both widths: the phone layout.
@@ -1418,6 +1425,8 @@ test("a priority's own page at 1280 and 390 px has no line of counts or of order
         .locator("thead th")
         .filter({ hasText: /^Title/ })
         .first();
+      await expect(title).toBeVisible();
+      // The wait above drew the Title header, and a drawn element has a box, so the box is there.
       const before = await title.boundingBox();
       if (before === null) throw new Error("the Title header has no box");
       const ends = async () =>
