@@ -176,7 +176,7 @@ var projections = []projection{{
 	nodes: `
 		select n.id, md5(n.made_at::text || '|' || n.made_by::text || '|' || ` + currentLinks(graphstore.KindComment,
 		`t.kind in ('`+graphstore.TupleAnchoredTo+`', '`+graphstore.TupleOwnedBy+`', '`+graphstore.TupleAuthoredBy+`')`) + `)
-		from graph_nodes n where n.kind = 'comment'`,
+		from graph_nodes n where n.kind = '` + graphstore.KindComment + `'`,
 	pastBound: `
 		select count(*) from comments c
 		left join artifacts anchor on anchor.id = (c.anchor->>'artifact_id')::uuid

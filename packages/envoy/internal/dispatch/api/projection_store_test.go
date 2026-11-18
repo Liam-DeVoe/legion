@@ -1050,33 +1050,39 @@ func requireNeitherSideSurvivesAFailure(t *testing.T, ctx context.Context, run *
 
 // requireEveryRowHasItsNodeAndTuples reads the plain case: every row the run's own requests
 // wrote names a node the store holds, and the transaction that wrote the row wrote that node
-// or stated a fact about it.
+// and stated at least one fact about it.
 //
-// A row's xmin is the transaction that wrote it, which is how the two are compared. A node may
-// be written again by a later pass, so a row whose node has moved on since is held to the
-// tuples its own transaction stated about that node instead.
+// A row's xmin is the transaction that wrote it, which is how the three are compared: the row's
+// xmin, its node's and each of its tuples'. Both sides are required of every row, so a row whose
+// node another transaction wrote, or whose transaction stated no fact about its node, fails
+// naming the transactions it read.
 func requireEveryRowHasItsNodeAndTuples(t *testing.T, ctx context.Context, run *projectionRun) {
 	t.Helper()
 	for _, table := range projectedTables {
 		orphans, err := readStrings(ctx, run.database.Pool, `
-			select coalesce(row.node_kind, '(none)') || ' ' || coalesce(row.node_address, '(none)') || ' at xmin ' || row.xmin::text
+			select coalesce(row.node_kind, '(none)') || ' ' || coalesce(row.node_address, '(none)')
+				|| ': the row at xmin ' || row.xmin::text
+				|| ', its node at xmin ' || coalesce(node.xmin::text, '(no node)')
+				|| ', its tuples at xmin ' || coalesce(facts.xmins, '(no tuple)')
 			from `+table+` row
-			where row.node_kind is null or row.node_address is null
-			   or not exists (
-				select 1 from graph_nodes node
-				where node.kind = row.node_kind and node.id = row.node_address
-				  and (node.xmin::text = row.xmin::text or exists (
-					select 1 from graph_tuples fact
-					where fact.from_kind = row.node_kind and fact.from_id = row.node_address
-					  and fact.xmin::text = row.xmin::text))
-			   )
+			left join graph_nodes node on node.kind = row.node_kind and node.id = row.node_address
+			left join lateral (
+				select string_agg(distinct fact.xmin::text, ', ') as xmins,
+					bool_or(fact.xmin::text = row.xmin::text) as same
+				from graph_tuples fact
+				where fact.from_kind = row.node_kind and fact.from_id = row.node_address
+			) facts on true
+			where node.kind is null
+			   or node.xmin::text <> row.xmin::text
+			   or facts.same is not true
 			order by 1
 		`)
 		if err != nil {
 			t.Fatalf("read the rows of %s against the store: %v", table, err)
 		}
 		if len(orphans) != 0 {
-			t.Errorf("%s holds %d row the store did not write with it: %v", table, len(orphans), orphans)
+			t.Errorf("%s holds %d row(s) whose node and tuples were not written by the row's own transaction:\n  %s",
+				table, len(orphans), strings.Join(orphans, "\n  "))
 		}
 		var written int
 		if err := run.database.Pool.QueryRow(ctx, `select count(*) from `+table).Scan(&written); err != nil {
