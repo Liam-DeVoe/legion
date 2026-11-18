@@ -801,8 +801,7 @@ func TestProjectReleaseAsksARoleWhoseSessionTakesItsTopicLate(t *testing.T) {
 
 	rig.startRelease("60s")
 	idleRigEventually(t, idleRigRecordWait, "the release's ask finding no session on the role's topic", func() bool {
-		on := map[string]string{"issue": slow.key}
-		return rig.logged(releaseAskWaitsLine, on)+rig.logged(askNoHolderLine, on) > 0
+		return rig.logged(releaseAskWaitsLine, map[string]string{"issue": slow.key}) > 0
 	})
 	plan.WithholdRole = false
 	rig.agents.setPlan(slow.key, string(slow.role), plan)

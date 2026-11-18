@@ -6155,7 +6155,7 @@ The release does five things, in this order:
 3. As soon as a pod's own read is done, it asks each running role of that pod when its workspace holds unpushed commits, its shim refused the read, or a role of it is in a turn.
    So a slow shim in one pod delays the ask of no other pod.
    A shim of an image older than the read refuses it.
-   The ask goes once, on the role's own Envoy topic, as an update round's ask goes, so it can arrive in the middle of a turn (`supervise.ReleaseTask`).
+   The ask reaches each role once, on the role's own Envoy topic, as an update round's ask does, so it can arrive in the middle of a turn (`supervise.ReleaseTask`).
    It gives the moment the daemon deletes the pod, and says that work not pushed by then goes with the pod.
    It asks the role to push to `legion/<KEY>`, to answer with the `legion` tool's `ready_for_update` naming the ask's round (`release:<id>`), and to end its turn.
    Each asked pod waits until each asked role answered and no role of it is in a turn, or until the bound.

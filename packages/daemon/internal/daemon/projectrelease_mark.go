@@ -47,7 +47,7 @@ type projectRelease struct {
 	// release's own ask round is named by (ownRound).
 	id atomic.Int64
 	// asks is the running release's side of its asks (releaseAskHook), which the outbox reads as
-	// it publishes one: installed once, before id names the release (asking), nil before.
+	// it publishes one: installed once, before id names the release (recorded), nil before.
 	asks atomic.Pointer[releaseAskHook]
 	// finishedActs is set once the release finished its acts (finish, finished): its round is then
 	// no round the outbox publishes an ask under without the claim-round read (askRound), while
@@ -67,8 +67,10 @@ func (r *projectRelease) mark() bool {
 }
 
 // recorded names the release once StartProjectRelease committed its record, so the outbox lets
-// that release's own asks through (ownRound, askRound).
-func (r *projectRelease) recorded(id int64) {
+// that release's own asks through (ownRound, askRound), and installs hook, the release's side of
+// those asks, before the round, so every ask the outbox publishes under that round finds it.
+func (r *projectRelease) recorded(id int64, hook releaseAskHook) {
+	r.asks.Store(&hook)
 	r.id.Store(id)
 }
 
@@ -89,14 +91,7 @@ func (h releaseAskHook) reach(token claim.Token) {
 	}
 }
 
-// asking installs hook, the running release's side of its asks. The release installs it once,
-// before its record names its round (recorded), so every ask the outbox publishes under that
-// round finds it.
-func (r *projectRelease) asking(hook releaseAskHook) {
-	r.asks.Store(&hook)
-}
-
-// askHook is the running release's side of its asks (asking), and the zero hook on a nil mark and
+// askHook is the running release's side of its asks (recorded), and the zero hook on a nil mark and
 // on one no release installed it on: its bound is the zero time, long past, and it tells nobody.
 func (r *projectRelease) askHook() releaseAskHook {
 	if r == nil {

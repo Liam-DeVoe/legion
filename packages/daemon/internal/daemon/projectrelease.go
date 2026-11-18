@@ -221,9 +221,9 @@ type releaseRun struct {
 }
 
 // releaseAsk is where one asked claim's answer goes: its pod's line and its place among the line's
-// asked roles, and the pod's nudge, which wakes the pod's wait at once. reached is whether the ask
-// reached a session of the claim's role by the bound, or the role answered it (reach, Answer):
-// only such a role stays on the line at the bound (passBound).
+// asked roles, and the pod's nudge, which wakes the pod's wait at once. reached is whether the
+// outbox's publish of the ask reached a session of the claim's role before the bound (reach): only
+// such a role, or one that answered, stays on the line at the bound (passBound).
 type releaseAsk struct {
 	line, ask int
 	nudge     chan struct{}
@@ -295,8 +295,7 @@ func (r *projectReleaser) Start(ctx context.Context, bound time.Duration, dryRun
 	}
 	run := &releaseRun{id: release.ID, bound: release.BoundAt, stop: stop, asked: map[claim.Token]releaseAsk{},
 		heldRefused: newRefusals()}
-	r.mark.asking(releaseAskHook{bound: run.bound, reached: func(token claim.Token) { run.reach(token, r.now()) }})
-	r.mark.recorded(release.ID)
+	r.mark.recorded(release.ID, releaseAskHook{bound: run.bound, reached: func(token claim.Token) { run.reach(token, r.now()) }})
 	r.run = run
 	r.log.Info("project release: recorded; the daemon starts nothing of the project until its next boot",
 		"release", release.ID, "bound", bound.String(), "boundAt", release.BoundAt.Format(time.RFC3339),
@@ -362,12 +361,11 @@ func (r *projectReleaser) AskRound() string {
 // Answer is api.ProjectRelease's record of an asked role's answer. The claim is read from its
 // machine's published view, which waits on no decision in flight, and held to the session and the
 // generation the answer names, as the machine holds every agent request (fenceRequest). The answer
-// is recorded on the release, never on the claim, counts the ask as having reached the role's
-// session (releaseAsk.reached), and wakes its pod's wait at once. An answer that comes once its
-// pod's bound has passed is accepted and not recorded: the line keeps the bound, which is what
-// decided the pod. A role the bound took off its pod's line, since the ask reached no session of
-// it by then (passBound), is one the release did not ask, and its answer is refused as any such
-// claim's is.
+// is recorded on the release, never on the claim, and wakes its pod's wait at once. An answer that
+// comes once its pod's bound has passed is accepted and not recorded: the line keeps the bound,
+// which is what decided the pod. A role the bound took off its pod's line, since the ask reached no
+// session of it by then and it had not answered (passBound), is one the release did not ask, and
+// its answer is refused as any such claim's is.
 func (r *projectReleaser) Answer(ctx context.Context, token claim.Token, session string, generation uint64, head string) error {
 	run := r.current()
 	if run == nil {
@@ -402,8 +400,6 @@ func (r *projectReleaser) Answer(ctx context.Context, token claim.Token, session
 		at := r.now().UTC()
 		ask.AnsweredAt = &at
 	}
-	asked.reached = true
-	run.asked[token] = asked
 	run.mu.Unlock()
 	r.log.Info("project release: an asked role answered", "release", run.id, "claim", token, "head", head)
 	r.record(ctx, run)

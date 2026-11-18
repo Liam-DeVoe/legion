@@ -3284,8 +3284,9 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 		token claim.Token
 	}
 	finished := false
-	// finishPast finishes owed, a row the fences end, as the outbox's fence would.
-	finishPast := func(owed record.OwedStart) error {
+	// finishOwed finishes owed, a row the fences end, as the outbox's fence would, and finishPast
+	// does so and says so.
+	finishOwed := func(owed record.OwedStart) error {
 		// No live lease holds the row (record.Store.OwedStarts), so the token it carries is
 		// either none at all or the one a dead lane left on it, and the delete names that token:
 		// a lane that took the row between this pass's read and this write keeps it, and the
@@ -3294,6 +3295,12 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 			return fmt.Errorf("finish the start %s owed a worker it can no longer reach: %w", owed.Issue, err)
 		}
 		finished = true
+		return nil
+	}
+	finishPast := func(owed record.OwedStart) error {
+		if err := finishOwed(owed); err != nil {
+			return err
+		}
 		intake.OnCommit(ctx, func() {
 			a.log.Info("admission: finished a held start whose issue has moved past it", "issue", owed.Issue, "row", owed.ID,
 				"role", owed.Role, "phase", owed.Phase, "generation", owed.Generation)
@@ -3344,11 +3351,14 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 	}
 	for _, movedRow := range moved {
 		owed := movedRow.owed
-		if err := finishPast(owed); err != nil {
-			return finished, err
-		}
 		if !held[movedRow.token].ProjectReleased() {
+			if err := finishPast(owed); err != nil {
+				return finished, err
+			}
 			continue
+		}
+		if err := finishOwed(owed); err != nil {
+			return finished, err
 		}
 		if err := a.enqueue(ctx, tx, owed.Issue, record.ReleaseStoppedStart(byKey[owed.Issue].Tree, owed.Role, owed.Generation), a.now()); err != nil {
 			return finished, err

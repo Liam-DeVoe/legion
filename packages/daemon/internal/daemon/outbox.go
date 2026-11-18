@@ -1793,7 +1793,7 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 	if releaseRound := r.release.askRound(); releaseRound != "" && payload.Round == releaseRound {
 		r.log.Info("outbox update ask of the running project release; it is published without the claim's round", fields...)
 		asks := r.release.askHook()
-		waits := !asks.bound.IsZero() && r.now().Before(asks.bound)
+		waits := r.now().Before(asks.bound)
 		noHolder := "outbox update ask of the running project release finished undelivered: no live session held the role by the release's bound"
 		if waits {
 			noHolder = "outbox update ask of the running project release waits: no live session holds the role yet"

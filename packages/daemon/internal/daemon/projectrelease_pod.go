@@ -198,9 +198,10 @@ func (r *projectReleaser) ask(ctx context.Context, run *releaseRun, pod *release
 // written, so an answer that comes at once finds it. It answers whether any role was asked: none
 // where no role runs or the deployment has no outbox. Rows that could not be written are answered
 // by their error, and their roles are taken off the line and out of run.asked again, so no role
-// they never reached reads as asked. A role whose row was written counts as reached once the
-// outbox's publish of it reached a session of the role, or the role answered (reach, Answer); one
-// the ask reached no session of by the bound is taken off the line then (atBound).
+// they never reached reads as asked. A role whose row was written counts as asked once the
+// outbox's publish of it reached a session of the role (reach), or once the role answered; one the
+// ask reached no session of by the bound, and that had not answered, is taken off the line then
+// (atBound).
 func (r *projectReleaser) askOnce(ctx context.Context, run *releaseRun, pod *releasePod) (bool, error) {
 	running := runningClaims(r.issueViews(pod.sandbox.Issue))
 	if len(running) == 0 {
@@ -316,18 +317,18 @@ func (r *projectReleaser) atBound(run *releaseRun, pod *releasePod) bool {
 func (run *releaseRun) passBound(pod *releasePod) (dropped []claim.Token, reached bool) {
 	run.mu.Lock()
 	defer run.mu.Unlock()
-	onLine := map[int]claim.Token{}
+	line := &run.result.Sandboxes[pod.line]
+	onLine := make([]claim.Token, len(line.Asked))
 	for token, asked := range run.asked {
 		if asked.line == pod.line {
 			onLine[asked.ask] = token
 		}
 	}
-	line := &run.result.Sandboxes[pod.line]
 	kept := line.Asked[:0]
 	for i, ask := range line.Asked {
 		token := onLine[i]
 		asked := run.asked[token]
-		if !asked.reached {
+		if !asked.reached && ask.AnsweredAt == nil {
 			delete(run.asked, token)
 			dropped = append(dropped, token)
 			continue
