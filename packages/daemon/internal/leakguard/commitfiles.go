@@ -151,15 +151,13 @@ func (g *Guard) commitChanges(ctx context.Context, dir, commit string, parents i
 // one answer that publishes no line unread: a file passed over would pass every line of it, and a
 // file read in part would pass the rest. Of a binary file, the read holds its first 8000 bytes
 // alone, whatever its size: cat-file writes the rest, which is passed over unkept. The blobs are
-// read change by change as git writes them (blobBatch), the commit's file first and then the files
-// it is compared with, so what the read holds is one change's: the commit's file, its lines no
-// file read so far holds, and the file being read. A file it is compared with is passed over
-// unread where no line of the commit's file is left to take, which is every one of them where the
-// commit's file is binary.
-//
-// The blobs are asked for here, change by change in the order the loop below reads them, each
-// change's file and then the files it is compared with, so that each read is of the blob it
-// expects.
+// listed for the batch (blobBatch) change by change in the order the loop below reads them, the
+// commit's file first and then the files it is compared with, so that each read is of the blob it
+// expects, and what the read holds is one change's: the commit's file, its lines no file read so
+// far holds, and the file being read. A file it is compared with is passed over, never asked of
+// cat-file, where no line of the commit's file is left to take, which is every one of them where
+// the commit's file is binary; so such a file the repository lacks, or that a partial clone's
+// fetch of fails, refuses nothing.
 func (g *Guard) addedLines(ctx context.Context, dir, commit string, parents int, changes []fileChange) ([]Record, error) {
 	kind, theirs := "commit", "the parent of commit "+short(commit)+"'s"
 	if parents > 1 {
@@ -170,7 +168,10 @@ func (g *Guard) addedLines(ctx context.Context, dir, commit string, parents int,
 	for _, change := range changes {
 		ids = append(append(ids, change.blob), change.held...)
 	}
-	batch := g.readBlobs(ctx, dir, ids)
+	batch, err := g.readBlobs(ctx, dir, ids)
+	if err != nil {
+		return nil, err
+	}
 	// read is the text of the next blob, the file at path whose owner whose names, and the failure
 	// that names it where it is a text file above the bound.
 	read := func(whose, path string) (string, error) {
@@ -186,6 +187,16 @@ func (g *Guard) addedLines(ctx context.Context, dir, commit string, parents int,
 		if err != nil {
 			return err
 		}
+		// A record's text is a copy, so that the file it was read from is not held for it.
+		if len(change.held) == 0 {
+			// Compared with no file, the commit's file adds its every line.
+			for line := range lines(file) {
+				if strings.TrimSpace(line) != "" {
+					records = append(records, Record{Label: change.path, Text: strings.Clone(line)})
+				}
+			}
+			return nil
+		}
 		// own are the lines of the commit's file that no file read so far holds.
 		own := map[string]bool{}
 		for line := range lines(file) {
@@ -195,9 +206,7 @@ func (g *Guard) addedLines(ctx context.Context, dir, commit string, parents int,
 		}
 		for range change.held {
 			if len(own) == 0 {
-				if err := batch.passOver(); err != nil {
-					return err
-				}
+				batch.passOver()
 				continue
 			}
 			held, err := read(theirs, change.from)
@@ -206,17 +215,18 @@ func (g *Guard) addedLines(ctx context.Context, dir, commit string, parents int,
 			}
 			for line := range lines(held) {
 				delete(own, line)
+				if len(own) == 0 {
+					break
+				}
 			}
 		}
 		for line := range lines(file) {
 			if own[line] {
-				// A record's text is a copy, so that the file it was read from is not held for it.
 				records = append(records, Record{Label: change.path, Text: strings.Clone(line)})
 			}
 		}
 		return nil
 	}
-	var err error
 	for _, change := range changes {
 		if err = add(change); err != nil {
 			break

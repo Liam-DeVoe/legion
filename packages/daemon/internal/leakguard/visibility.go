@@ -100,12 +100,12 @@ func (g *Guard) FreshVisibility(ctx context.Context, slug string) (Visibility, e
 // github.com and nothing else.
 //
 // `legion gh` reads with it the visibility of a repository of an owner its bundle holds no gh
-// directory for (cmd/legion's ghConfigDir): it refuses the guard's own REST and GraphQL reads of
-// such a repository, which would run with that bundle's token, so this read is the one it makes,
-// and a repository GitHub hides behind authentication never reads public.
+// directory for (cmd/legion's liftForPublicRead): it refuses the guard's own REST and GraphQL
+// reads of such a repository, which would run with that bundle's token, so this read is the one
+// it makes, and a repository GitHub hides behind authentication never reads public.
 func (g *Guard) VisibilityWithoutCredential(ctx context.Context, slug string) (Visibility, error) {
-	if _, err := ghrepo.Parse("", slug); err != nil {
-		return "", fmt.Errorf("%s is no repository GitHub serves, so no visibility can be read for it", maskPath(slug))
+	if err := unservable(slug); err != nil {
+		return "", err
 	}
 	visibility, err := g.lsRemote(ctx, githubOrigin, slug)
 	if err != nil {
@@ -234,8 +234,32 @@ func (g *Guard) keptVisibility(slug string) (Visibility, bool) {
 	if path == "" {
 		return "", false
 	}
-	content, ok := readPrivateState(path)
-	if !ok {
+	// The directory is opened with O_NOFOLLOW and without O_DIRECTORY, and found to be a directory
+	// after: under the gVisor kernel of an issue pod (4.19.0-gvisor, measured 2026-11-17), an open
+	// with both follows a link to a directory, fstat then answering a directory, where O_NOFOLLOW
+	// alone refuses the link (ELOOP). Linux refuses the link either way. O_NONBLOCK keeps a FIFO at
+	// the path from blocking the open until a writer comes.
+	dir, err := os.OpenFile(filepath.Dir(path), os.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return "", false
+	}
+	defer dir.Close()
+	info, err := dir.Stat()
+	if err != nil || !info.IsDir() || !ownedByCurrentUser(info) || info.Mode().Perm()&0o077 != 0 {
+		return "", false
+	}
+	fd, err := unix.Openat(int(dir.Fd()), filepath.Base(path), unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return "", false
+	}
+	cache := os.NewFile(uintptr(fd), path)
+	defer cache.Close()
+	info, err = cache.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+		return "", false
+	}
+	content, err := io.ReadAll(cache)
+	if err != nil {
 		return "", false
 	}
 	var entry visibilityCacheEntry
@@ -243,44 +267,6 @@ func (g *Guard) keptVisibility(slug string) (Visibility, bool) {
 		return "", false
 	}
 	return Public, true
-}
-
-// readPrivateState is the content of the file at path, a file of the guard's state that only
-// this user may have written: its directory opened without following a link, a directory owned
-// by the current user and readable by no one else, and the file opened in it without following a
-// link, regular and readable by no one else. Anything else is no content. A kept answer may only
-// spare the guard a read, so one another user could have planted is never read (keptVisibility).
-//
-// The directory is opened with O_NOFOLLOW and without O_DIRECTORY, and found to be a directory
-// after: under the gVisor kernel of an issue pod (4.19.0-gvisor, measured 2026-11-17), an open
-// with both follows a link to a directory, fstat then answering a directory, where O_NOFOLLOW
-// alone refuses the link (ELOOP). Linux refuses the link either way. O_NONBLOCK keeps a FIFO at
-// the path from blocking the open until a writer comes.
-func readPrivateState(path string) ([]byte, bool) {
-	dir, err := os.OpenFile(filepath.Dir(path), os.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
-	if err != nil {
-		return nil, false
-	}
-	defer dir.Close()
-	info, err := dir.Stat()
-	if err != nil || !info.IsDir() || !ownedByCurrentUser(info) || info.Mode().Perm()&0o077 != 0 {
-		return nil, false
-	}
-	fd, err := unix.Openat(int(dir.Fd()), filepath.Base(path), unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
-	if err != nil {
-		return nil, false
-	}
-	file := os.NewFile(uintptr(fd), path)
-	defer file.Close()
-	info, err = file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
-		return nil, false
-	}
-	content, err := io.ReadAll(file)
-	if err != nil {
-		return nil, false
-	}
-	return content, true
 }
 
 func ownedByCurrentUser(info os.FileInfo) bool {
@@ -646,14 +632,14 @@ func (g *Guard) lsRemote(ctx context.Context, origin, slug string) (Visibility, 
 	if err != nil {
 		return "", err
 	}
+	if status == 0 && listsARef(listed) {
+		return Public, nil
+	}
 	masked := maskPath(slug)
 	if status != 0 {
 		return "", fmt.Errorf("git ls-remote of %s exited %d: %s", masked, status, strings.ReplaceAll(strings.TrimSpace(stderr.String()+listed), slug, masked))
 	}
-	if !listsARef(listed) {
-		return "", fmt.Errorf("git ls-remote of %s exited 0 and listed no ref", masked)
-	}
-	return Public, nil
+	return "", fmt.Errorf("git ls-remote of %s exited 0 and listed no ref", masked)
 }
 
 // listsARef is whether listed, what git ls-remote printed on its standard output, holds a ref: a

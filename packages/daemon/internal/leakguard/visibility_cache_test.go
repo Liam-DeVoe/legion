@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
 type visibilityTestClock struct {
@@ -206,7 +207,7 @@ func TestVisibilityReadsWithoutRESTWhenTheRetryIsStillLimited(t *testing.T) {
 			bin, records := t.TempDir(), t.TempDir()
 			graphql, record := filepath.Join(records, "graphql"), filepath.Join(records, "git")
 			writeProgram(t, bin, "gh", tc.graphql(graphql))
-			writeProgram(t, bin, "git", recordsItsCall(record)+tc.git)
+			writeProgram(t, bin, "git", leakguardtest.RecordsGitCall(record)+tc.git)
 			var reads int
 			visibility, err := New(Options{
 				Clock: clock,
@@ -240,10 +241,10 @@ func TestVisibilityReadsWithoutRESTWhenTheRetryIsStillLimited(t *testing.T) {
 			if want := []time.Duration{time.Minute}; !slices.Equal(clock.waits, want) {
 				t.Errorf("the waits are %v, want %v", clock.waits, want)
 			}
-			if got := len(readCalls(t, graphql)); got != 1 {
+			if got := len(leakguardtest.ReadCalls(t, graphql)); got != 1 {
 				t.Errorf("gh's GraphQL read ran %d times, want once", got)
 			}
-			if got := len(readCalls(t, record)); got != tc.gitRuns {
+			if got := len(leakguardtest.ReadCalls(t, record)); got != tc.gitRuns {
 				t.Errorf("git ran %d times, want %d", got, tc.gitRuns)
 			}
 		})
@@ -286,7 +287,7 @@ func TestVisibilityRefusesRateLimitBeyondTheWaitBound(t *testing.T) {
 			bin, records := t.TempDir(), t.TempDir()
 			graphql, record := filepath.Join(records, "graphql"), filepath.Join(records, "git")
 			writeProgram(t, bin, "gh", graphQLRateLimited(graphql))
-			writeProgram(t, bin, "git", recordsItsCall(record)+cannotConnect)
+			writeProgram(t, bin, "git", leakguardtest.RecordsGitCall(record)+cannotConnect)
 			var reads int
 			_, err := New(Options{
 				Clock: clock,
@@ -308,10 +309,10 @@ func TestVisibilityRefusesRateLimitBeyondTheWaitBound(t *testing.T) {
 			if len(clock.waits) != 0 {
 				t.Errorf("the waits are %v, want none", clock.waits)
 			}
-			if got := len(readCalls(t, graphql)); got != 1 {
+			if got := len(leakguardtest.ReadCalls(t, graphql)); got != 1 {
 				t.Errorf("gh's GraphQL read ran %d times, want once", got)
 			}
-			if got := len(readCalls(t, record)); got != 1 {
+			if got := len(leakguardtest.ReadCalls(t, record)); got != 1 {
 				t.Errorf("git ran %d times, want the one ls-remote", got)
 			}
 		})

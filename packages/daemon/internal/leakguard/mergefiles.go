@@ -43,18 +43,24 @@ func (g *Guard) mergeChanges(ctx context.Context, dir, merge string, parents []s
 	for _, parent := range parents {
 		asked.WriteString(merge + " " + parent + "\n")
 	}
-	out, err := g.gitFed(ctx, dir, asked.String(), "diff-tree", "--stdin", "--always", "-r", "--no-renames", "-z")
+	out, err := g.gitFed(ctx, dir, nil, asked.String(), "diff-tree", "--stdin", "--always", "-r", "--no-renames", "-z")
 	if err != nil {
 		return nil, nil, err
 	}
 	what := "merge " + short(merge)
-	// listed is how many of the diffs read so far list a path, counted only while each one has:
-	// a path one diff leaves out is one the merge has as that parent has it. added is whether each
-	// of those diffs lists the path as one the merge adds (A). listedFirst are the paths the first
-	// diff lists, in its order, at index, each with the merge's file and its parents' files there,
-	// each blob once however many parents have it.
-	listed, added, index := map[string]int{}, map[string]bool{}, map[string]int{}
-	var listedFirst []fileChange
+	// listedPath is a path the first diff lists: change, the merge's file there and its parents'
+	// files, each blob once however many parents have it; listed, how many of the diffs read so
+	// far list the path, counted only while each one has, since a path one diff leaves out is one
+	// the merge has as that parent has it; and added, whether each of those diffs lists the path as
+	// one the merge adds (A).
+	type listedPath struct {
+		change fileChange
+		listed int
+		added  bool
+	}
+	// listedFirst are the paths the first diff lists, in its order, each at index.
+	index := map[string]int{}
+	var listedFirst []listedPath
 	diffs := 0
 	for entry, err := range rawEntries(out, what) {
 		switch {
@@ -65,38 +71,42 @@ func (g *Guard) mergeChanges(ctx context.Context, dir, merge string, parents []s
 				return nil, nil, fmt.Errorf("git diff-tree of merge %s headed a diff with another commit", short(merge))
 			}
 			diffs++
+			continue
 		case diffs == 0:
 			return nil, nil, shapeError(what)
-		case listed[entry.path] == diffs-1:
-			listed[entry.path] = diffs
-			if diffs == 1 {
-				change := fileChange{path: entry.path, from: entry.path}
-				if entry.ourKind.blob() {
-					change.blob = entry.ours
-				}
-				index[entry.path] = len(listedFirst)
-				listedFirst = append(listedFirst, change)
-				added[entry.path] = true
-			}
-			change := &listedFirst[index[entry.path]]
-			if entry.theirKind.blob() && !slices.Contains(change.held, entry.theirs) {
-				change.held = append(change.held, entry.theirs)
-			}
-			added[entry.path] = added[entry.path] && entry.status == 'A'
 		}
+		at, seen := index[entry.path]
+		switch {
+		case !seen && diffs == 1:
+			change := fileChange{path: entry.path, from: entry.path}
+			if entry.ourKind.blob() {
+				change.blob = entry.ours
+			}
+			at = len(listedFirst)
+			index[entry.path] = at
+			listedFirst = append(listedFirst, listedPath{change: change, added: true})
+		case !seen || listedFirst[at].listed != diffs-1:
+			continue
+		}
+		listing := &listedFirst[at]
+		listing.listed = diffs
+		if entry.theirKind.blob() && !slices.Contains(listing.change.held, entry.theirs) {
+			listing.change.held = append(listing.change.held, entry.theirs)
+		}
+		listing.added = listing.added && entry.status == 'A'
 	}
 	if diffs != len(parents) {
 		return nil, nil, fmt.Errorf("git diff-tree of merge %s answered %d diffs for its %d parents", short(merge), diffs, len(parents))
 	}
-	for _, change := range listedFirst {
-		if listed[change.path] != diffs {
+	for _, listing := range listedFirst {
+		if listing.listed != diffs {
 			continue
 		}
-		if added[change.path] {
-			paths = append(paths, change.path)
+		if listing.added {
+			paths = append(paths, listing.change.path)
 		}
-		if change.blob != "" {
-			changes = append(changes, change)
+		if listing.change.blob != "" {
+			changes = append(changes, listing.change)
 		}
 	}
 	return paths, changes, nil

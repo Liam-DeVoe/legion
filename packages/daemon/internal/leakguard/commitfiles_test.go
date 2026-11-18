@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -267,6 +266,70 @@ func TestACommitsFileAboveTheBoundRefusesThePush(t *testing.T) {
 	}
 }
 
+// A file no line can be taken from is never asked of cat-file, so git neither writes it nor, in a
+// partial clone, fetches it (blobBatch): the parent's file of a commit whose own file is binary,
+// and a merge parent's file once an earlier parent's file at that path holds every line of the
+// merge's. Such a file the repository lacks refuses nothing, since no line of it would be read:
+// the commit here is pushed from a repository its parent's file has been removed from, and
+// passes. The blobs the guard asks for are kept (blobRecord).
+func TestAFileNoLineCanBeTakenFromIsNotAskedFor(t *testing.T) {
+	named := "the runner answers at " + theHost + "\n"
+	for _, tc := range []struct {
+		name              string
+		held, side, added map[string]string
+		// lacks is the file the repository is made to lack before the push, as <rev>:<path> with
+		// HEAD the pushed commit, "" for none.
+		lacks string
+		// asks are the blobs the guard asks cat-file for, in order, each as <rev>:<path> with HEAD
+		// the pushed commit.
+		asks []string
+	}{
+		{
+			name:  "the parent's file of a commit whose own file is binary, which the repository lacks",
+			held:  map[string]string{"notes.lock": "a line of the parent\n"},
+			added: map[string]string{"notes.lock": "\x00a line of the parent\n" + named},
+			lacks: "HEAD^:notes.lock",
+			asks:  []string{"HEAD:notes.lock"},
+		},
+		{
+			name:  "a merge's second parent's file, where its first parent's holds every line of the merge's",
+			held:  map[string]string{"notes.md": "one\ntwo\nthree\n"},
+			side:  map[string]string{"notes.md": "a line the side branch writes\n"},
+			added: map[string]string{"notes.md": "three\ntwo\n"},
+			// The main commit's file, which it adds, then the merge's and its first parent's.
+			asks: []string{"HEAD^1:main.md", "HEAD:notes.md", "HEAD^1:notes.md"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, base, head, reached := pushOf(t, tc.held, tc.side, tc.added, nil)
+			fixture := fixturegit.Isolated(t, t.TempDir())
+			blob := func(at string) string {
+				t.Helper()
+				return fixture.Run(repo, "git", "rev-parse", strings.Replace(at, "HEAD", head, 1))
+			}
+			if tc.lacks != "" {
+				lacked := blob(tc.lacks)
+				remove(t, filepath.Join(repo, ".git", "objects", lacked[:2], lacked[2:]))
+				if _, err := fixture.Try(repo, "git", "cat-file", "-e", lacked); err == nil {
+					t.Fatalf("the repository still has %s, so this case proves nothing", tc.lacks)
+				}
+			}
+			var want []string
+			for _, at := range tc.asks {
+				want = append(want, blob(at))
+			}
+			path, record := blobRecord(t)
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, append(reached, path)...)
+			if err := guard.Push(bound(t), mainPush(repo, base, head, "origin", theURL)); err != nil {
+				t.Fatalf("the push = %v, want it passed", err)
+			}
+			if read := asked(t, record); !slices.Equal(read, want) {
+				t.Errorf("the guard asked cat-file for %q, want %q", read, want)
+			}
+		})
+	}
+}
+
 // A record of a file names the file, and the lines of a file are read from its blob alike in a
 // commit of one parent and in a merge. The identities and the message come first, then the
 // records of paths, then the records of lines, each in path order and a file's lines in the
@@ -490,7 +553,7 @@ func TestACommitThatMovesThousandsOfFilesIsReadForItsLine(t *testing.T) {
 		}
 		fmt.Fprintf(&entries, "100644 %s\tnotes.md\n", notesAt)
 		index := fixture.With("GIT_INDEX_FILE=" + filepath.Join(t.TempDir(), "index"))
-		fed(t, index, repo, entries.String(), "git", "update-index", "--index-info")
+		index.Fed(repo, entries.String(), "git", "update-index", "--index-info")
 		return index.Run(repo, "git", "write-tree")
 	}
 	base := fixture.Run(repo, "git", "commit-tree", tree("packages/an-invented-package/src", notes), "-m", "the commit the destination holds")
@@ -502,17 +565,5 @@ func TestACommitThatMovesThousandsOfFilesIsReadForItsLine(t *testing.T) {
 	wantRefused(t, err, []string{"notes.md: " + theClass})
 	if read := asked(t, record); !slices.Equal(read, []string{named, notes}) {
 		t.Errorf("the guard asked cat-file for %d blobs, %.80q, want notes.md's two, %q", len(read), read, []string{named, notes})
-	}
-}
-
-// fed runs argv in dir under runner's environment with input on its standard input, and fails the
-// test where the command fails, naming what ran and what it printed: a fixturegit.Runner hands a
-// command no standard input.
-func fed(t *testing.T, runner fixturegit.Runner, dir, input string, argv ...string) {
-	t.Helper()
-	command := exec.Command(argv[0], argv[1:]...)
-	command.Dir, command.Env, command.Stdin = dir, runner.Env, strings.NewReader(input)
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("%s in %s: %v\n%s", strings.Join(argv, " "), dir, err, output)
 	}
 }

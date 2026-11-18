@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
 // The read with no credential carries no credential of the pod's. Of the caller's GIT_ variables
@@ -30,7 +31,7 @@ import (
 // prints its messages in English.
 func TestLsRemoteReadsWithNoCredentialOfThePods(t *testing.T) {
 	bin, record, home := t.TempDir(), filepath.Join(t.TempDir(), "record"), t.TempDir()
-	writeProgram(t, bin, "git", recordsItsCall(record)+answersTheRefs)
+	writeProgram(t, bin, "git", leakguardtest.RecordsGitCall(record)+answersTheRefs)
 	netrc := "machine github.com\nlogin invented-user\npassword invented-password\n"
 	if err := os.WriteFile(filepath.Join(home, ".netrc"), []byte(netrc), 0o600); err != nil {
 		t.Fatal(err)
@@ -51,7 +52,7 @@ func TestLsRemoteReadsWithNoCredentialOfThePods(t *testing.T) {
 	if err != nil || visibility != Public {
 		t.Fatalf("read %q, %v; want public", visibility, err)
 	}
-	calls := readCalls(t, record)
+	calls := leakguardtest.ReadCalls(t, record)
 	if len(calls) != 1 {
 		t.Fatalf("git ran %d times, want once", len(calls))
 	}
@@ -97,7 +98,7 @@ func TestLsRemoteReadsWithNoCredentialOfThePods(t *testing.T) {
 // GIT_TERMINAL_PROMPT=0 and no askpass at all.
 func TestLsRemoteKeepsTheCallersTransportButNotItsPrompts(t *testing.T) {
 	bin, record, askpasses := t.TempDir(), filepath.Join(t.TempDir(), "record"), t.TempDir()
-	writeProgram(t, bin, "git", recordsItsCall(record)+answersTheRefs)
+	writeProgram(t, bin, "git", leakguardtest.RecordsGitCall(record)+answersTheRefs)
 	writeProgram(t, askpasses, "answers", "echo invented-token\n")
 	cainfo, capath := filepath.Join(t.TempDir(), "ca.pem"), t.TempDir()
 	guard := New(Options{Env: append(fixtureenv.Isolated(t.TempDir()),
@@ -114,7 +115,7 @@ func TestLsRemoteKeepsTheCallersTransportButNotItsPrompts(t *testing.T) {
 	if err != nil || visibility != Public {
 		t.Fatalf("read %q, %v; want public", visibility, err)
 	}
-	calls := readCalls(t, record)
+	calls := leakguardtest.ReadCalls(t, record)
 	if len(calls) != 1 {
 		t.Fatalf("git ran %d times, want once", len(calls))
 	}
@@ -281,7 +282,7 @@ func TestVisibilityWithoutCredentialReadsWithLsRemoteAlone(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			bin, record, ghRecord, state := t.TempDir(), filepath.Join(t.TempDir(), "git"), filepath.Join(t.TempDir(), "gh"), t.TempDir()
-			writeProgram(t, bin, "git", recordsItsCall(record)+tc.git)
+			writeProgram(t, bin, "git", leakguardtest.RecordsGitCall(record)+tc.git)
 			writeProgram(t, bin, "gh", "echo gh >> "+shQuote(ghRecord)+"\necho public\nexit 0\n")
 			var sources []VisibilitySource
 			guard := New(Options{
@@ -295,7 +296,7 @@ func TestVisibilityWithoutCredentialReadsWithLsRemoteAlone(t *testing.T) {
 			case tc.want == "" && (err == nil || visibility != ""):
 				t.Errorf("read %q, %v; want no answer", visibility, err)
 			}
-			if calls := readCalls(t, record); (len(calls) == 1) != tc.gitRuns || len(calls) > 1 {
+			if calls := leakguardtest.ReadCalls(t, record); (len(calls) == 1) != tc.gitRuns || len(calls) > 1 {
 				t.Errorf("git ran %d times, want it run: %t", len(calls), tc.gitRuns)
 			}
 			if got := countLines(t, ghRecord); got != 0 {

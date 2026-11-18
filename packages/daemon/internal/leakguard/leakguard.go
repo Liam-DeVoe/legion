@@ -29,9 +29,11 @@ package leakguard
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
@@ -86,22 +88,30 @@ type Guard struct {
 	noAnswer string
 	// blobBound is the largest text file the read of a pushed commit's files takes, a merge's or a
 	// commit of one parent's (Guard.addedLines): 32 MiB, which New sets and a test lowers. The read
-	// holds at most two such files at once, the commit's and one parent's, and a set of the
-	// commit's distinct lines, which is under 100 MiB at the bound for lines of ordinary length and
-	// some hundreds of MiB for a file of nothing but short distinct lines: a small part of the 19
-	// GiB an issue pod's roles share at the default issue reservation (docs/kubernetes.md). It is
-	// over eight times the largest text file this repository tracks, a test fixture of 3.7 MiB
+	// holds at most two such files at once, the commit's and one parent's, and, for a file
+	// compared with another, a set of the commit's distinct lines, which is under 100 MiB at the
+	// bound for lines of ordinary length and some hundreds of MiB for a file of nothing but short
+	// distinct lines: a small part of the 19 GiB an issue pod's roles share at the default issue
+	// reservation (docs/kubernetes.md). It is over eight times the largest text file this
+	// repository tracks, a test fixture of 3.7 MiB
 	// (packages/envoy/internal/dispatch/pmdoc/testdata/fixtures.json, measured 2026-11-17), so
 	// that a lock file or a fixture a commit changes is far below it, and under the 50 MiB above
 	// which GitHub warns of a file a push adds.
 	blobBound int64
+	// heldReadBound is how long the read of what a push's destination holds runs at most
+	// (Guard.advertised): two minutes, which New sets and a test lowers. The hook's own context
+	// has no deadline (cmd/legion's main), so without it a destination that stops answering would
+	// hold the push for as long as it did not answer. Two minutes is that read many times over:
+	// measured from an issue pod on 2026-11-18, seven reads of cybermonklabs/legion's 5,749
+	// branches and tags took 0.58 s to 0.67 s, 0.63 s the median.
+	heldReadBound time.Duration
 }
 
 // New is a guard with opts' seams. It resolves no check: the shared check publishes often, and a
 // guard that resolved one at start would keep running a copy the current rules have moved past, so
 // every call resolves it again.
 func New(opts Options) *Guard {
-	g := &Guard{opts: opts, blobBound: 32 << 20}
+	g := &Guard{opts: opts, blobBound: 32 << 20, heldReadBound: 2 * time.Minute}
 	g.noAnswer = noAnswer(g.base())
 	return g
 }
@@ -229,18 +239,13 @@ func (g *Guard) Text(ctx context.Context, req TextRequest) error {
 // which runs this guard; the exemption that command makes for the check's own visibility read
 // requires the slug to be one ghrepo.Parse takes (its ghVisibilityRead), so a read for any other
 // slug would go back through `legion gh`, into the guard, into a read of the same slug, without
-// end. The guard therefore reads no visibility it could not have exempted. The refusal carries no
-// error of Parse's: that refusal repeats the slug as it was written, and a report carries a
-// masked name alone.
+// end. The guard therefore reads no visibility it could not have exempted (unservable).
 func (g *Guard) scanThrough(ctx context.Context, what, slug string) (bool, error) {
 	if slug == "" {
 		return true, nil
 	}
-	if _, err := ghrepo.Parse("", slug); err != nil {
-		return false, &SetupFailure{
-			What: what,
-			Why:  "the destination " + maskPath(slug) + " is no repository GitHub serves, so no visibility can be read for it",
-		}
+	if err := unservable(slug); err != nil {
+		return false, &SetupFailure{What: what, Why: "the destination " + err.Error()}
 	}
 	visibility, err := g.Visibility(ctx, slug)
 	if err != nil {
@@ -251,6 +256,18 @@ func (g *Guard) scanThrough(ctx context.Context, what, slug string) (bool, error
 		}
 	}
 	return visibility == Public, nil
+}
+
+// unservable is the refusal of slug where it is no repository GitHub could serve, one
+// ghrepo.Parse refuses, and nil for every other slug: no visibility is read for such a slug
+// (Guard.scanThrough, Guard.VisibilityWithoutCredential). The refusal carries no error of
+// Parse's: that refusal repeats the slug as it was written, and a report carries a masked name
+// alone.
+func unservable(slug string) error {
+	if _, err := ghrepo.Parse("", slug); err != nil {
+		return fmt.Errorf("%s is no repository GitHub serves, so no visibility can be read for it", maskPath(slug))
+	}
+	return nil
 }
 
 // value is the value of key in env, as exec reads it: the last entry of that name wins.

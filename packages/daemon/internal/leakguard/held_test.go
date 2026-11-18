@@ -266,14 +266,11 @@ exec `+shQuote(fixturegit.CompiledGit(t))+` "$@"
 }
 
 // A read of what the destination holds that does not answer ends at its own bound
-// (heldReadBound), although the caller's context has no deadline, as the hook's has none: a
+// (Guard.heldReadBound), although the caller's context has no deadline, as the hook's has none: a
 // destination that stops answering refuses the push rather than holding it. The push is refused
 // as a setup failure that names the URL, without its credential, and the bound. The stand-in git
 // here never answers an ls-remote, and runs the real git for every other call; the bound is 2 s.
 func TestAReadOfWhatTheDestinationHoldsThatDoesNotAnswerEndsAtItsBound(t *testing.T) {
-	saved := heldReadBound
-	heldReadBound = 2 * time.Second
-	t.Cleanup(func() { heldReadBound = saved })
 	// The userinfo is built apart from the scheme, so no line of this file is a URL that carries
 	// one, which the shared check would refuse at the push.
 	const user, token = "invented-user", "invented-token"
@@ -287,6 +284,7 @@ exec `+shQuote(fixturegit.CompiledGit(t))+` "$@"
 `)
 	repo, base, head, reached := pushOf(t, nil, nil, map[string]string{"notes.md": "the runner answers at " + theHost + "\n"}, nil)
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, append(reached, pathWith(bin))...)
+	guard.heldReadBound = 2 * time.Second
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	started := time.Now()

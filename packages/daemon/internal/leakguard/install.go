@@ -323,6 +323,8 @@ func unpackServed(body []byte, dir string) (int, error) {
 	}
 	archive := tar.NewReader(zipped)
 	files := 0
+	// made are the directories mkdirShared has made, which no later member makes again.
+	made := map[string]bool{}
 	for {
 		header, err := archive.Next()
 		if errors.Is(err, io.EOF) {
@@ -337,11 +339,11 @@ func unpackServed(body []byte, dir string) (int, error) {
 		target := filepath.Join(dir, header.Name)
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := mkdirShared(dir, target); err != nil {
+			if err := mkdirShared(dir, target, made); err != nil {
 				return files, err
 			}
 		case tar.TypeReg:
-			if err := mkdirShared(dir, filepath.Dir(target)); err != nil {
+			if err := mkdirShared(dir, filepath.Dir(target), made); err != nil {
 				return files, err
 			}
 			if err := writeMember(target, archive, header.FileInfo().Mode().Perm()&^0o022); err != nil {
@@ -356,16 +358,25 @@ func unpackServed(body []byte, dir string) (int, error) {
 
 // mkdirShared makes target and every directory between it and dir, each 0755 whatever the umask:
 // a role's shell may run umask 077, under which MkdirAll's 0755 lands 0700 and no one else could
-// reach the check's files below it. dir itself is the caller's, and its mode is left to it.
-func mkdirShared(dir, target string) error {
+// reach the check's files below it. dir itself is the caller's, and its mode is left to it. made
+// is every directory it has made so far, target among them once it returns, each with every
+// directory between it and dir: it makes none of them again and sets no mode of them again, since
+// each member of a body would otherwise set the mode of each of its directories once more, and a
+// syscall is slow under gVisor, which a pod runs under.
+func mkdirShared(dir, target string, made map[string]bool) error {
+	if made[target] {
+		return nil
+	}
 	if err := os.MkdirAll(target, 0o755); err != nil {
 		return err
 	}
-	for at := target; at != dir && strings.HasPrefix(at, dir+string(filepath.Separator)); at = filepath.Dir(at) {
+	for at := target; at != dir && !made[at] && strings.HasPrefix(at, dir+string(filepath.Separator)); at = filepath.Dir(at) {
 		if err := os.Chmod(at, 0o755); err != nil {
 			return err
 		}
+		made[at] = true
 	}
+	made[target] = true
 	return nil
 }
 

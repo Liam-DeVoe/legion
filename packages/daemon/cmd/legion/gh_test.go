@@ -973,7 +973,7 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 	// the guard refuses, which TestLegionGhChecksTheCallWithTheLeakGuard reads.
 	env := map[string]string{
 		"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
-		"PATH": wrappers + ":" + gitStandInLsRemote(t) + ":" + os.Getenv("PATH"), "PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), ghCheckPasses),
+		"PATH": wrappers + ":" + gitStandInLsRemote(t, os.DevNull) + ":" + os.Getenv("PATH"), "PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), ghCheckPasses),
 	}
 	wantEnv := "env " + filepath.Join(wrappers, "gh") + "|1|credential.https://github.com.useHttpPath=true|1|1\n"
 	for _, tc := range []struct {
@@ -1106,7 +1106,9 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 // the anonymous read of with a 401, as it answers a private one, of one it has no repository
 // for, and of an empty one, which lists no ref, after that one ls-remote, made with no credential
 // as above. So are the guard's own REST and GraphQL visibility reads of other/open, public as it
-// is, with no ls-remote.
+// is, with no ls-remote. And a read of other/open under a bundle whose renames move it to
+// other/moved, of the same owner, is refused naming that pair, with no ls-remote: the refusal of
+// the pair wraps the refusal of its owner, and stays the pair's.
 func TestLegionGhReadsAPublicRepositoryOfAnOwnerTheBundleHoldsNoneFor(t *testing.T) {
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
@@ -1117,10 +1119,9 @@ func TestLegionGhReadsAPublicRepositoryOfAnOwnerTheBundleHoldsNoneFor(t *testing
 	if err := os.WriteFile(stub, []byte(ghStandInPrefix(help)+"printf '%s|%s\\n' \"$GH_CONFIG_DIR\" \"$*\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	gits := gitStandInLsRemote(t)
 	// ran is what one `legion gh` run left: its status and output, the ls-remotes the stand-in
-	// git answered (readLsRemotes), the gh runs the wrapper first on PATH recorded, and the call
-	// log.
+	// git answered (gitStandInLsRemote), the gh runs the wrapper first on PATH recorded, and the
+	// call log.
 	type ran struct {
 		code           int
 		stdout, stderr string
@@ -1137,9 +1138,8 @@ func TestLegionGhReadsAPublicRepositoryOfAnOwnerTheBundleHoldsNoneFor(t *testing
 		lsRemotes, ghRuns, state := filepath.Join(records, "ls-remote"), filepath.Join(records, "gh"), filepath.Join(records, "state")
 		env := map[string]string{
 			"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
-			"PATH":              ghRecordingWrapperDir(t, ghRuns) + ":" + gits + ":" + os.Getenv("PATH"),
-			"PUBLIC_LEAK_CHECK": check, testProvenCheckEnv: ghProvenProgramSHA256,
-			lsRemoteRecordVar: lsRemotes, "XDG_STATE_HOME": state,
+			"PATH":              ghRecordingWrapperDir(t, ghRuns) + ":" + gitStandInLsRemote(t, lsRemotes) + ":" + os.Getenv("PATH"),
+			"PUBLIC_LEAK_CHECK": check, testProvenCheckEnv: ghProvenProgramSHA256, "XDG_STATE_HOME": state,
 			"GIT_ASKPASS": "/invented/askpass", "SSH_ASKPASS": "/invented/askpass", "SSH_ASKPASS_REQUIRE": "force",
 			"GIT_TERMINAL_PROMPT": "1",
 		}
@@ -1147,7 +1147,7 @@ func TestLegionGhReadsAPublicRepositoryOfAnOwnerTheBundleHoldsNoneFor(t *testing
 		code, stdout, stderr := legionGh(t, env, args...)
 		return ran{
 			code: code, stdout: stdout, stderr: stderr,
-			lsRemotes: readLsRemotes(t, lsRemotes), ghRuns: readRecord(t, ghRuns),
+			lsRemotes: leakguardtest.ReadCalls(t, lsRemotes), ghRuns: readRecord(t, ghRuns),
 			log: readRecord(t, filepath.Join(state, "legion-gh", "calls.log")),
 		}
 	}
@@ -1243,6 +1243,24 @@ func TestLegionGhReadsAPublicRepositoryOfAnOwnerTheBundleHoldsNoneFor(t *testing
 		if got.ghRuns != "" {
 			t.Errorf("%s ran gh through the wrapper: %q; want none", what, got.ghRuns)
 		}
+	}
+
+	moved, movedDefault := gitCredentialBundle(t)
+	if err := os.WriteFile(filepath.Join(moved, ghconfig.PairsFile), []byte("other/open other/moved\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"repo", "view", "other/open", "--json", "nameWithOwner,id"}
+	what := fmt.Sprintf("under a bundle that renames other/open to other/moved, legion gh %q", args)
+	got := run(t, proven, map[string]string{"LEGION_GH_OWNERS_DIR": moved, "GH_CONFIG_DIR": movedDefault}, args)
+	if got.code != 2 || got.stdout != "" || !strings.Contains(got.stderr, "the configured rename other/open -> other/moved") ||
+		!strings.Contains(got.stderr, `the role's GitHub App is not installed on "other"`) {
+		t.Errorf("%s = exit %d, stdout %q, stderr %q; want exit 2 naming the pair and its owner, and no gh run", what, got.code, got.stdout, got.stderr)
+	}
+	if len(got.lsRemotes) != 0 {
+		t.Errorf("%s ran git ls-remote %q; want it refused before any", what, got.lsRemotes)
+	}
+	if got.ghRuns != "" {
+		t.Errorf("%s ran gh through the wrapper: %q; want none", what, got.ghRuns)
 	}
 }
 
@@ -1366,11 +1384,6 @@ func ghStandInPrefix(help string) string {
 		"fi\n"
 }
 
-// lsRemoteRecordVar names the file the stand-in git of gitStandInLsRemote records each ls-remote
-// in. It is no GIT_ name, which the read with no credential would not keep (leakguard's
-// lsRemoteInherits).
-const lsRemoteRecordVar = "LS_REMOTE_RECORD"
-
 // gitStandInLsRemote is a directory holding a stand-in git for the head of a test's PATH: it
 // answers an anonymous `git ls-remote <url> HEAD` of github.com as GitHub would, and runs this
 // machine's git for every other command. Of other, an owner no bundle of these tests holds a
@@ -1378,10 +1391,11 @@ const lsRemoteRecordVar = "LS_REMOTE_RECORD"
 // lists nothing and exits 0; other/gone is no repository, which git says it did not find; and
 // every other repository is private, answered as GitHub answers an anonymous read of one, a 401,
 // for which git with no askpass and no terminal prompt prints `could not read Username`. Every
-// repository of another owner is public. Each ls-remote appends a line to the file
-// lsRemoteRecordVar names: its arguments, and GIT_TERMINAL_PROMPT, GIT_ASKPASS, SSH_ASKPASS and
-// SSH_ASKPASS_REQUIRE as git saw them, "unset" for one that is (readLsRemotes).
-func gitStandInLsRemote(t *testing.T) string {
+// repository of another owner is public. Each ls-remote appends a line to the file at record, as
+// the guard's own stand-ins record theirs (leakguardtest.RecordsGitCall, leakguardtest.ReadCalls):
+// its arguments, and GIT_TERMINAL_PROMPT, GIT_ASKPASS, SSH_ASKPASS and SSH_ASKPASS_REQUIRE as git
+// saw them, "unset" for one that is, among the rest.
+func gitStandInLsRemote(t *testing.T, record string) string {
 	t.Helper()
 	git, err := exec.LookPath("git")
 	if err != nil {
@@ -1391,8 +1405,7 @@ func gitStandInLsRemote(t *testing.T) string {
 	script := "#!/bin/sh\n" +
 		"case \" $* \" in\n" +
 		"*\" ls-remote \"*)\n" +
-		"  printf 'argv=%s\\tprompt=%s\\taskpass=%s\\tsshaskpass=%s\\trequire=%s\\n' \"$*\" \"${GIT_TERMINAL_PROMPT-unset}\" " +
-		"\"${GIT_ASKPASS-unset}\" \"${SSH_ASKPASS-unset}\" \"${SSH_ASKPASS_REQUIRE-unset}\" >>\"${" + lsRemoteRecordVar + ":-/dev/null}\"\n" +
+		"  " + leakguardtest.RecordsGitCall(record) +
 		"  case \" $* \" in\n" +
 		"  *\" https://github.com/other/open.git \"*) " + lists + " ;;\n" +
 		"  *\" https://github.com/other/empty.git \"*) exit 0 ;;\n" +
@@ -1408,22 +1421,6 @@ func gitStandInLsRemote(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return dir
-}
-
-// readLsRemotes is each ls-remote the stand-in git of gitStandInLsRemote recorded in record, as
-// its keys and values, and none where git ran none.
-func readLsRemotes(t *testing.T, record string) []map[string]string {
-	t.Helper()
-	var calls []map[string]string
-	for line := range strings.Lines(readRecord(t, record)) {
-		call := map[string]string{}
-		for field := range strings.SplitSeq(strings.TrimSuffix(line, "\n"), "\t") {
-			key, value, _ := strings.Cut(field, "=")
-			call[key] = value
-		}
-		calls = append(calls, call)
-	}
-	return calls
 }
 
 // ghRecordingWrapperDir is ghWrapperDir whose wrapper appends each run, a line `gh <args>`, to

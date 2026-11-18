@@ -151,9 +151,9 @@ func ownerGHConfigDir(ownersDir, owner string) (string, error) {
 // ownerNotInstalledError is the refusal of an owner the bundle under ownersDir holds no gh
 // directory for (ownerGHConfigDir): the role's GitHub App is not installed on it. It is a type so
 // that `legion gh` can tell that refusal of the owner a command names from every other: a read of
-// one public repository of such an owner runs all the same (ghConfigDir), while a bundle whose
-// renames cannot be read, and a pair that moved the repository to such an owner, which wraps this
-// refusal of the pair's `to` owner (ghConfigDirFor), stay refused.
+// one public repository of such an owner runs all the same (liftForPublicRead), while a bundle
+// whose renames cannot be read, and a pair that moved the repository to such an owner, which wraps
+// this refusal of the pair's `to` owner (ghConfigDirFor), stay refused.
 type ownerNotInstalledError struct {
 	owner, ownersDir string
 }

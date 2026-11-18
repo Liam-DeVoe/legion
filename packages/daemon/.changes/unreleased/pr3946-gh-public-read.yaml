@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  `legion gh` now runs a call that writes nothing, such as a view or a list, of one public
+  repository of an owner the role's gh bundle holds no directory for. The call runs under the
+  issue owner's token, and only after an anonymous `git ls-remote` of the repository's https URL,
+  made with no credential at all, lists a ref of it. A repository GitHub does not serve to
+  everyone lists none, so its read is refused, and so is every other call that names such an
+  owner, a write among them, with nothing sent to GitHub.

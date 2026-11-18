@@ -12,7 +12,8 @@
 // two-go shape of a call whose body is on standard input, and AnswersHelp is a check a pod's
 // launcher installs, counting the verifications that ran it. GitHubTarball writes the tarball
 // GitHub serves of the check's repository, which the daemon packs for the launcher, and Tarball
-// one of a shape GitHub's is not.
+// one of a shape GitHub's is not. RecordsGitCall begins a stand-in git that records each call it
+// is handed, and ReadCalls reads such a record back.
 //
 // It is an ordinary package rather than a _test.go file of one of them because cmd/legion is
 // package main, which can import no other package's test-only helpers (internal/fixturegit says

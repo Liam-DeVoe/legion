@@ -45,9 +45,9 @@ var githubAsksForACredential = []string{
 	"fatal: could not read Username for 'https://github.com': terminal prompts disabled",
 }
 
-// The three things a stand-in git does after it records its call (recordsItsCall): list the
-// repository's HEAD as ls-remote of a public repository does, print what git prints when GitHub
-// asks for a credential, and fail the way a git that cannot reach GitHub fails.
+// The three things a stand-in git does after it records its call (leakguardtest.RecordsGitCall):
+// list the repository's HEAD as ls-remote of a public repository does, print what git prints when
+// GitHub asks for a credential, and fail the way a git that cannot reach GitHub fails.
 var (
 	answersTheRefs     = "printf '%s\\tHEAD\\n' " + strings.Repeat("1", 40) + "\nexit 0\n"
 	asksForACredential = printsToStderr(githubAsksForACredential...) + "exit 128\n"
@@ -109,9 +109,10 @@ func ghStandIn(rest, graphql string) string {
 var graphQLReset = time.Date(2026, 11, 14, 6, 0, 0, 0, time.UTC)
 
 // graphQLRead is the GraphQL read of a stand-in gh. It appends its call to record, with its
-// arguments and the variables the guard sets on it (readCalls reads the line), then prints
-// status, GraphQL's rate-limit headers with remaining points left, a blank line and body, as `gh
-// api --include` prints them, then gh's own error line where stderr is one, and exits with exit.
+// arguments and the variables the guard sets on it (leakguardtest.ReadCalls reads the line), then
+// prints status, GraphQL's rate-limit headers with remaining points left, a blank line and body,
+// as `gh api --include` prints them, then gh's own error line where stderr is one, and exits with
+// exit.
 func graphQLRead(record, status string, remaining int, body, stderr string, exit int) string {
 	script := `printf 'argv=%s\tread=%s\thost=%s\tnocolor=%s\tclicolor=%s\n' "$*" "${` + VisibilityReadVar + `-unset}" "${GH_HOST-unset}" ` +
 		`"${NO_COLOR-unset}" "${CLICOLOR_FORCE-unset}" >> ` + shQuote(record) + "\n" +
@@ -152,43 +153,6 @@ func graphQLNotFound(record string) string {
 	return graphQLRead(record, "HTTP/2.0 200 OK", 12221,
 		`{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","path":["repository"],"locations":[{"line":1,"column":42}],"message":"`+message+`"}]}`,
 		"gh: "+message, 1)
-}
-
-// recordsItsCall is the start of a stand-in git: it appends to record one line per call, with
-// its arguments, the variables the read with no credential sets, must not inherit or must keep,
-// what its HOME holds, and the directory it runs in, each as key=value and separated by tabs
-// (readCalls).
-func recordsItsCall(record string) string {
-	return `printf 'argv=%s\tprompt=%s\taskpass=%s\tsshaskpass=%s\trequire=%s\tnosystem=%s\tglobal=%s\tcount=%s\tkey0=%s\tparameters=%s\tgitdir=%s\tprotocol=%s\tcainfo=%s\tcapath=%s\tproxy=%s\tlang=%s\thome=%s\tnetrc=%s\thomeholds=%s\tdir=%s\n' ` +
-		`"$*" "${GIT_TERMINAL_PROMPT-unset}" "${GIT_ASKPASS-unset}" "${SSH_ASKPASS-unset}" "${SSH_ASKPASS_REQUIRE-unset}" ` +
-		`"${GIT_CONFIG_NOSYSTEM-unset}" "${GIT_CONFIG_GLOBAL-unset}" "${GIT_CONFIG_COUNT-unset}" "${GIT_CONFIG_KEY_0-unset}" ` +
-		`"${GIT_CONFIG_PARAMETERS-unset}" "${GIT_DIR-unset}" "${GIT_ALLOW_PROTOCOL-unset}" ` +
-		`"${GIT_SSL_CAINFO-unset}" "${GIT_SSL_CAPATH-unset}" "${HTTPS_PROXY-unset}" ` +
-		`"${LC_ALL-unset}" "${HOME-unset}" "${NETRC-unset}" "$(ls -A "${HOME-/nonexistent}" 2>&1 | tr '\n' ' ')" ` +
-		`"$(pwd -P)" >> '` + record + "'\n"
-}
-
-// readCalls is each call recordsItsCall wrote to record, as its keys and values, and none where
-// git never ran.
-func readCalls(t *testing.T, record string) []map[string]string {
-	t.Helper()
-	content, err := os.ReadFile(record)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	var calls []map[string]string
-	for line := range strings.Lines(string(content)) {
-		call := map[string]string{}
-		for field := range strings.SplitSeq(strings.TrimRight(line, "\n"), "\t") {
-			key, value, _ := strings.Cut(field, "=")
-			call[key] = value
-		}
-		calls = append(calls, call)
-	}
-	return calls
 }
 
 // countLines is how many lines the file at path holds, and 0 where there is no file.

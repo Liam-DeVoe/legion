@@ -9,7 +9,6 @@ body: |-
   where a remote-tracking ref of the clone does: git moves those for a push to whatever
   URL a remote pushes to at the time, so a commit pushed first to a local bare remote named
   `origin/rehearsal`, or to a local bare push URL of `origin`, was not read at its push to
-  `origin`. This replaces the rule by which the private-name pass skipped a commit that a
-  remote-tracking ref holds: a remote-tracking ref of the clone no longer holds a commit. Each
-  push with an update that is not a deletion costs that one `git ls-remote`, and a read that
-  fails refuses the push as a setup failure naming the remote and the URL.
+  `origin`. Each push with an update that is not a deletion, to a destination the guard scans,
+  costs that one `git ls-remote`, and a read that fails refuses the push as a setup failure naming
+  the remote and the URL.

@@ -106,7 +106,7 @@ It carries:
     git hands the hook the URL the clone's configuration already led the push to, and under the clone's `url.<base>.pushInsteadOf` that URL can be one its `url.<base>.insteadOf` rewrites.
     A URL that is a relative local path is read from the clone's directory, where git read it for the push.
     The process's own environment still applies, the `GIT_CONFIG_COUNT` block a pod's credential helper is set in among it, and so does the user's global configuration.
-    The read has a bound of its own, two minutes, since the hook's context has none (`heldReadBound`); seven reads of cybermonklabs/legion's 5,749 branches and tags from an issue pod took 0.63 s at the median on 2026-11-18.
+    The read has a bound of its own, two minutes, since the hook's context has none (`Guard.heldReadBound`); seven reads of cybermonklabs/legion's 5,749 branches and tags from an issue pod took 0.63 s at the median on 2026-11-18.
     A destination that stops answering refuses the push as a setup error that names the URL and the bound.
     The URL such an error names, and git's own message it quotes, carry no user and no token (`withoutUserinfo`).
     A push made to a URL rather than to a remote is named by that URL in every refusal and setup failure, and that name carries no user and no token either (`PushName`).

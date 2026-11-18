@@ -7,7 +7,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"time"
 )
 
 // commits are the commits an update that is no deletion would add to the destination, oldest
@@ -21,35 +20,25 @@ import (
 // forward merge (the default branch merged onto an older tip of the branch) would read every
 // commit of the default branch since that tip, not only the merge and the branch's own commits.
 // One rev-list answers, fed on its standard input the local side, then ^<sha> for the remote side
-// where the repository has it and for each of held:
+// where the repository has it and held does not, and not, ^<sha> for each of held, which
+// Guard.pushRecords writes once for the push's every update:
 //
 //	git rev-list --reverse --stdin
 //
 // which is `git rev-list --reverse <local> --not [<remote>] <held...>` with the shas off the
 // command line, since a repository can advertise thousands of refs. A git that fails is an error.
-func (g *Guard) commits(ctx context.Context, dir string, held []string, update Update) ([]string, error) {
-	has := slices.Contains(held, update.RemoteSHA)
-	if !has {
-		var err error
-		if has, err = g.holds(ctx, dir, update.RemoteSHA); err != nil {
+func (g *Guard) commits(ctx context.Context, dir string, held []string, not string, update Update) ([]string, error) {
+	fed := update.LocalSHA + "\n"
+	if !slices.Contains(held, update.RemoteSHA) {
+		has, err := g.holds(ctx, dir, update.RemoteSHA)
+		if err != nil {
 			return nil, err
 		}
+		if has {
+			fed += "^" + update.RemoteSHA + "\n"
+		}
 	}
-	var fed strings.Builder
-	fed.WriteString(update.LocalSHA)
-	fed.WriteString("\n")
-	not := func(sha string) {
-		fed.WriteString("^")
-		fed.WriteString(sha)
-		fed.WriteString("\n")
-	}
-	if has {
-		not(update.RemoteSHA)
-	}
-	for _, sha := range held {
-		not(sha)
-	}
-	out, err := g.gitFed(ctx, dir, fed.String(), "rev-list", "--reverse", "--stdin")
+	out, err := g.gitFed(ctx, dir, nil, fed+not, "rev-list", "--reverse", "--stdin")
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +109,7 @@ var fetchesNothing = []string{"GIT_NO_LAZY_FETCH=1"}
 // user and password a URL can carry (withoutUserinfo).
 func (g *Guard) advertised(ctx context.Context, dir, url string) ([]string, error) {
 	read := "git ls-remote " + withoutUserinfo(url)
-	bounded, cancel := context.WithTimeout(ctx, heldReadBound)
+	bounded, cancel := context.WithTimeout(ctx, g.heldReadBound)
 	defer cancel()
 	var stderr strings.Builder
 	status, out, err := g.run(bounded, child{
@@ -151,7 +140,7 @@ func (g *Guard) advertised(ctx context.Context, dir, url string) ([]string, erro
 	if len(asked) == 0 {
 		return nil, nil
 	}
-	types, err := g.gitFedWith(ctx, dir, fetchesNothing, shas.String(), "cat-file", "--batch-check")
+	types, err := g.gitFed(ctx, dir, fetchesNothing, shas.String(), "cat-file", "--batch-check")
 	if err != nil {
 		return nil, err
 	}
@@ -164,14 +153,6 @@ func (g *Guard) advertised(ctx context.Context, dir, url string) ([]string, erro
 	}
 	return commits, nil
 }
-
-// heldReadBound is how long the read of what a push's destination holds runs at most
-// (Guard.advertised). The hook's own context has no deadline (cmd/legion's main), so without it a
-// destination that stops answering would hold the push for as long as it did not answer. Two
-// minutes is that read many times over: measured from an issue pod on 2026-11-18, seven reads of
-// cybermonklabs/legion's 5,749 branches and tags took 0.58 s to 0.67 s, 0.63 s the median. It is
-// a variable so that a test can shorten it.
-var heldReadBound = 2 * time.Minute
 
 // outsideTheRepository is which names of the caller's environment the read of what a push's
 // destination holds keeps (Guard.advertised): every one but GIT_DIR. git hands a pre-push hook

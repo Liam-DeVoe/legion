@@ -52,8 +52,8 @@ type capturedRequest struct {
 //
 // It also answers the anonymous `git ls-remote` of one repository, public, as GitHub answers a
 // public repository's: its refs. That is the read with no credential `legion gh` makes of a
-// repository of an owner the bundle does not hold (ghConfigDir), which reads public only for a
-// ref listed; the same read of any other repository gets the 401 every unauthenticated git
+// repository of an owner the bundle does not hold (liftForPublicRead), which reads public only for
+// a ref listed; the same read of any other repository gets the 401 every unauthenticated git
 // request gets, as GitHub answers a private repository's.
 type captureProxy struct {
 	url, caFile string

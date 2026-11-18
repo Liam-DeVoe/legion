@@ -403,7 +403,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
 - `legion gh`'s read of a public repository outside the project
 
-  A read of one repository of an owner the bundle holds no directory for (a call in the read grammar `ghWritesNothing` holds, below, naming that one repository, or one of knives' audit GraphQL reads of it) runs under the issue owner's gh directory once an unauthenticated `git ls-remote` of the repository's https URL exits 0 and lists a ref of it (`ghConfigDir`, `leakguard.Guard.VisibilityWithoutCredential`).
+  A read of one repository of an owner the bundle holds no directory for (a call in the read grammar `ghWritesNothing` holds, below, naming that one repository, or one of knives' audit GraphQL reads of it) runs under the issue owner's gh directory once an unauthenticated `git ls-remote` of the repository's https URL exits 0 and lists a ref of it (`liftForPublicRead`, `leakguard.Guard.VisibilityWithoutCredential`).
   That `ls-remote` runs with no credential at all: `credential.helper` and `core.askPass` emptied on its command line, no `GIT_ASKPASS`, `SSH_ASKPASS` or `SSH_ASKPASS_REQUIRE`, `GIT_TERMINAL_PROMPT=0` and no token in the URL, so a repository GitHub hides behind authentication never reads public.
   Any other outcome refuses the call with the refusal of its owner, the issue owner's token goes with the read itself alone, and the guard's own REST and GraphQL visibility reads of such a repository stay refused: the guard is handed the public answer (`leakguard.GhRequest.Public`) instead of reading it again.
 
