@@ -402,6 +402,10 @@ test("the simplify pass reads every file of its scope and reports the defects it
   // The Thermo line is written on every diff now, and carries what the pass reported; on a diff
   // that touches no runtime code its two pair rows are written too, each saying the pair did not run.
   expect(prBody).toContain("defects reported: <none | <n>, fixed in <sha>>");
+  // Each half of the pair is a row of its own, naming its verdict and how many of its findings
+  // stand, so a disagreement between the halves is in the line for the next round to read.
+  expect(prBody).toContain("- `thermonuclear-deep-review`: <verdict>; <n> findings standing.");
+  expect(prBody).toContain("- `thermonuclear-code-quality`: <verdict>; <n> findings standing.");
   expect(prBody).toContain(
     "(on a diff that touches no runtime code, a docs-only diff among them, the simplify half and the defects are recorded as on any other diff, and each pair row reads `not run (no runtime code)`)"
   );
