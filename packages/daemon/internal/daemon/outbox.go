@@ -1984,6 +1984,32 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			if err != nil {
 				return fmt.Errorf("create claim %s: %w", token, err)
 			}
+			// A leave or a linger that committed between the fences above and this create read
+			// the issue's claims before this one was stored, so none of its rows names it, and the
+			// tree's cleanup would wait for it. So the issue is read again now, its row and its
+			// root's locked for share (store.StandsInWorkflow): where it has left the workflow or
+			// its tree lingers, the new claim, which has run nothing, is retired as a tree close
+			// retires a claim. A check start is fenced by its check instead, and starts its look in
+			// a lingering tree.
+			if payload.CheckLook == 0 {
+				var stands bool
+				err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+					var err error
+					stands, err = store.StandsInWorkflow(ctx, tx, issue.Key, record.OutOfWorkflow)
+					return err
+				})
+				if err != nil {
+					return fmt.Errorf("read %s again after storing claim %s: %w", issue.Key, token, err)
+				}
+				if !stands {
+					if err := machine.Handle(ctx, supervise.RequestTreeClose{Claim: token}); err != nil {
+						return fmt.Errorf("retire claim %s, stored after %s left the workflow: %w", token, issue.Key, err)
+					}
+					r.log.Info("outbox start of an issue that left the workflow while it stored its claim; the claim is retired and the start finished without acting",
+						"row", row.ID, "issue", issue.Key, "role", payload.Role, "claim", token)
+					return nil
+				}
+			}
 		}
 		// The task this start gives the claim, nil for a start that carries none. It is built here,
 		// before the start is recorded, because the record reads it: a task the claim holds back

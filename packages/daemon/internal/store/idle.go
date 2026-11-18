@@ -415,18 +415,39 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 // resume names, and whether the issue and its tree root are both still the workflow's to run
 // (pods.InWorkflowNotLingering). An issue or a root the record no longer holds is neither.
 func resumeStanding(ctx context.Context, tx pgx.Tx, issue string, outOfWorkflow func(status string) bool) (uint64, bool, error) {
+	return issueStanding(ctx, tx, issue, outOfWorkflow, "")
+}
+
+// StandsInWorkflow is whether issue and its tree root are both still the workflow's to run
+// (pods.InWorkflowNotLingering), read in tx with both rows locked for share. A start that has just
+// stored a claim of issue asks it in a transaction of its own (the daemon's outbox): a leave or a
+// linger reads the issue's claims after it writes the issue's or the root's row, in its own READ
+// COMMITTED transaction, so this read waits for one that wrote its row and has not committed, and
+// one that writes its row after this read reads the claims after the stored claim committed. An
+// issue the record no longer holds does not stand.
+func StandsInWorkflow(ctx context.Context, tx pgx.Tx, issue string, outOfWorkflow func(status string) bool) (bool, error) {
+	_, live, err := issueStanding(ctx, tx, issue, outOfWorkflow, " for share of i, root")
+	if err != nil {
+		return false, fmt.Errorf("read whether %s stands in the workflow: %w", issue, err)
+	}
+	return live, nil
+}
+
+// issueStanding reads issue's generation and whether it and its tree root are both still the
+// workflow's to run, with lock appended to its select (empty, or a row lock clause).
+func issueStanding(ctx context.Context, tx pgx.Tx, issue string, outOfWorkflow func(status string) bool, lock string) (uint64, bool, error) {
 	var generation int64
 	var issuePhase, status, rootPhase, rootStatus string
 	var lingering, rootLingering bool
 	err := tx.QueryRow(ctx, `select i.generation, i.phase, i.status, i.linger_until is not null,
 		root.phase, root.status, root.linger_until is not null
-		from issues i join issues root on root.key = i.tree where i.key = $1`, issue).Scan(
+		from issues i join issues root on root.key = i.tree where i.key = $1`+lock, issue).Scan(
 		&generation, &issuePhase, &status, &lingering, &rootPhase, &rootStatus, &rootLingering)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, false, nil
 	}
 	if err != nil {
-		return 0, false, fmt.Errorf("read %s for the resumes of its cancelled release: %w", issue, err)
+		return 0, false, fmt.Errorf("read %s and its tree root: %w", issue, err)
 	}
 	live := pods.InWorkflowNotLingering(
 		pods.Standing{Phase: phase.Phase(issuePhase), Status: status, Lingers: lingering},
