@@ -60,11 +60,20 @@ type Result struct {
 	FaultAuthor string   `json:"fault_author" input:"zero: it names no author, so a failing example of a program check reads fault_by_test_author"`
 	TestAuthors []string `json:"test_authors" input:"zero: it names no author, so a failing example of a program check reads fault_by_test_author"`
 	// TestCommit is the commit of the test that ran, for a run or a failing example of a program
-	// check whose subject is production or the graph, and "" for a result of any other check. Such a
-	// result counts only while no file of the check's tie differs between TestCommit and the
-	// subject's commit (R7: the procedure is "the code that runs it" too; R9: "its test, as it is
-	// now").
+	// check whose subject is production or the graph, and "" for a result of any other check, which
+	// no rule reads (resultCommit reads a result's Commit first). Such a result counts only while no
+	// file of the check's tie differs between TestCommit and the subject's commit (R7: the procedure
+	// is "the code that runs it" too; R9: "its test, as it is now").
 	TestCommit string `json:"test_commit" input:"zero: no test of its own ran; fault refuses that for a program check of production or the graph"`
+}
+
+// resultCommit is the commit where the job of r ran, and where r counts (R8; CheckStates, steps 2,
+// 4 and 7): the Commit of a result of a check of the code, and else the TestCommit, the commit of
+// the test of a program check of production or of the graph, whose results name no commit (fault).
+// It is the one reading of that fact: the judge counts r there, and legFault groups r there with
+// the other records of its job.
+func resultCommit(r Result) string {
+	return cmp.Or(r.Commit, r.TestCommit)
 }
 
 // fault is the first member of r that the derivation reads and that r does not set, or does not
@@ -82,9 +91,10 @@ type Result struct {
 // of the code, the subject of the check's kind (commit, deploy or graph_tx), also a run of a check
 // of the graph that could not run, which names the transaction that it tried to read (R13: a query
 // "reads the graph at one transaction"); a run of a program check that names a job, the job; and a
-// result of a program check of production or of the graph, test_commit. A failing example of a
-// query or an agent of production or of the graph names no subject, since each one counts
-// (CheckStates, step 7).
+// result of a program check of production or of the graph, test_commit. A result of a check of
+// production or of the graph names no commit, which such a check does not read, so its commit is
+// its test_commit (resultCommit); a failing example of a query or an agent of production or of the
+// graph names no subject, since each one counts (CheckStates, step 7).
 func (r Result) fault(procedure *Check) string {
 	switch named := namedSubjects(r); {
 	case r.Check == "":
@@ -114,6 +124,8 @@ func (r Result) fault(procedure *Check) string {
 	case (run || c.Subject == SubjectCode) && readOf(c, r.Commit, r.Deploy, r.GraphTx) == "":
 		return fmt.Sprintf("it sets no %s, the subject that a check of %s reads",
 			readOf(c, "commit", "deploy", "graph_tx"), readOf(c, "the code", "production", "the graph"))
+	case readsProduction(c) && r.Commit != "":
+		return fmt.Sprintf("it sets the commit %s, which a check of %s does not read", quoted(r.Commit), readOf(c, "the code", "production", "the graph"))
 	case run && c.Procedure == ProcedureProgram && checkJob(c) != "" && r.Job == "":
 		return "it sets no job, and only the reports of the job of its check count"
 	case c.Procedure == ProcedureProgram && readsProduction(c) && r.TestCommit == "":
@@ -192,7 +204,7 @@ func (r JobRun) fault() string {
 // legFault is the refusal of the first record that says that one job at one commit has legs and
 // has none, and "" when there is none, with whether that record is a job run. The records of a job
 // at a commit are its runs there, in their order, and then its run results, in their order, at the
-// commit where the job ran, the result's TestCommit when it sets one, else its Commit; the record
+// commit where the job ran and where the judge counts them (resultCommit); the record
 // refused is the first whose leg is "" where the first record of its job at its commit names a
 // leg, or that names a leg where that record's is "". "" is the leg of no matrix, and one job at one
 // commit has legs or it has none (R12: "Each leg of a matrix reports its own result, and no leg
@@ -224,7 +236,7 @@ func legFault(runs []JobRun, results []Result) (fault string, ofRun bool) {
 		}
 	}
 	for i, r := range results {
-		if commit := cmp.Or(r.TestCommit, r.Commit); r.Kind == ResultRun && r.Job != "" && commit != "" {
+		if commit := resultCommit(r); r.Kind == ResultRun && r.Job != "" && commit != "" {
 			if fault := differs(fmt.Sprintf("result %d", i+1), r.Job, commit, *r.Leg); fault != "" {
 				return fault, false
 			}

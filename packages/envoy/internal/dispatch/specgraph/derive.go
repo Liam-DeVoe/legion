@@ -119,10 +119,10 @@ func Derive(in Input) (State, error) {
 //     same reason: each commit and check of it a name, the map of each commit that it names set (a
 //     commit where no tie is known has {} or no key), each known tie as NewTie refuses it, since a
 //     known tie with no path covers no change, and no tie that is not known and holds a path;
-//   - JobRuns and Uncited, which only lower a state, set, empty for none: with no job run a leg that
-//     ended with no result would be hidden (R9), and with no map of the checks that CI refused, a
-//     refused check would be judged (R48); and Uncited as the reader of uncited.json refuses it
-//     (uncitedFault);
+//   - JobRuns and Uncited set, empty for none, since neither moves a state toward true: with no job
+//     run a leg that ended with no result would be hidden (R9), and with no map of the checks that
+//     CI refused, a refused check would be judged (R48); and Uncited as the reader of uncited.json
+//     refuses it (uncitedFault);
 //   - each job run (JobRun.fault), its Leg and Ended set among it.
 //
 // A History that could not answer is refused later, where the judge first asks it (checkJudge).

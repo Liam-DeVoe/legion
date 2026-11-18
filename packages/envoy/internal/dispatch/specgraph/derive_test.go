@@ -220,10 +220,10 @@ func TestTheDerivationRefusesAnInputThatIsNotWhole(t *testing.T) {
 			want: "specgraph: job run 1: it sets no job"},
 		{name: "a job run with no commit", change: func(in *Input) { in.JobRuns = []JobRun{{Job: "go-checks", Leg: new(""), Ended: new(true)}} },
 			want: "specgraph: job run 1: it sets no commit"},
-		// The runs and the checks that CI refused only lower a state: a run of a leg that ended with
-		// no result reads unknown (R9), and so does a check that CI refused (R48). A caller that gives
-		// none of them would read as one in whose history no job ran and CI refused no check, so it
-		// gives each, empty for none. A run that has not ended is a run of its job too.
+		// The runs and the checks that CI refused never move a state toward true: a run of a leg that
+		// ended with no result reads unknown (R9), and so does a check that CI refused (R48). A caller
+		// that gives none of them would read as one in whose history no job ran and CI refused no
+		// check, so it gives each, empty for none. A run that has not ended is a run of its job too.
 		{name: "control: a job run that has not ended", change: func(in *Input) {
 			in.JobRuns = []JobRun{{Job: "go-checks", Leg: new(""), Commit: "c1", Ended: new(false)}}
 		}},

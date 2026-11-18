@@ -206,6 +206,22 @@ func TestScenarioRefusals(t *testing.T) {
 		{"a run of a check of production with no deploy", "carry",
 			write("results.json", `[{"check":"production-delivery-takes-under-a-second","check_version":1,"kind":"run","outcome":"fail","leg":"","at":"2026-11-12T12:00:00Z","seq":4}]`),
 			"results.json", "result 1: it sets no deploy, the subject that a check of production reads"},
+		// A check of production or of the graph reads no commit, and the commit of its result is the
+		// commit of its test, test_commit, so a commit on such a result would be a second reading of
+		// that commit.
+		{"a failing example of a check of production that names a commit", "carry",
+			write("results.json", `[{"check":"production-delivery-takes-under-a-second","check_version":1,"kind":"failing_example","outcome":"fail","commit":"c1","leg":"","at":"2026-11-12T12:00:00Z","seq":4}]`),
+			"results.json", `result 1: it sets the commit "c1", which a check of production does not read`},
+		// The derivation reads a relation of an approved node only by an id, so a parent " " would
+		// read as no parent: in wait-cycle, envoy-delivers-messages would then read met, where the
+		// scenario has it not met.
+		{"an approved block whose parent is no id", "wait-cycle", func(t *testing.T, dir string) {
+			editApproved(t, filepath.Join(dir, "approved.json"), func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode {
+				v := &approvedNode(t, nodes, "a-message-survives-a-restart").Versions[0]
+				v.Block = strings.Replace(v.Block, `parent="envoy-delivers-messages"`, `parent=" "`, 1)
+				return nodes
+			})
+		}, "approved.json", `specgraph: approved node "a-message-survives-a-restart" version 1: bad-approved-block: parent " " is no id (line 1 of its block)`},
 		{"a run of a program check with no job", "carry",
 			write("results.json", `[{"check":"a-restart-loses-no-message","check_version":1,"kind":"run","outcome":"fail","commit":"c1","leg":"","at":"2026-11-12T11:00:00Z","seq":5}]`),
 			"results.json", "result 1: it sets no job, and only the reports of the job of its check count"},

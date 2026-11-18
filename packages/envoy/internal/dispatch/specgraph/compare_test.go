@@ -316,6 +316,66 @@ func TestReadApprovedRefusesAMalformedFixture(t *testing.T) {
 	}
 }
 
+// An approved block holds each relation by the id of the node that it names, and the derivation
+// reads a relation only by an id: a parent " " would read as no parent, and in wait-cycle the
+// statement above it would then read met where the scenario has it not met. So versionText refuses
+// a value at an id place of a block that is not in the shape of an id (notAnID), naming the member
+// and the value. Each node prints as a block that versionText reads with a value that is an id (the
+// control), and with the row's value it is refused with the row's line.
+func TestAnApprovedBlockWithANameThatIsNoIDAtAnIDPlaceIsRefused(t *testing.T) {
+	t.Parallel()
+	type node interface{ Print() (string, error) }
+	page := func() Statement {
+		return Statement{ID: "a-page-shows-it", Text: "The page shows it.", Kind: KindBehavior}
+	}
+	orders := func() Check {
+		return Check{ID: "a-page-shows-each-order", Serves: "a-page-shows-it", Subject: SubjectProduction, Procedure: ProcedureAgent,
+			Claim: "The page shows each order.", ProcedureText: "An agent reads the page.", FailingExample: "A page that shows no order."}
+	}
+	delivery := func() Component {
+		return Component{ID: "envoy-delivery", Name: "Envoy delivery", Purpose: "It delivers each stored message."}
+	}
+	for _, row := range []struct {
+		name, member, ok, value string
+		node                    func(v string) (id string, n node)
+	}{
+		{"a statement's parent of no letter", "parent", "pages", " ", func(v string) (string, node) { s := page(); s.Parent = v; return s.ID, s }},
+		{"a statement's parent in capitals", "parent", "pages", "Pages", func(v string) (string, node) { s := page(); s.Parent = v; return s.ID, s }},
+		{"a statement that it serves", "serves", "pages", "Pages", func(v string) (string, node) { s := page(); s.Serves = []string{v}; return s.ID, s }},
+		{"a component that a statement is about", "about", "pages", "Pages", func(v string) (string, node) { s := page(); s.About = []string{v}; return s.ID, s }},
+		{"the statement that a check serves", "serves", "a-page-shows-it", "Pages", func(v string) (string, node) { c := orders(); c.Serves = v; return c.ID, c }},
+		{"two statements that a check serves", "serves", "a-page-shows-it", "a-page-shows-all a-page-shows-it", func(v string) (string, node) { c := orders(); c.Serves = v; return c.ID, c }},
+		{"a component's parent of no letter", "parent", "envoy", " ", func(v string) (string, node) { c := delivery(); c.Parent = v; return c.ID, c }},
+		{"a component that an interface joins", "joins", "legion", "Legion", func(v string) (string, node) {
+			c := delivery()
+			c.Interface, c.Joins = true, []string{"dispatch", v}
+			return c.ID, c
+		}},
+		{"the id of a term", "id", "work-unit", "Work-Unit", func(v string) (string, node) {
+			return v, Term{ID: v, Name: "work unit", Definition: "A work unit is work that makes one or more statements true."}
+		}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			for _, v := range []string{row.ok, row.value} {
+				id, n := row.node(v)
+				block, err := n.Print()
+				if err != nil {
+					t.Fatalf("Print with %q: %v", v, err)
+				}
+				_, problems := versionText(id, ApprovedVersion{Version: 1, Block: block})
+				want := "bad-approved-block: " + row.member + " " + quoted(v) + " is no id"
+				switch {
+				case v == row.ok && len(problems) != 0:
+					t.Errorf("control: the block %q gives %v; want no problem", block, problems)
+				case v != row.ok && (len(problems) != 1 || problems[0].Detail != want):
+					t.Errorf("the block %q gives %v; want the one problem %q", block, problems, want)
+				}
+			}
+		})
+	}
+}
+
 // ReadApproved names a value of another type than approved.json's form needs by the form and the
 // place of the value, in the package's own words: no Go type and no verb of encoding/json/v2, which
 // picks "cannot" or "unable to" once in each process, reaches the person. A time that is not RFC

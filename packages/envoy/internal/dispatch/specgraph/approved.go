@@ -69,8 +69,9 @@ const approvedForm = `{"nodes":[{"id":"<id>","removed":<true or false>,"partly_c
 // prints a value of the input: a node with no id, an id on two nodes, a node that does not set
 // removed or partly_checked, since false is a value of each, a node with no version, version
 // numbers that do not go up from 1, a version with no time or with one older than the one before
-// it, and a block that is not its node's one block as Print writes it, naming the version. It
-// reads the whole file, with no bound on its size.
+// it, and a block that is not its node's one block as Print writes it, or that names a value that
+// is no id at an id place (notAnID), naming the version. It reads the whole file, with no bound on
+// its size.
 func ReadApproved(r io.Reader) (Approved, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
@@ -143,7 +144,8 @@ func (n ApprovedNode) check() error {
 
 // textFault is the fault of the id or of the texts of n, or nil: no id, no version, version numbers
 // that do not go up from 1, a version with no time or with one older than the one before it, and a
-// block that is not its node's one block as Print writes it.
+// block that is not its node's one block as Print writes it or that names a value that is no id at
+// an id place (versionText).
 func (n ApprovedNode) textFault() error {
 	switch {
 	case n.ID == "":
@@ -240,8 +242,8 @@ func (a Approved) Since(id string) time.Time {
 
 // versionText is the tree of the one node that version v of the approved node id holds, at the
 // position "approved <id> version <n>". problems is each reason it holds none: a line that Parse
-// refuses, or bad-approved-block for a block of no node or of two, of a node with another id, or
-// not as Print writes its node.
+// refuses, or bad-approved-block for a block of no node or of two, of a node with another id, with
+// a value at an id place that is not an id (notAnID), or not as Print writes its node.
 func versionText(id string, v ApprovedVersion) (Tree, []Problem) {
 	name := fmt.Sprintf("approved %s version %d", id, v.Version)
 	tree, problems := Parse(map[string][]byte{name: []byte(v.Block)})
@@ -258,10 +260,53 @@ func versionText(id string, v ApprovedVersion) (Tree, []Problem) {
 	case nodes[0].id != id:
 		return refuse(fmt.Sprintf("the block holds node %s, not %s", quoted(nodes[0].id), quoted(id)))
 	}
+	if member, value, found := notAnID(nodes[0].node); found {
+		return refuse(fmt.Sprintf("%s %s is no id", member, quoted(value)))
+	}
 	if printed, err := nodes[0].node.Print(); err != nil || printed != v.Block {
 		return refuse("the block is not as Print writes it")
 	}
 	return tree, nil
+}
+
+// notAnID is the first value of node, the one node of an approved block, at a place that names a
+// node and not in the shape of an id (slug), by its member: its id, its parent, and each node that
+// it serves, is about or joins. The derivation reads a relation only by an id, so a relation of
+// another value, a name of no letter and no digit among them, would read as no relation: a
+// statement at the top of the tree in place of under its parent, which can make that parent met.
+// Validate refuses such a value in the files (no-parent, bad-component, and the rules of serves,
+// about and joins); the approved spec is not validated, so versionText refuses it here. A "" at a
+// place that is not an entry of a list, such as a parent or the statement that a check serves, is
+// one that the node does not set, and each entry of a list is set.
+func notAnID(node any) (member, value string, found bool) {
+	type place struct {
+		member, value string
+		entry         bool
+	}
+	entries := func(member string, ids []string) []place {
+		places := make([]place, len(ids))
+		for i, id := range ids {
+			places[i] = place{member, id, true}
+		}
+		return places
+	}
+	var places []place
+	switch n := node.(type) {
+	case Statement:
+		places = slices.Concat([]place{{"id", n.ID, false}, {"parent", n.Parent, false}}, entries("serves", n.Serves), entries("about", n.About))
+	case Check:
+		places = []place{{"id", n.ID, false}, {"serves", n.Serves, false}}
+	case Component:
+		places = slices.Concat([]place{{"id", n.ID, false}, {"parent", n.Parent, false}}, entries("joins", n.Joins))
+	case Term:
+		places = []place{{"id", n.ID, false}}
+	}
+	for _, p := range places {
+		if (p.entry || p.value != "") && !slug.MatchString(p.value) {
+			return p.member, p.value, true
+		}
+	}
+	return "", "", false
 }
 
 // idProblem is the problem detail of the node id at pos: its rule is the word before the

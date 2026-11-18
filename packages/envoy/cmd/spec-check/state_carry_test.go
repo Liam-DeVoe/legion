@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
@@ -137,7 +138,10 @@ func TestAFactAgainstACheckCountsWhereTheResultsOfItsCommitCount(t *testing.T) {
 // where the results of c1 count (the control; R9: "When a check has no result that counts after a
 // run of its job ends, it reads unknown"). A run result of leg "" at c1 beside those of leg linux
 // would answer it, and the check would read true (passed, counted from c1), so the reader refuses
-// the two forms, with a line that names the file, the commit, the job and the two legs.
+// the two forms, with a line that names the file, the commit, the job and the two legs. The rule
+// reads a run result at the commit where the judge counts it, its commit, so a test_commit, which
+// a result of a check of the code does not need, changes neither (the deep audit's input: a
+// test_commit of no commit of the history, or of m2, where the run of no matrix is).
 func TestARunResultOfNoMatrixAnswersNoRunWhereItsJobHadLegs(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "spec-check")
@@ -148,98 +152,203 @@ func TestARunResultOfNoMatrixAnswersNoRunWhereItsJobHadLegs(t *testing.T) {
 	if lines := subjectLines(got.stdout, "m2, the head of main"); got.code != 0 || got.stderr != "" || !slices.Contains(lines, want) {
 		t.Fatalf("control: exit %d, stderr %q, at m2 %q; want exit 0 and the line %q", got.code, got.stderr, lines, want)
 	}
-	var results []map[string]any
-	readJSONFile(t, filepath.Join(dir, "results.json"), &results)
-	if results[0]["kind"] != "run" || results[0]["commit"] != "c1" || results[2]["kind"] != "run" || results[2]["leg"] != "linux" {
-		t.Fatalf("silent-leg's results 1 and 3 are no runs of leg linux at c1: %v", results[:3])
+	var base []map[string]any
+	readJSONFile(t, filepath.Join(dir, "results.json"), &base)
+	if base[0]["kind"] != "run" || base[0]["commit"] != "c1" || base[2]["kind"] != "run" || base[2]["leg"] != "linux" {
+		t.Fatalf("silent-leg's results 1 and 3 are no runs of leg linux at c1: %v", base[:3])
 	}
-	results[0]["leg"] = ""
-	writeJSONFile(t, filepath.Join(dir, "results.json"), results)
-	expect(t, runBinary(t, binary, "", "state", "--scenario", dir), result{code: 2, stderr: "spec-check: " + filepath.Join(dir, "results.json") +
-		`: result 3: it sets the leg "linux", and result 1 of its job "go-checks" at the commit "c1" sets the leg ""; one job at one commit has legs or it has none, and "" is the leg of no matrix` + "\n"})
+	const mix = `one job at one commit has legs or it has none, and "" is the leg of no matrix`
+	for _, row := range []struct {
+		result int
+		set    map[string]any
+		want   string
+	}{
+		{0, map[string]any{"leg": ""}, `result 3: it sets the leg "linux", and result 1 of its job "go-checks" at the commit "c1" sets the leg ""; ` + mix},
+		{0, map[string]any{"leg": "", "test_commit": "c9"}, `result 3: it sets the leg "linux", and result 1 of its job "go-checks" at the commit "c1" sets the leg ""; ` + mix},
+		{2, map[string]any{"leg": "", "test_commit": "c9"}, `result 3: it sets the leg "", and result 1 of its job "go-checks" at the commit "c1" sets the leg "linux"; ` + mix},
+		{2, map[string]any{"leg": "", "test_commit": "m2"}, `result 3: it sets the leg "", and result 1 of its job "go-checks" at the commit "c1" sets the leg "linux"; ` + mix},
+	} {
+		results := slices.Clone(base)
+		results[row.result] = withMembers(results[row.result], row.set)
+		writeJSONFile(t, filepath.Join(dir, "results.json"), results)
+		expect(t, runBinary(t, binary, "", "state", "--scenario", dir), result{code: 2, stderr: "spec-check: " + filepath.Join(dir, "results.json") + ": " + row.want + "\n"})
+	}
 }
 
 // R48: "At that commit, such a check reads unknown, and no earlier result of it counts"; R7: "Of
-// several results that count, the latest counts"; R9: "a check whose current text has no failing
-// example that failed when it should" reads unknown. A refusal of CI cancels each piece of evidence
-// of the check at its commit and earlier, the runs, the results and the failing examples, and no
-// newer one. The refusal carries no time, so "earlier" is the order of record of the results of its
-// commit: a result recorded no later than the newest of them is cancelled. A refusal at a commit
-// that holds no result of the check counts at that commit alone, as the subject. Each row: carry,
-// with the row's records; the check reads the row's line at c2, where c1's and m2's results carry
-// (R8), and at m2, the head of main. m2's pass and the run of the job that ended at m2 are the
-// reviewer's case; c1's results are recorded on 12 November.
-func TestARefusalOfCICancelsTheEvidenceOfItsCommitAndOlder(t *testing.T) {
+// several results that count, the latest counts", "A pass and a failure on one such subject and one
+// procedure make the state unknown. The failing run is a report (R11), and a later pass does not end
+// the report"; R9: "The check reads true only when its test, as it is now, failed on that fault",
+// and "a check whose current text has no failing example that failed when it should" reads
+// unknown. A refusal of CI at c1 takes out the passing evidence of c1 and of each other commit
+// recorded no later than c1's newest record, the passes and the failing examples that failed on
+// their fault, and no newer one. The refusal carries no time, and the history gives no order of
+// commits, so "earlier" is the order of record. It takes out no failure, no run that could not run
+// and no failing example that missed its fault, of any commit, c1's among them, so a refusal moves
+// no state toward true: where a row gives the line with no refusal too, the line with the refusal
+// is not true unless that one is. A refusal at a commit that holds no result of the check counts
+// at that commit alone, as the subject. Each row: carry, with the row's records, and c0 as c1's
+// parent with c1's tree and ties where the row says so; the check reads the row's line at c2, where
+// the results of c0, c1 and m2 carry (R8), and at m2, the head of main. m2's pass and the run of the
+// job that ended at m2 are the reviewer's case; c1's results are recorded on 12 November, its pass
+// at 10:00 and its caught failing example at 10:05.
+func TestARefusalOfCITakesOutOnlyThePassingEvidenceOfItsCommitAndOlder(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "spec-check")
 	const check = "a-restart-loses-no-message"
 	refused := map[string]any{"c1": map[string]any{check: "test-did-not-run"}}
-	// at m2 is m2's pass recorded at its time, and the run of the job that ended at m2; fault adds a
-	// caught failing example at commit, recorded at its time.
-	at := func(passAt string) func(r []map[string]any) []map[string]any {
+	type change = func(r []map[string]any) []map[string]any
+	// run adds a run of the check at commit with its outcome, recorded at its time and seq, and fault
+	// a caught failing example; at is m2's pass, beside the run of the job that ended at m2; failsAtC1
+	// makes c1's run at 10:00 a failure.
+	run := func(commit, outcome, runAt string, seq int) change {
 		return func(r []map[string]any) []map[string]any {
-			return append(r, withMembers(r[0], map[string]any{"commit": "m2", "at": passAt, "seq": 6}))
+			return append(r, withMembers(r[0], map[string]any{"commit": commit, "outcome": outcome, "at": runAt, "seq": seq}))
 		}
 	}
-	fault := func(commit, faultAt string) func(r []map[string]any) []map[string]any {
+	fault := func(commit, faultAt string, seq int) change {
 		return func(r []map[string]any) []map[string]any {
-			return append(r, withMembers(r[1], map[string]any{"commit": commit, "at": faultAt, "seq": 7}))
+			return append(r, withMembers(r[1], map[string]any{"commit": commit, "at": faultAt, "seq": seq}))
 		}
+	}
+	at := func(passAt string) change { return run("m2", "pass", passAt, 6) }
+	failsAtC1 := func(r []map[string]any) []map[string]any {
+		r[0] = withMembers(r[0], map[string]any{"outcome": "fail"})
+		return r
 	}
 	for _, row := range []struct {
-		name       string
-		changes    []func(r []map[string]any) []map[string]any
+		name, why  string
+		changes    []change
 		uncited    map[string]any
 		c2, m2     string // the line of the check at c2 and at m2
+		none       string // the line at c2 and at m2 with no refusal, "" for a row that reads none
+		c0         bool
 		noM2JobRun bool
 	}{
-		{name: "control: m2's pass and no refusal", changes: []func(r []map[string]any) []map[string]any{at("2026-11-13T12:00:00Z")}, uncited: map[string]any{},
+		{name: "control: m2's pass and no refusal", changes: []change{at("2026-11-13T12:00:00Z")}, uncited: map[string]any{},
 			c2: "true (passed, counted from m2)", m2: "true (passed, counted from m2)"},
-		{name: "CI refused the check at c1: its failing example is cancelled with its pass, and m2's pass has none", changes: []func(r []map[string]any) []map[string]any{at("2026-11-13T12:00:00Z")},
-			uncited: refused, c2: "unknown (no_failing_example)", m2: "unknown (no_failing_example)"},
-		{name: "the same, and a caught failing example at m2", changes: []func(r []map[string]any) []map[string]any{at("2026-11-13T12:00:00Z"), fault("m2", "2026-11-13T12:05:00Z")},
+		{name: "CI refused the check at c1", why: "c1's caught failing example is taken out with its pass, and m2's pass has none",
+			changes: []change{at("2026-11-13T12:00:00Z")}, uncited: refused, c2: "unknown (no_failing_example)", m2: "unknown (no_failing_example)"},
+		{name: "the same, and a caught failing example at m2", changes: []change{at("2026-11-13T12:00:00Z"), fault("m2", "2026-11-13T12:05:00Z", 7)},
 			uncited: refused, c2: "true (passed, counted from m2)", m2: "true (passed, counted from m2)"},
-		{name: "the same, and a caught failing example at c2, newer than c1's results", changes: []func(r []map[string]any) []map[string]any{at("2026-11-13T12:00:00Z"), fault("c2", "2026-11-13T11:00:00Z")},
+		{name: "the same, and a caught failing example at c2, newer than c1's results", changes: []change{at("2026-11-13T12:00:00Z"), fault("c2", "2026-11-13T11:00:00Z", 7)},
 			uncited: refused, c2: "true (passed, counted from m2)", m2: "true (passed, counted from m2)"},
-		{name: "m2's pass and its caught failing example recorded before c1's results", changes: []func(r []map[string]any) []map[string]any{at("2026-11-12T09:00:00Z"), fault("m2", "2026-11-12T09:05:00Z")},
+		{name: "m2's pass and its caught failing example recorded before c1's results", changes: []change{at("2026-11-12T09:00:00Z"), fault("m2", "2026-11-12T09:05:00Z", 7)},
 			uncited: refused, c2: "unknown (uncited)", m2: "unknown (uncited)"},
-		{name: "control: the same with no refusal", changes: []func(r []map[string]any) []map[string]any{at("2026-11-12T09:00:00Z"), fault("m2", "2026-11-12T09:05:00Z")},
+		{name: "control: the same with no refusal", changes: []change{at("2026-11-12T09:00:00Z"), fault("m2", "2026-11-12T09:05:00Z", 7)},
 			uncited: map[string]any{}, c2: "true (passed, counted from c1)", m2: "true (passed, counted from c1)"},
-		// The refusal's place is the newest record of c1, its failing example at 10:05, not its pass at
-		// 10:00: m2's pass at 10:02 is older, so it is cancelled, and m2's later failing example alone
-		// counts no run.
-		{name: "m2's pass recorded between c1's pass and c1's failing example", changes: []func(r []map[string]any) []map[string]any{at("2026-11-12T10:02:00Z"), fault("m2", "2026-11-13T12:05:00Z")},
-			uncited: refused, c2: "unknown (uncited)", m2: "unknown (uncited)"},
-		{name: "CI refused the check at c2, which holds no result and no run: the refusal counts at c2 alone", noM2JobRun: true,
+		{name: "m2's pass recorded between c1's pass and c1's failing example",
+			why:     "the refusal's place is the newest record of c1, its failing example at 10:05, not its pass at 10:00: m2's pass at 10:02 is older, so it is taken out, and m2's later failing example alone counts no run",
+			changes: []change{at("2026-11-12T10:02:00Z"), fault("m2", "2026-11-13T12:05:00Z", 7)}, uncited: refused, c2: "unknown (uncited)", m2: "unknown (uncited)"},
+		{name: "CI refused the check at c2, which holds no result and no run", why: "the refusal counts at c2 alone", noM2JobRun: true,
 			uncited: map[string]any{"c2": map[string]any{check: "test-not-in-code"}}, c2: "unknown (uncited)", m2: "true (passed, counted from c1)"},
+		// Each row below holds a failure beside a pass. A failure is a report, and no refusal takes it
+		// out, so each reads as with no refusal, or further from true.
+		{name: "c2 fails at 10:03, between c1's pass and c1's failing example, then passes at 12:00",
+			why:     "the refusal takes out c1's pass and failing example and keeps c2's failure, so c2 holds a pass and a failure (R7)",
+			changes: []change{run("c2", "fail", "2026-11-12T10:03:00Z", 5), run("c2", "pass", "2026-11-12T12:00:00Z", 6), fault("c2", "2026-11-12T12:05:00Z", 7)},
+			uncited: refused, c2: "unknown (disagree)", m2: "unknown (disagree)", none: "unknown (disagree)"},
+		{name: "c2 fails at 10:03, and m2 passes on 13 November",
+			why:     "the refusal keeps c2's failure, so m2's later pass does not end the report (R7)",
+			changes: []change{run("c2", "fail", "2026-11-12T10:03:00Z", 5), at("2026-11-13T12:00:00Z"), fault("m2", "2026-11-13T12:05:00Z", 7)},
+			uncited: refused, c2: "unknown (disagree)", m2: "unknown (disagree)", none: "unknown (disagree)"},
+		{name: "c1 fails at 10:00, and c0, c1's parent, passes at 11:00",
+			why: "the refusal takes out c1's caught failing example and keeps c1's failure, so c0's later pass does not end the report (R7)",
+			c0:  true, changes: []change{failsAtC1, run("c0", "pass", "2026-11-12T11:00:00Z", 5), fault("c0", "2026-11-12T11:05:00Z", 6)},
+			uncited: refused, c2: "unknown (disagree)", m2: "unknown (disagree)", none: "unknown (disagree)"},
+		{name: "c0, c1's parent, passes at 09:00, and c1 fails at 10:00",
+			why: "the refusal takes out c0's pass and the caught failing examples of c0 and c1, each recorded no later than c1's newest record, and keeps c1's failure, " +
+				"so no caught failing example counts (R9), away from the false that reads with no refusal",
+			c0: true, changes: []change{failsAtC1, run("c0", "pass", "2026-11-12T09:00:00Z", 5), fault("c0", "2026-11-12T09:05:00Z", 6)},
+			uncited: refused, c2: "unknown (no_failing_example)", m2: "unknown (no_failing_example)", none: "false (failed, counted from c1)"},
+		{name: "c0, c1's parent, fails at 09:00, and c2 passes at 12:00",
+			why: "the refusal takes out c1's pass and failing example and keeps c0's failure, so c2's later pass does not end the report (R7)",
+			c0:  true, changes: []change{run("c0", "fail", "2026-11-12T09:00:00Z", 5), run("c2", "pass", "2026-11-12T12:00:00Z", 6), fault("c2", "2026-11-12T12:05:00Z", 7)},
+			uncited: refused, c2: "unknown (disagree)", m2: "unknown (disagree)", none: "unknown (disagree)"},
+		{name: "c1 fails at 10:00, and m2 passes on 13 November",
+			why:     "the refusal at c1 keeps c1's own failure, so m2's later pass does not end the report (R7)",
+			changes: []change{failsAtC1, at("2026-11-13T12:00:00Z"), fault("m2", "2026-11-13T12:05:00Z", 7)},
+			uncited: refused, c2: "unknown (disagree)", m2: "unknown (disagree)", none: "unknown (disagree)"},
+		{name: "a run at c2 at 10:03 that could not run, between c1's pass and c1's failing example",
+			why:     "a run that could not run is no passing evidence, so the refusal keeps it, and it is the newest run (R9: \"A check that could not run\" reads unknown)",
+			changes: []change{run("c2", "could_not_run", "2026-11-12T10:03:00Z", 5)},
+			uncited: refused, c2: "unknown (could_not_run)", m2: "unknown (could_not_run)", none: "unknown (could_not_run)"},
+		{name: "a failing example at c1 at 10:06 that missed its fault, and m2's later pass",
+			why: "a failing example that missed its fault is no passing evidence, so the refusal keeps it, and it is the newest failing example " +
+				"(R9: \"a check whose current text has no failing example that failed when it should\")",
+			changes: []change{func(r []map[string]any) []map[string]any {
+				return append(r, withMembers(r[1], map[string]any{"outcome": "pass", "at": "2026-11-12T10:06:00Z", "seq": 5}))
+			}, at("2026-11-13T12:00:00Z")},
+			uncited: refused, c2: "unknown (failing_example_missed)", m2: "unknown (failing_example_missed)", none: "unknown (failing_example_missed)"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			dir := copyScenario(t, "carry")
-			var results []map[string]any
-			readJSONFile(t, filepath.Join(dir, "results.json"), &results)
-			for _, change := range row.changes {
-				results = change(results)
+			lines := func(uncited map[string]any) map[string][]string {
+				dir := copyScenario(t, "carry")
+				if row.c0 {
+					withParentOfC1(t, dir)
+				}
+				var results []map[string]any
+				readJSONFile(t, filepath.Join(dir, "results.json"), &results)
+				for _, change := range row.changes {
+					results = change(results)
+				}
+				var jobs []any
+				readJSONFile(t, filepath.Join(dir, "jobs.json"), &jobs)
+				if !row.noM2JobRun {
+					jobs = append(jobs, map[string]any{"job": "go-checks", "leg": "", "commit": "m2", "ended": true})
+				}
+				writeJSONFile(t, filepath.Join(dir, "results.json"), results)
+				writeJSONFile(t, filepath.Join(dir, "jobs.json"), jobs)
+				writeJSONFile(t, filepath.Join(dir, "uncited.json"), uncited)
+				got := runBinary(t, binary, "", "state", "--scenario", dir)
+				if got.code != 0 || got.stderr != "" {
+					t.Fatalf("exit %d, stderr %q: want exit 0 and nothing on stderr", got.code, got.stderr)
+				}
+				return map[string][]string{"c2": subjectLines(got.stdout, "c2, the head of listener-restart"), "m2": subjectLines(got.stdout, "m2, the head of main")}
 			}
-			var jobs []any
-			readJSONFile(t, filepath.Join(dir, "jobs.json"), &jobs)
-			if !row.noM2JobRun {
-				jobs = append(jobs, map[string]any{"job": "go-checks", "leg": "", "commit": "m2", "ended": true})
+			got := lines(row.uncited)
+			for subject, want := range map[string]string{"c2": row.c2, "m2": row.m2} {
+				if !slices.Contains(got[subject], "  check "+check+": "+want) {
+					t.Errorf("at subject %s: %q, want the line %q (%s)", subject, got[subject], "  check "+check+": "+want, row.why)
+				}
+				if row.none != "" && strings.HasPrefix(want, "true") && !strings.HasPrefix(row.none, "true") {
+					t.Errorf("at subject %s the row's refusal moves the check toward true: %q, and %q with no refusal", subject, want, row.none)
+				}
 			}
-			writeJSONFile(t, filepath.Join(dir, "results.json"), results)
-			writeJSONFile(t, filepath.Join(dir, "jobs.json"), jobs)
-			writeJSONFile(t, filepath.Join(dir, "uncited.json"), row.uncited)
-			got := runBinary(t, binary, "", "state", "--scenario", dir)
-			if got.code != 0 || got.stderr != "" {
-				t.Fatalf("exit %d, stderr %q: want exit 0 and nothing on stderr", got.code, got.stderr)
+			if row.none == "" {
+				return
 			}
-			for subject, want := range map[string]string{"c2, the head of listener-restart": row.c2, "m2, the head of main": row.m2} {
-				if lines := subjectLines(got.stdout, subject); !slices.Contains(lines, "  check "+check+": "+want) {
-					t.Errorf("at subject %s: %q, want the line %q", subject, lines, "  check "+check+": "+want)
+			none := lines(map[string]any{})
+			for _, subject := range []string{"c2", "m2"} {
+				if !slices.Contains(none[subject], "  check "+check+": "+row.none) {
+					t.Errorf("with no refusal, at subject %s: %q, want the line %q", subject, none[subject], "  check "+check+": "+row.none)
 				}
 			}
 		})
 	}
+}
+
+// withParentOfC1 gives carry's c1 a parent c0, with c1's tree and c1's ties, so the results of c0
+// count where those of c1 count.
+func withParentOfC1(t *testing.T, dir string) {
+	t.Helper()
+	var history map[string]any
+	readJSONFile(t, filepath.Join(dir, "history.json"), &history)
+	commits := history["commits"].([]any)
+	i := slices.IndexFunc(commits, func(c any) bool { return c.(map[string]any)["id"] == "c1" })
+	if i < 0 {
+		t.Fatal("carry's history holds no c1")
+	}
+	c1 := commits[i].(map[string]any)
+	c0 := map[string]any{"id": "c0", "parent": c1["parent"], "files": maps.Clone(c1["files"].(map[string]any))}
+	c1["parent"] = "c0"
+	history["commits"] = slices.Insert(commits, i, any(c0))
+	writeJSONFile(t, filepath.Join(dir, "history.json"), history)
+	var ties map[string]any
+	readJSONFile(t, filepath.Join(dir, "ties.json"), &ties)
+	ties["c0"] = ties["c1"]
+	writeJSONFile(t, filepath.Join(dir, "ties.json"), ties)
 }
 
 // withMembers is a copy of the record r with the members of set set to their values.

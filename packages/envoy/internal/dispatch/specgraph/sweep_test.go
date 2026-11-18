@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -67,12 +68,55 @@ func notRepoPaths(path string) []string {
 // refusal of CI, and, in production-and-graph, a program check of production whose runs name the
 // commit of their test (test_commit), a query of the graph at the transaction of its subject
 // (graph_tx), and a run of a job that has not ended. So each member that a rule reads is in a
-// record of some scenario, and each place of it is swept. The sweep also reads silent-leg with the
-// job's matrix dropped after c1, one run of no matrix at m2 that ended with no result, a shape that
-// no scenario holds: there a run result of the leg "" at c1, where the job had legs, would answer
-// that run, and the check would read true (legFault refuses it).
+// record of some scenario, and each place of it is swept. The sweep also reads the shapes that no
+// scenario holds (sweepBases). One right: a content label or a repository path of a tree written
+// " ", which the reader takes, is a real label or a real path, so the tree changed at a path that
+// a tie covers, and a result there, a failure among them, carries no more across it (R8:
+// "A result at one commit also counts at another commit when no code that the check runs changed
+// between the two"); a base whose failure at one commit carries to another shows it.
 func TestNoInputThatSaysNothingMovesAStateTowardTrue(t *testing.T) {
 	t.Parallel()
+	bases := sweepBases(t)
+	byRight := func(what string) string {
+		if strings.HasPrefix(what, "history.json /commits/") && strings.Contains(what, "/files/") {
+			return "the tree changed at a path that a tie covers, so the carry ends (R8)"
+		}
+		return ""
+	}
+	for _, name := range slices.Sorted(maps.Keys(bases)) {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			base := bases[name]
+			inputs, roundTrip := sweepInputs(t, base)
+			whole := baseStates(t, base)
+			if got, err := sweepStates(roundTrip); err != nil || !maps.Equal(got, whole) {
+				t.Fatalf("each JSON file of the scenario written again by the sweep does not read as the scenario: %v", err)
+			}
+			n := sweepAgainst(t, whole, inputs, byRight)
+			legs := 0 // the inputs that write the leg of no matrix at the leg of a record
+			for _, in := range inputs {
+				if strings.HasSuffix(in.what, `/leg as ""`) {
+					legs++
+				}
+			}
+			t.Logf(`%d inputs: %d refused, %d read as the whole scenario, %d read another state, %d of them toward true by right; %d of them a leg written as ""`,
+				n.inputs, n.refused, n.same, n.moved, n.byRight, legs)
+		})
+	}
+}
+
+// sweepBases is each base that the sweeps read, by its name: each scenario of testdata/scenarios,
+// and three shapes that no scenario holds. silent-leg with the job's matrix dropped after c1, one
+// run of no matrix at m2 that ended with no result: there a run result of the leg "" at c1, where
+// the job had legs, would answer that run, and the check would read true (legFault refuses it).
+// carry with a failure of c2 at 10:03, between c1's pass and c1's caught failing example, and a
+// later pass of c2 with its caught failing example: c2 reads unknown (disagree), and a refusal of
+// CI at c1 that took out c2's failure with c1's evidence would make it read true (CheckStates, step
+// 2). And carry with c0, c1's parent with c1's tree and ties, whose failure at 09:00 counts where
+// c1's results count, and a later pass of c2: a refusal at c1 that took out c0's failure as earlier
+// evidence would make c2 read true.
+func sweepBases(t *testing.T) map[string]fstest.MapFS {
+	t.Helper()
 	dirs, err := filepath.Glob(filepath.Join("testdata", "scenarios", "*"))
 	if err != nil || len(dirs) < 7 {
 		t.Fatalf("the scenarios: %q, %v", dirs, err)
@@ -84,43 +128,360 @@ func TestNoInputThatSaysNothingMovesAStateTowardTrue(t *testing.T) {
 	dropped := maps.Clone(bases["silent-leg"])
 	dropped["jobs.json"] = &fstest.MapFile{Data: []byte(`[{"job":"go-checks","leg":"","commit":"m2","ended":true}]`)}
 	bases["silent-leg with its matrix dropped at m2"] = dropped
+	// carry is carry with records added to results.json, each a copy of carry's result 1 (from 0, a
+	// pass of a-restart-loses-no-message at c1) or 2 (from 1, its caught failing example) with the
+	// members of set, and a run of go-checks that ended at each commit of jobsAt.
+	type add struct {
+		from int
+		set  map[string]any
+	}
+	carry := func(jobsAt []string, adds ...add) fstest.MapFS {
+		fsys := maps.Clone(bases["carry"])
+		editTree(t, fsys, "results.json", func(v any) any {
+			results := v.([]any)
+			for _, a := range adds {
+				r := maps.Clone(results[a.from].(map[string]any))
+				maps.Copy(r, a.set)
+				results = append(results, r)
+			}
+			return results
+		})
+		editTree(t, fsys, "jobs.json", func(v any) any {
+			jobs := v.([]any)
+			for _, commit := range jobsAt {
+				jobs = append(jobs, map[string]any{"job": "go-checks", "leg": "", "commit": commit, "ended": true})
+			}
+			return jobs
+		})
+		return fsys
+	}
+	bases["carry with c2's failure between c1's pass and c1's failing example"] = carry([]string{"c2"},
+		add{0, map[string]any{"commit": "c2", "outcome": "fail", "at": "2026-11-12T10:03:00Z", "seq": 5}},
+		add{0, map[string]any{"commit": "c2", "at": "2026-11-12T12:00:00Z", "seq": 6}},
+		add{1, map[string]any{"commit": "c2", "at": "2026-11-12T12:05:00Z", "seq": 7}})
+	parent := carry([]string{"c0", "c2"},
+		add{0, map[string]any{"commit": "c0", "outcome": "fail", "at": "2026-11-12T09:00:00Z", "seq": 5}},
+		add{0, map[string]any{"commit": "c2", "at": "2026-11-12T12:00:00Z", "seq": 6}},
+		add{1, map[string]any{"commit": "c2", "at": "2026-11-12T12:05:00Z", "seq": 7}})
+	editTree(t, parent, "history.json", func(v any) any {
+		history := v.(map[string]any)
+		commits := history["commits"].([]any)
+		i := slices.IndexFunc(commits, func(c any) bool { return c.(map[string]any)["id"] == "c1" })
+		c1 := maps.Clone(commits[i].(map[string]any))
+		c0 := map[string]any{"id": "c0", "parent": c1["parent"], "files": c1["files"]}
+		c1["parent"] = "c0"
+		commits = slices.Clone(commits)
+		commits[i] = c1
+		history["commits"] = slices.Insert(commits, i, any(c0))
+		return history
+	})
+	editTree(t, parent, "ties.json", func(v any) any {
+		ties := v.(map[string]any)
+		ties["c0"] = ties["c1"]
+		return ties
+	})
+	bases["carry with a failure of c0, c1's parent, and a later pass of c2"] = parent
+	return bases
+}
+
+// baseStates is the state of each check, statement and wait of the base, as sweepStates gives it.
+func baseStates(t *testing.T, base fs.FS) map[string]string {
+	t.Helper()
+	whole, err := sweepStates(base)
+	if err != nil {
+		t.Fatalf("the base: %v", err)
+	}
+	return whole
+}
+
+// sweepCount is what a sweep read: its inputs, how many the reader or the derivation refused, how
+// many read as the base, how many read another state, and how many of those moved a state toward
+// true by a right that the sweep gives.
+type sweepCount struct{ inputs, refused, same, moved, byRight int }
+
+// sweepAgainst derives each input and compares its states with whole, the states of its base: an
+// input that moves a state toward true fails the test, unless byRight, when it is not nil, gives
+// the reason of a right for it.
+func sweepAgainst(t *testing.T, whole map[string]string, inputs []sweepInput, byRight func(what string) string) sweepCount {
+	t.Helper()
+	n := sweepCount{inputs: len(inputs)}
+	for _, in := range inputs {
+		got, err := sweepStates(in.fsys)
+		switch {
+		case err != nil:
+			n.refused++
+		case maps.Equal(got, whole):
+			n.same++
+		default:
+			n.moved++
+			toward := towardTrue(whole, got)
+			switch {
+			case len(toward) == 0:
+			case byRight != nil && byRight(in.what) != "":
+				n.byRight++
+			default:
+				t.Errorf("%s: %s", in.what, strings.Join(toward, "; "))
+			}
+		}
+	}
+	return n
+}
+
+// A refusal of CI takes out only passing evidence (CheckStates, step 2), so adding one moves no
+// check toward true, no statement or its own state toward met, and no wait toward ends. The sweep
+// adds one refusal at a time to uncited.json of each base (sweepBases), at each commit that a record
+// of the base names, for each check of its approved spec that the base does not refuse there.
+func TestAddingARefusalOfCIMovesNoStateTowardTrue(t *testing.T) {
+	t.Parallel()
+	bases := sweepBases(t)
 	for _, name := range slices.Sorted(maps.Keys(bases)) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			base := bases[name]
-			whole, err := sweepStates(base)
+			s, err := ReadScenario(base)
 			if err != nil {
-				t.Fatalf("the scenario: %v", err)
+				t.Fatalf("the base: %v", err)
 			}
-			inputs, roundTrip := sweepInputs(t, base)
-			if got, err := sweepStates(roundTrip); err != nil || !maps.Equal(got, whole) {
-				t.Fatalf("each JSON file of the scenario written again by the sweep does not read as the scenario: %v", err)
+			current, _ := s.Approved.Current()
+			var inputs []sweepInput
+			for _, commit := range namesOf(t, base)["commit"] {
+				for _, c := range current.Checks {
+					if _, refused := s.Uncited[commit][c.ID]; refused {
+						continue
+					}
+					fsys := maps.Clone(base)
+					editTree(t, fsys, "uncited.json", func(v any) any {
+						uncited := v.(map[string]any)
+						checks := map[string]any{}
+						if at, held := uncited[commit].(map[string]any); held {
+							checks = maps.Clone(at)
+						}
+						checks[c.ID] = "test-did-not-run"
+						uncited[commit] = checks
+						return uncited
+					})
+					inputs = append(inputs, sweepInput{fmt.Sprintf("uncited.json: a refusal of %s at %s", c.ID, commit), fsys})
+				}
 			}
-			refused, same, moved := 0, 0, 0
-			for _, in := range inputs {
-				got, err := sweepStates(in.fsys)
-				switch {
-				case err != nil:
-					refused++
-				case maps.Equal(got, whole):
-					same++
-				default:
-					moved++
-					if toward := towardTrue(whole, got); len(toward) > 0 {
-						t.Errorf("%s: %s", in.what, strings.Join(toward, "; "))
+			n := sweepAgainst(t, baseStates(t, base), inputs, nil)
+			t.Logf("%d refusals added: %d refused, %d read as the base, %d read another state", n.inputs, n.refused, n.same, n.moved)
+		})
+	}
+}
+
+// addableMembers is each member that a record of a JSON file of a scenario can leave out (the ten
+// members marked zero that a file can leave out, memberMark), by the place of the list of its
+// records and the kind of the values that the sweep gives it.
+var addableMembers = map[string]struct {
+	records []string
+	members [][2]string // each member and its kind
+}{
+	"results.json": {nil, [][2]string{{"commit", "commit"}, {"deploy", "deploy"}, {"graph_tx", "graph_tx"}, {"job", "job"},
+		{"attempt", "attempt"}, {"fault_author", "author"}, {"test_authors", "authors"}, {"test_commit", "commit"}}},
+	"subjects.json": {nil, [][2]string{{"graph_tx", "graph_tx"}}},
+	"history.json":  {[]string{"commits"}, [][2]string{{"parent", "commit"}}},
+}
+
+// A member that a record leaves out, added, states one more fact of the record. No such input may
+// move a state toward true: the sweep adds each member of addableMembers to each record of each base
+// (sweepBases) that leaves it out, one at a time, with each value of its kind that a record of the
+// base names and one that none names. A test_commit on a result of a check of the code moves
+// nothing, since the commit of a result has one reading, its commit (resultCommit), for the judge
+// and for the leg rule alike, and a commit on a result of a check of production or of the graph is
+// refused.
+func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
+	t.Parallel()
+	bases := sweepBases(t)
+	for _, name := range slices.Sorted(maps.Keys(bases)) {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			base := bases[name]
+			names := namesOf(t, base)
+			values := map[string][]any{"attempt": {2}}
+			for kind, other := range map[string]string{"commit": "c9", "deploy": "d9", "graph_tx": "g9", "job": "other-job", "author": "agent-c"} {
+				for _, v := range append(slices.Clone(names[kind]), other) {
+					values[kind] = append(values[kind], v)
+					if kind == "author" {
+						values["authors"] = append(values["authors"], []any{v})
 					}
 				}
 			}
-			legs := 0 // the inputs that write the leg of no matrix at the leg of a record
-			for _, in := range inputs {
-				if strings.HasSuffix(in.what, `/leg as ""`) {
-					legs++
+			var inputs []sweepInput
+			for _, file := range slices.Sorted(maps.Keys(addableMembers)) {
+				var tree any
+				if err := json.Unmarshal(base[file].Data, &tree); err != nil {
+					t.Fatalf("%s: %v", file, err)
+				}
+				list := tree
+				for _, name := range addableMembers[file].records {
+					list = list.(map[string]any)[name]
+				}
+				for i, record := range list.([]any) {
+					place := append(slices.Clone(addableMembers[file].records), strconv.Itoa(i))
+					for _, m := range addableMembers[file].members {
+						if _, set := record.(map[string]any)[m[0]]; set {
+							continue
+						}
+						for _, v := range values[m[1]] {
+							fsys := maps.Clone(base)
+							fsys[file] = &fstest.MapFile{Data: encodeTree(t, treeWith(tree, append(slices.Clone(place), m[0]), v))}
+							inputs = append(inputs, sweepInput{fmt.Sprintf("%s %s with %s %s", file, treePointer(place), m[0], encodeTree(t, v)), fsys})
+						}
+					}
 				}
 			}
-			t.Logf(`%d inputs: %d refused, %d read as the whole scenario, %d read another state; %d of them a leg written as ""`,
-				len(inputs), refused, same, moved, legs)
+			n := sweepAgainst(t, baseStates(t, base), inputs, nil)
+			t.Logf("%d members added: %d refused, %d read as the base, %d read another state", n.inputs, n.refused, n.same, n.moved)
 		})
 	}
+}
+
+// A text inside a block that names nothing, " " or "", at one place: the id or a value of an
+// attribute of the block's opening line, or a line of its body after the marker of a field of a
+// check (blockTexts), in a block of approved.json or of a spec file of the base. No such input may
+// move a state toward true: the reader refuses a relation of an approved block that is no id
+// (notAnID), and Validate refuses one in the files.
+func TestNoNameOfNothingInsideABlockMovesAStateTowardTrue(t *testing.T) {
+	t.Parallel()
+	bases := sweepBases(t)
+	for _, name := range slices.Sorted(maps.Keys(bases)) {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			base := bases[name]
+			var inputs []sweepInput
+			var tree any
+			if err := json.Unmarshal(base["approved.json"].Data, &tree); err != nil {
+				t.Fatalf("approved.json: %v", err)
+			}
+			for n, node := range tree.(map[string]any)["nodes"].([]any) {
+				for v, version := range node.(map[string]any)["versions"].([]any) {
+					place := []string{"nodes", strconv.Itoa(n), "versions", strconv.Itoa(v), "block"}
+					block := version.(map[string]any)["block"].(string)
+					for _, at := range blockTexts(block) {
+						for _, form := range namesOfNothing {
+							if block[at[0]:at[1]] != form {
+								fsys := maps.Clone(base)
+								fsys["approved.json"] = &fstest.MapFile{Data: encodeTree(t, treeWith(tree, place, block[:at[0]]+form+block[at[1]:]))}
+								inputs = append(inputs, sweepInput{fmt.Sprintf("approved.json %s: %q as %q", treePointer(place), block[at[0]:at[1]], form), fsys})
+							}
+						}
+					}
+				}
+			}
+			for _, file := range slices.Sorted(maps.Keys(base)) {
+				if !strings.HasPrefix(file, "files/") || path.Ext(file) != ".md" {
+					continue
+				}
+				text := string(base[file].Data)
+				for _, at := range blockTexts(text) {
+					for _, form := range namesOfNothing {
+						if text[at[0]:at[1]] != form {
+							fsys := maps.Clone(base)
+							fsys[file] = &fstest.MapFile{Data: []byte(text[:at[0]] + form + text[at[1]:])}
+							inputs = append(inputs, sweepInput{fmt.Sprintf("%s at byte %d: %q as %q", file, at[0], text[at[0]:at[1]], form), fsys})
+						}
+					}
+				}
+			}
+			n := sweepAgainst(t, baseStates(t, base), inputs, nil)
+			t.Logf("%d texts inside a block: %d refused, %d read as the base, %d read another state", n.inputs, n.refused, n.same, n.moved)
+		})
+	}
+}
+
+// blockOpening is the opening line of a block, with what its braces hold, and blockAttribute the
+// id and each value of an attribute in it.
+var (
+	blockOpening   = regexp.MustCompile(`^:::[a-z]+\{(.*)\}$`)
+	blockAttribute = regexp.MustCompile(`#([^ }]*)|[a-z_]+="([^"]*)"`)
+)
+
+// blockTexts is the place of each text inside each block of text, as the offsets of its first and
+// its last byte and one: the id and each value of an attribute of the block's opening line, and
+// each line of its body, after the marker of a field of a check and its space where it has one.
+func blockTexts(text string) [][2]int {
+	var places [][2]int
+	inBlock, at := false, 0
+	for _, line := range strings.SplitAfter(text, "\n") {
+		body := strings.TrimSuffix(line, "\n")
+		switch open := blockOpening.FindStringSubmatchIndex(body); {
+		case !inBlock && open != nil:
+			inBlock = true
+			for _, m := range blockAttribute.FindAllStringSubmatchIndex(body[open[2]:open[3]], -1) {
+				for g := 2; g < len(m); g += 2 {
+					if m[g] >= 0 {
+						places = append(places, [2]int{at + open[2] + m[g], at + open[2] + m[g+1]})
+					}
+				}
+			}
+		case inBlock && body == ":::":
+			inBlock = false
+		case inBlock && body != "":
+			start := 0
+			for _, marker := range checkFields {
+				if strings.HasPrefix(body, marker+" ") {
+					start = len(marker) + 1
+				}
+			}
+			places = append(places, [2]int{at + start, at + len(body)})
+		}
+		at += len(line)
+	}
+	return places
+}
+
+// namesOf is each name that a record of the scenario fsys names, by its kind (commit, deploy,
+// graph_tx, job, author), sorted, each once: the commits of the history, of the subjects, of the
+// results, of the job runs and of the maps of ties.json and uncited.json; the deploys and the
+// transactions of the subjects and of the results; the jobs of the results and of the job runs; and
+// the authors of the results.
+func namesOf(t *testing.T, fsys fstest.MapFS) map[string][]string {
+	t.Helper()
+	names := map[string]map[string]bool{}
+	add := func(kind string, v any) {
+		if s, ok := v.(string); ok && s != "" {
+			if names[kind] == nil {
+				names[kind] = map[string]bool{}
+			}
+			names[kind][s] = true
+		}
+	}
+	read := func(file string) any {
+		var tree any
+		if err := json.Unmarshal(fsys[file].Data, &tree); err != nil {
+			t.Fatalf("%s: %v", file, err)
+		}
+		return tree
+	}
+	for _, c := range read("history.json").(map[string]any)["commits"].([]any) {
+		add("commit", c.(map[string]any)["id"])
+	}
+	for _, file := range []string{"subjects.json", "results.json", "jobs.json"} {
+		for _, r := range read(file).([]any) {
+			r := r.(map[string]any)
+			add("commit", r["commit"])
+			add("commit", r["test_commit"])
+			add("deploy", r["deploy"])
+			add("graph_tx", r["graph_tx"])
+			add("job", r["job"])
+			add("author", r["fault_author"])
+			if authors, ok := r["test_authors"].([]any); ok {
+				for _, a := range authors {
+					add("author", a)
+				}
+			}
+		}
+	}
+	for _, file := range []string{"ties.json", "uncited.json"} {
+		for commit := range read(file).(map[string]any) {
+			add("commit", commit)
+		}
+	}
+	sorted := map[string][]string{}
+	for kind, set := range names {
+		sorted[kind] = slices.Sorted(maps.Keys(set))
+	}
+	return sorted
 }
 
 // sweepInput is one input of the sweep: what it changed, and the files of the scenario with it.

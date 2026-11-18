@@ -415,8 +415,10 @@ func TestGitHistoryIsTheSameUnderEachSetting(t *testing.T) {
 // H2: a GitHistory whose Dir is no clone, or a directory that does not exist, lists no path, and
 // it has not read two equal trees: Changed gives an error that names Dir and git's own reason, and
 // the derivation gives no state, where the same input with a history that holds the two trees
-// reads its state. The case: TestCheckState's pass at c1, and the subject c2, whose tree differs
-// from c1's in docs/x.md alone, so the pass carries to c2 by the FixtureHistory (the control).
+// reads its state: CheckStates gives no check state, and Derive, which the command calls, gives
+// the zero State, no check and no statement. The case: TestCheckState's pass at c1, and the subject
+// c2, whose tree differs from c1's in docs/x.md alone, so the pass carries to c2 by the
+// FixtureHistory (the control).
 func TestAGitHistoryThatCannotReadItsCloneGivesNoState(t *testing.T) {
 	t.Parallel()
 	s := newCheckCase(t)
@@ -429,11 +431,14 @@ func TestAGitHistoryThatCannotReadItsCloneGivesNoState(t *testing.T) {
 	for _, dir := range []string{notAClone, filepath.Join(notAClone, "gone")} {
 		in := s.input()
 		in.History = GitHistory{Dir: dir}
-		_, err := Derive(in)
-		_, checksErr := CheckStates(in)
+		state, err := Derive(in)
+		checks, checksErr := CheckStates(in)
 		if err == nil || checksErr == nil || err.Error() != checksErr.Error() || !strings.Contains(err.Error(), quoted(dir)) ||
 			!strings.Contains(err.Error(), "fatal:") {
 			t.Errorf("GitHistory{Dir: %s}: Derive gives %v and CheckStates %v; want one error that names the directory and git's own reason", dir, err, checksErr)
+		}
+		if checks != nil || state.Checks != nil || state.Statements != nil || state.Subject != (Point{}) {
+			t.Errorf("GitHistory{Dir: %s}: beside the error, CheckStates gives %+v and Derive %+v; want no state", dir, checks, state)
 		}
 	}
 }
