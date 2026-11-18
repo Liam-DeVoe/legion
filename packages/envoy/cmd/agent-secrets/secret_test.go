@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -232,8 +233,8 @@ func (b *secretBroker) recorded() ([]string, []Reread) {
 }
 
 // servedBy answers a reread as the broker would from what sm holds: absent for a secret it does
-// not hold or one scheduled for deletion, no-current-value for one with no AWSCURRENT version,
-// served otherwise, as the type its type tag names.
+// not hold or one scheduled for deletion, no-current-value for one with no AWSCURRENT version, and
+// otherwise what its tags answer (servedAs).
 func servedBy(sm secretsAPI) func(name string) Reread {
 	return func(name string) Reread {
 		out, err := sm.DescribeSecret(context.Background(), &secretsmanager.DescribeSecretInput{SecretId: aws.String(policytest.ID(name))})
@@ -243,8 +244,23 @@ func servedBy(sm secretsAPI) func(name string) Reread {
 		case !secrets.HasCurrentVersion(out.VersionIdsToStages):
 			return Reread{Name: name, Reason: policy.ReasonNoCurrentValue}
 		}
-		return Reread{Name: name, Served: true, Type: policy.TypeFromTags(secrets.TagMap(out.Tags))}
+		return servedAs(name, secrets.TagMap(out.Tags))
 	}
+}
+
+// servedAs is the reread the broker answers for a secret it holds with a current value and tags:
+// refused as its loader refuses a type that needs GitHub owners and has none or unreadable ones
+// (github-owners-missing, github-owners-malformed: a race between two retags can leave such a
+// pair), and served otherwise, as the type the tags name. It is the one statement of that answer
+// for the AWS fake (servedBy) and the GCP one (gcpServedBy).
+func servedAs(name string, tags map[string]string) Reread {
+	secretType := policy.TypeFromTags(tags)
+	if _, err := policy.GitHubOwnersFor(secretType, tags[policy.TagGitHubOwners]); errors.Is(err, policy.ErrGitHubOwnersMissing) {
+		return Reread{Name: name, Reason: policy.ReasonGitHubOwnersMissing}
+	} else if err != nil {
+		return Reread{Name: name, Reason: policy.ReasonGitHubOwnersMalformed}
+	}
+	return Reread{Name: name, Served: true, Type: secretType}
 }
 
 // useAWS makes the secret forms' AWS clients sm and a fakeSTS signed in as arn in account, with no

@@ -77,12 +77,18 @@ func TestProjectChannelsTagMovesTheVersionOnlyWhenPresent(t *testing.T) {
 			untagged: "SLACK_TOKEN\tshared\tagent\t" + arn + "slack-token\t0s\t\tdefault-grant=session\tproject=PRIV\n",
 			line:     "SLACK_TOKEN\tshared\tagent\t" + arn + "slack-token\t0s\t\tdefault-grant=session\tproject=PRIV\tproject-channels=slack\n",
 		},
-		// The one case with optional fields before the project fields: requesters, scopes and
-		// admin are written first, then project, then project-channels.
+		// The cases with optional fields before the project fields, one in each of NewSet's two
+		// forms a tagged secret takes: requesters, scopes and admin are written first, then
+		// project, then project-channels.
 		"a secret with requesters, scopes, admin, a project and a max-grant": {
 			secret:   policy.Secret{Name: "SLACK_TOKEN", Owner: policy.OwnerShared, Tier: policy.TierHuman, Source: arn + "slack-token", Requesters: "carol@example.com", Scopes: "cloud-platform", Admin: true, MaxGrant: time.Hour, Project: privProject},
 			untagged: "SLACK_TOKEN\tshared\thuman\t" + arn + "slack-token\t1h0m0s\t\trequesters=carol@example.com\tscopes=cloud-platform\tadmin=true\tproject=PRIV\n",
 			line:     "SLACK_TOKEN\tshared\thuman\t" + arn + "slack-token\t1h0m0s\t\trequesters=carol@example.com\tscopes=cloud-platform\tadmin=true\tproject=PRIV\tproject-channels=slack\n",
+		},
+		"a session-default secret with requesters, scopes, admin, a project and a max-grant": {
+			secret:   policy.Secret{Name: "SLACK_TOKEN", Owner: policy.OwnerShared, Tier: policy.TierHuman, Source: arn + "slack-token", SessionDefault: true, Requesters: "carol@example.com", Scopes: "cloud-platform", Admin: true, MaxGrant: time.Hour, Project: privProject},
+			untagged: "SLACK_TOKEN\tshared\thuman\t" + arn + "slack-token\t1h0m0s\t\tdefault-grant=session\trequesters=carol@example.com\tscopes=cloud-platform\tadmin=true\tproject=PRIV\n",
+			line:     "SLACK_TOKEN\tshared\thuman\t" + arn + "slack-token\t1h0m0s\t\tdefault-grant=session\trequesters=carol@example.com\tscopes=cloud-platform\tadmin=true\tproject=PRIV\tproject-channels=slack\n",
 		},
 	} {
 		untagged := policy.NewSet(map[string]policy.Secret{c.secret.Name: c.secret})

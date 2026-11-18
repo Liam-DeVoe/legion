@@ -87,8 +87,8 @@ func tagPairs(tags map[string]string) string {
 // registered services: the broker's answer to the reread below is what catches it, and the
 // retag exits 1 with the tag written. The write is made against that read (heldTags), and a
 // write another writer raced answers errTagsChanged, which the retag prints, exiting 1; on AWS,
-// whose own write landed beside that writer's and put nothing back (errTagsRaced), it also asks
-// the broker to reread.
+// whose own write lands before it is read back, a write that landed with an error (a race beside
+// that writer's, or a read-back that failed; tagsLanded) also asks the broker to reread.
 //
 // A retag that leaves the secret a type is refused, before anything is written, by a broker whose
 // settings do not say it reads the type tag (requireTypeTag). A retag that changes the type tag
@@ -259,9 +259,9 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 				// back, so the retag writes nothing more on them: the requesters rewrite would
 				// send this retag's owner and tier over whatever the other writer wrote.
 				fmt.Fprintf(stderr, "agent-secrets %s: the removal landed, so its second write, %s's requesters as %q, was not made; read the tags as they now stand with `%s`, and run this retag again\n",
-					form, name, rewrite, s.backend.agentSecrets("secret", "show", name))
+					form, name, rewrite, pipeCommand(s.backend.signInPrefix(), "secret", "show", name))
 			}
-			rereadIfRaced(s, stdout, stderr, form, name, err)
+			rereadIfLanded(s, stdout, stderr, form, name, err)
 			return 1
 		}
 		fmt.Fprintf(stdout, "retagged %s in %s (removed %s)\n", name, s.storeName(), strings.Join(remove, ", "))
@@ -276,7 +276,7 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 					// tag holds what this retag wrote, so the message says so and names the read
 					// that shows the tags as they now stand.
 					fmt.Fprintf(stderr, "agent-secrets %s: the removal stands, and %s's requesters were written as %q, but %v; looked in %s. Read the tags as they now stand with `%s`\n",
-						form, name, rewrite, s.refusedAs(err), s.storeName(), s.backend.agentSecrets("secret", "show", name))
+						form, name, rewrite, s.refusedAs(err), s.storeName(), pipeCommand(s.backend.signInPrefix(), "secret", "show", name))
 					rereadRetag(s, stdout, stderr, form, name, policy.TypeFromTags(after))
 					return 1
 				}
@@ -304,11 +304,12 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 		// AWS: IAM conditioned on the request tags leaves a shared secret's owner and tier to
 		// administrators specifically. GCP has no per-secret condition on secretmanager.secrets.update,
 		// so a deployment instead grants that permission at all only to administrators for the
-		// secrets it protects this way.
-		if s.backend.isAccessDenied(err) && (held.tags[policy.TagOwner] == policy.OwnerShared || owner == policy.OwnerShared) {
+		// secrets it protects this way. A write that landed was not refused, whatever its read-back
+		// answered, so it gets no such line.
+		if s.backend.isAccessDenied(err) && !writeLanded(err) && (held.tags[policy.TagOwner] == policy.OwnerShared || owner == policy.OwnerShared) {
 			fmt.Fprintf(stderr, "agent-secrets %s: %s\n", form, sharedRetagRefused)
 		}
-		rereadIfRaced(s, stdout, stderr, form, name, err)
+		rereadIfLanded(s, stdout, stderr, form, name, err)
 		return 1
 	}
 	fmt.Fprintf(stdout, "retagged %s in %s (owner=%s, tier=%s)\n", name, s.storeName(), owner, tier)
@@ -412,12 +413,12 @@ func checkRetagValue(s *secretSession, name, slug string, held heldTags, after m
 	}
 }
 
-// rereadIfRaced asks the broker to reread name after a tag write that landed beside another
-// writer's, leaving a pair the broker refuses (errTagsRaced, AWS): the
-// secret's tags changed twice, so the broker is asked to serve them as they now stand. A write the
-// store refused wrote nothing (GCP's errTagsChanged alone), and needs no reread.
-func rereadIfRaced(s *secretSession, stdout, stderr io.Writer, form, name string, err error) {
-	if errors.Is(err, errTagsRaced) {
+// rereadIfLanded asks the broker to reread name after a tag write that landed with an error
+// (writeLanded, AWS): a race beside another writer's, or a read-back that failed. The secret's
+// tags changed, so the broker is asked to serve them as they now stand. A write the store refused
+// wrote nothing (GCP's errTagsChanged alone, or a refused AWS call), and needs no reread.
+func rereadIfLanded(s *secretSession, stdout, stderr io.Writer, form, name string, err error) {
+	if writeLanded(err) {
 		rereadAfter(s, stdout, stderr, form, name, true, nil)
 	}
 }

@@ -193,34 +193,43 @@ func rollbackAnswers(t *testing.T, loader policy.Loader) map[string]rollbackAnsw
 	return answers
 }
 
+// readRollbackGolden is the golden's one reader, for this file's check and for
+// rollback_guard_test.go's. It fails t unless the golden records an answer for exactly the cases
+// rollbackGuardCases builds, by name, and at least one, so a case added to or taken out of this
+// file without the golden written again at the merge base fails rather than going unrecorded.
+func readRollbackGolden(t *testing.T) map[string]rollbackAnswer {
+	t.Helper()
+	raw, err := os.ReadFile(rollbackGolden)
+	if err != nil {
+		t.Fatalf("read %s: %v", rollbackGolden, err)
+	}
+	var golden map[string]rollbackAnswer
+	if err := json.Unmarshal(raw, &golden); err != nil {
+		t.Fatalf("decode %s: %v", rollbackGolden, err)
+	}
+	var cases, recorded []string
+	for _, c := range rollbackGuardCases() {
+		cases = append(cases, c.name)
+	}
+	for name := range golden {
+		recorded = append(recorded, name)
+	}
+	slices.Sort(cases)
+	slices.Sort(recorded)
+	if len(cases) == 0 || !slices.Equal(cases, recorded) {
+		t.Fatalf("this file builds the cases %v and %s records %v; want the same names, and above zero: write the golden again at the merge base, as the head comment says", cases, rollbackGolden, recorded)
+	}
+	return golden
+}
+
 // TestTheRollbackGuardBaseAnswersAreRecorded writes the golden, with -write-rollback-golden, at the
-// merge base alone. Without the flag it checks that the golden holds an answer for exactly the
-// cases rollbackGuardCases builds, by name, so a case added to or taken out of this file without
-// the golden written again at the merge base fails here rather than going unrecorded. What this
-// broker answers for each case is rollback_guard_test.go's check. It never skips: the broker
-// packages' run counts every skip as a database suite that did not run (database-skips.sh).
+// merge base alone. Without the flag it checks that the golden records exactly the cases this file
+// builds (readRollbackGolden); what this broker answers for each case is rollback_guard_test.go's
+// check. It never skips: the broker packages' run counts every skip as a database suite that did
+// not run (database-skips.sh).
 func TestTheRollbackGuardBaseAnswersAreRecorded(t *testing.T) {
 	if !*writeRollbackGolden {
-		raw, err := os.ReadFile(rollbackGolden)
-		if err != nil {
-			t.Fatalf("read %s: %v", rollbackGolden, err)
-		}
-		var golden map[string]rollbackAnswer
-		if err := json.Unmarshal(raw, &golden); err != nil {
-			t.Fatalf("decode %s: %v", rollbackGolden, err)
-		}
-		var cases, recorded []string
-		for _, c := range rollbackGuardCases() {
-			cases = append(cases, c.name)
-		}
-		for name := range golden {
-			recorded = append(recorded, name)
-		}
-		slices.Sort(cases)
-		slices.Sort(recorded)
-		if len(cases) == 0 || !slices.Equal(cases, recorded) {
-			t.Fatalf("this file builds the cases %v and %s records %v; want the same names, and above zero: write the golden again at the merge base, as the head comment says", cases, rollbackGolden, recorded)
-		}
+		readRollbackGolden(t)
 		return
 	}
 	answers := rollbackAnswers(t, policytest.Loader(rollbackGuardStore()))

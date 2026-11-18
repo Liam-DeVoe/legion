@@ -673,9 +673,6 @@ type secretBackend interface {
 	// and nothing put back (tagsLanded, writeLanded).
 	setTags(ctx context.Context, slug string, held heldTags, tags map[string]string) error
 	removeTags(ctx context.Context, slug string, held heldTags, keys []string) error
-	// agentSecrets is an agent-secrets command line that signs in as this command did, for a
-	// message that names the command to run next.
-	agentSecrets(words ...string) string
 	// delete schedules the secret's deletion and answers the moment it happens (AWS:
 	// DeleteSecret's own recovery window end; GCP: the expire_time it sets), nil only on error.
 	delete(ctx context.Context, slug string) (deletion *time.Time, err error)

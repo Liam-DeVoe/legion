@@ -2,8 +2,6 @@ package policy_test
 
 import (
 	"context"
-	"encoding/json"
-	"os"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/broker/policy"
@@ -34,23 +32,9 @@ func TestTheProjectRollbackGuardIsRefusedByTheMergeBaseAndIgnoredHere(t *testing
 	if record.ValidService(policy.RequestersRollbackGuard) {
 		t.Fatalf("%q is a valid service name, so a deployment could register it and a broker before the project tags would read the guard as that service", policy.RequestersRollbackGuard)
 	}
-	raw, err := os.ReadFile(rollbackGolden)
-	if err != nil {
-		t.Fatalf("read %s: %v", rollbackGolden, err)
-	}
-	var golden map[string]rollbackAnswer
-	if err := json.Unmarshal(raw, &golden); err != nil {
-		t.Fatalf("decode %s: %v", rollbackGolden, err)
-	}
-	cases := rollbackGuardCases()
-	if len(cases) == 0 || len(golden) != len(cases) {
-		t.Fatalf("the check holds %d cases and the golden %d answers; want them equal and above zero", len(cases), len(golden))
-	}
+	golden, cases := readRollbackGolden(t), rollbackGuardCases()
 	for _, c := range cases {
-		answer, ok := golden[c.name]
-		switch {
-		case !ok:
-			t.Errorf("%s is not in the golden", c.name)
+		switch answer := golden[c.name]; {
 		case c.guarded && (answer.Served || answer.Reason != policy.ReasonRequestersMalformed):
 			t.Errorf("the merge base answered %s, which carries the guard, %+v; want it refused %s", c.name, answer, policy.ReasonRequestersMalformed)
 		case !c.guarded && !answer.Served:
