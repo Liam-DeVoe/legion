@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -33,6 +34,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -1541,6 +1543,40 @@ func TestDevSignInLoadedFenceRefusesAPublicOrigin(t *testing.T) {
 	}
 	if err := devSignInLoadedFence(devSignInBoot(t, map[string]string{"DISPATCH_DEV_SIGNIN": ""}), public, nil, appCredentialSource{}); err != nil {
 		t.Errorf("origin %s without the flag: %v, want accepted", public, err)
+	}
+}
+
+// The WARN line that says the dev sign-in route is mounted names the dashboard origin the fence
+// accepted. An origin with a user and a password prints neither, and an origin whose path holds an
+// @ still names its host and port. The user and the password are made for this test.
+func TestDevSignInMountedLineNamesTheHostAndNoUserPart(t *testing.T) {
+	const (
+		user     = "made-up-user"
+		password = "not-a-secret-91d2e8"
+	)
+	for _, tc := range []struct{ name, origin, host string }{
+		{name: "user and password", origin: "http://" + user + ":" + password + "@127.0.0.1:8766", host: "127.0.0.1:8766"},
+		{name: "@ in the path", origin: "http://localhost:8766/a@b", host: "localhost:8766"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			boot := devSignInBoot(t, nil)
+			if err := devSignInLoadedFence(boot, tc.origin, nil, appCredentialSource{}); err != nil {
+				t.Fatalf("the fence refused a loopback origin: %v", err)
+			}
+			var logged bytes.Buffer
+			logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
+			logDevSignInMounted(boot, tc.origin)
+			line := logged.String()
+			if !strings.Contains(line, "dev sign-in mounted") {
+				t.Fatalf("logged %q, want the dev sign-in WARN line", line)
+			}
+			if strings.Contains(line, password) || strings.Contains(line, user) {
+				t.Errorf("the line holds the user part: %q", line)
+			}
+			if !strings.Contains(line, tc.host) {
+				t.Errorf("the line %q does not name the host %s", line, tc.host)
+			}
+		})
 	}
 }
 

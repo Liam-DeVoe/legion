@@ -283,11 +283,7 @@ func main() {
 		slog.Info("dispatch: loaded github app", "slug", appCfg.Slug, "client_id", appCfg.ClientID, "source", appSource.String())
 	}
 	if boot.DevSignIn {
-		cookies := "cookies are valid on this process only"
-		if boot.DevSignInSharedKey != "" {
-			cookies = "cookies are valid on every process given this DISPATCH_DEV_SIGNIN_SHARED_KEY"
-		}
-		slog.Warn("dispatch: dev sign-in mounted: any email signs in at /auth/_dev/signin without the sign-in issuer; "+cookies, "origin", redact.URL(serverURL))
+		logDevSignInMounted(boot, serverURL)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -1431,6 +1427,24 @@ func devSignInLoadedFence(boot bootConfig, serverURL string, app *auth.AppConfig
 		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 lets the App private key (DISPATCH_APP_PEM_B64) sign calls only to a loopback host: DISPATCH_GITHUB_API_BASE=%q (empty is https://api.github.com) must name 127.0.0.1, [::1] or localhost. Use a throwaway key: every App call hands a signed App JWT to whatever listens there", boot.GitHubAPIBase)
 	}
 	return nil
+}
+
+// logDevSignInMounted writes the WARN line that says the dev sign-in route is mounted. It names
+// the host and port the route serves, which routes.DevSignInOrigin reads from the dashboard
+// origin. Main calls it only after devSignInLoadedFence accepted serverURL, so that is a loopback
+// name or IP literal with an optional port, and no user part, path, query or fragment of the
+// setting reaches the line. redact.URL prints nothing for an origin with an @ anywhere in it, its
+// path included, so the line would then name no host.
+func logDevSignInMounted(boot bootConfig, serverURL string) {
+	cookies := "cookies are valid on this process only"
+	if boot.DevSignInSharedKey != "" {
+		cookies = "cookies are valid on every process given this DISPATCH_DEV_SIGNIN_SHARED_KEY"
+	}
+	host, err := routes.DevSignInOrigin(serverURL)
+	if err != nil {
+		host = redact.NotPrinted
+	}
+	slog.Warn("dispatch: dev sign-in mounted: any email signs in at /auth/_dev/signin without the sign-in issuer; "+cookies, "host", host)
 }
 
 // loopbackDatabase refuses a DATABASE_URL with a host that is not this machine: the data a

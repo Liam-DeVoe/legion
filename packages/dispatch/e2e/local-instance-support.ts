@@ -192,7 +192,8 @@ export function databaseUrlRefusal(raw: string): string | undefined {
   // A user part that holds a `/` leaves a raw `@` once the user part the URL parser found is taken
   // out, and the host it read is then a part of the user part: such a value is named by its
   // length (`shownSettingUrl`, of the Postgres schemes), not by its hosts.
-  const misread = raw.includes("@") && shownSettingUrl(raw, ["postgres:", "postgresql:"]) === undefined;
+  const misread =
+    raw.includes("@") && shownSettingUrl(raw, ["postgres:", "postgresql:"]) === undefined;
   return misread
     ? "DATABASE_URL must name a loopback Postgres (127.0.0.1, localhost or [::1]) or a Unix " +
         `socket: ${unshownSettingUrl(raw)}; this command truncates it`
