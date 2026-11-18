@@ -22,7 +22,8 @@ import (
 // names its session in actor.
 
 // listArchitectureSources answers every source of every project, by project and then in the
-// order each project's sources were added.
+// order each project's sources were added. Its /api/v2 route is one project's list, so its
+// /api/v1 answer links each project it holds (decision 9 of the plan of dispatch://INFRA-4071).
 func (s *server) listArchitectureSources(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -31,6 +32,9 @@ func (s *server) listArchitectureSources(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
+	}
+	for _, source := range sources {
+		successorValue(r, "key", source.Project)
 	}
 	WriteJSON(w, http.StatusOK, sources)
 }

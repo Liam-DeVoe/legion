@@ -3516,7 +3516,8 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 
 - The Dispatch API describes itself.
   `internal/dispatch/api/routes_table.go` is the one table of both versions of the API (`routes()`, its row types in `routes_versions.go`), and `register` mounts one `apiRoute` for each version a row serves:
-  the `routeRow` whole, the `Version` it is mounted under, a `/api/v1` row's `Successor`, and `ReadScope`.
+  the `routeRow` whole, the `Version` it is mounted under, `ReadScope`, and on a `/api/v1` mount its `Successor`, the `/api/v2` route its `Link` header names:
+  a `v1Row`'s own, the `/api/v2` mount of a row served in both versions, or a test hook's `/api/v2/_test` path.
   `/api/v2` is the version to call, from the first `legion-envoy` release that carries pull request #4274, and `/api/v1` is deprecated and ends at `DISPATCH_API_V1_END` (`cmd/dispatch/README.md`, "Required configuration").
   A `routeRow` (each group's `v2<Group>Rows`, in `api/v2_<group>.go`) names every fact a wrapper reads as a column — `Method`, a version-free `Pattern`, `Auth` one of `public`, `any`, `bearer`, `Description`, `Handler`, `Versions`, the shape columns (`Resource`, `Kind`, `Key`, `TimeFields`, `Position`, `CrossProject`), `Query`, `Body`, `Shape`, `Refusals`, `List`, `OAuthScopes`, `Authorities`, `Scope` (its write class), `ProjectOf`, `SessionPath`, `IDs` and the keyed facts — and is served at `/api/v2` and, unless its `Versions` is `onlyV2`, at `/api/v1` too, so a row a later change adds is served in both versions by one declaration.
   A `v1Row` (`v1Rows`) is a route of `/api/v1` as it stood when `/api/v2` began, a positional literal of its five columns and its `Successor`, the `/api/v2` route that answers for it;

@@ -96,6 +96,11 @@ type successor struct {
 	// the route that answers for (a filter, a selector, a duplicate); every other row names its
 	// own route, at the same path, renamed, or merged with other rows into one.
 	Deleted bool
+	// None is the version-free path of the list a client finds the values of the wildcard its
+	// handler resolves in, which a successful answer that resolved none links (Link, decision 9):
+	// row 178, every project's architecture sources, links each project it lists and /projects
+	// when it lists none. Empty for every other row.
+	None string
 }
 
 // successorIs is the successor of a v1Row that keeps a route of its own in /api/v2: target is
@@ -122,9 +127,17 @@ func deletedFor(method, target string, bindings ...string) successor {
 	return next
 }
 
+// whenNone is next for a row whose answer lists every value of the wildcard its handler
+// resolves, where an answer listing none links pattern (successor.None).
+func (next successor) whenNone(pattern string) successor {
+	next.None = pattern
+	return next
+}
+
 // testHookRow is a test hook's row: the five columns as a v1Row writes them, its pattern the
-// /api/v1 path the hook has always answered at. A hook has no successor: it is served in both
-// versions (testHookV2Pattern), and it is none of R1's rows.
+// /api/v1 path the hook has always answered at. A hook names no successor of its own: it is
+// served in both versions (testHookV2Pattern), its /api/v1 answer links its /api/v2 path, and it
+// is none of R1's rows.
 type testHookRow struct {
 	Method      string
 	Pattern     string
@@ -458,7 +471,9 @@ type apiRoute struct {
 	routeRow
 	// Version is the version the route is mounted under.
 	Version apiVersion
-	// Successor is the route that answers a v1Row's route under /api/v2; zero on every other.
+	// Successor is the /api/v2 route that answers the route's own under /api/v1, which its Link
+	// header names (linkSuccessor): a v1Row's Successor, the /api/v2 mount of a routeRow served in
+	// both versions, a test hook's /api/v2/_test path. Zero on every /api/v2 route.
 	Successor successor
 	// ReadScope is whether a read-only token may call the route: true on every route the read
 	// list names (readScopeRoutes) by the method and pattern it is mounted at, which routes()
@@ -543,7 +558,8 @@ func documentOwnerOf(pattern string) documentOwnerKind {
 }
 
 // mountRow is the apiRoutes of one routeRow: one at /api/v2, and one at /api/v1 first where its
-// Versions is both, its zero value. Each carries the row's own columns, its body bound resolved.
+// Versions is both, its zero value, whose successor is the /api/v2 one. Each carries the row's
+// own columns, its body bound resolved.
 func mountRow(row routeRow) []apiRoute {
 	versions := []apiVersion{apiV1, apiV2}
 	if row.Versions == onlyV2 {
@@ -551,22 +567,26 @@ func mountRow(row routeRow) []apiRoute {
 	}
 	routes := make([]apiRoute, 0, len(versions))
 	for _, version := range versions {
-		mounted := row
+		mounted := apiRoute{routeRow: row, Version: version, columns: true}
 		mounted.Pattern = versionPrefix(version) + row.Pattern
 		mounted.BodyLimit = row.bodyLimit()
-		routes = append(routes, apiRoute{routeRow: mounted, Version: version, columns: true})
+		if version == apiV1 {
+			mounted.Successor = successor{Method: row.Method, Pattern: row.Pattern}
+		}
+		routes = append(routes, mounted)
 	}
 	return routes
 }
 
-// testHookRoutes is a hook's two routes: at its /api/v1 path, and at its /api/v2/_test path with
-// the same facts, read from the side maps under the v1 path.
+// testHookRoutes is a hook's two routes: at its /api/v1 path, whose successor is the other, and
+// at its /api/v2/_test path with the same facts, read from the side maps under the v1 path.
 func testHookRoutes(hook testHookRow) []apiRoute {
 	atV1 := v1Route(routeRow{Method: hook.Method, Pattern: hook.Pattern, Auth: hook.Auth, Description: hook.Description, Handler: hook.Handler}, nil)
 	atV2 := atV1
 	atV2.Pattern = testHookV2Pattern(hook.Pattern)
 	atV2.Version = apiV2
 	atV2.sideMapPattern = hook.Pattern
+	atV1.Successor = successor{Method: hook.Method, Pattern: strings.TrimPrefix(atV2.Pattern, "/api/v2")}
 	return []apiRoute{atV1, atV2}
 }
 

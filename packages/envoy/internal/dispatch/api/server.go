@@ -932,7 +932,14 @@ func (s *server) routeHandler(route apiRoute) http.HandlerFunc {
 	// (compressAnswers). The route and its version are put on the request before any of them, so
 	// every layer that refuses answers for the version, and the code behind reads the route
 	// rather than the path (withMountedRoute).
-	return withMountedRoute(route, accesslog.HandlerFunc(route.Pattern, compressAnswers(s.decideBrokerToken(trackTransactions(handler)))))
+	served := accesslog.HandlerFunc(route.Pattern, compressAnswers(s.decideBrokerToken(trackTransactions(handler))))
+	if route.Version == apiV1 {
+		// Outermost of the writers, so the Link it sets when the status is written follows every
+		// layer's answer - a refusal before the handler, a keyed replay, the handler's own - and
+		// reads whatever value the handler resolved for it (v1_successor.go).
+		served = linkSuccessor(route, served)
+	}
+	return withMountedRoute(route, served)
 }
 
 // liveSocketPattern is the path of the live socket, which register mounts beside the table.

@@ -3517,6 +3517,8 @@ The dashboard's own pages and assets write none, so a browser's page loads do no
 `/healthz`, which a load balancer calls every few seconds, `/livez`, which a liveness or startup probe calls, and `/metrics`, which a scraper calls, write none either.
 Three answers are given before any route runs and write none:
 the `403` a cookie request from another origin gets, the `421` a request for another host gets on a server with local sign-in, and the `307` redirect Go's router gives an unclean path (`/api/v1//issues`) or a prefix route called without its trailing slash (`/api/github/rest`).
+A fourth is given before any route runs and writes one, so the log shows who still calls `/api/v1` once it has ended:
+the `410 API_V1_ENDED` every path under `/api/v1` gets once `DISPATCH_API_V1_END` has passed (Required configuration, above), its `route` the pattern of the route that would have answered it, or `unmatched` where none would, as for the `404` of an unknown path.
 Match the line as `msg="dispatch: request"`: the previous-shared-token warning's message starts with the same words.
 The line is one synchronous write to stderr per request, so a log pipe that blocks stalls requests.
 
@@ -3573,7 +3575,9 @@ Each item below names a rule, then what a caller meets.
 
 Every `/api/v1` answer, an unknown `/api/v1` path's included, carries `Deprecation: @<unix seconds>` (RFC 9745), dated by the constant `apiV1DeprecatedAt`, the day the change that added `/api/v2` was finished, which can be some days before the release that carries it;
 and `Link: </api/v2/…>; rel="successor-version"`, the `/api/v2` route that answers for it, filled from the request's own path values and carrying that route's query where the `/api/v1` route became a filter of it (`GET /api/v1/issues/{key}/artifacts/{slug}` links `/api/v2/issues/{key}/artifacts?slug={slug}`).
-Where the `/api/v2` path needs a value the `/api/v1` request does not carry, an artifact's id or an issue's key, the handler records the one it resolved, and a request refused before it resolves one links `</api/v2>` with `title="<METHOD> /api/v2/<pattern>"`.
+Where the `/api/v2` path needs a value the `/api/v1` request does not carry, an artifact's id or an issue's key, the handler records the one it resolved;
+an answer that holds none, a request refused before its handler resolves one or a keyed write's replay, links `</api/v2>` with `title="<METHOD> /api/v2/<pattern>"`.
+`GET /api/v1/settings/architecture-sources`, every project's sources, carries one `Link` value per project its answer holds, `</api/v2/projects/{key}/architecture-sources>`, and `</api/v2/projects>` when it holds none.
 While `DISPATCH_API_V1_END` is ahead each `/api/v1` answer carries `Sunset` too, and once it has passed every `/api/v1` path answers `410 API_V1_ENDED`.
 No `/api/v2` answer carries any of the three.
 An unknown path under `/api`, `/v1`, `/auth`, `/ws`, or `/healthz`, outside `/api/v2`, is a JSON 404 `{"code":"NOT_FOUND","error":"no route for GET

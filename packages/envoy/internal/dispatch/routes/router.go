@@ -85,6 +85,11 @@ type AppContext struct {
 	// below which every event is final), and, for a context with no Store, nothing, since it has no
 	// event log to read (whoami then answers 503). A test sets it to answer a head of its own.
 	eventHead func(context.Context) (int64, error)
+	// apiV1End is AppContextOptions.APIV1End, the instant /api/v1 ends; zero is no end.
+	apiV1End time.Time
+	// now is the clock the end of /api/v1 is read against on each request (endAPIV1): nil for
+	// time.Now, and a test's own clock where it moves the time past the end.
+	now func() time.Time
 }
 
 // AppContextOptions is the explicit-injection bundle main.go assembles
@@ -167,6 +172,10 @@ type AppContextOptions struct {
 	// is not the dashboard origin. cmd/dispatch sets it from DISPATCH_DEV_SIGNIN behind its boot
 	// fence; BuildAppContext refuses it for a non-loopback ServerURL.
 	DevSignIn bool
+	// APIV1End is the instant /api/v1 ends (cmd/dispatch: DISPATCH_API_V1_END); zero is no end.
+	// While it is ahead each /api/v1 answer carries a Sunset header naming it, and once it has
+	// passed every path under /api/v1 answers 410 API_V1_ENDED (endAPIV1).
+	APIV1End time.Time
 }
 
 // BuildAppContext bundles the shared HTTP-handler state.
@@ -251,6 +260,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		apiDeps:        apiDeps,
 		eventHead:      eventHead,
 		lifetime:       opts.Lifetime,
+		apiV1End:       opts.APIV1End,
 	}, nil
 }
 
@@ -314,11 +324,15 @@ func New(ctx *AppContext) (http.Handler, api.Background) {
 		r.eventHead = background.EventHead
 	}
 	mux.HandleFunc("/", r.staticHandler)
+	// The end of /api/v1 sits outside the cookie-origin guard, so once it has passed it answers
+	// every path under /api/v1, a cross-origin write's included, and until then each refusal the
+	// guard writes there carries the version's headers too.
+	handler := r.endAPIV1(mux, r.enforceCookieOrigin(mux))
 	if ctx.devSignInHost == "" {
-		return r.enforceCookieOrigin(mux), background
+		return handler, background
 	}
 	mux.HandleFunc("GET /auth/_dev/signin", accesslog.HandlerFunc("/auth/_dev/signin", r.authDevSignIn))
-	return requireHost(ctx.devSignInHost, r.enforceCookieOrigin(mux)), background
+	return requireHost(ctx.devSignInHost, handler), background
 }
 
 // ───── auth ─────────────────────────────────────────────────────────────────
@@ -584,7 +598,8 @@ func (r *router) staticHandler(w http.ResponseWriter, req *http.Request) {
 		// An unknown API path writes its access-log line too, so a client calling a route that
 		// does not exist is visible beside the callers of the routes that do. A path under
 		// /api/v2 answers that version's no-route code and points at its own index; every other
-		// root answers as /api/v1 always has.
+		// root answers as /api/v1 always has, and one under /api/v1 carries that version's
+		// Deprecation, Sunset and Link to /api/v2, which endAPIV1 set before the mux ran.
 		accesslog.HandlerFunc(unmatchedRoute, func(w http.ResponseWriter, req *http.Request) {
 			code, status, hint := apicode.NotFound.V1Name(), apicode.NotFound.V1Status(), "GET /api/v1 lists every route"
 			if isReservedPath(normalized, apiV2Roots) {
@@ -1017,6 +1032,99 @@ func writeAPIRefusal(w http.ResponseWriter, req *http.Request, code apicode.Code
 		name, status = code.Name(), code.Status()
 	}
 	writeCodeError(w, status, message, name)
+}
+
+// apiV1DeprecatedAt dates the Deprecation header of every /api/v1 answer (RFC 9745; R3.1 of
+// dispatch://INFRA-4071/spec, decision 10 of its plan): 00:00Z of the day the change that added
+// /api/v2 wrote its last implementing head, which its implementer sets in that round. It is a
+// date in code because no build can know the day it is released: the Envoy image is built before
+// the release job decides its legion-envoy version, and the server knows only the commit it was
+// built from (main's buildCommit), so the date can be some days before the release that carries
+// it.
+var apiV1DeprecatedAt = time.Date(2026, time.November, 17, 0, 0, 0, 0, time.UTC)
+
+// apiV1Deprecation is the Deprecation header's value, `@` and the date's Unix seconds.
+var apiV1Deprecation = "@" + strconv.FormatInt(apiV1DeprecatedAt.Unix(), 10)
+
+// apiV1Roots is the path root of /api/v1, every path the end of /api/v1 holds (endAPIV1).
+var apiV1Roots = []string{"/api/v1"}
+
+// apiV1Index is the Link of a /api/v1 answer no route of its own names a successor for: an
+// unknown path, the cookie-origin guard's refusal, the end's 410. It links /api/v2, which lists
+// every route; a route's own answer replaces it with its successor (api's linkSuccessor).
+const apiV1Index = `</api/v2>; rel="successor-version"`
+
+// endAPIV1 holds every path under /api/v1 - a route's, an unknown one, a test hook's - to the
+// version's deprecation and to its end, in front of next, which serves mux (R3.1, R3.4): each
+// answer carries Deprecation and the Link to /api/v2, and, while the instant AppContext.apiV1End
+// names is ahead, Sunset (RFC 8594) naming it; once it has passed, the path is answered 410
+// API_V1_ENDED, pointing to GET /api/v2, and no route runs. The clock is read on each request, so
+// the end takes effect at its instant on every process with no restart. Every other path passes
+// untouched.
+//
+// The 410 writes its access-log line, since after the end the log is where an operator sees who
+// still calls /api/v1: under the route mux would have served the request by, as that route's own
+// line names it, or unmatchedRoute, as the no-route answer's line does (endedRoute).
+func (r *router) endAPIV1(mux *http.ServeMux, next http.Handler) http.Handler {
+	end := r.ctx.apiV1End
+	now := r.ctx.now
+	if now == nil {
+		now = time.Now
+	}
+	// Written once, so a request formats nothing: Sunset is an IMF-fixdate, which is UTC, and the
+	// 410 names the end as the setting gave it.
+	var sunset string
+	var ended map[string]string
+	if !end.IsZero() {
+		sunset = end.UTC().Format(http.TimeFormat)
+		ended = map[string]string{
+			"code":  apicode.APIV1Ended.V1Name(),
+			"error": "/api/v1 ended at " + end.Format(time.RFC3339Nano) + "; GET /api/v2 lists every route",
+			"hint":  "GET /api/v2",
+		}
+	}
+	answerEnded := func(w http.ResponseWriter, _ *http.Request) {
+		api.WriteJSON(w, apicode.APIV1Ended.V1Status(), ended)
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if !underAPIV1(req.URL.Path) {
+			next.ServeHTTP(w, req)
+			return
+		}
+		header := w.Header()
+		header.Set("Deprecation", apiV1Deprecation)
+		header.Set("Link", apiV1Index)
+		if !end.IsZero() {
+			if !now().Before(end) {
+				accesslog.HandlerFunc(endedRoute(mux, req), answerEnded)(w, req)
+				return
+			}
+			header.Set("Sunset", sunset)
+		}
+		next.ServeHTTP(w, req)
+	})
+}
+
+// endedRoute is the access-log route of a request the end of /api/v1 answers: the path pattern of
+// the route mux matches it to, which is the route its line would have named had the route run, or
+// unmatchedRoute where only the catch-all matches - a path no route answers, a method its route
+// does not serve - or none does, an unclean path mux would have redirected.
+func endedRoute(mux *http.ServeMux, req *http.Request) string {
+	_, pattern := mux.Handler(req)
+	if _, path, withMethod := strings.Cut(pattern, " "); withMethod {
+		pattern = path
+	}
+	if pattern == "" || pattern == "/" {
+		return unmatchedRoute
+	}
+	return pattern
+}
+
+// underAPIV1 reports whether path is /api/v1 or a path below it once cleaned, as staticHandler
+// reads a path's root. A path that does not begin /api/v1 is none: one that cleans to such a path
+// is unclean, and the mux redirects it to the clean path, which this then holds.
+func underAPIV1(path string) bool {
+	return strings.HasPrefix(path, "/api/v1") && isReservedPath(filepath.Clean(path), apiV1Roots)
 }
 
 // writeSignInRefusedPage answers the sign-in callback, a top-level browser navigation back from
