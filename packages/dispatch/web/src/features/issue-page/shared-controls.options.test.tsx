@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, type Mock, mock, spyOn, test } from "bun:test";
 import { type ArtifactRebuildReport, MAX_ISSUE_ADVANCES } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -22,8 +22,8 @@ import type {
   Artifact,
   ArtifactApproval,
   ArtifactReview,
-  ArtifactText,
   Ask,
+  AskRead,
   ClaimHolderLiveness,
   Comment,
   Issue,
@@ -45,7 +45,7 @@ import { ConnectionDot } from "../doc/ConnectionDot";
 import { AskCard } from "../inbox/AskCard";
 import { ApprovalSteps } from "../issue/ApprovalSteps";
 import { AssigneeControl } from "../issue/AssigneeControl";
-import { badgeSelectPageRailWrapper, badgeSelectWrapper } from "../issue/badge-select";
+import { badgeSelectWrapper } from "../issue/badge-select";
 import { ClaimChip } from "../issue/ClaimChip";
 import { GitHubLink } from "../issue/GitHubLink";
 import type { StepEntry } from "../issue/gated-steps";
@@ -76,6 +76,7 @@ import {
   doc,
   draw,
   GONE_SESSION,
+  holdsItsLine,
   idlePriorityWrite,
   LIVE_SESSION,
   listed,
@@ -986,7 +987,18 @@ test("inRow draws no label and the words of Details", async () => {
       `, ${CONTROL_LABELS.takeable_now}`
     );
 
-    expect(caseOf(view, "no repository").textContent).toBe(CONTROL_LABELS.none);
+    // With nothing resolved the row draws `main`'s empty box, with its placeholder and a
+    // description in the page's words, and no word of its own such as "None".
+    const noRepository = within(caseOf(view, "no repository"));
+    const emptyBox = noRepository.getByRole("combobox", {
+      description: CONTROL_LABELS.no_repository,
+      name: "Repository of CORE-1",
+    });
+    expect([(emptyBox as HTMLInputElement).value, emptyBox.getAttribute("placeholder")]).toEqual([
+      "",
+      "owner/name",
+    ]);
+    expect(noRepository.queryByText(CONTROL_LABELS.none)).toBeNull();
     expect(
       within(caseOf(view, "repository")).getByRole("combobox", { name: "Repository of CORE-2" })
     ).toBeInTheDocument();
@@ -1295,24 +1307,12 @@ test("inRow draws the claim as a sentence that wraps between words", async () =>
   expect(drawn).toEqual(want);
 });
 
-/** What keeps a piece of a line whole on it (`shared-controls.tooltips.test.tsx`'s
- *  `HOLDS_ITS_LINE`): `shrink-0` and `flex-none` keep its width in a flex row,
- *  `whitespace-nowrap`, `text-nowrap` and `whitespace-pre` keep its words on one line, and
- *  `truncate` cuts what does not fit. */
-const HOLDS_WHOLE = [
-  "flex-none",
-  "shrink-0",
-  "text-nowrap",
-  "truncate",
-  "whitespace-nowrap",
-  "whitespace-pre",
-];
-
 // At a phone's 320 px the claim in a row of Details wraps word by word: inside `NoTooltips`, drawn
 // with the most words the chip draws (an unresponsive holder, the heartbeat it was last seen at
 // and the moment it comes free, each instant a `<time>`), no piece of the claim carries a class of
-// `HOLDS_WHOLE` or an inline `flex-shrink: 0`. The separators between the pieces are hidden from a
-// reader and hold no word, and `AgentName`'s state mark is a dot with no word in it.
+// `HOLDS_ITS_LINE` or an inline `flex-shrink: 0` (`holdsItsLine`). The separators between the
+// pieces are hidden from a reader and hold no word, and `AgentName`'s state mark is a dot with no
+// word in it.
 test("in Details' row every word of the claim wraps, and none is held whole against the row", async () => {
   const read = await readClaim("waiting", "inside", true, (chip) => ({
     held: [chip, ...chip.querySelectorAll("*")]
@@ -1321,16 +1321,12 @@ test("in Details' row every word of the claim wraps, and none is held whole agai
           element.getAttribute("aria-hidden") !== "true" &&
           !element.matches("[data-agent-name] > [role='img']")
       )
-      .flatMap((element) => {
-        const held = classOf(element).filter((token) => HOLDS_WHOLE.includes(token));
-        if (element instanceof HTMLElement && element.style.flexShrink === "0") {
-          held.push("flex-shrink: 0");
-        }
-        return held.map(
+      .flatMap((element) =>
+        holdsItsLine(element).map(
           (token) =>
             `<${element.tagName.toLowerCase()} class="${element.getAttribute("class") ?? ""}">${element.textContent}: ${token}`
-        );
-      }),
+        )
+      ),
     times: chip.querySelectorAll("time").length,
     unresponsive: chip.querySelector("[data-testid='issue-claim-unresponsive']") !== null,
   }));
@@ -1342,12 +1338,22 @@ test("in Details' row every word of the claim wraps, and none is held whole agai
 });
 
 // Inside `NoTooltips` the priority's add control in a row of Details is, from `md`, as tall as the
-// controls beside it there (the repository's select, drawn in `badgeSelectPageRailWrapper`), and
-// keeps the 44 px below `md`. Outside, its class is `main`'s.
+// controls beside it there (the repository's box, `main`'s input, read from the box drawn in a
+// row of Details), and keeps the 44 px below `md`. Outside, its class is `main`'s.
 test("the priority's add control has the height of its siblings in Details", async () => {
-  const siblings = tokens(badgeSelectPageRailWrapper).filter((token) =>
-    token.startsWith("md:min-h-")
+  const repository = draw(
+    <RepoControl inRow issueKey="CORE-1" project="CORE" repo="acme/api" resolvedRepo="acme/api" />,
+    "inside"
   );
+  const siblings = (() => {
+    try {
+      return classOf(
+        within(repository.container).getByRole("combobox", { name: "Repository of CORE-1" })
+      ).filter((token) => token.startsWith("md:min-h-"));
+    } finally {
+      undraw(repository);
+    }
+  })();
   expect(siblings).toEqual(["md:min-h-7"]);
   for (const surface of ["inside", "outside"] as const) {
     const view = draw(addablePriorityLine(surface), surface);
@@ -1944,14 +1950,21 @@ test("the default shapes keep main's class strings", async () => {
     "ClaimChip unresponsive dot": "shrink-0",
     "ClaimChip unresponsive": "shrink-0",
 
+    // `main`'s features/issue/RepoControl.tsx: the line, its label, the box's wrapper, the box
+    // holding the issue's own repository and the box of an inherited one, the clear control, the
+    // box's description and the refusal of a value that is not owner/name.
     "RepoControl line":
       "flex shrink-0 items-center gap-2 text-sm text-slate-700 dark:text-slate-300",
-    "RepoControl wrapper":
-      "relative inline-flex min-h-11 shrink-0 items-center rounded-sm md:min-h-7 has-focus-visible:ring-2 has-focus-visible:ring-sky-600 dark:has-focus-visible:ring-sky-400 ",
-    "RepoControl badge, its own":
-      "inline-flex items-center rounded-sm px-1.5 py-0.5 text-xs font-semibold font-mono bg-sky-100 dark:bg-sky-950 text-sky-800 dark:text-sky-300",
-    "RepoControl badge, inherited":
-      "inline-flex items-center rounded-sm px-1.5 py-0.5 text-xs font-semibold font-mono bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300",
+    "RepoControl label": "font-medium",
+    "RepoControl wrapper": "relative inline-flex shrink-0 items-center",
+    "RepoControl box, its own":
+      "min-h-11 w-[200px] rounded-sm border py-0.5 pl-1.5 font-mono text-xs outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 pr-8 border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-900 dark:focus:border-sky-400 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400",
+    "RepoControl box, inherited":
+      "min-h-11 w-[200px] rounded-sm border py-0.5 pl-1.5 font-mono text-xs outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 pr-1.5 border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-900 dark:focus:border-sky-400 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400",
+    "RepoControl clear":
+      "absolute inset-y-0 right-0 inline-flex w-8 items-center justify-center rounded-sm text-base outline-none focus-visible:ring-2 disabled:opacity-50 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400",
+    "RepoControl description": "sr-only",
+    "RepoControl refusal": "text-rose-700 dark:text-rose-400",
 
     "IssueComponentsLine line":
       "flex shrink-0 items-center gap-2 text-sm text-slate-700 dark:text-slate-300",
@@ -2446,16 +2459,28 @@ test("the default shapes keep main's class strings", async () => {
     );
     classAt("ClaimChip unresponsive", within(unresponsive).getByTestId("issue-claim-unresponsive"));
 
-    const repository = within(caseOf(view, "repository")).getByRole("combobox", {
-      name: "Repository of CORE-1",
-    });
-    classAt("RepoControl wrapper", repository.parentElement);
+    const ownRepository = within(caseOf(view, "repository"));
+    const repository = ownRepository.getByRole("combobox", { name: "Repository of CORE-1" });
     classAt("RepoControl line", repository.parentElement?.parentElement);
-    classAt("RepoControl badge, its own", repository.parentElement?.querySelector("span"));
+    classAt("RepoControl label", ownRepository.getByText("Repository:"));
+    classAt("RepoControl wrapper", repository.parentElement);
+    classAt("RepoControl box, its own", repository);
     classAt(
-      "RepoControl badge, inherited",
-      caseOf(view, "inherited repository").querySelector("span[aria-hidden='true']")
+      "RepoControl clear",
+      ownRepository.getByRole("button", { name: "Clear the repository of CORE-1" })
     );
+    classAt(
+      "RepoControl description",
+      document.getElementById(repository.getAttribute("aria-describedby") ?? "")
+    );
+    const inheritedRepository = within(caseOf(view, "inherited repository"));
+    const inherited = inheritedRepository.getByRole("combobox", { name: "Repository of CORE-2" });
+    classAt("RepoControl box, inherited", inherited);
+    // A value that is not owner/name, written with Enter, draws the refusal; the focus starts the
+    // mappings' read, which lands before the next read of the mount.
+    await user.type(inherited, "nope{Enter}");
+    await settleReads();
+    classAt("RepoControl refusal", inheritedRepository.getByRole("alert"));
 
     const components = within(caseOf(view, "components"));
     classAt("IssueComponentsLine line", components.getByTestId("issue-components"));
@@ -3408,52 +3433,6 @@ test("Escape in the priority's form closes the form alone and returns the focus 
   }
 });
 
-// The same ruling, for the third way the form closes, outside `NoTooltips`: Add's write disables
-// the add control until the write settles, as on `main`, and a disabled control holds no focus, so
-// the focus waits on the body and moves to the add control once the write settles. A focus the
-// reader put elsewhere in between stays where the reader put it. Inside `NoTooltips` the add
-// control is refused with `aria-disabled` and holds the focus all along, which the case after
-// this one asserts.
-test("outside NoTooltips Add in the priority's form returns the focus to its add control once its write settles", async () => {
-  const user = userEvent.setup();
-  for (const reader of ["waits", "moves on"] as const) {
-    const patchIssue = answerIssuePatches();
-    const written = Promise.withResolvers<Issue>();
-    patchIssue.mockImplementation(() => written.promise);
-    const view = draw(
-      <>
-        <button type="button">Elsewhere</button>
-        {addablePriorityLine("outside")}
-      </>,
-      "outside"
-    );
-    try {
-      addControlOf(view, "outside").focus();
-      await user.keyboard("{Enter}");
-      const picker = await pickerOf(view);
-      await waitFor(() => expect(within(picker).getAllByRole("option")).toHaveLength(3));
-      await user.selectOptions(picker, "evals-now");
-      await user.click(within(view.container).getByRole("button", { name: "Add" }));
-      await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
-      // While the write is out the add control is disabled and holds no focus.
-      expect(pickerShown(view)).toBe(false);
-      expect(addControlOf(view, "outside")).toBeDisabled();
-      expect(document.activeElement).toBe(document.body);
-      const elsewhere = within(view.container).getByRole("button", { name: "Elsewhere" });
-      if (reader === "moves on") elsewhere.focus();
-      written.resolve({} as Issue);
-      await waitFor(() => expect(addControlOf(view, "outside")).not.toBeDisabled());
-      await settleReads();
-      expect(document.activeElement).toBe(
-        reader === "waits" ? addControlOf(view, "outside") : elsewhere
-      );
-    } finally {
-      patchIssue.mockRestore();
-      undraw(view);
-    }
-  }
-});
-
 // Add closes the priority's form and draws the add control in its place, refused while Add's
 // write is out, and inside `NoTooltips` until the read of the issue after it is drawn as well:
 // there the write returns its reads, and it stops pending only once they land. Inside, the add
@@ -3506,7 +3485,7 @@ test("inside NoTooltips Add in the priority form keeps the focus on the add cont
         if (reader === "moves on") elsewhere.focus();
 
         // The write lands, and the read after it is held.
-        const release = await landHeldRead(reads, () => {
+        const answerReread = await landHeld(reads.read, () => {
           reads.advances = ["evals-now"];
           written.resolve({} as Issue);
         });
@@ -3518,11 +3497,13 @@ test("inside NoTooltips Add in the priority form keeps the focus on the add cont
           expect(pickerShown(view)).toBe(false);
           expectRefusedHoldingFocus(add);
         } else if (surface === "outside") {
-          // The write stopped pending as it landed, before its read.
+          // The write stopped pending as it landed, before its read, and a focus left on the body
+          // moved to the add control then.
           expect(add.hasAttribute("disabled")).toBe(false);
+          expect(document.activeElement).toBe(reader === "waits" ? add : elsewhere);
         }
 
-        release();
+        answerReread(reads.answer());
         await scope.findByRole("link", { name: "P1 Evals collecting data now" });
         await settleReads();
         expect(add.isConnected).toBe(true);
@@ -3580,7 +3561,7 @@ test("inside NoTooltips the priority form's Add is refused while a Remove's writ
       expectRefusedHoldingFocus(submit);
 
       // The write lands, and the read after it is held: a press then sends nothing either.
-      const release = await landHeldRead(reads, () => {
+      const answerReread = await landHeld(reads.read, () => {
         reads.advances = [];
         written.resolve({} as Issue);
       });
@@ -3590,7 +3571,7 @@ test("inside NoTooltips the priority form's Add is refused while a Remove's writ
       expect(pickerShown(view)).toBe(true);
       expectRefusedHoldingFocus(submit);
 
-      release();
+      answerReread(reads.answer());
       await waitFor(() => expect(remove.isConnected).toBe(false));
       await settleReads();
       expect(document.activeElement).toBe(submit);
@@ -3663,18 +3644,24 @@ function specReview(state: ArtifactReview["state"], reason: string | null = null
   };
 }
 
-/** Lands `written` with `review` while every read of the document from here on is held, and waits
- *  until the read the review's invalidation makes has started. Returns what answers the held
- *  reads. */
-async function landHeld(
-  written: { resolve: (review: ArtifactReview) => void },
-  review: ArtifactReview
-): Promise<(answer: Artifact) => void> {
-  const reads = stubs.getArtifact.mock.calls.length;
-  const reread = Promise.withResolvers<Artifact>();
-  stubs.getArtifact.mockImplementation(() => reread.promise);
-  written.resolve(review);
-  await waitFor(() => expect(stubs.getArtifact).toHaveBeenCalledTimes(reads + 1));
+/** A read a case holds, answering `Answer`: a `spyOn` of an `api` read, or the `read` of
+ *  `IssueReads` or `AskReads`. */
+interface ReadStub<Answer> {
+  readonly mock: { readonly calls: readonly unknown[] };
+  mockImplementation(read: () => Promise<Answer>): unknown;
+}
+
+/** Lets a write `land` while every call of `read` from here on is held, and waits until the read
+ *  the write's invalidation makes has started. Returns what answers the held reads. */
+async function landHeld<Answer>(
+  read: ReadStub<Answer>,
+  land: () => void
+): Promise<(answer: Answer) => void> {
+  const made = read.mock.calls.length;
+  const reread = Promise.withResolvers<Answer>();
+  read.mockImplementation(() => reread.promise);
+  land();
+  await waitFor(() => expect(read).toHaveBeenCalledTimes(made + 1));
   await settleReads();
   return reread.resolve;
 }
@@ -3731,7 +3718,9 @@ test("inside NoTooltips Approve pressed by Enter keeps the focus until the appro
       }
 
       // The approval lands, and the read after it is held.
-      const answerReread = await landHeld(written, specReview("approved"));
+      const answerReread = await landHeld(stubs.getArtifact, () =>
+        written.resolve(specReview("approved"))
+      );
       expect(approve.isConnected).toBe(true);
       if (surface === "inside") {
         // A press while the read is out sends no second approval, and Approve is still refused.
@@ -3834,7 +3823,9 @@ test("inside NoTooltips Approve leaves a focus the reader moved elsewhere where 
       const elsewhere = scope.getByRole("button", { name: "Elsewhere" });
       elsewhere.focus();
 
-      const answerReread = await landHeld(written, specReview("approved"));
+      const answerReread = await landHeld(stubs.getArtifact, () =>
+        written.resolve(specReview("approved"))
+      );
       expect(document.activeElement).toBe(elsewhere);
       answerReread(approved);
       await scope.findByRole("button", { name: "Approved v2" });
@@ -3854,12 +3845,11 @@ test("inside NoTooltips Approve leaves a focus the reader moved elsewhere where 
 // is out, and inside `NoTooltips` until the read after it is drawn as well, the Request changes
 // dialog refuses. Inside, its text box is read-only and its Request changes and Cancel are
 // `aria-disabled`, in place of the `disabled` that drops the focus in a browser: the focus stays
-// where it is, a press sends no second request, Cancel closes nothing and neither does Escape,
-// which would let go of the write and let Approve and Request changes be pressed before it lands.
-// Once the new approval is read the dialog closes and gives the focus back to the header's
-// Request changes, which opened it and is `aria-disabled` too while the write is out. Outside
-// `NoTooltips` the text box, both buttons and the header's Request changes are `disabled` while
-// the write is out, and Escape closes the dialog then, as on `main`.
+// where it is, a press sends no second request and Cancel closes nothing. Once the new approval is
+// read the dialog closes and gives the focus back to the header's Request changes, which opened it
+// and is `aria-disabled` too while the write is out. Outside `NoTooltips` the text box, both
+// buttons and the header's Request changes are `disabled` while the write is out, and Escape
+// closes the dialog then, as on `main`.
 test("inside NoTooltips the Request changes dialog keeps its focus until the change request is read", async () => {
   const user = userEvent.setup();
   const reason = "The plan names no owner";
@@ -3919,10 +3909,6 @@ test("inside NoTooltips the Request changes dialog keeps its focus until the cha
       await settleReads();
       expect(createArtifactReview).toHaveBeenCalledTimes(1);
       expectRefusedHoldingFocus(submit);
-      await user.keyboard("{Escape}");
-      await settleReads();
-      expect(scope.queryByRole("dialog")).not.toBeNull();
-      expectRefusedHoldingFocus(submit);
       expect(requestChanges.getAttribute("aria-disabled")).toBe("true");
       cancel.focus();
       await user.keyboard("{Enter}");
@@ -3932,7 +3918,9 @@ test("inside NoTooltips the Request changes dialog keeps its focus until the cha
 
       // The change request lands, and the read after it is held.
       submit.focus();
-      const answerReread = await landHeld(written, specReview("changes_requested", reason));
+      const answerReread = await landHeld(stubs.getArtifact, () =>
+        written.resolve(specReview("changes_requested", reason))
+      );
       expect(scope.queryByRole("dialog")).not.toBeNull();
       // A press while the read is out sends no second change request, and the dialog's Request
       // changes is still refused.
@@ -3940,10 +3928,6 @@ test("inside NoTooltips the Request changes dialog keeps its focus until the cha
       await settleReads();
       expect(createArtifactReview).toHaveBeenCalledTimes(1);
       expect(submit.textContent).toBe("Submitting…");
-      expectRefusedHoldingFocus(submit);
-      await user.keyboard("{Escape}");
-      await settleReads();
-      expect(scope.queryByRole("dialog")).not.toBeNull();
       expectRefusedHoldingFocus(submit);
 
       answerReread(changesRequested);
@@ -3955,6 +3939,253 @@ test("inside NoTooltips the Request changes dialog keeps its focus until the cha
       expect(createArtifactReview).toHaveBeenCalledTimes(1);
     } finally {
       written.reject(new Error("the connection dropped"));
+      createArtifactReview.mockRestore();
+      undraw(view);
+      unemulate();
+    }
+  }
+});
+
+/** Opens the Request changes dialog from the header's Request changes, types `reason` and sends it
+ *  by a press of the dialog's own Request changes, then waits until `createArtifactReview`, which
+ *  the case stubs, has been called. Returns the chip's Approve, or null where it draws none, and
+ *  its Request changes; the dialog is still open. */
+async function sendChangeRequest(
+  user: UserEvent,
+  view: RenderResult,
+  createArtifactReview: Mock<typeof api.createArtifactReview>,
+  reason: string
+): Promise<{ approve: HTMLElement | null; requestChanges: HTMLElement }> {
+  const scope = within(view.container);
+  const requestChanges = await scope.findByRole("button", { name: "Request changes" });
+  const approve = scope.queryByRole("button", { name: "Approve" });
+  requestChanges.focus();
+  await user.keyboard("{Enter}");
+  const dialog = within(await scope.findByRole("dialog", { name: "Request changes" }));
+  await user.type(dialog.getByRole("textbox", { name: "Reason" }), reason);
+  dialog.getByRole("button", { name: "Request changes" }).focus();
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
+  await settleReads();
+  return { approve, requestChanges };
+}
+
+/** A refusal Dispatch gives a review: the version it would record has moved on. */
+function reviewVersionMoved(): ApiError {
+  return new ApiError(409, {
+    code: "REVIEW_VERSION_MOVED",
+    error: "The review would record version 3; read it first.",
+  });
+}
+
+// A write keeps trying until Dispatch decides it, and a dialog that refused to close while it did
+// would hold the reader behind its focus trap, away from the shell's Stop trying. Inside
+// `NoTooltips` Escape closes the Request changes dialog while its change request is out and leaves
+// the write going: the dialog gives the focus back to the header's Request changes, which stays
+// `aria-disabled` beside Approve, a press of either doing nothing, until the change request lands
+// and its read is drawn, and one change request goes out in all. Outside `NoTooltips` Escape
+// closes the dialog and lets go of the write, so Approve and Request changes take a press again,
+// as on `main`.
+test("inside NoTooltips Escape closes the Request changes dialog while its change request is out and leaves the write going", async () => {
+  const user = userEvent.setup();
+  const reason = "The plan names no owner";
+  const changesRequested = doc(SPEC_ID, "spec.md", {
+    latest_version: 2,
+    state: "changes_requested",
+    version: 2,
+  });
+  for (const surface of ["inside", "outside"] as const) {
+    const unemulate = emulateChromiumFocusFixup();
+    stubs.getArtifact.mockResolvedValue(awaitingSpec());
+    const written = Promise.withResolvers<ArtifactReview>();
+    const createArtifactReview = spyOn(api, "createArtifactReview").mockImplementation(
+      () => written.promise
+    );
+    const view = draw(
+      <KeymapProvider>
+        <ReadApprovalChip id={SPEC_ID} />
+      </KeymapProvider>,
+      surface
+    );
+    try {
+      const scope = within(view.container);
+      const { approve, requestChanges } = await sendChangeRequest(
+        user,
+        view,
+        createArtifactReview,
+        reason
+      );
+      if (approve === null) throw new Error("the chip draws no Approve");
+      await user.keyboard("{Escape}");
+      await waitFor(() => expect(scope.queryByRole("dialog")).toBeNull());
+      await settleReads();
+
+      if (surface === "outside") {
+        for (const control of [approve, requestChanges]) {
+          expect(control.hasAttribute("disabled")).toBe(false);
+          expect(control.hasAttribute("aria-disabled")).toBe(false);
+        }
+        continue;
+      }
+
+      expectRefusedHoldingFocus(requestChanges);
+      await user.keyboard("{Enter}");
+      await settleReads();
+      expect(scope.queryByRole("dialog")).toBeNull();
+      expectRefusedHoldingFocus(requestChanges);
+      approve.focus();
+      expectRefusedHoldingFocus(approve);
+      await user.keyboard("{Enter}");
+      await settleReads();
+      expectRefusedHoldingFocus(approve);
+      expect(createArtifactReview).toHaveBeenCalledTimes(1);
+
+      // The change request lands, and the read after it is held: both are still refused.
+      requestChanges.focus();
+      const answerReread = await landHeld(stubs.getArtifact, () =>
+        written.resolve(specReview("changes_requested", reason))
+      );
+      await user.keyboard("{Enter}");
+      await settleReads();
+      expect(scope.queryByRole("dialog")).toBeNull();
+      expectRefusedHoldingFocus(requestChanges);
+      expect(approve.getAttribute("aria-disabled")).toBe("true");
+
+      answerReread(changesRequested);
+      await scope.findByRole("button", { name: "Changes requested" });
+      await waitFor(() => expect(requestChanges.hasAttribute("aria-disabled")).toBe(false));
+      await settleReads();
+      expect(document.activeElement).toBe(requestChanges);
+      expect(approve.hasAttribute("aria-disabled")).toBe(false);
+      expect(scope.queryByRole("dialog")).toBeNull();
+      expect(createArtifactReview).toHaveBeenCalledTimes(1);
+    } finally {
+      written.reject(new Error("the connection dropped"));
+      createArtifactReview.mockRestore();
+      undraw(view);
+      unemulate();
+    }
+  }
+});
+
+// A change request Dispatch refuses while its dialog is open leaves the dialog open with its error
+// and the reason the reader wrote. Inside `NoTooltips` nothing in it was `disabled`, so the focus
+// stays on its Request changes, and the next press there sends the change request again. Once
+// nothing is out Escape closes the dialog and gives the focus back to the header's Request
+// changes. Outside `NoTooltips` the `disabled` submit dropped the focus to the body while the
+// write was out, and nothing puts it back, as on `main`.
+test("inside NoTooltips a refused change request keeps its dialog, its error and its focus", async () => {
+  const user = userEvent.setup();
+  const reason = "The plan names no owner";
+  for (const surface of ["inside", "outside"] as const) {
+    const unemulate = emulateChromiumFocusFixup();
+    stubs.getArtifact.mockResolvedValue(awaitingSpec());
+    const refuse: ((error: Error) => void)[] = [];
+    const createArtifactReview = spyOn(api, "createArtifactReview").mockImplementation(() => {
+      const written = Promise.withResolvers<ArtifactReview>();
+      refuse.push(written.reject);
+      return written.promise;
+    });
+    const view = draw(
+      <KeymapProvider>
+        <ReadApprovalChip id={SPEC_ID} />
+      </KeymapProvider>,
+      surface
+    );
+    try {
+      const scope = within(view.container);
+      const { requestChanges } = await sendChangeRequest(user, view, createArtifactReview, reason);
+      const box = scope.getByRole("dialog", { name: "Request changes" });
+      const dialog = within(box);
+      const submit = dialog.getByRole("button", { name: "Submitting…" });
+      for (const sent of [1, 2]) {
+        if (sent === 2) {
+          // Outside, the focus the `disabled` submit dropped is put back on it by hand.
+          if (surface === "outside") submit.focus();
+          await user.keyboard("{Enter}");
+          await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(2));
+          await settleReads();
+        }
+        expect(dialog.queryByRole("alert")).toBeNull();
+        refuse.at(-1)?.(reviewVersionMoved());
+        const alert = await dialog.findByRole("alert");
+        await settleReads();
+        expect(alert.textContent).toBe("Could not request changes. Try again.");
+        expect(scope.getByRole("dialog", { name: "Request changes" })).toBe(box);
+        expect(dialog.getByRole("textbox", { name: "Reason" })).toHaveValue(reason);
+        expect(submit.hasAttribute("disabled")).toBe(false);
+        expect(submit.hasAttribute("aria-disabled")).toBe(false);
+        expect(document.activeElement).toBe(surface === "inside" ? submit : document.body);
+      }
+
+      await user.keyboard("{Escape}");
+      await waitFor(() => expect(scope.queryByRole("dialog")).toBeNull());
+      await settleReads();
+      expect(document.activeElement).toBe(requestChanges);
+      expect(requestChanges.hasAttribute("disabled")).toBe(false);
+      expect(requestChanges.hasAttribute("aria-disabled")).toBe(false);
+      expect(createArtifactReview).toHaveBeenCalledTimes(2);
+    } finally {
+      createArtifactReview.mockRestore();
+      undraw(view);
+      unemulate();
+    }
+  }
+});
+
+// A change request refused after the reader closed its dialog leaves nothing refused. Inside
+// `NoTooltips` the refusal moves no focus: it stays on the header's Request changes, where the
+// dialog gave it back, and Request changes opens the dialog again, which shows the refusal, as
+// `main`'s dialog shows any refusal of a review left over. Outside `NoTooltips` Escape let go of
+// the write, and the dialog opens again with no error, as on `main`.
+test("inside NoTooltips a change request refused after its dialog closed lets the dialog open again", async () => {
+  const user = userEvent.setup();
+  for (const surface of ["inside", "outside"] as const) {
+    const unemulate = emulateChromiumFocusFixup();
+    stubs.getArtifact.mockResolvedValue(awaitingSpec());
+    const written = Promise.withResolvers<ArtifactReview>();
+    const createArtifactReview = spyOn(api, "createArtifactReview").mockImplementation(
+      () => written.promise
+    );
+    const view = draw(
+      <KeymapProvider>
+        <ReadApprovalChip id={SPEC_ID} />
+      </KeymapProvider>,
+      surface
+    );
+    try {
+      const scope = within(view.container);
+      const { approve, requestChanges } = await sendChangeRequest(
+        user,
+        view,
+        createArtifactReview,
+        "The plan names no owner"
+      );
+      await user.keyboard("{Escape}");
+      await waitFor(() => expect(scope.queryByRole("dialog")).toBeNull());
+      await settleReads();
+      written.reject(reviewVersionMoved());
+      await waitFor(() => expect(requestChanges.hasAttribute("aria-disabled")).toBe(false));
+      await settleReads();
+      expect(document.activeElement).toBe(requestChanges);
+      for (const control of [approve, requestChanges]) {
+        expect(control?.hasAttribute("disabled")).toBe(false);
+        expect(control?.hasAttribute("aria-disabled")).toBe(false);
+      }
+
+      await user.keyboard("{Enter}");
+      const dialog = within(await scope.findByRole("dialog", { name: "Request changes" }));
+      await settleReads();
+      expect(dialog.getByRole("textbox", { name: "Reason" })).toHaveValue("");
+      expect(dialog.queryByRole("alert")?.textContent).toBe(
+        surface === "inside" ? "Could not request changes. Try again." : undefined
+      );
+      await user.keyboard("{Escape}");
+      await waitFor(() => expect(scope.queryByRole("dialog")).toBeNull());
+      await settleReads();
+      expect(document.activeElement).toBe(requestChanges);
+      expect(createArtifactReview).toHaveBeenCalledTimes(1);
+    } finally {
       createArtifactReview.mockRestore();
       undraw(view);
       unemulate();
@@ -3999,7 +4230,9 @@ test("inside NoTooltips Request changes opens no dialog while Approve's write is
       expectRefusedHoldingFocus(requestChanges);
 
       // The approval lands and the read after it is held: a press then opens no dialog either.
-      const answerReread = await landHeld(written, specReview("approved"));
+      const answerReread = await landHeld(stubs.getArtifact, () =>
+        written.resolve(specReview("approved"))
+      );
       expect(document.activeElement).toBe(requestChanges);
       await user.keyboard("{Enter}");
       await settleReads();
@@ -4072,6 +4305,57 @@ test("inside NoTooltips a change request whose read removes Request changes hand
     } finally {
       createArtifactReview.mockRestore();
       undraw(view);
+    }
+  }
+});
+
+// A change request whose dialog the reader closed while it was out had the focus given back to
+// Request changes at once. Inside `NoTooltips`, once the change request lands and its read removes
+// Request changes, the chip's one hand-over takes the focus that fell to the body, as it does when
+// the dialog stays open to the end. Outside `NoTooltips` the chip moves no focus, as on `main`.
+test("inside NoTooltips a change request whose dialog was closed hands the focus to the chip once its read removes Request changes", async () => {
+  const user = userEvent.setup();
+  const reason = "The plan names no owner";
+  const changesRequested = doc(SPEC_ID, "spec.md", {
+    latest_version: 2,
+    state: "changes_requested",
+    version: 2,
+  });
+  for (const surface of ["inside", "outside"] as const) {
+    const unemulate = emulateChromiumFocusFixup();
+    stubs.getArtifact.mockResolvedValue(awaitingSpec());
+    const written = Promise.withResolvers<ArtifactReview>();
+    const createArtifactReview = spyOn(api, "createArtifactReview").mockImplementation(
+      () => written.promise
+    );
+    const view = draw(
+      <KeymapProvider>
+        <ReadWaitingApprovalChip id={SPEC_ID} />
+      </KeymapProvider>,
+      surface
+    );
+    try {
+      const scope = within(view.container);
+      const { requestChanges } = await sendChangeRequest(user, view, createArtifactReview, reason);
+      await user.keyboard("{Escape}");
+      await waitFor(() => expect(scope.queryByRole("dialog")).toBeNull());
+      await settleReads();
+      expect(document.activeElement).toBe(requestChanges);
+
+      const answerReread = await landHeld(stubs.getArtifact, () =>
+        written.resolve(specReview("changes_requested", reason))
+      );
+      answerReread(changesRequested);
+      const chip = await scope.findByRole("button", { name: "Changes requested" });
+      await waitFor(() => expect(requestChanges.isConnected).toBe(false));
+      await settleReads();
+      expect(document.activeElement).toBe(surface === "inside" ? chip : document.body);
+      expect(createArtifactReview).toHaveBeenCalledTimes(1);
+    } finally {
+      written.reject(new Error("the connection dropped"));
+      createArtifactReview.mockRestore();
+      undraw(view);
+      unemulate();
     }
   }
 });
@@ -4207,8 +4491,10 @@ test("inside NoTooltips a copy leaves a focus the reader moved elsewhere where i
 
 // A copy's write to the clipboard is the button's write: inside `NoTooltips` a press while it is
 // out does nothing, so a second Enter makes no second write and draws no "Copied" before the first
-// write lands, and the focus stays on the button. Once the write lands, a press made while "Copied"
-// shows copies again. Outside `NoTooltips` each press writes, as on `main`.
+// write lands, and the focus stays on the button, which says it is refused (`aria-disabled`) until
+// the write lands and no longer after. Once the write lands, a press made while "Copied" shows
+// copies again. Outside `NoTooltips` each press writes and the button is never marked refused, as
+// on `main`.
 test("inside NoTooltips a copy pressed again by Enter while its write is out makes no second write", async () => {
   const user = userEvent.setup();
   const originalClipboard = navigator.clipboard;
@@ -4236,13 +4522,19 @@ test("inside NoTooltips a copy pressed again by Enter while its write is out mak
         if (surface === "inside") {
           expect(scope.queryByText("Copied")).toBeNull();
           expect(document.activeElement).toBe(button);
+          expect(button.getAttribute("aria-disabled")).toBe("true");
+        } else {
+          expect(button.hasAttribute("aria-disabled")).toBe(false);
         }
         for (const write of writes) write.resolve();
         await scope.findByText("Copied");
+        // The mark goes in the render after the one that draws Copied, so the case waits for it.
+        await waitFor(() => expect(button.hasAttribute("aria-disabled")).toBe(false));
         if (surface === "inside") {
           await user.keyboard("{Enter}");
           await waitFor(() => expect(writes).toHaveLength(2));
           expect(document.activeElement).toBe(button);
+          expect(button.getAttribute("aria-disabled")).toBe("true");
         }
       } finally {
         for (const write of writes) write.resolve();
@@ -4269,53 +4561,25 @@ function ReadPriorityLine({
   );
 }
 
-/** CORE-1's reads, as `ReadPriorityLine` makes them (`read`). Each answers the issue advancing,
- *  as its own, what `advances` holds as it answers; `made` counts them. `hold` holds every read
- *  from there on and returns what answers them. */
+/** CORE-1's reads, as `ReadPriorityLine` makes them (`read`). Until `landHeld` holds `read`, each
+ *  answers `answer()`: the issue advancing, as its own, what `advances` holds as it answers. */
 interface IssueReads {
   advances: readonly string[];
-  readonly hold: () => () => void;
-  readonly made: () => number;
-  readonly read: () => Promise<Pick<Issue, "advances" | "advances_revision" | "key">>;
+  readonly answer: () => Pick<Issue, "advances" | "advances_revision" | "key">;
+  readonly read: Mock<() => Promise<Pick<Issue, "advances" | "advances_revision" | "key">>>;
 }
 
 function issueReads(advances: readonly string[]): IssueReads {
-  let made = 0;
-  let held: Promise<void> | undefined;
   const reads: IssueReads = {
     advances,
-    hold: () => {
-      const gate = Promise.withResolvers<void>();
-      held = gate.promise;
-      return () => {
-        held = undefined;
-        gate.resolve();
-      };
-    },
-    made: () => made,
-    read: async () => {
-      made += 1;
-      await held;
-      return {
-        advances: reads.advances.map((id) => ({ id, inherited: false })),
-        advances_revision: 1,
-        key: "CORE-1",
-      };
-    },
+    answer: () => ({
+      advances: reads.advances.map((id) => ({ id, inherited: false })),
+      advances_revision: 1,
+      key: "CORE-1",
+    }),
+    read: mock(async () => reads.answer()),
   };
   return reads;
-}
-
-/** Lets the line's write `land` while every read of the issue from here on is held, and waits
- *  until the read the write's invalidation makes has started. Returns what answers the held
- *  read. */
-async function landHeldRead(reads: IssueReads, land: () => void): Promise<() => void> {
-  const made = reads.made();
-  const release = reads.hold();
-  land();
-  await waitFor(() => expect(reads.made()).toBe(made + 1));
-  await settleReads();
-  return release;
 }
 
 /** Has the priorities read name a third priority, `P3 Lean proofs checked`, after the
@@ -4380,7 +4644,7 @@ test("inside NoTooltips a priority's Remove pressed by Enter keeps the focus unt
 
           // The write lands, or fails, and the read after it is held.
           const sent = patchIssue.mock.calls[calls]?.[1].advances ?? [];
-          const release = await landHeldRead(reads, () => {
+          const answerReread = await landHeld(reads.read, () => {
             if (write === "fails") {
               written.reject(new Error("the connection dropped"));
               return;
@@ -4402,7 +4666,7 @@ test("inside NoTooltips a priority's Remove pressed by Enter keeps the focus unt
             expect(document.activeElement).toBe(document.body);
           }
 
-          release();
+          answerReread(reads.answer());
           if (write === "lands") {
             await waitFor(() => expect(remove.isConnected).toBe(false));
           } else {
@@ -4476,12 +4740,12 @@ test("inside NoTooltips a priority's Remove leaves a focus the reader moved else
       const elsewhere = scope.getByRole("button", { name: "Elsewhere" });
       elsewhere.focus();
 
-      const release = await landHeldRead(reads, () => {
+      const answerReread = await landHeld(reads.read, () => {
         reads.advances = ["rocq-lean"];
         written.resolve({} as Issue);
       });
       expect(document.activeElement).toBe(elsewhere);
-      release();
+      answerReread(reads.answer());
       await waitFor(() => expect(remove.isConnected).toBe(false));
       await settleReads();
       expect(document.activeElement).toBe(elsewhere);
@@ -4600,12 +4864,9 @@ test("inside NoTooltips Rebuild keeps its focus until the rebuilt document is re
           if (reader === "moves on") elsewhere.focus();
 
           // The rebuild lands, and the read of the document's text after it is held.
-          const reads = stubs.getArtifactText.mock.calls.length;
-          const reread = Promise.withResolvers<ArtifactText>();
-          stubs.getArtifactText.mockImplementation(() => reread.promise);
-          rebuilt.resolve(rebuiltReport);
-          await waitFor(() => expect(stubs.getArtifactText).toHaveBeenCalledTimes(reads + 1));
-          await settleReads();
+          const answerReread = await landHeld(stubs.getArtifactText, () =>
+            rebuilt.resolve(rebuiltReport)
+          );
           expect(rebuild.isConnected).toBe(true);
           if (surface === "inside" && reader === "waits") {
             // A press while the read is out asks nothing and sends no second rebuild, and
@@ -4624,7 +4885,7 @@ test("inside NoTooltips Rebuild keeps its focus until the rebuilt document is re
             expect(rebuild.textContent).toBe("Rebuild from the latest version");
           }
 
-          reread.resolve({
+          answerReread({
             markdown: "The live document",
             token: "sha256:spec-text",
             version: null,
@@ -5063,13 +5324,22 @@ function expectAskControlFree(control: HTMLElement): void {
 }
 
 /** `ask`'s card in a row the focus can land on, as the Inbox draws its row: the element the
- *  card's own hand-off gives the focus to when a control holding it leaves the page. */
-function AskRow({ ask, changing = false }: { ask: Ask; changing?: boolean }): ReactNode {
+ *  card's own hand-off gives the focus to when a control holding it leaves the page. Each read of
+ *  the ask's thread is answered at once with the open ask, unless the case reads it itself. */
+function AskRow({
+  ask,
+  changing = false,
+  getAskThread = async () => threadOf(ask),
+}: {
+  ask: Ask;
+  changing?: boolean;
+  getAskThread?: (id: string) => Promise<AskRead>;
+}): ReactNode {
   return (
     <div data-testid="ask-row" tabIndex={-1}>
       <AskCard
         ask={ask}
-        getAskThread={async () => threadOf(ask)}
+        getAskThread={getAskThread}
         initialThread={threadOf(ask)}
         mode={changing ? "change" : "answer"}
       />
@@ -5081,12 +5351,13 @@ function AskRow({ ask, changing = false }: { ask: Ask; changing?: boolean }): Re
 // Inside `NoTooltips` each is `aria-disabled` in place of `disabled`, which drops the focus to the
 // body in a browser (the answer box is `readOnly`, an option is refused by its group): the one
 // the reader pressed keeps the focus, and a press of it sends no second write and changes
-// nothing. Once the write lands, what it takes off the page - the form, which the answer replaces
-// with its record, or the choice a question-shaped answer offers - hands the focus on as it goes,
-// to the row the card is drawn in, and a clarification that empties the box leaves Ask back
-// `disabled`, which hands it on too; once the write fails, the pressed control is still drawn and
-// kept the focus all along. Outside `NoTooltips` each is `disabled` while the write is out, as on
-// `main`, and the card hands the focus to the row as it disables the control.
+// nothing. Once the write lands, and inside `NoTooltips` once the read of the ask that a
+// clarification starts is drawn as well, what it takes off the page - the form, which the answer
+// replaces with its record, or the choice a question-shaped answer offers - hands the focus on as
+// it goes, to the row the card is drawn in, and a clarification that empties the box leaves Ask
+// back `disabled`, which hands it on too; once the write fails, the pressed control is still drawn
+// and kept the focus all along. Outside `NoTooltips` each is `disabled` while the write is out, as
+// on `main`, and the card hands the focus to the row as it disables the control.
 for (const control of ASK_CARD_CONTROLS) {
   test(`inside NoTooltips AskCard's ${control.name} keeps the focus while its write is out, then the card hands it to the row`, async () => {
     const user = userEvent.setup();
@@ -5187,6 +5458,245 @@ test("inside NoTooltips AskCard's Answer leaves a focus the reader moved elsewhe
       expect(answerAsk).toHaveBeenCalledTimes(1);
     } finally {
       answerAsk.mockRestore();
+      undraw(view);
+      unemulate();
+    }
+  }
+});
+
+/** The reads of an ask's thread a case answers itself (`read`): until `landHeld` holds `read`,
+ *  each answers the open ask's read at once. */
+interface AskReads {
+  readonly read: Mock<() => Promise<AskRead>>;
+}
+
+function askReads(ask: Ask): AskReads {
+  return { read: mock(async () => threadOf(ask)) };
+}
+
+/** Each element the focus lands on from `start` until `stop`. */
+interface FocusMoves {
+  readonly moved: EventTarget[];
+  readonly start: () => void;
+  readonly stop: () => void;
+}
+
+function recordFocusMoves(): FocusMoves {
+  const moved: EventTarget[] = [];
+  const record = (event: FocusEvent) => {
+    if (event.target !== null) moved.push(event.target);
+  };
+  return {
+    moved,
+    start: () => document.addEventListener("focusin", record),
+    stop: () => document.removeEventListener("focusin", record),
+  };
+}
+
+/** Once the ask is read again, the focus moved once, to `row`, inside `NoTooltips`, and not at
+ *  all outside it, where it was on the row already. */
+function expectOneMoveToRow(focus: FocusMoves, row: HTMLElement, surface: Surface): void {
+  expect(document.activeElement).toBe(row);
+  expect(focus.moved).toHaveLength(surface === "inside" ? 1 : 0);
+  if (surface === "inside") expect(focus.moved[0]).toBe(row);
+}
+
+// An answer Dispatch made and lost its answer to (`409 KEY_COMMITTED`) lands with no body: the
+// card has no record to draw, so it reads the ask again, and until that read is drawn the form
+// stays on the page with its option still picked. Inside `NoTooltips` the card stays refused until
+// then: Answer keeps the focus and is `aria-disabled`, and a press of it sends no second answer,
+// which Dispatch would refuse, the ask being closed. Once the read draws the recorded answer, the
+// form leaves the page and hands the focus to the row, the one move of the focus. Outside
+// `NoTooltips` Answer is `disabled` while the write is out, and the focus goes to the row then,
+// as on `main`.
+test("inside NoTooltips an answer that lands with no answer body keeps the ask card refused until the ask is read again", async () => {
+  const user = userEvent.setup();
+  for (const surface of ["inside", "outside"] as const) {
+    const unemulate = emulateChromiumFocusFixup();
+    const focus = recordFocusMoves();
+    const ask = openAsk({ id: `ask-${surface}` });
+    const reads = askReads(ask);
+    const answered = Promise.withResolvers<Ask>();
+    const answerAsk = spyOn(api, "answerAsk").mockImplementation(() => answered.promise);
+    const view = draw(<AskRow ask={ask} getAskThread={reads.read} />, surface);
+    try {
+      const scope = within(view.container);
+      const row = scope.getByTestId("ask-row");
+      await settleReads();
+      await user.click(radioOf(scope, "Ship"));
+      const answer = scope.getByRole("button", { name: "Answer" });
+      answer.focus();
+      await user.keyboard("{Enter}");
+      await waitFor(() => expect(answerAsk).toHaveBeenCalledTimes(1));
+      await settleReads();
+      if (surface === "inside") {
+        expectRefusedHoldingFocus(answer);
+      } else {
+        expectAskControlDisabledAsOnMain(answer);
+        expect(document.activeElement).toBe(row);
+      }
+
+      // The answer lands with no body, and the read of the ask after it is held.
+      focus.start();
+      const answerReread = await landHeld(reads.read, () =>
+        answered.reject(new ApiError(409, { code: "KEY_COMMITTED", error: "made" }))
+      );
+      expect(answer.isConnected).toBe(true);
+      expect(radioOf(scope, "Ship").checked).toBe(true);
+      if (surface === "inside") {
+        // A press while the read is out sends no second answer, and Answer is still refused.
+        await user.keyboard("{Enter}");
+        await settleReads();
+        expect(answerAsk).toHaveBeenCalledTimes(1);
+        expectRefusedHoldingFocus(answer);
+      } else {
+        // The write stopped pending as it landed, before its read.
+        expect(answer.hasAttribute("disabled")).toBe(false);
+        expect(answer.hasAttribute("aria-disabled")).toBe(false);
+        expect(document.activeElement).toBe(row);
+      }
+      expect(focus.moved).toHaveLength(0);
+
+      answerReread(threadOf(answeredWith(ask, answerAsk.mock.calls[0]?.[1])));
+      await scope.findByText(/Answered by/);
+      await settleReads();
+      expect(answer.isConnected).toBe(false);
+      expectOneMoveToRow(focus, row, surface);
+      expect(answerAsk).toHaveBeenCalledTimes(1);
+    } finally {
+      answerAsk.mockRestore();
+      focus.stop();
+      undraw(view);
+      unemulate();
+    }
+  }
+});
+
+// A clarification empties the box as it lands and reads the ask again. Inside `NoTooltips`, until
+// that read is drawn, Ask back is drawn as it stood at the press: refused with `aria-disabled`, and
+// not `disabled` for the text the landing took, which would drop the focus in a browser; it keeps
+// the focus, and a press of it sends nothing. Once the read is drawn Ask back, with no text to
+// send, is `disabled`, and the card hands the focus to the row, the one move of the focus. Outside
+// `NoTooltips` Ask back is `disabled` while the write is out, and the focus goes to the row then,
+// as on `main`.
+test("inside NoTooltips Ask back keeps the focus until the ask is read again", async () => {
+  const user = userEvent.setup();
+  for (const surface of ["inside", "outside"] as const) {
+    const unemulate = emulateChromiumFocusFixup();
+    const focus = recordFocusMoves();
+    const ask = openAsk({ id: `ask-${surface}` });
+    const reads = askReads(ask);
+    const said = Promise.withResolvers<Comment>();
+    const createComment = spyOn(api, "createComment").mockImplementation(() => said.promise);
+    const view = draw(<AskRow ask={ask} getAskThread={reads.read} />, surface);
+    try {
+      const scope = within(view.container);
+      const row = scope.getByTestId("ask-row");
+      await settleReads();
+      await user.type(answerBoxOf(scope), "Stage it before the release");
+      const askBack = scope.getByRole("button", { name: "Ask back" });
+      askBack.focus();
+      await user.keyboard("{Enter}");
+      await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+      await settleReads();
+      if (surface === "inside") {
+        expectRefusedHoldingFocus(askBack);
+      } else {
+        expectAskControlDisabledAsOnMain(askBack);
+        expect(document.activeElement).toBe(row);
+      }
+
+      // The clarification lands and empties the box, and the read of the ask after it is held.
+      focus.start();
+      const answerReread = await landHeld(reads.read, () => said.resolve({} as Comment));
+      expect(answerBoxOf(scope).value).toBe("");
+      if (surface === "inside") {
+        expectRefusedHoldingFocus(askBack);
+        await user.keyboard("{Enter}");
+        await settleReads();
+        expect(createComment).toHaveBeenCalledTimes(1);
+        expectRefusedHoldingFocus(askBack);
+      } else {
+        expectAskControlDisabledAsOnMain(askBack);
+        expect(document.activeElement).toBe(row);
+      }
+      expect(focus.moved).toHaveLength(0);
+
+      answerReread(threadOf(ask));
+      await waitFor(() => expect(askBack.hasAttribute("disabled")).toBe(true));
+      await settleReads();
+      expect(askBack.hasAttribute("aria-disabled")).toBe(false);
+      expectOneMoveToRow(focus, row, surface);
+      expect(createComment).toHaveBeenCalledTimes(1);
+    } finally {
+      createComment.mockRestore();
+      focus.stop();
+      undraw(view);
+      unemulate();
+    }
+  }
+});
+
+// A clarification sent by Ask back instead closes the choice a question-shaped answer offers as
+// it lands, and reads the ask again. Inside `NoTooltips`, until that read is drawn, the choice
+// stays on the page with both its actions refused: Ask back instead keeps the focus and a press of
+// it sends nothing. Once the read is drawn the choice leaves the page and the card hands the focus
+// to the row, the one move of the focus. Outside `NoTooltips` Ask back instead is `disabled` while
+// the write is out, and the focus goes to the row then; the choice leaves as the clarification
+// lands, as on `main`.
+test("inside NoTooltips Ask back instead keeps the focus until the ask is read again", async () => {
+  const user = userEvent.setup();
+  for (const surface of ["inside", "outside"] as const) {
+    const unemulate = emulateChromiumFocusFixup();
+    const focus = recordFocusMoves();
+    const ask = openAsk({ id: `ask-${surface}` });
+    const reads = askReads(ask);
+    const said = Promise.withResolvers<Comment>();
+    const createComment = spyOn(api, "createComment").mockImplementation(() => said.promise);
+    const view = draw(<AskRow ask={ask} getAskThread={reads.read} />, surface);
+    try {
+      const scope = within(view.container);
+      const row = scope.getByTestId("ask-row");
+      await settleReads();
+      const { anyway, instead } = await offerToAskBack(scope, user);
+      await user.keyboard("{Enter}");
+      await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+      await settleReads();
+      if (surface === "inside") {
+        expectRefusedHoldingFocus(instead);
+      } else {
+        expectAskControlDisabledAsOnMain(instead);
+        expect(document.activeElement).toBe(row);
+      }
+
+      // The clarification lands and closes the choice, and the read of the ask after it is held.
+      focus.start();
+      const answerReread = await landHeld(reads.read, () => said.resolve({} as Comment));
+      expect(answerBoxOf(scope).value).toBe("");
+      if (surface === "inside") {
+        expect(anyway.isConnected).toBe(true);
+        expect(anyway.getAttribute("aria-disabled")).toBe("true");
+        expect(anyway.hasAttribute("disabled")).toBe(false);
+        expectRefusedHoldingFocus(instead);
+        await user.keyboard("{Enter}");
+        await settleReads();
+        expect(createComment).toHaveBeenCalledTimes(1);
+        expectRefusedHoldingFocus(instead);
+      } else {
+        expect(instead.isConnected).toBe(false);
+        expect(document.activeElement).toBe(row);
+      }
+      expect(focus.moved).toHaveLength(0);
+
+      answerReread(threadOf(ask));
+      await waitFor(() => expect(instead.isConnected).toBe(false));
+      await settleReads();
+      expect(anyway.isConnected).toBe(false);
+      expectOneMoveToRow(focus, row, surface);
+      expect(createComment).toHaveBeenCalledTimes(1);
+    } finally {
+      createComment.mockRestore();
+      focus.stop();
       undraw(view);
       unemulate();
     }
