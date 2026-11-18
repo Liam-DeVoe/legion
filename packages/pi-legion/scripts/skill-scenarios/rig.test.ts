@@ -1225,11 +1225,10 @@ describe("require_superpowers", () => {
 });
 
 // launch with a stand-in tmux that starts the pane's command a moment later, as a real tmux server
-// does, and a stand-in mise that prints the omp command line it was given.
+// does, a stand-in systemd-run that records the scope it was asked for and runs the command after
+// `--`, and a stand-in mise that prints the omp command line it was given.
 describe("launch", () => {
-  // Catches: a later turn that reads the previous turn's `exit=` line as its own and returns at
-  // once, and extra omp arguments placed anywhere but after the prompt.
-  test("a later turn passes its arguments to omp and waits for its own exit line", () => {
+  function launchRun(args: string, env: Record<string, string> = {}) {
     const run = freshDir("launch-run");
     const bin = freshDir("launch-bin");
     for (const dir of ["cwd", "sessions"]) mkdirSync(path.join(run, dir));
@@ -1243,17 +1242,294 @@ describe("launch", () => {
       `#!/bin/sh\nif [ "$1" = where ]; then echo "${bin}/pin"; exit 0; fi\nshift 3\necho "$@"\n`,
       { mode: 0o755 }
     );
+    writeFileSync(
+      path.join(bin, "systemd-run"),
+      `#!/bin/bash\nscope=()\nwhile [ "$1" != -- ]; do scope+=("$1"); shift; done\nshift\necho "\${scope[*]}" >"${run}/scope"\nexec "$@"\n`,
+      { mode: 0o755 }
+    );
     const standIns = `
 tmux() { case $1 in new-session) (command sleep 0.3 && bash -c "\${@: -1}") & ;; esac; }
 sleep() { command sleep 0.05; }`;
     const result = bash(
-      `${fn("fail")}\n${fn("pinned_omp")}\n${fn("launch")}\n${standIns}\nR=$1 tag=t pin=omp@pin\nlaunch spec-writing-s1-1 --continue\ncp "$R/out.txt" "$R/seen"`,
+      `${fn("fail")}\n${fn("pinned_omp")}\n${fn("launch")}\n${standIns}\nR=$1 tag=t pin=omp@pin\nlaunch spec-writing-s1-1${args}\ncp "$R/out.txt" "$R/seen"`,
       [run],
-      { PATH: `${bin}:${childEnv.PATH}` }
+      { PATH: `${bin}:${childEnv.PATH}`, ...env }
     );
-    expect(result.code).toBe(0);
-    expect(readFileSync(path.join(run, "seen"), "utf8")).toBe(
+    const read = (name: string) => readFileSync(path.join(run, name), "utf8");
+    return { ...result, run, bin, read };
+  }
+
+  // Catches: a later turn that reads the previous turn's `exit=` line as its own and returns at
+  // once, and extra omp arguments placed anywhere but after the prompt.
+  test("a later turn passes its arguments to omp and waits for its own exit line", () => {
+    const { code, read, bin, run } = launchRun(" --continue");
+    expect(code).toBe(0);
+    expect(read("seen")).toBe(
       `${bin}/pin/bin/omp -p The person answered your asks on LWEVAL-2. --continue --session-dir ${run}/sessions\nexit=0\n`
     );
+  });
+
+  // Catches: an agent that runs in the caller's own scope with no memory cap. On 2026-11-18 one
+  // reviewer's shell held an endless command substitution (an unquoted here-document whose
+  // backticks ran `yes`) and its omp reached 79 GiB in the session's scope before the kernel
+  // killed it. In a scope of its own, capped with no swap, such an agent is killed alone.
+  test("the agent runs in a user scope of its own, capped at 8G with no swap, or at SKILL_SCENARIOS_MEMORY_MAX", () => {
+    const capped = launchRun("");
+    expect(capped.code).toBe(0);
+    expect(capped.read("scope")).toBe(
+      "--user --scope --quiet -p MemoryMax=8G -p MemorySwapMax=0\n"
+    );
+    const named = launchRun("", { SKILL_SCENARIOS_MEMORY_MAX: "2G" });
+    expect(named.read("scope")).toBe("--user --scope --quiet -p MemoryMax=2G -p MemorySwapMax=0\n");
+  });
+});
+
+// The heads scenarios wait for the run's Dispatch to know #702's head before any agent starts:
+// fixture_heads with a stand-in for the label checkout's `dispatch` command (its
+// packages/envoy-client/bin/dispatch.ts), which records each call and prints the line of #702 from
+// the call HEADS_LINE_AT on, beside a line of #703 on every call, and a stand-in sleep that records
+// each wait. Like the real command, the stand-in refuses a call that names no host or no session
+// (`DISPATCH_HOST is not set`), and prints no line of a head then.
+describe("fixture_heads", () => {
+  function waitFor(lineAt: number) {
+    const run = freshDir("heads-run");
+    const co = freshDir("heads-checkout");
+    const rigWork = freshDir("heads-work");
+    const bin = path.join(co, "packages", "envoy-client", "bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(
+      path.join(bin, "dispatch.ts"),
+      `import { appendFileSync, existsSync, readFileSync } from "node:fs";
+const calls = process.env.HEADS_CALLS ?? "";
+const n = (existsSync(calls) ? readFileSync(calls, "utf8").split("\\n").filter(Boolean).length : 0) + 1;
+appendFileSync(calls, \`\${JSON.stringify({ argv: process.argv.slice(2), url: process.env.DISPATCH_URL, token: process.env.DISPATCH_TOKEN_FILE, host: process.env.DISPATCH_HOST, session: process.env.DISPATCH_SESSION_ID })}\\n\`);
+if (!process.env.DISPATCH_HOST || !process.env.DISPATCH_SESSION_ID) {
+  console.log("dispatch: DISPATCH_HOST is not set.");
+  process.exit(1);
+}
+console.log(\`- k1 (before_merge). Compared with the heads of 2 open pull requests. Read \${n}.\`);
+console.log("  A pass stands: no, as 0 of 2 heads read yes");
+console.log("  - #703 at ${"3".repeat(40)}: no, as fail f1 counts there.");
+if (n >= Number(process.env.HEADS_LINE_AT)) console.log("  - #702 at ${"2".repeat(40)}: yes, from implementer, tester. Passes p1, p2 decide it.");
+`
+    );
+    const calls = path.join(run, "calls.jsonl");
+    const result = bash(
+      [
+        fn("fail"),
+        fn("fixture_heads"),
+        `sleep() { printf '%s\\n' "$1" >>"$R/sleeps"; }`,
+        "R=$1 co=$2 work=$3 dispatch_port=4567 worker_key=LWEVAL-9",
+        "fixture_heads 702",
+      ].join("\n"),
+      [run, co, rigWork],
+      { HEADS_CALLS: calls, HEADS_LINE_AT: String(lineAt) }
+    );
+    const read = (name: string) =>
+      existsSync(path.join(run, name)) ? readFileSync(path.join(run, name), "utf8") : "";
+    const made = read("calls.jsonl").split("\n").filter(Boolean);
+    return { ...result, run, rigWork, read, made: made.map((line) => JSON.parse(line)) };
+  }
+
+  // Catches: a wait that starts the agent before Dispatch learned #702's head, one that takes the
+  // line of #703 for it, one that reads another Dispatch than the run's own, one that names no host
+  // or session (the real command refuses it and prints no line of a head), and one that keeps no
+  // record of what it read.
+  test("a line of #702 on the third read passes, and that read's output is results-before.txt", () => {
+    const { code, stderr, read, made, rigWork } = waitFor(3);
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    expect(made).toHaveLength(3);
+    expect(made[0]).toEqual({
+      argv: ["results", "--issue", "LWEVAL-9"],
+      url: "http://127.0.0.1:4567",
+      token: path.join(rigWork, "services", "dispatch-token"),
+      host: "omp",
+      session: "rig-fixture-heads",
+    });
+    expect(read("sleeps")).toBe("2\n2\n");
+    expect(read("results-before.txt")).toContain("Read 3.");
+    expect(read("results-before.txt")).toContain(`  - #702 at ${"2".repeat(40)}: yes`);
+  });
+
+  // Catches: a wait with no deadline, one shorter than 60 s, a failure that does not name the head
+  // or the file, and one that leaves no record of the last read.
+  test("no line of #702 in 60 s fails, naming #702 and the last read's file", () => {
+    const { code, stderr, read, made, run } = waitFor(1000);
+    expect(code).toBe(1);
+    expect(stderr).toContain("#702");
+    expect(stderr).toContain(path.join(run, "results-before.txt"));
+    expect(made).toHaveLength(31);
+    const waited = read("sleeps")
+      .split("\n")
+      .filter(Boolean)
+      .reduce((sum, seconds) => sum + Number(seconds), 0);
+    expect(waited).toBe(60);
+    expect(read("results-before.txt")).toContain("Read 31.");
+    expect(read("results-before.txt")).not.toContain("#702");
+  });
+});
+
+// cmd_batch of reviewer-own-head runs each of its four cases <runs> times for each label, each
+// as a run of its own. A stand-in rig.sh records each run's arguments, which cmd_batch hands to
+// `rig.sh run` through xargs, and a stand-in go records the build of the runs' natsd.
+describe("cmd_batch", () => {
+  // Catches: a batch that runs one case alone, gives two runs one index (and so one PR number and
+  // one commit time), drops the case from a run's arguments, or builds no natsd for the runs.
+  test("reviewer-own-head runs each case for each label and run number, each with its own index", () => {
+    const here = freshDir("batch-here");
+    const rigWork = freshDir("batch-work");
+    writeFileSync(path.join(here, "rig.sh"), `printf '%s\\n' "$*" >>"${here}/runs"\n`);
+    const result = bash(
+      [
+        fn("fail"),
+        fn("cmd_batch"),
+        "load_label() { :; }",
+        'lock_services() { S=$work/services; mkdir -p "$S"; }',
+        "on_exit() { :; }",
+        "services_up() { :; }",
+        "date() { echo 1700000000; }",
+        `go() { printf 'go %s\\n' "$*" >>"$here/builds"; }`,
+        "here=$1 work=$2 root=/checkout",
+        "cmd_batch reviewer-own-head 2 head ablate-head",
+      ].join("\n"),
+      [here, rigWork]
+    );
+    expect({ code: result.code, stderr: result.stderr }).toEqual({ code: 0, stderr: "" });
+    const cases = ["sibling-fails", "ci-only", "no-implementer", "no-tester"];
+    let index = 0;
+    const want = ["head", "ablate-head"].flatMap((label) =>
+      cases.flatMap((which) =>
+        [1, 2].map((n) => `run reviewer-own-head ${label} ${n} ${++index} 1700000000 ${which}`)
+      )
+    );
+    const runs = readFileSync(path.join(here, "runs"), "utf8").split("\n").filter(Boolean);
+    expect(runs.toSorted()).toEqual(want.toSorted());
+    expect(readFileSync(path.join(here, "builds"), "utf8")).toBe(
+      `go -C /checkout/packages/envoy build -o ${rigWork}/services/bin/natsd ./internal/testnats/cmd/natsd\n`
+    );
+  });
+
+  // Catches: a run whose directory leaves out its case, so the cases' batches of one label, each
+  // numbered from 1, remove each other's runs, and a case outside the four.
+  test("cmd_run names a reviewer-own-head run by its case, and refuses another case", () => {
+    const rigWork = freshDir("run-work");
+    mkdirSync(path.join(rigWork, "services"), { recursive: true });
+    writeFileSync(path.join(rigWork, "services", "env"), "");
+    const script = [
+      fn("fail"),
+      fn("cmd_run"),
+      'load_label() { P=$work/profiles/$1; mkdir -p "$P"; : >"$P/built-from"; }',
+      "on_exit() { :; }",
+      `run_reviewer_own_head() { printf '%s\\n' "$*" >"$R/ran"; echo exit=0 >"$R/out.txt"; }`,
+      "work=$1 services_env=$1/services/env",
+      'cmd_run reviewer-own-head head 1 3 1700000000 "$2"',
+    ].join("\n");
+    const ran = bash(script, [rigWork, "ci-only"]);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const run = path.join(rigWork, "runs", "reviewer-own-head-ci-only-head-1");
+    expect(readFileSync(path.join(run, "ran"), "utf8")).toBe(
+      "reviewer-own-head-ci-only-head-1 1 3 1700000000 ci-only\n"
+    );
+    const refused = bash(script, [rigWork, "frobnicate"]);
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toContain(
+      "'frobnicate' is not sibling-fails, ci-only, no-implementer or no-tester"
+    );
+  });
+});
+
+// The world of the heads scenarios: fixture_repo's bare remote, source repository and workspace,
+// and heads_fixture's two pull request branches of one issue on it. worker_fixture, the
+// tester-proof world, builds on the same fixture_repo, and keeps its world as it was.
+describe("heads_fixture", () => {
+  function build(fixture: "heads_fixture" | "worker_fixture") {
+    const run = freshDir(`${fixture}-run`);
+    const result = bash(
+      [
+        "set -euo pipefail",
+        ...["fail", "g", "fixture_repo", "workspace_on", fixture].map(fn),
+        "R=$1 worker_key=LWEVAL-9 worker_repo=example/widgets",
+        `${fixture} 3 1700000000`,
+      ].join("\n"),
+      [run]
+    );
+    return { ...result, run };
+  }
+  const git = (dir: string, ...args: string[]) => {
+    const result = Bun.spawnSync(["git", "-C", dir, ...args], { env: childEnv });
+    if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
+    return result.stdout.toString().trim();
+  };
+  /** The commit the workspace's working copy stands on, as jj reads it with the fixture's own
+   * configuration. */
+  const workspaceParent = (run: string) =>
+    Bun.spawnSync(["jj", "log", "--no-graph", "-r", "@-", "-T", "commit_id"], {
+      cwd: path.join(run, "ws"),
+      env: { ...childEnv, JJ_CONFIG: path.join(run, "jj-setup.toml") },
+    })
+      .stdout.toString()
+      .trim();
+
+  // Catches: one branch where the case needs two heads, a head that is no commit of the remote, a
+  // commit that is not one above main or that changes code (the reviewer then runs its
+  // thermonuclear pair), a fixture that ignores the run's index and start, a workspace left on
+  // main, and a world that names another pull request than #702.
+  test("two branches of the issue, each one docs-only commit above main, and the world of #702", () => {
+    const { code, stderr, run } = build("heads_fixture");
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    const remote = path.join(run, "remote.git");
+    const heads = JSON.parse(readFileSync(path.join(run, "heads.json"), "utf8")) as Record<
+      string,
+      string
+    >;
+    expect(Object.keys(heads).toSorted()).toEqual(["702", "703"]);
+    expect(heads["702"]).not.toBe(heads["703"]);
+    const main = git(remote, "rev-parse", "main");
+    for (const [pr, head] of Object.entries(heads)) {
+      expect(head).toMatch(/^[0-9a-f]{40}$/);
+      expect(git(remote, "rev-parse", `legion/LWEVAL-9-${pr}`)).toBe(head);
+      expect(git(remote, "rev-parse", `${head}^`)).toBe(main);
+      expect(git(remote, "rev-list", "--count", `main..${head}`)).toBe("1");
+      const changed = git(remote, "diff", "--name-only", main, head).split("\n");
+      expect(changed.length).toBeGreaterThan(0);
+      expect(changed.filter((file) => !file.endsWith(".md"))).toEqual([]);
+      expect(git(remote, "log", "-1", "--format=%at %ct", head)).toBe("1700000003 1700000003");
+    }
+    expect(JSON.parse(readFileSync(path.join(run, "world.json"), "utf8"))).toEqual({
+      key: "LWEVAL-9",
+      repo: "example/widgets",
+      pr: 702,
+      branch: "legion/LWEVAL-9-702",
+      head: heads["702"],
+    });
+    expect(workspaceParent(run)).toBe(heads["702"]);
+    expect(readFileSync(path.join(run, "pushes.log"), "utf8")).toBe("");
+  });
+
+  // Catches: a move of the shared part into fixture_repo that changes the tester's world: its
+  // branch, its code commit, its PR number or its workspace.
+  test("worker_fixture with the same inputs keeps legion/LWEVAL-9 one commit above main with greet.ts, and pr 1003", () => {
+    const { code, stderr, run } = build("worker_fixture");
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    const remote = path.join(run, "remote.git");
+    const head = git(remote, "rev-parse", "legion/LWEVAL-9");
+    expect(git(remote, "rev-parse", `${head}^`)).toBe(git(remote, "rev-parse", "main"));
+    expect(git(remote, "rev-list", "--count", `main..${head}`)).toBe("1");
+    expect(git(remote, "diff", "--name-only", "main", head).split("\n")).toEqual([
+      "greet.test.ts",
+      "greet.ts",
+    ]);
+    expect(git(remote, "show", `${head}:greet.ts`)).toContain(
+      "export function greet(name: string): string {"
+    );
+    expect(JSON.parse(readFileSync(path.join(run, "world.json"), "utf8"))).toEqual({
+      key: "LWEVAL-9",
+      repo: "example/widgets",
+      pr: 1003,
+      branch: "legion/LWEVAL-9",
+      head,
+    });
+    expect(workspaceParent(run)).toBe(head);
+    expect(readFileSync(path.join(run, "pushes.log"), "utf8")).toBe("");
   });
 });

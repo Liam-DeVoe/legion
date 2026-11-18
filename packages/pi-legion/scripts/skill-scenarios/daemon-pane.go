@@ -1,8 +1,8 @@
 // Daemon-pane is the skill-scenario rig's one reading of the Legion daemon: what the daemon gives a
-// phase-worker pane, computed by the daemon's own functions, for worker-pane.ts and
-// daemon-standin.ts to run Oh My Pi and the stand-in daemon under. It belongs to no module:
-// daemon-pane.ts runs it with `go run -overlay` as a main inside a checkout's packages/daemon, the
-// one place the daemon's internal packages can be imported from.
+// phase worker's or a tree's root architect's pane, computed by the daemon's own functions, for
+// worker-pane.ts and daemon-standin.ts to run Oh My Pi and the stand-in daemon under. It belongs to
+// no module: daemon-pane.ts runs it with `go run -overlay` as a main inside a checkout's
+// packages/daemon, the one place the daemon's internal packages can be imported from.
 //
 //	phase <role>             prints the phase the role's worker runs in, the first phase
 //	                         workflow.RoleFor gives to the role, then on a second line the word of
@@ -224,16 +224,15 @@ func firstBytes(path string, n int) ([]byte, error) {
 }
 
 // systemPromptArgument composes the pane's role prompt as the daemon does (specs.SpawnSpec): the
-// role prompts snapshotted under the state directory, the role's parts, then its addressing; it
-// writes the text to the claim's prompt file, as a pane's launch does, and answers the argument
-// that names that file. The join and the write are this program's own copies of the daemon's
-// (runtime.ComposePrompt, runtime.WriteSystemPrompt), since the rig runs it against each label's
-// checkout of the daemon module, an older one among them, which has neither.
+// role prompts snapshotted under the state directory, the role's parts, then its addressing, and
+// for a tree's root architect the design gate fragment after it, which the rig gives as the daemon
+// gives it for a deployment that gates no step (DesignGateFragment(nil): "Design gate steps:
+// none."); it writes the text to the claim's prompt file, as a pane's launch does, and answers the
+// argument that names that file. The join and the write are this program's own copies of the
+// daemon's (runtime.ComposePrompt, runtime.WriteSystemPrompt), since the rig runs it against each
+// label's checkout of the daemon module, an older one among them, which has neither.
 func systemPromptArgument(req paneRequest, token claim.Token) (string, error) {
 	role := claim.Role(req.Role)
-	if claim.IsTreeArchitect(role, req.Issue, req.Issue) {
-		return "", errors.New("a tree architect is also told its design gate policy, which the rig does not stand in for")
-	}
 	composer, err := prompts.New(req.StateDir)
 	if err != nil {
 		return "", err
@@ -253,6 +252,9 @@ func systemPromptArgument(req paneRequest, token claim.Token) (string, error) {
 	})
 	if err != nil {
 		return "", err
+	}
+	if claim.IsTreeArchitect(role, req.Issue, req.Issue) {
+		addressing += " " + daemon.DesignGateFragment(nil)
 	}
 	var body strings.Builder
 	for _, path := range parts.RolePromptPaths {
