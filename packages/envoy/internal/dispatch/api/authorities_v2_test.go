@@ -94,6 +94,18 @@ func assertScopeRefused(t *testing.T, what string, response *httptest.ResponseRe
 	}
 }
 
+// assertGateRefused fails unless response is assertScopeRefused's refusal written by the route's
+// wrapper (gateV2Authorities) for the declared rule, whose text names that rule ("which state
+// accepted requires"): a handler's own scope check names no rule, so a gate that skipped the rule
+// fails this even where the handler refuses the request too.
+func assertGateRefused(t *testing.T, what string, response *httptest.ResponseRecorder, scope, rule string) {
+	t.Helper()
+	assertScopeRefused(t, what, response, scope)
+	if _, text := refusalOf(t, response); !strings.Contains(text, "which "+rule+" requires") {
+		t.Errorf("%s: the refusal %q names no rule %q: the route's wrapper did not refuse it", what, text, rule)
+	}
+}
+
 // The authority a value of a request needs is held before the handler runs (R1.8): a state, a
 // body member's presence and a query value, each refused 403 OAUTH_SCOPE_REQUIRED naming the scope
 // for a credential that lacks it, and admitted for one that holds it, and a value that needs
