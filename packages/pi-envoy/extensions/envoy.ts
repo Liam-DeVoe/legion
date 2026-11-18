@@ -184,7 +184,7 @@ import { name as packageName, version as packageVersion } from "../package.json"
   type: "json",
 };
 import { CardAges } from "../src/card-age";
-import { CardWake, type EnvoyCardMarker } from "../src/card-wake";
+import { CardWake, type EnvoyCardMarker, lowCard } from "../src/card-wake";
 import { withDispatchFirst } from "../src/dispatch-first";
 import { sessionDispatchClient } from "../src/dispatch-session";
 import { recordEnvoySession, resolveEnvoySession } from "../src/envoy-session";
@@ -364,6 +364,10 @@ const DELIVERY_PICTURES_TIMEOUT_MS = 20_000;
 /** How long a delivery waits on the whole body of an item an event carried only in part before
  *  it goes out with that part and the note saying so. */
 const WHOLE_BODY_TIMEOUT_MS = 10_000;
+/** How often the check for stored cards runs while one waits (`checkStoredCards`), and how many
+ *  checks one arming runs at most: 10 s, after which the next run's end or heartbeat checks. */
+const STORED_CHECK_MS = 100;
+const STORED_CHECKS = 100;
 /** The most BTW event ids an instance remembers, so a failure notice naming one stays inert. */
 const BTW_EVENTS_LIMIT = 1_000;
 /** The line a late BTW's card ends with: it runs nothing and asks for nothing. */
@@ -1292,7 +1296,9 @@ export default function envoyExtension(pi: PiApi): void {
   // the wake tracks no inert card and an id there would name nothing.
   // Every other card goes as the wake says (`CardWake.deliveryFor`): an aside with `triggerTurn`,
   // never a steer, so no card waits in the steering queue a person's typed message uses; the wake
-  // records a startup card, which goes as a follow-up, before the host has it.
+  // records a startup card, which goes as a follow-up, before the host has it. A `low` card
+  // (`stored`) goes as `nextTurn` with no turn, which `UnwrittenFrames` hands only to a settled
+  // host: the host stores it with no event, so the check for stored cards looks for its write.
   const handCard = (
     content: string | readonly ContentBlock[],
     deliverAs: CardDelivery,
@@ -1311,18 +1317,17 @@ export default function envoyExtension(pi: PiApi): void {
       );
       return;
     }
-    const { details, ...options } = cardWake.deliveryFor(
-      deliverAs === "aside",
-      activeSessionContext
-    );
+    const { details, ...options } = cardWake.deliveryFor(deliverAs, activeSessionContext);
     pi.sendMessage(
       { customType: "envoy-message", content, display: true, details: { ...known, ...details } },
       options
     );
+    if (deliverAs === "stored") checkStoredCards();
   };
 
   // The host is idle, holds no message, is not shutting down, and is on the session this instance
-  // serves: only then is an inert card handed, or a withdrawn card handed back (`UnwrittenFrames`).
+  // serves: only then is an inert or a stored card handed, or a withdrawn card handed back
+  // (`UnwrittenFrames`).
   const hostSettled = (): boolean => {
     const hostContext = activeSessionContext;
     return (
@@ -1342,6 +1347,17 @@ export default function envoyExtension(pi: PiApi): void {
     // - is still that session's to be shown.
     hostIsOn: (card) => hostSessionID() === card,
     settled: hostSettled,
+    // The branch of the session this instance serves once the host has written its file, the one
+    // witness that a stored card reached it (`storedCheck`): a session file is written from the
+    // session's first assistant message on, and a card stored before that is lost with the
+    // process until then.
+    storedEntries: () => {
+      const hostContext = activeSessionContext;
+      if (hostContext === undefined || hostSessionID() !== sessionID) return undefined;
+      const file = hostContext.sessionManager.getSessionFile();
+      if (file === undefined || !existsSync(file)) return undefined;
+      return hostContext.sessionManager.getBranch?.() ?? [];
+    },
     recordDelivered: async (card, identity) => {
       await ledger?.recordDeliveredFor(card, identity);
     },
@@ -1395,6 +1411,34 @@ export default function envoyExtension(pi: PiApi): void {
       });
     },
   });
+
+  // A stored card (`UnwrittenFrames`, `stored`) raises no host event: neither the moment the host
+  // settles, when one held while it was busy is handed, nor its write to the session file. So a
+  // check on the host's timer looks for both (`storedCheck`), every `STORED_CHECK_MS`, from a
+  // run's end that no continuation follows, a stored card's hand-over and each heartbeat, until no
+  // stored card waits or `STORED_CHECKS` checks have run. A run that starts in between holds the
+  // card again, as the host is not settled, and its end checks again; so does the next heartbeat
+  // for a session whose file Oh My Pi has not written yet. A new arming counts the checks again
+  // from the first, and one already running goes on, so two never run side by side.
+  let storedChecksLeft = 0;
+  const checkStoredCards = (): void => {
+    const running = storedChecksLeft > 0;
+    storedChecksLeft = STORED_CHECKS;
+    if (running) return;
+    const step = async (): Promise<void> => {
+      let again = false;
+      try {
+        storedChecksLeft -= 1;
+        again = !shuttingDown && (await unwritten.storedCheck()) && storedChecksLeft > 0;
+      } finally {
+        const hostContext = again ? activeSessionContext : undefined;
+        if (hostContext === undefined) storedChecksLeft = 0;
+        else hostContext.setTimeout(step, STORED_CHECK_MS);
+      }
+    };
+    if (activeSessionContext === undefined) storedChecksLeft = 0;
+    else activeSessionContext.setTimeout(step, STORED_CHECK_MS);
+  };
 
   // Shows `session` a card the delivery ledger asked for (a failure notice naming a frame the
   // session was never shown) under a claim of that frame, so a live copy arriving meanwhile is
@@ -2068,14 +2112,12 @@ export default function envoyExtension(pi: PiApi): void {
           // card is then for a session open nowhere here, so it is handed to nobody (`closed`)
           // and its pictures stay unshown, which is what the copy the relay sends that session
           // again carries. A frame that is no delivery has its card in the conversation the
-          // host moved to, the one that took it (`cardSession`).
-          const outcome = unwritten.sendCard(
-            cardSession(),
-            card.content,
-            rendered.delivery?.mode === "aside" ? "aside" : "card",
-            identity,
-            claim
-          );
+          // host moved to, the one that took it (`cardSession`). A `low` card is stored with no
+          // turn (`lowCard`), and one held while the host is busy is handed once it settles.
+          const mode =
+            rendered.delivery?.mode === "aside" ? "aside" : lowCard(rendered) ? "stored" : "card";
+          const outcome = unwritten.sendCard(cardSession(), card.content, mode, identity, claim);
+          if (mode === "stored") checkStoredCards();
           if (outcome !== "closed") markPicturesShown(shownPictures(sessionID), card.shown);
         } else {
           const { turn } = accepted;
@@ -3351,8 +3393,10 @@ export default function envoyExtension(pi: PiApi): void {
       // once, since a title write that fails fails the same way at every tick.
       writeHeartbeatTitle(context);
       // A held inert card or notice, or a card the host withdrew unwritten, is handed first,
-      // while the host is settled (`hostSettled`).
+      // while the host is settled (`hostSettled`). A stored card is checked for too: one held, and
+      // one whose session file the host may have written since.
       unwritten.handBackWithdrawn();
+      if (unwritten.waitsOnStored()) checkStoredCards();
       if (healing) {
         // A pass that has not settled holds the queue, and with it the registration refresh that
         // is its last step. The age is measured from the last registration accepted for the
@@ -4369,6 +4413,7 @@ export default function envoyExtension(pi: PiApi): void {
   pi.on("agent_start", async (_event, context) => {
     runSeq += 1;
     cardWake.agentStart();
+    unwritten.runStarted();
     runUnderAnnouncement =
       announced?.from === context.sessionManager.getSessionId() ? announced : undefined;
   });
@@ -4467,6 +4512,10 @@ export default function envoyExtension(pi: PiApi): void {
     endInjectedUserTurns(sessionID);
     // A `pi.sendUserMessage` turn no longer looked for is done with now, found or not.
     await unwritten.textTurnsEnded();
+    // A stored card held while the run went is handed once the host settles, and a stored card
+    // handed before is written once the file holds it: a run that a continuation follows is not
+    // over, so the continuation's end checks instead.
+    if (event.willContinue !== true && unwritten.waitsOnStored()) checkStoredCards();
     // A run that started under a switch's announcement and ended with a reply it was not aborted
     // in, the host still on the session it announced leaving: that switch was cancelled. A fork's
     // run ends after the host moved, which keeps the announcement, and with it the parent's frames.

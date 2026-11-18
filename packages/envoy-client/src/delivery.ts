@@ -474,6 +474,10 @@ export type RenderInboundResult = {
   readonly envelope?: InboundEnvelope;
   /** Actor of a Dispatch event that passed the wire schema. */
   readonly dispatchActor?: DispatchEvent["actor"];
+  /** Type of a Dispatch event that passed the wire schema (`frame.event.type`): with `delivery`,
+   *  what a host reads to tell an event's card from the message or mention Dispatch delivers to
+   *  the session, and an ask's card (`ask.*`) from the rest. */
+  readonly dispatchType?: string;
   readonly delivery?: DispatchDelivery;
   readonly rejectedDelivery?: DispatchDelivery;
   readonly malformedDelivery?: true;
@@ -1051,6 +1055,7 @@ export function renderInbound(
   }
   let dispatchEvent: unknown;
   let dispatchActor: DispatchEvent["actor"] | undefined;
+  let dispatchType: string | undefined;
   let dispatchIssue: string | undefined;
   let dispatchReply: ReplyHint | undefined;
   let delivery: DispatchDelivery | undefined;
@@ -1109,6 +1114,7 @@ export function renderInbound(
             skip: false,
             content: `Unsubscribed from ${dispatchOwner(frame.event, topic)} by ${who}`,
             envelope,
+            dispatchType: frame.event.type,
           };
         }
         // Same shape for a human curating an ask's followers: only the session the
@@ -1132,6 +1138,7 @@ export function renderInbound(
                 ? `Now following ask ${ask} on ${owner} (added by ${who}): its answer and replies reach you directly; ${commandLine("dispatch_follow", { ask, action: "unfollow" })} to stop.`
                 : `No longer following ask ${ask} on ${owner} (removed by ${who}).`,
             envelope,
+            dispatchType: frame.event.type,
           };
         }
         const comment =
@@ -1216,6 +1223,7 @@ export function renderInbound(
           ...(compactRecord ?? { payload: dispatchPayloadForReader(frame.event, sessionID) }),
         };
         dispatchActor = frame.event.actor;
+        dispatchType = frame.event.type;
         bodyNote = carriedBodyNote(frame.event);
         if (bodyWasCut(frame.event.payload)) cutItem = carriedItem(frame.event);
         pictures = eventPictures(frame.event);
@@ -1342,6 +1350,7 @@ export function renderInbound(
       trailer === "" ? encode({ envoy: rendered }) : `${encode({ envoy: rendered })}\n\n${trailer}`,
     envelope,
     ...(dispatchActor === undefined ? {} : { dispatchActor }),
+    ...(dispatchType === undefined ? {} : { dispatchType }),
     ...(delivery === undefined ? {} : { delivery }),
     ...(rejectedDelivery === undefined ? {} : { rejectedDelivery }),
     ...(malformedDelivery ? { malformedDelivery: true as const } : {}),

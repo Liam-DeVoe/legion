@@ -860,6 +860,27 @@ function forwardedRoleEnvelope(role: string, summary: string, label: string) {
   });
 }
 
+/** A notice or role message the daemon published, as the listener relays it: `agent` its source,
+ *  as the listener writes for a publish that names none, no sender session unless `fields` name
+ *  one, and the urgency `fields` name. */
+function daemonEnvelope(
+  summary: string,
+  label: string,
+  fields: { readonly urgency?: string; readonly source_session?: string } = {}
+) {
+  return JSON.stringify({
+    event_id: `evt-${label}`,
+    source: "agent",
+    source_event_id: `source-${label}`,
+    topic: "notifications.role.legion-controller",
+    dedupe_key: `daemon-${label}`,
+    issued_at: 1,
+    payload_summary: summary,
+    trace_id: `trace-${label}`,
+    ...fields,
+  });
+}
+
 /** A Dispatch delivery frame addressed to ses_delivery, on issue CORE-1. `bodyTruncated` says
  *  the event carries the body's first part alone, so the session reads the message whole before
  *  it renders it (`wholeCarriedBody`). */
@@ -1142,6 +1163,12 @@ async function bootDirectSession(
      *  a written one is read before the broker route, and the trade that names the session
      *  would never happen. */
     readonly dispatchCredential?: "broker";
+    /** The host's `ctx.hasPendingMessages()`, which a context without it lacks: with `idle`
+     *  answering true and this false, the host is settled, and a stored card is handed to it. */
+    readonly pending?: () => boolean;
+    /** The session file the host names (`getSessionFile`), a path that exists once the host
+     *  wrote it; none by default, as before a session's first assistant message. */
+    readonly sessionFile?: string;
   } = {}
 ) {
   process.env.DISPATCH_URL = "http://dispatch.test";
@@ -1256,6 +1283,7 @@ async function bootDirectSession(
   const context: SessionContext = {
     ...base,
     ...(options.idle !== undefined && { isIdle: options.idle }),
+    ...(options.pending !== undefined && { hasPendingMessages: options.pending }),
     ...(options.contextUsage !== undefined && { getContextUsage: options.contextUsage }),
     ...(options.cwd !== undefined && { cwd: options.cwd }),
     ...(options.sideTurn !== undefined && {
@@ -1266,6 +1294,9 @@ async function bootDirectSession(
     sessionManager: {
       ...base.sessionManager,
       getBranch: () => options.branch ?? [...prior, ...fixture.entries],
+      ...(options.sessionFile !== undefined && {
+        getSessionFile: () => options.sessionFile,
+      }),
       getEntries: () => [...prior, ...fixture.entries],
       ...(options.hostSessionID !== undefined && { getSessionId: options.hostSessionID }),
     },
@@ -13702,6 +13733,132 @@ console.log(JSON.stringify(args));
         );
       });
     }
+  });
+
+  // A `low` card of the daemon or of a Dispatch event goes into the session's stored context with
+  // no turn (`../src/card-wake.ts`, `lowCard`): `nextTurn` with no `triggerTurn`, handed only to a
+  // settled host, since a busy one keeps such a card in memory only (`../src/unwritten-frames.ts`,
+  // the `stored` hand-over). The host emits no `message_end` for it, so its frame is settled once
+  // the session file holds its entry.
+  describe("a low card", () => {
+    /** Runs the host's managed timers until none is left: the stored-card check re-arms itself. */
+    const drainTimers = async (): Promise<void> => {
+      while (contextTimers.length > 0) await Promise.all(contextTimers.splice(0));
+    };
+
+    test("is stored with no turn on a settled host, its details naming the urgency, and every other card starts a turn", async () => {
+      const { agent, delivered, fixture } = await bootDirectSession("low-idle", {
+        idle: () => true,
+        pending: () => false,
+      });
+
+      agent.push(daemonEnvelope("low notice", "low-idle", { urgency: "low" }));
+      await delivered(1);
+      agent.push(daemonEnvelope("med notice", "med-idle", { urgency: "med" }));
+      agent.push(
+        daemonEnvelope("peer low", "peer-low", { urgency: "low", source_session: "ses_peer" })
+      );
+      await delivered(3);
+
+      expect(fixture.deliveries.map((delivery) => delivery.options)).toEqual([
+        { deliverAs: "nextTurn", triggerTurn: false },
+        { deliverAs: "aside", triggerTurn: true },
+        { deliverAs: "aside", triggerTurn: true },
+      ]);
+      expect(fixture.deliveries[0]?.details).toMatchObject({
+        event_id: "evt-low-idle",
+        handOver: "inert",
+        urgency: "low",
+      });
+      expect(fixture.deliveries[0]?.details).not.toHaveProperty("envoyCard");
+      expect(fixture.deliveries[0]?.details).not.toHaveProperty("wake");
+    });
+
+    test("that comes while a turn runs is held, a later card is not, and the run's end hands it once the host settles", async () => {
+      let idle = false;
+      const { agent, context, delivered, fixture } = await bootDirectSession("low-busy", {
+        idle: () => idle,
+        pending: () => false,
+      });
+
+      agent.push(daemonEnvelope("held notice", "low-busy", { urgency: "low" }));
+      agent.push(daemonEnvelope("later notice", "med-busy", { urgency: "med" }));
+      await delivered(1);
+      await drainTimers();
+      expect(fixture.deliveries).toHaveLength(1);
+      expect(String(fixture.deliveries[0]?.content)).toContain("later notice");
+      expect(fixture.deliveries[0]?.options).toEqual({ deliverAs: "aside", triggerTurn: true });
+
+      idle = true;
+      await fixture.handlers.get("agent_end")?.({ messages: [] }, context);
+      await delivered(2);
+      expect(String(fixture.deliveries[1]?.content)).toContain("held notice");
+      expect(fixture.deliveries[1]?.options).toEqual({ deliverAs: "nextTurn", triggerTurn: false });
+    });
+
+    test("held while the host was busy is handed ahead of a card that starts a turn", async () => {
+      let idle = false;
+      const { agent, delivered, fixture } = await bootDirectSession("low-first", {
+        idle: () => idle,
+        pending: () => false,
+      });
+
+      agent.push(daemonEnvelope("held notice", "low-first", { urgency: "low" }));
+      agent.push(daemonEnvelope("busy notice", "med-first", { urgency: "med" }));
+      await delivered(1);
+      await drainTimers();
+      idle = true;
+      agent.push(daemonEnvelope("waking notice", "med-waking", { urgency: "med" }));
+      await delivered(3);
+
+      expect(
+        fixture.deliveries.map((delivery) => [
+          String(delivery.content).match(/(held|busy|waking) notice/)?.[1],
+          delivery.options,
+        ])
+      ).toEqual([
+        ["busy", { deliverAs: "aside", triggerTurn: true }],
+        ["held", { deliverAs: "nextTurn", triggerTurn: false }],
+        ["waking", { deliverAs: "aside", triggerTurn: true }],
+      ]);
+    });
+
+    test("is recorded shown once the session file holds its entry, and not before", async () => {
+      const directory = mkdtempSync(join(tmpdir(), "envoy-low-card-"));
+      const sessionFile = join(directory, "session.jsonl");
+      const branch: unknown[] = [];
+      try {
+        const { agent, context, delivered, fixture } = await bootDirectSession("low-witness", {
+          idle: () => true,
+          pending: () => false,
+          branch,
+          sessionFile,
+        });
+        const recorded = () =>
+          fixture.entries.filter(
+            (entry) =>
+              entry.customType === REPLAY_DELIVERED_ENTRY &&
+              JSON.stringify(entry).includes("evt-low-witness")
+          );
+
+        agent.push(daemonEnvelope("stored notice", "low-witness", { urgency: "low" }));
+        await delivered(1);
+        await drainTimers();
+        const { options: _options, ...stored } = fixture.deliveries[0] ?? {};
+        // The host stored the card in memory; its file is written only at the first reply.
+        branch.push({ type: "custom_message", ...stored });
+        await fixture.handlers.get("agent_end")?.({ messages: [] }, context);
+        await drainTimers();
+        expect(recorded()).toEqual([]);
+
+        writeFileSync(sessionFile, "");
+        await fixture.handlers.get("agent_end")?.({ messages: [] }, context);
+        await drainTimers();
+        expect(recorded()).toHaveLength(1);
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    });
   });
 
   // A person's Send or Aside from the Agents page is the user's own turn, as if typed at the

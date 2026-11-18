@@ -348,6 +348,32 @@ describe("renderInbound dispatch events", () => {
     });
   });
 
+  // A host reads the type, beside the delivery, to tell the card of an event from the message or
+  // mention Dispatch delivers to the session and from an ask's card (pi-envoy's `lowCard`).
+  test("names the type of the Dispatch event it renders, and none for a frame that is no event", () => {
+    const commented = renderInbound(dispatchEvent("comment.created", comment), reader);
+    const answered = renderInbound(dispatchEvent("ask.answered", answeredAsk), reader);
+    const targeted = renderInbound(
+      JSON.stringify(envelope({ source: "dispatch", payload: targetedDispatchPayload })),
+      reader
+    );
+    const unparsed = renderInbound(
+      JSON.stringify(envelope({ source: "dispatch", payload: "not json" })),
+      reader
+    );
+    const agent = renderInbound(JSON.stringify(envelope()), reader);
+
+    expect([commented, answered, targeted].map((rendered) => rendered.dispatchType)).toEqual([
+      "comment.created",
+      "ask.answered",
+      "message.created",
+    ]);
+    expect(commented.delivery).toBeUndefined();
+    expect(targeted.delivery).toBeDefined();
+    expect(unparsed.dispatchType).toBeUndefined();
+    expect(agent.dispatchType).toBeUndefined();
+  });
+
   test("decodes a targeted comment with its comment reply address and hint", () => {
     const rendered = renderInbound(
       JSON.stringify(
