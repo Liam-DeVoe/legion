@@ -613,25 +613,14 @@
       "generation": 1,
       "phase": "step",
       "stepRole": "checker",
+      "startWaitsForPod": [
+        "checker"
+      ],
       "status": "in_progress",
       "tree": "LEGION-240",
       "repo": "acme/widgets",
       "defaultBranch": "main",
-      "workers": {
-        "checker": {
-          "claim": {
-            "session": "ses_checker",
-            "state": "working",
-            "pluginContract": 0,
-            "pendingTask": {
-              "phase": "step",
-              "queuedAt": "2026-09-22T09:16:02Z"
-            }
-          },
-          "pass": 0,
-          "rounds": 0
-        }
-      }
+      "workers": {}
     },
     "LEGION-241": {
       "key": "LEGION-241",
@@ -643,7 +632,17 @@
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "heldFrom": "step",
-      "workers": {}
+      "workers": {
+        "checker": {
+          "claim": {
+            "session": "ses_checker_241",
+            "state": "failed",
+            "pluginContract": 0
+          },
+          "pass": 0,
+          "rounds": 0
+        }
+      }
     }
   },
   "pendingStatusWrites": [],

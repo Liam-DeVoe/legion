@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -86,12 +88,12 @@ func deploymentRolesDropped() string {
 
 // A caller older than deploymentRolesContract sees an issue at step as at work (ruling 4): for a
 // caller at each contract the daemon serves below it, LEGION-240, at step, is in `issues` with the
-// phase implementing and in `admission.active`, and its checker's pending task is at
-// implementing; LEGION-241, held from step, is held from implementing for a caller at
-// recordFieldsContract or above and names no heldFrom below it, where withoutRecordFields already
-// clears it; neither names a stepRole; no stranded claim names the checker; and one line names the
-// row. At the contract, LEGION-240 is at step, both name the checker, and the checker's stranded
-// claim is served.
+// phase implementing and in `admission.active`, and names no start that waits for its pod;
+// LEGION-241, held from step, is held from implementing for a caller at recordFieldsContract or
+// above and names no heldFrom below it, where withoutRecordFields already clears it, and keeps its
+// checker's worker; neither names a stepRole; no stranded claim names the checker; and one line
+// names the row. At the contract, LEGION-240 is at step and names the checker's start as waiting
+// for its pod, both name the checker, and the checker's stranded claim is served.
 func TestAnOlderCallerSeesAStepIssueAsAtWork(t *testing.T) {
 	var contracts []int
 	for _, row := range stateNarrowings {
@@ -130,12 +132,15 @@ func TestAnOlderCallerSeesAStepIssueAsAtWork(t *testing.T) {
 			case contract >= recordFieldsContract && heldFrom != map[bool]string{true: "implementing", false: "step"}[older]:
 				t.Errorf("LEGION-241 is served heldFrom %v, want %s", heldFrom, map[bool]string{true: "implementing", false: "step"}[older])
 			}
-			if workers, ok := step["workers"].(map[string]any); ok {
-				if checker, ok := workers["checker"].(map[string]any); ok {
-					if task, ok := checker["claim"].(map[string]any)["pendingTask"].(map[string]any); ok && task["phase"] != wantPhase {
-						t.Errorf("the checker's pending task is served at %v, want %s", task["phase"], wantPhase)
-					}
-				}
+			waiting, named := step["startWaitsForPod"]
+			switch {
+			case older && named:
+				t.Errorf("LEGION-240 names startWaitsForPod %v below deploymentRolesContract, want none", waiting)
+			case !older && fmt.Sprint(waiting) != "[checker]":
+				t.Errorf("LEGION-240 is served startWaitsForPod %v, want [checker]", waiting)
+			}
+			if workers, _ := held["workers"].(map[string]any); workers["checker"] == nil {
+				t.Errorf("LEGION-241 is served the workers %v, want its checker's among them", held["workers"])
 			}
 			checkers := 0
 			for _, c := range served.StrandedClaims {
@@ -159,6 +164,31 @@ func TestAnOlderCallerSeesAStepIssueAsAtWork(t *testing.T) {
 	}
 }
 
+// A caller older than deploymentRolesContract reads a pending task's phase as a strict list
+// without step, so the checker's task, queued for step on an issue at step, is served queued for
+// implementing below the contract and for step at it.
+func TestAnOlderCallerSeesATaskPendingAtStepAsAtImplementing(t *testing.T) {
+	state := populatedState(t)
+	issues := maps.Clone(state.Issues)
+	atStep := issues["LEGION-240"]
+	atStep.StartWaitsForPod = nil
+	atStep.Workers = map[claim.Role]PhaseView{"checker": {Claim: ClaimView{Session: "ses_checker", State: "working",
+		PendingTask: &PendingTaskView{Phase: phase.Step, QueuedAt: time.Date(2026, 9, 22, 9, 16, 2, 0, time.UTC)}}}}
+	issues["LEGION-240"] = atStep
+	state.Issues = issues
+	for _, contract := range []int{deploymentRolesContract - 1, deploymentRolesContract} {
+		served, _, _ := stateServedWithLog(t, state, contract)
+		want := map[bool]string{true: "implementing", false: "step"}[contract < deploymentRolesContract]
+		workers, _ := served.Issues["LEGION-240"]["workers"].(map[string]any)
+		checker, _ := workers["checker"].(map[string]any)
+		view, _ := checker["claim"].(map[string]any)
+		task, _ := view["pendingTask"].(map[string]any)
+		if task["phase"] != want {
+			t.Errorf("at contract %d the checker's pending task is served %v, want it at %s", contract, task, want)
+		}
+	}
+}
+
 // issueKeys is the keys of m, sorted.
 func issueKeys(m map[string]map[string]any) []string {
 	keys := make([]string, 0, len(m))
@@ -170,11 +200,11 @@ func issueKeys(m map[string]map[string]any) []string {
 }
 
 // Each claim the row leaves out for an older caller is logged, one line each, naming the caller's
-// plugin contract and the claim: the checker's stranded claim on LEGION-241 and its waiting wake on
-// LEGION-240 are two lines.
+// plugin contract and the claim: the checker's stranded claim on LEGION-241 and its waiting wake
+// are two lines.
 func TestEachClaimLeftOutForAnOlderCallerIsLogged(t *testing.T) {
 	state := populatedState(t)
-	state.WakesWaiting = append(slices.Clone(state.WakesWaiting), WakeWaiting{Claim: "legion-legion-legion-240-checker", Issue: "LEGION-240", Role: "checker",
+	state.WakesWaiting = append(slices.Clone(state.WakesWaiting), WakeWaiting{Claim: "legion-legion-legion-241-checker", Issue: "LEGION-241", Role: "checker",
 		Kind: "launch", DueAt: time.Date(2026, 9, 22, 9, 18, 20, 0, time.UTC)})
 	contract := deploymentRolesContract - 1
 
@@ -182,7 +212,7 @@ func TestEachClaimLeftOutForAnOlderCallerIsLogged(t *testing.T) {
 
 	want := []leftOutLine{
 		{Message: leftAClaimOut, PluginContract: contract, Claim: "checker of LEGION-241"},
-		{Message: leftAClaimOut, PluginContract: contract, Claim: "checker of LEGION-240"},
+		{Message: leftAClaimOut, PluginContract: contract, Claim: "checker of LEGION-241"},
 	}
 	if !slices.Equal(left, want) {
 		t.Fatalf("the left-out lines = %+v, want %+v", left, want)
@@ -210,9 +240,9 @@ func TestTheDeploymentRolesContractIsTheContractThatAddedTheRoles(t *testing.T) 
 
 // servedWithoutDeploymentRoles changes want, a state body as decoded JSON, to what
 // withoutDeploymentRoles serves a caller below deploymentRolesContract: each phase, heldFrom and
-// pending task's phase of step served as implementing, no stepRole, and no stranded claim or
-// waiting wake of a role outside Legion's six. The tests that build a narrowed body from the full one
-// apply it as they take out the keys of every other row.
+// pending task's phase of step served as implementing, no stepRole, no startWaitsForPod, and no
+// stranded claim or waiting wake of a role outside Legion's six. The tests that build a narrowed
+// body from the full one apply it as they take out the keys of every other row.
 func servedWithoutDeploymentRoles(want map[string]any) {
 	issues, _ := want["issues"].(map[string]any)
 	for _, issue := range issues {
@@ -224,6 +254,7 @@ func servedWithoutDeploymentRoles(want map[string]any) {
 			issue["heldFrom"] = "implementing"
 		}
 		delete(issue, "stepRole")
+		delete(issue, "startWaitsForPod")
 		views := []any{issue["architect"]}
 		if workers, ok := issue["workers"].(map[string]any); ok {
 			for _, worker := range workers {

@@ -962,8 +962,8 @@ var stateNarrowings = []stateNarrowing{
 	{entryTimesContract, carriesEntryTimes, withoutEntryTimes, "the issues' entryQueuedAt, entryConfirmedAt and architectStalls", nil},
 	{OwnerPlanContract, carriesNewHoldReasons, withoutNewHoldReasons, "the issues' holdReason task-stopped and children, " +
 		"and admission.held's words children_before_retro and task_stopped", nil},
-	{deploymentRolesContract, carriesDeploymentRoles, withoutDeploymentRoles, "the phase step (served as implementing), the issues' stepRole, " +
-		"and the stranded claims and waiting wakes of a deployment's roles", leftDeploymentRoles},
+	{deploymentRolesContract, carriesDeploymentRoles, withoutDeploymentRoles, "the phase step (served as implementing), the issues' stepRole " +
+		"and startWaitsForPod, and the stranded claims and waiting wakes of a deployment's roles", leftDeploymentRoles},
 }
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
@@ -1538,18 +1538,19 @@ func withoutNewHoldReasons(state State) State {
 }
 
 // deploymentRolesContract is the contract whose entry in version.go added the roles a deployment
-// defines to the state: the phase step, the issues' `stepRole`, and the stranded claims and waiting
-// wakes of a role outside Legion's six. A caller below it reads `phase` and a pending task's
-// `phase` as a strict list without step, and a stranded claim's or a wake's `role` as one of the
-// six, so it is served the state without them (withoutDeploymentRoles).
+// defines to the state: the phase step, the issues' `stepRole` and `startWaitsForPod`, and the
+// stranded claims and waiting wakes of a role outside Legion's six. A caller below it reads `phase`
+// and a pending task's `phase` as a strict list without step, an issue before memoryContract as a
+// strict object that refuses a key it does not name, and a stranded claim's or a wake's `role` as
+// one of the six, so it is served the state without them (withoutDeploymentRoles).
 const deploymentRolesContract = 161
 
 // carriesDeploymentRoles is whether state carries anything deploymentRolesContract added: an
-// issue at step or held from it, an issue's stepRole, a claim view whose pending task is at step,
-// or a stranded claim or a waiting wake of a role outside Legion's six.
+// issue at step or held from it, an issue's stepRole or startWaitsForPod, a claim view whose
+// pending task is at step, or a stranded claim or a waiting wake of a role outside Legion's six.
 func carriesDeploymentRoles(state State) bool {
 	for _, issue := range state.Issues {
-		if issue.Phase == phase.Step || issue.HeldFrom == string(phase.Step) || issue.StepRole != "" {
+		if issue.Phase == phase.Step || issue.HeldFrom == string(phase.Step) || issue.StepRole != "" || len(issue.StartWaitsForPod) > 0 {
 			return true
 		}
 		if issue.Architect != nil && pendingAtStep(*issue.Architect) {
@@ -1575,11 +1576,11 @@ func pendingAtStep(view ClaimView) bool {
 // controller reads as past review or as a wait describes it; and every plan of this release holds
 // an implementer — and it stays in `issues` and in `admission.active`, which the daemon computes
 // before any narrowing. A hold from step is served as a hold from implementing, a pending task
-// at step as one at implementing, and `stepRole` is cleared; each stranded claim and waiting wake
-// of a role outside Legion's six is dropped (leftDeploymentRoles names each). An issue's workers
-// keep the deployment role's key, which such a caller reads as a record keyed by any string. The
-// maps and lists it changes are copied, as every sibling strip copies what it changes, so the state
-// the source answered is left as it was.
+// at step as one at implementing, and `stepRole` and `startWaitsForPod` are cleared; each stranded
+// claim and waiting wake of a role outside Legion's six is dropped (leftDeploymentRoles names
+// each). An issue's workers keep the deployment role's key, which such a caller reads as a record
+// keyed by any string. The maps and lists it changes are copied, as every sibling strip copies
+// what it changes, so the state the source answered is left as it was.
 func withoutDeploymentRoles(state State) State {
 	issues := make(map[string]Issue, len(state.Issues))
 	for key, issue := range state.Issues {
@@ -1590,6 +1591,7 @@ func withoutDeploymentRoles(state State) State {
 			issue.HeldFrom = string(phase.Implementing)
 		}
 		issue.StepRole = ""
+		issue.StartWaitsForPod = nil
 		if issue.Architect != nil && pendingAtStep(*issue.Architect) {
 			architect := atWork(*issue.Architect)
 			issue.Architect = &architect

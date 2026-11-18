@@ -297,7 +297,7 @@ test("the gate names a key no schema names, and is blind under the loose blocks"
 // `workers` is keyed by a plain string, so the schema no longer holds the role names and the gate
 // above cannot see a role the Go side adds. The key list it held is held here instead: every
 // worker key of every golden is a role of the step grammar, one of Legion's six or a role of the
-// deployment (contract 161), as LEGION-240's `checker` is.
+// deployment (contract 161), as LEGION-241's `checker` is.
 test("every golden's worker keys are roles of the step grammar", () => {
   const states = Object.keys(schemas).filter((name) => schemas[name] === LegionStateResponse);
   expect(states.length).toBeGreaterThan(0);
@@ -579,14 +579,18 @@ test("the phase lists are the daemon's, with awaiting_person after admitted and 
 });
 
 // Contract 161: a step of a role of the deployment runs as the phase `step`, and the issue names
-// the role that works it, `stepRole`, at `step` and while a hold keeps it out of that step.
+// the role that works it, `stepRole`, at `step` and while a hold keeps it out of that step. An
+// issue whose pod was built before that role names it in `startWaitsForPod` and holds no claim of
+// it; a held issue keeps the failed claim of that role as its worker.
 test("the state golden carries an issue at step and the role of the deployment that works it", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
   const atStep = state.issues["LEGION-240"];
   expect([atStep?.phase, atStep?.stepRole]).toEqual(["step", "checker"]);
-  expect(Object.keys(atStep?.workers ?? {})).toEqual(["checker"]);
+  expect(atStep?.startWaitsForPod).toEqual(["checker"]);
+  expect(Object.keys(atStep?.workers ?? {})).toEqual([]);
   const held = state.issues["LEGION-241"];
   expect([held?.phase, held?.heldFrom, held?.stepRole]).toEqual(["held", "step", "checker"]);
+  expect(Object.keys(held?.workers ?? {})).toEqual(["checker"]);
 });
 
 // Contract 161: a move back may go to `step` and name the step it returns to by its place,

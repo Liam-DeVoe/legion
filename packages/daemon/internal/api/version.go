@@ -2149,14 +2149,18 @@ package api
 // 161: the roles a deployment defines run steps of an issue's task. An issue whose running step is
 // of such a role stands at a new phase, `step`, of `GET /legion/v1/state`'s `phase`, `heldFrom` and
 // a claim view's `pendingTask.phase`, and names that role in a new key, `issues.<key>.stepRole`; a
-// stranded claim and a waiting wake may name such a role. A caller from a pod whose claims record a
+// stranded claim and a waiting wake may name such a role. An issue names, in a new key
+// `issues.<key>.startWaitsForPod`, the roles whose start waits because its pod was built before the
+// deployment defined them, absent where none waits. A caller from a pod whose claims record a
 // contract below 161 is served an issue at step as at work, at `implementing`, its hold from step as
-// one from `implementing`, a pending task at step as one at `implementing`, no `stepRole`, and no
-// stranded claim or waiting wake of a role outside Legion's six (one row of `stateNarrowings`,
-// `withoutDeploymentRoles`), and the daemon logs one line for each claim it leaves out
-// (`leftAClaimOut`); the issue stays in `issues` and in `admission.active`. Such a role's agent
-// completes its step with `POST /legion/v1/handoff/complete` and the verdict `pass` or `fail` and a
-// commit, and no handoff record (`400 STEP_VERDICT_REQUIRED`); `VERDICT_ROLE_FORBIDDEN` now reads
+// one from `implementing`, a pending task at step as one at `implementing`, no `stepRole`, no
+// `startWaitsForPod` (a plugin before memoryContract reads an issue as a strict object and would
+// refuse the whole state over it), and no stranded claim or waiting wake of a role outside Legion's
+// six (one row of `stateNarrowings`, `withoutDeploymentRoles`), and the daemon logs one line for
+// each claim it leaves out (`leftAClaimOut`); the issue stays in `issues` and in
+// `admission.active`. Such a role's agent completes its step with `POST
+// /legion/v1/handoff/complete` and the verdict `pass` or `fail` and a commit, and no handoff
+// record (`400 STEP_VERDICT_REQUIRED`); `VERDICT_ROLE_FORBIDDEN` now reads
 // `only a tester or a role of the deployment reports a verdict`. `POST /legion/v1/phase/backward`
 // takes such a role's grant, and one optional field, `returnTo`, the place of the step the move
 // returns to (below 1 `400 INVALID_RETURN_TO`; a place the workflow may not name, or a `to` that is
