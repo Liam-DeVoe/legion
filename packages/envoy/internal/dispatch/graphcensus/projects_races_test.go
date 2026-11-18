@@ -57,8 +57,12 @@ func TestAStaleCommentBatchDoesNotRestoreAnErasedComment(t *testing.T) {
 	if err != nil || len(batch) != 1 {
 		t.Fatalf("read the unmarked comment: %d row(s), %v; want 1", len(batch), err)
 	}
-	if _, _, _, err := writeCommentBatch(ctx, database, batch); err != nil {
+	first, _, _, err := writeCommentBatch(ctx, database, batch)
+	if err != nil {
 		t.Fatalf("write the first run's batch: %v", err)
+	}
+	if first != 1 {
+		t.Fatalf("the first run's batch counts %d row(s) written, want 1: the comment stood unmarked", first)
 	}
 	// The erase takes the issue owner, deletes the stamped row, then erases its node and tuples.
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
