@@ -40,7 +40,20 @@ import { approvalPillClassName, LabelPill, Pill, StatusPill } from "../../compon
 import { PinButton } from "../../components/PinButton";
 import { RefusableButton } from "../../components/RefusableButton";
 import { withoutEllipsis } from "../../components/tooltips";
-import { pageHeaderControl, pageInkText, pageQuietText } from "../../theme/classes";
+import {
+  focusBorder,
+  focusVisibleRing,
+  inputClasses,
+  PAGE_COLORS,
+  pageFailedText,
+  pageHairBorder,
+  pageHeaderControl,
+  pageInkText,
+  pageLineBorder,
+  pageMutedText,
+  pagePaperBg,
+  pageQuietText,
+} from "../../theme/classes";
 import { mentionOptions } from "../conversation/MentionComposer";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { ConnectionDot } from "../doc/ConnectionDot";
@@ -5670,6 +5683,163 @@ test("inside NoTooltips an editor's Save and Cancel keep the focus while its sav
     saved.resolve();
     undraw(view);
     unemulate();
+  }
+});
+
+/** The identity block's two editors, each by the property's word its box is named by and the
+ *  word on its Save. */
+const FIELD_EDITORS = [
+  ["route", PROPERTY_LABELS.route, CONTROL_LABELS.save_route],
+  ["parent", PROPERTY_LABELS.parent, CONTROL_LABELS.save_parent],
+] as const;
+
+/** `main`'s focus indicator, which the page keeps, since its palette holds no focus colour: the
+ *  ring and a field's focus rule. */
+const MAIN_FOCUS: readonly string[] = [...tokens(focusVisibleRing), ...tokens(focusBorder)];
+
+/** The colour a class token names after its variants, or `undefined` for a token that names none
+ *  (`text-sm`, `border`, `ring-2`, `outline-none`): what follows a colour's property, as
+ *  `shared-controls.tooltips.test.tsx` reads it, an opacity dropped - a palette shade
+ *  (`slate-300`), a keyword colour (`white`, `transparent`), an arbitrary colour, or a colour of
+ *  the page's palette by its own name (`page-ink`), which `PAGE_COLORS` must then hold. */
+function colourNamed(token: string): string | undefined {
+  const utility = /^(?:[^:[\]]+:)*(.+)$/.exec(token)?.[1] ?? token;
+  const named =
+    /^-?(?:text|bg|border(?:-[xytrblse])?|outline|ring(?:-offset)?|placeholder|decoration|divide|caret|accent|fill|stroke|shadow|from|via|to)-(.+)$/
+      .exec(utility)?.[1]
+      ?.replace(/\/(?:\d+|\[[^\]]*\])$/, "");
+  if (named === undefined) return undefined;
+  return /^(?:[a-z]+-\d{2,3}|white|black|transparent|\[(?:#|rgba?\(|hsla?\(|oklch\(|oklab\(|color:|var\(--color-).*|(?:page|icon-rail)(?:-[a-z]+)*)$/.test(
+    named
+  )
+    ? named
+    : undefined;
+}
+
+/** Each class token of `root` and of every element inside it that names a colour the page's
+ *  palette (`PAGE_COLORS`) does not hold and that is no token of `main`'s focus indicator, and
+ *  how many of their tokens name a colour at all. */
+function offPageTokens(root: Element): { readonly colours: number; readonly offenders: string[] } {
+  const offenders: string[] = [];
+  let colours = 0;
+  for (const element of [root, ...root.querySelectorAll("*")]) {
+    for (const token of classOf(element)) {
+      const colour = colourNamed(token);
+      if (colour === undefined) continue;
+      colours += 1;
+      if (!Object.hasOwn(PAGE_COLORS, colour) && !MAIN_FOCUS.includes(token)) {
+        offenders.push(`<${element.tagName.toLowerCase()}> ${token}`);
+      }
+    }
+  }
+  return { colours, offenders };
+}
+
+/** The form an editor's box sits in. */
+function formOf(box: HTMLElement): HTMLFormElement {
+  const form = box.closest("form");
+  if (form === null) throw new Error("the box is in no form");
+  return form;
+}
+
+// The identity block's editors are drawn in a row of Details on the new issue page alone, so each
+// draws the page's colours, read here inside `NoTooltips`. The box is the page's field, as the
+// repository box in Details is: a border in the page's hairline rule, its paper and its ink, with
+// `main`'s focus ring, the application's one focus indicator, and none of the colours of `main`'s
+// field (`inputClasses`) but its focus rule. Save is the page's bordered action and Cancel its
+// quiet act, each with that focus ring. Every colour a class of the form names, the route's
+// refusal of a draft Dispatch would not take among them, is the page's or that focus indicator.
+test("the route and parent editors draw the page's field, with a border and a focus ring", async () => {
+  const user = userEvent.setup();
+  const mainField = tokens(inputClasses(true)).filter((token) => !MAIN_FOCUS.includes(token));
+  for (const [field, label, saveLabel] of FIELD_EDITORS) {
+    const view = draw(<OpenFieldForm field={field} onClose={() => undefined} />, "inside");
+    try {
+      const scope = within(view.container);
+      const box = scope.getByRole("textbox", { name: label });
+      await waitFor(() => expect(document.activeElement).toBe(box));
+      expect(classOf(box)).toEqual(
+        expect.arrayContaining([
+          "border",
+          "focus-visible:ring-2",
+          ...tokens(pageHairBorder),
+          ...tokens(pagePaperBg),
+          ...tokens(pageInkText),
+          ...tokens(focusVisibleRing),
+        ])
+      );
+      expect(classOf(box).filter((token) => mainField.includes(token))).toEqual([]);
+      expect(classOf(scope.getByRole("button", { name: saveLabel }))).toEqual(
+        expect.arrayContaining([
+          "border",
+          ...tokens(pageLineBorder),
+          ...tokens(pagePaperBg),
+          ...tokens(pageMutedText),
+          "not-refused:hover:text-page-ink",
+          "focus-visible:ring-2",
+          ...tokens(focusVisibleRing),
+        ])
+      );
+      expect(classOf(scope.getByRole("button", { name: CONTROL_LABELS.cancel }))).toEqual(
+        expect.arrayContaining([
+          ...tokens(pageQuietText),
+          "not-refused:hover:text-page-muted",
+          "focus-visible:ring-2",
+          ...tokens(focusVisibleRing),
+        ])
+      );
+      if (field === "route") {
+        await user.clear(box);
+        await user.type(box, "nobody");
+        const refusal = document.getElementById(box.getAttribute("aria-describedby") ?? "");
+        if (refusal === null) throw new Error("the route box names no description");
+        expect(classOf(refusal)).toEqual(expect.arrayContaining(tokens(pageFailedText)));
+      }
+      const read = offPageTokens(formOf(box));
+      expect(read.offenders).toEqual([]);
+      // A walk that found no colour would pass with nothing read.
+      expect(read.colours).toBeGreaterThan(0);
+    } finally {
+      undraw(view);
+    }
+  }
+});
+
+/** The words of each text node inside `root` that a reader sees: none inside an element drawn
+ *  for a screen reader alone (`sr-only`). */
+function seenWords(root: Element): string[] {
+  const seen: string[] = [];
+  const walk = (node: Node) => {
+    if (node.nodeType === node.TEXT_NODE) {
+      const words = node.textContent?.trim() ?? "";
+      if (words !== "") seen.push(words);
+    } else if (!(node instanceof Element && classOf(node).includes("sr-only"))) {
+      for (const child of node.childNodes) walk(child);
+    }
+  };
+  walk(root);
+  return seen;
+}
+
+// Each editor is drawn in the row of Details that draws its property's label, so the editor's own
+// label is for a screen reader alone (`sr-only`): the box keeps the property's word as its name,
+// and no word of the form a reader sees is that label again.
+test("the route and parent editors name their box without drawing the row's label again", async () => {
+  for (const [field, label, saveLabel] of FIELD_EDITORS) {
+    const view = draw(<OpenFieldForm field={field} onClose={() => undefined} />, "inside");
+    try {
+      const box = within(view.container).getByRole("textbox", { name: label });
+      await waitFor(() => expect(document.activeElement).toBe(box));
+      const labels = [...view.container.querySelectorAll(`label[for="${box.id}"]`)];
+      expect(labels.map((element) => element.textContent)).toEqual([label]);
+      expect(labels.map((element) => classOf(element).includes("sr-only"))).toEqual([true]);
+      const seen = seenWords(formOf(box));
+      expect(seen).not.toContain(label);
+      // The walk reads the words the form draws: its two buttons'.
+      expect(seen).toEqual(expect.arrayContaining([saveLabel, CONTROL_LABELS.cancel]));
+    } finally {
+      undraw(view);
+    }
   }
 });
 
