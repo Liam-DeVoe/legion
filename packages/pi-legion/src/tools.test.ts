@@ -355,6 +355,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "implementing",
         "testing",
         "reviewing",
+        "step",
         "accepting",
         "retro",
         "merging",
