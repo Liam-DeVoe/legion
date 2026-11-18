@@ -346,7 +346,7 @@ func TestNewSetTakesTheSameAccountAndWorkflowKeyTwiceApart(t *testing.T) {
 // entry's.
 func TestNewSetTakesAManagedUsersRepository(t *testing.T) {
 	const managed = "mona-cat_octo/example-repo"
-	set, err := exchange.NewSet(nil, nil, []exchange.WorkflowEntry{{Repository: managed, Workflow: workflow, Ref: ref, Project: project, Person: person}}, nil, signInDomain)
+	set, err := exchange.NewSet(nil, nil, []exchange.WorkflowEntry{{Repository: managed, Workflow: workflow, Ref: ref, Project: project, Person: person}}, nil, nil, signInDomain)
 	if err != nil {
 		t.Fatalf("NewSet(a workflow of %s): %v", managed, err)
 	}
