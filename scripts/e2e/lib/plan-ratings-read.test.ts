@@ -157,6 +157,16 @@ const bounds = join(
   "plan-rating.json"
 );
 const readMoved = fakeDispatchRead(moved, dir, [project, key]);
+
+/** copyScript places the script at `moved`, with the prologue it sources beside it. */
+function copyScript(): void {
+  mkdirSync(join(dirname(moved), "lib"), { recursive: true });
+  copyFileSync(script, moved);
+  copyFileSync(
+    join(import.meta.dir, "dispatch-read.sh"),
+    join(dirname(moved), "lib", "dispatch-read.sh")
+  );
+}
 beforeAll(async () => {
   const rendered = await executeDispatchTool({
     tool: "dispatch_plans",
@@ -336,8 +346,7 @@ describe("plan-ratings-read.sh", () => {
   test("a rating is read on the scale the daemon's bounds file states", () => {
     const [least, most] = [LEGION_PLAN_RATING_LEAST, LEGION_PLAN_RATING_MOST];
     const other = most + 2;
-    mkdirSync(dirname(moved), { recursive: true });
-    copyFileSync(script, moved);
+    copyScript();
     mkdirSync(dirname(bounds), { recursive: true });
     writeFileSync(
       bounds,
@@ -367,8 +376,7 @@ describe("plan-ratings-read.sh", () => {
   // With no bounds of a rating to read, or bounds that name no top, no line can be judged: the
   // script says so before it runs `dispatch`, so nothing is read and nothing passes.
   test("bounds of a rating it cannot read are UNKNOWN, exit 2, reading nothing", () => {
-    mkdirSync(dirname(moved), { recursive: true });
-    copyFileSync(script, moved);
+    copyScript();
     rmSync(bounds, { force: true });
     const missing = readMoved(printed());
     expect(missing.stdout).toContain("UNKNOWN: the scale of a rating,");

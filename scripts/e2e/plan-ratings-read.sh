@@ -34,17 +34,16 @@ if [ "$#" -ne 2 ] || ! [[ $1 =~ ^[A-Z][A-Z0-9]*$ ]] || ! [[ $2 =~ ^$1-[0-9]+$ ]]
 fi
 project=$1
 issue=$2
-unknown() {
-  echo "UNKNOWN: $*"
-  exit 2
-}
-command -v dispatch >/dev/null || unknown "no dispatch command is on PATH, so nothing was read"
+case ${BASH_SOURCE[0]} in */*) here=${BASH_SOURCE[0]%/*} ;; *) here=. ;; esac
+# shellcheck source-path=SCRIPTDIR source=lib/dispatch-read.sh
+. "$here/lib/dispatch-read.sh"
+read_require_dispatch
 
-# The scale a rating is printed on is the daemon's: the bounds its golden test writes from
-# record.PlanRatingLeast and record.PlanRatingMost to this file, which the contract's constants,
-# and so the printer's, are held to. A rating is read on it, so a line the command prints out of
-# another top is no finished issue, and the scale is written nowhere in this script.
-bounds="$(dirname "${BASH_SOURCE[0]}")/../../packages/contracts/fixtures/daemon-api/plan-rating.json"
+# The scale a rating is printed on is the daemon's: the bounds its golden test writes to this file
+# from planrating.Least and planrating.Most, generated from the contract's constants, which the
+# printer reads too. A rating is read on it, so a line the command prints out of another top is no
+# finished issue, and the scale is written nowhere in this script.
+bounds="$here/../../packages/contracts/fixtures/daemon-api/plan-rating.json"
 scale=$(awk '
   { text = text $0 }
   END {
@@ -54,13 +53,10 @@ scale=$(awk '
     most = substr(text, RSTART, RLENGTH); sub(/.*: */, "", most)
     print least " " most
   }
-' "$bounds" 2>/dev/null) || unknown "the scale of a rating, $bounds, could not be read, so no line can be judged"
+' "$bounds" 2>/dev/null) || read_unknown "the scale of a rating, $bounds, could not be read, so no line can be judged"
 read -r least most <<<"$scale"
 
-code=0
-out=$(dispatch plans --project "$project" 2>&1) || code=$?
-[ "$code" -eq 0 ] || unknown "dispatch plans --project $project exited $code, so nothing was read: $out"
-printf '%s\n' "$out"
+read_dispatch plans --project "$project"
 
 # Each line after the header is one finished issue, as `dispatch plans` prints it
 # (packages/envoy-client/src/dispatch-commands/plans.ts):
@@ -139,4 +135,4 @@ awk -v project="$project" -v issue="$issue" -v least="$least" -v most="$most" '
     if (count) exit 1
     print "PASS: " issue ": " said
   }
-' <<<"$out"
+' <<<"$read_out"
