@@ -370,8 +370,8 @@ approval to the version it writes. Once they have answered:
   changed since the earlier approval, then the reviews' sentence (the card shows `Approved at
   version N on <date> by <who>.`, and its `Show diff` control carries the detail). The rewrite
   closes the gate until they approve. Release no further child until the `design-approved` after
-  it; work already in flight, including what the daemon started at the answer, continues through
-  its merge.
+  it; work already in flight, including what the daemon started at the answer, continues, and
+  merges only once they approve.
 
 A settled decision is the human's. A plan that would overturn one goes back to the planner with the
 decision kept, unless the planner brings evidence the human did not weigh that would change it
@@ -458,8 +458,6 @@ person approved the root's version, so the person can still ask for the root's o
   other block.
 - A check that the deployment's instructions ask of every change, such as an after-merge production
   check, serves the requirement whose change it deploys.
-- A requirement that the root needs and the ancestor does not state goes up, as "A requirement the
-  ancestor does not state" says.
 - A root that already runs with requirements of its own becomes a view at its next spec change.
   Each of its requirements that the ancestor states becomes checks that serve the ancestor's
   requirement. Each one that the ancestor does not state goes up.
@@ -492,7 +490,7 @@ These steps take the place of steps 4 and 5 of "The armed gate":
      artifactId: "<UUID>", // the root's own primary document
      version: <N>, // its latest version
      basis: "dispatch://<ANCESTOR>/spec", // the ancestor's document for the same step
-     basisVersion: <M>, // the version a person approved, or the version a request of the route asks about
+     basisVersion: <M>, // its latest version, which a person approved or a request of the route asks about
      reason: "<the ancestor's requirements that the checks serve, and the reviews' result>",
    })
    ```
@@ -516,8 +514,8 @@ shows `pending_on_basis`, with the request it waits on. The root keeps its slot 
 your turn. The person's approval of that version opens the step with `design-approved`. Every other
 end of the wait comes as `basis-ended`.
 
-A step that opened on a basis is registered. A relaunched architect does not register it again in
-the same generation: its catch-up shows the step with its `basis`.
+A relaunched architect does not register a step that opened on a basis again in the same
+generation: its catch-up shows the step with its `basis`.
 
 A condition that the deployment's instructions put on an approval request holds for a registration
 on a basis too. For example, where a request waits for an owner's approval link in the spec, the
@@ -558,8 +556,8 @@ architect and whether its tree runs:
    the issue. A message on its role topic wakes it. A claim that the operator suspended reads the
    same, and a message to it waits until the operator starts it again.
 3. Read `treeRuns` on the record of the root that the ancestor's `tree` field names. `true` means
-   the ancestor's tree runs, and `false` means it does not. An ancestor that the daemon does not
-   record has no `treeRuns`, and its tree does not run. A root that a re-admission left at `todo`
+   the ancestor's tree runs. An ancestor that the daemon does not record has no `treeRuns`, and
+   its tree does not run. A root that a re-admission left at `todo`
    runs nothing, whatever its architect claim reads.
 
 While the ancestor's tree runs, send the requirement with `envoy_publish` to the ancestor's
@@ -589,8 +587,10 @@ A version of the route is a version that adds, revises or restores a requirement
 up, put to the person for approval. Its request's summary names the roots and the requirement, so a
 root that reads the request can tell it is one. Any other root under the ancestor whose
 registration finds that version waiting on the person may register on it as a pending basis too.
-While a request of the route waits on the person, a second requirement waits for that answer. It
-then goes into the next version, and the root registers on that version.
+While a request of the route waits on the person, a second requirement, or a further part found
+after the request opened, waits for that answer and goes into the next version. The root still
+registers on the waiting version, and builds that part only once it registers on a version that
+holds it.
 
 ### For the ancestor's architect
 
@@ -662,8 +662,9 @@ On a person's changes request on a version of the route, the ancestor's architec
 2. Runs the two fresh reviews, requests the person's approval of that version again, and registers
    the ancestor's gate at it where the ancestor is its tree's root.
 3. Tells each root whose pending basis the changes request ended, and each root whose step opened
-   on the version the person now asks to change. The `resting-root` and `basis-changes-requested`
-   notices name them.
+   on the version the person now asks to change, which version was sent back, the new version, and
+   that its request is open. The `resting-root` and `basis-changes-requested` notices name those
+   roots.
 4. Also tells each root that sent the requirement. A changes request that came before a root
    registered makes its call fail (`BASIS_NOT_APPROVED`, which names the changes request), so no
    notice names that root.
