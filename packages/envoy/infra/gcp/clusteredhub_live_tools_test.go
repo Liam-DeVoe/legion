@@ -24,10 +24,7 @@ import (
 // .github/scripts/go-fetch.sh installs them before the tests, and the tests only look them up.
 const liveToolsFile = "testdata/live-tools.txt"
 
-var (
-	liveToolPins = sync.OnceValues(func() (map[string]string, error) { return readLiveTools(liveToolsFile) })
-	liveToolsBin = sync.OnceValues(goBin)
-)
+var liveToolPins = sync.OnceValues(func() (map[string]string, error) { return readLiveTools(liveToolsFile) })
 
 // liveTool is the path of the tool liveToolsFile pins under the name binary, in `go env GOBIN`,
 // where a `go install` of its line puts it. It installs nothing and so downloads nothing: a fetch
@@ -40,7 +37,7 @@ func liveTool(t *testing.T, binary string) string {
 	require.NoError(t, err)
 	pin, ok := pins[binary]
 	require.True(t, ok, "%s pins no tool named %s", liveToolsFile, binary)
-	gobin, err := liveToolsBin()
+	gobin, err := goBin(t.TempDir())
 	require.NoError(t, err)
 	path, err := findLiveTool(gobin, binary, pin)
 	require.NoError(t, err)
@@ -70,11 +67,11 @@ func findLiveTool(gobin, binary, pin string) (string, error) {
 }
 
 // goBin is where `go install` puts a binary: GOBIN, or the bin directory of GOPATH's first entry
-// when GOBIN is unset. It asks the go command, which also reads `go env -w` settings, from outside
-// any module, so no go.mod can make it fetch a toolchain.
-func goBin() (string, error) {
+// when GOBIN is unset. It asks the go command, which also reads `go env -w` settings, in dir, a
+// directory outside any module, so no go.mod can make it fetch a toolchain.
+func goBin(dir string) (string, error) {
 	cmd := exec.Command("go", "env", "GOBIN", "GOPATH")
-	cmd.Dir = os.TempDir()
+	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("go env GOBIN GOPATH: %w", err)

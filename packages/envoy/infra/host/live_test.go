@@ -331,7 +331,7 @@ func TestLiveGoConsumersCanUseTheSDK(t *testing.T) {
 func moduleCacheProxy(t *testing.T) string {
 	t.Helper()
 	env := exec.Command("go", "env", "GOMODCACHE")
-	env.Dir = os.TempDir()
+	env.Dir = t.TempDir()
 	out, err := env.Output()
 	require.NoError(t, err, "go env GOMODCACHE")
 	cache := strings.TrimSpace(string(out))
