@@ -86,9 +86,14 @@ func (e *Engine) phaseWorkerRecord(ctx context.Context, tx pgx.Tx, key string, g
 	if err != nil {
 		return nil, err
 	}
-	// A key that yields no claim token has no run, and is passed over as admission's
-	// resumeSlottedWorkers passes over one.
-	token, err := claim.NewToken(project, issue.Key, role)
+	phases, err := e.store.Phases(ctx, tx, issue.Key)
+	if err != nil {
+		return nil, err
+	}
+	// The run is the run of the agent that works the role's step (record.WorkerClaim), a keyed
+	// agent on a step of another role included. A key that yields no claim token has no run, and
+	// is passed over as admission's resumeSlottedWorkers passes over one.
+	token, err := record.WorkerClaim(project, issue.Key, role, phases)
 	if err != nil {
 		return nil, nil
 	}

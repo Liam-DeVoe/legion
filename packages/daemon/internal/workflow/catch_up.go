@@ -212,11 +212,7 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 	if err != nil || finished {
 		return err
 	}
-	project, err := claim.ProjectToken(issue.Project)
-	if err != nil {
-		return err
-	}
-	token, err := claim.NewToken(project, issue.Key, role)
+	token, err := e.workerClaim(ctx, tx, *issue, role)
 	if err != nil {
 		return err
 	}

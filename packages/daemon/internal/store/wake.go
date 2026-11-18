@@ -449,20 +449,6 @@ func (p *PodRecords) RecordListenerReady(ctx context.Context, tx pgx.Tx, at time
 	return nil
 }
 
-// ReleasedClaimOfRole is the released claim of issue's role, and whether there is one.
-func (p *PodRecords) ReleasedClaimOfRole(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (supervise.Claim, bool, error) {
-	claims, err := ReleasedClaimsOf(ctx, tx, p.project, issue)
-	if err != nil {
-		return supervise.Claim{}, false, err
-	}
-	for _, c := range claims {
-		if c.Role == role {
-			return c, true, nil
-		}
-	}
-	return supervise.Claim{}, false, nil
-}
-
 // ReleasedClaimByToken is the released claim whose token is token, and whether this daemon's
 // project holds one. The listener reports a role token it saw a message published to and knows
 // nothing of which daemon owns it, so every daemon reads its own claims and the one that holds a
