@@ -15,7 +15,7 @@ in the environment: a person's own session gets no tool, no title and no daemon 
 The Legion entry claims roles, matches injected user turns and reads the bootstrapped session
 through the interface the Envoy entry publishes: one process-wide object on `globalThis` under
 `Symbol.for("legion.pi-shared.envoy-plugin-interface")`, at `ENVOY_PLUGIN_INTERFACE_VERSION`
-(currently 6), described in `packages/pi-shared/AGENTS.md`. At factory time `extensions/legion.ts`
+(currently 5), described in `packages/pi-shared/AGENTS.md`. At factory time `extensions/legion.ts`
 sets its own load marker, `Symbol.for("legion.pi-legion.loaded")`, to
 `{ from: import.meta.url, envoyInterface: ENVOY_PLUGIN_INTERFACE_VERSION }`, which the daemon's load
 probe reads.
@@ -95,15 +95,7 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 159's unreachable claims
-(every claim view of `GET /legion/v1/state` and the controller's locator carry `unreachable`,
-`{since, lastSeen?}`, absent while the claim is reachable and from every view served a caller
-under 159 (`api.stateFor`, `withoutUnreachable`); the controller's `legion` tool gains
-`relaunch`, which posts `POST /legion/v1/claims/relaunch` with the claim's token; and the
-controller the daemon launches posts its activity report as a worker's session does; every
-session posts that report again every 5 minutes while a turn is open, which the relaunch guard
-reads as the turn still running), after
-contract 146 (in which
+number is the one `DaemonAPIVersion` declares, last bumped by contract 146 (dispatch://INFRA-2614:
 a root at `admitted` carries its architect's `phaseEntry` and `givenEntry`, every issue carries
 `entryQueuedAt` and `entryConfirmedAt`, the two times of a claim's own record of its handshake of
 its last entry, which outlast that entry's task and which a tree's own root carries from its
@@ -826,11 +818,6 @@ machine, the runner and the four numbers live once, in
 `@legion/pi-shared` (`phase-stall.ts`, `phase-reminder.ts`, `stall-limits.ts`): this entry is the
 Oh My Pi host, and `packages/claude-envoy/src/legion-phase-hook.ts` is the Claude Code one, driven
 by Claude Code's own hooks over a state file (`packages/claude-envoy/AGENTS.md`).
-A reminder that comes while a cut-turn note is on its way to the session (the interface's
-`cutTurnNote`, which the Envoy entry sets at `session_start` and clears once the host has written
-the note) waits for the note before it is sent, so the note comes before the turn the reminder
-opens (R2); it waits `CUT_TURN_NOTE_BOUND_MS` (10 s) at most, and logs a
-`warn` when it goes without it.
 `extensions/legion-phase-stall-omp.test.ts` proves it on the pinned Oh My Pi
 (`LEGION_TEST_OMP`) through the harness's `runLegionPane` (`@legion/pi-shared/test/omp-harness`),
 which hands both plugin entries to the Oh My Pi child by path: every turn reminded, the WAITING

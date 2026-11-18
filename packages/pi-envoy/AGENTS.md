@@ -469,28 +469,6 @@ session runs: `plugin` `@sjawhar/pi-envoy` and `plugin_version` the `version` of
 `package.json` (imported, so the release's bundle carries the version the release wrote there), and
 the listener's `GET /v1/sessions` and `GET /v1/registry/<id>`, and `envoy_sessions`, show both.
 
-A heartbeat that stops has its own watchdog (`src/registration-watchdog.ts`, R4): the heartbeat is
-armed once per process, so a timer that stops leaves the process running and unregistered for the
-rest of its life, and every message published to its role reaches a session Envoy no longer lists.
-The watchdog runs on this process's own timer, never the host's, since the end it exists for is
-the host's interval no longer firing, and it acts only where the heartbeat cannot: after five
-minutes — Envoy's live window, after which the listener's session bucket forgets a session — with
-no accepted registration and no tick of the heartbeat's own interval, it arms the heartbeat again
-and ticks it once, which registers under the same session.
-While registrations are accepted, or while the heartbeat still ticks, it does nothing, however
-long the listener refuses: a failed tick already buys the one extra call its interval allows
-(`armRetry`), and a second caller would make every session of a fleet ask again at once through
-one listener outage.
-Its own retries back off to at most a minute, and it closes no NATS connection: the pass its tick
-runs dials one only when that connection is down (`ensureConnection`), so a listener outage makes
-no session redial NATS.
-The session's shutdown clears the timer, so a session stopped cleanly never registers again.
-`ENVOY_REGISTRATION_WATCHDOG_MS` is the window, which a rig shortens to drive whole windows in
-seconds, and `ENVOY_HEARTBEAT_STOP_AFTER_MS` is the rig's seam for the end itself: the heartbeat
-armed first stops firing that many milliseconds after it was armed, and the watchdog's own restart
-runs free of it.
-No production path sets either.
-
 ## Consumer delivery
 
 The listener holds a durable consumer for the session and relays it to the session in stream
@@ -907,66 +885,6 @@ plugin gives the Legion entry is the interface it publishes at factory time
 bridge the Legion entry claims through, the record of the user turns this plugin sends in, and the
 slot for the bootstrapped session's transcript; what the Legion entry does with it, and how it
 refuses to run without it, is "What this plugin needs from pi-envoy" there.
-
-A session Legion drives whose previous process ended in a turn is told so at its start, before the
-first turn it runs (`src/cut-turn.ts`, R2).
-The transcript holds the cut turn, so no delivery is sent again: what is missing is the news that
-the turn was cut, which the daemon already gives a task's resumed worker (`interruptedTask` in
-`packages/daemon/internal/supervise/delivery.go`), and this gives for the deliveries written into
-the turn.
-Its sentences are the daemon's own where they say the same thing, since both notes are read by the
-same agents, and a turn a task started and a delivery joined gets both.
-A session Legion drives marks each of its runs with an `envoy-turn-mark` entry: `ended: false`
-at the host's `agent_start`, and `ended: true` at an `agent_end` that carries no `willContinue`,
-which is how the host settles a run with nothing to follow (the model's stop, a person's
-interrupt, the daemon's abort, a spent retry budget, an error it does not retry).
-A run the host will continue (a retry, a reminder, a background job's result) gets no end mark
-until the run that finishes it, and one start mark covers it.
-The host writes each entry into the session file as it records it and in that order, so a mark on
-disk follows everything recorded before it.
-In a transcript that holds a mark, the last turn ended only where the newest mark is an end mark
-and no reply, user message or delivery card follows it; every other last turn is cut, whatever its
-last reply carries.
-That is what covers a provider error the host is retrying, which its own transcript cannot tell
-from an ended turn (it writes the failed attempt as it writes any provider error and marks it
-retried only when the retry closes): a process killed in the backoff, in a credential wait before
-the retry is announced, or between saving the attempt and anything after it, left no end mark.
-The reading errs toward an extra note and never toward a missing one: a run the host drops
-without telling extensions (a session switch, a continuation that never runs) and an end mark a
-kill took before it reached the file read as cut, and the note only asks the agent to read what
-that turn did.
-A transcript that holds no mark was written before the plugin marked runs and is read as it was:
-the branch's newest assistant message, with what follows it, says whether the last turn had an
-end.
-There, one that ended a model turn, or one a person's interrupt, the daemon's abort or a provider
-error ended, is an end unless a user message or a delivery card follows it, which started a turn
-the process ended in before any reply; a tool call whose result never came, a reply with no stop
-reason at all and a delivery no assistant message follows are no end, and nor is the message Oh
-My Pi writes at resume to close a turn whose process recorded its exit in it (`Previous OMP process
-exited before completing the turn.`, a SIGTERM's case).
-The note names each delivery card the host wrote into that turn, and each person's Send that
-became the session's own turn there, by the Dispatch message id its user message carries as the
-host's `tag` and the session's record of handling that message (`envoy-dispatch-handled-attempt`);
-a Send on a host without `pi.sendUserInput` carries no tag and is not named. The note goes with no
-`deliverAs` and no turn: an idle host writes it into the transcript and the model's context at
-once, ahead of whatever opens the next turn, and ends its message.
-It starts no turn itself.
-The host holds a send made in `session_start` until its startup discovery has run, and RPC mode
-starts reading commands without waiting for that send to land, so a task, a person's input or the
-phase reminder could open a turn before the note reached the session, and that turn would take
-the note after its own opening message.
-So until the note's `message_end` every start of a turn waits for it, for at most
-`CUT_TURN_NOTE_BOUND_MS` (10 s, `@legion/pi-shared/interface`), and a start that gives up on it
-logs a `warn`: an input waits in the plugin's `input` handler, which the host runs for every RPC
-prompt, steer and follow-up (the daemon's task among them), every typed line and every
-`sendUserInput` before it prompts them, and the Legion entry's phase reminder waits on the note
-the interface says is on its way (`cutTurnNote`).
-A card the plugin hands is sent after the note, which the host writes at once in the order it was
-sent, before the card's turn opens.
-A turn another extension opened with a send made before the note was sent takes the note at its
-next step, after its opening message.
-Only a session Legion drives is told (`legionManaged`: the transcript entry a claim leaves, or
-this process's own claim), and only once per session id.
 
 ## Configuration
 
@@ -1415,8 +1333,6 @@ and arms nothing — an unknown ask state never nudges.
 | OMP extension entry | `extensions/envoy.ts` | The one entry; ships as `dist/envoy.js` in `@sjawhar/pi-envoy` and loads in every installed OMP session. The Legion entry is `../pi-legion/extensions/legion.ts` (`packages/pi-legion/AGENTS.md`) |
 | Registration and role state | `src/registration-state.ts`, `src/registration-state.test.ts` | The two serial queues (`passes` and `roleMoves`), each task's deadline and its handle, the registration and role state queued tasks write, this extension instance's client instance id, and each named operation the plugin makes outside a queue. `extensions/envoy.ts` declares none of it ("Critical conventions" below) |
 | The holds given up but not yet released | `src/hand-back-ledger.ts` | The two books of role holds this process owes the listener — pending hand-backs and the ones a refused release abandoned — their releases, the adoption a registration of a hold's session makes, and the reading of a refused claim against an abandoned hold. Held by `src/registration-state.ts` alone, and exercised through its tests |
-| The watchdog over a heartbeat that stopped | `src/registration-watchdog.ts`, `src/registration-watchdog.test.ts`, `extensions/envoy.test.ts` (`-t "watchdog over a heartbeat"`) | When a heartbeat that stopped is armed again (R4, "Every registration" above): the window, the backoff cap and what silences it. The timer, the restart and the two knobs are `extensions/envoy.ts`'s (`armRegistrationWatchdog`) |
-| The note a cut turn leaves | `src/cut-turn.ts`, `src/cut-turn.test.ts`, `extensions/envoy.test.ts` (`-t "cut turn"`), `extensions/cut-turn-omp.test.ts`, `test/legion-managed-session.ts` | What a resumed session is told about the turn its previous process ended in (R2, "Legion" above): how the transcript says a turn had no end, in a transcript the plugin marks and in one written before it did, which deliveries the note names, and the note's own words. `tellCutTurn` in `extensions/envoy.ts` writes it at `session_start`, and `markRun` there writes each run's marks at `agent_start` and at a settling `agent_end`. `cut-turn-omp.test.ts` kills a pinned Oh My Pi (`LEGION_TEST_OMP`) in a provider retry's backoff and reads the note in the resumed session's first request, and reads the end mark a cancelled retry's settle leaves, with `test/legion-managed-session.ts` standing in for the claim's transcript entry; it fails if the host renames or drops `agent_start` or `agent_end` |
 | Legion lifecycle | `../pi-legion/` | The daemon client, the claim and controller sessions, the `legion` tool and the phase stall are `@sjawhar/pi-legion`'s: see `packages/pi-legion/AGENTS.md` |
 | Shared modules and the interface | `../pi-shared/` | `@legion/pi-shared`: the interface this entry publishes (`interface`), the role-claim bridge, the injected-user-turn record, the subagent check (`subagent-session`), the host types, `toolSuccess`/`toolFailure`, and `shell-command`; inlined into `dist/envoy.js` by `bun build`. See `packages/pi-shared/AGENTS.md` |
 | The `dispatch` CLI in Oh My Pi | `bin/dispatch` (the shim, mode 755), `dist/dispatch.js` (`../envoy-client/scripts/build-dispatch-cli.sh`, the one build of the CLI bundle, in `build` and `scripts/pi-plugin-prepack.sh`), `extensions/envoy.ts`, `../pi-shared/src/shell-command.ts`, `package.json`'s `omp.bin` | The extension registers no Dispatch tool: Oh My Pi puts the plugin's `bin/` on `PATH` from `omp.bin`, and at load the extension puts it first on `PATH` itself only when no entry already resolves to it, sets `DISPATCH_HOST=omp` and hands on the session's envoy.json as `ENVOY_CONFIG_FILE`; session events and the heartbeat's drift heal set `DISPATCH_SESSION_ID` (the drift heal also calls `procmgr.refreshShellConfigCache()`); the Legion entry writes the title after naming a pane. |
