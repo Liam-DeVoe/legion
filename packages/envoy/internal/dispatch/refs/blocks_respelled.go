@@ -48,13 +48,15 @@ func topLevelCandidates(blocks []model.ArtifactBlock, candidates []respellCandid
 // respelledBlocks keeps, of candidates, which are top-level blocks of the version
 // (topLevelCandidates), each block that holds the same tree as the text recorded for it at its
 // storedAt (document_block_texts), spelled by another renderer version: that text stood in no
-// container there, and reads, alone, as its text now (pmdoc.FragmentReadsAs). A block that stood
-// inside a list item, a quote, a footnote definition or a typed block at storedAt was recorded
-// after that container's marker or line, with its prefix on each later line, which its text read
-// alone loses. So a block is kept only when its recorded text occurs in storedAt's stored markdown
-// and every occurrence starts a line (startsLinesOnly): a nested block starts after its
-// container's prefix or marker (`  `, `> `, `- `, `[^f]: `). A text that does not occur there, and
-// a version that holds no markdown, keep nothing.
+// container with a prefix there, and reads, alone, as its text now (pmdoc.FragmentReadsAs). A
+// block that stood inside a list item, a quote or a footnote definition at storedAt was recorded
+// after that container's marker, with its prefix on each later line, which its text read alone
+// loses. So a block is kept only when its recorded text occurs in storedAt's stored markdown and
+// every occurrence starts a line (startsLinesOnly): such a nested block starts after its
+// container's prefix or marker (`  `, `> `, `- `, `[^f]: `). A block that stood inside a top-level
+// typed block starts a line and passes: a typed block writes its blocks with no prefix, so its
+// recorded text reads alone as it stood there. A text that does not occur there, and a version
+// that holds no markdown, keep nothing.
 //
 // The row of each block it keeps takes the new text's sha256 and excerpt and keeps its changed
 // version and time, and it returns the ids it kept; version is the version IndexBlocks indexes,

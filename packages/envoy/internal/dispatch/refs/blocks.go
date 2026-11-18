@@ -63,11 +63,14 @@ type Pointer struct {
 // text keeps the earlier spelling until its text next changes. Such a block counts as unchanged
 // in what this returns. Every block inside a list item, a quote, a footnote definition or a typed
 // block takes this version when its text moved, and so does a top-level block that stood inside
-// one at its changed version: a block's text read alone loses its container's prefix, so two
-// trees can read as one (the inner list of `- a\n  - b\n  - c` is `- b\n  - c`, which reads
-// alone as c under b, as the inner list of `- a\n  - b\n    - c` does). So does a block whose
-// recorded text or text here holds `[^`, which reads as a footnote reference or as text by the
-// labels the rest of its document defines.
+// a list item, a quote or a footnote definition at its changed version: a block's text read alone
+// loses its container's prefix, so two trees can read as one (the inner list of
+// `- a\n  - b\n  - c` is `- b\n  - c`, which reads alone as c under b, as the inner list of
+// `- a\n  - b\n    - c` does). A top-level block that stood inside a top-level typed block at its
+// changed version can keep it: a typed block writes its blocks with no prefix, so the text
+// recorded for such a block reads alone as it stood. A block whose recorded text or text here
+// holds `[^` takes this version too, since that text reads as a footnote reference or as text by
+// the labels the rest of its document defines.
 //
 // A pair (block, kind, target) that survives keeps its created version, time and source event,
 // and takes the to_types this version gives it. A new pair takes this version and versionAt, and
