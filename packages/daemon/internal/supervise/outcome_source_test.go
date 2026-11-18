@@ -21,16 +21,20 @@ import (
 // all, and a busy path that decides the busy answer itself, from the agent's words, never reaches
 // a charge function. Nor can a type keep a site from reading those words: they reach the daemon as
 // an error and as strings, which it must hold to log a failure and to keep a delivery's last send
-// error, and the text of either is open to any function that holds it. So this test reads the
-// source and holds the five things the compiler cannot: every member of the set
-// (runtime.Outcome, declared in internal/runtime) has a row in the policy; no site reads a
-// refusal's words to decide — not in this package, and not in internal/stream, which mints the
+// error, and the text of either is open to any function that holds it. Of the Claude Code
+// bridge's busy refusal, whose words the bridge keeps for a daemon rolled back to the release
+// before this one, the compiler holds one part: the words are a constant the bridge does not
+// export (claudebridge's busyWords), so no other package can name them. It cannot keep a package
+// from writing them out, nor the bridge from using its constant for anything but that refusal.
+// So this test reads the source and holds the five things the compiler cannot: every member of
+// the set (runtime.Outcome, declared in internal/runtime) has a row in the policy; no site
+// matches a refusal's words — not in this package, and not in internal/stream, which mints the
 // outcome where the frame is read, or internal/claudebridge, which writes the busy refusal; no
-// site compares anything with the words of that busy refusal (claudebridge.Busy), which the bridge
-// keeps for a daemon rolled back to the release before this one, the one daemon that reads them;
-// every charge names a declared member; and no function but a charge function writes a budget
-// counter except to reset it to zero (budgetResets names each that may). Delete this test when a
-// chokepoint for that becomes possible.
+// site holds the busy refusal's words but the refusal itself — none in this package, the stream
+// or the runtime, and none in the bridge but its constant and the refusal it writes; every charge
+// names a declared member; and no function but a charge function writes a budget counter except
+// to reset it to zero (budgetResets names each that may). Delete a check here when the compiler
+// comes to hold it.
 //
 // It type-checks each package's non-test source against the compiler's export data for its
 // dependencies (compiledDependencies, as TestProcessEndsListsEveryEndDeclared does), so it reads
@@ -43,7 +47,11 @@ func TestOutcomeSourceHoldsThePolicyAtItsSites(t *testing.T) {
 	t.Run("every declared outcome has a row in Charges", func(t *testing.T) {
 		declared := set.declaredOutcomes(t)
 		rows := map[string]bool{}
-		charges := src.funcDecl(t, "outcome.go", "Charges")
+		policy, _ := src.pkg.Scope().Lookup("Charges").(*types.Func)
+		charges := src.funcs()[policy]
+		if charges == nil {
+			t.Fatal("the package declares no function Charges, which this test reads as the policy")
+		}
 		switches, defaults := 0, 0
 		ast.Inspect(charges.Body, func(node ast.Node) bool {
 			sw, ok := node.(*ast.SwitchStmt)
@@ -68,7 +76,7 @@ func TestOutcomeSourceHoldsThePolicyAtItsSites(t *testing.T) {
 			return false
 		})
 		if switches != 1 {
-			t.Fatalf("Charges holds %d switch statements, want the one switch over the set", switches)
+			t.Fatalf("Charges (%s) holds %d switch statements, want the one switch over the set", src.pos(charges), switches)
 		}
 		// The zero value's row is the default, which is also the row of every value the set does
 		// not hold; every other member has a case of its own, so a member added with none fails
@@ -93,36 +101,33 @@ func TestOutcomeSourceHoldsThePolicyAtItsSites(t *testing.T) {
 			taint := pkg.refusalWords(t)
 			for _, file := range pkg.files {
 				for _, decl := range file.Decls {
-					in := "a package-level declaration"
-					if fn, ok := decl.(*ast.FuncDecl); ok {
-						in = fn.Name.Name
-					}
 					for _, match := range taint.matches(decl) {
-						t.Errorf("%s, in %s.%s, %s on a refusal's words: the outcome is minted from the frame's code where the frame is read (stream.PromptRefusalOutcome), never from its words",
-							pkg.pos(match.at), pkg.pkg.Name(), in, match.what)
+						t.Errorf("%s, in %s, %s matches a refusal's words: the outcome is minted from the frame's code where the frame is read (stream.PromptRefusalOutcome), never from its words",
+							pkg.pos(match.at), pkg.declName(decl), match.what)
 					}
 				}
 			}
 		}
 	})
 
-	t.Run("no site compares the Claude Code bridge's busy words", func(t *testing.T) {
-		busy, _ := sources[claudebridgePath].pkg.Scope().Lookup("Busy").(*types.Const)
+	t.Run("no site holds the Claude Code bridge's busy words but its busy refusal", func(t *testing.T) {
+		bridge := sources[claudebridgePath]
+		busy, _ := bridge.pkg.Scope().Lookup("busyWords").(*types.Const)
 		if busy == nil || busy.Val().Kind() != constant.String || constant.StringVal(busy.Val()) == "" {
-			t.Fatal("internal/claudebridge declares no string constant Busy, whose words this test holds every site from comparing")
+			t.Fatal("internal/claudebridge declares no string constant busyWords, whose words this test holds every other site from holding")
 		}
+		words, refusal := constant.StringVal(busy.Val()), bridge.busyRefusal(busy)
 		for _, path := range []string{supervisePath, streamPath, claudebridgePath, runtimePath} {
 			pkg := sources[path]
-			taint := pkg.busyWords(constant.StringVal(busy.Val()))
+			var allowed map[ast.Expr]bool
+			if path == claudebridgePath {
+				allowed = refusal
+			}
 			for _, file := range pkg.files {
 				for _, decl := range file.Decls {
-					in := "a package-level declaration"
-					if fn, ok := decl.(*ast.FuncDecl); ok {
-						in = fn.Name.Name
-					}
-					for _, match := range taint.compared(decl) {
-						t.Errorf("%s, in %s.%s, %s the Claude Code bridge's busy words (claudebridge.Busy): they are kept for a daemon rolled back to the release before this one, and this one reads a busy agent from the refusal's code (shimwire.CodeSessionBusy), never from its words",
-							pkg.pos(match.at), pkg.pkg.Name(), in, match.what)
+					for _, held := range pkg.busyHolders(decl, words, allowed) {
+						t.Errorf("%s, in %s, holds the Claude Code bridge's busy words (claudebridge's busyWords) or a piece of them: only the bridge's busy refusal carries them, for a daemon rolled back to the release before this one, and this one reads a busy agent from the refusal's code (shimwire.CodeSessionBusy), never from its words",
+							pkg.pos(held), pkg.declName(decl))
 					}
 				}
 			}
@@ -168,7 +173,7 @@ func TestOutcomeSourceHoldsThePolicyAtItsSites(t *testing.T) {
 	t.Run("no function but a charge function or a reset writes a budget counter", func(t *testing.T) {
 		counters := src.budgetCounters(t)
 		wrote := map[string]bool{}
-		for i, file := range src.files {
+		for _, file := range src.files {
 			for _, decl := range file.Decls {
 				fn, ok := decl.(*ast.FuncDecl)
 				if !ok || fn.Body == nil {
@@ -176,7 +181,7 @@ func TestOutcomeSourceHoldsThePolicyAtItsSites(t *testing.T) {
 				}
 				for _, write := range src.budgetWrites(fn.Body, counters) {
 					wrote[fn.Name.Name] = true
-					where := fmt.Sprintf("%s (%s, in %s)", src.pos(write.target), src.names[i], fn.Name.Name)
+					where := fmt.Sprintf("%s (in %s)", src.pos(write.target), fn.Name.Name)
 					switch {
 					case slices.Contains(chargeFunctions, fn.Name.Name):
 					case budgetResets[fn.Name.Name] != "":
@@ -302,10 +307,8 @@ func (s *goSource) isZero(expr ast.Expr) bool {
 type goSource struct {
 	fileset *gotoken.FileSet
 	files   []*ast.File
-	// names is the name of each of files, at the same index.
-	names []string
-	pkg   *types.Package
-	info  *types.Info
+	pkg     *types.Package
+	info    *types.Info
 	// given is what assignments answers, read once on its first call: both taints and the judge
 	// read it, and it walks every file of the package.
 	given map[types.Object][]ast.Expr
@@ -324,12 +327,29 @@ func checkOutcomeSources(t *testing.T) map[string]*goSource {
 		if err != nil {
 			t.Fatal(err)
 		}
-		sources[path] = &goSource{fileset: fileset, files: checked.Files, names: checked.Names, pkg: checked.Types, info: checked.Info}
+		sources[path] = &goSource{fileset: fileset, files: checked.Files, pkg: checked.Types, info: checked.Info}
 	}
 	return sources
 }
 
 func (s *goSource) pos(node ast.Node) string { return s.fileset.Position(node.Pos()).String() }
+
+// declName names decl in a failure: the package and the function it declares, a method by its
+// receiver's type, or the package's declarations outside any function.
+func (s *goSource) declName(decl ast.Decl) string {
+	fn, ok := decl.(*ast.FuncDecl)
+	if !ok {
+		return "a package-level declaration of " + s.pkg.Name()
+	}
+	if fn.Recv == nil {
+		return s.pkg.Name() + "." + fn.Name.Name
+	}
+	receiver := types.TypeString(s.info.Defs[fn.Name].(*types.Func).Signature().Recv().Type(), types.RelativeTo(s.pkg))
+	if strings.HasPrefix(receiver, "*") {
+		receiver = "(" + receiver + ")"
+	}
+	return s.pkg.Name() + "." + receiver + "." + fn.Name.Name
+}
 
 // isOutcome is whether typ is runtime.Outcome, read from its source or from its export data.
 func isOutcome(typ types.Type) bool {
@@ -354,20 +374,6 @@ func (s *goSource) declaredOutcomes(t *testing.T) []declaredOutcome {
 	}
 	slices.SortFunc(declared, func(a, b declaredOutcome) int { return strings.Compare(a.name, b.name) })
 	return declared
-}
-
-// funcDecl is the declaration of the package-level function name in file.
-func (s *goSource) funcDecl(t *testing.T, file, name string) *ast.FuncDecl {
-	t.Helper()
-	if i := slices.Index(s.names, file); i >= 0 {
-		for _, decl := range s.files[i].Decls {
-			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name.Name == name {
-				return fn
-			}
-		}
-	}
-	t.Fatalf("%s declares no function %s", file, name)
-	return nil
 }
 
 // callee is the function or method a call resolves to, or nil for a conversion, a builtin or a
@@ -414,9 +420,10 @@ func (s *goSource) params(decl *ast.FuncDecl) []types.Object {
 }
 
 // assignments is every expression the package's source gives each variable: by := and =, by a
-// var declaration, and, for a parameter, by each call of its function. A value no expression
-// stands for alone — one of several results of one call — is recorded as that call. It is read
-// once per package (given).
+// var declaration, by a range — its value, and its key where the key is an element too — and,
+// for a parameter, by each call of its function. A value no expression stands for alone — one of
+// several results of one call, an element of what a loop ranges over — is recorded as that call
+// or as what it ranges over. It is read once per package (given).
 func (s *goSource) assignments() map[types.Object][]ast.Expr {
 	if s.given != nil {
 		return s.given
@@ -445,6 +452,11 @@ func (s *goSource) assignments() map[types.Object][]ast.Expr {
 			}
 		}
 	}
+	give := func(target, expr ast.Expr) {
+		if object := object(target); object != nil {
+			given[object] = append(given[object], expr)
+		}
+	}
 	decls := s.funcs()
 	for _, file := range s.files {
 		ast.Inspect(file, func(node ast.Node) bool {
@@ -457,6 +469,19 @@ func (s *goSource) assignments() map[types.Object][]ast.Expr {
 					lhs[i] = name
 				}
 				pair(lhs, node.Values)
+			case *ast.RangeStmt:
+				// The key is an index of a string, a slice, an array or an integer's count, and no
+				// part of what the loop ranges over; of a map, a channel or an iterator it is an
+				// element, as the value is.
+				if node.Value != nil {
+					give(node.Value, node.X)
+				}
+				if typ := s.info.Types[node.X].Type; node.Key != nil && typ != nil {
+					switch typ.Underlying().(type) {
+					case *types.Map, *types.Chan, *types.Signature:
+						give(node.Key, node.X)
+					}
+				}
 			case *ast.CallExpr:
 				fn := s.callee(node)
 				decl, declared := decls[fn]
@@ -476,18 +501,15 @@ func (s *goSource) assignments() map[types.Object][]ast.Expr {
 	return given
 }
 
-// refusalTaint is every variable of the package a refusal's words reach, through assignments and
-// through the parameters of the package's own functions, since a helper can take the words as
-// its parameter.
+// refusalTaint is every variable of the package a refusal's words reach, through assignments,
+// through the loops that range over them and through the parameters of the package's own
+// functions, since a helper can take the words as its parameter.
 type refusalTaint struct {
 	src *goSource
 	// fields is each field that holds a refusal's words, and methods the names of the methods and
 	// functions that return them.
 	fields  func(field *types.Var) bool
 	methods []string
-	// words is the words themselves where the package holds them as a constant (busyWords), and ""
-	// where they reach it only at run time.
-	words   string
 	tainted map[types.Object]bool
 }
 
@@ -525,18 +547,18 @@ func (s *goSource) refusalWords(t *testing.T) *refusalTaint {
 		}
 		taint.methods = []string{"Reason", "RefusalReason"}
 	}
-	taint.spread(func(types.Object) bool { return true })
+	taint.spread()
 	return taint
 }
 
-// spread taints every object carries admits that the package gives an expression the words reach
+// spread taints every variable that the package gives an expression the words reach
 // (assignments), until no more is.
-func (r *refusalTaint) spread(carries func(types.Object) bool) {
+func (r *refusalTaint) spread() {
 	given := r.src.assignments()
 	for changed := true; changed; {
 		changed = false
 		for target, exprs := range given {
-			if r.tainted[target] || !carries(target) {
+			if r.tainted[target] {
 				continue
 			}
 			for _, expr := range exprs {
@@ -549,41 +571,112 @@ func (r *refusalTaint) spread(carries func(types.Object) bool) {
 	}
 }
 
-// busyWords is the taint of the Claude Code bridge's busy words (claudebridge.Busy, whose value
-// is words) in the package: every constant expression with that value, however it is spelled —
-// the bridge's constant, a constant of the package's own given it, the sentence written out — and
-// every variable or constant of type string, []byte or error given an expression they reach. A
-// value of any other type carries them to no comparison: the frame the bridge writes them into is
-// one, and writing them is what they are for.
-func (s *goSource) busyWords(words string) *refusalTaint {
-	taint := &refusalTaint{src: s, fields: func(*types.Var) bool { return false }, words: words, tainted: map[types.Object]bool{}}
-	errorType := types.Universe.Lookup("error").Type()
-	taint.spread(func(object types.Object) bool {
-		if types.Identical(object.Type(), errorType) {
+// busyHolders is every constant expression in decl that holds the Claude Code bridge's busy words
+// (holdsBusyWords), however it is spelled — the sentence or a piece of it written out, alone, in
+// a longer text or in a pattern, a constant of the package's own, the bridge's constant — and
+// wherever it stands: an argument, a key or an element of a literal, a list a loop ranges over, a
+// variable's value. It reads no flow: nothing in the daemon but the bridge's busy refusal has a
+// reason to hold the words, so holding them is the fault, whatever is done with them. Of words
+// spelled out in pieces it reports the outermost constant, once. allowed is what may hold them
+// (busyRefusal).
+func (s *goSource) busyHolders(decl ast.Decl, words string, allowed map[ast.Expr]bool) []ast.Expr {
+	var found []ast.Expr
+	ast.Inspect(decl, func(node ast.Node) bool {
+		expr, ok := node.(ast.Expr)
+		if !ok {
 			return true
 		}
-		switch under := object.Type().Underlying().(type) {
-		case *types.Basic:
-			return under.Info()&types.IsString != 0
-		case *types.Slice:
-			elem, ok := under.Elem().Underlying().(*types.Basic)
-			return ok && elem.Kind() == types.Byte
+		if allowed[expr] {
+			return false
 		}
-		return false
+		if value := s.info.Types[expr].Value; value != nil && value.Kind() == constant.String && holdsBusyWords(constant.StringVal(value), words) {
+			found = append(found, expr)
+			return false
+		}
+		return true
 	})
-	return taint
+	return found
+}
+
+// busyRefusal is where the bridge may hold its busy words: the value its declaration gives
+// busyWords, and busyWords as the Error of a shimwire.Response the bridge hands to its respond
+// method, which is the busy refusal it writes.
+func (s *goSource) busyRefusal(busy *types.Const) map[ast.Expr]bool {
+	allowed := map[ast.Expr]bool{}
+	for _, file := range s.files {
+		ast.Inspect(file, func(node ast.Node) bool {
+			switch node := node.(type) {
+			case *ast.ValueSpec:
+				for i, name := range node.Names {
+					if s.info.Defs[name] == busy && i < len(node.Values) {
+						allowed[node.Values[i]] = true
+					}
+				}
+			case *ast.CallExpr:
+				fn := s.callee(node)
+				if fn == nil || fn.Pkg() != s.pkg || fn.Name() != "respond" || fn.Signature().Recv() == nil {
+					return true
+				}
+				for _, arg := range node.Args {
+					literal, ok := ast.Unparen(arg).(*ast.CompositeLit)
+					if !ok {
+						continue
+					}
+					named, ok := s.info.Types[literal].Type.(*types.Named)
+					if !ok || named.Obj().Pkg() == nil || named.Obj().Pkg().Path() != internalPath+"shimwire" || named.Obj().Name() != "Response" {
+						continue
+					}
+					for _, elt := range literal.Elts {
+						field, ok := elt.(*ast.KeyValueExpr)
+						if !ok {
+							continue
+						}
+						key, isKey := field.Key.(*ast.Ident)
+						value, isValue := ast.Unparen(field.Value).(*ast.Ident)
+						if isKey && key.Name == "Error" && isValue && s.info.Uses[value] == busy {
+							allowed[field.Value] = true
+						}
+					}
+				}
+			}
+			return true
+		})
+	}
+	return allowed
+}
+
+// busyRun is the fewest bytes a constant must share with the busy words, in one run, to hold
+// them: "Agent is already", the opening Oh My Pi's own busy sentence shares, is sixteen. A shorter
+// run is a phrase other texts share with the words, such as " a turn; the " or " is already ",
+// and tells nothing of the refusal.
+const busyRun = 16
+
+// bridgeName is the bridge's name as the busy words carry it. Each of the bridge's own messages
+// carries it too, so a run of the words that is a piece of it tells nothing of the refusal.
+const bridgeName = " the Claude Code bridge "
+
+// holdsBusyWords is whether value shares with words a run of at least busyRun bytes that is no
+// piece of the bridge's name (bridgeName): the words whole, a prefix or any other piece of them,
+// either alone or inside a longer text.
+func holdsBusyWords(value, words string) bool {
+	for i := range len(value) {
+		for j := range len(words) {
+			n := 0
+			for i+n < len(value) && j+n < len(words) && value[i+n] == words[j+n] {
+				n++
+			}
+			if n >= busyRun && !strings.Contains(bridgeName, words[j:j+n]) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // reaches is whether a refusal's words reach expr.
 func (r *refusalTaint) reaches(expr ast.Expr) bool {
 	found := false
 	ast.Inspect(expr, func(node ast.Node) bool {
-		if expr, ok := node.(ast.Expr); ok && r.words != "" {
-			if value := r.src.info.Types[expr].Value; value != nil && value.Kind() == constant.String && constant.StringVal(value) == r.words {
-				found = true
-				return false
-			}
-		}
 		switch node := node.(type) {
 		case *ast.SelectorExpr:
 			if selection := r.src.info.Selections[node]; selection != nil && selection.Kind() == types.FieldVal {
@@ -611,122 +704,131 @@ type wordMatch struct {
 	what string
 }
 
-// stringMatchers are the functions of package strings that match one text against another.
-var stringMatchers = []string{"HasPrefix", "HasSuffix", "Contains", "ContainsAny", "EqualFold", "Index", "Cut", "CutPrefix", "CutSuffix"}
-
-// busyMatchers are the functions of package strings and of package bytes that compare one text
-// with another (busyMatcher): every one of stringMatchers, and Compare, Equal, LastIndex and Count.
-var busyMatchers = slices.Concat(stringMatchers, []string{"Compare", "Equal", "LastIndex", "Count"})
-
-// matches is every place in node that matches a refusal's words: a call of a matcher of package
-// strings on them, an == or != between them and a string constant other than "", and a switch on
-// them with such a constant for a case. Words are a plain string: a value of a named type — an
-// Outcome a call minted from a tainted error — is a member, which is compared by design.
-func (r *refusalTaint) matches(node ast.Node) []wordMatch {
-	words := func(expr ast.Expr) bool {
-		value := r.src.info.Types[expr].Value
-		return value != nil && value.Kind() == constant.String && constant.StringVal(value) != ""
-	}
-	text := func(expr ast.Expr) bool {
-		basic, ok := r.src.info.Types[expr].Type.(*types.Basic)
-		return ok && basic.Info()&types.IsString != 0 && r.reaches(expr)
-	}
-	var found []wordMatch
-	ast.Inspect(node, func(node ast.Node) bool {
-		switch node := node.(type) {
-		case *ast.CallExpr:
-			fn := r.src.callee(node)
-			if fn == nil || fn.Pkg() == nil || fn.Pkg().Path() != "strings" || !slices.Contains(stringMatchers, fn.Name()) {
-				return true
-			}
-			for _, arg := range node.Args {
-				if r.reaches(arg) {
-					found = append(found, wordMatch{at: node, what: "calls strings." + fn.Name()})
-					break
-				}
-			}
-		case *ast.BinaryExpr:
-			if node.Op != gotoken.EQL && node.Op != gotoken.NEQ {
-				return true
-			}
-			if (text(node.X) && words(node.Y)) || (text(node.Y) && words(node.X)) {
-				found = append(found, wordMatch{at: node, what: "compares with " + node.Op.String()})
-			}
-		case *ast.SwitchStmt:
-			if node.Tag == nil || !text(node.Tag) {
-				return true
-			}
-			for _, stmt := range node.Body.List {
-				if slices.ContainsFunc(stmt.(*ast.CaseClause).List, words) {
-					found = append(found, wordMatch{at: node, what: "switches"})
-					break
-				}
-			}
-		}
-		return true
-	})
-	return found
+// textMatchers are the functions of packages strings and bytes that match one text against
+// another, or split it by another: what a site learns from one of them about a refusal's words is
+// a reading of them. TrimPrefix and TrimSuffix are none: a trimmed text is still the words, so a
+// site that compares one, with the text it was trimmed from or with anything else, compares the
+// words (matches), and a site that only trims them changes what a log line shows.
+var textMatchers = []string{
+	"Compare", "Contains", "ContainsAny", "ContainsFunc", "ContainsRune", "Count", "Cut", "CutPrefix",
+	"CutSuffix", "Equal", "EqualFold", "Fields", "FieldsFunc", "FieldsFuncSeq", "FieldsSeq", "HasPrefix",
+	"HasSuffix", "Index", "IndexAny", "IndexByte", "IndexFunc", "IndexRune", "LastIndex", "LastIndexAny",
+	"LastIndexByte", "LastIndexFunc", "Lines", "Split", "SplitAfter", "SplitAfterN", "SplitAfterSeq",
+	"SplitN", "SplitSeq",
 }
 
-// busyMatcher is whether fn matches one text, or one error, against another: a matcher of
-// package strings or of package bytes, any function or method of package regexp, and errors.Is
-// and errors.As.
-func busyMatcher(fn *types.Func) bool {
+// elementMatchers are the functions of packages slices and maps that compare one value with
+// another, by package: whether a list holds a text, where, and whether two lists or maps are
+// alike. They compare values of any type, so one compares a refusal's words only where it is
+// handed them as a text or among a list's or a map's texts (holdsText).
+var elementMatchers = map[string][]string{
+	"slices": {"BinarySearch", "BinarySearchFunc", "Compare", "CompareFunc", "Contains", "ContainsFunc", "Equal", "EqualFunc", "Index", "IndexFunc"},
+	"maps":   {"Equal", "EqualFunc"},
+}
+
+// textMatcher is whether fn matches one text against another: one of textMatchers in package
+// strings or package bytes, package regexp's Match functions, or a method of a regexp.Regexp that
+// matches a text, finds in it or splits it. errors.Is and errors.As are none: they compare an
+// error with another by identity or by type, which reads none of its words, as sendOutcome reads
+// the refusal a send returned.
+func textMatcher(fn *types.Func) bool {
 	if fn == nil || fn.Pkg() == nil {
 		return false
 	}
+	method := fn.Signature().Recv() != nil
 	switch fn.Pkg().Path() {
 	case "strings", "bytes":
-		return slices.Contains(busyMatchers, fn.Name())
+		return !method && slices.Contains(textMatchers, fn.Name())
 	case "regexp":
-		return true
-	case "errors":
-		return fn.Name() == "Is" || fn.Name() == "As"
+		return strings.HasPrefix(fn.Name(), "Match") || method && (strings.HasPrefix(fn.Name(), "Find") || fn.Name() == "Split")
 	}
 	return false
 }
 
-// compared is every place in node that compares the bridge's busy words (busyWords) with
-// anything: a call of a matcher (busyMatcher) with them among its arguments or as its receiver,
-// an == or != with them on one side and anything but nil on the other, and a switch whose tag or
-// one of whose cases they reach. A refusal's words at run time are matched only against a string
-// constant (matches), but these are a reading whatever the other side is: the one text the busy
-// refusal's words can tell anything about is a refusal, so comparing them with any text reads the
-// agent's words.
-func (r *refusalTaint) compared(node ast.Node) []wordMatch {
-	isNil := func(expr ast.Expr) bool { return r.src.info.Types[expr].IsNil() }
+// elementMatcher is whether fn is one of elementMatchers.
+func elementMatcher(fn *types.Func) bool {
+	return fn != nil && fn.Pkg() != nil && fn.Signature().Recv() == nil && slices.Contains(elementMatchers[fn.Pkg().Path()], fn.Name())
+}
+
+// holdsText is whether a value of typ is a text or holds texts: a plain string, or a slice, an
+// array or a map whose elements or keys hold one. A text is a plain string for the reason a
+// comparison's is (matches).
+func holdsText(typ types.Type) bool {
+	if basic, ok := typ.(*types.Basic); ok {
+		return basic.Info()&types.IsString != 0
+	}
+	switch under := typ.Underlying().(type) {
+	case *types.Slice:
+		return holdsText(under.Elem())
+	case *types.Array:
+		return holdsText(under.Elem())
+	case *types.Map:
+		return holdsText(under.Key()) || holdsText(under.Elem())
+	}
+	return false
+}
+
+// matches is every place in node that matches the words: a call of a text matcher (textMatcher)
+// with them among its arguments or as its receiver; a call of an element matcher
+// (elementMatcher) with them among its arguments as a text or among a list's or a map's texts;
+// a lookup in a map keyed by a text they reach, alone or comma-ok; and an == or !=, or a switch's
+// tag against a case, that compares a text they reach with anything but "" or nil. Asking
+// whether there are words at all reads none of them. A text is a plain string: a value of a
+// named type — an Outcome a call minted from a tainted error — is a member, which is compared by
+// design, and an error compared with == is compared by identity, which reads none of its words.
+func (r *refusalTaint) matches(node ast.Node) []wordMatch {
+	text := func(expr ast.Expr) bool {
+		basic, ok := r.src.info.Types[expr].Type.(*types.Basic)
+		return ok && basic.Info()&types.IsString != 0 && r.reaches(expr)
+	}
+	texts := func(expr ast.Expr) bool {
+		typ := r.src.info.Types[expr].Type
+		return typ != nil && holdsText(typ) && r.reaches(expr)
+	}
+	empty := func(expr ast.Expr) bool {
+		tv := r.src.info.Types[expr]
+		return tv.IsNil() || tv.Value != nil && tv.Value.Kind() == constant.String && constant.StringVal(tv.Value) == ""
+	}
+	compares := func(a, b ast.Expr) bool { return text(a) && !empty(b) || text(b) && !empty(a) }
 	var found []wordMatch
 	ast.Inspect(node, func(node ast.Node) bool {
 		switch node := node.(type) {
 		case *ast.CallExpr:
 			fn := r.src.callee(node)
-			if !busyMatcher(fn) {
+			reached := r.reaches
+			switch {
+			case textMatcher(fn):
+			case elementMatcher(fn):
+				reached = texts
+			default:
 				return true
 			}
 			operands := slices.Clone(node.Args)
 			if selector, ok := ast.Unparen(node.Fun).(*ast.SelectorExpr); ok && r.src.info.Selections[selector] != nil {
 				operands = append(operands, selector.X)
 			}
-			if slices.ContainsFunc(operands, r.reaches) {
-				found = append(found, wordMatch{at: node, what: "calls " + fn.Pkg().Name() + "." + fn.Name() + " with"})
+			if slices.ContainsFunc(operands, reached) {
+				found = append(found, wordMatch{at: node, what: "a call of " + fn.FullName()})
+			}
+		case *ast.IndexExpr:
+			if typ := r.src.info.Types[node.X].Type; typ != nil {
+				if _, isMap := typ.Underlying().(*types.Map); isMap && text(node.Index) {
+					found = append(found, wordMatch{at: node, what: "a map lookup keyed by a text"})
+				}
 			}
 		case *ast.BinaryExpr:
-			if (node.Op != gotoken.EQL && node.Op != gotoken.NEQ) || isNil(node.X) || isNil(node.Y) {
-				return true
-			}
-			if r.reaches(node.X) || r.reaches(node.Y) {
-				found = append(found, wordMatch{at: node, what: "compares with " + node.Op.String()})
+			if (node.Op == gotoken.EQL || node.Op == gotoken.NEQ) && compares(node.X, node.Y) {
+				found = append(found, wordMatch{at: node, what: "a comparison with " + node.Op.String()})
 			}
 		case *ast.SwitchStmt:
 			if node.Tag == nil {
 				return true
 			}
-			reached := r.reaches(node.Tag)
 			for _, stmt := range node.Body.List {
-				reached = reached || slices.ContainsFunc(stmt.(*ast.CaseClause).List, r.reaches)
-			}
-			if reached {
-				found = append(found, wordMatch{at: node, what: "switches on"})
+				if slices.ContainsFunc(stmt.(*ast.CaseClause).List, func(c ast.Expr) bool { return compares(node.Tag, c) }) {
+					found = append(found, wordMatch{at: node, what: "a switch"})
+					break
+				}
 			}
 		}
 		return true

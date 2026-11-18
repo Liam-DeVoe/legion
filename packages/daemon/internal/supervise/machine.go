@@ -1174,7 +1174,7 @@ type Machine struct {
 	// prompt with exactly one prompt_result, owned by the first run after the prompt's admission
 	// (rpc-prompt-results.ts), and refuses a prompt that arrives while another is admitted, with
 	// the busy answer whose code the stream mints OutcomeAgentBusy for, rather than queue it; the
-	// Claude Code bridge takes one prompt at a time too (internal/claudebridge's Busy and
+	// Claude Code bridge takes one prompt at a time too (internal/claudebridge's busyWords and
 	// promptRun). So the session's next turn after an acknowledgement is that prompt's, however
 	// long its pre-turn work runs past the wait for it (noTurn): a turn that starts while an id is
 	// held here is the task's (turnStarted), and a result naming one is the task's whichever id the

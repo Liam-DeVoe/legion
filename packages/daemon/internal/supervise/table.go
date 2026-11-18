@@ -1761,7 +1761,7 @@ func (m *Machine) recordBusyTurn(ctx context.Context) error {
 // later send of the same task: the pinned Oh My Pi acknowledges a prompt at its admission, runs
 // one admitted prompt at a time and refuses the rest, and hands each prompt's result to the first
 // run after its admission (rpc-prompt-results.ts), so the session's next turn is that prompt's;
-// the Claude Code bridge takes one prompt at a time too (internal/claudebridge's Busy and
+// the Claude Code bridge takes one prompt at a time too (internal/claudebridge's busyWords and
 // promptRun). Without it, a start after the five-second wait confirmed nothing: the worker's
 // completion in that turn was refused as the earlier task's, and the task was sent again as
 // the turn ended (dispatch://INFRA-3276).

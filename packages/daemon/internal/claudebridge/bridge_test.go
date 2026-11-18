@@ -541,7 +541,7 @@ func TestATurnIsOneUserMessageWhenTheHandoffSucceeds(t *testing.T) {
 	}
 }
 
-// A prompt during a turn is acknowledged and then refused busy: the bridge's words (Busy) and
+// A prompt during a turn is acknowledged and then refused busy: the bridge's words (busyWords) and
 // beside them the busy code (shimwire.CodeSessionBusy), which the daemon's stream mints as the
 // agent being in a turn of its own (outcome_test.go), so the daemon takes the task back uncharged
 // and sends it again at the turn's end. The gate holds the turn's own result back, so the turn is
@@ -555,9 +555,9 @@ func TestAPromptDuringATurnIsRefusedBusy(t *testing.T) {
 	}
 	r.prompt("p2", "say again")
 	refusal := r.expect("response", map[string]any{"id": "p2", "command": "prompt", "success": false})
-	if refusal["error"] != Busy || refusal["code"] != shimwire.CodeSessionBusy {
+	if refusal["error"] != busyWords || refusal["code"] != shimwire.CodeSessionBusy {
 		t.Errorf("the refusal %q with code %v is not the bridge's busy refusal %q with code %q", refusal["error"],
-			refusal["code"], Busy, shimwire.CodeSessionBusy)
+			refusal["code"], busyWords, shimwire.CodeSessionBusy)
 	}
 	r.open()
 	r.expect("agent_end", nil)
@@ -829,9 +829,9 @@ func TestAPromptDuringAClaudeStartedTurnIsRefusedBusy(t *testing.T) {
 	}
 	r.prompt("p2", "say again")
 	refusal := r.expect("response", map[string]any{"id": "p2", "command": "prompt", "success": false})
-	if refusal["error"] != Busy || refusal["code"] != shimwire.CodeSessionBusy {
+	if refusal["error"] != busyWords || refusal["code"] != shimwire.CodeSessionBusy {
 		t.Errorf("the refusal %q with code %v is not the bridge's busy refusal %q with code %q", refusal["error"],
-			refusal["code"], Busy, shimwire.CodeSessionBusy)
+			refusal["code"], busyWords, shimwire.CodeSessionBusy)
 	}
 	r.open()
 	r.expect("agent_end", nil)

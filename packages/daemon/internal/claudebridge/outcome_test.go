@@ -11,8 +11,9 @@ import (
 
 // rolledBackBusyWords is the bridge's busy refusal as the release before this one worded it. A
 // daemon rolled back to that release reads a busy agent from the words alone, by the opening they
-// share with Oh My Pi's own busy sentence, so the bridge keeps them for it word for word. It is a
-// literal here, not Busy, so a change to Busy fails this test rather than moving it along.
+// share with Oh My Pi's own busy sentence, so the bridge keeps them for it word for word. It is
+// a literal here, not busyWords, so a change to busyWords fails this test rather than moving it
+// along.
 const rolledBackBusyWords = "Agent is already processing a turn; the Claude Code bridge takes a prompt only between turns"
 
 // The bridge's own refusal of a prompt during a turn, as it writes it to the shim, decodes to a

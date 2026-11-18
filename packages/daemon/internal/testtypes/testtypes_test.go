@@ -12,7 +12,8 @@ import (
 // CheckPackage reads the files the build compiles and no other. A test file and a file a build
 // constraint leaves out are no part of the package the build makes, so a test that read them
 // would hold the daemon to code it never runs. Each of the two here declares A again, so reading
-// either one fails the check on the redeclaration rather than passing unseen.
+// either one fails the check on the redeclaration rather than passing unseen. The test reads each
+// file's name from its position, as every caller does.
 func TestCheckPackageReadsTheFilesTheBuildCompilesAndNoOther(t *testing.T) {
 	dir := t.TempDir()
 	for name, source := range map[string]string{
@@ -25,12 +26,17 @@ func TestCheckPackageReadsTheFilesTheBuildCompilesAndNoOther(t *testing.T) {
 		}
 	}
 	// The files import nothing, so the check needs no importer.
-	checked, err := CheckPackage(token.NewFileSet(), nil, "example.com/p", dir)
+	fset := token.NewFileSet()
+	checked, err := CheckPackage(fset, nil, "example.com/p", dir)
 	if err != nil {
 		t.Fatalf("CheckPackage: %v", err)
 	}
-	if !slices.Equal(checked.Names, []string{"a.go"}) {
-		t.Errorf("CheckPackage read %v, want a.go alone: the build compiles no test file and no file its constraints leave out", checked.Names)
+	var read []string
+	for _, file := range checked.Files {
+		read = append(read, filepath.Base(fset.Position(file.Pos()).Filename))
+	}
+	if !slices.Equal(read, []string{"a.go"}) {
+		t.Errorf("CheckPackage read %v, want a.go alone: the build compiles no test file and no file its constraints leave out", read)
 	}
 	if checked.Types.Path() != "example.com/p" {
 		t.Errorf("CheckPackage checked the package as %q, want the path it was given", checked.Types.Path())

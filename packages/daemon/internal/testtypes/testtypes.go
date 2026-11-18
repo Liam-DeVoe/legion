@@ -104,10 +104,9 @@ type Package struct {
 	Info *types.Info
 	// Files is each file the build compiles, parsed, in the order go/build lists them, which is
 	// the order of their names: a test that walks them reads them, and reports what it finds, in
-	// the same order on every run.
+	// the same order on every run. A test reads a file's name from its position, through the
+	// FileSet the check was given.
 	Files []*ast.File
-	// Names is the name of each of Files in the package's directory, at the same index.
-	Names []string
 }
 
 // CheckPackage parses the non-test Go files in dir that this build compiles, chosen by their
@@ -124,7 +123,7 @@ func CheckPackage(fset *token.FileSet, imports types.Importer, path, dir string)
 	if err != nil {
 		return nil, fmt.Errorf("list the source of %s in %s: %w", path, dir, err)
 	}
-	checked := &Package{Files: make([]*ast.File, 0, len(listed.GoFiles)), Names: listed.GoFiles, Info: &types.Info{
+	checked := &Package{Files: make([]*ast.File, 0, len(listed.GoFiles)), Info: &types.Info{
 		Types: map[ast.Expr]types.TypeAndValue{}, Defs: map[*ast.Ident]types.Object{}, Uses: map[*ast.Ident]types.Object{},
 		Selections: map[*ast.SelectorExpr]*types.Selection{},
 	}}
