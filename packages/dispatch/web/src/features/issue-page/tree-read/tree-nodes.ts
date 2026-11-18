@@ -659,10 +659,12 @@ function draftOf(node: TreeAnswerNode, type: NodeType, context: TreeDraftContext
 
 /** When the node was made and who made it, as the read answers them: what the outline draws for
  *  an ask, a comment, a message and a result, and for no document block, decision or child
- *  issue. */
+ *  issue. The read lists every author of the node's first version, whoever made it first ahead
+ *  of the rest, and a row draws one name: the first, and none where the list is empty. */
 function madeBy(draft: Draft, node: TreeAnswerNode): void {
   draft.at = node.made_at;
-  if (node.author !== null) draft.author = node.author;
+  const author = node.author[0];
+  if (author !== undefined) draft.author = author;
 }
 
 /**

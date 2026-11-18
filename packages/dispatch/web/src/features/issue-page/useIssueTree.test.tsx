@@ -112,7 +112,7 @@ function answerNode(
 ): TreeAnswerNode {
   return {
     attributes: {},
-    author: null,
+    author: [],
     id,
     made_at: "2026-11-05T00:00:00Z",
     parent: KEY,
@@ -145,7 +145,7 @@ function treeAnswer(
       task,
       ...comments.map((one) =>
         answerNode(one.id, "comment", {
-          author: one.author,
+          author: [one.author],
           made_at: one.created_at,
           text: one.body,
         })
@@ -3251,7 +3251,7 @@ test("the outline's tree that took the focus for want of a row hands it to the f
     nodes: [answerNode(KEY, "issue", { parent: null }), ...nodes],
   });
   const reply = answerNode(comment.id, "comment", {
-    author: comment.author,
+    author: [comment.author],
     made_at: comment.created_at,
     text: comment.body,
   });
@@ -3386,7 +3386,7 @@ for (const latency of [200, 1_200]) {
       treeAnswer([], {
         nodes: [
           answerNode(held.id, "comment", {
-            author: held.author,
+            author: [held.author],
             made_at: held.created_at,
             state: held.resolved ? "settled" : "live",
             text: held.body,
@@ -3464,7 +3464,7 @@ test("a resolve from the margin with the live feed down reads the tree once, aft
     return treeAnswer([], {
       nodes: [
         answerNode(held.id, "comment", {
-          author: held.author,
+          author: [held.author],
           made_at: held.created_at,
           state: held.resolved ? "settled" : "live",
           text: held.body,
@@ -4270,7 +4270,7 @@ function openRig(read: RuleRead): Rig {
     return treeAnswer([], {
       nodes: [
         answerNode(held.id, "comment", {
-          author: held.author,
+          author: [held.author],
           made_at: held.created_at,
           state: held.resolved ? "settled" : "live",
           text: held.body,

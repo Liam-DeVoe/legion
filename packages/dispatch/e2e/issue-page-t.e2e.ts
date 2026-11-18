@@ -485,7 +485,7 @@ function expectDecisionsFromNodes(outline: OutlineRead, recorded: SeedFixture): 
     const decision = node.parent === null ? undefined : nodes.get(node.parent);
     if (
       node.supertag !== "comment" ||
-      node.author?.kind !== "user" ||
+      node.author[0]?.kind !== "user" ||
       decision?.supertag !== "decision"
     ) {
       return [];
