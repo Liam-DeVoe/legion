@@ -30,7 +30,7 @@ import (
 // through, and the read completes holding the session.
 func TestASessionRegisteredAsTheFirstReadStartsIsListedOnceTheReadCompletes(t *testing.T) {
 	client := setupNATS(t)
-	r, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1))
+	r, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}

@@ -17,7 +17,7 @@ import (
 // never takes it for a session gone silent, however late its clock reads.
 func TestSessionReadersDropTheReadBarrier(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}

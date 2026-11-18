@@ -76,6 +76,17 @@ type ServiceTokenVerifier interface {
 	Verify(ctx context.Context, raw string) (oidc.Claims, error)
 }
 
+// AgentPublisher is what a person's targeted message is queued through when no store of the
+// listener's holds its session (queueForUnknownSession, message_queue_publish.go): the bus client
+// (*bus.Client) where the deployment has NATS, and an AgentPublishRecorder in a test process that
+// has none.
+type AgentPublisher interface {
+	// PublishReportingDuplicateWithin publishes the envelope and returns once the stream has
+	// acknowledged it, reporting whether the stream already held it. ctx bounds the whole publish,
+	// and a publish whose ctx has ended sends nothing.
+	PublishReportingDuplicateWithin(context.Context, contracts.Envelope) (bool, error)
+}
+
 // Deps are the API's application dependencies.
 type Deps struct {
 	Store          *store.Store
@@ -124,6 +135,10 @@ type Deps struct {
 	// AgentStream relays a live session's own conversation to a human watching it; nil is a
 	// deployment with no NATS, where an agent view is refused STREAM_UNAVAILABLE.
 	AgentStream agentstream.Source
+	// AgentPublisher queues a person's targeted message on its session's own subject when neither
+	// the listener's registry nor its known-session store holds that session. Nil is a deployment
+	// with no NATS and no test hooks, where such a message settles failed instead.
+	AgentPublisher AgentPublisher
 	// AgentSecrets relays the credential-request UI to the secrets broker; nil (the broker URL
 	// is unconfigured) means the feature is off: the pending list answers null, and every other
 	// handler that needs it answers 404 FEATURE_OFF.
@@ -226,6 +241,9 @@ type DepsInput struct {
 	BrokerTokens *brokertoken.Verifier
 	// AgentStream is the live agent conversation relay; nil where the deployment has no NATS.
 	AgentStream agentstream.Source
+	// AgentPublisher queues a targeted message for a session no store of the listener's holds;
+	// nil queues none. See Deps.AgentPublisher; cmd/dispatch passes its NATS client.
+	AgentPublisher AgentPublisher
 	// AgentSecretsURL is the secrets broker's API base URL (DISPATCH_AGENT_SECRETS_URL); empty
 	// means the feature is off. AgentSecretsTokenFile is the file holding Dispatch's own
 	// projected Kubernetes ServiceAccount token, which the client presents on every broker call.
@@ -328,6 +346,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		OIDC:                   input.OIDC,
 		BrokerTokens:           input.BrokerTokens,
 		AgentStream:            input.AgentStream,
+		AgentPublisher:         input.AgentPublisher,
 		AgentSecrets:           agentSecretsClient,
 		Files:                  input.Files,
 		TestHooksEnabled:       input.TestHooksEnabled,
@@ -401,11 +420,28 @@ type server struct {
 	// leg of the related-item check past its grace, or makes it fail, while every other leg runs
 	// as it runs in production.
 	beforeCrossProjectRead func(ctx context.Context) error
+	// crossProjectWait overrides how long the related-item check waits for its cross-project leg
+	// once its meaning stage has answered (awaitCrossProject); zero, which every server the
+	// deployment builds leaves it, means crossProjectGrace. Only a test sets it, so a grace that
+	// reaches past the meaning deadline is the test's choice rather than a race between the
+	// meaning query and 300 ms of wall clock (INFRA-3904).
+	crossProjectWait time.Duration
+	// meaningBound overrides the meaning allowance of the related-item check
+	// (relatedMeaningAllowance), which the check's own allowance still caps; zero, which every
+	// server the deployment builds leaves it, means relatedMeaningAllowance. Only a test sets it,
+	// so a meaning deadline no load reaches is the test's choice, and what ends a wait before it
+	// can be told from that deadline without a clock (INFRA-3904).
+	meaningBound time.Duration
 	// duplicateBound overrides the bound the near-copy gate's read runs under; zero, which every
-	// server the deployment builds leaves it, means duplicateGateTimeout. Only a test sets it
-	// (the forced create whose check does not answer), so a case's outcome is its own choice
-	// rather than its machine's speed.
+	// server the deployment builds leaves it, means duplicateGateTimeout. Only a test sets it: a
+	// case that reads the gate's verdict gives it a bound of its own (testServerOptions'
+	// duplicateBound), and a forced create whose check does not answer a short one, so a case's
+	// outcome is its own choice rather than its machine's speed.
 	duplicateBound time.Duration
+	// beforeDuplicateRead runs at the head of the near-copy gate's read, inside its bound, and its
+	// error stands in for the read failing. Only a test sets it: it is how a case holds the read
+	// until the bound ends it, so the bound and nothing else decides that case.
+	beforeDuplicateRead func(ctx context.Context) error
 	// nearCopyRowID overrides how a near_copy_checks row gets its id; nil, which every server the
 	// deployment builds leaves it, means a random uuid. Only a test sets it, to put a refused row in
 	// place under the id a create will write, as a refusal whose insert landed but whose answer the
@@ -550,6 +586,15 @@ type queryer interface {
 	SendBatch(ctx context.Context, batch *pgx.Batch) pgx.BatchResults
 }
 
+// RouteMux is what Register mounts the routes on: an *http.ServeMux in a server, and in the routes
+// package's TestAKeyedWriteNeverRunsUnkeyed one that also keeps the pattern of each, so the test
+// reads every route the router mounts from the mounting itself rather than from a list kept beside
+// it, and finds a write mounted beside the table, which runs outside keyedWrites.
+type RouteMux interface {
+	Handle(pattern string, handler http.Handler)
+	HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request))
+}
+
 // Register mounts every native-workspace route on mux. The routes live in routes_table.go; the
 // same table answers GET /api/v1.
 //
@@ -587,7 +632,7 @@ type queryer interface {
 // on no context that ever ends, so they would outlive the process's shutdown, or the test that
 // built the server, and the returned wait would block for ever once an events subscription had
 // started the relay, or at once under the test hooks.
-func Register(mux *http.ServeMux, lifetime context.Context, deps Deps) Background {
+func Register(mux RouteMux, lifetime context.Context, deps Deps) Background {
 	s := register(mux, lifetime, deps)
 	return Background{Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, EventHead: s.eventFeedHead, EventHorizon: s.horizon}
 }
@@ -614,11 +659,12 @@ type Background struct {
 }
 
 // waitBackground waits for every keyed handler and every delivery a request left running past
-// its client, then for every live socket and the subscriptions it ran, then for the hub's
-// goroutines, the relay's and the test hooks' listener. The detached work comes first because it
-// is the only work lifetime does not stop: a keyed handler is bounded by keyedHandlerLimit, a
-// delivery by the listener client's receipt timeout per recipient, and each reads and writes
-// through the database pool this wait is holding open for it.
+// its client, then for every live socket and the subscriptions it ran, serving none that opens from
+// then on (liveSocketSet.wait), then for the hub's goroutines, the relay's and the test hooks'
+// listener. The detached work comes first because it is the only work lifetime does not stop: a
+// keyed handler is bounded by keyedHandlerLimit, a delivery by the listener client's receipt
+// timeout per recipient, and each reads and writes through the database pool this wait is holding
+// open for it.
 func (s *server) waitBackground() {
 	s.detached.wait()
 	s.liveSockets.wait()
@@ -688,7 +734,7 @@ func (b *backgroundWork) wait() {
 // log's boot mark does (takeBootMark), for a server that has a Store. The test hooks' listener is
 // one of those: it needs Deps.TestHooksEnabled and a Store and dials on a goroutine of its own,
 // since a process has to be listening before another process calls a hook.
-func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
+func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	if lifetime == nil {
 		panic("api.Register: the lifetime parameter is required: it is the context that ends the delivery hub, the event stream relay and every live socket (a test passes t.Context())")
 	}
@@ -1010,9 +1056,10 @@ func parseQueryBool(query url.Values, field string, trim, readFirst bool) (value
 // place, so a retry goes out on the new cookie before this tab knows. A request whose caller is
 // another person, or no person at all (a bearer), is answered 409 LOGIN_CHANGED before anything
 // runs - before its Idempotency-Key is read, so its key is untouched. A caller that resolves to
-// nobody (a lapsed cookie) is left to the route's own refusal, a 401, so a write a session lapsed
-// under waits for the sign-in that follows. A request without the header - the dispatch command,
-// an agent, a script - is not checked. Logins are compared as model.CanonicalLogin compares them.
+// nobody (a lapsed cookie) is passed on to the 401 written further in - the keyed layer's for a
+// keyed write, the handler's for any other - so a write a session lapsed under waits for the
+// sign-in that follows. A request without the header - the dispatch command, an agent, a script -
+// is not checked. Logins are compared as model.CanonicalLogin compares them.
 func (s *server) refuseChangedLogin(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		pressed := r.Header.Values(contracts.DispatchLoginHeader)
@@ -1087,8 +1134,8 @@ func (s *server) optionalActor(r *http.Request) (model.Actor, bool, error) {
 	}
 	accesslog.Note(r.Context(), accesslog.KindUser, login)
 	// A person at a browser is the person, so their cookie holds every scope and names no agent
-	// that acted for them.
-	return model.Actor{Kind: "user", ID: login, Credential: personCredential}, true, nil
+	// that acted for them. The cookie proved the login, so the actor is Proven.
+	return model.Actor{Kind: "user", ID: login, Credential: personCredential, Proven: true}, true, nil
 }
 
 // The two credentials every request of their kind shares. Each is a fact of the deployment
@@ -1171,7 +1218,8 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 				"this request's credential acts for session %s; its actor names another writer", authenticated.ID)
 		}
 		// Recorded: the actor a handler writes and compares carries no credential, as a stored
-		// actor decoded from JSON carries none (model.Actor.Recorded).
+		// actor decoded from JSON carries none (model.Actor.Recorded). It keeps the Proven mark
+		// brokerTokenActor set, since the credential, not the body, named this session.
 		actor := authenticated.Recorded()
 		if supplied != nil {
 			actor.Origin = supplied.Origin
@@ -1192,6 +1240,7 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		// No Credential: this actor is one a handler records and compares, and a stored actor
 		// was decoded from JSON, which carries none (model.Actor.Recorded). A layer that needs
 		// the request's own credential reads it from optionalActor (callerHoldsScope).
+		// Not Proven: the body named this session and the credential proved none.
 	}, nil
 }
 
@@ -1390,13 +1439,18 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 			session = named
 		}
 		act = &model.ActorAct{
-			Session:   session,
-			TokenID:   credential.TokenID,
-			TokenName: credential.TokenName,
-			Scopes:    credential.Scopes,
+			Session: session,
+			// Only the session the credential itself proved; one a personal token's `?session=`
+			// names is the caller's word.
+			SessionProven: session != "" && session == credential.Session,
+			TokenID:       credential.TokenID,
+			TokenName:     credential.TokenName,
+			Scopes:        credential.Scopes,
 		}
 	}
-	return model.Actor{Kind: "user", ID: model.CanonicalLogin(person), Act: act}, true
+	// Proven: every credential that holds the person scope proves its person - the cookie its
+	// login, a personal or broker-issued token the owner it names.
+	return model.Actor{Kind: "user", ID: model.CanonicalLogin(person), Act: act, Proven: true}, true
 }
 
 // actSessionFromBody records on actor's act the session the request body names, for the
@@ -1407,7 +1461,9 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 // `?session=` is taken on every other route (actingPerson). A credential that did prove one - a
 // broker-issued token - decides it, and a body naming another session is the disagreement
 // bearerSessionActor and actingPerson both refuse, 403 ACTOR_SESSION_MISMATCH, rather than a
-// write recorded as a session the caller merely asked for.
+// write recorded as a session the caller merely asked for. The act keeps SessionProven only
+// when the body names the session the credential proved; a session the body alone names is not
+// proven.
 //
 // Only those routes read it: decodeJSON refuses an unknown field, so a body actor on a route
 // whose input struct does not declare one is a 400, and four of the mutating rows a person's
@@ -1428,6 +1484,7 @@ func actSessionFromBody(w http.ResponseWriter, actor model.Actor, supplied *mode
 	}
 	// A copy, so a handler holding the actor actingPerson answered keeps the act it was given.
 	act := *actor.Act
+	act.SessionProven = act.SessionProven && act.Session == named
 	act.Session = named
 	actor.Act = &act
 	return actor, true

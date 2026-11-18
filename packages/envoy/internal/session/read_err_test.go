@@ -22,7 +22,7 @@ import (
 // stay healthy throughout.
 func TestReadErrReportsSessionReadsThatCannotReadPastABarrier(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestReadErrReportsSessionReadsThatCannotReadPastABarrier(t *testing.T) {
 // caches, so /healthz reads this one to report them (degraded, cmd/listener's healthz handler).
 func TestKnownSessionsReadErrReportsReadsThatCannotReadPastABarrier(t *testing.T) {
 	client := setupNATS(t)
-	known, err := OpenKnownSessions(client.Conn, WithKnownSessionReplicas(1))
+	known, err := OpenKnownSessions(t.Context(), client.Conn, WithKnownSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the known-session store: %v", err)
 	}

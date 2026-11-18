@@ -33,7 +33,7 @@ func clusterBucket(t *testing.T, uri string) (*natsgo.Conn, bus.KeyValue) {
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	kv, err := bus.EnsureKeyValue(conn, js, &natsgo.KeyValueConfig{Bucket: testBucketName, Replicas: 3, Storage: natsgo.MemoryStorage})
+	kv, err := bus.EnsureKeyValue(t.Context(), conn, js, &natsgo.KeyValueConfig{Bucket: testBucketName, Replicas: 3, Storage: natsgo.MemoryStorage})
 	if err != nil {
 		t.Fatalf("bucket: %v", err)
 	}

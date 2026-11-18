@@ -38,7 +38,7 @@ func TestStoredKeysOnAClusterTakesTheLeadersListAndRefusesAMemberWithNoLeader(t 
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	kv, err := EnsureKeyValue(client.Conn, js, config())
+	kv, err := EnsureKeyValue(t.Context(), client.Conn, js, config())
 	if err != nil {
 		t.Fatalf("create the three-copy bucket: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestStoredKeysOnAClusterTakesTheLeadersListAndRefusesAMemberWithNoLeader(t 
 	leader := cluster.Member(info.Cluster.Leader)
 	member := (leader + 1) % len(cluster.Servers)
 	memberConn, memberJS := memberJetStream(t, cluster, member)
-	memberKV, err := EnsureKeyValue(memberConn, memberJS, config())
+	memberKV, err := EnsureKeyValue(t.Context(), memberConn, memberJS, config())
 	if err != nil {
 		t.Fatalf("open the bucket through member %s: %v", cluster.Name(member), err)
 	}

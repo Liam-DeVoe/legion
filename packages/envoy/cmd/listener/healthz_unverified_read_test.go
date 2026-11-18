@@ -28,12 +28,12 @@ func TestHealthzIsUnhealthyOnceACachesReadsCannotReadPastABarrierForTheBound(t *
 	const consumer = "listener-healthz-unverified-read"
 	client := setupTestNATS(t)
 	bindBoundDurable(t, client, consumer, func(msg *natsgo.Msg) { _ = msg.Ack() })
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open interest registry: %v", err)
 	}
 	t.Cleanup(registry.StopWatch)
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
@@ -101,12 +101,12 @@ func TestHealthzIsDegradedOnceTheKnownSessionStoresReadsCannotReadPastABarrier(t
 	const consumer = "listener-healthz-known-read"
 	client := setupTestNATS(t)
 	bindBoundDurable(t, client, consumer, func(msg *natsgo.Msg) { _ = msg.Ack() })
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open interest registry: %v", err)
 	}
 	t.Cleanup(registry.StopWatch)
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
@@ -140,10 +140,10 @@ func TestHealthzIsDegradedOnceTheKnownSessionStoresReadsCannotReadPastABarrier(t
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	if _, err := bus.EnsureKeyValue(conn, js, &natsgo.KeyValueConfig{Bucket: bus.KnownSessionBucket, TTL: 2 * time.Second, Storage: natsgo.MemoryStorage}); err != nil {
+	if _, err := bus.EnsureKeyValue(t.Context(), conn, js, &natsgo.KeyValueConfig{Bucket: bus.KnownSessionBucket, TTL: 2 * time.Second, Storage: natsgo.MemoryStorage}); err != nil {
 		t.Fatalf("make the known-session bucket with a 2 s maximum age: %v", err)
 	}
-	known, err := session.OpenKnownSessions(conn, session.WithKnownSessionReplicas(1))
+	known, err := session.OpenKnownSessions(t.Context(), conn, session.WithKnownSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the known-session store: %v", err)
 	}
@@ -189,7 +189,7 @@ func unverifiedReadWatcher(t *testing.T, conn *natsgo.Conn, now func() time.Time
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	kv, err := bus.EnsureKeyValue(conn, js, &natsgo.KeyValueConfig{Bucket: "healthz-unverified-read"})
+	kv, err := bus.EnsureKeyValue(t.Context(), conn, js, &natsgo.KeyValueConfig{Bucket: "healthz-unverified-read"})
 	if err != nil {
 		t.Fatalf("open the bucket: %v", err)
 	}

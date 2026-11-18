@@ -50,7 +50,7 @@ func TestWriteBarrierFailsOnAMemberCutOffFromTheOthers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	kv, err := EnsureKeyValue(client.Conn, js, &nats.KeyValueConfig{Bucket: "write-barrier-cut-off", Replicas: 3, Storage: nats.MemoryStorage})
+	kv, err := EnsureKeyValue(t.Context(), client.Conn, js, &nats.KeyValueConfig{Bucket: "write-barrier-cut-off", Replicas: 3, Storage: nats.MemoryStorage})
 	if err != nil {
 		t.Fatalf("create the bucket: %v", err)
 	}
