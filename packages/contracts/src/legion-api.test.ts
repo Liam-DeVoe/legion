@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import { EnvelopeSchema } from "./envelope";
 import * as legionApi from "./legion-api";
 import {
   LEGION_FAILURE_CAUSES,
@@ -50,6 +51,22 @@ import { DISPATCH_KEY_PATTERN, isLegionRole, LEGION_ROLES } from "./legion-roles
 
 const fixtureDir = path.join(import.meta.dir, "..", "fixtures", "daemon-api");
 
+/** `state-events.json`, which `internal/daemon`'s TestStateEventsGolden writes: a daemon's records
+ * driven through one write after another, each step holding what it did, every message the state
+ * lane published for it as the Envoy listener stores its envelope, and the state the route served
+ * after them. Each envelope's payload is a message of its own schema (`messageSchemas`). */
+const stateEventsGolden = z.strictObject({
+  steps: z
+    .array(
+      z.strictObject({
+        name: z.string().min(1),
+        messages: z.array(EnvelopeSchema).min(1),
+        state: LegionStateResponse,
+      })
+    )
+    .min(1),
+});
+
 /** Every fixture the Go golden test writes, with the schema that must accept it. A new fixture
  * with no entry here fails the first test rather than going unchecked. */
 const schemas: Record<string, z.ZodType> = {
@@ -59,6 +76,8 @@ const schemas: Record<string, z.ZodType> = {
   // Written by internal/projection's own golden test: what the state route projects while the
   // daemon's own controller (`controller: daemon`) holds its claim on no issue.
   "state-controller-claim.json": LegionStateResponse,
+  // Written by internal/daemon's own golden test (`stateEventsGolden` above).
+  "state-events.json": stateEventsGolden,
   "register.json": LegionRegisterResponse,
   // The claim wire's `claim.ReadyRequest` with a capability report: what a session posts on
   // `claims/ready` (contract 21).
@@ -128,6 +147,13 @@ const schemas: Record<string, z.ZodType> = {
     code: z.literal("HANDOFF_STALE_ENTRY"),
     instruction: z.string().min(1),
   }),
+};
+
+/** Every Go-written fixture whose envelopes carry a message the daemon publishes on the bus, with
+ * the message schema each envelope's payload must parse to: what holds a message schema to a
+ * golden, as `schemas` holds an answer schema to one. */
+const messageSchemas: Record<string, z.ZodType> = {
+  "state-events.json": legionStateMessage,
 };
 
 function fixture(name: string): unknown {
@@ -204,29 +230,85 @@ test("every Go-written fixture parses to a value equal to the file", () => {
   }
 });
 
-// The other direction of that gate, and the hole a merge opened in it: the case above walks the
-// goldens, so an answer schema no golden names is walked by nothing and a Go field it gains is
+// The drift gate on the bus's side: the payload of every envelope of a message golden parses to a
+// value equal to it through its message schema, so a key the daemon publishes with no line in the
+// schema is named here by its path. The states of the state lane's run are the state's, held the
+// same way, each named by the step the daemon served it after.
+test("every message of a Go-written run parses to a value equal to its payload, and every state to the state", () => {
+  let messages = 0;
+  for (const [name, schema] of Object.entries(messageSchemas)) {
+    const run = fixture(name) as {
+      steps: {
+        name: string;
+        messages: { payload_summary: string; payload: string }[];
+        state: unknown;
+      }[];
+    };
+    expect(run.steps.length, `${name} holds no step`).toBeGreaterThan(0);
+    for (const step of run.steps) {
+      for (const envelope of step.messages) {
+        const where = `${name}, ${step.name}, ${envelope.payload_summary}`;
+        const payload: unknown = JSON.parse(envelope.payload);
+        const parsed = schema.safeParse(payload);
+        expect(parsed.error?.issues ?? [], `${where} failed the schema`).toEqual([]);
+        const dropped = firstDroppedKey(payload, parsed.data);
+        expect(
+          dropped,
+          `${where}: the Go field ${dropped} has no line in its schema`
+        ).toBeUndefined();
+        expect(parsed.data, `${where} parses to a value the payload does not equal`).toEqual(
+          payload
+        );
+        messages += 1;
+      }
+      const where = `${name}, ${step.name}`;
+      const state = LegionStateResponse.safeParse(step.state);
+      expect(state.error?.issues ?? [], `${where}: the state failed the schema`).toEqual([]);
+      const dropped = firstDroppedKey(step.state, state.data);
+      expect(
+        dropped,
+        `${where}: the Go field ${dropped} has no line in its schema`
+      ).toBeUndefined();
+      expect<unknown>(
+        state.data,
+        `${where}: the state parses to a value it does not equal`
+      ).toEqual(step.state);
+    }
+  }
+  expect(messages).toBeGreaterThan(0);
+});
+
+// The other direction of those gates, and the hole a merge opened in them: the cases above walk
+// the goldens, so an answer schema no golden names is walked by nothing and a Go field it gains is
 // dropped in silence — which is what `LegionReleaseRecordsResponse` was between the merge that
 // brought it and the fixture above. Every answer schema the module exports must therefore be the
 // schema of some golden, and the roster is derived (`exportedSchemas`), so the next answer
 // schema added with no fixture fails here by its own name. `LegionEmptyResponse` is the schema
 // of eight fact-route goldens, so it is a value of the map eight times over and passes as any
-// other does.
-test("every answer schema the module exports is the schema of a golden", () => {
-  const held = new Set(Object.values(schemas));
-  const roster = exportedSchemas("answer");
+// other does. A message schema is held the same way, by the golden whose envelopes carry its
+// messages (`messageSchemas`): the daemon writes a message as it writes a body, and a field it
+// gains is dropped in silence the same way.
+test("every answer and message schema the module exports is the schema of a golden", () => {
+  const held = new Set([...Object.values(schemas), ...Object.values(messageSchemas)]);
+  const answers = exportedSchemas("answer");
+  const messages = exportedSchemas("message");
+  const roster = { ...answers, ...messages };
   const names = Object.keys(roster).sort();
-  console.log(`answer roster (${names.length} schemas) held by a golden: ${names.join(", ")}`);
+  console.log(
+    `answer and message roster (${names.length} schemas) held by a golden: ${names.join(", ")}`
+  );
 
-  // A roster that matched nothing would leave the assertion below holding vacuously.
-  expect(names.length).toBeGreaterThan(0);
+  // A roster that matched nothing on either side would leave the assertion below holding
+  // vacuously for that side.
+  expect(Object.keys(answers).length).toBeGreaterThan(0);
+  expect(Object.keys(messages).length).toBeGreaterThan(0);
   const without = Object.entries(roster)
     .filter(([, schema]) => !held.has(schema))
     .map(([name]) => name)
     .sort();
   expect(
     without,
-    `these answer schemas have no Go-written golden under fixtures/daemon-api: ${without.join(", ")}`
+    `these answer and message schemas have no Go-written golden under fixtures/daemon-api: ${without.join(", ")}`
   ).toEqual([]);
 });
 

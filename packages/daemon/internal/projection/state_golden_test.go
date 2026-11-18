@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testgolden"
 )
 
 var updateGolden = flag.Bool("update", false, "rewrite the golden fixtures this package pins")
@@ -147,7 +148,7 @@ func TestTheStateWithTheControllersClaimGolden(t *testing.T) {
 	}
 	state.Settings = api.SettingsOf(cfg)
 	state.ControllerLocator = &api.ControllerLocator{Runtime: "kubernetes", External: true, SessionID: "ses_controller", RegisteredAt: admitted.Add(-30 * time.Second)}
-	golden(t, "state-controller-claim.json", state)
+	testgolden.Check(t, "state-controller-claim.json", state, *updateGolden, "go test ./internal/projection/ -update")
 }
 
 // controllerClaimStore is the store TestTheStateWithTheControllersClaimGolden projects: the tree
@@ -189,35 +190,5 @@ func sandboxLocator(token claim.Token, sandbox, podUID string, generation uint64
 	return &runtime.Locator{
 		Runtime: runtime.RuntimeSandbox, Claim: token, Incarnation: runtime.SandboxIncarnation(podUID, generation),
 		Sandbox: &runtime.SandboxLocator{Namespace: "legion", Name: sandbox, PodUID: podUID, Container: container, Generation: generation},
-	}
-}
-
-// golden pins the state document Project's caller serves: Go writes it (`-update`), and
-// `packages/contracts/src/legion-api.test.ts` parses it through the schema the plugin reads the
-// state with and holds the parse equal to the file. A fixture that differs from what Go now
-// writes is stale. It is internal/api's golden helper with this package's command in its message:
-// the daemon-api fixtures are written from two packages, so a state-shape change takes both
-// `-update` runs whether or not the helper is shared. Once a third package writes one, the
-// helper moves into an internal/testgolden package.
-func golden(t *testing.T, name string, value any) {
-	t.Helper()
-	encoded, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		t.Fatalf("marshal %s: %v", name, err)
-	}
-	encoded = append(encoded, '\n')
-	path := filepath.Join("..", "..", "..", "contracts", "fixtures", "daemon-api", name)
-	if *updateGolden {
-		if err := os.WriteFile(path, encoded, 0o644); err != nil {
-			t.Fatalf("write golden: %v", err)
-		}
-		return
-	}
-	want, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read golden (run `go test ./internal/projection/ -update`): %v", err)
-	}
-	if !bytes.Equal(encoded, want) {
-		t.Fatalf("%s is stale\n got: %s\nwant: %s", name, encoded, want)
 	}
 }

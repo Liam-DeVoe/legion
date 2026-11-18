@@ -20,17 +20,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testgolden"
 )
 
 var updateGolden = flag.Bool("update", false, "rewrite the golden fixtures this package pins")
-
-// goldenPath is the cross-language pin: Go writes the wire shape, and
-// `packages/contracts/src/legion-api.test.ts` parses it through the zod schema the plugin reads
-// with and holds the parse equal to the file, so a Go field with no zod line is named there. Go
-// is the source of truth; the fixture is how the schema is held to it.
-func goldenPath(name string) string {
-	return filepath.Join("..", "..", "..", "contracts", "fixtures", "daemon-api", name)
-}
 
 // settingsFixtureFile is the maximal kubernetes legion.yaml the state golden and the settings tests
 // share: every key the loader models is set, and every value a credential, its source or its file
@@ -1140,35 +1133,11 @@ func TestStateOperatorClaimGolden(t *testing.T) {
 	})
 }
 
-// golden pins one response's wire shape: Go writes it (`-update`), and
-// `packages/contracts/src/legion-api.test.ts` parses it through the schema of the response it is
-// and holds the parse equal to the file. A fixture that differs from what Go now writes is stale.
+// golden pins one response's wire shape to its daemon API fixture through the helper every writer
+// of one shares (testgolden.Check), under this package's own `-update` flag and command.
 func golden(t *testing.T, name string, value any) {
 	t.Helper()
-	encoded, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		t.Fatalf("marshal %s: %v", name, err)
-	}
-	encoded = append(encoded, '\n')
-
-	path := goldenPath(name)
-	if *updateGolden {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatalf("create fixture directory: %v", err)
-		}
-		if err := os.WriteFile(path, encoded, 0o644); err != nil {
-			t.Fatalf("write golden: %v", err)
-		}
-		return
-	}
-
-	want, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read golden (run `go test ./internal/api/ -update`): %v", err)
-	}
-	if !bytes.Equal(encoded, want) {
-		t.Fatalf("%s is stale\n got: %s\nwant: %s", name, encoded, want)
-	}
+	testgolden.Check(t, name, value, *updateGolden, "go test ./internal/api/ -update")
 }
 
 // The register response is what the plugin reads its claim, its secret and the task agents its
