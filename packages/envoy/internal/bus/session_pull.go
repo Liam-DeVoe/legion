@@ -122,7 +122,12 @@ type SessionPull struct {
 //
 // The pull lasts as long as the connection it is made on (Client.requestLife): once that
 // connection is lost, Next hands over what the pull already holds and then answers
-// ErrConnectionLost, whose retry (Reconnected) is a new pull on the new connection.
+// ErrConnectionLost, whose retry (Reconnected) is a new pull on the new connection. So does a
+// call of the pull's own on that connection - its subscribe, its pull request and the drain Detach
+// makes - and an acknowledgement of a message it delivered, when nats.go refused it for that
+// connection's close, on a client still running and while the connection is still the client's
+// (lostIfClosed): nats.go refuses each of them before it writes anything (nats.go v1.53.1
+// nats.go:4575-4580, :5030-5035, :5432).
 func (s *SessionConsumers) Pull(ctx context.Context, sessionID string) (*SessionPull, error) {
 	name, err := sessionConsumerNameOf(sessionID)
 	if err != nil {
@@ -139,15 +144,14 @@ func (s *SessionConsumers) Pull(ctx context.Context, sessionID string) (*Session
 	if err != nil {
 		return nil, err
 	}
-	life := s.client.requestLife()
+	life, conn := s.client.requestLife()
 	if life.Err() != nil {
 		return nil, s.client.lostOrClosed(nil)
 	}
 	lost := &connectionLost{client: s.client}
-	conn := s.client.Connection()
 	p := &SessionPull{conn: conn, client: s.client, life: life, lost: lost, name: name, next: consumerAPI("MSG.NEXT", name), inbox: conn.NewInbox(), request: request, heartbeat: s.pullHeartbeat, wake: make(chan struct{}, 1)}
 	if p.sub, err = conn.Subscribe(p.inbox, p.receive); err != nil {
-		return nil, err
+		return nil, s.client.lostIfClosed(err, conn, true)
 	}
 	if err := p.pull(); err != nil {
 		p.Stop()
@@ -203,7 +207,7 @@ func (p *SessionPull) pull() error {
 	p.heard = time.Now()
 	p.mu.Unlock()
 	if err := p.conn.PublishRequest(p.next, p.inbox, p.request); err != nil {
-		return err
+		return p.lostIfClosed(err)
 	}
 	p.remaining = sessionPullBatch
 	return nil
@@ -227,7 +231,7 @@ func (p *SessionPull) Next(ctx context.Context) (SessionMessage, error) {
 		switch status, description := pullStatus(msg); {
 		case status == "":
 			p.remaining--
-			return sessionMessageOf(msg)
+			return p.messageOf(msg)
 		case status == pullStatusExpired, status == pullStatusConflict && description == pullLeadershipChange:
 			// The request ended; the next round sends another.
 			p.remaining = 0
@@ -294,9 +298,9 @@ func (p *SessionPull) take(ctx context.Context) (*nats.Msg, error) {
 	}
 }
 
-// sessionMessageOf is the message the server delivered as msg, whose reply subject carries its
+// messageOf is the message the server delivered to the pull as msg, whose reply subject carries its
 // delivery (the JetStream ack subject).
-func sessionMessageOf(msg *nats.Msg) (SessionMessage, error) {
+func (p *SessionPull) messageOf(msg *nats.Msg) (SessionMessage, error) {
 	meta, err := msg.Metadata()
 	if err != nil {
 		return SessionMessage{}, err
@@ -308,17 +312,35 @@ func sessionMessageOf(msg *nats.Msg) (SessionMessage, error) {
 		StreamSeq:    meta.Sequence.Stream,
 		Delivered:    meta.NumDelivered,
 		StoredAt:     meta.Timestamp,
-		SessionAcker: sessionAck{msg},
+		SessionAcker: sessionAck{msg: msg, pull: p},
 	}, nil
 }
 
-// sessionAck answers a pulled message on the connection it arrived on, by publishing to its reply
-// subject; Ack and NakWithDelay are sent once.
-type sessionAck struct{ msg *nats.Msg }
+// sessionAck answers a message pull delivered on the connection it arrived on, the pull's, by
+// publishing to its reply subject; Ack and NakWithDelay are sent once. An answer nats.go refused
+// for that connection's close is the pull's lostIfClosed's.
+type sessionAck struct {
+	msg  *nats.Msg
+	pull *SessionPull
+}
 
-func (a sessionAck) Ack() error                             { return a.msg.Ack() }
-func (a sessionAck) InProgress() error                      { return a.msg.InProgress() }
-func (a sessionAck) NakWithDelay(delay time.Duration) error { return a.msg.NakWithDelay(delay) }
+func (a sessionAck) Ack() error        { return a.pull.lostIfClosed(a.msg.Ack()) }
+func (a sessionAck) InProgress() error { return a.pull.lostIfClosed(a.msg.InProgress()) }
+func (a sessionAck) NakWithDelay(delay time.Duration) error {
+	return a.pull.lostIfClosed(a.msg.NakWithDelay(delay))
+}
+
+// lostIfClosed is err, nats.go's answer for a call made on the pull's connection, as its client's
+// lostIfClosed names it: ErrConnectionLost, unsent, when nats.go refused the call for that
+// connection's close on a client still running and the connection is still the client's
+// (heldNow), and err as it is otherwise, so a message acknowledged on a connection the client has
+// replaced answers nats.ErrConnectionClosed, which no retry answers. nil takes no lock.
+func (p *SessionPull) lostIfClosed(err error) error {
+	if err == nil {
+		return nil
+	}
+	return p.client.lostIfClosed(err, p.client.heldNow(p.conn), true)
+}
 
 // Stop ends the pull and leaves the messages it held and Next had not returned where they are:
 // the server delivers each of them again once its ack wait (SessionConsumerAckWait) has passed.
@@ -341,15 +363,16 @@ func (p *SessionPull) Detach() error {
 		// queues them.
 		if err := p.sub.Drain(); err != nil {
 			// Drain fails only on a closed connection (nats.go v1.53.1: ErrConnectionClosed;
-			// its other error, a subscription with no connection, cannot arise here). The close
-			// has already ended the subscription and thrown away what nats.go held unread, so
-			// those messages reach neither Release nor the server and are delivered again only
-			// once their ack wait has passed. The poll below would end at once on the invalid
-			// subscription and report nothing, so the failure is returned here instead. Stop is
-			// kept as a guard for any other drain failure; on a closed connection it does
+			// its other error, a subscription with no connection, cannot arise here), which is
+			// ErrConnectionLost while the connection is still the running client's (lostIfClosed).
+			// The close has already ended the subscription and thrown away what nats.go held
+			// unread, so those messages reach neither Release nor the server and are delivered
+			// again only once their ack wait has passed. The poll below would end at once on the
+			// invalid subscription and report nothing, so the failure is returned here instead.
+			// Stop is kept as a guard for any other drain failure; on a closed connection it does
 			// nothing.
 			p.Stop()
-			p.detachErr = fmt.Errorf("bus: the inbox subscription of the pull of consumer %q could not be drained, so the messages nats.go held unread are lost: %w", p.name, err)
+			p.detachErr = fmt.Errorf("bus: the inbox subscription of the pull of consumer %q could not be drained, so the messages nats.go held unread are lost: %w", p.name, p.lostIfClosed(err))
 			return
 		}
 		for deadline := time.Now().Add(sessionPullDrainWait); p.sub.IsValid() && time.Now().Before(deadline); {
@@ -387,7 +410,7 @@ func (p *SessionPull) Release() (int, error) {
 			// return to the server.
 			continue
 		}
-		held = append(held, sessionAck{msg})
+		held = append(held, sessionAck{msg: msg, pull: p})
 	}
 	returned, nakErr := ReturnMessages(fmt.Sprintf("the pull of consumer %q", p.name), held)
 	return returned, errors.Join(detachErr, nakErr)

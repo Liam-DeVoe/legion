@@ -18,9 +18,11 @@ import (
 // connection the hold is relaying, as a network that ends a connection does, and keeps accepting,
 // so the client reconnects through it at its next attempt; Cut ends them too and refuses every
 // reconnect until Restore, as Proxy.Cut does, so a test can see what the client does while it is
-// disconnected, however long the box takes. A new connection's replies are not held unless Hold
-// names them again. Every other protocol line is relayed as it is, so the connection is a real one
-// on a real server.
+// disconnected, however long the box takes. It can hold a flush's PONG the same way (HoldFlush), so
+// a flush waits on a PONG that never comes, which is what it sees of a flush whose PONG the drop
+// lost. A new connection's replies and flushes are not held unless Hold or HoldFlush names them
+// again. Every other protocol line is relayed as it is, so the connection is a real one on a real
+// server.
 type ReplyHold struct {
 	listener net.Listener
 	target   string
@@ -31,11 +33,28 @@ type ReplyHold struct {
 	// replies are the reply subjects of the held requests, whose answers the hold drops.
 	replies map[string]struct{}
 	// held is what the hold reports of the replies it holds now; nil while it holds none.
-	held  *HeldReplies
-	conns map[net.Conn]struct{}
+	held *HeldReplies
+	// flushPrefix and flush are HoldFlush's: the subject prefix of the publishes whose flush's
+	// PONG the hold keeps, and what it reports of it; flush is nil while it holds none.
+	flushPrefix string
+	flush       *HeldFlush
+	conns       map[net.Conn]struct{}
 	// cut is set from Cut until Restore: every connection the hold accepts is closed at once.
 	cut bool
 }
+
+// HeldFlush is what a flush hold (ReplyHold.HoldFlush) reports: the PONG of a publish's flush
+// withheld.
+type HeldFlush struct {
+	withheld chan struct{}
+}
+
+// Withheld is closed once the hold has kept from the client the PONG answering the first PING the
+// client sent after a publish on the hold's prefix: that publish's own flush, for a publish that
+// flushes behind it (bus.Client's publishConfirmed), is waiting for that PONG from then on, and
+// waits until the connection is dropped, which nats.go answers it with as a close (processOpErr
+// clears the pending flushes).
+func (f *HeldFlush) Withheld() <-chan struct{} { return f.withheld }
 
 // HeldReplies is what a hold (ReplyHold.Hold) reports, as two events: a reply withheld, and the
 // PONG of the client's first flush after a held request, forwarded.
@@ -95,6 +114,18 @@ func (h *ReplyHold) Hold(prefix string) *HeldReplies {
 	return h.held
 }
 
+// HoldFlush holds the PONG of the flush of every publish the client sends from now on whose subject
+// starts with prefix - the PONG answering the first PING the client sends on the connection after
+// such a publish - until Drop, and reports when it has withheld the first of them (HeldFlush). A
+// test that drops the connection then drops it while that flush is still waiting.
+func (h *ReplyHold) HoldFlush(prefix string) *HeldFlush {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.flushPrefix = prefix
+	h.flush = &HeldFlush{withheld: make(chan struct{})}
+	return h.flush
+}
+
 // Drop holds nothing more and closes every connection the hold is relaying: each client through it
 // is disconnected at once, and reconnects through it.
 func (h *ReplyHold) Drop() {
@@ -125,6 +156,7 @@ func (h *ReplyHold) Restore() {
 // h.mu.
 func (h *ReplyHold) dropLocked() {
 	h.prefix, h.replies, h.held = "", nil, nil
+	h.flushPrefix, h.flush = "", nil
 	for conn := range h.conns {
 		_ = conn.Close()
 		delete(h.conns, conn)
@@ -132,13 +164,19 @@ func (h *ReplyHold) dropLocked() {
 }
 
 // flushes is one relayed connection's count of the PINGs the client sent and the PONGs forwarded
-// to it, under ReplyHold.mu, and the PONG a held request's flush waits for.
+// to it, under ReplyHold.mu, the PONG a held request's flush waits for, and the PONG a flush hold
+// keeps from the client.
 type flushes struct {
 	pings, pongs int
 	// due is the PONG, by its count on this connection, that answers the first PING the client
 	// sent after a held request, and 0 while none is due; held is the hold it belongs to.
 	due  int
 	held *HeldReplies
+	// kept is the PONG, by its count on this connection, that answers the first PING the client
+	// sent after a publish a flush hold names, which the hold keeps from the client, and 0 while
+	// none is; keptFor is the flush hold it belongs to.
+	kept    int
+	keptFor *HeldFlush
 }
 
 // request notes the reply subject of a request the client sent on subject when its reply is to be
@@ -151,6 +189,16 @@ func (h *ReplyHold) request(conn *flushes, subject, reply string) {
 		if conn.due == 0 {
 			conn.due, conn.held = conn.pings+1, h.held
 		}
+	}
+}
+
+// published notes that the next PING the client sends on the connection is the flush of a publish
+// it sent on subject, when a flush hold names that subject.
+func (h *ReplyHold) published(conn *flushes, subject string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.flush != nil && strings.HasPrefix(subject, h.flushPrefix) && conn.kept == 0 {
+		conn.kept, conn.keptFor = conn.pings+1, h.flush
 	}
 }
 
@@ -170,6 +218,21 @@ func (h *ReplyHold) withhold(subject string) bool {
 		return false
 	}
 	closeOnce(h.held.withheld)
+	return true
+}
+
+// keepPong reports whether the PONG the server sent next on conn is the one a flush hold keeps
+// from the client, and when it is, counts it and reports it withheld. A PONG answers the PINGs of
+// its connection in order, so its count says which PING it answers.
+func (h *ReplyHold) keepPong(conn *flushes) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if conn.kept == 0 || conn.pongs+1 != conn.kept {
+		return false
+	}
+	conn.pongs++
+	closeOnce(conn.keptFor.withheld)
+	conn.kept, conn.keptFor = 0, nil
 	return true
 }
 
@@ -205,9 +268,9 @@ func (h *ReplyHold) serve() {
 }
 
 // relay joins client to the server, a protocol line at a time each way: what the client sends is
-// relayed as it is, noting the replies of the requests to hold and counting its PINGs, and what
-// the server sends is relayed but for each held reply and its payload. Both ends are out of the
-// hold's map once the relay ends.
+// relayed as it is, noting the replies of the requests to hold, the publishes whose flush to hold
+// and counting its PINGs, and what the server sends is relayed but for each held reply and its
+// payload and each held flush's PONG. Both ends are out of the hold's map once the relay ends.
 func (h *ReplyHold) relay(client net.Conn) {
 	h.mu.Lock()
 	cut := h.cut
@@ -247,6 +310,11 @@ func (h *ReplyHold) relay(client net.Conn) {
 		if err != nil {
 			return
 		}
+		isPub := strings.EqualFold(fields[0], "PUB") || strings.EqualFold(fields[0], "HPUB")
+		if isPub && len(fields) >= 3 {
+			// `PUB <subject> [reply] <bytes>` and `HPUB <subject> [reply] <header bytes> <bytes>`.
+			h.published(conn, fields[1])
+		}
 		switch {
 		// `PUB <subject> <reply> <bytes>` and `HPUB <subject> <reply> <header bytes> <bytes>`.
 		case (strings.EqualFold(fields[0], "PUB") && len(fields) == 4) || (strings.EqualFold(fields[0], "HPUB") && len(fields) == 5):
@@ -260,8 +328,8 @@ func (h *ReplyHold) relay(client net.Conn) {
 	}
 }
 
-// down relays what the server sends to client, leaving out each held reply, and counts the PONGs
-// it forwards (HeldReplies.Flushed).
+// down relays what the server sends to client, leaving out each held reply and each PONG a flush
+// hold keeps (keepPong), and counts the PONGs it forwards (HeldReplies.Flushed).
 func (h *ReplyHold) down(conn *flushes, server, client net.Conn) {
 	defer func() {
 		_ = client.Close()
@@ -276,10 +344,14 @@ func (h *ReplyHold) down(conn *flushes, server, client net.Conn) {
 		if len(fields) >= 4 && (strings.EqualFold(fields[0], "MSG") || strings.EqualFold(fields[0], "HMSG")) && h.withhold(fields[1]) {
 			continue
 		}
+		pong := len(fields) == 1 && strings.EqualFold(fields[0], "PONG")
+		if pong && h.keepPong(conn) {
+			continue
+		}
 		if _, err := client.Write(append(line, payload...)); err != nil {
 			return
 		}
-		if len(fields) == 1 && strings.EqualFold(fields[0], "PONG") {
+		if pong {
 			h.ponged(conn)
 		}
 	}

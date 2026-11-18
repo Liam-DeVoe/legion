@@ -1,6 +1,7 @@
 package testnats
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -58,6 +59,53 @@ func TestAReplyHoldReportsAFlushOnlyOnceItsPongReachesTheClient(t *testing.T) {
 	}
 	if msg, err := replies.NextMsg(100 * time.Millisecond); err == nil {
 		t.Fatalf("the held reply reached the client: %q", msg.Data)
+	}
+}
+
+// A flush hold keeps from the client the PONG of the flush that follows a publish on its prefix, so
+// that flush waits until the connection drops, which nats.go answers it with as a close
+// (nats.ErrConnectionClosed: processOpErr clears the pending flushes). A flush after a publish on
+// another subject, made first, is answered as ever. That is what lets a test drop the connection
+// while a publish's flush is still waiting for its PONG, the order a drop gives a flush in flight.
+//
+// The control is this row with keepPong reporting false for every PONG: the held flush returns nil
+// before the drop.
+func TestAFlushHoldKeepsThePongOfAPublishsFlushUntilTheDrop(t *testing.T) {
+	hold := StartReplyHold(t, URL(t))
+	client := Connect(t, hold.URL())
+	held := hold.HoldFlush("hold.flush.")
+	if err := client.Publish("hold.other", []byte("other")); err != nil {
+		t.Fatalf("publish on another subject: %v", err)
+	}
+	if err := client.Flush(); err != nil {
+		t.Fatalf("the flush after a publish the hold does not name answered %v, want it answered", err)
+	}
+	if err := client.Publish("hold.flush.one", []byte("held")); err != nil {
+		t.Fatalf("publish on the held prefix: %v", err)
+	}
+	flushed := make(chan error, 1)
+	go func() { flushed <- client.FlushTimeout(Remaining(t)) }()
+	select {
+	case <-held.Withheld():
+	case err := <-flushed:
+		t.Fatalf("the held publish's flush answered %v before the hold withheld its PONG", err)
+	case <-time.After(Remaining(t)):
+		t.Fatal("the hold had not withheld the flush's PONG by the test's deadline")
+	}
+	// An absence, which a slow box can only miss, never invent: the flush is still waiting.
+	select {
+	case err := <-flushed:
+		t.Fatalf("the flush whose PONG the hold keeps answered %v before the drop", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	hold.Drop()
+	select {
+	case err := <-flushed:
+		if !errors.Is(err, natsgo.ErrConnectionClosed) {
+			t.Fatalf("the flush the drop cut off answered %v, want nats.ErrConnectionClosed", err)
+		}
+	case <-time.After(Remaining(t)):
+		t.Fatal("the flush the drop cut off was still waiting at the test's deadline")
 	}
 }
 

@@ -47,6 +47,7 @@ type connectOpts struct {
 	streamSubjectsRefresh       time.Duration
 	reconnectWaitTick           func()
 	beforeRequestFlush          func()
+	lifeEndGate                 func()
 	background                  bool
 	silentCutDetection          bool
 	lossAtOnce                  bool
@@ -283,6 +284,12 @@ type Client struct {
 	// export_test.go) to hold the flush until the connection it would flush is gone, the
 	// interleaving a flush begun after the connection turned reconnecting has.
 	beforeRequestFlush func()
+	// lifeEndGate, when not nil, runs right before each end of a connection's life
+	// (endLifeNow), on the goroutine that ends it. It is nil outside tests: a test sets it
+	// (withLifeEndGate, close_lost_test.go) to hold the life's end until a request has had
+	// nats.go's answer for its connection's close, the order nats.go gives when close clears the
+	// pending requests before its status report reaches the client.
+	lifeEndGate func()
 	// lossAtOnce is withLossAtOnce's: a request made while the connection is reconnecting answers
 	// ErrConnectionLost without waiting for it (connForRequest).
 	lossAtOnce bool
@@ -493,6 +500,7 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		reconnectErrClock:           opts.reconnectErrClock,
 		reconnectWaitTick:           opts.reconnectWaitTick,
 		beforeRequestFlush:          opts.beforeRequestFlush,
+		lifeEndGate:                 opts.lifeEndGate,
 		lossAtOnce:                  opts.lossAtOnce,
 		stopCh:                      make(chan struct{}),
 	}
@@ -960,6 +968,11 @@ func (c *Client) subscribeCore(next recoverableSubscription) (*nats.Subscription
 // Close has stopped the client it registers nothing, as a restore binds nothing: replacing the
 // transport's subscription would unsubscribe one the drain is letting finish. A registration on
 // another subject or queue group than the transport's subscription is refused (ErrSubscriptionHeld).
+// conn is the client's connection when the call began. A bind that nats.go answered with that
+// connection's close, on a client still running, answers ErrConnectionLost (lostIfClosed), whose
+// retry waits for the connection that replaces it (Reconnected); the registration stays all the
+// same, so the recovery binds it there. A core subscribe nats.go refused sent nothing (nats.go
+// v1.53.1 nats.go:5030-5035); a JetStream one may have sent its consumer lookup or create first.
 func (c *Client) registerSubscription(next recoverableSubscription, conn *nats.Conn, js nats.JetStreamContext) (*nats.Subscription, error) {
 	c.subscriptionsMu.Lock()
 	subscription := &c.subscriptions[next.transport]
@@ -994,7 +1007,7 @@ func (c *Client) registerSubscription(next recoverableSubscription, conn *nats.C
 	}
 	sub, err := bind(next, conn, js)
 	if err := c.endBind(subscription, sub, err, true); err != nil {
-		return nil, err
+		return nil, c.lostIfClosed(err, conn, next.transport == coreSubscription)
 	}
 	return sub, nil
 }
@@ -1062,17 +1075,23 @@ func (c *Client) DrainSubscription(sub *nats.Subscription) (*nats.Subscription, 
 	if active == nil || !active.IsValid() {
 		return nil, nil
 	}
+	// A valid handle is one on the client's connection: the client replaces only a connection that
+	// nats.go has closed, and that close ends every subscription on it. So the unsubscribe and the
+	// drain below act on conn, and one nats.go refuses for its close, which it does before
+	// writing anything (nats.go v1.53.1 nats.go:5315-5322, :5432), is that connection's loss on a
+	// client still running (lostIfClosed).
+	conn := c.Connection()
 	// Taken before the state it guards is read, so that an event between the two still wakes the
 	// watch below.
 	changed := c.ConnectionChanged()
 	if !c.Connected() {
 		if err := active.Unsubscribe(); err != nil {
-			return nil, err
+			return nil, c.lostIfClosed(err, conn, true)
 		}
 		return nil, nil
 	}
 	if err := active.Drain(); err != nil {
-		return nil, err
+		return nil, c.lostIfClosed(err, conn, true)
 	}
 	go c.watchDrain(active, changed)
 	return active, nil
@@ -1570,7 +1589,11 @@ const reconnectRecheck = time.Second
 // its constructor on, a connection nats.go has yet to connect for the first time and does not
 // close before then, so a caller waits for that first connection as for a reconnect, and nothing
 // here dials beside nats.go before it; a connection dialled later to replace a closed one is an
-// ordinary one, connected before it is installed.
+// ordinary one, connected before it is installed. A dial that found no server to connect to
+// answers nats.go's ErrNoServers, after its ten attempts (connectWithContext), and on a client
+// still running that is its connection's loss, ErrConnectionLost, unsent, whose retry waits for
+// the dial that does connect (Reconnected): the client's connection is closed, and its recovery
+// goes on dialling (lostIfClosed). Any other failure of the dial, ctx's end among them, is its own.
 func (c *Client) ensureConnWithContext(ctx context.Context) error {
 	for {
 		c.mu.Lock()
@@ -1614,7 +1637,7 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 
 		nc, err := connectWithContext(ctx, c.name, c.urls, c.connectionSettings, c.dialer, c.onReconnect, c.onDisconnect, c.onClosed, c.onAsyncError, c.reconnectErrClock)
 		if err != nil {
-			return err
+			return c.lostIfClosed(err, conn, true)
 		}
 		js, err := nc.JetStream(nats.MaxWait(10*time.Second), nats.PublishAsyncTimeout(publishAcknowledgementTimeout))
 		if err != nil {
@@ -1899,54 +1922,68 @@ func (c *Client) PublishReportingDuplicate(item contracts.Envelope) (bool, error
 
 // PublishReportingDuplicateWithin publishes as PublishReportingDuplicate does, reporting the same
 // duplicate verdict over the same two transports, with ctx as the whole publish's bound instead of
-// publishBound.
+// publishBound. The verdict is PublishAckWithin's Duplicate.
 func (c *Client) PublishReportingDuplicateWithin(ctx context.Context, item contracts.Envelope) (bool, error) {
+	ack, err := c.PublishAckWithin(ctx, item)
+	return ack.Duplicate, err
+}
+
+// PublishAckWithin publishes item on its own topic as PublishReportingDuplicateWithin does, over
+// the same two transports and within ctx's bound, and returns the stream's whole acknowledgement
+// rather than its duplicate verdict alone: the sequence beside the verdict. Its caller reads the
+// verdict, so a publish under a message id is sent once (publishJetStreamOn) and a duplicate names
+// a copy stored before this call: an answer the connection's loss took is the error, which wraps
+// ErrUnacknowledged since the stream may hold this call's copy (sendStored). A core-transport
+// topic has no acknowledgement, so it answers the zero StoredAck beside PublishCoreContext's
+// error. The listener's send and publish routes publish this way: their sender limit charges
+// nothing for a copy the stream already held, and one for a copy this call may have stored
+// (cmd/listener's senderCharge.published).
+func (c *Client) PublishAckWithin(ctx context.Context, item contracts.Envelope) (StoredAck, error) {
 	return c.publishEnvelope(ctx, item, true)
 }
 
-// publishEnvelope publishes item over the transport its topic takes and returns the duplicate
-// verdict, false for a core-transport topic. verdict says the caller reads that verdict: a publish
-// under a message id is then sent once, and otherwise sent again after a lost answer (sendStored).
-func (c *Client) publishEnvelope(ctx context.Context, item contracts.Envelope, verdict bool) (bool, error) {
+// publishEnvelope publishes item over the transport its topic takes and returns the stream's
+// acknowledgement, the zero StoredAck for a core-transport topic. verdict says the caller reads its
+// duplicate verdict: a publish under a message id is then sent once, and otherwise sent again after
+// a lost answer (sendStored).
+func (c *Client) publishEnvelope(ctx context.Context, item contracts.Envelope, verdict bool) (StoredAck, error) {
 	if c.UsesCoreTransport(item.Topic) {
-		return false, c.PublishCoreContext(ctx, item.Topic, item)
+		return StoredAck{}, c.PublishCoreContext(ctx, item.Topic, item)
 	}
 	return c.publishJetStream(ctx, item, verdict)
 }
 
-// StoredAck is the stream's acknowledgement of a stored publish (PublishStoredAck): the stream
-// sequence of the copy the stream holds under the publish's message id, and whether an earlier
-// publish stored that copy. A duplicate's Sequence is that earlier copy's, which nats-server names
-// in its answer, so a caller can read the copy the stream already holds (NextStoredMessage at that
-// sequence).
+// StoredAck is the stream's acknowledgement of a stored publish (PublishStoredAck,
+// PublishAckWithin): the stream sequence of the copy the stream holds under the publish's message
+// id, and whether an earlier publish stored that copy. A duplicate's Sequence is that earlier
+// copy's, which nats-server names in its answer, so a caller can read the copy the stream already
+// holds (NextStoredMessage at that sequence). Both of those publishes are sent once under a message
+// id (sendStored), so a duplicate never names a copy an earlier send of the same call stored.
 type StoredAck struct {
 	Sequence  uint64
 	Duplicate bool
 }
 
-// PublishStoredAck publishes item to the notification stream on subject, under Nats-Msg-Id msgID
-// instead of the one publishJetStream derives, within ctx's bound as PublishWithin's, for a caller
-// that names both the subject it is stored on and the stored message itself, and returns the
-// stream's acknowledgement. It is how the listener keeps a role message it could not deliver:
-// stored on that role's kept subject (KeptRoleSubject) while the envelope keeps its own topic
-// field, so the holder that later takes the role is handed the message as its sender sent it.
-// Every listener that keeps the same message writes it under one id (KeptMsgID), and the keep
-// reads the acknowledgement to tell a new copy from one the stream already held, and which copy
-// that is (cmd/listener/role_keep.go).
+// PublishStoredAck publishes item to the notification stream on subject, under Nats-Msg-Id msgID,
+// none when it is empty, within ctx's bound as PublishWithin's, for a caller that names both the
+// subject it is stored on and the stored message itself, and returns the stream's
+// acknowledgement. It is how the listener keeps a role message it could not deliver: stored on
+// that role's kept subject (KeptRoleSubject) while the envelope keeps its own topic field, so the
+// holder that later takes the role is handed the message as its sender sent it. Every listener
+// that keeps the same message writes it under one id (KeptMsgID), and the keep reads the
+// acknowledgement to tell a new copy from one the stream already held, and which copy that is
+// (cmd/listener/role_keep.go).
 //
 // A duplicate is no error: it comes back Duplicate, with the sequence of the copy the stream
-// holds. Its refusals are publishJetStream's (ErrTooLarge, ErrRefused, ErrPublishDenied,
-// ErrStreamFull), and ErrDuplicateInProcess while a clustered stream is still storing an earlier
-// publish under the same id; subject must be one the stream captures, or nothing answers the
-// publish. It is sent once (publishJetStreamOn), so an answer the connection's loss took is
-// ErrConnectionLost: the keep publishes again itself once the connection is back and reads the
-// copy a duplicate names, which is then its own.
+// holds. Its refusals are those of every stored publish, which publishJetStream describes
+// (ErrTooLarge, ErrRefused, ErrPublishDenied, ErrStreamFull), and ErrDuplicateInProcess while a
+// clustered stream is still storing an earlier publish under the same id; subject must be one the
+// stream captures, or nothing answers the publish. It is sent once (publishJetStreamOn), so an
+// answer the connection's loss took is ErrConnectionLost, wrapped in ErrUnacknowledged since the
+// stream may hold the copy (sendStored): the keep publishes again itself once the connection is
+// back and reads the copy a duplicate names, which is then its own.
 func (c *Client) PublishStoredAck(ctx context.Context, subject string, item contracts.Envelope, msgID string) (StoredAck, error) {
-	ack, err := c.publishJetStreamOn(ctx, subject, item, msgID, true)
-	if err != nil {
-		return StoredAck{}, err
-	}
-	return StoredAck{Sequence: ack.Sequence, Duplicate: ack.Duplicate}, nil
+	return c.publishJetStreamOn(ctx, subject, item, msgID, true)
 }
 
 // PublishStoredAs is PublishStoredAck for a caller that needs no acknowledgement: the listener's
@@ -1960,14 +1997,15 @@ func (c *Client) PublishStoredAs(ctx context.Context, subject string, item contr
 	return err
 }
 
-// publishJetStream publishes item to the notification stream within ctx's bound. The MsgId, where
-// the envelope earns one, is the dedupe key and the topic together, because one upstream event can
-// be published on several topics under one key - a GitHub comment that mentions the trigger is
-// published on its mention topic beside its comment topic - and each of those must be retained.
-// The bound below is the earlier of the caller's own deadline and publishBound, since WithTimeout
-// keeps the parent's deadline when that is the earlier one; publishBound is what bounds a caller
-// that passed none. The acknowledgement wait is still taken from publishAcknowledgementClock, the
-// seam a test uses to expire that bound without spending it.
+// publishJetStream publishes item to the notification stream within ctx's bound, and returns the
+// stream's acknowledgement (StoredAck). The MsgId, where the envelope earns one, is the dedupe key
+// and the topic together, because one upstream event can be published on several topics under one
+// key - a GitHub comment that mentions the trigger is published on its mention topic beside its
+// comment topic - and each of those must be retained. The bound publishJetStreamOn sets is the
+// earlier of the caller's own deadline and publishBound, since WithTimeout keeps the parent's
+// deadline when that is the earlier one; publishBound is what bounds a caller that passed none.
+// The acknowledgement wait is still taken from publishAcknowledgementClock, the seam a test uses
+// to expire that bound without spending it.
 //
 // A publish the server refuses under the connection's own publish permissions is answered
 // ErrPublishDenied, as a publish window's sends are (window.acknowledged): a denied JetStream
@@ -1990,17 +2028,14 @@ func (c *Client) PublishStoredAs(ctx context.Context, subject string, item contr
 // TestAPublishWithAnEndedContextSendsNothing pins it, so either change fails that test instead of
 // reaching the wire. What a context that ends during the acknowledgement wait leaves is a message
 // the stream may hold while the caller is answered failure; that is the acknowledgement's own
-// ambiguity, which the MsgId's duplicate window absorbs for an envelope that earns one.
-func (c *Client) publishJetStream(ctx context.Context, item contracts.Envelope, verdict bool) (bool, error) {
+// ambiguity, which the MsgId's duplicate window absorbs for an envelope that earns one, and which
+// the failure names (ErrUnacknowledged, sendStored).
+func (c *Client) publishJetStream(ctx context.Context, item contracts.Envelope, verdict bool) (StoredAck, error) {
 	msgID := ""
 	if contracts.DedupeKeyNamesTheUpstreamEvent(item) {
 		msgID = ForwardMsgID(item.DedupeKey, item.Topic)
 	}
-	ack, err := c.publishJetStreamOn(ctx, item.Topic, item, msgID, verdict)
-	if err != nil {
-		return false, err
-	}
-	return ack.Duplicate, nil
+	return c.publishJetStreamOn(ctx, item.Topic, item, msgID, verdict)
 }
 
 // publishJetStreamOn is publishJetStream to subject under Nats-Msg-Id msgID, none when it is
@@ -2012,22 +2047,23 @@ func (c *Client) publishJetStream(ctx context.Context, item contracts.Envelope, 
 // verdict says the caller reads the acknowledgement's duplicate verdict. A publish under a message
 // id whose caller does is sent once (sendStored): a second send of one that landed is stored once
 // but answered as a duplicate of the first send's copy, which that caller would read as another
-// writer's copy - the send route hands it to Dispatch as no envelope, the wake logs it as already
-// stored. A caller that reads the copy a duplicate names, as the keep does (PublishStoredAck),
-// sends it again itself after the loss. One whose caller reads no verdict is sent again here,
-// since the stream settles all it is asked: it stores the message once.
-func (c *Client) publishJetStreamOn(ctx context.Context, subject string, item contracts.Envelope, msgID string, verdict bool) (*nats.PubAck, error) {
+// writer's copy - the send route hands it to Dispatch as no envelope and its sender limit charges
+// it nothing, the wake logs it as already stored. A caller that reads the copy a duplicate names,
+// as the keep does (PublishStoredAck), sends it again itself after the loss. One whose caller
+// reads no verdict is sent again here, since the stream settles all it is asked: it stores the
+// message once.
+func (c *Client) publishJetStreamOn(ctx context.Context, subject string, item contracts.Envelope, msgID string, verdict bool) (StoredAck, error) {
 	if err := checkSubject(subject); err != nil {
-		return nil, err
+		return StoredAck{}, err
 	}
 	data, err := json.Marshal(item)
 	if err != nil {
-		return nil, err
+		return StoredAck{}, err
 	}
 	ctx, cancel := c.publishAcknowledgementClock.WithTimeout(ctx, publishBound)
 	defer cancel()
 	if err := c.ensureConnWithContext(ctx); err != nil {
-		return nil, err
+		return StoredAck{}, err
 	}
 	options := []nats.PubOpt{nats.Context(ctx)}
 	if msgID != "" {
@@ -2036,45 +2072,116 @@ func (c *Client) publishJetStreamOn(ctx context.Context, subject string, item co
 	return c.sendStored(ctx, subject, data, msgID != "" && verdict, options...)
 }
 
+// ErrUnacknowledged is wrapped by the error of a stored publish that failed and may still have put
+// its message in the stream: a send went out while its context was live and nothing answered it
+// (sendUnanswered). The stream may hold the message, or store it yet from bytes still on their way
+// to the server, so a caller that counts what it stored counts this one too (cmd/listener's sender
+// limit). It wraps the failure itself, so every comparison the failure answered
+// (context.DeadlineExceeded, ErrConnectionLost, nats.ErrConnectionClosed and the rest) still holds.
+//
+// A failure before anything was sent does not wrap it: a subject or an envelope refused before the
+// send, a wait for a reconnect that ended before any send, or the ErrConnectionLost a client that
+// answers a loss at once gives in place of that wait (connForRequest), a publish Request did not
+// send because the connection's life had ended before it (requestUnsent), and a context that had
+// already ended, under which nats.go sends nothing (publishJetStream). Nor does a server's answer,
+// a refusal (an *nats.APIError, ErrStreamFull, ErrDuplicateInProcess) or no stream answering the
+// subject (nats.ErrNoStreamResponse), since the stream stored nothing, unless an earlier send of
+// the same call went unanswered: then the resend is what the server refused (sendStored). A
+// denied publish (ErrPublishDenied) never wraps it, since the grant that denied it denied every
+// send of the call.
+var ErrUnacknowledged = errors.New("the stream did not acknowledge the publish, so it may hold the message")
+
+// sendUnanswered reports whether err, from a JetStream publish handed to nats.go under a live
+// context, leaves the send unanswered rather than refused, so that it may have reached the stream.
+// It is a positive list of what a publish through the client's JetStream context returns once its
+// request is out and no answer came. nats.go v1.53.1's js.PublishMsg returns, under nats.Context,
+// the context's own error when it ends during the acknowledgement wait, and
+// nats.ErrConnectionClosed when the connection closes with the request outstanding
+// (clearPendingRequestCalls closes the reply's channel); nats.ErrTimeout is the same wait's end
+// where a publish takes a timeout instead of a context. The client's bound context
+// (boundJetStream) returns ErrConnectionLost when the connection's loss or close ends the wait on
+// a running client, in place of nats.go's own answer (lostOrClosed). nats.ErrDisconnected is not
+// on the list: no publish returns it, and it names a connection that sends nothing. Nor is the
+// ErrConnectionLost of a publish Request did not send because the connection's life had ended
+// before it (requestUnsent): the stream cannot hold it, so a caller that counts it would count a
+// message its retry then stores a second time. Two of the list also come back before a send:
+// nats.ErrConnectionClosed from a connection that closed between the connect and the send, and
+// the context's error from one that ended in the instant before nats.go's own check. They count
+// all the same, since telling them apart would race the close and the deadline. Every other error
+// is the server's answer or a refusal before the send.
+func sendUnanswered(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) ||
+		errors.Is(err, nats.ErrTimeout) || errors.Is(err, nats.ErrConnectionClosed) ||
+		errors.Is(err, ErrConnectionLost) && !requestUnsent(err)
+}
+
+// unacknowledged is err wrapped in ErrUnacknowledged when a send of the call may have stored the
+// message (mayHold), and err as it is otherwise.
+func unacknowledged(err error, mayHold bool) error {
+	if !mayHold {
+		return err
+	}
+	return fmt.Errorf("%w: %w", ErrUnacknowledged, err)
+}
+
 // sendStored publishes data to subject on the notification stream under options, and names a
 // refusal as the ErrPublishDenied, ErrTooLarge, ErrStreamFull or ErrDuplicateInProcess it is. It is
 // the one send of the stored path: its callers (publishJetStreamOn, publishStoredRaw) bound ctx,
 // connected first and pass nats.Context(ctx) among the options, so the acknowledgement wait ends
 // with that bound.
 //
-// A publish whose connection closed under it, or was lost under it before its acknowledgement came
-// (ErrConnectionLost), may have been stored. One that is not once is sent again on the connection
-// that replaces it, within ctx (ensureConnWithContext, Reconnected): a publish under a message id
-// whose caller reads no verdict, which the stream stores once, and one with no precondition, which
-// may be stored twice, as a publish sent again after a closed connection always could. One that
-// is once is sent once and answers the error, since a second send of a write that landed answers
-// what the first send's landing made true, not what its caller asks: a write under an expected last
-// sequence (PublishCursorAt) would be refused as the cursor having moved, and one under a
-// Nats-Msg-Id whose caller reads the duplicate verdict (publishJetStreamOn) would be answered as a
-// duplicate of its own copy. Its caller reads the state again instead and decides from what is
-// stored, or answers the loss as a request the bus did not answer.
-func (c *Client) sendStored(ctx context.Context, subject string, data []byte, once bool, options ...nats.PubOpt) (*nats.PubAck, error) {
+// A publish whose connection was lost under it before its acknowledgement came may have been
+// stored. On a client still running that loss answers ErrConnectionLost, a close of the connection
+// among the losses (boundJetStream, closedUnder). One that is not once is sent again on the
+// connection that replaces it, within ctx (Reconnected): a publish under a message id whose caller
+// reads no verdict, which the stream stores once, and one with no precondition, which may be stored
+// twice, as a publish sent again after a closed connection always could; on a client every caller
+// of which retries a lost request itself (withLossAtOnce) it answers the loss instead. The closed
+// connection's own error comes back from a client that was stopped (lostOrClosed), and from the
+// JetStream context of a connection the client replaced as the send began, and is sent again on
+// the connection ensureConnWithContext serves: the replacement, or the one Drain still drains.
+// One that is once is sent once and answers the error, since a second send of a write that landed
+// answers what the first send's landing made true, not what its caller asks: a write under an
+// expected last sequence (PublishCursorAt) would be refused as the cursor having moved, and one
+// under a Nats-Msg-Id whose caller reads the duplicate verdict (publishJetStreamOn) would be
+// answered as a duplicate of its own copy. Its caller reads the state again instead and decides
+// from what is stored, or answers the loss as a request the bus did not answer.
+//
+// A failure after a send that may have reached the stream wraps ErrUnacknowledged: ctx was live
+// as the send was made, read just before it, and what came back was no answer (sendUnanswered).
+// That is the error a once publish answers for its loss, so its caller counts the copy the stream
+// may hold. Once one send of the call is such a send, every failure after it wraps it too, the
+// resend's and that of the reconnect before the resend, since the first send may have stored the
+// message.
+func (c *Client) sendStored(ctx context.Context, subject string, data []byte, once bool, options ...nats.PubOpt) (StoredAck, error) {
 	sentAt := time.Now()
+	live := ctx.Err() == nil
 	ack, err := c.JS().Publish(subject, data, options...)
+	mayHold := live && sendUnanswered(err)
+	resend := false
 	switch {
 	case err == nil, once:
 	case errors.Is(err, nats.ErrConnectionClosed):
 		if err := c.ensureConnWithContext(ctx); err != nil {
-			return nil, err
+			return StoredAck{}, unacknowledged(err, mayHold)
 		}
-		sentAt = time.Now()
-		ack, err = c.JS().Publish(subject, data, options...)
+		resend = true
 	case !c.lossAtOnce && Reconnected(ctx, err):
+		resend = true
+	}
+	if resend {
 		sentAt = time.Now()
+		live = ctx.Err() == nil
 		ack, err = c.JS().Publish(subject, data, options...)
+		mayHold = mayHold || live && sendUnanswered(err)
 	}
 	if err != nil {
 		if denied := c.deniedPublish(subject, sentAt); denied != nil {
-			return nil, denied
+			return StoredAck{}, denied
 		}
-		return nil, storedRefusal(c.refused(err, len(data)))
+		return StoredAck{}, unacknowledged(storedRefusal(c.refused(err, len(data))), mayHold)
 	}
-	return ack, nil
+	return StoredAck{Sequence: ack.Sequence, Duplicate: ack.Duplicate}, nil
 }
 
 // ErrCursorMoved is wrapped by the error of a PublishCursorAt the stream refused because its
@@ -2096,13 +2203,15 @@ var ErrCursorMoved = errors.New("the cursor moved under this write")
 // forwarded, or forward one twice. The loser's error wraps ErrCursorMoved and stored nothing.
 // Every other failure keeps the error the publish path reports: ErrPublishDenied for a write the
 // connection's user may not make, ErrTooLarge for a subject or body past the server's bounds,
-// ErrStreamFull while the stream holds its byte limit, and ctx's error when ctx ends first.
+// ErrStreamFull while the stream holds its byte limit, and ctx's error when ctx ends first, which
+// wraps ErrUnacknowledged once the write went out, since the stream may then hold it (sendStored).
 //
-// A write whose answer the connection's loss took answers ErrConnectionLost, and one whose
-// connection closed under it the closed connection's error: it is sent once (sendStored), since a
-// second send of a write that landed would be refused as the cursor having moved. Such a write may
-// have landed, so the caller reads the cursor back to learn which (cmd/listener's
-// roleKeepLaneCursor.confirm).
+// A write whose answer the connection's loss took answers ErrConnectionLost, a close of the
+// connection on a client still running among the losses, and one whose connection a stopped
+// client's close cut off the closed connection's error, each wrapped in ErrUnacknowledged: it
+// is sent once (sendStored), since a second send of a write that landed would be refused as the
+// cursor having moved. Such a write may have landed, so the caller reads the cursor back to learn
+// which (cmd/listener's roleKeepLaneCursor.confirm).
 func (c *Client) PublishCursorAt(ctx context.Context, subject string, data []byte, expected uint64) (uint64, error) {
 	ack, err := c.publishStoredRaw(ctx, subject, data, nats.ExpectLastSequencePerSubject(expected))
 	if err != nil {
@@ -2123,14 +2232,14 @@ func (c *Client) PublishCursorAt(ctx context.Context, subject string, data []byt
 // precondition is one option rather than a variadic list because each caller has exactly one or
 // none: a list would have the caller build a slice and this method append to it, where the two
 // sends below build sendStored's own variadic slice once, exactly as each caller built it before.
-func (c *Client) publishStoredRaw(ctx context.Context, subject string, data []byte, precondition nats.PubOpt) (*nats.PubAck, error) {
+func (c *Client) publishStoredRaw(ctx context.Context, subject string, data []byte, precondition nats.PubOpt) (StoredAck, error) {
 	if err := checkSubject(subject); err != nil {
-		return nil, err
+		return StoredAck{}, err
 	}
 	ctx, cancel := c.publishAcknowledgementClock.WithTimeout(ctx, publishBound)
 	defer cancel()
 	if err := c.connForRequest(ctx); err != nil {
-		return nil, err
+		return StoredAck{}, err
 	}
 	if precondition == nil {
 		return c.sendStored(ctx, subject, data, false, nats.Context(ctx))
@@ -2166,6 +2275,12 @@ func cursorMoved(err error) error {
 // publish, which also catches a cancel that lands as a reconnect completes. A deadline arrives
 // spent through publishHandler (cmd/listener/api.go), whose reads before the publish (the sender
 // stamp's) share the route's deadline with it.
+//
+// A publish or a flush that nats.go answered with the close of the client's connection - the
+// connection closed under it, or, for the flush, dropped while its PONG was due, which nats.go
+// answers as a close (processOpErr clears the pending flushes, nats.go v1.53.1 nats.go:3577 and
+// :5947-5949) - answers ErrConnectionLost on a client still running (publishConfirmed), so its
+// caller reads it as the lost connection it is rather than as a closed one.
 func (c *Client) PublishCoreContext(ctx context.Context, subject string, item contracts.Envelope) error {
 	if err := checkSubject(subject); err != nil {
 		return err
@@ -2179,7 +2294,7 @@ func (c *Client) PublishCoreContext(ctx context.Context, subject string, item co
 	if err := c.ensureConnWithContext(ctx); err != nil {
 		return err
 	}
-	conn := c.Conn
+	conn := c.Connection()
 	return c.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Data: data}, conn.PublishMsg)
 }
 

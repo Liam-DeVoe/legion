@@ -463,6 +463,11 @@ type keptRoleCopy struct {
 	until int64
 	// sequence is the copy's stream sequence on the role's kept subject.
 	sequence uint64
+	// repeat is whether the keep stored nothing new because the lane already held this
+	// message's copy inside its hour (storeKeptRoleCopy), which the publish route's sender limit
+	// charges nothing for (roleSend.kept). A copy the keep's own earlier send may have stored is
+	// no repeat.
+	repeat bool
 }
 
 // keptRolePublish is the stored publish a keep makes (storeKeptRoleCopy):
@@ -513,6 +518,13 @@ func keepRoleMessage(cfg listenerDeliveryHandlerConfig, role string, item contra
 // own. Every other failure, of a publish or of a read, and a chain that runs out of ctx, is a keep
 // that failed.
 //
+// The copy a duplicate names is a repeat unless a send of this keep under the same id may have
+// stored it and it is this keep's own envelope: a send whose answer the stream may hold
+// (bus.ErrUnacknowledged) - one whose answer the connection's loss took (bus.Reconnected), or one
+// that went out unanswered before an in-process refusal - may have stored the copy a later answer
+// names, and a copy carrying the keep's own event id is then the one it stored. A copy of another
+// event id was stored by another send, the keep's own having been dropped as its duplicate.
+//
 // A new copy's hour counts from its store time, read back at its acknowledged sequence, which is
 // what the walk measures its age against. A read that fails counts it from the listener's clock
 // just before the publish, logged at debug: the store time is no earlier than that, so the answer
@@ -521,9 +533,14 @@ func storeKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 	subject := bus.KeptRoleSubject(role)
 	first := bus.KeptMsgID(item.DedupeKey, role)
 	msgID := first
+	// ownSend is whether a send of this keep under msgID may have stored the copy a later answer
+	// names: one the stream may hold though nothing answered it (bus.ErrUnacknowledged), whether
+	// the connection's loss took its answer or the stream then refused a later send as in process.
+	ownSend := false
 	for {
 		published := cfg.now()
 		ack, err := publish(ctx, subject, item, msgID)
+		ownSend = ownSend || errors.Is(err, bus.ErrUnacknowledged)
 		if errors.Is(err, bus.ErrDuplicateInProcess) {
 			if waitErr := waitUnlessDone(ctx, roleKeepInProcessPause); waitErr != nil {
 				return keptRoleCopy{}, fmt.Errorf("keep the role %s message under %s: %w (after %w)", role, msgID, waitErr, err)
@@ -544,9 +561,11 @@ func storeKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 			return keptRoleCopy{}, fmt.Errorf("keep the role %s message under %s: %w", role, msgID, err)
 		}
 		if inside {
+			held.repeat = !ownSend || held.item.EventID != item.EventID
 			return held, nil
 		}
 		msgID = first + ":after:" + strconv.FormatUint(ack.Sequence, 10)
+		ownSend = false
 	}
 }
 

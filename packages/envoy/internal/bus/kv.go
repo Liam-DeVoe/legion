@@ -577,13 +577,29 @@ func (kv KeyValue) Bucket() string {
 // create's bound and the watch's life: a ctx the next disconnect ends would end every watch that
 // follows its bucket at each disconnect, where nats.go's ordered consumer carries a watch over a
 // reconnect by itself. A read that is over when its watch ends is bound by its caller instead
-// (ReadHistory), and a watch's install waits on its create holding no lock (kvwatch).
+// (ReadHistory), and a watch's install waits on its create holding no lock (kvwatch). A create
+// nats.go answered with the close of the handle's connection - its subscribe refused (nats.go
+// v1.53.1 nats.go:5030-5035) or its consumer create cut off (clearPendingRequestCalls, nats.go
+// :6086) - answers ErrConnectionLost while that connection was its owner's when the create began
+// and the owner still runs (heldConn, lostIfClosed), and nats.go's own error on a handle of a
+// connection the owner had already replaced, which no retry on the owner's connection answers.
 func (kv KeyValue) WatchKeys(ctx context.Context, keys string, opts ...jetstream.WatchOpt) (jetstream.KeyWatcher, error) {
 	if err := kv.check(keys, watchOverhead(kv.Bucket())); err != nil {
 		return nil, err
 	}
+	conn := kv.heldConn()
 	watcher, err := kv.watch.Watch(ctx, keys, opts...)
-	return watcher, invalidKey(keys, err)
+	return watcher, kv.owner.lostIfClosed(invalidKey(keys, err), conn, false)
+}
+
+// heldConn is the connection kv was opened on while it is its owner's (Client.heldNow), and nil
+// for a handle no client owns or one on a connection its owner has replaced: the connection a
+// watch's create counts as its owner's (WatchKeys).
+func (kv KeyValue) heldConn() *nats.Conn {
+	if kv.owner == nil {
+		return nil
+	}
+	return kv.owner.heldNow(kv.streams.Conn())
 }
 
 // WatchFilteredKeys is WatchKeys over several key patterns at once, the watch a caller that reads
@@ -596,8 +612,9 @@ func (kv KeyValue) WatchFilteredKeys(ctx context.Context, keys []string, opts ..
 			return nil, err
 		}
 	}
+	conn := kv.heldConn()
 	watcher, err := kv.watch.WatchFiltered(ctx, keys, opts...)
-	return watcher, invalidKey(keys, err)
+	return watcher, kv.owner.lostIfClosed(invalidKey(keys, err), conn, false)
 }
 
 // The subjects nats.go builds from a key of bucket, each as the bytes it puts around the key. A put
