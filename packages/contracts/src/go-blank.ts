@@ -21,7 +21,7 @@
  * pair of sets ("The whitespace is spelled out rather than written `\s`, which means another
  * set in each language: JavaScript's also matches a vertical tab and U+FEFF"). That pair is the
  * set both readers of references spell out, `[\t\n\f\r\p{Z}]`, and JavaScript's `\s`, which
- * differ in a vertical tab and U+FEFF, not in the two characters above.
+ * differ in a vertical tab and U+FEFF.
  *
  * `packages/contracts/fixtures/go-unicode-isspace.json` holds the 25 scalars `unicode.IsSpace`
  * reports. This pattern is held to that list over every scalar by `goBlankPattern` > `calls
