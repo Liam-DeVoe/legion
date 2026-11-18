@@ -279,7 +279,7 @@ func (e *Engine) startAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			return "", err
 		}
 	}
-	return stepClaim(issue, issue.Key, phase.RoleFor(at))
+	return stepClaim(issue, issue.Key, issue.RoleAt(at))
 }
 
 // stepClaim is the claim token of role on key, in issue's project.
@@ -311,9 +311,10 @@ func (e *Engine) readAgent(agent claim.Token) StepAgent {
 // issue's run, where the task stands, with handoff as the completion's row: endOf's result, the
 // place of the step at to on w where the work goes back (stepAt; to is the place the transition's
 // row moves the task to, or no place for a fail that returns nowhere), and the handoff record
-// handoff names when its role is the role of from. A phase that runs no step, admitted among them,
-// whose role is the architect's, ends no step and names no report.
-func endOfTransition(w Walk, trigger TriggerKind, from phase.Phase, to stepSite, handoff record.PhaseRow) StepEnd {
+// handoff names when its role is ended, the role whose step the move ends (transition reads it
+// from the task's place). A phase that runs no step, admitted among them, whose role is the
+// architect's, ends no step and names no report.
+func endOfTransition(w Walk, trigger TriggerKind, from phase.Phase, to stepSite, handoff record.PhaseRow, ended claim.Role) StepEnd {
 	result, returns := endOf(trigger)
 	end := StepEnd{Result: result}
 	if _, _, _, _, ok := stepAt(w, standingIn(from)); !ok {
@@ -322,7 +323,7 @@ func endOfTransition(w Walk, trigger TriggerKind, from phase.Phase, to stepSite,
 	if _, step, _, _, ok := stepAt(w, to); returns && ok {
 		end.ReturnedTo = new(step)
 	}
-	if handoff.Role != "" && handoff.Role == phase.RoleFor(from) {
+	if handoff.Role != "" && handoff.Role == ended {
 		end.Report = handoff.HandoffRecord
 	}
 	return end

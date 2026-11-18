@@ -1378,7 +1378,7 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 		return intake.Result{}, err
 	}
 	working := issue.WorkingPhase()
-	if !InWorkflow(*issue) || phase.RoleFor(working) != fact.Role {
+	if !InWorkflow(*issue) || issue.RoleAt(working) != fact.Role {
 		return refused("PHASE_NOT_RESTARTED", fmt.Sprintf("the %s does not work %s's phase %s, so nothing restarted it",
 			fact.Role, issue.Key, working)), nil
 	}
@@ -1465,7 +1465,7 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		}
 		reviewed = reviewedPart(claim.RoleReviewer, from, reviewer)
 	}
-	return from, e.restart(ctx, tx, issue, phase.RoleFor(from), func(at Standing) string {
+	return from, e.restart(ctx, tx, issue, issue.RoleAt(from), func(at Standing) string {
 		return task(issue, at, record.PhaseRow{}, pr, reviewed, reason)
 	}, freshSession)
 }
@@ -1650,7 +1650,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if returns {
 		to, found := w.returnTarget()
 		if !found {
-			return e.stopUnreturned(ctx, tx, issue, w, endOfTransition(w, trigger, issue.Phase, stepSite{}, handoff))
+			return e.stopUnreturned(ctx, tx, issue, w, endOfTransition(w, trigger, issue.Phase, stepSite{}, handoff, ended))
 		}
 		if row, ok = w.row(issue.Phase, trigger, to, snapshot); !ok {
 			return fmt.Errorf("return the work of %s from %+v to %+v: its line %v holds no such return", issue.Key, w.Place, to, w.Line)
@@ -1712,7 +1712,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	}
 	// The move ends the step the issue stood in, on the issue as it stood: before the phase write,
 	// and before the start below writes the step it moves into.
-	if err := e.endStep(ctx, tx, issue, endOfTransition(w, trigger, issue.Phase, placeNamed(row.ToPlace, row.To), handoff)); err != nil {
+	if err := e.endStep(ctx, tx, issue, endOfTransition(w, trigger, issue.Phase, placeNamed(row.ToPlace, row.To), handoff, ended)); err != nil {
 		return err
 	}
 	from := issue.Phase
@@ -1757,7 +1757,8 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// row's place (Walk.RoleAt), so the second of two steps that run as step starts its own role,
 	// and on an issue with none the role of the phase.
 	starting := phase.RoleFor(row.To)
-	if w.Stored {
+	// The merge's row keeps the task at its merge while the issue goes to done, which no role works.
+	if w.Stored && row.To != phase.Done {
 		starting = w.RoleAt(row.ToPlace)
 	}
 	if holds {

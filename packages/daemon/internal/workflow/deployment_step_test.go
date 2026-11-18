@@ -1,9 +1,11 @@
 package workflow
 
 import (
+	"context"
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -261,4 +263,87 @@ func TestALateCompletionBeforeADeploymentStepIsAnsweredAsAnEndedStep(t *testing.
 		t.Fatalf("the reviewer's row keeps the handoff record %q, want review-1", row.LastHandoff)
 	}
 	assertWalksAt(t, pool, engine, root.Key, phase.Step, stepPlace(3))
+}
+
+// checkerAtStep2 is LEGION-208 at step 2 of `implementer checker`, the checker's step.
+func checkerAtStep2(t *testing.T, pool *pgxpool.Pool) record.Issue {
+	t.Helper()
+	root := stepRoot(t, pool, phase.Step)
+	seedStepsAt(t, pool, root.Key, root.Generation, 2, map[string]string{"checker": "testing"}, "implementer", "checker")
+	return root
+}
+
+// A retry or a restart of a step of a role the deployment defines starts that role: the
+// architect's retry of an issue held from step for its checker's failed claim restarts the checker
+// and puts the issue back at step; the operator's restart of the checker on an issue at step
+// restarts it, and a restart of a role that works no step of it is refused; and a person's todo on
+// a root whose stopped task's first step is the critic's starts the critic again at step 1.
+func TestARetryOfADeploymentStepRestartsItsRole(t *testing.T) {
+	t.Run("the retry of a hold from step", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		root := checkerAtStep2(t, pool)
+		applyRefusingNothing(t, pool, engine, intake.ClaimFailed{Issue: root.Key, Role: "checker", Reason: "the pane died"})
+
+		applyRefusingNothing(t, pool, engine, intake.RetryOrEscalate{Issue: root.Key, Decision: intake.RetryDecision, Reason: "try again"})
+
+		assertWalksAt(t, pool, engine, root.Key, phase.Step, stepPlace(2))
+		if starts := startsOf(t, pool, root.Key, "checker"); len(starts) != 1 || starts[0].Phase != phase.Step {
+			t.Fatalf("the checker's starts after the retry = %+v, want one, of step", starts)
+		}
+	})
+
+	t.Run("the operator's restart", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		root := checkerAtStep2(t, pool)
+
+		applyRefusingNothing(t, pool, engine, intake.RestartPhase{Issue: root.Key, Role: "checker"})
+		if starts := startsOf(t, pool, root.Key, "checker"); len(starts) != 1 {
+			t.Fatalf("the checker's starts after its restart = %+v, want one", starts)
+		}
+		result := applyFacts(t, pool, engine)("restart-linter", intake.RestartPhase{Issue: root.Key, Role: "linter"})
+		if result.Refusal == nil || result.Refusal.Code != "PHASE_NOT_RESTARTED" {
+			t.Fatalf("the restart of the linter = %+v, want PHASE_NOT_RESTARTED", result.Refusal)
+		}
+	})
+
+	t.Run("a todo on a task stopped at its critic's first step", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		root := stepRoot(t, pool, phase.Step)
+		seedStepsAt(t, pool, root.Key, root.Generation, 1, map[string]string{"critic": "review"}, "critic", "implementer")
+		if result := applyFacts(t, pool, engine)("stop", ownersStop(t, root.Key, "a")); result.Refusal != nil {
+			t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
+		}
+
+		if result := applyFacts(t, pool, engine)("todo", personsTodo(root.Key)); result.Refusal != nil {
+			t.Fatalf("the todo was refused: %+v", result.Refusal)
+		}
+
+		assertWalksAt(t, pool, engine, root.Key, phase.Step, stepPlace(1))
+		if starts := startsOf(t, pool, root.Key, "critic"); len(starts) != 1 {
+			t.Fatalf("the critic's starts after the todo = %+v, want one", starts)
+		}
+	})
+}
+
+// The start of a step of a role the deployment defines names that role's claim as its agent.
+func TestTheStartOfADeploymentStepNamesItsAgent(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	root := checkerAtStep2(t, pool)
+	issue := issueOf(t, pool, engine, root.Key)
+	want, err := claim.NewToken("legion", root.Key, "checker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got claim.Token
+	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+		got, err = engine.startAgent(ctx, tx, issue, phase.Step)
+		return err
+	})
+	if got != want {
+		t.Fatalf("the agent of the checker's step = %q, want %q", got, want)
+	}
 }
