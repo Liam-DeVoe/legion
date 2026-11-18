@@ -271,9 +271,10 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 }
 
 // armBackstops arms the backstop of a release that completed: backstop_minutes from now, for the
-// worker of the pod's open phase (workflow.OpenPhaseRole). An architect gets none — nothing of
-// its own is due, and a sub-architect woken for nothing would hold a pod open for the backstop
-// period — and neither does an issue whose phase no role works.
+// worker of the pod's open phase (workflow.OpenRoleOf, which at step is the role of the running
+// step, read with the issue). An architect gets none — nothing of its own is due, and a
+// sub-architect woken for nothing would hold a pod open for the backstop period — and neither does
+// an issue whose phase no role works.
 //
 // It also cancels the backstops the release before this one armed: that pod is gone, and its
 // backstop has nothing left to bring back.
@@ -284,7 +285,7 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 	if r.backstop <= 0 {
 		return nil
 	}
-	role := workflow.OpenPhaseRole(issue.Phase)
+	role := workflow.OpenRoleOf(issue)
 	if role == "" {
 		return nil
 	}

@@ -476,17 +476,23 @@ func deleteIssueRelease(ctx context.Context, db execer, project, issue string) e
 	return err
 }
 
+// readIdleView reads issue's pod as the idle rule reads it (pods.IdleView). The view's StepRole is
+// the subquery record.issueColumns ends with, written here a second time over the alias i, since
+// store and record import neither each other: the role of the step the task of the issue's
+// generation stands at, "" where its plan rows hold none or the task stands at no step.
 func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.IdleView, error) {
 	view := pods.IdleView{Issue: issue}
 	var issueGeneration, rootGeneration int64
-	var issuePhase, rootPhase string
+	var issuePhase, rootPhase, stepRole string
 	err := tx.QueryRow(ctx, `select i.tree, i.phase, i.status, i.generation, i.linger_until,
 		root.phase, root.status, root.generation, root.linger_until,
-		root.phase = 'awaiting_person', root.awaiting_answered_at is not null
+		root.phase = 'awaiting_person', root.awaiting_answered_at is not null,
+		coalesce((select s.role from plan_tasks t join plan_steps s on s.issue = t.issue and s.generation = t.generation and s.task = t.task and s.position = t.position
+			where t.issue = i.key and t.generation = i.generation and t.running_kind = 'step'), '')
 		from issues i join issues root on root.key = i.tree where i.key = $1`, issue).Scan(
 		&view.Tree, &issuePhase, &view.Status, &issueGeneration, &view.LingerUntil,
 		&rootPhase, &view.Root.Status, &rootGeneration, &view.Root.LingerUntil,
-		&view.Root.AwaitingPerson, &view.Root.Answered)
+		&view.Root.AwaitingPerson, &view.Root.Answered, &stepRole)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return view, nil
@@ -495,6 +501,7 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 	}
 	view.Found = true
 	view.Phase, view.Root.Phase = phase.Phase(issuePhase), phase.Phase(rootPhase)
+	view.StepRole = claim.Role(stepRole)
 	view.Generation, view.Root.Generation = uint64(issueGeneration), uint64(rootGeneration)
 
 	claims, err := tx.Query(ctx, `select c.role, c.state, c.plugin_contract, c.serving_generation,
