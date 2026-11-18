@@ -94,9 +94,9 @@
 // Each observation consumes one transaction id, which brings anti-wraparound vacuum sooner. One
 // that reads the lock table costs more: pg_locks visits every backend's fast-path locks and every
 // lock partition of the instance. Measured as a prepared statement on PostgreSQL 18.6 with
-// max_connections 1200, an observation took 0.47 ms on an idle instance and 2.4 ms beside 300 busy
-// clients when it read the lock table, and 0.12 ms and 0.25 ms when it did not, about what an
-// observation cost when it read only the snapshot (0.10 ms and 0.26 ms).
+// max_connections 1200, an observation took 0.54 ms on an idle instance and 3.0 ms beside 300 busy
+// clients when it read the lock table, and 0.10 ms and 0.24 ms when it did not, about what an
+// observation cost when it read only the snapshot (0.10 ms and 0.19 ms).
 // A Horizon observes only when a caller asks it to (Safe, Await) and runs no timer of its own, so a
 // process whose readers are idle consumes none, and concurrent callers share one observation.
 // pg_locks needs no privilege: every role sees every backend's locks.
@@ -194,11 +194,13 @@ var eventWritersCTE = eventWritersFrom("pg_locks", "pg_snapshot_xmax(pg_current_
 // other than the reader's holds: its pid, the backend's or null for a prepared transaction, and
 // its xid, the least of the widened ids it holds an ExclusiveLock on under its virtualtransaction,
 // or null when the lock table lists none. Each id is widened before the least is taken: a
-// subtransaction's id past a multiple of 2^32 has low bits below its top id's. writers is
-// materialized so that its subquery runs once for each lock.
+// subtransaction's id past a multiple of 2^32 has low bits below its top id's. next is
+// materialized so that the snapshot is read once, not once for each lock row (pg_current_snapshot
+// copies every running id: 19 ms a read beside 300 busy clients measured, against 3 ms
+// materialized), and writers so that its subquery runs once for each lock.
 func eventWritersFrom(locks, xmax string) string {
 	return `
-	next as (
+	next as materialized (
 		select ` + xmax + `::text::numeric as nx
 	), locks as materialized (
 		select l.locktype, l.database, l.relation, l.virtualtransaction, l.pid, l.mode, l.granted,
