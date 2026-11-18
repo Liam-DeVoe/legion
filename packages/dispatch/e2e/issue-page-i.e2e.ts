@@ -30,6 +30,7 @@ import {
   createComment,
   createIssue,
   createMessage,
+  createProject,
   getArtifact,
   getArtifactText,
   getAsk,
@@ -1701,6 +1702,106 @@ test("zooming back out of a top-level row keeps that row on screen", async ({ br
       "the key back out of a top-level row",
       "left that row off screen at 1440x900"
     );
+  });
+});
+
+// The tester's finding at #4205's 861adff1, on editing in a node and "after each move the
+// focused row is on screen": the row's editor holds the statement's whole document in a box of
+// its own scroll, and the words above the statement in that document cite issues of another
+// project, whose names the editor draws only once its reads of them answer - after the caret is
+// in. The words above grow, the box keeps the caret's block in place by scrolling itself, and the
+// window, which anchors its own scroll on what the box draws, scrolls by as much: the caret went
+// under the band at the top, at -43 px at 1440 by 900 and at -97 px at 390 by 664, and on a real
+// issue of some 160 rows the whole editing row stood above the window. The seeds' documents cite
+// nothing outside the issue's own project above a statement, so no row met it.
+// SLOW(>=2s): a whole seeded issue, sixty issues of another project and a long spec citing them,
+// a load waited on until the focus lands, then End and Enter, waited on until the editor's reads
+// of the names have answered.
+test("the caret Enter puts in a statement stays on screen while the editor draws the names its document cites", async ({
+  browser,
+}) => {
+  await phase(browser, seedWholeIssue, async (page) => {
+    // The cited issues are another project's, so nothing the page reads before the editor opens
+    // has their names in hand.
+    await createProject({ key: "CITED", name: "Cited issues" });
+    const cited: string[] = [];
+    for (let number = 1; number <= 60; number += 1) {
+      const issue = await createIssue({
+        force: true,
+        project: "CITED",
+        title: `A cited issue of another project, number ${number}, whose title runs long`,
+      });
+      cited.push(issue.key);
+    }
+    const spec = await createIssue(
+      {
+        force: true,
+        project: PROJECT,
+        spec: [
+          "# Long statements under words that cite another project",
+          "",
+          "## Problem",
+          "",
+          ...Array.from({ length: 6 }, (_, paragraph) => [
+            `Paragraph ${paragraph + 1} cites ${cited
+              .slice(paragraph * 10, paragraph * 10 + 10)
+              .map((key) => `dispatch://${key}`)
+              .join(", ")}.`,
+            "",
+          ]).flat(),
+          "## Requirements",
+          "",
+          ...Array.from({ length: 12 }, (_, index) => [
+            `:::requirement{#r-cited-${index + 1}}`,
+            `Statement ${index + 1} says ${Array.from({ length: 500 }, (_, word) => `word${word}`).join(" ")}.`,
+            ":::",
+            "",
+          ]).flat(),
+        ].join("\n"),
+        title: "An issue whose statements stand under words citing another project",
+      },
+      asPlanner
+    );
+    const last = blockNodeId(await primarySlug(spec.key), "r-cited-12");
+    await gotoIssue(page, `/issues/${spec.key}`);
+    await expectIssuePageDrawn(page);
+    await expect
+      .poll(async () => (await focusedRow(page)) !== null, {
+        message: "the page opens with the focus on no row",
+      })
+      .toBe(true);
+    await page.keyboard.press("End");
+    await expect
+      .poll(() => focusedRow(page), { message: "End did not reach the last statement" })
+      .toBe(last);
+    const reads = watchApiRequests(page);
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(() => caretInNode(page), { message: "Enter did not put the caret in the statement" })
+      .toBe(true);
+    // Every read the editor makes of the names it draws has answered, so the words above the
+    // caret have their last size.
+    await expectLoadSettled(reads);
+    await nextFrames(page);
+    expect(
+      await page.evaluate(
+        ({ band, foot }) => {
+          const selection = window.getSelection();
+          if (selection === null || selection.rangeCount === 0) return false;
+          const style = getComputedStyle(document.documentElement);
+          const top = Number.parseFloat(style.getPropertyValue(band)) || 0;
+          const bottom =
+            window.innerHeight - (Number.parseFloat(style.getPropertyValue(foot)) || 0);
+          // A caret on an empty line has no rectangle of its own, so its line's box is read.
+          const anchor = selection.anchorNode;
+          const line = anchor instanceof Element ? anchor : anchor?.parentElement;
+          const box = selection.getRangeAt(0).getClientRects()[0] ?? line?.getBoundingClientRect();
+          return box !== undefined && box.top >= top - 1 && box.bottom <= bottom;
+        },
+        { band: IDENTITY_HEIGHT_PROPERTY, foot: FOOT_HEIGHT_PROPERTY }
+      ),
+      "the caret went off screen while the editor drew the names its document cites at 1440x900"
+    ).toBe(true);
   });
 });
 
