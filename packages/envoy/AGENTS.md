@@ -4803,7 +4803,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   the publish goes ahead), and the JetStream path relies on nats.go's own check instead, whose request returns the context's error before it sends anything;
   a topic the stream captures answers it as that 503.
   Every answer is written with the route's one `listener publish` record line (`requestRecord`, `request_record.go`), its `outcome` naming it:
-  `accepted` (the kept 202 among them), `invalid_request`, `too_large`, `bus_unavailable`, `publish_denied`, `role_unclaimed`, `role_lapsed`, `role_claim_unreadable`, `capability_refused`, `delivery_failed`, `stream_full` or `stream_refused` (the `409` of a forward the stream refuses for the message itself).
+  `accepted` (the kept 202 among them), `invalid_request`, `too_large`, `bus_unavailable`, `publish_denied`, `role_unclaimed`, `role_lapsed`, `role_claim_unreadable`, `capability_refused`, `delivery_failed`, `stream_full` or `stream_refused` (the `409` of a publish or forward the stream refuses for the message itself).
   A message NATS cannot take whole is a 413 naming its size against the server's max payload, and a topic NATS does not accept (one holding whitespace or an empty token) a 400.
 
 - `/v1/roles/<role>` (GET)

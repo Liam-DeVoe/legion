@@ -4,8 +4,14 @@ custom:
 body: |-
   At shutdown the listener's role lane keeps the messages it holds only after its own connection
   has drained, so the handler's keeps of the messages its subscription still holds go first: a
-  listener holding its 4,096-message bound kept those first and lost the buffered ones. A forward
-  to a role's live holder that the stream refuses for the message itself (too large, or a sealed
-  stream) is answered 409, recorded `stream_refused`, instead of being retried to the 504 that has
-  a sender send it again for as long as the stream's answer stands. A publish to a role with no
-  live holder whose keep the stream refuses that way still gets the no-holder 404.
+  listener holding its 4,096-message bound kept those first and lost the buffered ones.
+
+  A send or publish the stream refuses for the message itself (a message or headers past the
+  stream's maxima, a message too large for the store, or a sealed stream) is answered 409 with no
+  `Retry-After`, recorded `stream_refused`, on both `/v1/messages/send` and
+  `/v1/messages/publish`. Before, a direct send and a plain-topic publish got a 503 with
+  `Retry-After`, which senders retried, and a role send retried its forward to the 504 that has a
+  sender send it again for as long as the stream's answer stands. A sender now reads the 409 as a
+  refusal: Dispatch's send client reports the listener's reason rather than an unavailable
+  listener. A publish to a role with no live holder whose keep the stream refuses that way still
+  gets the no-holder 404.
