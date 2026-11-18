@@ -501,7 +501,9 @@ func TestClearedGenerationPublishesTheEmptySetPerIssue(t *testing.T) {
 // wait of its own: its router writes it under the code NOT_FOUND with "no route for …", which the
 // outbox's execute reads (dispatch.NoRoute) before this rule is reached, so the row keeps its
 // place and the two deploy in either order. The rows here are judged by what each answer leaves:
-// the router's 404, a 404 with no code at all, and a Dispatch that is down each keep the row.
+// the router's 404, a 404 with no code at all, the route's own 400 INVALID_ISSUE (a coded refusal
+// the shared rule calls final, dispatch.PermanentRefusal) and a Dispatch that is down each keep the
+// row.
 func TestGatePublicationExecutorSendsTheSetAndRetriesARefusal(t *testing.T) {
 	const issue = "LEGION-208"
 	r := newGatePublishRig(t, 1)
@@ -513,6 +515,7 @@ func TestGatePublicationExecutorSendsTheSetAndRetriesARefusal(t *testing.T) {
 		fmt.Errorf("publish the design gates of %s: %w", issue, errors.New("Dispatch is down")),
 		&dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "no route for PUT /api/v1/issues/" + issue + "/design-gates"},
 		&dispatch.Error{Status: http.StatusNotFound, Message: "<html>404 Not Found</html>"},
+		&dispatch.Error{Status: http.StatusBadRequest, Code: "INVALID_ISSUE", Message: `"spec" names no document: artifact_id is the document that step's gate recorded`},
 		&dispatch.Error{Status: http.StatusNotFound, Code: dispatch.IssueNotFound, Message: "issue not found"},
 	}
 	r.inTx(func(ctx context.Context, tx pgx.Tx) error {
@@ -528,6 +531,7 @@ func TestGatePublicationExecutorSendsTheSetAndRetriesARefusal(t *testing.T) {
 		{what: "a Dispatch that is down", rows: 1},
 		{what: "the router's 404 NOT_FOUND of a Dispatch with no such route", rows: 1, after: time.Minute},
 		{what: "a 404 with no code at all, from whatever stands in front of Dispatch", rows: 1, after: time.Minute},
+		{what: "the route's own 400 INVALID_ISSUE, which an operator repairs by changing the gate", rows: 1, after: time.Minute},
 		{what: "the 404 that names the issue as unknown", rows: 0, after: time.Minute},
 	} {
 		r.ahead += step.after
