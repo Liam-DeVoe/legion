@@ -72,8 +72,9 @@ const VIEW_SLOTS: Readonly<Record<Preset, ((props: SlotProps) => ReactNode) | un
 export type SlotsFilled = Readonly<Record<Preset, boolean>>;
 
 /** Whether each slot's own part has filled it: a view whose part has not draws nothing, and an
- *  address naming a node beside it draws the outline (`StageSlot`). The part that fills a view's
- *  slot sets it here, and lands on the node in its own tree. */
+ *  address naming a node beside it draws the outline (`StageSlot`). Each view's part sets its
+ *  entry here when it fills its slot; from then the address is that view's, which is to land on
+ *  the node in its own tree. */
 export const SLOT_FILLED: SlotsFilled = {
   conversation: true,
   decisions: false,

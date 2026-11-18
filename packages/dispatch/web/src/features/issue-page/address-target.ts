@@ -1,6 +1,7 @@
 import { isIdPrefix, itemFromSearch } from "@legion/contracts";
 import { notifyManager, type QueryKey, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useMemo, useSyncExternalStore } from "react";
+import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
+import { useLocation } from "react-router-dom";
 
 import type { Ask, Comment, IssueDetails, MessageRead } from "../../api/types";
 import {
@@ -117,7 +118,7 @@ export function landingPath(to: string): string {
  * `addTurns` places each turn. Where the tree holds none of them - the head of such a thread
  * sits under the issue, and an approval request is no node (`addAsks`) - it is the issue alone.
  */
-export function agentsOnlyAncestor(
+function agentsOnlyAncestor(
   root: TreeNode,
   id: string,
   comments: readonly Pick<Comment, "answers" | "ask_id" | "id" | "reply_to">[] | undefined,
@@ -168,7 +169,8 @@ export type AddressFallback =
    * holds (`missing`), or a read that failed (`unavailable`). `route` is the item's route, which
    * the match list and the failure name the item by. `retrying` is whether the read the landing
    * answers from runs again, as a Retry of a failed one asks, and `failure` how many times that
-   * read has failed (its `errorUpdateCount`), which tells one failure's line from the next.
+   * read has failed since the address was followed (its `errorUpdateCount`, less the count it
+   * held as the following first read it), which tells one failure's line from the next.
    */
   | {
       readonly failure: number;
@@ -211,23 +213,51 @@ function landingReadKey(route: ItemRoute): QueryKey {
   return messageQuery(route.key, route.id).queryKey;
 }
 
+/** What one following of an address - the location's own key, a new one at each navigation, a
+ *  link followed again to the same address among them - has seen so far
+ *  (`useAddressFallback`). */
+interface Following {
+  /** How many times the landing's read had failed as this following first read it (its
+   *  `errorUpdateCount`), from which the following counts its own failures; undefined until the
+   *  following reads it. */
+  readonly failedBefore: number | undefined;
+  /** Whether the tree has held the address's node, or the nearest drawn ancestor of a turn only
+   *  agents wrote in, at any time during this following. */
+  readonly found: boolean;
+  /** The following: the location's own key (`useLocation().key`). */
+  readonly key: string;
+  /** The last landing the old page's landing settled on during this following, which it draws
+   *  again while the read runs again. */
+  readonly settled: Exclude<ItemLanding, { kind: "pending" }> | undefined;
+}
+
 /**
  * Where `address` lands where it names a node the tree holds none of (`reveal` undefined), once
  * every read the tree is built from has answered (`readsHeld`): before that the node may not
  * have arrived yet. Undefined while the tree holds the node, while the reads are out, for an
- * address naming no node or opening a document, and while the old page's landing is still
- * reading the item (`pending`) for the first time.
+ * address naming no node or opening a document, and while the old page's landing reads the item
+ * (`pending`) with no landing settled since the address was followed.
+ *
+ * Each following of the address (the location's own key) is decided on its own, once: a
+ * following whose tree has held the address's node, or the nearest drawn ancestor of a turn only
+ * agents wrote in, draws no fallback for the rest of it, whatever the tree holds later - a block
+ * deleted, the last child unlinked, the comment deleted while the reader is on its row leaves
+ * the outline drawn, and the reader in it.
  *
  * An ask, a comment or a message of the outline (`outlineItemRoute`) is told from the
  * conversation's reads where it is a turn of a thread only agents wrote in, as the tree leaves
  * it out (`agentsOnlyItem`, with the asks the tree draws its nodes from: the issue's open asks
  * and the asks read), and lands on its nearest drawn ancestor (`agents-only`). Every other item
  * is read as the old page reads one (`useItemLanding`), and nothing is read for an item the tree
- * holds. Its `turn` - an item of this issue beside no document, whose page is the outline -
- * draws the outline as it stands, which lands on the node once a read draws it. A read that
- * failed is pending again while it runs again, since it holds no answer, and stays the failure
- * it was until that run ends, so its line stays drawn, busy, with its Retry and the focus. A
- * block or the children is `absent`, as no read is left to draw it.
+ * holds, or held earlier in the following. Its `turn` - an item of this issue beside no
+ * document, whose page is the outline - draws the outline as it stands, which lands on the node
+ * once a read draws it. A read that runs again holds no answer, so its landing is pending again
+ * until that run ends - a Retry's, or window focus reading a read in error again - and the
+ * following keeps drawing the landing it last settled on meanwhile: an item found missing keeps
+ * its line, and a failed read its line, busy, with its Retry and the focus. The failures are
+ * counted from the following's start, so an item whose read failed before the address was
+ * followed again draws no failure of its own until its read fails again. A block or the
+ * children is `absent`, as no read is left to draw it.
  */
 export function useAddressFallback({
   address,
@@ -272,8 +302,14 @@ export function useAddressFallback({
         : agentsOnlyAncestor(root, agentsOnly, comments, messages),
     [agentsOnly, comments, messages, root]
   );
+  // What this following has seen (`Following`), held from one render to the next, and anew for
+  // each following.
+  const following = useLocation().key;
+  const [followed, setFollowed] = useState<Following | undefined>(undefined);
+  const before = followed?.key === following ? followed : undefined;
+  const found = before?.found === true || reveal !== undefined || agentsOnly !== undefined;
   // The issue's own route reads nothing: the landing reads an item only where it falls back.
-  const read = agentsOnly === undefined ? unheld : undefined;
+  const read = found ? undefined : unheld;
   const landing = useItemLanding(read ?? { key: route.key, kind: "issue" }, issue);
   const client = useQueryClient();
   const readKey = read === undefined ? undefined : landingReadKey(read);
@@ -287,10 +323,21 @@ export function useAddressFallback({
     readKey === undefined ? undefined : client.getQueryState(readKey)
   );
   const retrying = state?.fetchStatus === "fetching";
-  const failure = state?.errorUpdateCount ?? 0;
+  const failures = state?.errorUpdateCount ?? 0;
+  const failedBefore = before?.failedBefore ?? (readKey === undefined ? undefined : failures);
+  const settled = landing?.kind === "pending" ? before?.settled : landing;
+  if (
+    before === undefined ||
+    before.found !== found ||
+    before.failedBefore !== failedBefore ||
+    before.settled?.kind !== settled?.kind
+  ) {
+    setFollowed({ failedBefore, found, key: following, settled });
+  }
   if (agentsOnly !== undefined && ancestor !== undefined) {
     return { ancestor, id: agentsOnly, kind: "agents-only" };
   }
+  if (found) return undefined;
   const target = address.target;
   if (
     unresolved &&
@@ -299,12 +346,12 @@ export function useAddressFallback({
   ) {
     return { kind: "absent", target };
   }
-  if (unheld === undefined || landing === undefined || landing.kind === "turn") return undefined;
-  if (landing.kind === "pending") {
-    if (!retrying || failure === 0) return undefined;
-    // Never called: the line is drawn only while the read runs again, when Retry asks nothing.
-    const failed = { kind: "unavailable", retry: () => undefined } as const;
-    return { failure, kind: "landing", landing: failed, retrying, route: unheld };
-  }
-  return { failure, kind: "landing", landing, retrying, route: unheld };
+  if (read === undefined || settled === undefined || settled.kind === "turn") return undefined;
+  return {
+    failure: failures - (failedBefore ?? failures),
+    kind: "landing",
+    landing: settled,
+    retrying,
+    route: read,
+  };
 }

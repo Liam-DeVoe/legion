@@ -21,8 +21,6 @@ const EVENT_FRESH = {
 /** What the outline's reads give (`useOutlineReads`). Each field is one value for as long as the
  *  reads say the same; the object holding them is new on every render. */
 export interface OutlineReads {
-  /** Whether every document the tree reads holds blocks (`IssueTreeView.blocksHeld`). */
-  readonly blocksHeld: boolean;
   /** The reads of the issue's conversation the tree's turns come from, each undefined until it
    *  has answered, and whether each of the six reads the tree's other nodes come from - the
    *  coverage, the decisions, the results, the asks, the comments and the messages - holds its
@@ -33,8 +31,8 @@ export interface OutlineReads {
     readonly held: boolean;
     readonly messages: IssueTreeReads["messages"];
   };
-  /** Whether every read the tree's nodes come from holds its answer: `reads.held` and
-   *  `blocksHeld`. */
+  /** Whether every read the tree's nodes come from holds its answer: `reads.held`, and every
+   *  document the tree reads holding its blocks (`IssueTreeView.blocksHeld`). */
   readonly readsHeld: boolean;
   /** The whole tree (`useIssueTree`). */
   readonly root: TreeNode;
@@ -79,5 +77,5 @@ export function useOutlineReads(issue: IssueDetails): OutlineReads {
       },
     ],
   });
-  return { blocksHeld, reads, readsHeld: reads.held && blocksHeld, root };
+  return { reads, readsHeld: reads.held && blocksHeld, root };
 }

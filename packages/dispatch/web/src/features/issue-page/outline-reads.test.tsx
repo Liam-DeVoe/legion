@@ -17,9 +17,10 @@ import { nodesInOrder } from "./tree-keys";
 
 /**
  * The outline's reads (`useOutlineReads`) called from two places of one page: the body, and a
- * second caller beside it, as whatever lands on an address naming an item calls them. The reads
- * and how they are kept fresh are in one place, so each read is one request shared by its key,
- * a caller mounted again reads none of them again, and both callers hold one tree.
+ * second caller beside it, which stands in for a later part's caller - what is to land on an
+ * address naming an item beside the outline - as no such caller is drawn on the page yet. The
+ * reads and how they are kept fresh are in one place, so each read is one request shared by its
+ * key, a caller mounted again reads none of them again, and both callers hold one tree.
  */
 
 // The hook as its module defines it, read before the case's spy stands in for the module's
@@ -32,7 +33,8 @@ interface Held {
   second?: outlineReads.OutlineReads;
 }
 
-/** A caller of the outline's reads beside the body, holding what they gave it. */
+/** A caller of the outline's reads beside the body, standing in for a later part's, holding
+ *  what they gave it. */
 function SecondCaller({ held, issue }: { held: Held; issue: IssueDetails }): ReactNode {
   held.second = useOutlineReadsItself(issue);
   return null;

@@ -9,7 +9,7 @@ import {
   textSecondaryOnCanvas,
 } from "../../../theme/classes";
 import { ItemMatchList } from "../../issue/ItemMatchList";
-import type { ItemRoute } from "../../issue/useItemLanding";
+import type { ItemLanding, ItemRoute } from "../../issue/useItemLanding";
 import { buildIssuePath } from "../../refs/routes";
 import {
   type AddressFallback,
@@ -30,6 +30,7 @@ import { EMPTY_STATE_LINES } from "../page-words";
 import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { specSummary } from "../spec-summary";
+import { focusIsLoose } from "../tree-focus";
 import { abortOnReaderAct } from "../useNodeEditing";
 import { FailedReadLine } from "./failed-read-line";
 
@@ -50,10 +51,11 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
   const key = issue.key;
   // The address's own node is resolved against the whole tree and then kept by the view, so an
   // address that names a node the words filter would not have matched still draws it. An item
-  // the tree holds no node of falls back to the item's own page once the reads are held
-  // (`useAddressFallback`); a turn the outline leaves out lands on its nearest drawn ancestor,
-  // which the view keeps as it keeps the address's own node; and a block or the children the
-  // tree holds no node of are said to be so, in the outline's place.
+  // the tree holds no node of falls back to the item's own page once the reads are held, unless
+  // the tree has held it since the address was followed (`useAddressFallback`); a turn the
+  // outline leaves out lands on its nearest drawn ancestor, which the view keeps as it keeps the
+  // address's own node; and a block or the children the tree holds no node of are said to be
+  // so, in the outline's place.
   const addressed = useAddressTarget(root, address);
   const fallback = useAddressFallback({
     address,
@@ -79,7 +81,8 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
   const artifacts = useMemo(() => artifactsBySlug(issue), [issue]);
   const request = useOutlineRequest();
   // Whether the reader has acted since they followed the address, after which a line drawn in
-  // the outline's place leaves the focus where they put it.
+  // the outline's place leaves the focus where they put it, unless nothing holds it, and the
+  // address's row drawn after the act takes none (`IssueTree`'s `addressActs`).
   const acts = useReaderActs(locationKey);
   // The document a row of the outline is being edited in, and that document's one editor, which
   // the body draws for the row to take onto its own stage (`useOutlineEditing`).
@@ -89,8 +92,13 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
     <NoTooltips>
       {/* The outline's measure, the prototype's `#pane`: at most 1000 px, in the middle of the
           column. On a phone 4 px from the left edge and 10 px from the right, as the
-          prototype's `#reading` is there, so the bullets keep the picture's place. */}
-      <div className="mx-auto flex w-full max-w-[1000px] min-w-0 flex-col max-[761px]:-mr-1 max-[761px]:-ml-2.5 max-[761px]:w-auto">
+          prototype's `#reading` is there, so the bullets keep the picture's place. Its
+          `data-issue-body` is the body's own mark, which tells it from a view drawn in its place
+          (`StageSlot`): a view draws a tree named as the outline is. */}
+      <div
+        className="mx-auto flex w-full max-w-[1000px] min-w-0 flex-col max-[761px]:-mr-1 max-[761px]:-ml-2.5 max-[761px]:w-auto"
+        data-issue-body=""
+      >
         {fallback?.kind === "landing" ? (
           // Keyed on the following, so a link to the same item followed again is drawn anew and
           // takes the focus again.
@@ -106,6 +114,7 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
           />
         ) : (
           <IssueTree
+            addressActs={acts}
             addressKey={locationKey}
             artifacts={artifacts}
             context={view.context}
@@ -157,7 +166,9 @@ function useReaderActs(following: string): ReaderActs {
  * names are listed to choose from; and an item the issue holds none of, or whose read failed,
  * is said to be so. The list and the failure take the focus as they are drawn, so it is on the
  * line that names the item and never left on the page's body, unless the reader has acted since
- * the address was followed (`acts`): the focus is then where they put it.
+ * the address was followed (`acts`) and something holds the focus: it is then where they put it.
+ * A line drawn in place of the one that held the focus - a Retry pressed, and its read answering
+ * that the item is gone, or naming several - takes it, as the focus fell to the page's body.
  *
  * Going to a document goes to the address that opens it with the item marked (`landingPath`),
  * never to the one the old landing writes (`?comment=`), which this page reads as the item's
@@ -171,18 +182,13 @@ function ItemFallback({
   fallback: Extract<AddressFallback, { kind: "landing" }>;
 }): ReactNode {
   const { failure, landing, retrying, route } = fallback;
-  const list = useFocusOnDraw<HTMLDivElement>(acts);
   // The address is replaced rather than added to the reader's history, so Back still leaves the
   // page they came from.
   if (landing.kind === "redirect" || landing.kind === "rewrite") {
     return <Navigate replace to={landingPath(landing.to)} />;
   }
   if (landing.kind === "ambiguous") {
-    return (
-      <div ref={list} tabIndex={-1}>
-        <ItemMatchList candidates={landing.candidates} route={route} />
-      </div>
-    );
+    return <MatchList acts={acts} candidates={landing.candidates} route={route} />;
   }
   const noun = ITEM_NOUNS[route.kind];
   if (landing.kind === "missing") {
@@ -206,15 +212,41 @@ function ItemFallback({
   );
 }
 
+/** The several items an id written short names, to choose from (`ambiguous`), which take the
+ *  focus as they are drawn (`useFocusOnDraw`). */
+function MatchList({
+  acts,
+  candidates,
+  route,
+}: {
+  acts: ReaderActs;
+  candidates: Extract<ItemLanding, { kind: "ambiguous" }>["candidates"];
+  route: ItemRoute;
+}): ReactNode {
+  const list = useFocusOnDraw<HTMLDivElement>(acts);
+  return (
+    <div ref={list} tabIndex={-1}>
+      <ItemMatchList candidates={candidates} route={route} />
+    </div>
+  );
+}
+
 /** What the reader's first act since the address was followed aborts (`useReaderActs`). */
 type ReaderActs = RefObject<AbortController | undefined>;
 
-/** The element its ref is given to takes the focus once it is drawn, unless the reader has acted
- *  since the address was followed (`acts`), as the landing on a row does (`IssueTree.tsx`). */
+/**
+ * The element its ref is given to takes the focus once it is drawn, unless the reader has acted
+ * since the address was followed (`acts`) and something holds the focus then, as the landing on
+ * a row takes none after such an act (`IssueTree.tsx`). Nothing holds it on the page itself, or
+ * on an element that holds the line (`focusIsLoose`): the line it replaced held it and took it
+ * off the page with it - a Retry the reader pressed, whose read then answered.
+ */
 function useFocusOnDraw<T extends HTMLElement>(acts: ReaderActs) {
   const element = useRef<T>(null);
   useEffect(() => {
-    if (acts.current?.signal.aborted !== true) element.current?.focus();
+    const drawn = element.current;
+    if (drawn === null) return;
+    if (acts.current?.signal.aborted !== true || focusIsLoose(drawn)) drawn.focus();
   }, [acts]);
   return element;
 }
@@ -234,9 +266,11 @@ const ABSENT_LINES: Readonly<
     { readonly heading: string; readonly line: (key: string) => string }
   >
 > = {
+  // A block of a document the outline draws no row for - a paragraph, a heading, a table - is no
+  // node of the tree as much as a block id no document holds, so the words fit both.
   block: {
-    heading: "Block not found",
-    line: (key) => `That link doesn't name a block on ${key}'s page.`,
+    heading: "No row for this block",
+    line: (key) => `That link names no row of ${key}'s outline.`,
   },
   children: {
     heading: "No child issues",
