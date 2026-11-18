@@ -77,7 +77,7 @@ export type SlotsFilled = Readonly<Record<Preset, boolean>>;
  *  the node in its own tree. */
 export const SLOT_FILLED: SlotsFilled = {
   conversation: true,
-  decisions: false,
+  decisions: true,
   plan: false,
   spec: false,
   verification: false,
