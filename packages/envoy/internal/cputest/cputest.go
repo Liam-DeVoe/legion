@@ -59,6 +59,11 @@ const MinWindow = 50 * time.Millisecond
 // the large window over the work of the small one: about scale for work in proportion to the
 // input, and about scale times scale for work for each pair of units.
 //
+// small and large each build the input of one run, which is not the code under test, and return
+// the run: Growth builds each run of a window before the window opens. A run that changes its input,
+// as a write into a document does, gets a fresh input from each call, and Again is the small or
+// large of a run that changes nothing.
+//
 // The work of a window is the work of the caller's own code: the user CPU time of the thread that
 // runs the window (ThreadUser), on which onThread holds it. It leaves out the time that the kernel
 // spends for that thread: its system calls, its page faults, and the reclaim of memory before each
@@ -71,20 +76,26 @@ const MinWindow = 50 * time.Millisecond
 // collector's work that an allocation does there among it.
 //
 // Growth refuses a reading that measures nothing, with an error that says why: a sample whose two
-// readings are of two threads, and a window whose least is no time or shorter than MinWindow, of
-// which the split of the thread's time by the ticks of the scheduler is no small part.
-func Growth(samples, scale int, small, large func()) (growth float64, smallWindow, largeWindow time.Duration, err error) {
-	windows := []func(){func() {
-		for range scale {
-			small()
-		}
-	}, large}
+// readings are of two threads, and a window whose least is no time or shorter than MinWindow
+// (ErrShortWindow), of which the split of the thread's time by the ticks of the scheduler is no
+// small part.
+func Growth(samples, scale int, small, large func() (run func())) (growth float64, smallWindow, largeWindow time.Duration, err error) {
+	inputs := []func() func(){small, large}
+	runs := []int{scale, 1}
 	names := []string{"smaller", "larger"}
-	least := make([]time.Duration, len(windows))
+	least := make([]time.Duration, len(inputs))
 	for sample := range samples {
-		for index, window := range windows {
+		for index, input := range inputs {
+			window := make([]func(), runs[index])
+			for run := range window {
+				window[run] = input()
+			}
 			runtime.GC()
-			took, from, to := onThread(ThreadUser, window)
+			took, from, to := onThread(ThreadUser, func() {
+				for _, run := range window {
+					run()
+				}
+			})
 			if from != to {
 				return 0, 0, 0, fmt.Errorf("cputest: the %s window started on thread %d and ended on thread %d, so its two readings are of two threads",
 					names[index], from, to)
@@ -99,11 +110,19 @@ func Growth(samples, scale int, small, large func()) (growth float64, smallWindo
 		case took <= 0:
 			return 0, least[0], least[1], fmt.Errorf("cputest: the %s window reads %v, no time, so it measures no work", names[index], took)
 		case took < MinWindow:
-			return 0, least[0], least[1], fmt.Errorf("cputest: the %s window lasts %v, under the %v that a window lasts so that the split of a thread's time by the ticks of the scheduler is a small part of it: give each window more work",
-				names[index], took, MinWindow)
+			return 0, least[0], least[1], fmt.Errorf("cputest: the %s window lasts %v, %w", names[index], took, ErrShortWindow)
 		}
 	}
 	return float64(scale) * float64(least[1]) / float64(least[0]), least[0], least[1], nil
+}
+
+// ErrShortWindow is Growth's refusal of a window shorter than MinWindow.
+var ErrShortWindow = fmt.Errorf("under the %v that a window lasts so that the split of a thread's time by the ticks of the scheduler is a small part of it: give each window more work", MinWindow)
+
+// Again is the small or large of Growth for run, a run that changes nothing that it reads: each
+// run of a window is run itself.
+func Again(run func()) func() func() {
+	return func() func() { return run }
 }
 
 // resolution is the smallest step Process moves in on this machine, measured once: the fewest

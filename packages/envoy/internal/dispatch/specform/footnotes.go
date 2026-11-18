@@ -44,8 +44,9 @@ func holdsWords(notes []*Footnote) {
 // grow with the texts and their footnotes, not with their product. A text holds a footnote that it
 // refers to, and each footnote that such a footnote refers to in turn. The words of each finding
 // name the footnote and how many other texts refer to it (place). The sentences of each footnote
-// that a statement holds count among the statement's, and the verbs of each footnote that a text of
-// prose holds stand beside its own in the rule synonym-rotation (held).
+// that a statement holds count among the statement's (held). Two verbs for one action are the one
+// finding of the text or the footnote that holds them both with no one footnote that it refers to
+// holding them all (held, rotations).
 type footnoteJudge struct {
 	c      Context
 	people [][]string
@@ -58,9 +59,11 @@ type footnoteJudge struct {
 	referrers map[*Footnote]int
 	// counted is, for each footnote that a text holds, the footnotes with sentences that it holds,
 	// until their sentences pass maxSentences, and verbs the verbs of the synonym groups that it
-	// and the footnotes that it holds use (carry).
+	// and the footnotes that it holds use (carry). gives is the verbs of each synonym group that a
+	// footnote rotates with the footnotes that it refers to (rotations).
 	counted map[*Footnote]*sentenceCount
 	verbs   map[*Footnote]ste.Verbs
+	gives   map[*Footnote]ste.Verbs
 }
 
 // footnoteJudgment is one footnote judged: the findings of the form rules, the findings of the
@@ -86,12 +89,13 @@ func (count *sentenceCount) full() bool {
 // footnotesHeld is what the footnotes that a text holds add to it: for a statement, each footnote
 // whose sentences count among its own, with how many it adds, their sum (count) and whether that
 // sum is only the least that they hold (atLeast), because one footnote holds more than Dispatch
-// counted; for a text of prose, the verbs of the synonym groups that they use.
+// counted; for a text of prose, the verbs of the synonym groups that each footnote that it refers
+// to uses with the footnotes that it holds.
 type footnotesHeld struct {
 	adds    []sentencesAdded
 	count   int
 	atLeast bool
-	verbs   ste.Verbs
+	verbs   []ste.Verbs
 }
 
 // sentencesAdded is a footnote, by its label, and how many sentences it adds to a statement.
@@ -133,13 +137,26 @@ func (j *footnoteJudge) owned(text Text) []broken {
 	var found []broken
 	if prose(text.Kind) {
 		j.walk(text, j.formGiven, func(via, note *Footnote) {
-			found = append(found, j.placed(via, note, j.judgment(note).form)...)
+			found = append(found, j.placed(via, note, j.form(note))...)
 		})
 	}
 	j.walk(text, j.referencesGiven, func(via, note *Footnote) {
 		found = append(found, j.placed(via, note, j.judgment(note).references)...)
 	})
 	return found
+}
+
+// form is the findings of the form rules of note: those of its words (judgment), then each synonym
+// group that it rotates with the footnotes that it refers to (rotations).
+func (j *footnoteJudge) form(note *Footnote) []broken {
+	if j.counted == nil {
+		j.carry()
+	}
+	form := j.judgment(note).form
+	if gives := j.gives[note]; gives != 0 {
+		return append(slices.Clip(form), rotationBreaks(gives, "the footnotes that it refers to")...)
+	}
+	return form
 }
 
 // walk calls visit for each footnote that text holds and given does not, in the order of the first
@@ -210,7 +227,7 @@ func textCount(count int) string {
 
 // held is what the footnotes that text holds add to it (footnotesHeld): for a statement, the
 // footnotes with sentences of each footnote that it refers to (carry), each once; for a text of
-// prose, the verbs that the footnotes that it refers to hold (carry).
+// prose, the verbs that each footnote that it refers to holds (carry).
 func (j *footnoteJudge) held(text Text) footnotesHeld {
 	var noted footnotesHeld
 	if !prose(text.Kind) || len(text.Notes) == 0 {
@@ -220,7 +237,9 @@ func (j *footnoteJudge) held(text Text) footnotesHeld {
 		j.carry()
 	}
 	for _, note := range text.Notes {
-		noted.verbs |= j.verbs[note]
+		if verbs := j.verbs[note]; verbs != 0 {
+			noted.verbs = append(noted.verbs, verbs)
+		}
 	}
 	if text.Kind != KindStatement {
 		return noted
@@ -253,7 +272,7 @@ func (j *footnoteJudge) held(text Text) footnotesHeld {
 // at most maxSentences+1 footnotes. The verbs of each footnote are added to itself and to each
 // footnote that holds it in the same way, and the walk stops at a footnote that holds them all
 // already, so each footnote takes each verb once. So the work is in proportion to the footnotes
-// and their references.
+// and their references. Then it finds the rotations that each footnote gives (rotations).
 func (j *footnoteJudge) carry() {
 	j.counted, j.verbs = map[*Footnote]*sentenceCount{}, map[*Footnote]ste.Verbs{}
 	var held, order []*Footnote
@@ -303,6 +322,64 @@ func (j *footnoteJudge) carry() {
 			}
 			count.notes, count.sum = append(count.notes, source), count.sum+sentences
 			walk = append(walk, referrers[note]...)
+		}
+	}
+	j.rotations(order, referrers)
+}
+
+// rotations finds, for each footnote that a text holds, the verbs of each synonym group that it
+// breaks the rule synonym-rotation in with the footnotes that it refers to (gives), once carry has
+// carried the verbs: two verbs or more of the group that it and the footnotes that it holds use
+// together, where neither its own words, which are Lint's finding of it, nor one footnote that it
+// refers to holds them all (ste.Rotations). Where one footnote that it refers to holds them all,
+// that footnote gives the finding or rotates them in its own words, or a footnote that it holds in
+// turn does: so each group that a footnote gives or rotates in its own words is given for each
+// footnote that holds that footnote with the same verbs of the group (given), walking back along
+// the references. Footnotes that refer to each other in a loop hold the same verbs, so a group that
+// they rotate together and that none of them gives is given by the first footnote of the loop in
+// the order of the texts. Each footnote takes each group once, so the work is in proportion to the
+// footnotes and their references.
+func (j *footnoteJudge) rotations(order []*Footnote, referrers map[*Footnote][]*Footnote) {
+	j.gives = map[*Footnote]ste.Verbs{}
+	given := map[*Footnote]ste.Verbs{}
+	// spread adds groups, each verb of each group, to given of source, and of each footnote that
+	// holds it with the same verbs of the group.
+	spread := func(source *Footnote, groups ste.Verbs) {
+		type step struct {
+			note   *Footnote
+			groups ste.Verbs
+		}
+		walk := []step{{source, groups}}
+		for len(walk) > 0 {
+			each := walk[len(walk)-1]
+			walk = walk[:len(walk)-1]
+			added := each.groups &^ given[each.note]
+			if added == 0 {
+				continue
+			}
+			given[each.note] |= added
+			for _, referrer := range referrers[each.note] {
+				walk = append(walk, step{referrer, added &^ (j.verbs[referrer] ^ j.verbs[each.note]).Groups()})
+			}
+		}
+	}
+	var held []ste.Verbs
+	for _, note := range order {
+		own, all := j.judgment(note).verbs, j.verbs[note]
+		if all == 0 {
+			continue
+		}
+		held = held[:0]
+		for _, child := range note.Notes {
+			held = append(held, j.verbs[child])
+		}
+		j.gives[note] = ste.Rotations(own, held)
+		spread(note, (j.gives[note] | own.Rotated()&^(own^all).Groups()).Groups())
+	}
+	for _, note := range order {
+		if lost := j.verbs[note].Rotated() &^ given[note]; lost != 0 {
+			j.gives[note] |= lost
+			spread(note, lost.Groups())
 		}
 	}
 }

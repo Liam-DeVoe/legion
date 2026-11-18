@@ -128,12 +128,13 @@ func TestLintSplitsLinesAsPythonDoes(t *testing.T) {
 	}
 }
 
-// TestRotationsJoinTheVerbsOfTwoTexts holds the carry of the rule synonym-rotation from one text
-// into another: LintVerbs gives the verbs of the synonym groups that a text uses, by the same
-// reading as Lint, and Rotations gives each group whose verbs the two texts use together where the
-// second uses one that the first does not, with every verb of the group that either uses. A group
-// that one text alone rotates is its own finding (Lint), and the same verb in both is no rotation.
-func TestRotationsJoinTheVerbsOfTwoTexts(t *testing.T) {
+// TestRotationsJoinTheVerbsOfTexts holds the carry of the rule synonym-rotation from the texts that
+// a text holds into it: LintVerbs gives the verbs of the synonym groups that a text uses, by the
+// same reading as Lint, and Rotations gives each group whose verbs the texts use two of together,
+// with every verb of the group that one of them uses, where neither the text nor one text that it
+// holds uses them all. A group that one text alone rotates is that text's own finding (Lint), and
+// the same verb in two texts is no rotation.
+func TestRotationsJoinTheVerbsOfTexts(t *testing.T) {
 	verbs := func(text string) Verbs {
 		findings, used := LintVerbs(text)
 		if want := Lint(text); !sameFindings(findings, want) {
@@ -142,21 +143,31 @@ func TestRotationsJoinTheVerbsOfTwoTexts(t *testing.T) {
 		return used
 	}
 	for _, test := range []struct {
-		name, own, carried string
-		want               [][]string
+		name, own string
+		held      []string
+		want      [][]string
 	}{
-		{"a verb and its synonym", "Check the config file.", "Then verify the output.", [][]string{{"check", "verify"}}},
-		{"an inflection of each", "Legion checks each upload.", "It confirmed the size first.", [][]string{{"check", "confirm"}}},
-		{"no verb of the group in the first text", "Dispatch keeps the record.", "It checks the size and confirms the type.", [][]string{{"check", "confirm"}}},
-		{"two groups", "Check the file and delete it.", "Then verify it and remove the copy.", [][]string{{"check", "verify"}, {"delete", "remove"}}},
-		{"three verbs of one group, in the order of the group", "Validate the file.", "Then check it and confirm it.", [][]string{{"check", "confirm", "validate"}}},
-		{"the control: the same verb in both", "Check the config file.", "Then check the output.", nil},
-		{"the control: two verbs in the first text alone", "Check the file and verify it.", "The note says so.", nil},
-		{"the control: the second text adds none of the first's verbs", "Check the file and verify it.", "Then verify the output.", nil},
-		{"the control: a verb in code font", "Check the config file.", "Then run `verify` on it.", nil},
+		{"a verb and its synonym", "Check the config file.", []string{"Then verify the output."}, [][]string{{"check", "verify"}}},
+		{"an inflection of each", "Legion checks each upload.", []string{"It confirmed the size first."}, [][]string{{"check", "confirm"}}},
+		{"two groups", "Check the file and delete it.", []string{"Then verify it and remove the copy."}, [][]string{{"check", "verify"}, {"delete", "remove"}}},
+		{"three verbs of one group, in the order of the group", "Validate the file.", []string{"Then check it and confirm it."}, [][]string{{"check", "confirm", "validate"}}},
+		{"a verb in each of two held texts", "Dispatch keeps the record.", []string{"It checks the size.", "It confirms the type."}, [][]string{{"check", "confirm"}}},
+		{"a third verb beside a held text's two", "Validate the file.", []string{"It checks the size and confirms the type."}, [][]string{{"check", "confirm", "validate"}}},
+		{"a third verb beside the text's own two", "Check the file and verify it.", []string{"It confirms the type."}, [][]string{{"check", "verify", "confirm"}}},
+		{"the control: two verbs in a held text alone", "Dispatch keeps the record.", []string{"It checks the size and confirms the type."}, nil},
+		{"the control: a verb of the text that a held text's two hold", "Check the file.", []string{"It checks the size and confirms the type."}, nil},
+		{"the control: the same verb in both", "Check the config file.", []string{"Then check the output."}, nil},
+		{"the control: two verbs in the text alone", "Check the file and verify it.", []string{"The note says so."}, nil},
+		{"the control: the held text adds none of the text's verbs", "Check the file and verify it.", []string{"Then verify the output."}, nil},
+		{"the control: a verb in code font", "Check the config file.", []string{"Then run `verify` on it."}, nil},
+		{"the control: no held text", "Check the config file.", nil, nil},
 	} {
-		if got := Rotations(verbs(test.own), verbs(test.carried)); !reflect.DeepEqual(got, test.want) {
-			t.Errorf("%s: Rotations(%q, %q) = %q, want %q", test.name, test.own, test.carried, got, test.want)
+		held := make([]Verbs, len(test.held))
+		for index, text := range test.held {
+			held[index] = verbs(text)
+		}
+		if got := Rotations(verbs(test.own), held).Words(); !reflect.DeepEqual(got, test.want) {
+			t.Errorf("%s: Rotations(%q, %q) = %q, want %q", test.name, test.own, test.held, got, test.want)
 		}
 	}
 }

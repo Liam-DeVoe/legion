@@ -182,8 +182,7 @@ type broken struct {
 }
 
 // kindFootnote is the kind that a footnote is judged as (footnoteJudge.judgment): prose, which is
-// no statement, so that its sentences count in each statement that holds it, and not in itself, and
-// whose verbs stand beside the words of each text that holds it in the rule synonym-rotation.
+// no statement, so that its sentences count in each statement that holds it, and not in itself.
 const kindFootnote Kind = "footnote"
 
 // prose reports whether the form rules judge a text of kind: each kind but the failing example of
@@ -360,10 +359,12 @@ func serverPage(serverURL, address string) (text.Ref, bool) {
 // formBreaks is each word that holds a stop with no space after it (stopsWithNoSpace), the
 // sentence count of a statement, with the sentences of its footnotes (noted), and each sentence
 // over maxWords, as sentencesOf reads the line, and each hard finding of ste-lint, by its own rule
-// name. The verbs of the footnotes stand beside the line's in the rule synonym-rotation
-// (ste.Rotations), so a footnote, whose verbs stand beside those of each text that holds it, gives
-// no finding of that rule itself. It also answers how many sentences the line has, and the verbs of
-// the synonym groups that it uses.
+// name. The verbs of the footnotes that a text holds stand beside the line's in the rule
+// synonym-rotation where no one footnote that it refers to holds them all (ste.Rotations): two
+// verbs for one action that the words of a footnote hold, or that it holds with the footnotes that
+// it refers to, are the footnote's one finding (footnoteJudge.rotations), however many texts refer
+// to it. It also answers how many sentences the line has, and the verbs of the synonym groups that
+// it uses.
 func formBreaks(kind Kind, line string, noted footnotesHeld) ([]broken, int, ste.Verbs) {
 	var found []broken
 	for _, word := range stopsWithNoSpace(line) {
@@ -381,16 +382,21 @@ func formBreaks(kind Kind, line string, noted footnotesHeld) ([]broken, int, ste
 	}
 	lint, verbs := ste.LintVerbs(line)
 	for _, finding := range lint {
-		if kind == kindFootnote && finding.Rule == steSynonymRotation {
-			continue
-		}
 		found = append(found, broken{rule: Rule("ste100-" + finding.Rule), detail: fmt.Sprintf("ASD-STE100 does not permit %s: %q", steRules[finding.Rule], finding.Match)})
 	}
-	for _, rotation := range ste.Rotations(verbs, noted.verbs) {
-		found = append(found, broken{rule: "ste100-" + steSynonymRotation, detail: fmt.Sprintf("with the words of its footnotes: ASD-STE100 does not permit %s: %s",
-			steRules[steSynonymRotation], quotedList(rotation))})
-	}
+	found = append(found, rotationBreaks(ste.Rotations(verbs, noted.verbs), "its footnotes")...)
 	return found, len(sentences), verbs
+}
+
+// rotationBreaks is a finding of the rule synonym-rotation for each synonym group of rotated, the
+// verbs that a text or a footnote uses together with the words of what (ste.Rotations).
+func rotationBreaks(rotated ste.Verbs, what string) []broken {
+	var found []broken
+	for _, words := range rotated.Words() {
+		found = append(found, broken{rule: "ste100-" + steSynonymRotation, detail: fmt.Sprintf("with the words of %s: ASD-STE100 does not permit %s: %s",
+			what, steRules[steSynonymRotation], quotedList(words))})
+	}
+	return found
 }
 
 // steSynonymRotation is ste-lint's name of the rule of two verbs for one action.

@@ -31,12 +31,13 @@ const (
 // addresses and titles, many terms and many texts, and each part of a document that many texts
 // share. The one part of a document that the reader lets many texts share is a footnote: many
 // statements, term lines, component rows and purpose lines that refer to one long footnote, to one
-// footnote of many links, or to one chain of footnotes, one statement that refers to a chain of
-// footnotes, and one statement that refers to many footnotes. The footnotes of the chains hold a
-// verb of a synonym group, which Dispatch carries into each text that holds them, as it carries
-// their sentences. The reader refuses a link definition, which many links could share, and a link
-// and an image hold their own address and title. Each row judges a text of n units and one of
-// workScale times n, and the work of the larger grows less than workBound times (cputest.Growth):
+// footnote of many links, or to one chain of footnotes, many claims that refer to one long footnote
+// of two verbs for one action, which is one finding of the footnote, one statement that refers to a
+// chain of footnotes, and one statement that refers to many footnotes. The footnotes of the chains
+// hold a verb of a synonym group, which Dispatch carries into each text that holds them, as it
+// carries their sentences. The reader refuses a link definition, which many links could share,
+// and a link and an image hold their own address and title. Each row judges a text of n units and
+// one of workScale times n, and the work of the larger grows less than workBound times (Growth):
 // the smaller text is judged workScale times in one window and the larger once, so that both
 // windows last about as long. The work is the user CPU time of the thread that judges: the work of
 // the judgment's own code. A wait for a core is not in it, and nor is the kernel's work for the
@@ -188,6 +189,8 @@ func TestTheWorkOfAJudgmentGrowsInProportionToItsText(t *testing.T) {
 			extracted(func(n int) string {
 				return chain(n) + units("", ":::requirement{#s-%d}\nDispatch keeps it[^1].\n:::\n\n", "")(n)
 			})},
+		{"many claims that refer to one long footnote of two verbs for one action", "ste100-synonym-rotation", 500,
+			extracted(shared("Dispatch checks record %d and confirms it. ", "", ":::check{#c-%d}\nDispatch keeps record %[1]d[^shared].\n:::\n\n"))},
 		{"one statement that refers to a chain of footnotes", ruleSentences, 500,
 			extracted(func(n int) string { return ":::requirement{#s}\nDispatch keeps it[^1].\n:::\n\n" + chain(n) })},
 		{"one statement that refers to many footnotes", ruleSentences, 1_000,
@@ -200,7 +203,7 @@ func TestTheWorkOfAJudgmentGrowsInProportionToItsText(t *testing.T) {
 			judges := []func() []Finding{row.judge(t, sizes[0]), row.judge(t, sizes[1])}
 			findings := make([][]Finding, len(sizes))
 			growth, small, large, err := cputest.Growth(workSamples, workScale,
-				func() { findings[0] = judges[0]() }, func() { findings[1] = judges[1]() })
+				cputest.Again(func() { findings[0] = judges[0]() }), cputest.Again(func() { findings[1] = judges[1]() }))
 			if err != nil {
 				t.Fatal(err)
 			}

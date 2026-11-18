@@ -1,6 +1,7 @@
 package cputest
 
 import (
+	"errors"
 	"runtime"
 	"strings"
 	"sync"
@@ -67,11 +68,11 @@ func faultPages(t *testing.T) {
 func TestGrowthLeavesOutTheKernelsWorkForTheThread(t *testing.T) {
 	const scale, samples = 4, 3
 	growth, small, large, err := Growth(samples, scale,
-		func() { userWork(spinSteps) },
-		func() {
+		Again(func() { userWork(spinSteps) }),
+		Again(func() {
 			userWork(scale * spinSteps)
 			faultPages(t)
-		})
+		}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,26 +132,27 @@ func holdEachProcessor(t *testing.T) {
 }
 
 // Growth refuses a window that it cannot read, with a line that says why: a window shorter than
-// MinWindow, of which the kernel's split of a thread's time into user and system time by the ticks
-// of the scheduler is no small part; a window that reads no time; and a window whose two readings
-// are of two threads. A window that blocks in a system call while other goroutines hold each
-// processor ends on another thread unless onThread holds the goroutine on its thread: so with the
-// lock taken out, the last row fails.
+// MinWindow (ErrShortWindow), of which the kernel's split of a thread's time into user and system
+// time by the ticks of the scheduler is no small part; a window that reads no time; and a window
+// whose two readings are of two threads. A window that blocks in a system call while other
+// goroutines hold each processor ends on another thread unless onThread holds the goroutine on its
+// thread: so with the lock taken out, the last row fails.
 func TestGrowthRefusesAWindowThatItCannotRead(t *testing.T) {
 	for _, test := range []struct {
 		name         string
 		scale        int
 		small, large func()
 		refusal      string
+		is           error
 	}{
 		{"a window shorter than the floor", 2, func() { userWork(spinSteps / 5) }, func() { userWork(2 * spinSteps / 5) },
-			"the smaller window lasts"},
-		{"a window that reads no time", 1, func() {}, func() {}, "the smaller window reads 0s, no time"},
+			"the smaller window lasts", ErrShortWindow},
+		{"a window that reads no time", 1, func() {}, func() {}, "the smaller window reads 0s, no time", nil},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			_, small, large, err := Growth(3, test.scale, test.small, test.large)
-			if err == nil || !strings.Contains(err.Error(), test.refusal) {
-				t.Fatalf("Growth of windows of %v and %v answered %v, want a refusal that says %q", small, large, err, test.refusal)
+			_, small, large, err := Growth(3, test.scale, Again(test.small), Again(test.large))
+			if err == nil || !strings.Contains(err.Error(), test.refusal) || test.is != nil && !errors.Is(err, test.is) {
+				t.Fatalf("Growth of windows of %v and %v answered %v, want a refusal that says %q (%v)", small, large, err, test.refusal, test.is)
 			}
 			t.Logf("refused: %v", err)
 		})
@@ -159,14 +161,14 @@ func TestGrowthRefusesAWindowThatItCannotRead(t *testing.T) {
 		holdEachProcessor(t)
 		const scale = 4
 		growth, small, large, err := Growth(3, scale,
-			func() {
+			Again(func() {
 				userWork(spinSteps)
 				blockInTheKernel(t)
-			},
-			func() {
+			}),
+			Again(func() {
 				userWork(scale * spinSteps)
 				blockInTheKernel(t)
-			})
+			}))
 		if err != nil {
 			t.Fatal(err)
 		}

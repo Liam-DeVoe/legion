@@ -4652,8 +4652,9 @@ Each item below names a path with its method and identity, then its purpose.
       Its words name the footnote and how many other texts refer to it, as in `in its footnote [^n] (2 other texts also refer to it)`.
       The sentences of a footnote count in each statement that refers to it, and the finding names each footnote with its sentences, as in `[^1] adds 2`.
       When Dispatch stops the count of a statement's footnotes, the finding says `at least`.
-      The verbs of a footnote stand beside the words of each text that refers to it in the rule `ste100-synonym-rotation`.
-      So `Check the file.[^1]` with the footnote `Then verify it.` breaks that rule, in each text that refers to the footnote.
+      Two verbs for one action (rule `ste100-synonym-rotation`) are one finding, of the footnote or the text that holds both verbs when no footnote that it refers to holds both.
+      So a footnote with `It checks the size and confirms the type.` gives one finding, however many texts refer to it.
+      And `Check the file.[^1]` with the footnote `Then verify it.` gives one finding, of that text.
       A definition can stand wholly in its footnote, as in `- **lease**: [^1]`.
 
     - How the rules count sentences: a sentence holds a word with a letter, so a statement such as `42`, `...` or `12:30.` has no sentence.

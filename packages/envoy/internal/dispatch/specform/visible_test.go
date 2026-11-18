@@ -340,12 +340,22 @@ func TestARelativeLinkToARecordLinksToTheRecord(t *testing.T) {
 // whose kind the rule judges, and its words name the footnote and how many other texts refer to
 // it. One footnote that breaks two rules gives two findings, and two footnotes that break one rule
 // give two. The sentences of a footnote count in each statement that holds it, and the finding
-// names each footnote whose sentences it counts, with how many it adds. The verbs of a footnote
-// stand beside the words of each text that holds it in the rule synonym-rotation, as its sentences
-// count with it.
+// names each footnote whose sentences it counts, with how many it adds. Two verbs for one action
+// (synonym-rotation) are one finding of the one text or footnote whose words hold them both, or
+// with what it refers to holds them both where no one footnote of that holds them all: so a
+// footnote of two such verbs gives one finding however many texts refer to it, and a verb of a
+// text with its synonym in a footnote of that text gives the text's finding.
 func TestAFootnoteIsJudgedOnceAndGivesEachFindingOnce(t *testing.T) {
 	shared := requirement("first", "Dispatch stores each record.[^n]") + "\n" + requirement("second", "Dispatch shows each record.[^n]") +
 		"\n[^n]: Ada Lovelace wrote it.\n"
+	// claims is count claims that refer to the footnote [^n], and then note, its words.
+	claims := func(count int, note string) string {
+		var markdown strings.Builder
+		for index := 1; index <= count; index++ {
+			fmt.Fprintf(&markdown, ":::check{#c%d}\nDispatch keeps record %[1]d.[^n]\n:::\n\n", index)
+		}
+		return markdown.String() + "[^n]: " + note + "\n"
+	}
 	for _, test := range []struct {
 		name, markdown string
 		from           int
@@ -388,10 +398,19 @@ func TestAFootnoteIsJudgedOnceAndGivesEachFindingOnce(t *testing.T) {
 		{"two verbs for one action in two footnotes of one claim", ":::check{#two}\nDispatch keeps each record.[^a][^b]\n:::\n\n" +
 			"[^a]: It checks the size.\n\n[^b]: It confirms the type.\n", 0,
 			[]string{`claim two ste100-synonym-rotation: with the words of its footnotes: ASD-STE100 does not permit two verbs for one action: "check" and "confirm"`}},
-		{"a footnote of two verbs for one action, in each claim that refers to it", ":::check{#c1}\nDispatch keeps each record.[^n]\n:::\n\n" +
-			":::check{#c2}\nDispatch shows each record.[^n]\n:::\n\n[^n]: It checks the size and confirms the type.\n", 0,
-			[]string{`claim c1 ste100-synonym-rotation: with the words of its footnotes: ASD-STE100 does not permit two verbs for one action: "check" and "confirm"`,
-				`claim c2 ste100-synonym-rotation: with the words of its footnotes: ASD-STE100 does not permit two verbs for one action: "check" and "confirm"`}},
+		{"a footnote of two verbs for one action, which two claims refer to", claims(2, "It checks the size and confirms the type."), 0,
+			[]string{`claim c1 ste100-synonym-rotation: in its footnote [^n] (1 other text also refers to it): ASD-STE100 does not permit two verbs for one action: "confirms"`}},
+		{"a footnote of two verbs for one action, which 2,000 claims refer to", claims(2_000, "It checks the size and confirms the type."), 0,
+			[]string{`claim c1 ste100-synonym-rotation: in its footnote [^n] (1999 other texts also refer to it): ASD-STE100 does not permit two verbs for one action: "confirms"`}},
+		{"two verbs for one action in a footnote and the footnote that it refers to", claims(2, "It checks the size.[^b]") + "\n[^b]: It confirms the type.\n", 0,
+			[]string{`claim c1 ste100-synonym-rotation: in its footnote [^n] (1 other text also refers to it): with the words of the footnotes that it refers to: ASD-STE100 does not permit two verbs for one action: "check" and "confirm"`}},
+		{"two verbs for one action in two footnotes that refer to each other", claims(2, "It checks the size.[^b]") + "\n[^b]: It confirms the type.[^n]\n", 0,
+			[]string{`claim c1 ste100-synonym-rotation: in its footnote [^n] (1 other text also refers to it): with the words of the footnotes that it refers to: ASD-STE100 does not permit two verbs for one action: "check" and "confirm"`}},
+		{"a claim that adds a third verb for one action to its footnote's two", ":::check{#more}\nValidate the file.[^n]\n:::\n\n[^n]: It checks the size and confirms the type.\n", 0,
+			[]string{`claim more ste100-synonym-rotation: with the words of its footnotes: ASD-STE100 does not permit two verbs for one action: "check", "confirm" and "validate"`,
+				`claim more ste100-synonym-rotation: in its footnote [^n]: ASD-STE100 does not permit two verbs for one action: "confirms"`}},
+		{"the control: a verb of a claim that its footnote's two verbs for one action hold", ":::check{#again}\nCheck the file.[^n]\n:::\n\n[^n]: It checks the size and confirms the type.\n", 0,
+			[]string{`claim again ste100-synonym-rotation: in its footnote [^n]: ASD-STE100 does not permit two verbs for one action: "confirms"`}},
 		{"the control: one verb in a claim and in its footnote", ":::check{#same}\nCheck the config file.[^1]\n:::\n\n[^1]: Then check the output.\n", 0, nil},
 		{"the control: two verbs for one action in the claim alone", ":::check{#own}\nCheck the file and verify it.[^1]\n:::\n\n[^1]: The note says so.\n", 0,
 			[]string{`claim own ste100-synonym-rotation: ASD-STE100 does not permit two verbs for one action: "verify"`}},

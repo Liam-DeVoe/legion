@@ -26,6 +26,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"math/bits"
 	"regexp"
 	"sort"
 	"strings"
@@ -73,10 +74,11 @@ type compiled struct {
 	nominalization *regexp.Regexp
 	// synonyms holds, for each group, one pattern per member: the member and its inflections.
 	synonyms [][]*regexp.Regexp
-	// members is the word of each member of each group, as rules.json writes it, and first the bit
-	// of the first member of each group in Verbs.
+	// members is the word of each member of each group, as rules.json writes it, first the bit of
+	// the first member of each group in Verbs, and groups the bits of all members of each group.
 	members [][]string
 	first   []int
+	groups  []Verbs
 }
 
 // Verbs is the members of ste-lint's synonym groups that a text uses, one bit for each member of
@@ -112,6 +114,7 @@ func compileRules(raw []byte) compiled {
 		rule.first = append(rule.first, verbCount(rule.members))
 		rule.synonyms = append(rule.synonyms, patterns)
 		rule.members = append(rule.members, group)
+		rule.groups = append(rule.groups, (Verbs(1)<<len(group)-1)<<rule.first[len(rule.first)-1])
 	}
 	if count := verbCount(rule.members); count > 64 {
 		panic(fmt.Sprintf("ste: rules.json has %d members of synonym groups, and Verbs holds 64", count))
@@ -534,28 +537,63 @@ func LintVerbs(text string) ([]Finding, Verbs) {
 	return findings, verbs
 }
 
-// Rotations is each synonym group that a text whose own words use the verbs own breaks the rule
-// synonym-rotation in, once the verbs carried stand beside them, as the verbs of the footnotes of a
-// text do: a group of which carried uses a verb that own does not, where own and carried use two
-// verbs of it together. Each is the words of the verbs of the group that either uses, in the order
-// of rules.json. A group that own alone uses two verbs of is Lint's finding of the text itself.
-func Rotations(own, carried Verbs) [][]string {
-	var rotations [][]string
-	for group, members := range rules.members {
-		var used []string
-		adds := false
-		for member, word := range members {
-			bit := Verbs(1) << (rules.first[group] + member)
-			if (own|carried)&bit != 0 {
-				used = append(used, word)
-			}
-			adds = adds || carried&^own&bit != 0
-		}
-		if adds && len(used) > 1 {
-			rotations = append(rotations, used)
+// Rotations is the verbs of each synonym group that a text breaks the rule synonym-rotation in with
+// the texts that it holds, and that no one of them breaks it in alone: own is the verbs of the
+// text's own words, and held the verbs of each text that it holds, each with the verbs of the texts
+// that that one holds in turn. It is each group of which they use two verbs or more together, where
+// neither own nor one of held uses each verb of the group that they use together: a group that
+// own uses each of those verbs of is Lint's finding of the text, and one that a text of held uses
+// each of is that text's finding.
+func Rotations(own Verbs, held []Verbs) Verbs {
+	all := own
+	for _, each := range held {
+		all |= each
+	}
+	rotated := all.Rotated() & (own ^ all).Groups()
+	for _, each := range held {
+		rotated &= (each ^ all).Groups()
+	}
+	return rotated
+}
+
+// Rotated is the verbs of v of each synonym group of which v uses two verbs or more.
+func (v Verbs) Rotated() Verbs {
+	var rotated Verbs
+	for _, group := range rules.groups {
+		if used := v & group; bits.OnesCount64(uint64(used)) > 1 {
+			rotated |= used
 		}
 	}
-	return rotations
+	return rotated
+}
+
+// Groups is each verb of each synonym group of which v uses a verb.
+func (v Verbs) Groups() Verbs {
+	var all Verbs
+	for _, group := range rules.groups {
+		if v&group != 0 {
+			all |= group
+		}
+	}
+	return all
+}
+
+// Words is the word of each verb of v, as rules.json writes it: one list for each synonym group of
+// which v uses a verb, in the order of rules.json.
+func (v Verbs) Words() [][]string {
+	var words [][]string
+	for group, members := range rules.members {
+		var used []string
+		for member, word := range members {
+			if v&(1<<(rules.first[group]+member)) != 0 {
+				used = append(used, word)
+			}
+		}
+		if used != nil {
+			words = append(words, used)
+		}
+	}
+	return words
 }
 
 // conjunctionEnd is ste-lint's CONJUNCTION_END, `\b(?:and|or)\s*$` with IGNORECASE, searched in
