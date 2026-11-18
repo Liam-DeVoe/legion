@@ -103,6 +103,7 @@ import {
   removeAll,
   removeContainersOf,
   removeIds,
+  removeImage,
   removeLeft,
   runTag,
   type ShellStack,
@@ -380,7 +381,7 @@ test.skipIf(skipImage)(
       expect(answers(first.url)).toBe(true);
     } finally {
       await first?.stop().catch(() => {});
-      for (const dir of dirs) removeContainersOf(dir);
+      for (const dir of dirs) await removeContainersOf(dir);
       rmSync(tmp, { recursive: true, force: true });
     }
   },
@@ -458,7 +459,7 @@ test.skipIf(skipImage)(
       expect(unjudged[0]).toContain(`container ${otherTime.id} (time namespace time:[1])`);
       expect(start.stderr).not.toContain(runs.id);
     } finally {
-      removeIds(made);
+      await removeIds(made);
       rmSync(goneSockets, { recursive: true, force: true });
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -684,7 +685,7 @@ test.skipIf(skipImage)(
       expect([containerExists(gone.name), existsSync(gone.sockets)]).toEqual([false, false]);
       expect([containerExists(runs.name), existsSync(runs.sockets)]).toEqual([true, true]);
     } finally {
-      removeIds(made);
+      await removeIds(made);
       chmodSync(join(held, "held"), 0o700);
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -719,7 +720,7 @@ test.skipIf(skipImage)(
       );
       docker("commit", dead.id, copy);
       committed = true;
-      removeIds(made.splice(0));
+      await removeIds(made.splice(0));
       const name = plantedName(run, 1);
       const id = docker("create", "--name", name, copy).trim();
       made.push(id);
@@ -737,7 +738,7 @@ test.skipIf(skipImage)(
     } finally {
       await removeAll(
         () => removeIds(made),
-        () => committed && docker("image", "rm", "--force", copy),
+        () => committed && removeImage(copy),
         () => rmSync(tmp, { recursive: true, force: true })
       );
     }
@@ -762,13 +763,18 @@ test.skipIf(skipImage)(
       // machine removes them before that start meets the removals the row stages.
       const inProgress = leaveUnlistedContainer(image, made, run, 0, who.gone);
       const goneFirst = leaveUnlistedContainer(image, made, run, 1, who.gone);
-      // Another start's removal, as the start under test meets it: its `docker` removes the first
-      // container a second after it answers Docker's refusal of a removal in progress, and
-      // removes the second itself just before the real `docker rm` of it, which then finds it
-      // gone. Every other call is the real `docker`'s.
+      // Another start's removal, as the start under test meets it: its `docker` refuses each
+      // removal of the first container as Docker refuses one while another is in progress, for as
+      // long as the real `docker` still lists it, and removes it a second after the first
+      // refusal; and it removes the second container itself just before the real `docker rm` of
+      // it, which then finds it gone. Every other call is the real `docker`'s.
+      const other = join(tmp, "other-removal");
       const { bin } = soleListing(tmp, [inProgress.listing, goneFirst.listing], (real) => [
-        `if [ "$1" = rm ] && [[ " $* " == *" ${inProgress.fullId} "* ]]; then`,
-        `  ( sleep 1; exec ${JSON.stringify(real)} rm --force --volumes ${inProgress.fullId} >/dev/null 2>&1 ) &`,
+        `if [ "$1" = rm ] && [[ " $* " == *" ${inProgress.fullId} "* ]] &&`,
+        `  [ -n "$(${JSON.stringify(real)} ps --all --quiet --no-trunc --filter id=${inProgress.fullId})" ]; then`,
+        `  if mkdir ${JSON.stringify(other)} 2>/dev/null; then`,
+        `    ( sleep 1; exec ${JSON.stringify(real)} rm --force --volumes ${inProgress.fullId} >/dev/null 2>&1 ) &`,
+        "  fi",
         `  echo "Error response from daemon: removal of container ${inProgress.fullId} is already in progress" >&2`,
         "  exit 1",
         "fi",

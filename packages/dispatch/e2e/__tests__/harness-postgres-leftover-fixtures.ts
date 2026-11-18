@@ -418,51 +418,60 @@ export function containersOf(run: string): string[] {
   });
 }
 
-/** How long a row's removal waits for a removal of the same container that another start of the
- *  machine has in progress, the bound a start itself waits it out with (`dockerMs` of
- *  e2e/harness-postgres-removal.ts): a daemon that answers removes a container in well under a
- *  second. */
-const removalInProgressMs = 60_000;
+/** Runs a `docker` removal, of a container or an image, for as long as Docker takes over it, and
+ *  answers its exit status and what it wrote on standard error. A daemon that many sessions share
+ *  can take minutes over one removal while it answers every other call at once (`dockerMs` of
+ *  e2e/harness-postgres-removal.ts), so a removal has no bound of its own: the bound of the row
+ *  that runs it is what ends one that hangs. */
+async function dockerRemoval(args: readonly string[]): Promise<{ status: number; said: string }> {
+  const run = Bun.spawn(["docker", ...args], { stdout: "ignore", stderr: "pipe" });
+  const [status, stderr] = await Promise.all([run.exited, new Response(run.stderr).text()]);
+  return { status, said: stderr.trim() || `exit ${status}` };
+}
 
 /** Removes each container of `ids`, by its id, and once it has tried them all throws naming each
  *  removal that failed, with what Docker said: one failed removal keeps no other container. A
  *  container that is gone already is no failure (`docker rm --force`), nor is one that another
- *  start of the machine is removing, once Docker no longer lists it. */
-export function removeIds(ids: readonly string[]): void {
+ *  start of the machine is removing: while that removal is in progress Docker refuses this one,
+ *  and the row asks again until Docker removes it or finds it gone, as a start does. */
+export async function removeIds(ids: readonly string[]): Promise<void> {
   const failed: string[] = [];
   for (const id of ids) {
-    const run = spawnSync("docker", ["rm", "--force", "--volumes", id], {
-      encoding: "utf8",
-      timeout: 120_000,
-    });
-    if (run.status === 0) continue;
-    const said = run.stderr.trim() || run.error?.message || `exit ${run.status}`;
-    if (/removal of container \S+ is already in progress/.test(said)) {
-      const deadline = Date.now() + removalInProgressMs;
-      while (containerExists(id) && Date.now() < deadline) Bun.sleepSync(200);
-      if (!containerExists(id)) continue;
+    for (;;) {
+      const { status, said } = await dockerRemoval(["rm", "--force", "--volumes", id]);
+      if (status === 0) break;
+      if (!/removal of container \S+ is already in progress/.test(said)) {
+        failed.push(`${id}: ${said}`);
+        break;
+      }
+      await sleep(200);
     }
-    failed.push(`${id}: ${said}`);
   }
   if (failed.length > 0)
     throw new Error(`docker rm --force --volumes failed: ${failed.join("; ")}`);
 }
 
+/** Removes the image `name`, which a row made, however long Docker takes over it. */
+export async function removeImage(name: string): Promise<void> {
+  const { status, said } = await dockerRemoval(["image", "rm", "--force", name]);
+  if (status !== 0) throw new Error(`docker image rm --force ${name}: ${said}`);
+}
+
 /** Removes each container whose mark names `run`, the run directory of a stack this row started,
  *  by the id Docker lists it under: a container's name is no one stack's alone. */
-export function removeContainersOf(run: string): void {
-  removeIds(containersOf(run));
+export async function removeContainersOf(run: string): Promise<void> {
+  await removeIds(containersOf(run));
 }
 
 /** Removes what a stack this row started left, by the paths it recorded for it: its container,
  *  by the id its mark is listed under, or its postmasters, then its directories. */
-export function removeLeft(
+export async function removeLeft(
   stack: Stack | undefined,
   provider: { variable: ProviderVariable; value: string }
-) {
+): Promise<void> {
   if (stack === undefined) return;
   if (provider.variable === pgImageVariable) {
-    removeContainersOf(stack.dir);
+    await removeContainersOf(stack.dir);
     rmSync(dirname(stack.address), { recursive: true, force: true });
   } else {
     for (const data of [
@@ -539,7 +548,7 @@ export async function startUnjudged(
       named: markFile,
       stop: async () => {
         await stopStack(stack);
-        removeLeft(stack, provider);
+        await removeLeft(stack, provider);
       },
     };
   }

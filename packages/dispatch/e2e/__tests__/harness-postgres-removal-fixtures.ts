@@ -1,8 +1,9 @@
 /** The fixtures of the rows of `harness-postgres-removal.test.ts` and
  *  `harness-postgres-holders.test.ts`: the marks, data directories and stand-in postmasters a row
- *  plants, the start's sweep and a start's claim, each run in a child of the row, the end of such
- *  a child, and the stack's harness and the stand-in `pg_ctl` a row kills hard. The rows and what
- *  they require stay in those files. */
+ *  plants, the start's sweep, a start's claim and a start's removal of one container, each run in
+ *  a child of the row, the stand-in `docker` of that removal, the end of such a child, and the
+ *  stack's harness and the stand-in `pg_ctl` a row kills hard. The rows and what they require stay
+ *  in those files. */
 
 import { expect } from "bun:test";
 import {
@@ -10,6 +11,7 @@ import {
   copyFileSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   symlinkSync,
@@ -379,3 +381,71 @@ export function holding(lines: readonly string[], text: string): string[] {
  *  under load, which took more than 180 s once on a shared Linux machine under a load of 1,217, on
  *  2026-11-17, is the longest of them. */
 export const claimEventMs = 240_000;
+
+/** A start's removal of the container `CONTAINER_ID` (`removeContainer`) in a child of this file,
+ *  which waits at most `ANSWER_MS` for one ask of Docker: it prints how the removal ended. */
+const removeScript = `
+import { removeContainer } from ${JSON.stringify(removalModule)};
+console.log(JSON.stringify(await removeContainer(process.env.CONTAINER_ID, Number(process.env.ANSWER_MS))));
+`;
+
+/** A directory in `tmp` with a stand-in `docker`, which runs no real one, so a row of it acts on
+ *  no container of the machine: it writes the arguments of each call it gets as a line of
+ *  `calls`, and the stat of its own process as a file of `processes`, and then runs the lines of
+ *  bash `body`. Answers the directory, the calls so far, and each process it ran as, by its pid
+ *  and start. */
+export function standInDocker(tmp: string, body: readonly string[]) {
+  const bin = mkdtempSync(join(tmp, "docker-"));
+  const calls = join(bin, "calls");
+  const processes = join(bin, "processes");
+  mkdirSync(processes);
+  writeFileSync(
+    join(bin, "docker"),
+    [
+      "#!/usr/bin/env bash",
+      `echo "$*" >>${JSON.stringify(calls)}`,
+      `cat /proc/$$/stat >${JSON.stringify(processes)}/$$`,
+      ...body,
+      "",
+    ].join("\n"),
+    { mode: 0o755 }
+  );
+  return {
+    bin,
+    calls: (): string[] => readFileSync(calls, "utf8").trim().split("\n"),
+    processes: (): { pid: number; start: string }[] =>
+      readdirSync(processes).map((pid) => ({
+        pid: Number(pid),
+        start: marks.startOf(readFileSync(join(processes, pid), "utf8")),
+      })),
+  };
+}
+
+/** Removes the container `id` in a child (`removeScript`) whose `docker` is the one in `bin`, and
+ *  which waits at most `answerMs` for one ask of Docker. Answers how the removal ended and how
+ *  many seconds the child took; kills the child and throws where it has not ended within `ms`. */
+export async function removeInChild(bin: string, id: string, answerMs: number, ms: number) {
+  const started = Date.now();
+  const child = Bun.spawn([process.execPath, "--eval", removeScript], {
+    env: {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH ?? ""}`,
+      CONTAINER_ID: id,
+      ANSWER_MS: String(answerMs),
+    },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const printed = Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  const code = await Promise.race([child.exited, Bun.sleep(ms).then(() => undefined)]);
+  if (code === undefined) {
+    await endChild(child);
+    throw new Error(`the removal in a child did not end within ${ms / 1000} s`);
+  }
+  const [stdout, stderr] = await printed;
+  if (code !== 0) throw new Error(`the removal in a child exited ${code}: ${stderr}`);
+  return { removal: JSON.parse(stdout) as unknown, seconds: (Date.now() - started) / 1000 };
+}
