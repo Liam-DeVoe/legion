@@ -5408,6 +5408,39 @@ const RELOAD_DURING_WRITE: RuleWay = {
   },
 };
 
+/** A write of the issue held open, and a second whose own callback, as Dispatch answers it in 200
+ *  ms, drops the views (`dropViews`), as a Settle, a Keep reading the decisions again and a Change
+ *  do; then, the first still out, the reader leaving the issue and coming back to it: a new load
+ *  of the stage, with the filter that was on, which resets the views (`resetViews`) and reads the
+ *  open one at once, and once more as the first write settles. */
+const RELOAD_AFTER_DROP_DURING_WRITE: RuleWay = {
+  words:
+    "a write of the issue whose callback drops the views while a second write of the issue is out, then the reader leaving the issue and coming back to it while the second is out",
+  does: async (rig) => {
+    const settleWrite = holdWrite(rig);
+    const drop = new MutationObserver<void, Error, void, void>(rig.client, {
+      mutationKey: writeKeyOf(KEY),
+      mutationFn: async () => {
+        await Bun.sleep(200);
+      },
+      onSuccess: () => {
+        dropViews(rig.client, KEY);
+      },
+    });
+    await writeSettles(() => drop.mutate(), 200);
+    await tick(10, 10);
+    const before = ruleReads(rig);
+    stageOf(rig).unmount();
+    rig.stage = undefined;
+    await tick(100, 10);
+    mountStage(rig);
+    await tick(300, 10);
+    expect(ruleReads(rig) - before, "the load's read, sent while the write is out").toBe(1);
+    act(() => settleWrite());
+    await tick(50, 10);
+  },
+};
+
 /** A write of the issue whose own callback, as Dispatch answers it 200 ms on, does what a Settle,
  *  a Keep reading the decisions again and a Change do - code that calls `dropViews` there, which
  *  no load does: invalidates the coverage, refreshes the tree and drops the views. TanStack runs
@@ -5686,6 +5719,7 @@ const WAYS = {
   writeDroppingViewsOnly: writeDroppingViews({ dropOnly: true }),
   eventWhileCommentsRefused600: eventWhileCommentsRefused(600),
   reloadDuringWrite: RELOAD_DURING_WRITE,
+  reloadAfterDropDuringWrite: RELOAD_AFTER_DROP_DURING_WRITE,
 } satisfies Record<string, RuleWay>;
 
 /** How many reads of a query a way starts: a count, or the least and the most. */
@@ -6512,6 +6546,9 @@ const READ_RULES: readonly ReadRule[] = [
   // A load while a write of the issue is out reads the open view at once, and once more as the
   // write settles: the load's reset holds nothing.
   { read: "spec", state: "answered", observed: true, way: "reloadDuringWrite", now: 2 },
+  // A load after a write's own callback dropped the views, while a write of the issue is still
+  // out, is a load too: the open view at once, and once more as the write settles.
+  { read: "spec", state: "answered", observed: true, way: "reloadAfterDropDuringWrite", now: 2 },
   // One event, read once, while a read of the comments is out that Dispatch then refuses.
   { read: "tree", state: "answered", observed: true, way: "eventWhileCommentsRefused600", now: 1 },
 ];
