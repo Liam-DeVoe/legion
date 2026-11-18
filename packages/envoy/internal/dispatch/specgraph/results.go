@@ -72,10 +72,28 @@ type Result struct {
 // resultCommit is the commit where the job of r ran, and where r counts (R8; CheckStates, steps 2,
 // 4 and 7): the Commit of a result of a check of the code, and else the TestCommit, the commit of
 // the test of a program check of production or of the graph, whose results name no commit (fault).
-// It is the one reading of that fact: the judge counts r there, and legFault groups r there with
-// the other records of its job.
+// It is the one reading of that fact for a check whose results count at a commit
+// (countsAtACommit): the judge counts r there, and legFault groups r there with the other records
+// of its job (jobCommit).
 func resultCommit(r Result) string {
 	return cmp.Or(r.Commit, r.TestCommit)
+}
+
+// jobCommit is the commit where the job of the result r ran, by procedure, the text of the check
+// that ran r, nil when the caller does not hold it, as Result.fault reads it: resultCommit for a
+// check whose results count at a commit (countsAtACommit), and none for a query or an agent of
+// production or of the graph, which reads no commit, whatever test_commit r names. With no text in
+// hand it is the commit that r names, which a result of a check of the code names, and never its
+// test_commit: only the text of a program check of production or of the graph makes that the
+// commit where its job ran.
+func jobCommit(procedure *Check, r Result) string {
+	switch {
+	case procedure == nil:
+		return r.Commit
+	case countsAtACommit(*procedure):
+		return resultCommit(r)
+	}
+	return ""
 }
 
 // fault is the first member of r that the derivation reads and that r does not set, or does not
@@ -206,18 +224,21 @@ func (r JobRun) fault() string {
 // legFault is the refusal of the first record that says that one job at one commit has legs and
 // has none, and "" when there is none, with whether that record is a job run. The records of a job
 // at a commit are its runs there, in their order, and then its run results, in their order, at the
-// commit where the job ran and where the judge counts them (resultCommit); the record
-// refused is the first whose leg is "" where the first record of its job at its commit names a
-// leg, or that names a leg where that record's is "". "" is the leg of no matrix, and one job at one
-// commit has legs or it has none (R12: "Each leg of a matrix reports its own result, and no leg
-// replaces the result of another"), so such records say two things that cannot both be true: a run
-// result of the leg "" at a commit where the job had legs would answer a run of no matrix wherever
-// the results of that commit count, and hide that the run ended with no result (R9: "When a check
-// has no result that counts after a run of its job ends, it reads unknown"). A state reads no leg
-// of a failing example, so its leg is no part of the rule. Each run and each result is
-// whole (JobRun.fault, Result.fault). The reader of a scenario and the entry of the derivation both
-// refuse by it.
-func legFault(runs []JobRun, results []Result) (fault string, ofRun bool) {
+// commit where the job ran by the check that ran each one (jobCommit), procedures[i] the text of
+// the check that ran results[i] as Result.fault reads it, nil where the caller does not hold it: a
+// run result of a query or an agent of production or of the graph is a record of its job at no
+// commit, whatever test_commit it names, since such a check reads no commit and no state reads a
+// leg of it. The record refused is the first whose leg is "" where the first record of its job at
+// its commit names a leg, or that names a leg where that record's is "". "" is the leg of no
+// matrix, and one job at one commit has legs or it has none (R12: "Each leg of a matrix reports
+// its own result, and no leg replaces the result of another"), so such records say two things that
+// cannot both be true: a run result of the leg "" at a commit where the job had legs would answer a
+// run of no matrix wherever the results of that commit count, and hide that the run ended with no
+// result (R9: "When a check has no result that counts after a run of its job ends, it reads
+// unknown"). A state reads no leg of a failing example, so its leg is no part of the rule. Each run
+// and each result is whole (JobRun.fault, Result.fault). The reader of a scenario and the entry of
+// the derivation both refuse by it.
+func legFault(runs []JobRun, results []Result, procedures []*Check) (fault string, ofRun bool) {
 	type at struct{ job, commit string }
 	type record struct{ name, leg string }
 	first := map[at]record{} // the first record of each job at each commit
@@ -238,7 +259,7 @@ func legFault(runs []JobRun, results []Result) (fault string, ofRun bool) {
 		}
 	}
 	for i, r := range results {
-		if commit := resultCommit(r); r.Kind == ResultRun && r.Job != "" && commit != "" {
+		if commit := jobCommit(procedures[i], r); r.Kind == ResultRun && r.Job != "" && commit != "" {
 			if fault := differs(fmt.Sprintf("result %d", i+1), r.Job, commit, *r.Leg); fault != "" {
 				return fault, false
 			}

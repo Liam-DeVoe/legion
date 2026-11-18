@@ -146,19 +146,20 @@ func (in Input) check(current Tree) error {
 		return err
 	}
 	type text struct {
-		check  Check
+		check  *Check
 		digest string
 	}
 	texts := make(map[string]text, len(current.Checks))
-	for _, c := range current.Checks {
+	for i := range current.Checks {
+		c := &current.Checks[i]
 		texts[c.ID] = text{c, c.Digest()}
 	}
+	procedures := make([]*Check, len(in.Results)) // the current text of the check that ran each result, or nil
 	for i, r := range in.Results {
-		var procedure *Check
 		if t, held := texts[r.Check]; held && t.digest == r.CheckDigest {
-			procedure = &t.check
+			procedures[i] = t.check
 		}
-		if fault := r.fault(procedure); fault != "" {
+		if fault := r.fault(procedures[i]); fault != "" {
 			return fmt.Errorf("specgraph: result %d: %s", i+1, fault)
 		}
 	}
@@ -188,7 +189,7 @@ func (in Input) check(current Tree) error {
 			return fmt.Errorf("specgraph: job run %d: %s", i+1, fault)
 		}
 	}
-	if fault, _ := legFault(in.JobRuns, in.Results); fault != "" {
+	if fault, _ := legFault(in.JobRuns, in.Results, procedures); fault != "" {
 		return errors.New("specgraph: " + fault)
 	}
 	return nil

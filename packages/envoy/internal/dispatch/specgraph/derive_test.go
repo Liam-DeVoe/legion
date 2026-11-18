@@ -349,6 +349,47 @@ func TestTheDerivationRefusesAnInputThatIsNotWhole(t *testing.T) {
 			none.Leg, none.Seq = new(""), 3
 			in.Results = append(in.Results, none)
 		}, want: `specgraph: result 3: it sets the leg "", and result 1 of its job "go-checks" at the commit "c1" sets the leg "linux"; one job at one commit has legs or it has none, and "" is the leg of no matrix`},
+		// The commit of a run result is decided by the text of its check that ran it
+		// (countsAtACommit): a run result of a program check of production or of the graph is a record
+		// of its job at its test_commit, where its test ran, and one of a query or an agent of
+		// production or of the graph is a record of its job at no commit, whatever test_commit it
+		// names, since such a check reads no commit and no state reads a leg of it. Of a result whose
+		// text the entry does not hold, it reads the commit that the result names and no test_commit,
+		// since that text alone could make the test_commit the commit where its job ran.
+		{name: `a run result of a program check of production in a named leg where the runs of its job at its test_commit are of the leg ""`,
+			add: []Check{checkStateProductionProgram}, change: func(in *Input) {
+				q := checkStateProductionProgram
+				in.JobRuns = []JobRun{{Job: q.Test.Job, Leg: new(""), Commit: "c1", Ended: new(true)}}
+				in.Results = append(in.Results, Result{Check: q.ID, CheckDigest: q.Digest(), Kind: ResultRun, Outcome: OutcomeFail,
+					Deploy: "d1", Job: q.Test.Job, Leg: new("linux"), TestCommit: "c1", At: checkStateRun, Seq: 3})
+			}, want: `specgraph: result 3: it sets the leg "linux", and job run 1 of its job "production-checks" at the commit "c1" sets the leg ""; one job at one commit has legs or it has none, and "" is the leg of no matrix`},
+		{name: `control: a run result of a query of production that names that job and test_commit c1, in a named leg`,
+			add: []Check{checkStateProduction}, change: func(in *Input) {
+				in.JobRuns = []JobRun{{Job: "production-checks", Leg: new(""), Commit: "c1", Ended: new(true)}}
+				in.Results = append(in.Results, Result{Check: checkStateProduction.ID, CheckDigest: checkStateProduction.Digest(), Kind: ResultRun, Outcome: OutcomeFail,
+					Deploy: "d1", Job: "production-checks", Leg: new("linux"), TestCommit: "c1", At: checkStateRun, Seq: 3})
+			}},
+		{name: `control: the same run result of a query of production with no test_commit`,
+			add: []Check{checkStateProduction}, change: func(in *Input) {
+				in.JobRuns = []JobRun{{Job: "production-checks", Leg: new(""), Commit: "c1", Ended: new(true)}}
+				in.Results = append(in.Results, Result{Check: checkStateProduction.ID, CheckDigest: checkStateProduction.Digest(), Kind: ResultRun, Outcome: OutcomeFail,
+					Deploy: "d1", Job: "production-checks", Leg: new("linux"), At: checkStateRun, Seq: 3})
+			}},
+		{name: `control: a run result of an agent of production that names that job and test_commit c1, in a named leg`,
+			add: []Check{checkStateProductionAgent}, change: func(in *Input) {
+				a := checkStateProductionAgent
+				in.JobRuns = []JobRun{{Job: "production-checks", Leg: new(""), Commit: "c1", Ended: new(true)}}
+				in.Results = append(in.Results, Result{Check: a.ID, CheckDigest: a.Digest(), Kind: ResultRun, Outcome: OutcomeFail,
+					Deploy: "d1", Job: "production-checks", Leg: new("linux"), TestCommit: "c1", At: checkStateRun, Seq: 3})
+			}},
+		{name: `control: run results of an older text of a program check of production at one test_commit, in the leg "" and in a named leg`,
+			add: []Check{checkStateProductionProgram}, change: func(in *Input) {
+				q := checkStateProductionProgram
+				for i, leg := range []string{"", "linux"} {
+					in.Results = append(in.Results, Result{Check: q.ID, CheckDigest: "an-older-text", Kind: ResultRun, Outcome: OutcomePass,
+						Deploy: "d1", Job: q.Test.Job, Leg: new(leg), TestCommit: "c1", At: checkStateRun, Seq: int64(3 + i)})
+				}
+			}},
 		// A run result that names no job, or no commit of its job's run, is a record of no job at one
 		// commit: the rule reads none of them. Each is of an older text, so no rule of its text asks a
 		// job or a commit of it.

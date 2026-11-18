@@ -178,13 +178,14 @@ func ReadScenario(fsys fs.FS) (Scenario, error) {
 	if s.Ties, err = readWith(fsys, "ties.json", ReadCommitTies); err != nil {
 		return s, err
 	}
-	if s.Results, err = readResults(fsys, s.Approved); err != nil {
+	var procedures []*Check
+	if s.Results, procedures, err = readResults(fsys, s.Approved); err != nil {
 		return s, err
 	}
 	if s.JobRuns, err = readJobRuns(fsys); err != nil {
 		return s, err
 	}
-	if fault, ofRun := legFault(s.JobRuns, s.Results); fault != "" {
+	if fault, ofRun := legFault(s.JobRuns, s.Results, procedures); fault != "" {
 		file := "results.json"
 		if ofRun {
 			file = "jobs.json"
@@ -308,29 +309,32 @@ func readWith[T any](fsys fs.FS, name string, read func(io.Reader) (T, error)) (
 }
 
 // readResults reads results.json, each result carrying the Digest of the approved version of its
-// check that check_version names, and refuses a result that Result.fault refuses by that version's
-// text, and two results that sameRecordFault names.
-func readResults(fsys fs.FS, approved Approved) ([]Result, error) {
+// check that check_version names, and the text of that version of each, and refuses a result that
+// Result.fault refuses by that text, and two results that sameRecordFault names.
+func readResults(fsys fs.FS, approved Approved) ([]Result, []*Check, error) {
 	read, err := readEach[scenarioResult](fsys, "results.json", "result", resultForm)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	results := make([]Result, len(read))
+	texts := make([]Check, len(read))
+	procedures := make([]*Check, len(read))
 	for i, r := range read {
 		check, held := checkVersion(approved, r.Check, r.CheckVersion)
 		if !held {
-			return nil, scenarioFault("results.json", "result %d: the approved spec holds no version %d of check %s", i+1, r.CheckVersion, quoted(r.Check))
+			return nil, nil, scenarioFault("results.json", "result %d: the approved spec holds no version %d of check %s", i+1, r.CheckVersion, quoted(r.Check))
 		}
 		results[i] = r.Result
 		results[i].CheckDigest = check.Digest()
-		if fault := results[i].fault(&check); fault != "" {
-			return nil, scenarioFault("results.json", "result %d: %s", i+1, fault)
+		texts[i], procedures[i] = check, &texts[i]
+		if fault := results[i].fault(procedures[i]); fault != "" {
+			return nil, nil, scenarioFault("results.json", "result %d: %s", i+1, fault)
 		}
 	}
 	if fault := sameRecordFault(results); fault != "" {
-		return nil, scenarioFault("results.json", "%s", fault)
+		return nil, nil, scenarioFault("results.json", "%s", fault)
 	}
-	return results, nil
+	return results, procedures, nil
 }
 
 // checkVersion is the text of version v of the check id in the approved spec, and whether the

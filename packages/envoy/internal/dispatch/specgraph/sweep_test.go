@@ -101,7 +101,7 @@ func TestNoInputThatSaysNothingMovesAStateTowardTrue(t *testing.T) {
 }
 
 // sweepBases is each base that the sweeps read, by its name: each scenario of testdata/scenarios,
-// and ten shapes that no scenario holds. silent-leg with the job's matrix dropped after c1, one
+// and fourteen shapes that no scenario holds. silent-leg with the job's matrix dropped after c1, one
 // run of no matrix at m2 that ended with no result: there a run result of the leg "" at c1, where
 // the job had legs, would answer that run, and the check would read true (legFault refuses it).
 // Three of carry where a failure and a later pass count at one subject, so the check reads unknown
@@ -117,8 +117,9 @@ func TestNoInputThatSaysNothingMovesAStateTowardTrue(t *testing.T) {
 // statement, so a failing check that reads as a check of no statement would leave that statement
 // met: envoy-delivers-messages, with its own check false and the check of
 // a-message-survives-a-restart true (its two outcomes swapped); and a-message-survives-a-restart,
-// with a second check that passes beside its failing one. And four of production-and-graph, two
-// with its query of the graph and two with that check written as an agent: a result of either
+// with a second check that passes beside its failing one. And eight of production-and-graph, two
+// for each kind of check that reads no commit: its query of the graph, and that check written as
+// an agent of the graph, as a query of production and as an agent of production. A result of each
 // belongs to no commit, so CI's refusal at the commit that its test_commit names takes out nothing
 // of it (CheckStates, step 2), and R7 decides. Of each two, one holds test_commit c1 on the check's
 // failing run and the other CI's refusal of the check at c1: the refusal sweep adds the refusal to
@@ -209,29 +210,59 @@ func sweepBases(t *testing.T) map[string]fstest.MapFS {
 	bases["wait-cycle with the outcomes of its two first runs swapped"] = swapped
 	bases["wait-cycle with a second, passing check of a-message-survives-a-restart"] = withSecondCheck(t, bases["wait-cycle"])
 	const graph = "the-graph-holds-a-delivery-of-each-message"
-	agent := maps.Clone(bases["production-and-graph"])
-	asAgent := strings.NewReplacer(`procedure="query"`, `procedure="agent"`, "Procedure: The query reads", "Procedure: An agent reads")
-	editTree(t, agent, "approved.json", func(v any) any {
-		for _, n := range v.(map[string]any)["nodes"].([]any) {
-			if n := n.(map[string]any); n["id"] == graph {
-				for _, version := range n["versions"].([]any) {
-					version := version.(map[string]any)
-					version["block"] = asAgent.Replace(version["block"].(string))
+	// written is production-and-graph with its check of the graph written as a check of procedure
+	// and subject, which reads no commit either: its text in the approved spec and in the files at
+	// m2, and for a check of production each run of it that read the transaction tx1 reading the
+	// deploy d1 of the subject instead, as a check of production reads a deploy.
+	written := func(procedure Procedure, subject Subject) fstest.MapFS {
+		var pairs []string
+		if procedure == ProcedureAgent {
+			pairs = append(pairs, `procedure="query"`, `procedure="agent"`, "Procedure: The query reads", "Procedure: An agent reads")
+		}
+		if subject == SubjectProduction {
+			pairs = append(pairs, `subject="graph"`, `subject="production"`)
+		}
+		as := strings.NewReplacer(pairs...)
+		fsys := maps.Clone(bases["production-and-graph"])
+		editTree(t, fsys, "approved.json", func(v any) any {
+			for _, n := range v.(map[string]any)["nodes"].([]any) {
+				if n := n.(map[string]any); n["id"] == graph {
+					for _, version := range n["versions"].([]any) {
+						version := version.(map[string]any)
+						version["block"] = as.Replace(version["block"].(string))
+					}
 				}
 			}
+			return v
+		})
+		fsys["files/m2/spec.md"] = &fstest.MapFile{Data: []byte(as.Replace(string(fsys["files/m2/spec.md"].Data)))}
+		if subject == SubjectProduction {
+			editTree(t, fsys, "results.json", func(v any) any {
+				for _, r := range v.([]any) {
+					if r := r.(map[string]any); r["check"] == graph && r["graph_tx"] != nil {
+						delete(r, "graph_tx")
+						r["deploy"] = "d1"
+					}
+				}
+				return v
+			})
 		}
-		return v
-	})
-	agent["files/m2/spec.md"] = &fstest.MapFile{Data: []byte(asAgent.Replace(string(agent["files/m2/spec.md"].Data)))}
-	isAgent := func(c Check) bool { return c.ID == graph && c.Procedure == ProcedureAgent }
-	s, err := ReadScenario(agent)
-	if err != nil {
-		t.Fatalf("production-and-graph with %s written as an agent: %v", graph, err)
+		is := func(c Check) bool { return c.ID == graph && c.Procedure == procedure && c.Subject == subject }
+		s, err := ReadScenario(fsys)
+		if err != nil {
+			t.Fatalf("production-and-graph with %s written with procedure %q and subject %q: %v", graph, procedure, subject, err)
+		}
+		if current, _ := s.Approved.Current(); !slices.ContainsFunc(s.Files["m2"].Checks, is) || !slices.ContainsFunc(current.Checks, is) {
+			t.Fatalf("production-and-graph with %s written with procedure %q and subject %q: the files at m2 or the approved spec do not read it so", graph, procedure, subject)
+		}
+		return fsys
 	}
-	if current, _ := s.Approved.Current(); !slices.ContainsFunc(s.Files["m2"].Checks, isAgent) || !slices.ContainsFunc(current.Checks, isAgent) {
-		t.Fatalf("production-and-graph with %s written as an agent: the files at m2 or the approved spec do not read it as an agent", graph)
-	}
-	for what, base := range map[string]fstest.MapFS{"its query of the graph": bases["production-and-graph"], "its check of the graph as an agent": agent} {
+	for what, base := range map[string]fstest.MapFS{
+		"its query of the graph":                           bases["production-and-graph"],
+		"its check of the graph as an agent":               written(ProcedureAgent, SubjectGraph),
+		"its check of the graph as a query of production":  written(ProcedureQuery, SubjectProduction),
+		"its check of the graph as an agent of production": written(ProcedureAgent, SubjectProduction),
+	} {
 		withTestCommit := maps.Clone(base)
 		editTree(t, withTestCommit, "results.json", func(v any) any {
 			for _, r := range v.([]any) {
