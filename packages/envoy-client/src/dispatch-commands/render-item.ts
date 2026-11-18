@@ -13,7 +13,7 @@ import type {
   PostHistoryRead,
 } from "@legion/contracts";
 import { actorActText, encodeBlockId, POST_HISTORY_PAGE_LIMIT } from "@legion/contracts";
-import { actorText, deletedMark } from "../actor-text";
+import { actorText, deletedMark, editedMark } from "../actor-text";
 import { askAnswerText, dispatchWordsText, textHead } from "../ask-answer";
 import type { DispatchClient } from "../dispatch-http";
 import { ownerTitle } from "../dispatch-owner";
@@ -279,7 +279,12 @@ export function commentSummary(
 /** The block of its parent a reply answers: its id and the head of its text, that no current
  *  revision of the parent holds it, or, where the parent is a post its author deleted, the
  *  deleted line every read prints for one (`deletedMark`) in place of the text the delete
- *  cleared. A comment or message that answers no block prints nothing. */
+ *  cleared. Where the parent stands and its author edited it (`edited_at`), the line ends with
+ *  the mark every line prints for an edited post (`editedMark`): the head is of the parent's
+ *  words as they stand, and a read of the reply does not always print the parent's own
+ *  `Edited:` line beside it (a comment's or message's read answers the post named and its
+ *  replies, never the post it quotes). A comment or message that answers no block prints
+ *  nothing. */
 function replyBlockLines(record: Pick<Comment, "reply_block">): string[] {
   const block = record.reply_block;
   if (block === undefined || block === null) return [];
@@ -288,10 +293,11 @@ function replyBlockLines(record: Pick<Comment, "reply_block">): string[] {
       `Re: block ${block.block_id} (parent deleted): ${deletedMark(block.deleted_at, block.deleted_by)}`,
     ];
   }
+  const edited = block.edited_at == null ? "" : ` · ${editedMark(block.edited_at)}`;
   return [
     block.removed
-      ? `Re: block ${block.block_id} (removed)`
-      : `Re: block ${block.block_id}: ${textHead(block.text)}`,
+      ? `Re: block ${block.block_id} (removed)${edited}`
+      : `Re: block ${block.block_id}: ${textHead(block.text)}${edited}`,
   ];
 }
 

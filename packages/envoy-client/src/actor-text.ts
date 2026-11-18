@@ -50,7 +50,8 @@ export function deletedMark(at: string, by: Actor | WrittenActor | null | undefi
  * that prints a post's words without this gives a reader stale words with nothing to tell them
  * by. A line joins it to its other fields with ` · `, after the words where it prints any.
  *
- * One wording for every surface: an event of a post (`dispatch-commands/render-issue.ts`), a
+ * One wording for every surface: a reply's quote of the block of a parent its author edited
+ * (`dispatch-commands/render-item.ts`), an event of a post (`dispatch-commands/render-issue.ts`), a
  * graph row naming one and a read of one of its blocks (`dispatch-commands/render-graph.ts`), an
  * Inbox thread whose root is one (`dispatch-commands/session.ts`), a card's re-read of a body its
  * event cut (`delivery.ts`), the answers list a session is handed (`session-answers.ts`) and a

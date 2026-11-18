@@ -13337,6 +13337,96 @@ describe("executeDispatchTool", () => {
     ]);
   });
 
+  // A read of a reply answers the reply and its own replies, never the parent it quotes, so the
+  // parent's own `Edited:` line is not in it: the quote of a parent its author edited carries the
+  // mark every line prints for an edited post, whether it prints the block's words or that an
+  // edit removed the block. A quote of a parent nobody edited reads as it did. A comment's read
+  // and an issue message's read both print the quote.
+  test("a reply's quote of a parent its author edited carries the edited mark", async () => {
+    const parent = "11111111-1111-4111-8111-111111111111";
+    const replyId = "22222222-2222-4222-8222-222222222222";
+    const editedAt = "2026-09-10T00:00:00Z";
+    const quote = (removed: boolean, edited: boolean) => ({
+      node: `comment/${parent}#b2`,
+      ref: `dispatch://DSP-1/comment/${parent}#b-b2`,
+      block_id: "b2",
+      text: "Beta, as edited.",
+      removed,
+      ...(edited ? { edited_at: editedAt } : {}),
+    });
+    const comment = (id: string, body: string, replyBlock: unknown) => ({
+      id,
+      issue_key: "DSP-1",
+      author: { kind: "session", id: "reviewer-1" },
+      body,
+      anchor: null,
+      reply_to: parent,
+      resolved: false,
+      suggestion: null,
+      created_at: "2026-09-09T00:00:00Z",
+      reply_block: replyBlock,
+    });
+    const message = (id: string, body: string, replyBlock: unknown) => ({
+      id,
+      issue_key: "DSP-1",
+      author: { kind: "user", id: "sami" },
+      body,
+      in_reply_to: null,
+      created_at: "2026-09-09T00:00:00Z",
+      reply_block: replyBlock,
+    });
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      if (target.pathname === `/api/v1/comments/${replyId}`) {
+        return response({
+          comment: comment(replyId, "Yes", quote(false, true)),
+          replies: [
+            comment("comment-3", "Still yes", quote(true, true)),
+            comment("comment-4", "Agreed", quote(false, false)),
+          ],
+        });
+      }
+      if (target.pathname === `/api/v1/issues/DSP-1/messages/${replyId}`) {
+        return response({ message: message(replyId, "Noted.", quote(false, true)), replies: [] });
+      }
+      if (target.pathname === "/api/v1/references") return response(emptyGraph("comment"));
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+    const read = (ref: string) =>
+      executeDispatchTool({
+        tool: "dispatch_read",
+        args: { ref },
+        cwd: "/workspace",
+        host: "omp",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+
+    const commentRead = await read(`dispatch://DSP-1/comment/${replyId}`);
+    expect(commentRead.text.split("\n").slice(0, 11)).toEqual([
+      "Comment:",
+      `${replyId} · session reviewer-1`,
+      `Re: block b2: Beta, as edited. · edited ${editedAt}`,
+      "Body: Yes",
+      "Reply chain:",
+      "comment-3 · session reviewer-1",
+      `Re: block b2 (removed) · edited ${editedAt}`,
+      "Body: Still yes",
+      "comment-4 · session reviewer-1",
+      "Re: block b2: Beta, as edited.",
+      "Body: Agreed",
+    ]);
+    const messageRead = await read(`dispatch://DSP-1/message/${replyId}`);
+    expect(messageRead.text.split("\n").slice(0, 4)).toEqual([
+      "Message:",
+      `${replyId} · user sami`,
+      `Re: block b2: Beta, as edited. · edited ${editedAt}`,
+      "Body: Noted.",
+    ]);
+  });
+
   test("a comment read names the comment each nested reply answers", async () => {
     const root = "11111111-1111-4111-8111-111111111111";
     const middle = "22222222-2222-4222-8222-222222222222";
