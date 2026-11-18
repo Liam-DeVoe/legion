@@ -398,20 +398,28 @@ type walkedChain struct {
 // another seed (R8, dispatch://INFRA-1950/spec#b-r-lens-trigger). The roots begin their chains in
 // the order of the seeds. A chain of the seeds that holds no root - each of its seeds triggered by
 // another, so its triggers close in a cycle - then begins at its first seed in that order that no
-// walk visited, so a cycle is read all the same. The walk lists from each beginning, breadth first,
-// each lens it reaches that no walk has visited, so a lens is in one chain at most and a cycle is
-// read once. It steps only along the triggered_by tuples a lens's row answers, each of which binds
-// the reader's predicate: it passes through no lens the reader may not see, so a lens reached only
-// through a hidden one is in no chain of that reader's, and a lens on the node that only a hidden
-// lens joins to another is in none either, the lenses list answering it all the same.
+// walk visited, so a cycle within the bound is read all the same (below). The walk lists from each
+// beginning, breadth first, each lens it reaches that no walk has visited, so a lens is in one
+// chain at most and a cycle is read once. It steps only along the triggered_by tuples a lens's row
+// answers, each of which binds the reader's predicate: it passes through no lens the reader may not
+// see, so a lens reached only through a hidden one is in no chain of that reader's, and a lens on
+// the node that only a hidden lens joins to another is in none either, the lenses list answering it
+// all the same.
 //
 // A chain stops at lensChainDepth lenses and names the next lens it reached. A walk that does not
 // stop visits every lens joined to its beginning, so a later walk that reaches a lens an earlier
 // one visited stands past that earlier walk's cut: it answers no chain, and the lenses it visited
-// are visited, so none of them begins one. So a lens past the cut begins no chain of its own, and
-// the read of a chain of 60 lenses on the node answers 50 of them in all and names the 51st. The
-// chains come in the order the walks began. A chain is answered only where it holds two lenses or
-// more: a lens no tuple the reader may see joins to another is in no chain.
+// are visited, so none of them begins one. A later walk, from a seed that is no root, stands past
+// a cut as well where it stops at the bound before it meets a visited lens - as the walk from the
+// first of 120 lenses on the node, each triggered by the one invoked after it, does, the last
+// being their one root: it answers no chain either, and the lenses it reached are visited. So a
+// lens past the cut begins no chain of its own, and the read of a chain of 60 lenses on the node,
+// or of 120, answers 50 of them in all and names where the walk stopped. A rootless cycle of more
+// than lensChainDepth lenses so answers no chain: no lens of it begins one (R8), and its walk
+// cannot tell it from a chain past a cut without reading past the bound. A rootless cycle within
+// the bound is answered once, each lens once. The chains come in the order the walks began. A
+// chain is answered only where it holds two lenses or more: a lens no tuple the reader may see
+// joins to another is in no chain.
 func (w *lensWalk) chains(seeds []string) ([]walkedChain, error) {
 	own := make(map[string]bool, len(seeds))
 	for _, seed := range seeds {
@@ -426,8 +434,8 @@ func (w *lensWalk) chains(seeds []string) ([]walkedChain, error) {
 	visited := map[string]bool{}
 	var chains []walkedChain
 	// The roots, and then each seed no walk has visited: a seed of a chain that holds no root, or
-	// one past a cut, whose walk reaches a lens an earlier walk visited.
-	for _, seed := range append(roots, seeds...) {
+	// one past a cut, whose walk reaches a lens an earlier walk visited or stops at the bound.
+	for index, seed := range append(roots, seeds...) {
 		if visited[seed] || w.rows[seed] == nil {
 			continue
 		}
@@ -435,7 +443,7 @@ func (w *lensWalk) chains(seeds []string) ([]walkedChain, error) {
 		if err != nil {
 			return nil, err
 		}
-		if past || len(chain.ids) < 2 {
+		if past || (index >= len(roots) && chain.stoppedAt != nil) || len(chain.ids) < 2 {
 			continue
 		}
 		slices.SortStableFunc(chain.ids, func(a, b string) int { return invokedBefore(w.rows[a], w.rows[b]) })
