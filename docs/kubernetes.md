@@ -1986,7 +1986,7 @@ This release adds the outbox kind `merge_holds_changed`, the notice kind `merge-
 Its migration `20261117113130_merge_holds_changed` adds the outbox kind to the outbox's kind check (`outbox_kind_check`), and it writes the whole list, so it stands above `20261116165926_role_holders_publish`, the release before it whose list does not name the kind.
 Its migrations `20261115060739_claim_suspended_by_controller` and `20261115083448_claim_suspended_by_architect` add the two sources to the claims' check (`claims_suspended_by_check`).
 The migrations change no column.
-This release also tells an issue's architect of a run of provider errors, in a `notice` row of the kind `provider-errors`, which only the controller was told before.
+This release also tells an issue's architect of a run of provider errors, in a `notice` row of the kind `provider-errors`, and the architect that owns a claim an architect's suspension holds of an update round held past its bound, in one of the kind `update-stalled`, both of which only the controller was told before.
 Its migration `20261115121838_drop_controller_wakes_for_nothing` deletes the queued controller notices of `awaiting-person` and `unslotted`, the two kinds this release no longer writes, and the rollback needs no statement for it: the earlier release writes and runs both kinds again.
 
 **The rows of the new kinds must go before the earlier image is pinned.**
@@ -2004,17 +2004,20 @@ delete from outbox where kind = 'notice' and payload->>'kind' = 'merge-holds-cha
 Each deleted row costs one thing: one merger or one architect is not told of one change of the merge holds document.
 After the rollback, no role reads that document, because the earlier release's role prompts and skills do not name it, so a line in it holds no sign-off and no merge.
 
-**The architect's `provider-errors` notices must go as well.**
-An earlier release refuses a `notice` row of the kind `provider-errors` at each attempt (`unknown notice kind`, `validNoticeKind` in `record/outbox.go`), so the row fails on its backoff for ever, and while that backoff holds it ahead of now it fails every read of the project's state that passes it (`WaitingNotices`, `pacedCatchUps`).
+**The architect's `provider-errors` and `update-stalled` notices must go as well.**
+An earlier release refuses a `notice` row of either kind at each attempt (`unknown notice kind`, `validNoticeKind` in `record/outbox.go`), so the row fails on its backoff for ever, and while that backoff holds it ahead of now it fails every read of the project's state that passes it (`WaitingNotices`, `pacedCatchUps`).
 Run this with the daemon stopped, before the earlier image is pinned:
 
 ```sql
--- The notice to an architect of a run of provider errors. The controller's row of the same run stays.
-delete from outbox where kind = 'notice' and payload->>'kind' = 'provider-errors';
+-- The notices to an architect of a run of provider errors and of a held update round. The
+-- controller's rows stay.
+delete from outbox where kind = 'notice' and payload->>'kind' in ('provider-errors', 'update-stalled');
 ```
 
-Each deleted row costs one architect one notice of one run of provider errors.
-The controller's `controller_notice` row of that run stays, and the earlier release sends it.
+Each deleted row costs one architect one notice of one run of provider errors or of one held round.
+The controller's `controller_notice` row of a run of provider errors stays, and the earlier release sends it.
+A held round whose architect's row is deleted stays marked told on its claims, so the earlier release tells nobody of it.
+So before the delete, read each such row (`select issue, payload->>'reason' from outbox where kind = 'notice' and payload->>'kind' = 'update-stalled';`): each names a claim an architect suspended, which the step below hands to the operator, and which only the operator's `legion claims resume` then lifts, so the pod waits for that resume.
 
 **The earlier release does not hold a claim that the controller or an architect suspended, unless you move it to the operator.**
 An earlier release keeps a claim suspended against its own rules only when the operator suspended it (`suspended_by = 'operator'`, supervise's `RuleHolds` and the repair in `admit.go`), and it repairs every other suspended claim as it repairs one the daemon itself suspended.

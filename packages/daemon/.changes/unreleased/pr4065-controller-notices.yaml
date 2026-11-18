@@ -8,8 +8,12 @@ body: |-
   `worker-stalled` of a tree's architect whose claim did not fail. An escalated `held`, the
   `worker-died` of a tree's architect whose root is not `done`, and `session-store-fault` still
   reach the controller. A `provider-errors` notice now goes to the issue's architect as well, as a
-  notice that wakes an architect whose pod was released; a run of an architect's own claim still
-  goes to the controller alone. A store migration deletes the queued controller notices of the two
+  notice that wakes an architect whose pod was released; a run of a child's own architect's claim
+  goes to the architect above that child, and a run of the tree root's architect's claim to the
+  controller alone. An `update-stalled` notice of a round an architect's suspension holds goes to
+  the architect that owns the held claim, and to the controller only where that architect's
+  claim has failed or there is none; every other `update-stalled` still reaches the controller.
+  A store migration deletes the queued controller notices of the two
   kinds that no release writes now. Before you roll back to an
   earlier release, stop the daemon and run the steps of `docs/kubernetes.md`, "Rolling back the
   release whose controller and architects hold claims and whose daemon tells a held role of a
