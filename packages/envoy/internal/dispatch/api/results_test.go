@@ -4101,3 +4101,58 @@ func TestALinkedResultsAnswerNamesItsRepository(t *testing.T) {
 		}
 	})
 }
+
+// A pull request row an earlier release stored under a name no repository GitHub could hold —
+// `acme/..`, which a rename stored before the routes held names to GitHub's rule made the
+// canonical name of its rows — is read for a check CI proves without any GitHub path built from
+// that name: its halves would go into the paths as they are, and `..` asks about a path above
+// the repository's. Every other reader of a stored name splits it with refs.SplitGitHubRepo.
+func TestACIReadOfAStoredHeadRowSendsGitHubNoNameItDoesNotAllow(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate fixture key: %v", err)
+	}
+	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+	var mu sync.Mutex
+	var above []string
+	upstream := githubtest.Server(t, githubtest.Spec{
+		Record: func(r *http.Request) {
+			if strings.Contains(r.URL.Path, "/../") || strings.HasSuffix(r.URL.Path, "/..") {
+				mu.Lock()
+				above = append(above, r.Method+" "+r.URL.Path)
+				mu.Unlock()
+			}
+		},
+		Handle: func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/access_tokens"):
+				w.WriteHeader(http.StatusCreated)
+				fmt.Fprintf(w, `{"token":"ghs_fake_77","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+			case strings.HasSuffix(r.URL.Path, "/installation"):
+				fmt.Fprint(w, `{"id":77,"app_slug":"dispatch-test","permissions":{"contents":"read","pull_requests":"read"}}`)
+			case strings.HasSuffix(r.URL.Path, "/check-runs"):
+				fmt.Fprint(w, `{"total_count":0,"check_runs":[]}`)
+			case r.URL.Path == "/repos/acme/widgets":
+				fmt.Fprint(w, `{"full_name":"acme/widgets","default_branch":"main"}`)
+			default:
+				w.WriteHeader(http.StatusNotFound)
+				fmt.Fprint(w, `{"message":"Not Found"}`)
+			}
+		},
+	})
+	handler, database, _, _ := newRegisteredTestServer(t, testServerOptions{
+		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
+		githubAPIBase: upstream,
+	})
+	issue := issueInRepository(t, handler, "RESCB", "acme/widgets", "A stored head row GitHub does not allow")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciCheckBlock("c1", ciCheckKept))
+	writeHead(t, database, "acme/..", 7, headCommit, "open", issue.Key)
+
+	readResults(t, handler, issue.Key)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(above) != 0 {
+		t.Fatalf("the results read sent GitHub %d requests whose path climbs above a repository: %v", len(above), above)
+	}
+}
