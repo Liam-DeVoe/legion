@@ -2933,6 +2933,34 @@ one_failure_result "a row that marks a part of u-1's claim, marked verified, unv
     '^1 of 17 assertions failed: claim-marks-agree$' "^FAIL claim-marks-agree: f-check-part-unverified gives a part of u-1's claim the mark unverified, and u-1 carries verified, " \
     "$(fixture_run "$dir" --replay)"
 
+# 111. A claim with a part marked false is false (test round 34). claim-marks-agree holds a part
+# of a claim marked verified to verified, since a part of a verified claim is verified too.
+# The same rule read the other way is that a claim one of whose parts is false is false, so a
+# row that gives a part of a claim the mark false disagrees with that claim's row unless the
+# row is marked false. At 54cb2498 the gate passed a row that gives a part of u-2 the mark
+# false with a refines while u-2 is marked unverified, and while u-2 is marked
+# not-externally-checkable, so two rows gave one claim two verdicts and nothing failed. The
+# case plants each of the two, which must fail claim-marks-agree alone, naming both rows, and
+# the same part under u-2 marked false, which passes.
+for theirs in unverified not-externally-checkable; do
+    dir="$(fresh "false-part-under-$theirs")"
+    claims_copy="$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+    sed -i "/\"id\":\"u-2\"/s/\"mark\":\"verified\"/\"mark\":\"$theirs\"/" "$claims_copy"
+    grep -F '"id":"u-2"' "$claims_copy" | grep -qF "\"mark\":\"$theirs\"" || {
+        printf 'FAIL u-2 could not be marked %s in the fixture copy of claims.jsonl\n' "$theirs"
+        exit 1
+    }
+    checks_row f-check-part-false '[{"row":"u-2","mark":"false","refines":"This row holds the count of thirteen, which the file does not print."}]' >>"$claims_copy"
+    one_failure_result "a row that marks a part of u-2's claim, marked $theirs, false with a refines fails claim-marks-agree alone, naming both rows" claim-marks-agree \
+        '^1 of 17 assertions failed: claim-marks-agree$' "^FAIL claim-marks-agree: .*f-check-part-false.*u-2" \
+        "$(fixture_run "$dir" --replay)"
+done
+dir="$(fresh false-part-under-false)"
+claims_copy="$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+sed -i '/"id":"u-2"/s/"mark":"verified"/"mark":"false"/' "$claims_copy"
+checks_row f-check-part-false '[{"row":"u-2","mark":"false","refines":"This row holds the count of thirteen, which the file does not print."}]' >>"$claims_copy"
+ending_result "a row that marks a part of u-2's claim, marked false, false with a refines passes" 0 '^all 17 assertions passed$' "$(fixture_run "$dir" --replay)"
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, and this
