@@ -18,7 +18,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -135,7 +134,7 @@ func TestTheDaemonCallsDispatchWithItsOwnBrokerToken(t *testing.T) {
 	if claims["htm"] != http.MethodPost || claims["htu"] != target || claims["ath"] != base64.RawURLEncoding.EncodeToString(hash[:]) {
 		t.Fatalf("the proof claims htm=%v htu=%v ath=%v, want POST, %s and the hash of the token beside it", claims["htm"], claims["htu"], claims["ath"], target)
 	}
-	if read := introspect(t, rig, token); !read.Active || read.Session != "legion-daemon:EXAMPLE" {
+	if read := rig.Introspect(t, token); !read.Active || read.Session != "legion-daemon:EXAMPLE" {
 		t.Fatalf("the broker reads the daemon's token back as %+v, want a live token of the session legion-daemon:EXAMPLE", read)
 	}
 
@@ -175,31 +174,4 @@ func proofClaims(t *testing.T, compact string) map[string]any {
 		t.Fatalf("the proof's claims: %v", err)
 	}
 	return claims
-}
-
-// introspection is what this file reads of the broker's introspection answer.
-type introspection struct {
-	Active  bool   `json:"active"`
-	Session string `json:"session"`
-}
-
-// introspect is the broker's reading of token, asked as the listener asks.
-func introspect(t *testing.T, rig *brokertest.Rig, token string) introspection {
-	t.Helper()
-	request, err := http.NewRequest(http.MethodPost, rig.URL+"/v1/oauth/introspect", strings.NewReader(url.Values{"token": {token}}.Encode()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	request.Header.Set("Authorization", "Bearer "+rig.ListenerToken)
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		t.Fatalf("introspect the daemon's token: %v", err)
-	}
-	defer response.Body.Close()
-	var read introspection
-	if err := json.NewDecoder(response.Body).Decode(&read); err != nil || response.StatusCode != http.StatusOK {
-		t.Fatalf("introspect the daemon's token: %d, %v", response.StatusCode, err)
-	}
-	return read
 }

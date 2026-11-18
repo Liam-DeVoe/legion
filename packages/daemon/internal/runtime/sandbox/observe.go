@@ -71,9 +71,10 @@ func (r *Runtime) Probe(ctx context.Context, loc runtime.Locator) (runtime.Obser
 
 // evaluate is one observation of loc's process from the stores: Uncertain while they cannot answer
 // (view), otherwise the verdict the mapping reads from them, said Displaced when the daemon's own
-// replacement of the recorded pod is what ended the process (displaced). A verdict that saw the
-// recorded generation running keeps for the claim whether that generation's start carried a
-// Dispatch token, as its address record says (observeDispatchToken).
+// replacement of the recorded pod is what ended the process (displaced). Under
+// dispatch_token_broker, a verdict that saw the recorded generation running keeps for the claim
+// whether that generation's start carried a Dispatch token, as its address record says
+// (observeDispatchToken).
 //
 // The pod store and the Sandbox store are fed by two informers nothing orders, so a pod's end can
 // reach the runtime before the Suspended patch that named it does. A final verdict (ends) whose

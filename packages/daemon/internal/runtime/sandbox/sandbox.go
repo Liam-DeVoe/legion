@@ -180,7 +180,8 @@ type Runtime struct {
 	// from that launch's own decision (launchedDispatchToken), and at each observation of a live
 	// generation from the address record its start wrote (observeDispatchToken), so a restarted
 	// daemon counts the generations an earlier one started; dropped with the watch's record when
-	// the process is let go or the claim's next launch begins (forget, forgetIf).
+	// the process is let go or the claim's next launch begins (forget, forgetIf). Kept under
+	// dispatch_token_broker alone (keepDispatchToken), the one setting it is read under.
 	dispatchTokenClaims map[claim.Token]string
 	// transitionLaunches counts the launches since this runtime was built whose start carried the
 	// transition token, and lastTransitionLaunch is when the latest was sent, zero before the first
@@ -387,7 +388,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		}
 	}
 	if err := CheckPod(opts.Pod, opts.ProviderKeys, opts.Tools, opts.LaunchSecrets, opts.ProvidersSecrets, opts.SessionStore,
-		opts.AgentSecrets != nil && opts.AgentSecrets.ExchangeAudience != "", opts.Dispatch.Broker); err != nil {
+		exchangeOf(opts.AgentSecrets, opts.Dispatch.Broker)); err != nil {
 		return refuse("%v", err)
 	}
 	for _, name := range opts.ProvidersSecrets {

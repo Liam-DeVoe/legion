@@ -80,10 +80,13 @@ func checkOperatorConfig(cfg config.Config, lookup func(string) (string, bool)) 
 	if cfg.Runtime.Kubernetes == nil {
 		return nil
 	}
-	broker := cfg.Runtime.Kubernetes.AgentSecrets
+	audience := ""
+	if broker := cfg.Runtime.Kubernetes.AgentSecrets; broker != nil {
+		audience = broker.ExchangeAudience
+	}
 	return sandbox.CheckPod(sandbox.Pod(cfg.Runtime.Kubernetes.Pod), providerSecretKeys(cfg.ProviderKeys),
-		workerImageTools, names, providersSecrets(cfg, lookup), cfg.Runtime.Kubernetes.SessionStore, broker != nil && broker.ExchangeAudience != "",
-		cfg.DispatchTokenBroker)
+		workerImageTools, names, providersSecrets(cfg, lookup), cfg.Runtime.Kubernetes.SessionStore,
+		sandbox.ExchangeOf(audience, cfg.DispatchTokenBroker))
 }
 
 // environLookup is os.LookupEnv over environ, the daemon's environment or a test's.

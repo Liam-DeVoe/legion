@@ -4,11 +4,11 @@
 // package whose own import path does not start with github.com/sjawhar/envoy import a package
 // under github.com/sjawhar/envoy/internal/..., which blocks a foreign module from importing
 // internal/broker/brokertest directly, however workspace-linked the two modules are. This facade
-// changes no behavior — Rig and Option are type aliases for the internal package's own types, and
-// NewRig and WithAccessLifetime simply forward to it — so every exported field and method
-// internal/broker/brokertest.Rig carries (Req, UI, MintPodToken, Store, Operator, ...) stays
-// reachable exactly as documented there; that file remains the one place the rig's own behavior
-// is described and changed.
+// changes no behavior — Rig, Option and Introspection are type aliases for the internal packages'
+// own types, and NewRig and WithAccessLifetime simply forward to it — so every exported field and
+// method internal/broker/brokertest.Rig carries (Req, UI, Introspect, MintPodToken, Store,
+// Operator, ...) stays reachable exactly as documented there; that file remains the one place the
+// rig's own behavior is described and changed.
 package brokertest
 
 import (
@@ -16,6 +16,7 @@ import (
 	"time"
 
 	internal "github.com/sjawhar/envoy/internal/broker/brokertest"
+	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 )
 
 // Rig is internal/broker/brokertest.Rig under a name a foreign module may import.
@@ -23,6 +24,10 @@ type Rig = internal.Rig
 
 // Option is internal/broker/brokertest.Option: one change to how NewRig wires its broker.
 type Option = internal.Option
+
+// Introspection is internal/broker/oauthwire.Introspection: what the broker's introspection reads
+// one of its access tokens back as, which Rig.Introspect answers.
+type Introspection = oauthwire.Introspection
 
 // DaemonAccount is internal/broker/brokertest.DaemonAccount: the ServiceAccount every Rig lets log
 // in as legion-daemon with its token.

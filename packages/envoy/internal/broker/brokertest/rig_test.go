@@ -96,8 +96,8 @@ type exchangeAnswer struct {
 
 // tradeAs is one trade at the Rig's token endpoint as a pod of account makes it: its subject
 // token, naming no session, proved with a fresh key through brokerclient's DPoP signer. It
-// answers the trade's answer and what the broker's introspection reads the minted token back as,
-// asked as the listener asks, and fails t on any refusal.
+// answers the trade's answer and what the broker's introspection reads the minted token back as
+// (Rig.Introspect), and fails t on any refusal.
 func tradeAs(t *testing.T, rig *Rig, account string) (exchangeAnswer, oauthwire.Introspection) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -111,31 +111,22 @@ func tradeAs(t *testing.T, rig *Rig, account string) (exchangeAnswer, oauthwire.
 		"subject_token_type": {oauthwire.SubjectTokenTypeKubernetes},
 	}
 	proved := &http.Client{Transport: brokerclient.NewDPoPTransport(key, http.DefaultTransport)}
-	status, body := postForm(t, proved, rig.URL+brokerclient.TokenPath, form, nil)
+	status, body := postForm(t, proved, rig.URL+brokerclient.TokenPath, form)
 	var answer exchangeAnswer
 	if err := json.Unmarshal(body, &answer); err != nil || status != http.StatusOK || answer.AccessToken == "" {
 		t.Fatalf("%s's trade = %d %s, want 200 and an access token", account, status, body)
 	}
-	status, body = postForm(t, http.DefaultClient, rig.URL+"/v1/oauth/introspect", url.Values{"token": {answer.AccessToken}},
-		map[string]string{"Authorization": "Bearer " + rig.ListenerToken})
-	var read oauthwire.Introspection
-	if err := json.Unmarshal(body, &read); err != nil || status != http.StatusOK {
-		t.Fatalf("introspecting %s's token = %d %s, want 200", account, status, body)
-	}
-	return answer, read
+	return answer, rig.Introspect(t, answer.AccessToken)
 }
 
-// postForm posts form to target through client with headers, answering the status and the body.
-func postForm(t *testing.T, client *http.Client, target string, form url.Values, headers map[string]string) (int, []byte) {
+// postForm posts form to target through client, answering the status and the body.
+func postForm(t *testing.T, client *http.Client, target string, form url.Values) (int, []byte) {
 	t.Helper()
 	request, err := http.NewRequest(http.MethodPost, target, strings.NewReader(form.Encode()))
 	if err != nil {
 		t.Fatal(err)
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	for name, value := range headers {
-		request.Header.Set(name, value)
-	}
 	response, err := client.Do(request)
 	if err != nil {
 		t.Fatalf("POST %s: %v", target, err)

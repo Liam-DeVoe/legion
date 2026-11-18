@@ -123,14 +123,10 @@ func daemonWhoami(project string) map[string]any {
 // variables R2 names, the projected token in a file of its own.
 func podIdentity(t *testing.T, broker string) map[string]string {
 	t.Helper()
-	tokenFile := filepath.Join(t.TempDir(), "token")
-	if err := os.WriteFile(tokenFile, []byte(daemonSubjectToken+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	return map[string]string{
 		"AGENT_SECRETS_URL":                broker,
 		"AGENT_SECRETS_MACHINE_IDENTITY":   "kubernetes",
-		"AGENT_SECRETS_MACHINE_TOKEN_FILE": tokenFile,
+		"AGENT_SECRETS_MACHINE_TOKEN_FILE": writeSecret(t, "token", daemonSubjectToken),
 	}
 }
 
@@ -278,9 +274,11 @@ func TestTheBootRefusesAnEntryDispatchWouldRefuse(t *testing.T) {
 
 // TestTheDaemonNeverSendsTheTransitionToken: under dispatch_token_broker a transition file holds the
 // shared Dispatch token a launch into a pod built before the setting gets, and the daemon's own
-// client never presents it: every request it sends Dispatch, the boot's whoami and the workflow's
-// reads and writes, carries the broker's token under DPoP with a proof, and none carries the
-// transition token's text, anywhere in it.
+// client never presents it: boot plans no bearer for its own calls (plan.dispatchToken), which a
+// boot reading the transition file as the daemon's bearer would set and which no request shows,
+// since dispatchCredential reads no bearer under the setting; and every request the client sends
+// Dispatch, the boot's whoami and the workflow's reads and writes, carries the broker's token under
+// DPoP with a proof, and none carries the transition token's text, anywhere in it.
 func TestTheDaemonNeverSendsTheTransitionToken(t *testing.T) {
 	const transitionToken = "shared-transition-token-3a9f"
 	broker := newCredentialBroker(t, mintsTheDaemonsToken)
@@ -301,6 +299,10 @@ func TestTheDaemonNeverSendsTheTransitionToken(t *testing.T) {
 	p, err := prepare(cfg, quietLogger(), overrides{environ: environ})
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
+	}
+	if p.dispatchToken != "" {
+		t.Fatalf("boot planned a Dispatch bearer for the daemon's own calls under dispatch_token_broker (the transition token: %t), want none",
+			p.dispatchToken == transitionToken)
 	}
 	transport, _, err := dispatchCredential(context.Background(), cfg, p.dispatchToken, getenvOf(env), quietLogger())
 	if err != nil {

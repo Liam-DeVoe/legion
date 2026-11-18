@@ -740,9 +740,9 @@ const dispatchCredentialLine = "legion daemon's Dispatch credential"
 // trade is a failed Dispatch call that sent nothing (dispatch.TransientError), which the outbox
 // waits out as it waits out a Dispatch outage.
 //
-// The transition token dispatch_token_transition_file holds (readBoot's transitionToken) is never
-// this credential: it is the sandbox runtime's alone, for a launch into a pod built before the
-// setting.
+// The transition token dispatch_token_transition_file holds (sandbox.DispatchCredential.Transition)
+// is never this credential: it is the sandbox runtime's alone, for a launch into a pod built before
+// the setting.
 func dispatchCredential(ctx context.Context, cfg config.Config, dispatchToken string, getenv func(string) string, log *slog.Logger) (http.RoundTripper, *brokerclient.Client, error) {
 	switch {
 	case cfg.DispatchURL == "":

@@ -50,8 +50,8 @@ func wantNoDispatchToken(t *testing.T, what string, start shimwire.LauncherStart
 	if pointer, told := env["DISPATCH_TOKEN_FILE"]; told {
 		t.Errorf("%s tells its role DISPATCH_TOKEN_FILE=%s, want none under the broker", what, pointer)
 	}
-	if got := env[dispatchBrokerVariable]; got != "1" {
-		t.Errorf("%s tells its role %s=%q, want 1", what, dispatchBrokerVariable, got)
+	if got := env[shimwire.DispatchTokenBrokerVariable]; got != "1" {
+		t.Errorf("%s tells its role %s=%q, want 1", what, shimwire.DispatchTokenBrokerVariable, got)
 	}
 	for _, word := range slices.Concat(start.Argv, start.Env, slices.Collect(maps.Values(start.Files))) {
 		if strings.Contains(word, testTransitionToken) {
@@ -85,9 +85,9 @@ func TestNoDispatchBearerIsHandedOutWithTheBrokerKey(t *testing.T) {
 	start := launcherCommand(launchOf(t, r, spec), r)
 	wantNoDispatchToken(t, "a fresh issue pod's launch", start)
 	env := envOf(workerOf(t, r, spec))
-	if pointer, told := env["DISPATCH_TOKEN_FILE"]; told || env[dispatchBrokerVariable] != "1" {
+	if pointer, told := env["DISPATCH_TOKEN_FILE"]; told || env[shimwire.DispatchTokenBrokerVariable] != "1" {
 		t.Fatalf("the role's process is told DISPATCH_TOKEN_FILE=%q (set: %t) and %s=%q, want no pointer and 1",
-			pointer, told, dispatchBrokerVariable, env[dispatchBrokerVariable])
+			pointer, told, shimwire.DispatchTokenBrokerVariable, env[shimwire.DispatchTokenBrokerVariable])
 	}
 	checkGolden(t, "pod-with-dispatch-broker", brokerLaunch{Env: env, Files: slices.Sorted(maps.Keys(start.Files))})
 }
@@ -111,9 +111,9 @@ func TestAKeptPodWithoutTheExchangeIdentityGetsTheTransitionToken(t *testing.T) 
 	start := lastStart(t, g, workerToken)
 	env := startEnv(start)
 	token, carried := start.Files[dispatchTokenKey]
-	if !carried && env[dispatchBrokerVariable] == "" {
+	if !carried && env[shimwire.DispatchTokenBrokerVariable] == "" {
 		t.Fatalf("the launch of %s at generation %d into pod %s, which carries no exchange identity, carries no Dispatch credential at all: no %s among its files %v and no %s",
-			workerToken, start.Generation, loc.Sandbox.Name, dispatchTokenKey, slices.Sorted(maps.Keys(start.Files)), dispatchBrokerVariable)
+			workerToken, start.Generation, loc.Sandbox.Name, dispatchTokenKey, slices.Sorted(maps.Keys(start.Files)), shimwire.DispatchTokenBrokerVariable)
 	}
 	if token != testTransitionToken {
 		t.Errorf("the launch into the kept pod carries %s %q, want the transition token", dispatchTokenKey, token)
@@ -121,8 +121,8 @@ func TestAKeptPodWithoutTheExchangeIdentityGetsTheTransitionToken(t *testing.T) 
 	if want := generationDir(start.Generation) + "/" + dispatchTokenKey; env["DISPATCH_TOKEN_FILE"] != want {
 		t.Errorf("the launch tells its role DISPATCH_TOKEN_FILE=%q, want the generation's private %s", env["DISPATCH_TOKEN_FILE"], want)
 	}
-	if value, told := env[dispatchBrokerVariable]; told {
-		t.Errorf("the launch tells its role %s=%q, whose pod carries no identity to trade", dispatchBrokerVariable, value)
+	if value, told := env[shimwire.DispatchTokenBrokerVariable]; told {
+		t.Errorf("the launch tells its role %s=%q, whose pod carries no identity to trade", shimwire.DispatchTokenBrokerVariable, value)
 	}
 }
 

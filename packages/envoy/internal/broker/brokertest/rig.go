@@ -14,9 +14,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/machine"
 	"github.com/sjawhar/envoy/internal/broker/oauth"
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
+	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
 	"github.com/sjawhar/envoy/internal/broker/proof"
@@ -449,6 +452,33 @@ func (r *Rig) Req(t *testing.T, method, path string, headers map[string]string, 
 func (r *Rig) UI(t *testing.T, method, path string, body any) (int, []byte) {
 	t.Helper()
 	return r.Req(t, method, path, map[string]string{"Authorization": "Bearer " + r.UIToken}, body)
+}
+
+// Introspect is what the broker's introspection reads token back as, asked as the Envoy listener
+// asks it: POST /v1/oauth/introspect with the token in a form, presenting ListenerToken. It fails
+// t on any answer but 200.
+func (r *Rig) Introspect(t *testing.T, token string) oauthwire.Introspection {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, r.URL+"/v1/oauth/introspect", strings.NewReader(url.Values{"token": {token}}.Encode()))
+	if err != nil {
+		t.Fatalf("build the introspection request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", "Bearer "+r.ListenerToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/oauth/introspect: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read the answer of POST /v1/oauth/introspect: %v", err)
+	}
+	var read oauthwire.Introspection
+	if err := json.Unmarshal(body, &read); err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /v1/oauth/introspect = %d %s, want 200 and an introspection (%v)", resp.StatusCode, body, err)
+	}
+	return read
 }
 
 // uiCall is the UI-route caller a machine-login decision goes out through: Rig.UI or Client.UI,

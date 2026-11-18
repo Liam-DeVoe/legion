@@ -11,13 +11,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 )
 
 // bootReads is what boot reads from the configuration, the daemon's environment and the files they
 // name before it writes anything (readBoot).
 type bootReads struct {
 	project, operatorToken, dispatchToken string
-	transitionToken                       string // the shared Dispatch token dispatch_token_transition_file holds, read under dispatch_token_broker alone; "" with no such file, and never on the daemon's own calls
 	secrets                               map[string]string
 	paneNatsUser                          string         // the pane seed's user's public key, "" with no pane seed
 	nats                                  natsConnection // the user the daemon's own NATS connection authenticates as
@@ -135,22 +135,27 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 		}
 	}
 	// The loader takes dispatch_token_broker only beside dispatch_url, and the transition file only
-	// beside the broker, so the broker reads no bearer file.
+	// beside the broker, so the broker reads no bearer file. A launch's Dispatch credential is the
+	// bearer, or under the broker the role's own trade and the shared token
+	// dispatch_token_transition_file holds ("" with no such file), which a launch into a pod built
+	// before the setting carries and the daemon's own calls never present.
+	credential := sandbox.DispatchCredential{Broker: cfg.DispatchTokenBroker}
 	switch {
 	case cfg.DispatchTokenBroker && cfg.DispatchTokenTransitionFile != "":
-		if r.transitionToken, err = config.ReadSecretPointer("dispatch_token_transition_file", cfg.DispatchTokenTransitionFile); err != nil {
+		if credential.Transition, err = config.ReadSecretPointer("dispatch_token_transition_file", cfg.DispatchTokenTransitionFile); err != nil {
 			return bootReads{}, err
 		}
 	case cfg.DispatchURL != "" && !cfg.DispatchTokenBroker:
 		if r.dispatchToken, err = config.ReadSecretPointer("dispatch_token_file", cfg.DispatchTokenFile); err != nil {
 			return bootReads{}, err
 		}
+		credential.Bearer = r.dispatchToken
 	}
 	switch cfg.Runtime.Name {
 	case "tmux":
 		r.tmux, err = readTmux(cfg, lookup, getenv, hostOMP)
 	case "kubernetes":
-		r.sandbox, err = readSandbox(cfg, r.project, r.dispatchToken, r.transitionToken, r.paneNatsUser, lookup, log)
+		r.sandbox, err = readSandbox(cfg, r.project, credential, r.paneNatsUser, lookup, log)
 	default:
 		err = fmt.Errorf("runtime %q is neither tmux nor kubernetes", cfg.Runtime.Name)
 	}

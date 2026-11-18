@@ -15,8 +15,8 @@
 // DISPATCH_PROOF_ORIGINS names the proxy's address, so a proof's htu names an origin Dispatch was
 // told it is reached at. The proxy is the run's request log: each request's time, route,
 // Authorization scheme, a digest of its token and the answer's status and code. Each broker token
-// it sees is read back once at the broker's introspection, as Dispatch reads it, for the expiry the
-// tables print beside the write.
+// it sees is read back once at the broker's introspection (brokertest.Rig.Introspect), for the
+// expiry the tables print beside the write.
 //
 // What is stood in for lies outside the credential path, each as the real one with nothing to
 // report answers. The Envoy listener Dispatch delivers a message through knows no session
@@ -43,7 +43,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -74,7 +73,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-jose/go-jose/v4"
 	"github.com/sjawhar/envoy/brokerclient"
 	"github.com/sjawhar/envoy/brokertest"
 
@@ -134,24 +132,20 @@ type dispatchBrokerRig struct {
 	// documentsOfP is the id of every document and file of P's issues, which names reads a
 	// request of /api/v1/artifacts/{id} by; K4 fills it once the run with P's tokens is over.
 	documentsOfP map[string]bool
-	// direct is the HTTP client of the rig's own setup and introspection, outside the proxy.
+	// direct is the HTTP client of the rig's own setup, outside the proxy.
 	direct *http.Client
 }
 
-// rigToken is what the broker's introspection answers for one of its access tokens.
-type rigToken struct {
-	Active   bool     `json:"active"`
-	Session  string   `json:"session"`
-	Projects []string `json:"projects"`
-	Exp      int64    `json:"exp"`
-}
+// rigToken is what the broker's introspection answers for one of its access tokens
+// (brokertest.Introspection).
+type rigToken brokertest.Introspection
 
 // expiry is when the token stops being live, the zero time where the broker named none.
 func (k rigToken) expiry() time.Time {
-	if k.Exp == 0 {
+	if k.ExpiresAt == 0 {
 		return time.Time{}
 	}
-	return time.Unix(k.Exp, 0)
+	return time.Unix(k.ExpiresAt, 0)
 }
 
 // newDispatchBrokerRig starts the broker with access tokens that live lifetime, Dispatch behind
@@ -465,34 +459,14 @@ func (r *dispatchBrokerRig) during(do func()) []proxyRecord {
 	return records
 }
 
-// introspect asks the broker what the token of digest is, as Dispatch asks it
-// (internal/brokertoken/introspect.go): POST /v1/oauth/introspect with Dispatch's own account
-// token. A token already read is not read again.
+// introspect asks the broker what the token of digest is (brokertest.Rig.Introspect). A token
+// already read is not read again.
 func (r *dispatchBrokerRig) introspect(digest string) rigToken {
 	r.t.Helper()
 	if known, ok := r.tokens[digest]; ok {
 		return known
 	}
-	request, err := http.NewRequest(http.MethodPost, r.broker.URL+"/v1/oauth/introspect",
-		strings.NewReader(url.Values{"token": {r.proxy.token(digest)}}.Encode()))
-	if err != nil {
-		r.t.Fatal(err)
-	}
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	request.Header.Set("Authorization", "Bearer "+r.broker.UIToken)
-	response, err := r.direct.Do(request)
-	if err != nil {
-		r.t.Fatalf("introspect the token %s: %v", digest, err)
-	}
-	defer response.Body.Close()
-	answer, err := io.ReadAll(response.Body)
-	if err != nil || response.StatusCode != http.StatusOK {
-		r.t.Fatalf("introspect the token %s = %d %s (%v)", digest, response.StatusCode, answer, err)
-	}
-	var token rigToken
-	if err := json.Unmarshal(answer, &token); err != nil {
-		r.t.Fatalf("decode the introspection of %s: %v", digest, err)
-	}
+	token := rigToken(r.broker.Introspect(r.t, r.proxy.token(digest)))
 	r.tokens[digest] = token
 	return token
 }
@@ -527,7 +501,7 @@ func (r *dispatchBrokerRig) newRole(name, session, pod string) *rigRole {
 	if err != nil {
 		r.t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(role.keyDir, "key.pem"), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(role.keyDir, brokerclient.RoleKeyFile), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600); err != nil {
 		r.t.Fatal(err)
 	}
 	role.key = key
@@ -549,13 +523,10 @@ func (r *dispatchBrokerRig) registeredRole(name string) *rigRole {
 	r.t.Helper()
 	suffix := strings.ToLower(randomSuffix(r.t)[:6])
 	role := r.newRole(name, "rig-"+name+"-"+suffix, "rig-pod-"+name+"-"+suffix)
-	sum, err := (&jose.JSONWebKey{Key: &role.key.PublicKey}).Thumbprint(crypto.SHA256)
-	if err != nil {
-		r.t.Fatal(err)
-	}
+	thumbprint := keyThumbprint(r.t, role.key)
 	registrar := &agentsecrets.Client{URL: r.broker.URL, TokenFile: r.registrar}
 	podToken := r.broker.MintAccountPodToken(r.t, brokertest.ExchangeRolesAccount, role.pod, time.Hour)
-	if _, err := registrar.RegisterPodSession(context.Background(), role.pod, podToken, role.session, base64.RawURLEncoding.EncodeToString(sum), 1); err != nil {
+	if _, err := registrar.RegisterPodSession(context.Background(), role.pod, podToken, role.session, thumbprint, 1); err != nil {
 		r.t.Fatalf("the daemon's registration of %s for %s: %v", role.session, role.pod, err)
 	}
 	role.writeSubject(r.t, r.broker.MintSubjectToken(r.t, brokertest.ExchangeRolesAccount, role.pod))
@@ -587,7 +558,7 @@ func (r *dispatchBrokerRig) environment(role *rigRole, sharedTokenFile string) [
 		brokerclient.BrokerURLVar:        r.broker.URL,
 		brokerclient.IdentityVar:         r.launch[brokerclient.IdentityVar],
 		brokerclient.MachineTokenFileVar: role.subject,
-		"AGENT_SECRETS_KEY_DIR":          role.keyDir,
+		brokerclient.KeyDirVar:           role.keyDir,
 	}
 	env := []string{
 		"DISPATCH_SESSION_ID=" + role.session, "DISPATCH_HOST=omp", "HOME=" + role.home, "PATH=" + os.Getenv("PATH"),

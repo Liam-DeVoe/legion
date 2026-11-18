@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/repocache"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -199,21 +200,15 @@ var runtimeOwnedComposedOrExchange = func() map[string]bool {
 	return names
 }()
 
-// dispatchBrokerVariable is the daemon's word to a role that its Dispatch credential is a token
-// its Dispatch client trades its pod's exchange identity for at the secrets broker, and nothing
-// else: under it the client reads no bearer from any source (packages/envoy-client's
-// dispatch-config.ts, brokerRouteForced). The runtime tells it, as 1, to every role of a pod that
-// carries an exchange identity under dispatch_token_broker (launch.brokersDispatch), and so never
-// beside DISPATCH_TOKEN_FILE.
-const dispatchBrokerVariable = "DISPATCH_TOKEN_BROKER"
-
 // brokerOwned is the one variable the runtime sets itself only where the deployment sets
 // dispatch_token_broker (Options.Dispatch.Broker), as exchangeOwned is only where it names an
 // exchange audience: a deployment without the setting tells no role DISPATCH_TOKEN_BROKER, so the
 // name stays the operator's pod env's and a launch spec's to set, as it was before the setting
-// existed. It is no address: a role started under another word holds its credential for its life
-// and is never relaunched for the word (handedAddresses leaves it out).
-var brokerOwned = map[string]bool{dispatchBrokerVariable: true}
+// existed. The runtime tells it, as 1, to every role of a pod that carries an exchange identity
+// under the setting (launch.brokersDispatch), and so never beside DISPATCH_TOKEN_FILE. It is no
+// address: a role started under another word holds its credential for its life and is never
+// relaunched for the word (handedAddresses leaves it out).
+var brokerOwned = map[string]bool{shimwire.DispatchTokenBrokerVariable: true}
 
 // runtimeOwnedComposedExchangeOrBroker is every variable a launch spec may not set under
 // dispatch_token_broker, which configure takes only beside an exchange audience:
@@ -227,12 +222,12 @@ var runtimeOwnedComposedExchangeOrBroker = func() map[string]bool {
 // specOwned is every variable a launch spec may not set under r (runtime.ValidateSpawnSpec): the
 // runtime's own and the composed ones, the exchange identity's two where the deployment names
 // an exchange audience (exchangeOwned), and DISPATCH_TOKEN_BROKER where it sets
-// dispatch_token_broker (brokerOwned).
+// dispatch_token_broker as well (brokerOwned), as PodExchange reads the two.
 func (r *Runtime) specOwned() map[string]bool {
-	switch {
-	case r.dispatch.Broker:
+	switch exchangeOf(r.agentSecrets, r.dispatch.Broker) {
+	case ExchangeAndBroker:
 		return runtimeOwnedComposedExchangeOrBroker
-	case r.agentSecrets != nil && r.agentSecrets.ExchangeAudience != "":
+	case ExchangeIdentity:
 		return runtimeOwnedComposedOrExchange
 	}
 	return runtimeOwnedOrComposed
@@ -1769,7 +1764,7 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	// identity trades for, and nothing else (brokersDispatch): its launch carries no Dispatch
 	// token, so it is told no DISPATCH_TOKEN_FILE either (the pointers below follow l.secrets).
 	if l.brokersDispatch(r) {
-		add(dispatchBrokerVariable, "1")
+		add(shimwire.DispatchTokenBrokerVariable, "1")
 	}
 	// The pod's own test database, when the deployment serves one (runtime.kubernetes.test_postgres):
 	// an issue pod's roles alone, whose launcher serves it before it accepts a role start

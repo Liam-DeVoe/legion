@@ -70,26 +70,24 @@ type sandboxReads struct {
 
 // readSandbox is Agent Sandbox's share of readBoot (C1's translation, C3): the cluster's client from
 // runtime.kubernetes' kubeconfig, and the Options every value of the configuration becomes, with
+// credential, the launch's Dispatch credential readBoot read (sandbox.DispatchCredential), and
 // paneNatsUser, the public key of the pane NATS nkey seed's user ("" with none), which the image
-// probe holds the providers Secret's seed to, and transitionToken, the shared Dispatch token
-// dispatch_token_transition_file holds ("" with none), which a launch into a pod built before
-// dispatch_token_broker carries (sandbox.DispatchCredential). None of the host's own agent
-// machinery is read: no Oh My Pi invocation or plugin gate (the image probe proves the image's),
-// no Dispatch token file (a launch carries its Dispatch token in its start command's Files), no
-// secretsd provider keys (a pod mounts its keys from the providers Secret), and no host gh, git,
-// or jj (a pod runs the image's).
-func readSandbox(cfg config.Config, project, dispatchToken, transitionToken, paneNatsUser string, lookup func(string) (string, bool), log *slog.Logger) (sandboxReads, error) {
+// probe holds the providers Secret's seed to. None of the host's own agent machinery is read: no
+// Oh My Pi invocation or plugin gate (the image probe proves the image's), no Dispatch token file
+// (a launch carries its Dispatch token in its start command's Files), no secretsd provider keys
+// (a pod mounts its keys from the providers Secret), and no host gh, git, or jj (a pod runs the
+// image's).
+func readSandbox(cfg config.Config, project string, credential sandbox.DispatchCredential, paneNatsUser string, lookup func(string) (string, bool), log *slog.Logger) (sandboxReads, error) {
 	k := *cfg.Runtime.Kubernetes
 	rc, err := kubeClient(k)
 	if err != nil {
 		return sandboxReads{}, err
 	}
-	opts, err := sandboxOptions(cfg, k, project, dispatchToken, lookup, log)
+	opts, err := sandboxOptions(cfg, k, project, credential, lookup, log)
 	if err != nil {
 		return sandboxReads{}, err
 	}
 	opts.NATSUser = paneNatsUser
-	opts.Dispatch.Transition = transitionToken
 	return sandboxReads{client: rc, opts: opts}, nil
 }
 
@@ -318,10 +316,10 @@ func kubeClient(k config.Kubernetes) (*rest.Config, error) {
 // experiment of its own still declares the memory experiment and hands over its two arms, which
 // name no file where the project writes no `memory` block and so add nothing to a launch.
 // lookup is the daemon's environment, which can name the NATS nkey seed (launchSecrets).
-// dispatchToken is the bearer dispatch_token_file holds, which readBoot reads only without
-// dispatch_token_broker: the launch's Dispatch credential is that bearer, or under the setting
-// the role's own trade (sandbox.DispatchCredential.Broker); readSandbox adds the transition token.
-func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchToken string, lookup func(string) (string, bool), log *slog.Logger) (sandbox.Options, error) {
+// credential is the launch's Dispatch credential (readBoot): the bearer dispatch_token_file holds,
+// or under dispatch_token_broker the role's own trade (sandbox.DispatchCredential.Broker) and the
+// transition token.
+func sandboxOptions(cfg config.Config, k config.Kubernetes, project string, credential sandbox.DispatchCredential, lookup func(string) (string, bool), log *slog.Logger) (sandbox.Options, error) {
 	issueVolume, err := resource.ParseQuantity(k.IssueVolume)
 	if err != nil {
 		return sandbox.Options{}, fmt.Errorf("runtime.kubernetes.issue_volume: %w", err)
@@ -365,7 +363,7 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 		Sandbox:    sandboxConfig(k.Sandbox),
 		Resources:  sandbox.PodResources{Issue: issue, Controller: controller},
 		DaemonURL:  cfg.DaemonURL, EnvoyURL: cfg.EnvoyURL, DispatchURL: cfg.DispatchURL,
-		Dispatch: sandbox.DispatchCredential{Bearer: dispatchToken, Broker: cfg.DispatchTokenBroker},
+		Dispatch: credential,
 		NATSURLs: cfg.NatsURLs,
 		// The controller this runtime launches is told the project's channels, and is relaunched
 		// when they change (sandbox's address record).

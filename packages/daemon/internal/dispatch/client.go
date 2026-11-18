@@ -493,11 +493,11 @@ func (c *HTTPClient) Handoff(ctx context.Context, id string) (Handoff, error) {
 // Whoami reads GET /api/v1/whoami: who Dispatch takes this client's credential for. The boot reads
 // it under dispatch_token_broker, to refuse a broker token whose writes Dispatch would refuse.
 func (c *HTTPClient) Whoami(ctx context.Context) (Caller, error) {
-	var response callerResponse
-	if err := c.request(ctx, http.MethodGet, "/api/v1/whoami", nil, &response); err != nil {
+	var caller Caller
+	if err := c.request(ctx, http.MethodGet, "/api/v1/whoami", nil, &caller); err != nil {
 		return Caller{}, err
 	}
-	return Caller(response), nil
+	return caller, nil
 }
 
 func (c *HTTPClient) request(ctx context.Context, method, path string, body, into any) error {
@@ -717,14 +717,6 @@ func (r handoffResponse) handoff() Handoff {
 		Version:  r.Version,
 		Author:   HandoffAuthor{Kind: r.Author.Kind, ID: r.Author.ID},
 	}
-}
-
-// callerResponse is what Dispatch's GET /api/v1/whoami answers a credential that is not a person's
-// browser session (its whoamiAgent) and that Caller reads, each null where Dispatch names none.
-type callerResponse struct {
-	Session *string `json:"session"`
-	Project *string `json:"project"`
-	Owner   *string `json:"owner"`
 }
 
 type actor struct {

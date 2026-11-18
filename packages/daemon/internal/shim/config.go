@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
 // The readers below are the command's refusals, each one naming the flag and the path or value at
@@ -78,7 +80,7 @@ func ReadProviderEnv(dir string, lookup func(string) (string, bool)) ([]string, 
 		return nil, fmt.Errorf("--provider-env-dir %s is unreadable: %w", dir, err)
 	}
 	var env []string
-	brokerValue, _ := lookup(dispatchBrokerVariable)
+	brokerValue, _ := lookup(shimwire.DispatchTokenBrokerVariable)
 	broker := brokerValue == "1"
 	for _, entry := range entries {
 		name := entry.Name()
@@ -92,7 +94,7 @@ func ReadProviderEnv(dir string, lookup func(string) (string, bool)) ([]string, 
 		}
 		if broker && (name == "DISPATCH_TOKEN" || name == "DISPATCH_TOKEN_FILE") {
 			return nil, fmt.Errorf("--provider-env-dir key %s (%s) is a Dispatch credential, and this shim's environment holds %s=1: "+
-				"the role trades its pod's identity for its own Dispatch token, so the providers Secret may hold no shared one — remove the key", name, path, dispatchBrokerVariable)
+				"the role trades its pod's identity for its own Dispatch token, so the providers Secret may hold no shared one — remove the key", name, path, shimwire.DispatchTokenBrokerVariable)
 		}
 		if _, ok := lookup(name + "_FILE"); ok {
 			continue
@@ -109,11 +111,6 @@ func ReadProviderEnv(dir string, lookup func(string) (string, bool)) ([]string, 
 	}
 	return env, nil
 }
-
-// dispatchBrokerVariable is the daemon's word, in a role's environment, that its Dispatch
-// credential is traded at the secrets broker and no launch carries a Dispatch token
-// (packages/envoy-client's dispatch-config.ts reads it as the only route).
-const dispatchBrokerVariable = "DISPATCH_TOKEN_BROKER"
 
 // ReadAgentSecretsFlags reads --agent-secrets-key-dir, --pod-token-file and --agent-secrets-bin,
 // the Sandbox runtime's three flags for a pod the daemon enrolls with the secrets broker: the

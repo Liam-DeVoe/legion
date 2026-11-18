@@ -9,11 +9,7 @@ import (
 // it, and whether the key is on the wire at all.
 func dispatchCredentialServed(t *testing.T, body []byte) (map[string]any, bool) {
 	t.Helper()
-	var served map[string]json.RawMessage
-	if err := json.Unmarshal(body, &served); err != nil {
-		t.Fatalf("decode state %s: %v", body, err)
-	}
-	raw, carried := served["dispatchCredential"]
+	raw, carried := keysOf(t, body)["dispatchCredential"]
 	if !carried {
 		return nil, false
 	}

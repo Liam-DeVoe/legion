@@ -38,6 +38,8 @@ const (
 	PoolAudienceVar     = internal.PoolAudienceVar
 	PoolAccountVar      = internal.PoolAccountVar
 	SessionVar          = internal.SessionVar
+	KeyDirVar           = internal.KeyDirVar
+	RoleKeyFile         = internal.RoleKeyFile
 	IdentityKubernetes  = internal.IdentityKubernetes
 	IdentityMetadata    = internal.IdentityMetadata
 	IdentityPool        = internal.IdentityPool

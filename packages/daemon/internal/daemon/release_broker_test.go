@@ -156,17 +156,6 @@ func (c *sleepClock) waits() []time.Duration {
 	return slices.Clone(c.slept)
 }
 
-// podExchangeSubject is the issue pod's exchange token as a role's broker client presents it, under
-// the broker's Kubernetes subject token type (oauthwire.SubjectTokenTypeKubernetes, which this
-// module cannot import).
-type podExchangeSubject struct{ token string }
-
-func (s podExchangeSubject) Token(context.Context) (string, string, error) {
-	return s.token, "urn:envoy:params:oauth:token-type:kubernetes-service-account", nil
-}
-
-func (podExchangeSubject) Describe() string { return "the issue pod's exchange token" }
-
 // releaseRig is the tester of an issue pod, under a daemon whose agent-secrets client reaches the
 // rig's broker through proxy, after the operator suspended it and had it forget releaseSession.
 type releaseRig struct {
@@ -304,12 +293,19 @@ func keyThumbprint(t *testing.T, key *ecdsa.PrivateKey) string {
 	return base64.RawURLEncoding.EncodeToString(sum)
 }
 
-// trade is the pod's trade at the broker under releaseSession, with the pod's exchange token,
-// proved with the role's own key.
+// trade is the pod's trade at the broker under releaseSession, with the pod's exchange token in
+// the file a pod's broker client reads it from (brokerclient.MachineIdentity), proved with the
+// role's own key.
 func (r *releaseRig) trade() error {
 	r.t.Helper()
-	client, err := brokerclient.New(brokerclient.Config{BrokerURL: r.broker.URL, Key: r.key, Session: releaseSession,
-		Subject: podExchangeSubject{token: r.broker.MintSubjectToken(r.t, brokertest.ExchangeRolesAccount, releasePod)}})
+	subject, err := brokerclient.MachineIdentity(getenvOf(map[string]string{
+		brokerclient.IdentityVar:         brokerclient.IdentityKubernetes,
+		brokerclient.MachineTokenFileVar: writeSecret(r.t, "exchange-token", r.broker.MintSubjectToken(r.t, brokertest.ExchangeRolesAccount, releasePod)),
+	}))
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	client, err := brokerclient.New(brokerclient.Config{BrokerURL: r.broker.URL, Key: r.key, Session: releaseSession, Subject: subject})
 	if err != nil {
 		r.t.Fatal(err)
 	}
