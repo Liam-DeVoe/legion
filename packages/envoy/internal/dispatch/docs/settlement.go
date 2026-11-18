@@ -239,6 +239,9 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 	// it: a close commits on that row, so a close this process has not heard of yet is read here,
 	// and no close commits until this settlement's transaction ends.
 	settle.owner, settle.issueClosed = owner, !open
+	if err := lockSettlementFence(ctx, tx, room); err != nil {
+		return settle.stoppedShort(err)
+	}
 	// The owner row is read and locked in this transaction, so the repairs settlement injects
 	// below do not read it again: that read would be a second pooled connection taken while
 	// this transaction holds one, which is what deadlocks the pool.
@@ -264,6 +267,27 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 	}
 	_, outcome := settle.commitVersion(ctx)
 	return outcome
+}
+
+// lockSettlementFence takes the document's document_block_versions row `for no key update`, the
+// revision fence's row (R23 of dispatch://INFRA-1149), right after the settlement's owner row and
+// before anything the settlement writes. Whether a settlement writes a version is decided only in
+// commitVersion, after reconcileAskBlocks has opened the asks of new ask blocks and followed each
+// one for a session author, which writes that session's node (asks.Follow); the version's own
+// fence - the version row's trigger (document_block_versions_owe, migration 0122) and
+// refs.standsAtVersion - comes after that node. The lock order written on api/inbox_read.go's
+// markInboxReadThreads has a writer under the fence take its row before any node, tuple or
+// projection row it writes, so every settlement takes it here, since any of them may write a
+// version. Those later takes of the same row in this transaction wait on nothing. Every document
+// holds the row from its first version on; a document with none has no row, and the insert of its
+// first version makes it.
+func lockSettlementFence(ctx context.Context, tx pgx.Tx, artifactID string) error {
+	if _, err := tx.Exec(ctx, `
+		select 1 from document_block_versions where artifact_id = $1 for no key update
+	`, artifactID); err != nil {
+		return fmt.Errorf("take the revision fence of document %s: %w", artifactID, err)
+	}
+	return nil
 }
 
 // take is what the settlement takes of its room before it opens a transaction: the room warmed

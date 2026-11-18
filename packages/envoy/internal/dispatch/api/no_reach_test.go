@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -387,17 +388,26 @@ func declaredShapesUnchanged(t *testing.T) {
 }
 
 // committedOpenAPIShapes is the committed document as this test reads it: what each path serves,
-// and the fields of each schema with the ones an answer always carries. The name is the shapes
-// and not the document because committedOpenAPI is already this package's reader of the
-// document's own bytes (openapi_test.go).
+// and each schema as far as an answer is held to it. The name is the shapes and not the document
+// because committedOpenAPI is already this package's reader of the document's own bytes
+// (openapi_test.go).
 type committedOpenAPIShapes struct {
 	Paths      map[string]map[string]json.RawMessage `json:"paths"`
 	Components struct {
-		Schemas map[string]struct {
-			Properties map[string]json.RawMessage `json:"properties"`
-			Required   []string                   `json:"required"`
-		} `json:"schemas"`
+		Schemas map[string]openAPISchema `json:"schemas"`
 	} `json:"components"`
+}
+
+// openAPISchema is one schema of the committed document, as far as an answer is held to it: the
+// fields an object declares and the ones it always carries, the schema of an array's rows, the
+// branches of a union, and the component a reference names.
+type openAPISchema struct {
+	Ref        string                   `json:"$ref"`
+	Properties map[string]openAPISchema `json:"properties"`
+	Required   []string                 `json:"required"`
+	Items      *openAPISchema           `json:"items"`
+	AnyOf      []openAPISchema          `json:"anyOf"`
+	OneOf      []openAPISchema          `json:"oneOf"`
 }
 
 // committedDocument is the OpenAPI document the contracts package is generated from, held to a
@@ -1183,17 +1193,91 @@ var readRelations = map[string][]string{
 	"GET /api/v1/artifacts/{id}/blocks": {"artifacts", "asks", "comments", "doc_updates", "embeddings"},
 }
 
+// readAnswerPaths are the fields each of the two reads answers for the seed readsUnchanged
+// writes, at every depth, as the fork-point build answered them for that seed. A field's path is
+// the path of the object holding it, a dot and its name; the rows of an array sit under the
+// array's path and `[]`, so the blocks the block read lists are `[]` and a cell of a table block
+// is `[].table.rows[].cells[]`. They are pinned rather than read off the answer, as readRelations
+// is, so a field the answer drops fails naming its path however deep it sits, where a check of
+// the top level alone, or of the fields the document requires, passes a nested field and one Go
+// leaves out where it is empty (`omitempty`).
+var readAnswerPaths = map[string][]string{
+	"GET /api/v1/comments/{id}": {
+		"comment",
+		"comment.anchor", "comment.anchor.artifact_id", "comment.anchor.block_id", "comment.anchor.mark_id",
+		"comment.anchor.orphaned", "comment.anchor.quote", "comment.anchor.version",
+		"comment.anchor_block", "comment.anchor_block.id", "comment.anchor_block.type",
+		"comment.anchor_block.path", "comment.anchor_block.path[].id", "comment.anchor_block.path[].index",
+		"comment.anchor_block.path[].type",
+		"comment.anchor_block.table", "comment.anchor_block.table.cells", "comment.anchor_block.table.column",
+		"comment.anchor_block.table.header", "comment.anchor_block.table.id", "comment.anchor_block.table.row",
+		"comment.answers", "comment.artifact_id", "comment.ask_id",
+		"comment.author", "comment.author.id", "comment.author.kind", "comment.author.proven",
+		"comment.body", "comment.created_at",
+		"comment.deliveries", "comment.deliveries[].attempt", "comment.deliveries[].comment_id",
+		"comment.deliveries[].created_at", "comment.deliveries[].delivery", "comment.deliveries[].duplicate",
+		"comment.deliveries[].envelope_id", "comment.deliveries[].error", "comment.deliveries[].reply_id",
+		"comment.deliveries[].resolve_error", "comment.deliveries[].session_id", "comment.deliveries[].state",
+		"comment.deliveries[].target",
+		"comment.edited_at", "comment.id", "comment.issue_key",
+		"comment.mentions", "comment.mentions[].delivery", "comment.mentions[].session_id", "comment.mentions[].target",
+		"comment.reply_block", "comment.reply_to", "comment.resolved", "comment.resolved_at",
+		"comment.resolved_by", "comment.resolved_by.id", "comment.resolved_by.kind", "comment.resolved_by.proven",
+		"comment.suggestion", "comment.suggestion.accepted", "comment.suggestion.replace_with",
+		"comment.turn",
+		"replies",
+		"replies[].anchor", "replies[].answers", "replies[].artifact_id", "replies[].ask_id",
+		"replies[].author", "replies[].author.id", "replies[].author.kind", "replies[].author.proven",
+		"replies[].body", "replies[].created_at", "replies[].deliveries", "replies[].edited_at", "replies[].id",
+		"replies[].issue_key", "replies[].mentions", "replies[].reply_block", "replies[].reply_to",
+		"replies[].resolved", "replies[].resolved_at", "replies[].resolved_by", "replies[].suggestion",
+		"replies[].turn",
+	},
+	"GET /api/v1/artifacts/{id}/blocks": {
+		"[].id", "[].type", "[].from", "[].to", "[].token", "[].embedding",
+		"[].attributes", "[].attributes[].kind", "[].attributes[].name", "[].attributes[].value",
+		"[].references", "[].references.asks", "[].references.comments",
+		"[].table", "[].table.rows", "[].table.rows[].id", "[].table.rows[].index", "[].table.rows[].cells",
+		"[].table.rows[].cells[].column", "[].table.rows[].cells[].header", "[].table.rows[].cells[].id",
+		"[].table.rows[].cells[].row", "[].table.rows[].cells[].text",
+	},
+}
+
+// readsUnchangedSpec is the document readsUnchanged seeds. Each part of it gives a field of the
+// two reads a value: the table gives the block read a table block's rows and cells, and the
+// comment anchored in one of its cells that cell's place in the table; the callout gives a typed
+// block's attributes.
+const readsUnchangedSpec = "Introduction.\n\n" +
+	"| Step | Due |\n| --- | --- |\n| Target passage | Today |\n\n" +
+	":::callout{kind=\"note\" title=\"Heads up\"}\nA note.\n:::\n"
+
 // readsUnchanged reads one comment and one document block through the reads the table already
-// held, and holds each to its answer and to its plan. The answer is what the contracts declare,
-// field for field; the plan is the tables the statements of that read touch.
+// held, and holds each to its answer and to its plan. The answer is held to what the contracts
+// declare at every depth, and to the fields the fork-point build answered for the same seed
+// (readAnswerPaths); the plan is the tables the statements of that read touch.
 func readsUnchanged(t *testing.T) {
 	recorder := &statementRecorder{}
 	database := storetest.TracedStore(t, storetest.Open(t), recorder)
-	handler, _, _ := newTestServer(t, testServerOptions{store: database})
-	issue := createInteractionIssue(t, handler, "TEST", "An unchanged read", "Introduction.\n\nTarget passage.\n")
+	// A listener that holds no session: the comment's mention is stored and its attempt settles
+	// failed, so the comment answers a mention and a delivery, each with every field it has.
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/sessions" {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(listener.Close)
+	handler, _, _ := newTestServer(t, testServerOptions{store: database, envoyURL: listener.URL})
+	issue := createInteractionIssue(t, handler, "TEST", "An unchanged read", readsUnchangedSpec)
+	// A field whose value is empty is one an answer may leave out, so the comment gives each of
+	// its fields a value: an anchor in a table cell, a suggestion, a mention and a reply, and the
+	// rejection of the suggestion, which resolves it.
 	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
-		"anchor": map[string]string{"artifact": "spec", "quote": "Target passage"},
-		"body":   "Please clarify this.",
+		"anchor":     map[string]string{"artifact": "spec", "quote": "Target passage"},
+		"body":       "Please clarify this.",
+		"suggestion": map[string]string{"replace_with": "Clearer passage"},
+		"mentions":   []map[string]string{{"target": "session:gone"}},
 	}, "alice")
 	if created.Code != http.StatusCreated {
 		t.Fatalf("seed a comment: status=%d body=%s", created.Code, created.Body.String())
@@ -1201,23 +1285,43 @@ func readsUnchanged(t *testing.T) {
 	comment := decodeBody[struct {
 		ID string `json:"id"`
 	}](t, created)
+	if reply := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
+		"body": "It reads clearly to me.", "reply_to": comment.ID,
+	}, "bob"); reply.Code != http.StatusCreated {
+		t.Fatalf("seed a reply: status=%d body=%s", reply.Code, reply.Body.String())
+	}
+	if rejected := dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/reject", nil, "alice"); rejected.Code != http.StatusOK {
+		t.Fatalf("reject the suggestion: status=%d body=%s", rejected.Code, rejected.Body.String())
+	}
+	settledCommentDeliveries(t, database, comment.ID)
 
 	root := repositoryRoot(t)
 	declared := schemasOfGeneratedModule(t, readRepositoryFile(t, root, contractsGenerated))
 	document := committedDocument(t, root)
-	for _, read := range []struct{ name, target, schema string }{
-		{"GET /api/v1/comments/{id}", "/api/v1/comments/" + comment.ID, "CommentRead"},
-		{"GET /api/v1/artifacts/{id}/blocks", "/api/v1/artifacts/" + issue.PrimaryArtifactID + "/blocks", "ArtifactBlock"},
+	for _, read := range []struct{ name, target string }{
+		{"GET /api/v1/comments/{id}", "/api/v1/comments/" + comment.ID},
+		{"GET /api/v1/artifacts/{id}/blocks", "/api/v1/artifacts/" + issue.PrimaryArtifactID + "/blocks"},
 	} {
 		t.Run(read.name, func(t *testing.T) {
+			var answered []string
 			statements := recorder.record(func() {
 				answer := recordedRequest(t, handler, read.target, recorder)
 				if answer.Code != http.StatusOK {
 					t.Fatalf("%s: status=%d body=%s", read.name, answer.Code, answer.Body.String())
 				}
-				holdAnswerToSchema(t, read.schema, declared,
-					document.Components.Schemas[read.schema].Required, answer.Body.Bytes())
+				answered = answerFieldPaths(t, document, declared, read.name, answer.Body.Bytes())
 			})
+			want := readAnswerPaths[read.name]
+			for _, path := range want {
+				if !slices.Contains(answered, path) {
+					t.Errorf("%s no longer carries %s, which it answered for this seed before this child", read.name, path)
+				}
+			}
+			for _, path := range answered {
+				if !slices.Contains(want, path) {
+					t.Errorf("%s carries %s, which it did not answer for this seed before this child", read.name, path)
+				}
+			}
 			if len(statements) == 0 {
 				t.Fatalf("%s issued no statement", read.name)
 			}
@@ -1229,41 +1333,126 @@ func readsUnchanged(t *testing.T) {
 	}
 }
 
-// holdAnswerToSchema holds one answer to the fields the contracts declare for its shape: every
-// declared field answered, and no field the declaration does not hold.
-func holdAnswerToSchema(t *testing.T, schema string, declared map[string][]string, required []string, body []byte) {
+// componentSchemaRef is how the document refers to one of its own component schemas.
+const componentSchemaRef = "#/components/schemas/"
+
+// answerFieldPaths holds one answer of a GET route to the schema the committed document declares
+// for its 200, at every depth, and answers the path of every field the answer carries
+// (readAnswerPaths). Each object is held to the schema its field declares, through a reference
+// or a union, as the top-level one is: a field that schema does not declare fails, and so does a
+// field it requires and the answer leaves out.
+func answerFieldPaths(t *testing.T, document committedOpenAPIShapes, declared map[string][]string, route string, body []byte) []string {
 	t.Helper()
-	fields, held := declared[schema]
-	if !held {
-		t.Fatalf("%s declares no schema %s", contractsGenerated, schema)
+	method, pattern, _ := strings.Cut(route, " ")
+	operation, served := document.Paths[pattern][strings.ToLower(method)]
+	if !served {
+		t.Fatalf("the document declares no %s", route)
+	}
+	var declaration struct {
+		Responses map[string]struct {
+			Content map[string]struct {
+				Schema openAPISchema `json:"schema"`
+			} `json:"content"`
+		} `json:"responses"`
+	}
+	if err := json.Unmarshal(operation, &declaration); err != nil {
+		t.Fatalf("decode the document's %s: %v", route, err)
+	}
+	success, declaresSuccess := declaration.Responses["200"].Content["application/json"]
+	if !declaresSuccess {
+		t.Fatalf("the document declares no JSON answer of %s for 200", route)
 	}
 	var answer any
 	if err := json.Unmarshal(body, &answer); err != nil {
-		t.Fatalf("decode the answer: %v", err)
+		t.Fatalf("decode the answer of %s: %v", route, err)
 	}
-	rows, isList := answer.([]any)
-	if !isList {
-		rows = []any{answer}
+	walk := answerWalk{t: t, document: document, declared: declared, paths: map[string]bool{}}
+	walk.value("", answer, success.Schema)
+	return slices.Sorted(maps.Keys(walk.paths))
+}
+
+// answerWalk is one answer held to its schema: the document and the contracts module it is held
+// to, and the path of every field it has met.
+type answerWalk struct {
+	t        *testing.T
+	document committedOpenAPIShapes
+	declared map[string][]string
+	paths    map[string]bool
+}
+
+// value holds the value at path to schema. A null holds no field; an array holds each row to the
+// schema of its rows; an object holds its fields to the ones schema declares.
+func (w *answerWalk) value(path string, value any, schema openAPISchema) {
+	if value == nil {
+		return
 	}
-	if len(rows) == 0 {
-		t.Fatalf("%s answered no row to hold to its shape", schema)
-	}
-	for _, row := range rows {
-		object, isObject := row.(map[string]any)
-		if !isObject {
-			t.Fatalf("%s answered %T, want an object", schema, row)
+	schema, name := w.resolve(path, schema, value)
+	switch typed := value.(type) {
+	case map[string]any:
+		w.object(path, typed, schema, name)
+	case []any:
+		if schema.Items == nil {
+			w.t.Errorf("the answer carries an array at %s, where the contracts declare none", path)
+			return
 		}
-		for _, field := range slices.Sorted(maps.Keys(object)) {
-			if !slices.Contains(fields, field) {
-				t.Errorf("the answer carries %q, which %s does not declare for %s", field, contractsGenerated, schema)
-			}
+		for _, row := range typed {
+			w.value(path+"[]", row, *schema.Items)
 		}
-		// A field the document does not require is one the answer leaves out where it has none
-		// (Go's `omitempty`); a required one is what every reader of this shape is promised.
-		for _, field := range required {
-			if _, answered := object[field]; !answered {
-				t.Errorf("%s declares %s.%s, which the answer does not carry", contractsGenerated, schema, field)
-			}
+	}
+}
+
+// resolve follows a reference to the component schema it names, and a union to its branch that
+// declares what value is, an object's fields or an array's rows. It answers the schema and the
+// name of the component it is, "" for a schema declared in place. A union with no such branch
+// answers itself, which declares no field, so every field of the value fails rather than passing
+// unread.
+func (w *answerWalk) resolve(path string, schema openAPISchema, value any) (openAPISchema, string) {
+	if schema.Ref != "" {
+		name, local := strings.CutPrefix(schema.Ref, componentSchemaRef)
+		component, held := w.document.Components.Schemas[name]
+		if !local || !held {
+			w.t.Fatalf("the schema at %s refers to %s, which the document does not declare", path, schema.Ref)
+		}
+		resolved, inner := w.resolve(path, component, value)
+		if inner != "" {
+			return resolved, inner
+		}
+		return resolved, name
+	}
+	_, isList := value.([]any)
+	for _, branch := range slices.Concat(schema.AnyOf, schema.OneOf) {
+		resolved, name := w.resolve(path, branch, value)
+		if (isList && resolved.Items != nil) || (!isList && resolved.Properties != nil) {
+			return resolved, name
+		}
+	}
+	return schema, ""
+}
+
+// object holds one object to its schema. A field of a component schema is held to the fields
+// the contracts module declares for that component as well as to the document's, so what a
+// consumer imports is what the answer carries.
+func (w *answerWalk) object(path string, object map[string]any, schema openAPISchema, name string) {
+	holder := name
+	if holder == "" {
+		holder = "the object at " + cmp.Or(path, "the top")
+	}
+	for _, field := range slices.Sorted(maps.Keys(object)) {
+		fieldPath := field
+		if path != "" {
+			fieldPath = path + "." + field
+		}
+		fieldSchema, held := schema.Properties[field]
+		if !held || (name != "" && !slices.Contains(w.declared[name], field)) {
+			w.t.Errorf("the answer carries %s, which %s does not declare for %s", fieldPath, contractsGenerated, holder)
+			continue
+		}
+		w.paths[fieldPath] = true
+		w.value(fieldPath, object[field], fieldSchema)
+	}
+	for _, field := range schema.Required {
+		if _, answered := object[field]; !answered {
+			w.t.Errorf("%s declares %s.%s, which the answer does not carry at %s", contractsGenerated, holder, field, cmp.Or(path, "the top"))
 		}
 	}
 }

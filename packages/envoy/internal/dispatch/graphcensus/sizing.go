@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -190,16 +192,20 @@ const movedParents = "block_parent_moved"
 
 // storeKinds are the terms R4 states, each beside the writer or the requirement whose tuples it
 // counts:
-//   - a comment's node and its visibility and state (graphstore.Write), the authored_by and the
-//     aliases of whoever wrote it (graphstore.AuthorFacts), and the artifacts it is anchored to
-//     and owned by (api's commentStored);
-//   - a delivery to a comment's mention, one delivered_to (outbox.deliveredGraph);
+//   - a comment's node and its visibility, state and project (graphstore.Write), the authored_by
+//     and the aliases of whoever wrote it (graphstore.AuthorFacts), and the artifacts it is
+//     anchored to and owned by (api's commentStored);
+//   - a delivery to a comment's mention, one delivered_to (outbox.deliveredGraph), and the same
+//     one tuple for each session or role the bus reached with a comment event
+//     (outbox.deliveredGraph) and for each fallback copy the outbox published
+//     (outbox.fallbackDelivered);
 //   - a version's blocks as refs.IndexBlocks states them: a block it inserts afresh, its node, its
-//     two base attributes, its in_document and its part_of; a block it restores, its state and
-//     its in_document, with at most the retraction and the assertion of a parent the restore
-//     moved; a block it drops, its state gone; a block whose parent moved, the retraction of the
-//     old parent and the assertion of the new; and a block reference, the pair's assertion and,
-//     at most, the retraction that ends it, which no table records once the pair is gone;
+//     three base attributes (its visibility, state and project), its in_document and its part_of;
+//     a block it restores, its state and its in_document, with at most the retraction and the
+//     assertion of a parent the restore moved; a block it drops, its state gone; a block whose
+//     parent moved, the retraction of the old parent and the assertion of the new; and a block
+//     reference, the pair's assertion and, at most, the retraction that ends it, which no table
+//     records once the pair is gone;
 //   - dispatch://INFRA-1253's text value and rank value of each block whose text a version wrote;
 //   - dispatch://INFRA-1152's delivered_to of a message, and one tuple for each read mark, clear,
 //     dismissal and snooze. Each of the tables those four are written to keeps the newest mark of
@@ -227,8 +233,8 @@ const movedParents = "block_parent_moved"
 //     #b-r-constraint-risk), every one of them assumed.
 func storeKinds() []StoreKind {
 	return []StoreKind{{
-		Name: "comment", MovedBy: movedHere, Nodes: 1, Tuples: 2,
-		Driver: "comments.created_at: the comment's node and its visibility and state",
+		Name: "comment", MovedBy: movedHere, Nodes: 1, Tuples: 3,
+		Driver: "comments.created_at: the comment's node and its visibility, state and project",
 		count:  `(select count(*) from sized_comments)`,
 	}, {
 		Name: graphstore.TupleAuthoredBy, MovedBy: movedHere, Tuples: 1,
@@ -252,9 +258,24 @@ func storeKinds() []StoreKind {
 		count: `(select count(*) from comment_deliveries where state in ` + model.DeliveryTakenStatesSQL +
 			` and created_at > ` + sizingWindow + `)`,
 	}, {
-		Name: "block", MovedBy: movedHere, Nodes: 1, Tuples: 4,
-		Driver: "document_block_texts of the versions written in the window, a block's first row: its node, its visibility" +
-			" and state, its in_document and its part_of",
+		Name: "bus_delivery", MovedBy: movedHere, Tuples: 1,
+		Driver: "events.published_destinations of the comment events written in the window, each a session's or a role's" +
+			" topic as the outbox reads one: a delivered_to for each destination the bus reached",
+		count: `(select count(*) from events e cross join lateral unnest(e.published_destinations) reached (topic)
+			where e.type like 'comment.%' and e.created_at > ` + sizingWindow + `
+			  and jsonb_typeof(e.payload->'id') = 'string' and e.payload->>'id' <> ''
+			  and octet_length(e.payload->>'id') <= ` + addressBound + `
+			  and ` + reachesANode("reached.topic") + `)`,
+	}, {
+		Name: "fallback_delivery", MovedBy: movedHere, Tuples: 1,
+		Driver: "comment_fallback_copies.settled_at of the copies the outbox published in the window, each to a session's" +
+			" or a role's topic: a delivered_to for each",
+		count: `(select count(*) from comment_fallback_copies f
+			where f.published and f.settled_at > ` + sizingWindow + ` and ` + reachesANode("f.destination") + `)`,
+	}, {
+		Name: "block", MovedBy: movedHere, Nodes: 1, Tuples: 5,
+		Driver: "document_block_texts of the versions written in the window, a block's first row: its node, its visibility," +
+			" state and project, its in_document and its part_of",
 		count: `(select count(*) from sized_texts where written and earlier is null)`,
 	}, {
 		Name: "block_restored", MovedBy: movedHere, Tuples: 4,
@@ -566,6 +587,19 @@ func storeKinds() []StoreKind {
 // it, and a decision or a reading is a kind production writes none of yet, whose rate the sizing
 // assumes.
 const sizingAuthors = `(select null::text, null::text, null::timestamptz where false) stored (kind, id, at)`
+
+// reachesANode is true of a topic the outbox reads as a node of the store (outbox's
+// nodeOfSubject): a session's own topic or a role's, with a name after the prefix, and that name
+// inside the store's address bound, since the outbox leaves out a delivered_to whose far end is
+// past it (outbox.deliveredGraph, outbox.fallbackDelivered). topic is the SQL expression that
+// holds the topic. The prefixes are ASCII, so the bytes past the prefix are the name's.
+func reachesANode(topic string) string {
+	names := func(prefix string) string {
+		return `(` + topic + ` like '` + prefix + `_%' and octet_length(` + topic + `) - ` +
+			strconv.Itoa(len(prefix)) + ` <= ` + addressBound + `)`
+	}
+	return `(` + names(contracts.AgentTopicPrefix) + ` or ` + names(contracts.RoleTopicPrefix) + `)`
+}
 
 // sizingWritesWith is the sets of rows several terms count over, each read once for every term
 // that counts it: the comments written inside the window with the facts each one's write states

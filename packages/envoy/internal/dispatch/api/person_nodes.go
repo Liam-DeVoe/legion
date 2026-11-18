@@ -174,7 +174,7 @@ var personNodesQuery = personNodesHeld + `, items as (
 		       end as href,
 		       h.from_kind as stored_kind
 		from held h
-		join comments c on h.from_kind = 'comment' and h.from_id = c.id::text
+		join comments c on h.from_kind = '` + graphstore.KindComment + `' and h.from_id = c.id::text
 		left join issues i on i.key = c.issue_key
 		left join artifacts a on a.id = c.artifact_id
 		where (i.key is not null or a.id is not null)

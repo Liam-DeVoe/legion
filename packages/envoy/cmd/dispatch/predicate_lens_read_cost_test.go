@@ -29,6 +29,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/testbaseline"
 )
 
 const (
@@ -970,18 +972,20 @@ func TestThePredicateAndTheLensReadsGetNoSlower(t *testing.T) {
 const predicateCostStoreMigration = "packages/envoy/internal/dispatch/store/migrations/20261109013400_graph_store.up.sql"
 
 // predicateCostBaseHoldsTheStore refuses a base build whose tree holds no store
-// (predicateCostStoreMigration), naming the base: the default of baseBuild, `git merge-base
-// origin/main HEAD`, is such a base while the branches this child stacks on are unmerged, and over
-// it every reading of a read this child changed would compare the store with no store. It is not
+// (predicateCostStoreMigration), naming the base: `git merge-base origin/main HEAD`, the base a
+// branch that lands on main names in BASELINE_SHA, is such a base while the branches this child
+// stacks on are unmerged, and over it every reading of a read this child changed would compare the
+// store with no store. It reads the base baseBuild builds (testbaseline.Commit), and it is not
 // in baseBuild, whose other callers (dispatch://INFRA-1149's census and cost tests) measure the
 // store against a base from before it.
 func predicateCostBaseHoldsTheStore(t *testing.T) {
 	t.Helper()
 	root := gitOutput(t, ".", "rev-parse", "--show-toplevel")
-	commit, named := baseCommit(t, root)
+	commit := testbaseline.Commit(t)
+	named := fmt.Sprintf("the commit %s=%s names", testbaseline.Variable, strings.TrimSpace(os.Getenv(testbaseline.Variable)))
 	if err := exec.Command("git", "-C", root, "cat-file", "-e", commit+":"+predicateCostStoreMigration).Run(); err != nil {
 		t.Fatalf("the base %s (%s) holds no migration %s (graph_store), so it is a build with no store and c-read-cost would measure nothing this child changed: set %s to the release this branch lands after, the merge base with legion/INFRA-1150",
-			commit, named, predicateCostStoreMigration, baselineEnv)
+			commit, named, predicateCostStoreMigration, testbaseline.Variable)
 	}
 	t.Logf("the base %s (%s) holds the migration that made the store, %s", commit, named, predicateCostStoreMigration)
 }

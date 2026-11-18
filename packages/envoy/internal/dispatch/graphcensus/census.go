@@ -50,7 +50,7 @@ type projection struct {
 	// so the report says what it checked rather than only what it found.
 	note string
 	rows string
-	// nodes is the nodes of the kind. It names no state: presentNodes wraps it.
+	// nodes is the kind's nodes at any state. It names no state: presentNodes wraps it.
 	nodes string
 	// tuples, where it is set, holds the kind triple by triple, over the triple of holding node,
 	// tuple kind and far end (dispatch://INFRA-1150 c-census), and nodes is unused. It is a
