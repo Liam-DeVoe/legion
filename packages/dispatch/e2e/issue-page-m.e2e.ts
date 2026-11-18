@@ -2910,6 +2910,474 @@ test("t o and a load of /collaborators keep the focused Collaborators control in
   }
 });
 
+// The hold of the place `t o` lands the focus at, as the reader acts around it. Each row seeds
+// the `t o` row's five blockers, whose titles' read it holds back until it lets it through, so
+// Blocked by grows once the reader has acted.
+
+const TABLET = { height: 1024, width: 768 } as const;
+
+/** An issue whose Blocked by names five issues with titles long enough to wrap over several
+ *  lines of Details, as the `t o` row above seeds it; with `waiting`, five more such issues wait
+ *  on it, which Blocks lists once Details has read them. */
+async function seedHeldRows({ waiting }: { waiting: boolean }): Promise<string> {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "An issue that waits on five others" });
+  const wrapped = "a title long enough to wrap over several lines of Details ".repeat(3);
+  const blockers: string[] = [];
+  for (let index = 0; index < 5; index += 1) {
+    // `force`: the five titles are alike on purpose, and the duplicate check would refuse them.
+    const blocker = await createIssue({
+      force: true,
+      project: "CORE",
+      title: `Blocker ${index}: ${wrapped}`,
+    });
+    blockers.push(blocker.key);
+  }
+  await patchIssue(issue.key, { blocked_by: blockers });
+  for (let index = 0; waiting && index < 5; index += 1) {
+    // `force`: as for the blockers above.
+    const waiter = await createIssue({
+      force: true,
+      project: "CORE",
+      title: `Waiter ${index}: ${wrapped}`,
+    });
+    await patchIssue(waiter.key, { blocked_by: [issue.key] });
+  }
+  return issue.key;
+}
+
+/** The reads Details makes once it opens that a row holds back, each until its promise settles:
+ *  the blockers' titles, and, where named, the issue's log and the issues waiting on it. */
+interface HeldReads {
+  readonly log?: Promise<void>;
+  readonly titles: Promise<void>;
+  readonly waiting?: Promise<void>;
+}
+
+/** A reader's page at `size` on `key`, loaded with Details shut, then `t o`: Details open at
+ *  the collaborators' row and the focus on its control, with `held`'s reads held back. */
+async function afterTo(
+  browser: Browser,
+  key: string,
+  size: { readonly height: number; readonly width: number },
+  held: HeldReads
+): Promise<{ context: BrowserContext; page: Page }> {
+  const context = await reader(browser, "alice");
+  const page = await context.newPage();
+  await page.setViewportSize(size);
+  await page.route(new RegExp(`/api/v1/issues/${key}/events`), async (route) => {
+    await held.log;
+    await route.continue();
+  });
+  await page.route("**/api/v1/references?**", async (route) => {
+    if (new URL(route.request().url()).searchParams.get("kind") === "blocked_by") {
+      await held.waiting;
+    }
+    await route.continue();
+  });
+  await page.route("**/api/v1/reference-targets?**", async (route) => {
+    await held.titles;
+    await route.continue();
+  });
+  await gotoIssue(page, `/issues/${key}`);
+  // The issue holds no node, so its tree is drawn empty: the page is drawn once it is there.
+  await expectIssuePageDrawn(page);
+  await expect(marginShell(page)).toBeHidden();
+  await focusThePage(page);
+  await page.keyboard.press("t");
+  await page.keyboard.press("o");
+  await expect(page).toHaveURL(new RegExp(`/issues/${key}/collaborators$`));
+  await expect(
+    collaboratorsControl(page),
+    "t o did not focus the Collaborators control"
+  ).toBeFocused();
+  return { context, page };
+}
+
+/** The Collaborators control of Details' People section, which `t o` focuses. */
+function collaboratorsControl(page: Page): Locator {
+  return marginShell(page)
+    .locator('[data-details-row="collaborators"]')
+    .getByRole("button", { exact: true, name: PROPERTY_LABELS.collaborators });
+}
+
+/** Where `locator` is drawn; `what` names it where it is drawn nowhere. */
+async function boxOf(locator: Locator, what: string) {
+  // Each caller reads a place after the page settled, so one instant's box is the place it means.
+  const box = await locator.boundingBox();
+  if (box === null) throw new Error(`${what} has no box`);
+  return box;
+}
+
+/** True where `box` lies wholly inside `view`. */
+function wholly(
+  box: { readonly height: number; readonly y: number },
+  view: { readonly bottom: number; readonly top: number }
+): boolean {
+  return box.y >= view.top && box.y + box.height <= view.bottom;
+}
+
+/** The reader turning the wheel over the middle of Details' view by `by` px, until the box has
+ *  moved and then stood still for two frames. */
+async function wheelOverDetails(page: Page, by: number): Promise<void> {
+  const view = await historyViewport(page);
+  const shell = await boxOf(marginShell(page), "Details");
+  const from = await historyScrollTop(page);
+  await page.mouse.move(shell.x + shell.width / 2, (view.top + view.bottom) / 2);
+  await page.mouse.wheel(0, by);
+  await expect
+    .poll(() => historyScrollTop(page), { message: "the wheel did not scroll Details" })
+    .not.toBe(from);
+  await expect
+    .poll(
+      async () => {
+        const at = await historyScrollTop(page);
+        await nextFrames(page);
+        return (await historyScrollTop(page)) - at;
+      },
+      { message: "Details' box kept scrolling after the wheel" }
+    )
+    .toBe(0);
+}
+
+/** Lets a held read through with `release`, waits for `row` to draw `drawn` and for what the
+ *  page does about the taller row to finish, and answers how far `row` grew. */
+async function grows(
+  page: Page,
+  row: Locator,
+  what: string,
+  release: () => void,
+  drawn: string
+): Promise<number> {
+  const before = (await boxOf(row, what)).height;
+  release();
+  await expect(row, `${what} never drew what it read`).toContainText(drawn);
+  // Half a second for whatever the page does about the taller row to finish: a hold or an
+  // anchor that puts a row back has done so well within it.
+  await page.waitForTimeout(500);
+  await nextFrames(page);
+  const grew = (await boxOf(row, what)).height - before;
+  expect(
+    grew > 100,
+    `${what} grew ${Math.round(grew)} px once its read landed, so the row proves nothing`
+  ).toBe(true);
+  return grew;
+}
+
+// After `t o` the reader turns the wheel over Details until Blocked by's top is above the view,
+// its last 80 px still in it, the focused Collaborators control below them in the view. Blocked
+// by then grows as the titles of the issues it names land. The browser's own scroll anchoring
+// keeps a node in the part of Blocked by left in view, which a growth below that node does not
+// move, so it puts nothing back; the hold of the place `t o` landed the focus at had ended at the
+// wheel, and every row under Blocked by went down by the growth, the focused control with them.
+// Found on a running build with a copy of a large real issue: the control went from 635 to 935 px
+// in a view of 53 to 900 at 1440 px, and the same at 768. The hold now lasts while the focus
+// stays on the control, and takes the place where the reader's scroll left it.
+test("t o, then a wheel that leaves Blocked by partly in view above the focused control: the control stays where the wheel left it as Blocked by grows", async ({
+  browser,
+}) => {
+  test.setTimeout(180_000);
+  const key = await seedHeldRows({ waiting: false });
+  // Each width's move of the control, so one run says every width the growth moved it at.
+  const moved: string[] = [];
+  for (const size of [DESKTOP, TABLET]) {
+    const titles = Promise.withResolvers<void>();
+    const { context, page } = await afterTo(browser, key, size, { titles: titles.promise });
+    try {
+      const blockedBy = detailsRow(page, PROPERTY_LABELS.blocked_by);
+      const view = await historyViewport(page);
+      const blocked = await boxOf(blockedBy, "Blocked by");
+      await wheelOverDetails(page, Math.round(blocked.y + blocked.height - 80 - view.top));
+      const left = await boxOf(blockedBy, "Blocked by");
+      expect(
+        left.y < view.top && left.y + left.height > view.top,
+        `at ${size.width} px the wheel left Blocked by at ${Math.round(left.y)} to ${Math.round(left.y + left.height)} px, not across the view's top at ${Math.round(view.top)}`
+      ).toBe(true);
+      // One read of the place the wheel left: the box has stood still for two frames, and the
+      // titles, which alone move it next, are still held.
+      const before = await boxOf(collaboratorsControl(page), "the Collaborators control");
+      expect(
+        wholly(before, view),
+        `at ${size.width} px the wheel took the Collaborators control out of Details' view`
+      ).toBe(true);
+
+      const grew = await grows(page, blockedBy, "Blocked by", titles.resolve, "Blocker 4:");
+      // One read once the titles have landed and the half second in `grows` has passed.
+      const after = await boxOf(collaboratorsControl(page), "the Collaborators control");
+      await expect(collaboratorsControl(page)).toBeFocused();
+      if (Math.abs(after.y - before.y) > 1) {
+        moved.push(
+          `at ${size.width} px, after the wheel, Blocked by grew ${Math.round(grew)} px and moved the focused Collaborators control from ${Math.round(before.y)} px to ${Math.round(after.y)} px`
+        );
+      }
+    } finally {
+      titles.resolve();
+      await context.close();
+    }
+  }
+  expect(moved, moved.join("; ")).toEqual([]);
+});
+
+// After `t o` the reader presses Shift, a key that leaves the focus on the control and scrolls
+// nothing, and Blocked by, in view above the control, grows as the titles land. The hold had
+// ended at the key, and the growth pushed the focused control down out of Details' view. Found on
+// a running build with a copy of a large real issue: the control went from 835 to 1,135 px in a
+// view of 53 to 900 at 1440 px, and the same at 768 and 390. The hold now lasts while the focus
+// stays on the control.
+test("t o, then Shift: the focused Collaborators control stays where it landed as Blocked by grows above it", async ({
+  browser,
+}) => {
+  test.setTimeout(240_000);
+  const key = await seedHeldRows({ waiting: false });
+  // Each width's move of the control, so one run says every width the growth moved it at.
+  const moved: string[] = [];
+  for (const size of [DESKTOP, TABLET, PHONE]) {
+    const titles = Promise.withResolvers<void>();
+    const { context, page } = await afterTo(browser, key, size, { titles: titles.promise });
+    try {
+      await page.keyboard.press("Shift");
+      await nextFrames(page);
+      // One read of where the control landed: the key moved nothing, and the titles, which alone
+      // move it next, are still held.
+      const before = await boxOf(collaboratorsControl(page), "the Collaborators control");
+      const blockedBy = detailsRow(page, PROPERTY_LABELS.blocked_by);
+      const grew = await grows(page, blockedBy, "Blocked by", titles.resolve, "Blocker 4:");
+      // One read once the titles have landed and the half second in `grows` has passed.
+      const after = await boxOf(collaboratorsControl(page), "the Collaborators control");
+      await expect(collaboratorsControl(page)).toBeFocused();
+      if (Math.abs(after.y - before.y) > 1) {
+        moved.push(
+          `at ${size.width} px, after Shift, Blocked by grew ${Math.round(grew)} px and moved the focused Collaborators control from ${Math.round(before.y)} px to ${Math.round(after.y)} px`
+        );
+      }
+    } finally {
+      titles.resolve();
+      await context.close();
+    }
+  }
+  expect(moved, moved.join("; ")).toEqual([]);
+});
+
+// At 390 px the reader's wheel after `t o` takes Blocked by wholly above Details' view. Its
+// growth as the titles land is then above every row in view, and the browser's own scroll
+// anchoring keeps those rows where they are, while the hold, which keeps the control's place
+// from where the wheel left it, finds nothing to put back. Found on a running build at 390 px,
+// where nothing moved; the row holds that case, which the hold that ended at the wheel kept too.
+test("t o, then a wheel at 390 px that takes Blocked by wholly above Details' view: no row in view moves as Blocked by grows", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  const key = await seedHeldRows({ waiting: false });
+  const titles = Promise.withResolvers<void>();
+  const { context, page } = await afterTo(browser, key, PHONE, { titles: titles.promise });
+  try {
+    const blockedBy = detailsRow(page, PROPERTY_LABELS.blocked_by);
+    const view = await historyViewport(page);
+    const blocked = await boxOf(blockedBy, "Blocked by");
+    await wheelOverDetails(page, Math.ceil(blocked.y + blocked.height - view.top) + 8);
+    const left = await boxOf(blockedBy, "Blocked by");
+    expect(
+      left.y + left.height <= view.top,
+      `the wheel left Blocked by's foot at ${Math.round(left.y + left.height)} px, in the view from ${Math.round(view.top)}`
+    ).toBe(true);
+    // One read of the place the wheel left: the box has stood still for two frames, and the
+    // titles, which alone move it next, are still held. The row at the middle of the view
+    // stands for every row in it.
+    const shell = await boxOf(marginShell(page), "Details");
+    const middle = await page.evaluateHandle(({ x, y }) => document.elementFromPoint(x, y), {
+      x: shell.x + shell.width / 2,
+      y: (view.top + view.bottom) / 2,
+    });
+    const middleTop = () => middle.evaluate((element) => element?.getBoundingClientRect().top);
+    const before = await middleTop();
+    expect(before, "nothing is drawn at the middle of Details' view").toBeDefined();
+
+    const grew = await grows(page, blockedBy, "Blocked by", titles.resolve, "Blocker 4:");
+    // One read once the titles have landed and the half second in `grows` has passed.
+    const after = await middleTop();
+    expect(
+      Math.abs((after ?? Number.POSITIVE_INFINITY) - (before ?? 0)) <= 1,
+      `Blocked by grew ${Math.round(grew)} px above Details' view and moved the row at its middle from ${Math.round(before ?? 0)} px to ${Math.round(after ?? 0)} px`
+    ).toBe(true);
+  } finally {
+    titles.resolve();
+    await context.close();
+  }
+});
+
+// The hold keeps the control's place only while the control lies at least partly in Details'
+// view. After `t o` the reader turns the wheel up until the control is wholly below the view, and
+// Blocked by, in view above, grows as the titles land. Keeping the control's place then would
+// scroll the box by the growth and take the rows the reader turned to up out of the view: the
+// hold yields, and Blocked by's top stays where the reader sees it. The reader turns the wheel
+// down until the control is in view again, which makes it the place to keep once more, and Blocks,
+// in view above it, grows as the issues waiting on this one land: the control stays where the
+// wheel left it. The window is short, so the control lies out of view below the rows above it.
+test("t o, then a wheel that takes the focused control out of Details' view: the hold yields as Blocked by grows, and keeps the control again once a wheel brings it back", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  const key = await seedHeldRows({ waiting: true });
+  const titles = Promise.withResolvers<void>();
+  const waiting = Promise.withResolvers<void>();
+  const { context, page } = await afterTo(
+    browser,
+    key,
+    { height: 700, width: 1440 },
+    { titles: titles.promise, waiting: waiting.promise }
+  );
+  try {
+    const blockedBy = detailsRow(page, PROPERTY_LABELS.blocked_by);
+    const view = await historyViewport(page);
+    const landed = await boxOf(collaboratorsControl(page), "the Collaborators control");
+    await wheelOverDetails(page, -Math.ceil(view.bottom - landed.y + 24));
+    const below = await boxOf(collaboratorsControl(page), "the Collaborators control");
+    expect(
+      below.y >= view.bottom,
+      `the wheel left the Collaborators control at ${Math.round(below.y)} px, not below Details' view, which ends at ${Math.round(view.bottom)}`
+    ).toBe(true);
+    // One read of the place the wheel left: the box has stood still for two frames, and the
+    // titles, which alone move it next, are still held.
+    const blockedTop = (await boxOf(blockedBy, "Blocked by")).y;
+    expect(
+      blockedTop >= view.top && blockedTop < view.bottom,
+      `Blocked by's top stood at ${Math.round(blockedTop)} px, out of Details' view`
+    ).toBe(true);
+
+    const grew = await grows(page, blockedBy, "Blocked by", titles.resolve, "Blocker 4:");
+    // One read once the titles have landed and the half second in `grows` has passed.
+    const blockedAfter = (await boxOf(blockedBy, "Blocked by")).y;
+    expect(
+      Math.abs(blockedAfter - blockedTop) <= 1,
+      `with the focused control out of view, Blocked by grew ${Math.round(grew)} px and its top went from ${Math.round(blockedTop)} px to ${Math.round(blockedAfter)} px`
+    ).toBe(true);
+
+    const away = await boxOf(collaboratorsControl(page), "the Collaborators control");
+    await wheelOverDetails(page, Math.ceil(away.y + away.height + 16 - view.bottom));
+    // One read of the place the wheel left: the box has stood still for two frames, and the
+    // issues waiting on this one, which alone move it next, are still held.
+    const before = await boxOf(collaboratorsControl(page), "the Collaborators control");
+    expect(
+      wholly(before, view),
+      `the wheel back left the Collaborators control at ${Math.round(before.y)} px, out of Details' view`
+    ).toBe(true);
+    const blocks = detailsRow(page, PROPERTY_LABELS.blocks);
+    const blocksAt = await boxOf(blocks, "Blocks");
+    expect(
+      blocksAt.y >= view.top,
+      `Blocks stood at ${Math.round(blocksAt.y)} px, above Details' view, where the browser's own anchoring keeps the control`
+    ).toBe(true);
+    const blocksGrew = await grows(page, blocks, "Blocks", waiting.resolve, "Waiter 4:");
+    // One read once the waiting issues have landed and the half second in `grows` has passed.
+    const after = await boxOf(collaboratorsControl(page), "the Collaborators control");
+    await expect(collaboratorsControl(page)).toBeFocused();
+    expect(
+      Math.abs(after.y - before.y) <= 1,
+      `back in view, Blocks grew ${Math.round(blocksGrew)} px above the focused Collaborators control and moved it from ${Math.round(before.y)} px to ${Math.round(after.y)} px`
+    ).toBe(true);
+  } finally {
+    titles.resolve();
+    waiting.resolve();
+    await context.close();
+  }
+});
+
+// The history's anchor keeps the place of the entry the reader's pointer rests on in Details' box
+// (`ViewportAnchor.tsx`), with the browser's own scroll anchoring off there while it does, and the
+// hold of the place `t o` landed the focus at keeps the Collaborators control's place in the same
+// box by scrolling it in its own resize observer (`details-more.tsx`). Blocks grows above the
+// control when the issues waiting on this one are read, and the hold scrolls the box by as much
+// before the anchor's observer runs. That scroll of the hold's left the anchor's kept place stale:
+// the anchor found the box off the offset it kept the place at, put nothing back, and then took
+// the scroll's event for no move of the view. Once the reader moved the focus off the control
+// with Shift+Tab, which ends the hold, Blocked by, wholly above the view, grew when the titles of
+// the issues it names landed, and every row in Details' view went down by as much, with nothing
+// to put them back. The three reads are held until the row lets each go: the log until the hold
+// has the focus, so the anchor's observer starts after the hold's, as it does when the log
+// answers slowly; the waiting issues until the pointer is on an entry; the titles until the focus
+// has left the control.
+test("a growth above Details' view once the t o hold has ended leaves the rows in view where they stood, though the hold scrolled while the history kept the pointer's entry", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  const key = await seedHeldRows({ waiting: true });
+  const log = Promise.withResolvers<void>();
+  const waiting = Promise.withResolvers<void>();
+  const titles = Promise.withResolvers<void>();
+  // Tall enough that Details shows the history's entries beside the Collaborators control.
+  const { context, page } = await afterTo(
+    browser,
+    key,
+    { height: 1600, width: 1440 },
+    { log: log.promise, titles: titles.promise, waiting: waiting.promise }
+  );
+  try {
+    // The hold looks for the focus two frames after the key and holds from the frame it finds
+    // it; two frames more, and the log is let through.
+    await nextFrames(page);
+    await nextFrames(page);
+    log.resolve();
+    const entry = historyEntries(page).first();
+    await expect(entry, "the history drew no entry").toBeAttached();
+    await nextFrames(page);
+
+    // The reader's pointer comes to rest on the history's first entry.
+    const entryAt = await boxOf(entry, "the history's first entry");
+    const shown = await historyViewport(page);
+    expect(
+      wholly(entryAt, shown),
+      `the history's first entry stood out of Details' view (${Math.round(entryAt.y)} px)`
+    ).toBe(true);
+    const pointer = { x: entryAt.x + entryAt.width / 2, y: entryAt.y + entryAt.height / 2 };
+    await page.mouse.move(pointer.x, pointer.y);
+    await nextFrames(page);
+
+    // The issues waiting on this one land, Blocks grows above the control, and the hold keeps
+    // the control where it landed.
+    const blocks = detailsRow(page, PROPERTY_LABELS.blocks);
+    await grows(page, blocks, "Blocks", waiting.resolve, "Waiter 4:");
+
+    // The reader moves the focus off the control, to the Subscribers control above it in view,
+    // which ends the hold and scrolls nothing.
+    await page.keyboard.press("Shift+Tab");
+    await expect(collaboratorsControl(page)).not.toBeFocused();
+    await nextFrames(page);
+    // One read of the place the focus move left: the box has not moved since the hold's scroll,
+    // and the titles, which alone move it next, are still held. Details' box scrolls now that
+    // Blocks has grown, so its view is read again.
+    const view = await historyViewport(page);
+    const blockedBy = detailsRow(page, PROPERTY_LABELS.blocked_by);
+    const blockedAt = await boxOf(blockedBy, "Blocked by");
+    expect(
+      blockedAt.y + blockedAt.height <= view.top,
+      `Blocked by still reached into Details' view (its foot at ${Math.round(blockedAt.y + blockedAt.height)} px, the view from ${Math.round(view.top)}), so its growth is not above the view`
+    ).toBe(true);
+    const onEntry = await page.evaluate(
+      ({ x, y }) => document.elementFromPoint(x, y)?.closest("[data-history-entry]") !== null,
+      pointer
+    );
+    expect(onEntry, "the pointer no longer rests on an entry of the history").toBe(true);
+    const before = await boxOf(collaboratorsControl(page), "the Collaborators control");
+    expect(
+      wholly(before, view),
+      `the Collaborators control stood out of Details' view (${Math.round(before.y)} px, the view ${Math.round(view.top)} to ${Math.round(view.bottom)})`
+    ).toBe(true);
+
+    const grew = await grows(page, blockedBy, "Blocked by", titles.resolve, "Blocker 4:");
+    // One read once the titles have landed and the half second in `grows` has passed.
+    const after = await boxOf(collaboratorsControl(page), "the Collaborators control");
+    expect(
+      Math.abs(after.y - before.y) <= 1,
+      `after the hold ended, Blocked by grew ${Math.round(grew)} px above Details' view and moved the Collaborators control in it from ${Math.round(before.y)} px to ${Math.round(after.y)} px`
+    ).toBe(true);
+  } finally {
+    log.resolve();
+    waiting.resolve();
+    titles.resolve();
+    await context.close();
+  }
+});
+
 // `/issues/<key>/activity` opens Details at the history. The page
 // arrives with the log unread, so the history's heading has its box while the list under it is
 // still the loading line, and Details cannot yet scroll it to the top: the landing must still

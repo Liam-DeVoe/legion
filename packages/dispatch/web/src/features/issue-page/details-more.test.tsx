@@ -1227,9 +1227,10 @@ function PeopleInDrawer(): ReactNode {
  * under the one before, from the box's top, moved up by the box's scroll, and each element as
  * the row it stands in. happy-dom lays nothing out and never calls a resize observer back, so
  * `grow` sets a row's height and `resized` calls every observer back, as the browser does once
- * a row's height has changed.
+ * a row's height has changed. `log` is the answer to the history's read of the issue's log, an
+ * empty log at once unless a case holds it back.
  */
-function drawPeopleInDrawer(path: string) {
+function drawPeopleInDrawer(path: string, log: Promise<DispatchEvent[]> = Promise.resolve([])) {
   const heights = new Map([
     ["row-above", 200],
     ["row-below", 100],
@@ -1290,7 +1291,7 @@ function drawPeopleInDrawer(path: string) {
       legion_registry: "ok",
       people: [],
     }),
-    spyOn(api, "getIssueEvents").mockResolvedValue([]),
+    spyOn(api, "getIssueEvents").mockImplementation(() => log),
   ];
   const view = render(
     <MemoryRouter initialEntries={[path]}>
@@ -1437,9 +1438,64 @@ test("after t v, a row above the focused history that grows scrolls Details by a
   }
 });
 
-// The place is held only until the reader names one of their own: once they press a key or turn
-// the wheel, a row above that grows moves what is in view, as it does anywhere else.
-test("a key or a turn of the wheel of the reader's ends the hold, and a later growth above the control scrolls nothing", async () => {
+// `t v` from a load with Details shut reaches the history while its log is still being read, at
+// the end of what Details holds; once the log is drawn, the history's own landing brings its
+// heading to the top of Details' view. That landing is the place `t v` asks for, not a move the
+// hold makes good: the history stays at the top of the box, and a row above it that grows later
+// keeps it there.
+test("after t v, the history's landing at the top of Details is the place held as a row above it grows", async () => {
+  const log = Promise.withResolvers<DispatchEvent[]>();
+  const page = drawPeopleInDrawer(`/issues/${KEY}`, log.promise);
+  try {
+    await userEvent.keyboard("tv");
+    const history = await screen.findByTestId("issue-history");
+    await waitFor(() =>
+      expect(document.activeElement, "t v did not focus the history").toBe(history)
+    );
+    for (let frame = 0; frame < 2; frame += 1) {
+      await act(async () => {
+        const { promise, resolve } = Promise.withResolvers<void>();
+        requestAnimationFrame(() => resolve());
+        await promise;
+      });
+    }
+    expect(
+      history.getBoundingClientRect().top,
+      "the history stood at the top of Details before its log was read, so the case proves nothing"
+    ).toBeGreaterThan(BOX_TOP);
+
+    await act(async () => log.resolve([]));
+    await waitFor(() =>
+      expect(
+        history.getBoundingClientRect().top,
+        "the history's landing did not bring it to the top of Details"
+      ).toBe(BOX_TOP)
+    );
+    // The frame after the landing observes the history's list drawn under its heading.
+    page.resized();
+    expect(
+      history.getBoundingClientRect().top,
+      "the hold took the history's landing for a move to make good and put the history back"
+    ).toBe(BOX_TOP);
+
+    const scrolled = page.box.scrollTop;
+    page.grow("row-above", GROWTH);
+    page.resized();
+    expect(page.box.scrollTop, "the row above grew and Details did not scroll by as much").toBe(
+      scrolled + GROWTH
+    );
+    expect(
+      history.getBoundingClientRect().top,
+      "the row above grew and moved the history from where it landed"
+    ).toBe(BOX_TOP);
+  } finally {
+    page.restore();
+  }
+});
+
+// The hold lasts while the focus stays on the control: a key or a turn of the wheel that leaves it
+// there leaves the hold on, and a row above that grows later scrolls Details by as much.
+test("the hold survives a key and a turn of the wheel, and a later growth above the control scrolls Details by as much", async () => {
   const acts: readonly (readonly [string, (box: HTMLElement) => Promise<void>])[] = [
     [
       "a key",
@@ -1461,25 +1517,122 @@ test("a key or a turn of the wheel of the reader's ends the hold, and a later gr
     try {
       await userEvent.keyboard("to");
       await page.focused("t o");
+      const top = page.control().getBoundingClientRect().top;
       const scrolled = page.box.scrollTop;
+
+      await readerActs(page.box);
       page.grow("row-above", GROWTH);
       page.resized();
       expect(
         page.box.scrollTop,
-        `before ${how}, the row above grew and Details did not scroll by as much`
+        `after ${how}, the row above grew and Details did not scroll by as much`
       ).toBe(scrolled + GROWTH);
-
-      await readerActs(page.box);
-      const top = page.control().getBoundingClientRect().top;
-      page.grow("row-above", GROWTH);
-      page.resized();
-      expect(page.box.scrollTop, `after ${how}, a growth above the control scrolled Details`).toBe(
-        scrolled + GROWTH
-      );
-      expect(page.control().getBoundingClientRect().top).toBe(top + GROWTH);
+      expect(page.control().getBoundingClientRect().top).toBe(top);
     } finally {
       page.restore();
     }
+  }
+});
+
+/** The reader scrolling Details' box by `by`, and the box's scroll event that reports it, which
+ *  happy-dom does not raise for a change of `scrollTop`. */
+function readerScrolls(box: HTMLElement, by: number): void {
+  act(() => {
+    box.scrollTop += by;
+    box.dispatchEvent(new Event("scroll"));
+  });
+}
+
+// A scroll of Details the hold did not make is the reader's view of the control from then on:
+// the control is kept where that scroll left it, not put back where it landed.
+test("a scroll the reader makes moves the place the hold keeps to where the control then stands", async () => {
+  const page = drawPeopleInDrawer(`/issues/${KEY}`);
+  try {
+    await userEvent.keyboard("to");
+    await page.focused("t o");
+    const landed = page.control().getBoundingClientRect().top;
+
+    readerScrolls(page.box, 100);
+    const seen = page.control().getBoundingClientRect().top;
+    expect(seen).toBe(landed - 100);
+    const scrolled = page.box.scrollTop;
+    page.grow("row-above", GROWTH);
+    page.resized();
+    expect(page.box.scrollTop, "the row above grew and Details did not scroll by as much").toBe(
+      scrolled + GROWTH
+    );
+    expect(
+      page.control().getBoundingClientRect().top,
+      "the hold put the control back where it landed, undoing the reader's scroll"
+    ).toBe(seen);
+  } finally {
+    page.restore();
+  }
+});
+
+// The hold's own scroll raises its event a frame later, at the offset the hold left the box at.
+// That event is no scroll of the reader's: here the row above grows again before it, and the
+// change is observed after it, so taking the event for the reader's would keep the control where
+// that second growth pushed it.
+test("the hold's own scroll is not taken for the reader's", async () => {
+  const page = drawPeopleInDrawer(`/issues/${KEY}`);
+  try {
+    await userEvent.keyboard("to");
+    await page.focused("t o");
+    const top = page.control().getBoundingClientRect().top;
+    const scrolled = page.box.scrollTop;
+
+    page.grow("row-above", GROWTH);
+    page.resized();
+    expect(page.box.scrollTop).toBe(scrolled + GROWTH);
+    page.grow("row-above", GROWTH);
+    act(() => {
+      page.box.dispatchEvent(new Event("scroll"));
+    });
+    page.resized();
+    expect(
+      page.control().getBoundingClientRect().top,
+      "the hold took its own scroll for the reader's and kept the control where a growth pushed it"
+    ).toBe(top);
+    expect(page.box.scrollTop).toBe(scrolled + 2 * GROWTH);
+  } finally {
+    page.restore();
+  }
+});
+
+// A scroll that leaves the control wholly outside Details' view lets the hold yield: a row above
+// that grows then scrolls nothing, so the rows the reader scrolled to stay where they are. A
+// scroll that finds the control in the view again takes it as the place once more.
+test("a control scrolled wholly out of Details' view is not held, and is held again once a scroll finds it in view", async () => {
+  const page = drawPeopleInDrawer(`/issues/${KEY}`);
+  try {
+    await userEvent.keyboard("to");
+    await page.focused("t o");
+    const landed = page.control().getBoundingClientRect();
+
+    // Down past the control, until its foot stands above the box's top.
+    readerScrolls(page.box, landed.bottom - BOX_TOP + 100);
+    expect(page.control().getBoundingClientRect().bottom).toBeLessThan(BOX_TOP);
+    const scrolled = page.box.scrollTop;
+    page.grow("row-above", GROWTH);
+    page.resized();
+    expect(
+      page.box.scrollTop,
+      "the hold scrolled Details for a control wholly out of its view"
+    ).toBe(scrolled);
+
+    // The growth brought the control back into the view; the reader's next scroll finds it there.
+    readerScrolls(page.box, -10);
+    const seen = page.control().getBoundingClientRect().top;
+    expect(seen).toBeGreaterThan(BOX_TOP);
+    page.grow("row-above", GROWTH);
+    page.resized();
+    expect(
+      page.control().getBoundingClientRect().top,
+      "back in view, the control was not held again"
+    ).toBe(seen);
+  } finally {
+    page.restore();
   }
 });
 

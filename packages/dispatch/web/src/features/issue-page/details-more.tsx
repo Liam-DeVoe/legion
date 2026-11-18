@@ -25,7 +25,7 @@ import { DETAILS_ROW_ATTRIBUTE, type DetailsRow, useOpenDetailsAt } from "./deta
 import { FocusedNodeFacts } from "./FocusedNodeFacts";
 import { type FocusedNode, useFocusedNode } from "./focused-node";
 import { IssueCollaboratorList } from "./IssueCollaboratorList";
-import { IssueHistory } from "./IssueHistory";
+import { HISTORY_HEADING_LANDED_EVENT, IssueHistory } from "./IssueHistory";
 import { agentsOnlyItem, issueAddress } from "./issue-address";
 import { DETAILS_ATTRIBUTE, useMarginDrawer } from "./margin-slot";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
@@ -55,9 +55,6 @@ const COLLABORATORS_ROW = `aside[${DETAILS_ATTRIBUTE}] [${DETAILS_ROW_ATTRIBUTE}
 
 /** The history inside Details, which `t v` puts the focus on. */
 const HISTORY_IN_DETAILS = `aside[${DETAILS_ATTRIBUTE}] ${HISTORY}`;
-
-/** What a reader does that names a place of their own: the hold of the landed place ends at it. */
-const READER_ACTS = ["keydown", "pointerdown", "touchmove", "wheel"] as const;
 
 /**
  * The people of the issue, under Opened by in Details' People section: the sessions subscribed
@@ -422,29 +419,41 @@ function useLandedPlaceHold(open: boolean | undefined): (target: string, frames:
  * row above it that reads what it shows once Details opens - Blocked by, which reads the titles
  * of the issues it names - grows when that read lands, after the focus, and would push the
  * focused element down, out of the view where the reader sees the focus; a focused element
- * keeps its own place. So once the focus has arrived inside `target` - up to `frames` frames
- * are waited for it, and nothing is held if it never arrives - each change of height of what
- * Details' scrolling box holds scrolls the box by as far as the focused element then stands
- * from the top it had when the focus arrived. That top is measured afresh each time, so a move
- * anything else made, the browser's own scroll anchoring among them, is made good rather than
- * added to.
+ * keeps its own place, as the CSS scroll-anchoring spec takes the focused element first.
+ * So once the focus has arrived inside `target` - up to `frames` frames are waited for it, and
+ * nothing is held if it never arrives - each change of height of what Details' scrolling box
+ * holds scrolls the box by as far as the focused element then stands from the top kept. That
+ * top is measured afresh each time, so a move anything else made, the browser's own scroll
+ * anchoring among them, is made good rather than added to.
  *
- * The reader's first act ends the hold: a turn of the wheel, a touch that moves, a key or a
- * press anywhere on the page, heard before anything under it can stop it. So does the focus
- * leaving the element, and (`useLandedPlaceHold`) Details closing, the page going and the next
- * landing. A scroll the hold makes is no act of the reader's and never ends it. Returns what ends
- * the hold.
+ * The top kept is where the reader last saw the element: where the focus found it, and again
+ * where each scroll of the box the hold did not make itself left it - the reader's wheel, a key,
+ * a drag, the browser's own anchoring. The hold tells its own scroll by the offset that scroll
+ * left the box at, within the frame that reports it, as `ViewportAnchor.tsx` tells its own. While
+ * a scroll has left the element wholly outside the view, the hold yields: it corrects nothing,
+ * so whatever keeps the rows in view keeps them - the browser's own anchoring, or the history's
+ * anchor where it keeps a place - and a scroll that brings the element back into the view takes
+ * it as the place again.
+ *
+ * One move is the place the key asked for rather than one to make good: `t v` often reaches the
+ * history while its list is still the loading line, at the end of what Details holds, and once
+ * the list is drawn the history's own landing brings its heading to the top of Details' view
+ * (`IssueHistory.tsx`). The heading says so with an event that bubbles through the focused
+ * history (`HISTORY_HEADING_LANDED_EVENT`), and the top kept from then on is the one that landing
+ * left.
+ *
+ * The hold lasts while the focus stays on the element: a key, a press, the wheel or a touch that
+ * leaves it there leaves the hold on. The focus leaving the element ends it, and so
+ * (`useLandedPlaceHold`) do Details closing, the page going and the next landing. Returns what
+ * ends the hold.
  */
 function holdLandedPlace(target: string, frames: number): () => void {
   let frame = 0;
-  let held: { readonly control: HTMLElement; readonly sizes: ResizeObserver } | undefined;
+  let stop: (() => void) | undefined;
   function release(): void {
     cancelAnimationFrame(frame);
-    if (held === undefined) return;
-    held.sizes.disconnect();
-    held.control.removeEventListener("focusout", release);
-    for (const act of READER_ACTS) window.removeEventListener(act, release, true);
-    held = undefined;
+    stop?.();
+    stop = undefined;
   }
   const arrive = (left: number): void => {
     const control = document.activeElement;
@@ -468,21 +477,60 @@ function holdLandedPlace(target: string, frames: number): () => void {
     }
     if (box === null || box === details) return;
     const scroller = box;
-    const kept = control.getBoundingClientRect().top;
+    // The control's top as the place to keep, or null while it lies wholly outside the view.
+    let kept: number | null = null;
+    const take = () => {
+      const at = control.getBoundingClientRect();
+      const view = scroller.getBoundingClientRect();
+      kept = at.bottom > view.top && at.top < view.bottom ? at.top : null;
+    };
+    take();
+    // Where the hold's own last scroll left the box, and the frame asked for to end the mark: the
+    // frame that reports a scroll made in a resize observation runs its scroll steps, which raise
+    // the scroll's event, before its animation-frame callbacks.
+    let own: { readonly at: number; readonly frame: number } | undefined;
+    const endOwn = () => {
+      if (own !== undefined) cancelAnimationFrame(own.frame);
+      own = undefined;
+    };
     const sizes = new ResizeObserver(() => {
       if (document.activeElement !== control) {
         release();
         return;
       }
+      if (kept === null) return;
       const drift = control.getBoundingClientRect().top - kept;
-      if (drift !== 0) scroller.scrollTop += drift;
+      if (drift === 0) return;
+      const before = scroller.scrollTop;
+      scroller.scrollTop += drift;
+      if (scroller.scrollTop === before) return;
+      endOwn();
+      own = {
+        at: scroller.scrollTop,
+        frame: requestAnimationFrame(() => {
+          own = undefined;
+        }),
+      };
     });
+    // A frame raises one scroll event for the box, whatever moved it: the hold's own only where
+    // the box stands where the hold's last scroll left it.
+    const scrolled = () => {
+      const mine = own;
+      endOwn();
+      if (mine !== undefined && mine.at === scroller.scrollTop) return;
+      take();
+    };
     for (const content of scroller.children) sizes.observe(content);
     control.addEventListener("focusout", release);
-    for (const act of READER_ACTS) {
-      window.addEventListener(act, release, { capture: true, passive: true });
-    }
-    held = { control, sizes };
+    control.addEventListener(HISTORY_HEADING_LANDED_EVENT, take);
+    scroller.addEventListener("scroll", scrolled, { passive: true });
+    stop = () => {
+      endOwn();
+      sizes.disconnect();
+      control.removeEventListener("focusout", release);
+      control.removeEventListener(HISTORY_HEADING_LANDED_EVENT, take);
+      scroller.removeEventListener("scroll", scrolled);
+    };
   };
   // The opener focuses the control in its second frame, and this looks in that frame, after it.
   frame = requestAnimationFrame(() => {

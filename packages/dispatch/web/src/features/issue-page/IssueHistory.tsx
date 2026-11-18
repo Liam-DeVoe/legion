@@ -53,6 +53,12 @@ import { ROW_LINK } from "./row-references";
 /** How many events a page of the log holds, as the server answers it. */
 const PAGE = 200;
 
+/** The event the history's heading raises, bubbling, once an arrival at `/activity` has brought
+ *  it to the top of Details' view. That scroll is the landing the arrival asked for, not a move
+ *  that takes the reader from their place: the hold of the place `t v` lands the focus at keeps
+ *  the focused history where this scroll leaves it (`details-more.tsx`). */
+export const HISTORY_HEADING_LANDED_EVENT = "history-heading-landed";
+
 /** A day's line, the prototype's `.hdl`: 12 px on 18 px at weight 600 in the muted grey, 5 px
  *  above and below, its words as written. Its count is at weight 500 in the quiet grey. */
 const DAY_LINE = `py-[5px] text-left text-xs leading-[18px] font-semibold ${pageMutedText}`;
@@ -260,7 +266,8 @@ export function IssueHistory({
   // with the browser's Back or Forward to the history this list drew there before - Details left
   // open beside a view, or at a turn's address - finds Details where they left it, so that
   // arrival brings nothing. Only the box Details scrolls in moves, never the page under it; the
-  // reader's own scroll after that is theirs.
+  // reader's own scroll after that is theirs. Once the heading has landed it says so
+  // (`HISTORY_HEADING_LANDED_EVENT`).
   const navigation = useNavigationType();
   const heading = useRef<HTMLHeadingElement>(null);
   const headingLanded = useRef<string | undefined>(undefined);
@@ -284,7 +291,9 @@ export function IssueHistory({
     landedBefore.current = true;
     if (comingBack) return;
     const box = scrollingAncestor(element);
-    if (box !== null) scrollElementToTop(element, box);
+    if (box === null) return;
+    scrollElementToTop(element, box);
+    element.dispatchEvent(new CustomEvent(HISTORY_HEADING_LANDED_EVENT, { bubbles: true }));
   });
   // The history is newest first, so every event the feed prepends lands above a reader who is
   // down in it: the anchor holds the entry they are on where it was, in the box it scrolls in -
