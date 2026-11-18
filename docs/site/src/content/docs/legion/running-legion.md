@@ -661,8 +661,8 @@ What each part is for:
 - Workflow limits, all optional: `linger_hours` (72), `production_check_hours` (336: how long a
   closed issue's production check runs before its last look, 14 days by default,
   decimals allowed), `pod_update_grace_minutes` (30: how many minutes after it opens a pod's
-  update round ends and the pod is replaced, whatever the roles answered and unless an operator's
-  suspension holds the round, decimals allowed),
+  update round ends and the pod is replaced, whatever the roles answered and unless the operator's,
+  the controller's or an architect's suspension holds the round, decimals allowed),
   `pod_update_max_open_rounds` (how many issues may hold an open pod-update round at once) and
   `pod_update_rounds_per_minute` (how many rounds one sweep opens), each a positive integer whose
   absent key is no limit at all, `stalled_tree_notice_hours` (6: how long a tree the daemon runs
@@ -1193,12 +1193,17 @@ Closing the terminal leaves the project without one, and the daemon logs
    session instead. The daemon suspends or ends claims only when an issue leaves the workflow,
    when a claim moves to another tree, or for a production check after the issue is done. A phase
    start gives its task to that live claim. At boot the daemon
-   resumes by rule a suspended worker that still owns its issue's phase, but never a claim an
-   operator suspended; a start for an operator-suspended claim waits instead. A notice for a root's
-   operator-suspended architect waits until the operator resumes it. A notice for a child whose
-   own architect an operator suspended goes to the architect above that child. A drain therefore
+   resumes by rule a suspended worker that still owns its issue's phase and that the daemon itself
+   suspended, but never a claim the operator, the project's controller or an architect suspended:
+   a start for a claim one of those three holds waits instead, until a resume lifts the hold. The
+   operator's resume lifts any of the three, the controller's its own and an architect's, and an
+   architect's only an architect's. A notice for a root's architect that the operator or the
+   controller suspended waits until a resume lifts that suspension. A notice for a child whose own
+   architect is suspended, whoever suspended it, goes to the architect above that child, unless the
+   daemon only released that architect's idle pod, which the notice wakes. A drain therefore
    ends with the operator resuming every claim they suspended, one `legion claims resume` each;
-   `legion claims list --json` names each one's `suspendedBy` (`operator`, `daemon`, `exit`, or
+   `legion claims list --json` names each one's `suspendedBy` (`operator`, `controller`,
+   `architect`, `daemon`, `exit`, `released` for one whose idle pod the daemon released, or
    `unknown` for one suspended before this release). A daemon suspension of a claim whose issue
    left the workflow waits for its current turn to finish, with no stop timeout: a child parked
    in Dispatch (`backlog` or `icebox`) stops its worker only once the worker's current turn ends,

@@ -72,12 +72,12 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 //   - A worker of its issue's phase: the role phase.RoleFor gives the phase its worker works
 //     (record.Issue.WorkingPhase), which a held issue keeps from the phase it left. Only a start
 //     of that phase brings back a failed or a retired worker, so either is stranded once no such
-//     start is queued (StartFor, the rule promotion reads). A suspended one is stranded when an
-//     operator suspended it, or when its suspension was recorded before migration 0038 (unknown)
-//     and no start is queued for it: the boot resumes neither, and a start queued for an unknown
-//     one resumes it. The daemon resumes one it or its own exit suspended by rule (supervise's
-//     ByRule), at boot (DaemonBooted) and at the phase's next start, so the report leaves those
-//     sources out.
+//     start is queued (StartFor, the rule promotion reads). A suspended one is stranded when the
+//     operator, the controller or an architect suspended it, or when its suspension was recorded
+//     before migration 0038 (unknown) and no start is queued for it: the boot resumes neither,
+//     and a start queued for an unknown one resumes it. The daemon resumes one it or its own exit
+//     suspended by rule (supervise's ByRule), at boot (DaemonBooted) and at the phase's next
+//     start, so the report leaves those sources out.
 //   - Its tree's architect: only its tree's admission starts it, whoever suspended it. A notice to a
 //     suspended one is held until it holds its role again, which nothing in the daemon brings
 //     about, and a notice to a failed or a retired one finishes undelivered (the notice executor).
@@ -202,10 +202,11 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 		// to the architect above it (Engine.claimFailed), and the daemon starts it again at its
 		// child's next phase start (Engine.reviveArchitect). A stranded claim goes to the
 		// controller, whose remedy is an operator's retry, which a claim the daemon starts again
-		// does not need. One an operator stopped or suspended is that operator's own move, which
-		// its retry or resume undoes. One the child's leave suspended or retired comes back at the
-		// child's next first phase start. One that its own exit retired is reported nowhere, as
-		// Stranded's comment says.
+		// does not need. One the operator, the controller or an architect above it stopped or
+		// suspended is that caller's own move: a retry undoes the stop, and the suspension waits
+		// for its holder's resume or one that outranks it (supervise.Claim.ResumeRefusal). One the
+		// child's leave suspended or retired comes back at the child's next first phase start. One
+		// that its own exit retired is reported nowhere, as Stranded's comment says.
 		var current phase.Phase
 		switch {
 		case claim.IsTreeArchitect(c.Role, issue.Key, issue.Tree):

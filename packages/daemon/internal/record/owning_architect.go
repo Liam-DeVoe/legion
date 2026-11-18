@@ -119,9 +119,10 @@ func TreeByKey(members []Issue) map[string]Issue {
 // outbox runs the start its child's first phase start queued, and holds its role from that run on,
 // queued or launching. A released claim keeps its session, its phase and its task, and the next
 // wake for its role resumes it, so what it owns is still its own; any other suspension stops the
-// claim until a rule or an operator starts it again. Were a released architect to lose its role
-// here, a notice for it would walk up to the architect above it, which owns neither the issue nor
-// the answer.
+// claim until a rule or a resume starts it again, and one the operator, the controller or an
+// architect holds (supervise.SuspendSource.Holds) until that holder's resume, or one that outranks
+// it, lifts it. Were a released architect to lose its role here, a notice for it would walk up to
+// the architect above it, which owns neither the issue nor the answer.
 //
 // It is the whole rule for a reader in a transaction (ArchitectRuns). The daemon's outbox reads
 // the same rule over the machine's live view and also passes over a claim whose process a

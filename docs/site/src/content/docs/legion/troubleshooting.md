@@ -858,10 +858,12 @@ failure by the child's next phase start. A notice starts no architect, except on
 the daemon released, which it wakes: a notice for a root's architect waits for it, or ends
 undelivered once that claim has failed or retired, and a notice for a child whose own architect
 does not hold its role goes to the architect above. A suspended worker of its issue's current
-phase that the daemon suspended is resumed by the daemon at boot. One an operator suspended
-(`legion claims suspend`, one claim at a time or a whole fleet before a restart), or whose
-suspension predates the release that records who suspended it (`suspendedBy: unknown`), is not;
-neither is an operator-suspended or failed tree architect, nor a claim whose launches ran out, nor
+phase that the daemon suspended is resumed by the daemon at boot. One the operator, the project's
+controller or an architect suspended (the operator's `legion claims suspend`, one claim at a time
+or a whole fleet before a restart, or the controller's or an architect's suspension through its
+`legion` tool), or whose suspension predates the release that records who suspended it
+(`suspendedBy: unknown`), is not; neither is a tree architect that the operator or the controller
+suspended or that failed, nor a claim whose launches ran out, nor
 a claim a close or a stop retired while its tree runs, whatever its role. Each of those but a
 child's own architect stops its tree: nothing wakes it, the daemon looks healthy and the state
 shows the tree active, but the tree stops for good at the worker's phase, or at the first decision
@@ -928,6 +930,10 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
     legion claims deliver --config legion.yaml --operator-token-file operator-token --claim legion-widgets-widgets-12-implementer \
       --task "Continue <title>. Issue: WIDGETS-12. Phase: implementing. Resume the existing phase work."
     ```
+  - **`suspendedBy: controller` or `suspendedBy: architect`** (the project's controller, or an
+    architect of the worker's tree, suspended it through its `legion` tool): it is that holder's
+    move, and it waits for that holder's `resume`. Ask the holder on its role topic before you act;
+    your own resume or delivery lifts either suspension too, since the operator's outranks both.
 
 - **`retry`** (a failed architect): retry it. The daemon relaunches it on the session it kept, or on
   a new one once supervise's `forgetSession` has dropped that, with fresh budgets, and sends it a
@@ -970,10 +976,11 @@ The list never names a child's own architect: while that architect does not hold
 architect above it takes the child's notices, and a later start of the role brings it back, as the
 daemon's supervise table decides for the state the claim stands in. The workflow's own starts of
 it, an operator's retry and the controller's `fresh_session` are among such starts. A child's own
-architect that an operator suspended waits for the operator's resume (`legion claims list` shows
-it).
-Any other claim an operator suspended is listed even when a workflow start is queued for it: that
-start waits for the operator's resume. One whose `suspendedBy` is `unknown` is listed only while no
+architect that the operator, the controller or an architect above it suspended waits for that
+holder's resume, or one that outranks it: the operator's lifts any of the three, and the
+controller's an architect's too (`legion claims list` shows the holder as its `suspendedBy`).
+Any other claim one of those three suspended is listed even when a workflow start is queued for it:
+that start waits for the same resume. One whose `suspendedBy` is `unknown` is listed only while no
 start is queued for it, since the next phase start or re-admission resumes it as before.
 
 ## A worker that stopped taking turns

@@ -1359,10 +1359,12 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 // told in the order the notices were written: on its backoff (errNoticeWaits), or, when the
 // earlier row is itself due at a moment still ahead, at that moment and once (wait.Until). A role
 // topic with no live holder refuses the publish (notify.ErrNoHolder): while the architect's claim
-// can hold its role again — relaunching, a root the operator suspended and can resume, or the
+// can hold its role again — relaunching, a suspended root whoever suspended it (the operator's or
+// the controller's suspension until that holder's resume, or the operator's, lifts it), or the
 // architect of a catch-up's own issue suspended while that issue is in the workflow, which its
-// next start resumes — the row is held for it; once nobody will hold that role for this notice —
-// the claim has failed or retired, or its tree lingers or has closed — the row finishes
+// next start, or the resume that lifts a hold over it, starts again — the row is held for it; once
+// nobody will hold that role for this notice — the claim has failed or retired, or its tree lingers
+// or has closed — the row finishes
 // undelivered with one log line. So does a row whose architect cannot be resolved from the record
 // (errNoticeUnroutable), which holds back no later notice either, and, before any publish, a row
 // whose architect stopped with its finished tree (stoppedWithTree), and a child's catch-up while
@@ -1914,9 +1916,9 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// A child of a closed tree re-admitted as a root of its own keeps its roles' claims, which
 		// still name the tree it left; each is re-pointed before anything else here, so it binds this
 		// tree's lifecycle and launches in this tree's resources, and so does whatever resumes it
-		// while this start waits (an operator's resume of a claim the operator suspended). The issue
-		// the supervisor keeps beside the machine (volumeLost) never moves with it: a claim's issue is
-		// fixed for its life.
+		// while this start waits (the resume that lifts a suspension the operator, the controller
+		// or an architect holds over it). The issue the supervisor keeps beside the machine
+		// (volumeLost) never moves with it: a claim's issue is fixed for its life.
 		if found && machine.Claim().Tree != issue.Tree {
 			if err := machine.Retree(ctx, issue.Tree); err != nil {
 				return err
@@ -2000,10 +2002,11 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return fmt.Errorf("start claim %s: %w", token, err)
 			}
 		case supervise.StateSuspended:
-			// The role owns the issue's phase this start is for: the rule resumes it, unless an
-			// operator suspended it meanwhile, when the task's delivery below waits instead. A check
-			// start resumes the role the check records the close or the linger suspended, in a Sandbox the
-			// resume relaunches (runtime/sandbox's relaunch).
+			// The role owns the issue's phase this start is for: the rule resumes it, unless the
+			// operator, the controller or an architect suspended it meanwhile (supervise's
+			// Claim.RuleHolds), when the task's delivery below waits instead. A check start resumes
+			// the role the check records the close or the linger suspended, in a Sandbox the resume
+			// relaunches (runtime/sandbox's relaunch).
 			reason := fmt.Sprintf("start row %d of %s (phase %q)", row.ID, issue.Key, payload.Phase)
 			if payload.CheckLook > 0 {
 				reason = fmt.Sprintf("start row %d of %s (production check look %d)", row.ID, issue.Key, payload.CheckLook)

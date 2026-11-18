@@ -152,11 +152,12 @@ type stallNoticeOwed struct {
 
 // tellStallBackstopped tells the architect that owns the stall's notice — for a phase worker the
 // architect its issue's notices reach, for a child's own architect the architect above that child,
-// and for a tree's architect that architect itself, with the controller — what the daemon's stall
-// backstop did to this turn, with the record the machine acted on in the notice: how long the
-// agent was silent, the bound it passed, when the turn began and the call the record names, if
-// any. The call's arguments are in no part of it: their text is in no column either, a shell
-// command routinely holding a credential (supervise.StepRecord).
+// and for a tree's architect that architect itself, with the controller too only when the stall's
+// end failed the claim (enqueueStallNotice) — what the daemon's stall backstop did to this turn,
+// with the record the machine acted on in the notice: how long the agent was silent, the bound it
+// passed, when the turn began and the call the record names, if any. The call's arguments are in no
+// part of it: their text is in no column either, a shell command routinely holding a credential
+// (supervise.StepRecord).
 //
 // What the lines below say of the end is the record itself, which carries it: the end says what
 // became of the claim's process, the machine's own record of the stop says whether the runtime
