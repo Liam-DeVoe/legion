@@ -63,6 +63,26 @@ export function classOf(element: Element): string[] {
   return tokens(element.getAttribute("class") ?? "");
 }
 
+/** What holds an element at its width or on one line: `shrink-0` and `flex-none` keep its width
+ *  in a flex row, `whitespace-nowrap`, `text-nowrap` and `whitespace-pre` keep its words on one
+ *  line, and `truncate` cuts what does not fit. */
+export const HOLDS_ITS_LINE = [
+  "flex-none",
+  "shrink-0",
+  "text-nowrap",
+  "truncate",
+  "whitespace-nowrap",
+  "whitespace-pre",
+];
+
+/** What of `HOLDS_ITS_LINE` an element carries, its inline `flex-shrink: 0` among them. */
+export function holdsItsLine(element: Element): string[] {
+  const held = classOf(element).filter((token) => HOLDS_ITS_LINE.includes(token));
+  return element instanceof HTMLElement && element.style.flexShrink === "0"
+    ? [...held, "flex-shrink: 0"]
+    : held;
+}
+
 export const LIVE_SESSION = "session-live-0001";
 export const STALLED_SESSION = "session-stalled-02";
 export const GONE_SESSION = "session-gone-00003";
