@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // IntrospectPath is the broker's RFC 7662 introspection route, which answers what the broker
@@ -103,7 +104,9 @@ func (v *Verifier) introspect(ctx context.Context, token string) (Introspection,
 	form := url.Values{"token": []string{token}}.Encode()
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, v.brokerURL+IntrospectPath, strings.NewReader(form))
 	if err != nil {
-		return Introspection{}, fmt.Errorf("%w: build the introspection request: %w", ErrBrokerUnreachable, err)
+		// The request is built from the broker URL, which may carry a user and a password, and a
+		// parse error quotes the URL whole: redact.Error prints only its class then.
+		return Introspection{}, fmt.Errorf("%w: build the introspection request: %w", ErrBrokerUnreachable, redact.Error(err, v.brokerURL))
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	request.Header.Set("Authorization", "Bearer "+account)

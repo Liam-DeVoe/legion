@@ -9,7 +9,20 @@ import (
 	"time"
 
 	"golang.org/x/sync/singleflight"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
+
+// issuerError is err as a message may print it, err having come from asking issuer: err itself for
+// an issuer redact.URL prints whole, and otherwise only the class of the failure (redact.Error),
+// since a library's error can quote the URL it was asked on, and an issuer can carry a user and a
+// password. Every message of this package names an issuer through redact.URL.
+func issuerError(err error, issuer string) error {
+	if redact.URL(issuer) == issuer {
+		return err
+	}
+	return redact.Error(err, issuer)
+}
 
 // ErrIssuerUnavailable means the issuer could not be asked: its discovery document has not been
 // read yet, or a call to it failed in a way that says nothing about the token or the grant it
@@ -103,7 +116,7 @@ func (d *discovery[T]) discover(ctx context.Context) (T, error) {
 		}
 		return result.Val.(T), nil
 	case <-ctx.Done():
-		return zero, fmt.Errorf("%w: waiting for issuer %s's discovery: %w", ErrIssuerUnavailable, d.issuer, ctx.Err())
+		return zero, fmt.Errorf("%w: waiting for issuer %s's discovery: %w", ErrIssuerUnavailable, redact.URL(d.issuer), ctx.Err())
 	}
 }
 
@@ -130,7 +143,7 @@ func (d *discovery[T]) run(ctx context.Context) {
 	wait := discoveryRetryFirst
 	for {
 		if _, err := d.discover(ctx); err == nil {
-			slog.Info("oidc: discovered the issuer", "issuer", d.issuer)
+			slog.Info("oidc: discovered the issuer", "issuer", redact.URL(d.issuer))
 			return
 		} else if ctx.Err() == nil {
 			d.logFailure(err)
@@ -153,7 +166,7 @@ func (d *discovery[T]) logFailure(err error) {
 	}
 	d.mu.Unlock()
 	if due {
-		slog.Error("oidc: discover the issuer; retrying in the background, and what needs it answers 503 meanwhile", "issuer", d.issuer, "error", err)
+		slog.Error("oidc: discover the issuer; retrying in the background, and what needs it answers 503 meanwhile", "issuer", redact.URL(d.issuer), "error", err)
 	}
 }
 

@@ -13,6 +13,8 @@ import (
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // tokenTimeout bounds one call to the issuer's token endpoint, a code exchange or a refresh, and
@@ -98,17 +100,17 @@ func NewCodeFlow(issuer, clientID, clientSecret, hostedDomain string) *CodeFlow 
 func discoverCodeFlow(ctx context.Context, issuer, clientID, clientSecret string) (*codeFlowIssuer, error) {
 	provider, err := gooidc.NewProvider(ctx, issuer)
 	if err != nil {
-		return nil, fmt.Errorf("oidc: discovering issuer %s: %w", issuer, err)
+		return nil, fmt.Errorf("oidc: discovering issuer %s: %w", redact.URL(issuer), issuerError(err, issuer))
 	}
 	endpoint := provider.Endpoint()
 	if endpoint.AuthURL == "" || endpoint.TokenURL == "" {
-		return nil, fmt.Errorf("oidc: issuer %s names no authorization_endpoint or token_endpoint in its discovery document, so it offers no sign-in", issuer)
+		return nil, fmt.Errorf("oidc: issuer %s names no authorization_endpoint or token_endpoint in its discovery document, so it offers no sign-in", redact.URL(issuer))
 	}
 	var revocation struct {
 		Endpoint string `json:"revocation_endpoint"`
 	}
 	if err := provider.Claims(&revocation); err != nil {
-		return nil, fmt.Errorf("oidc: read issuer %s's revocation_endpoint: %w", issuer, err)
+		return nil, fmt.Errorf("oidc: read issuer %s's revocation_endpoint: %w", redact.URL(issuer), issuerError(err, issuer))
 	}
 	return &codeFlowIssuer{
 		verifier: newVerifier(provider, issuer, clientID),

@@ -13,6 +13,8 @@ import (
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	jose "github.com/go-jose/go-jose/v4"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // The class of every Key failure. A key the issuer does not publish and an issuer that cannot be
@@ -96,16 +98,16 @@ type keysFetch struct {
 func NewKeys(ctx context.Context, issuer string) (*Keys, error) {
 	provider, err := gooidc.NewProvider(ctx, issuer)
 	if err != nil {
-		return nil, fmt.Errorf("oidc: discovering issuer %s: %w", issuer, err)
+		return nil, fmt.Errorf("oidc: discovering issuer %s: %w", redact.URL(issuer), issuerError(err, issuer))
 	}
 	var discovery struct {
 		JWKSURI string `json:"jwks_uri"`
 	}
 	if err := provider.Claims(&discovery); err != nil {
-		return nil, fmt.Errorf("oidc: reading issuer %s discovery document: %w", issuer, err)
+		return nil, fmt.Errorf("oidc: reading issuer %s discovery document: %w", redact.URL(issuer), issuerError(err, issuer))
 	}
 	if discovery.JWKSURI == "" {
-		return nil, fmt.Errorf("oidc: issuer %s names no jwks_uri in its discovery document", issuer)
+		return nil, fmt.Errorf("oidc: issuer %s names no jwks_uri in its discovery document", redact.URL(issuer))
 	}
 	return &Keys{
 		Lifetime:     DefaultKeysLifetime,
