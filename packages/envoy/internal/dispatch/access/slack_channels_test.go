@@ -200,12 +200,14 @@ func TestTheChannelsTimeMovesOnlyWhenTheListChanges(t *testing.T) {
 // TestASharedSlackChannelNamesItsProjectOnlyToACallerWhoSeesIt: a Slack channel belongs to one
 // private project, so a write of a private project's list naming a channel another private project
 // lists is refused with ErrSlackChannelShared and writes nothing. The refusal names the other
-// project only to a caller who sees it: its person sees it by the membership answer, and its
-// credential lists no projects or lists it; anyone else reads the refusal that names no project.
-// A public project's list is never refused for sharing a channel. OTHER is private and names
-// C0SHARED001 here; each write is of PRIV's list, or PUB's. Controls: drop the credential's part
-// of the rule, and olga's token listing PRIV alone fails naming it; refuse a public project's
-// write too, and PUB's row fails.
+// project only to a caller who sees it by the read rule: the viewer Resolve answers for the
+// request's own caller, which the write's actor carries (model.Actor.Viewer). An agent credential
+// with no list sees only public projects, so it reads the refusal that names no project however
+// much its person sees, and so does a write whose actor carries no viewer. A public project's list
+// is never refused for sharing a channel. OTHER is private and names C0SHARED001 here; each write
+// is of PRIV's list, or PUB's. Controls: name OTHER to a credential with no list whenever its
+// person sees OTHER, and olga's token and broker token listing nothing fail naming it; refuse a
+// public project's write too, and PUB's row fails.
 func TestASharedSlackChannelNamesItsProjectOnlyToACallerWhoSeesIt(t *testing.T) {
 	ctx := context.Background()
 	database := seedAccess(t)
@@ -217,25 +219,30 @@ func TestASharedSlackChannelNamesItsProjectOnlyToACallerWhoSeesIt(t *testing.T) 
 		named  = "C0SHARED001 is listed by OTHER, a private project; a Slack channel belongs to one private project"
 		hidden = "C0SHARED001 is listed by a private project you cannot see"
 	)
-	// acting is the actor an owner's write runs as: the person, carrying the request's credential,
-	// which lists projects when it is a token that names some.
-	acting := func(login, token string, projects ...string) model.Actor {
-		return model.Actor{Kind: "user", ID: login, Credential: &model.Credential{Scopes: model.Scopes, TokenID: token, Projects: projects}}
-	}
+	// brokerToken is a person's access token the secrets broker issued, with no list, as the API
+	// resolves it (api/broker_token.go).
+	brokerToken := model.Actor{Kind: "session", ID: "ses_olga", Owner: new(olga), Credential: &model.Credential{Scopes: model.Scopes, Session: "ses_olga"}}
 	for _, row := range []struct {
-		name string
-		by   model.Actor
-		want string
+		name   string
+		caller model.Actor
+		want   string
 	}{
-		{"olga, OTHER's owner, at her browser", acting(olga, ""), named},
-		{"dave, a full member of the group OTHER lists", acting(dave, ""), named},
-		{"carol, whom PRIV lists and OTHER does not", acting(carol, ""), hidden},
-		{"olga's token listing PRIV alone", acting(olga, "token-of-olga", "PRIV"), hidden},
-		{"olga's token listing OTHER and PRIV", acting(olga, "token-of-olga", "OTHER", "PRIV"), named},
-		{"olga as an actor carrying no credential", model.Actor{Kind: "user", ID: olga}, named},
+		{"olga, OTHER's owner, at her browser", cookie(olga), named},
+		{"dave, a full member of the group OTHER lists", cookie(dave), named},
+		{"carol, whom PRIV lists and OTHER does not", cookie(carol), hidden},
+		{"olga's personal token listing no projects", personalToken(olga), hidden},
+		{"olga's broker token listing no projects", brokerToken, hidden},
+		{"olga's token listing PRIV alone", personalToken(olga, "PRIV"), hidden},
+		{"olga's token listing OTHER and PRIV", personalToken(olga, "OTHER", "PRIV"), named},
 	} {
-		err := inTx(t, database, func(tx pgx.Tx) error {
-			_, _, err := SetSlackChannels(ctx, tx, broker, "PRIV", []string{"C0SHARED001"}, row.by)
+		viewer, err := Resolve(ctx, database.Pool, row.caller)
+		if err != nil {
+			t.Fatalf("%s: resolve: %v", row.name, err)
+		}
+		// The owner's write runs as the caller's person, carrying the caller's viewer.
+		by := model.Actor{Kind: "user", ID: viewer.Person, Viewer: &viewer}
+		err = inTx(t, database, func(tx pgx.Tx) error {
+			_, _, err := SetSlackChannels(ctx, tx, broker, "PRIV", []string{"C0SHARED001"}, by)
 			return err
 		})
 		if !errors.Is(err, ErrSlackChannelShared) || err.Error() != row.want {
@@ -244,6 +251,12 @@ func TestASharedSlackChannelNamesItsProjectOnlyToACallerWhoSeesIt(t *testing.T) 
 		if got := slackChannelsOf(t, database.Pool, "PRIV"); len(got) != 0 || changedAtOf(t, database.Pool, "PRIV") != nil {
 			t.Errorf("%s: PRIV's list moved to %v under a refused write", row.name, got)
 		}
+	}
+	if err := inTx(t, database, func(tx pgx.Tx) error {
+		_, _, err := SetSlackChannels(ctx, tx, broker, "PRIV", []string{"C0SHARED001"}, model.Actor{Kind: "user", ID: olga})
+		return err
+	}); !errors.Is(err, ErrSlackChannelShared) || err.Error() != hidden {
+		t.Errorf("a write by an actor carrying no viewer = %v, want ErrSlackChannelShared reading %q", err, hidden)
 	}
 	if err := inTx(t, database, func(tx pgx.Tx) error {
 		_, _, err := SetSlackChannels(ctx, tx, broker, "PUB", []string{"C0SHARED001"}, cookie(olga))

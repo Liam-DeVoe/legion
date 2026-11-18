@@ -85,6 +85,19 @@ func (s *server) patchProjectAccess(w http.ResponseWriter, r *http.Request) {
 			answer, appended = written, append(appended, event)
 		}
 		if input.SlackChannels != nil {
+			// A shared channel's refusal names the other private project only to a caller who sees
+			// it: the read rule over the request's own credential (access.Resolve), not over by, the
+			// person actingPerson answers. Read as that person, a token listing no project would see
+			// the person's private projects, which the token does not.
+			caller, _, err := s.optionalActor(r)
+			if err != nil {
+				return model.ProjectAccess{}, nil, err
+			}
+			viewer, err := access.Resolve(ctx, tx, caller)
+			if err != nil {
+				return model.ProjectAccess{}, nil, err
+			}
+			by.Viewer = &viewer
 			written, event, err := access.SetSlackChannels(ctx, tx, s.deps.Events, key, *input.SlackChannels, by)
 			if err != nil {
 				return model.ProjectAccess{}, nil, err
@@ -139,23 +152,14 @@ func (s *server) principalWrite(w http.ResponseWriter, r *http.Request, kind, pr
 // locks access.LockForAccessWrite takes in the one order every access write takes them (group,
 // the group the write names, or "" for none), so an owner change committed meanwhile is read
 // rather than raced and a delete of the group is ordered against the write. Anyone else is 403
-// PROJECT_OWNER_REQUIRED before anything is written. The write runs as the person carrying the
-// request's own credential, whose list of projects decides what a refusal may name
-// (access.SetSlackChannels); every write records the actor without it (model.Actor.Recorded). It
-// publishes what the write appended once it commits, and answers the project's access as the
-// write left it.
+// PROJECT_OWNER_REQUIRED before anything is written. It publishes what the write appended once it
+// commits, and answers the project's access as the write left it.
 func (s *server) ownerWrite(w http.ResponseWriter, r *http.Request, group string,
 	write func(ctx context.Context, tx pgx.Tx, key string, by model.Actor) (model.ProjectAccess, []model.Event, error)) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
 		return
 	}
-	caller, _, err := s.optionalActor(r)
-	if err != nil {
-		s.writeAuthenticationError(w, err)
-		return
-	}
-	actor.Credential = caller.Credential
 	key := r.PathValue("key")
 	tx, err := s.begin(r.Context())
 	if err != nil {

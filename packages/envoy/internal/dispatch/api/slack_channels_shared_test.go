@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -182,31 +183,49 @@ func TestASharedSlackChannelIsRefused(t *testing.T) {
 }
 
 // TestTheSharedChannelRefusalReadsTheCallersCredential: the refusal names the other private
-// project only to a caller whose credential lists no projects or lists it, so the owner's route
-// must hand the write the request's own credential, which actingPerson's actor leaves out. No
-// credential this release resolves carries a list of projects yet, so the request carries the
-// caller already resolved, as the layers in front of a handler hand it on (resolvedCaller): dave's
-// personal token listing PRIV2 alone. dave sees PRIV through its list, yet this token does not.
-// Control: drop the credential in ownerWrite, and the refusal names PRIV.
+// project only to a caller who sees it by the read rule, resolved for the request's own
+// credential, never for the person actingPerson answers. An agent credential with no list sees
+// only public projects, so alice's personal token and her broker token, each listing no project,
+// read the refusal that names none, though alice herself sees PRIV and reads its name at her
+// browser. Controls: name PRIV to a credential with no list whenever its person sees it, or
+// resolve actingPerson's actor in place of the request's caller, and the token rows fail naming
+// the token.
 func TestTheSharedChannelRefusalReadsTheCallersCredential(t *testing.T) {
-	handler, database := newAccessServer(t)
-	createAccessProject(t, handler, "PRIV", "alice")
-	if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/PRIV/access/people/"+accessDave, nil, "alice"); response.Code != http.StatusOK {
-		t.Fatalf("alice names dave on PRIV's list: %d %s", response.Code, response.Body.String())
-	}
-	makePrivate(t, database, "PRIV", "C0SHARED001")
-	createAccessProject(t, handler, "PRIV2", accessDave)
-	makePrivate(t, database, "PRIV2")
+	rig := newBrokerTokenRig(t)
+	// alice owns both, so she sees PRIV.
+	createAccessProject(t, rig.handler, "PRIV", "alice")
+	makePrivate(t, rig.database, "PRIV", "C0SHARED001")
+	createAccessProject(t, rig.handler, "PRIV2", "alice")
+	makePrivate(t, rig.database, "PRIV2")
 
-	token := model.Actor{Kind: "session", Owner: new(accessDave),
-		Credential: &model.Credential{Scopes: model.Scopes, TokenID: "token-of-dave", TokenName: "listing PRIV2", Projects: []string{"PRIV2"}}}
-	request := httptest.NewRequest(http.MethodPatch, "/api/v1/projects/PRIV2/access", strings.NewReader(`{"slack_channels":["C0SHARED001"]}`))
-	request.Header.Set("Content-Type", "application/json")
-	request = request.WithContext(context.WithValue(request.Context(), resolvedCallerKey{}, resolvedCaller{actor: token}))
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	refusal := decodeBody[errorBody](t, response)
-	if want := "C0SHARED001 is listed by a private project you cannot see"; response.Code != http.StatusConflict || refusal.Code != "SLACK_CHANNEL_SHARED" || refusal.Error != want {
-		t.Fatalf("dave's token listing PRIV2 alone writes C0SHARED001 = %d %s, want 409 SLACK_CHANNEL_SHARED reading %q: the token does not list PRIV", response.Code, response.Body.String(), want)
+	const path = "/api/v1/projects/PRIV2/access"
+	body := map[string]any{"slack_channels": []string{"C0SHARED001"}}
+	caller := newBrokerCaller(t)
+	const brokerToken = "alice-broker-token-listing-no-project"
+	says := liveNamedToken(caller.jkt)
+	says.ProjectScope, says.Project = brokertoken.ProjectScopePerson, ""
+	rig.broker.Says(brokerToken, says)
+	for _, row := range []struct {
+		who  string
+		send func() *httptest.ResponseRecorder
+		want string
+	}{
+		{"alice at her browser", func() *httptest.ResponseRecorder {
+			return dispatchRequest(t, rig.handler, http.MethodPatch, path, body, "alice")
+		}, "C0SHARED001 is listed by PRIV, a private project; a Slack channel belongs to one private project"},
+		{"alice's dsp_ token listing no project", func() *httptest.ResponseRecorder {
+			return agentRequest(t, rig.handler, http.MethodPatch, path, body, personalTokenOwnedBy(t, rig.database, "alice", model.ScopePerson))
+		}, "C0SHARED001 is listed by a private project you cannot see"},
+		{"alice's broker token listing no project", func() *httptest.ResponseRecorder {
+			return rig.serve(caller.presenting(t, http.MethodPatch, path, brokerToken, body))
+		}, "C0SHARED001 is listed by a private project you cannot see"},
+	} {
+		before := allEvents(t, rig.database)
+		response := row.send()
+		refusal := decodeBody[errorBody](t, response)
+		if response.Code != http.StatusConflict || refusal.Code != "SLACK_CHANNEL_SHARED" || refusal.Error != row.want {
+			t.Errorf("%s writes C0SHARED001 on PRIV2 = %d %s, want 409 SLACK_CHANNEL_SHARED reading %q", row.who, response.Code, response.Body.String(), row.want)
+		}
+		wantChannelsUnwritten(t, rig.database, "PRIV2", before)
 	}
 }
