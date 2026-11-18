@@ -1090,3 +1090,75 @@ test("a right press the page never sees released leaves the title clamped once E
     restore();
   }
 });
+
+// A press of the primary button that the browser turns into a drag, as when the reader drags the
+// words they selected in the editor, never sees its mouseup either: Chromium sends dragstart,
+// pointercancel and dragend, and no mouseup and no click. Nothing waits on such a press, so an edit
+// a key then ends draws the title clamped to two lines again at once, not whole until the reader
+// next releases a mouse button somewhere.
+test("a press a drag takes leaves the title clamped once Enter ends the edit", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const view = renderHeader();
+
+  try {
+    const heading = await screen.findByRole("heading", { level: 1, name: issue.title });
+    expect(heading.className).toContain("line-clamp-2");
+    await user.click(heading);
+    const editor = await screen.findByRole("textbox", { name: "Issue title" });
+    await waitFor(() => expect(editor).toHaveFocus());
+    // The press goes down on the editor's selected words and becomes a drag: the events Chromium
+    // sends for it, in its order, with no mouseup.
+    fireEvent.pointerDown(editor, { button: 0, isPrimary: true, pointerType: "mouse" });
+    fireEvent.mouseDown(editor, { button: 0 });
+    fireEvent.dragStart(editor);
+    fireEvent.pointerCancel(editor, { button: 0, isPrimary: true, pointerType: "mouse" });
+    fireEvent.dragEnd(editor);
+    expect(editor).toHaveFocus();
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(heading).toHaveFocus());
+    expect(heading.className).toContain("line-clamp-2");
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// The same drag from a press that ends the edit: the reader presses a link outside the title, whose
+// mousedown takes the focus and so ends the edit while the button is down, and drags the link. The
+// blur holds the title whole until the press is released, but a drag sends no mouseup, so the
+// press is over at its dragend and the title is clamped to two lines again then.
+test("a press that ends the edit and turns into a drag leaves the title clamped once the drag ends", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const view = renderHeader();
+  const link = document.createElement("a");
+  link.href = "/elsewhere";
+  link.textContent = "Elsewhere";
+  document.body.append(link);
+
+  try {
+    const heading = await screen.findByRole("heading", { level: 1, name: issue.title });
+    await user.click(heading);
+    const editor = await screen.findByRole("textbox", { name: "Issue title" });
+    await waitFor(() => expect(editor).toHaveFocus());
+    // The press goes down on the link, which takes the focus inside its mousedown, and becomes a
+    // drag: the events Chromium sends for it, in its order, with no mouseup.
+    fireEvent.pointerDown(link, { button: 0, isPrimary: true, pointerType: "mouse" });
+    fireEvent.mouseDown(link, { button: 0 });
+    act(() => link.focus());
+    await waitFor(() =>
+      expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument()
+    );
+    // The press is down, so the title is held whole for now.
+    expect(heading.className).not.toContain("line-clamp-2");
+    fireEvent.dragStart(link);
+    fireEvent.pointerCancel(link, { button: 0, isPrimary: true, pointerType: "mouse" });
+    fireEvent.dragEnd(link);
+    await waitFor(() => expect(heading.className).toContain("line-clamp-2"));
+  } finally {
+    link.remove();
+    view.unmount();
+    restore();
+  }
+});
