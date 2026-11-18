@@ -52,8 +52,6 @@ readonly project="$PROJECT"
 stamp="$(date +%s)-$$"
 readonly stamp
 readonly session="premortem-risks-$stamp"
-# The ten kinds dispatch://INFRA-1297 records, which the catalogue's migration seeds.
-readonly seeded_kinds='["best-practice","boring-solution","botec","conway","first-principles","inversion","pre-mortem","reversibility","second-order","trade-off"]'
 # The standard the first constraint carries and its reference, which the requirement reads back
 # character for character: a section sign, an en dash and curly quotes, each of which a reader that
 # rewrote the text would change.
@@ -66,29 +64,13 @@ printf 'Authorization: Bearer %s\n' "$token" >"$work/auth"
 key=""
 cleanup() {
   local code=$?
-  if [[ -n "$key" ]]; then
-    send PATCH "/api/v1/issues/$key" "$(jq -cn --arg s "$session" '{status: "done", actor: {kind: "session", id: $s}}')"
-    [[ "$status" == 200 ]] ||
-      printf '%s: could not close %s: HTTP %s: %s\n' "$driver" "$key" "$status" "$(body)" >&2
-  fi
+  [[ -z "$key" ]] || close_issue "$key"
   rm -rf "$work"
   exit "$code"
 }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-
-# send METHOD PATH [JSON]: sends METHOD PATH with the bearer in $work/auth; the answer's body goes
-# to $work/body and its HTTP status to $status.
-send() {
-  local -a data=()
-  [[ $# -lt 3 ]] || data=(-H 'Content-Type: application/json' --data-binary "$3")
-  status="$(curl -sS --max-time 60 -X "$1" -o "$work/body" -w '%{http_code}' -H "@$work/auth" "${data[@]}" \
-    "$base$2" 2>"$work/curl")" || status="curl failed: $(<"$work/curl")"
-}
-
-# actor: the session every write of this run acts for.
-actor() { jq -cn --arg s "$session" '{kind: "session", id: $s}'; }
 
 # references SECTION WHAT DIRECTION ADDRESS [KIND]: GET /api/v1/references with DIRECTION (from or
 # to) at ADDRESS, kept to the edge kind KIND where it is given.
@@ -127,14 +109,7 @@ write_risk() {
 
 # --- the catalogue ------------------------------------------------------------------------------
 
-send GET /api/v1/schema/blocks
-want_status 200 "$driver" "read the catalogue"
-cp "$work/body" "$work/schema.json"
-held="$(jq -cS --argjson want "$seeded_kinds" '[.lens_kinds[].id] as $ids | [$want[] | select(. as $id | $ids | index($id))]' \
-  "$work/schema.json")" || fail "$driver" "read the catalogue" "unreadable: $(body)"
-[[ "$held" == "$seeded_kinds" ]] ||
-  fail "$driver" "the catalogue holds its ten kinds" "it holds $held of $seeded_kinds"
-pass "$driver" "the catalogue holds its ten kinds"
+seeded_catalogue
 
 # --- setup: the requirement, a paragraph and three checks, blocks of the issue's documents -------
 
@@ -160,6 +135,7 @@ want_status 200 setup "read the spec's text"
 cp "$work/body" "$work/spec-text.json"
 send GET "/api/v1/issues/$key/artifacts/spec/blocks"
 want_status 200 setup "read the spec's blocks"
+expect setup "the spec's block r1 is a requirement" '["requirement"]' '[.[] | select(.id == "r1") | .type]'
 paragraph_id="$(jq -r --slurpfile text "$work/spec-text.json" \
   '$text[0].markdown as $md | [.[] | select(.type == "paragraph" and $md[.from:.to] == "A paragraph, which is no constraint.") | .id] | first // empty' \
   "$work/body")" || fail setup "find the paragraph's block" "unreadable: $(body)"
@@ -186,9 +162,6 @@ upload setup "write the verification document with three checks" verification.md
 readonly verification="dispatch://$key/artifact/verification-md"
 readonly check1="$verification#b-c1" check2="$verification#b-c2" check3="$verification#b-c3"
 pass setup "wrote $verification, holding $check1, $check2 and $check3"
-send GET "/api/v1/issues/$key/artifacts/spec/blocks"
-want_status 200 setup "read the spec's blocks"
-expect setup "the spec's block r1 is a requirement" '["requirement"]' '[.[] | select(.id == "r1") | .type]'
 send GET "/api/v1/issues/$key/artifacts/verification-md/blocks"
 want_status 200 setup "read the verification document's blocks"
 expect setup "the verification document's blocks c1, c2 and c3 are checks" \
@@ -243,7 +216,6 @@ pass P1 "wrote the constraint $measured_constraint"
 
 send GET "/api/v1/issues/$key/constraints"
 want_status 200 P1 "read the issue's constraints"
-cp "$work/body" "$work/constraints.json"
 expect P1 "the issue answers both constraints, each with the fields of its shape" \
   "$(jq -cnS --arg a "$standard_constraint" --arg b "$measured_constraint" --arg s "$standard" --arg r "$reference" \
     '[{address: $a, standard: $s, reference: $r, measurement: null, value: null, taken_where: null},
@@ -299,7 +271,8 @@ references P3 "read the requirement's constrained_by tuples" from "$requirement"
 expect P3 "the requirement holds one constrained_by tuple, to the first constraint" "[\"$standard_constraint\"]" \
   '[.edges[] | .node.ref]'
 far="$(jq -r '.edges[0].node.ref' "$work/body")"
-cp "$work/constraints.json" "$work/body"
+send GET "/api/v1/issues/$key/constraints"
+want_status 200 P3 "read the issue's constraints, the far end of the requirement's constrained_by tuple among them"
 got="$(jq -r --arg a "$far" '.constraints[] | select(.address == $a) | .reference' "$work/body")"
 [[ "$got" == "$reference" ]] ||
   fail P3 "the requirement reads the standard's reference back through its constrained_by tuple" \
@@ -316,7 +289,7 @@ expect P3 "the unpointed constraint shows no requirement" '[]' \
 
 # --- P4: no block type declares the store's pointers --------------------------------------------
 
-cp "$work/schema.json" "$work/body"
+cp "$work/catalogue.json" "$work/body"
 # block_attributes: every attribute of kind block[] the schema answers, on a block type or a store
 # type, as "<type>.<attribute>".
 readonly block_attributes='[(.types[] | .name as $t | (.attributes // {}) | to_entries[] | select(.value.kind == "block[]") | "\($t).\(.key)"),

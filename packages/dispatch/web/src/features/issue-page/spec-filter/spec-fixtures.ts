@@ -133,7 +133,7 @@ export function decision(
 
 /** The decisions read over `made`. */
 export function decisionsRead(made: readonly Decision[]): IssueDecisions {
-  return { decisions: [...made], document: "artifact-dec", open_questions: [] };
+  return { decisions: [...made], document: "artifact-dec", entries: [], open_questions: [] };
 }
 
 /** The address of one statement, which is one block of the issue's spec. */

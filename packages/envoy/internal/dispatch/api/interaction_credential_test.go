@@ -9,8 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -520,11 +518,7 @@ func requireTheRepositoryNamesTheKind(t *testing.T) {
 		t.Errorf("%s declares GraphNode.kind as one of %v, which holds no %s", OpenAPIDocumentPath, kinds, graphstore.KindInteraction)
 	}
 	const labels = "packages/dispatch/web/src/features/refs/ReferencedBy.tsx"
-	source, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "..", filepath.FromSlash(labels)))
-	if err != nil {
-		t.Fatalf("read %s: %v", labels, err)
-	}
-	_, table, found := strings.Cut(string(source), "const NODE_LABELS")
+	_, table, found := strings.Cut(readRepositoryFile(t, repositoryRoot(t), labels), "const NODE_LABELS")
 	table, _, closed := strings.Cut(table, "\n};")
 	if !found || !closed {
 		t.Fatalf("%s holds no NODE_LABELS table", labels)
@@ -950,9 +944,9 @@ func requireAProjectedRowIsWrittenInItsNodesTransaction(t *testing.T, server *se
 
 // requireTwoFrameWritersQueueAtTheRunsNode appends two frames of one run from two goroutines at
 // once: the first is held open after its row, and the second, started while it is, waits on the
-// run's interaction row, which every frame's transaction locks first (goingNodeLock). Once the
-// first commits the second takes the next sequence, so the two read 1 and 2, one after the other,
-// with no gap, each held as a frame value.
+// run's interaction row, which every frame's transaction locks first (graphstore.NodeRowLockSQL).
+// Once the first commits the second takes the next sequence, so the two read 1 and 2, one after
+// the other, with no gap, each held as a frame value.
 func requireTwoFrameWritersQueueAtTheRunsNode(t *testing.T, server *server, database *store.Store) {
 	ctx := context.Background()
 	run, err := server.recordGoingRequest(ctx, model.Actor{Kind: "user", ID: "alice"}, "TEST", "Which writer takes which frame?")
@@ -971,21 +965,14 @@ func requireTwoFrameWritersQueueAtTheRunsNode(t *testing.T, server *server, data
 			second, err = appendGoingEvent(ctx, database.Pool, run.ID, going.Text("The second writer's frame."))
 			secondDone <- err
 		}()
-		deadline := time.Now().Add(5 * time.Second)
-		for {
-			waiting, err := storetest.CountLockWaits(ctx, database, goingNodeLock)
+		waitUntil(t, 5*time.Second, "the second writer waiting on the run's interaction row while the first held it", func() bool {
+			waiting, err := storetest.CountLockWaits(ctx, database, graphstore.NodeRowLockSQL)
 			if err != nil {
 				t.Fatalf("count the writers waiting on the run's node: %v", err)
 			}
-			if waiting == 1 {
-				t.Logf("the second writer waits on the run's interaction row: %s", goingNodeLock)
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("the second writer never waited on the run's interaction row while the first held it: %d writers wait on %q", waiting, goingNodeLock)
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
+			return waiting == 1
+		})
+		t.Logf("the second writer waits on the run's interaction row: %s", graphstore.NodeRowLockSQL)
 	})
 	if err != nil {
 		t.Fatalf("append the first writer's frame: %v", err)

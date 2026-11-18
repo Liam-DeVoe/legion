@@ -1639,13 +1639,13 @@ export class DispatchApiClient {
     return this.read("/api/v1/artifacts/{id}/blocks", { id });
   }
 
-  /** An issue's decision records: its decisions.md, the open questions its spec holds, and each
-   *  decision with the spec blocks it shaped. */
+  /** An issue's decision records: its decision nodes and asks (`entries`), the open questions
+   *  its spec holds, and each decision with the spec nodes it shaped. */
   getIssueDecisions(key: string) {
     return this.read("/api/v1/issues/{key}/decisions", { key });
   }
 
-  /** Record that the caller agrees with the decision that heading block opens, as the text they
+  /** Record that the caller agrees with the decision at that block, as the text they
    *  read: `textSha256` is the decision's own `text_sha256`, and a decision that changed since
    *  is `409 DECISION_CHANGED`. */
   keepDecision(id: string, blockId: string, textSha256: string, bounds: WriteBounds) {
@@ -1754,8 +1754,8 @@ export class DispatchApiClient {
   /** What many `dispatch://` references point at, in one read: one member per `ref` in the
    *  request's order, each `{ref, kind, name, gone}`. A page that names many references can read
    *  all their names through this, in as few requests as both bounds allow
-   *  (`referenceTargetsQuery`), rather than one `getReferences` per reference
-   *  (R21 of dispatch://INFRA-1196/spec#b-r-requests). At most `REFERENCE_TARGETS_MAX` references:
+   *  (`referenceTargetsQuery`), rather than one `getReferences` per reference, so a page's first
+   *  load makes no request for each reference. At most `REFERENCE_TARGETS_MAX` references:
    *  past that the server answers `400 CAP_EXCEEDED`. */
   getReferenceTargets(refs: readonly string[]) {
     return this.read("/api/v1/reference-targets", {}, { ref: [...refs] });

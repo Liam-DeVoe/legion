@@ -287,7 +287,7 @@ func TestADeclinedAskReadsDeclinedAndWritesNoAnswer(t *testing.T) {
 		t.Fatalf("the ask the bound refused has %d ask.resolved events, want none", resolved[overTheBound])
 	}
 
-	// A declined ask whose question is a document's decision block leaves that block closed, as
+	// A declined ask whose question is a document's ask block leaves that block closed, as
 	// every other resolution leaves it: the document's text, as an agent reads it, shows the block
 	// resolved, rendered from the ask's node on read (dispatch://INFRA-1150 R3), and the decline
 	// changes no byte of the document. It runs on a server whose documents settle fast enough to

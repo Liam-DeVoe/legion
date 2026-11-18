@@ -50,18 +50,12 @@ read_bearer
 readonly driver=lens-trigger.sh
 # shellcheck disable=SC2031 # the DISPATCH_URL lib.sh's `cli` exports is its own; this one is the caller's
 readonly base="${DISPATCH_URL%/}"
-# The dashboard's origin, the scheme and host of DISPATCH_URL: a write the person's cookie
-# authenticates must name it (enforceCookieOrigin).
-base_host="${base#*://}"
-readonly origin="${base%%://*}://${base_host%%/*}"
 # shellcheck disable=SC2153 # PROJECT is the caller's input, checked by name above
 readonly project="$PROJECT"
 readonly login="$DEV_SIGNIN_LOGIN"
 stamp="$(date +%s)-$$"
 readonly stamp
 readonly session="lens-trigger-$stamp"
-# The ten kinds dispatch://INFRA-1297 records, which the catalogue's migration seeds.
-readonly seeded_kinds='["best-practice","boring-solution","botec","conway","first-principles","inversion","pre-mortem","reversibility","second-order","trade-off"]'
 # The bound of one chain that R8 states (dispatch://INFRA-1950/spec#b-r-lens-trigger), and the
 # length of the chain read past it, ten more.
 readonly bound=50
@@ -75,10 +69,7 @@ cleanup() {
   local code=$?
   local issue
   for issue in "${issues[@]}"; do
-    send PATCH "/api/v1/issues/$issue" \
-      "$(jq -cn --arg s "$session" '{status: "done", actor: {kind: "session", id: $s}}')"
-    [[ "$status" == 200 ]] ||
-      printf '%s: could not close %s: HTTP %s: %s\n' "$driver" "$issue" "$status" "$(body)" >&2
+    close_issue "$issue"
   done
   rm -rf "$work"
   exit "$code"
@@ -87,35 +78,10 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# request AS METHOD PATH [JSON]: sends METHOD PATH as AS: `agent`, with the bearer in $work/auth,
-# or `person`, with the session cookie the dev sign-in left in $work/jar and the dashboard's origin,
-# which the server requires of every write a cookie authenticates. The answer's body goes to
-# $work/body and its HTTP status to $status. A request is given up after $max_time seconds, 60
-# unless the caller names fewer.
-max_time=60
-request() {
-  local -a auth data=()
-  if [[ "$1" == person ]]; then
-    auth=(-b "$work/jar" -H "Origin: $origin")
-  else
-    auth=(-H "@$work/auth")
-  fi
-  [[ $# -lt 4 ]] || data=(-H 'Content-Type: application/json' --data-binary "$4")
-  status="$(curl -sS --max-time "$max_time" -X "$2" -o "$work/body" -w '%{http_code}' "${auth[@]}" \
-    "${data[@]}" "$base$3" 2>"$work/curl")" || status="curl failed: $(<"$work/curl")"
-}
-
-# send METHOD PATH [JSON]: request as the agent bearer.
-send() { request agent "$@"; }
-# person_send METHOD PATH [JSON]: request as the person DEV_SIGNIN_LOGIN signed in.
-person_send() { request person "$@"; }
-
 # lenses_on SECTION WHAT ADDRESS: the person's read of GET /api/v1/lenses?on=ADDRESS, given up
 # after 30 s, which `curl --max-time 30` holds.
 lenses_on() {
-  max_time=30
-  person_send GET "/api/v1/lenses?on=$(q "$3")"
-  max_time=60
+  max_time=30 person_send GET "/api/v1/lenses?on=$(q "$3")"
   want_status 200 "$1" "$2"
 }
 
@@ -132,20 +98,15 @@ new_issue() {
   pass "$1" "created $key in $project, whose spec is $spec"
 }
 
-# invoke SECTION WHAT KIND [TRIGGER]: the person invokes a lens of KIND on $spec, with a
-# triggered_by tuple to the lens TRIGGER names where one is given, and the answer is 201. It sets
-# $lens to the lens's address and $lens_id to its uuid. QUIET=1 keeps the passing line to itself,
-# for the long chains.
-invoke() {
+# invoke_kind SECTION WHAT KIND [TRIGGER]: the person invokes a lens of KIND on $spec (lib.sh's
+# invoke), with a triggered_by tuple to the lens TRIGGER names where one is given, which the answer
+# names. It sets $lens to the lens's address and $lens_id to its uuid.
+invoke_kind() {
   local trigger="${4-}"
-  person_send POST "/api/v1/issues/$key/lenses" "$(jq -cn --arg on "$spec" --arg k "$3" --arg t "$trigger" \
+  invoke "$1" "$2" "cookie:$login" "$(jq -cn --arg on "$spec" --arg k "$3" --arg t "$trigger" \
     '{on: $on, kind: $k} + (if $t == "" then {} else {triggered_by: $t} end)')"
-  want_status 201 "$1" "$2"
-  lens="$(jq -er '.address' "$work/body")" || fail "$1" "$2" "no address: $(body)"
-  lens_id="$(jq -er '.id' "$work/body")" || fail "$1" "$2" "no id: $(body)"
-  [[ -z "$trigger" ]] || [[ "$(jq -r '.triggered_by' "$work/body")" == "$trigger" ]] ||
-    fail "$1" "$2" "the write answers triggered_by $(jq -c '.triggered_by' "$work/body"), want $trigger"
-  [[ "${QUIET:-0}" == 1 ]] || pass "$1" "$2 ($lens)"
+  [[ -z "$trigger" ]] || [[ "$(jq -r '.triggered_by' "$work/invoked")" == "$trigger" ]] ||
+    fail "$1" "$2" "the write answers triggered_by $(jq -c '.triggered_by' "$work/invoked"), want $trigger"
 }
 
 # pointer NODE BODY: the person writes one pointer tuple out of the node whose store address is
@@ -160,12 +121,13 @@ lens_field() {
 }
 
 # chain_of SECTION LENGTH: seeds an acyclic chain of LENGTH lenses on $spec, each but the first
-# triggered by the one before, and writes their addresses in invoked order to $work/chain.json.
+# triggered by the one before, and writes their addresses in invoked order to $work/chain.json. The
+# passing line of each invocation is kept to itself; a failing one is printed.
 chain_of() {
   local section="$1" length="$2" at previous=""
   : >"$work/chain.txt"
   for ((at = 1; at <= length; at++)); do
-    QUIET=1 invoke "$section" "invoke lens $at of the chain of $length" trade-off "$previous"
+    invoke_kind "$section" "invoke lens $at of the chain of $length" trade-off "$previous" >/dev/null
     printf '%s\n' "$lens" >>"$work/chain.txt"
     previous="$lens"
   done
@@ -175,28 +137,18 @@ chain_of() {
 
 # --- the catalogue ------------------------------------------------------------------------------
 
-request agent GET /api/v1/schema/blocks
-want_status 200 "$driver" "read the catalogue"
-held="$(jq -cS --argjson want "$seeded_kinds" '[.lens_kinds[].id] as $ids | [$want[] | select(. as $id | $ids | index($id))]' \
-  "$work/body")" || fail "$driver" "read the catalogue" "unreadable: $(body)"
-[[ "$held" == "$seeded_kinds" ]] ||
-  fail "$driver" "the catalogue holds its ten kinds" "it holds $held of $seeded_kinds"
-pass "$driver" "the catalogue holds its ten kinds"
+seeded_catalogue
 
 # --- setup --------------------------------------------------------------------------------------
 
-status="$(curl -sS --max-time 60 -o "$work/body" -w '%{http_code}' -c "$work/jar" \
-  "$base/auth/_dev/signin?login=$(q "$login")" 2>"$work/curl")" || status="curl failed: $(<"$work/curl")"
-want_status 302 setup "dev sign-in as $login"
-grep -q $'\tdsession\t' "$work/jar" || fail setup "dev sign-in as $login" "the answer set no session cookie"
-pass setup "signed in as $login"
+sign_in setup "$login"
 
 # --- T1: a trigger read from both ends ----------------------------------------------------------
 
 new_issue T1 "Lens trigger check"
-invoke T1 "invoke a trade-off analysis on the spec" trade-off
+invoke_kind T1 "invoke a trade-off analysis on the spec" trade-off
 readonly tradeoff="$lens" tradeoff_id="$lens_id"
-invoke T1 "invoke the pre-mortem the trade-off analysis asked for, triggered by it" pre-mortem "$tradeoff"
+invoke_kind T1 "invoke the pre-mortem the trade-off analysis asked for, triggered by it" pre-mortem "$tradeoff"
 readonly premortem="$lens" premortem_id="$lens_id"
 
 lenses_on T1 "read the lenses on the spec" "$spec"
@@ -217,7 +169,7 @@ expect T1 "in the chain the pre-mortem is marked as triggered by the trade-off a
   "$(jq -cn --arg a "$tradeoff" --arg b "$premortem" '[{address: $a, triggered_by: []}, {address: $b, triggered_by: [$a]}]')" \
   '[.chains[0].lenses[] | {address, triggered_by}]'
 
-invoke T1 "invoke a third lens, an inversion the pre-mortem triggered" inversion "$premortem"
+invoke_kind T1 "invoke a third lens, an inversion the pre-mortem triggered" inversion "$premortem"
 readonly third="$lens"
 lenses_on T1 "read the lenses on the spec" "$spec"
 expect T1 "the spec answers the chain of three, in invoked order, with no stop" \
@@ -264,18 +216,15 @@ expect T2 "the trade-off analysis, read at its own address, answers no lens it t
 # --- T3: a lens triggered by itself is refused --------------------------------------------------
 
 pointer "lens/$tradeoff_id" "$(jq -cn --arg t "$tradeoff" '{kind: "triggered_by", action: "append", to: $t}')"
-[[ "$status" == 4?? ]] ||
-  fail T3 "a triggered_by tuple from the trade-off analysis at itself is refused with a 4xx status" "HTTP $status: $(body)"
+want_status 400 T3 "a triggered_by tuple from the trade-off analysis at itself is refused with HTTP 400"
 pass T3 "a triggered_by tuple from the trade-off analysis at itself is refused with HTTP $status"
-code="$(jq -r '.code // empty' "$work/body")"
-[[ -n "$code" ]] || fail T3 "the refusal carries a code" "$(body)"
-pass T3 "the refusal carries a code, $code"
+expect T3 "the refusal carries a code, INVALID_POINTER" '"INVALID_POINTER"' '.code'
 
-request person GET "/api/v1/references?from=$(q "$tradeoff")&kind=triggered_by"
+person_send GET "/api/v1/references?from=$(q "$tradeoff")&kind=triggered_by"
 want_status 200 T3 "read the trade-off analysis's triggered_by tuples"
 expect T3 "the trade-off analysis holds no triggered_by tuple" '[]' '[.edges[] | .node.ref]'
 # The same read of the inversion, which holds one, finds it.
-request person GET "/api/v1/references?from=$(q "$third")&kind=triggered_by"
+person_send GET "/api/v1/references?from=$(q "$third")&kind=triggered_by"
 want_status 200 T3 "read the inversion's triggered_by tuples"
 expect T3 "the same read finds the inversion's triggered_by tuple, to the pre-mortem" "[\"$premortem\"]" \
   '[.edges[] | .node.ref]'
@@ -292,9 +241,9 @@ expect T4 "every lens on the spec is $login's, whom DEV_SIGNIN_LOGIN signs in" \
 # --- T5: a cycle is read once -------------------------------------------------------------------
 
 new_issue T5 "Lens trigger cycle check"
-invoke T5 "invoke lens A" trade-off
+invoke_kind T5 "invoke lens A" trade-off
 readonly cycle_a="$lens" cycle_a_id="$lens_id"
-invoke T5 "invoke lens B, triggered by A" pre-mortem "$cycle_a"
+invoke_kind T5 "invoke lens B, triggered by A" pre-mortem "$cycle_a"
 readonly cycle_b="$lens"
 pointer "lens/$cycle_a_id" "$(jq -cn --arg t "$cycle_b" '{kind: "triggered_by", action: "append", to: $t}')"
 want_status 200 T5 "append a triggered_by tuple from A to B, which closes the cycle"

@@ -203,7 +203,7 @@ export function decisionNode(block: string, partial: Partial<TreeNode> = {}): Tr
 }
 
 /** One `shaped` tie, as today's read carries it: a link from a block of the decision to the
- *  node `ref` names (dispatch://INFRA-1150 R1). */
+ *  node `ref` names. */
 export function shaped(ref: string, stale = false): DecisionLink {
   return {
     created_at: "2026-11-10T00:00:00Z",
@@ -254,6 +254,7 @@ export function decisionsRead(made: readonly Decision[]): IssueDecisions {
   return {
     decisions: [...made],
     document: `dispatch://${KEY}/artifact/${DECISIONS_SLUG}`,
+    entries: [],
     open_questions: [],
   };
 }

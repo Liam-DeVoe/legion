@@ -48,7 +48,7 @@ func TestAWriteMadeForARunNamesEachNodeItMarksOnce(t *testing.T) {
 	const stored, edited = int64(9600001), int64(9600002)
 
 	writeComment := func(ctx context.Context, tx pgx.Tx, id string, event int64) error {
-		node, tuples := CommentFacts(nil, id, author, at, NoEvent, VisibilityProject, "", "", "", nil)
+		node, tuples := CommentFacts(nil, id, author, at, NoEvent, "", "", "", nil)
 		node.Changed = true
 		authors, authored, _ := AuthorFacts(KindComment, id, author, at, NoEvent)
 		written, err := WriteUncaused(ctx, tx, append([]Node{node}, authors...), append(tuples, authored...))
@@ -74,7 +74,7 @@ func TestAWriteMadeForARunNamesEachNodeItMarksOnce(t *testing.T) {
 	runInOneTransaction(t, database, "the comment written again for the run", func(_ context.Context, tx pgx.Tx) error {
 		return writeComment(forRun, tx, comment, edited)
 	})
-	marked, _ := CommentFacts(nil, comment, author, at, NoEvent, VisibilityProject, "", "", "", nil)
+	marked, _ := CommentFacts(nil, comment, author, at, NoEvent, "", "", "", nil)
 	marked.Changed = true
 	runInOneTransaction(t, database, "the comment written through Write for the run", func(_ context.Context, tx pgx.Tx) error {
 		return Write(forRun, tx, []Node{marked}, nil)

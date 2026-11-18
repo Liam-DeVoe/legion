@@ -184,6 +184,7 @@ const decisions: IssueDecisions = {
     waitingDecision("changed", ["r1"]),
   ],
   document: `dispatch://${KEY}/artifact/decisions-md`,
+  entries: [],
   open_questions: [],
 };
 
@@ -590,7 +591,12 @@ test("a tie to a requirement the coverage read does not hold puts no decision on
 test("a Change under its decision node is counted without the decisions document", () => {
   const bare: IssueDetails = { ...issue, artifacts: [spec], decisions_artifact_id: "" };
   const row = waitingDecision("noded", ["r1"]);
-  const read: IssueDecisions = { decisions: [row], document: null, open_questions: [] };
+  const read: IssueDecisions = {
+    decisions: [row],
+    document: null,
+    entries: [],
+    open_questions: [],
+  };
   const asked: Comment = { ...change, anchor: null, id: "c-noded" };
   const waits = (tree: TreeAnswer): readonly [number, readonly string[]] => [
     waitingOnReader(bare, "alice", read, isStatement, [asked], tree).decisions,
@@ -620,7 +626,12 @@ test("a Change under its decision node is counted without the decisions document
 test("the count and the tree agree on a decision node's Change the comments read does not hold", () => {
   const bare: IssueDetails = { ...issue, artifacts: [spec], decisions_artifact_id: "" };
   const row = waitingDecision("noded", ["r1"]);
-  const read: IssueDecisions = { decisions: [row], document: null, open_questions: [] };
+  const read: IssueDecisions = {
+    decisions: [row],
+    document: null,
+    entries: [],
+    open_questions: [],
+  };
   const asked: Comment = { ...change, anchor: null, id: "c-noded" };
   const tree = answerOf([statement, decisionNode(row), commentNode(asked, "noded")]);
   for (const comments of [undefined, []]) {
@@ -640,7 +651,12 @@ test("the count and the tree agree on a decision node's Change the comments read
 // reader, in the count as in the tree.
 test("a comment on a statement is no Change of a decision of another document with the same block id", () => {
   const row = waitingDecision("r1", ["r1"]);
-  const read: IssueDecisions = { decisions: [row], document: null, open_questions: [] };
+  const read: IssueDecisions = {
+    decisions: [row],
+    document: null,
+    entries: [],
+    open_questions: [],
+  };
   const remark: Comment = { ...change, anchor: null, id: "c-on-statement" };
   const tree = answerOf([statement, commentNode(remark, "r1"), decisionNode(row, 0)]);
   expect([
@@ -675,7 +691,12 @@ function nodeIn(root: TreeNode, id: string): TreeNode | undefined {
 // spec's decision of the same id still waits for review.
 test("a Change of a decision node is no Change of another document's decision of the same block id", () => {
   const row = waitingDecision("d1", ["r1"]);
-  const read: IssueDecisions = { decisions: [row], document: null, open_questions: [] };
+  const read: IssueDecisions = {
+    decisions: [row],
+    document: null,
+    entries: [],
+    open_questions: [],
+  };
   const asked: Comment = { ...change, anchor: null, id: "c-on-decision" };
   const other = treeNode("d1", "decision", {
     changed_at: row.changed_at,

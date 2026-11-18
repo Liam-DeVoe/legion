@@ -155,11 +155,9 @@ seed_reset_database() {
   esac
   [[ "$name" =~ ^infra_1150_[a-z0-9_]+$ ]] ||
     seed_refuse "the database is $name: this seed drops and creates only a database whose name begins infra_1150_, one of this child's drivers' own"
-  (
-    unset PGHOSTADDR
-    exec psql "${scheme}${authority}/postgres${query}" -X -q -v ON_ERROR_STOP=1 \
-      -c "drop database if exists \"$name\" with (force)" -c "create database \"$name\""
-  ) >"$work/seed-reset" 2>&1 || fail seed "drop and create the database $name" "psql: $(<"$work/seed-reset")"
+  baseline_psql "${scheme}${authority}/postgres${query}" -q \
+    -c "drop database if exists \"$name\" with (force)" -c "create database \"$name\"" \
+    >"$work/seed-reset" 2>&1 || fail seed "drop and create the database $name" "psql: $(<"$work/seed-reset")"
   printf 'seed database %s dropped and created empty\n' "$name"
 }
 
@@ -207,7 +205,7 @@ seed_actor() { jq -cn --arg s "$seed_session" '{kind: "session", id: $s}'; }
 seed_wait_settled() {
   local waited=0 owed
   while true; do
-    owed="$(env -u PGHOSTADDR psql "$baseline_database_url" -X -Atqc \
+    owed="$(baseline_psql "$baseline_database_url" -Atqc \
       'select count(*) from doc_settlements_pending' 2>"$seed_dir/psql")" ||
       fail seed "$1" "read doc_settlements_pending: $(<"$seed_dir/psql")"
     [[ "$owed" != 0 ]] || return 0
@@ -335,7 +333,7 @@ seed_decisions() {
   [[ -n "$baseline_url" && -n "$baseline_token" && -n "$baseline_database_url" ]] ||
     seed_refuse "seed_decisions writes through the server baseline_start boots: call baseline_start first"
   [[ -n "$work" ]] || seed_refuse "seed_decisions writes its files under \$work: call lib.sh's work_dir first"
-  require_commands curl env grep head jq psql sleep
+  require_commands curl grep head jq psql sleep
   seed_dir="$work/seed"
   mkdir -p "$seed_dir"
   printf 'Authorization: Bearer %s\n' "$baseline_token" >"$seed_dir/auth"

@@ -658,10 +658,10 @@ func refuseCheckProvedByCI(ctx context.Context, q queryer, check resolvedCheck) 
 // document read itself gives for the block (docs.Service.TextWithBlocks), as refs.IndexBlocks
 // cuts it. GET /api/v1/reference-targets has only that stored text to read a block's tree from,
 // so the coverage and the results reads take the same text through the same rule, and one block
-// answers one tree in all three reads: a typed block in a quote, whose stored text does not read
-// back as that block alone, included. The ranges come with the markdown from that one read, which
-// serves both from the read cache without a render where it can (typedBlockMarkdown); a block the
-// read gives no range for answers the block's own content (blockContent).
+// answers one tree in all three reads, the whole stored text of a typed block in a quote included.
+// The ranges come with the markdown from that one read, which serves both from the read cache
+// without a render where it can (typedBlockMarkdown); a block the read gives no range for answers
+// the block's own content (blockContent).
 func (s *server) typedBlocksIn(ctx context.Context, artifactID, blockType string, trees bool, visit func(node *pmdoc.Node, id, content string)) error {
 	markdown, texts, err := s.typedBlockMarkdown(ctx, artifactID, blockType, trees)
 	if err != nil {
@@ -687,7 +687,7 @@ func (s *server) typedBlocksIn(ctx context.Context, artifactID, blockType string
 		content := ""
 		if trees {
 			if whole, held := texts[id]; held {
-				content = blockTextContent(whole)
+				content = blockTextContent(whole, true)
 			} else {
 				content = blockContent(node)
 			}
@@ -727,6 +727,15 @@ func (s *server) typedBlockMarkdown(ctx context.Context, artifactID, blockType s
 	}
 	markdown, err := s.deps.Docs.Text(ctx, artifactID)
 	return markdown, nil, err
+}
+
+// sliceMarkdown is markdown[from:to] held to the string's own bounds: a block range the document
+// read gives lies inside it, and a range that does not answers "" rather than panicking.
+func sliceMarkdown(markdown string, from, to int) string {
+	if from < 0 || to > len(markdown) || from > to {
+		return ""
+	}
+	return markdown[from:to]
 }
 
 // checkBlocksIn is every `check` block of one document, in document order, with its attributes

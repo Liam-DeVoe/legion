@@ -199,7 +199,7 @@ func TestAMarginRewordReachesTheAskInTheEditorsNameAfterTheReopen(t *testing.T) 
 const askedQuestion, rewordedQuestion = "Ship it on Friday?", "Ship it on Monday instead?"
 
 // rewordedWhileClosed is an issue whose spec holds rewordedDecisionSpec's decision, closed through
-// PATCH, whose decision block alice's browser reworded once the close had withdrawn its ask, and
+// PATCH, whose ask block alice's browser reworded once the close had withdrawn its ask, and
 // whose document a settlement saved on the closed issue.
 type rewordedWhileClosed struct {
 	handler   http.Handler

@@ -10,6 +10,8 @@ import (
 // insert, which changes the block's address, so the move appends one of these, from the old
 // address to the new one, with the time of the move, and rewrites no stored pointer. The restore
 // and the conversion of that issue write it; dispatch://INFRA-1253 moves blocks through it again.
+// The pre-mortem conversion (api.ConvertPremortem) appends one from the address of the document it
+// retires - kind artifact, the document's ref_key - to the lens it wrote in the document's place.
 // No table projects it.
 const TupleMovedTo = "moved_to"
 
@@ -26,8 +28,15 @@ const MovedToHops = 8
 // where the chain stops before a block that stands: an address that states no moved_to, a far
 // end that is no block, a cycle, or a chain longer than MovedToHops.
 //
+// From a document's address, its ref_key, which holds no '#' where a block's address always
+// holds one, it answers the id of the lens the newest moved_to that address states points at, and
+// true, where that lens is not gone: the lens the pre-mortem conversion retired the document into
+// (migration 20261117042519). It answers false for a document's address that states no such
+// moved_to, and for one whose lens is gone.
+//
 // The rule is block_moved_to's, called here alone, so the reading of api's blockReferenceNode and
-// the readings refs.Closure and refs.BlockLinks make inside their own statements are one rule.
+// getReferences and the readings refs.Closure and refs.BlockLinks make inside their own
+// statements are one rule.
 func MovedTo(ctx context.Context, q Queryer, address string) (string, bool, error) {
 	var reached *string
 	if err := q.QueryRow(ctx, `select block_moved_to($1)`, address).Scan(&reached); err != nil {

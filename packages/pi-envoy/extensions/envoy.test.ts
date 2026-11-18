@@ -1759,7 +1759,7 @@ async function withEnvoyTimings<T>(
 }
 
 const UNASKED_WAIT_NUDGE =
-  "You just said you are waiting on a human for something no open ask in Dispatch covers. Open it now: a decision block in the document it concerns (dispatch doc-edit with an ask block), or dispatch ask for a to-do only a human can do, naming exactly what you need and from whom.";
+  "You just said you are waiting on a human for something no open ask in Dispatch covers. Open it now: an ask block in the document it concerns (dispatch doc-edit), or dispatch ask for a to-do only a human can do, naming exactly what you need and from whom.";
 
 /** Custom-message type of the nudge itself, which a session hears amid other deliveries. */
 const ASK_REMINDER_TYPE = "dispatch-ask-reminder";
@@ -3487,7 +3487,7 @@ describe("envoy OMP extension", () => {
   // Whether a document edit opened an ask is the server's reading of the document it wrote
   // (`advice.decision_blocks_added`), never a reading of the operations' markdown here: whether an
   // opener is a block depends on where it lands, as code or inside a blockquote or a list item.
-  test("a dispatch doc-edit spends the check exactly when the server reports a decision block it added", async () => {
+  test("a dispatch doc-edit spends the check exactly when the server reports an ask block it added", async () => {
     // The query creates a fresh extension module with isolated module-level awareness state.
     const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-document-block");
     const session = await bootAskNudge(envoyExtension, "ses_nudge_document_block", () => ({}));
@@ -3597,7 +3597,7 @@ describe("envoy OMP extension", () => {
     }
   });
 
-  test("a document written through dispatch issue or dispatch artifact spends the check only when it holds a decision block", async () => {
+  test("a document written through dispatch issue or dispatch artifact spends the check only when it holds an ask block", async () => {
     // The query creates a fresh extension module with isolated module-level awareness state.
     const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-document-upload");
     const session = await bootAskNudge(envoyExtension, "ses_nudge_document_upload", () => ({}));
@@ -4254,6 +4254,54 @@ describe("envoy OMP extension", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content[0]?.text).toContain("no live session ses_missing");
+  });
+
+  test("envoy_send and envoy_publish show the listener's sentence when the sender is rate limited, after one request each", async () => {
+    const sentence =
+      "Your sending is rate limited. This message was not sent. This listener lets one session " +
+      "send 4 messages a minute and 2 at once. You can send it again after 15 seconds.";
+    const routes: string[] = [];
+    globalThis.fetch = async (input, init) => {
+      const path = new URL(input.toString()).pathname;
+      if (path !== "/v1/messages/send" && path !== "/v1/messages/publish") {
+        return responseWithRegistration(input, init, {});
+      }
+      routes.push(path);
+      // The listener's 429 for a session past its sending limit (`senderRateLimitedAnswer`,
+      // packages/envoy/cmd/listener/sender_limit.go).
+      return new Response(
+        JSON.stringify({
+          error: sentence,
+          reason: "sender_rate_limited",
+          retry_after_seconds: 15,
+          messages_per_minute: 4,
+          burst: 2,
+        }),
+        { status: 429, headers: { "Content-Type": "application/json", "Retry-After": "15" } }
+      );
+    };
+    const { default: envoyExtension } = await import("./envoy.ts?sender-rate-limited");
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    await fixture.handlers.get("session_start")?.({}, sessionContext());
+    const send = fixture.tools.find((tool) => tool.name === "envoy_send");
+    const publish = fixture.tools.find((tool) => tool.name === "envoy_publish");
+    if (send === undefined || publish === undefined) {
+      throw new Error("envoy_send or envoy_publish was not registered");
+    }
+
+    const sent = await send.execute("", { session_id: "ses_target", message: "hello" });
+    const published = await publish.execute("", {
+      topic: "notifications.team.x",
+      message: "hello",
+    });
+
+    for (const result of [sent, published]) {
+      expect(result.isError).toBe(true);
+      expect(result.content[0]?.text).toBe(`${sentence} (reason: sender_rate_limited)`);
+    }
+    // One request to each route: neither tool sends a refused message again.
+    expect(routes).toEqual(["/v1/messages/send", "/v1/messages/publish"]);
   });
 
   // slack_post's broker and Slack, as the session's process meets them: the broker's client on

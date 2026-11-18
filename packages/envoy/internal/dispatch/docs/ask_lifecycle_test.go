@@ -689,18 +689,30 @@ func requireSettledAtLatestVersion(t *testing.T, service *Service, artifactID st
 }
 
 // serveTwoBuilds registers in server_processes, the registry the document service reads the fleet
-// from (processes.Live), a live process of each of two builds for the rest of the test, both
-// reading and creating this build's schema, as a roll serves them. The document service then
-// keeps the server-owned attributes of each ask block in step with its asks row
-// (rollWindowAskAttributes) and writes an issue's close and reopen into its asks' blocks
-// (WriteIssueAskStates), for the release before's pages, which read an ask's state from its block.
+// from (processes.Live), a live process of each of two builds for the rest of the test, as a roll
+// serves them: one of the release before, with the schema numbers a process of it registers
+// (baseSchemaVersion, baseSchemaCreatable), and one of this build, with its own. The fleet guard
+// reads a process below this build's schema version as a build whose pages read an ask's state
+// from its block (anotherBuildServes), so the document service then keeps the server-owned
+// attributes of each ask block in step with its asks row (rollWindowAskAttributes) and writes an
+// issue's close and reopen into its asks' blocks (WriteIssueAskStates). A test's editor presents
+// no schema_creatable, so its creatable version is 1, at most the lowest version the fleet reads,
+// and its document socket stays writable beside the release before (schemaFleet.admits).
 func serveTwoBuilds(t *testing.T, database *store.Store) {
 	t.Helper()
 	if _, err := database.Pool.Exec(context.Background(), `
 		insert into server_processes (instance, commit, schema_version, schema_creatable, heartbeat_at)
 		values (gen_random_uuid(), 'the-release-before', $1, $2, now() + interval '1 hour'),
-		       (gen_random_uuid(), 'this-release', $1, $2, now() + interval '1 hour')
-	`, pmdoc.SchemaVersion(), pmdoc.SchemaCreatable()); err != nil {
+		       (gen_random_uuid(), 'this-release', $3, $4, now() + interval '1 hour')
+	`, baseSchemaVersion, baseSchemaCreatable, pmdoc.SchemaVersion(), pmdoc.SchemaCreatable()); err != nil {
 		t.Fatalf("register a live process of each of two builds: %v", err)
 	}
 }
+
+// baseSchemaVersion and baseSchemaCreatable are the schema numbers a process of the release
+// before registers: legion/INFRA-1149's pmdoc/schema/blocks.json is version 4, and creates nothing
+// past it.
+const (
+	baseSchemaVersion   = 4
+	baseSchemaCreatable = 4
+)
