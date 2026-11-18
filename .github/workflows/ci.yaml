@@ -2802,6 +2802,9 @@ jobs:
               - *go_workspace
               - 'packages/envoy/**'
               - 'packages/daemon/**/*.go'
+              # The daemon's bounds of a rating, which packages/envoy/internal/textcheck's
+              # rating_bounds_test.go:23 holds Dispatch's own bounds to.
+              - 'packages/contracts/fixtures/daemon-api/plan-rating.json'
               # The prompt design_approved_wake_test.go:32-38 holds the resume's wake to, the copy
               # of the phrase it reads in place of importing internal/workflow (:26-27), and the
               # committed extract reclaim_doc_test.go:50 holds the guide's paragraph to.
