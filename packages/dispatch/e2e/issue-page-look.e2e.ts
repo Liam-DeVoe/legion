@@ -182,7 +182,6 @@ test("the new issue page draws the whole document in the shipped typeface @phone
   expect(families.filter((family) => sameFamily(family, "Inter"))).toEqual([]);
 
   const address = await typefaceAddress(page);
-  expect(address).not.toBeNull();
   expect(fontRequests.length).toBeGreaterThan(0);
   expect([...new Set(fontRequests)]).toEqual([address]);
   for (const answer of fontResponses) {

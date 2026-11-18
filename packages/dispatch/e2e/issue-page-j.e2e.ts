@@ -354,9 +354,6 @@ test("a Contents entry is cut again in the typeface once its file arrives @phone
     }
     await expectIssuePageDrawn(page);
     const address = await typefaceAddress(page);
-    if (address === null) {
-      throw new Error(`the page's stylesheet declares no @font-face for ${TYPEFACE}`);
-    }
 
     // A reader whose request for the file is held until the list is drawn in the fallback, the
     // Outline sheet opened on a phone before the file arrives.

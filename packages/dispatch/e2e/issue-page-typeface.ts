@@ -12,9 +12,9 @@ import type { Page } from "@playwright/test";
 export const TYPEFACE = "Dispatch Inter";
 
 /** The address the page's stylesheet loads the typeface from, read from its own `@font-face`
- *  rule; null when no rule declares the family. c-typeface. */
-export function typefaceAddress(page: Page): Promise<string | null> {
-  return page.evaluate((family) => {
+ *  rule. Throws when no rule declares the family. c-typeface. */
+export async function typefaceAddress(page: Page): Promise<string> {
+  const address = await page.evaluate((family) => {
     const find = (rules: CSSRuleList, base: string): string | null => {
       for (const rule of rules) {
         if (rule instanceof CSSFontFaceRule) {
@@ -34,6 +34,10 @@ export function typefaceAddress(page: Page): Promise<string | null> {
     }
     return null;
   }, TYPEFACE);
+  if (address === null) {
+    throw new Error(`the page's stylesheet declares no @font-face for ${TYPEFACE}`);
+  }
+  return address;
 }
 
 /** How each face of the typeface's family stands in the document's font set: `loaded` once the
