@@ -952,6 +952,16 @@ shard and alone jobs skipped and no blob report anywhere, and without it in this
 run would be reported as legs that uploaded nothing rather than as the build that never
 handed them anything. The verdict step below names it as it names the rest.
 
+## Why the merge job runs on arm64
+
+arm64, for the reason the comment on ci.yaml's `changes` job gives (INFRA-4222). This job
+runs JavaScript actions, `bunx playwright merge-reports` and two scripts over gh and jq, with
+the runner image's own node, python3, gh and jq. The one toolchain it installs is Bun, from
+the aarch64 row of .github/actions/setup-bun that ci.yaml's tool-fallback-arm job proves.
+Playwright's report merge starts no browser. At busy
+hours the x64 pool held this 35-second job for about 35 minutes (run 44126172228 on
+2026-11-17), and it holds every browser run's verdict, after the legs and before ci-ok.
+
 ## The merge job's measured steps and its budget
 
 The budget is measured. Over the 32 concluded `dispatch-browser / merge` jobs of the last
