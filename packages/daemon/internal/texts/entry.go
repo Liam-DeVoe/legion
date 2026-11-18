@@ -30,11 +30,26 @@ type Entry struct {
 	Form Form
 	// Record is the zero value of the kind's record type, which declares the kind's fields.
 	Record any
+	// Readers are the roles that read the kind's text. The slice is shared: do not change it.
+	Readers []claim.Role
 	// Urgency is the kind's urgency rule for a reader and the variant of the text. It is nil
 	// for a task, which always starts a turn. A nil rule on a notice or a role message gives
 	// Med.
 	Urgency func(reader claim.Role, v Variant) Urgency
 }
+
+// The reader sets that the entries of the list name.
+var (
+	toArchitect              = []claim.Role{claim.RoleArchitect}
+	toController             = []claim.Role{claim.RoleController}
+	toArchitectAndController = []claim.Role{claim.RoleArchitect, claim.RoleController}
+	toReviewer               = []claim.Role{claim.RoleReviewer}
+	toMerger                 = []claim.Role{claim.RoleMerger}
+	toCheckRoles             = []claim.Role{claim.RoleImplementer, claim.RoleTester}
+	toPhaseWorkers           = []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger}
+	toPodRoles               = []claim.Role{claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger}
+	toEveryRole              = []claim.Role{claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger, claim.RoleController}
+)
 
 // byKind is the position of each kind on the list.
 var byKind = func() map[Kind]int {

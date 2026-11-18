@@ -18,23 +18,19 @@ const (
 
 // Variant holds the facts of one text that an urgency rule reads, beside the kind and the
 // reader. A notice's variant comes from the notice's own row, so a copy of the row gets the
-// urgency of the row it copies.
+// urgency of the row it copies. The json names are the payload keys the facts come from, so
+// json.Unmarshal of a notice's payload gives its variant.
 type Variant struct {
 	// Role is the worker role that the notice names.
-	Role claim.Role
-	// Verdict is the verdict that the text carries.
-	Verdict string
-	// Reason is the reason that the text carries.
-	Reason string
-	// Phase is the phase of the issue that the text names.
-	Phase phase.Phase
-	// ChildStatus is the variant word of a child-status notice: the case of the child that it
-	// tells.
-	ChildStatus string
-	// Held is the variant word of a held notice: the case that held the issue.
-	Held string
-	// AllPassed is true where every check of a CI settlement passed.
-	AllPassed bool
+	Role claim.Role `json:"role,omitempty"`
+	// Phase is the phase that the text names: the phase that ended, or the issue's phase.
+	Phase phase.Phase `json:"phase,omitempty"`
+	// To is the phase that a phase-finished notice's move went to.
+	To phase.Phase `json:"to,omitempty"`
+	// Change is the variant word of a child-status notice (ChangeTodo and the others).
+	Change string `json:"change,omitempty"`
+	// Hold is the variant word of a held notice (HoldFailure and the others).
+	Hold string `json:"hold,omitempty"`
 }
 
 // UrgencyOf is the urgency of a text of kind to reader, with the variant v. A task has no
