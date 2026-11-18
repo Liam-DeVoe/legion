@@ -3081,12 +3081,18 @@ test("the keys of a row's editor move its caret and edit inside the node's own b
     const heading = "Keep every address the old page answered";
     const decision = seeded.decisions[1] ?? "";
 
-    /** Enter on the focused row, and the caret in its node's block `blockId`. */
+    /** Enter on the focused row, the caret in its node's block `blockId`, and the editor's own
+     *  write of its selection after the focus passed. */
     const enter = async (blockId: string) => {
       await page.keyboard.press("Enter");
       await expect
         .poll(() => caretInRowBlock(page, blockId), { message: "Enter put no caret in the block" })
         .toBe(true);
+      // ProseMirror writes its own selection back over the page's 20 ms after it takes the focus
+      // (prosemirror-view's focus handler), undoing a caret move it has not read yet: an arrow
+      // pressed in that window is put back, and the key after it acts at the old place. A reader
+      // is never that quick, so the row waits that window out before its first key.
+      await page.waitForTimeout(50);
     };
     /** One edit through the row `focus` focuses: Enter, `keys` pressed, `paste` pasted as a
      *  browser sends a paste, a `Y` typed and Escape. The document `artifactId` then stores
