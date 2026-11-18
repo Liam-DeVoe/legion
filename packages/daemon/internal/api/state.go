@@ -751,24 +751,13 @@ type AssignmentView struct {
 	DrawnAt    *time.Time `json:"drawnAt,omitempty"`
 }
 
-// WaitingOnView is what a root in awaiting_person waits on from a person (record.Awaiting). Kind
-// is `ask` with Ask, the id of the oldest question of its tree still with the person, or `gate`
-// with GateVersion and ArtifactID, the spec version of its registered document a person has not
-// reviewed. Since is Dispatch's time of the hand-back the wait began at,
-// absent when unknown. AnsweredAt and AnsweredBy are absent until a person's act answers the
-// wait; the answered root then stands in admission's waiting line as well, among the issues
-// whose work came back, oldest first, until the pass that resumes it. AnsweredBy is every value
-// of record.Answer, `declined` — a person who closed an ask of the root rather than answer it
-// (contract 68) — among them, and it names how the wait was answered, not always by a person.
-type WaitingOnView struct {
-	Kind        string        `json:"kind"`
-	Ask         string        `json:"ask,omitempty"`
-	GateVersion int           `json:"gateVersion,omitempty"`
-	ArtifactID  string        `json:"artifactId,omitempty"`
-	Since       *time.Time    `json:"since,omitempty"`
-	AnsweredAt  *time.Time    `json:"answeredAt,omitempty"`
-	AnsweredBy  record.Answer `json:"answeredBy,omitempty"`
-}
+// WaitingOnView is what a root in awaiting_person waits on from a person (record.Awaiting): an ask
+// or a spec version, when the wait began and, once an act answered it, when and by what act. The
+// answered root then stands in admission's waiting line as well, among the issues whose work came
+// back, oldest first, until the pass that resumes it. It is record.WaitingOnView, where its fields
+// are declared: the state's `waitingOn` and a state event's are the same value read two ways
+// (record.Observed), and the view is declared once, under both.
+type WaitingOnView = record.WaitingOnView
 
 // MarshalJSON keeps `workers` an object on the wire for an issue that has no worker yet.
 func (i Issue) MarshalJSON() ([]byte, error) {

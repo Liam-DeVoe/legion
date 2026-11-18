@@ -134,12 +134,15 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 
 	projected := api.State{Issues: make(map[string]api.Issue, len(issues))}
 	for _, issue := range issues {
+		// What Dispatch observes of the issue's own record — its phase, its tree and what it
+		// waits on from a person — is built by the one definition a state event's values are
+		// built by too (record.Observed), so the event and this view never disagree.
+		observed := record.Observed(issue)
 		view := api.Issue{
 			Key:           issue.Key,
 			Generation:    issue.Generation,
-			Phase:         issue.Phase,
+			Phase:         observed.Phase,
 			Status:        issue.Status,
-			Tree:          issue.Tree,
 			Repo:          issue.Repo,
 			DefaultBranch: issue.DefaultBranch,
 			// When this root's linger runs out, nil for every issue that is not a lingering
@@ -149,7 +152,12 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			// The parent chain a labelled root is held under, empty for every other record: the
 			// hold on it is the ancestry hold, and nothing else on this wire names the chain.
 			Ancestry: issue.Ancestry,
-			Workers:  map[claim.Role]api.PhaseView{},
+			// What the root waits on from a person, present only while it is in awaiting_person.
+			WaitingOn: observed.WaitingOn,
+			Workers:   map[claim.Role]api.PhaseView{},
+		}
+		if observed.Tree != nil {
+			view.Tree = *observed.Tree
 		}
 		// Every experiment answer the issue runs under, a done issue's included: it is what its
 		// roles ran with, and nothing redraws it. The three memory fields are the answer of the
@@ -173,9 +181,6 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 		}
 		if slot, ok := slotViews[issue.Key]; ok {
 			view.Slot = &slot
-		}
-		if issue.AwaitingPerson() {
-			view.WaitingOn = waitingOn(*issue.Awaiting)
 		}
 
 		phases, err := s.Phases(ctx, tx, issue.Key)
@@ -719,28 +724,6 @@ func mergeWaitView(issue record.Issue, reviewer record.PhaseRow, pr *record.Pull
 	view.CheckRuns = len(classify.HeadRuns(*pr))
 	if reviewer.Decision != nil {
 		view.ToldHead, view.ToldState = reviewer.Decision.ToldStuckHead, string(reviewer.Decision.ToldStuckState)
-	}
-	return view
-}
-
-// waitingOn is the view of what a root in awaiting_person waits on: the gate shape when the wait
-// names a spec version, otherwise the question; the answer only once a person gave one. The act
-// that answered travels as the record's own word for it (record.Answer), `declined` for a person
-// who closed an ask of the root rather than answer it among them, so a value the record gains is
-// served as it stands and the contract number is what holds a plugin to the list it parses
-// (api.DaemonAPIVersion).
-func waitingOn(w record.Awaiting) *api.WaitingOnView {
-	view := &api.WaitingOnView{Kind: "ask", Ask: w.Ask}
-	if w.GateVersion != 0 {
-		view = &api.WaitingOnView{Kind: "gate", GateVersion: w.GateVersion, ArtifactID: w.Artifact}
-	}
-	if !w.Since.At.IsZero() {
-		since := w.Since.At
-		view.Since = &since
-	}
-	if w.AnsweredAt != nil {
-		answeredAt := *w.AnsweredAt
-		view.AnsweredAt, view.AnsweredBy = &answeredAt, w.AnsweredBy
 	}
 	return view
 }

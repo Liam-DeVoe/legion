@@ -812,7 +812,7 @@ func TestAClosingTreeNamesEveryDecisionStillOwedToItsArchitect(t *testing.T) {
 			return err
 		}
 		var id int64
-		if err := tx.QueryRow(ctx, "select max(id) from outbox").Scan(&id); err != nil {
+		if err := tx.QueryRow(ctx, "select max(id) from outbox where kind = $1", string(row.Kind)).Scan(&id); err != nil {
 			return err
 		}
 		return records.ClaimKeptDecisions(ctx, tx, root.Key, naming, id)

@@ -83,7 +83,7 @@ func TestGateRegistrationWithDesignGateOffStartsPlanningAndSeedsApprovalRead(t *
 	// (awaiting_reconcile.go) and the wake's (wake.go); a child's own architect's plain start carries
 	// none (gateOpened, reviveArchitect), and the task-less starts admission brings back beside a
 	// phase worker are written in internal/admit, never here.
-	rows, err := pool.Query(ctx, `select kind, payload from outbox order by id`)
+	rows, err := pool.Query(ctx, `select kind, payload from outbox where `+notStateRows+` order by id`)
 	if err != nil {
 		t.Fatalf("read outbox: %v", err)
 	}
@@ -865,11 +865,17 @@ func testEngine(policy config.DesignGate, log *slog.Logger) *Engine {
 	}, log)
 }
 
+// notStateRows is the predicate that leaves the state lane's rows (record.LaneState) out of a read
+// of the whole outbox: a write of an issue, a slot, a claim or the admission block queues one when
+// the store's state events are on, and a test that counts or lists the outbox asserts the rows of
+// the other lanes.
+const notStateRows = `kind not in ('state_change', 'state_admission', 'state_boot')`
+
 // assertOutboxKinds is every row the transition left, by kind and in the order it wrote them. A
 // phase worker's start is one of them: one row, which carries the task (StartOrOwe).
 func assertOutboxKinds(t *testing.T, pool *pgxpool.Pool, want []string) {
 	t.Helper()
-	rows, err := pool.Query(t.Context(), `select kind from outbox order by id`)
+	rows, err := pool.Query(t.Context(), `select kind from outbox where `+notStateRows+` order by id`)
 	if err != nil {
 		t.Fatalf("read outbox: %v", err)
 	}

@@ -2626,8 +2626,10 @@ type source struct {
 // It is also where the outbox learns of its rows: every write that makes a row due — Enqueue, and
 // ExpediteOutbox — wakes the row's lane (outbox.wake) once the transaction has committed, through
 // the transaction's commit hooks (intake.OnCommit), so no lane runs a row it cannot yet read, and
-// no lane polls for one. wake is nil where there is no workflow to wake: the API-only daemon, the
-// state route's reads and the stranded report.
+// no lane polls for one. A write of an issue or a slot — PutIssue, PutSlot, ReleaseSlot and
+// ReleaseSlotForWait — wakes the project's state lane the same way, since the store queues the
+// state event of such a write itself. wake is nil where there is no workflow to wake: the
+// API-only daemon, the state route's reads and the stranded report.
 type projectRecords struct {
 	record.Store
 	project string
@@ -2714,6 +2716,20 @@ func (s projectRecords) EnqueueDesignGates(ctx context.Context, tx pgx.Tx, publi
 	return nil
 }
 
+// PutIssue records the issue and then wakes the project's state lane once the transaction
+// commits: a write that moves the issue's phase, tree or waitingOn queues its state event in that
+// transaction (record.Postgres.PublishState), under the bare project key rather than the issue's,
+// so the lane it runs on is the project's one state lane (record.LaneState), and the store, which
+// knows nothing of the lanes, cannot wake it. A write that queued nothing costs the woken lane one
+// list.
+func (s projectRecords) PutIssue(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+	if err := s.Store.PutIssue(ctx, tx, issue); err != nil {
+		return err
+	}
+	s.wakeOnCommit(ctx, s.stateLane())
+	return nil
+}
+
 // PutSlot grants the slot and then wakes the issue's lifecycle lane once the transaction
 // commits. A grant writes a slots row and no outbox row, so nothing would otherwise tell the
 // lane that anything changed — and the thing the grant releases is an outbox row: the worker
@@ -2721,13 +2737,41 @@ func (s projectRecords) EnqueueDesignGates(ctx context.Context, tx pgx.Tx, publi
 // (record.SuperviseRequest.NeedsSlot). Without this wake that task would sit until the lane's
 // next sweep, up to one outbox lease behind the grant. The wake belongs here rather than in
 // record.Store for the same reason every other wake does: the store is the daemon's
-// transactional record and knows nothing of the lanes that run beside it.
+// transactional record and knows nothing of the lanes that run beside it. A grant or a move of
+// the slot queues its state event too, so the project's state lane is woken as PutIssue wakes it.
 func (s projectRecords) PutSlot(ctx context.Context, tx pgx.Tx, slot record.Slot) error {
 	if err := s.Store.PutSlot(ctx, tx, slot); err != nil {
 		return err
 	}
 	s.wakeOnCommit(ctx, record.OutboxRow{Issue: slot.Issue, Kind: record.OutboxKindSupervise})
+	s.wakeOnCommit(ctx, s.stateLane())
 	return nil
+}
+
+// ReleaseSlot takes the slot away and then wakes the project's state lane once the transaction
+// commits, as PutIssue does: the release queues the state event naming the slot it took.
+func (s projectRecords) ReleaseSlot(ctx context.Context, tx pgx.Tx, issue string) error {
+	if err := s.Store.ReleaseSlot(ctx, tx, issue); err != nil {
+		return err
+	}
+	s.wakeOnCommit(ctx, s.stateLane())
+	return nil
+}
+
+// ReleaseSlotForWait takes the slot away for what the issue waits on and then wakes the
+// project's state lane once the transaction commits, as ReleaseSlot does.
+func (s projectRecords) ReleaseSlotForWait(ctx context.Context, tx pgx.Tx, issue string, at time.Time) error {
+	if err := s.Store.ReleaseSlotForWait(ctx, tx, issue, at); err != nil {
+		return err
+	}
+	s.wakeOnCommit(ctx, s.stateLane())
+	return nil
+}
+
+// stateLane names the project's state lane to wakeOnCommit: every state row of the project
+// carries the bare project key in its issue column, so that key and any state kind name the lane.
+func (s projectRecords) stateLane() record.OutboxRow {
+	return record.OutboxRow{Issue: s.project, Kind: record.OutboxKindStateChange}
 }
 
 // wakeOnCommit wakes the row's lane once the transaction that wrote it commits. A write made
@@ -2747,7 +2791,8 @@ func (s projectRecords) wakeOnCommit(ctx context.Context, row record.OutboxRow) 
 	if log == nil {
 		log = slog.Default()
 	}
-	// Caller 2 is the caller of Enqueue or ExpediteOutbox, past this helper and the method.
+	// Caller 2 is the caller of the method that wrote the row (Enqueue, ExpediteOutbox, PutIssue
+	// and the rest), past this helper and the method.
 	_, file, line, _ := goruntime.Caller(2)
 	log.Error("outbox row written outside a commit scope; its lane is woken at once",
 		"kind", row.Kind, "issue", row.Issue, "file", file, "line", line)

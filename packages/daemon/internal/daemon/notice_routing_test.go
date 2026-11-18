@@ -112,7 +112,7 @@ func architectClaim(t *testing.T, sup *supervisor, issue string, state supervise
 func leasedOutboxRow(t *testing.T, pool *store.Pool, records record.Store, row record.OutboxRow) record.OutboxRow {
 	t.Helper()
 	enqueueOutbox(t, pool, records, row)
-	if err := pool.QueryRow(context.Background(), "select id from outbox order by id desc limit 1").Scan(&row.ID); err != nil {
+	if err := pool.QueryRow(context.Background(), "select id from outbox where kind = $1 order by id desc limit 1", string(row.Kind)).Scan(&row.ID); err != nil {
 		t.Fatalf("read the enqueued row: %v", err)
 	}
 	row.LeaseToken = leaseOutboxRow(t, pool, row.ID)
@@ -366,7 +366,7 @@ func TestANoticeHeldForAnAbsentArchitectArrivesInOrderOnceItReturns(t *testing.T
 	// The held row's error carries the listener's refusal, which is what the log line and the row's
 	// last_error show an operator.
 	var lastError string
-	if err := pool.QueryRow(context.Background(), "select id, last_error from outbox order by id limit 1").Scan(&first.ID, &lastError); err != nil {
+	if err := pool.QueryRow(context.Background(), "select id, last_error from outbox where "+notStateRows+" order by id limit 1").Scan(&first.ID, &lastError); err != nil {
 		t.Fatalf("read the first held row: %v", err)
 	}
 	first.LeaseToken = leaseOutboxRow(t, pool, first.ID)

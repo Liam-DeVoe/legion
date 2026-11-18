@@ -187,7 +187,7 @@ func (r *claimReleaseRig) due(age time.Duration) {
 	row := mustOutboxRow(r.t, claimIssue, record.ClaimRelease{}, at)
 	row.CreatedAt = at
 	enqueueOutbox(r.t, r.pool, record.NewStore(), row)
-	if err := r.pool.QueryRow(context.Background(), "select id from outbox order by id desc limit 1").Scan(&r.row); err != nil {
+	if err := r.pool.QueryRow(context.Background(), "select id from outbox where kind = $1 order by id desc limit 1", string(record.OutboxKindClaimRelease)).Scan(&r.row); err != nil {
 		r.t.Fatalf("read back the release row's id: %v", err)
 	}
 }

@@ -943,7 +943,7 @@ func TestAStatusWriteWhoseReasonDispatchRefusesStillSetsTheStatusAndTellsTheArch
 	}
 	var kind string
 	var payload []byte
-	if err := pool.QueryRow(context.Background(), "select kind, payload from outbox").Scan(&kind, &payload); err != nil {
+	if err := pool.QueryRow(context.Background(), "select kind, payload from outbox where "+notStateRows).Scan(&kind, &payload); err != nil {
 		t.Fatalf("read the row left behind: %v", err)
 	}
 	if kind != string(record.OutboxKindNotice) {
@@ -1030,7 +1030,7 @@ func TestAStatusWriteRetriesUntilTheStatusLandsAfterItsReasonIsRefused(t *testin
 	}
 	var kind string
 	var attempts int
-	if err := pool.QueryRow(context.Background(), "select kind, attempts from outbox").Scan(&kind, &attempts); err != nil {
+	if err := pool.QueryRow(context.Background(), "select kind, attempts from outbox where "+notStateRows).Scan(&kind, &attempts); err != nil {
 		t.Fatalf("read the row after the failed status write: %v", err)
 	}
 	if kind != string(record.OutboxKindDispatchStatus) || attempts != 1 {
@@ -1048,7 +1048,7 @@ func TestAStatusWriteRetriesUntilTheStatusLandsAfterItsReasonIsRefused(t *testin
 		t.Fatalf("statuses written = %v, want the retry's write after the first attempt failed", client.statuses)
 	}
 	var payload []byte
-	if err := pool.QueryRow(context.Background(), "select kind, payload from outbox").Scan(&kind, &payload); err != nil {
+	if err := pool.QueryRow(context.Background(), "select kind, payload from outbox where "+notStateRows).Scan(&kind, &payload); err != nil {
 		t.Fatalf("read the row left behind: %v", err)
 	}
 	if kind != string(record.OutboxKindNotice) {
@@ -1110,7 +1110,7 @@ func TestAStatusWriteWhoseAnswerWasLostStillTellsTheArchitectItsRefusedReason(t 
 	}
 	var kind string
 	var payload []byte
-	if err := pool.QueryRow(context.Background(), "select kind, payload from outbox").Scan(&kind, &payload); err != nil {
+	if err := pool.QueryRow(context.Background(), "select kind, payload from outbox where "+notStateRows).Scan(&kind, &payload); err != nil {
 		t.Fatalf("read the row left behind: %v", err)
 	}
 	if kind != string(record.OutboxKindNotice) {

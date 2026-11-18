@@ -587,7 +587,7 @@ func TestPromotionStartsAChildUnlessItsWorkerIsStartedForTheRun(t *testing.T) {
 					}
 				})
 				var id int64
-				if err := pool.QueryRow(context.Background(), `select max(id) from outbox`).Scan(&id); err != nil {
+				if err := pool.QueryRow(context.Background(), `select max(id) from outbox where kind = $1`, string(record.OutboxKindSupervise)).Scan(&id); err != nil {
 					t.Fatalf("read the %s row's id: %v", payload.Op, err)
 				}
 				return id

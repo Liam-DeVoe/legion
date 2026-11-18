@@ -72,7 +72,7 @@ func recordedGate(t *testing.T, pool *pgxpool.Pool) *record.DesignGate {
 func outboxRows(t *testing.T, pool *pgxpool.Pool) int {
 	t.Helper()
 	var rows int
-	if err := pool.QueryRow(context.Background(), `select count(*) from outbox`).Scan(&rows); err != nil {
+	if err := pool.QueryRow(context.Background(), `select count(*) from outbox where `+notStateRows).Scan(&rows); err != nil {
 		t.Fatalf("count outbox rows: %v", err)
 	}
 	return rows

@@ -21,7 +21,7 @@ type queuedRow struct {
 // queuedRows is every row the outbox holds, decoded, in the order they were written.
 func queuedRows(t *testing.T, pool *pgxpool.Pool) []queuedRow {
 	t.Helper()
-	rows, err := pool.Query(t.Context(), "select id, kind, issue, payload from outbox order by id")
+	rows, err := pool.Query(t.Context(), "select id, kind, issue, payload from outbox where "+notStateRows+" order by id")
 	if err != nil {
 		t.Fatalf("read the outbox: %v", err)
 	}

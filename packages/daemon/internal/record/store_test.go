@@ -1225,7 +1225,7 @@ func TestHeldRowsListsLifecycleRowsBehindTheirIssuesRunningOne(t *testing.T) {
 		must(t, err)
 		must(t, records.Enqueue(ctx, tx, row))
 		var id int64
-		must(t, tx.QueryRow(ctx, "select max(id) from outbox").Scan(&id))
+		must(t, tx.QueryRow(ctx, "select max(id) from outbox where kind = $1", string(row.Kind)).Scan(&id))
 		return id
 	}
 	lease := func(tx pgx.Tx, id int64) {
@@ -1486,7 +1486,7 @@ func TestADueLifecycleRowWaitsWhileItsIssuesLifecycleRowRuns(t *testing.T) {
 		must(t, err)
 		must(t, records.Enqueue(ctx, tx, row))
 		var id int64
-		must(t, tx.QueryRow(ctx, "select max(id) from outbox").Scan(&id))
+		must(t, tx.QueryRow(ctx, "select max(id) from outbox where kind = $1", string(row.Kind)).Scan(&id))
 		return id
 	}
 	due := func(tx pgx.Tx, issue string, kinds []OutboxKind) []string {
