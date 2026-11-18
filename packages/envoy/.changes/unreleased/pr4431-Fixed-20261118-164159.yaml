@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'A send or a topic publish repeated under the same `idempotency_key` (or any repeat whose dedupe key names its event) is now answered with the copy the stream holds: its `event_id`, `issued_at` and body are the first copy''s, with `duplicate: true`, where the listener answered the new envelope it built for the repeat, whose `event_id` no stored message carries. `POST /v1/messages/publish` now carries `duplicate` too. The listener reads the copy back at the sequence the stream''s duplicate verdict named; a copy it cannot read, a verdict with sequence 0 and a sequence that no longer holds the copy are answered `503` with `Retry-After: 1` and the body `envoy: the stream already holds this message, so the answer is its stored copy: <reason>`, recorded with the outcome `stored_copy_unreadable`, and the same request again gets the copy once it can be read. Every answer''s `expects_reply` is the answered envelope''s, in the request''s spelling where the two agree, the role send''s `202` kept answer included.'
+time: 2026-11-18T16:41:59.765451887Z
+custom:
+    Issue: pr4431
