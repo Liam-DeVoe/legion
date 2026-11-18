@@ -4732,10 +4732,15 @@ function answerlessLanding(feed: "down" | "up"): RuleWay {
  *  still out: nothing of the tree or its views is read until the second write settles too, with
  *  the live feed up or down, and no event comes. The second reads and writes nothing of the issue
  *  (a pin, say), or, with `kept`, puts its answer in the cache as it settles (a Keep), which with
- *  the feed down is a change of the issue the refresh held for the writes then reads. */
-function answerlessBesideWrite(feed: "down" | "up", kept = false): RuleWay {
+ *  the feed down is a change of the issue the refresh held for the writes then reads. With
+ *  `feedBackPart`, the live feed, down, comes back with its gap replayed in part while the tree and
+ *  the open view wait for the second write, and the event feed refreshes every query. */
+function answerlessBesideWrite(
+  feed: "down" | "up",
+  { feedBackPart = false, kept = false }: { feedBackPart?: boolean; kept?: boolean } = {}
+): RuleWay {
   return {
-    words: `a write that lands in 200 ms with no answer and a refresh of every query while a second write is out, the second then settling${kept ? " and putting its answer in the cache" : ""}, with the live feed ${feed} and no event`,
+    words: `a write that lands in 200 ms with no answer and a refresh of every query while a second write is out, ${feedBackPart ? "the live feed then back with its gap replayed in part, " : ""}the second then settling${kept ? " and putting its answer in the cache" : ""}, with the live feed ${feed} and no event`,
     does: async (rig) => {
       if (feed === "down") await feedDown(rig);
       const second = Promise.withResolvers<void>();
@@ -4765,6 +4770,13 @@ function answerlessBesideWrite(feed: "down" | "up", kept = false): RuleWay {
         treeAndViewReads() - before,
         "the reads of the tree and its views while the second write is out"
       ).toBe(0);
+      if (feedBackPart) {
+        await feedStartsAgain(rig, false);
+        expect(
+          treeAndViewReads() - before,
+          "the reads of the tree and its views while the second write is out, the feed back"
+        ).toBe(0);
+      }
       act(() => second.resolve());
       await tick(50, 10);
     },
@@ -4811,6 +4823,37 @@ function focusWhileWriting(words: string, meanwhile?: (rig: Rig) => Promise<void
     },
   };
 }
+
+/** A write out for 1.5 s while the tree is read again, with the live feed up: the read waits for
+ *  the write and sends as it settles. 200 ms on the comments are read, and 200 ms after that an
+ *  event refreshes them: the scheduler holds that comments read back to a second after the last
+ *  one began, and the tree read the event asks for waits until it has begun (as the case "the
+ *  tree read an event asks for begins after the comments read the scheduler owes for it" shows),
+ *  counting the tree's own second from the moment its last read sent, not from the moment it
+ *  began to wait. So the way reads the tree twice: as the write settles, and once for the event. */
+const EVENT_AFTER_WAITED_READ: RuleWay = {
+  words:
+    "a write out for 1.5 s while the tree is read again, the comments read 200 ms after it settles and an event of the issue 200 ms later",
+  does: async (rig) => {
+    const answer = Promise.withResolvers<void>();
+    const write = new MutationObserver<void, Error, void, void>(rig.client, {
+      mutationFn: () => answer.promise,
+    });
+    void write.mutate();
+    await tick(10, 10);
+    act(() => {
+      void rig.client.refetchQueries({ exact: true, queryKey: issueTreeKey(KEY) });
+    });
+    await tick(1_500, 10);
+    act(() => answer.resolve());
+    await tick(200, 10);
+    act(() => {
+      void rig.client.refetchQueries({ queryKey: ["comments", KEY] });
+    });
+    await tick(200, 10);
+    await commentsEvent(rig);
+  },
+};
 
 /** The margin's resolve of the comment (`useMarginItems.ts`), answered by Dispatch in `latency`:
  *  its `onMutate` writes the resolve into the comments read before Dispatch holds it, its
@@ -4927,7 +4970,9 @@ const WAYS = {
   resolveRefusedUpPosted: refusedResolve("up", true),
   landedBlankBesideUp: answerlessBesideWrite("up"),
   landedBlankBesideDown: answerlessBesideWrite("down"),
-  landedBlankBesideKeepDown: answerlessBesideWrite("down", true),
+  landedBlankBesideKeepDown: answerlessBesideWrite("down", { kept: true }),
+  landedBlankBesideFeedPart: answerlessBesideWrite("down", { feedBackPart: true }),
+  eventAfterWaitedRead: EVENT_AFTER_WAITED_READ,
   focusDownWriting: focusWhileWriting(
     "a window focus with the live feed down while a write is out, the write then settling with the feed still down"
   ),
@@ -5532,6 +5577,13 @@ const READ_RULES: readonly ReadRule[] = [
   // they settle.
   { read: "tree", state: "answered", observed: true, way: "landedBlankBesideKeepDown", now: 1 },
   { read: "spec", state: "answered", observed: true, way: "landedBlankBesideKeepDown", now: 1 },
+  // A refresh asked while a read waits for the writes - the event feed's refresh of every query
+  // after an incomplete replay - is answered by the request that read sends as they settle.
+  { read: "tree", state: "answered", observed: true, way: "landedBlankBesideFeedPart", now: 1 },
+  { read: "spec", state: "answered", observed: true, way: "landedBlankBesideFeedPart", now: 1 },
+  // The tree read an event asks for after a read that waited for a write keeps its second from
+  // the moment that read sent.
+  { read: "tree", state: "answered", observed: true, way: "eventAfterWaitedRead", now: 2 },
   // A write Dispatch refuses with the live feed up: its rollback is no change, and an event that
   // lands while it is out is read once it settles.
   { read: "tree", state: "answered", observed: true, way: "resolveRefusedUp", now: 0 },

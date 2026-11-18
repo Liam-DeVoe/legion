@@ -144,6 +144,22 @@ export function trackQueryFetches(queryClient: QueryClient): void {
   schedulerFor(queryClient);
 }
 
+/**
+ * Records that a fetch of the query `queryKey` names exactly, which is out, sends its request now:
+ * from now on it is the fetch's start, for the interval and for every refresh owed. A query
+ * function that waits before it sends - the issue page's tree and view reads wait until no write
+ * is out (`tree-read.ts`' `readTree`) - calls it as it sends, since the cache's `fetch` action, the
+ * start recorded otherwise, came as the wait began: a refresh asked while it waited is answered by
+ * the request it then sends, and is not fetched a second time once that fetch lands.
+ */
+export function recordFetchSent(queryClient: QueryClient, queryKey: QueryKey): void {
+  const query = queryClient.getQueryCache().find({ exact: true, queryKey });
+  if (query === undefined) {
+    return;
+  }
+  schedulerFor(queryClient).started.set(query.queryHash, Date.now());
+}
+
 /** Marks a query stale and, while something renders it or a fetch of it is out, records that it
  *  owes a fetch begun after `requestedAt`. A fetch out settles by clearing the stale mark, so the
  *  debt is what keeps the query stale when nothing renders it once that fetch lands (`drive`). */
