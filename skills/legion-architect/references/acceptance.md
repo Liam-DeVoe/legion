@@ -64,8 +64,9 @@ legion({ op: "sign_off", issue: "LEGION-40" })
 ## The last round
 
 A parent's own pull request proves each of its checks, so sign off a parent with children only
-on an approved head carrying the merges of every child those checks need. Each needs a passing
-result at that head, or, for one in another repository, at a commit on the branch that
+on an approved head carrying the merges of every child those checks need. Each is judged as
+`skill://legion-architect`, section 6, judges a check: at that head, or, for one in another
+repository, at a commit on the branch that
 issue's pull request merged into or on that repository's default branch — that default branch
 alone where Dispatch knows of no merge of the issue — and, for a `default_branch` check, on that
 default branch whatever branch the pull request merged into. A child records no result that

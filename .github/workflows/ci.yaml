@@ -2264,7 +2264,9 @@ jobs:
               # src/skills-guard.test.ts:24,275 spawns packages/claude-envoy/scripts/build.ts and
               # asserts an exact file list over the tree it writes, so this job reads that whole
               # package and the one entry of its BUNDLE_ENTRYPOINTS (scripts/build.ts:41-46) that
-              # lives outside it. A spawn carries no import, so no derivation of this repository
+              # lives outside it; scripts/skill-scenarios/gate-search.ts:218, which
+              # gate-search.test.ts runs, spawns that script too and reads the legion/ it writes.
+              # A spawn carries no import, so no derivation of this repository
               # sees the reach: both patterns are hand-kept, with their declared reads in
               # ci_job_reads.py.
               - 'packages/claude-envoy/**'

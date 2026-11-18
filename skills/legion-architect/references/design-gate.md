@@ -23,10 +23,8 @@ document (`verification.md`) with it, uploading each version after the first wit
 `serves` naming the requirements it serves, its `surface`, its `run`, its `when` and its
 `negative_control`, or `ci_check` in place of its `run` (below). The human approves both
 documents in one request (step 4 below), and every later role reads the checks: the implementer
-and the tester record a result against each check with no `ci_check`, and the
-reviewer approves only once a pass stands for every `before_merge` check at the head, which is the
-line of that head under the check in `dispatch results --issue <issue>`, and never a pass at
-another commit, a pass recorded under an older wording of the check or a retracted one.
+and the tester record a result against each check with no `ci_check`, and the reviewer approves
+as `skill://legion-worker/references/merge-gate.md` says.
 
 A check proves only the clauses that something drove, so each clause of its `negative_control`
 names the test row or the run that drives it. A check of a requirement over every member of a

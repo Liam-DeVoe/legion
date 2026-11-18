@@ -156,10 +156,9 @@ pi-envoy 17.1.0) when its commit is an earlier head, when no attributed head is 
 when the pull request is attributed to another issue, or when any field of the check changed
 after it was recorded.
 
-**An issue is proved by its own checks.** Approval is gated by the `before_merge` checks of its
-own Verification document, read at its own head, so a result a child recorded proves nothing for
-a root — it was recorded at the child's head — and a child never records the result that proves
-a root's check. A child carrying part of a root's requirement proves it with a check on its own
+**An issue is proved by its own checks.** A result a child recorded proves nothing for a root —
+it was recorded at the child's head — and a child never records the result that proves a root's
+check. A child carrying part of a root's requirement proves it with a check on its own
 Verification document whose `serves` names that requirement. A root's own checks are proven at
 its own head, or, for an `after_merge` check, on the branch the root's pull request merged into
 or on the repository's default branch, in its last round.

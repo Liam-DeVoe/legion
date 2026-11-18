@@ -5,6 +5,10 @@
 // Each planted text's depth is asserted first, so a plant that no longer sits at its depth fails
 // instead of passing at another one.
 //
+// The `cut` mode, at head: the head itself, taken for the label's checkout, fails once for each
+// sentence the head's search cuts; a copy with each of those sentences deleted, and nothing else,
+// is clean; and the label's sentence planted in that copy fails again, naming its text.
+//
 //   bun test rule-search.test.ts
 //
 // RULE_SEARCH_CHECKOUT names the checkout (default: the repository this file is in) and
@@ -12,10 +16,10 @@
 // checkout's prompts and skills under its own mktemp directory.
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { appendFileSync, cpSync, mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { chainOf, RULES, roleTexts, search } from "./rule-search";
+import { chainOf, headSentences, RULES, roleTexts, search, searchCut } from "./rule-search";
 
 const checkout = process.env.RULE_SEARCH_CHECKOUT ?? path.resolve(import.meta.dir, "../../../..");
 const tree = (process.env.RULE_SEARCH_TREE ?? "head") as "base" | "head";
@@ -125,6 +129,50 @@ describe("rule-search", () => {
       appendFileSync(path.join(dir, UNREAD), `\n${plant.sentence}\n`);
       expect(search(dir, tree, label).faults).toEqual([]);
     });
+
+    test.if(tree === "head")(
+      `${label}: cut, the head taken for the label's checkout fails once for each sentence its search cuts`,
+      () => {
+        const dir = copy();
+        const count = [...headSentences(dir, label).cuts.values()].flat().length;
+        expect(count).toBeGreaterThan(0);
+        const faults = searchCut(dir, dir, label).faults;
+        expect(faults).toHaveLength(count);
+        for (const fault of faults) expect(fault).toContain("is not applied");
+      }
+    );
+
+    test.if(tree === "head")(
+      `${label}: cut, a copy with each sentence the head's search cuts deleted is clean, and the rule planted in it fails`,
+      () => {
+        const head = copy();
+        const ablated = copy();
+        for (const [file, cut] of headSentences(head, label).cuts) {
+          let text = readFileSync(path.join(ablated, file), "utf8");
+          for (const sentence of cut) {
+            const words = new RegExp(
+              sentence.text
+                .split(" ")
+                .map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+                .join("\\s+")
+            );
+            expect(words.test(text)).toBe(true);
+            text = text.replace(words, "");
+          }
+          writeFileSync(path.join(ablated, file), text);
+        }
+        expect(searchCut(ablated, head, label).faults).toEqual([]);
+        // A cut can take a link with it, so the plant goes in the first of its texts the copy reads.
+        const read = roleTexts(ablated, role).files;
+        const file = Object.values(plant.at).find((at) => read.includes(at));
+        expect(file).toBeDefined();
+        appendFileSync(path.join(ablated, file as string), `\n${plant.sentence}\n`);
+        const faults = searchCut(ablated, head, label).faults;
+        expect(faults).toHaveLength(1);
+        expect(faults[0]).toContain(`${file}:`);
+        expect(faults[0]).toContain("nor the label's form of a cut");
+      }
+    );
   }
 
   test("a checkout with no texts is UNKNOWN for each label, never clean", () => {

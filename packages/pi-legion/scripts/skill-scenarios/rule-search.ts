@@ -4,12 +4,14 @@
 // it"), so a label's list of cuts comes from this search, never from a hand-made list.
 //
 //   bun rule-search.ts <checkout> <base|head> <label>...
-//   bun rule-search.ts <checkout> texts <reviewer|architect>
+//   bun rule-search.ts <checkout> cut <label> <head checkout>
+//   bun rule-search.ts <checkout> texts <reviewer|architect|sub-architect>
 //
 // <checkout> is a tree of cybermonklabs/legion. <base> says it is #4230 before T5.12 of its plan
-// addendum (621d1378273e), <head> that it holds T5.12's changes: an
-// entry marked for one of the two is not expected in the other. `texts` lists the texts of a role,
-// each with its depth and the chain of links that reaches it first.
+// addendum (621d1378273e), <head> that it holds the changes of T5.12 and T5.13: an
+// entry marked for one of the two is not expected in the other. `cut` says that <checkout> is
+// <head checkout>, a tree at head, with the label's cuts applied (below). `texts` lists the texts
+// of a reader, each with its depth and the chain of links that reaches it first.
 //
 // The texts of a role are the closure of its links. Its entry texts are its prompt parts, as
 // prompts.Compose gives them (packages/daemon/internal/prompts/prompts.go, Compose), and its
@@ -38,12 +40,22 @@
 // Exit 0: every hit is classified and every entry matched once. Exit 1: one FAULT line for each
 // hit with no entry, hit with two, entry with no hit or two, missing text, and for a run that read
 // no text or found no hit (it could not see). Exit 2: a usage error.
+//
+// `cut` shows that no text the label's role reads in the label's checkout still states its rule.
+// The head checkout's own search must be clean. Then each sentence that it cuts must be gone from
+// the label's checkout, word for word, and each hit there must be a sentence that the head's search
+// keeps, unchanged, or the label's form of a sentence that an entry cuts (one that a `cut` entry of
+// either tree matches: a sentence with words cut, or a base sentence restored). A hit that is
+// neither, a sentence the head keeps that the label changed included, is a FAULT.
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 type Tree = "base" | "head";
 type Role = "reviewer" | "architect";
+/** A reader of texts: a label's role, or the architect of a tree's child (architect.md), whom no
+ * label runs and gate-search.ts reads for. */
+export type Reader = Role | "sub-architect";
 
 interface Entry {
   /** The text, relative to the checkout. */
@@ -70,7 +82,7 @@ interface Rule {
 }
 
 const PROMPTS = "packages/daemon/internal/prompts";
-const ROLE_TEXTS: Record<Role, { readonly parts: readonly string[]; readonly skill: string }> = {
+const ROLE_TEXTS: Record<Reader, { readonly parts: readonly string[]; readonly skill: string }> = {
   reviewer: {
     parts: [
       "roles/core/common.md",
@@ -84,6 +96,12 @@ const ROLE_TEXTS: Record<Role, { readonly parts: readonly string[]; readonly ski
   },
   architect: {
     parts: ["roles/architect-root.md", "go/architect-root.md", "go/architect-common.md"].map(
+      (part) => `${PROMPTS}/${part}`
+    ),
+    skill: "skills/legion-architect/SKILL.md",
+  },
+  "sub-architect": {
+    parts: ["roles/architect.md", "go/architect.md", "go/architect-common.md"].map(
       (part) => `${PROMPTS}/${part}`
     ),
     skill: "skills/legion-architect/SKILL.md",
@@ -118,6 +136,7 @@ const ENTRIES_HEAD: readonly Entry[] = [
     file: "packages/daemon/internal/prompts/roles/reviewer.md",
     has: "Approval is refused while any `before_merge` check",
     cut: "T5.12's pair of `reviewer.md:12` sends the reviewer to the line of that head. The label restores `the check's own answer`.",
+    at: "base",
   },
   {
     file: "packages/daemon/internal/prompts/roles/reviewer.md",
@@ -138,6 +157,7 @@ const ENTRIES_HEAD: readonly Entry[] = [
     file: "skills/legion-worker/references/pr-body.md",
     has: "Approval is gated by the `before_merge` checks of its own Verification document, read at its own head",
     cut: "Where approval reads, in the same words. The label deletes `, read at its own head`.",
+    at: "base",
   },
   {
     file: "skills/legion-worker/references/pr-body.md",
@@ -158,6 +178,13 @@ const ENTRIES_HEAD: readonly Entry[] = [
     file: "skills/legion-worker/references/merge-gate.md",
     has: "Approval is gated by the `before_merge` checks of the issue's own Verification document at its head",
     keep: "The architect's acceptance of a root against its child, which no reviewer gives.",
+    at: "base",
+  },
+  {
+    file: "skills/legion-worker/references/merge-gate.md",
+    has: "A child's result against a root's check proves nothing for the root",
+    keep: "A root against its child. The case has no child.",
+    at: "head",
   },
   {
     file: "packages/daemon/internal/prompts/go/worker-common.md",
@@ -390,6 +417,7 @@ const ENTRIES_HEAD: readonly Entry[] = [
     file: "skills/legion-architect/SKILL.md",
     has: "The checks are the gate every later role reads",
     keep: "The architect's account of the gate: a pass standing at the head. It names neither the line of a head nor the check's answer, as `roles/architect.md:105` does not.",
+    at: "base",
   },
   {
     file: "skills/legion-architect/SKILL.md",
@@ -431,6 +459,7 @@ const ENTRIES_HEAD: readonly Entry[] = [
     file: "skills/legion-architect/references/design-gate.md",
     has: "The human approves both documents in one request",
     cut: "T5.12's change of `design-gate.md:27-28` sends the reviewer to the line of the head. The label restores `which is the check's own answer`.",
+    at: "base",
   },
   {
     file: "skills/legion-architect/references/design-gate.md",
@@ -516,6 +545,12 @@ const ENTRIES_TWO_ROLES: readonly Entry[] = [
     at: "base",
   },
   {
+    file: "packages/daemon/internal/prompts/roles/reviewer.md",
+    has: "Your approval is gated by the `before_merge` checks",
+    cut: "T5.13's gate text asks a pass from both roles. The label deletes ` from the implementer and from the tester both`, and makes `: a line that names one of the two roles alone is no pass for your approval, and a pass at another commit is none` read `: a pass at another commit is none`.",
+    at: "head",
+  },
+  {
     file: "skills/legion-retro/SKILL.md",
     has: "and the pull request body's `Checks` block carries each of those lines",
     cut: "The retro's gate asks a pass from both roles. The label deletes `from the implementer and from the tester alike,`.",
@@ -590,6 +625,12 @@ const ENTRIES_TWO_ROLES: readonly Entry[] = [
     has: "Approval is refused while any `before_merge` check",
     keep: "`from which roles` names what the line shows, not which roles a pass needs.",
     at: "base",
+  },
+  {
+    file: "skills/legion-worker/references/merge-gate.md",
+    has: "Approval is refused while any `before_merge` check",
+    cut: "T5.13's gate text asks a pass from both roles. The label deletes ` from the implementer and from the tester both` and `: a line that names one of the two roles alone is no pass for the approval`.",
+    at: "head",
   },
   {
     file: "skills/legion-worker/references/pr-body.md",
@@ -784,6 +825,18 @@ const ENTRIES_CI_PASS: readonly Entry[] = [
     file: "packages/daemon/internal/prompts/roles/reviewer.md",
     has: "A `ci_check` check with no pass takes the end-of-round rule above",
     keep: "It sends such a check with no pass to the waits above. It does not say where a pass comes from.",
+  },
+  {
+    file: "packages/daemon/internal/prompts/roles/reviewer.md",
+    has: "Your approval is gated by the `before_merge` checks",
+    cut: "T5.13's gate text makes a pass from CI the pass of a check carrying `ci_check`. The label deletes ` (from CI, for a check carrying ci_check)`.",
+    at: "head",
+  },
+  {
+    file: "skills/legion-worker/references/merge-gate.md",
+    has: "Approval is refused while any `before_merge` check",
+    cut: "T5.13's gate text makes a pass from CI the pass of a check carrying `ci_check`. The label deletes ` (from CI, for a check carrying ci_check)`.",
+    at: "head",
   },
   {
     file: "skills/agent-secrets/SKILL.md",
@@ -1448,6 +1501,18 @@ const ENTRIES_LATER_FAIL: readonly Entry[] = [
     at: "head",
   },
   {
+    file: "packages/daemon/internal/prompts/roles/reviewer.md",
+    has: "A pass and a fail at one head leave it not known, whoever recorded them, and a later pass there does not end it: refuse the approval",
+    cut: "T5.13 adds it. The label deletes it.",
+    at: "head",
+  },
+  {
+    file: "skills/legion-retro/SKILL.md",
+    has: "A pass at another commit does not count, and a pass and a fail at one head leave it not known.",
+    cut: "The retro's gate, in a text that the reviewer reads. T5.13 adds it, and the label deletes `, and a pass and a fail at one head leave it not known`.",
+    at: "head",
+  },
+  {
     file: "skills/legion-worker/references/merge-gate.md",
     has: "A `wake_at` that no look follows is refused",
     keep: "The looks of the production check after the close.",
@@ -1529,6 +1594,7 @@ const ENTRIES_LATER_FAIL: readonly Entry[] = [
     file: "skills/legion-architect/references/design-gate.md",
     has: "The human approves both documents in one request",
     keep: "The results that the roles record and the reviewer's gate. It says nothing of a pass and a fail at one head.",
+    at: "base",
   },
   {
     file: "skills/legion-architect/references/design-gate.md",
@@ -1599,6 +1665,7 @@ const ENTRIES_ARCHITECT_LATER_FAIL: readonly Entry[] = [
     file: "skills/legion-architect/references/design-gate.md",
     has: "The human approves both documents in one request",
     keep: "The results that the roles record and the reviewer's gate. It says nothing of a pass and a fail at one head.",
+    at: "base",
   },
   {
     file: "skills/legion-architect/references/design-gate.md",
@@ -1626,6 +1693,18 @@ const ENTRIES_ARCHITECT_LATER_FAIL: readonly Entry[] = [
     file: "skills/legion-worker/references/merge-gate.md",
     has: "That is a refusal: `REQUEST_CHANGES` naming the check",
     cut: "The reviewer's rule, in a text that the architect reads. T5.12 adds it, and the label deletes it.",
+    at: "head",
+  },
+  {
+    file: "packages/daemon/internal/prompts/roles/architect-root.md",
+    has: "A pass and a fail at one head leave it not known: send the issue back with `request_backward_move` naming the check",
+    cut: "T5.13 adds it. The label deletes it.",
+    at: "head",
+  },
+  {
+    file: "skills/legion-retro/SKILL.md",
+    has: "A pass at another commit does not count, and a pass and a fail at one head leave it not known.",
+    cut: "The retro's gate, in a text that the architect reads. T5.13 adds it, and the label deletes `, and a pass and a fail at one head leave it not known`.",
     at: "head",
   },
   {
@@ -1813,9 +1892,9 @@ export function installedSkills(checkout: string): string[] {
     .sort();
 }
 
-/** The texts a role reads in `checkout`: its entry texts, then each text a link names, to closure. */
-export function roleTexts(checkout: string, role: Role): RoleTexts {
-  const { parts, skill } = ROLE_TEXTS[role];
+/** The texts a reader reads in `checkout`: its entry texts, then each text a link names, to closure. */
+export function roleTexts(checkout: string, reader: Reader): RoleTexts {
+  const { parts, skill } = ROLE_TEXTS[reader];
   const depth = new Map<string, number>();
   const via = new Map<string, string>();
   const missing: string[] = [];
@@ -1860,13 +1939,19 @@ export function chainOf(texts: RoleTexts, file: string): string[] {
 
 export interface Sentence {
   readonly file: string;
+  /** The line it starts on. */
   readonly line: number;
+  /** The line it ends on. */
+  readonly last: number;
+  /** Its unit's place in the file: sentences of one heading, list item, table row, fenced line or
+   * paragraph share it. */
+  readonly unit: number;
   readonly text: string;
   /** A line of a fenced block. */
   readonly fenced: boolean;
 }
 
-/** Each sentence of `text`, with the line it starts on. */
+/** Each sentence of `text`, with the lines it starts and ends on and its unit. */
 export function sentences(file: string, text: string): Sentence[] {
   // A unit is a heading, a list item, a table row, a line of a fenced block or a paragraph: its
   // lines, each trimmed and with its runs of white space as one space, joined by one space, and
@@ -1902,7 +1987,9 @@ export function sentences(file: string, text: string): Sentence[] {
   });
   close();
   const found: Sentence[] = [];
-  for (const unit of units) {
+  units.forEach((unit, index) => {
+    const lineAt = (offset: number) =>
+      unit.starts.filter((start) => start.at <= offset).at(-1)?.line ?? unit.starts[0]?.line ?? 0;
     let from = 0;
     const ends = [...unit.text.matchAll(/(?<=[.?!])\s+(?=[A-Z`"*(])/g)].map((m) => [
       m.index,
@@ -1910,12 +1997,17 @@ export function sentences(file: string, text: string): Sentence[] {
     ]);
     for (const [end, next] of [...ends, [unit.text.length, unit.text.length]]) {
       const at = from;
-      const line =
-        unit.starts.filter((start) => start.at <= at).at(-1)?.line ?? unit.starts[0]?.line ?? 0;
-      found.push({ file, line, text: unit.text.slice(from, end), fenced: unit.fenced });
+      found.push({
+        file,
+        line: lineAt(at),
+        last: lineAt(Math.max(at, (end as number) - 1)),
+        unit: index,
+        text: unit.text.slice(from, end),
+        fenced: unit.fenced,
+      });
       from = next as number;
     }
-  }
+  });
   return found;
 }
 
@@ -1942,6 +2034,17 @@ export function depthText(texts: RoleTexts): string {
     .join(", ");
 }
 
+/** The entries of `entries` that classify `sentence`, a hit in `file`. */
+function ownersOf(entries: readonly Entry[], file: string, sentence: Sentence): Entry[] {
+  return entries.filter(
+    (entry) =>
+      entry.file === file &&
+      (entry.fenced === true
+        ? sentence.fenced
+        : !sentence.fenced && sentence.text.includes(entry.has ?? "\u0000"))
+  );
+}
+
 /** The classified search of one label in `checkout`. */
 export function search(checkout: string, tree: Tree, label: string): Outcome {
   const rule = RULES[label];
@@ -1962,13 +2065,7 @@ export function search(checkout: string, tree: Tree, label: string): Outcome {
     for (const sentence of sentences(file, readFileSync(path.join(checkout, file), "utf8"))) {
       if (!rule.patterns.some((pattern) => pattern.test(sentence.text))) continue;
       hits++;
-      const owners = entries.filter(
-        (entry) =>
-          entry.file === file &&
-          (entry.fenced === true
-            ? sentence.fenced
-            : !sentence.fenced && sentence.text.includes(entry.has ?? "\u0000"))
-      );
+      const owners = ownersOf(entries, file, sentence);
       for (const owner of owners) matched.set(owner, (matched.get(owner) ?? 0) + 1);
       const where = `${file}:${sentence.line} (depth ${texts.depth.get(file)})`;
       const words =
@@ -2014,42 +2111,145 @@ export function search(checkout: string, tree: Tree, label: string): Outcome {
   };
 }
 
+/** The hits of a label's search in `head`, a tree at head, that one entry classifies, by text:
+ * each one it cuts, and the words of each one it keeps. */
+export function headSentences(
+  head: string,
+  label: string
+): { cuts: Map<string, Sentence[]>; kept: Map<string, Set<string>> } {
+  const rule = RULES[label];
+  if (rule === undefined) throw new Error(`no rule for the label ${label}`);
+  const headEntries = rule.entries.filter((entry) => entry.at !== "base");
+  const cuts = new Map<string, Sentence[]>();
+  const kept = new Map<string, Set<string>>();
+  for (const file of roleTexts(head, rule.role).files) {
+    for (const sentence of sentences(file, readFileSync(path.join(head, file), "utf8"))) {
+      if (!rule.patterns.some((pattern) => pattern.test(sentence.text))) continue;
+      const owners = ownersOf(headEntries, file, sentence);
+      if (owners.length !== 1) continue;
+      if ((owners[0] as Entry).cut !== undefined)
+        cuts.set(file, [...(cuts.get(file) ?? []), sentence]);
+      else kept.set(file, (kept.get(file) ?? new Set()).add(sentence.text));
+    }
+  }
+  return { cuts, kept };
+}
+
+/** The search of a label's own checkout: `checkout` is `head`, a tree at head, with the label's
+ * cuts applied. Each sentence that the head's search cuts must be gone from `checkout`, and each hit
+ * there must be a sentence that the head's search keeps, unchanged, or the label's form of a
+ * sentence that a `cut` entry of either tree matches. */
+export function searchCut(checkout: string, head: string, label: string): Outcome {
+  const rule = RULES[label];
+  if (rule === undefined) throw new Error(`no rule for the label ${label}`);
+  const faults = search(head, "head", label).faults.map((fault) => `the head checkout: ${fault}`);
+  const { cuts, kept } = headSentences(head, label);
+  const texts = roleTexts(checkout, rule.role);
+  for (const file of texts.missing)
+    faults.push(`${label}: a text the ${rule.role} reads is not in the checkout: ${file}`);
+  const lines: string[] = [];
+  const cutFiles = new Set<string>();
+  let hits = 0;
+  let cut = 0;
+  let keep = 0;
+  for (const file of texts.files) {
+    const all = sentences(file, readFileSync(path.join(checkout, file), "utf8"));
+    const words = new Set(all.map((sentence) => sentence.text));
+    for (const sentence of cuts.get(file) ?? [])
+      if (words.has(sentence.text))
+        faults.push(
+          `${label}: the cut of ${file}:${sentence.line} at head is not applied, its words are still there: ${sentence.text.slice(0, 137)}`
+        );
+    for (const sentence of all) {
+      if (!rule.patterns.some((pattern) => pattern.test(sentence.text))) continue;
+      hits++;
+      const where = `${file}:${sentence.line} (depth ${texts.depth.get(file)})`;
+      const short =
+        sentence.text.length > 140 ? `${sentence.text.slice(0, 137)}...` : sentence.text;
+      if (kept.get(file)?.has(sentence.text)) {
+        keep++;
+        lines.push(
+          `${where} KEEP ${short}\n    The head's sentence, unchanged, which its search keeps.`
+        );
+        continue;
+      }
+      const owner = ownersOf(rule.entries, file, sentence).find((entry) => entry.cut !== undefined);
+      if (owner !== undefined) {
+        cut++;
+        cutFiles.add(file);
+        lines.push(`${where} CUT  ${short}\n    The label's form of it: ${owner.cut}`);
+        continue;
+      }
+      faults.push(
+        `${label}: ${where} states the rule, or may, and is neither a sentence the head's search keeps, unchanged, nor the label's form of a cut: ${short}`
+      );
+    }
+  }
+  if (texts.files.length === 0) faults.push(`${label}: UNKNOWN: read no text of the ${rule.role}`);
+  if (cuts.size === 0)
+    faults.push(`${label}: UNKNOWN: the head's search cuts no sentence, so no cut is checked`);
+  return {
+    lines,
+    faults,
+    hits,
+    cut,
+    keep,
+    texts: texts.files.length,
+    depths: depthText(texts),
+    cutTexts: cutFiles.size,
+  };
+}
+
 function main(argv: string[]): number {
   const [checkout, tree, ...labels] = argv;
   if (checkout !== undefined && tree === "texts") {
-    const role = labels[0];
-    if (labels.length !== 1 || (role !== "reviewer" && role !== "architect")) {
-      console.error("usage: bun rule-search.ts <checkout> texts <reviewer|architect>");
+    const reader = labels[0];
+    if (
+      labels.length !== 1 ||
+      (reader !== "reviewer" && reader !== "architect" && reader !== "sub-architect")
+    ) {
+      console.error(
+        "usage: bun rule-search.ts <checkout> texts <reviewer|architect|sub-architect>"
+      );
       return 2;
     }
-    const texts = roleTexts(checkout, role);
+    const texts = roleTexts(checkout, reader);
     for (const file of texts.files)
       console.log(
         `${texts.depth.get(file)} ${file} <= ${chainOf(texts, file).slice(0, -1).join(" > ")}`
       );
-    console.log(`${role}: ${texts.files.length} texts, ${depthText(texts)}`);
+    console.log(`${reader}: ${texts.files.length} texts, ${depthText(texts)}`);
     for (const file of texts.missing)
-      console.error(`FAULT: a text the ${role} reads is not in the checkout: ${file}`);
+      console.error(`FAULT: a text the ${reader} reads is not in the checkout: ${file}`);
     return texts.missing.length > 0 || texts.files.length === 0 ? 1 : 0;
   }
-  if (checkout === undefined || (tree !== "base" && tree !== "head") || labels.length === 0) {
+  const head = tree === "cut" ? labels[1] : undefined;
+  if (
+    checkout === undefined ||
+    (tree !== "base" && tree !== "head" && tree !== "cut") ||
+    labels.length === 0 ||
+    (tree === "cut" && (labels.length !== 2 || head === undefined))
+  ) {
     console.error("usage: bun rule-search.ts <checkout> <base|head> <label>...");
-    console.error("       bun rule-search.ts <checkout> texts <reviewer|architect>");
+    console.error("       bun rule-search.ts <checkout> cut <label> <head checkout>");
+    console.error("       bun rule-search.ts <checkout> texts <reviewer|architect|sub-architect>");
     console.error(`labels: ${Object.keys(RULES).join(", ")}`);
     return 2;
   }
-  const unknown = labels.filter((label) => RULES[label] === undefined);
+  const named = tree === "cut" ? labels.slice(0, 1) : labels;
+  const unknown = named.filter((label) => RULES[label] === undefined);
   if (unknown.length > 0) {
     console.error(`no rule for ${unknown.join(", ")}; labels: ${Object.keys(RULES).join(", ")}`);
     return 2;
   }
   let failed = false;
-  for (const label of labels) {
-    const outcome = search(checkout, tree, label);
+  for (const label of named) {
+    const outcome =
+      tree === "cut" ? searchCut(checkout, head as string, label) : search(checkout, tree, label);
     console.log(`## ${label}: ${RULES[label]?.rule}`);
     for (const line of outcome.lines) console.log(line);
     console.log(
-      `${label} at ${tree}: ${outcome.hits} hits in ${outcome.texts} texts of the ${RULES[label]?.role} (${outcome.depths}), ${outcome.cut} cut in ${outcome.cutTexts} texts, ${outcome.keep} kept with a reason, ${outcome.faults.length} faults`
+      `${label} at ${tree === "cut" ? `the label's cuts of ${head}` : tree}: ${outcome.hits} hits in ${outcome.texts} texts of the ${RULES[label]?.role} (${outcome.depths}), ${outcome.cut} cut in ${outcome.cutTexts} texts, ${outcome.keep} kept with a reason, ${outcome.faults.length} faults`
     );
     for (const fault of outcome.faults) console.error(`FAULT: ${fault}`);
     failed ||= outcome.faults.length > 0;

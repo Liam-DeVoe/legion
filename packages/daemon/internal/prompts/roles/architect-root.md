@@ -184,7 +184,9 @@ Then
 `implementing` or `testing`, `reason`). Your acceptance comment names each check with its result.
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
 issue's own head: each needs a pass standing at that head, which
-`dispatch results --issue <issue>` shows. A result a child recorded against one of the root's
+`dispatch results --issue <issue>` shows. A pass and a fail at one head leave it not known: send
+the issue back with `request_backward_move` naming the check, do not accept it, and do not wait
+for a later result. A result a child recorded against one of the root's
 checks proves nothing for the root, and a child that carries part of a root requirement proves
 that part with a check on the child's own Verification document whose `serves` names the
 requirement, which clears the root's coverage flag for it. The root's own checks are proven at
