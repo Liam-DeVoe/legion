@@ -59,6 +59,8 @@ function declineItem(page: Page): Locator {
 async function offersDecline(page: Page, card: Locator): Promise<boolean> {
   await expect(card).toBeVisible();
   const chevron = card.locator("[data-ask-menu-button]");
+  // An open question's card draws its split button in the same render as the card itself
+  // (`AskCard`'s answer row), so a visible card with no chevron is a closed question's record.
   if ((await chevron.count()) === 0) return false;
   await chevron.click();
   await expect(page.locator("[data-ask-menu]")).toBeVisible();

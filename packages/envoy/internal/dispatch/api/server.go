@@ -421,7 +421,7 @@ type server struct {
 	routeIndex []routeIndexEntry
 	// mux is the mux register mounted this server's routes on, which a held text's post runs a
 	// write kept whole through (held_replay.go); nil on a server a test builds directly.
-	mux *http.ServeMux
+	mux RouteMux
 	// readOnlyRefusal is the message every route the read list does not name answers a read-only
 	// token with (refuseReadOnlyToken): the read list as register found it, in words. register
 	// builds it once, before it wraps the first row, so the rows share one text rather than each
@@ -611,8 +611,11 @@ type queryer interface {
 // RouteMux is what Register mounts the routes on: an *http.ServeMux in a server, and in the routes
 // package's TestAKeyedWriteNeverRunsUnkeyed one that also keeps the pattern of each, so the test
 // reads every route the router mounts from the mounting itself rather than from a list kept beside
-// it, and finds a write mounted beside the table, which runs outside keyedWrites.
+// it, and finds a write mounted beside the table, which runs outside keyedWrites. It serves the
+// routes it mounts too, because a held text's post runs the write it kept through them
+// (held_replay.go); the routes test's mux embeds an http.ServeMux, which serves them.
 type RouteMux interface {
+	http.Handler
 	Handle(pattern string, handler http.Handler)
 	HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request))
 }

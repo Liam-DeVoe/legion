@@ -152,7 +152,7 @@ async function selectAcross(from: Locator, start: string, to: Locator, end: stri
       { end, last, start }
     );
   } finally {
-    await last?.dispose();
+    await last.dispose();
   }
 }
 
@@ -643,12 +643,17 @@ test("on a phone the bar stands at the foot of the screen, and its Quote reply q
     "Ledger first"
   );
   expect(await barActions(page)).toEqual(["Quote replyq", "Defined"]);
-  // At the foot of the screen, 12 px above its edge, and centred across it.
+  // At the foot of the screen, 12 px above its edge, and centred across it, read again until the
+  // bar's box is there rather than taken at one instant.
   const screen = page.viewportSize();
-  const placed = await bar(page).boundingBox();
-  if (screen === null || placed === null) throw new Error("the bar or the screen has no box");
-  expect(Math.abs(screen.height - 12 - (placed.y + placed.height))).toBeLessThanOrEqual(1);
-  expect(Math.abs(placed.x + placed.width / 2 - screen.width / 2)).toBeLessThanOrEqual(1);
+  if (screen === null) throw new Error("the page has no viewport size");
+  await expect(async () => {
+    const placed = await bar(page).boundingBox();
+    expect(placed).not.toBeNull();
+    if (placed === null) return;
+    expect(Math.abs(screen.height - 12 - (placed.y + placed.height))).toBeLessThanOrEqual(1);
+    expect(Math.abs(placed.x + placed.width / 2 - screen.width / 2)).toBeLessThanOrEqual(1);
+  }).toPass();
   await quoteButton(page).tap();
   await expectQuoted(card.locator("[data-ask-answer]"), ORDER_QUOTE);
 });
