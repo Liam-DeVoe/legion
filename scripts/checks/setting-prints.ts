@@ -13,9 +13,14 @@
  * call, the message of an error, a `throw`, a child's command line, and the error of a `new URL(…)`
  * that Bun prints whole. The one function, `shownSettingUrl` (and `unshownSettingUrl`, which names
  * a value by its length), ends a value's path, and so does a value whose type cannot hold text (a
- * number, a boolean, a set of literal strings). A `new URL(…)` of a setting that was handed to
- * `shownSettingUrl` or `URL.canParse` is judged: each place that admits it refuses a value the
- * judge would not show before anything parses it.
+ * number, a boolean, a set of literal strings). A `new URL(…)` of a setting writes no line only
+ * where a guard runs before it on every path: an `if` before it, in a block around it, that ends
+ * the function, the loop or the program when `shownSettingUrl` does not show that same value (or
+ * `URL.canParse` refuses it), or a branch (`if`, `?:`, `&&`, `||`) taken only when the judge
+ * admits it. The value is a `const`, a parameter its function never assigns, or a member of one
+ * that no line of the file assigns; the guard stands in the same function, or in one that makes
+ * the arrow or function expression the parse is in after the guard. A judge whose answer nothing
+ * reads, or one that runs after the parse, admits nothing.
  *
  * A line it reports is where a setting AS READ is written into text: the template, `+`, `join`,
  * `String` or format that writes it, a parse error that holds it, or a print of the raw value. A
@@ -104,6 +109,14 @@ const plantedAdmitted = process.env.PLANTED_ADMITTED ?? "";
 if (shownSettingUrl(plantedAdmitted) === undefined) process.exit(2);
 const plantedOrigin = new URL(plantedAdmitted).origin; // planted: quiet
 void plantedOrigin;
+const plantedIgnored = process.env.PLANTED_IGNORED ?? "";
+shownSettingUrl(plantedIgnored);
+const plantedIgnoredHost = new URL(plantedIgnored).host; // planted: found
+void plantedIgnoredHost;
+const plantedLate = process.env.PLANTED_LATE ?? "";
+const plantedLateHost = new URL(plantedLate).host; // planted: found
+if (shownSettingUrl(plantedLate) === undefined) process.exit(2);
+void plantedLateHost;
 `;
 const plantedFile = path.join(root, "scripts/checks/setting-prints.planted.ts");
 
@@ -116,7 +129,7 @@ export function readPath(file: string): boolean {
 
 /** The functions that end a value's path: the one function and its words for a value it hides. */
 const SANITIZERS = new Set(["shownSettingUrl", "unshownSettingUrl"]);
-/** The calls that judge a value before a `new URL(…)` of it. */
+/** The calls whose answer, read by a guard, admits a value to a `new URL(…)` of it. */
 const JUDGES = new Set(["shownSettingUrl", "canParse"]);
 /** Calls and classes that take their argument as a URL, or hand it to another program. */
 const URL_TAKERS = new Set([
@@ -620,8 +633,6 @@ export function search(files: readonly string[], extra: ReadonlyMap<string, stri
   const thrown = new Map<ts.Node, Set<number>>();
   const caught = new Map<ts.Node, Set<number>>();
   const urls = new Set<number>();
-  /** The settings handed to a judge (`shownSettingUrl`, `URL.canParse`) somewhere in the tree. */
-  const judgedSettings = new Set<number>();
   let changed = false;
   const grow = (map: Map<ts.Node, Set<number>>, key: ts.Node, value: Labels) => {
     if (value.size === 0) return;
@@ -813,22 +824,240 @@ export function search(files: readonly string[], extra: ReadonlyMap<string, stri
     return answer;
   };
 
-  const judgedValues = new Set<ts.Node>();
-  /** Whether every value of `expression` that carries a setting was handed to a judge. */
-  const judged = (expression: ts.Expression): boolean => {
-    const e = strip(expression);
-    if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e)) {
-      const declarations = declarationsOf(symbolAt(ts.isIdentifier(e) ? e : e.name));
-      return declarations.length > 0 && declarations.every((d) => judgedValues.has(d));
+  /** The symbol of the name at the root of `value` (a name, or a chain of members of one) when no
+   *  line assigns it again: a `const`, or a parameter that no line of its function assigns. A chain
+   *  is one only when no line of its file assigns a member written the same way. */
+  const steady = (value: ts.Expression): ts.Symbol | undefined => {
+    const whole = strip(value);
+    let e = whole;
+    while (ts.isPropertyAccessExpression(e)) e = strip(e.expression);
+    if (!ts.isIdentifier(e)) return undefined;
+    const symbol = symbolAt(e);
+    const declarations = declarationsOf(symbol);
+    const declaration = declarations[0];
+    if (symbol === undefined || declaration === undefined || declarations.length !== 1)
+      return undefined;
+    let fixed = false;
+    if (ts.isVariableDeclaration(declaration) || ts.isBindingElement(declaration)) {
+      fixed = (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) !== 0;
+    } else if (ts.isParameter(declaration)) {
+      fixed = !assignedIn(declaration.parent, (target) => symbolAt(target) === symbol);
     }
+    if (!fixed) return undefined;
+    if (whole === e) return symbol;
+    const text = whole.getText();
+    return assignedIn(whole.getSourceFile(), (target) => target.getText() === text)
+      ? undefined
+      : symbol;
+  };
+  /** Whether a line in `node` assigns a place `matches` (after `strip`). */
+  const assignedIn = (node: ts.Node, matches: (target: ts.Expression) => boolean): boolean => {
+    let found = false;
+    const visit = (n: ts.Node) => {
+      if (found) return;
+      if (
+        ts.isBinaryExpression(n) &&
+        n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        n.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+        matches(strip(n.left))
+      ) {
+        found = true;
+        return;
+      }
+      if (
+        (ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) &&
+        (n.operator === ts.SyntaxKind.PlusPlusToken ||
+          n.operator === ts.SyntaxKind.MinusMinusToken) &&
+        matches(strip(n.operand))
+      ) {
+        found = true;
+        return;
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(node);
+    return found;
+  };
+  /** Whether `a` and `b` are the same steady value, written the same way. */
+  const sameValue = (a: ts.Expression, b: ts.Expression): boolean => {
+    const symbol = steady(a);
+    return (
+      symbol !== undefined &&
+      steady(b) === symbol &&
+      strip(a).getText().replace(/\s+/g, "") === strip(b).getText().replace(/\s+/g, "")
+    );
+  };
+  /** What `expression` is of `value`'s judgement: the answer of `shownSettingUrl(value)`
+   *  ("shown"), or of `URL.canParse(value)` with no base ("parses"), called here or held by a
+   *  `const` that was given it. */
+  const judgement = (
+    expression: ts.Expression,
+    value: ts.Expression
+  ): "shown" | "parses" | undefined => {
+    const e = strip(expression);
+    if (ts.isCallExpression(e)) {
+      const name = nameOf(e.expression);
+      const first = e.arguments[0];
+      if (!JUDGES.has(name) || first === undefined || !sameValue(first, value)) return undefined;
+      if (name === "shownSettingUrl") return "shown";
+      const callee = strip(e.expression);
+      return e.arguments.length === 1 &&
+        ts.isPropertyAccessExpression(callee) &&
+        nameOf(callee.expression) === "URL"
+        ? "parses"
+        : undefined;
+    }
+    if (ts.isIdentifier(e) && steady(e) !== undefined) {
+      const declaration = declarationsOf(symbolAt(e))[0];
+      if (declaration !== undefined && ts.isVariableDeclaration(declaration)) {
+        const init = declaration.initializer;
+        if (init !== undefined && ts.isIdentifier(declaration.name)) return judgement(init, value);
+      }
+    }
+    return undefined;
+  };
+  /** Whether `c` compares `value`'s judgement with the answer the judge gives a value it refuses:
+   *  `undefined` from `shownSettingUrl` (`null` too, compared loosely), `false` from `canParse`. */
+  const comparesWithRefusal = (c: ts.BinaryExpression, value: ts.Expression): boolean => {
+    const op = c.operatorToken.kind;
+    const loose =
+      op === ts.SyntaxKind.EqualsEqualsToken || op === ts.SyntaxKind.ExclamationEqualsToken;
+    for (const [side, other] of [
+      [c.left, c.right],
+      [c.right, c.left],
+    ] as const) {
+      const kind = judgement(side, value);
+      const answer = strip(other);
+      if (kind === "parses" && answer.kind === ts.SyntaxKind.FalseKeyword) return true;
+      if (
+        kind === "shown" &&
+        ((ts.isIdentifier(answer) && answer.text === "undefined") ||
+          ts.isVoidExpression(answer) ||
+          (loose && answer.kind === ts.SyntaxKind.NullKeyword))
+      )
+        return true;
+    }
+    return false;
+  };
+  /** Whether `condition` holds whenever the judge does not admit `value`. */
+  const refusing = (condition: ts.Expression, value: ts.Expression): boolean => {
+    const c = strip(condition);
+    if (ts.isPrefixUnaryExpression(c) && c.operator === ts.SyntaxKind.ExclamationToken)
+      return admitting(c.operand, value);
+    if (!ts.isBinaryExpression(c)) return false;
+    const op = c.operatorToken.kind;
+    if (op === ts.SyntaxKind.BarBarToken)
+      return refusing(c.left, value) || refusing(c.right, value);
+    return (
+      (op === ts.SyntaxKind.EqualsEqualsEqualsToken || op === ts.SyntaxKind.EqualsEqualsToken) &&
+      comparesWithRefusal(c, value)
+    );
+  };
+  /** Whether `condition` holds only when the judge admits `value`. */
+  const admitting = (condition: ts.Expression, value: ts.Expression): boolean => {
+    const c = strip(condition);
+    if (judgement(c, value) !== undefined) return true;
+    if (ts.isPrefixUnaryExpression(c) && c.operator === ts.SyntaxKind.ExclamationToken)
+      return refusing(c.operand, value);
+    if (!ts.isBinaryExpression(c)) return false;
+    const op = c.operatorToken.kind;
+    if (op === ts.SyntaxKind.AmpersandAmpersandToken)
+      return admitting(c.left, value) || admitting(c.right, value);
+    return (
+      (op === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
+        op === ts.SyntaxKind.ExclamationEqualsToken) &&
+      comparesWithRefusal(c, value)
+    );
+  };
+  /** Whether no line after `statement` runs once it has run: it throws, returns, breaks, goes on
+   *  to the next turn of its loop, or calls a function that never returns (`process.exit`). */
+  const exits = (statement: ts.Statement): boolean => {
+    if (
+      ts.isThrowStatement(statement) ||
+      ts.isReturnStatement(statement) ||
+      ts.isBreakStatement(statement) ||
+      ts.isContinueStatement(statement)
+    )
+      return true;
+    if (ts.isBlock(statement)) return statement.statements.some(exits);
+    if (ts.isIfStatement(statement))
+      return (
+        statement.elseStatement !== undefined &&
+        exits(statement.thenStatement) &&
+        exits(statement.elseStatement)
+      );
+    if (ts.isExpressionStatement(statement)) {
+      const call = strip(statement.expression);
+      if (!ts.isCallExpression(call)) return false;
+      try {
+        const signature = checker.getResolvedSignature(call);
+        return (
+          signature !== undefined &&
+          (checker.getReturnTypeOfSignature(signature).flags & ts.TypeFlags.Never) !== 0
+        );
+      } catch {
+        return false;
+      }
+    }
+    return false;
+  };
+  /** Whether a guard admits `value` before it is read at its own place on every path: an `if`
+   *  before it, in a block around it, that exits when the judge refuses the value, or a branch
+   *  around it taken only when the judge admits it. It looks out through an arrow or function
+   *  expression, made after any guard before it, but not through a declared function or method,
+   *  which a line before the guard can call. */
+  const guarded = (value: ts.Expression): boolean => {
+    if (steady(value) === undefined) return false;
+    let child: ts.Node = value;
+    for (let p = value.parent; p !== undefined; child = p, p = p.parent) {
+      if (
+        ts.isBlock(p) ||
+        ts.isSourceFile(p) ||
+        ts.isCaseClause(p) ||
+        ts.isDefaultClause(p) ||
+        ts.isModuleBlock(p)
+      ) {
+        const before = p.statements.slice(
+          0,
+          Math.max(p.statements.indexOf(child as ts.Statement), 0)
+        );
+        for (const statement of before) {
+          if (
+            ts.isIfStatement(statement) &&
+            refusing(statement.expression, value) &&
+            exits(statement.thenStatement)
+          )
+            return true;
+        }
+      } else if (ts.isIfStatement(p)) {
+        if (child === p.thenStatement && admitting(p.expression, value)) return true;
+        if (child === p.elseStatement && refusing(p.expression, value)) return true;
+      } else if (ts.isConditionalExpression(p)) {
+        if (child === p.whenTrue && admitting(p.condition, value)) return true;
+        if (child === p.whenFalse && refusing(p.condition, value)) return true;
+      } else if (ts.isBinaryExpression(p) && child === p.right) {
+        const op = p.operatorToken.kind;
+        if (op === ts.SyntaxKind.AmpersandAmpersandToken && admitting(p.left, value)) return true;
+        if (op === ts.SyntaxKind.BarBarToken && refusing(p.left, value)) return true;
+      } else if (withBody(p) && !ts.isArrowFunction(p) && !ts.isFunctionExpression(p)) {
+        return false;
+      }
+    }
+    return false;
+  };
+  /** Whether each value of `expression` that carries a setting is guarded where it is read. */
+  const admitted = (expression: ts.Expression): boolean => {
+    const e = strip(expression);
+    if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e)) return guarded(e);
     if (ts.isTemplateExpression(e)) {
       return e.templateSpans.every(
-        (span) => !carries(ev(span.expression)) || judged(span.expression)
+        (span) => !carries(ev(span.expression)) || admitted(span.expression)
       );
     }
-    if (ts.isConditionalExpression(e)) return judged(e.whenTrue) && judged(e.whenFalse);
+    const either = (part: ts.Expression) => !carries(ev(part)) || admitted(part);
+    if (ts.isConditionalExpression(e)) return either(e.whenTrue) && either(e.whenFalse);
     if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken) {
-      return (!carries(ev(e.left)) || judged(e.left)) && (!carries(ev(e.right)) || judged(e.right));
+      return either(e.left) && either(e.right);
     }
     return false;
   };
@@ -1273,7 +1502,7 @@ export function search(files: readonly string[], extra: ReadonlyMap<string, stri
       if (first !== undefined && args[0] !== undefined) bind(first.name, ev(args[0]));
     }
     if (ts.isNewExpression(call) && name === "URL") {
-      const parsed = args.filter((arg) => carries(ev(arg)) && !judged(arg));
+      const parsed = args.filter((arg) => carries(ev(arg)) && !admitted(arg));
       if (parsed.length > 0) {
         raise(
           call,
@@ -1289,9 +1518,6 @@ export function search(files: readonly string[], extra: ReadonlyMap<string, stri
     // a child is handed its command line and its environment, whose use the search cannot read.
     const spawns = childCommand(callee) || /^Bun\.spawn(Sync)?$/.test(callee.getText());
     const takesUrl = URL_TAKERS.has(name) || /^ky\b/.test(callee.getText());
-    if (!symbolic && body === undefined && JUDGES.has(name) && args[0] !== undefined) {
-      for (const id of settingsIn(ev(args[0]))) judgedSettings.add(id);
-    }
     if (!symbolic && body === undefined && (takesUrl || spawns)) {
       const handed = spawns
         ? args.flatMap((arg) => {
@@ -1391,20 +1617,9 @@ export function search(files: readonly string[], extra: ReadonlyMap<string, stri
     ts.forEachChild(node, flow);
   };
 
-  // Every value a judge was handed, how many calls of the tree reach each function, and each
-  // parameter as itself for the symbolic reading.
+  // How many calls of the tree reach each function, and each parameter as itself for the symbolic
+  // reading.
   const prepare = (node: ts.Node) => {
-    if (
-      ts.isCallExpression(node) &&
-      JUDGES.has(nameOf(node.expression)) &&
-      node.arguments[0] !== undefined
-    ) {
-      const arg = strip(node.arguments[0]);
-      if (ts.isIdentifier(arg) || ts.isPropertyAccessExpression(arg)) {
-        for (const d of declarationsOf(symbolAt(ts.isIdentifier(arg) ? arg : arg.name)))
-          judgedValues.add(d);
-      }
-    }
     if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
       const body = bodyOf(node);
       if (body !== undefined) calls.set(body, (calls.get(body) ?? 0) + 1);
@@ -1477,18 +1692,8 @@ export function search(files: readonly string[], extra: ReadonlyMap<string, stri
       urlish: boolean;
     }
   >();
-  /** Whether a setting was handed to a judge, or is one named for a call whose setting was. */
-  const judgedSetting = (id: number): boolean => {
-    const label = labels[id];
-    if (judgedSettings.has(id)) return true;
-    return label?.kind === "source" && label.origin !== undefined && judgedSetting(label.origin);
-  };
   for (const label of labels) {
     if (label.kind !== "written" || label.ends.size === 0 || label.sources.size === 0) continue;
-    // A parse error of a setting that a judge was handed is no line that prints it: each place
-    // that admits such a setting refuses one the judge would not show before anything parses it.
-    if (label.how.startsWith("the error of new URL") && [...label.sources].every(judgedSetting))
-      continue;
     const key = `${label.file}:${label.line}`;
     let finding = lines.get(key);
     if (finding === undefined) {

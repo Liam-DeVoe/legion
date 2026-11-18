@@ -30,6 +30,8 @@ const DISPATCH_BASE =
   "the Dispatch URL, which the config admits only when shownSettingUrl shows it (httpUrl, dispatch-config.ts), so it holds no user part and parses";
 const ADMITTED_URL = (where: string) =>
   `a URL this file admits only when shownSettingUrl shows it (${where}), so it holds no user part and parses`;
+const PLAYWRIGHT_BASE =
+  "baseUrl: PLAYWRIGHT_BASE_URL, which baseUrlOf (api.ts) hands on only when shownSettingUrl shows it and it carries no user part, or the harness's own loopback origin";
 
 const DISPATCH = "packages/envoy/cmd/dispatch/";
 
@@ -39,6 +41,11 @@ export const JUDGED: readonly Judged[] = [
     file: "packages/broker-client/src/metadata-identity.ts",
     text: "return `http://${host}${IDENTITY_PATH}",
     why: "GCE_METADATA_HOST, admitted only as a host or an IP with an optional port (HOST_AND_PORT above), so it holds no user part",
+  },
+  {
+    file: "packages/broker-client/src/person-identity.ts",
+    text: "const config = await discovery(new URL(flow.issuer)",
+    why: "the sign-in issuer, which discover parses only when read() calls it, after read() refused an issuer that shownSettingUrl does not show (shownIssuer) and one with a user part",
   },
   {
     file: "packages/broker-client/src/pool-identity.ts",
@@ -105,6 +112,21 @@ export const JUDGED: readonly Judged[] = [
     text: "const url = new URL(path, options.baseUrl ?? baseUrl)",
     why: "PLAYWRIGHT_BASE_URL, admitted by baseUrlOf only when shownSettingUrl shows it with no user part, or a stack's own loopback origin, so it parses",
   },
+  ...[
+    "export const dashboardOrigin = new URL(baseUrl).origin",
+    "const mint = new URL(devSignInPath(login), baseUrl)",
+  ].map((text) => ({
+    file: "packages/dispatch/e2e/api.ts",
+    text,
+    why: PLAYWRIGHT_BASE,
+  })),
+  ...['const liveUrl = new URL("/ws/live", options.url)', "fetch(new URL(route.route, base)"].map(
+    (text) => ({
+      file: "packages/dispatch/e2e/delivery-live-probe.ts",
+      text,
+      why: "--url, which parseOptions admits only when shownSettingUrl shows it, and hands on as the URL it parsed then",
+    })
+  ),
   {
     file: "packages/dispatch/e2e/harness-pool.ts",
     text: "const own = `${bucket}-worker-${index}`",
@@ -346,6 +368,11 @@ export const JUDGED: readonly Judged[] = [
     text: "const url = new URL(`${this.#base}${shown}`)",
     why: DISPATCH_BASE,
   },
+  {
+    file: "packages/pi-legion/scripts/skill-scenarios/seed.ts",
+    text: "const url = new URL(route, baseUrl)",
+    why: PLAYWRIGHT_BASE,
+  },
   ...[
     "`LEGION_PROJECT ${project} names controller role ${controllerToken(project)}, but the daemon at",
     "but the daemon registered this c",
@@ -374,6 +401,17 @@ export const JUDGED: readonly Judged[] = [
     why: "the git commands this search runs to read its scope, handed the revision --base names; nothing prints them",
   },
   ...[
+    "fetch(new URL(path, dispatchUrl)",
+    "new URL(`/__fixture/sessions/",
+    'new URL("/__fixture/sends", envoyUrl)',
+  ].map((text) => ({
+    file: "scripts/e2e/dispatch-claimant-delivery.ts",
+    text,
+    why: ADMITTED_URL(
+      "<dispatch-url> and <fake-envoy-url>, refused at the driver's top level before any of its functions runs"
+    ),
+  })),
+  ...[
     'await fetch(new URL("/healthz", base))',
     "new URL(`/api/v1/issues/${encodeURIComponent(options.issue)}/comments`, options.url),",
     "const target = new URL(incoming.pathname + incoming.search, options.url)",
@@ -400,6 +438,13 @@ export const JUDGED: readonly Judged[] = [
     text: "const child = Bun.spawn([process.execPath, dispatchCommand, ...argv]",
     why: "the dispatch command's path and its arguments, which this driver writes, no URL",
   },
+  ...["fetch(new URL(path, dispatchUrl)", 'new URL("/__fixture/repos", githubUrl)'].map((text) => ({
+    file: "scripts/e2e/verification-results.ts",
+    text,
+    why: ADMITTED_URL(
+      "<dispatch-url> and <fake-github-url>, refused at the driver's top level before any of its functions runs"
+    ),
+  })),
   {
     file: "scripts/e2e/verification-results.ts",
     text: '["psql", databaseUrl, "-X"',
