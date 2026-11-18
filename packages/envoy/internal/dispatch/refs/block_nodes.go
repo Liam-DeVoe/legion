@@ -66,12 +66,21 @@ func blockFits(refKey string, nodes []model.ArtifactBlock) ([]bool, int) {
 // made_at and made_by, so a block is made by the version that first indexed it, and a block an
 // earlier build indexed with no project takes its document's here (graphstore.Write fills a
 // project the row does not hold).
+//
+// The index owns a block's text and its place in its document, not its state or its visibility,
+// so every node it writes restates the block (graphstore.Node's Restates): state is live for a
+// block the version holds and gone for one it dropped, and nothing more. A block already there
+// keeps its visibility, and a block the version holds keeps any state a later release's write
+// marked it with - a requirement marked proposed whose words a version changes stays proposed -
+// while one stored gone, a block a version restores, comes back live. A block the version
+// dropped goes gone whatever it was.
 func blockNode(address string, document indexedDocument, at time.Time, state string) graphstore.Node {
 	return graphstore.Node{
 		Kind: BlockNodeKind, ID: address, Supertag: BlockSupertag,
 		Visibility: graphstore.VisibilityProject, State: state,
 		Project: document.project, Parties: document.parties,
 		MadeAt: at, MadeBy: document.writer, SourceEvent: graphstore.NoEvent,
+		Restates: true,
 	}
 }
 

@@ -105,6 +105,13 @@ type BackfillReport struct {
 // only the rows still owed: a second run over tables every row of which is marked writes no node,
 // no tuple and no marker (TestASecondBackfillWritesNothingOverMarkedRows).
 //
+// Every node it writes through graphstore.Write restates its node (graphstore.Node's Restates):
+// the run owns a row's facts, not the state or the visibility of the node that row names, so a
+// node another write made and then marked - a later release's proposed requirement, or a node it
+// reserved for its author - keeps what that write gave it, and one stored gone comes back live,
+// as the writer whose row it is would bring it back. The roles and the sessions go through
+// graphstore.WriteArms, whose upsert moves nothing on a node already there.
+//
 // It is no repair. Its input is each row's own content: it never reads one side of a
 // projection to write the other, so a row whose node is already written is left alone and a
 // kind whose rows disagree with the store is for the census to report, not for this to paper
@@ -354,6 +361,7 @@ func writeBlockBatch(ctx context.Context, database *store.Store, batch []blockRo
 			Visibility: graphstore.VisibilityProject, State: graphstore.StateLive,
 			Project: project, Parties: parties,
 			MadeAt: row.createdAt, MadeBy: backfillActor, SourceEvent: row.event,
+			Restates: true,
 		})
 		tuples = append(tuples, graphstore.Tuple{
 			FromKind: refs.BlockNodeKind, FromID: row.address, Kind: refs.TupleInDocument,
@@ -942,7 +950,8 @@ func readCommentRows(ctx context.Context, database *store.Store, after string) (
 // batch that names them, the comment's authored_by tuple and the aliases the server proved.
 // Write makes an author's node as Authored's arms make it and moves nothing on one that is
 // already there, since every writer of a person or a session node writes it as AuthorFacts does:
-// project-visible, live and carrying no attribute.
+// project-visible, live and carrying no attribute. The batch restates that node too, so a state
+// or a visibility another write gave it stays.
 //
 // The batch is read before this transaction. Another run can mark a row and the erase can then
 // remove it before this run writes. heldCommentRows takes the owners in store order and keeps
@@ -976,6 +985,9 @@ func writeCommentBatch(ctx context.Context, database *store.Store, batch []comme
 			for _, author := range authors {
 				if _, made := written[[2]string{author.Kind, author.ID}]; !made {
 					written[[2]string{author.Kind, author.ID}] = struct{}{}
+					// The author's node is the person's or the session's, whose state and
+					// visibility no comment of theirs owns.
+					author.Restates = true
 					nodes = append(nodes, author)
 				}
 			}
