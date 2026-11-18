@@ -43,6 +43,25 @@ func storeSupervisedClaims(t *testing.T, pool *store.Pool, sup *supervisor, toke
 	}
 }
 
+// storeRoleClaims stores, for issue of tree, an idle claim of each role of Legion, as the daemon's
+// store holds the claim of each role it ran there: what a walk over every claim of the issue reads
+// (record.Store.IssueClaims), which writes no row for a claim the issue does not hold.
+func storeRoleClaims(t *testing.T, pool *store.Pool, tree, issue string) {
+	t.Helper()
+	for _, role := range claim.Roles {
+		token, err := claim.NewToken("legion", issue, role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
+			state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
+			values ($1, 'legion', $2, $3, $4, 1, '', '', 'idle', 0, 0, 0, 0) on conflict (token) do nothing`,
+			string(token), tree, issue, string(role)); err != nil {
+			t.Fatalf("store the %s's claim of %s: %v", role, issue, err)
+		}
+	}
+}
+
 // Key a's agent works the tester's step in the claim it started as implementer, so the tester's
 // phases row names `…-implementer`, and the fresh tester an earlier version of the plan started,
 // `…-tester`, still holds its own claim. When the tree's linger expires, its close writes a row for
