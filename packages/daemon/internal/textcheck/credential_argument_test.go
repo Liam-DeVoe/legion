@@ -34,6 +34,11 @@ import (
 // names nothing after the flag, so it matches nothing.
 var credentialHeader = regexp.MustCompile(`(?i)(?:^|[^\w-])(?:-H|--header)(?:=|\s*)\\?["']?(?:(?:authorization:\s*(?:bearer|token|basic)\s+|[\w-]*(?:api-key|-token)\s*:\s*)(?:\\?["'])*\\?[$<]|\\?\$\{?\w*(?:auth|token|bearer|credential))`)
 
+// actionsCredential is a GitHub Actions credential expression, which workflowCredential finds
+// given to a command as an argument. Actions writes its value into the command as a shell writes a
+// variable's, so tokenValue and passwordWord take it as a flag's value where they take a variable.
+const actionsCredential = `\$\{\{\s*(?:github\.token|secrets\.\w+)\s*\}\}`
+
 // workflowCredential matches a GitHub Actions credential expression, `${{ github.token }}` or
 // `${{ secrets.<name> }}`, given to a command as an argument: on a `run:` line after a word, quoted
 // or not (`run: .github/scripts/read.sh "${{ github.token }}"`), or quoted after a word on any line,
@@ -41,8 +46,9 @@ var credentialHeader = regexp.MustCompile(`(?i)(?:^|[^\w-])(?:-H|--header)(?:=|\
 // value into the command, so it is in that process's command line. The forms that put it in a
 // process's environment or in an action's input name a key or a variable before it - a step's
 // `env:` key (`GH_TOKEN: ${{ github.token }}`), a `with:` input, `export GH_TOKEN="${{ … }}"` - and
-// match nothing, and so does prose that writes the expression unquoted.
-var workflowCredential = regexp.MustCompile(`(?:\brun:\s(?:.*[^:=\s])?\s+["']?|(?:^|[^:=\s])\s+["'])\$\{\{\s*(?:github\.token|secrets\.\w+)\s*\}\}`)
+// match nothing, and so does prose that writes the expression unquoted. A credential flag's value,
+// unquoted or after `=` (`--token=${{ github.token }}`), is credentialFlag's to find.
+var workflowCredential = regexp.MustCompile(`(?:\brun:\s(?:.*[^:=\s])?\s+["']?|(?:^|[^:=\s])\s+["'])` + actionsCredential)
 
 // credentialFlag finds the flags whose next word is a user's password (`-u`, `--user`), a
 // request's body (`-d`, the `--data` family, wget's `--post-data`, `-F`, `--form`) or a token
@@ -51,11 +57,14 @@ var workflowCredential = regexp.MustCompile(`(?:\brun:\s(?:.*[^:=\s])?\s+["']?|(
 // other flags too, and match nothing.
 var credentialFlag = regexp.MustCompile(`(?:^|[^\w-])(-u|--user|-d|--data|--data-binary|--data-raw|--data-urlencode|--data-ascii|--post-data|-F|--form|--token|--oauth2-bearer)(?:=|[ \t]+)`)
 
-// passwordWord matches a `-u` word whose password is a variable, a token file read into it or a
-// placeholder (`"$user:$token"`, `"ada:$(cat …)"`, `"ada:<password>"`), or a variable named for a
-// credential (`"$credential"`). A `--user "$(id -u):$(id -g)"` of docker's names no password, and
-// `env -u "$name"` unsets a variable, so neither matches.
-var passwordWord = regexp.MustCompile(`(?i):\\?["']?(?:\\?\$\{?\w|\\?\$\(\s*(?:cat\s|<)|<)|\$\{?\w*(?:token|credentials?)\b`)
+// passwordWord matches a `-u` word whose password is a variable, a token file read into it, a
+// placeholder or an Actions credential expression, a value like a variable (`"$user:$token"`,
+// `"ada:$(cat …)"`, `"ada:<password>"`, `"ci:${{ secrets.REGISTRY_PASSWORD }}"`), or a variable
+// named for a credential (`"$credential"`). shellWord cuts an unquoted expression at its first
+// blank, so a word that ends at an expression's `${{` after the `:` matches too. A
+// `--user "$(id -u):$(id -g)"` of docker's names no password, and `env -u "$name"` unsets a
+// variable, so neither matches.
+var passwordWord = regexp.MustCompile(`(?i):\\?["']?(?:\\?\$\{?\w|\\?\$\(\s*(?:cat\s|<)|<|` + actionsCredential + `|\$\{\{$)|\$\{?\w*(?:token|credentials?)\b`)
 
 // tokenWord matches a body word that carries a token: a form field `token=$…` or `token=<…>`, a
 // JSON field `"…token": "$…"`, a variable named for one (`$agent_token`, but not
@@ -63,11 +72,11 @@ var passwordWord = regexp.MustCompile(`(?i):\\?["']?(?:\\?\$\{?\w|\\?\$\(\s*(?:c
 var tokenWord = regexp.MustCompile(`(?i)token\\?["']?\s*[=:]\s*\\?["']?\\?[$<]|\$\{?\w*token\b|\$\(\s*(?:cat\s|<)[^)]*token`)
 
 // tokenValue matches a `--token` or `--oauth2-bearer` value that is one variable, one command
-// substitution or one placeholder, quoted or not: `"$token"`, `$(cat "$file")`, `<bearer>`. A
-// value that joins several, dev-oidc-issuer's `--token "$audience=$account=$file"`, names a file
-// and no token, and a fixed fixture value (`--token fixture-token`) is no secret, so neither
-// matches.
-var tokenValue = regexp.MustCompile(`^\\?["']?(?:\\?\$\{?!?\w+\}?|\\?\$\([^)]*\)|<[^>]+>)\\?["']?(?:[\s;|&)]|$)`)
+// substitution, one placeholder or one Actions credential expression, a value like a variable,
+// quoted or not: `"$token"`, `$(cat "$file")`, `<bearer>`, `${{ secrets.ADMIN_PAT }}`. A value
+// that joins several, dev-oidc-issuer's `--token "$audience=$account=$file"`, names a file and no
+// token, and a fixed fixture value (`--token fixture-token`) is no secret, so neither matches.
+var tokenValue = regexp.MustCompile(`^\\?["']?(?:\\?\$\{?!?\w+\}?|\\?\$\([^)]*\)|<[^>]+>|` + actionsCredential + `)\\?["']?(?:[\s;|&)]|$)`)
 
 // shellWord is the shell word s starts with: up to the first blank, `|`, `;`, `&`, `<`, `>` or `)`
 // that stands outside quotes and outside a `$(…)`, so a quoted body with blanks in it, or with a
