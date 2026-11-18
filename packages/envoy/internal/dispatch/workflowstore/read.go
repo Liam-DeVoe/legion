@@ -169,7 +169,7 @@ func ProjectPlans(ctx context.Context, q Queryer, project string, window Window)
 			if step.Kind == StepKindStep && step.Result == ResultFailed {
 				issue.FailedSteps++
 			}
-			if step.Kind == StepKindRetro && step.Rating != nil {
+			if step.Rating != nil {
 				issue.Ratings = append(issue.Ratings, Rating{Rating: step.Rating.Rating, Reason: step.Rating.Reason, StepID: step.ID, EndedAt: step.EndedAt})
 			}
 		}
