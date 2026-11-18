@@ -552,9 +552,10 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 		// issue's branch the daemon recorded, offers the newer copy to the launcher of the pod
 		// that replaces the one the work came off before any role of that pod starts, refuses a
 		// running copy older than that push, and closes the older copy unsent, all in one
-		// transaction. Each copy's attempt is spent once: the first pod that is not the one the
-		// work came off spends it, whether the copy is sent or refused, and nothing is answered
-		// for that copy again.
+		// transaction. A refused or closed copy is spent there; a sent one is spent once a role of
+		// the pod it was sent to registers (store.Store.RecordPodRegistration, which the
+		// supervisor's Deps.PodRegistered calls), and is sent again to the next start of the issue
+		// while none has.
 		opts.SavedWorkspaceBundle = st.TakeWorkspaceCopyForRestore
 		// A launcher's restore report keeps the copy it names as the restoring pod's own running
 		// copy, so the work outlives a second end of that pod before its first turn. Which of the

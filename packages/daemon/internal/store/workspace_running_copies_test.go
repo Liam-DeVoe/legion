@@ -383,7 +383,7 @@ func TestARestoreReportNamingAnotherIssuesRunningCopyChangesNothing(t *testing.T
 	}
 }
 
-// A confirmation keeps only a running copy whose one attempt was a send to the confirming pod. Any
+// A confirmation keeps only a running copy whose attempt is a send to the confirming pod. Any
 // other launcher of the issue reports work its pod does not hold — the pod the copy was refused
 // to, or one it was never sent to — and such a report keeps nothing: the row keeps its source, its
 // restore id, its two times and its attempt, so it is never named off a pod whose disk lacks the

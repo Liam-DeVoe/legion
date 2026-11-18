@@ -57,8 +57,7 @@ func servedLeakCheck() *fakeLeakCheck {
 }
 
 // leakCheckStore is a store holding the issue's saved workspace bundle, as a released issue's
-// does when its next pod starts: the bundle's one restore attempt is what a refused start must
-// not spend.
+// does when its next pod starts: the bundle is what a refused start must take nothing of.
 func leakCheckStore(t *testing.T) (*store.Store, runtime.WorkspaceBundle) {
 	t.Helper()
 	st := migratedStore(t)

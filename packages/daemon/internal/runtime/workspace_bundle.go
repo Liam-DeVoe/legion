@@ -85,30 +85,31 @@ type WorkspaceBundle struct {
 func (b WorkspaceBundle) Size() int { return len(b.Bundle) }
 
 // WorkspaceBundleTake is what one pod's ask did to one saved copy of an issue's workspace
-// (store.Store.TakeWorkspaceCopyForRestore). A copy is offered to one pod only — the first pod to
-// ask for it that is not the one its work came off and that first asked at or after the copy was
-// written — and the ask that reaches that pod closes it to every later one, whether the body was
-// sent or refused.
+// (store.Store.TakeWorkspaceCopyForRestore). A copy is offered to the first pod to ask for it that
+// is not the one its work came off and that first asked at or after the copy was written. A
+// refusal or a supersession closes it to every later ask. A send closes it once a role of that pod
+// registers, and until then the next ask, that pod's restarted roles container or the pod after
+// it, is offered it again (DecideWorkspaceRestore).
 type WorkspaceBundleTake int
 
 const (
 	// WorkspaceBundleNone: there is nothing to send this pod and nothing was recorded. The issue
-	// was never released, a wake cancelled its release, the copy has had its one attempt already,
-	// or this pod is the one the work was taken off or the one whose restore of it is confirmed.
+	// was never released, a wake cancelled its release, the copy is spent already, or this pod
+	// is the one the work was taken off or the one whose restore of it is confirmed.
 	WorkspaceBundleNone WorkspaceBundleTake = iota
 	// WorkspaceBundleSend: this pod takes the copy, and the row records the attempt as its
-	// before a byte of it leaves the daemon.
+	// before a byte of it leaves the daemon. The copy is spent once a role of this pod registers.
 	WorkspaceBundleSend
 	// WorkspaceBundleLeftForNextPod: the copy is the one this pod's ask is offered, and it was
 	// written after this pod first asked for a restore, so nothing is sent to this pod and nothing
 	// is recorded on the copy. This pod has been working since that first ask, and the copy would
-	// `jj edit` its workspace back over that work; the copy's one attempt stays for the next pod
-	// of the issue, whose first ask comes after the copy was written (DecideWorkspaceRestore).
+	// `jj edit` its workspace back over that work; the copy stays unspent for the next pod of the
+	// issue, whose first ask comes after the copy was written (DecideWorkspaceRestore).
 	WorkspaceBundleLeftForNextPod
 	// WorkspaceBundleRefusedPushed: the copy is a running copy whose take began before the newest
 	// push of the issue's branch the daemon recorded, so it is sent to no pod
-	// (DecideWorkspaceRestore); a release bundle is never refused so. The refusal is the copy's
-	// one attempt, and the work stays in the database for a person to recover.
+	// (DecideWorkspaceRestore); a release bundle is never refused so. The refusal spends the
+	// copy, and the work stays in the database for a person to recover.
 	WorkspaceBundleRefusedPushed
 	// WorkspaceBundleSuperseded: the issue's other copy is the newer one and is the copy this
 	// pod is offered, so this one is closed unsent. The pods after this one hold the
@@ -165,10 +166,11 @@ func (p WorkspacePush) Recorded() bool { return !p.At.IsZero() }
 
 // WorkspaceCopyHeld is one copy as the restore's decision reads it off its row: its two times,
 // both by the store's clock — At, when its take began (WorkspaceBundle.At), and Written, when the
-// store wrote it — whether a pod has had the copy's one attempt already, and the uid of the pod its
-// work came off (WorkspaceBundle.PodUID). Nothing else of the row enters the decision. The zero
-// value is a copy the issue does not hold, as the zero WorkspacePush is a push not recorded: the
-// store writes no copy without the time its take began.
+// store wrote it — whether the copy is spent (store's heldCopy: refused, superseded, or sent to a
+// pod where a role has registered since), and the uid of the pod its work came off
+// (WorkspaceBundle.PodUID). Nothing else of the row enters the decision. The zero value is a copy
+// the issue does not hold, as the zero WorkspacePush is a push not recorded: the store writes no
+// copy without the time its take began.
 //
 // The two times answer two questions. At says what the work is as of: the bundler read the
 // workspace after the take began, so At orders the work of the issue's two copies
@@ -289,12 +291,17 @@ func NewerWorkspaceCopy(bundle, running WorkspaceCopyHeld) WorkspaceCopyKind {
 // Two rules answer a copy WorkspaceBundleNone whatever the rules above say of it, and the store
 // records nothing on such a copy:
 //
-//   - One attempt per copy. The launcher's own record of the restore it ran lives in the process
-//     that ran it: a roles container that restarts on the pod's own disk comes back with that
-//     record gone and the workspace as the roles left it, hours of work past the copy, and a copy
-//     sent again there would `jj edit` back to its head. The attempt is recorded before any slice
-//     leaves the daemon, so a send that fails halfway, a restore that fails and a restore whose
-//     report never arrived all leave the same row: one no pod is sent again.
+//   - None for a spent copy (Spent). A refusal and a supersession spend a copy at once. A send
+//     spends it once a role of the pod it was sent to registers (store.Store.RecordPodRegistration):
+//     from then on a role may have changed that workspace, and the launcher's own record of the
+//     restore it ran lives in the process that ran it, so a roles container that restarts on the
+//     pod's own disk comes back with that record gone, and a copy sent again there would `jj edit`
+//     back to its head over the role's work. Until a role registers no role of that pod has run,
+//     so a pod, or its roles container, that ends first leaves the copy unspent for the next ask,
+//     the restarted container's or the next pod's, and that ask is decided by every rule here, as
+//     the first send was. The attempt is recorded before any slice leaves the daemon, so a send
+//     that fails halfway, a restore that fails and a restore whose report never arrived all leave
+//     the same row.
 //   - None spent by the pod the work came off (Source). Every start of every role asks for its
 //     pod (sandbox's launchers.start), and that pod goes on starting roles — a release stops them
 //     and a role relaunched before the teardown starts again, and a cadence copies a pod that is
@@ -311,8 +318,8 @@ func NewerWorkspaceCopy(bundle, running WorkspaceCopyHeld) WorkspaceCopyKind {
 // written asked before it, and has been working since. That copy is a late copy: one read off the
 // pod before this one, before that pod ended, and written after this pod's first ask, its take
 // begun before that ask or after it. Applying it here would `jj edit` this pod's workspace back
-// over the work done since that ask, so it is not sent here, and it keeps its one attempt for the
-// next pod of the issue, whose first ask comes after the write. Its work reaches that pod only
+// over the work done since that ask, so it is not sent here, and it stays unspent for the next
+// pod of the issue, whose first ask comes after the write. Its work reaches that pod only
 // while this pod takes no copy of its own: this pod's next copy replaces it, and a copy of this
 // pod that finds nothing unpushed drops it. That loss needs a write stalled through a whole pod
 // start, and is accepted.
@@ -329,8 +336,8 @@ func DecideWorkspaceRestore(bundle, running WorkspaceCopyHeld, push WorkspacePus
 		// Both times here are the store's clock. The offered copy is sent to a pod whose first
 		// ask for a restore is at or after the copy's write. To a pod that first asked before the
 		// copy was written, nothing is sent and nothing is recorded: that pod has been working
-		// since its first ask, so the copy is not applied over that work, and the copy keeps its
-		// one attempt for the next pod, whose first ask comes after the copy was written. The
+		// since its first ask, so the copy is not applied over that work, and the copy stays
+		// unspent for the next pod, whose first ask comes after the copy was written. The
 		// write and not the take's begin, since the copy lock orders the write and the ask.
 		case c.Written.After(firstAsked):
 			return WorkspaceBundleLeftForNextPod

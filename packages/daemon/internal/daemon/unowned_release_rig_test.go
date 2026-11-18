@@ -53,8 +53,8 @@ const idleRigEarlierRelease = 1
 
 // idleRigEarlierPodUID is the pod that earlier release took the work off (source_pod_uid). It is
 // a pod of an earlier life of the issue that this rig never made, so no pod of the rig is
-// refused by uid and the bundle's one restore attempt is still there for the pod the start
-// makes (store.TakeWorkspaceCopyForRestore).
+// refused by uid and the bundle is still unspent for the pod the start makes
+// (store.TakeWorkspaceCopyForRestore).
 const idleRigEarlierPodUID = "uid-pod-of-an-earlier-life"
 
 // idleRigEarlierBundle is the workspace bundle an earlier release of the issue's pod saved, as
@@ -150,7 +150,7 @@ func TestAStartAfterTheReleaseOfAnIssueWithNoLiveClaimMakesThePodAgain(t *testin
 		if forgotten := rig.logged(idleRigSessionForgotten, map[string]string{"claim": string(token)}); forgotten != 0 {
 			t.Errorf("the daemon dropped %s's recorded session %d times, want none: a retry without --fresh-session resumes it", token, forgotten)
 		}
-		// The bundle's one attempt, spent on the pod the start made: the daemon records which
+		// The bundle's attempt, recorded against the pod the start made: the daemon records which
 		// pod it is sending the work to before a byte of it leaves (store's
 		// TakeWorkspaceCopyForRestore), which is the pod being offered the bundle. Whether the
 		// launcher could apply it to the workspace is that launcher's own report and no part of
@@ -390,7 +390,7 @@ func (r *idleWakeRig) stopRole(issue idleRigIssue) {
 
 // savedBundle seeds the workspace bundle an earlier release of the issue's pod saved and no pod
 // has restored, through the store that release saves it through (store.PutWorkspaceBundle), and
-// answers it. Its one restore attempt is unspent: the pod its work came off is a pod of an
+// answers it. It is unspent: the pod its work came off is a pod of an
 // earlier life of the issue (idleRigEarlierPodUID), so no pod standing now is the source, and a
 // pod standing now first asked before the save, so a role it starts after this is answered
 // nothing and spends nothing (store.TakeWorkspaceCopyForRestore).
@@ -418,7 +418,7 @@ func (r *idleWakeRig) savedBundle(issue idleRigIssue) runtime.WorkspaceBundle {
 }
 
 // idleRigBundleRow is the issue's saved workspace bundle as the database holds it: the release
-// that saved it, the pod its work came off, and its one restore attempt — the pod the work was
+// that saved it, the pod its work came off, and its restore attempt — the pod the work was
 // offered to and what that offer did (`sent`, the only outcome an offer to a pod records here),
 // both empty while nothing has asked.
 type idleRigBundleRow struct {

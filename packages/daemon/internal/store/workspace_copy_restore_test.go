@@ -30,10 +30,12 @@ import (
 // are the store's, so the answer reads the copy's write off the row and the first ask off the
 // store's own record, and names both for the restore's line.
 //
-// A copy is sent to one pod's launcher once. The launcher's record of the restore it ran dies with
-// the process that ran it, so a roles container that restarts comes back to the same disk with
-// that record gone and the workspace hours of work past the copy; the daemon's record survives,
-// written in the take itself, before a slice leaves the daemon. The bytes stay in every case.
+// A copy sent to a pod's launcher is spent once a role of that pod registers. The launcher's record
+// of the restore it ran dies with the process that ran it, so a roles container that restarts
+// comes back to the same disk with that record gone and the workspace hours of work past the copy;
+// the daemon's record survives, the send written in the take itself, before a slice leaves the
+// daemon, and the registration before the daemon answers it. The bytes stay in every case. What a
+// pod that ends before any role of it registered leaves is workspace_unspent_copy_test.go's.
 func TestEitherSavedCopyOfAWorkspaceBundleHasOneRestoreAttempt(t *testing.T) {
 	const issue = "INFRA-945"
 	for _, c := range []struct {
@@ -113,12 +115,14 @@ func TestEitherSavedCopyOfAWorkspaceBundleHasOneRestoreAttempt(t *testing.T) {
 				!slices.Equal(b.Tips, saved.Tips) || !maps.Equal(b.Bookmarks, saved.Bookmarks) || !b.At.Equal(written.at) || !c.restoreID(b.Release) {
 				t.Fatalf("the first pod to ask after the copy was written was answered %+v (%v, %v); want the copy whole", b, sent.Take, err)
 			}
-			// The same pod again, which is its roles container restarting, the pod working before
-			// the write, and a third pod after an eviction: the spent attempt answers each nothing.
+			// A role of that pod registers. Then the same pod again, which is its roles container
+			// restarting, the pod working before the write, and a third pod after an eviction: the
+			// spent copy answers each nothing.
+			registerIn(t, s, issue, after)
 			for _, pod := range []string{after, working, "pod-after-an-eviction"} {
 				restore, err := s.TakeWorkspaceCopyForRestore(ctx, issue, pod)
 				if again := restore.Of(c.copies.kind); err != nil || again.Take != runtime.WorkspaceBundleNone {
-					t.Fatalf("%s was answered %q (%v, %v) after the copy's one attempt, want nothing to send", pod, again.Bundle.Bundle, again.Take, err)
+					t.Fatalf("%s was answered %q (%v, %v) after a role of the pod the copy was sent to registered, want nothing to send", pod, again.Bundle.Bundle, again.Take, err)
 				}
 			}
 			if row := heldCopyRow(t, s, c.copies, issue); !row.held || row.size != saved.Size() || row.outcome != sentCopyOutcome || row.attemptPod != after {
@@ -275,10 +279,11 @@ func advisoryWaiters(t *testing.T, s *Store) int {
 // the clock only once they hold it, so whichever comes first has committed before the other reads
 // the clock. Here the write of the ended pod's copy has stamped its write time and is held before
 // it commits when the new pod's first role start asks. The ask waits for the write, and so it reads
-// the copy and is sent it at that first ask, and its next ask is sent nothing. Were the two not
-// taken in one order, the ask would be recorded after the copy's write time while the copy was not
-// yet committed, it would read nothing, and its next ask — another role's start, hours of work on —
-// would be sent a copy written before its first ask, over that work.
+// the copy and is sent it at that first ask, and its next ask, once a role of it has registered, is
+// sent nothing. Were the two not taken in one order, the ask would be recorded after the copy's
+// write time while the copy was not yet committed, it would read nothing, and its next ask —
+// another role's start, hours of work on — would be sent a copy written before its first ask, over
+// that work.
 func TestACopyWriteInFlightWhenAPodFirstAsksIsReadAtThatAsk(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)
@@ -331,8 +336,9 @@ func TestACopyWriteInFlightWhenAPodFirstAsksIsReadAtThatAsk(t *testing.T) {
 	if !writtenAt.Before(first.restore.FirstAsked) {
 		t.Fatalf("the copy was written at %s and the pod first asked at %s, want the write first", writtenAt, first.restore.FirstAsked)
 	}
+	registerIn(t, s, issue, pod)
 	if again, err := s.TakeWorkspaceCopyForRestore(ctx, issue, pod); err != nil || again.Running.Take != runtime.WorkspaceBundleNone {
-		t.Fatalf("the pod's next ask was answered %v (%v), want nothing: the copy had its one attempt at the first", again.Running.Take, err)
+		t.Fatalf("the pod's next ask, once a role of it registered, was answered %v (%v), want nothing: the copy was sent at the first", again.Running.Take, err)
 	}
 }
 
@@ -511,7 +517,7 @@ func TestAReleaseBundleOlderThanTheNewestRecordedPushIsSentAndItsConfirmationLif
 		t.Fatalf("the release bundle taken before the push was answered %+v with %q offered, want it offered and sent whole", sent, restore.Offered)
 	}
 	if row := heldCopyRow(t, s, releaseBundleCopies, "INFRA-1117"); !row.held || row.outcome != sentCopyOutcome || row.attemptPod != "pod-after-the-push" {
-		t.Fatalf("the release bundle holds %+v, want its attempt spent sending it", row)
+		t.Fatalf("the release bundle holds %+v, want the send to that pod recorded on it", row)
 	}
 	if !unrestored() {
 		t.Fatal("the bundle reads as restored before any launcher confirmed it")

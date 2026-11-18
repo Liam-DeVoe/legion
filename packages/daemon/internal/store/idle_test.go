@@ -140,14 +140,14 @@ func TestTheIdleViewReadsTheUnrestoredBundleAndTheRunningHoldStreak(t *testing.T
 	}
 }
 
-// A running copy holds no pod, whatever became of its one restore attempt. The row that holds a
+// A running copy holds no pod, whatever became of its restore attempt. The row that holds a
 // pod is the release bundle's (workspaceBundleUnrestored, workflow.IdleHoldBundleUnrestored),
 // because the work in it is in the database alone: the pod it came off is gone, and a release of
 // the pod that holds it instead would take a disk nothing put the work back on. A running copy is
 // the other way round — the work is on the disk it was copied from, and an idle release of that
 // pod saves it again as a bundle — so an issue whose only copy is a running one is released when
 // it goes idle, and a failed restore of that copy changes nothing: the row stays, its attempt is
-// spent, and no pod waits on it.
+// recorded, and no pod waits on it.
 func TestTheIdleViewHoldsNoPodForARunningWorkspaceCopy(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
@@ -163,7 +163,7 @@ func TestTheIdleViewHoldsNoPodForARunningWorkspaceCopy(t *testing.T) {
 	}
 
 	// The pod that replaced the one the copy came off was sent it and its restore failed: the
-	// attempt is spent and the row stays, which is the state a hold would be read from.
+	// attempt is recorded and the row stays, which is the state a hold would be read from.
 	if restore, err := st.TakeWorkspaceCopyForRestore(ctx, rootIssue, "pod-that-replaced-it"); err != nil || restore.Running.Take != runtime.WorkspaceBundleSend {
 		t.Fatalf("the replacement pod was answered %v (%v), want the running copy", restore.Running.Take, err)
 	}

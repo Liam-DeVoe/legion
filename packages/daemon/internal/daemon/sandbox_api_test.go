@@ -417,7 +417,7 @@ func (a *issueSandboxAPI) pod(name string) bool {
 }
 
 // podUID is the uid the API stamped on the pod of name, "" while it holds no such pod. It is
-// what a saved workspace bundle's one restore attempt is recorded against, so a test can read
+// what a saved workspace bundle's restore attempt is recorded against, so a test can read
 // which pod the daemon offered the bundle to (store.TakeWorkspaceCopyForRestore).
 func (a *issueSandboxAPI) podUID(name string) string {
 	a.mu.Lock()

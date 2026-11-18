@@ -1503,6 +1503,12 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		PluginRelaunchable: p.pluginRelaunchable,
 		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
 	}
+	// A registration in an issue pod is recorded against that pod before it is answered, which is
+	// what spends a saved workspace copy sent to the pod (store.Store.RecordPodRegistration); the
+	// tmux runtime's processes run in no pod and send no copy, so that daemon records none.
+	if cfg.Runtime.Name == "kubernetes" {
+		sup.deps.PodRegistered = st.RecordPodRegistration
+	}
 	stopping, beginStop := context.WithCancel(context.Background())
 	supervisionOf := &supervision{
 		cfg: cfg, log: log, plan: p, stream: listener, runtime: rt, supervisor: sup, tokens: tokens, claims: claims,

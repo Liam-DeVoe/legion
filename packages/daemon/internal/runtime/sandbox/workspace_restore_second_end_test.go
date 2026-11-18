@@ -67,8 +67,8 @@ func TestARestoreSendsTheKeptCopyToAPodTheAPIServerStampedSecondsBeforeIt(t *tes
 // container restarting — is sent nothing of it: the pod has been working since its first ask, and
 // the copy would `jj edit` its workspace back over that work. The ask is weighed against the
 // copy's write and not its take's begin. The daemon says so at Info, naming the pod's first ask
-// and the copy's write, both by the store's clock, and the copy keeps its one attempt, so the pod
-// after this one is sent the work.
+// and the copy's write, both by the store's clock, and the copy stays unspent, so the pod after
+// this one is sent the work.
 func TestARestoreLeavesACopyWrittenAfterThePodFirstAskedForThePodAfterIt(t *testing.T) {
 	st := migratedStore(t)
 	logs := &logBuffer{}

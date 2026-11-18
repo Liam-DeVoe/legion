@@ -176,8 +176,9 @@ func TestKubernetesDocStatesTheTwoKindsOfWorkspaceCopy(t *testing.T) {
 
 // The two readings that earn an uncharged continue, the end reasons the second covers, the reason
 // that needs the condition, that no count of such ends is kept however often they come, and the
-// ends that are still charged as a death, the pod's own memory use under node pressure among them
-// though it carries the condition, and the daemon's own end whatever the kubelet wrote.
+// ends that are still counted as any stop of a role's process is — the pod's own memory use under
+// node pressure among them though it carries the condition — and the daemon's own end whatever the
+// kubelet wrote.
 func TestKubernetesDocStatesWhichPodEndsAreContinuedUnchargedAndWhichIsCharged(t *testing.T) {
 	const what = `docs/kubernetes.md's "An end from outside the pod" paragraph`
 	lines, region := testdoc.Region(t, workspaceCopyDocExtract, what, podEndReadingsStart, podEndReadingsEnd)
@@ -189,7 +190,13 @@ func TestKubernetesDocStatesWhichPodEndsAreContinuedUnchargedAndWhichIsCharged(t
 		{Fact: "that no run of such ends is ever charged", Phrase: "costs its roles nothing, however often it comes"},
 		{Fact: "that no count of such ends is kept", Phrase: "The daemon keeps no count of these ends"},
 		{Fact: "that the ends of a start are uncharged too", Phrase: "whether its agent was ready or still starting"},
-		{Fact: "the end that is still charged", Phrase: "An end of neither reading is charged as a death"},
+		{Fact: "the end that is still counted", Phrase: "An end of neither reading is counted as before this release, as a stop of each role's process"},
+		{Fact: "that each such stop is one failed launch, which a ready sets back",
+			Phrase: "each stop is one failed launch, which the relaunched agent's ready sets back to 0"},
+		{Fact: "that a stop after the ready that held a task or a turn is also a death, which fails the claim at the limit",
+			Phrase: "after the role's ready, a stop while the role held a task or a turn is also a death, which clears only when that work ends, so at the limit the deaths fail the claim"},
+		{Fact: "that a stop holding neither after a ready is restarted with no limit, and one before every ready is not",
+			Phrase: "After a ready, a stop of a role that held neither is restarted with no limit, while a role that stops before its ready every time fails at the failed-launch limit."},
 		{Fact: "that the kubelet's eviction with no condition is charged", Phrase: "`" + evictedReason + "` with no `DisruptionTarget` condition is such an end"},
 		{Fact: "the three limits that eviction is for", Phrase: "its own ephemeral-storage limit, a container's ephemeral-storage limit or an `emptyDir`'s `sizeLimit`"},
 		{Fact: "a reason outside the three, which is charged", Phrase: "UnexpectedAdmissionError"},

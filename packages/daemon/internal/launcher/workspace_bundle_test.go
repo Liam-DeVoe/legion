@@ -319,9 +319,11 @@ func TestARestoreWhoseBaseCommitIsGoneStartsTheRolesWithANotice(t *testing.T) {
 		t.Fatalf("the notice is %q, want it to name when the lost work was saved", notice)
 	}
 	// The notice names the bundle the work is in, because that is where it stays: the daemon
-	// records one restore attempt per bundle and sends it to no pod again.
-	if !strings.Contains(notice, fmt.Sprintf("bundle of release %d", bundleRelease)) || !strings.Contains(notice, "sends to no pod again") {
-		t.Fatalf("the notice is %q, want it to name the bundle the work stays in and that no pod is sent it again", notice)
+	// sends it to no pod again once a role of this pod has registered, which the roles that start
+	// on what was pushed do.
+	const neverAgain = "sends to no pod again once a role of this pod has registered"
+	if !strings.Contains(notice, fmt.Sprintf("bundle of release %d", bundleRelease)) || !strings.Contains(notice, neverAgain) {
+		t.Fatalf("the notice is %q, want it to name the bundle the work stays in and that no pod is sent it again once a role of this pod registered", notice)
 	}
 	if log := f.Run(workspace, "jj", "log", "-R", workspace, "--ignore-working-copy", "-r", "all()", "--no-graph", "-T", "commit_id ++ \"\\n\""); strings.Contains(log, saved.Head) {
 		t.Fatalf("a restore that failed left the saved working copy in the workspace:\n%s", log)
@@ -329,12 +331,12 @@ func TestARestoreWhoseBaseCommitIsGoneStartsTheRolesWithANotice(t *testing.T) {
 }
 
 // A bundle is restored into a workspace provisioned after it was saved, and into no other. The
-// daemon holds that rule with a record of its own — one restore attempt per bundle, against the
-// pod it is sent to (store.TakeWorkspaceCopyForRestore) — and this is the workspace's own half
-// of it, which catches what the daemon cannot see: a bundle that reached the very workspace the
-// save was taken from, whose creation record is older than the save (workspace.Created).
-// Applying it there would `jj edit` back to the saved head and move each bookmark
-// `--allow-backwards` over what the roles have done since.
+// daemon holds that rule with a record of its own — the pod it sends a bundle to, which it sends
+// none again once a role of that pod registers (store.TakeWorkspaceCopyForRestore) — and this is
+// the workspace's own half of it, which catches what the daemon cannot see: a bundle that reached
+// the very workspace the save was taken from, whose creation record is older than the save
+// (workspace.Created). Applying it there would `jj edit` back to the saved head and move each
+// bookmark `--allow-backwards` over what the roles have done since.
 func TestARestoreRefusesAWorkspaceOlderThanTheWorkItHolds(t *testing.T) {
 	testbin.RequireJJFilters(t)
 	f := newBundleFixture(t)

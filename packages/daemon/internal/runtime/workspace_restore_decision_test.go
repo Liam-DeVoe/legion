@@ -6,7 +6,7 @@ import (
 )
 
 // The decision between an issue's two saved copies, read as a table over every rule it keeps: a
-// copy the issue does not hold, whose one attempt is spent or whose work came off the pod asking
+// copy the issue does not hold, that is spent or whose work came off the pod asking
 // is answered nothing; the newer of the copies the issue holds, by when each take began, is
 // offered and the older superseded, a tie going to the release bundle, whether or not the newer
 // can be sent this pod; a running copy whose take began before the newest recorded push is

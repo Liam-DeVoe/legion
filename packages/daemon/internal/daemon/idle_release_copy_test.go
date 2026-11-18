@@ -227,10 +227,14 @@ func TestALateRestoreReportKeepsOnlyTheSavedWorkItsIdNames(t *testing.T) {
 		t.Fatalf("save the release's bundle: %v", err)
 	}
 	// The bundle is sent to a pod whose launcher holds its report until some connection carries
-	// it.
+	// it, and a role of that pod registers, which spends the bundle there: the next pod's ask
+	// leaves it as that pod's send left it.
 	if restore, err := st.TakeWorkspaceCopyForRestore(ctx, issue, bundlePod); err != nil ||
 		restore.ReleaseBundle.Take != runtime.WorkspaceBundleSend {
 		t.Fatalf("the pod after the release was answered %v (%v), want the release bundle", restore.ReleaseBundle.Take, err)
+	}
+	if err := st.RecordPodRegistration(ctx, issue, bundlePod); err != nil {
+		t.Fatal(err)
 	}
 	taken := runtime.WorkspaceBundle{Bundle: []byte("PACK the work the cadence copied"), Head: "abc",
 		PodUID: "pod-still-running"}

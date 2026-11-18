@@ -1151,8 +1151,8 @@ func (r *Runtime) BundleWorkspace(ctx context.Context, issue string, role claim.
 	}
 	// The shim knows nothing of the pod it runs in, and the row the save writes has to: the pod
 	// this work came off is the one pod the restore refuses by name, so that a role relaunched
-	// in it before the teardown is answered nothing and leaves the bundle's one attempt for the
-	// pod that replaces it (store.TakeWorkspaceCopyForRestore). It is the pod checked above,
+	// in it before the teardown is answered nothing and leaves the bundle unsent for the pod
+	// that replaces it (store.TakeWorkspaceCopyForRestore). It is the pod checked above,
 	// the running pod the claim's locator records.
 	bundle.PodUID = loc.Sandbox.PodUID
 	return bundle, nil

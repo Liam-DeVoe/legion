@@ -9,6 +9,7 @@ body: |-
   own copy, so a second end of the pod before its next turn still restores it. No restore sets the
   issue's branch `legion/<KEY>` or its rescue branch, and no running copy older than the newest
   recorded push is restored. The restore decision compares times from the store's clock alone.
+  A copy sent to a pod that ends before any of its roles registers is sent again at the next start.
 
   A pod the cluster ends, by an eviction, a preemption, a node going down or a delete the daemon
   did not make, continues every role of the issue in its own session with no death and no launch

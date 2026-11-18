@@ -170,11 +170,12 @@ func (s *Store) DeleteWorkspaceBundle(ctx context.Context, issue string) error {
 // daemon read twice, the row being gone. A report with no pod to name is refused, since the kept
 // row could not then tell the pod the work is on from the pod that replaces it.
 //
-// It keeps only a bundle whose one attempt was a send to that pod: the row's attempt names podUID
-// and records the send (attempt_outcome, TakeWorkspaceCopyForRestore). Any other launcher of the
-// issue — one whose pod the take answered nothing, refused the bundle or closed it superseded —
-// reports work its pod was never sent, and its report changes nothing: the bundle's row stays, and
-// with it the hold on the issue's pod, since no pod's disk holds that work.
+// It keeps only a bundle whose attempt is a send to that pod: the row's attempt names podUID and
+// records the send (attempt_outcome, TakeWorkspaceCopyForRestore). Any other launcher of the
+// issue — one whose pod the take answered nothing, refused the bundle or closed it superseded, or
+// one whose pod ended before any role of it registered and the bundle was sent again to another —
+// reports work the row's attempt does not name, and its report changes nothing: the bundle's row
+// stays, and with it the hold on the issue's pod.
 func (s *Store) KeepRestoredWorkspaceBundle(ctx context.Context, issue, podUID string, release int64) error {
 	if podUID == "" {
 		return fmt.Errorf("the restored workspace bundle of %s saved by release %d needs the pod that restored it", issue, release)
@@ -243,8 +244,8 @@ func keepReleaseBundleAsRunningCopy(ctx context.Context, tx pgx.Tx, issue string
 // workflow.IdleHoldBundleUnrestored). The row's own presence is that record: a restore the pod's
 // launcher confirmed deletes it (KeepRestoredWorkspaceBundle), and it does so before any role of
 // the pod starts, so a row still here when the idle rule reads it is work no pod has put back —
-// the release that would overwrite it is the release the hold stops. A bundle whose one attempt
-// failed is such a row, and so is one whose attempt was spent refusing it to a pod or closing it
+// the release that would overwrite it is the release the hold stops. A bundle whose restore failed
+// in a pod where a role then registered is such a row, and so is one refused to a pod or closed
 // unsent (attempt_outcome, TakeWorkspaceCopyForRestore); each holds the issue's pod until the
 // issue's work is over, and the row's own columns say which it was. The work is in the database
 // alone, and a release of that pod would take the disk the roles have worked on since.

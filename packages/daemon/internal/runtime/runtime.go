@@ -247,8 +247,8 @@ type WorkspaceBundler interface {
 //
 // It is one call, and the store answers it in one transaction, because the choice between the two
 // copies is one decision (DecideWorkspaceRestore): which copy is the newer, whether the running
-// copy is older than the newest push of the issue's branch the daemon recorded, whether either has
-// had its one attempt or came off the pod asking, and whether that pod first asked for a restore
+// copy is older than the newest push of the issue's branch the daemon recorded, whether either is
+// spent or came off the pod asking, and whether that pod first asked for a restore
 // before the copy it is offered was written. Made as several calls it could leave the store
 // half-changed — the older copy closed, the newer one's take failed, and the pod given neither.
 // The pod's first ask is the store's own record (the call records it the first time a pod asks),
@@ -256,26 +256,29 @@ type WorkspaceBundler interface {
 // store's clock.
 //
 // WorkspaceBundleNone, for a copy, is nothing sent and nothing recorded: an issue never released
-// and whose cadence took nothing, one whose release a wake cancelled, one whose copy has had its
-// one attempt already, and the pod the work was taken off, or the pod that restored it, asking
+// and whose cadence took nothing, one whose release a wake cancelled, one whose copy is spent
+// already, and the pod the work was taken off, or the pod that restored it, asking
 // for its own workspace's work back. The runtime calls this at every start of every
 // role, and both the pod a release is stopping and the pod a cadence copies go on starting roles,
 // so such a start is one of those calls; the decision knows that pod by the uid the copy recorded
 // (WorkspaceBundle.PodUID), and the store leaves the row untouched for the pod that replaces it.
 //
-// WorkspaceBundleSend is the attempt, and the call is where it is spent: the store records
-// podUID against the copy before answering the body, and answers no body for that copy again. A
-// launcher holds its record of the restore it ran in memory, so a roles container that restarts
-// comes back to the pod's own disk with that record gone and the workspace hours of work past the
-// copy; the daemon's record is what keeps the copy from being applied over that work.
+// WorkspaceBundleSend is the attempt: the store records podUID against the copy before answering
+// the body, and the copy is spent once a role of that pod registers
+// (store.Store.RecordPodRegistration), after which no body of it is answered again. A launcher
+// holds its record of the restore it ran in memory, so a roles container that restarts comes back
+// to the pod's own disk with that record gone; once a role has registered there, the workspace can
+// hold work past the copy, and the daemon's record is what keeps the copy from being applied over
+// it. A pod, or its roles container, that ends before any role registered leaves the copy unspent,
+// and the next call, the restarted container's or the next pod's, decides it again.
 //
 // WorkspaceBundleLeftForNextPod is nothing sent and nothing recorded, of a copy written after
 // this pod first asked: the pod has been working since that ask, so the copy is not applied over
-// that work, and its one attempt is left for the next pod of the issue, which first asks after
-// the copy was written.
+// that work, and it stays unspent for the next pod of the issue, which first asks after the copy
+// was written.
 //
 // WorkspaceBundleRefusedPushed, of a running copy alone, and WorkspaceBundleSuperseded spend the
-// attempt and send nothing, for the reasons DecideWorkspaceRestore gives. The work stays in the
+// copy and send nothing, for the reasons DecideWorkspaceRestore gives. The work stays in the
 // database for a person to recover; a release bundle nothing restored also holds the issue's pod
 // (workflow.IdleHoldBundleUnrestored), and a running copy holds no pod, its work being on the disk
 // it was taken off.

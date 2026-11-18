@@ -263,7 +263,7 @@ const (
 )
 
 // copyHeld is taken as the restore's decision reads its row: its time the one the shim stamped it
-// with, its one attempt unspent, off the pod being replaced. The store stamps a row with its own
+// with, unspent, off the pod being replaced. The store stamps a row with its own
 // clock as it writes it, a moment after the shim reads the workspace; every time of these cases is
 // read off this one machine's clock, in the order the store would write them, so the shim's stands
 // for the store's.

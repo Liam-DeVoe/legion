@@ -907,6 +907,17 @@ type Deps struct {
 	// where it is read; nil reads no report, so every let-go of a process that ran a turn
 	// records that the daemon has none.
 	ClaimActivity func(ctx context.Context, token claim.Token, generation uint64) (ActivityReport, bool, error)
+	// PodRegistered records that a role of issue registered in the pod of podUID: the daemon's
+	// store, under which a saved copy of the issue's workspace sent to that pod is spent from then
+	// on (store.Store.RecordPodRegistration). A registration of a claim whose process runs in a
+	// pod (runtime.SandboxLocator) calls it before the registration is persisted and answered, the
+	// first registration and every one after it (register, reregister), and an error refuses the
+	// registration, which leaves the agent to its registration deadline: answered while the store
+	// still read the copy unspent, a restarted roles container of that pod would be sent the copy
+	// again over the work the role does from then on. It is called while the machine's lock is
+	// held, bounded by the claim-write deadline. nil — the tmux runtime, and a test that needs
+	// none — records nothing, as does a claim whose locator names no pod.
+	PodRegistered func(ctx context.Context, issue, podUID string) error
 	// PluginContract is the daemon's own plugin contract number (api.DaemonAPIVersion; supervise
 	// cannot import api), compared against each claim's recorded PluginContract to decide whether a
 	// registration or a restored claim is stale.

@@ -205,7 +205,7 @@ func TestAStoredBundleReadsAsUnrestoredUntilItsConfirmation(t *testing.T) {
 	}
 }
 
-// A confirmation keeps only a bundle whose one attempt was a send to the confirming pod. Any other
+// A confirmation keeps only a bundle whose attempt is a send to the confirming pod. Any other
 // launcher of the issue reports work its pod does not hold — a pod that first asked before the
 // save and so was sent nothing of it, or one the bundle was never sent to — and such a report
 // keeps nothing: no running copy is written from it, and the bundle's row stays, with the hold it

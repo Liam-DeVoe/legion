@@ -326,9 +326,9 @@ func (d *launchers) start(ctx context.Context, token claim.Token, podUID string,
 	// The shared public leak check goes over before anything else, and a launcher that could not
 	// install it starts nothing: every write of the role resolves the check first and its shim
 	// refuses to start the agent without the install (leakguard.Installed), so a start sent
-	// anyway would be a role that fails at once. The refusal leaves the issue's saved copies of
-	// its workspace in the store, since a copy taken here would spend its one restore attempt on a
-	// pod no role of which ran.
+	// anyway would be a role that fails at once. The refusal takes nothing of the issue's saved
+	// copies of its workspace, since a take here would decide them, refusing or closing a copy
+	// for good, for a pod no role of which runs.
 	if err := d.serveLeakCheck(ctx, token, podUID); err != nil {
 		return err
 	}
@@ -446,11 +446,11 @@ func (d *launchers) serveLeakCheck(ctx context.Context, token claim.Token, podUI
 const bundleRestoreBound = 2 * time.Minute
 
 // leftForNextPodLine is the line a copy written after this pod first asked for a restore is logged
-// with (runtime.WorkspaceBundleLeftForNextPod), at Info: the copy keeps its one attempt for the
-// next pod of the issue, which is sent it unless this pod's own next copy replaces it first. It
-// names when this pod first asked, when the copy's take began and when the store wrote it, all by
-// the store's clock; the write after the ask is the whole of why this pod was sent nothing.
-const leftForNextPodLine = "launcher bundle: the saved workspace copy was written after this pod first asked for a restore, so it is not sent to this pod, which has been working since that ask, and nothing is recorded on it: it keeps its one attempt for the next pod of the issue"
+// with (runtime.WorkspaceBundleLeftForNextPod), at Info: the copy stays unspent for the next pod
+// of the issue, which is sent it unless this pod's own next copy replaces it first. It names when
+// this pod first asked, when the copy's take began and when the store wrote it, all by the store's
+// clock; the write after the ask is the whole of why this pod was sent nothing.
+const leftForNextPodLine = "launcher bundle: the saved workspace copy was written after this pod first asked for a restore, so it is not sent to this pod, which has been working since that ask, and nothing is recorded on it: it stays for the next pod of the issue"
 
 // refusedPushedLine is the warning a running copy older than the issue's newest recorded push is
 // logged with (runtime.WorkspaceBundleRefusedPushed); a release bundle is never refused so. A
@@ -482,10 +482,11 @@ const withheldBranchLine = "launcher bundle: the saved workspace copy's own valu
 const reachedLine = "launcher bundle: the issue's saved workspace work reached the pod that restores it"
 
 // restoreFailedLine is the warning a launcher's report of a restore that failed is logged with.
-// The copy had its one attempt and stays in the daemon's database, but a running copy only until
-// the next copy of the issue's workspace replaces it, which the line says so that an operator who
-// wants its bytes reads them first (restoreReported).
-const restoreFailedLine = "launcher bundle: the pod's launcher could not restore the issue's saved workspace work, which had its one attempt and is sent to no pod again; it stays in the daemon's database, a running copy only until the next copy of the issue's workspace replaces it"
+// The copy stays in the daemon's database, but a running copy only until the next copy of the
+// issue's workspace replaces it, which the line says so that an operator who wants its bytes reads
+// them first (restoreReported). The roles start on what was pushed, and the first of them to
+// register spends the copy (store.Store.RecordPodRegistration), so no pod is sent it again.
+const restoreFailedLine = "launcher bundle: the pod's launcher could not restore the issue's saved workspace work, which no pod is sent again once a role of this pod registers; it stays in the daemon's database, a running copy only until the next copy of the issue's workspace replaces it"
 
 // restoreWorkspace carries the newer of the two copies of this pod's issue workspace to the pod's
 // launcher: the bundle the issue's last idle release saved, and the copy the daemon took while
@@ -510,24 +511,28 @@ const restoreFailedLine = "launcher bundle: the pod's launcher could not restore
 // that never starts is worse than one whose workspace holds only what was pushed, and the
 // launcher writes the agent its own notice of what was lost (internal/launcher's restoreWorkspace).
 //
-// One attempt per copy, and the take is it: the store records the pod this send is for before it
-// answers the body, and answers nothing for that copy afterwards. So a roles container that
-// restarts, a pod that replaces this one and a third pod after an eviction are each sent nothing,
-// and no copy is ever applied over work a running pod's roles have done since it was taken. The
-// work itself stays in the database; a release bundle no pod restored holds the issue's pod
+// The take records the pod this send is for before it answers the body, and the copy is spent once
+// a role of this pod registers (store.Store.RecordPodRegistration), after which the take answers
+// nothing for it. So once a role has registered, a roles container that restarts, a pod that
+// replaces this one and a third pod after an eviction are each sent nothing, and no copy is ever
+// applied over work a running pod's roles have done since it was taken. Before any role of this
+// pod registered no role of it ran, so a pod, or its roles container, that ends then leaves the
+// copy unspent: the restarted container's first role start, or the next pod's, asks again, the
+// store decides again, and the copy it sends is restored over the workspace no role has touched.
+// The work itself stays in the database; a release bundle no pod restored holds the issue's pod
 // (workflow.IdleHoldBundleUnrestored) until the issue's work is over, and a running copy holds
 // none, the disk it was taken off being where its work is.
 //
 // Whose attempt it is the session's own pod decides, and the store decides it: the pod a copy was
 // taken off goes on starting roles — a release stops them, and a cadence copies a pod that is
 // working — and such a start reaches here too, for the very workspace the work came from. The
-// store knows that pod by the uid the copy recorded and answers it nothing, leaving the attempt
-// for the pod that replaces it. Every other pod spends the attempt the first time it asks after
-// the copy was written. A copy written after this pod's first ask, which is this pod's first role
-// start, is not sent here and nothing is recorded on it: this pod has been working since that
-// ask, and the next pod of the issue is sent the copy. That line is Info, since no work is lost;
-// the refusal of a running copy older than a recorded push is this hop's warning an operator must
-// read — the work is in the database and no pod will put it back on its own.
+// store knows that pod by the uid the copy recorded and answers it nothing, leaving the copy for
+// the pod that replaces it. Every other pod is sent it the first time it asks after the copy was
+// written. A copy written after this pod's first ask, which is this pod's first role start, is not
+// sent here and nothing is recorded on it: this pod has been working since that ask, and the next
+// pod of the issue is sent the copy. That line is Info, since no work is lost; the refusal of a
+// running copy older than a recorded push is this hop's warning an operator must read — the work
+// is in the database and no pod will put it back on its own.
 func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, podUID string) {
 	if d.saved == nil || d.restored == nil {
 		return
@@ -543,7 +548,7 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 	defer cancel()
 	restore, err := d.saved(restoring, issue, podUID)
 	if err != nil {
-		d.log.Warn("launcher bundle: the issue's saved workspace copies could not be taken for this pod's one restore attempt, so the pod starts on what was pushed and every copy is left as it was",
+		d.log.Warn("launcher bundle: the issue's saved workspace copies could not be taken for this pod's restore, so the pod starts on what was pushed and every copy is left as it was",
 			"issue", issue, "launcher", token, "pod", podUID, "error", err)
 		return
 	}
@@ -608,9 +613,9 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 		// before its first role runs. The daemon's copy stays as it is until the launcher reports
 		// what the restore itself did (restoreReported) — a restore can still fail, and the work
 		// is then in the daemon's database alone, which is where the launcher's notice says it is.
-		// This send was that copy's one attempt, so no pod is sent it again; a release bundle stays
-		// until the issue's work is over, and a running copy until the next copy of the issue's
-		// workspace replaces its row.
+		// The copy is spent once a role of this pod registers, and no pod is sent it after that;
+		// a release bundle stays until the issue's work is over, and a running copy until the
+		// next copy of the issue's workspace replaces its row.
 		d.log.Info(reachedLine,
 			"issue", issue, "launcher", token, "copy", kind, "taken", bundle.At,
 			"bytes", len(bundle.Bundle), "slices", len(frames), "restore", bundle.Release)
@@ -622,13 +627,13 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 
 // restoreReported keeps the saved copy of this pod's issue workspace that a launcher's report
 // names as this pod's own running copy, once that launcher reports that its restore put the work
-// back. A restore that failed, and a pod no role ever started in, leave the copy as the send left
-// it, with its one attempt recorded, so no pod is sent it again (restoreWorkspace). A release
-// bundle no pod restored is ended by the issue's close or its tree's close (outbox's
-// dropReleasedWork), or by a cancel of the release that saved it, which moves it into the issue's
-// running copy (store.CancelIssueRelease). A running copy no pod restored is replaced by the next
-// copy taken off any pod of the issue, the restoring pod's own included
-// (store.PutRunningWorkspaceCopy).
+// back. A restore that failed leaves the copy as the send left it, spent once a role of this pod
+// registers, and a pod that ends before any role of it registered leaves it unspent for the next
+// start of the issue (restoreWorkspace). A release bundle no pod restored is ended by the issue's
+// close or its tree's close (outbox's dropReleasedWork), or by a cancel of the release that saved
+// it, which moves it into the issue's running copy (store.CancelIssueRelease). A running copy no
+// pod restored is replaced by the next copy taken off any pod of the issue, the restoring pod's own
+// included (store.PutRunningWorkspaceCopy).
 //
 // The confirmed copy is kept, not deleted, because from here on the restoring pod's disk is the
 // one place its work is, and a pod that does nothing takes no copy of its own: an agent relaunched

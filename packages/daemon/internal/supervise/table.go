@@ -2313,9 +2313,14 @@ func spawn(m *Machine, ctx context.Context, ev Event) error {
 // agent's ready ends it. A registration whose answer never reached its agent leaves a claim no
 // ready will ever come for, and from here that looks exactly like an agent slow to boot. A
 // registration whose plugin still differs from the daemon's is relaunched at once and refused
-// (staleRegistration): the agent that just registered is not the one that relaunch starts.
+// (staleRegistration): the agent that just registered is not the one that relaunch starts. The
+// pod's registration is recorded before anything of the claim changes (recordPodRegistration), so
+// a record that fails refuses the registration with the claim as it was.
 func register(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestRegister)
+	if err := m.recordPodRegistration(ctx); err != nil {
+		return err
+	}
 	m.claim.Session, m.claim.SessionFile = r.Session, r.SessionFile
 	m.claim.CapabilityHash = bytes.Clone(r.CapabilityHash)
 	m.claim.PluginContract = r.PluginContract
@@ -2339,9 +2344,14 @@ func register(m *Machine, ctx context.Context, ev Event) error {
 // reregister is the recorded session registering again: it is issued a new secret, and the
 // deadline stays where the first registration set it, so an agent that keeps registering and never
 // says it is ready is still relaunched. A registration whose plugin still differs from the
-// daemon's is relaunched at once and refused the same way register's is (staleRegistration).
+// daemon's is relaunched at once and refused the same way register's is (staleRegistration). The
+// pod's registration is recorded again first, as register records it, which keeps the time of the
+// pod's first.
 func reregister(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestRegister)
+	if err := m.recordPodRegistration(ctx); err != nil {
+		return err
+	}
 	m.claim.SessionFile = r.SessionFile
 	m.claim.CapabilityHash = bytes.Clone(r.CapabilityHash)
 	m.claim.PluginContract = r.PluginContract
@@ -2352,6 +2362,28 @@ func reregister(m *Machine, ctx context.Context, ev Event) error {
 		return err
 	}
 	return m.staleRegistration(ctx, r.PluginContract)
+}
+
+// recordPodRegistration records, through Deps.PodRegistered, that a role of the claim's issue has
+// registered in the pod its process runs in, before the registration is persisted and answered: a
+// saved copy of the issue's workspace sent to that pod stays unspent until then, so a restarted
+// roles container is sent it again, and from the registration on the role may change the
+// workspace (store.Store.RecordPodRegistration). An error refuses the registration and leaves the
+// agent to its registration deadline, which relaunches it to register again. A claim whose locator
+// names no pod, a claim of no issue (the project controller's, whose pod is sent no copy), and a
+// daemon that wired no record, record nothing.
+func (m *Machine) recordPodRegistration(ctx context.Context) error {
+	loc := m.claim.Locator
+	if m.deps.PodRegistered == nil || m.claim.Issue == "" || loc == nil || loc.Sandbox == nil || loc.Sandbox.PodUID == "" {
+		return nil
+	}
+	recording, cancel := context.WithTimeout(ctx, m.deps.claimWrite())
+	defer cancel()
+	if err := m.deps.PodRegistered(recording, m.claim.Issue, loc.Sandbox.PodUID); err != nil {
+		return fmt.Errorf("the registration of %s in pod %s could not be recorded, so it is refused and its agent left to the registration deadline: %w",
+			m.claim.Token, loc.Sandbox.PodUID, err)
+	}
+	return nil
 }
 
 // ready is the agent saying it can be prompted. The time is kept on the claim (Claim.LastReady),

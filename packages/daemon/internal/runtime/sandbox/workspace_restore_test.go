@@ -257,8 +257,8 @@ func TestASavedWorkspaceBundleReachesThePodsLauncherBeforeItStartsAnyRole(t *tes
 // Held says the launcher holds the body, not that the restore ran: the restore runs later, at the
 // first role start, and it can fail — a prerequisite commit the bundle needs that the new pod's
 // clone does not have, a jj step that will not run, the restore's own budget. The work is kept
-// where the launcher's notice says it is, in the daemon's database, and it is sent to no pod
-// again: that send was the bundle's one restore attempt.
+// where the launcher's notice says it is, in the daemon's database, and once the role that starts
+// on what was pushed registers it is sent to no pod again (store.Store.RecordPodRegistration).
 //
 // The pod it was sent to is the case the rule is for. Its roles container restarts, which is a
 // launcher process of its own, holding no record of the restore that already ran, on the pod's
@@ -290,14 +290,18 @@ func TestAFailedRestoreKeepsTheSavedWorkAndSendsItToNoPodAgain(t *testing.T) {
 			size, held, len(saved.Bundle))
 	}
 
-	// The roles container restarts in the same pod, and the start of the next role is what
-	// would send the bundle again.
+	// The role that started on what was pushed registers, and then the roles container restarts
+	// in the same pod: the start of the next role is what would send the bundle again.
+	pod := string(g.pod(SandboxName(spec.Claim)).UID)
+	if err := st.RecordPodRegistration(g.ctx, testTree, pod); err != nil {
+		t.Fatal(err)
+	}
 	before := len(sent)
 	g.connect(spec.Claim)
-	g.r.launchers.restoreWorkspace(g.ctx, spec.Claim, string(g.pod(SandboxName(spec.Claim)).UID))
+	g.r.launchers.restoreWorkspace(g.ctx, spec.Claim, pod)
 	for _, frame := range g.sent(spec.Claim)[before:] {
 		if slice, ok := frame.(shimwire.LauncherBundle); ok {
-			t.Fatalf("the pod's second launcher was sent slice %d of %d of release %d, want nothing: the bundle has had its one restore attempt",
+			t.Fatalf("the pod's second launcher was sent slice %d of %d of release %d, want nothing: a role of the pod it was sent to registered",
 				slice.Index, slice.Count, slice.Release)
 		}
 	}
@@ -309,11 +313,11 @@ func TestAFailedRestoreKeepsTheSavedWorkAndSendsItToNoPodAgain(t *testing.T) {
 // A release stops the roles of the pod it is releasing, and a role relaunched in that pod before
 // the teardown deletes it starts like any other: it asks the store for the issue's saved work.
 // That pod is the one the work was taken off — its workspace holds every commit of it — so it
-// must be sent nothing, and it must not spend the bundle's one restore attempt either: the pod
-// the wake makes next is the one with an empty workspace, and an attempt spent here would leave
-// it sent nothing while the row stayed and held the issue's pod
-// (workflow.IdleHoldBundleUnrestored). The store knows that pod by the uid the save recorded,
-// so it is the pod's identity and no time that leaves the attempt where it belongs.
+// must be sent nothing, and it must not spend the bundle either: the pod the wake makes next is
+// the one with an empty workspace, and a bundle spent here would leave it sent nothing while the
+// row stayed and held the issue's pod (workflow.IdleHoldBundleUnrestored). The store knows that
+// pod by the uid the save recorded, so it is the pod's identity and no time that leaves the
+// bundle for its replacement.
 func TestARelaunchInThePodBeingReleasedLeavesTheAttemptForItsReplacement(t *testing.T) {
 	st := migratedStore(t)
 	g := newRig(t, nil, withSavedWorkspace(st))
@@ -378,14 +382,17 @@ func TestARelaunchInThePodBeingReleasedLeavesTheAttemptForItsReplacement(t *test
 			len(read.Bundle), read.Head, read.Tips, read.Bookmarks, len(saved.Bundle), saved.Head, saved.Tips, want)
 	}
 
-	// That send was the attempt. The replacement pod's own roles container restarting is the
-	// case the rule is for, and it is sent nothing.
+	// That send is spent once a role of the replacement pod registers. Its own roles container
+	// restarting after that is the case the rule is for, and it is sent nothing.
+	if err := st.RecordPodRegistration(g.ctx, testTree, string(replacement.UID)); err != nil {
+		t.Fatal(err)
+	}
 	before = len(g.sent(spec.Claim))
 	g.connect(spec.Claim)
 	g.r.launchers.restoreWorkspace(g.ctx, spec.Claim, string(replacement.UID))
 	for _, frame := range g.sent(spec.Claim)[before:] {
 		if slice, ok := frame.(shimwire.LauncherBundle); ok {
-			t.Fatalf("the replacement pod's second launcher was sent slice %d of %d of release %d, want nothing: the bundle has had its one restore attempt",
+			t.Fatalf("the replacement pod's second launcher was sent slice %d of %d of release %d, want nothing: a role of that pod registered",
 				slice.Index, slice.Count, slice.Release)
 		}
 	}
@@ -441,9 +448,9 @@ func TestALateRestoreReportLeavesTheBundleOfANewerRelease(t *testing.T) {
 // A launcher that refuses a slice costs the restore and nothing else: the role starts on the
 // workspace the pod's own fetch provisioned, the launcher writes the agent the notice of what was
 // lost, and the saved work stays in the daemon's database. A pod that never starts would be the
-// worse mistake. The refusal costs the bundle its one attempt all the same: the daemon records
-// the attempt before it sends a slice, because a send it could not finish leaves it knowing
-// nothing of what that pod's workspace now holds.
+// worse mistake. The daemon records the attempt before it sends a slice, because a send it could
+// not finish leaves it knowing nothing of what that pod's workspace now holds, and the role that
+// starts spends the bundle when it registers.
 func TestARefusedBundleSliceStillStartsTheRoleAndKeepsTheSavedWork(t *testing.T) {
 	st := migratedStore(t)
 	saved := savedWorkspaceBundle()
@@ -685,12 +692,13 @@ func TestTheLineOfAClosedCopyNamesTheNewerOneAndWhatThisPodWasAnsweredOfIt(t *te
 }
 
 // A restore of a running copy that fails leaves the work where the launcher's notice says it is,
-// in the daemon's database, spends that copy's one attempt and names the issue on the daemon's
-// log. What it must not do is hold the issue's pod: the idle rule reads the release bundles alone
-// (store.workspaceBundleUnrestored, workflow.IdleHoldBundleUnrestored), and this issue has no
-// release bundle, so its pod is still released when it next goes idle — which is right, since the
-// work in the copy is also on the disk the copy was taken off, and that release would save it
-// again. The store's own side of this is TestTheIdleViewHoldsNoPodForARunningWorkspaceCopy.
+// in the daemon's database, and names the issue on the daemon's log; the role that starts on what
+// was pushed spends the copy when it registers. What it must not do is hold the issue's pod: the
+// idle rule reads the release bundles alone (store.workspaceBundleUnrestored,
+// workflow.IdleHoldBundleUnrestored), and this issue has no release bundle, so its pod is still
+// released when it next goes idle — which is right, since the work in the copy is also on the disk
+// the copy was taken off, and that release would save it again. The store's own side of this is
+// TestTheIdleViewHoldsNoPodForARunningWorkspaceCopy.
 func TestAFailedRestoreOfARunningWorkspaceCopyKeepsItAndHoldsNoPod(t *testing.T) {
 	st := migratedStore(t)
 	logs := &logBuffer{}
@@ -714,7 +722,11 @@ func TestAFailedRestoreOfARunningWorkspaceCopyKeepsItAndHoldsNoPod(t *testing.T)
 		t.Fatalf("after the failed restore the store holds %d bytes of the running copy (held=%t), want its %d kept",
 			size, held, len(taken.Bundle))
 	}
-	// That send was the copy's one attempt: the pod after this one is sent nothing of it.
+	// A role of this pod registers, which spends the copy: the pod after this one is sent nothing
+	// of it.
+	if err := st.RecordPodRegistration(g.ctx, testTree, string(g.pod(SandboxName(spec.Claim)).UID)); err != nil {
+		t.Fatal(err)
+	}
 	restore, err := st.TakeWorkspaceCopyForRestore(g.ctx, testTree, "pod-after-the-failure")
 	if after := restore.Running; err != nil || after.Take != runtime.WorkspaceBundleNone {
 		t.Fatalf("the pod after the failed restore was answered %d bytes (%v, %v), want nothing", len(after.Bundle.Bundle), after.Take, err)
