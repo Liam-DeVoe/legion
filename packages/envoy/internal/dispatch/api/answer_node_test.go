@@ -75,6 +75,11 @@ func TestEveryWriterOfAnAnswerWritesItOnTheNode(t *testing.T) {
 
 	t.Run("settlement's retraction and restoration", func(t *testing.T) {
 		handler, database, documentService := blockAskHandlerWithDocuments(t)
+		// The issue is created as before the issue room: the ask block's ask is read under the
+		// spec (awaitIndexedAskBlock) and the browser binds the room's own fragment
+		// (removeBlockAsABrowserDoes), where an issue born converted holds the ask under its tree
+		// artifact and the spec in a fragment of its own.
+		holdIssuesUnconverted(t, database)
 		issue, askID := seedBlockAsk(t, handler, "A block ask retracted and restored", "decision", transportAsk, "Which transport?")
 		removeBlockAsABrowserDoes(t, documentService, issue.PrimaryArtifactID, "decision")
 		settleDocument(t, handler, issue.PrimaryArtifactID, issue.Key, "after-delete")

@@ -47,7 +47,7 @@ func TestTheSettlementTreeReadWalksTheReplicaUnderItsLock(t *testing.T) {
 		}
 	}()
 	for range rounds {
-		if _, _, _, _, err := service.treePoint("room", live); err != nil {
+		if _, _, _, _, err := service.treePoint("room", live, service.layoutOf(live)); err != nil {
 			t.Errorf("the tree read of a room committing beside it answered %v", err)
 			break
 		}

@@ -53,7 +53,7 @@ func TestTheSaveOfARetiredDocumentsTypingKeepsItAndWritesNoVersion(t *testing.T)
 	if after := versions(); after != before {
 		t.Fatalf("the save of the retired document left %d versions, want the %d it held before the typing", after, before)
 	}
-	stored, err := service.storedTree(ctx, artifactID)
+	stored, err := service.storedTree(ctx, roomTarget(artifactID))
 	if err != nil {
 		t.Fatalf("read the stored document: %v", err)
 	}

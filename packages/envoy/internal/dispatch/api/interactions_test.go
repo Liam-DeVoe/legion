@@ -837,6 +837,9 @@ func TestCommentsSuggestionsAndArtifactFilter(t *testing.T) {
 		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
 		return documentService
 	})
+	// The issue is created as before the issue room: the marks are read from the spec's own
+	// stored room (loadMarkProjection), which a spec of an issue born converted no longer has.
+	holdIssuesUnconverted(t, database)
 	issue := createInteractionIssue(t, handler, "TEST", "Comments", "The quick brown fox")
 	first := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
 		"body": "Why brown?", "anchor": map[string]any{"artifact": "spec", "quote": "brown"}, "actor": sessionActor(),
@@ -931,6 +934,9 @@ func TestSuggestionAcceptAppliesLiveDocument(t *testing.T) {
 		})
 		return documentService
 	})
+	// The issue is created as before the issue room: the marks are read from the spec's own
+	// stored room (loadMarkProjection), which a spec of an issue born converted no longer has.
+	holdIssuesUnconverted(t, database)
 	issue := createInteractionIssue(t, handler, "TEST", "Accept suggestion", "The quick brown fox")
 
 	suggestion := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
@@ -1350,6 +1356,10 @@ func TestSuggestionAcceptClearsPendingAuthorBeforeNextVersion(t *testing.T) {
 // made after that read stays pending until a later version holds and credits it (LEGION-503).
 func TestAnUploadKeepsTheCreditOfAnEditItsUploaderMakesWhileItWrites(t *testing.T) {
 	documentService, handler, database := browserDocumentService(t)
+	// The issue is created as before the issue room: the browser below binds the room's own
+	// fragment, as a page bound every document before the issue room, which in an issue born
+	// converted is the tree's and not the spec's (connectBrowserPeer).
+	holdIssuesUnconverted(t, database)
 	issue := createInteractionIssue(t, handler, "TEST", "Upload timing", "First.\n\nSecond.\n")
 	alice := model.Actor{Kind: "user", ID: "alice", Proven: true}
 	peer := connectBrowserPeer(t, documentService, issue.PrimaryArtifactID)
@@ -1411,7 +1421,11 @@ func TestAnUploadClearsPendingCreditOnlyWhenItChangesTheDocument(t *testing.T) {
 		{name: "an unchanged re-upload", replacement: "before\n\nAlice wrote this.\n", find: "before", want: []model.Actor{session, alice}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			documentService, handler, _ := browserDocumentService(t)
+			documentService, handler, database := browserDocumentService(t)
+			// The issue is created as before the issue room: the browser below binds the room's
+			// own fragment, as a page bound every document before the issue room, which in an
+			// issue born converted is the tree's and not the document's (connectBrowserPeer).
+			holdIssuesUnconverted(t, database)
 			issue := createInteractionIssue(t, handler, "TEST", "Overwritten author", "before")
 			path := "/api/v1/issues/" + issue.Key + "/artifacts"
 			upload := func(content string) {

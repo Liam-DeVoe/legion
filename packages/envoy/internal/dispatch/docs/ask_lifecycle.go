@@ -175,7 +175,7 @@ func (s *Service) writeDocumentAskStates(
 		return ask, wanted
 	}
 	var writes *issueAskStateWrites
-	err := s.applyLive(ctx, artifactID, actor, func(doc *crdt.Doc, current pmdoc.ValidDocument, _ func(func(*crdt.Transaction))) error {
+	err := s.applyLive(ctx, artifactID, actor, func(doc liveDoc, current pmdoc.ValidDocument, _ func(func(*crdt.Transaction))) error {
 		if current.Node() == nil {
 			// Settlement reads none of its ask blocks either (settleRoomWithin).
 			slog.Warn("dispatch: leave the ask blocks of a document outside Proof schema as they are", "artifact", artifactID)
@@ -192,7 +192,7 @@ func (s *Service) writeDocumentAskStates(
 		// id, as settlement makes its repairs (repairLive), and each repeat on the block at its place
 		// (markRepeatedAskBlocks), all in one rewrite of the fork, whose tree is the one current read.
 		// A document none of them changes is left as it was, and applyLive writes nothing for it.
-		_, err = rewriteLive(doc, nil, writes.apply)
+		_, err = doc.rewrite(writes.apply)
 		return err
 	})
 	switch {

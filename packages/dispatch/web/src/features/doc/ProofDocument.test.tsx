@@ -18,12 +18,17 @@ import {
   artifact as spec,
 } from "../../__tests__/proof-document";
 import { ApiError, api } from "../../api/client";
-import type { ArtifactText, Ask, IssueDetails, IssueReferenceSummary } from "../../api/types";
+import type {
+  Artifact,
+  ArtifactText,
+  Ask,
+  IssueDetails,
+  IssueReferenceSummary,
+} from "../../api/types";
 import { heldSends } from "../conversation/held-sends";
 import { marginComposeSendKey } from "../margin/margin-context";
 import { appKeymap } from "../shell/keymap";
 import { colorForLogin } from "./connection";
-import type { ArtifactWithFragment } from "./roots";
 
 answerTextReadsWithTheSeededText();
 
@@ -126,7 +131,7 @@ test("ProofDocument binds prosemirror once an artifact read that names no fragme
 
 /** The artifact read, answered with `record` (this file's artifact unless named) once `release` is
  *  called; `requested` once the page made it. */
-function heldArtifactRead(record: ArtifactWithFragment = artifact): {
+function heldArtifactRead(record: Artifact = artifact): {
   release(): void;
   requested(): boolean;
 } {
@@ -176,7 +181,9 @@ for (const [named, bound] of [
   test(`ProofDocument connects at once on ${bound} when the artifact it was handed names ${named === null ? "null" : "it"}`, async () => {
     const read = heldArtifactRead();
     const fake = fakeDocumentRuntime({ text: "The live document" });
-    const handed: ArtifactWithFragment = { ...spec, fragment: named };
+    // The generated Artifact holds `fragment` as a name or nothing; an answer naming `null` is the
+    // shape the page also reads as naming none, which no field of that type spells.
+    const handed = { ...spec, fragment: named } as unknown as Artifact;
     const { view } = renderProofDocument({ document: handed, fake });
 
     try {

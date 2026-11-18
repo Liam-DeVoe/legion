@@ -192,6 +192,9 @@ func countCommentRows(t *testing.T, handler http.Handler, issueKey string) int {
 
 func TestReopenCommentClearsResolutionAndReprojects(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
+	// The issue is created as before the issue room: the mark is read from the spec's own stored
+	// room (loadMarkProjection), which a spec of an issue born converted no longer has.
+	holdIssuesUnconverted(t, database)
 	issue := createInteractionIssue(t, handler, "TEST", "Reopen comment", "before")
 	root := createThreadComment(t, handler, issue.Key, map[string]any{
 		"body": "resolve this", "anchor": map[string]any{"artifact": "spec", "quote": "before"}, "actor": sessionActor(),
@@ -481,6 +484,9 @@ func TestCreateCommentRejectsReplySuggestions(t *testing.T) {
 
 func TestEditCommentIsAuthorOnly(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
+	// The issue is created as before the issue room: the mark is read from the spec's own stored
+	// room (loadMarkProjection), which a spec of an issue born converted no longer has.
+	holdIssuesUnconverted(t, database)
 	issue := createInteractionIssue(t, handler, "TEST", "Edit comment", "before")
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{
 		"body": "before edit", "anchor": map[string]any{"artifact": "spec", "quote": "before"},

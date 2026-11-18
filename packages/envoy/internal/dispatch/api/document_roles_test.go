@@ -108,6 +108,10 @@ func TestIssueDocumentsTakeTheirRoleFromTheirName(t *testing.T) {
 func TestADecisionsDocumentIsRefusedByNameAndOneThatStandsTakesItsNextVersion(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	ctx := context.Background()
+	// The issues are created as before the issue room: one born converted holds its decisions
+	// query, a doc row slugged decisions, which the count below would take for a stored decisions
+	// document, and it never holds the decisions document a release before stored.
+	holdIssuesUnconverted(t, database)
 	issue := createInteractionIssue(t, handler, "DEC", "Decisions", "A spec\n")
 	owner := "/api/v1/issues/" + issue.Key
 

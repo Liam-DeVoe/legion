@@ -98,8 +98,8 @@ func (s *Service) MarkQuote(ctx context.Context, artifactID string, mark MarkSpe
 	if mark.Kind == MarkComment {
 		ctx = commentMarkOperation(ctx)
 	}
-	err := s.applyLive(ctx, artifactID, mark.By, func(doc *crdt.Doc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
-		fragment := doc.GetXmlFragment(fragmentName)
+	err := s.applyLive(ctx, artifactID, mark.By, func(doc liveDoc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
+		fragment := doc.documentFragment()
 		valid, err := startTree(current, doc)
 		if err != nil {
 			return err
@@ -176,6 +176,9 @@ func markQuoteInTxn(txn *crdt.Transaction, fragment *crdt.YXmlFragment, doc *pmd
 // how). A mark whose append is still in flight - one the room took inside closeMargin, which the
 // gate admits - is found by the same wait as any other, from the store it lands in; the version
 // pinned after it holds it, since this read comes first and the store only grows.
+//
+// A document of an issue room is watched through its room and read from its own fragment of it
+// (targetOf).
 func (s *Service) VerifyMark(ctx context.Context, artifactID string, kind MarkKind, id string) (Anchored, error) {
 	if kind == MarkComment {
 		ctx = commentMarkOperation(ctx)
@@ -184,9 +187,13 @@ func (s *Service) VerifyMark(ctx context.Context, artifactID string, kind MarkKi
 	if err != nil {
 		return Anchored{}, err
 	}
+	target, err := s.targetOf(ctx, artifactID)
+	if err != nil {
+		return Anchored{}, err
+	}
 	updates := make(chan struct{}, 1)
 	var unsubscribe func()
-	err = s.srv.Apply(ctx, artifactID, func(doc *crdt.Doc, _ func(func(*crdt.Transaction))) {
+	err = s.srv.Apply(ctx, target.room, func(doc *crdt.Doc, _ func(func(*crdt.Transaction))) {
 		unsubscribe = doc.OnUpdate(func(_ []byte, _ any) {
 			select {
 			case updates <- struct{}{}:
@@ -202,14 +209,14 @@ func (s *Service) VerifyMark(ctx context.Context, artifactID string, kind MarkKi
 	}
 	// The room can be evicted from here on: no close retires a room while an Apply is inside it.
 	if s.afterReadWarm != nil {
-		s.afterReadWarm(artifactID)
+		s.afterReadWarm(target.room)
 	}
 
 	timer := time.NewTimer(s.markWait)
 	defer timer.Stop()
 	final := false
 	for {
-		tree, err := s.anchorTree(ctx, artifactID, fromStore)
+		tree, err := s.anchorTree(ctx, target, fromStore)
 		if err != nil {
 			return Anchored{}, err
 		}
@@ -234,13 +241,14 @@ func (s *Service) VerifyMark(ctx context.Context, artifactID string, kind MarkKi
 	}
 }
 
-// anchorTree is the document a mark is verified against: the stored document for a comment's
-// anchor on a closed issue (VerifyMark says why), the live one every other read sees (docTree).
-func (s *Service) anchorTree(ctx context.Context, artifactID string, fromStore bool) (*pmdoc.Node, error) {
+// anchorTree is the document a mark is verified against, the target's own fragment of its room:
+// the stored document for a comment's anchor on a closed issue (VerifyMark says why), the live one
+// every other read sees (docTree).
+func (s *Service) anchorTree(ctx context.Context, target liveTarget, fromStore bool) (*pmdoc.Node, error) {
 	if fromStore {
-		return s.storedTree(ctx, artifactID)
+		return s.storedTree(ctx, target)
 	}
-	return s.docTree(ctx, artifactID)
+	return s.docTree(ctx, target.document)
 }
 
 // BlockForQuote returns the stable block that contains the one matching quote.
@@ -282,10 +290,10 @@ func (s *Service) RejectSuggestion(ctx context.Context, artifactID, id string, a
 }
 
 func (s *Service) applySuggestion(ctx context.Context, artifactID, id, replaceWith string, actor model.Actor, accept bool) error {
-	return s.applyLive(ctx, artifactID, actor, func(doc *crdt.Doc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
-		fragment := doc.GetXmlFragment(fragmentName)
+	return s.applyLive(ctx, artifactID, actor, func(doc liveDoc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
+		fragment := doc.documentFragment()
 		// Read before the Yjs transaction opens: the state vector takes the document lock.
-		since := authoredClock(ctx, artifactID, doc)
+		since := authoredClock(ctx, artifactID, doc.Doc)
 		valid, err := startTree(current, doc)
 		if err != nil {
 			return err
@@ -327,7 +335,7 @@ func (s *Service) applySuggestion(ctx context.Context, artifactID, id, replaceWi
 		// naming a block nobody can name.
 		write := func(next *pmdoc.Node) error {
 			written := editBatch{tree: next, operations: 1}
-			return recordInsertedText(ctx, artifactID, id, fragment, since, written.writes, func() error {
+			return recordInsertedText(ctx, artifactID, id, fragment, doc.fragment, since, written.writes, func() error {
 				var updateErr error
 				transact(func(txn *crdt.Transaction) {
 					updateErr = pmdoc.Update(txn, fragment, next)
@@ -559,40 +567,49 @@ func recordedMarksQuery(target anchorTarget) string {
 	`, commentMarkType(target.table), target.table, target.anchoredOn())
 }
 
-// recordedMarkRefs is every mark an ask or comment row anchored on artifactID records, read by the
-// anchor's artifact alone whatever an ask's block_artifact_id holds: an ask that also names an ask
-// block on another document keeps its mark on its anchor's document, as refreshAnchors and the
-// other anchor readers read it.
-func (s *Service) recordedMarkRefs(ctx context.Context, artifactID string) (map[pmdoc.MarkRef]struct{}, error) {
+// recordedMarkRefs is every mark an ask or comment row anchored on one of documents records, read
+// by the anchor's artifact alone whatever an ask's block_artifact_id holds: an ask that also names
+// an ask block on another document keeps its mark on its anchor's document, as refreshAnchors and
+// the other anchor readers read it. A sweep of an issue room passes every document of the room
+// (sweepUnrecordedMarks): a row records a mark against the document whose fragment holds it.
+func (s *Service) recordedMarkRefs(ctx context.Context, documents ...string) (map[pmdoc.MarkRef]struct{}, error) {
 	recorded := make(map[pmdoc.MarkRef]struct{})
-	for _, target := range anchorTargets {
-		rows, err := s.queryFrom(ctx).Query(ctx, recordedMarksQuery(target), artifactID)
-		if err != nil {
-			return nil, fmt.Errorf("list recorded %s marks: %w", target.table, err)
-		}
-		for rows.Next() {
-			var encoded []byte
-			var markType string
-			if err := rows.Scan(&encoded, &markType); err != nil {
-				rows.Close()
-				return nil, fmt.Errorf("scan recorded %s mark: %w", target.table, err)
-			}
-			var anchor model.Anchor
-			if err := model.DecodeAnchor(encoded, &anchor); err != nil {
-				rows.Close()
-				return nil, fmt.Errorf("decode recorded %s mark: %w", target.table, err)
-			}
-			if anchor.MarkID != "" {
-				recorded[pmdoc.MarkRef{Type: markType, ID: anchor.MarkID}] = struct{}{}
+	for _, document := range documents {
+		for _, target := range anchorTargets {
+			if err := s.readRecordedMarks(ctx, target, document, recorded); err != nil {
+				return nil, err
 			}
 		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("list recorded %s marks: %w", target.table, err)
-		}
-		rows.Close()
 	}
 	return recorded, nil
+}
+
+// readRecordedMarks adds to recorded every mark a row of target's table anchored on document
+// records (recordedMarksQuery).
+func (s *Service) readRecordedMarks(ctx context.Context, target anchorTarget, document string, recorded map[pmdoc.MarkRef]struct{}) error {
+	rows, err := s.queryFrom(ctx).Query(ctx, recordedMarksQuery(target), document)
+	if err != nil {
+		return fmt.Errorf("list recorded %s marks: %w", target.table, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var encoded []byte
+		var markType string
+		if err := rows.Scan(&encoded, &markType); err != nil {
+			return fmt.Errorf("scan recorded %s mark: %w", target.table, err)
+		}
+		var anchor model.Anchor
+		if err := model.DecodeAnchor(encoded, &anchor); err != nil {
+			return fmt.Errorf("decode recorded %s mark: %w", target.table, err)
+		}
+		if anchor.MarkID != "" {
+			recorded[pmdoc.MarkRef{Type: markType, ID: anchor.MarkID}] = struct{}{}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("list recorded %s marks: %w", target.table, err)
+	}
+	return nil
 }
 
 // sweepUnrecordedMarks removes every ask, comment or suggestion mark of this tree that no row
@@ -606,16 +623,32 @@ func (s *Service) recordedMarkRefs(ctx context.Context, artifactID string) (map[
 // of a quiet document are a TTL apart, so a drop a second before one - an idle reconnect - would
 // otherwise lose the mark a second after it rather than a TTL after it. A tab that closes or goes
 // offline therefore loses its stray mark one TTL later, as every other unrecorded mark does.
-func (s *Service) sweepUnrecordedMarks(room string, tree *pmdoc.Node) {
-	recordedRefs, err := s.recordedMarkRefs(context.Background(), room)
+//
+// The tree of an issue room is every fragment of layout joined, whose top-level blocks counts
+// parts (roomLayout.parts): each fragment's marks are its own document's, which a row records
+// against that document. So what every document of the room records is read before any fragment
+// is swept, and each expired mark is taken out of the fragment of the document that holds it
+// (unmarkExpired): no mark a document records is taken from it. A room that is its own document
+// has an empty layout and one fragment.
+func (s *Service) sweepUnrecordedMarks(room string, layout roomLayout, tree *pmdoc.Node, counts []int) {
+	documents := layout.documents(room)
+	parts := []*pmdoc.Node{tree}
+	if len(layout) > 0 && tree != nil {
+		if parts = layout.parts(tree, counts); parts == nil {
+			slog.Error("dispatch: the settled tree of an issue room does not part into its fragments, so none of its marks is swept",
+				"room", room, "fragments", len(documents))
+			return
+		}
+	}
+	recordedRefs, err := s.recordedMarkRefs(context.Background(), documents...)
 	if err != nil {
 		slog.Error("dispatch: list recorded marks for sweep", "room", room, "error", err)
 		return
 	}
 	now := s.now()
-	marks := pmdoc.ListMarks(tree)
+	// expired is each fragment's marks to take out, beside parts.
+	expired := make([][]pmdoc.MarkRef, len(parts))
 	seen := make(map[pmdoc.MarkRef]struct{})
-	var expired []pmdoc.MarkRef
 	var next time.Duration
 	state := s.lockState(room)
 	// With nothing unrecorded, every mark here is seen for the first time and its author cannot
@@ -625,33 +658,35 @@ func (s *Service) sweepUnrecordedMarks(room string, tree *pmdoc.Node) {
 	if len(state.unrecorded) > 0 {
 		authors = connectedMarkAuthors(state.connected)
 	}
-	for _, mark := range marks {
-		if mark.Type != string(MarkAsk) && mark.Type != string(MarkComment) && mark.Type != string(MarkSuggestion) {
-			continue
-		}
-		seen[mark.MarkRef] = struct{}{}
-		if _, found := recordedRefs[mark.MarkRef]; found {
-			delete(state.unrecorded, mark.MarkRef)
-			continue
-		}
-		firstSeen, seenBefore := state.unrecorded[mark.MarkRef]
-		_, writing := authors[mark.By]
-		if writing || !seenBefore {
-			firstSeen = now
-			state.unrecorded[mark.MarkRef] = firstSeen
-		}
-		since := firstSeen
-		// A mark written while its author was already away ages from its own first sighting: the
-		// later of the two is when it was last anybody's open composer. A mark with no author
-		// matches no departure, as it matches no connected browser.
-		if left, away := state.departed[mark.By]; away && left.After(since) {
-			since = left
-		}
-		age := now.Sub(since)
-		if age >= s.unrecordedMarkTTL {
-			expired = append(expired, mark.MarkRef)
-		} else if wait := s.unrecordedMarkTTL - age; next == 0 || wait < next {
-			next = wait
+	for index, part := range parts {
+		for _, mark := range pmdoc.ListMarks(part) {
+			if mark.Type != string(MarkAsk) && mark.Type != string(MarkComment) && mark.Type != string(MarkSuggestion) {
+				continue
+			}
+			seen[mark.MarkRef] = struct{}{}
+			if _, found := recordedRefs[mark.MarkRef]; found {
+				delete(state.unrecorded, mark.MarkRef)
+				continue
+			}
+			firstSeen, seenBefore := state.unrecorded[mark.MarkRef]
+			_, writing := authors[mark.By]
+			if writing || !seenBefore {
+				firstSeen = now
+				state.unrecorded[mark.MarkRef] = firstSeen
+			}
+			since := firstSeen
+			// A mark written while its author was already away ages from its own first sighting:
+			// the later of the two is when it was last anybody's open composer. A mark with no
+			// author matches no departure, as it matches no connected browser.
+			if left, away := state.departed[mark.By]; away && left.After(since) {
+				since = left
+			}
+			age := now.Sub(since)
+			if age >= s.unrecordedMarkTTL {
+				expired[index] = append(expired[index], mark.MarkRef)
+			} else if wait := s.unrecordedMarkTTL - age; next == 0 || wait < next {
+				next = wait
+			}
 		}
 	}
 	for mark := range state.unrecorded {
@@ -670,11 +705,13 @@ func (s *Service) sweepUnrecordedMarks(room string, tree *pmdoc.Node) {
 		s.scheduleSettleAfterLocked(room, state, next)
 	}
 	s.unlockState(room, state)
-	if len(expired) == 0 {
-		return
-	}
-	if err := s.unmarkExpired(room, expired); err != nil {
-		slog.Error("dispatch: sweep unrecorded marks", "room", room, "error", err)
+	for index, marks := range expired {
+		if len(marks) == 0 {
+			continue
+		}
+		if err := s.unmarkExpired(documents[index], marks); err != nil {
+			slog.Error("dispatch: sweep unrecorded marks", "room", room, "document", documents[index], "error", err)
+		}
 	}
 }
 
@@ -727,13 +764,19 @@ func forgetMarkAuthorDeparture(state *roomState, actor model.Actor) {
 	delete(state.departed, ActorRef(actor))
 }
 
-// unmarkExpired removes from room's live document each of expired that it still holds.
-func (s *Service) unmarkExpired(room string, expired []pmdoc.MarkRef) error {
+// unmarkExpired removes from artifactID's document, its fragment of the live room it is edited in
+// (targetOf), each of expired that the fragment still holds.
+func (s *Service) unmarkExpired(artifactID string, expired []pmdoc.MarkRef) error {
+	ctx := context.Background()
+	target, err := s.targetOf(ctx, artifactID)
+	if err != nil {
+		return err
+	}
 	var sweepErr error
-	err := s.srv.Apply(context.Background(), room, func(doc *crdt.Doc, transact func(func(*crdt.Transaction))) {
+	err = s.srv.Apply(ctx, target.room, func(doc *crdt.Doc, transact func(func(*crdt.Transaction))) {
 		transact, release := s.serviceTransact(transact)
 		defer release()
-		fragment := doc.GetXmlFragment(fragmentName)
+		fragment := doc.GetXmlFragment(target.fragment)
 		// The tree is read inside the transaction that unmarks it, under the document's lock: a
 		// walk of the live tree outside one takes no lock and can read a peer's write halfway.
 		transact(func(txn *crdt.Transaction) {

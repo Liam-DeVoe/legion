@@ -207,6 +207,10 @@ func TestAContentFreeCreateTakesNoDocumentRole(t *testing.T) {
 // document has. Only its content differs, and a person writes that in Dispatch.
 func TestANewEmptyDocumentIsANodeOfItsIssue(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
+	// The issue is created as before the issue room: the two documents' rows are compared whole,
+	// and in an issue born converted each version's doc_update_version is the head of the one room
+	// both documents are fragments of, which the second document's write moved.
+	holdIssuesUnconverted(t, database)
 	issue := createArtifactIssue(t, handler)
 	owner := "/api/v1/issues/" + issue.Key
 	ctx := context.Background()

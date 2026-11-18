@@ -189,6 +189,10 @@ func requirementsSpec(ids []string) string {
 // r-one-tree, the first of its six serves targets that is a node of its own issue.
 func TestPlacementAndCoverageAreTwoRelations(t *testing.T) {
 	handler, database := blockIndexHandler(t)
+	// The issues are created as before the issue room: the blocks are read at their documents' own
+	// addresses, `<issue>/<slug>#<block>`, where an issue born converted keys its blocks by its
+	// tree artifact.
+	holdIssuesUnconverted(t, database)
 	createReferenceAPIProject(t, handler, "CORE")
 	if issue := createSpecIssue(t, handler, "CORE", placementSpec); issue.Key != "CORE-1" {
 		t.Fatalf("the seeded issue is %s, want CORE-1, which its spec's references name", issue.Key)

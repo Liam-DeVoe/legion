@@ -191,7 +191,10 @@ func sequentialIssueRead(t *testing.T, deps Deps, key string) []byte {
 // paths run the same statements and the same scans, so an issue holding one of everything reads
 // the same either way.
 func TestBatchedIssueReadAnswersTheSequentialLoadersBytes(t *testing.T) {
-	handler, _, deps := newTestServer(t, testServerOptions{})
+	handler, database, deps := newTestServer(t, testServerOptions{})
+	// The issue is created as before the issue room: one born converted also lists its decisions
+	// query among its documents, and this test counts the documents of an issue's one-document rooms.
+	holdIssuesUnconverted(t, database)
 	fixture := buildFullIssueRead(t, handler)
 
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+fixture.key, nil, "alice")
@@ -332,6 +335,10 @@ func TestIssueReadCostsTwoRoundTrips(t *testing.T) {
 		// shutdown settles the documents after the counts.
 		settle: time.Hour,
 	})
+	// The issues are created as before the issue room: the bare issue's artifacts are taken out
+	// from under it below, which an issue born converted holds in its issue_trees and document_rooms
+	// rows too. The row is written on the untraced pool, outside the count.
+	holdIssuesUnconverted(t, database)
 	fixture := buildFullIssueRead(t, handler)
 
 	response := countedIssueRead(t, handler, fixture.key)

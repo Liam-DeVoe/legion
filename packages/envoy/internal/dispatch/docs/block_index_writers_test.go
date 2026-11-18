@@ -624,12 +624,14 @@ var indexPasses = map[string]string{
 	// docs.WriteRemovedNode with each changed_by_run its node states retracted, which reads the
 	// store to state what it writes into that same node and mends no projection from it; and an
 	// issue's tree artifact, its node and its part_of written from the issue its caller names,
-	// before the rows naming it.
+	// before the rows naming it; and an issue born converted's decisions query node, its node and
+	// its part_of written the same way, from the issue its create makes, before the row naming it.
 	"api/artifacts.go#statedVersionBytes":          "the upload's own bytes and the node its document's row names",
 	"docs/mutation.go#WriteVersionNode":            "the version row its write inserted and that row's document",
 	"api/artifact_removal.go#removedDocumentNodes": "the document the removal takes and the nodes the store holds of it and its versions",
 	"api/artifact_removal.go#removeArtifact":       "the facts removedDocumentNodes stated, the changed_by_run its document's node states among them, and the artifact.removed event it appended",
 	"api/artifacts.go#createIssueTree":             "the issue its caller names and the slugs its documents hold",
+	"api/issue_create.go#createDecisionsQuery":     "the issue its caller creates and the slugs its documents hold",
 	// The seed's comments: their nodes, their author's person node and each comment's
 	// authored_by tuple, all drawn from the plan before any row is written (commentStoreWrite).
 	"cmd/dispatch-seed/write_items.go#writeComments": "the seed's own plan",

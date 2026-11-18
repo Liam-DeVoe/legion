@@ -75,8 +75,11 @@ func RetireDocument(ctx context.Context, tx pgx.Tx, artifactID string, actor mod
 	var createdBy []byte
 	var createdAt time.Time
 	var retired bool
+	// The role the document plays: its row's, or, for a document of an issue born converted, which
+	// carries none in its row, its query node's (graphstore.ArtifactQueryRoleSQL), as the artifact
+	// read answers it, so the event names the part the document played either way.
 	if err := tx.QueryRow(ctx, `
-		select ref_key, coalesce(role, ''), session_id, created_by, created_at, retired_at is not null
+		select ref_key, coalesce(role, `+graphstore.ArtifactQueryRoleSQL+`, ''), session_id, created_by, created_at, retired_at is not null
 		from artifacts where id = $1
 	`, artifactID).Scan(&refKey, &role, &session, &createdBy, &createdAt, &retired); err != nil {
 		return Retirement{}, fmt.Errorf("read the document to retire: %w", err)

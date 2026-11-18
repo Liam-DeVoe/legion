@@ -184,12 +184,19 @@ var storeWriteCallSites = []string{
 	// the issue_trees row, in its caller's transaction, which holds the issue's row and causes what
 	// the write stated under the event it appends - the order of the write it shares with
 	// createIssue's spec (WriteUncaused, then the row), which TestEveryStoreWriteTakesOneLockOrder
-	// proves of WriteUncaused.
+	// proves of WriteUncaused. createDecisionsQuery is the decisions query node of an issue born
+	// converted (T12b of dispatch://INFRA-1253's plan): in createIssue's transaction, after the
+	// issue's row, the tree's issue_trees row and the spec's document_rooms row, its node and its
+	// part_of through WriteUncaused before the artifacts row naming the node, then its empty
+	// version 1 and that version's node, and createIssue causes what both stated under
+	// issue.created through Caused. api's TestEveryObjectNodeWriterTakesTheStoreLockOrder runs
+	// createIssue born converted and holds it to those steps.
 	"api/artifact_removal.go#removeArtifact",
 	"api/artifact_removal.go#removedDocumentNodes",
 	"api/artifacts.go#createIssueTree",
 	"api/artifacts.go#statedVersionBytes",
 	"api/broadcasts.go#writeBroadcast",
+	"api/issue_create.go#createDecisionsQuery",
 	"api/message_delivery.go#insertSessionReply",
 	"api/messages.go#createStoredMessage",
 	"api/messages.go#writeMessageNode",

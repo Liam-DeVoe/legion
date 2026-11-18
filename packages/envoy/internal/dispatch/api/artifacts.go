@@ -52,10 +52,16 @@ const (
 	maxNewArtifactKeyBytes = 2692
 )
 
-// artifactColumns is the canonical artifact column list scanArtifact reads. role is read through
-// coalesce because model.Artifact carries it as "" when the document plays no role, and retired_at
-// as whether it is set (model.Artifact.Retired).
-const artifactColumns = `id::text, issue_key, project_key, session_id, ref_key, slug, name, kind, is_primary, coalesce(role, ''), created_by, created_at, retired_at is not null`
+// artifactColumns is the canonical artifact column list scanArtifact reads, over the artifacts
+// table unaliased. role is read through coalesce because model.Artifact carries it as "" when the
+// document plays no role, and, for a document of an issue born converted, which carries none in
+// its row, from its node's query value (graphstore.ArtifactQueryRoleSQL: decision 2 of
+// dispatch://INFRA-1253's plan, such a document writes no role; R8 keeps the read's role);
+// retired_at as whether it is set (model.Artifact.Retired); and last the room the document is
+// edited in, its document_rooms row's room or its own id (model.Artifact.Room).
+const artifactColumns = `id::text, issue_key, project_key, session_id, ref_key, slug, name, kind, is_primary, coalesce(role, ` +
+	graphstore.ArtifactQueryRoleSQL + `, ''), created_by, created_at, retired_at is not null, ` +
+	`coalesce((select moved.room::text from document_rooms moved where moved.artifact_id = artifacts.id), artifacts.id::text)`
 
 func (s *server) listArtifacts(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
@@ -418,7 +424,8 @@ func writeDocumentVersion(ctx context.Context, tx pgx.Tx, artifactID string, num
 	var owner graphstore.VersionOwner
 	if err := tx.QueryRow(ctx, docs.RenderStampHead+`
 		insert into artifact_versions as v (artifact_id, number, markdown, authors, named, summary, doc_update_version, `+docs.RenderStampColumns+`)
-		values ($1, $2, $3, $4, $5, $6, coalesce((select max(version) from doc_updates where artifact_id = $1), 0),
+		values ($1, $2, $3, $4, $5, $6, coalesce((select max(version) from doc_updates
+				where artifact_id = coalesce((select moved.room from document_rooms moved where moved.artifact_id = $1), $1)), 0),
 			`+docs.RenderStampValues+`, $7, $8)
 		returning number, named, summary, authors, created_at, `+model.VersionSize+`, `+graphstore.VersionOwnerColumns("v.artifact_id")+`
 	`, artifactID, number, markdown, encodedAuthors, summary != nil, summary, stamp.Token, stamp.Renderer).Scan(
@@ -500,6 +507,9 @@ func (s *server) storeArtifact(
 	}
 	defer tx.Rollback(r.Context())
 	var issueStatus *string
+	// issueRoom is the tree artifact of the issue the upload names where the issue is converted
+	// (issueTreeOf), "" otherwise.
+	var issueRoom string
 	var project, session *string
 	switch {
 	case target.Session != "":
@@ -515,6 +525,12 @@ func (s *server) storeArtifact(
 			return
 		}
 		if err := tx.QueryRow(r.Context(), `select project_key from issues where key = $1`, *target.IssueKey).Scan(&project); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		// The room of an issue that is converted (born so, or by the conversion): every document
+		// the issue gets from here on is a fragment of it from its first write (R5).
+		if issueRoom, err = issueTreeOf(r.Context(), tx, *target.IssueKey); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -571,6 +587,14 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, createRoleNameRefusal(input.name, slug, *role))
 			return
 		}
+		// A document of a converted issue joins the issue's room (joinIssueRoom below) and writes
+		// no role: the part it plays is the query value of its node, a query node of that name
+		// (decision 2 of dispatch://INFRA-1253's plan), which the read projects as its role.
+		joining := kind == "doc" && issueRoom != ""
+		query := ""
+		if joining && role != nil {
+			query, role = *role, nil
+		}
 		actorJSON, err := encodeJSON(actor)
 		if err != nil {
 			s.writeHandlerError(w, err)
@@ -588,6 +612,10 @@ func (s *server) storeArtifact(
 			}
 			// The document is the node this create makes (graphstore.Created).
 			node := graphstore.Created(graphstore.ArtifactNode(refKey, deref(project), deref(session), actor, at))
+			if query != "" {
+				node = graphstore.Created(graphstore.QueryNode(refKey, deref(project), query, actor, at))
+				facts = graphstore.AttributeFacts(facts, node)
+			}
 			documentNode, err = graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{node}, facts)
 			if err != nil {
 				s.writeHandlerError(w, err)
@@ -604,6 +632,15 @@ func (s *server) storeArtifact(
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
+		}
+		// Its document_rooms row before its first write, so the seed below writes its fragment of
+		// the issue's room and its block index indexes the room (T12b).
+		if joining {
+			if err := joinIssueRoom(r.Context(), tx, issueRoom, artifact.ID); err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+			artifact.Room, artifact.Fragment = issueRoom, artifact.ID
 		}
 	} else if err != nil {
 		s.writeHandlerError(w, err)
@@ -830,6 +867,14 @@ func (s *server) storeArtifact(
 				s.writeHandlerError(w, err)
 				return
 			}
+			// A document of an issue room is indexed by the room's pass, whose references and
+			// block mentions are keyed by the room's tree artifact (docs.IndexDocumentReferences).
+			if artifact.Room != artifact.ID {
+				if err := refs.Stamp(r.Context(), tx, "artifact", artifact.Room, event.ID); err != nil {
+					s.writeHandlerError(w, err)
+					return
+				}
+			}
 		}
 		blockCause = event.ID
 		published = append(published, event)
@@ -952,7 +997,7 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if artifact.Kind != "doc" {
+	if !readsAsDocument(artifact) {
 		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
 		return
 	}
@@ -1244,6 +1289,19 @@ func (s *server) commitArtifactVersionEvent(
 	if err := refs.Stamp(ctx, tx, "artifact", artifactID, event.ID); err != nil {
 		return model.Event{}, err
 	}
+	// A document of an issue room is indexed by the room's pass, whose references and block
+	// mentions are keyed by the room's tree artifact (docs' indexDocumentInRoom).
+	var room string
+	if err := tx.QueryRow(ctx, `
+		select coalesce((select moved.room::text from document_rooms moved where moved.artifact_id = $1::uuid), $1::text)
+	`, artifactID).Scan(&room); err != nil {
+		return model.Event{}, fmt.Errorf("read the document's room: %w", err)
+	}
+	if room != artifactID {
+		if err := refs.Stamp(ctx, tx, "artifact", room, event.ID); err != nil {
+			return model.Event{}, err
+		}
+	}
 	if err := graphstore.Caused(ctx, tx, written.Blocks, event.ID); err != nil {
 		return model.Event{}, err
 	}
@@ -1374,12 +1432,16 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if artifact.Kind != "doc" {
+	if !readsAsDocument(artifact) {
 		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
 		return
 	}
 	if artifact.Retired {
 		s.writeHandlerError(w, documentRetiredRefusal(artifact))
+		return
+	}
+	if err := refuseNodesOfOtherIssues(r.Context(), s.deps.Store.Pool, artifact, input.Ops); err != nil {
+		s.writeHandlerError(w, err)
 		return
 	}
 	// release ends the conditional edit gate once: right after the commit, which is all a later
@@ -1558,14 +1620,25 @@ func participantsOrEmpty(participants []model.Actor) []model.Actor {
 	return participants
 }
 
+// readsAsDocument reports whether an artifact is read and edited as a document: a markdown
+// document, or an issue's tree artifact, whose own fragment of the issue's room holds the nodes
+// written into the issue rather than into a document, and which the text read and the edit route
+// take as they take a document (dispatch://INFRA-1253 R8).
+func readsAsDocument(artifact model.Artifact) bool {
+	return artifact.Kind == "doc" || artifact.Kind == "tree"
+}
+
 // issueArtifactsStatement lists an issue's artifacts, $1 the issue key, in the order every
 // reader of the issue shows them; collectArtifacts reads its rows. The issue read queues it in
 // a batch with its other reads (getIssue), so the statement and the scan live apart from the
 // sequential loader that every other route calls. A retired document is in no list of its
-// issue's documents (docs.RetireDocument), and its own address and id still read it.
+// issue's documents (docs.RetireDocument), and its own address and id still read it. Neither is
+// the issue's tree artifact (createIssueTree): it is the issue's room, whose own fragment holds the
+// nodes written into the issue rather than into a document, and the tree read names it
+// (dispatch://INFRA-1253 R8).
 const issueArtifactsStatement = `
 		select ` + artifactColumns + `
-		from artifacts where issue_key = $1 and retired_at is null order by created_at, id
+		from artifacts where issue_key = $1 and retired_at is null and kind <> 'tree' order by created_at, id
 	`
 
 func (s *server) loadArtifacts(ctx context.Context, q queryer, issueKey string) ([]model.Artifact, error) {
@@ -1995,7 +2068,9 @@ func loadArtifactRowByID(ctx context.Context, q queryer, id string) (model.Artif
 	`, parsed))
 }
 
-// scanArtifact reads artifactColumns. A session-owned artifact's project is "".
+// scanArtifact reads artifactColumns. A session-owned artifact's project is "". The fragment of
+// the room that holds the document is its own id where its room is another (an issue room's
+// tree), and the room's own fragment otherwise, as docs' fragmentOf names it.
 func scanArtifact(row pgx.Row) (model.Artifact, error) {
 	var artifact model.Artifact
 	var project *string
@@ -2003,12 +2078,17 @@ func scanArtifact(row pgx.Row) (model.Artifact, error) {
 	if err := row.Scan(
 		&artifact.ID, &artifact.IssueKey, &project, &artifact.SessionID, &artifact.RefKey, &artifact.Slug,
 		&artifact.Name, &artifact.Kind, &artifact.Primary, &artifact.Role, &createdBy, &artifact.CreatedAt, &artifact.Retired,
+		&artifact.Room,
 	); err != nil {
 		return model.Artifact{}, err
 	}
 	artifact.Project = deref(project)
 	if err := json.Unmarshal(createdBy, &artifact.CreatedBy); err != nil {
 		return model.Artifact{}, fmt.Errorf("decode artifact author: %w", err)
+	}
+	artifact.Fragment = model.ArtifactFragmentOwn
+	if artifact.Room != artifact.ID {
+		artifact.Fragment = artifact.ID
 	}
 	return artifact, nil
 }
@@ -2536,4 +2616,77 @@ func (s *server) quiesceDocuments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.runTestHookEverywhere(w, r, testHookCall{Hook: hookQuiesceDocuments})
+}
+
+// issueTreeOf is the tree artifact of the issue issueKey, whose Yjs document is the issue's room,
+// where the issue is converted - born so (createIssue) or by the conversion - and "" where it holds
+// none (issue_trees, D14 of dispatch://INFRA-1253's plan).
+func issueTreeOf(ctx context.Context, q queryer, issueKey string) (string, error) {
+	var tree string
+	err := q.QueryRow(ctx, `select artifact_id::text from issue_trees where issue_key = $1`, issueKey).Scan(&tree)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read the issue's tree: %w", err)
+	}
+	return tree, nil
+}
+
+// nodesOfOtherIssuesStatement reads, of the node addresses $1, each that is a block node
+// (refs.BlockNodeKind) of a document - its ref_key, the address before `#` - of another issue than
+// $2, with that issue, in the order given.
+var nodesOfOtherIssuesStatement = `
+	select named.address, a.issue_key
+	from unnest($1::text[]) with ordinality as named(address, position)
+	join graph_nodes n on n.kind = '` + refs.BlockNodeKind + `' and n.id = named.address
+	join artifacts a on a.ref_key = split_part(named.address, '#', 1)
+	where a.issue_key is not null and a.issue_key is distinct from $2
+	order by named.position
+	limit 1`
+
+// refuseNodesOfOtherIssues is the 409 NODE_IN_OTHER_ISSUE refusing an edit of artifact whose
+// operations name, in block or as an anchor's `block:<id>`, a node of another issue by its store
+// address, `<ref_key>#<block id>`, the address the issue's tree read names each node by: a node
+// whose parent is a node of an issue above lives in its own issue's room, and the issue above
+// answers it read-only (D3 of dispatch://INFRA-1253's plan), so a write addressed through that
+// issue is sent to the node's own, which the refusal names. An operation that names its block by
+// its bare id, as every edit does, is the document's own to answer.
+func refuseNodesOfOtherIssues(ctx context.Context, q queryer, artifact model.Artifact, ops []model.EditOp) error {
+	var addresses []string
+	for _, op := range ops {
+		for _, named := range []string{op.Block, blockAnchor(op.After), blockAnchor(op.Before)} {
+			if strings.Contains(named, "#") {
+				addresses = append(addresses, named)
+			}
+		}
+	}
+	if len(addresses) == 0 {
+		return nil
+	}
+	var address string
+	var other string
+	err := q.QueryRow(ctx, nodesOfOtherIssuesStatement, addresses, artifact.IssueKey).Scan(&address, &other)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read the issues of the nodes an edit names: %w", err)
+	}
+	owner := "this document"
+	if artifact.IssueKey != nil {
+		owner = "issue " + *artifact.IssueKey
+	}
+	return errorf(http.StatusConflict, codeNodeInOtherIssue,
+		"%s is a node of issue %s, not of %s: write it through %s's own documents (dispatch://%s)", address, other, owner, other, other)
+}
+
+// blockAnchor is the block id an insert's or a move's anchor names in its `block:<id>` form, "" for
+// an anchor written as a quote.
+func blockAnchor(anchor string) string {
+	id, _ := strings.CutPrefix(anchor, "block:")
+	if id == anchor {
+		return ""
+	}
+	return id
 }

@@ -620,7 +620,7 @@ func (st *settlement) commitRepairs(ctx context.Context) (settleStep, settleOutc
 		// before them: a peer's edit made since is in the room, its browsers and, stored here, its
 		// stored updates, and a version rendered from the earlier tree would leave it out. An edit
 		// made after this read is in neither the version nor its authors.
-		if versionRead, err = s.readSettlementTree(st.state, st.doc, room, s.afterSettleAuthorsTake, true); err != nil {
+		if versionRead, err = s.readSettlementTree(st.state, st.doc, room, st.layout, s.afterSettleAuthorsTake, true); err != nil {
 			return settleDone, st.abandon(err)
 		}
 		if err := ledger.flushThrough(ctx, tx, room, versionRead.point); err != nil {
@@ -986,9 +986,10 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	// A closed issue's settlement sweeps no marks: the unmark is an injection without the
 	// owner-verified mark, which allowInject refuses on a closed issue. The document's next
 	// settlement on the open issue sweeps them: at the reopen, one runs only for a document the
-	// reopen writes or marks owed.
+	// reopen writes or marks owed. An issue room's sweep reads each fragment's marks against what
+	// its own document records.
 	if !st.issueClosed {
-		s.sweepUnrecordedMarks(room, st.versioned)
+		s.sweepUnrecordedMarks(room, st.layout, st.versioned, st.versionedCounts)
 	}
 	return settleDone, settleOutcome{}
 }
@@ -1187,7 +1188,13 @@ func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFr
 		writes = append(writes, written{fragment: fragment, result: result, actor: actor})
 		listed[fragment.document] = st.credit.listed[fragment.document]
 	}
-	index, err := s.indexRoom(ctx, tx, room, versions, markdown, offsetBlocks(offsets, st.layout.blockDocuments(room, st.versioned, st.versionedCounts)),
+	// A fragment that renders as no text holds no block (withoutSilentFragments).
+	parts := make([]*pmdoc.Node, len(fragments))
+	for index, fragment := range fragments {
+		parts[index] = fragment.tree
+	}
+	indexed := withoutSilentFragments(offsets, parts, func(index int) bool { return fragments[index].markdown == "" })
+	index, err := s.indexRoom(ctx, tx, room, versions, markdown, offsetBlocks(indexed, st.layout.blockDocuments(room, st.versioned, st.versionedCounts)),
 		st.versioned, &st.reconciliation.sources)
 	if err != nil {
 		return graphstore.NoEvent, err

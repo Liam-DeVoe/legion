@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/rank"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -416,12 +417,25 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// An issue is born converted - its spec a fragment of the issue's room from its first write,
+	// and a query node - only while every live process serves the issue room (decision 7 of
+	// dispatch://INFRA-1253's plan, R5): a process of the release before would admit the spec's
+	// socket to the spec's own room. Read in this transaction, beside everything else it writes.
+	bornConverted, err := fleetServesIssueRoom(r.Context(), tx)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	createdAt := time.Now().UTC()
 	specRefKey := graphstore.ArtifactRefKey(key, input.Project, "", "spec")
 	issueNode := graphstore.Created(graphstore.IssueNode(key, input.Project, actor, createdAt))
 	specNode := graphstore.Created(graphstore.ArtifactNode(specRefKey, input.Project, "", actor, createdAt))
-	issueNodes, err := graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{issueNode, specNode},
-		[]graphstore.Tuple{graphstore.ArtifactPartOf(specRefKey, key, actor, createdAt)})
+	specFacts := []graphstore.Tuple{graphstore.ArtifactPartOf(specRefKey, key, actor, createdAt)}
+	if bornConverted {
+		specNode = graphstore.Created(graphstore.QueryNode(specRefKey, input.Project, graphstore.QuerySpec, actor, createdAt))
+		specFacts = graphstore.AttributeFacts(specFacts, specNode)
+	}
+	issueNodes, err := graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{issueNode, specNode}, specFacts)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -504,13 +518,25 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
+	defer ledger.Discard()
+	// An issue born converted takes its tree, whose Yjs document is the issue's room, and the
+	// spec's document_rooms row naming it before the spec's first write, so the seed below writes
+	// the spec's fragment of the room and the block index below indexes the room (T12b of
+	// dispatch://INFRA-1253's plan); and its decisions query node.
+	var treeID string
+	var roomNodes graphstore.Uncaused
+	if bornConverted {
+		if treeID, roomNodes, err = s.createConvertedIssueRoom(documentCtx, tx, key, input.Project, artifactID, actor, createdAt); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	// An issue created without a spec gets an empty primary document.
 	var markdown string
 	if input.Spec != nil && strings.TrimSpace(*input.Spec) != "" {
 		markdown = *input.Spec
 	}
-	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
-	defer ledger.Discard()
 	markdown, err = s.deps.Docs.SeedText(documentCtx, artifactID, markdown, actor)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -523,12 +549,14 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	// The seed's own rendering is what this row stores, so the row records what it was rendered
 	// from (docs.Ledger.RenderStampOf): a text read of a document still standing there serves the
-	// stored markdown rather than rendering the document again.
+	// stored markdown rather than rendering the document again. Its doc_update_version is the head
+	// of the room the spec is edited in, the issue's room for an issue born converted.
 	stamp := ledger.RenderStampOf(artifactID, markdown)
 	var specCreated time.Time
 	if err := tx.QueryRow(r.Context(), docs.RenderStampHead+`
 		insert into artifact_versions (artifact_id, number, markdown, authors, doc_update_version, `+docs.RenderStampColumns+`)
-		values ($1, 1, $2, $3, coalesce((select max(version) from doc_updates where artifact_id = $1), 0),
+		values ($1, 1, $2, $3, coalesce((select max(version) from doc_updates
+				where artifact_id = coalesce((select moved.room from document_rooms moved where moved.artifact_id = $1), $1)), 0),
 			`+docs.RenderStampValues+`, $4, $5)
 		returning created_at
 	`, artifactID, markdown, authors, stamp.Token, stamp.Renderer).Scan(&specCreated); err != nil {
@@ -598,13 +626,21 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The room's pass states its references and block mentions under the tree artifact, the
+	// room's own key (docs.IndexDocumentReferences), so they take the issue's event there.
+	if treeID != "" {
+		if err := refs.Stamp(r.Context(), tx, "artifact", treeID, event.ID); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	// What the spec's block index stated waits for the issue's own event: it is the cause every
 	// node and tuple of that pass carries (graphstore.Caused).
 	if err := graphstore.Caused(r.Context(), tx, specBlocks, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := graphstore.Caused(r.Context(), tx, issueNodes, event.ID); err != nil {
+	if err := graphstore.Caused(r.Context(), tx, graphstore.Joined(issueNodes, roomNodes), event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -805,4 +841,107 @@ func (s *server) respondWithExistingExternalIssue(
 func isUniqueViolation(err error) bool {
 	var pgError *pgconn.PgError
 	return errors.As(err, &pgError) && pgError.Code == "23505"
+}
+
+// fleetServesIssueRoom reports whether every live server process (processes.Live, read through
+// tx) lists the issue room in its capabilities: the test an issue is born converted by (decision 7
+// of dispatch://INFRA-1253's plan). With no live process it holds, as every fleet test of this
+// server reads an empty fleet, so a process that has not registered yet - a test's, a tool's -
+// serves no older room.
+func fleetServesIssueRoom(ctx context.Context, tx pgx.Tx) (bool, error) {
+	live, err := processes.Live(ctx, tx)
+	if err != nil {
+		return false, err
+	}
+	for _, process := range live {
+		if !process.Lists(processes.CapabilityIssueRoom) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// issueDecisionsName is the name an issue's decisions query node is created under, from which its
+// slug is taken (nextArtifactSlug). It is no decisions document's: decisions_documents(), which
+// INFRA-1150's decisions step selects by, takes a role of `decisions` or the slug `decisions-md`,
+// and this row carries no role and never that slug.
+const issueDecisionsName = "decisions"
+
+// createConvertedIssueRoom makes, in tx, what an issue born converted holds beside its spec's row
+// (T12b of dispatch://INFRA-1253's plan): its tree artifact, whose Yjs document is the issue's
+// room (createIssueTree), with the tree's own fragment seeded empty, so an edit of the tree finds
+// a document inside the Proof schema; the spec's document_rooms row naming that room, announced in
+// this transaction (docs.AnnounceDocumentRooms), before the spec's first write, which then writes
+// the spec's fragment of the room (docs.Service.SeedText); and the decisions query node
+// (createDecisionsQuery). ctx is the context the caller joined to tx (docs.Service.Join). The
+// caller holds the new issue's row, which every writer of a document_rooms row holds first. It
+// answers the tree's id and what the node writes stated, which the caller causes under its event.
+func (s *server) createConvertedIssueRoom(ctx context.Context, tx pgx.Tx, key, project, specID string, actor model.Actor, at time.Time) (string, graphstore.Uncaused, error) {
+	treeID, treeNodes, err := s.createIssueTree(ctx, tx, key, project, actor, at)
+	if err != nil {
+		return "", graphstore.Uncaused{}, err
+	}
+	if _, err := s.deps.Docs.SeedText(ctx, treeID, "", actor); err != nil {
+		return "", graphstore.Uncaused{}, fmt.Errorf("seed the issue tree's own fragment: %w", err)
+	}
+	if err := joinIssueRoom(ctx, tx, treeID, specID); err != nil {
+		return "", graphstore.Uncaused{}, err
+	}
+	decisions, err := s.createDecisionsQuery(ctx, tx, key, project, actor, at)
+	if err != nil {
+		return "", graphstore.Uncaused{}, err
+	}
+	return treeID, graphstore.Joined(treeNodes, decisions), nil
+}
+
+// joinIssueRoom writes, in tx, document's document_rooms row naming room, its issue's tree, and
+// announces it in tx (docs.AnnounceDocumentRooms), so every process closes its rooms of the two
+// once tx commits. The caller holds the issue's row, as every writer of the row does.
+func joinIssueRoom(ctx context.Context, tx pgx.Tx, room, document string) error {
+	if _, err := tx.Exec(ctx, `insert into document_rooms (artifact_id, room) values ($1, $2)`, document, room); err != nil {
+		return fmt.Errorf("join the document to its issue's room: %w", err)
+	}
+	return docs.AnnounceDocumentRooms(ctx, tx, room, document)
+}
+
+// createDecisionsQuery creates, in tx, the decisions query node of the issue key in project: a
+// doc row with no fragment and no document_rooms row (D6 of dispatch://INFRA-1253's plan), whose
+// node is a query node of query `decisions` (graphstore.QueryNode) with its part_of the issue,
+// written before the row that names it, and its version 1, empty, with its version node, as every
+// empty document is created with, so no reader of the issue's documents meets one with no version.
+// The row carries no role: the read projects `decisions` from the node's query value. It answers
+// what the node writes stated, which the caller causes under its event.
+func (s *server) createDecisionsQuery(ctx context.Context, tx pgx.Tx, key, project string, actor model.Actor, at time.Time) (graphstore.Uncaused, error) {
+	slug, err := s.nextArtifactSlug(ctx, tx, artifactTarget{IssueKey: &key}, issueDecisionsName)
+	if err != nil {
+		return graphstore.Uncaused{}, fmt.Errorf("take the decisions query's slug: %w", err)
+	}
+	actorJSON, err := encodeJSON(actor)
+	if err != nil {
+		return graphstore.Uncaused{}, err
+	}
+	refKey := graphstore.ArtifactRefKey(key, project, "", slug)
+	node := graphstore.Created(graphstore.QueryNode(refKey, project, graphstore.QueryDecisions, actor, at))
+	written, err := graphstore.WriteUncaused(ctx, tx, []graphstore.Node{node},
+		graphstore.AttributeFacts([]graphstore.Tuple{graphstore.ArtifactPartOf(refKey, key, actor, at)}, node))
+	if err != nil {
+		return graphstore.Uncaused{}, fmt.Errorf("write the decisions query's node: %w", err)
+	}
+	var id string
+	if err := tx.QueryRow(ctx, `
+		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by, node_kind, node_address)
+		values ($1, $2, $3, $4, 'doc', false, $5, $6, $7)
+		returning id::text
+	`, key, project, slug, issueDecisionsName, actorJSON, graphstore.KindArtifact, refKey).Scan(&id); err != nil {
+		return graphstore.Uncaused{}, fmt.Errorf("create the decisions query: %w", err)
+	}
+	version, owner, err := writeDocumentVersion(ctx, tx, id, 1, "", []model.Actor{actor}, nil, docs.RenderStamp{})
+	if err != nil {
+		return graphstore.Uncaused{}, fmt.Errorf("write the decisions query's first version: %w", err)
+	}
+	versionNode, err := docs.WriteVersionNode(ctx, tx, owner, version.Number, actor, version.CreatedAt)
+	if err != nil {
+		return graphstore.Uncaused{}, err
+	}
+	return graphstore.Joined(written, versionNode), nil
 }

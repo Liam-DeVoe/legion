@@ -71,6 +71,10 @@ type Ledger struct {
 	// flushes are the room updates this transaction stored ahead of its own appends, one flush
 	// per document (flushThrough), which its commit marks stored.
 	flushes []*RoomFlush
+	// rooms holds, per document this transaction resolved into an issue room it is not
+	// (Service.targetOf), that room: the transaction's write to the document is the room's
+	// (liveWriteFor).
+	rooms map[string]string
 }
 
 // ledgerAnnouncement is one document a transaction appended to and the last version it appended.
@@ -132,12 +136,14 @@ type ledgerVersionText struct {
 }
 
 // ledgerSeed is a document SeedText wrote in this transaction: the actor who wrote its first
-// text, and the tree it wrote with that tree's rendering and its blocks' byte ranges. Credit
-// registers the actor against every ask block the tree introduced (registerAskAuthors) once the
-// transaction has committed, and the seed's version cuts its mentions' excerpts from the
-// rendering.
+// text, the room it wrote it into - the document itself, or the issue room whose fragment of it
+// the seed wrote - and the tree it wrote with that tree's rendering and its blocks' byte ranges.
+// Credit registers the actor against every ask block the tree introduced (registerAskAuthors), in
+// the room, once the transaction has committed, and the seed's version cuts its mentions' excerpts
+// from the rendering.
 type ledgerSeed struct {
 	actor    model.Actor
+	room     string
 	rendered renderedTree
 }
 
@@ -199,7 +205,8 @@ func collectVersionText(ctx context.Context, artifactID, markdown string) {
 }
 
 // Commit commits the transaction, then credits, releases and publishes what its document
-// operations recorded (see Ledger), publishes the events they appended, so a caller's own events,
+// operations recorded (see Ledger), closes this process's instance of each issue room a document
+// joined in it (closeJoinedRooms), publishes the events they appended, so a caller's own events,
 // published after Commit returns, follow them, and stores the display trees of the versions'
 // markdown (storeVersionTrees). When the commit returns an error its outcome is unknown, so the
 // rooms the transaction wrote are failed and reload the durable document.
@@ -208,12 +215,35 @@ func (l *Ledger) Commit(ctx context.Context) error {
 		return err
 	}
 	l.publish()
+	l.closeJoinedRooms(ctx)
 	l.publishEvents()
 	l.storeVersionTrees(ctx)
 	for _, copy := range l.copies {
 		l.service.scheduleSettle(copy)
 	}
 	return nil
+}
+
+// closeJoinedRooms closes this process's instance of each issue room the committed transaction
+// seeded a new document's fragment into (SeedText, which resolved the document into the room its
+// document_rooms row names): the document joined the room in this transaction, so an instance
+// loaded before the commit holds a layout without it (layoutOf). It is closed before the writer
+// answers, as every other process closes its own on the join's notice (documentRoomsMoved), so the
+// writer's next write loads the room over the new layout. Left open, the instance's own
+// settlement finds its layout stale and closes it (errRoomLayoutMoved, reloadReplacedRoom), and
+// every write that meets that close is refused (errRoomReloading). A settlement that read the
+// room's documents once this commit released the issue's row may have reserved that close before
+// this one ran, so the reservation is waited out too (awaitReservedClose).
+func (l *Ledger) closeJoinedRooms(ctx context.Context) {
+	for document, seed := range l.seeds {
+		if seed.room == document {
+			continue
+		}
+		if live := l.service.srv.GetDoc(seed.room); live != nil && !slices.Contains(l.service.layoutOf(live), document) {
+			l.service.closeMovedRoom(context.WithoutCancel(ctx), seed.room)
+		}
+		l.service.awaitReservedClose(ctx, seed.room)
+	}
 }
 
 // publishEvents publishes the events this ledger's document operations appended, in the order
@@ -555,11 +585,39 @@ func (l *Ledger) WroteVersionText(artifactID, markdown string) {
 	l.versionTexts = append(l.versionTexts, ledgerVersionText{artifactID: artifactID, markdown: markdown})
 }
 
+// liveWriteFor is the transaction's write to artifactID's room: artifactID names the room itself,
+// or a document the transaction resolved into it (Service.targetOf, noteRoom).
 func (l *Ledger) liveWriteFor(artifactID string) *liveWrite {
 	if l == nil {
 		return nil
 	}
+	if room, moved := l.rooms[artifactID]; moved {
+		artifactID = room
+	}
 	return l.live[artifactID]
+}
+
+// roomOf is the issue room the transaction resolved document into (Service.targetOf), and whether
+// it did.
+func (l *Ledger) roomOf(document string) (string, bool) {
+	if l == nil {
+		return "", false
+	}
+	room, held := l.rooms[document]
+	return room, held
+}
+
+// noteRoom records that document is edited in room (Service.targetOf), where room is another
+// room than the document itself: a document that is its own room is resolved again by each
+// operation, since a transaction may yet write its document_rooms row.
+func (l *Ledger) noteRoom(document, room string) {
+	if l == nil || document == room {
+		return
+	}
+	if l.rooms == nil {
+		l.rooms = make(map[string]string)
+	}
+	l.rooms[document] = room
 }
 
 // LostOps reports which operations of this transaction's write to artifactID the live document
@@ -605,13 +663,13 @@ func (l *Ledger) recordSettlementCredit(ctx context.Context) error {
 	}
 	released := l.releasedAuthors()
 	for artifactID, seed := range l.seeds {
-		if err := recordAskAuthors(ctx, l.tx, artifactID, seededAskAuthors(seed)); err != nil {
+		if err := recordAskAuthors(ctx, l.tx, seed.room, seededAskAuthors(seed)); err != nil {
 			return err
 		}
 		if _, listed := released[artifactID][actorKey(seed.actor)]; listed {
 			continue
 		}
-		if err := recordLatestEditSource(ctx, l.tx, artifactID, &seed.actor); err != nil {
+		if err := recordLatestEditSource(ctx, l.tx, seed.room, &seed.actor); err != nil {
 			return err
 		}
 	}
@@ -620,7 +678,7 @@ func (l *Ledger) recordSettlementCredit(ctx context.Context) error {
 		if write.actor == nil {
 			continue
 		}
-		pending := pendingAuthorsOf(write.credits, func(key string) persistence.Version { return write.creditedBy[key] })
+		pending := writtenPendingAuthors(write)
 		if err := upsertPendingAuthors(ctx, l.tx, artifactID, pending); err != nil {
 			return err
 		}
@@ -632,6 +690,29 @@ func (l *Ledger) recordSettlementCredit(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// writtenPendingAuthors is the pending rows write's authors leave once its transaction commits:
+// each author no version of the transaction listed, at the append that recorded its latest change
+// (liveWrite.creditedBy), under each document whose fragment the write's content changes wrote
+// (creditedDocuments), as an issue room's browser update records its authors (pendingAuthorsIn):
+// the room's own rows for a room that is its own document, or whose own fragment alone was written.
+func writtenPendingAuthors(write *liveWrite) []pendingAuthor {
+	pending := pendingAuthorsOf(write.credits, func(key string) persistence.Version { return write.creditedBy[key] })
+	if len(write.creditedDocuments) == 0 || slices.Equal(write.creditedDocuments, []string{write.artifactID}) {
+		return pending
+	}
+	documents := make([]pendingAuthor, 0, len(pending)*len(write.creditedDocuments))
+	for _, document := range write.creditedDocuments {
+		if document == write.artifactID {
+			document = ""
+		}
+		for _, author := range pending {
+			author.document = document
+			documents = append(documents, author)
+		}
+	}
+	return documents
 }
 
 // seededAskAuthors is the author of every ask block seed introduced: its actor, as creditRooms
@@ -681,13 +762,13 @@ func (l *Ledger) releasedAuthors() map[string]map[string]struct{} {
 // settlement on any process reads the edit source its events name (settlementAuthors) and, for a
 // block its room did not register, the ask block's author (askBlockSources.author).
 func (l *Ledger) creditRooms() {
-	for artifactID, seed := range l.seeds {
-		state := l.service.lockState(artifactID)
+	for _, seed := range l.seeds {
+		state := l.service.lockState(seed.room)
 		state.creditSeq.Add(1)
 		state.lastActor = new(seed.actor)
 		state.unsettled = true
 		state.registerAskAuthors(askBlockIDs(seed.rendered.tree), seed.actor)
-		l.service.unlockState(artifactID, state)
+		l.service.unlockState(seed.room, state)
 	}
 	for _, artifactID := range l.order {
 		write := l.live[artifactID]
@@ -710,24 +791,24 @@ func (l *Ledger) creditRooms() {
 	}
 }
 
-// seeded records that this transaction seeded artifactID's first text as actor (SeedText), with
-// the rendering of the tree it wrote, whose ask blocks credit registers to actor once the
-// transaction commits.
-func (l *Ledger) seeded(artifactID string, rendered renderedTree, actor model.Actor) {
+// seeded records that this transaction seeded artifactID's first text, in room, as actor
+// (SeedText), with the rendering of the tree it wrote, whose ask blocks credit registers to actor
+// once the transaction commits.
+func (l *Ledger) seeded(artifactID, room string, rendered renderedTree, actor model.Actor) {
 	if l.seeds == nil {
 		l.seeds = make(map[string]ledgerSeed)
 	}
-	l.seeds[artifactID] = ledgerSeed{actor: actor, rendered: rendered}
+	l.seeds[artifactID] = ledgerSeed{actor: actor, room: room, rendered: rendered}
 }
 
 // writtenRendering is the rendering of the tree this transaction last wrote to artifactID: the one
-// its live write's latest operation recorded (recordLiveOperation, for applyLive and applyMargin
-// alike), else the tree it seeded (SeedText); none when it holds neither.
+// its live write's latest operation recorded of that document (recordLiveOperation, for applyLive
+// and applyMargin alike), else the tree it seeded (SeedText); none when it holds neither.
 func (l *Ledger) writtenRendering(artifactID string) renderedTree {
 	if l == nil {
 		return renderedTree{}
 	}
-	if write := l.liveWriteFor(artifactID); write != nil && write.tree != nil {
+	if write := l.liveWriteFor(artifactID); write != nil && write.tree != nil && write.treeDocument == artifactID {
 		return renderedTree{tree: write.tree, markdown: write.markdown, offsets: write.offsets}
 	}
 	return l.seeds[artifactID].rendered

@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -885,6 +886,143 @@ func TestARoomSettlementOverAStaleLayoutClosesTheRoom(t *testing.T) {
 	}
 	if held != 1 {
 		t.Errorf("the room holds %d blocks of the joined document, want its one paragraph", held)
+	}
+}
+
+// seedJoinedDocument opens a transaction joined to service and writes in it, as an upload to a
+// converted issue writes them, a new document of room's issue under slug with its document_rooms
+// row naming room's tree, the issue's row taken first as every writer of that row takes it, and the
+// document's first text, markdown, seeded into its fragment of the room (SeedText). It answers the
+// document and the transaction's ledger, not committed; the test's cleanup discards both.
+func seedJoinedDocument(t *testing.T, service *Service, room issueRoom, slug, markdown string) (string, *Ledger) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := service.store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the join's transaction: %v", err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(ctx) })
+	joined, ledger := service.Join(ctx, tx)
+	t.Cleanup(ledger.Discard)
+	if _, err := tx.Exec(ctx, `select 1 from issues where key = $1 for no key update`, room.issue); err != nil {
+		t.Fatalf("take the issue's row: %v", err)
+	}
+	var document string
+	if err := tx.QueryRow(ctx, `
+		with document as (
+			insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+			values ($1, 'DOC', $2, $2 || '.md', 'doc', false, '{"kind":"user","id":"alice"}')
+			returning id
+		), joined as (
+			insert into document_rooms (artifact_id, room) select id, $3::uuid from document
+		)
+		select id::text from document`, room.issue, slug, room.tree).Scan(&document); err != nil {
+		t.Fatalf("join %s to the issue room: %v", slug, err)
+	}
+	if _, err := service.SeedText(joined, document, markdown, model.Actor{Kind: "user", ID: "alice"}); err != nil {
+		t.Fatalf("seed %s's fragment of the issue room: %v", slug, err)
+	}
+	return document, ledger
+}
+
+// A transaction that seeds a new document's first text into its issue's room - an upload of a new
+// document to a converted issue, which writes the document's document_rooms row first - changes the
+// room's layout, and its commit closes this process's instance of the room, loaded over the
+// documents before it, before the writer answers: the writer's next write loads the room over the
+// new layout rather than meeting that instance's close, which a settlement that found the layout
+// stale makes (errRoomLayoutMoved) and which refuses every write it meets (errRoomReloading). No
+// notice of the join reaches this process here (the join announces nothing), so the close is the
+// commit's own.
+func TestADocumentSeededIntoAResidentIssueRoomClosesTheRoomAtItsCommit(t *testing.T) {
+	database := storetest.Open(t)
+	service, server := newTestServiceInstance(t, database)
+	room := createIssueRoom(t, database, 1)
+	peer := connectPeer(t, server.URL, room.tree, "alice")
+	if err := peer.WaitForText(fragmentMarkdown(room.plan), planSeed, roomWait(t)); err != nil {
+		t.Fatal(err)
+	}
+	joined, ledger := seedJoinedDocument(t, service, room, "notes", "Joined words.\n")
+	if err := ledger.Commit(context.Background()); err != nil {
+		t.Fatalf("commit the join: %v", err)
+	}
+	if live := service.srv.GetDoc(room.tree); live != nil && !slices.Contains(service.layoutOf(live), joined) {
+		t.Fatalf("the commit that seeded %s into the issue room left resident the room loaded over %v", joined, service.layoutOf(live))
+	}
+	select {
+	case <-peer.Ended:
+	case <-time.After(roomWait(t)):
+		t.Fatalf("the browser on the room loaded over the documents before the join stayed connected")
+	}
+	if _, err := joinedReplaceText(service, joined, "Joined words, written again.\n", model.Actor{Kind: "user", ID: "alice"}); err != nil {
+		t.Fatalf("the next write to the joined document: %v", err)
+	}
+}
+
+// A settlement that read the issue room's documents once a join's transaction committed finds
+// the layout of the instance it settles stale and reserves that instance's close
+// (reserveRoomCloseLocked), which refuses every write until it returns (errRoomReloading). The
+// join's commit, which closes that instance itself, waits the reservation out before the writer
+// answers, so the writer's next write is not refused.
+func TestAJoinsCommitWaitsOutACloseReservedOnItsRoom(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	service, server := newTestServiceInstance(t, database)
+	// No settlement timer of the room fires during the test: the reservation is the test's own.
+	service.settle = time.Hour
+	room := createIssueRoom(t, database, 1)
+	peer := connectPeer(t, server.URL, room.tree, "alice")
+	if err := peer.WaitForText(fragmentMarkdown(room.plan), planSeed, roomWait(t)); err != nil {
+		t.Fatal(err)
+	}
+	joined, ledger := seedJoinedDocument(t, service, room, "notes", "Joined words.\n")
+	if err := ledger.commit(ctx); err != nil {
+		t.Fatalf("commit the join's transaction: %v", err)
+	}
+
+	reserved, release := make(chan struct{}), make(chan struct{})
+	var reservedOnce sync.Once
+	service.afterRoomCloseReserved = func(string) {
+		reservedOnce.Do(func() { close(reserved) })
+		<-release
+	}
+	state := service.lockState(room.tree)
+	reservation, ok := service.reserveRoomCloseLocked(room.tree, state, service.srv.GetDoc(room.tree))
+	service.unlockState(room.tree, state)
+	if !ok {
+		t.Fatal("reserve the close of the issue room's instance loaded over the documents before the join")
+	}
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		_, _ = service.closeReservedRoom(ctx, reservation)
+	}()
+	select {
+	case <-reserved:
+	case <-time.After(roomWait(t)):
+		t.Fatal("the reserved close never started")
+	}
+
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		ledger.publish()
+		ledger.closeJoinedRooms(ctx)
+	}()
+	select {
+	case <-finished:
+		close(release)
+		t.Fatal("the join's commit answered while a close reserved on its room still refused every write")
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-finished:
+	case <-time.After(roomWait(t)):
+		t.Fatal("the join's commit did not answer once the reserved close returned")
+	}
+	<-closed
+	if _, err := joinedReplaceText(service, joined, "Joined words, written again.\n", model.Actor{Kind: "user", ID: "alice"}); err != nil {
+		t.Fatalf("the next write to the joined document: %v", err)
 	}
 }
 

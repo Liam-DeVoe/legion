@@ -147,16 +147,18 @@ func (s *Service) forkPoint(room string, live *crdt.Doc, client crdt.ClientID, a
 // copy the read takes from the room, and its tree is then walked. A room whose load listed no
 // replica has no tree to walk, nor has a copy the replica could not start from: that copy is
 // decoded and read here, holding no lock (stateTree). The tree is the room's whole tree, every
-// fragment its layout names joined as the room renders them (layoutOf, joinFragments), with how
-// many top-level blocks each fragment holds; a room that is its own document has no counts.
+// fragment layout names joined as the room renders them (joinFragments), with how many top-level
+// blocks each fragment holds; a room that is its own document has an empty layout and no counts.
+// layout is the settlement's (settlement.layout): the instance's as its load read it
+// (layoutOf), or that layout without the documents that have left the room since (readLocked).
 //
 // It arms no settlement for the updates it classified and reports instead whether any is one a
 // settlement follows: the settlement reading them is the one they would arm, and arming another
 // moves the room's generation under it, which ends it as superseded. It reports that whether or
 // not the tree could be read, so its caller arms what the drain classified exactly where a caller
 // of readPoint would. The caller holds no state lock and is not inside a Yjs transaction on live.
-func (s *Service) treePoint(room string, live *crdt.Doc) (*pmdoc.Node, []int, roomPoint, bool, error) {
-	fragments := s.layoutOf(live).fragments()
+func (s *Service) treePoint(room string, live *crdt.Doc, layout roomLayout) (*pmdoc.Node, []int, roomPoint, bool, error) {
+	fragments := layout.fragments()
 	var tree *pmdoc.Node
 	var counts []int
 	var treeErr error

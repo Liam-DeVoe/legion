@@ -233,22 +233,25 @@ type uploadHold struct {
 	hold *roomHold
 }
 
-// capturePendingAuthors reads R in tx, which holds the document's advisory lock, with the
-// document's latest person sender (readLastPerson), and takes whom a version lists
-// (captureAuthors), with the in-flight credits observed through `through`, under room's state
-// lock.
-func (s *Service) capturePendingAuthors(ctx context.Context, tx pgx.Tx, room string, write *liveWrite, actor *model.Actor, through uint64) (authorCapture, error) {
-	owed, err := readPendingAuthors(ctx, tx, room)
+// capturePendingAuthors reads R in tx, which holds the room's advisory lock, with the room's latest
+// person sender (readLastPerson), and takes whom a version of the target's document lists
+// (captureAuthors), with the in-flight credits observed through `through`, under the room's state
+// lock. A document of an issue room reads its own R rows - the ones an update that changed its
+// fragment wrote under it (pendingAuthorsIn) - and takes only the in-flight credits of updates that
+// changed its fragment (inflightCredit.documents): nobody is listed on a version of a document
+// whose fragment no change of theirs touched.
+func (s *Service) capturePendingAuthors(ctx context.Context, tx pgx.Tx, target liveTarget, write *liveWrite, actor *model.Actor, through uint64) (authorCapture, error) {
+	owed, err := readPendingAuthors(ctx, tx, target.document)
 	if err != nil {
 		return authorCapture{}, err
 	}
-	durableLatest, err := readLastPerson(ctx, tx, room)
+	durableLatest, err := readLastPerson(ctx, tx, target.room)
 	if err != nil {
 		return authorCapture{}, err
 	}
-	state := s.lockState(room)
-	defer s.unlockState(room, state)
-	return captureAuthors(state, owed, durableLatest, write, actor, through), nil
+	state := s.lockState(target.room)
+	defer s.unlockState(target.room, state)
+	return captureDocumentAuthors(state, owed, durableLatest, write, actor, through, target.document), nil
 }
 
 // everyCredit bounds no in-flight credit: a capture through it takes every credit its room has
@@ -282,6 +285,13 @@ const everyCredit = math.MaxUint64
 // that never loaded the document does. actor, the version's writer, names nobody by itself: an
 // agent writing a named version over someone's edit did not make that edit.
 func captureAuthors(state *roomState, owed map[string]model.Actor, durableLatest *model.Actor, write *liveWrite, actor *model.Actor, through uint64) authorCapture {
+	return captureDocumentAuthors(state, owed, durableLatest, write, actor, through, "")
+}
+
+// captureDocumentAuthors is captureAuthors for a version of document, a document of an issue room,
+// which takes only the in-flight credits whose update changed its fragment (inflightCredit.documents)
+// or that name no document, a room that is its own document's; "" takes every credit.
+func captureDocumentAuthors(state *roomState, owed map[string]model.Actor, durableLatest *model.Actor, write *liveWrite, actor *model.Actor, through uint64, document string) authorCapture {
 	capture := authorCapture{
 		state:    state,
 		authors:  make(map[string]model.Actor, len(owed)+1),
@@ -292,6 +302,11 @@ func captureAuthors(state *roomState, owed map[string]model.Actor, durableLatest
 		capture.rAuthors = append(capture.rAuthors, author)
 	}
 	capture.inflight = state.unconsumedInflightLocked(through)
+	if document != "" {
+		capture.inflight = slices.DeleteFunc(capture.inflight, func(record *inflightCredit) bool {
+			return record.documents != nil && !slices.Contains(record.documents, document)
+		})
+	}
 	for _, record := range capture.inflight {
 		mergeAuthors(capture.authors, record.authors)
 	}

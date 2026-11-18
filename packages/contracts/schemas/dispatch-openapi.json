@@ -619,7 +619,7 @@
     },
     "/api/v1/artifacts/{id}": {
       "get": {
-        "description": "Read a document's metadata and current version.",
+        "description": "Read a document's metadata and current version, with the room the document is edited in (room: its issue room's tree artifact, or its own id) and the fragment of that room that holds it (fragment). An issue's tree artifact (kind tree) reads as a document does.",
         "operationId": "getApiV1ArtifactsById",
         "parameters": [
           {
@@ -664,7 +664,7 @@
         "x-auth": "any"
       },
       "delete": {
-        "description": "Remove a document of an issue that is still untouched: made by typing a title and never written in. It answers 204 and appends artifact.removed on the issue, and it leaves no row behind. A document that holds writing or a later version, an edit that has not settled, or a comment, ask, review, approval request, check result, read mark or link from anything in Dispatch is 409 ARTIFACT_NOT_UNTOUCHED, saying which of those it is; the issue's spec, a document that plays a role and an artifact that is no document read the same refusal; and a project's document is 400 ARTIFACT_PROJECT_DOCUMENT, since a project document's events are its own and its removal event would need the row the removal deletes.",
+        "description": "Remove a document of an issue that is still untouched: made by typing a title and never written in. It answers 204 and appends artifact.removed on the issue, and it leaves no row behind; a document of an issue room leaves the room with it. A document that holds writing or a later version, an edit that has not settled, or a comment, ask, review, approval request, check result, read mark or link from anything in Dispatch is 409 ARTIFACT_NOT_UNTOUCHED, saying which of those it is; a document of an issue room whose index is owed a write an unsettled edit of the room held back reads the same refusal, as one to retry once the room has settled; the issue's spec, a document that plays a role and an artifact that is no document read the same refusal; and a project's document is 400 ARTIFACT_PROJECT_DOCUMENT, since a project document's events are its own and its removal event would need the row the removal deletes.",
         "operationId": "deleteApiV1ArtifactsById",
         "parameters": [
           {
@@ -1649,7 +1649,7 @@
     },
     "/api/v1/artifacts/{id}/edits": {
       "post": {
-        "description": "Apply quote-anchored edit ops with an optional optimistic-concurrency precondition. A batch that is not a person's own (one whose credential does not hold the person scope: an agent's session, a pod's service account, the deployment's shared token) whose result drops the block of an answered ask, or retypes it, is 409 ANSWERED_ASK_KEPT, quoting each such ask's question and naming its node and its block's address, and writes nothing; a person's own, at a browser or through a token of theirs that holds the person scope, is taken.",
+        "description": "Apply quote-anchored edit ops with an optional optimistic-concurrency precondition. An issue's tree artifact (kind tree) takes an edit as a document does, into its own fragment of the issue room. An op naming, by its store address (\u003cref_key\u003e#\u003cblock id\u003e), a node of another issue is 409 NODE_IN_OTHER_ISSUE, naming that node's issue, and writes nothing. A batch that is not a person's own (one whose credential does not hold the person scope: an agent's session, a pod's service account, the deployment's shared token) whose result drops the block of an answered ask, or retypes it, is 409 ANSWERED_ASK_KEPT, quoting each such ask's question and naming its node and its block's address, and writes nothing; a person's own, at a browser or through a token of theirs that holds the person scope, is taken.",
         "operationId": "postApiV1ArtifactsByIdEdits",
         "parameters": [
           {
@@ -2205,7 +2205,7 @@
     },
     "/api/v1/artifacts/{id}/text": {
       "get": {
-        "description": "A document's canonical markdown, its whole-document token and its version. With ?blocks=true the answer carries the document's blocks as well, each as GET /api/v1/artifacts/{id}/blocks reports it, rendered from the one tree the markdown and the token come from: a listing read this way cannot be split by another session's write.",
+        "description": "A document's canonical markdown, its whole-document token and its version. With ?blocks=true the answer carries the document's blocks as well, each as GET /api/v1/artifacts/{id}/blocks reports it, rendered from the one tree the markdown and the token come from: a listing read this way cannot be split by another session's write. An issue's tree artifact (kind tree) answers its own fragment of the issue room: the nodes written into the issue rather than into a document.",
         "operationId": "getApiV1ArtifactsByIdText",
         "parameters": [
           {
@@ -14001,6 +14001,9 @@
           "created_by": {
             "$ref": "#/components/schemas/Actor"
           },
+          "fragment": {
+            "type": "string"
+          },
           "id": {
             "type": "string"
           },
@@ -14026,6 +14029,9 @@
             "type": "string"
           },
           "role": {
+            "type": "string"
+          },
+          "room": {
             "type": "string"
           },
           "session_id": {
@@ -14561,6 +14567,9 @@
           "created_by": {
             "$ref": "#/components/schemas/Actor"
           },
+          "fragment": {
+            "type": "string"
+          },
           "id": {
             "type": "string"
           },
@@ -14586,6 +14595,9 @@
             "type": "string"
           },
           "role": {
+            "type": "string"
+          },
+          "room": {
             "type": "string"
           },
           "session_id": {

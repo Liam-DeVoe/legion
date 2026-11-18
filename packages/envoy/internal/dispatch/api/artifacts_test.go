@@ -562,7 +562,10 @@ func TestDocumentRoutesResolveUnambiguousFilenameAliases(t *testing.T) {
 }
 
 func TestMissingIssueDocumentRouteListsItsSlugsAndNames(t *testing.T) {
-	handler := newTestHandler(t)
+	handler, database := newTestHandlerWithStore(t)
+	// The issue is created as before the issue room: one born converted also lists its decisions
+	// query among its documents, and this test lists the documents of an issue's one-document rooms.
+	holdIssuesUnconverted(t, database)
 	issue := createArtifactIssue(t, handler)
 	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
 		"name": "plan.md", "content": "# Plan\n",
@@ -587,7 +590,10 @@ func TestMissingIssueDocumentRouteListsItsSlugsAndNames(t *testing.T) {
 // reference come first, the newest fill the rest, and the hint says how many the owner holds and
 // which route lists them all.
 func TestMissingDocumentOnABusyOwnerNamesTheClosestAndCountsTheRest(t *testing.T) {
-	handler := newTestHandler(t)
+	handler, database := newTestHandlerWithStore(t)
+	// The issue is created as before the issue room: one born converted also counts its decisions
+	// query among its documents, and this test counts the documents of an issue's one-document rooms.
+	holdIssuesUnconverted(t, database)
 	issue := createArtifactIssue(t, handler)
 	names := []string{"prediction-P1.md"}
 	for index := range 10 {

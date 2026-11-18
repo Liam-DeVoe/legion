@@ -573,6 +573,10 @@ func TestAVersionWrittenForARunNamesTheBlocksItChanged(t *testing.T) {
 	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{})
 	server := directServer(deps)
 	ctx := context.Background()
+	// The issue is created as before the issue room: the blocks are read at the spec's own
+	// addresses, `<issue>/spec#<block>`, where an issue born converted keys its blocks by its tree
+	// artifact.
+	holdIssuesUnconverted(t, database)
 	issue := createInteractionIssue(t, handler, "RVB", "A spec a run edits",
 		":::requirement{#kept}\nThe kept words stay.\n:::\n\n:::requirement{#edited}\nThe first words.\n:::\n\n:::requirement{#dropped}\nThe dropped words.\n:::\n")
 	run, err := server.recordGoingRequest(ctx, model.Actor{Kind: "user", ID: "alice"}, "", "Edit the spec for me.")

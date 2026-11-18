@@ -178,6 +178,16 @@ func QueryNode(refKey, project, query string, who model.Actor, at time.Time) Nod
 	return node
 }
 
+// ArtifactQueryRoleSQL is the SQL expression, over the artifacts table unaliased, of the role the
+// row's document plays as a query node (QueryNode): its query value, `verification`, `plan` or
+// `decisions`, and null for the spec's `spec`, whose part is the row's is_primary, and for a
+// document whose node is no query node. A document of an issue born converted writes no role in its
+// row (decision 2 of dispatch://INFRA-1253's plan), so a reader of the role it plays reads this
+// beside the row's own.
+const ArtifactQueryRoleSQL = `(select nullif(node.attributes->>'` + AttributeQuery + `', '` + QuerySpec + `')
+	from graph_nodes node
+	where node.kind = '` + KindArtifact + `' and node.id = artifacts.ref_key and node.supertag = '` + SupertagQuery + `')`
+
 // VersionID is the address of a document's version node: the document's ref_key, `@v` and the
 // version's number, which no ref_key holds since a slug holds no `@`.
 func VersionID(refKey string, number int) string { return refKey + "@v" + strconv.Itoa(number) }

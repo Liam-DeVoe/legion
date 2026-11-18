@@ -422,7 +422,12 @@ func TestAskAskedOf(t *testing.T) {
 	// is unchanged: asked_of survives the block's removal, the settlement's retraction and the
 	// restore.
 	t.Run("the person survives a block settlement's restore", func(t *testing.T) {
-		handler, _, documentService := blockAskHandlerWithDocuments(t)
+		handler, database, documentService := blockAskHandlerWithDocuments(t)
+		// The issue is created as before the issue room: the ask block's ask is read under the
+		// spec (awaitIndexedAskBlock) and the browser binds the room's own fragment
+		// (removeBlockAsABrowserDoes), where an issue born converted holds the ask under its tree
+		// artifact and the spec in a fragment of its own.
+		holdIssuesUnconverted(t, database)
 		issue, askID := seedBlockAsk(t, handler, "A block ask handed on", "decision", transportAsk, "Which transport?")
 		handAskOn(t, handler, askID, "bob", "alice")
 

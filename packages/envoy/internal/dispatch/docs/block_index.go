@@ -1335,6 +1335,9 @@ func (s *Service) indexOwedRoom(ctx context.Context, document owedDocument) (ind
 		return false, false, false, err
 	}
 	versions := refs.Versions{}
+	// markdowns is each fragment's own rendering: one that renders as no text holds no block
+	// (withoutSilentFragments).
+	markdowns := make([]string, len(documents))
 	for index, fragment := range documents {
 		if latest[index].number == 0 {
 			parts[index] = &pmdoc.Node{Type: parts[index].Type, Attrs: parts[index].Attrs}
@@ -1350,6 +1353,7 @@ func (s *Service) indexOwedRoom(ctx context.Context, document owedDocument) (ind
 		if markedAt != nil && markdown != latest[index].markdown {
 			return false, true, false, nil
 		}
+		markdowns[index] = markdown
 	}
 	if len(versions) > 0 {
 		joined, joinedCounts := joinFragments(parts)
@@ -1357,6 +1361,7 @@ func (s *Service) indexOwedRoom(ctx context.Context, document owedDocument) (ind
 		if err != nil {
 			return false, false, false, err
 		}
+		offsets = withoutSilentFragments(offsets, parts, func(index int) bool { return markdowns[index] == "" })
 		blocks := offsetBlocks(offsets, read.layout.blockDocuments(room, joined, joinedCounts))
 		// The events that recorded each version are read before the pass, as for one document:
 		// each document's is the cause of the facts the pass states of its blocks.
