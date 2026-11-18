@@ -508,10 +508,12 @@ const planRecordID = "5d6e7f80-91a2-5b3c-8d4e-5f6a7b8c9d0e"
 // A plan record is the plan one run of an issue carries out, written once when its work starts. A
 // plan of the source default names no document and no version, which the row leaves out, since
 // Dispatch refuses either on such a plan; its tasks and their steps survive Postgres in order. A
-// plan of the source owner carries both. The owner's tasks stand out of the order of their ids,
-// ui before api, and each one's steps out of sorted order, so a sort of either list on the way in
-// or out changes what is compared; and each case builds its plan afresh for the comparison, so a
-// sort of the queued value in place does not change the value it is held to.
+// plan of the source owner carries both; the daemon queues none yet (the workflow's defaultPlan is
+// its one plan), so that case holds the row's copy of each field such a plan carries. The owner's
+// tasks stand out of the order of their ids, ui before api, and each one's steps out of sorted
+// order, so a sort of either list on the way in or out changes what is compared; and each case
+// builds its plan afresh for the comparison, so a sort of the queued value in place does not change
+// the value it is held to.
 func TestAPlanRecordKeepsItsTasksInOrderThroughTheOutbox(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

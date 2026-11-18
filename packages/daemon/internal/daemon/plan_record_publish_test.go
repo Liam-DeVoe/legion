@@ -47,7 +47,9 @@ func ratingRecordOf() record.StepRecord {
 // source, the owner's document and its version where the plan has them, and every task with its
 // steps in order, and the row is done. The owner's plan carries every field a default plan leaves
 // empty, a version that is not its run, and two tasks out of the order of their ids, so a field the
-// copy to Dispatch drops, or a sort of the tasks, changes what Dispatch receives.
+// copy to Dispatch drops, or a sort of the tasks, changes what Dispatch receives. The daemon queues
+// no owner's plan yet (the workflow's defaultPlan is its one plan): that case holds the copy to
+// Dispatch of each field such a plan carries, which the record's type already has.
 func TestAPlanRecordIsWrittenUnderItsIssueAndItsID(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -105,7 +107,7 @@ func TestTheRetrosRatingReachesDispatch(t *testing.T) {
 // ERROR line, and nothing says the write was dropped. 404 ISSUE_NOT_FOUND, Dispatch holding no such
 // issue, ends the row instead (TestAPlanRecordThatDispatchRefusesEndsWithAWarning, and
 // TestAStepRecordThatDispatchRefusesEndsWithAWarning for the step record a rating is), and so does
-// a 400 INVALID_JSON naming the rating (TestARatingThatDispatchRefusesByNameEndsWithAWarning).
+// a 400 STEP_INPUT naming the rating (TestARatingThatDispatchRefusesByNameEndsWithAWarning).
 func TestAPlanAndARatingWaitForADispatchThatHasNoRouteForThem(t *testing.T) {
 	notFound := &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "no route for PUT /api/v1/issues/LEGION-1/…"}
 	for _, route := range []struct {
@@ -138,14 +140,15 @@ func TestAPlanAndARatingWaitForADispatchThatHasNoRouteForThem(t *testing.T) {
 	}
 }
 
-// A 400 INVALID_JSON naming the rating ends the rating's row after its one run, as every refusal no
-// retry changes ends a step record's (TestAStepRecordThatDispatchRefusesEndsWithAWarning): a
-// Dispatch ignores a body member it does not declare, so no Dispatch refuses the rating by name,
-// and an answer that did would come again at every retry and hold the record lane behind it
-// (record.LaneRecord). The one Warn line names the issue, the record's id and Dispatch's code, and
-// the row's failure is not logged as a failed attempt besides.
+// A 400 STEP_INPUT naming the rating ends the rating's row after its one run, as every refusal no
+// retry changes ends a step record's (TestAStepRecordThatDispatchRefusesEndsWithAWarning): Dispatch
+// answers it where the record it holds under the retro's id is a run of another kind
+// (workflowstore's ratingOfKind), and that answer would come again at every retry and hold the
+// record lane behind it (record.LaneRecord). The one Warn line names the issue, the record's id and
+// Dispatch's code, and the row's failure is not logged as a failed attempt besides.
 func TestARatingThatDispatchRefusesByNameEndsWithAWarning(t *testing.T) {
-	refusal := &dispatch.Error{Status: http.StatusBadRequest, Code: "INVALID_JSON", Message: `invalid JSON body: json: unknown field "rating"`}
+	refusal := &dispatch.Error{Status: http.StatusBadRequest, Code: dispatch.StepInput,
+		Message: "rating is the rating a retro gives its plan, and step " + retroRecordID + " is a run of kind step"}
 	rig := newStepRecordRigOf(t, ratingRecordOf(), answersInTurn(refusal))
 	rig.run()
 	if left := rig.left(); left != 0 {

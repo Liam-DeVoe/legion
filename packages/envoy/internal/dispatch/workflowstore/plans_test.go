@@ -564,9 +564,13 @@ func TestProjectPlansTakesTheNewestPlanAndEveryRating(t *testing.T) {
 }
 
 // Of plans of one generation the read takes the one made last, and of those made at one moment
-// the one of the greatest id. LEG-1's four plans were made at minutes in neither ascending nor
-// descending order as written, and its plan made last has neither the least nor the greatest id,
-// so a read that took the plan made first, or the least or the greatest id where the moments
+// the one of the greatest id. The daemon writes one plan of a generation, under the id it derives
+// from the issue and the generation (the workflow's PlanID), so it never writes two; the route
+// takes any uuid, so the read holds to one plan of a generation whatever the store holds, and these
+// plans, each with the default plan's body (defaultPlan) under an id no derivation gives, are the
+// store's case and not the daemon's. LEG-1's four plans were made at minutes in neither ascending
+// nor descending order as written, and its plan made last has neither the least nor the greatest
+// id, so a read that took the plan made first, or the least or the greatest id where the moments
 // differ, lists another plan; LEG-2's four, made at one moment, have ids in neither order as
 // written, so a read that took the least id lists another. The order the statement answers the
 // rows in is the database's, so this test cannot set which plan is the first or the last row;

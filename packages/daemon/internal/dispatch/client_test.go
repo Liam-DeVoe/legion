@@ -427,7 +427,9 @@ func TestPutStepWritesARatingOnTheRatingRoute(t *testing.T) {
 // session of the issue's project, the one session Dispatch's route takes a plan from. The body
 // names the run, the source and every task with its steps in order; a plan of the source default
 // names no document and no version, which Dispatch refuses on such a plan, so the body leaves both
-// out, and a plan of the source owner names both, under the names Dispatch's route reads.
+// out, and a plan of the source owner names both, under the names Dispatch's route reads. The
+// daemon writes no owner's plan yet (the workflow's defaultPlan is its one plan), so that case
+// holds the body of each field such a plan carries.
 func TestPutPlanWritesThePlanUnderTheDaemonSession(t *testing.T) {
 	const id = "5d6e7f80-91a2-5b3c-8d4e-5f6a7b8c9d0e"
 	for _, tc := range []struct {
