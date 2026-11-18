@@ -601,14 +601,13 @@ interrupt withdrew is not shown again.
 
 What a registration carries is the shared rule `registrationTopics`: the session's own agent
 subject and every topic it follows, a role-bound one included, but one reaching a private stream
-subject that is not this session's (`reachesPrivateStreamSubject`: another session's agent
-subject, a failed-delivery lane, another project's Legion controller lane, or a wildcard reaching
-one, the listener's own rule, which it would leave out of the row and warn about on every
+subject that is not this session's (`reachesPrivateStreamSubject`, the listener's own rule,
+which it would leave out of the row and warn about on every
 heartbeat). No topic is left out because the stream subjects this build was compiled with
 capture nothing of it: during a roll the deployed stream holds a newer build's subjects too, and
 only the listener reads them. A topic left out of the registration would stay out of the
 consumer's filter, and the consumer would move past every message stored on it. The listener
-keeps a topic no stream subject captures yet in the row and in the filter, and warns
+keeps a topic no stream subject captures yet in the row
 (`uncapturedTopicWarning` in `@legion/contracts`). `envoy_subscribe` follows every topic its
 caller names and shows the listener's warnings in its result (`Warnings: ...`, and
 `details.warnings`), less the uncaptured-topic warning of each topic the caller did not name in

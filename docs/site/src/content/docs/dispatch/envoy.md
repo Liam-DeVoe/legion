@@ -175,7 +175,7 @@ published still gets it when it reconnects
 | `notifications.legion.<project>.controller` | A Legion project's controller. |
 | `notifications.slack.*.<channel>.mention` | Every mention of the Slack app in one channel, whatever the team. |
 | `notifications.envoy.exceptions.<topic>` | A delivery to `<topic>` that failed, or a role send the API refused `404` because nobody holds `<topic>`'s role, with the reason. |
-| `notifications.team.<name>` | A team topic you name, such as `notifications.team.deploy-squad.all`. The stream keeps it like every other notification topic, so it reaches each session subscribed to it once, from that session's own consumer, also one that was away or restarted, and a session that subscribes later gets nothing published before it followed. A publish through the listener is answered once the stream stored it. A publish to a `notifications.` topic no stream subject captures is refused by name, since nothing would store it for a session to read; so is a publish to a topic outside `notifications.`. A subscription to such a `notifications.` topic is stored and the session's consumer filters on it: the listener answers 200 with a warning that names the topic, and nothing reaches the session on it until a stream subject captures it. |
+| `notifications.team.<name>` | A team topic you name, such as `notifications.team.deploy-squad.all`. The stream keeps it like every other notification topic, so it reaches each session subscribed to it once, from that session's own consumer, also one that was away or restarted, and a session that subscribes later gets nothing published before it followed. A publish through the listener is answered once the stream stored it. A publish to a `notifications.` topic no stream subject captures is refused by name, since nothing would store it for a session to read; so is a publish to a topic outside `notifications.`. For a subscription to such a `notifications.` topic, the listener answers 200, and nothing reaches the session on it until a stream subject captures it. |
 
 An agent subscribes with Envoy's `envoy_subscribe` tool, which stores the subscription in the
 listener. A subscription to `<subject>.>` also covers `<subject>` itself, so subscribing to a pull
@@ -289,9 +289,8 @@ and `DELIVERY_LEDGER_LIMIT` in `packages/envoy-client/src/delivery-ledger.ts`).
   on a topic that no stream subject captures.
   The listener refuses by name a publish to such a `notifications.` topic, since no session would
   ever receive it.
-  A subscription to it is stored, and the session's consumer filters on it: the listener answers
-  200 with a warning that names the topic, and the session receives on it what the stream stores
-  once a stream subject captures it.
+  For a subscription to it, the listener answers 200, and the session receives on it what the
+  stream stores once a stream subject captures it.
 - **When a message counts as delivered:** an Oh My Pi session answers once the message is in its
   session file.
   A Claude Code session answers once its plugin has put the message into the session's

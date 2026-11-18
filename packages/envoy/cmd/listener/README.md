@@ -46,8 +46,6 @@ The lease is the key `lease.<durable>` (`lease.listener-<machine id>`) in the KV
 The age is sized by the `seen.` records beside the lease, not by the lease:
 every pod answers a lapsed session's `last_seen` out of that record alone, and the session registry would report it for the session TTL and its last-seen retention (`session.LastSeenMemory`, 2 hours) past the session's last registration write, so the bucket's age, which drops the record 20 minutes after that write, is what ends the answer.
 The interest reaper deletes a dead session's row at its first pass after both the session's record and its own allowance have run out (`store.InterestReapAllowance`, 15 minutes after the row's `updated_at`, which lags the session's last heartbeat by up to `store.InterestRefreshAge`).
-So while the session TTL is at most 15 minutes the row goes between 10 and 20 minutes after that heartbeat, and `/v1/interests/` can give the last heartbeat of every row that reaper still holds.
-A longer TTL holds a dead session's row past those 20 minutes, and the listing then gives it no heartbeat.
 Its value is JSON: `holder` (the holding pod's instance), `boot` (random per process start), `deliver_subject`, `service_since`, `acquired_at`, `released`, `former_boots` (below), and `stale_binding`, `unsettled`, `ack_wait_owed` and `receiving` ("Take-over" below);
 a field this build does not know is kept across every rewrite.
 `former_boots` names the boots that held the lease before `holder` (`formerBoots`, `lease_record.go`):
@@ -343,8 +341,6 @@ Every pod of a machine id reads and writes the same records, so a pod that takes
 - **Last seen** (`seen.<session token>` in `envoy_listener`, the same session token as in the ledger key above):
   every session registration write records when the session was last seen, and every pod answers a lapsed session's `last_seen` out of that record alone, so two pods never answer one session differently - a pod that watched the session keeps no answer of its own.
   The registry would report it for the session TTL and 2 hours (`session.LastSeenMemory`) past the last write, but the bucket's `MaxAge` drops the record 20 minutes after that write, so the answer lasts 20 minutes past the last write.
-  While the session TTL is at most 15 minutes that outlasts every row the interest reaper holds, so `/v1/interests/` gives the last heartbeat of each row it lists ("The delivery lease" above states that reaper's own deadline).
-  A longer TTL leaves a dead session's row listed with no heartbeat.
   With no record in the bucket - it was never written, its age removed it, or it could not be read within the request's budget - no pod answers one.
 
 - **Role-claim grace** counts from the machine's service start, `service_since` in the lease record:
@@ -386,12 +382,11 @@ During a roll two builds run for one machine id, and each must deliver what the 
 - **A session's consumer takes what its filter captures.**
   A relay's restart writes the filter from the session's followed topics: each one a consumer can filter on, whatever either build's stream subjects capture (`sessionConsumerFilter`, `bus.CanFilterOn`), in every form a reader takes it in (`bus.SessionConsumerFilters`).
   A consumer keeps its position when its filter changes, so a topic either build knows is delivered from the sequence the session had reached.
-  A topic no stream subject captures yet is in the filter too, and a registration stores it with a warning (`contracts.UncapturedTopicWarning`).
-  Once the newer build's start adds a subject that captures it, the consumer delivers what the stream stores on it.
+  Once the newer build's start adds a subject that captures a topic in the filter, the consumer delivers what the stream stores on it.
   A topic left out until the next registration would lose every message the stream stored on it in between, because the consumer moves past a message its filter does not match.
 
 - **A publish on a topic only the newer build captures is stored.**
-  The publish route refuses a topic as reaching no session only on a read of the stream's subjects that started after the request asked (`bus.SubjectsAsk.Uncaptured`), and refuses nothing when no such read can be made, so the older pod stores such a publish too.
+  The publish route refuses such a topic only on a read of the stream's subjects that started after the request asked (`bus.SubjectsAsk.Uncaptured`), and not when no such read can be made, so the older pod stores such a publish too.
   The one exception is a pod whose NATS user may not read the stream: it refuses on the subjects it holds.
 
 - **Fields a build does not know are kept.**

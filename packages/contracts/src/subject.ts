@@ -437,8 +437,8 @@ export type Subject =
 /**
  * The warning the listener answers a registration with for each `topic` it stores for `sessionID`
  * that no stream subject captures yet: a `notifications.` topic that is no role lane and reaches no
- * private stream subject. The listener keeps such a topic in the session's row and in its
- * consumer's filter, and names it in this warning (`uncapturedTopics` in
+ * private stream subject. The listener keeps such a topic in the session's row and names it in
+ * this warning (`uncapturedTopics` in
  * packages/envoy/cmd/listener/api.go, through `contracts.UncapturedTopicWarning`, which
  * `scripts/gen-go.ts` emits from this builder). Nothing is delivered on the topic until a stream
  * subject captures it; a subject a newer build adds during a roll then does, and nothing stored

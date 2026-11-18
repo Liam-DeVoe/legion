@@ -9,18 +9,16 @@ body: |-
   newer subject captured did not get into the consumer filter of the session. Thus the session
   lost each message that the stream stored on it.
 
-  Each `X.>` follow now also registers `X`. While no stream subject captures `X`, the listener
-  returns a warning for it, but the tool result does not show that warning. The result shows the
-  uncaptured-topic warning only for a topic that the caller named in that call. It does not show
-  it for a topic that the plugin added, or for another topic that the session follows. `follow`
-  registers also when it adds no topic. Thus a caller that names a followed topic again sees its
-  warning again. The listener still logs each warning.
+  Each `X.>` follow now also registers `X`. The tool result does not show the warning that
+  `uncapturedTopicWarning` builds for a topic that the caller did not name in that call
+  (`warningsForNamedTopics`). `follow` registers also when it adds no topic. Thus a caller that
+  names a followed topic again sees its warning again. The listener still logs each warning.
 
   No listener that this plugin needs refuses such a registration. The oldest is the listener with
   #2446, `legion-envoy-v27.1.0`, which stores the topic
   (`packages/envoy/cmd/listener/api.go:1477-1497` at that tag). A listener from #2603
-  (`legion-envoy-v30.8.0`) to `legion-envoy-v30.36.0` leaves the topic out with its own warning
-  and stores the other topics (`api.go:2683-2685` at `legion-envoy-v30.8.0`).
+  (`legion-envoy-v30.8.0`) until this change leaves the topic out with its own warning and stores
+  the other topics (`api.go:2683-2685` at `legion-envoy-v30.8.0`).
 
   `envoy_subscribe` now answers success with `registrationError` when its registration fails,
   and it records the follow, so a restart follows the topic again. `envoy_unsubscribe` no longer

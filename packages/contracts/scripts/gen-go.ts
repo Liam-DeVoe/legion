@@ -307,13 +307,12 @@ func ControllerRoleToken(project string) string {
 
 // UncapturedTopicWarning is the warning POST /v1/interests/subscribe answers for topic, a
 // notification topic that no stream subject captures yet, that is no role lane and that reaches
-// no private stream subject: the registration keeps it for sessionID, in the row and in the
-// session's consumer filter, and nothing is delivered on it until a stream subject captures it
-// (uncapturedTopics in cmd/listener). Generated from uncapturedTopicWarning in
-// packages/contracts, so the listener and the plugins read one sentence. A plugin hides the
-// warning of a topic its caller did not name only when the warning is this exact text for that
-// topic and the answer's session_id (warningsForNamedTopics in @legion/envoy-client). A plugin
-// built on other words shows every such warning.
+// no private stream subject: the registration keeps it for sessionID in the row, and nothing is
+// delivered on it until a stream subject captures it (uncapturedTopics in cmd/listener). Generated
+// from uncapturedTopicWarning in packages/contracts, so the listener and the plugins read one
+// sentence. A plugin hides the warning of a topic its caller did not name only when the warning is
+// this exact text for that topic and the answer's session_id (warningsForNamedTopics in
+// @legion/envoy-client). A plugin built on other words shows every such warning.
 func UncapturedTopicWarning(topic, sessionID string) string {
 	return ${uncapturedTopicWarningText}
 }

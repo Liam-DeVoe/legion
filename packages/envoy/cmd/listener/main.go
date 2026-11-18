@@ -1655,16 +1655,7 @@ func main() {
 	// (session.WithLastSeenBucket). The registry would answer a departed session's last heartbeat
 	// for its own session.LastSeenMemory (2 hours), which this listener does not shorten, but the
 	// state bucket drops the seen. record listenerStateMaxAge (20 minutes) after its last write,
-	// and with the bucket that ends the answer (internal/session/lastseen.go). So a caller told a
-	// session is gone, past the one-hour gone horizon, is no longer told when it last registered,
-	// and /v1/interests/ reports the real last heartbeat of a listed row only while that heartbeat
-	// is less than those 20 minutes old. The reaper deletes a dead session's row at its first pass
-	// (every 5 minutes) after both its allowance (store.InterestReapAllowance(store.InterestReapGrace),
-	// 15 minutes after the row's updated_at, which lags the heartbeat by up to
-	// store.InterestRefreshAge) and the session's record (one TTL after its last write) have run
-	// out. So while the TTL is at most 15 minutes the row goes between 10 and 20 minutes after the
-	// last heartbeat, and every row still listed has one. A longer TTL holds the row past those 20
-	// minutes, with no heartbeat.
+	// and with the bucket that ends the answer (internal/session/lastseen.go).
 	//
 	// The windows every reader of the registry judges a record's age against. Each defaults to
 	// the compiled constant (session.LiveWindow, session.GoneHorizon). The live window's is the

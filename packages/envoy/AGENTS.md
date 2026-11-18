@@ -1483,9 +1483,7 @@ with four writers parked on one issue's row lock, a read of an unrelated issue w
 Sixteen ran out too: under heavy agent load the API held all sixteen and every other caller, the events outbox included, waited behind them.
 The database has hundreds of connections spare, so 64 is deliberate headroom.
 These sizes are what every deployment runs (`store.Open`).
-A test process alone runs smaller ones: given `DISPATCH_TEST_POOL_BUDGET`, refused without `DISPATCH_TEST_HOOKS=1`, it opens its pools through `store.OpenWithin`, each scaled down toward, never below, the smallest size that still serves its callers (`store.ScaledPoolSizes`), so the processes a test suite starts fit a test server smaller than production's sizes need.
-The server of every CI lane whose Go tests start Dispatch processes is sized for production's (`cmd/dispatch/AGENTS.md`, Checks).
-The lanes that start Dispatch outside the Go tests are the exceptions: the docs-site lane, the e2e lane, and the browser lane's jobs that take a `postgres:` service (`dispatch-browser.yaml`) start it against a service they do not raise, with no budget.
+A test process alone runs smaller ones: given `DISPATCH_TEST_POOL_BUDGET`, refused without `DISPATCH_TEST_HOOKS=1`, it opens its pools through `store.OpenWithin`, each scaled down toward, never below, the smallest size that still serves its callers (`store.ScaledPoolSizes`), so the processes a test suite starts fit a test server smaller than production's sizes need (`cmd/dispatch/AGENTS.md`, Checks).
 
 Work that genuinely needs its own connection while a transaction is open does not take it from the shared one;
 it takes it from a pool of its own, opened on demand from a copy of the shared pool's configuration and closed with it (`store.Pool.separate`).
@@ -4327,9 +4325,6 @@ A read-only broker token carries no project either, but none of the three checks
   Without the bucket, it answers a lapsed session for the registry's last-seen retention (`session.WithLastSeenRetention`, `session.LastSeenMemory` (2 hours) by default and never less than one TTL) past that registration's expiry.
   With the bucket, which a listener with a lease opens, the bucket's age ends the answer first: the state bucket drops a `seen.` record 20 minutes after its last write (`listenerStateMaxAge`), and no pod answers once the record is gone (`internal/session/lastseen.go`).
   So the answer lasts 20 minutes past the last write.
-  That is shorter than the gone horizon (1 hour), so a caller told a session is gone can no longer be told when it was last seen.
-  While the session TTL is at most 15 minutes it outlasts every row the interest reaper holds, which goes between 10 and 20 minutes after its session's last heartbeat (`store.InterestReapAllowance`, `store.InterestReapGrace` + `store.InterestRefreshAge`, 15 minutes after the row's `updated_at`), so `GET /v1/interests/` gives a last heartbeat for each row it lists.
-  A longer TTL leaves a dead session's row listed with no heartbeat (`cmd/listener/README.md`, "Last seen").
   The state bucket's `MaxAge` (`listenerStateMaxAge`, 20 minutes) bounds how long the shared record itself stands, and every open raises a bucket an earlier build created with a shorter age.
   An id's revision fence does not leave with its per-process last-seen record: the last-seen deadline (`expireDue`) drops only that record.
   The next completed read that finds the bucket no longer holds the key drops the fence (`kvwatch.Copy.CompleteRead`).
@@ -4684,12 +4679,12 @@ A read-only broker token carries no project either, but none of the three checks
   A stream stamped with a higher generation was set by a newer build and is left exactly as it is, by a start (`ensureStreamWithConfig`) and by the keeper (`keepStream`), so while two builds run during a release the older one never reverts what the newer one set;
   a change to the stream's subjects, age, duplicate window or discard takes a new generation and a new row in `TestTheStreamConfigEqualsItsGenerationsPinnedRow`.
   A client that owns no stream reads the deployed stream's subjects at connect and again every `streamSubjectsRefresh`, so it publishes each topic on the transport the deployed stream calls for (`bus.Client.UsesCoreTransport`), and a topic under a subject only the newer build adds takes JetStream from the older build too.
-  The listener's registration and its session consumer filter do not depend on those subjects: they keep every followed notification topic a consumer can filter on (`bus.CanFilterOn`), a topic no stream subject captures yet among them, and the filter carries each in every form a reader takes it in (`bus.SessionConsumerFilters`).
+  The listener's registration and its session consumer filter do not depend on those subjects (`bus.CanFilterOn`, `bus.SessionConsumerFilters`).
   nats-server 2.15.1 takes a consumer filter subject that no stream subject captures, and a topic out of the filter when a newer build's subject captures it would lose every message the stream stores on it before the next registration takes it in, since the consumer moves past a message its filter does not match.
-  The listener's publish route refuses a topic as reaching no session, and its registration warns of one, only on a read of the subjects that started after the request asked (`bus.Client.AskDeployedSubjects`, `bus.SubjectsAsk.Uncaptured`).
+  The listener's publish route refuses a topic as reaching no session, and its registration warns of one, on a read of the subjects that started after the request asked (`bus.Client.AskDeployedSubjects`, `bus.SubjectsAsk.Uncaptured`).
   Within 250 ms of the end of the last such read (`streamSubjectsRereadGap`), a judgement waits out the rest of that gap and reads, and a read in flight that started before the request asked is waited for and then read again.
   Every judgement that asked before a read started shares that read, so a burst costs the server one read per gap, and each such read is bounded at 2 s (`firstStreamSubjectsRead`).
-  Where no such read can be made (the client holds no connection, the caller's context ends first, or the read fails), nothing is refused and no warning is given.
+  A read that cannot be made (the client holds no connection, the caller's context ends first, or the read fails) refuses nothing and gives no warning.
   The one exception is a client whose NATS user may not read the stream: it judges on the subjects it holds, because it will never read them again.
   A publish reads them again too before it sends such a topic over core NATS, where the stream would store a topic it does capture with no message id and no acknowledgement (`bus.Client.PublishTakesJetStream`, by which the listener's delivery exception chooses its one-copy message id too).
   That read refuses nothing, so the publish waits for no read already in flight that started within those 2 s, and it makes none within the 250 ms gap: it answers on the subjects the client holds then, and a direct publish in the roll window inside the gap or during an unanswered read goes over core NATS, stored, with no MsgId and no acknowledgement.
@@ -4860,8 +4855,8 @@ Each item below names an endpoint and its method, then its contract, and an item
   the "Role messages use core NATS" rule under "Critical conventions" has the retry).
   Every other `notifications.` topic that would deliver to no session (`bus.Client.ReachesNoSession`: one the deployed stream does not capture, a role lane excepted) is refused `400 {"error":"no stream subject captures <topic>, so no session would receive it; publish to a notifications.team.<name> topic instead","expected":["topic"]}` and nothing is published:
   a session reads only what its own consumer holds, so such a publish would reach nobody, now or later, and no retry makes a delivery of it.
-  The route refuses only on a read of the deployed stream's subjects that started after the request asked (`bus.SubjectsAsk.Uncaptured`, "Operational notes" above), so a subject a newer build added before the request arrived does not make it refuse a publish on that subject's topics.
-  Where no such read can be made (no connection, the request's deadline ends first, or the read fails), the route does not refuse, because a refusal of a topic the stream does capture loses the message, and a publish of one it does not reaches nobody either way.
+  The route refuses on a read of the deployed stream's subjects that started after the request asked (`bus.SubjectsAsk.Uncaptured`, "Operational notes" above), so a subject a newer build added before the request arrived does not make it refuse a publish on that subject's topics.
+  A read that cannot be made gives no refusal by name, because a refusal of a topic the stream does capture loses the message, and a publish of one it does not reaches nobody either way.
   A listener whose NATS user may not read the stream refuses on the subjects it holds, because it will never read them again.
   `notifications.team.<name>` is the one namespace an agent names itself and the stream stores it (`bus.StreamSubjects`), so it is the topic such a caller wants.
   A role topic is answered once the stream stored the forward, or once 4 s from the request's arrival have passed (`publishDeliveryWindow`), and publishes no delivery exception: the sender has the answer.
@@ -4898,7 +4893,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   The next session to hold the role live before then is handed each kept copy once, in the order the copies were kept (the "Role messages use core NATS" rule).
   At the end of the hour the listener drops a copy that no session took, and sends a dead letter to the sender's session when the publish named one, unless no walk had claimed the copy and its hour ended more than an hour before the walk that drops it (`roleKeepStaleAge`).
   A repeat of the dedupe key while its first copy is still on the lane inside its hour stores nothing new, and is answered with that copy's `event_id` and `kept_until`.
-  It answers `404 {"error":…,"reason":"unclaimed","claim_revision":0}` for a role with no claim nothing was kept for, or `reason: "holder_lapsed"` for a lapsed claim nothing was kept for, with the `holder`, its `holder_state` (`unresponsive` inside the gone horizon, `gone` past it), `claim_released: false`, since nothing here releases a claim, a `last_seen` whenever the listener can still name one (the holder's record while it stands, else its `seen.` record, which `envoy_listener` keeps 20 minutes past the last registration, or, on a listener without that bucket, its own record, for `session.LastSeenMemory`, 2 hours, past the expiry of the last registration, one session TTL after that registration), and the `claim_revision` of the claim that still stands, which a conditional claim takes as its `if_claim_revision`.
+  It answers `404 {"error":…,"reason":"unclaimed","claim_revision":0}` for a role with no claim nothing was kept for, or `reason: "holder_lapsed"` for a lapsed claim nothing was kept for, with the `holder`, its `holder_state`, `claim_released: false`, since nothing here releases a claim, a `last_seen` whenever the listener can still name one (the holder's record while it stands, else its `seen.` record, which `envoy_listener` keeps 20 minutes past the last registration, or, on a listener without that bucket, its own record, for `session.LastSeenMemory`, 2 hours, past the expiry of the last registration, one session TTL after that registration), and the `claim_revision` of the claim that still stands, which a conditional claim takes as its `if_claim_revision`.
   A later attempt that finds the role unclaimed is answered as the first resolution answers an unclaimed role, the claim being gone.
   A later attempt never answers `holder_lapsed`: a holder it finds past the live window keeps its claim and fails that attempt alone.
   Three cases keep nothing and are answered 404: the request sent `keep: false`; the role's token is one `roles.PatternString` refuses (`roles.Valid`), which no claim can ever name; or the keep itself failed.
@@ -5026,7 +5021,7 @@ Each item below names an endpoint and its method, then its contract, and an item
 
 - A registration's `notifications.` topic that would deliver to no session now (`bus.Client.ReachesNoSession`, judged on a read of the deployed stream's subjects that started after the registration asked, `bus.SubjectsAsk.Uncaptured`), and that reaches no private stream subject, is stored like any other topic, and the session's consumer filters on it where a consumer can (`bus.CanFilterOn`):
   the answer stays 200, and `warnings` names the topic (`<topic> is registered, but no stream subject captures it yet, so nothing is delivered to <session> on it until one does; to hear what agents publish, follow a notifications.team.<name> topic`, `contracts.UncapturedTopicWarning`, from `uncapturedTopics`, whose set the warning loop reads after the private rule below has had its say).
-  The route judges the topics after it has stored the registration, so a read that does not answer within the request's budget costs the warning and not the registration, and a read that cannot be made gives no warning.
+  The route judges the topics after it has stored the registration, and a read that cannot be made gives no warning.
   It keeps the topic because a subject a later build adds captures it from then on, and a topic out of the filter at that moment would lose every message the stream stores on it before the next registration takes it in: the consumer moves past a message its filter does not match as soon as it looks for its next one.
   A stored interest that delivers nothing costs one record.
   No registration is refused whole for such a topic, because a registration carries topics nobody typed:
@@ -5313,8 +5308,7 @@ there is no second delivery design and no fallback, and a registration this list
 This section is the one statement of that rule; every other document points here by path rather than restating it.
 
 A session can follow its own agent subject and any topic that the stream captures, `notifications.team.<name>` included (`bus.StreamSubjects`).
-`POST /v1/interests/subscribe` also takes a `notifications.` topic that no stream subject captures yet:
-it stores the topic in the interest record, puts it in the session consumer's filter where NATS accepts it as a filter subject, and answers 200 with a warning that names the topic (`contracts.UncapturedTopicWarning`).
+`POST /v1/interests/subscribe` also takes a registration that names a `notifications.` topic no stream subject captures yet, and answers 200.
 Nothing is delivered to the session on that topic until a stream subject captures it.
 Only `POST /v1/messages/publish` refuses an uncaptured `notifications.` topic by name, since no session would be delivered the message.
 A role lane stays on core NATS and is never a session's subscription:
@@ -6281,9 +6275,9 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
 
 - Every other `notifications.` topic that would deliver to no session is refused by name at `/v1/messages/publish`, where nothing would store it:
   a session receives only what its own consumer holds, so such a publish would reach nobody and leave its sender believing otherwise.
-  A registration naming one is not refused: `/v1/interests/subscribe` stores the topic with the registration's other topics, filters the session's consumer on it, answers 200 and names the topic in `warnings`.
+  A registration naming one is not refused: `/v1/interests/subscribe` answers 200.
   A subject a later build adds captures the topic from then on, and the consumer, which already filters on it, delivers what the stream stores on it.
-  Each plugin's explicit subscribe (`envoy_subscribe`, claude-envoy's `follow`) follows such a topic and shows that warning.
+  Each plugin's explicit subscribe (`envoy_subscribe`, claude-envoy's `follow`) follows such a topic and shows its warning.
   A role lane is the exception every one of them makes, registered by its holder through `/v1/roles/set` and carried on core NATS, and the one predicate they read says so (`bus.Client.ReachesNoSession`).
 
 - The listener subscribes to no topic of its own for a session, so it takes none off the bus:

@@ -1939,7 +1939,7 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 // a core publish of a topic it captures too, but under no Nats-Msg-Id, so a repeat is stored
 // again, and with no acknowledgement, so a store the stream refuses goes unreported. The
 // listener's publish route answers 400 to a core topic other than a role lane (ReachesNoSession)
-// only once a read of the subjects that started after the request asked leaves it uncaptured
+// once a read of the subjects that started after the request asked leaves it uncaptured
 // (SubjectsAsk.Uncaptured), since no session's consumer would hold it.
 func (c *Client) UsesCoreTransport(topic string) bool {
 	return strings.HasPrefix(topic, NotificationTopicPrefix) && !c.DeployedStreamCaptures(topic)
@@ -1996,9 +1996,9 @@ func (c *Client) AskDeployedSubjects() SubjectsAsk {
 }
 
 // Uncaptured reports whether the deployed stream leaves topic uncaptured, judged on a read of its
-// subjects that started after the ask (AskDeployedSubjects) and never on one made before it: a
-// subject a newer build added a moment before the request asked, inside streamSubjectsRereadGap of
-// the client's last read, captures the topic too. It is for a caller that refuses or warns on that
+// subjects that started after the ask (AskDeployedSubjects): a subject a newer build added a
+// moment before the request asked, inside streamSubjectsRereadGap of the client's last read,
+// captures the topic too. It is for a caller that refuses or warns on that
 // no: the listener's publish route refuses the publish (ReachesNoSession, cmd/listener's
 // publishHandler), and its registration warns that no stream subject captures the topic yet
 // (uncapturedTopics), keeping the topic either way. During a roll the newer build's start
@@ -2190,14 +2190,10 @@ func (c *Client) rereadForTransport(ctx context.Context) {
 // lane. A session receives what its own consumer delivers, which is what the stream stored, so a
 // publish to such a topic reaches nobody, now or later. POST /v1/messages/publish refuses such a
 // publish by name, since its sender is there to read the answer, and POST /v1/interests/subscribe
-// keeps such a topic in the registration and in the session consumer's filter and names it in a
-// warning (cmd/listener/api.go): a subject a later build adds captures it from then on, and a
-// topic out of the filter when it does would have the consumer move past what is stored on it.
-// Each takes that no only once a read of the subjects that started after the request asked agrees
-// (SubjectsAsk.Uncaptured), and takes none where no such read can be made, the one exception being
-// a client whose NATS user may not read the stream. A role lane is the exception the name's "no
-// session" turns on: it travels over core NATS to the listener, which forwards the message to its
-// holder's agent subject, where the stream stores it for the holder's own consumer.
+// names such a topic in a warning (cmd/listener/api.go). Each takes that no from
+// SubjectsAsk.Uncaptured. A role lane is the exception the name's "no session" turns on: it
+// travels over core NATS to the listener, which forwards the message to its holder's agent
+// subject, where the stream stores it for the holder's own consumer.
 //
 // It is a method for the same reason UsesCoreTransport is: the question is what the DEPLOYED
 // stream captures, not what this binary compiles. While two builds serve one NATS, the stream

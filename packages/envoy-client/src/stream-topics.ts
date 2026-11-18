@@ -111,8 +111,8 @@ export function reachesPrivateStreamSubject(
  * (`uncapturedTopics` in packages/envoy/cmd/listener/api.go), which during a roll hold the
  * subjects a newer build added. A topic only those capture, left out here, would stay out of the
  * session's consumer filter, and the consumer would move past every message stored on it. The
- * listener keeps a topic no stream subject captures in the row and in the filter, and warns
- * (`uncapturedTopicWarning` in `@legion/contracts`). No older listener this plugin works with
+ * listener keeps a topic no stream subject captures in the row (`uncapturedTopicWarning` in
+ * `@legion/contracts`). No older listener this plugin works with
  * refuses a registration for such a topic. A listener built from #2603 until it kept them leaves
  * the topic out with a warning of its own and stores the rest of the registration. One built from
  * #2446 (the oldest this plugin needs) until #2603 stores the topic and filters the consumer only
@@ -168,10 +168,9 @@ export function warningsForNamedTopics(
  * agent subject, then every topic it follows but a role's and one reaching a private stream
  * subject. A role's topic — a role lane, or a subject the host holds only while it holds a role
  * (`heldForRole`) — is the role claim's to open, so a process that restores this state without
- * the role follows none of it; another session's agent subject (a fork's parent, until the host
- * closes it), a failed-delivery lane, a controller notice lane, or a wildcard reaching one of
- * them, is not this session's to follow, and the listener would refuse it
- * (`reachesPrivateStreamSubject`).
+ * the role follows none of it; a topic reaching a private stream subject
+ * (`PRIVATE_STREAM_SUBJECTS`, `reachesPrivateStreamSubject`) is not this session's to follow, and
+ * the listener leaves it out of the registration.
  */
 export function replayFollowedSubjects(
   ownAgentSubject: string,
