@@ -30,7 +30,8 @@ func taskCost(t *testing.T, stdin string, args ...string) (int, string, string) 
 }
 
 // `legion task-cost` prints what the daemon's own reader answers for the window and the claim it
-// is given, and nothing of its own: its output is supervise's reading of the same lines.
+// is given, and nothing of its own: its output is supervise's reading of the same lines, and its
+// exit status is 0, or 1 for a reading the reader says holds no evidence (a claim no line names).
 func TestTaskCostPrintsTheDaemonsOwnReading(t *testing.T) {
 	for _, args := range [][]string{
 		{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T10:00:00Z"},
@@ -45,13 +46,49 @@ func TestTaskCostPrintsTheDaemonsOwnReading(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		wantCode := 0
+		if want.NoEvidence() {
+			wantCode = 1
+		}
 		code, stdout, stderr := taskCost(t, taskCostLog, args...)
-		if code != 0 || stderr != "" || stdout != want.Text() {
-			t.Errorf("legion task-cost %q = %d, stdout %q, stderr %q; want 0 and the reading %q", args, code, stdout, stderr, want.Text())
+		if code != wantCode || stderr != "" || stdout != want.Text() {
+			t.Errorf("legion task-cost %q = %d, stdout %q, stderr %q; want %d and the reading %q", args, code, stdout, stderr, wantCode, want.Text())
 		}
 	}
 	if _, stdout, _ := taskCost(t, taskCostLog, "--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T10:00:00Z"); !strings.Contains(stdout, "turns started: 1 (by a task number 1, with no cause 0)\n") {
 		t.Errorf("legion task-cost over the three lines printed %q, want the turn its task started", stdout)
+	}
+}
+
+// A window that holds no daemon line, of the claim asked for — an empty standard input, as a
+// wrong kubectl selector pipes, a window the log does not reach, a claim no line names — is
+// evidence of nothing: `legion task-cost` prints the reading with each of its three verdicts as
+// "no evidence", none as a pass, and exits 1, so a check reading the command cannot take a reading
+// of nothing for three passes (review handoff v1, costreading.go:758). Exit 2 stays the usage
+// error's, for arguments the command cannot take.
+//
+// The negative control is the window that holds the three lines: the command exits 0, and its
+// verdicts are judged, each a pass.
+func TestTaskCostExitsOneWhenTheWindowHoldsNoDaemonLine(t *testing.T) {
+	for _, tc := range []struct {
+		name, stdin string
+		args        []string
+	}{
+		{"an empty standard input", "", []string{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T10:00:00Z"}},
+		{"a window the log does not reach", taskCostLog, []string{"--from", "2026-11-13T09:00:00Z", "--to", "2026-11-13T10:00:00Z"}},
+		{"a claim no line names", taskCostLog, []string{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T10:00:00Z",
+			"--claim", "legion-infra-infra-2811-implementer"}},
+	} {
+		code, stdout, stderr := taskCost(t, tc.stdin, tc.args...)
+		if code != 1 || stderr != "" || !strings.Contains(stdout, "daemon lines in the window: 0\n") ||
+			strings.Count(stdout, ": no evidence\n") != 3 || strings.Contains(stdout, ": pass\n") {
+			t.Errorf("%s: legion task-cost %q = %d, stdout %q, stderr %q; want 1 and each of the three verdicts %q, none a pass",
+				tc.name, tc.args, code, stdout, stderr, "no evidence")
+		}
+	}
+	code, stdout, stderr := taskCost(t, taskCostLog, "--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T10:00:00Z")
+	if code != 0 || stderr != "" || strings.Contains(stdout, "no evidence") || strings.Count(stdout, ": pass\n") != 3 {
+		t.Errorf("legion task-cost over the three lines = %d, stdout %q, stderr %q; want 0 and its three verdicts judged, each a pass", code, stdout, stderr)
 	}
 }
 

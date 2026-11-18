@@ -43,6 +43,10 @@ kubectl -n legion logs deploy/legion-<project>-daemon -c legion --since-time <fr
 The command reads the log on its standard input.
 It writes the figures on its standard output.
 
+The command exits with status 0 when it gives a reading.
+It exits with status 1 when the window holds no line of the daemon, or no line of the claim that `--claim` names, and when it cannot read its standard input.
+It exits with status 2 when it cannot use its arguments, and then writes its usage.
+
 ## How far back the reading goes
 
 The command reads only the log that the node keeps for the daemon's container, `legion`.
@@ -80,14 +84,24 @@ So each figure that names a task names its claim too.
 
   - A turn with no cause is the turn of a message, or the worker's own turn.
 
-  - The daemon writes `supervise: a turn started` and `supervise: a turn ended` for each turn.
+  - The daemon writes `supervise: a turn started` when a turn starts.
+    It writes `supervise: a turn ended` when the worker's agent says that the turn ended.
     The `task` attribute of these lines is the cause.
     A line without a `task` attribute is a turn with no cause.
+
+  - A turn that the death of its process cuts off has no `supervise: a turn ended` line, and neither has a turn that the daemon cuts off when it stops the process and takes the task back.
+    So `turns ended` can be smaller than `turns started`.
 
   - The worker's report of a turn writes one more `supervise: a turn ended` line, with a `sequence` attribute.
     The command does not count that line.
 
+  - The daemon gives the first turn after an accepted take to that take.
+    When the worker's report of that turn names no task, that turn was the turn of something else.
+    The daemon then puts the take back to wait for its own turn, and writes `supervise: a turn's report names no task of the take whose turn it was given; the take awaits its turn again`.
+    The command counts the turn that the daemon put back as a turn with no cause, at its start and at its end, although these two lines name the task.
+
 - `turns each number took` is, for each task, the number of turns that started with that task as their cause.
+  A turn that the daemon put back does not count.
   The expected value is 1.
 
 - `numbers written by origin` is the number of tasks that the daemon wrote as values, by the origin of each task.
@@ -118,29 +132,41 @@ So each figure that names a task names its claim too.
   The daemon answers that take again, with `repeat` set to `true`, and the command does not count it.
 
 - `numbers owed that no take reached within the first bound` counts each time that the daemon owed a worker a task and the worker did not take the task within the first bound, `worker_take_timeout_seconds`, of the daemon's first wait.
-  Below it, one line gives each such task with its claim: when the clock of the task last started, when the bound passed, and what came after.
+  Below it, one line gives each such time with its claim and its task: when the clock of the task last started, when the bound passed, and what came after.
   This is a stranded task, which the design of task delivery forbids.
-  The third verdict fails for each of these tasks too.
+  The third verdict fails for each of these times too.
   The production check of task delivery, check c9, reads this figure as **zero**.
 
   - The daemon owes a task from the time that it writes the task, unless a take of the task that the daemon accepted still stands.
     The daemon stops owing the task when it accepts a take of the task, when it answers a take `dropped`, when the task finishes, when its value is deleted, and when the daemon writes a newer task to the claim.
 
+  - A take-back of the task, `supervise: a task was taken back`, makes the daemon owe the task again, as a new time owed.
+    This is true also when the daemon does not write the task again.
+    For example, the daemon takes the task back from a process that it stopped, and the next process of the worker reads the task as the daemon last wrote it.
+
   - The clock of the task runs only during the daemon's first wait: the time in which the worker has seen the task and can take it.
     The clock starts at the line `supervise: a task value was reported seen` for the latest value that the daemon wrote for the task.
+    That line must give the same `revision` as the line of the write, and also the same `epoch` when it gives an `epoch`.
+    The epoch changes when the task bucket is created again, and the revisions then start again at 1.
     A new write of the task stops the clock until the worker reports the new value seen.
+    A report of another value also stops the clock, for example a late report of a value from the bucket before it was created again.
 
   - A turn of the worker, `supervise: a turn started`, stops the clock.
     The end of that turn, `supervise: a turn ended`, starts the clock again, and the bound starts again from zero.
-    A take-back of the task, `supervise: a task was taken back`, also ends the turn of the claim.
+    A take-back of the task also ends the turn of the claim.
 
   - A take that the daemon answered `refused` stops the clock until the daemon writes the task again, for example when the hold ends.
     The clock then starts again at the next report that the worker saw the task.
     A take that the daemon could not decide or record (`supervise: a take could not be decided or recorded; …`) and a take-back of the task stop the clock in the same way.
+    The next registration of the worker's agent also ends each of these stops.
 
   - The death of the worker's process, `supervise: process died`, stops the clock until the next registration of the worker's agent, `supervise: an agent registered`.
 
-  - A start of the daemon, `legion daemon started`, stops the clock as of the line before it, until the worker's next act in the log: a report that it saw the task, a take, a turn, or a registration.
+  - A registration is the agent of a new process, which has not seen the task yet.
+    The daemon does not charge a new process for a task that only the process before it saw.
+    So after a registration, the clock starts again only at the report of the new process that it saw the task.
+
+  - A start of the daemon, `legion daemon started`, stops the clock as of the line before it, until the worker's next act in the log: a report that it saw the task, a take, a turn, a report that put a take back, or a registration.
     A daemon that starts with a report of a seen task from its database writes the task again at the first bound, and charges nobody.
     So a clock whose bound ends at a new write of the task has not passed the bound.
 
@@ -156,7 +182,8 @@ So each figure that names a task names its claim too.
 
   - The figure can also miss a task.
     When the daemon stops a process during a turn for a reason other than a death, and takes back no task, the log has no line for the end of that turn.
-    The clock then starts again only at the end of the next turn of that claim, or at its next registration.
+    The clock then starts again only at the end of the next turn of that claim, or at the first report of the claim's next process that it saw the task.
+    A take-back of a task that the daemon last wrote before `<from>` opens no time owed that the command can measure, because the command does not know which revision the worker must report seen.
     The shim's hello has no line in the log, so after a start of the daemon the clock starts again only at the worker's next act that the log shows.
 
 - `numbers finished, by what finished each` is the number of tasks that finished.
@@ -176,13 +203,20 @@ So each figure that names a task names its claim too.
 - `retirements` is the number of charges that retired a worker's process.
   The daemon retires the process at the worker's limit of charges.
 
-- The three `verdict` lines each give `pass` or `fail`.
+- The three `verdict` lines each give `pass`, `fail` or `no evidence`.
   A verdict that fails lists each task that fails it, below it.
 
+  - Each verdict gives `no evidence` when the window holds no line of the daemon, or no line of the claim that `--claim` names.
+    A wrong selector in the `kubectl` command, or a window that the node no longer keeps, gives this result.
+    A reading with no evidence passes no verdict, and the command exits with status 1.
+
   1. `no charge of a worker whose turn began within the second bound after its take`.
-     It fails for a charge made while an accepted take stood, if a turn of that claim started after that take and no later than the charge's limit.
-     For a `turn-start` charge, the limit is the second bound after the take.
+     It fails for a charge made while an accepted take stood, if a turn of that claim started after the second wait of that take began, and no later than the charge's limit.
+     The second wait begins at the latest of these times: the daemon accepts the take; the daemon puts the take back; a turn that ran while the take waited for its turn ends; the worker acts for the first time after a start of the daemon.
+     So a turn that the daemon gave to the take and then put back is not a turn within the second bound.
+     For a `turn-start` charge, the limit is the second bound after the second wait began.
      For every other charge, the limit is the charge itself.
+     When the second wait began after the take, the line of the failure gives that time too.
 
   2. `no write of origin resume to a claim that finished its last task in its session`.
      It fails for each task of origin `resume` written with `finished` set to `true`.
@@ -245,7 +279,7 @@ The sample shows these points:
 
 - The daemon refused the first take of task 4 because of a hold.
   The refusal stopped the clock of task 4 until the daemon wrote task 4 again when the hold ended.
-  The tester took task 4 one second after it saw that write, so task 4 is not in the figure of the numbers owed.
+  The tester took task 4 half a second after it reported that new write seen, so task 4 is not in the figure of the numbers owed.
 
 - The reviewer saw task 1, and then ran a turn of its own for nearly eight minutes before it took task 1.
   The turn stopped the clock, so the figure does not count task 1, although the take came more than a first bound after the reviewer saw the task.

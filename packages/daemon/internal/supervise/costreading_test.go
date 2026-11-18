@@ -273,11 +273,15 @@ func TestDocExampleTaskCost(t *testing.T) {
 
 // jsonHarness is waitsHarness with the machine's log written as the daemon writes it — slog's
 // JSON handler at its default level (cmd/legion's start) — into log, each line stamped with the
-// harness clock's time rather than the wall clock's, so a window reads the walk.
-func jsonHarness(t *testing.T) (*harness, *testlog.Buffer) {
+// harness clock's time rather than the wall clock's, so a window reads the walk. set, when it is
+// given, changes the machine's deps before it is built.
+func jsonHarness(t *testing.T, set ...func(*Deps)) (*harness, *testlog.Buffer) {
 	t.Helper()
 	h := newBareHarness(t)
 	withWaits(&h.deps)
+	for _, change := range set {
+		change(&h.deps)
+	}
 	log := &testlog.Buffer{}
 	h.deps.Log = slog.New(logRecorder{
 		Handler: slog.NewJSONHandler(log, &slog.HandlerOptions{ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
@@ -510,7 +514,9 @@ func TestTaskCostLogEndsATakeWhenANewerNumberIsWritten(t *testing.T) {
 }
 
 // costLines is the line builders of a reading built line by line from at: any line, a value write
-// of a number at a revision, its seen report, a take's answer, and a turn line.
+// of a number at a revision, its seen report, the two of an epoch the line names, a take's answer,
+// and a turn line. A write and a seen report that name no epoch are an older daemon's lines, which
+// the reading matches by revision alone.
 type costLines struct {
 	t  *testing.T
 	at time.Time
@@ -527,6 +533,15 @@ func (b costLines) written(offset time.Duration, claim string, task, revision ui
 
 func (b costLines) seen(offset time.Duration, claim string, task, revision uint64) string {
 	return b.line(offset, taskSeenLine, claim, "task", task, "revision", revision)
+}
+
+func (b costLines) writtenIn(offset time.Duration, claim string, task uint64, epoch string, revision uint64, cause string) string {
+	return b.line(offset, valueWrittenLine, claim, "task", task, "origin", OriginPhaseStart, "finished", false,
+		"epoch", epoch, "revision", revision, "cause", cause)
+}
+
+func (b costLines) seenIn(offset time.Duration, claim string, task uint64, epoch string, revision uint64) string {
+	return b.line(offset, taskSeenLine, claim, "task", task, "epoch", epoch, "revision", revision)
 }
 
 func (b costLines) answered(offset time.Duration, claim string, task uint64, outcome TakeOutcome, hold string) string {
@@ -553,13 +568,25 @@ func (b costLines) readCost(lines []string) TaskCost {
 // its own. Listed: a number seen and never taken; one seen and taken only after its bound, which
 // the late take does not undo, nor a turn that began after the bound; one seen, refused, written
 // again at the hold's end and seen again, once, from that seen report; one taken back, written
-// again and seen, and never taken again; and one seen, whose process died, from the next
-// registration. Not listed: a number taken after a turn that ran longer than the bound between
-// its seen report and its take; one written, and written again at each bound, but never reported
-// seen, which is the unseen rewrite's case; one whose clock started a bound before the window's
-// end, so its bound ends there; one taken at its bound; one a newer number replaced, or whose
-// value was deleted, within its bound; one whose clock a death stopped until a registration it
-// was taken soon after; and one a take the daemon could not decide stopped.
+// again and seen, and never taken again; one seen, whose process died, from its new process's
+// seen report after the next registration; one taken, then taken back from a process the daemon
+// stopped, with no new write, and never taken by the process relaunched, from that process's seen
+// report (review handoff v1, costreading.go:476); and one refused, whose process died before the
+// hold ended, and never taken by the process relaunched, which the refusal no longer holds off,
+// from that process's seen report. Not listed: a number taken after a turn that ran longer than
+// the bound between its seen report and its take; one written, and written again at each bound,
+// but never reported seen, which is the unseen rewrite's case; one whose clock started a bound
+// before the window's end, so its bound ends there; one taken at its bound; one a newer number
+// replaced, or whose value was deleted, within its bound; one whose clock a death stopped until a
+// registration it was taken soon after; one a take the daemon could not decide stopped; and one
+// seen by a process that died, whose relaunched process never reported it seen, which a new
+// process is not charged for (decision 6).
+//
+// The negative controls: with a take-back that opens no new time owed, the stopped process's task
+// is not listed; with a registration that leaves a take-back's or a refusal's stop standing,
+// neither relaunched process's task is; and with a registration that keeps the seen report of the
+// process before it, and starts the clock from the registration, the task its relaunched process
+// never saw is listed.
 func TestTaskCostLogListsEachNumberNoTakeReachedWithinTheFirstBound(t *testing.T) {
 	b := costLines{t: t, at: time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)}
 	lines := []string{
@@ -593,6 +620,26 @@ func TestTaskCostLogListsEachNumberNoTakeReachedWithinTheFirstBound(t *testing.T
 		b.seen(0, "died-and-untaken", 1, 1),
 		b.line(time.Minute, processDiedLine, "died-and-untaken", "incarnation", "pod/1", "observed", "gone"),
 		b.line(20*time.Minute, agentRegisteredLine, "died-and-untaken", "generation", 2, "session", "ses_2"),
+		b.seen(20*time.Minute+time.Second, "died-and-untaken", 1, 1),
+
+		b.written(0, "taken-back-from-a-stopped-process", 1, 1, TaskValueQueued),
+		b.seen(0, "taken-back-from-a-stopped-process", 1, 1),
+		b.answered(time.Second, "taken-back-from-a-stopped-process", 1, TakeOutcomeAccepted, ""),
+		b.line(2*time.Minute, takenBackLine, "taken-back-from-a-stopped-process", "task", 1, "cause", takenBackRetired),
+		b.line(3*time.Minute, agentRegisteredLine, "taken-back-from-a-stopped-process", "generation", 2, "session", "ses_2"),
+		b.seen(3*time.Minute+time.Second, "taken-back-from-a-stopped-process", 1, 1),
+
+		b.written(0, "refused-and-relaunched", 1, 1, TaskValueQueued),
+		b.seen(time.Second, "refused-and-relaunched", 1, 1),
+		b.answered(2*time.Second, "refused-and-relaunched", 1, TakeOutcomeRefused, HoldIssueInTurn),
+		b.line(4*time.Minute, processDiedLine, "refused-and-relaunched", "incarnation", "pod/1", "observed", "gone"),
+		b.line(5*time.Minute, agentRegisteredLine, "refused-and-relaunched", "generation", 2, "session", "ses_2"),
+		b.seen(5*time.Minute+time.Second, "refused-and-relaunched", 1, 1),
+
+		b.written(0, "relaunched-and-unseen", 1, 1, TaskValueQueued),
+		b.seen(0, "relaunched-and-unseen", 1, 1),
+		b.line(time.Minute, processDiedLine, "relaunched-and-unseen", "incarnation", "pod/1", "observed", "gone"),
+		b.line(2*time.Minute, agentRegisteredLine, "relaunched-and-unseen", "generation", 2, "session", "ses_2"),
 
 		b.written(0, "taken-after-a-turn", 1, 1, TaskValueQueued),
 		b.seen(time.Second, "taken-after-a-turn", 1, 1),
@@ -625,6 +672,7 @@ func TestTaskCostLogListsEachNumberNoTakeReachedWithinTheFirstBound(t *testing.T
 		b.seen(0, "died", 1, 1),
 		b.line(time.Minute, processDiedLine, "died", "incarnation", "pod/1", "observed", "gone"),
 		b.line(20*time.Minute, agentRegisteredLine, "died", "generation", 2, "session", "ses_2"),
+		b.seen(20*time.Minute+time.Second, "died", 1, 1),
 		b.answered(23*time.Minute, "died", 1, TakeOutcomeAccepted, ""),
 
 		b.written(0, "undecided", 1, 1, TaskValueQueued),
@@ -633,12 +681,14 @@ func TestTaskCostLogListsEachNumberNoTakeReachedWithinTheFirstBound(t *testing.T
 	}
 	cost := b.readCost(lines)
 	want := []string{
-		"died-and-untaken task 1: the clock started 2026-11-14T09:20:00.000Z, the bound passed 2026-11-14T09:25:00.000Z, still owed at the window's end",
+		"died-and-untaken task 1: the clock started 2026-11-14T09:20:01.000Z, the bound passed 2026-11-14T09:25:01.000Z, still owed at the window's end",
 		"late-taken task 1: the clock started 2026-11-14T09:00:00.000Z, the bound passed 2026-11-14T09:05:00.000Z, taken 2026-11-14T09:05:01.000Z",
 		"passed-before-a-turn task 1: the clock started 2026-11-14T09:00:00.000Z, the bound passed 2026-11-14T09:05:00.000Z, taken 2026-11-14T09:08:00.000Z",
 		"refused task 1: the clock started 2026-11-14T09:30:01.000Z, the bound passed 2026-11-14T09:35:01.000Z, still owed at the window's end",
+		"refused-and-relaunched task 1: the clock started 2026-11-14T09:05:01.000Z, the bound passed 2026-11-14T09:10:01.000Z, still owed at the window's end",
 		"seen-and-untaken task 1: the clock started 2026-11-14T09:00:01.000Z, the bound passed 2026-11-14T09:05:01.000Z, still owed at the window's end",
 		"taken-back task 1: the clock started 2026-11-14T09:02:01.000Z, the bound passed 2026-11-14T09:07:01.000Z, still owed at the window's end",
+		"taken-back-from-a-stopped-process task 1: the clock started 2026-11-14T09:03:01.000Z, the bound passed 2026-11-14T09:08:01.000Z, still owed at the window's end",
 	}
 	if !slices.Equal(cost.Unreached, want) {
 		t.Fatalf("the numbers owed that no take reached within the first bound are\n%s\nwant\n%s",
@@ -657,7 +707,7 @@ func TestTaskCostLogListsEachNumberNoTakeReachedWithinTheFirstBound(t *testing.T
 	text := cost.Text()
 	for _, printed := range []string{
 		"first bound 5m0s\n",
-		"numbers taken: 7\nnumbers owed that no take reached within the first bound: 6\n  " + strings.Join(want, "\n  ") + "\nnumbers finished",
+		"numbers taken: 8\nnumbers owed that no take reached within the first bound: 8\n  " + strings.Join(want, "\n  ") + "\nnumbers finished",
 		"verdict: each number taken once for each time the record owed it: fail\n  " + strings.Join(verdict, "\n  ") + "\n",
 	} {
 		if !strings.Contains(text, printed) {
@@ -701,6 +751,245 @@ func TestTaskCostLogStopsTheClockAtADaemonsStartUntilTheWorkersNextAct(t *testin
 	if !slices.Equal(cost.Unreached, want) {
 		t.Fatalf("the numbers owed that no take reached within the first bound are\n%s\nwant\n%s",
 			strings.Join(cost.Unreached, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// A seen report starts a number's clock only where it names the claim's latest write: that
+// revision of that epoch. A bucket created again counts its revisions from 1 once more, so a late
+// report of the bucket before it — revision 1 of the old epoch, which the daemon logs since it is
+// of another epoch than the revision it recorded seen — is no report of revision 1 of the new
+// one: it leaves the new write unseen, as the machine reads it, which charges nobody, so the clock
+// stops and the number is not listed. The new epoch's own report starts the clock, and a number
+// its worker then leaves untaken is listed from that report. A seen report that names no epoch is
+// an older daemon's, matched by its revision alone.
+//
+// The negative control is the match by revision alone, as the reading made it before the seen
+// report named its epoch: the late report of the old bucket starts the clock again, and the
+// number whose new write its worker reported seen and then saw replaced by the old one is listed.
+func TestTaskCostLogMatchesASeenReportToItsWriteByEpochAndRevision(t *testing.T) {
+	const old, created = "2026-11-14T08:00:00.123456789Z", "2026-11-14T09:01:00.000000001Z"
+	b := costLines{t: t, at: time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)}
+	cost := b.readCost([]string{
+		b.writtenIn(0, "created-again", 1, old, 1, TaskValueQueued),
+		b.seenIn(500*time.Millisecond, "created-again", 1, old, 1),
+		b.writtenIn(time.Minute, "created-again", 1, created, 1, TaskValueRepair),
+		b.seenIn(time.Minute+500*time.Millisecond, "created-again", 1, created, 1),
+		b.seenIn(time.Minute+time.Second, "created-again", 1, old, 1),
+
+		b.writtenIn(0, "created-again-and-seen", 1, old, 1, TaskValueQueued),
+		b.seenIn(500*time.Millisecond, "created-again-and-seen", 1, old, 1),
+		b.writtenIn(time.Minute, "created-again-and-seen", 1, created, 1, TaskValueRepair),
+		b.seenIn(time.Minute+time.Second, "created-again-and-seen", 1, created, 1),
+
+		b.writtenIn(0, "an-older-daemons-report", 1, old, 1, TaskValueQueued),
+		b.seen(time.Second, "an-older-daemons-report", 1, 1),
+	})
+	want := []string{
+		"an-older-daemons-report task 1: the clock started 2026-11-14T09:00:01.000Z, the bound passed 2026-11-14T09:05:01.000Z, still owed at the window's end",
+		"created-again-and-seen task 1: the clock started 2026-11-14T09:01:01.000Z, the bound passed 2026-11-14T09:06:01.000Z, still owed at the window's end",
+	}
+	if !slices.Equal(cost.Unreached, want) {
+		t.Fatalf("the numbers owed that no take reached within the first bound are\n%s\nwant\n%s",
+			strings.Join(cost.Unreached, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// The reader reads the daemon's own put-back (decision 8): a run the daemon gave an accepted take,
+// whose report named no task, was no turn of that number. Walked through the machine and its log
+// as the daemon writes it, both ways the report can come — after the run's end frame, and ahead of
+// it while the run goes on — that run counts as a turn of no cause, its start and its end, so the
+// number took one turn, its own. The charge the second wait then makes one bound after the
+// put-back, or after the end of the run the take waited behind, is no charge of a worker whose
+// turn began within the second bound, though the run began ten seconds after the take. The take
+// taken back at that charge is owed a second time, so its second take is no take too many, and no
+// time owed went a first bound untaken.
+//
+// The negative control is the put-back line not read: the number took two turns, and the run the
+// daemon gave the take is read as a turn within the second bound of a charge made after it.
+func TestTaskCostLogReadsTheMachinesOwnPutBack(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// putBack walks the claim from the start of the run the daemon gave the take to the take
+		// awaiting its turn on an idle claim, with the put-back between.
+		putBack func(h *harness)
+	}{
+		{"the report after the run's end", func(h *harness) {
+			h.advance(10 * time.Minute)
+			h.mustQuiet(StreamTurnEnd{Claim: testToken})
+			h.advance(time.Minute)
+			if err := h.reportTurn(0, nil); err != nil {
+				h.t.Fatalf("report the run as no task's: %v", err)
+			}
+		}},
+		{"the report ahead of the run's end", func(h *harness) {
+			h.advance(time.Minute)
+			if err := h.reportTurn(0, nil); err != nil {
+				h.t.Fatalf("report the run as no task's: %v", err)
+			}
+			h.advance(10 * time.Minute)
+			h.mustQuiet(StreamTurnEnd{Claim: testToken})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, log := jsonHarness(t, currentPlugin)
+			h.manualTakes()
+			h.reach(StateReady)
+			h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", ID: "outbox:1", Row: 1,
+				Phase: phase.Implementing, Generation: 1})
+			h.mustTake()
+			h.advance(10 * time.Second)
+			h.must(StreamTurnStart{Claim: testToken})
+			tc.putBack(h)
+			if p := h.pending(); !p.awaitsTurn() {
+				t.Fatalf("after the put-back the task is %+v, want its take awaiting its turn", p)
+			}
+			h.advance(turnStartBound)
+			h.wantCharges(WaitTurnStart)
+			h.mustTake()
+			h.advance(30 * time.Second)
+			h.must(StreamTurnStart{Claim: testToken})
+			h.advance(5 * time.Minute)
+			h.must(StreamTurnEnd{Claim: testToken})
+			if p := h.claim().Pending; p != nil {
+				t.Fatalf("pending %+v, want the task finished by its own turn's report", p)
+			}
+			if n := strings.Count(log.String(), `"msg":"`+notTheTakesTurnLine+`"`); n != 1 {
+				t.Fatalf("the log holds %d put-back lines, want one", n)
+			}
+
+			cost, err := ReadTaskCost(strings.NewReader(log.String()), TaskCostArgs{From: epoch.Add(-time.Hour), To: h.clock.Now().Add(time.Second), Take: takeBound})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cost.TurnsStarted != (TurnCauses{Task: 1, None: 1}) || cost.TurnsEnded != (TurnCauses{Task: 1, None: 1}) {
+				t.Errorf("turns started %+v and ended %+v, want one by a task number and the put-back run with no cause each", cost.TurnsStarted, cost.TurnsEnded)
+			}
+			if want := []TaskTurns{{string(testToken), 1, 1}}; !slices.Equal(cost.TurnsOfTask, want) {
+				t.Errorf("turns of each number %+v, want %+v", cost.TurnsOfTask, want)
+			}
+			if !maps.Equal(cost.ChargesByWait, map[string]int{WaitTurnStart: 1}) {
+				t.Errorf("charges by wait %v, want the one charge of the second wait", cost.ChargesByWait)
+			}
+			if len(cost.ChargedWithinBound) != 0 || len(cost.TakenNotOncePerOwed) != 0 || len(cost.Unreached) != 0 {
+				t.Errorf("the first verdict fails on %q, the third on %q, and %q were owed past the first bound; want neither verdict to fail and no number owed so",
+					cost.ChargedWithinBound, cost.TakenNotOncePerOwed, cost.Unreached)
+			}
+		})
+	}
+}
+
+// Verdict 1 reads a take's second wait from where the machine begins it (secondWaitNow): the
+// latest of the take's acceptance, its put-back, the end of a turn that ran while it awaited its
+// turn, and the worker's first act after a daemon's start. A charge of the second wait is a charge
+// of a worker whose turn began within the second bound wherever a turn began within one bound of
+// that start, however long after the acceptance, and it is listed with the start it was judged
+// from. Here the take's own turn began within one bound of each — of the worker's first act after
+// a daemon's start, a take it sent again; of its put-back; and of the end of the run it waited
+// behind after a put-back that came ahead of that run's end — and the worker was charged all the
+// same, which the daemon must never do.
+//
+// The negative controls are the second wait begun at the acceptance alone, where the put-back's
+// charge is listed against the run the put-back gave back and the other two are not listed, at
+// the put-back but never at the end of the run it waited behind, and at no act after a daemon's
+// start: each leaves its charge unlisted or listed against the wrong turn.
+func TestTaskCostLogFirstVerdictReadsTheSecondWaitFromWhereTheMachineBeginsIt(t *testing.T) {
+	b := costLines{t: t, at: time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)}
+	taken := func(claim string) []string {
+		return []string{
+			b.written(0, claim, 1, 1, TaskValueQueued),
+			b.seen(0, claim, 1, 1),
+			b.answered(time.Second, claim, 1, TakeOutcomeAccepted, ""),
+		}
+	}
+	taskTurn := func(offset time.Duration, msg, claim string) string {
+		return b.line(offset, msg, claim, "generation", 1, "task", 1)
+	}
+	putBack := func(offset time.Duration, claim string) string {
+		return b.line(offset, notTheTakesTurnLine, claim, "task", 1)
+	}
+	charged := func(offset time.Duration, claim string) string {
+		return b.line(offset, promptFailureLine, claim, "wait", WaitTurnStart, "bound", int64(turnStartBound))
+	}
+	var lines []string
+	lines = append(lines, taken("after-a-daemon-start")...)
+	lines = append(lines,
+		b.line(30*time.Minute, DaemonStartedLine, "", "project", "INFRA"),
+		b.line(31*time.Minute, takeAnsweredLine, "after-a-daemon-start", "task", 1, "outcome", TakeOutcomeAccepted, "hold", "", "repeat", true),
+		taskTurn(32*time.Minute, turnStartedLine, "after-a-daemon-start"),
+		charged(56*time.Minute, "after-a-daemon-start"))
+	lines = append(lines, taken("put-back")...)
+	lines = append(lines,
+		taskTurn(10*time.Second, turnStartedLine, "put-back"),
+		taskTurn(20*time.Minute, turnEndedLine, "put-back"),
+		putBack(21*time.Minute, "put-back"),
+		taskTurn(22*time.Minute, turnStartedLine, "put-back"),
+		charged(46*time.Minute, "put-back"))
+	lines = append(lines, taken("in-turn-hold")...)
+	lines = append(lines,
+		taskTurn(10*time.Second, turnStartedLine, "in-turn-hold"),
+		putBack(time.Minute, "in-turn-hold"),
+		taskTurn(30*time.Minute, turnEndedLine, "in-turn-hold"),
+		taskTurn(31*time.Minute, turnStartedLine, "in-turn-hold"),
+		charged(55*time.Minute, "in-turn-hold"))
+	cost := b.readCost(lines)
+	want := []string{
+		"after-a-daemon-start task 1: taken 2026-11-14T09:00:01.000Z, its second wait begun again 2026-11-14T09:31:00.000Z, a turn started 2026-11-14T09:32:00.000Z, charged 2026-11-14T09:56:00.000Z (wait turn-start, bound 25m0s)",
+		"put-back task 1: taken 2026-11-14T09:00:01.000Z, its second wait begun again 2026-11-14T09:21:00.000Z, a turn started 2026-11-14T09:22:00.000Z, charged 2026-11-14T09:46:00.000Z (wait turn-start, bound 25m0s)",
+		"in-turn-hold task 1: taken 2026-11-14T09:00:01.000Z, its second wait begun again 2026-11-14T09:30:00.000Z, a turn started 2026-11-14T09:31:00.000Z, charged 2026-11-14T09:55:00.000Z (wait turn-start, bound 25m0s)",
+	}
+	if !slices.Equal(cost.ChargedWithinBound, want) {
+		t.Fatalf("the first verdict fails on\n%s\nwant\n%s", strings.Join(cost.ChargedWithinBound, "\n"), strings.Join(want, "\n"))
+	}
+	if want := []TaskTurns{{"after-a-daemon-start", 1, 1}, {"in-turn-hold", 1, 1}, {"put-back", 1, 1}}; !slices.Equal(cost.TurnsOfTask, want) {
+		t.Errorf("turns of each number %+v, want %+v: each put-back run is a turn of no cause", cost.TurnsOfTask, want)
+	}
+}
+
+// A window that holds no daemon line, of the claim asked for, is evidence of nothing: an empty
+// log, a window the log does not reach, a claim no line of it names. The reading says so
+// (NoEvidence) and prints each of R9's three verdicts as "no evidence", none as a pass, so check
+// c9 cannot read a reading of nothing as three passes (review handoff v1, costreading.go:758).
+//
+// The negative control is the same window with one line of the claim in it: the verdicts are
+// judged, and pass.
+func TestTaskCostLogWithNoLineInTheWindowIsNoEvidence(t *testing.T) {
+	const claim = "legion-infra-infra-2811-tester"
+	b := costLines{t: t, at: time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)}
+	line := b.written(time.Minute, claim, 1, 1, TaskValueQueued) + "\n"
+	window := TaskCostArgs{From: b.at, To: b.at.Add(time.Hour), Take: takeBound}
+	dayBefore, otherClaim := window, window
+	dayBefore.From, dayBefore.To = window.From.Add(-24*time.Hour), window.To.Add(-24*time.Hour)
+	otherClaim.Claim = "legion-infra-infra-2811-implementer"
+	verdicts := func(word string) string {
+		return "verdict: no charge of a worker whose turn began within the second bound after its take: " + word + "\n" +
+			"verdict: no write of origin resume to a claim that finished its last task in its session: " + word + "\n" +
+			"verdict: each number taken once for each time the record owed it: " + word + "\n"
+	}
+	read := func(log string, args TaskCostArgs) TaskCost {
+		t.Helper()
+		cost, err := ReadTaskCost(strings.NewReader(log), args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cost
+	}
+	for _, tc := range []struct {
+		name, log string
+		args      TaskCostArgs
+	}{
+		{"an empty log", "", window},
+		{"a window the log does not reach", line, dayBefore},
+		{"a claim no line names", line, otherClaim},
+	} {
+		cost := read(tc.log, tc.args)
+		text := cost.Text()
+		if !cost.NoEvidence() || !strings.Contains(text, "daemon lines in the window: 0\n") || !strings.HasSuffix(text, verdicts("no evidence")) {
+			t.Errorf("%s: the reading has no evidence %v and prints\n%s\nwant no evidence, no line, and each verdict %q", tc.name, cost.NoEvidence(), text, "no evidence")
+		}
+	}
+	cost := read(line, window)
+	if text := cost.Text(); cost.NoEvidence() || !strings.HasSuffix(text, verdicts("pass")) {
+		t.Errorf("one line in the window: the reading has no evidence %v and prints\n%s\nwant its verdicts judged, each a pass", cost.NoEvidence(), text)
 	}
 }
 

@@ -20,7 +20,8 @@ no take within the first bound of the daemon's first wait, and finished, the cha
 retirements, and three verdicts. --claim reads one claim alone. --take-timeout is the
 deployment's first bound, worker_take_timeout_seconds (300 when not given), which the log does not
 always name. Every figure is a lower bound but the owed numbers, which can also count too many
-(the page says when): the log reaches back only as far as the node kept it.
+(the page says when): the log reaches back only as far as the node kept it. A window that holds
+no daemon line, of the claim asked for, prints each verdict as "no evidence" and exits 1.
 
   kubectl -n legion logs deploy/legion-<project>-daemon -c legion --since-time <from> | legion task-cost --from <from> --to <to>`
 
@@ -31,7 +32,11 @@ var taskCostStdin io.Reader = os.Stdin
 // runTaskCost is `legion task-cost`, the documentation site's cost reading
 // (docs/site/src/content/docs/legion/task-delivery-cost.md): it parses its arguments and reads the
 // log with the daemon's own reader (supervise.ParseTaskCostArgs, supervise.ReadTaskCost), and
-// prints what that reader answers, adding nothing of its own.
+// prints what that reader answers, adding nothing of its own. Its exit status is 2 for arguments
+// it cannot take, as every command's usage error is, and 1 where it gives no reading a check can
+// pass: a log it could not read, and a window that holds no daemon line (TaskCost.NoEvidence),
+// whose verdicts it prints as "no evidence". A reading of nothing is a failure of the input, not
+// of the arguments, and a check reading the command must never take it for a pass.
 func runTaskCost(_ context.Context, args []string, stdout, stderr io.Writer) int {
 	parsed, err := supervise.ParseTaskCostArgs(args)
 	if errors.Is(err, flag.ErrHelp) {
@@ -48,5 +53,8 @@ func runTaskCost(_ context.Context, args []string, stdout, stderr io.Writer) int
 		return 1
 	}
 	fmt.Fprint(stdout, cost.Text())
+	if cost.NoEvidence() {
+		return 1
+	}
 	return 0
 }
