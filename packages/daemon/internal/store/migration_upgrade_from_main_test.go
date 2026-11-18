@@ -47,15 +47,14 @@ import (
 // dispatch://INFRA-3274's kind list with the merge-queue read and removal (20261114031356), which
 // stand above all of them and are applied after them, in version order: the kind list with the
 // update ask, the record of what a relaunch ended, the drop, then the merge-queue kind list. The
-// last of them is the last word of outbox_kind_check: the upgrade applies it after 20261029120800
-// has deleted main's merge-lane rows, and it names every other kind main's daemon writes
-// (mainsOutboxKinds), with update_ask and the two merge-queue kinds besides, which main's daemon
-// never writes. And so is dispatch://INFRA-3146's `phases.entry_moved_back` (20261113090512),
-// which stands between INFRA-2981's two and adds one column beside the phase entry's, true on
-// every row it finds and false by default after, and so needs no row of its own here
-// (migration_20261113090512_test.go reads both). Store.Migrate applies every embedded migration a
-// database has not recorded, so a database that took INFRA-2981's two before this one takes it
-// in its next upgrade all the same.
+// last of them rewrites outbox_kind_check after 20261029120800 has deleted main's merge-lane rows,
+// and it names every other kind main's daemon writes (mainsOutboxKinds), with role_message,
+// update_ask and the two merge-queue kinds besides, which main's daemon never writes. And so is
+// dispatch://INFRA-3146's `phases.entry_moved_back` (20261113090512), which stands between
+// INFRA-2981's two and adds one column beside the phase entry's, true on every row it finds and
+// false by default after, and so needs no row of its own here (migration_20261113090512_test.go
+// reads both). Store.Migrate applies every embedded migration a database has not recorded, so a
+// database that took INFRA-2981's two before this one takes it in its next upgrade all the same.
 // dispatch://INFRA-2614's architect stall marks (20261113181500), its architect entry upgrade
 // (20261113182000), its claim handshake (20261114020537) and its phase entry's mark that a task is
 // sent again as written (20261114061900) are named here too: an upgrade of a database main
@@ -72,12 +71,14 @@ import (
 // columns, which main's own 20261104073148 and 20261104153554 added, and it touches no
 // outbox_kind_check. dispatch://INFRA-3583's project release (20261115073241), which adds a
 // table and a source to claims_suspended_by_check and touches no outbox row, stands above all of
-// these. The kind list with the role-holders publication (20261116165926) stands above it and
-// above all of these but the reviewer's reviewed commit, and it is the last of them to rewrite
-// outbox_kind_check: it is now that constraint's last word, and it names every kind the
-// merge-queue list names and its own. dispatch://INFRA-4109's cutover of the update ask's mark
-// (20261117200337) is applied after them both and touches no outbox_kind_check: it clears a
-// claim's ask mark where that claim's ask is still queued.
+// these but the reviewer's reviewed commit. The kind list with the role-holders publication
+// (20261116165926) stands above it and above all of these but the reviewer's reviewed commit, and
+// it is the last of them to rewrite outbox_kind_check: it is now that constraint's last word, and
+// it names every kind the merge-queue list names and its own. dispatch://INFRA-4109's cutover of
+// the update ask's mark (20261117200337) stands above all three, the project release, the
+// role-holders kind list and the reviewer's reviewed commit, and is applied after them; it
+// touches no outbox_kind_check, and it clears a claim's ask mark where that claim's ask is still
+// queued.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,

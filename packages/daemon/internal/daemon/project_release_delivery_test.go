@@ -354,6 +354,44 @@ func TestADeliveryHeldThroughAProjectReleaseWaitsForTheRoleAfterTheClaimIsReady(
 	}
 }
 
+// The wake pacing can hold the boot's start of a claim the project release stopped for longer than
+// an hour over a wave, the claim launching with no process all that time. A role message, a
+// phase-ended message and a hook prompt held for it each wait for that start as a delivery waits
+// for any launch the pacing parked (launchParked): the row runs again at the start's turn or
+// parkedWakeBound on, whichever comes first, on a routine wait, rather than climbing its backoff
+// to 64 s and warning at every attempt from the seventh for as long as the park lasts. The
+// negative control is awaitsBootStart without its read of the park: the role message, which reads
+// the claim through awaitsBootStart alone, then waits on its backoff with the start's own sentence.
+func TestADeliveryHeldThroughAProjectReleaseWaitsOutThePacingOfItsStart(t *testing.T) {
+	for _, tc := range releaseDeliveries {
+		t.Run(tc.name, func(t *testing.T) {
+			stored := stoppedByRelease(t, tc.role)
+			rig := newReleaseDeliveryRig(t, stored)
+			// A machine takes its deps where it is built, so the pacing goes in before the claim
+			// is supervised: it gives every wake a turn parkedTurn ahead, and the rig's clock fires
+			// that turn's timer only when a test fires it.
+			rig.sup.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time { return now.Add(parkedTurn) }}
+			machine := rig.supervise(t, stored)
+			rig.publisher.setAbsent(notify.RoleTopicPrefix + string(stored.Token))
+			rig.start(t, machine, stored)
+			if held := machine.View(); held.State != supervise.StateLaunching || held.Locator != nil ||
+				held.WakeWaiting == nil || held.WakeWaiting.Kind != supervise.WakeLaunch {
+				t.Fatalf("after the boot's start the claim is %s recording %+v with wake %+v, want it launching with no process under the start the pacing parked",
+					held.State, held.Locator, held.WakeWaiting)
+			}
+			rig.enqueue(t, tc.payload(stored.Token))
+
+			rig.waits(t, "while the wake pacing holds the claim's start")
+			row, present := readHeldRow(t, rig.pool, "LEGION-208")
+			if due := rig.clock.Now().Add(parkedWakeBound); !present || !row.nextAt.Equal(due) ||
+				!strings.Contains(row.lastError, "launch, which the wake pacing holds until") {
+				t.Fatalf("while the wake pacing holds the claim's start the row is present=%t with %s, want it waiting for the parked launch until %s, parkedWakeBound on",
+					present, row, due.Format(time.RFC3339Nano))
+			}
+		})
+	}
+}
+
 // Each boot builds the set again from the store (readReleaseStoppedClaims): the claims the newest
 // release's record names, read with what each claim's record says since that release ended. So a
 // claim the first boot after the release started, whose session did not hold its role yet when the

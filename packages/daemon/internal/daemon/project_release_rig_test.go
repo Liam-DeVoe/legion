@@ -785,9 +785,8 @@ const releaseAskWaitsLine = "outbox update ask of the running project release wa
 // as it starts.
 func TestProjectReleaseAsksARoleWhoseSessionTakesItsTopicLate(t *testing.T) {
 	plan := idleRigPlan{TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 1}, AnswerRelease: true, WithholdRole: true}
-	rig := newIdleRigWith(t, idleRigOptions{}, idleRigSeed{name: "slow", roles: []claim.Role{claim.RoleImplementer}, plan: &plan})
+	rig := newIdleWakeRig(t, map[string]idleRigPlan{"slow": plan}, "slow")
 	slow := rig.issue("slow")
-	rig.launchAll()
 
 	rig.startRelease("60s")
 	idleRigEventually(t, idleRigRecordWait, "the release's ask finding no session on the role's topic", func() bool {
@@ -818,10 +817,10 @@ func TestProjectReleaseAsksARoleWhoseSessionTakesItsTopicLate(t *testing.T) {
 // disk. The pod's line gives that reason, names no asked role and keeps the read's count, and the
 // pod's claim is held for an operator, which the next boot does not start.
 func TestProjectReleaseLeavesAPodWhoseAskReachedNoSession(t *testing.T) {
-	rig := newIdleRigWith(t, idleRigOptions{}, idleRigSeed{name: "unheld", roles: []claim.Role{claim.RoleImplementer},
-		plan: &idleRigPlan{TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 1}, AnswerRelease: true, WithholdRole: true}})
+	rig := newIdleWakeRig(t, map[string]idleRigPlan{
+		"unheld": {TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 1}, AnswerRelease: true, WithholdRole: true},
+	}, "unheld")
 	unheld := rig.issue("unheld")
-	rig.launchAll()
 
 	rig.startRelease("15s")
 	release, _ := rig.awaitReleaseFinished()

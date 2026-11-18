@@ -1587,9 +1587,10 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 // One role with no live holder is waited for: a claim the daemon's boot starts after a project
 // release (awaitsBootStart), which is not released (supervise.Claim.Released) and which nothing
 // wakes. The release held the message for that role, and its session holds no topic until that
-// start has brought it back and the session has taken its role, so the row waits, with the
-// sentence the other deliveries for such a claim wait with (bootStartWait), and is published
-// once the session holds the role again (dispatch://INFRA-3583 R8).
+// start has brought it back and the session has taken its role, so the row waits as every other
+// delivery for such a claim waits: while the wake pacing holds the start, on the parked launch's
+// wait (launchParked), and otherwise with bootStartWait's sentence. It is published once the
+// session holds the role again (dispatch://INFRA-3583 R8).
 //
 // An outbox with no supervisor (a test's), or a role no machine of this daemon holds, neither
 // ends the row before the publish nor waits, and publishes as before.

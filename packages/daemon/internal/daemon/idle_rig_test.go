@@ -206,9 +206,15 @@ type idleRigSeed struct {
 //
 // plans is what the role process of each issue it names does, by the name the test calls the
 // issue; an issue it does not name, and every issue when plans is nil, runs the default plan. They
-// are set before the boot (idleRigPlan says why), as the plan of a seed is (idleRigSeed.plan).
+// are set before the boot (idleRigPlan says why), as the plan of a seed is (idleRigSeed.plan). A
+// name in plans that names no issue of issues fails the test.
 func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string) *idleWakeRig {
 	t.Helper()
+	for name := range plans {
+		if !slices.Contains(issues, name) {
+			t.Fatalf("the rig seeded no issue called %s", name)
+		}
+	}
 	seeds := make([]idleRigSeed, len(issues))
 	for i, name := range issues {
 		seeds[i] = idleRigSeed{name: name, roles: []claim.Role{claim.RoleImplementer}, pull: name == idleRigChecks}
@@ -222,8 +228,10 @@ func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string
 }
 
 // newIdleRigWith readies every part and boots the daemon, as newIdleWakeRig does, with what
-// options asks beyond it and with the roles and plan each seed names. It launches nothing itself:
-// its caller sets what it needs before the pods come up and then waits for them (launchAll).
+// options asks beyond it and with the roles and plan each seed names. The boot starts the phase
+// owner of each seed the rig does not hold back (idleRigSeed.heldBack), and that process can
+// start before the boot returns, so a plan it reads at its start belongs on the seed
+// (idleRigSeed.plan). It waits for no pod: its caller waits for them with launchAll.
 func newIdleRigWith(t *testing.T, options idleRigOptions, seeds ...idleRigSeed) *idleWakeRig {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
@@ -438,11 +446,11 @@ func (r *idleWakeRig) issue(name string) idleRigIssue {
 	return idleRigIssue{}
 }
 
-// launchAll launches every seeded issue's pod, in order, passing over an issue the rig holds back
-// (idleRigSeed.heldBack). It is apart from newIdleRigWith so a test can set what a role process
-// reads at each task (idleRigPlan) before its pod is up, and tell a role the boot does not start,
-// which launch resumes, what to do before its process starts; newIdleWakeRig calls it before it
-// returns.
+// launchAll waits until every seeded issue's pod runs its roles, in order, passing over an issue
+// the rig holds back (idleRigSeed.heldBack), and resumes each role the boot does not start
+// (launch). It is apart from newIdleRigWith so a caller can do slow work meanwhile (buildLegion),
+// and can set the plan of a role the boot does not start before launch resumes it;
+// newIdleWakeRig calls it before it returns.
 func (r *idleWakeRig) launchAll() {
 	r.t.Helper()
 	for _, issue := range r.issues {

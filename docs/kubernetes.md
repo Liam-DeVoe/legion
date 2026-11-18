@@ -6317,7 +6317,7 @@ Each new pod builds its workspace from the issue's pushed branch, and the releas
 A delivery that waited reaches its claim after the start: a role message, a phase-ended message and a hook prompt wait on until the start's session holds the claim's role again.
 One for a claim that failed, retired or was suspended again by an operator or the daemon is handled as any delivery for a role nobody holds.
 Nothing wakes a claim the release stopped before that start.
-The daemon's own deliveries for it wait for the start, a notice and a merge-queue removal message among them; while the wake pacing holds the start, all but a role message look again at its turn or five minutes later, whichever comes first.
+The daemon's own deliveries for it wait for the start, a notice and a merge-queue removal message among them; while the wake pacing holds the start, every one of them looks again at its turn or five minutes later, whichever comes first.
 The wake the Envoy listener reports for a message to the claim's session or role starts nothing, since that wake acts only on a claim an idle release suspended.
 The listener reads such a claim's session `gone` from the release's stop on, because that stop deletes the session's registration once the process has ended, as every suspension's stop does ([Liveness rules](#liveness-rules)).
 The release and the starts charge no launch failure and no death.
