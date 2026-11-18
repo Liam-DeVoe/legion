@@ -1,6 +1,7 @@
 // Package sandbox runs each issue in one Agent Sandbox (agents.x-k8s.io/v1beta1 Sandbox,
 // kubernetes-sigs/agent-sandbox v1.0.3). Its pod's one container, `roles`, runs one launcher that
-// serves all six workflow roles, each role's generation in namespaces of its own (`legion launcher
+// serves every role of the issue (Legion's six workflow roles, then each role the deployment
+// defines), each role's generation in namespaces of its own (`legion launcher
 // role-init`), and the roles share the issue's workspace and network. The project controller
 // (`controller: daemon`) runs in a Sandbox of its own whose pod has the controller's launcher
 // alone. The two are the runtime's two kinds of pod (podKind): one supervision path runs both, and
@@ -385,7 +386,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		sessionStore: opts.SessionStore, controllerSlackChannels: slices.Clone(opts.ControllerSlackChannels),
 		bootTimeout: opts.BootTimeout, registrationIntervals: opts.RegistrationIntervals,
 		busyBackoff: opts.BusyBackoff, provisionBound: provisionBound, terminationGrace: opts.TerminationGrace,
-		launchBound:   launchBound(opts.BootTimeout, provisionBound, opts.TerminationGrace),
+		launchBound:   launchBound(opts.BootTimeout, provisionBound, opts.TerminationGrace, len(issueRoles)),
 		probeInterval: opts.ProbeInterval, adoptTimeout: opts.AdoptTimeout, agent: opts.Agent, setup: slices.Clone(opts.Setup),
 		testPostgres: opts.TestPostgres, skills: opts.SkillsRepository, memoryGuard: opts.MemoryGuard,
 		tokens: opts.Tokens, gitHubCredential: opts.GitHubCredential, controllerCredential: opts.ControllerCredential,

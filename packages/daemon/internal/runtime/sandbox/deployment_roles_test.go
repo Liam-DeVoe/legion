@@ -137,3 +137,26 @@ func TestALauncherOfADeploymentRoleIsAccepted(t *testing.T) {
 		t.Errorf("a launcher of ghost = %v, %q; want the refusal %q", handler != nil, reason, "launcher role is not one of its pod's roles")
 	}
 }
+
+// A line of a pod's log that a role of the deployment wrote is that role's, never the launcher's
+// own, and the bound of a launch counts the calls of every role of the runtime's issue pods: a
+// runtime with one role more than Legion's six has a bound longer by that role's calls.
+func TestAPodsLogAndBoundCountItsDeploymentsRoles(t *testing.T) {
+	roles := append(slices.Clone(claim.Roles), "checker")
+	if got := containerLines("checker: a\nlauncher: b\n", 10, roles); got != "launcher: b" {
+		t.Errorf("the launcher's own lines = %q, want %q", got, "launcher: b")
+	}
+	plain, err := configure(testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployed := testOptions()
+	deployed.DeploymentApps = appauth.DeploymentApps{"checker": appauth.Review}
+	withChecker, err := configure(deployed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := withChecker.LaunchBound()-plain.LaunchBound(), time.Duration(relaunchRoleCalls)*apiTimeout; got != want {
+		t.Errorf("the checker's runtime's launch bound exceeds the plain runtime's by %s, want %s (one role's calls)", got, want)
+	}
+}

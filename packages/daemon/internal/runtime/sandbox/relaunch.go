@@ -393,10 +393,11 @@ func boundRanOut(parent, bounded context.Context, bound time.Duration, err error
 // Get and the Create (4) against the 3 of the 6 above that ensureSandbox's wait for a Sandbox
 // being deleted spends, which that try never takes — a Sandbox it waited out is gone, and the one
 // it creates in its place already owns no claim template (replaceSupersededSandbox).
-// Per launcher role of the pod (relaunchRoleCalls, claim.Roles for an issue pod, the most any pod
-// has): launcherBound's Secret Get (1); writeLauncherSecrets' credential mint and its upsert's Get,
-// Delete and Create (4); bindLauncherSecrets' Get and Update, and both again on a conflict (4).
-var relaunchCalls = relaunchPodCalls + relaunchRoleCalls*len(claim.Roles)
+// Per launcher role of the pod (relaunchRoleCalls, times roles, the most roles any pod of the
+// runtime has: its issue roles, Legion's six and each role the deployment defines): launcherBound's
+// Secret Get (1); writeLauncherSecrets' credential mint and its upsert's Get, Delete and Create
+// (4); bindLauncherSecrets' Get and Update, and both again on a conflict (4).
+func relaunchCalls(roles int) int { return relaunchPodCalls + relaunchRoleCalls*roles }
 
 const (
 	relaunchPodCalls  = 17 + cacheEnsureCalls
@@ -414,10 +415,10 @@ const (
 // replacing try's waits — ensureSandbox's wait for a Sandbox being deleted, awaitPodGone and
 // awaitNewPod, the boot timeout each; provision's waits on its repository's cache (cacheWaits);
 // awaitRoleLauncher's backstop; the termination grace the start frame has past the launcher
-// deadline — and of its relaunchCalls calls at apiTimeout each.
-func launchBound(bootTimeout, provisionBound, terminationGrace time.Duration) time.Duration {
+// deadline — and of its relaunchCalls calls, for a pod of roles roles, at apiTimeout each.
+func launchBound(bootTimeout, provisionBound, terminationGrace time.Duration, roles int) time.Duration {
 	waits := 3*bootTimeout + cacheWaits(bootTimeout) + launcherBackstop(bootTimeout, provisionBound) + terminationGrace
-	return waits + time.Duration(relaunchCalls)*apiTimeout
+	return waits + time.Duration(relaunchCalls(roles))*apiTimeout
 }
 
 // cacheWaits is the most a launch try's provision waits on its repository's cache: the cache's

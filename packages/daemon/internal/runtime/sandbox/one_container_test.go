@@ -757,7 +757,7 @@ func TestARolesQuoteIsItsOwnLinesOfTheSharedLog(t *testing.T) {
 	if got := roleLines(log, claim.RoleMerger, 3); got != "" {
 		t.Errorf("roleLines of a role with no lines = %q, want none", got)
 	}
-	if got, want := containerLines(log, 3), "launcher: connected\ntesters: not mine either"; got != want {
+	if got, want := containerLines(log, 3, claim.Roles), "launcher: connected\ntesters: not mine either"; got != want {
 		t.Errorf("containerLines = %q, want %q", got, want)
 	}
 }
