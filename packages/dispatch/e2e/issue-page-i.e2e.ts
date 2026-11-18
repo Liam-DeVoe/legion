@@ -3054,26 +3054,21 @@ function changeIn(before: string, after: string): string {
 // editor is the document's whole editor, and the keys it answers for a whole document reached past
 // the block: measured on a preview, Ctrl+Home moved the caret before the spec's `## Summary` and a
 // `Y` typed then made it `## YSummary`, and Up after Left put the caret before a heading above the
-// statement. Each move is pressed once Enter has put the caret at the start of a node's block, and
-// a `Y` typed after it. In a statement of the spec, Up from its first line and Down from its last
-// leave the caret at its start - unguarded, each put it between the statement and the block above
-// or below, and the `Y` became a paragraph of its own there - and select-all selects the
-// statement's words alone, which the `Y` replaces - unguarded, the `Y` replaced the whole spec.
-// In a decision's heading, Ctrl+Home leaves the caret at its start and Ctrl+End takes it to its
-// end - unguarded, they took it to the start of the document's first heading and the end of its
-// last paragraph; the spec opens and closes with typed blocks whose header and foot take no
-// caret, and Chromium's Ctrl+Home and Ctrl+End leave the caret where it is there. Backspace
-// pressed three times at the heading's start leaves the caret there too - unguarded, the editor
-// took the heading a level down and then made it a paragraph (Milkdown's `DowngradeHeading`), and
-// the third joined it to the paragraph above; the spec's statements are typed blocks, which no
-// join crosses. A paste of two lines at the heading's start, sent as a browser sends a paste, is
-// refused - unguarded, the editor put a line break into the heading, and the stored `## Keep...`
-// became a heading of two lines, `Two\`, `linesYKeep...` and `---` under them. Each time the
-// stored document holds the `Y` in that block, where the move stopped, and every other block byte
-// for byte as it was; the block is put back through the row after - past the `Y` and Backspace in
-// a heading, since Delete at a heading's start takes it a level down - and the stored document
-// read back as it was before.
-// SLOW(>=2s): the whole issue seeded and loaded, then seven edits made through the row, each read
+// statement. The row edits a statement of the spec, since the seed's decisions are decision blocks
+// of the spec and no row of the page edits a heading. Each move is pressed once Enter has put the
+// caret at the statement's start, and a `Y` typed after it. Up from its first line and Down from
+// its last leave the caret at its start - unguarded, each put it between the statement and the
+// block above or below, and the `Y` became a paragraph of its own there - and select-all selects
+// the statement's words alone, which the `Y` replaces - unguarded, the `Y` replaced the whole spec.
+// Ctrl+Home from the statement's middle takes the caret to its start, and Ctrl+End from its start
+// takes it to its end: the spec opens and closes with typed blocks whose header and foot take no
+// caret, and Chromium's Ctrl+Home and Ctrl+End leave the caret where it is there, so each is
+// pressed where a caret left in place would take the `Y` elsewhere. A paste of two lines at the
+// statement's start, sent as a browser sends a paste, goes into the statement as a line break and
+// makes no block beside it. Each time the stored document holds the `Y` in the statement, where
+// the move stopped, and every other block byte for byte as it was; the statement is put back
+// through the row after, and the stored document read back as it was before.
+// SLOW(>=2s): the whole issue seeded and loaded, then six edits made through the row, each read
 // back from the stored document, put back through the row and read back again.
 test("the keys of a row's editor move its caret and edit inside the node's own block alone", async ({
   browser,
@@ -3083,12 +3078,9 @@ test("the keys of a row's editor move its caret and edit inside the node's own b
   try {
     await expectTreeDrawn(page);
     const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
-    const decisionsSlug = (await getArtifact(seeded.decisionsArtifactId)).slug;
     const statementBlock = requirementBlockId(2);
     const statement = blockNodeId(specSlug, statementBlock);
     const words = requirementText(2);
-    const heading = "Keep every address the old page answered";
-    const decision = seeded.decisions[1] ?? "";
 
     /** Enter on the focused row, the caret in its node's block `blockId`, and the editor's own
      *  write of its selection after the focus passed. */
@@ -3196,53 +3188,38 @@ test("the keys of a row's editor move its caret and edit inside the node's own b
         await page.keyboard.type(words);
       },
     });
-
-    // A decision's heading, reached by `w` from the third requirement, which that decision
-    // shapes.
-    const inHeading = {
-      artifactId: seeded.decisionsArtifactId,
-      blockId: decision,
-      focus: async () => {
-        await focusRow(page, blockNodeId(specSlug, requirementBlockId(3)));
-        await page.keyboard.press("w");
-        expect(await focusedRow(page), "w did not move into the decision behind r3").toBe(
-          blockNodeId(decisionsSlug, decision)
-        );
-      },
-      undo: async () => {
-        await page.keyboard.press("ArrowRight");
-        await page.keyboard.press("Backspace");
-      },
-      words: heading,
-    };
     await editThroughRow({
-      ...inHeading,
-      edited: `Y${heading}`,
-      keys: ["Control+Home"],
-      name: "Ctrl+Home",
+      ...inStatement,
+      edited: `Y${words}`,
+      keys: ["ArrowRight", "ArrowRight", "ArrowRight", "Control+Home"],
+      name: "Ctrl+Home from the statement's middle",
     });
     await editThroughRow({
-      ...inHeading,
-      edited: `${heading}Y`,
+      ...inStatement,
+      edited: `${words}Y`,
       keys: ["Control+End"],
-      name: "Ctrl+End",
+      name: "Ctrl+End from the statement's start",
       undo: async () => {
         await page.keyboard.press("Control+End");
         await page.keyboard.press("Backspace");
       },
     });
+    // The editor reads a pasted text as markdown (`@milkdown/plugin-clipboard`), and two lines as
+    // one paragraph holding a line break, which goes into the statement's paragraph at the caret:
+    // the break stores as a backslash after `Two`, and `lines` and the `Y` open the statement's
+    // next line. Without the editor's hold on the block (`holdEditsToBlock`) the paste goes in the
+    // same way: the hold refuses a block made beside the statement, and two lines make none, since
+    // a statement holds paragraphs and a paragraph holds line breaks.
     await editThroughRow({
-      ...inHeading,
-      edited: `Y${heading}`,
-      keys: ["Backspace", "Backspace", "Backspace"],
-      name: "Backspace pressed three times at the heading's start",
-    });
-    await editThroughRow({
-      ...inHeading,
-      edited: `Y${heading}`,
+      ...inStatement,
+      edited: `Two\\\nlinesY${words}`,
       keys: [],
-      name: "a paste of two lines at the heading's start",
+      name: "a paste of two lines at the statement's start",
       paste: "Two\nlines",
+      undo: async () => {
+        await page.keyboard.press("Control+a");
+        await page.keyboard.type(words);
+      },
     });
   } finally {
     await context.close();
