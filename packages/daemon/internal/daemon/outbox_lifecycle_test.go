@@ -310,6 +310,7 @@ func TestAPhaseCompletionLeavesTheWorkerResidentUntilItsIssueCloses(t *testing.T
 
 	// A person closes the issue: its tree lingers, and the close suspends the planner, keeping its
 	// session for a re-admission to resume.
+	storeSupervisedClaims(t, pool, sup, planner, implementer)
 	if _, err := intake.ApplyFact(ctx, pool, "dispatch", "ev-done", intake.DispatchIssue{Key: issue.Key, ResolvedRepo: "acme/widgets", Seq: 6, Type: "issue.closed", Status: "done", Title: issue.Title, Rank: "U"}, engine); err != nil {
 		t.Fatalf("close the issue: %v", err)
 	}
@@ -377,6 +378,7 @@ func TestAnIssuesCloseWaitsForTheWorkersTurnToEnd(t *testing.T) {
 		return rows, attempts
 	}
 
+	storeSupervisedClaims(t, pool, sup, planner)
 	if _, err := intake.ApplyFact(ctx, pool, "dispatch", "ev-done", intake.DispatchIssue{Key: issue.Key, ResolvedRepo: "acme/widgets", Seq: 6, Type: "issue.closed", Status: "done", Title: issue.Title, Rank: "U"}, engine); err != nil {
 		t.Fatalf("close the issue: %v", err)
 	}

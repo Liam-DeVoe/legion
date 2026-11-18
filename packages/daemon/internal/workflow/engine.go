@@ -1893,18 +1893,41 @@ func (e *Engine) gateOpened(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 	return e.transition(ctx, tx, issue, TriggerGateOpened, "", record.PhaseRow{}, nil, "")
 }
 
-// everyClaim enqueues op for every claim an issue can hold but except's: its architect, which
-// admission or the tree's architect started, and each phase worker, whether or not it ever
-// reported a handoff. The phase rows record only handoffs, so they cannot list the claims; the
-// executor treats a request for a claim that does not exist as done. except is the one role left
-// out, "" for none: a merged child's close leaves out the role that works its production check
-// (Engine.checkRole), whose claim the check's own close retires (closeCheck).
+// everyClaim enqueues op for every stored claim of issue (record.Store.IssueClaims) but the one
+// except's close reaches: one row for each claim, naming it (record.SuperviseRequest.Claim) with
+// its stored role, whether or not its agent ever reported a handoff. Two claims can hold one role —
+// a keyed agent on a step of another role, beside that role's own claim from an earlier version of
+// the plan — so a row naming a role alone would reach the claim of the worker on that role's step
+// twice and leave the other claim without its op. except is the one role left out, "" for none: a
+// merged child's close leaves out the role that works its production check (Engine.checkRole),
+// whose claim the check's own close retires (closeCheck); that close names the role alone, so the
+// claim it reaches, and the one left out here, is the claim of the worker on that role's step
+// (record.WorkerClaim).
 func (e *Engine) everyClaim(ctx context.Context, tx pgx.Tx, issue record.Issue, op record.SuperviseOp, reason string, except claim.Role) error {
-	for _, role := range claim.Roles {
-		if role == except {
+	project, err := claim.ProjectToken(issue.Project)
+	if err != nil {
+		return fmt.Errorf("the claims of %s: %w", issue.Key, err)
+	}
+	claims, err := e.store.IssueClaims(ctx, tx, project, issue.Key)
+	if err != nil {
+		return err
+	}
+	var excepted claim.Token
+	if except != "" {
+		rows, err := e.store.Phases(ctx, tx, issue.Key)
+		if err != nil {
+			return err
+		}
+		if excepted, err = record.WorkerClaim(project, issue.Key, except, rows); err != nil {
+			return fmt.Errorf("the %s of %s: %w", except, issue.Key, err)
+		}
+	}
+	for _, c := range claims {
+		if c.Token == excepted {
 			continue
 		}
-		if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: op, Tree: issue.Tree, Role: role, Generation: issue.Generation, Reason: reason}); err != nil {
+		if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: op, Tree: issue.Tree, Role: c.Role, Claim: c.Token,
+			Generation: issue.Generation, Reason: reason}); err != nil {
 			return err
 		}
 	}

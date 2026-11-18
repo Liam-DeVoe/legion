@@ -245,11 +245,12 @@ func TestAnOrphansClaimsLeaveTheirOldTreeAndStartInTheirOwn(t *testing.T) {
 }
 
 // A root that leaves admission's waiting line before a slot opens its tree (labelled and todo, then
-// set to backlog) lingers like any root, and its linger's expiry queues a close row per role. Its
-// tree never had a lifecycle, so it holds nothing a cleanup releases: each close reserves nothing
-// and finishes at the ordinary fences, with no claim to close. Before, the reservation refused the
-// absent lifecycle, and every close row retried on its backoff forever, logged as a failure each
-// time.
+// set to backlog) lingers like any root. Its tree never had a lifecycle, so no claim of it was ever
+// stored, and its linger's expiry queues no close row (the close names each stored claim). A close
+// row of such a tree that is queued all the same — one an earlier release wrote for each role —
+// reserves nothing and finishes at the ordinary fences, with no claim to close. Before, the
+// reservation refused the absent lifecycle, and every close row retried on its backoff forever,
+// logged as a failure each time.
 func TestANeverOpenedTreesLingerClosesFinishWithoutRetrying(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -289,12 +290,20 @@ func TestANeverOpenedTreesLingerClosesFinishWithoutRetrying(t *testing.T) {
 		}
 		return closes, all
 	}
-	// The first run expires the linger, which queues the tree's close rows; the second runs them.
+	// The first run expires the linger, which queues no close row: the tree holds no claim.
 	if err := runner.RunOnce(ctx); err != nil {
 		t.Fatalf("run the linger: %v", err)
 	}
-	if closes, _ := rows(); closes != len(claim.Roles) {
-		t.Fatalf("the linger's expiry queued %d close rows, want one per role (%d)", closes, len(claim.Roles))
+	if closes, _ := rows(); closes != 0 {
+		t.Fatalf("the linger's expiry queued %d close rows, want none: the never-opened tree holds no claim", closes)
+	}
+	closeRow := mustOutboxRow(t, root.Key, record.SuperviseRequest{Op: "tree_close", Tree: root.Key, Role: claim.RoleArchitect, Generation: 1, Linger: 1}, time.Now())
+	if _, err := pool.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token)
+		values ($1, $2, $3, 0, now(), '', '')`, string(closeRow.Kind), closeRow.Issue, string(closeRow.Payload)); err != nil {
+		t.Fatalf("queue a close row an earlier release wrote: %v", err)
+	}
+	if closes, _ := rows(); closes != 1 {
+		t.Fatalf("the outbox holds %d close rows, want the one queued", closes)
 	}
 	if err := runner.RunOnce(ctx); err != nil {
 		t.Fatalf("run the close rows: %v", err)

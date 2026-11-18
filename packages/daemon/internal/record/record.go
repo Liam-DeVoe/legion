@@ -1799,6 +1799,10 @@ type Store interface {
 	// agent, ordered by generation, task and place: the earlier rows NameAgents names a version's
 	// agents from.
 	PlanStepsOf(ctx context.Context, tx pgx.Tx, issue string) ([]PlanStep, error)
+	// IssueClaims is every stored claim of issue in project (the claims' project token), in any
+	// state, with its stored role, ordered by token: what a walk over every claim of an issue
+	// reads, so each row it writes names one stored claim.
+	IssueClaims(ctx context.Context, tx pgx.Tx, project, issue string) ([]IssueClaim, error)
 	// OwnersNewestPlan is the newest plan in force, of any generation, generation 0 included, that
 	// an architect of issue's tree now gave (ArchitectOfTree); nil where no owner gave one in force.
 	OwnersNewestPlan(ctx context.Context, tx pgx.Tx, issue Issue) (*StoredPlan, error)

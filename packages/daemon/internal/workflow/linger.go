@@ -519,10 +519,20 @@ func (e *Engine) lingerExpired(ctx context.Context, tx pgx.Tx, fact intake.Linge
 		return intake.Result{}, err
 	}
 	// Each row names the root generation whose linger it expires: a member keeps its own generation
-	// across re-admission, so only that tells this linger's rows from a later one's.
+	// across re-admission, so only that tells this linger's rows from a later one's. Each row names
+	// one stored claim of the member (record.Store.IssueClaims), so a claim of a role a keyed agent
+	// took over gets its close too: the tree's cleanup waits for every stored claim of the tree.
 	for _, member := range members {
-		for _, role := range claim.Roles {
-			closeRow := record.SuperviseRequest{Op: "tree_close", Tree: member.Tree, Role: role, Generation: member.Generation, Linger: issue.Generation}
+		project, err := claim.ProjectToken(member.Project)
+		if err != nil {
+			return intake.Result{}, fmt.Errorf("the claims of %s: %w", member.Key, err)
+		}
+		claims, err := e.store.IssueClaims(ctx, tx, project, member.Key)
+		if err != nil {
+			return intake.Result{}, err
+		}
+		for _, c := range claims {
+			closeRow := record.SuperviseRequest{Op: "tree_close", Tree: member.Tree, Role: c.Role, Claim: c.Token, Generation: member.Generation, Linger: issue.Generation}
 			if err := e.enqueue(ctx, tx, member.Key, closeRow); err != nil {
 				return intake.Result{}, err
 			}
