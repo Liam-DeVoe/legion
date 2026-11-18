@@ -3,10 +3,10 @@
  *  about the page the other shot.
  *
  *  It builds on the fixtures that already exist rather than writing a second corpus:
- *  `seedWorkspace()` fills the Inbox, the Agents page, a broadcast, the answers, the projects and
+ *  `seedWorkspace` fills the Inbox, the Agents page, a broadcast, the answers, the projects and
  *  the issue tree, and the delivery fixtures fill `/delivery` and `/pipeline`. What it adds is
  *  the four documents the issue tabs need, and the one priority the two priority pages are read
- *  against: `seedWorkspace()` writes none, and both of those pages draw a sentence instead of a
+ *  against: `seedWorkspace` writes none, and both of those pages draw a sentence instead of a
  *  row for a deployment that has written no priority. */
 import {
   createIssueArtifact,
@@ -83,9 +83,15 @@ function createReviewPriority() {
   });
 }
 
-/** Seeds the review corpus into an empty database; the caller resets first. */
-export async function seedReviewRoutes(): Promise<ReviewSeed> {
-  const workspace = await seedWorkspace();
+/** Seeds the review corpus into an empty database; the caller resets first. `boundMs` is the
+ *  bound of the seed's waits, which `seedWorkspace` gives each of its own: the caller's, so a
+ *  browser row's seed gives up at the bound that row's assertions use. */
+export async function seedReviewRoutes({
+  boundMs,
+}: {
+  readonly boundMs: number;
+}): Promise<ReviewSeed> {
+  const workspace = await seedWorkspace({ boundMs });
   const issue = workspace.issues.workflow;
 
   // `seedPipelineFixture()` is `seedDeliveryFixture()`'s settings row written a second time and
@@ -157,8 +163,11 @@ Each page is read once it is drawn.
 
   const specId = (await getIssue(issue)).primary_artifact_id ?? "";
   const shaped = await blockId(specId, "One command, a seeded corpus, a signed-in browser.");
+  // The decision's words cite the block it shaped as well as its `shaped` attribute tying them:
+  // a decision card draws its words, so the card beside the spec draws that block's own words,
+  // which `e2e/review-routes.ts`'s `issue-spec` row waits on to know the reference graph answered.
   await createIssueArtifact(issue, {
-    content: `:::decision{#d1 shaped="dispatch://${issue}/spec#b-${shaped}"}\n### ${DECISION}\n\n${REASON}\n:::\n`,
+    content: `:::decision{#d1 shaped="dispatch://${issue}/spec#b-${shaped}"}\n### ${DECISION}\n\n${REASON} Shapes dispatch://${issue}/spec#b-${shaped}.\n:::\n`,
     name: "choices.md",
   });
 

@@ -173,6 +173,17 @@ func (d parentDocument) highestTuple(t *testing.T) int64 {
 	return highest
 }
 
+// tupleCount is how many tuples the log holds, which a pass that appends nothing leaves as it
+// found it.
+func (d parentDocument) tupleCount(t *testing.T) int64 {
+	t.Helper()
+	var count int64
+	if err := d.database.Pool.QueryRow(context.Background(), `select count(*) from graph_tuples`).Scan(&count); err != nil {
+		t.Fatalf("count the tuples the log holds: %v", err)
+	}
+	return count
+}
+
 // tuplesAfter is every tuple appended after seq, in log order, as q sees the log: what one
 // transaction stated.
 func (d parentDocument) tuplesAfter(t *testing.T, q Queryer, seq int64) []graphstore.Tuple {
@@ -399,12 +410,13 @@ func moverUnderRight() blockDoc {
 // the document holds.
 //
 // A version that moves a block under another parent and changes no text retracts the parent it
-// left and asserts the one it reached, moves no block's changed_version or changed_at, and
-// states nothing else at all, the moved block being the one child of either parent, so its rank
-// still stands. A version that changes one block's text alone reads the parent of every other
-// block again, and the same version indexed twice states nothing. A block one version drops and
-// the next restores joins the document a second time, on its new row, and no block that stayed
-// joins it twice.
+// left and asserts the one it reached, each at that version's time, by its writer and under the
+// event that recorded it, moves no block's changed_version or changed_at, and states nothing else
+// at all, the moved block being the one child of either parent, so its rank still stands. A
+// version that changes one block's text alone reads the parent of every other block again, and
+// the same version indexed twice loses the revision fence and appends no tuple. A block one
+// version drops and the next restores joins the document a second time, on its new row, and no
+// block that stayed joins it twice.
 func TestABlockParentIsATupleAndItsColumnIsItsProjection(t *testing.T) {
 	ctx := context.Background()
 	database := parentDatabase(t)
@@ -553,13 +565,19 @@ func TestABlockParentIsATupleAndItsColumnIsItsProjection(t *testing.T) {
 	nested.requireParentsProjected(t, "the text-only version")
 
 	// The same version indexed twice states nothing at all: the mark only moves forward, and a
-	// pass that does not move it writes neither a projection row nor a tuple.
+	// pass that does not move it writes neither a projection row nor a tuple. The second pass
+	// loses the revision fence, and the log holds as many tuples after it as before.
+	logged := nested.tupleCount(t)
 	won, stated = nested.indexVersion(t, 3, changed, textOnly)
 	if won {
 		t.Errorf("the second pass at version 3 claimed the document's blocks stand at it")
 	}
 	if len(stated) != 0 {
 		t.Errorf("the second pass at version 3 stated %v, want nothing", stated)
+	}
+	if after := nested.tupleCount(t); after != logged {
+		t.Errorf("the log holds %d tuples after the second pass at version 3 and held %d before it, want the pass that lost the fence to append none",
+			after, logged)
 	}
 	nested.requireParentsProjected(t, "the second pass at version 3")
 
@@ -643,19 +661,39 @@ func TestABlockParentIsATupleAndItsColumnIsItsProjection(t *testing.T) {
 	if len(wasChanged) != 3 {
 		t.Fatalf("before the move document_blocks holds the changes %v, want one for each of the 3 blocks", wasChanged)
 	}
-	moved := mover.writeVersion(t, 2, moverMarkdown, writer)
+	// The version that moves the block is another writer's, so a tuple stated with the first
+	// version's writer fails here as one stated with its time or its event does.
+	moved := mover.writeVersion(t, 2, moverMarkdown, model.Actor{Kind: "user", ID: "carol"})
 	_, stated = mover.indexVersion(t, 2, moverUnderRight(), moved)
+	// The new parent and the retraction of the one the block left are each the moving version's:
+	// its time, its writer and the event that recorded it, read off that version's own rows.
+	requireMovedBy := func(what string, tuple graphstore.Tuple) {
+		t.Helper()
+		if !tuple.At.Equal(moved.at) {
+			t.Errorf("the moved block's %s is dated %s, want the moving version's own %s", what, tuple.At, moved.at)
+		}
+		if tuple.Who != moved.writer {
+			t.Errorf("the moved block's %s was stated by %#v, want the moving version's writer %#v", what, tuple.Who, moved.writer)
+		}
+		if tuple.SourceEvent != moved.event {
+			t.Errorf("the moved block's %s was caused by event %d, want the moving version's own %d", what, tuple.SourceEvent, moved.event)
+		}
+	}
 	if tuple := mover.currentParent(t, "mover"); tuple.ToID != mover.address("right") {
 		t.Errorf("after the move the block is part of %s, want %s", tuple.ToID, mover.address("right"))
+	} else {
+		requireMovedBy("new parent", tuple)
 	}
 	history, err := graphstore.History(ctx, database.Pool, BlockNodeKind, mover.address("mover"), graphstore.TuplePartOf)
 	if err != nil {
 		t.Fatalf("read the history of the moved block's parent: %v", err)
 	}
-	if !slices.ContainsFunc(history, func(tuple graphstore.Tuple) bool {
+	if left := slices.IndexFunc(history, func(tuple graphstore.Tuple) bool {
 		return !tuple.Asserted && tuple.ToID == mover.address("left")
-	}) {
+	}); left < 0 {
 		t.Errorf("the history of the moved block is %v, want the retraction of the parent it left", history)
+	} else {
+		requireMovedBy("retraction of the parent it left", history[left])
 	}
 	wantMoved := map[string]string{"left": "", "right": "", "mover": "right"}
 	if got := mover.projectedParents(t); !maps.Equal(got, wantMoved) {

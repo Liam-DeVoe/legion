@@ -4,6 +4,7 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
+import { quietConsoleError } from "../../__tests__/act-warnings";
 import { displayTree } from "../../__tests__/display-trees";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { api } from "../../api/client";
@@ -18,7 +19,7 @@ import type {
   IssueAskRow,
   IssueDecisions,
 } from "../../api/types";
-import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
 import { DecisionsPanel } from "./DecisionsPanel";
 
 const documentId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
@@ -281,6 +282,80 @@ test("Change opens the comment composer on notes.md, quoting the decision's firs
   }
 });
 
+/** The view of one person's decision: an ask bob answered, `fields` its answer. */
+function answeredView(fields: Partial<DecisionEntry>): IssueDecisions {
+  const question = "Name them notices";
+  return {
+    decisions: [],
+    document: null,
+    entries: [
+      entry({
+        answer_state: "answered",
+        answered_at: "2026-11-01T00:00:00Z",
+        answered_by: "bob",
+        block: "name",
+        kind: "person",
+        node: { id: askId, kind: "ask" },
+        question,
+        ref: `dispatch://CORE-1/ask/${askId}`,
+        text: question,
+        ...fields,
+      }),
+    ],
+    open_questions: [],
+  };
+}
+
+/** Counts the markdown parses the page's one engine makes from here on, which every body and
+ *  preview of the panel reaches through (`markdown-engine.ts`, as `stored-text-drawing.test.tsx`
+ *  counts them). Every tree a row seeds is read before this is called, since `displayTree` is a
+ *  parse of that same engine. */
+function countParses() {
+  const engine = loadedEngine();
+  if (engine === undefined) {
+    throw new Error("the Markdown engine did not load");
+  }
+  return spyOn(engine, "parse");
+}
+
+// A person's decision is drawn by their answer, a stored text the server read for display
+// beside it (`answer_tree`), so the tab draws that reading and parses no markdown, as it draws an
+// agent's decision from the reading of its text.
+test("a person's answer is drawn from the reading the server sent with it, parsing nothing", async () => {
+  const answer = "The person chose **the name**.";
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(
+    answeredView({ answer, answer_tree: displayTree(answer), selected: [] })
+  );
+  const parse = countParses();
+  try {
+    renderPanel();
+    const mine = await screen.findByRole("region", { name: "Your decisions" });
+    await waitFor(() => expect(within(mine).getByText("the name").tagName).toBe("STRONG"));
+    expect(parse).not.toHaveBeenCalled();
+  } finally {
+    parse.mockRestore();
+    read.mockRestore();
+  }
+});
+
+// An answer that chose options and wrote nothing holds no stored text: the tab draws the labels
+// chosen as the words they are, as the Answers page draws a chosen label, and parses nothing.
+test("an answer of chosen options alone is drawn as their labels' words, parsing nothing", async () => {
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(
+    answeredView({ answer: null, selected: ["Notices", "A **bold** name"] })
+  );
+  const parse = countParses();
+  try {
+    renderPanel();
+    const mine = await screen.findByRole("region", { name: "Your decisions" });
+    expect(await within(mine).findByText("Notices, A **bold** name")).toBeDefined();
+    expect(parse).not.toHaveBeenCalled();
+  } finally {
+    parse.mockRestore();
+    read.mockRestore();
+  }
+});
+
 /** The view one decision of its own makes: it waits for review, so the row draws its Keep and
  *  Change beside the blocks of its text. */
 function waitingView(fields: Partial<DecisionEntry> & Pick<DecisionEntry, "text">): IssueDecisions {
@@ -490,7 +565,7 @@ test("a block whose tree the engine refuses shows its own text alone", async () 
     waitingView({ text, text_tree: refusedTree(text) })
   );
   // The engine reports every tree it refuses, one report per block drawn.
-  const logged = spyOn(console, "error").mockImplementation(() => {});
+  const logged = quietConsoleError();
   try {
     renderPanel();
     const waiting = await screen.findByRole("region", { name: "Waiting for your review" });

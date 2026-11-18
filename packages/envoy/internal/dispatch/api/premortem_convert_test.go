@@ -126,8 +126,9 @@ type premortemRig struct {
 	capture premortemCapture
 	// otherIssue is the second issue's key.
 	otherIssue string
-	// slug is the pre-mortem's slug, refKey its store address and address its dispatch:// one.
-	slug, refKey, address string
+	// slug is the pre-mortem's slug, refKey its store address, address its dispatch:// one and
+	// documentID the id of its artifacts row.
+	slug, refKey, address, documentID string
 	// otherIssueCheck is a check of the second issue, a dispatch:// address, and each node id the
 	// id a prevented_by tuple names its check by.
 	otherIssueCheck                                 string
@@ -155,9 +156,20 @@ func newPremortemRig(t *testing.T) premortemRig {
 	rig.otherIssueCheck = refs.BlockRef("dispatch://"+rig.otherIssue+"/artifact/"+otherVerification.Artifact.Slug, "k9")
 	rig.otherIssueCheckNode = otherVerification.Artifact.RefKey + "#k9"
 	premortem := uploadDocument(t, rig.handler, "/api/v1/issues/"+rig.issue, "graph-premortem.md", rig.capture.Document.Markdown)
-	rig.slug, rig.refKey = premortem.Artifact.Slug, premortem.Artifact.RefKey
+	rig.slug, rig.refKey, rig.documentID = premortem.Artifact.Slug, premortem.Artifact.RefKey, premortem.Artifact.ID
 	rig.address = "dispatch://" + rig.issue + "/artifact/" + rig.slug
 	return rig
+}
+
+// otherProjectCheck is a check of an issue of a second project, FAR, in a Verification document
+// of its own: its dispatch:// address, and the id a prevented_by tuple would name it by.
+func (r premortemRig) otherProjectCheck() (address, node string) {
+	r.t.Helper()
+	issue := createInteractionIssue(r.t, r.handler, "FAR", "Another project's work",
+		":::requirement{#r7}\nEvery project keeps its own checks.\n:::\n")
+	verification := uploadDocument(r.t, r.handler, "/api/v1/issues/"+issue.Key, "verification.md",
+		checkServing("k7", refs.BlockRef("dispatch://"+issue.Key+"/spec", "r7")))
+	return refs.BlockRef("dispatch://"+issue.Key+"/artifact/"+verification.Artifact.Slug, "k7"), verification.Artifact.RefKey + "#k7"
 }
 
 // premortemMap is a map of each of the document's eleven risks: risk 0 to both checks of the
@@ -489,5 +501,54 @@ func TestThePremortemRouteRefusesAnEntryNamingItsPosition(t *testing.T) {
 	}
 	if after := rig.storeCounts(); after != before {
 		t.Errorf("the dry run left %v nodes and tuples, want the %v it found", after, before)
+	}
+}
+
+// TestAConversionMapNamingACheckOfAnotherProjectWritesNothing maps risk 5 to a check of another
+// project than the issue's (dispatch://INFRA-1950/spec#b-r-premortem-nodes): the conversion is
+// refused, in a dry run as in a real one, through the function and through its route, with 400
+// INVALID_POINTER naming the entry, risk 5 and the check by its address, and the store holds no
+// node or tuple of it - no lens, no risk, no prevented_by, no moved_to - and the document stays
+// listed and unretired.
+func TestAConversionMapNamingACheckOfAnotherProjectWritesNothing(t *testing.T) {
+	rig := newPremortemRig(t)
+	foreign, _ := rig.otherProjectCheck()
+	entries := rig.premortemMap()
+	entries[5].Checks, entries[5].Reason = []string{foreign}, "A check of another project."
+	says := "prevented_by entry 6 (risk 5): the prevented_by tuple from a risk of project RSN at the check block " + foreign +
+		" of project FAR breaks its type rule: prevented_by points from a risk at a check block of the same project"
+	path := "/api/v1/issues/" + rig.issue + "/artifacts/" + rig.slug + "/premortem-convert"
+	before := rig.storeCounts()
+	unchanged := func(name string) {
+		t.Helper()
+		if after := rig.storeCounts(); after != before {
+			t.Errorf("%s left %v nodes and tuples, want the %v it found", name, after, before)
+		}
+		if moved := rig.current(graphstore.KindArtifact, rig.refKey, graphstore.TupleMovedTo); len(moved) != 0 {
+			t.Errorf("after %s the document's address moved to %v, want nowhere", name, moved)
+		}
+		if retirements := rig.retirements(rig.documentID); len(retirements) != 0 ||
+			!slices.Contains(issueDocumentIDs(t, rig.handler, rig.issue), rig.documentID) {
+			t.Errorf("after %s the document holds the document.retired events %v, or left the issue's list; want it listed and none", name, retirements)
+		}
+	}
+
+	for _, dryRun := range []bool{true, false} {
+		name := fmt.Sprintf("the conversion with dry run %t", dryRun)
+		_, err := rig.convert(entries, dryRun)
+		t.Logf("%s: %v", name, err)
+		var mapError *PremortemMapError
+		if !errors.As(err, &mapError) || !errors.Is(err, graphstore.ErrInvalidPointer) || mapError.Entry != 6 || mapError.Risk != 5 || err.Error() != says {
+			t.Errorf("%s is refused %v, want the store's refusal of entry 6, risk 5, reading %q", name, err, says)
+		}
+		unchanged(name)
+
+		name = fmt.Sprintf("the route with dry_run %t", dryRun)
+		refused := requireRefused(t, name, dispatchRequest(t, rig.handler, http.MethodPost, path,
+			map[string]any{"prevented_by": entries, "dry_run": dryRun}, "alice"), http.StatusBadRequest, "INVALID_POINTER", foreign)
+		if refused.Error != says {
+			t.Errorf("%s is refused %q, want %q", name, refused.Error, says)
+		}
+		unchanged(name)
 	}
 }

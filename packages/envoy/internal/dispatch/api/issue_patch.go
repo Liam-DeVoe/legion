@@ -277,12 +277,6 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if repo != nil {
-		if err := checkIssueRepoMapped(r.Context(), tx, *repo, before.Project); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-	}
 	// The issue's duplicate_of and filed_from are read against the store beside the other
 	// refusals, so a refused one leaves the issue as it was.
 	duplicateOf, duplicateProvided, err := resolveDuplicateOf(r.Context(), tx, key, before.Project, input.DuplicateOf)

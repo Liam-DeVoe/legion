@@ -395,8 +395,10 @@ func TestALensCycleIsReadOnceEach(t *testing.T) {
 // lists fifty and names the lens where the walk stopped, the fifty-first. Stacked, each lens on
 // the one before it, the requirement's read holds one lens on it and one chain of fifty, each
 // lens standing on the one before it. Flat, every lens on the paragraph, the paragraph's read
-// holds all sixty on it; its first chain is the first fifty, stopped at the fifty-first, which
-// begins the chain of the ten past the cut.
+// holds all sixty on it, and fifty of them in all across every chain it answers: one chain, the
+// first fifty, stopped at the fifty-first. A chain starts only at a lens triggered by no other
+// lens on the paragraph, so no lens past the cut begins one, and no chain holds the fifty-first or
+// any lens after it.
 func TestALensChainOfSixtyIsCutAtFifty(t *testing.T) {
 	rig := newReasoningRig(t)
 	stacked := rig.invokeChain(rig.requirement, 60, true)
@@ -430,15 +432,75 @@ func TestALensChainOfSixtyIsCutAtFifty(t *testing.T) {
 	if got := readAddresses(read.Lenses); !slices.Equal(got, invokedAddresses(flat)) {
 		t.Fatalf("the paragraph holds %d lenses, want the sixty in the order invoked", len(got))
 	}
-	if len(read.Chains) != 2 {
-		t.Fatalf("the paragraph's read answers %d chains, want the fifty the walk listed and the ten past its cut", len(read.Chains))
+	listed, past := 0, invokedAddresses(flat[lensChainDepth:])
+	for index, chain := range read.Chains {
+		listed += len(chain.Lenses)
+		for _, lens := range chain.Lenses {
+			if at := slices.Index(past, lens.Address); at >= 0 {
+				t.Errorf("chain %d of the paragraph's read, of %d lenses, holds %s, lens %d of the chain of sixty, past the cut at %d",
+					index+1, len(chain.Lenses), lens.Address, lensChainDepth+at+1, lensChainDepth)
+			}
+		}
+	}
+	if listed != lensChainDepth || len(read.Chains) != 1 {
+		t.Fatalf("the paragraph's read lists %d lenses across %d chains, want %d in one chain: a lens past the cut begins no chain of its own",
+			listed, len(read.Chains), lensChainDepth)
 	}
 	if got := readAddresses(read.Chains[0].Lenses); !slices.Equal(got, invokedAddresses(flat[:lensChainDepth])) ||
 		read.Chains[0].StoppedAt == nil || *read.Chains[0].StoppedAt != flat[lensChainDepth].Address {
 		t.Fatalf("the flat chain lists %d lenses stopped at %v, want the first fifty stopped at %s", len(got), read.Chains[0].StoppedAt, flat[lensChainDepth].Address)
 	}
-	if got := readAddresses(read.Chains[1].Lenses); !slices.Equal(got, invokedAddresses(flat[lensChainDepth:])) || read.Chains[1].StoppedAt != nil {
-		t.Fatalf("the chain past the cut lists %v stopped at %v, want the last ten whole", got, read.Chains[1].StoppedAt)
+}
+
+// TestABackwardLensChainOfAHundredAndTwentyAnswersFiftyInAll: a hundred and twenty lenses on the
+// paragraph, invoked in order, each but the last then triggered by the one invoked after it through
+// the pointer route, so the chain's triggers run back against the order invoked and its one root,
+// the lens triggered by no other on the paragraph, is the last. Its walk lists the last fifty and
+// stops at the seventieth. The first lens begins no chain of its own although its walk, fifty
+// lenses long, meets no lens the root's walk visited before it stops: a walk from a lens that is no
+// root that stops at the bound stands past a cut. So the read answers one chain, fifty lenses in
+// all, and names where it stopped.
+func TestABackwardLensChainOfAHundredAndTwentyAnswersFiftyInAll(t *testing.T) {
+	rig := newReasoningRig(t)
+	invoked := make([]lensInvoked, 0, 120)
+	for range cap(invoked) {
+		invoked = append(invoked, rig.invoke(rig.paragraph, "botec", "alice", nil))
+	}
+	for index, lens := range invoked[:len(invoked)-1] {
+		pointed := rig.post(nodePath("lens/"+lens.ID, "pointers"), map[string]any{
+			"kind": graphstore.TupleTriggeredBy, "action": pointerAppend, "to": invoked[index+1].Address,
+		}, "alice")
+		if pointed.Code != http.StatusOK {
+			t.Fatalf("point lens %d at lens %d: status=%d body=%s", index+1, index+2, pointed.Code, pointed.Body.String())
+		}
+	}
+	read := rig.lenses(rig.paragraph, "alice")
+	addresses := invokedAddresses(invoked)
+	if got := readAddresses(read.Lenses); !slices.Equal(got, addresses) {
+		t.Fatalf("the paragraph holds %d lenses, want the %d in the order invoked", len(got), len(invoked))
+	}
+	// numbered is the place in the order invoked, from 1, of the lens at address; 0 for none.
+	numbered := func(address *string) int {
+		if address == nil {
+			return 0
+		}
+		return slices.Index(addresses, *address) + 1
+	}
+	listed := 0
+	for index, chain := range read.Chains {
+		listed += len(chain.Lenses)
+		t.Logf("chain %d lists %d lenses, lens %d to lens %d, and stops at lens %d (0: none)", index+1, len(chain.Lenses),
+			numbered(&chain.Lenses[0].Address), numbered(&chain.Lenses[len(chain.Lenses)-1].Address), numbered(chain.StoppedAt))
+	}
+	if listed != lensChainDepth || len(read.Chains) != 1 {
+		t.Fatalf("the paragraph's read lists %d lenses across %d chains, want %d in one chain: a lens past the cut begins no chain of its own",
+			listed, len(read.Chains), lensChainDepth)
+	}
+	cut := len(invoked) - lensChainDepth
+	chain := read.Chains[0]
+	if got := readAddresses(chain.Lenses); !slices.Equal(got, addresses[cut:]) || numbered(chain.StoppedAt) != cut {
+		t.Fatalf("the chain lists %d lenses and stops at lens %d, want lens %d to lens %d stopped at lens %d",
+			len(got), numbered(chain.StoppedAt), cut+1, len(invoked), cut)
 	}
 }
 

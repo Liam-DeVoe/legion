@@ -34,11 +34,10 @@ var catchUpAlice = model.Actor{Kind: "user", ID: "alice"}
 // catchUpSession is the session the release before puts on an ask as a follower.
 const catchUpSession = "session-catch-up-follower"
 
-// seedCatchUpAsk writes project, its issue <project>-1 and an open ask on that issue as the release
-// before writes them, then runs the boot step's backfill (graphcensus.BackfillAsks), which writes
-// the ask's node and marks its row, as it marks every row that release wrote. It answers the ask's
-// id and its issue.
-func seedCatchUpAsk(t *testing.T, database *store.Store, project string) (string, string) {
+// seedUnmarkedAsk writes project, its issue <project>-1 and an open ask on that issue as the
+// release before writes them: no node for any of them, and no marker on the ask's row, so phase 1
+// owes them (graphcensus.AsksOwed). It answers the ask's id and its issue.
+func seedUnmarkedAsk(t *testing.T, database *store.Store, project string) (string, string) {
 	t.Helper()
 	ctx := context.Background()
 	issue := project + "-1"
@@ -60,12 +59,31 @@ func seedCatchUpAsk(t *testing.T, database *store.Store, project string) (string
 	`, issue).Scan(&ask); err != nil {
 		t.Fatalf("seed the ask of %s: %v", issue, err)
 	}
-	if _, err := graphcensus.BackfillAsks(ctx, database); err != nil {
+	return ask, issue
+}
+
+// askMarked is whether ask's row names its node, as phase 1 marks it.
+func askMarked(t *testing.T, database *store.Store, ask string) bool {
+	t.Helper()
+	var marked bool
+	if err := database.Pool.QueryRow(context.Background(), `select node_kind is not null from asks where id = $1::uuid`, ask).Scan(&marked); err != nil {
+		t.Fatalf("read whether ask %s names its node: %v", ask, err)
+	}
+	return marked
+}
+
+// seedCatchUpAsk writes project, its issue <project>-1 and an open ask on that issue as the release
+// before writes them (seedUnmarkedAsk), then runs the boot step's backfill
+// (graphcensus.BackfillAsks), which writes the ask's node and marks its row, as it marks every row
+// that release wrote. It answers the ask's id and its issue.
+func seedCatchUpAsk(t *testing.T, database *store.Store, project string) (string, string) {
+	t.Helper()
+	ask, issue := seedUnmarkedAsk(t, database, project)
+	if _, err := graphcensus.BackfillAsks(context.Background(), database); err != nil {
 		t.Fatalf("state the ask of %s on its node: %v", issue, err)
 	}
-	var marked bool
-	if err := database.Pool.QueryRow(ctx, `select node_kind is not null from asks where id = $1::uuid`, ask).Scan(&marked); err != nil || !marked {
-		t.Fatalf("the ask of %s names its node %t (%v), want the backfill to have marked it", issue, marked, err)
+	if !askMarked(t, database, ask) {
+		t.Fatalf("the ask of %s names no node, want the backfill to have marked it", issue)
 	}
 	return ask, issue
 }
@@ -697,15 +715,17 @@ func TestATickRunsNoRestoreAfterACatchUpThatFailed(t *testing.T) {
 	}
 }
 
-// A booting process waits for the step's lock, so every process has phase 1 behind it before it
-// serves, and for nothing else of the step's (dispatch://INFRA-1150, "The step"; cmd/dispatch's
-// boot): a pass of phase 3 - every issue the restore and the conversion owe, one transaction each
-// - holds a lock of its own (decisionRestoreLock) and not the step's, which a tick lets go of
-// once phases 1 and 2 are behind it.
+// A booting process waits for the step's lock while phase 1 owes a row, so every process has
+// phase 1 behind it before it serves, and for nothing else of the step's (dispatch://INFRA-1150,
+// "The step"; cmd/dispatch's boot): a pass of phase 3 - every issue the restore and the conversion
+// owe, one transaction each - holds a lock of its own (decisionRestoreLock) and not the step's,
+// which a tick lets go of once phases 1 and 2 are behind it.
 //
 // A tick's pass of phase 3 queues behind issue DOC-1's row, which the test's own transaction
-// holds. A second process's boot answers within ten seconds while the pass still waits, and once
-// the row is let go the pass restores the issue's answered ask.
+// holds. An ask of another issue then stands as the release before writes it, so a second
+// process's boot owes phase 1 and takes the step's lock. That boot answers within ten seconds while
+// the pass still waits, having marked the ask, and once the row is let go the pass restores the
+// issue's answered ask.
 func TestABootWaitsForNoPassOfTheThirdPhase(t *testing.T) {
 	ctx := context.Background()
 	issue := newRestoreIssue(t, "# Spec\n\n:::ask{#q-boot urgency=\"med\" multiple=\"false\"}\nWhich build writes the corpus?\n:::\n")
@@ -724,6 +744,10 @@ func TestABootWaitsForNoPassOfTheThirdPhase(t *testing.T) {
 	ticked := make(chan error, 1)
 	go func() { ticked <- step.Tick(ctx) }()
 	storetest.WaitForLockWaiters(t, holder, 1, 30*time.Second)
+	owedAsk, _ := seedUnmarkedAsk(t, issue.database, "OWED")
+	if owed, err := graphcensus.AsksOwed(ctx, issue.database.Pool); err != nil || !owed {
+		t.Fatalf("phase 1 owes a row %t (%v) once the release before wrote an ask, want one owed, so the boot takes the step's lock", owed, err)
+	}
 
 	booting := NewDecisionStep(issue.database, catchUpCommit, nil)
 	bootCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -733,6 +757,9 @@ func TestABootWaitsForNoPassOfTheThirdPhase(t *testing.T) {
 		t.Fatalf("a boot while a pass of phase 3 waits answered %v after %s, want it to wait for no part of that pass", err, time.Since(started))
 	}
 	t.Logf("the boot answered in %s while the pass of phase 3 waited on the issue", time.Since(started))
+	if !askMarked(t, issue.database, owedAsk) {
+		t.Fatal("the boot answered with the release before's ask unmarked, want its phase 1 to have marked it")
+	}
 	if err := holder.Rollback(ctx); err != nil {
 		t.Fatalf("let the issue go: %v", err)
 	}
@@ -746,5 +773,77 @@ func TestABootWaitsForNoPassOfTheThirdPhase(t *testing.T) {
 	}
 	if spec := issue.latest(issue.spec); !strings.Contains(spec, "#q-boot urgency=") {
 		t.Fatalf("the pass restored no ask once the issue was let go:\n%s", spec)
+	}
+}
+
+// A booting process waits for the step's lock only while phase 1 owes a row (dispatch://INFRA-1150,
+// "The step"; cmd/dispatch's boot). A tick holds that lock while it runs phases 1 and 2, and a
+// process stopped or stalled while its tick holds it keeps it for as long as its session stays
+// open. Where phase 1 owes nothing, such a holder keeps no boot waiting. Where phase 1 owes a row,
+// the boot waits for the lock, so every process has phase 1 behind it before it serves.
+//
+// A second connection takes the step's lock and keeps it, as a stalled tick would. With nothing
+// owed, a boot answers nil within ten seconds. An ask then stands as the release before writes it,
+// naming no node. A boot has not answered two seconds later, and waits behind the holder. Once the
+// lock is let go, the boot answers nil, the ask names its node, and phase 1 owes nothing.
+func TestABootWaitsForTheStepsLockOnlyWhilePhaseOneOwesARow(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	conn, err := database.Pool.Dedicated(ctx, "test-stalled-decision-step")
+	if err != nil {
+		t.Fatalf("open the connection that holds the step's lock: %v", err)
+	}
+	t.Cleanup(func() { closeDecisionStepConn(conn) })
+	holder, err := conn.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the transaction that holds the step's lock: %v", err)
+	}
+	if _, err := holder.Exec(ctx, `select pg_advisory_lock($1)`, decisionStepLock); err != nil {
+		t.Fatalf("take the step's lock: %v", err)
+	}
+	if owed, err := graphcensus.AsksOwed(ctx, database.Pool); err != nil || owed {
+		t.Fatalf("phase 1 owes a row %t (%v) on an empty database, want nothing owed", owed, err)
+	}
+	bootCtx, cancelBoot := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelBoot()
+	started := time.Now()
+	if err := NewDecisionStep(database, catchUpCommit, nil).Boot(bootCtx); err != nil {
+		t.Fatalf("a boot with nothing owed answered %v after %s while another session held the step's lock, want nil: it waits for no lock", err, time.Since(started))
+	}
+	t.Logf("the boot with nothing owed answered in %s while another session held the step's lock", time.Since(started))
+
+	ask, issue := seedUnmarkedAsk(t, database, "OWED")
+	if owed, err := graphcensus.AsksOwed(ctx, database.Pool); err != nil || !owed {
+		t.Fatalf("phase 1 owes a row %t (%v) once the release before wrote an ask, want one owed", owed, err)
+	}
+	owedCtx, cancelOwed := context.WithTimeout(ctx, time.Minute)
+	defer cancelOwed()
+	booted := make(chan error, 1)
+	go func() { booted <- NewDecisionStep(database, catchUpCommit, nil).Boot(owedCtx) }()
+	select {
+	case err := <-booted:
+		t.Fatalf("a boot with phase 1 owed answered %v while another session held the step's lock, want it to wait for the lock", err)
+	case <-time.After(2 * time.Second):
+	}
+	if waiting := storetest.WaitForLockWaiters(t, holder, 1, 10*time.Second); waiting != 1 {
+		t.Fatalf("%d backends wait behind the session that holds the step's lock, want the boot's", waiting)
+	}
+	var released bool
+	if err := holder.QueryRow(ctx, `select pg_advisory_unlock($1)`, decisionStepLock).Scan(&released); err != nil || !released {
+		t.Fatalf("let the step's lock go: released %t (%v)", released, err)
+	}
+	select {
+	case err := <-booted:
+		if err != nil {
+			t.Fatalf("the boot answered %v once the step's lock was let go, want nil", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the boot answered nothing 30s after the step's lock was let go")
+	}
+	if !askMarked(t, database, ask) {
+		t.Fatalf("the ask of %s names no node after the boot, want its phase 1 to have marked it", issue)
+	}
+	if owed, err := graphcensus.AsksOwed(ctx, database.Pool); err != nil || owed {
+		t.Fatalf("phase 1 owes a row %t (%v) after the boot, want nothing owed", owed, err)
 	}
 }

@@ -94,6 +94,22 @@ test("a decision card names the decision, who made it, and opens the node that h
   }
 });
 
+// A decision's name is the words of its first block, as the server's read of a decision and the
+// Decisions tab name it: a heading is named by its words, and the `###` that marks it a heading
+// in the decision's markdown is none of them.
+test("a decision that opens with a heading is named by the heading's words", () => {
+  const view = renderCard({ text: ":::decision{#d1}\n### H\n\nWhy.\n:::\n" });
+  try {
+    expect(screen.getByRole("article", { name: "Decision: H" })).toBeDefined();
+    expect(screen.getByRole("link", { name: "H" })).toHaveAttribute(
+      "href",
+      "/issues/CORE-1/artifacts/choices-md#b-d-1"
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
 test("an unsure decision is drawn in the unsure colour and says so; a person's says whose", () => {
   const view = renderCard({
     kind: "person",

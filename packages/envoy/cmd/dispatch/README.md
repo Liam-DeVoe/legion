@@ -386,13 +386,22 @@ It runs under the lease `ci-reconcile` with that 5 minutes as its period, so one
   It writes through the listener's own CI bucket, `envoy_ci_state`, which every pass binds afresh and none creates:
   the listener stays the one owner of that bucket's TTL and its copies, and a pass that finds no bucket says so and reads GitHub nothing.
 
-- A pass reads every repository `repo_projects` maps, each under the name it is called today
-  — the row's own name, or, where the row names a rename, its `renamed_to` (`refs.CanonicalRepoSQL`)
-  — so a repository mapped under both an old and a new name is read once and a name it was renamed away from is never asked of GitHub, which answers 404 for that name's installation.
+- A pass reads every repository it covers (`cireconcile.covered`): each one `repo_projects` maps,
+  and each one an issue names as its own `repo`, which needs no mapping.
+  Each is read under the name it is called today
+  — its own name, or, where a mapping of that name names a rename, that mapping's `renamed_to` (`refs.CanonicalRepoSQL`)
+  — so a repository named under both an old and a new name is read once and a name it was renamed away from is never asked of GitHub, which answers 404 for that name's installation.
   It resolves each against GitHub (`GET /repos/{owner}/{repo}`) for the name and id GitHub itself gives it, and deduplicates by that id as well.
-  Every record it writes is keyed by GitHub's own owner and name, never the mapping's, which is stored lower-cased:
-  a record keyed from the mapping would be a second record of the same head on a second settlement subject.
-  A repository GitHub does not answer, or the App is not installed on, is named at WARN under the name the pass read it by, counted and passed over, so mappings renamed onto one repository are skipped once between them.
+  Every record it writes is keyed by GitHub's own owner and name, never the mapping's or the issue's, which are stored lower-cased:
+  a record keyed from either would be a second record of the same head on a second settlement subject.
+  A repository GitHub does not answer is named at WARN under the name the pass read it by, counted in `mappings_skipped` and passed over, so mappings renamed onto one repository are skipped once between them.
+  A mapped repository the App is not installed on is skipped the same way at every pass (`ci reconcile skipped a repository it holds no token for`), because a mapping without the App is a fault to mend: install the App, or remove the mapping.
+  A repository only an issue names that the App is not installed on is no fault: an issue's own repository is any `owner/name`, and Dispatch refuses that issue no work.
+  The pass counts it in `repositories_without_app`, never in `mappings_skipped`, and names it at INFO (`ci reconcile passed over a repository the App is not installed on`) only when it asks GitHub about it.
+  It holds GitHub's answer that the App is not installed for an hour (`cireconcile.AbsentAppRecheck`), for a mapped repository too, so it asks about such a repository once an hour and not once a pass.
+  The cost is that the repair can lag by up to an hour after an operator installs the App on a repository, which is accepted because the live webhook path carries the repository's new events meanwhile.
+  For a mapped repository the hold has a second cost: after an operator installs the App, the WARN and `mappings_skipped` of 1 also stand for up to an hour, until a pass asks GitHub again.
+  The issues half reads the repositories of closed issues too: an open issue that names no repository works in the repository of the nearest issue above it, whatever the status of that issue.
 
 - A pass reads a repository's open heads in batches, over GraphQL: one query answers twenty open pull requests with every check suite and every check run of each one's head commit (`cireconcile.headsQuery`), and the pass asks for the next twenty with the cursor that answer carries until GitHub says there is no next page.
   The query asks for the runs of every check type (`filterBy: {checkType: ALL}`), as the REST listing is read with `filter=all`: GitHub's default answers the latest run of each name alone and drops every earlier attempt — on one measured head, 29 of its 32 runs — and an earlier attempt whose completion webhook never arrived is exactly what this pass exists to recover.
@@ -422,12 +431,12 @@ It runs under the lease `ci-reconcile` with that 5 minutes as its period, so one
 
 - Requests are serial, as GitHub asks a poller for, and queries and REST reads are paced apart by the two budgets GitHub keeps them under.
   After each query the pass waits a third of what that query took, so its queries never take more than 45 seconds of a minute, inside GitHub's secondary limit of 60 seconds of GraphQL processing a minute for the whole App.
-  Before each REST request it leaves the gap it set itself: the requests the last pass learned this one will take — the pages of each listing of each head a query could not answer, and one identity read for each mapped repository — divided into nine tenths of its own deadline.
+  Before each REST request it leaves the gap it set itself: the requests the last pass learned this one will take — the pages of each listing of each head a query could not answer, and one identity read for each repository the pass covers — divided into nine tenths of its own deadline.
   That gap is never below `cireconcile.FastestRequestPace` (100ms, ten requests a second, inside GitHub's secondary limit of 900 points a minute) and never above `cireconcile.RequestPace` (500ms), which is the pace a deployment configures and the slowest the pass reads.
   The first pass of a process knows of no work and reads at the floor, and the pass after it knows the real count.
 
 - A pass is bound at the interval its loop runs it on, so it always ends before the pass after it is due and always logs its one line.
-  The pass walks one stable order — the mapped repositories, and within each its open pull requests by number — from the first repository to the last page of the last one, and keeps a cursor in it.
+  The pass walks one stable order — the repositories a pass covers (`cireconcile.covered`: the ones `repo_projects` maps and the ones an issue names as its own), and within each its open pull requests by number — from the first repository to the last page of the last one, and keeps a cursor in it.
   A pass starts at the cursor, reads to the end of the order and ends there rather than beginning the order again, and ends early when its deadline is up or at a rate limit.
   A pass cut short leaves the cursor at the first page or REST head it did not finish, which the pass after it takes up, so no head starves behind the heads the order holds before it; a pass that reaches the end of the order leaves the cursor at the start of it.
   One walk of the order, however many passes it takes, is a cycle, and only the pass that closes a cycle forgets what the cycle no longer lists, by what every pass of that cycle reached.
@@ -440,7 +449,9 @@ It runs under the lease `ci-reconcile` with that 5 minutes as its period, so one
   A rate-limited answer is never a page to read another way: it stops the pass, where a refused page, and a page holding a pull request GitHub answered with no node or no head commit, send that page's heads to the REST fallback.
   The pass records no limit of its own beyond that: the App client records GitHub's own answer, as every process's App call does.
 
-- Every pass logs one INFO `msg="ci reconcile pass"` line: `list_pages`, `heads`, `head_requests`, `heads_not_modified`, `records`, `mappings_skipped`, `heads_too_large`, `rate_limited`, with `rate_limit_scope` and `rate_limit_until` when it stopped at one, and then `heads_known`, `requests`, `pace`, `first_head`, `last_head`, `cycle_complete`, `deadline_reached`, `graphql_queries`, `graphql_points`, `rest_requests`, `rest_not_modified`, `heads_over_rest`, `heads_unchanged` and `duration`.
+- Every pass logs one INFO `msg="ci reconcile pass"` line: `list_pages`, `heads`, `head_requests`, `heads_not_modified`, `records`, `mappings_skipped`, `heads_too_large`, `rate_limited`, with `rate_limit_scope` and `rate_limit_until` when it stopped at one, and then `heads_known`, `requests`, `pace`, `first_head`, `last_head`, `cycle_complete`, `deadline_reached`, `graphql_queries`, `graphql_points`, `rest_requests`, `rest_not_modified`, `heads_over_rest`, `heads_unchanged`, `duration` and `repositories_without_app`.
+  `mappings_skipped` counts the repositories the pass skipped for a fault, each of them named at WARN, so a number above zero is something to mend;
+  `repositories_without_app` counts the repositories only an issue names that the App is not installed on, which is no fault and stays above zero for as long as an issue names one.
   `records` counts the records the pass changed, one for each head whose record a write of the pass changed, never one for each observation it wrote:
   a head's runs and its suites all write the one record of that head (`cistore.Key`), so a pass that records a head's run and its suite reports 1;
   a write the CI store refuses for its bound counts for nothing, although it marks the record overflowed.
@@ -1419,7 +1430,7 @@ A process that finds it held tries again
   A reconcile pass re-reads the pull request heads first, whether or not the deployment has delivery settings and outside the deploy repository's permission check (`Reconcile.runOnce`), since every deployment compares a recorded result with those heads;
   every other step of the pass is gated on the settings and on that check, so a deployment with no settings runs the head pass and nothing else.
 
-- The CI reconcile pass (`cireconcile.Interval`, lease `ci-reconcile`) runs every 5 minutes through `duty.RunLeased`, its first pass one interval after the start, and reads each open pull request's head of every repository `repo_projects` maps, recording every completed check run and completed check suite Envoy's listener record of that head lacks.
+- The CI reconcile pass (`cireconcile.Interval`, lease `ci-reconcile`) runs every 5 minutes through `duty.RunLeased`, its first pass one interval after the start, and reads each open pull request's head of every repository `repo_projects` maps or an issue names as its own, recording every completed check run and completed check suite Envoy's listener record of that head lacks.
   A webhook GitHub never delivered leaves a head short of a check, and a head short of a check never settles, which no notification announces either.
   It needs NATS, whose `envoy_ci_state` bucket it binds and never creates, and the App private key; without either it is off and says so at start.
   The pass compares a `tester` or `architect` check run's `app.id` against `DISPATCH_REVIEWER_APP_ID`, and with that variable unset records no verdict check at all.
@@ -2469,7 +2480,7 @@ One GitHub repository under two names was two repositories to Dispatch:
 The pair lives on this row because this row is where Dispatch already holds the old name, it is the operator's to set through `PUT /api/v1/settings/repo-projects/{owner}/{repo}` under the authority that already sets a mapping, and Dispatch asks GitHub nothing:
 a name a repository was renamed away from cannot be read at all, so a rename is declared, never discovered.
 The canonical name of a repository is what its row's `renamed_to` names, else the name itself, compared case-insensitively (`refs.CanonicalRepo`), and six sites read it:
-both sides of the attribution's hold, the repository the results route asks GitHub about, the key every writer of a `pull_request_heads` row uses, which re-keys a row stored under an old name and drops that row, the settings route, which reads it to decide whether a rename's target is itself renamed, and the CI reconcile, which reads every mapping under the name its repository has now, so no pass asks GitHub about a name it cannot read (`cireconcile`, `Reconciler.mapped`).
+both sides of the attribution's hold, the repository the results route asks GitHub about, the key every writer of a `pull_request_heads` row uses, which re-keys a row stored under an old name and drops that row, the settings route, which reads it to decide whether a rename's target is itself renamed, and the CI reconcile, which reads every repository it covers under the name it has now, so no pass asks GitHub about a name it cannot read (`cireconcile`, `Reconciler.covered`).
 A column check refuses a repository renamed to itself, and the route refuses a pair whose target is itself renamed and a rename of a repository another mapping already points at, so the canonical name is one step away and no cycle exists.
 The listener holds the other half of a rename:
 `ENVOY_GITHUB_REPOSITORY_RENAMES` publishes every GitHub envelope of the current repository a second time under its former name, so the operator who sets a mapping's `renamed_to` configures that pair too (`packages/envoy/AGENTS.md`, "Repository renames").
@@ -3248,11 +3259,12 @@ An id the catalogue holds is refused, exit 1, and nothing is written; every serv
 
 `envoy-dispatch premortem-convert --issue <KEY> --artifact <slug> --prevented-by <file> [--dry-run]` converts the pre-mortem document `<slug>` of issue `<KEY>` into nodes, against `DATABASE_URL`, in one transaction, as the server's own credential (`api.PremortemConverter`); the usage text, the map file's format among it, is in the command (`premortem_convert.go`).
 It runs `api.ConvertPremortem` (`internal/dispatch/api/premortem_convert.go`), the one conversion, which `POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert` runs too, and prints its report as JSON.
-The conversion reads the document's newest version, takes the issue's row first, and writes through `writeReasoningNodes` at no event one lens of kind `pre-mortem` under the issue, whose verdict is the document's verdict followed by its two closing sections, "What a world-class implementation looks like" and "The smallest first slice that proves the model", word for word, and under it one risk for risk 0 and each numbered risk, each with its heading, its early warning and its prevention and a `prevented_by` tuple to each check its line names.
+The conversion reads the document's newest version, takes the issue's row first, and writes through `writeReasoningNodes` at no event one lens of kind `pre-mortem` under the issue, whose verdict is the document's verdict followed by its two closing sections, "What a world-class implementation looks like" and "The smallest first slice that proves the model", word for word, and under it one risk for risk 0 and each numbered risk, each with its heading, its early warning and its prevention and a `prevented_by` tuple to each check its line names, a check of any issue of the issue's project.
 Then it appends a `moved_to` tuple from the document's address, kind `artifact` at its `ref_key`, to the lens, and retires the document through `docs.RetireDocument`, the one retire path, with the reason `converted into the pre-mortem lens <lens address>`: the document leaves its issue's document list, takes no new text (`409 DOCUMENT_RETIRED`), and one `document.retired` event records it, which the route publishes once its transaction commits and which reaches every server's stream from the commit when the command writes it.
 Its old address then answers the lens: `GET /api/v1/references?to=<the document's address>` names the lens as its node, as a moved block's old address names the block it moved to, and the reference closure of an issue that cites the document holds the lens as a member of `kind` `lens` at the lens's `address`, whose `artifact` is the retired document; both read the tuple through `block_moved_to`, which migration `20261117042519_block_moved_to_lens` widens to a document's address and its lens.
 `GET /api/v1/block-links` takes its two documents by id and reads no address, so it follows no move: a retired document keeps its row, its versions and its blocks, and the links to them read as before.
 A line of any other shape, a number the document does not hold, a number twice, a risk the document holds with no line, and an address that names no `check` block that is not `gone` are refused, exit 1, naming the line, and nothing is written; so is a document that is none, holds no verdict, risk or closing section, or was retired by anything but a conversion.
+A line naming a check of another project is refused by the store's rule on `prevented_by` (`graphstore`'s `pointerRules`) as the write runs, exit 1, naming the line, its risk and the check by its address, with `--dry-run` as without it, and nothing is written.
 `--dry-run` runs every write in a savepoint it rolls back and prints what the conversion would write, with no address; a document whose address carries a `moved_to` tuple already is reported converted, naming its lens, and nothing is written.
 
 ### The view over the store
@@ -3626,7 +3638,7 @@ It also answers `other_project_offers`, how many ask creates of the window offer
 The two records are written at different moments and only the check's own row is retried, so a count at a window's edge can name one fewer write than the window's total:
 
 ```bash
-curl -sf -H "Authorization: Bearer $(cat "$DISPATCH_TOKEN_FILE")" "$DISPATCH_URL/api/v1/related-checks?project=<KEY>&from=<time>&to=<time>"
+printf 'Authorization: Bearer %s' "$(cat "$DISPATCH_TOKEN_FILE")" | curl -sf -H @- "$DISPATCH_URL/api/v1/related-checks?project=<KEY>&from=<time>&to=<time>"
 ```
 
 Every suggestion an issue's or an ask's check offers is recorded in `write_suggestions`, whose `outcome` the server's outcome sweep (`api.RunSuggestionOutcomeSweep`) advances from `ignored` to `acted_on` (the suggested item was cited from the source, or the suggested issue was updated directly) or `overridden` (the source got further activity instead)
@@ -3685,8 +3697,11 @@ A read of the graph answers an interaction to the credential that asked it and t
 A read of that address answers the node's `frames` too, each `frame` value as `{sequence, name, data}` in sequence order, behind the same predicate; an edge at the run carries none of them, and no other kind of node carries the member.
 
 A write made for a run names the run in the `Dispatch-Going-Run` request header (`contracts.GoingRunHeader`), and `api.GoingCaller` sends it on every write it makes for its `Run`.
-`withinGoingRun` (`api/going_run_header.go`) reads the header once per `POST`, `PATCH`, `PUT` or `DELETE`, inside the project and session scope checks and outside the key layer: the run must be one the record holds, live (`now() < ends_at`, whatever frames it has stored) and the caller's whole credential's (`graphstore.ProvesAuthor` and `model.Actor.SameCredential`), and anything else, a header that is no uuid or is sent twice among it, answers `404 GOING_REQUEST_NOT_FOUND`, the stream's answer for a run nobody holds, before the write runs, so nothing is stored and no key is claimed.
-The run then rides on the request's context (`graphstore.WithRun`), and `graphstore.Write` and `graphstore.Caused` append one `changed_by_run` tuple from each node the write marks changed to `interaction/<uuid>`, in the write's own transaction and under its own cause, once for each node and run: the comment a comment write creates, each block whose words a version adds, changes or restores and each it drops, the issue, document, ask and message nodes their creates make, the issue's node an issue's own `PATCH /api/v1/issues/{key}` writes when it changes any field (written for a run alone, restating the issue, under the `PATCH`'s own event), the ask whose answer state `asks.Settle` writes (an answer, a resolution, a decline, an issue's close or reopen), the ask a follow or an unfollow states its `followed_by` out of, the reasoning nodes, the node a pointer goes out of and the node whose state moves, and never an author's `person` or `session` node.
+`withinGoingRun` (`api/going_run_header.go`) reads the header once per `POST`, `PATCH`, `PUT` or `DELETE`, inside the project and session scope checks and outside the key layer: the run must be one the record holds, live (`now() < ends_at`, whatever frames it has stored) and the caller's whole credential's (`graphstore.NamesCredential` and `model.Actor.SameCredential`), and anything else, a header that is no uuid or is sent twice among it, answers `404 GOING_REQUEST_NOT_FOUND`, the stream's answer for a run nobody holds, before the write runs, so nothing is stored and no key is claimed.
+A repeat is answered before its run is checked: a `POST` or `PATCH` sent again under the `Idempotency-Key` of a write already answered is answered from that key, so a retry after the run has ended reads the write it made rather than the refusal.
+Where the run is refused and the key holds an answer (`requestKeyAnswersItself`), the request goes on to the key layer with no run, and that layer answers it from the key alone and never runs its handler (`answerRefusedRun`): the stored answer or the route's replay, `409 KEY_IN_FLIGHT` for a first request still running, and the refusal where the key no longer holds an answer, so no write is made for a run the check refused, and a refused request whose key holds nothing claims none.
+The key's digest holds the run header (Keyed writes, below), so a repeat that names another run, or none, is `422 KEY_REUSED`.
+A run the check admits rides on the request's context (`graphstore.WithRun`), and `graphstore.Write` and `graphstore.Caused` append one `changed_by_run` tuple from each node the write marks changed to `interaction/<uuid>`, in the write's own transaction and under its own cause, once for each node and run: the comment a comment write creates, each block whose words a version adds, changes or restores and each it drops, the issue, document, ask and message nodes their creates make, the issue's node an issue's own `PATCH /api/v1/issues/{key}` writes when it changes any field (written for a run alone, restating the issue, under the `PATCH`'s own event), the ask whose answer state `asks.Settle` writes (an answer, a resolution, a decline, an issue's close or reopen), the ask a follow or an unfollow states its `followed_by` out of, the reasoning nodes, the node a pointer goes out of and the node whose state moves, and never an author's `person` or `session` node.
 An edit of an ask's words (`PATCH /api/v1/asks/{id}`) or of a comment's words (`PATCH /api/v1/comments/{id}`) writes no store node of its own, so for a run alone, and only when its words changed, it writes the ask's or the comment's node as the issue's `PATCH` writes the issue's, restating it under its own `ask.edited` or `comment.edited` event, and that node is marked; a comment whose row names no node is no node of the store, and its edit writes none.
 `DELETE /api/v1/artifacts/{id}` states the removed document's node gone and retracts each `changed_by_run` out of it (`docs.WriteRemovedNode`), so a run counts no document that has gone, and a document made again under the same title, which takes the same node, names no run but its own.
 A write on a context with no run appends none, so the block-index reconciliation tick, which indexes a version of more than 2,000 blocks or one with no rendering out of its request, names no run.
@@ -3730,7 +3745,7 @@ Each item below names a status and code, then its meaning.
 
 - The first answer, with `Idempotency-Replayed: ?1`
 
-  A repeat under a key whose first request finished, with the same method, route, path values, query, media type and body:
+  A repeat under a key whose first request finished, with the same run named in `Dispatch-Going-Run` (or none), method, route, path values, query, media type and body:
   the stored status, every header the first answer set and its body, and nothing runs again.
 
 - The first status with `ANSWER_NOT_KEPT`
@@ -4213,7 +4228,7 @@ Each item below names a path with its method and identity, then its purpose.
   Create or replace, or remove, a repository mapping; PUT takes `{project, default?, renamed_to?}`, and `default: true` moves the project's one default to it.
   `renamed_to` is the full `owner/name` the repository is called today, which every comparison Dispatch makes of a repository canonicalises through (`refs.CanonicalRepo`):
   absent or null leaves the stored pair as it is, `""` clears it, and a pair naming this repository itself, one naming a repository that is itself renamed, or one on a repository another mapping is already renamed to is `400 INVALID_REPO_PROJECT`.
-  A mapping an issue names as its `repo` is neither deleted nor moved: `409 REPO_PROJECT_IN_USE`.
+  A mapping an issue names as its `repo` is deleted and moved like any other: an issue's own repository needs no mapping.
   `AGENTS.md` gives the rules and the `settings.repo_project.updated` events.
 
 - `/api/v1/github/app-installation/{owner}/{repo}` (GET; cookie, trusted header, or bearer)
@@ -4490,8 +4505,11 @@ Each item below names a path with its method and identity, then its purpose.
   Answers `{on, lens, lenses, chains}`: `on` the node read (address, kind, state and visibility); `lens` the node itself, whole, where it is a lens, so either end of a trigger reads the other, and null otherwise; `lenses` the lenses whose `part_of` tuple points at the node, in the order they were invoked, the `seq` of that tuple, so a later write of a lens's row does not move it.
   Each lens carries its address `dispatch://lens/<uuid>`, its `kind` (`{id, words}`, the `lens_kind` its `has_kind` tuple names), `on` (the node it stands on, null where the caller may not see it), `author` (the person or session its `authored_by` tuple names: the session the body named on the shared bearer, null where the write named only a workload), `created_at`, `verdict`, `state`, `visibility`, `triggered_by` (the lenses its `triggered_by` tuples point at) and `triggered` (the lenses whose `triggered_by` tuples point at it), each by address in the order the tuples were written, since the store holds `triggered_by` as many-valued.
   Its `findings` come in rank order, each `{address, text, rank, state, visibility}`, `rank` being the `seq` of its `part_of` tuple, a sparse key; its `risks` in the order of their `part_of` tuples, each `{address, heading, early_warning, prevention, prevented_by, state, visibility}`, `prevented_by` the address of each check that prevents it and `[]` where none does.
-  A chain is `{lenses, stopped_at}`: the lenses joined to one another by `triggered_by` tuples the caller may see, walked both ways, breadth first, from the node itself where it is a lens and from each lens on the node, in that order, that no earlier chain lists; a visited set lists each lens once, so a cycle is read once, and the chain lists its lenses whole in the order they were invoked.
-  A chain lists at most `lensChainDepth` (50) lenses, the depth counted in lenses: past them `stopped_at` names the first lens the walk reached and did not list, and a lens on the node past that cut begins a chain of its own; a chain of exactly 50 has `stopped_at` null.
+  A chain is `{lenses, stopped_at}`: the lenses joined to one another by `triggered_by` tuples the caller may see, walked both ways, breadth first, and listed whole in the order they were invoked; a visited set lists each lens once, so a lens is in one chain at most and a cycle is read once.
+  A chain starts only at a lens the read answers in its own right (the node itself where it is a lens, then each lens on the node, in that order) that holds no `triggered_by` tuple the caller may see to another of those lenses; a chain of them that holds no such lens, its triggers closing in a cycle, starts after those at its first lens in that order, where it holds no more than 50 lenses (below), and the chains come in the order they started.
+  A chain lists at most `lensChainDepth` (50) lenses, the depth counted in lenses: past them `stopped_at` names the first lens the walk reached and did not list; a chain of exactly 50 has `stopped_at` null.
+  The lenses past that cut start no chain of their own: a walk that reaches a lens an earlier chain's walk visited answers no chain, and nor does a walk from a lens that starts no chain that stops at the bound, so the read of a chain of 60 lenses on the node answers 50 of them in all, across every chain, and names the 51st, and the read of 120 lenses on the node, each triggered by the one invoked after it, answers the last 50 and names the 70th.
+  So a cycle of those lenses that holds no lens a chain starts at answers no chain where it holds more than 50 lenses: none of its lenses starts one, and the walk cannot tell it from a chain past a cut without reading past the bound; within 50 it is answered once, each lens once.
   A chain holds two lenses or more.
   A lens, a finding or a risk the caller may not see is in no list, no chain and no count, and no chain passes through a lens the caller may not see, so a lens reached only through one is in none of that caller's chains.
 
@@ -4499,8 +4517,8 @@ Each item below names a path with its method and identity, then its purpose.
 
   Create an issue and its primary document.
   Omitting or leaving `spec` blank gives an empty primary document at version 1.
-  `repo` (`owner/name`) is the issue's own repository and must be mapped to its project:
-  `400 INVALID_ISSUE` when it is not `owner/name`, `400 REPO_NOT_MAPPED` when it is not mapped.
+  `repo` (`owner/name`) is the issue's own repository, any repository at all, one its project maps, one another project maps, or one no project maps:
+  `400 INVALID_ISSUE` when it is not `owner/name`.
   A title over 1,000 characters (`contracts.IssueTitleMax`, UTF-16 units after trimming) is `400 CAP_EXCEEDED` before the duplicate check.
   Refuses a near copy of an open issue of the project, other than the new issue's ancestors, with `409 POSSIBLE_DUPLICATE` and candidates unless `force` is true, once the refusal's `near_copy_checks` row is known to be written;
   a refusal whose row cannot be written refuses nothing, and the create goes in with `advice.suggestions.near_copy_check` naming the candidate.
@@ -4913,9 +4931,9 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/issues/{key}/risks` (POST; cookie, trusted header, or bearer)
 
   Write one risk under a pre-mortem lens of the issue, `{lens, heading, early_warning, prevention, prevented_by?, visibility?}`: the failure it names, the sign it is seen coming by and what keeps it from happening, as attributes of the risk, under the lens by its `part_of` tuple.
-  `prevented_by` is the address of a check block of the issue's documents that covers the risk, a `prevented_by` tuple.
-  The store holds a risk to a lens of kind `pre-mortem`: a lens of any other kind, a node that is no lens and a `prevented_by` at a block that is no check are `400 INVALID_POINTER`, the first saying a risk belongs under a lens of kind pre-mortem.
-  A blank field is `400 RISK_INPUT`, and a lens or a check the caller may not see under the issue `404 NOT_FOUND`.
+  `prevented_by` is the address of a check block that covers the risk, of any issue of the issue's project, a `prevented_by` tuple, read as the pointer route reads its far end (`pointerEnd`).
+  The store holds a risk to a lens of kind `pre-mortem` and its `prevented_by` to a check of the risk's own project: a lens of any other kind, a node that is no lens, a `prevented_by` at a block that is no check and a `prevented_by` at a check of another project, naming the check by its address, are `400 INVALID_POINTER`, the first saying a risk belongs under a lens of kind pre-mortem.
+  A blank field is `400 RISK_INPUT`, and a lens the caller may not see under the issue, or a check the caller may not see in any issue, `404 NOT_FOUND`, as one that does not exist.
   Answers `201` with the risk: its address `dispatch://risk/<uuid>`, `lens`, `heading`, `early_warning`, `prevention`, `prevented_by` (each check's address), `author`, `created_at`, `state` and `visibility`.
 
 - `/api/v1/issues/{key}/constraints` (GET, POST; cookie, trusted header, or bearer)
@@ -4929,10 +4947,10 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/issues/{key}/nodes/{id}/pointers` (POST; cookie, trusted header, or bearer)
 
   Append, retract or retarget one pointer tuple out of the node `{id}` names, `{kind, action, to, from?}`; `{id}` is the node's store address under the issue, percent-encoded as one path segment.
-  `kind` is `has_kind` (a lens to its `lens_kind`, `to` and `from` being `lens_kind` ids), `triggered_by` (a lens to the lens of the issue that asked for it), `constrained_by` (a requirement block to a constraint of the issue or of the catalogue) or `prevented_by` (a risk to a check block).
+  `kind` is `has_kind` (a lens to its `lens_kind`, `to` and `from` being `lens_kind` ids), `triggered_by` (a lens to the lens of the issue that asked for it), `constrained_by` (a requirement block to a constraint of the issue or of the catalogue) or `prevented_by` (a risk to a check block of any issue of the issue's project, `to` and a retarget's `from` alike, as the pre-mortem conversion writes one).
   `append` asserts a tuple at `to`, `retract` retracts the one at `to`, and `retarget` moves the one at `from` to `to`, retracting the old and asserting the new in one write and touching no `part_of` tuple.
-  The store holds each tuple to its type rule: a far end of the wrong type, a lens triggered by itself and a lens left with no kind are `400 INVALID_POINTER`, and a second `has_kind` or a retarget of a pre-mortem's kind away from `pre-mortem` is `409 POINTER_ALREADY_ASSERTED`, one body whatever hangs under the lens.
-  A node or a far end the caller may not see under the issue, and a tuple to retract or retarget that the node does not hold, are `404 NOT_FOUND`; `part_of`, which moves through the node's parent route, or any other kind or action, is `400 POINTER_INPUT`.
+  The store holds each tuple to its type rule: a far end of the wrong type, a `prevented_by` at a check of another project than the risk's, naming the check by its address, a lens triggered by itself and a lens left with no kind are `400 INVALID_POINTER`, and a second `has_kind` or a retarget of a pre-mortem's kind away from `pre-mortem` is `409 POINTER_ALREADY_ASSERTED`, one body whatever hangs under the lens.
+  A node or a far end the caller may not see under the issue (a `prevented_by`'s check in any issue), and a tuple to retract or retarget that the node does not hold, are `404 NOT_FOUND`, a check the caller may not see answering as one nobody holds; `part_of`, which moves through the node's parent route, or any other kind or action, is `400 POINTER_INPUT`.
   Answers `200 {node, kind, action, to, from}`, each end with its address, kind, state and visibility, and `from` null but for a retarget.
 
 - `/api/v1/issues/{key}/nodes/{id}/state` (POST; cookie, trusted header, or bearer)
@@ -4944,6 +4962,9 @@ Each item below names a path with its method and identity, then its purpose.
   `409 NODE_STATE_NOT_WRITABLE`, naming the node's kind, its state and the value asked for, refuses `settled` (the settle below writes it), `gone` on a block of a document or on an issue, a document, an ask, a comment or a message, and every value on a gone node: a gone node takes no state here, `live` or otherwise, because `proposed` or `overtaken` would bring it back as surely as `live`, and a block of a document a version dropped would then read as a present block no version holds.
   A block of an ask, a comment or a message is no node the store holds, since no writer writes a `graph_nodes` row for one: every read answers it `live`, and every value on it is that `409`, saying so (`itemBlockRefusal`).
   The write appends one `state` tuple written by the caller, through `graphstore.Write` and at no event, so every read of the node answers the new state at once; a write of the state the node holds appends nothing.
+  A move of a node out of `settled`, and a move of a node into `proposed`, take the settle's caller rule (`takesTheSettleRule`, `maySettle`): a person - a browser's cookie, or a token holding the `person` scope - makes either on any node, and any other caller only on a node whose recorded author, its `made_by`, is the author its credential proves, by the one author rule (`graphstore.SameAuthor`); any other caller is `403 STATE_NOT_PERMITTED`, naming the node, and nothing is stored.
+  The first move undoes what a settle decided and the second takes a requirement's gaps out of the coverage read and the approval request, so neither is open to a caller who could not settle the node, and the deployment's shared agent token, which proves no author, makes neither.
+  A write of `proposed` on a node already `proposed` moves nothing and appends nothing, so it takes no caller rule.
   The node's row keeps the `source_event` it held (`graphstore.Node.KeepsCause`): a write of the state is no cause of the node's other facts, so the next index pass of a block's document does not stamp its event on a block that version did not change.
   Answers `200 {node: {address, kind, state, visibility}, previous}`, `previous` the state it held before.
 
@@ -4966,8 +4987,9 @@ Each item below names a path with its method and identity, then its purpose.
 
   Convert the issue's pre-mortem document `{slug}`, by slug, into nodes, once (`api/premortem_convert.go`, `convertPremortemRoute`), `{prevented_by, dry_run?, actor?}`, in the request's one transaction as the credential that proved the caller; `envoy-dispatch premortem-convert` runs the same `api.ConvertPremortem` (above, "Converting a pre-mortem").
   It writes one lens of kind `pre-mortem` under the issue, whose verdict is the document's verdict followed by its two closing sections word for word, one risk under it for risk 0 and each numbered risk of the newest version with its heading, early warning and prevention and a `prevented_by` tuple to each check its entry names, and a `moved_to` tuple from the document's address to the lens, and retires the document through `docs.RetireDocument`, publishing its one `document.retired` event, whose reason names the lens, once the request commits.
-  `prevented_by` is one entry `{risk, checks, reason}` for each risk the document holds, `checks` the `dispatch://` addresses of check blocks of any issue, `[]` for none; the handler reads each entry on its own (`decodePremortemEntries`).
+  `prevented_by` is one entry `{risk, checks, reason}` for each risk the document holds, `checks` the `dispatch://` addresses of check blocks of any issue of the issue's project, `[]` for none; the handler reads each entry on its own (`decodePremortemEntries`).
   `400 ARTIFACT_INPUT`, naming the entry by its position from 1 and its risk number, or the risk no entry names, refuses an entry of the wrong shape or type, a blank reason or check, a number the document does not hold, a number twice, a risk with no entry, and an address that names no `check` block that is not `gone` and that the caller may see; a body that is not JSON is `400 INVALID_JSON`, no document `{slug}` of the issue `404 ARTIFACT_NOT_FOUND`, and a document with no verdict, risk or closing section, or one something other than a conversion retired, `400 ARTIFACT_INPUT`.
+  An entry naming a check of another project is `400 INVALID_POINTER`, naming the entry, its risk and the check by its address, with `dry_run` as without it: the store's rule on `prevented_by` refuses the write, which is rolled back.
   Each writes nothing.
   `dry_run` runs every write in a savepoint that is rolled back and answers what the call would write, with no address.
   A document whose address carries a `moved_to` tuple already answers `200`, writes nothing and names its lens.
@@ -5400,9 +5422,9 @@ Each item below names a status and code, then its meaning.
 
 - `400 INVALID_POINTER`
 
-  A pointer tuple a write states is at a node its type rule does not allow: a `has_kind` other than from a lens to a lens kind, a `triggered_by` other than from a lens to another lens, a `constrained_by` other than from a requirement block or a lens kind to a constraint, a `prevented_by` other than from a risk to a check block, or a risk's `part_of` to anything but a lens of kind `pre-mortem`;
+  A pointer tuple a write states is at a node its type rule does not allow: a `has_kind` other than from a lens to a lens kind, a `triggered_by` other than from a lens to another lens, a `constrained_by` other than from a requirement block or a lens kind to a constraint, a `prevented_by` other than from a risk to a check block of the risk's own project, or a risk's `part_of` to anything but a lens of kind `pre-mortem`;
   or a lens's `has_kind` is retracted with none asserted in its place.
-  The message names the tuple kind, the near end, the far end's kind and what the rule allows; nothing is written.
+  The message names the tuple kind, the near end, the far end's kind and what the rule allows, and for a check of another project both projects and the check by its address; nothing is written.
 
 - `409 POINTER_ALREADY_ASSERTED`
 

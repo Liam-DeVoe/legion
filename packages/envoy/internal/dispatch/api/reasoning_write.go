@@ -95,10 +95,11 @@ func lockIssueRow(ctx context.Context, tx pgx.Tx, key string) (string, error) {
 // route's to check before it calls this, through the read registry's loader for that end's kind,
 // so that a far end the caller may not see answers as one that does not exist. An end that
 // stands under `{key}` - the node a lens is invoked on, a lens a risk or a finding stands under,
-// a requirement or a check of the issue's documents - is found through FindNodeUnderIssue. An end
-// that stands under no issue - a has_kind tuple's lens_kind, a constraint of the catalogue a
-// lens_kind reaches - is no node FindNodeUnderIssue answers but 404 for, and is found through
-// refs.Node with the caller's visibility instead.
+// a requirement of the issue's documents - is found through FindNodeUnderIssue. A risk's check,
+// which stands under any issue of the project (the store holds it to the risk's project), and an
+// end that stands under no issue - a has_kind tuple's lens_kind, a constraint of the catalogue a
+// lens_kind reaches - are no nodes FindNodeUnderIssue answers but 404 for, and are found through
+// refs.Node with the caller's visibility instead (pointerEnd).
 //
 // It answers the nodes the request wrote, in the order it named them, without their authors':
 // the nodes this write made, which are the ones a write made for a run names as changed by it

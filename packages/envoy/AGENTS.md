@@ -112,6 +112,34 @@ Each item below names a task and where its code is, then notes on it.
   A server's refusal of a create or raise stops the listener's start naming the setting and its value, while Dispatch's server, which reconciles in the background, keeps serving with the refusal logged;
   a bucket raise's refusal also names the bucket (`refusedSettings`, `raiseReplicas`)
 
+- **Sender limit**:
+  `cmd/listener/sender_limit.go`, `cmd/listener/request_record.go` (`refuseSenderRateLimited`), `internal/bus/settings.go` (`MaxSenderMessagesPerMinute`), `internal/ratelimit/ratelimit.go` (`Keyed.WaitAt`)
+
+  `ENVOY_SENDER_MESSAGES_PER_MINUTE` is how many messages one agent session may send through this listener in a minute, `/v1/messages/send` and `/v1/messages/publish` together:
+  a whole number from 0 to 60000, and unset, blank or 0 sets no limit.
+  `ENVOY_SENDER_MESSAGE_BURST` is how many it may send at once, a whole number of 1 or more, and unset it equals the rate.
+  A burst with no rate or with a rate of 0, and any other value, refuses startup naming the variable and the value (`parseSenderLimit`).
+  The start logs one line, `listener sender limit: <rate> messages a minute, <burst> at once, for each agent session in this process` or `listener sender limit: none`.
+  The listener keeps one count for each sending session (`ratelimit.Keyed`), which starts at the burst and gains one message every 60 seconds divided by the rate, up to the burst.
+  The counts are this process's own: each listener, and each replica of one, keeps its own, and a restart fills each count again.
+  The sender is the session a secrets-broker token proves, else the request's `source_session`.
+  Only a message whose `source` is `agent` or absent and that has a sender is counted:
+  a message of Dispatch (`dispatch`) or of Envoy itself (`envoy`) is not, and neither is the Legion daemon's notice, which names no sender (`packages/daemon/internal/notify`).
+  Both routes take from the count after their own checks, the publish route's `ReachesNoSession` 400 included, and before they read a session, resolve a role, report a wake or store anything.
+  A message that finds its count at 0 is the `429` of `refuseSenderRateLimited`, recorded `outcome=sender_rate_limited`, and nothing is stored, kept for a later holder or reported for a wake.
+  `Retry-After` and the body's `retry_after_seconds` give the same whole seconds, rounded up and at least 1, until the count holds one message again.
+  The JSON body also holds `reason: "sender_rate_limited"`, `messages_per_minute`, `burst` and an `error` that is the sentence `Your sending is rate limited. This message was not sent. This listener lets one session send <rate> messages a minute and <burst> at once. You can send it again after <seconds> seconds.`, its nouns singular where a value is 1 (`1 message a minute`, `after 1 second`).
+  The request line of a refused message, and of each message that cost one, carries the field `sender`, and no other line of the listener carries it.
+  A counted message costs one where the route stores it, may have stored it (any answer of a role send after a forward, or a `503` after an unacknowledged publish, `bus.ErrUnacknowledged`) or reports a wake for it, whatever it answers (`senderCharge.stored`, `senderCharge.woke`).
+  Every role send `504` costs one, also one that forwarded nothing (`roleSend.timedOut`).
+  A refusal before any store or wake report, such as a `400`, `403`, `413` or a `503` before anything was sent (a wait for NATS to reconnect), costs nothing: the deferred `settle` returns the take.
+  A repeat the listener recognises costs nothing too (`senderCharge.forgive`): the stream's `duplicate` answer to a send or a topic publish, unless it answers the bus's resend (`bus.StoredAck.Resent`), and a role send's repeat of a kept copy (`keptRoleCopy.repeat`) before its first forward.
+  A role send's echo, and a repeat in the route's 10-minute record, cost nothing before any forward.
+  A repeat that finds the count at 0 is refused as a new message is, because the take comes first.
+  This 429 is not the broker token check's (`apiauth.go`), whose log reason is `rate_limited`.
+  No client sends a refused message again by itself (`packages/envoy-client/src/transport.ts` retries nothing below 500), except the Legion stall notice, whose sender waits the seconds and sends it again at most 3 times (`packages/pi-legion/src/stall-evidence.ts`).
+  `envoy-infra` takes the two settings as inputs `senderMessagesPerMinute` and `senderMessageBurst`.
+
 - **Stream consumer cap**:
   `internal/bus/stream.go` (`streamMaxConsumers`, `serverDefaultsAnUnsetCap`, `ownedStream`, `refusedSettings`), `internal/bus/keeper.go`
 
@@ -411,7 +439,7 @@ Each item below names a task and where its code is, then notes on it.
   a title naming another repository's issue first therefore does not cost the pull request its own, and a pull request no candidate of which resolves to its repository is attributed to nobody, as is one whose head branch is in another repository (`headInOwnRepository`).
   The hold is the server's own repository-resolution rule spliced into the statement that reads the candidates (`refs.IssueRepoTerms` through `attributionCandidatesQuery`), so an attribution can never disagree with the issue page;
   one pull request's best 25 candidates are the ones read (`attributionCandidateBound`).
-  Two names of one repository are one repository: six sites go through the canonical name the repository is called today (`refs.CanonicalRepo`, `refs.CanonicalRepoSQL`), which is the `renamed_to` of the old name's `repo_projects` row — both sides of that hold, the repository the results read asks GitHub about, the key every writer of a `pull_request_heads` row uses, the settings route's refusal of a target that is itself renamed, and the CI reconcile, which reads every mapping under the name its repository has now (`internal/dispatch/cireconcile`, `Reconciler.mapped`), so no pass asks GitHub about a name it cannot read;
+  Two names of one repository are one repository: six sites go through the canonical name the repository is called today (`refs.CanonicalRepo`, `refs.CanonicalRepoSQL`), which is the `renamed_to` of the old name's `repo_projects` row — both sides of that hold, the repository the results read asks GitHub about, the key every writer of a `pull_request_heads` row uses, the settings route's refusal of a target that is itself renamed, and the CI reconcile, which reads every mapping under the name its repository has now (`internal/dispatch/cireconcile`, `Reconciler.covered`), so no pass asks GitHub about a name it cannot read;
   an operator declares that pair through `PUT /api/v1/settings/repo-projects/{owner}/{repo}`, and Dispatch never reads it from GitHub, which answers 404 for the installation of a name a repository was renamed away from.
   The read of an issue's results also teaches Dispatch a pull request nothing ever told it of:
   a `before_merge` result whose commit heads no attributed row sends one `GET /repos/{owner}/{repo}/commits/{sha}/pulls` of its own and writes the heads GitHub names (`delivery.ReadThroughCommitPulls`, `comparisonReader.readThroughHead`), at most once per repository and commit every `delivery.CommitPullReadStaleAfter` (five minutes), so a result recorded before its own pull request opened stands at that head once the pull request opens at its commit.
@@ -1845,7 +1873,7 @@ The second phase runs on each tick while `processes.Live` lists a process of ano
 The step ticks at `docs.BlockIndexReconcileInterval` for as long as the process runs, since another build can go live after a tick found nothing to do.
 A tick with nothing owed and no other build live reads the live processes, the newest event and whether any block index is owed, each one probe of an index, on the shared pool, and dials no connection (`TestATickWithNothingOwedReadsNoTableWhole`).
 `graphcensus.AsksOwed` reads its tables to the end when nothing is owed, so it runs at boot, on a tick that owes a catch-up and after a tick that saw another build live, until it finds nothing: this build's create sites write their nodes and markers, so only another build writes a row it finds.
-A session advisory lock keeps two processes from running it together: a booting process waits for it, and a tick that finds it held skips.
+A session advisory lock keeps two processes from running it together: a booting process waits for it only while the first phase owes a row (`TestABootWaitsForTheStepsLockOnlyWhilePhaseOneOwesARow`), so a tick that holds it, or a process stalled while it holds it, keeps no boot waiting when nothing is owed, and a tick that finds it held skips.
 The count of what the restore and the conversion still owe, which `/healthz` answers as `decisions_step_owed`, one number, once a tick has counted it, and whose three parts each count logs, reads whole tables, so where it read nothing it is read again only after another build was live, a phase ran, an event was appended above the writer floor read before it, or while a block index is owed and once after.
 `DISPATCH_TEST_HOLD_DECISIONS_STEP=1`, beside `DISPATCH_TEST_HOOKS=1`, keeps every phase from running, and `backfill-graph-store` runs the first phase.
 
@@ -2896,11 +2924,11 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `issue.claimed` and `issue.released` carry `IssueClaimEventPayload {key, status, repo, resolved_repo, claim, previous_claim?, reason}` (`repo` and `resolved_repo` as on every issue event);
   the outbox publishes both to the previous claimant's own `notifications.agent.<session_id>` topic (`publishPreviousClaimant`), whatever the issue's route and regardless of `notify`, so a session learns it no longer holds the work.
 
-- Every issue has a nullable `repo`: its own repository, `owner/name` (`issues.repo`, migration `0113`), which must be a mapping of its project;
-  the composite foreign key `issues_repo_mapped_to_project` to `repo_projects (repo, project)` makes that a database invariant.
+- Every issue has a nullable `repo`: its own repository, `owner/name` (`issues.repo`, migration `0113`), any repository at all — one its project maps, one another project maps, one no project maps.
+  Migration `20261112004945` dropped the composite foreign key `issues_repo_mapped_to_project` that held it to a mapping of its project, and the unique constraint on `repo_projects (repo, project)` that backed only that key, because a project works wherever its issues say (INFRA-2543).
   `POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` take it (`api/issue_repo.go`:
   absent leaves it, `null` clears it, a string is canonicalised as a mapping's path is;
-  not `owner/name` is `400 INVALID_ISSUE`, not mapped `400 REPO_NOT_MAPPED`, checked under a key-share lock on the mapping row so the mapping cannot move or go before the write commits;
+  not `owner/name` is `400 INVALID_ISSUE`;
   a closed issue refuses it, `409 ISSUE_CLOSED`).
   Every issue read and every issue event carries `repo` and `resolved_repo`, resolved on read by `refs.IssueRepoTerms`, the server's one repository-resolution rule (`internal/dispatch/refs/issues.go`, spliced by `api`'s issue reads with `refs.IssueRepoJoin` and `refs.IssueRepoColumns`):
   one walk climbs the parent chains of every issue the read answers for at once — its `subjects` term, which is a listing's page, a listing's whole match or the one issue a read names — and each issue takes the nearest issue on its chain (itself first) whose own `repo` is set, else its project's default mapping (`repo_projects.is_default`, at most one per project by the partial unique index `repo_projects_default_per_project`, read for every project of the read in one join), else null.
@@ -2920,7 +2948,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   The API repairs an acyclic one: `PATCH` an ancestor that still reads (its `GET` answers 200) with `{"parent": null}`.
   The `PATCH` reads the issue it changes first (`issue_patch.go`), so a parent loop none of whose members reads, which only direct SQL can write, needs a database repair (`update issues set parent_key = null` on one member).
   A mapping's `PUT` takes `default` and moves the project's default in one transaction;
-  a mapping that issues name is neither deleted nor moved to another project (`409 REPO_PROJECT_IN_USE`, counted under the mapping's row lock);
+  a mapping that issues name as their repository is deleted and moved like any other, since an issue's own repository needs no mapping;
   and a moved mapping emits `settings.repo_project.updated` on the project it left (`deleted: true`) as well as the one it joined.
   Every writer of a mapping, the `PUT`, the `DELETE` and the boot seed of `DISPATCH_REPO_PROJECTS` (`api.SeedRepoProjects`), takes `lockRepoProjectWrite`'s locks in one order:
   an advisory lock on the repository, the event owners of every project it touches, then the row.
@@ -3752,8 +3780,12 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A current unit sends no title or summary text, because the stream keeps an envelope for its whole retention window and no deletion on the unit can recall it, so a reader fetches the current text through those links.
   A `summary_ready` payload also copies `status`, `summary_preset`, `summary_model`, `timestamp`, `version` and `payload_type`, and an older unit's `title` and `summary` (capped, with `body_truncated` when cut) still pass when present.
 
-- `ENVOY_GHOSTWISPR_SIGNING_SECRET` is optional for trusted Ghost Wispr deployments;
-  when unset, skip signature verification explicitly rather than half-verifying missing headers.
+- `ENVOY_GHOSTWISPR_SIGNING_SECRET` is required when `ENVOY_WEBHOOKS` names `ghostwispr`, as the GitHub and Slack secrets are for theirs:
+  an empty or blank value refuses the listener's start with an error naming the variable (`LoadWebhookConfig`, `internal/webhook/config.go`).
+  The handler checks the signature of every event, and `verify.GhostWispr` answers false for an empty secret, so a handler built with an empty secret publishes nothing and answers 401 to each request that reaches the check.
+
+- Every signature check in `internal/verify` (`Github`, `Slack`, `GhostWispr`) answers false when its secret is empty, the signature made with the empty key included.
+  The listener's start-up already refuses an enabled webhook whose secret is empty; the check's own refusal covers a handler that something else builds, such as a test.
 
 - GitHub mention routing is additive: matching comments publish to both `.comment` and `.mention` topics.
 
@@ -4832,6 +4864,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   That was the retried `503` with `Retry-After: 1` before, so a sender that met it retried and now meets a refusal it must report instead.
   Dispatch uses `source: "dispatch"`, an idempotency key, and a `payload` JSON string whose frame is `{event, delivery}`;
   the response is the envelope plus `recipient` with the full target session ID, `duplicate: true` when JetStream already held this message, and `recipient_state`, `state` and `last_seen` (below).
+  Before it reads the target, a message of an agent session whose count under the operator's sender limit is empty is answered `429` and recorded `outcome=sender_rate_limited`, with nothing read, reported or stored ("Sender limit" above).
 
 - A 200 from this route carries `recipient_state`, the target's registry state, and `state`, what the connection probe found it to be, `connected` or `stopped` (`sendHandler`), with `last_seen` in unix milliseconds:
   the entry's last registration, or for a target with no entry its known-session record's last write.
@@ -4948,7 +4981,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   the publish goes ahead), and the JetStream path relies on nats.go's own check instead, whose request returns the context's error before it sends anything;
   a topic the stream captures answers it as that 503.
   Every answer is written with the route's one `listener publish` record line (`requestRecord`, `request_record.go`), its `outcome` naming it:
-  `accepted` (the kept 202 among them), `invalid_request`, `too_large`, `bus_unavailable`, `publish_denied`, `role_unclaimed`, `role_lapsed`, `role_claim_unreadable`, `capability_refused`, `delivery_failed` or `stream_full`.
+  `accepted` (the kept 202 among them), `invalid_request`, `too_large`, `bus_unavailable`, `publish_denied`, `role_unclaimed`, `role_lapsed`, `role_claim_unreadable`, `capability_refused`, `delivery_failed`, `stream_full` or `sender_rate_limited` (the `429` of "Sender limit" above).
   A message NATS cannot take whole is a 413 naming its size against the server's max payload, and a topic NATS does not accept (one holding whitespace or an empty token) a 400.
 
 - `/v1/roles/<role>` (GET)
@@ -5651,8 +5684,11 @@ A caller that resolves to nobody (a lapsed cookie) keeps the route's own `401`, 
 
 A write made for a run of the command bar names the run in the `Dispatch-Going-Run` request header (`contracts.GoingRunHeader`), which `api.GoingCaller.Do` sends on every write for its `Run`.
 `withinGoingRun` (`internal/dispatch/api/going_run_header.go`) is its one reader, wrapped around every `POST`, `PATCH`, `PUT` and `DELETE` route inside the project and session scope checks and outside the key layer.
-The run must be one `going_requests` holds, live (`now() < ends_at`, whatever frames it holds) and the caller's whole credential's (`goingRunIsTheCallers`: `graphstore.ProvesAuthor` and `model.Actor.SameCredential`);
+The run must be one `going_requests` holds, live (`now() < ends_at`, whatever frames it holds) and the caller's whole credential's (`goingRunIsTheCallers`: `graphstore.NamesCredential` and `model.Actor.SameCredential`);
 anything else, a header sent twice or no uuid among it, is `404 GOING_REQUEST_NOT_FOUND`, the stream's answer for a run nobody holds, before the write runs, so nothing is stored and no key is claimed.
+A repeat is answered before its run is checked: a `POST` or `PATCH` sent again under the `Idempotency-Key` of a write already answered is answered from that key, so a retry after the run has ended reads the write it made rather than the refusal.
+Where the run is refused and the key holds an answer (`requestKeyAnswersItself`), the request goes on to `keyedWrites` with `goingRunRefused` on its context and no run, and the layer answers it from the key alone and never runs its handler (`answerRefusedRun`), with the refusal where the key no longer holds an answer, so no handler runs a write for a run the check refused, and a refused request whose key holds nothing claims none.
+The key's digest holds the run header (`writeRequestFields`), so a repeat that names another run, or none, is `422 KEY_REUSED`.
 A request without the header costs nothing new: it resolves no caller there and sends no query.
 The admitted run rides on the request's context (`graphstore.WithRun`), and `graphstore.Write` and `graphstore.Caused` append one `changed_by_run` tuple from each node the write marks changed (`graphstore.Node.Changed`, `graphstore.Tuple.Changes`) to `interaction/<uuid>`, in the write's own transaction and under its own cause, once for each node and run.
 The writers that mark: `refs.IndexBlocks` (each block whose words a version adds, changes or restores, and each it drops), the comment path, the issue, document, ask and message creates, an issue's own `PATCH` (`patchIssue`, which for a run alone writes the issue's node, restating it, when it changes any field, and states it under the `PATCH`'s own event), `writeReasoningNodes`, the pointer route (the node the pointer goes out of) and `writeNodeState`; an author's `person` or `session` node is never marked.
@@ -5662,7 +5698,7 @@ A write on a context with no run appends none, so the block-index reconciliation
 
 `keyedWrites` (`internal/dispatch/api/request_keys.go`), which `register` wraps around every `POST` and `PATCH` route, keeps one `request_keys` row per key (migration `0137`), keyed on `(login, idempotency_key)`:
 `login` is a person's canonical login whether they write from the dashboard or through an agent's personal token, a service token's subject, or `agent-token` for the shared agent token, so one caller's key is never another's.
-The row holds a SHA-256 of the method, the route pattern, its path values, the query, the media type and the body (a multipart body with its boundary masked, since a client mints a boundary per attempt), so a repeat is told from a reuse:
+The row holds a SHA-256 of the run the request names in `Dispatch-Going-Run` where it names one, the method, the route pattern, its path values, the query, the media type and the body (a multipart body with its boundary masked, since a client mints a boundary per attempt), so a repeat is told from a reuse:
 
 - Before it spools a byte of the body, the layer looks the key up by login and key alone, naming no digest.
   A repeat that finds its key held by a first request still running is never spooled:
@@ -5986,13 +6022,20 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   lower is stale; equal is a duplicate when the `snapshot` matches and otherwise a conflict (an equal pair with a different snapshot cannot occur within one record's lifetime;
   a recreated record may reuse one and is dropped).
 
+- The listener publishes a GitHub webhook event only when it normalizes it: an event `githubEventKinds` names, carrying the JSON object `githubPayload` writes (`GithubEnvelopes` publishes no envelope whose payload is empty).
+  Every other event a webhook delivers (a commit status, a branch or tag created or deleted, a label, a review thread resolved, a webhook's ping, and the rest of GitHub's list) is answered `200` and published nowhere.
+  Such an event was once published on the repository's own `comment` topic with no `payload`, which every Legion daemon that hears the repository terminates as poison (`Envoy envelope payload is not JSON`), one ERROR line per delivery.
+  GitHub delivers a sub-issue added or removed to each issue's repository (`sub_issue_*` to the parent's, `parent_issue_*` to the child's), and each delivery is published on `issue.<n>.sub_issue` of the issue in the webhook's own repository: the parent for `sub_issue_*`, the child for `parent_issue_*`.
+  Its payload of kind `sub_issue` carries that `number`, the parent (`parent_number`, `parent_title`, `parent_url`, `parent_repo`), the sub-issue (`sub_issue_number`, `sub_issue_title`, `sub_issue_url`, `sub_issue_repo`) and the `sender`; each repository is the one GitHub names for that issue, else the webhook's own.
+  `TestEveryPublishedGithubEnvelopeCarriesAJSONObjectPayload` publishes every event the table names from a body of its own, and fails for one added without a normalizer.
+
 - A live settlement is a possibly incomplete view of the head (a missed webhook, a record recreated after the KV TTL):
   it decides the outcome of every name it reports
   — at any id the ordering accepted, including the same run observed in place
   — and says nothing about the rest: a known failure among them stands (the consumer keeps failure names, not a per-name status map), and the head is red while any failure remains.
   A consumer that reconciles a verdict from GitHub's rollup compares the rollup's attempt set the same way, but GitHub's read is complete:
   its failing check runs and failing commit statuses replace the stored ones wholesale.
-  Statuses have no check run and the listener never sees them, so a consumer keeps them apart from check-run failures:
+  Statuses have no check run and the listener records and publishes none of them (a `status` webhook is published nowhere, above), so a consumer keeps them apart from check-run failures:
   a check run that shares a status's name cannot retire it — only GitHub does (likewise a deleted check's failure).
   A newer rollup set merges into the fence and takes the identity (no listener generation);
   the same set applies GitHub's verdict and keeps the listener identity for duplicate detection; an older, mixed, or empty-over-fenced set is ignored.

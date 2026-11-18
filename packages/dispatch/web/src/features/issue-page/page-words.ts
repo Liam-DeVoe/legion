@@ -1092,34 +1092,35 @@ export const BLOCK_ATTRIBUTE_LABELS = freeze({
   ci_check: "CI check",
   copied_from: "copied from",
   copied_from_document: "copied from document",
+  /** The author of a decision, which the server writes from who wrote the block. */
   decided_by: "decided by",
-  /** The question the decision came from, by the page's word for an ask (R34). */
+  /** The question an agent's decision settles. An ask is drawn as a question (R34). */
   from_ask: "from question",
   /** Why the block cannot be answered as written; "invalid" names a verdict, not the reason. */
   invalid: "problem",
+  /** The person who kept the decision as it reads; the server writes it. */
   kept_by: "kept by",
-  /** The sum of the decision's words as the person who kept it read them: a decision whose
-   *  words no longer match it waits for review again. */
-  kept_text_sum: "sum of the words kept",
+  /** The sum of the words that person kept, which the server compares with the words now. */
+  kept_text_sum: "sum of the kept words",
   kind: "kind",
   /** Whether the reader may choose more than one option. */
   multiple: "more than one answer",
   needs: "needs",
   negative_control: "negative control",
+  /** Whether a newer decision stands in this one's place. */
   replaced: "replaced",
   run: "run",
   selected: "selected",
   /** The requirements a check or a plan task is there for; the spec's own verb for the edge. */
   serves: "serves",
-  /** The blocks a decision or a question shaped, by the spec's own verb for the edge, as
-   *  `serves` is. */
+  /** The spec blocks a decision, or the answer of an ask, shaped. */
   shaped: "shaped",
   state: "state",
   surface: "surface",
   title: "title",
+  /** How unsure the agent was of a decision, and in the next one why. */
   uncertainty: "uncertainty",
-  /** Why the agent who made the decision is unsure of it. */
-  uncertainty_reason: "reason for the uncertainty",
+  uncertainty_reason: "why unsure",
   urgency: "urgency",
   when: "when",
 } as const);

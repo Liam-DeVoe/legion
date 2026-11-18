@@ -21,9 +21,11 @@ import (
 // every such caller rather than by its writer.
 //
 // This is the one rule, and every reader and every writer asks it rather than keeping a copy:
-// the going routes (api.createGoingRequest, api.streamGoingAnswer), the visibility a write may
+// the going POST, of the asker it records (api.createGoingRequest), the visibility a write may
 // ask for (VisibilityFor) and the SQL every author-private read binds (AuthorIsSQL, which states
-// the same test over a stored author).
+// the same test over a stored author). A run's owner is no question of it: the stream and a
+// write made for a run hold the run to the credential that asked it, through NamesCredential and
+// model.Actor.SameCredential (api's goingRunIsTheCallers).
 func ProvesAuthor(actor model.Actor) bool {
 	_, proved := provedAuthor(actor)
 	return proved

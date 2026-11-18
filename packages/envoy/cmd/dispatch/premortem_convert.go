@@ -45,7 +45,8 @@ one tab each:
 
   1. the risk's number as the document numbers it: 0 for risk 0, 1 to 10 for the numbered risks;
   2. none, or one or more check addresses separated by one space each, each of the form
-     dispatch://<KEY>/artifact/verification-md#b-<block id>, a check block of any issue;
+     dispatch://<KEY>/artifact/verification-md#b-<block id>, a check block of any issue of the
+     issue's project;
   3. the reason, plain text to the end of the line.
 
 A blank line, and a line whose first character is #, are skipped. For example:
@@ -55,8 +56,10 @@ A blank line, and a line whose first character is #, are skipped. For example:
   8	dispatch://CORE-1/artifact/verification-md#b-c-visibility-kinds	The kind census fails a kind with no predicate.
 
 The command refuses, writing nothing and naming the line: a line of any other shape, a number the
-document does not hold, a number twice, a risk the document holds with no line, and an address that
-names no check block that is not gone.
+document does not hold, a number twice, a risk the document holds with no line, an address that
+names no check block that is not gone, and a check of another project than the issue's, which the
+store's rule on prevented_by refuses, naming the line's risk and the check, with --dry-run as
+without it.
 
 Exit 0 when it converted, ran dry, or found the document converted already, printing the report; 1
 when it refused (the map file, or a document that is none, no pre-mortem, or retired by anything

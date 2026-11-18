@@ -515,7 +515,10 @@ func TestBlockIndexDoesNotRereadALiveAheadDocumentUntilItMoves(t *testing.T) {
 	if service.srv.GetDoc(opened) == nil || !settlementMark(opened).Equal(mark) {
 		t.Fatalf("opening the room of %s left none resident or moved its settlement mark", opened)
 	}
-	if _, err := database.Pool.Exec(ctx, `update document_block_versions set version = 1 where artifact_id = $1`, indexedElsewhere); err != nil {
+	// Another process of this build indexes the fourth document, which settles both marks a
+	// debt of this build carries: the version, and this build's own mark, which the tick's
+	// grammar arm set beside it when it owed the document a re-index (oweDocumentIndex).
+	if _, err := database.Pool.Exec(ctx, `update document_block_versions set version = 1, store_owed_at = null where artifact_id = $1`, indexedElsewhere); err != nil {
 		t.Fatalf("index %s elsewhere: %v", indexedElsewhere, err)
 	}
 
