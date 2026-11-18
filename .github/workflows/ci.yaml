@@ -1672,13 +1672,13 @@ jobs:
               - '.github/workflows/ci-job-test.yaml'
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/go-test-step-expansion.test.sh'
-              # :38 loads the script by path, and the script imports the engine, which imports
+              # :40 loads the script by path, and the script imports the engine, which imports
               # the path model and the Go build-tag module.
               - '.github/scripts/go-test-step-expansion.py'
               - '.github/scripts/ci_filter_coverage.py'
               - '.github/scripts/workflow_paths.py'
               - '.github/scripts/go_build_tags.py'
-              # Its last cases read the step lines the reader exists for, out of the files that
+              # Two of its cases read the step lines the reader exists for, out of the files that
               # hold them: the two wrapped lines, and the race API job's matrix, read as legs.
               - '.github/workflows/ci-job-envoy-go-race-docs.yaml'
               - '.github/workflows/ci-job-envoy-go-docs-finalizers.yaml'
@@ -1689,6 +1689,11 @@ jobs:
               - 'packages/daemon/go.mod'
               - 'packages/envoy/go.mod'
               - 'go.work'
+              # Its last case hashes each script AUDITED_SCRIPTS reads, so a pull request that
+              # edits one runs it and is told to read the script again, and it imports
+              # ci_job_reads.py to hold each such script to this gate's declared reads.
+              - 'packages/envoy/scripts/database-skips.sh'
+              - '.github/scripts/ci_job_reads.py'
             # Its cases build miniature modules with the go the job sets up and run the script
             # over them; no case reads a package of this repository.
             go_test_shards_test: &go_test_shards_test

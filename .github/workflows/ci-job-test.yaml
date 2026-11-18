@@ -558,10 +558,11 @@ jobs:
         run: .github/scripts/check-ts-filters.test.sh
 
       # After setup-go: every case is one line of text, read by the line reader of
-      # .github/scripts/go-test-step-expansion.py, whose own run compiles the three Go modules it
-      # covers and is run by hand rather than by any job; the cases on runes go test -run rewrites
-      # build that script's small rewrite probe with the toolchain packages/envoy selects, and the
-      # toolchain cases ask go for its GOROOT against a local proxy that never answers.
+      # .github/scripts/go-test-step-expansion.py, or the hash of a script that file's
+      # AUDITED_SCRIPTS pins. The script's own run compiles the three Go modules it covers and is
+      # run by hand rather than by any job; the cases on runes go test -run rewrites build that
+      # script's small rewrite probe with the toolchain packages/envoy selects, and the toolchain
+      # cases ask go for its GOROOT against a local proxy that never answers.
       - name: Test the go test step expansion
         if: inputs.changes-result != 'success' || inputs.go_test_step_expansion_test == 'true'
         run: .github/scripts/go-test-step-expansion.test.sh

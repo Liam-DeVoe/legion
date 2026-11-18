@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # Tests for `go-test-step-expansion.py`'s reading of one line of a step's script: which command a
-# line runs, and which shapes it refuses rather than guesses at.
+# line runs, and which shapes it refuses rather than guesses at; and that each script
+# AUDITED_SCRIPTS reads still has the SHA-256 its entry pins.
 #
-# Only the line reader. What the script makes of a command - the packages a `go test -list` names,
-# the pairs two steps share, the exceptions - needs all three Go modules' test binaries built,
-# which is minutes of compile and why no CI job runs that script (its own header says so). This
-# harness compiles no package of this repository: every case is one line of text, but the cases on
-# characters go test -run rewrites, which run go to build the script's small rewrite probe with the
-# toolchain packages/envoy selects, as the script does, the case that runs a stand-in go that
-# prints the environment the module's go commands and step lines get, and the cases that ask go
-# for its GOROOT under a go.work of their own and a local proxy that never answers.
+# Only the line reader and the pins. What the script makes of a command - the packages a
+# `go test -list` names, the pairs two steps share, the exceptions - needs all three Go modules'
+# test binaries built, which is minutes of compile and why no CI job runs that script (its own
+# header says so). This harness compiles no package of this repository: every case is one line of
+# text or a file's hash, but the cases on characters go test -run rewrites, which run go to build
+# the script's small rewrite probe with the toolchain packages/envoy selects, as the script does,
+# the case that runs a stand-in go that prints the environment the module's go commands and step
+# lines get, and the cases that ask go for its GOROOT under a go.work of their own and a local
+# proxy that never answers.
 #
 # The case that named this harness: a step whose line sets a variable before its command, or runs
 # it under the memory wrapper, was refused, and the refusal stopped the whole run at exit 2 with
@@ -438,5 +440,29 @@ answer=$(<"$current/answer")
 check "it answers under the stalled proxy, reaching it not at all, with the root of a go" \
   "$(is "$came/$([ -x "$answer/bin/go" ] && echo go || echo "$answer")" end/go)"
 check "  and writes nothing to standard error" "$(is "$(<"$current/err")" "")"
+# AUDITED_SCRIPTS holds a person's reading of each script, pinned by its SHA-256, and the script
+# refuses a step whose script's text has moved on. The script runs by hand, so nothing else tells
+# the pull request that edits an audited script: #2856 changed database-skips.sh's
+# EXPECTED_SKIPS, the pin went stale, and the next by-hand run ended at exit 2 with no verdict.
+# ci.yaml's go_test_step_expansion_test filter names each audited script, so this case runs on
+# that pull request. It also holds each audited script to the reads ci_job_reads.py declares for
+# this harness's gate, which ci-filters holds to that filter, so a new AUDITED_SCRIPTS entry fails
+# here until its script selects this harness. Both lists are read into variables first: a
+# failed read then stops the harness under `set -e`, where a process substitution's failure
+# would leave the loop with nothing to check.
+echo "case: each script AUDITED_SCRIPTS reads still has the text its entry was read from"
+repo=$(cd "$script_dir/../.." && pwd)
+pins=$(py 'for path, audited in ex.AUDITED_SCRIPTS.items(): print(path + "\t" + audited.sha256)')
+check "AUDITED_SCRIPTS names at least one script" "$(is "$([ -n "$pins" ] && echo yes || echo no)" yes)"
+declared=$(cd "$repo" && py 'import ci_job_reads
+print("\n".join(read.glob for gate in ci_job_reads.SCRIPT_TEST_GATES
+                if gate.filter == "go_test_step_expansion_test" for read in gate.reads))')
+while IFS=$'\t' read -r path pinned; do
+  actual=$(sha256sum "$repo/$path" | cut -d' ' -f1)
+  check "$path has its entry's SHA-256 (read the script again, then update its AuditedScript entry in go-test-step-expansion.py)" \
+    "$(is "$actual" "$pinned")"
+  check "$path is among the reads ci_job_reads.py declares for the go_test_step_expansion_test gate (add it there and to that ci.yaml filter)" \
+    "$(is "$(grep -Fxq -- "$path" <<<"$declared" && echo yes || echo no)" yes)"
+done <<<"$pins"
 
 summary "go-test-step-expansion.py reads a go command behind the variables and wrapper a step writes"
