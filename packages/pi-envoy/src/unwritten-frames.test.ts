@@ -57,9 +57,9 @@ function harness() {
     refuseHand: false,
     refuseRecord: false,
     matched: undefined as string | undefined,
-    // The entries of the session's branch once its file is written; undefined while there is no
-    // file, as before the session's first assistant message.
-    file: undefined as unknown[] | undefined,
+    // The entries of the session's branch once the session's store holds it; undefined before
+    // that, as before the session's first assistant message.
+    stored: undefined as unknown[] | undefined,
   };
   // Each frame the host was asked to record, with the session whose ledger it names. The real
   // host binds the write to that session (`DeliveryLedger.recordDeliveredFor`) and records nothing
@@ -79,7 +79,7 @@ function harness() {
     sessionID: () => state.session,
     hostIsOn: (id) => id === (state.hostSession ?? state.session),
     settled: () => state.settled,
-    storedEntries: () => state.file,
+    storedEntries: () => state.stored,
     recordDelivered: async (session, identity) => {
       recorded.push({ session, identity });
     },
@@ -427,21 +427,24 @@ describe("a stored card", () => {
     expect(claimState(frame)).toBe("pending");
   });
 
-  test("is written once the session file holds its entry, and never handed again before that", async () => {
+  test("is written once the session's store holds its entry, and never handed again before that", async () => {
     const { frames, state, handed, recorded, claim, claimState } = harness();
     const frame = dispatchFrame(1);
 
     expect(frames.sendCard("s1", "card", "stored", frame, claim(frame))).toBe("queued");
     expect(handed).toHaveLength(1);
-    // No file yet: the host writes none before the session's first assistant message.
+    // Not stored yet: the host stores no session before its first assistant message.
     expect(await frames.storedCheck()).toBe(true);
-    state.file = [storedEntry({ event_id: "event-2" })];
+    state.stored = [storedEntry({ event_id: "event-2" })];
     expect(await frames.storedCheck()).toBe(true);
     for (const _moment of [1, 2, 3]) frames.handBackWithdrawn();
     expect(handed).toHaveLength(1);
     expect(claimState(frame)).toBe("pending");
 
-    state.file = [storedEntry({ event_id: "event-2" }), storedEntry({ dedupe_key: "dispatch-1" })];
+    state.stored = [
+      storedEntry({ event_id: "event-2" }),
+      storedEntry({ dedupe_key: "dispatch-1" }),
+    ];
     expect(await frames.storedCheck()).toBe(false);
     expect(recorded).toEqual([{ session: "s1", identity: frame }]);
     expect(claimState(frame)).toBe("settled");

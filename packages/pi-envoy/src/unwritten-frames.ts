@@ -15,7 +15,7 @@ import { type HeldReplayNotice, writtenCardIdentity } from "./missed-messages";
  * first settled heartbeat (`handBackWithdrawn`), as is a replay notice (`sendNotice`), which is
  * handed the same way. A card handed again keeps its delivery.
  *
- * An idle host appends a stored card to the context and to the session file at once, starting no
+ * An idle host appends a stored card to the context and to the session's store at once, starting no
  * turn and emitting no `message_end`. A host that streams keeps it in memory only, where a turn
  * that a card starts does not take it and a process that ends loses it. So a stored card too is
  * handed only to a settled host, and not while a card handed to start a turn has not started it
@@ -23,7 +23,7 @@ import { type HeldReplayNotice, writtenCardIdentity } from "./missed-messages";
  * (`storedCheck`, which the extension runs after a run that does not continue, and at each
  * heartbeat that finds the host settled) or right before a card that starts a turn. A held
  * stored card holds back no other card. With no `message_end`, a stored card is written once the
- * session file holds its entry (`storedCheck`, `UnwrittenFramesHost.storedEntries`), and it is
+ * session's store holds its entry (`storedCheck`, `UnwrittenFramesHost.storedEntries`), and it is
  * never handed again.
  */
 export type CardDelivery = CardMode | "inert";
@@ -111,10 +111,11 @@ export interface UnwrittenFramesHost {
    * notice, or handed back what an interrupt withdrew.
    */
   settled(): boolean;
-  /** The entries of the active branch of the session this instance serves, once the host has
-   *  written that session's file; undefined while no file exists (Oh My Pi writes none before the
-   *  session's first assistant message), or while the host is on another session. A stored card
-   *  is written once an entry here names its frame (`writtenCardIdentity`). */
+  /** The entries of the active branch of the session this instance serves, once Oh My Pi's store
+   *  holds that session (`storeHoldsBranch`, or its file on disk under file storage); undefined
+   *  before that (Oh My Pi stores no session before its first assistant message), for a session
+   *  the host stores nowhere, or while the host is on another session. A stored card is written
+   *  once an entry here names its frame (`writtenCardIdentity`). */
   storedEntries(): readonly unknown[] | undefined;
   /** Records a frame the host wrote in the ledger of `sessionID`, the session it was shown in
    *  (`DeliveryLedger.recordDeliveredFor`). The write binds to that session and records nothing
@@ -167,6 +168,32 @@ export function unwrittenCardKeys(identity: {
     ...(identity.event_id === undefined ? [] : [`event:${identity.event_id}`]),
     ...(identity.dedupe_key === undefined ? [] : [`key:${identity.dedupe_key}`]),
   ];
+}
+
+/**
+ * Whether Oh My Pi's store holds every entry of `branch`, the active branch of a session the host
+ * stores (one that names a session file), as the branch tells it: the branch holds an assistant
+ * message. The host stores no session before its first assistant message. When it records that
+ * message it hands the store the whole session, and from then on it hands the store each entry as
+ * it records it (`SessionManager` `#shouldHaveSessionFile` and `#recordEntry`, at the pinned
+ * build). That is so under file storage, and under `OMP_SESSION_STORAGE=sql`, where the session is
+ * rows of a database and the file the host names is never on disk; there the store takes each
+ * entry at once and writes it to the database right after, as it does every entry. The host reads
+ * every branch of its tree, so a branch with no assistant message can be stored too: a stored card
+ * there waits, and is never recorded early.
+ */
+export function storeHoldsBranch(branch: readonly unknown[]): boolean {
+  return branch.some((entry) => {
+    if (typeof entry !== "object" || entry === null || !("type" in entry)) return false;
+    if (entry.type !== "message" || !("message" in entry)) return false;
+    const { message } = entry;
+    return (
+      typeof message === "object" &&
+      message !== null &&
+      "role" in message &&
+      message.role === "assistant"
+    );
+  });
 }
 
 /**
@@ -294,7 +321,7 @@ export class UnwrittenFrames {
   }
 
   /** Whether a stored card of the session this instance serves waits, held for a settled host or
-   *  handed and not yet in the session file (`storedCheck`). */
+   *  handed and not yet in the session's store (`storedCheck`). */
   waitsOnStored(): boolean {
     const sessionID = this.#host.sessionID();
     return [...this.#cards.values()].some(
@@ -422,9 +449,9 @@ export class UnwrittenFrames {
 
   /**
    * Hands the stored cards held while the host was busy once the host is settled, in the order
-   * they came, and records as written each stored card of this session whose entry the session
-   * file holds (`UnwrittenFramesHost.storedEntries`): the host emits no `message_end` for a
-   * stored card, so that file is its one witness. The file is written from the session's first
+   * they came, and records as written each stored card of this session whose entry the session's
+   * store holds (`UnwrittenFramesHost.storedEntries`): the host emits no `message_end` for a
+   * stored card, so that store is its one witness. The store holds a session from its first
    * assistant message on, so a stored card handed before that waits for it. A card is written at
    * the end of the branch, so the branch is read from its end, and only until each handed card is
    * found. Answers whether a stored card of this session still waits, held or handed, so the
@@ -481,7 +508,7 @@ export class UnwrittenFrames {
    * `pi.sendMessage` returns before the host queues the card or starts its run. A held inert or
    * stored card was never handed, so any settled moment hands it (a stored card not while a card
    * that starts a turn is on its way), and so is each held notice, once. A stored card handed is
-   * left alone: no `message_end` comes for it, and the session file is what says it was written
+   * left alone: no `message_end` comes for it, and the session's store is what says it was written
    * (`storedCheck`). A card or a notice that cannot be handed keeps waiting as it was
    * (`handBackFailed`, `handNoticeFailed`), and the next settled moment tries again.
    *

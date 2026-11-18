@@ -224,7 +224,7 @@ import {
   shellCommandShutdownReport,
   shellCommandWithheldReport,
 } from "../src/typed-shell";
-import { type CardDelivery, UnwrittenFrames } from "../src/unwritten-frames";
+import { type CardDelivery, storeHoldsBranch, UnwrittenFrames } from "../src/unwritten-frames";
 import { type AskGateRegistration, registerAskGate } from "./askgate/askgate";
 import {
   ADVISOR_GATE_ENTRY_TYPE,
@@ -1346,16 +1346,21 @@ export default function envoyExtension(pi: PiApi): void {
     // - is still that session's to be shown.
     hostIsOn: (card) => hostSessionID() === card,
     settled: hostSettled,
-    // The branch of the session this instance serves once the host has written its file, the one
-    // witness that a stored card reached it (`storedCheck`): a session file is written from the
-    // session's first assistant message on, and a card stored before that is lost with the
-    // process until then.
+    // The branch of the session this instance serves once Oh My Pi's store holds that session, the
+    // one witness that a stored card reached it (`storedCheck`). The store holds a session from its
+    // first assistant message on (`storeHoldsBranch`), file storage and SQL storage alike; under
+    // file storage, a session file on disk says so too, as for a session the host wrote before
+    // that. Under `OMP_SESSION_STORAGE=sql`, which every Legion workflow session runs
+    // (packages/daemon/internal/podsafety/podsafety.go), no file is ever on disk. A card stored
+    // before the store holds the session is lost with the process until then, and a session that
+    // names no file (`--no-session`) is stored nowhere.
     storedEntries: () => {
       const hostContext = activeSessionContext;
       if (hostContext === undefined || hostSessionID() !== sessionID) return undefined;
       const file = hostContext.sessionManager.getSessionFile();
-      if (file === undefined || !existsSync(file)) return undefined;
-      return hostContext.sessionManager.getBranch?.() ?? [];
+      if (file === undefined) return undefined;
+      const branch = hostContext.sessionManager.getBranch?.() ?? [];
+      return existsSync(file) || storeHoldsBranch(branch) ? branch : undefined;
     },
     recordDelivered: async (card, identity) => {
       await ledger?.recordDeliveredFor(card, identity);

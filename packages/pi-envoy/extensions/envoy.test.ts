@@ -13783,7 +13783,7 @@ console.log(JSON.stringify(args));
   // no turn (`../src/card-wake.ts`, `lowCard`): `nextTurn` with no `triggerTurn`, handed only to a
   // settled host, since a busy one keeps such a card in memory only (`../src/unwritten-frames.ts`,
   // the `stored` hand-over). The host emits no `message_end` for it, so its frame is settled once
-  // the session file holds its entry.
+  // the session's store holds its entry.
   describe("a low card", () => {
     /** Runs the host's managed timers until none is left: the stored-card check re-arms itself. */
     const drainTimers = async (): Promise<void> => {
