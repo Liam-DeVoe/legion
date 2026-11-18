@@ -148,6 +148,11 @@ var ClaimRecordFields = []RecordFieldDecision{
 	{Field: "ActivityNextReminderAt", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "Reach", Column: ColumnAgents, Keys: []string{"unreachable"},
 		Reason: "the mark of a claim whose session Envoy has not heard from for 20 minutes, which keeps its state and is the case for the controller's relaunch (R5)"},
+	// The relaunch's own record: the relaunch route reads LastRelaunch for its six-hour refusal,
+	// whose answer (RELAUNCHED_RECENTLY) names that time, and the reach keeper counts the claim's
+	// later launches from LastRelaunchGeneration. No reader of these routes acts on either.
+	{Field: "LastRelaunch", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "LastRelaunchGeneration", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "LastTurnStart", Column: ColumnAgents, Keys: []string{"lastTurnStart"},
 		Reason: "when the agent last began a turn, which tells a worker still making progress from one wedged in a turn"},
 	{Field: "LastTurnEnd", Column: ColumnAgents, Keys: []string{"lastTurnEnd"},
