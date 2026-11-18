@@ -262,11 +262,11 @@ func linesBetween(block ast.Node, from, to int) []text.Segment {
 //     writes such a one as text, where goldmark reads inline raw HTML and this takes it out. That
 //     takes out text the page shows, so a check fails rather than passes;
 //   - a tag or a quoted attribute value that an HTML block or inline raw HTML leaves open, as in
-//     `<div title="x` and a blank line, `<b title="x --> y">`, or `<!-- a ---> b <a title="-->">c`,
-//     where cmark-gfm's end of a run-on comment lies inside the attribute: on GitHub the HTML
-//     parser runs the tag on over what follows, up to the quote or the `>` that ends it, and hides
-//     that text, where this reads each node on its own, ends the tag with its node, and keeps the
-//     text;
+//     `<div title="x` and a blank line, or a run-on comment whose cmark-gfm end lies inside a later
+//     tag's attribute, as in `<!-- a ---> <b title="x --> y">c` or
+//     `<!-- a ---> b <a title="-->">c`: on GitHub the HTML parser runs the tag on over what
+//     follows, up to the quote or the `>` that ends it, and hides that text, where this reads each
+//     node on its own, ends the tag with its node, and keeps the text;
 //   - goldmark's reading after a run-on comment's raw HTML when a node goldmark began inside that
 //     raw HTML ends after it: a code span whose opening backtick that raw HTML took, as in the
 //     line Run `make` <!-- a ---> then `b --> <!-- c --> d` e. cmark-gfm reads every byte after
