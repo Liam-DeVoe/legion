@@ -475,6 +475,7 @@ export function IssueHistory({
         <ViewportAnchor
           enabled={holdsPlace}
           item="data-history-entry"
+          ownsScrollAnchoring
           ref={anchor}
           rootRef={anchorRoot}
           scroller={scroller}

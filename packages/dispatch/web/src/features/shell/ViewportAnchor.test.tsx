@@ -24,12 +24,15 @@ function chosen(): AnchorRow | null {
 function List({
   enabled,
   groups,
+  ownsScrollAnchoring,
   rows,
   scroller,
 }: {
   enabled?: () => boolean;
   /** A row's group; rows default to one shared group. */
   groups?: Readonly<Record<string, string>>;
+  /** Whether the anchor alone keeps the box's scroll while a place is kept there. */
+  ownsScrollAnchoring?: boolean;
   rows: string[];
   /** When given, the rows scroll in this element instead of the document. */
   scroller?: RefObject<HTMLDivElement | null>;
@@ -39,6 +42,7 @@ function List({
       enabled={enabled}
       group="data-group"
       item="data-row"
+      ownsScrollAnchoring={ownsScrollAnchoring}
       ref={anchor}
       scroller={scroller}
     >
@@ -920,8 +924,9 @@ test("the centre anchor stays inside a horizontally scrolled table's visible box
  * scroll steps. happy-dom keeps any offset it is given and raises no scroll event for it, runs
  * frame requests on a timer of its own, and never calls a ResizeObserver back. The box is
  * VIEWPORT_HEIGHT tall, its content running from its top to the last row's foot.
+ * With `ownsScrollAnchoring`, the host takes the box over.
  */
-function drawFrameByFrame(drawn: string[]) {
+function drawFrameByFrame(drawn: string[], { ownsScrollAnchoring = false } = {}) {
   const RealResizeObserver = globalThis.ResizeObserver;
   const observers: ResizeObserverCallback[] = [];
   globalThis.ResizeObserver = class {
@@ -946,7 +951,9 @@ function drawFrameByFrame(drawn: string[]) {
     () => request.mockRestore(),
     () => cancel.mockRestore()
   );
-  const view = render(<List rows={drawn} scroller={scrollerRef} />);
+  const view = render(
+    <List ownsScrollAnchoring={ownsScrollAnchoring} rows={drawn} scroller={scrollerRef} />
+  );
   const scroller = scrollerRef.current;
   if (scroller === null) throw new Error("scroller missing");
   Object.defineProperty(scroller, "clientHeight", { configurable: true, value: VIEWPORT_HEIGHT });
@@ -960,7 +967,10 @@ function drawFrameByFrame(drawn: string[]) {
       asked.clear();
       for (const callback of due) callback(performance.now());
     },
-    rerender: (next: string[]) => view.rerender(<List rows={next} scroller={scrollerRef} />),
+    rerender: (next: string[]) =>
+      view.rerender(
+        <List ownsScrollAnchoring={ownsScrollAnchoring} rows={next} scroller={scrollerRef} />
+      ),
     resized: () => {
       for (const callback of observers) callback([], undefined as unknown as ResizeObserver);
     },
@@ -1126,13 +1136,14 @@ test("once the frame of the anchor's own scroll has ended, the reader scrolling 
 // 1,492 px up, and the anchor, which had not made that scroll, put nothing back. A pull-back of
 // the box to its end then left the control 364 px above the view.
 test("a place kept in a named box turns the box's own scroll anchoring off until no place is kept", () => {
-  const view = render(<List rows={ids(12)} scroller={scrollerRef} />);
+  const view = render(<List ownsScrollAnchoring rows={ids(12)} scroller={scrollerRef} />);
   try {
     const scroller = scrollerRef.current;
     if (scroller === null) throw new Error("scroller missing");
     scroller.style.setProperty("overflow-anchor", "auto");
     const row = document.querySelector<HTMLElement>('[data-row="r3"]');
     if (row === null) throw new Error("r3 missing");
+    // user-event's hover sends no clientX/clientY of its own, and the pointer's place is what this row measures.
     fireEvent.pointerOver(row, { clientX: 20, clientY: 220 });
     expect(chosen()).toEqual({ id: "r3", via: "pointer" });
     expect(scroller.style.getPropertyValue("overflow-anchor")).toBe("none");
@@ -1166,7 +1177,7 @@ test("while a place is kept in a named box, the anchor watches the box's other c
   const view = render(
     <div data-scroller="" ref={scrollerRef}>
       <section data-above="">Above the rows</section>
-      <ViewportAnchor item="data-row" ref={anchor} scroller={scrollerRef}>
+      <ViewportAnchor item="data-row" ownsScrollAnchoring ref={anchor} scroller={scrollerRef}>
         {ids(12).map((id) => (
           <div data-row={id} key={id}>
             {id}
@@ -1183,12 +1194,81 @@ test("while a place is kept in a named box, the anchor watches the box's other c
     expect(watched.has(root)).toBe(true);
     expect(watched.has(above)).toBe(false);
 
+    // user-event's hover sends no clientX/clientY of its own, and the pointer's place is what this row measures.
     fireEvent.pointerOver(row, { clientX: 20, clientY: 220 });
     expect(watched.has(above)).toBe(true);
 
+    // A pointerout to a relatedTarget outside the rows, at a place of the pointer's own, neither of which user-event's unhover can set.
     fireEvent.pointerOut(row, { clientX: 20, clientY: 900, relatedTarget: document.body });
     expect(watched.has(above)).toBe(false);
     expect(watched.has(root)).toBe(true);
+  } finally {
+    view.unmount();
+    globalThis.ResizeObserver = RealResizeObserver;
+  }
+});
+
+// A host that leaves its box to the browser's own scroll anchoring, as the Inbox's columns do,
+// keeps that anchoring while a place is kept there. The reader focuses a row and scrolls past it,
+// and the focused row stays the kept place; content between that row and the view then changing
+// height in a commit of its own is the browser's to answer, which holds the rows in view. Turned
+// off for every host that names a box, the anchoring let the rows in view move by the change.
+// Nor does the anchor watch the box's other children for such a host, while it still keeps the
+// focused row's place as its own root changes height.
+test("a host that does not take its box over keeps the box's own scroll anchoring while a focused row is kept, and watches no other child of the box", () => {
+  const RealResizeObserver = globalThis.ResizeObserver;
+  const watched = new Set<Element>();
+  const observers: ResizeObserverCallback[] = [];
+  globalThis.ResizeObserver = class {
+    constructor(callback: ResizeObserverCallback) {
+      observers.push(callback);
+    }
+    disconnect() {
+      watched.clear();
+    }
+    observe(target: Element) {
+      watched.add(target);
+    }
+    unobserve(target: Element) {
+      watched.delete(target);
+    }
+  } as unknown as typeof ResizeObserver;
+  const view = render(
+    <div data-scroller="" ref={scrollerRef}>
+      <section data-above="">Above the rows</section>
+      <ViewportAnchor item="data-row" ref={anchor} scroller={scrollerRef}>
+        {ids(40).map((id) => (
+          <div data-row={id} key={id} tabIndex={-1}>
+            {id}
+          </div>
+        ))}
+      </ViewportAnchor>
+    </div>
+  );
+  try {
+    const scroller = scrollerRef.current;
+    const above = document.querySelector("[data-above]");
+    const root = scroller?.lastElementChild ?? null;
+    if (scroller === null || above === null || root === null) throw new Error("box missing");
+    scroller.style.setProperty("overflow-anchor", "auto");
+    rowOf("r3").focus();
+    // The reader scrolls past the focused row, and the browser says so with the box's scroll
+    // event, which user-event has no form for.
+    scroller.scrollTop = 1000;
+    fireEvent.scroll(scroller);
+    expect(chosen()).toEqual({ id: "r3", via: "focus" });
+    const kept = viewportTop("r3");
+    expect(kept).toBe(-800);
+    expect(scroller.style.getPropertyValue("overflow-anchor")).toBe("auto");
+    expect(watched.has(above)).toBe(false);
+    expect(watched.has(root)).toBe(true);
+
+    // r2 grows by a row's height in a commit of its own, which the anchor sees as its root
+    // resized: the place is kept, and r3 goes back where the reader last saw it.
+    heights = { r2: 2 * ROW_HEIGHT };
+    for (const callback of observers) callback([], undefined as unknown as ResizeObserver);
+    expect(viewportTop("r3")).toBe(kept);
+    expect(scroller.style.getPropertyValue("overflow-anchor")).toBe("auto");
   } finally {
     view.unmount();
     globalThis.ResizeObserver = RealResizeObserver;
@@ -1202,7 +1282,7 @@ test("while a place is kept in a named box, the anchor watches the box's other c
 // at that event kept the focused control where the new typeface had moved it, 38,600 px down, and
 // the observation that followed found nothing to put back.
 test("a scroll event that finds the box where the anchor last found it leaves the place for the change of height observed after it", () => {
-  const box = drawFrameByFrame(ids(30));
+  const box = drawFrameByFrame(ids(30), { ownsScrollAnchoring: true });
   try {
     readerOnR10(box.scroller);
     // Content above the rows grows by 400 px in no commit of the anchor's, and the box raises a
@@ -1326,7 +1406,7 @@ test("a host's keep leaves the place of the reader's focused control, which a cu
 // or, at the top, nothing, and the box gets its own scroll anchoring back. A place the reader's
 // own act recorded is not the host's to let go.
 test("keepRow(null) lets the row a host kept go, and leaves the reader's own place kept", () => {
-  const view = render(<List rows={ids(12)} scroller={scrollerRef} />);
+  const view = render(<List ownsScrollAnchoring rows={ids(12)} scroller={scrollerRef} />);
   try {
     const scroller = scrollerRef.current;
     if (scroller === null) throw new Error("scroller missing");
@@ -1339,7 +1419,9 @@ test("keepRow(null) lets the row a host kept go, and leaves the reader's own pla
     expect(chosen()).toBeNull();
     expect(scroller.style.getPropertyValue("overflow-anchor")).toBe("auto");
     // At the top of the box, rows arriving above land in view.
-    view.rerender(<List rows={["a", "b", ...ids(12)]} scroller={scrollerRef} />);
+    view.rerender(
+      <List ownsScrollAnchoring rows={["a", "b", ...ids(12)]} scroller={scrollerRef} />
+    );
     expect(scroller.scrollTop).toBe(0);
 
     // The pointer resting on a row is the reader's own place.
@@ -1357,15 +1439,18 @@ test("keepRow(null) lets the row a host kept go, and leaves the reader's own pla
 // nearest the middle of the view is the place from then on. A scroll event that finds the box
 // where the anchor last found it reports no move of the view, and leaves the kept row kept.
 test("a scroll the reader made lets the row a host kept go, and one that moved nothing leaves it", () => {
-  const view = render(<List rows={ids(12)} scroller={scrollerRef} />);
+  const view = render(<List ownsScrollAnchoring rows={ids(12)} scroller={scrollerRef} />);
   try {
     const scroller = scrollerRef.current;
     if (scroller === null) throw new Error("scroller missing");
     scroller.scrollTop = 100;
     anchor.current?.keepRow(rowOf("r5"));
+    // A scroll event at the offset the box stands at, which user-event has no form for.
     fireEvent.scroll(scroller);
     expect(chosen()).toEqual({ id: "r5", via: "kept" });
 
+    // The reader scrolls the box, and the browser says so with a scroll event, which user-event
+    // has no form for.
     scroller.scrollTop = 250;
     fireEvent.scroll(scroller);
     expect(chosen()).toEqual({ id: "r8", via: "center" });
@@ -1407,7 +1492,7 @@ test("a box the browser pulls back to its end keeps the row a host keeps, at the
 // The row a host keeps leaving the list takes the place with it: the next commit holds the row
 // nearest the middle of the view, and the box gets its own scroll anchoring back.
 test("the row a host keeps leaving the list lets its place go", () => {
-  const view = render(<List rows={ids(12)} scroller={scrollerRef} />);
+  const view = render(<List ownsScrollAnchoring rows={ids(12)} scroller={scrollerRef} />);
   try {
     const scroller = scrollerRef.current;
     if (scroller === null) throw new Error("scroller missing");
@@ -1416,7 +1501,9 @@ test("the row a host keeps leaving the list lets its place go", () => {
     anchor.current?.keepRow(rowOf("r5"));
     expect(chosen()).toEqual({ id: "r5", via: "kept" });
 
-    view.rerender(<List rows={ids(12).filter((id) => id !== "r5")} scroller={scrollerRef} />);
+    view.rerender(
+      <List ownsScrollAnchoring rows={ids(12).filter((id) => id !== "r5")} scroller={scrollerRef} />
+    );
     expect(chosen()).toEqual({ id: "r7", via: "center" });
     expect(scroller.style.getPropertyValue("overflow-anchor")).toBe("auto");
   } finally {
