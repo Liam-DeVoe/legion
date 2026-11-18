@@ -175,6 +175,18 @@ type Runtime struct {
 	// with the watch's record when the process is let go or the claim's next launch begins
 	// (forget, forgetIf). Memory only; a restarted daemon answers none.
 	sessions map[claim.Token]launchedSession
+	// dispatchTokenClaims is, by claim, the incarnation of its live generation whose start carried
+	// DISPATCH_TOKEN in its Files (DispatchTokens' LiveLaunches): set when a launch's start is sent,
+	// from that launch's own decision (launchedDispatchToken), and at each observation of a live
+	// generation from the address record its start wrote (observeDispatchToken), so a restarted
+	// daemon counts the generations an earlier one started; dropped with the watch's record when
+	// the process is let go or the claim's next launch begins (forget, forgetIf).
+	dispatchTokenClaims map[claim.Token]string
+	// transitionLaunches counts the launches since this runtime was built whose start carried the
+	// transition token, and lastTransitionLaunch is when the latest was sent, zero before the first
+	// (launchedDispatchToken). Memory only: they count this daemon's own boot.
+	transitionLaunches   int
+	lastTransitionLaunch time.Time
 	// podTurns serializes the relaunches, issue suspension, release and orphan deletion of one pod,
 	// keyed by its Sandbox's name (lockPod). Nothing serializes the pods of one tree against each
 	// other: each issue's pod provisions its own clone on its own volume.
@@ -418,7 +430,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		gitHubDirs: opts.GitHubDirs,
 		store:      opts.Store, conns: opts.Conns, now: opts.Now, log: opts.Log,
 		changed: make(chan struct{}), watch: map[claim.Token]runtime.Locator{}, podTurns: map[string]chan struct{}{}, stranded: map[string]string{},
-		sessions:    map[claim.Token]launchedSession{},
+		sessions: map[claim.Token]launchedSession{}, dispatchTokenClaims: map[claim.Token]string{},
 		cacheConfig: opts.RepositoryCache, mapped: opts.Mapped,
 		cacheDial: (&net.Dialer{}).DialContext, occupiedCaches: map[string]bool{}, cacheBearers: map[string]string{},
 	}

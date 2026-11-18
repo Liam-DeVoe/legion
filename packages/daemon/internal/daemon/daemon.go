@@ -2542,6 +2542,10 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			// and the NoPluginInstall option three lines below).
 			noPluginInstall: func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
 			architectStalls: architectStalls,
+			// Under dispatch_token_broker alone: without it the state carries no
+			// `dispatchCredential` (dispatchTokensOf).
+			dispatchSession: dispatch.DaemonSession(cfg.Project),
+			dispatchTokens:  dispatchTokensOf(cfg, s.runtime),
 		},
 		StateTransactions:  st,
 		ConsumerLag:        consumerLag,
@@ -2691,6 +2695,13 @@ type source struct {
 	// secretsLogin is the daemon's own agent-secrets token login client (newSecretsLogin), read
 	// through LoginStatus for the state route; nil when the deployment enrolls no pod.
 	secretsLogin *agentsecrets.Client
+	// dispatchSession is the session the daemon's own Dispatch calls run under
+	// (dispatch.DaemonSession), and dispatchTokens the Sandbox runtime's counts of the Dispatch
+	// tokens its launches hand out (sandbox.Runtime.DispatchTokens), which State serves together
+	// as `dispatchCredential`. dispatchTokens is nil without dispatch_token_broker
+	// (dispatchTokensOf), and the state then carries no such key.
+	dispatchSession string
+	dispatchTokens  func() sandbox.DispatchTokens
 	// deployment is the deployment's capabilities as this boot knows them (supervision.deployment),
 	// whose report the state carries.
 	deployment func() capabilities.Deployment
@@ -2955,6 +2966,18 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	if s.secretsLogin != nil {
 		state.AgentSecretsLogin = &api.AgentSecretsLoginView{State: s.secretsLogin.LoginStatus().State}
 	}
+	if s.dispatchTokens != nil {
+		tokens := s.dispatchTokens()
+		credential := &api.DispatchCredentialView{
+			Session: s.dispatchSession, TransitionLaunches: tokens.TransitionLaunches,
+			LiveLaunchesWithDispatchToken: tokens.LiveLaunches,
+		}
+		if !tokens.LastTransitionLaunch.IsZero() {
+			at := tokens.LastTransitionLaunch.UTC()
+			credential.LastTransitionLaunchAt = &at
+		}
+		state.DispatchCredential = credential
+	}
 	state.Capabilities = api.CapabilityStatesOf(s.deployment().Report())
 	if s.repositories != nil {
 		var caches []sandbox.CacheStatus
@@ -2989,6 +3012,17 @@ func adoptIdentity(identity func(context.Context, claim.Role, ghrepo.Repository)
 func repositoryCachesOf(rt runtime.Runtime) func() []sandbox.CacheStatus {
 	if keeper, ok := rt.(*sandbox.Runtime); ok {
 		return keeper.RepositoryCaches
+	}
+	return nil
+}
+
+// dispatchTokensOf is rt's counts of the Dispatch tokens its launches hand out
+// (sandbox.Runtime.DispatchTokens) when the deployment runs under dispatch_token_broker and rt is
+// the Sandbox runtime, the one runtime the loader takes that setting under, and nil otherwise, as
+// repositoryCachesOf is: a deployment without the setting serves no `dispatchCredential`.
+func dispatchTokensOf(cfg config.Config, rt runtime.Runtime) func() sandbox.DispatchTokens {
+	if counter, ok := rt.(*sandbox.Runtime); ok && cfg.DispatchTokenBroker {
+		return counter.DispatchTokens
 	}
 	return nil
 }

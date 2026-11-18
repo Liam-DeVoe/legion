@@ -816,10 +816,13 @@ func statementBound(bound time.Duration) int64 {
 // mergeWaitContract, the contract that added what a reviewing issue's round waits on from
 // GitHub, is served it without `mergeWait` (withoutMergeWait); a caller below
 // assignmentsContract, the contract that added the experiment answers each issue runs under, is
-// served every issue without `assignments` (withoutAssignments); and a caller below
+// served every issue without `assignments` (withoutAssignments); a caller below
 // entryTimesContract, the contract that added the two times of the task that entry was queued
 // as and the arms of the architect-stalled reading that hold for a root, is served it without
-// `entryQueuedAt`, `entryConfirmedAt` and `architectStalls` (withoutEntryTimes).
+// `entryQueuedAt`, `entryConfirmedAt` and `architectStalls` (withoutEntryTimes); and a caller
+// below dispatchCredentialContract, the contract that added the daemon's Dispatch credential
+// under dispatch_token_broker, is served it without `dispatchCredential`
+// (withoutDispatchCredential).
 // The narrowings compose: each is applied when the state carries something of its own, so a
 // caller below all of them — a pod below supervise.PodUpdateContract — is served a body
 // carrying none of the keys they strip, the line's own fields being fields of a view such a
@@ -948,6 +951,7 @@ var stateNarrowings = []stateNarrowing{
 	{mergeWaitContract, carriesMergeWait, withoutMergeWait, "the issues' mergeWait"},
 	{assignmentsContract, carriesAssignments, withoutAssignments, "the issues' assignments"},
 	{entryTimesContract, carriesEntryTimes, withoutEntryTimes, "the issues' entryQueuedAt, entryConfirmedAt and architectStalls"},
+	{dispatchCredentialContract, carriesDispatchCredential, withoutDispatchCredential, "dispatchCredential"},
 }
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
@@ -1083,10 +1087,10 @@ const phaseEntriesContract = 94
 // one measure: a caller served the movement without the quiet time beside it, or the other way
 // about, would hold half of what one read of the tree said. Every later row of stateNarrowings
 // stands above it — waitingOnIssueContract's, whose strip takes a word of the line's `kind` and
-// no key, then mergeWaitContract's, assignmentsContract's and entryTimesContract's, the last
-// this daemon's own contract — so a caller from it up is served the measure, and none of what a
-// later row adds until it reaches that row's contract (123, INFRA-3146's contract, moves no
-// shape of the state).
+// no key, then mergeWaitContract's, assignmentsContract's, entryTimesContract's and
+// dispatchCredentialContract's, the last this daemon's own contract — so a caller from it up is
+// served the measure, and none of what a later row adds until it reaches that row's contract
+// (123, INFRA-3146's contract, moves no shape of the state).
 const quietTimeContract = 111
 
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
@@ -1130,6 +1134,16 @@ const assignmentsContract = 141
 // it with no row of stateNarrowings between the two, so a caller in a pod at or above
 // assignmentsContract and below this contract is served `assignments` and not these three keys.
 const entryTimesContract = 146
+
+// dispatchCredentialContract is the daemon contract that added `dispatchCredential`, the daemon's
+// own Dispatch credential under dispatch_token_broker and the two counts of the Dispatch tokens
+// its launches hand out (version.go's 165, DispatchCredentialView). A plugin before it is served
+// the state without the key: one built before sjawhar/legion#2788 reads it with a strict schema
+// and would refuse the whole body for a key it does not name, and one built after strips the key
+// instead, so the strip is what keeps the object from a caller that did not ask for it rather
+// than what keeps such a caller reading at all. entryTimesContract stands below it with no row of
+// stateNarrowings between the two (151 moves no shape of the state).
+const dispatchCredentialContract = 165
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
@@ -1530,6 +1544,20 @@ func withoutAssignments(state State) State {
 		issues[key] = issue
 	}
 	state.Issues = issues
+	return state
+}
+
+// carriesDispatchCredential is whether state carries `dispatchCredential`, which the daemon writes
+// only under dispatch_token_broker, so it is asked of the state rather than answered true, as
+// carriesAssignments is.
+func carriesDispatchCredential(state State) bool { return state.DispatchCredential != nil }
+
+// withoutDispatchCredential is state with no `dispatchCredential`, the one key
+// dispatchCredentialContract added to the state; nothing else of that contract is on the route but
+// the `settings` key `dispatch_token_broker`, which every plugin reads loosely. The state is a value,
+// so the state the source answered is left as it was.
+func withoutDispatchCredential(state State) State {
+	state.DispatchCredential = nil
 	return state
 }
 

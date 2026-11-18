@@ -412,6 +412,22 @@ type DispatchCredential struct {
 	Transition string
 }
 
+// DispatchTokens is what the runtime counts of the Dispatch tokens its launches hand out
+// (Runtime.DispatchTokens): the two counts a deployment under dispatch_token_broker reads before
+// it removes dispatch_token_transition_file (dispatch://INFRA-4425 R4).
+//
+// TransitionLaunches is how many launches since this runtime was built sent a start that carried
+// the transition token (DispatchCredential.Transition), and LastTransitionLaunch when the latest
+// of them was sent, zero before the first. LiveLaunches is how many claims' live generations
+// started with DISPATCH_TOKEN in their start command's Files, whichever daemon started them: the
+// launcher deletes those files with the generation, so a token handed to a role lives exactly as
+// long as the generation it was handed to.
+type DispatchTokens struct {
+	TransitionLaunches   int
+	LastTransitionLaunch time.Time
+	LiveLaunches         int
+}
+
 // AgentSecrets is the secrets broker the runtime enrolls every pod with: the URL the
 // pod's `agent-secrets` client calls, and the audience and lifetime of the projected token each
 // pod carries for it. Nil enrolls none, and no pod carries the token, the key volume, the

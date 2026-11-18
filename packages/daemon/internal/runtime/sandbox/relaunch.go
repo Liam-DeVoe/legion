@@ -294,7 +294,11 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			return fail(fmt.Sprintf("stop its earlier generation %d", stale), err)
 		}
 	}
-	if err := r.recordAddresses(starting, s, spec.Role, spec.Generation, l.enrolls(r)); err != nil {
+	// Whether the start carries a Dispatch token is the launch's own decision (prepare's bearer,
+	// dispatchCredential's transition token), recorded with the generation's addresses so a
+	// restarted daemon counts it too (Runtime.DispatchTokens).
+	carried := l.secrets[dispatchTokenKey] != ""
+	if err := r.recordAddresses(starting, s, spec.Role, spec.Generation, l.enrolls(r), carried); err != nil {
 		return fail("record the addresses its generation is handed", err)
 	}
 	// The start sent carries what this launch learned from the cluster since prepare measured it,
@@ -308,6 +312,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		return fail("start through its authenticated launcher", errors.Join(err, r.stopIssuedChild(ctx, spec.Claim, string(pod.UID), spec.Generation, err)))
 	}
 	r.nameSession(loc, l)
+	r.launchedDispatchToken(loc, carried)
 	r.join(loc)
 	return loc, nil
 }
@@ -372,8 +377,10 @@ func (r *Runtime) keptBy(s *sandbox, l launch) (keptPod, bool) {
 // nothing. A launch never replaces a pod a round covers, and the controller's pod, which no round
 // covers, is never kept without the identity: its launch replaces it for that drift (movedInPod).
 //
-// Each launch that carries the transition token logs it, naming the claim and the pod: those are
-// the launches a deployment waits out before it removes dispatch_token_transition_file.
+// A launch that carries the transition token is counted, and logged naming the claim, the pod and
+// both counts, once its start is sent (launchedDispatchToken): those are the launches a deployment
+// waits out before it removes dispatch_token_transition_file, and a launch that fails before its
+// start never handed its role the token.
 func (r *Runtime) dispatchCredential(l *launch) error {
 	if !r.dispatch.Broker || l.trades(r) {
 		return nil
@@ -383,8 +390,6 @@ func (r *Runtime) dispatchCredential(l *launch) error {
 			l.spec.Claim, runtime.ErrAwaitingPodRound, l.name)
 	}
 	l.secrets[dispatchTokenKey] = r.dispatch.Transition
-	r.log.Warn("sandbox: a launch into a pod with no exchange identity carries the transition Dispatch token",
-		"claim", l.spec.Claim, "pod", l.name)
 	return nil
 }
 

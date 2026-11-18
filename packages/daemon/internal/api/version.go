@@ -2109,4 +2109,44 @@ package api
 // #2230, 150 #4049 and #4065, 152 #3730, 153 #4115). That is a reading and never the rule: read
 // main's own number and every open head again at the next forward merge rather than from this
 // line.)
-const DaemonAPIVersion = 151
+//
+// 165: dispatch://INFRA-4425 -- under `dispatch_token_broker` a role trades its pod's exchange
+// identity at the secrets broker for a Dispatch token of its own session, and the daemon names
+// that session, which moves three surfaces this number names. The agent's argv: in a pod that
+// carries the exchange identity (sandbox's launch.trades) the daemon chooses each Oh My Pi role's
+// session id and starts it with `--session-id <id>`, or with `--resume <id>` when it resumes the
+// role, and no path (sandbox's agentArgv); a launch into a pod that carries no exchange identity
+// keeps `--resume=<file>`. The worker environment: a role in a pod that carries the identity is
+// told `DISPATCH_TOKEN_BROKER=1` under the setting, which the image's Dispatch client reads as the
+// order to trade, and no `DISPATCH_TOKEN_FILE`, since its start carries no Dispatch token
+// (sandbox's mainEnvironment); a launch into a pod built before the identity carries the token of
+// `dispatch_token_transition_file` through `DISPATCH_TOKEN_FILE`, as every launch carried the
+// shared bearer before. The state: `GET /legion/v1/state` gains `dispatchCredential` under the
+// setting and nowhere else (api's DispatchCredentialView): the session the daemon's own Dispatch
+// calls run under, `legion-daemon:<project>`, the launches since the daemon's boot that carried the
+// transition token with the time of the last, and the live launches whose start carried a Dispatch
+// token, which a deployment waits to see at zero before it removes
+// `dispatch_token_transition_file`. The settings block's `dispatch_token_broker` is a key of the
+// block the plugin parses loosely (35 above), and moves no number.
+// A plugin before 165 reads the state with a strict schema that knows no `dispatchCredential` and
+// refuses the whole body for it, so a caller from a pod whose claims record a contract below 165
+// is served the state without the key (api's stateFor, withoutDispatchCredential), as a caller
+// below 146 is served the issues without the entry times; 151 moves no strictly parsed shape of
+// the state and narrows nothing.
+//
+// The skew is why the number moves. An Oh My Pi from before `--session-id` refuses a flag it does
+// not know and exits, and a Dispatch client from before `DISPATCH_TOKEN_BROKER` reads a role with
+// no `DISPATCH_TOKEN_FILE` as a role with no Dispatch credential at all, so the boot gate and
+// `legion probe-image` hold the daemon to an image built from this contract. A role in a kept pod
+// of an older image carries no exchange identity, so it keeps the argv and the credential it had,
+// and its pod's update round replaces the pod.
+// (This change took 165, the lowest number above main's 152 that no open pull request declared,
+// as `.github/scripts/check-daemon-api-contract.sh` named it at 2026-11-18T10:29Z, run against
+// the tip of main over a checkout without this file: 153 (#4115), 154 (#3659), 155 (#4273), 156
+// (#4065), 157 (#3993), 158 (#4180, #4259, #4261 and #4269), 159 (#4175), 160 (#3519), 161 (#4173
+// and #4193), 162 (#2230 and #3712), 163 (#4049) and 164 (#4017). This branch then stood on main's
+// 151. That is a reading and never the rule: read main's own number and every open head again at
+// the next forward merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+const DaemonAPIVersion = 165

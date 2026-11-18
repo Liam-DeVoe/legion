@@ -482,7 +482,7 @@ func TestAnIssuePodsRoleIsReadFromItsClaimNotItsContainer(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		record, err := r.recordFor(claim.RoleTester, 1, r.enrollsIn(nil, claim.RoleTester))
+		record, err := r.recordFor(claim.RoleTester, 1, r.enrollsIn(nil, claim.RoleTester), r.dispatch.Bearer != "")
 		if err != nil {
 			t.Fatal(err)
 		}
