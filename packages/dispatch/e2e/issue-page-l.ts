@@ -84,6 +84,8 @@ export async function replyFromRow(page: Page, id: string, text: string): Promis
  * cannot pass a row the box covers. With the box hidden the viewport's foot bounds the row.
  */
 export async function clearOfBox(row: Locator): Promise<boolean> {
+  // Every caller reads this inside `expect.poll`, so each answer here is one try of a read the
+  // poll repeats until the row stands clear of the box.
   if (!(await onScreen(row))) return false;
   return await row.first().evaluate((element) => {
     const box = document.querySelector<HTMLElement>('[data-testid="issue-composer"]');

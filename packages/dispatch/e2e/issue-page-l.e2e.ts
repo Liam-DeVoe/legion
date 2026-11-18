@@ -194,6 +194,8 @@ async function expectFormAtFoot(page: Page, when: string): Promise<void> {
  *  outline's, at most 1,000 px (R1). */
 async function expectFormOnOutline(page: Page, when: string): Promise<void> {
   const box = await formBox(page, when);
+  // The outline is measured once, at the instant the form above was, because the row compares
+  // where the two stand now and both are laid out in the same frame.
   const outline = await tree(page).boundingBox();
   expect(outline, `the page draws no outline ${when}`).not.toBeNull();
   expect(
@@ -265,6 +267,8 @@ test("a reply is drawn under the entry it answers, and every node takes a reply 
     // is the fourth level of the tree. The thread's folds are opened by their fold controls
     // alone, since G's `unfoldEveryBranch` also presses that line.
     const folds = nodeRows(page).getByRole("button", { exact: true, name: CONTROL_LABELS.unfold });
+    // The outline's rows were drawn with their fold controls in one render (the wait above), and
+    // each press redraws before the next count, so a count of none means every fold is open.
     for (let pressed = 0; pressed < 20 && (await folds.count()) > 0; pressed += 1) {
       await folds.first().click();
     }
@@ -341,7 +345,9 @@ test("a reply is drawn under the entry it answers, and every node takes a reply 
     // The box at the foot posts a comment drawn at the outline's top level, where the issue's
     // own nodes are: the issue itself is no row.
     const instead = composer(page).getByRole("button", { name: CONTROL_LABELS.write_on_issue });
-    if (await instead.isVisible()) await instead.click();
+    // The answer that landed above ended the line's target, so the box holds no reply and offers
+    // no way back to the issue.
+    await expect(instead, "the box still holds a target after the answer landed").toHaveCount(0);
     await sendFromComposer(page, "A comment on the issue from the composer.");
     await drawnUnder(
       (await commentWithBody(seeded.key, undefined, "A comment on the issue from the composer."))
@@ -597,6 +603,8 @@ test("the box at the foot is one line at rest, and says where a reply goes @phon
       await focusRow(page, seeded.openAsk);
       await page.keyboard.press("a");
       await expect(composerField(page)).toBeFocused();
+      // The field is measured once it holds the caret (the wait above), because the row reads the
+      // width it is drawn at for typing.
       const field = await composerField(page).boundingBox();
       console.log(
         `the answer field at ${at}: ${field?.width.toFixed(0)} x ${field?.height.toFixed(0)}`
@@ -653,6 +661,8 @@ test("the box stays at the foot, grows as it is typed and writes both kinds @pho
 
       // At rest: one line 26 px tall, which says where the words go and fits what it says.
       const field = composerField(page);
+      // The line at rest is measured once, at the instant the form above was measured on the
+      // outline, because the row reads the height it rests at.
       const rest = await field.boundingBox();
       expect(
         Math.abs((rest?.height ?? 0) - LINE_AT_REST),
@@ -707,12 +717,13 @@ test("the box stays at the foot, grows as it is typed and writes both kinds @pho
         .toBe(true);
 
       // Tab from the focused row reaches the line, Comment, Question and Send, in that order.
-      for (
-        let pressed = 0;
-        pressed < 30 &&
-        !(await composer(page).evaluate((section) => section.contains(document.activeElement)));
-        pressed += 1
-      ) {
+      for (let pressed = 0; pressed < 30; pressed += 1) {
+        // A press of Tab moves the focus before it returns, so the focus read here is where the
+        // last press put it.
+        const inBox = await composer(page).evaluate((section) =>
+          section.contains(document.activeElement)
+        );
+        if (inBox) break;
         await page.keyboard.press("Tab");
       }
       await expect(
@@ -1399,6 +1410,8 @@ test("today's docked composer lifts nothing at the foot of a short wide window",
     // The window's foot on the composer's bottom edge, which is where the inset reads its box: the
     // window is set to the composer's bottom until the two meet, as a reader's short window does.
     const bottomOf = async () => {
+      // The composer was seen drawn by the wait above, and each try of the loop below reads its
+      // box where the last resize left it.
       const box = await docked.boundingBox();
       return box === null ? Number.NaN : Math.round(box.y + box.height);
     };
