@@ -20,6 +20,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -31,22 +32,29 @@ import (
 // c-p99 (dispatch://INFRA-1152 spec R11, plan T16): neither the one read nor a write gets slower
 // beyond R11's bounds, every figure taken in this one run on two builds over one corpus.
 //
-// It boots the build of the commit BASELINE_SHA names (buildBaseline), checked out at
-// $TMPDIR/base-p99 and booted over $ISSUE_P99_DATABASE_URL, and this build's handler in the
-// process, over a database of the test's own, served on loopback by httptest. It boots a build of
-// an earlier commit because what it holds this build to - the reads this one replaces, and each
-// write as it was before this build's node and tuple writes - this build cannot answer. Each is
-// seeded with the corpus one_inbox_scale_seed_test.go seeds, through its own API and its own pool;
-// this build's then takes the tuples of every row the seed wrote in SQL from the backfill
-// (graphcensus.Backfill), as an older build's rows take them, so the heavy person's history is in
-// the store the read reads. Both are told who a person is by one header (bootBaselineTrustingHeader,
-// serveOnLoopback), and a person's request asks for display trees on both, as the dashboard asks.
+// It times two processes the same way: the build of the commit BASELINE_SHA names (buildBaseline),
+// checked out at $TMPDIR/base-p99 and booted over $ISSUE_P99_DATABASE_URL, and this build, built
+// from this checkout with the stamp the base build gets and booted over a database of the test's own
+// the way the base build is booted (bootOneInboxThisBuild, startBuild: the person read from one
+// trusted header, NATS off, a stand-in listener, and the Go runtime settings this process runs
+// under). It boots a build of an earlier commit because what it holds this build to - the reads this
+// one replaces, and each write as it was before this build's node and tuple writes - this build
+// cannot answer. Each corpus is the one one_inbox_scale_seed_test.go seeds, through its build's API
+// and its own pool: the base build's through its process, and this build's through this build's
+// handler in the process (bootOneInboxHere), which then takes the tuples of every row the seed wrote
+// in SQL from the backfill (graphcensus.Backfill), as an older build's rows take them, so the heavy
+// person's history is in the store the read reads. The handler in the process is kept for what only
+// it can do: it serves the seed before this build's process is booted, and its traced store records
+// the statements and rows of each counted move (countOneInboxMoves). Each process is timed once it
+// has drained what the corpus owes its background work (settleOneInbox), and a person's request asks
+// for display trees on both, as the dashboard asks.
 //
 // Before any timing it runs `vacuum analyze` and then `explain (analyze)` on the one read of each
 // reader below, and fails on a sequential scan of comments or messages, the two tables the corpus
 // fills to scale; it prints the plan over asks and events, which bounds nothing, and sets no
-// planner setting. Then, alternating between the two builds one operation at a time, oneInboxReadings
-// readings of each after one not counted, each the round trip on loopback:
+// planner setting. Then, alternating between the two processes one operation at a time,
+// oneInboxReadings readings of each after one not counted, each the round trip on loopback, taken by
+// this test's client the same way against both:
 //
 //   - the reads, per shape (oneInboxReaders): this build's GET /api/v1/me/inbox?state=inbox, which
 //     the dashboard reads, against the reads it replaces on the base build - GET /api/v1/inbox
@@ -100,7 +108,9 @@ var oneInboxReaders = []oneInboxReader{
 }
 
 // oneInboxHere is this build as c-p99 drives it: its handler in the process, over a store traced
-// for the statements a request marked countedRead runs (meInboxStatements), served on loopback.
+// for the statements a request marked countedRead runs (meInboxStatements), served on loopback,
+// which seeds the corpus and makes the counted moves; and, once the scan rule has passed, its own
+// process over the same database (bootOneInboxThisBuild), which every timed reading reads.
 type oneInboxHere struct {
 	side       *oneInboxSide
 	handler    http.Handler
@@ -124,6 +134,9 @@ func TestOneInboxP99HoldsTheReadsAndTheWrites(t *testing.T) {
 	// The scan rule, before anything is timed: a read whose plan scans a table the corpus fills to
 	// scale is no read a timing of it would say anything about.
 	explainOneInboxRead(t, this.database)
+	this.server = bootOneInboxThisBuild(t, this.database)
+	settleOneInbox(t, this, oneInboxOwedWorkHere)
+	analyzeOneInbox(t, this)
 
 	binary, commit := buildBaseline(t, filepath.Join(os.TempDir(), oneInboxWorktree))
 	baseServer := bootBaselineTrustingHeader(t, binary, databaseURL)
@@ -134,12 +147,12 @@ func TestOneInboxP99HoldsTheReadsAndTheWrites(t *testing.T) {
 	t.Cleanup(baseDatabase.Pool.Close)
 	base := &oneInboxSide{name: "the base build", server: baseServer, database: baseDatabase}
 	base.corpus = seedOneInboxCorpus(t, base.database, base.server)
-	settleOneInboxBase(t, base.database)
+	settleOneInbox(t, base, oneInboxOwedWork)
 	analyzeOneInbox(t, base)
 
 	this.server.trees, base.server.trees = true, true
-	t.Logf("c-p99: the base build %s against this build at %s, %d readings of each operation and shape after one not counted, "+
-		"alternating between the two one operation at a time, each the round trip on loopback; taken_at=%s",
+	t.Logf("c-p99: the base build %s against this build at %s, each a process of its own, %d readings of each operation and shape "+
+		"after one not counted, alternating between the two one operation at a time, each the round trip on loopback; taken_at=%s",
 		commit, gitOutput(t, ".", "rev-parse", "HEAD"), oneInboxReadings, oneInboxNow())
 	for _, reader := range oneInboxReaders {
 		measureOneInboxRead(t, reader, base, this)
@@ -159,7 +172,7 @@ func TestOneInboxP99HoldsTheReadsAndTheWrites(t *testing.T) {
 // person read from the header the base build is told to trust too, on the untraced pool so a
 // sign-in is no statement of a counted write; the stand-in listener the base build delivers to;
 // and this checkout's commit as its build commit, as every server a two-build check boots carries
-// its own.
+// its own. Its side's server is the handler served on loopback until bootOneInboxThisBuild.
 func bootOneInboxHere(t *testing.T) *oneInboxHere {
 	t.Helper()
 	database := storetest.Open(t)
@@ -175,6 +188,25 @@ func bootOneInboxHere(t *testing.T) *oneInboxHere {
 		side:    &oneInboxSide{name: "this build", server: serveOnLoopback(t, handler, oneInboxAgentToken), database: database},
 		handler: handler, traced: traced, statements: statements,
 	}
+}
+
+// bootOneInboxThisBuild builds this checkout's ./cmd/dispatch stamped with its commit, as
+// buildBaseline stamps the base build, and boots it over database as the base build is booted over
+// its own (startBuild), so the two builds' readings are taken of two processes alike: a timing of
+// the handler in this process would share its processor and its collector with the client and the
+// test's own corpus, which the base build's process does not.
+func bootOneInboxThisBuild(t *testing.T, database *store.Store) *baselineServer {
+	t.Helper()
+	root := gitOutput(t, ".", "rev-parse", "--show-toplevel")
+	commit := gitOutput(t, root, "rev-parse", "HEAD")
+	binary := cmdtest.BuildCommand(t, cmdtest.Command{
+		Name:   "this-build-dispatch",
+		Dir:    filepath.Join(root, "packages", "envoy"),
+		Target: "./cmd/dispatch",
+		Flags:  []string{"-ldflags", "-X main.buildCommit=" + commit},
+	})
+	t.Logf("this build is %s, built from %s at %s", binary, root, commit)
+	return startBuild(t, "this build", binary, database.Pool.Config().ConnString(), baselineIdentityHeader)
 }
 
 // backfillOneInbox runs the backfill over this build's corpus, which states every row the seed

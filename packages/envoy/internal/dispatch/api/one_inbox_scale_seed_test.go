@@ -495,12 +495,12 @@ func seedOneInboxHeavyThreads(t *testing.T, database *store.Store, issue string)
 // a hundred people a statement, in one transaction.
 //
 // Each message is owed a block index and its embedding windows by its insert trigger (migrations
-// 0144 and 20261107194001), which the base build's reconciliation pays off a batch a tick and this
-// build's handler in the process never does. The seed takes both debts off the messages it wrote,
-// in its own transaction, so neither build holds the blocks or windows of a body no read under
-// measurement reads, and the base build settles (settleOneInboxBase) on what the threads owe it
-// alone rather than on 40,000 more bodies: with the window debt left on them, the first c-p99 run
-// found the base build paying it off at about 2,400 items a minute.
+// 0144 and 20261107194001), which a build's process pays off a batch a tick and this build's
+// handler in the process never does. The seed takes both debts off the messages it wrote, in its
+// own transaction, so neither build holds the blocks or windows of a body no read under measurement
+// reads, and each build's process settles (settleOneInbox) on what the threads owe it alone rather
+// than on 40,000 more bodies: with the window debt left on them, the first c-p99 run found the base
+// build paying it off at about 2,400 items a minute.
 func seedOneInboxConversations(t *testing.T, database *store.Store) {
 	t.Helper()
 	const batch = 100

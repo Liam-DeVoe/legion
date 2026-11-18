@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -37,12 +39,14 @@ import (
 // The whole answer is one statement (meInboxStatement), which a reader observes rather than infers
 // (TestOneReadAnswersEveryRelationToThePersonsNode). Its rows are the entries, one row an entry and
 // nothing else, so count(*) over () over them is the count of the entries, taken after the
-// visibility predicate and the kind narrowing. What a row the page draws carries beside its entry is
-// columns of that same row: each one a record, or an array of records in the order its own statement
-// answers in, of a statement the read it replaces runs today, spliced in over the entry's node
-// (bindFragment) and read back by that statement's own scanner (meInboxRecord). A row's `page` column
-// says which of the page's three kinds of row the entry is - ask, thread or agent - or none, and only
-// that kind's columns hold anything: the others' laterals are fenced on it and run for no other row.
+// visibility predicate and the kind narrowing. A row's `page` column says which of the page's three
+// kinds of row the entry is - ask, thread or agent - or none. What those rows draw is read once for
+// the whole page, each kind by the statements the read it replaces runs today over every row of
+// that kind on the page, as those reads run them over theirs (meInboxPageReads), so no row is built
+// twice and none is built for an entry the page does not show; the first row carries it, as one
+// record of arrays of records, each array in the order its statement answers in and each record
+// read back by that statement's own scanner (meInboxRecord) and kept by the node it belongs to
+// (meInboxPage).
 //
 // The person is graphstore.PersonNode's canonical login, and a session the server proved theirs
 // (the identity tuple into that node, graphstore.TupleAliasOf) is their node too. The read is at
@@ -307,7 +311,45 @@ func (s *server) listMeInbox(w http.ResponseWriter, r *http.Request) {
 		last := response.Entries[count-1]
 		response.NextCursor = meInboxCursor{moment: last.Moment, kind: last.Node.Kind, id: last.Node.ID}.String()
 	}
-	WriteJSON(w, http.StatusOK, response)
+	writeMeInboxAnswer(w, response)
+}
+
+// writeMeInboxAnswer writes response with the bytes WriteJSON writes for it, its entries one at a
+// time: the envelope is encoded with no entry and each entry into its array in turn, so no buffer
+// holds the whole of a page at once - several megabytes for the person whose history is a hundred
+// times the median, which the encoder otherwise grows by doubling and the collector then scans.
+func writeMeInboxAnswer(w http.ResponseWriter, response meInboxResponse) {
+	entries := response.Entries
+	response.Entries = []meInboxEntry{}
+	envelope, err := json.Marshal(response)
+	if err != nil {
+		response.Entries = entries
+		WriteJSON(w, http.StatusOK, response)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	out := bufio.NewWriterSize(w, 64<<10)
+	// The envelope ends with its empty entries, `[]}`, so the entries go between its last two bytes.
+	_, err = out.Write(envelope[:len(envelope)-2])
+	for index := 0; err == nil && index < len(entries); index++ {
+		if index > 0 {
+			err = out.WriteByte(',')
+		}
+		var entry []byte
+		if entry, err = json.Marshal(entries[index]); err == nil {
+			_, err = out.Write(entry)
+		}
+	}
+	if err == nil {
+		_, err = out.WriteString("]}\n")
+	}
+	if err == nil {
+		err = out.Flush()
+	}
+	if err != nil {
+		slog.Warn("dispatch: write json failed", "error", err)
+	}
 }
 
 // meInboxAsks finishes the ask rows of the page: the details every list of asks carries beside its
@@ -381,7 +423,8 @@ func (s *server) meInboxRoster(ctx context.Context, record meInboxRecord, built 
 	return s.routeRosterAfterStored(ctx, roster, fresh, now, seen)
 }
 
-// meInboxRead is what the statement answered, each record read by its own row's scanner.
+// meInboxRead is what the statement answered: the page's entries in order, and what it read once for
+// every row of the page (meInboxPage), each record read by its own statement's scanner.
 type meInboxRead struct {
 	asOf             time.Time
 	total, remaining int
@@ -391,12 +434,33 @@ type meInboxRead struct {
 	askParts         refs.AskPartRows
 	trees            map[[32]byte]json.RawMessage
 	roster           meInboxRecord
+	page             meInboxPage
+}
+
+// meInboxPage is what the page's rows draw, read once for the whole page (meInboxPageReads) and kept
+// by the node each part belongs to: each Ask row with its reach, its thread's replies (each with the
+// targets it names, its attempts and the block it names), its rewordings and its followers; each
+// Reply row; and each Agent row's root, the replies under it (each with its attempts and its block)
+// and its session's name. The ask details every list of asks carries beside its rows are kept where
+// meInboxAsks reads them (openedEvents, backlinkCounts and askParts).
+type meInboxPage struct {
+	asks      map[string]inboxAsk
+	reaches   map[string]askReach
+	replies   map[string][]model.Comment
+	edits     map[string][]model.AskEdit
+	followers map[string][]model.AskFollower
+	threads   map[string]model.MyReplyRow
+	roots     map[string]model.Message
+	chains    map[string][]model.Message
+	titles    map[string]string
 }
 
 // meInboxRow is one entry as the statement answered it, with the parts of its page row that are
 // finished once every row is read (meInboxAsks) or shaped for the request's reader.
 type meInboxRow struct {
 	meInboxEntry
+	// page is the kind of page row the entry is, its row's page column, or "" for none.
+	page         string
 	askThread    *askThread
 	askReplies   []model.Comment
 	askEdits     []model.AskEdit
@@ -420,40 +484,54 @@ func (record meInboxRecord) Scan(dest ...any) error {
 
 // meInboxColumns is what each row of the statement holds, in its select's order.
 type meInboxColumns struct {
-	asOf                                      time.Time
-	roster                                    pgtype.UndecodedBytes
-	nodeKind, nodeID, page                    *string
-	moment                                    *time.Time
-	kinds, directions                         []string
-	ats                                       []time.Time
-	total, remaining                          *int64
-	agent                                     pgtype.UndecodedBytes
-	ask, opened, counted, parts, reach        pgtype.UndecodedBytes
-	replies, replyNamed, replyAttempts        []pgtype.UndecodedBytes
-	askBlocks, commentBlocks, edits, follower []pgtype.UndecodedBytes
-	askTrees                                  []pgtype.UndecodedBytes
-	thread                                    pgtype.UndecodedBytes
-	root                                      pgtype.UndecodedBytes
-	messages, attempts, messageBlocks         []pgtype.UndecodedBytes
-	title                                     *string
-	agentTrees                                []pgtype.UndecodedBytes
+	asOf             time.Time
+	roster           pgtype.UndecodedBytes
+	total, remaining *int64
+	// carries says the row carries what the statement read once for the page (once, one record of
+	// meInboxOnceColumns' fields, null on every other row): the first entry's row, or the one row a
+	// page of no entry answers.
+	carries                bool
+	once                   pgtype.UndecodedBytes
+	nodeKind, nodeID, page *string
+	moment                 *time.Time
+	kinds, directions      []string
+	ats                    []time.Time
+	agent                  pgtype.UndecodedBytes
+}
+
+// meInboxOnceColumns is what the statement read once for the page, each an array of the records one
+// statement answered over every row of its kind (meInboxPageReads), in that statement's order.
+type meInboxOnceColumns struct {
+	asks, opened, backlinks, parts, reach            []pgtype.UndecodedBytes
+	replies, replyNamed, replyAttempts               []pgtype.UndecodedBytes
+	askBlocks, commentBlocks, edits, followers       []pgtype.UndecodedBytes
+	threads                                          []pgtype.UndecodedBytes
+	roots, messages, attempts, messageBlocks, titles []pgtype.UndecodedBytes
+	trees                                            []pgtype.UndecodedBytes
+}
+
+func (once *meInboxOnceColumns) targets() []any {
+	return []any{
+		&once.asks, &once.opened, &once.backlinks, &once.parts, &once.reach,
+		&once.replies, &once.replyNamed, &once.replyAttempts, &once.askBlocks, &once.commentBlocks, &once.edits, &once.followers,
+		&once.threads,
+		&once.roots, &once.messages, &once.attempts, &once.messageBlocks, &once.titles,
+		&once.trees,
+	}
 }
 
 func (columns *meInboxColumns) targets() []any {
 	return []any{
-		&columns.asOf, &columns.roster, &columns.total, &columns.remaining,
+		&columns.asOf, &columns.roster, &columns.total, &columns.remaining, &columns.carries, &columns.once,
 		&columns.nodeKind, &columns.nodeID, &columns.moment, &columns.kinds, &columns.directions, &columns.ats,
 		&columns.page, &columns.agent,
-		&columns.ask, &columns.opened, &columns.counted, &columns.parts, &columns.reach,
-		&columns.replies, &columns.replyNamed, &columns.replyAttempts, &columns.askBlocks, &columns.commentBlocks,
-		&columns.edits, &columns.follower, &columns.askTrees,
-		&columns.thread,
-		&columns.root, &columns.messages, &columns.attempts, &columns.messageBlocks, &columns.title, &columns.agentTrees,
 	}
 }
 
 // readMeInboxRows reads every row the statement answered. The statement answers one row however
-// few entries there are, so that its now() is read: a row naming no node is that row alone.
+// few entries there are, so that its now() is read: a row naming no node is that row alone. Each
+// entry's own columns are read as its row arrives, and its page row is put together from what the
+// statement read once for the page (assemble) once every row is in.
 func readMeInboxRows(rows pgx.Rows) (*meInboxRead, error) {
 	defer rows.Close()
 	read := &meInboxRead{
@@ -475,6 +553,15 @@ func readMeInboxRows(rows pgx.Rows) (*meInboxRead, error) {
 		if columns.roster != nil {
 			read.roster = meInboxRecord{types: types, raw: columns.roster}
 		}
+		if columns.carries {
+			var once meInboxOnceColumns
+			if err := (meInboxRecord{types: types, raw: columns.once}).Scan(once.targets()...); err != nil {
+				return nil, fmt.Errorf("read what the inbox read for its page: %w", err)
+			}
+			if err := read.readPage(types, &once); err != nil {
+				return nil, err
+			}
+		}
 		if columns.nodeKind == nil {
 			continue
 		}
@@ -490,6 +577,11 @@ func readMeInboxRows(rows pgx.Rows) (*meInboxRead, error) {
 	if !answered {
 		return nil, errMeInboxNoRow
 	}
+	for index := range read.entries {
+		if err := read.assemble(&read.entries[index]); err != nil {
+			return nil, err
+		}
+	}
 	return read, nil
 }
 
@@ -502,7 +594,8 @@ func records(types *pgtype.Map, raw []pgtype.UndecodedBytes) []meInboxRecord {
 	return read
 }
 
-// entry reads one row naming a node: its relations, and the page row its page column names.
+// entry reads one row naming a node: its relations, its page column, and an Agent row's row itself
+// (scanMyAgentRow), which the page rows read once for their order and the entry keeps.
 func (read *meInboxRead) entry(types *pgtype.Map, columns *meInboxColumns) (meInboxRow, error) {
 	row := meInboxRow{meInboxEntry: meInboxEntry{
 		Node:      meInboxNode{Kind: *columns.nodeKind, ID: *columns.nodeID},
@@ -512,90 +605,151 @@ func (read *meInboxRead) entry(types *pgtype.Map, columns *meInboxColumns) (meIn
 	for index := range columns.kinds {
 		row.Relations[index] = meInboxRelation{Kind: columns.kinds[index], Direction: columns.directions[index], At: columns.ats[index]}
 	}
-	page := ""
 	if columns.page != nil {
-		page = *columns.page
+		row.page = *columns.page
 	}
-	var err error
-	switch page {
-	case meInboxPageAsk:
-		err = read.askRow(types, columns, &row)
-	case meInboxPageThread:
-		var thread model.MyReplyRow
-		if thread, err = scanMyReplyRow(meInboxRecord{types: types, raw: columns.thread}); err == nil {
-			row.Thread = &thread
+	if row.page == meInboxPageAgent {
+		listed, err := scanMyAgentRow(meInboxRecord{types: types, raw: columns.agent})
+		if err != nil {
+			return meInboxRow{}, fmt.Errorf("read the %s row of %s %s: %w", row.page, row.Node.Kind, row.Node.ID, err)
 		}
-	case meInboxPageAgent:
-		err = read.agentRow(types, columns, &row)
-	}
-	if err != nil {
-		return meInboxRow{}, fmt.Errorf("read the %s row of %s %s: %w", page, row.Node.Kind, row.Node.ID, err)
+		row.Agent = &meInboxAgent{MyReplyRow: listed}
 	}
 	return row, nil
 }
 
-// askRow reads an Ask row as listInbox reads one (scanAskRead) and what its thread holds as
-// loadAskThreads reads it: the reply chain (inboxAskReplyChainsQuery) with the targets each reply
-// names, its attempts and its named block (hydrateCommentSideTables), the rewordings, the followers
-// and the claim and route. Answers stay empty, as an Inbox row is an open ask.
-func (read *meInboxRead) askRow(types *pgtype.Map, columns *meInboxColumns, row *meInboxRow) error {
-	var ask inboxAsk
-	var issueKey, issueTitle, issueAssignee, documentProject, documentSlug, documentName *string
-	var snoozedUntil *time.Time
-	scanned, reply, err := scanAskRead(meInboxRecord{types: types, raw: columns.ask},
-		&issueKey, &issueTitle, &issueAssignee, &ask.Priority, &documentProject, &documentSlug, &documentName, &snoozedUntil)
-	if err != nil {
+// assemble puts an entry's page row together from the page (meInboxPage): an Ask row as listInbox
+// reads one, with its thread as loadAskThreads reads it - the reply chain, the rewordings, the
+// followers and the claim and route, answers left empty as an Inbox row is an open ask; a Reply row
+// as listMyReplies reads one; and an Agent row's session named as nameAgentSessions names it, with
+// the conversation it draws as hydrateMessageThreads reads one, the root and every reply under it
+// oldest first.
+func (read *meInboxRead) assemble(row *meInboxRow) error {
+	page := &read.page
+	missing := func(what string) error {
+		return fmt.Errorf("read the %s row of %s %s: the statement read no %s of it", row.page, row.Node.Kind, row.Node.ID, what)
+	}
+	switch row.page {
+	case meInboxPageAsk:
+		ask, held := page.asks[row.Node.ID]
+		if !held {
+			return missing("ask")
+		}
+		thread := askThread{
+			Answers:   []model.AskAnswerWithTree{},
+			Followers: append([]model.AskFollower{}, page.followers[row.Node.ID]...),
+		}
+		if reach, held := page.reaches[row.Node.ID]; held {
+			thread.askReach = reach
+		}
+		row.Ask, row.askThread = &ask, &thread
+		row.askReplies = append([]model.Comment{}, page.replies[row.Node.ID]...)
+		row.askEdits = append([]model.AskEdit{}, page.edits[row.Node.ID]...)
+	case meInboxPageThread:
+		thread, held := page.threads[row.Node.ID]
+		if !held {
+			return missing("thread")
+		}
+		row.Thread = &thread
+	case meInboxPageAgent:
+		root, held := page.roots[row.Node.ID]
+		if !held {
+			return missing("message")
+		}
+		row.Agent.Session.Name = delivery.SessionTitle(page.titles, row.Agent.Session.ID)
+		row.Agent.Conversation.Message.Message = root
+		row.agentReplies = append([]model.Message{}, page.chains[row.Node.ID]...)
+	}
+	return nil
+}
+
+// readPage reads what the statement read once for the page (meInboxPageReads) into read: the Ask
+// rows as listInbox reads them (scanAskRead) with the details loadAskDetails reads, each thread's
+// replies with the targets each names, its attempts and its named block (hydrateCommentSideTables),
+// the rewordings and followers; the Reply rows (scanMyReplyRow); each Agent row's root and the
+// replies under it, each message's attempts and the block it names, and the sessions' names; and
+// every stored tree their texts read.
+func (read *meInboxRead) readPage(types *pgtype.Map, columns *meInboxOnceColumns) error {
+	page := meInboxPage{
+		asks: map[string]inboxAsk{}, reaches: map[string]askReach{}, replies: map[string][]model.Comment{},
+		edits: map[string][]model.AskEdit{}, followers: map[string][]model.AskFollower{},
+		threads: map[string]model.MyReplyRow{}, roots: map[string]model.Message{},
+		chains: map[string][]model.Message{}, titles: map[string]string{},
+	}
+	if err := read.readAsks(types, columns, &page); err != nil {
 		return err
 	}
-	ask.Ask = scanned
-	ask.LastReply = reply
-	if snoozedUntil != nil {
-		stamp := timestampValue(*snoozedUntil)
-		ask.SnoozedUntil = &stamp
+	for _, record := range records(types, columns.threads) {
+		thread, err := scanMyReplyRow(record)
+		if err != nil {
+			return fmt.Errorf("read the inbox's Reply rows: %w", err)
+		}
+		page.threads[thread.ThreadID] = thread
 	}
-	if issueKey != nil {
-		ask.Issue = &inboxIssue{Key: *issueKey, Title: *issueTitle, Assignee: issueAssignee}
+	if err := readAgentConversations(types, columns, &page); err != nil {
+		return err
 	}
-	if documentProject != nil {
-		ask.Document = &inboxDocument{Project: *documentProject, Slug: *documentSlug, Name: *documentName}
+	for _, record := range records(types, columns.trees) {
+		if err := texttrees.HoldTree(record, read.trees); err != nil {
+			return err
+		}
 	}
-	if columns.opened != nil {
-		askID, event, err := events.ScanOpenedEventID(meInboxRecord{types: types, raw: columns.opened})
+	read.page = page
+	return nil
+}
+
+// readAsks reads the page's Ask rows and what their threads hold into page, and the details every
+// list of asks carries beside its rows into read.
+func (read *meInboxRead) readAsks(types *pgtype.Map, columns *meInboxOnceColumns, page *meInboxPage) error {
+	for _, record := range records(types, columns.asks) {
+		var ask inboxAsk
+		var issueKey, issueTitle, issueAssignee, documentProject, documentSlug, documentName *string
+		var snoozedUntil *time.Time
+		scanned, reply, err := scanAskRead(record,
+			&issueKey, &issueTitle, &issueAssignee, &ask.Priority, &documentProject, &documentSlug, &documentName, &snoozedUntil)
+		if err != nil {
+			return err
+		}
+		ask.Ask = scanned
+		ask.LastReply = reply
+		if snoozedUntil != nil {
+			stamp := timestampValue(*snoozedUntil)
+			ask.SnoozedUntil = &stamp
+		}
+		if issueKey != nil {
+			ask.Issue = &inboxIssue{Key: *issueKey, Title: *issueTitle, Assignee: issueAssignee}
+		}
+		if documentProject != nil {
+			ask.Document = &inboxDocument{Project: *documentProject, Slug: *documentSlug, Name: *documentName}
+		}
+		page.asks[ask.ID] = ask
+	}
+	for _, record := range records(types, columns.opened) {
+		askID, event, err := events.ScanOpenedEventID(record)
 		if err != nil {
 			return err
 		}
 		read.openedEvents[askID] = event
 	}
-	if columns.counted != nil {
+	for _, record := range records(types, columns.backlinks) {
 		var target string
 		var count int
-		if err := (meInboxRecord{types: types, raw: columns.counted}).Scan(&target, &count); err != nil {
+		if err := record.Scan(&target, &count); err != nil {
 			return fmt.Errorf("scan ask backlink count: %w", err)
 		}
 		read.backlinkCounts[target] = count
 	}
-	if columns.parts != nil {
-		if err := read.askParts.Scan(meInboxRecord{types: types, raw: columns.parts}); err != nil {
+	for _, record := range records(types, columns.parts) {
+		if err := read.askParts.Scan(record); err != nil {
 			return err
 		}
 	}
-	thread := askThread{
-		Answers:   []model.AskAnswerWithTree{},
-		Followers: []model.AskFollower{},
-	}
-	if columns.reach != nil {
-		if _, thread.askReach, err = scanAskReach(meInboxRecord{types: types, raw: columns.reach}); err != nil {
-			return err
-		}
-	}
-	replies := []model.Comment{}
-	for _, record := range records(types, columns.replies) {
-		var askID string
-		comment, err := scanComment(record, &askID)
+	for _, record := range records(types, columns.reach) {
+		askID, reach, err := scanAskReach(record)
 		if err != nil {
-			return fmt.Errorf("scan inbox ask reply: %w", err)
+			return err
 		}
-		replies = append(replies, comment)
+		page.reaches[askID] = reach
 	}
 	named := map[string][]model.Mention{}
 	for _, record := range records(types, columns.replyNamed) {
@@ -623,63 +777,41 @@ func (read *meInboxRead) askRow(types *pgtype.Map, columns *meInboxColumns, row 
 			blocks[replyID] = block
 		}
 	}
-	for index := range replies {
-		if held, found := named[replies[index].ID]; found {
-			replies[index].Mentions = held
+	for _, record := range records(types, columns.replies) {
+		var askID string
+		comment, err := scanComment(record, &askID)
+		if err != nil {
+			return fmt.Errorf("scan inbox ask reply: %w", err)
 		}
-		if held, found := attempts[replies[index].ID]; found {
-			replies[index].Deliveries = held
+		if held, found := named[comment.ID]; found {
+			comment.Mentions = held
 		}
-		replies[index].ReplyBlock = blocks[replies[index].ID]
+		if held, found := attempts[comment.ID]; found {
+			comment.Deliveries = held
+		}
+		comment.ReplyBlock = blocks[comment.ID]
+		page.replies[askID] = append(page.replies[askID], comment)
 	}
-	edits := []model.AskEdit{}
 	for _, record := range records(types, columns.edits) {
-		_, edit, err := scanInboxAskEdit(record)
+		askID, edit, err := scanInboxAskEdit(record)
 		if err != nil {
 			return err
 		}
-		edits = append(edits, edit)
+		page.edits[askID] = append(page.edits[askID], edit)
 	}
-	for _, record := range records(types, columns.follower) {
-		_, follower, err := scanInboxAskFollower(record)
+	for _, record := range records(types, columns.followers) {
+		askID, follower, err := scanInboxAskFollower(record)
 		if err != nil {
 			return err
 		}
-		thread.Followers = append(thread.Followers, follower)
+		page.followers[askID] = append(page.followers[askID], follower)
 	}
-	if err := read.holdTrees(types, columns.askTrees); err != nil {
-		return err
-	}
-	row.Ask, row.askThread, row.askReplies, row.askEdits = &ask, &thread, replies, edits
 	return nil
 }
 
-// agentRow reads an Agent row as listMyReplies reads one (scanMyAgentRow), its session named as
-// nameAgentSessions names it, and the conversation it draws as hydrateMessageThreads reads one: the
-// root, every reply under it oldest first, each message's attempts and the block it names.
-func (read *meInboxRead) agentRow(types *pgtype.Map, columns *meInboxColumns, row *meInboxRow) error {
-	listed, err := scanMyAgentRow(meInboxRecord{types: types, raw: columns.agent})
-	if err != nil {
-		return err
-	}
-	titles := map[string]string{}
-	if columns.title != nil {
-		titles[listed.Session.ID] = *columns.title
-	}
-	listed.Session.Name = delivery.SessionTitle(titles, listed.Session.ID)
-	root, err := scanMessage(meInboxRecord{types: types, raw: columns.root})
-	if err != nil {
-		return fmt.Errorf("scan the agent row's message: %w", err)
-	}
-	replies := []model.Message{}
-	for _, record := range records(types, columns.messages) {
-		var seedID string
-		reply, err := scanMessage(record, &seedID)
-		if err != nil {
-			return fmt.Errorf("scan the agent row's reply: %w", err)
-		}
-		replies = append(replies, reply)
-	}
+// readAgentConversations reads each Agent row's root and the replies under it into page, each
+// message with its attempts and the block it names, and the name of each session they are with.
+func readAgentConversations(types *pgtype.Map, columns *meInboxOnceColumns, page *meInboxPage) error {
 	attempts := map[string][]model.MessageDelivery{}
 	for _, record := range records(types, columns.attempts) {
 		attempt, err := scanMessageDelivery(record)
@@ -696,36 +828,35 @@ func (read *meInboxRead) agentRow(types *pgtype.Map, columns *meInboxColumns, ro
 		}
 		blocks[replyID] = block
 	}
-	for _, message := range append([]*model.Message{&root}, pointersTo(replies)...) {
-		if held, found := attempts[message.ID]; found {
-			message.Deliveries = held
+	held := func(message *model.Message) {
+		if made, found := attempts[message.ID]; found {
+			message.Deliveries = made
 		}
 		message.ReplyBlock = blocks[message.ID]
 	}
-	if err := read.holdTrees(types, columns.agentTrees); err != nil {
-		return err
-	}
-	row.Agent = &meInboxAgent{MyReplyRow: listed}
-	row.Agent.Conversation.Message.Message = root
-	row.agentReplies = replies
-	return nil
-}
-
-// pointersTo is a pointer to each of values, in order.
-func pointersTo[T any](values []T) []*T {
-	pointers := make([]*T, len(values))
-	for index := range values {
-		pointers[index] = &values[index]
-	}
-	return pointers
-}
-
-// holdTrees keeps every stored tree one row's texts read, for the request's reader.
-func (read *meInboxRead) holdTrees(types *pgtype.Map, raw []pgtype.UndecodedBytes) error {
-	for _, record := range records(types, raw) {
-		if err := texttrees.HoldTree(record, read.trees); err != nil {
-			return err
+	for _, record := range records(types, columns.roots) {
+		root, err := scanMessage(record)
+		if err != nil {
+			return fmt.Errorf("scan the agent row's message: %w", err)
 		}
+		held(&root)
+		page.roots[root.ID] = root
+	}
+	for _, record := range records(types, columns.messages) {
+		var seedID string
+		reply, err := scanMessage(record, &seedID)
+		if err != nil {
+			return fmt.Errorf("scan the agent row's reply: %w", err)
+		}
+		held(&reply)
+		page.chains[seedID] = append(page.chains[seedID], reply)
+	}
+	for _, record := range records(types, columns.titles) {
+		var session, title string
+		if err := record.Scan(&session, &title); err != nil {
+			return fmt.Errorf("scan the agent row's session name: %w", err)
+		}
+		page.titles[session] = title
 	}
 	return nil
 }
@@ -758,57 +889,161 @@ func (args *meInboxArgs) bind(value any) string {
 	return "$" + strconv.Itoa(len(args.values))
 }
 
-// meInboxStatement is the one statement of the read and its arguments.
-//
-// $1, $2 and $3 are unreadDirectRepliesArgs': the canonical login, the raw actor id and the session
-// an Agent read narrows to, none here. They are bound first because the fragments of the Reply and
-// Agent rows this statement splices in name them as $1 to $3 (myRepliesPageRest, myAgentUnreadRoots
-// and their siblings), and the person's node is that same canonical login.
+// meInboxStatement is the one statement of the read and its arguments: the text of the request's
+// shape (meInboxShape), built once a process, and the request's own arguments before that shape's
+// constants.
+func meInboxStatement(caller model.Actor, horizon int64, request meInboxRequest, trees, readsRoster bool, known *time.Time) (string, []any, error) {
+	shape := meInboxShape{state: request.state, owned: request.owned(), trees: trees, readsRoster: readsRoster}
+	text := meInboxTextOf(shape)
+	if text.err != nil {
+		return "", nil, text.err
+	}
+	return text.statement, append(meInboxRequestArgs(caller, horizon, request, shape, known), text.constants...), nil
+}
+
+// meInboxShape is what the text of the read's statement depends on, and nothing a request carries
+// but this: its state, whether an owner narrows it, whether the page asks for display trees and
+// whether the listener's stored roster is read. Every other value of a request is an argument, so
+// a shape is one text, built once a process (meInboxTextOf) and prepared once on each connection,
+// whose plan Postgres plans once and reuses from the sixth execution: the text is tens of kilobytes
+// and takes tens of milliseconds to plan and to build, which a request pays only where it is new.
+type meInboxShape struct {
+	state              string
+	owned              bool
+	trees, readsRoster bool
+}
+
+// The arguments every request binds first, in meInboxRequestArgs's order. $1, $2 and $3 are
+// unreadDirectRepliesArgs': the canonical login, the raw actor id and the session an Agent read
+// narrows to, none here. They are bound first because the fragments of the Reply and Agent rows
+// this statement splices in name them as $1 to $3 (myRepliesPageRest, myAgentUnreadRoots and their
+// siblings), and the person's node is that same canonical login. Then these, at these
+// placeholders, and after them the ones only some shapes bind (meInboxSlots).
+const (
+	meInboxVisibility   = "$4"
+	meInboxHorizon      = "$5"
+	meInboxKindsParam   = "$6"
+	meInboxIssue        = "$7"
+	meInboxArtifact     = "$8"
+	meInboxProject      = "$9"
+	meInboxCursorMoment = "$10"
+	meInboxCursorKind   = "$11"
+	meInboxCursorID     = "$12"
+	meInboxOffset       = "$13"
+	meInboxLimit        = "$14"
+	// meInboxBound is how many arguments every request binds.
+	meInboxBound = 14
+)
+
+// meInboxSlots is where a shape names the arguments only some shapes bind - the display trees'
+// version and mode where the page asks for trees, and the moment of the roster this process built
+// where the stored roster is read - and first, how many arguments a request of the shape binds,
+// after which the shape's own constants follow.
+type meInboxSlots struct {
+	version, mode, known string
+	first                int
+}
+
+func (shape meInboxShape) slots() meInboxSlots {
+	slots := meInboxSlots{first: meInboxBound}
+	next := func() string {
+		slots.first++
+		return "$" + strconv.Itoa(slots.first)
+	}
+	if shape.trees {
+		slots.version = next()
+		slots.mode = next()
+	}
+	if shape.readsRoster {
+		slots.known = next()
+	}
+	return slots
+}
+
+// meInboxRequestArgs is a request's own arguments, in the order its shape's text names them
+// (meInboxBound, meInboxSlots).
+func meInboxRequestArgs(caller model.Actor, horizon int64, request meInboxRequest, shape meInboxShape, known *time.Time) []any {
+	var kinds, artifact, moment, kind, id, limit any
+	if len(request.kinds) > 0 {
+		kinds = request.kinds
+	}
+	if request.artifact != nil {
+		artifact = *request.artifact
+	}
+	if request.cursor != nil {
+		moment, kind, id = request.cursor.moment, request.cursor.kind, request.cursor.id
+	}
+	if request.limit != nil {
+		limit = *request.limit
+	}
+	args := append(unreadDirectRepliesArgs(caller.ID, nil), refs.VisibilityArg(caller), horizon, kinds,
+		request.issue, artifact, request.project, moment, kind, id, request.offset, limit)
+	if shape.trees {
+		args = append(args, pmdoc.DisplayTreeVersionNow(), int16(pmdoc.DisplayLatest))
+	}
+	if shape.readsRoster {
+		args = append(args, known)
+	}
+	return args
+}
+
+// meInboxText is one shape's statement and the constants it binds after a request's own arguments.
+type meInboxText struct {
+	statement string
+	constants []any
+	err       error
+}
+
+// meInboxTexts holds each shape's text once it is built, for the life of the process.
+var meInboxTexts sync.Map
+
+// meInboxTextOf is shape's text, built on its first request.
+func meInboxTextOf(shape meInboxShape) *meInboxText {
+	if built, held := meInboxTexts.Load(shape); held {
+		return built.(*meInboxText)
+	}
+	statement, constants, err := meInboxBuild(shape)
+	built, _ := meInboxTexts.LoadOrStore(shape, &meInboxText{statement: statement, constants: constants, err: err})
+	return built.(*meInboxText)
+}
+
+// meInboxBuild writes shape's statement over the request's arguments (meInboxBound, meInboxSlots)
+// and answers it with the constants it binds after them.
 //
 // The relations are read once either way, by the walk: the distinct relation kinds that touch each
 // of the person's nodes, read by a skip over graph_tuples_inbound and graph_tuples_current (one index
 // probe a kind, kinds_in and kinds_out), then each kind's current tuples through
-// graphstore.CurrentTupleRead, one index range a kind, grouped by the node at the other end
-// (related). With no state the entries are those nodes. Under a state they are the page's own rows
-// in that state, read from the caches the page's lists read (meInboxPageRows), each joined to its
-// node's relations from that one walk: the read costs one pass over the person's current tuples and
-// one over their page, and never the product of the two, which a probe of the tuples between each
-// row's node and the person's made it (dispatch://INFRA-1152 c-p99: 8,002 probes, 71 s of 74, for
-// the person whose history is a hundred times the median, since every probe the planner chose read
-// all the person's tuples of a kind and kept the row's). Either way the visibility predicate is over
-// the node's own row of graph_nodes, in this statement and bound once, and the counts are taken
-// after it.
-func meInboxStatement(caller model.Actor, horizon int64, request meInboxRequest, trees, readsRoster bool, known *time.Time) (string, []any, error) {
-	args := &meInboxArgs{values: unreadDirectRepliesArgs(caller.ID, nil)}
-	visibility := args.bind(refs.VisibilityArg(caller))
-	atHorizon := `(t.source_event <= ` + args.bind(horizon) + ` or t.source_event = 0)`
-	var kinds any
-	if len(request.kinds) > 0 {
-		kinds = request.kinds
-	}
-	kindsParam := args.bind(kinds)
+// graphstore.CurrentTupleRead, one index range a kind, each relation kind and end once a node
+// (tied). With no state the entries are those nodes. Under a state they are the page's own rows
+// in that state, read from the caches the page's lists read (meInboxPageRows). Either way the page's
+// rows and the walk's relations are put together by grouping the two by node (sides) rather than by
+// joining one to the other: the read costs one pass over the person's current tuples and one over
+// their page whatever the planner takes either to hold, and never the product of the two, which a
+// probe of the tuples between each row's node and the person's made it (the scale check, c-p99:
+// 8,002 probes, 71 s of 74, for the person whose history is a hundred times the median,
+// since every probe the planner chose read all the person's tuples of a kind and kept the row's),
+// and which a join made it under the plan Postgres keeps from the sixth execution, a plan for no
+// value of the arguments that takes the page to hold one row and loops over the whole walk for
+// each (12.2 s for that person, against 1.6 s for the plan of its own arguments). The visibility
+// predicate is over the node's own row of graph_nodes, read by its key for each node, in this
+// statement and bound once, and the counts are taken after it. What the page's rows draw is read
+// once for the page (meInboxPageReads).
+func meInboxBuild(shape meInboxShape) (string, []any, error) {
+	slots := shape.slots()
+	args := &meInboxArgs{values: make([]any, slots.first)}
+	atHorizon := `(t.source_event <= ` + meInboxHorizon + ` or t.source_event = 0)`
 	// A relation kind the walk reads: one the data holds, the identity tuple left out, and inside the
 	// narrowing when the request names one.
 	readKind := func(kind string) string {
 		return kind + ` is not null and ` + kind + ` <> '` + graphstore.TupleAliasOf + `'
-			and (` + kindsParam + `::text[] is null or ` + kind + ` = any(` + kindsParam + `::text[]))`
+			and (` + meInboxKindsParam + `::text[] is null or ` + kind + ` = any(` + meInboxKindsParam + `::text[]))`
 	}
-	issue := args.bind(request.issue)
-	var artifact any
-	if request.artifact != nil {
-		artifact = *request.artifact
-	}
-	artifactParam := args.bind(artifact)
-	project := args.bind(request.project)
 	// A project narrows every entry by its node's own project, and a node the store holds no row
 	// for cannot be judged, so it is left out under the narrowing. An owner keeps the page's rows of
 	// that owner alone (meInboxRequest.owned); under a state the entries are those rows already.
-	inProject := `(` + project + `::text = '' or n.project_key = ` + project + `::text)`
-	ownedRows := ``
-	if request.owned() {
-		ownedRows = `
-		  and pr.page is not null`
-	}
+	inProject := `(` + meInboxProject + `::text = '' or n.project_key = ` + meInboxProject + `::text)`
+	visible := `coalesce((select ` + refs.VisibleRow("n", meInboxVisibility) + ` and ` + inProject + `
+			from graph_nodes n where n.kind = g.node_kind and n.id = g.node_id), ` + meInboxProject + `::text = '')`
 
 	var statement strings.Builder
 	statement.WriteString(`
@@ -828,9 +1063,8 @@ func meInboxStatement(caller model.Actor, horizon int64, request meInboxRequest,
 	` + meInboxKindSkip("kinds_in", "to") + `,
 	` + meInboxKindSkip("kinds_out", "from") + `,
 	page_rows(node_kind, node_id, page, moment, agent_session, agent) as (` +
-		meInboxPageRows(request, issue, artifactParam) + `
-	),`)
-	statement.WriteString(`
+		meInboxPageRows(shape, meInboxIssue, meInboxArtifact) + `
+	),
 	walked(near_kind, near_id, kind, direction, at) as (
 		select stated.from_kind, stated.from_id, k.kind, '` + meInboxInbound + `', stated.at
 		from kinds_in k
@@ -846,54 +1080,61 @@ func meInboxStatement(caller model.Actor, horizon int64, request meInboxRequest,
 				and t.to_kind <> '`+graphstore.KindValue+`' and `+atHorizon) + `) stated
 		where ` + readKind("k.kind") + ` and stated.asserted
 	),
-	-- Each node the person's current tuples reach, once, with every relation kind that ties it to
-	-- them: read whole once and kept, so a page joins its rows to it rather than asking each row.
-	related(node_kind, node_id, moment, kinds, directions, ats) as materialized (
-		select tied.near_kind, tied.near_id, max(tied.at),
-		       array_agg(tied.kind order by tied.kind, tied.direction),
-		       array_agg(tied.direction order by tied.kind, tied.direction),
-		       array_agg(tied.at order by tied.kind, tied.direction)
-		from (
-			select w.near_kind, w.near_id, w.kind, w.direction, max(w.at) as at
-			from walked w
-			where (w.near_kind, w.near_id) not in (select kind, id from person_nodes)
-			group by w.near_kind, w.near_id, w.kind, w.direction
-		) tied
-		group by tied.near_kind, tied.near_id
+	-- Each relation kind and end that ties a node to the person, once, with its newest moment: the
+	-- walk read whole once.
+	tied(node_kind, node_id, kind, direction, at) as (
+		select w.near_kind, w.near_id, w.kind, w.direction, max(w.at)
+		from walked w
+		where (w.near_kind, w.near_id) not in (select kind, id from person_nodes)
+		group by w.near_kind, w.near_id, w.kind, w.direction
+	),
+	-- The page's rows and the walk's relations side by side, a node at most once among the page's
+	-- rows, and then each node once with what either side holds of it and every relation kind that
+	-- ties it to the person: a grouping, which costs the rows of the two whatever the plan, where a
+	-- join of the two could loop over one for each row of the other.
+	sides(node_kind, node_id, page, page_moment, agent_session, agent, kind, direction, at) as (
+		select pr.node_kind, pr.node_id, pr.page, pr.moment, pr.agent_session, pr.agent,
+		       null::text, null::text, null::timestamptz
+		from page_rows pr
+		union all
+		select t.node_kind, t.node_id, null, null, null, null, t.kind, t.direction, t.at
+		from tied t
+	),
+	grouped(node_kind, node_id, page, page_moment, agent_session, agent, walk_moment, kinds, directions, ats) as (
+		select s.node_kind, s.node_id, max(s.page), max(s.page_moment), max(s.agent_session),
+		       (array_agg(s.agent) filter (where s.page = '` + meInboxPageAgent + `'))[1],
+		       max(s.at),
+		       array_agg(s.kind order by s.kind, s.direction) filter (where s.kind is not null),
+		       array_agg(s.direction order by s.kind, s.direction) filter (where s.kind is not null),
+		       array_agg(s.at order by s.kind, s.direction) filter (where s.kind is not null)
+		from sides s
+		group by s.node_kind, s.node_id
 	),`)
-	if request.state == "" {
+	if shape.state == "" {
+		ownedRows := ``
+		if shape.owned {
+			ownedRows = `
+		  and g.page is not null`
+		}
 		statement.WriteString(`
 	entries as (
-		select c.node_kind, c.node_id, c.moment, c.kinds, c.directions, c.ats,
-		       pr.page, pr.agent_session, pr.agent
-		from related c
-		left join page_rows pr on pr.node_kind = c.node_kind and pr.node_id = c.node_id
-		left join graph_nodes n on n.kind = c.node_kind and n.id = c.node_id
-		where (n.kind is null or ` + refs.VisibleRow("n", visibility) + `)
-		  and ` + inProject + ownedRows + `
+		select g.node_kind, g.node_id, g.walk_moment as moment, g.kinds, g.directions, g.ats,
+		       g.page, g.agent_session, g.agent
+		from grouped g
+		where g.kinds is not null` + ownedRows + `
+		  and ` + visible + `
 	),`)
 	} else {
 		statement.WriteString(`
 	entries as (
-		select pr.node_kind, pr.node_id, pr.moment,
-		       coalesce(r.kinds, '{}') as kinds, coalesce(r.directions, '{}') as directions, coalesce(r.ats, '{}') as ats,
-		       pr.page, pr.agent_session, pr.agent
-		from page_rows pr
-		left join related r on r.node_kind = pr.node_kind and r.node_id = pr.node_id
-		left join graph_nodes n on n.kind = pr.node_kind and n.id = pr.node_id
-		where (n.kind is null or ` + refs.VisibleRow("n", visibility) + `)
-		  and ` + inProject + `
-		  and (` + kindsParam + `::text[] is null or r.node_kind is not null)
+		select g.node_kind, g.node_id, g.page_moment as moment,
+		       coalesce(g.kinds, '{}') as kinds, coalesce(g.directions, '{}') as directions, coalesce(g.ats, '{}') as ats,
+		       g.page, g.agent_session, g.agent
+		from grouped g
+		where g.page is not null
+		  and (` + meInboxKindsParam + `::text[] is null or g.kinds is not null)
+		  and ` + visible + `
 	),`)
-	}
-	var moment, kind, id any
-	if request.cursor != nil {
-		moment, kind, id = request.cursor.moment, request.cursor.kind, request.cursor.id
-	}
-	cursorMoment, cursorKind, cursorID := args.bind(moment), args.bind(kind), args.bind(id)
-	var limit any
-	if request.limit != nil {
-		limit = *request.limit
 	}
 	statement.WriteString(`
 	counted as (
@@ -901,43 +1142,44 @@ func meInboxStatement(caller model.Actor, horizon int64, request meInboxRequest,
 	),
 	remaining as (
 		select c.*, count(*) over () as remaining from counted c
-		where ` + cursorMoment + `::timestamptz is null
-		   or (c.moment, c.node_kind, c.node_id) < (` + cursorMoment + `::timestamptz, ` + cursorKind + `::text, ` + cursorID + `::text)
+		where ` + meInboxCursorMoment + `::timestamptz is null
+		   or (c.moment, c.node_kind, c.node_id) < (` + meInboxCursorMoment + `::timestamptz, ` + meInboxCursorKind + `::text, ` + meInboxCursorID + `::text)
 	),
+	-- The page, each entry numbered in the order it is answered in.
 	paged as (
-		select * from remaining
-		order by moment desc, node_kind desc, node_id desc
-		offset ` + args.bind(request.offset) + ` limit ` + args.bind(limit) + `
-	)`)
+		select cut.*, row_number() over () as ord
+		from (
+			select * from remaining
+			order by moment desc, node_kind desc, node_id desc
+			offset ` + meInboxOffset + ` limit ` + meInboxLimit + `
+		) cut
+	),`)
+	reads, err := meInboxPageReads(args, slots)
+	if err != nil {
+		return "", nil, err
+	}
+	statement.WriteString(reads.ctes)
 	roster := `null::record`
-	if readsRoster {
-		roster = `(select row(stored.*) from (` + bindFragment(routeRosterQuery, args.bind(known)) + `) stored)`
+	if shape.readsRoster {
+		roster = `(select row(stored.*) from (` + bindFragment(routeRosterQuery, slots.known) + `) stored)`
 	}
-	askRow, err := meInboxAskRow(args, caller, visibility, trees)
-	if err != nil {
-		return "", nil, err
-	}
-	agentRow, err := meInboxAgentRow(args, visibility, trees)
-	if err != nil {
-		return "", nil, err
-	}
+	// The first entry's row carries what was read once for the page, as one record, and a page of
+	// no entry its one row; every other row carries none of it.
+	const carries = `(entry.ord is null or entry.ord = 1)`
 	statement.WriteString(`
-	select head.as_of, head.roster, head.total, head.remaining,
+	select head.as_of, head.roster, head.total, head.remaining, ` + carries + `,
+	       case when ` + carries + ` then row(` + strings.Join(reads.columns, `,
+	         `) + `) end,
 	       entry.node_kind, entry.node_id, entry.moment, entry.kinds, entry.directions, entry.ats,
-	       entry.page, entry.agent,
-	       ask_row.ask, ask_row.opened, ask_row.counted, ask_row.parts, ask_row.reach,
-	       ask_row.replies, ask_row.reply_named, ask_row.reply_attempts, ask_row.ask_blocks, ask_row.comment_blocks,
-	       ask_row.edits, ask_row.followers, ask_row.trees,
-	       thread_row.thread,
-	       agent_row.root, agent_row.messages, agent_row.attempts, agent_row.blocks, agent_row.title, agent_row.trees
+	       entry.page, entry.agent
 	from (
 		select now() as as_of, ` + roster + ` as roster,
 		       coalesce((select c.total from counted c limit 1), 0) as total,
 		       coalesce((select r.remaining from remaining r limit 1), 0) as remaining
 	) head
-	left join paged entry on true` + askRow + meInboxThreadRow + agentRow + `
+	left join paged entry on true
 	order by entry.moment desc, entry.node_kind desc, entry.node_id desc`)
-	return statement.String(), args.values, nil
+	return statement.String(), args.values[slots.first:], nil
 }
 
 // meInboxKindSkip lists the distinct relation kinds that touch each of the person's nodes at one end
@@ -968,13 +1210,22 @@ func meInboxKindSkip(name, end string) string {
 // session holding a reply from it (myAgentUnreadRoots and its siblings), on no issue or document,
 // so a request narrowed to an owner lists none. A mention or an addressing reaches the person's
 // node and writes no user_threads row, so it is no row of the page. A project narrows the entries
-// these rows are, by their nodes' project, where every other entry is narrowed (meInboxStatement).
+// these rows are, by their nodes' project, where every other entry is narrowed (meInboxBuild).
 //
 // Each row is the node it draws, the kind of row, the moment that state's list orders it by, and an
 // Agent row's session and the row itself (myAgentRowColumns), read once here for its order and kept.
 // A walk with no state draws the rows of the Inbox's own state.
-func meInboxPageRows(request meInboxRequest, issue, artifact string) string {
-	state := request.state
+//
+// The Ask rows are the open asks first, read by their state alone, and then the ones of those that
+// wait on the person, each with its newest reply; and an owner's test is written only into a shape
+// that names an owner. The plan Postgres keeps from the sixth execution knows nothing of the
+// arguments: it takes a test of an argument against a column to keep almost no row, and with the
+// owner's tests on every shape it took the open asks to be one and read each one's issue, document
+// and project by a scan of that whole table, and its newest reply, before it knew whether the ask
+// waits on the person at all (13.6 ms of that plan's 21.6 for the person whose history is empty,
+// against 0.4 ms in the plan of their own arguments).
+func meInboxPageRows(shape meInboxShape, issue, artifact string) string {
+	state := shape.state
 	if state == "" {
 		state = myRepliesStateInbox
 	}
@@ -991,15 +1242,25 @@ func meInboxPageRows(request meInboxRequest, issue, artifact string) string {
 		select u.kind, u.thread_id::text, '` + meInboxPageThread + `', ` + threadMoment + `, null::text, null::record
 		` + bindFragment(threads, "$1", issue, artifact)}
 	if state == myRepliesStateInbox {
+		owner := ``
+		if shape.owned {
+			owner = `
+			  and (` + issue + `::text = '' or a.issue_key = ` + issue + `::text)
+			  and (` + artifact + `::uuid is null or a.artifact_id = ` + artifact + `::uuid)`
+		}
 		arms = append(arms, `
 		select '`+graphstore.KindAsk+`', a.id::text, '`+meInboxPageAsk+`', coalesce(lr.created_at, a.created_at), null::text, null::record
-		from asks a`+askedOfPersonJoins+lastReplyJoin+`
-		where a.state = 'open' and (i.key is null or i.closed_at is null)
-		  and `+askedOfPersonExpression+` = $1
-		  and (`+issue+`::text = '' or a.issue_key = `+issue+`::text)
-		  and (`+artifact+`::uuid is null or a.artifact_id = `+artifact+`::uuid)`)
+		from (
+			with open_asks as materialized (
+				select id, created_at, issue_key, artifact_id, asked_of from asks where state = 'open'
+			)
+			select a.id, a.created_at
+			from open_asks a`+askedOfPersonJoins+`
+			where (i.key is null or i.closed_at is null)
+			  and `+askedOfPersonExpression+` = $1`+owner+`
+		) a`+lastReplyJoin)
 	}
-	if !request.owned() {
+	if !shape.owned {
 		arms = append(arms, `
 		select '`+graphstore.KindMessage+`', listed.root_id, '`+meInboxPageAgent+`', `+agentMoment+`, listed.session_id, row(listed.*)
 		from (`+agents+myAgentRowsSelect+`
@@ -1009,180 +1270,179 @@ func meInboxPageRows(request meInboxRequest, issue, artifact string) string {
 		union all`)
 }
 
-// meInboxEntryOf is the id of the entry's node where its row is of page kind, and null for every
-// other row, so a fragment's cast of it never reads a node that is no row of that kind.
-func meInboxEntryOf(page string) string {
-	return `(case when entry.page = '` + page + `' then entry.node_id end)`
+// meInboxReads is what the page's rows draw, as meInboxPageReads writes it: the statement's
+// common table expressions that read it, and the columns of the row that carries it, in the order
+// meInboxOnceColumns reads them.
+type meInboxReads struct {
+	ctes    string
+	columns []string
 }
 
-// meInboxThreadRow is a Reply row's lateral: its user_threads row read by its key, then what
-// listMyReplies selects over the rows its cut kept (myRepliesPageRest), as one record.
-var meInboxThreadRow = `
-	left join lateral (
-		select row(listed.*) as thread
-		from (
-			with recursive page as (
-				select kept.thread_id, kept.kind, kept.replied_at, kept.dismissed_at, kept.last_reply_id,
-				       kept.issue_key, kept.artifact_id, kept.read_through, kept.project_key, kept.unread, kept.version
-				from user_threads kept
-				where kept.login = $1 and kept.thread_id = ` + meInboxEntryOf(meInboxPageThread) + `::uuid
-			),` + myRepliesPageRest + `
-		) listed
-		where entry.page = '` + meInboxPageThread + `'
-	) thread_row on true`
-
-// meInboxAskRow is an Ask row's lateral: the row as listInbox selects it (askReadColumns over
-// askReadFrom, with its issue, document and the caller's snooze), the details loadAskDetails reads
-// (events.OpenedEventIDsStatement, refs.BacklinkCountRead, refs.AskPartRowsStatement), and its thread
-// as loadAskThreads reads it (inboxAskReplyChainsQuery, then the targets each reply names, its
-// attempts and its block, the rewordings, the followers and askReachesQuery), each over this one ask.
-func meInboxAskRow(args *meInboxArgs, caller model.Actor, visibility string, trees bool) (string, error) {
-	count, rest, err := refs.BacklinkCountRead(caller, graphstore.KindAsk, refs.AskBacklinkExclusions)
+// meInboxPageReads reads what the page's rows draw, once for the whole page and each kind of row
+// by the statements the read it replaces runs today, each over every row of that kind on the page
+// as those reads run them over theirs:
+//
+//   - the Ask rows as listInbox selects them (askReadColumns over askReadFrom, with their issue,
+//     document and the caller's snooze), the details loadAskDetails reads
+//     (events.OpenedEventIDsStatement, refs.BacklinkCountRead, refs.AskPartRowsStatement) and their
+//     threads as loadAskThreads reads them (inboxAskReplyChainsQuery, then the targets each reply
+//     names, its attempts and its block, the rewordings, the followers and askReachesQuery);
+//   - the Reply rows as listMyReplies selects them over the rows its cut kept (myRepliesPageRest),
+//     each read by its user_threads key;
+//   - the Agent rows' conversations as hydrateMessageThreads reads them - each root message, every
+//     reply under it (messageReplyChainsQuery), each message's attempts (messageDeliveriesQuery) and
+//     the block it names (refs.ReplyBlocksStatement) - and the names of their sessions
+//     (delivery.ResolveSessionTitlesQuery); each row itself is page_rows', read for its order;
+//   - the stored display tree of every text those rows may register with the request's reader,
+//     where the page asks for trees (meInboxTrees).
+//
+// Every statement is over the ids of its kind's rows on the page, so a row is read once whatever
+// else the page holds, and a kind the page holds no row of is read over none.
+func meInboxPageReads(args *meInboxArgs, slots meInboxSlots) (meInboxReads, error) {
+	// The count's statement text is the same whoever counts: who is the acting credential, which
+	// this statement has bound once already (meInboxVisibility), and the rest are constants.
+	count, rest, err := refs.BacklinkCountRead(model.Actor{}, graphstore.KindAsk, refs.AskBacklinkExclusions)
 	if err != nil {
-		return "", err
-	}
-	// The ask's id as the one-element array every statement below is written over. It is cast, so
-	// that a fragment's `= any($1)` reads it as an array and not as a subquery of one row.
-	askIDs := `(select ids from ask_key)::text[]`
-	// The count's second argument after the node kinds is the acting credential, which this
-	// statement has bound once already (visibility), and the rest are its own.
-	countArgs := []string{askIDs, args.bind(rest[0]), visibility}
-	for _, value := range rest[2:] {
-		countArgs = append(countArgs, args.bind(value))
+		return meInboxReads{}, err
 	}
 	askBlocks, err := refs.ReplyBlocksStatement(refs.ItemAsk)
 	if err != nil {
-		return "", err
+		return meInboxReads{}, err
 	}
 	commentBlocks, err := refs.ReplyBlocksStatement(refs.ItemComment)
 	if err != nil {
-		return "", err
+		return meInboxReads{}, err
 	}
-	askTrees := `null::record[]`
-	if trees {
-		askTrees = meInboxTrees(args, `
-			select a.question from asks a where a.id = (select id from ask_key)::uuid
+	messageBlocks, err := refs.ReplyBlocksStatement(refs.ItemMessage)
+	if err != nil {
+		return meInboxReads{}, err
+	}
+	// The ids of each kind's rows, as the array every statement below is written over. They are
+	// cast, so that a fragment's `= any($1)` reads each as an array and not as a subquery of one row.
+	askIDs := `(select ids from page_asks)::text[]`
+	countArgs := []string{askIDs, args.bind(rest[0]), meInboxVisibility}
+	for _, value := range rest[2:] {
+		countArgs = append(countArgs, args.bind(value))
+	}
+	replyIDs := `(select ids from ask_reply_ids)`
+	threadIDs := `(select ids from page_threads)`
+	rootIDs := `(select ids from page_roots)`
+	messageIDs := `(select ids from agent_message_ids)`
+	sessions := `array(select distinct p.agent_session from paged p where p.page = '` + meInboxPageAgent + `')`
+	ctes := `
+	page_asks(ids) as materialized (
+		select coalesce(array_agg(p.node_id), '{}') from paged p where p.page = '` + meInboxPageAsk + `'
+	),
+	ask_replies as materialized (
+		select * from (` + bindFragment(inboxAskReplyChainsQuery, askIDs) + `) chain
+	),
+	ask_reply_ids(ids) as materialized (
+		select coalesce(array_agg(r.id::uuid), '{}') from ask_replies r
+	),
+	ask_named as materialized (
+		select * from (` + bindFragment(askBlocks, replyIDs, meInboxVisibility) + `) named
+	),
+	comment_named as materialized (
+		select * from (` + bindFragment(commentBlocks, replyIDs, meInboxVisibility) + `) named
+	),
+	ask_edits(ask_id, previous, edited_by, at) as materialized (
+		select * from (` + bindFragment(inboxAskEditsQuery, askIDs) + `) edit
+	),
+	page_threads(ids) as materialized (
+		select coalesce(array_agg(p.node_id::uuid), '{}') from paged p where p.page = '` + meInboxPageThread + `'
+	),
+	page_roots(ids) as materialized (
+		select coalesce(array_agg(p.node_id::uuid), '{}') from paged p where p.page = '` + meInboxPageAgent + `'
+	),
+	agent_roots as materialized (
+		select ` + messageColumns + ` from messages where id = any(` + rootIDs + `::uuid[])
+	),
+	agent_chain as materialized (
+		select * from (` + bindFragment(messageReplyChainsQuery, rootIDs) + `) chain
+	),
+	agent_message_ids(ids) as materialized (
+		select array(select id::uuid from agent_roots union all select id::uuid from agent_chain)
+	),
+	agent_named as materialized (
+		select * from (` + bindFragment(messageBlocks, messageIDs, meInboxVisibility) + `) named
+	)`
+	trees := `null::record[]`
+	if slots.version != "" {
+		trees = meInboxTrees(slots, `
+			select a.question from asks a where a.id = any(`+askIDs+`::uuid[])
 			union all
 			select choice.value->>field.name
 			from asks a
 			cross join lateral jsonb_array_elements(case when jsonb_typeof(a.options) = 'array' then a.options else '[]'::jsonb end) choice
 			cross join (values ('label'), ('description')) field(name)
-			where a.id = (select id from ask_key)::uuid
+			where a.id = any(`+askIDs+`::uuid[])
 			union all
-			select a.answer->>'text' from asks a where a.id = (select id from ask_key)::uuid
+			select a.answer->>'text' from asks a where a.id = any(`+askIDs+`::uuid[])
 			union all
-			select a.resolution->>'reason' from asks a where a.id = (select id from ask_key)::uuid
+			select a.resolution->>'reason' from asks a where a.id = any(`+askIDs+`::uuid[])
 			union all
-			select r.body from replies r
+			select r.body from ask_replies r
 			union all
 			select b.excerpt from ask_named b
 			union all
 			select b.excerpt from comment_named b
 			union all
-			select e.previous->>'question' from edits e
+			select e.previous->>'question' from ask_edits e
 			union all
 			select choice.value->>field.name
-			from edits e
+			from ask_edits e
 			cross join lateral jsonb_array_elements(case when jsonb_typeof(e.previous->'options') = 'array' then e.previous->'options' else '[]'::jsonb end) choice
-			cross join (values ('label'), ('description')) field(name)`)
-	}
-	replyIDs := `(select ids from reply_ids)`
-	return `
-	left join lateral (
-		with ask_key(id, ids) as materialized (
-			select ` + meInboxEntryOf(meInboxPageAsk) + `, array[` + meInboxEntryOf(meInboxPageAsk) + `]
-		),
-		replies as materialized (
-			select * from (` + bindFragment(inboxAskReplyChainsQuery, askIDs) + `) chain
-		),
-		reply_ids(ids) as materialized (
-			select coalesce(array_agg(r.id::uuid), '{}') from replies r
-		),
-		ask_named as materialized (
-			select * from (` + bindFragment(askBlocks, replyIDs, visibility) + `) named
-		),
-		comment_named as materialized (
-			select * from (` + bindFragment(commentBlocks, replyIDs, visibility) + `) named
-		),
-		edits(ask_id, previous, edited_by, at) as materialized (
-			select * from (` + bindFragment(inboxAskEditsQuery, askIDs) + `) edit
-		)
-		select
-			(select row(listed.*) from (
-				select ` + askReadColumns + `,
-				       i.key, i.title, i.assignee, i.priority, ar.project_key, ar.slug, ar.name,
-				       sn.snoozed_until
-				` + askReadFrom + `
-				left join user_ask_snooze sn on sn.ask_id = a.id and sn.login = $1
-				where a.id = (select id from ask_key)::uuid
-			) listed) as ask,
-			(select row(opened.*) from (` + bindFragment(events.OpenedEventIDsStatement, askIDs) + `) opened) as opened,
-			(select row(counted.*) from (` + bindFragment(count, countArgs...) + `) counted) as counted,
-			(select row(parts.*) from (` + bindFragment(refs.AskPartRowsStatement, askIDs) + `) parts) as parts,
-			(select row(reach.*) from (` + bindFragment(askReachesQuery, askIDs) + `) reach) as reach,
-			array(select row(r.*) from replies r) as replies,
-			array(select row(named.*) from (` + bindFragment(commentMentionsQuery, replyIDs) + `) named) as reply_named,
-			array(select row(attempt.*) from (` + bindFragment(commentDeliveriesQuery, replyIDs) + `) attempt) as reply_attempts,
-			array(select row(b.*) from ask_named b) as ask_blocks,
-			array(select row(b.*) from comment_named b) as comment_blocks,
-			array(select row(e.*) from edits e) as edits,
-			array(select row(follower.*) from (` + bindFragment(inboxAskFollowersQuery, askIDs) + `) follower) as followers,
-			` + askTrees + ` as trees
-		where entry.page = '` + meInboxPageAsk + `'
-	) ask_row on true`, nil
-}
-
-// meInboxAgentRow is an Agent row's lateral: the conversation as hydrateMessageThreads reads it - the
-// root message, every reply under it (messageReplyChainsQuery), each message's attempts
-// (messageDeliveriesQuery) and the block it names (refs.ReplyBlocksStatement) - and the session's
-// name (delivery.ResolveSessionTitlesQuery). The row itself is page_rows', read for its order.
-func meInboxAgentRow(args *meInboxArgs, visibility string, trees bool) (string, error) {
-	blocks, err := refs.ReplyBlocksStatement(refs.ItemMessage)
-	if err != nil {
-		return "", err
-	}
-	agentTrees := `null::record[]`
-	if trees {
-		agentTrees = meInboxTrees(args, `
-			select r.body from root r
+			cross join (values ('label'), ('description')) field(name)
 			union all
-			select c.body from chain c
+			select r.body from agent_roots r
 			union all
-			select b.excerpt from named b`)
+			select c.body from agent_chain c
+			union all
+			select b.excerpt from agent_named b`)
 	}
-	messageIDs := `(select ids from message_ids)`
-	return `
-	left join lateral (
-		with root as materialized (
-			select ` + messageColumns + ` from messages where id = ` + meInboxEntryOf(meInboxPageAgent) + `::uuid
-		),
-		chain as materialized (
-			select * from (` + bindFragment(messageReplyChainsQuery, `array(select id::uuid from root)`) + `) chain
-		),
-		message_ids(ids) as materialized (
-			select array(select id::uuid from root union all select id::uuid from chain)
-		),
-		named as materialized (
-			select * from (` + bindFragment(blocks, messageIDs, visibility) + `) named
-		)
-		select
-			(select row(r.*) from root r) as root,
-			array(select row(c.*) from chain c) as messages,
-			array(select row(attempt.*) from (` + bindFragment(messageDeliveriesQuery, messageIDs) + `) attempt) as attempts,
-			array(select row(b.*) from named b) as blocks,
-			(select titled.session_title from (` + bindFragment(delivery.ResolveSessionTitlesQuery, `array[entry.agent_session]`) + `) titled) as title,
-			` + agentTrees + ` as trees
-		where entry.page = '` + meInboxPageAgent + `'
-	) agent_row on true`, nil
+	return meInboxReads{ctes: ctes, columns: []string{
+		`array(select row(listed.*) from (
+			select ` + askReadColumns + `,
+			       i.key, i.title, i.assignee, i.priority, ar.project_key, ar.slug, ar.name,
+			       sn.snoozed_until
+			` + askReadFrom + `
+			left join user_ask_snooze sn on sn.ask_id = a.id and sn.login = $1
+			where a.id = any(` + askIDs + `::uuid[])
+		) listed)`,
+		`array(select row(opened.*) from (` + bindFragment(events.OpenedEventIDsStatement, askIDs) + `) opened)`,
+		`array(select row(backlinks.*) from (` + bindFragment(count, countArgs...) + `) backlinks)`,
+		`array(select row(parts.*) from (` + bindFragment(refs.AskPartRowsStatement, askIDs) + `) parts)`,
+		`array(select row(reach.*) from (` + bindFragment(askReachesQuery, askIDs) + `) reach)`,
+		`array(select row(r.*) from ask_replies r)`,
+		`array(select row(named.*) from (` + bindFragment(commentMentionsQuery, replyIDs) + `) named)`,
+		`array(select row(attempt.*) from (` + bindFragment(commentDeliveriesQuery, replyIDs) + `) attempt)`,
+		`array(select row(b.*) from ask_named b)`,
+		`array(select row(b.*) from comment_named b)`,
+		`array(select row(e.*) from ask_edits e)`,
+		`array(select row(follower.*) from (` + bindFragment(inboxAskFollowersQuery, askIDs) + `) follower)`,
+		`array(select row(listed.*) from (
+			with recursive page as (
+				select kept.thread_id, kept.kind, kept.replied_at, kept.dismissed_at, kept.last_reply_id,
+				       kept.issue_key, kept.artifact_id, kept.read_through, kept.project_key, kept.unread, kept.version
+				from user_threads kept
+				where kept.login = $1 and kept.thread_id = any(` + threadIDs + `::uuid[])
+			),` + myRepliesPageRest + `
+		) listed)`,
+		`array(select row(r.*) from agent_roots r)`,
+		`array(select row(c.*) from agent_chain c)`,
+		`array(select row(attempt.*) from (` + bindFragment(messageDeliveriesQuery, messageIDs) + `) attempt)`,
+		`array(select row(b.*) from agent_named b)`,
+		`array(select row(titled.*) from (` + bindFragment(delivery.ResolveSessionTitlesQuery, sessions) + `) titled)`,
+		trees,
+	}}, nil
 }
 
 // meInboxTrees is the stored display tree of each of texts that has one (texttrees.ReadStatement),
 // keyed as every reader keys them, by the sum of the text (pmdoc.TextSum). texts is every text the
-// row may register with the request's reader; a text it leaves out is read for display instead, so it
-// errs on the side of naming more.
-func meInboxTrees(args *meInboxArgs, texts string) string {
-	return `array(select row(tree.*) from (` + bindFragment(texttrees.ReadStatement,
-		args.bind(pmdoc.DisplayTreeVersionNow()), args.bind(int16(pmdoc.DisplayLatest)),
+// page's rows may register with the request's reader; a text it leaves out is read for display
+// instead, so it errs on the side of naming more.
+func meInboxTrees(slots meInboxSlots, texts string) string {
+	return `array(select row(tree.*) from (` + bindFragment(texttrees.ReadStatement, slots.version, slots.mode,
 		`array(select sha256(convert_to(written.text, 'UTF8')) from (`+texts+`
 			) written(text) where written.text <> '')`) + `) tree)`
 }

@@ -56,10 +56,10 @@ const (
 	oneInboxWorktree    = "base-p99"
 )
 
-// oneInboxSettle bounds the wait for the base build to drain what the corpus owes its background
-// work: every comment the seed wrote is owed a block index and a grammar pass, which the base
-// build's own reconciliation pays off a batch at a time. A timing taken while it still runs is a
-// timing of that work too.
+// oneInboxSettle bounds the wait for a build's process to drain what the corpus owes its background
+// work: every comment the seed wrote is owed a block index and a grammar pass, which the build's
+// own reconciliation pays off a batch at a time. A timing taken while it still runs is a timing of
+// that work too.
 const oneInboxSettle = 30 * time.Minute
 
 // oneInboxOwedWork is what the base build still owes the corpus, as its block index tick counts it
@@ -71,6 +71,22 @@ const oneInboxOwedWork = `
 	       (select count(*) from comment_block_state where owed_at is not null or windows_owed_at is not null)
 	         + (select count(*) from message_block_state where owed_at is not null or windows_owed_at is not null)
 	         + (select count(*) from ask_block_state where owed_at is not null or windows_owed_at is not null)`
+
+// oneInboxOwedWorkHere is what this build still owes the corpus, as its own block index tick takes
+// it: the same passes, with a window owed only where its window arm takes the item - one the index
+// has reached or one holding a current block (refs.ItemsOwedWindows). An item marked whose state
+// is neither is no work of this build's and stays marked, so oneInboxOwedWork never reaches zero
+// over this build's corpus: on 2026-11-18 its 43,980 messages each held such a mark once this
+// build's process had settled.
+const oneInboxOwedWorkHere = `
+	select (select count(*) from block_grammar_owed),
+	       (select count(*) from refs_grammar_owed),
+	       (select count(*) from comment_block_state s where s.owed_at is not null or (s.windows_owed_at is not null
+	          and (s.body_sha256 is not null or exists (select 1 from comment_blocks b where b.comment_id = s.comment_id and b.position is not null))))
+	         + (select count(*) from message_block_state s where s.owed_at is not null or (s.windows_owed_at is not null
+	          and (s.body_sha256 is not null or exists (select 1 from message_blocks b where b.message_id = s.message_id and b.position is not null))))
+	         + (select count(*) from ask_block_state s where s.owed_at is not null or (s.windows_owed_at is not null
+	          and (s.body_sha256 is not null or exists (select 1 from ask_blocks b where b.ask_id = s.ask_id and b.position is not null))))`
 
 // TestOneInboxParticipantSetOfTheCorpus is measurement one: the corpus seeded on a database of the
 // test's own through this build's handler, and R11's three statements read over it.
@@ -129,7 +145,7 @@ func TestOneInboxWriteBaseline(t *testing.T) {
 
 	base := &oneInboxSide{name: "the base build", server: server, database: database}
 	base.corpus = seedOneInboxCorpus(t, database, server)
-	settleOneInboxBase(t, database)
+	settleOneInbox(t, base, oneInboxOwedWork)
 	analyzeOneInbox(t, base)
 
 	t.Logf("measurement-two: base build %s, %d readings of each write path after one not counted, taken_at=%s",
@@ -180,28 +196,28 @@ func (c handlerCaller) call(t *testing.T, login, method, path string, body any) 
 	return apiAnswer{status: response.Code, body: response.Body.Bytes(), took: time.Since(started)}
 }
 
-// settleOneInboxBase waits for the base build to drain what the corpus owes its background work
-// (oneInboxOwedWork), saying how much is left once a minute.
-func settleOneInboxBase(t *testing.T, database *store.Store) {
+// settleOneInbox waits for side's process to drain what the corpus owes its background work, as
+// owed counts it (oneInboxOwedWork, oneInboxOwedWorkHere), saying how much is left once a minute.
+func settleOneInbox(t *testing.T, side *oneInboxSide, owed string) {
 	t.Helper()
 	started := time.Now()
 	said := started
 	for {
 		var grammar, texts, items int64
-		if err := database.Pool.QueryRow(context.Background(), oneInboxOwedWork).Scan(&grammar, &texts, &items); err != nil {
-			t.Fatalf("read what the base build owes the corpus: %v", err)
+		if err := side.database.Pool.QueryRow(context.Background(), owed).Scan(&grammar, &texts, &items); err != nil {
+			t.Fatalf("read what %s owes the corpus: %v", side.name, err)
 		}
 		if grammar+texts+items == 0 {
-			t.Logf("the base build drained what the corpus owed it in %s", time.Since(started).Round(time.Second))
+			t.Logf("%s drained what the corpus owed it in %s", side.name, time.Since(started).Round(time.Second))
 			return
 		}
 		if time.Since(started) > oneInboxSettle {
-			t.Fatalf("after %s the base build still owes %d block-grammar passes, %d grammar passes and %d item block indexes",
-				oneInboxSettle, grammar, texts, items)
+			t.Fatalf("after %s %s still owes %d block-grammar passes, %d grammar passes and %d item block indexes",
+				oneInboxSettle, side.name, grammar, texts, items)
 		}
 		if time.Since(said) >= time.Minute {
-			t.Logf("the base build still owes %d block-grammar passes, %d grammar passes and %d item block indexes",
-				grammar, texts, items)
+			t.Logf("%s still owes %d block-grammar passes, %d grammar passes and %d item block indexes",
+				side.name, grammar, texts, items)
 			said = time.Now()
 		}
 		time.Sleep(2 * time.Second)

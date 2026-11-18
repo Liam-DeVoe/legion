@@ -145,18 +145,20 @@ type apiAnswer struct {
 	took   time.Duration
 }
 
-// baselineServer is a server a check drives over loopback: the base build's process, or this
-// build's handler served by httptest (serveOnLoopback), whose process is nil. It holds the origin
-// every request names (dev sign-in answers only that Host, and a cookie write must carry it as its
-// Origin), the agent bearer it trusts, and how it is told who a person is: by the header
-// identityHeader names, which it trusts, or, where that is empty, by the session cookie of one
-// signed-in client per person it has been asked to act as. signInKey is its
+// baselineServer is a server a check drives over loopback: a build's process (startBuild) - the base
+// build's, or this build's where a measurement times it as the base build is timed - or this build's
+// handler served by httptest (serveOnLoopback), whose process is nil. name is what the check calls
+// it. It holds the origin every request names (dev sign-in answers only that Host, and a cookie
+// write must carry it as its Origin), the agent bearer it trusts, and how it is told who a person
+// is: by the header identityHeader names, which it trusts, or, where that is empty, by the session
+// cookie of one signed-in client per person it has been asked to act as. signInKey is its
 // DISPATCH_DEV_SIGNIN_SHARED_KEY, which a second process booted over the same database must carry
 // too, since a process holding a key of its own is refused beside it. trees has every person's
 // request ask for display trees (Dispatch-Trees: 1), as the dashboard's client asks on every read
 // and write it sends (web/src/api/client.ts); an agent's call asks for none, as no other client
 // does.
 type baselineServer struct {
+	name           string
 	process        *cmdtest.Process
 	origin         string
 	token          string
@@ -188,30 +190,32 @@ var baselineRuntime = []string{"GOMAXPROCS", "GOGC", "GOMEMLIMIT"}
 // /healthz answers 200, and stops it when the test ends.
 func bootBaseline(t *testing.T, binary, databaseURL string) *baselineServer {
 	t.Helper()
-	return startBaseline(t, binary, databaseURL, "")
+	return startBuild(t, "the base build", binary, databaseURL, "")
 }
 
 // bootBaselineTrustingHeader is bootBaseline with the person read from baselineIdentityHeader, as
 // DISPATCH_IDENTITY=header:<name> reads one, in place of dev sign-in's cookie: a measurement that
-// times one request on the base build against the same request on this build's in-process server,
-// which reads the same header, then pays one identity's cost on both sides.
+// times one request on the base build against the same request on a server of this build, which
+// reads the same header, then pays one identity's cost on both sides.
 func bootBaselineTrustingHeader(t *testing.T, binary, databaseURL string) *baselineServer {
 	t.Helper()
-	return startBaseline(t, binary, databaseURL, baselineIdentityHeader)
+	return startBuild(t, "the base build", binary, databaseURL, baselineIdentityHeader)
 }
 
-// startBaseline is bootBaseline, resolving a person by the header identityHeader names where it is
-// set and by dev sign-in's cookie where it is empty.
-func startBaseline(t *testing.T, binary, databaseURL, identityHeader string) *baselineServer {
+// startBuild is bootBaseline for the build binary is, which the check calls name, resolving a
+// person by the header identityHeader names where it is set and by dev sign-in's cookie where it is
+// empty.
+func startBuild(t *testing.T, name, binary, databaseURL, identityHeader string) *baselineServer {
 	t.Helper()
 	home := t.TempDir()
 	webDist := filepath.Join(home, "web-dist")
 	if err := os.Mkdir(webDist, 0o755); err != nil {
-		t.Fatalf("make the base build's web directory: %v", err)
+		t.Fatalf("make %s's web directory: %v", name, err)
 	}
 	held := cmdtest.HoldPort(t)
 	transport := loopbackTransport(t)
 	server := &baselineServer{
+		name:           name,
 		origin:         "http://" + held.Addr,
 		token:          randomBaselineSecret(t),
 		identityHeader: identityHeader,
@@ -254,7 +258,7 @@ func startBaseline(t *testing.T, binary, databaseURL, identityHeader string) *ba
 		}
 	}
 	held.Pass(cmd, "DISPATCH_LISTEN_FD")
-	server.process = cmdtest.Start(t, "the base build", cmd)
+	server.process = cmdtest.Start(t, name, cmd)
 	server.waitHealthy(t, `msg="dispatch: listening" addr=`+held.Addr)
 	return server
 }
@@ -269,6 +273,7 @@ func serveOnLoopback(t *testing.T, handler http.Handler, token string) *baseline
 	t.Cleanup(served.Close)
 	transport := loopbackTransport(t)
 	return &baselineServer{
+		name:           "this build's handler",
 		origin:         served.URL,
 		token:          token,
 		identityHeader: baselineIdentityHeader,
@@ -297,7 +302,7 @@ func (s *baselineServer) waitHealthy(t *testing.T, listening string) {
 	for time.Now().Before(deadline) {
 		select {
 		case <-s.process.Exited:
-			t.Fatalf("the base build exited before it served:\n%s", s.process.Output.String())
+			t.Fatalf("%s exited before it served:\n%s", s.name, s.process.Output.String())
 		default:
 		}
 		if strings.Contains(s.process.Output.String(), listening) {
@@ -312,7 +317,7 @@ func (s *baselineServer) waitHealthy(t *testing.T, listening string) {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	t.Fatalf("the base build did not answer /healthz within %s:\n%s", baselineBoot, s.process.Output.String())
+	t.Fatalf("%s did not answer /healthz within %s:\n%s", s.name, baselineBoot, s.process.Output.String())
 }
 
 // call sends body to path as login, or on the agent bearer when login is empty, and answers what
