@@ -136,8 +136,10 @@ func newHome() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("make the tests' PULUMI_HOME: %w", err)
 	}
+	// A file backend, as every pulumi command of these tests has (NewCLI): a command with no
+	// backend set that needs one logs in to a new ephemeral Pulumi Cloud account.
 	install := exec.Command("pulumi", "plugin", "install", "resource", "docker", "v"+DockerPluginVersion, "--file", tarball)
-	install.Env = append(os.Environ(), "PULUMI_HOME="+dir, "PULUMI_SKIP_UPDATE_CHECK=true")
+	install.Env = append(os.Environ(), "PULUMI_HOME="+dir, "PULUMI_BACKEND_URL=file://"+dir, "PULUMI_SKIP_UPDATE_CHECK=true")
 	if out, err := install.CombinedOutput(); err != nil {
 		return dir, fmt.Errorf("install the docker plugin from %s=%s: %v\n%s", DockerPluginEnv, tarball, err, out)
 	}

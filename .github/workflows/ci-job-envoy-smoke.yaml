@@ -196,13 +196,15 @@ jobs:
       # serve cybermonklabs/legion here and fail. ${VERSION} is Pulumi's own placeholder, filled in at
       # install, so the URL is compared literally. The step runs in the module, so the script is
       # reached by its path from the repository root, and the binary goes under $RUNNER_TEMP as
-      # the docker provider's tarball above does.
+      # the docker provider's tarball above does. The CLI runs on a file backend, as every pulumi
+      # command of this job does: one with no backend set that needs one logs in to a new
+      # ephemeral Pulumi Cloud account.
       - name: The envoy-infra plugin's schema carries the version and the download URL it was built with
         run: |
           url=$(GITHUB_REPOSITORY=cybermonklabs/legion ../../../.github/scripts/repo-paths.sh plugin_download_url)
           go build -ldflags "-X main.version=1.2.3 -X 'github.com/sjawhar/envoy/infra/provider.downloadURL=$url'" -o "$RUNNER_TEMP/pr" ./cmd/pulumi-resource-envoy-infra
           # shellcheck disable=SC2016 # ${VERSION} is Pulumi's placeholder, not a shell expansion
-          pulumi package get-schema "$RUNNER_TEMP/pr" | jq -e '.version == "1.2.3" and .pluginDownloadURL == "https://github.com/cybermonklabs/legion/releases/download/envoy-infra-v${VERSION}"'
+          PULUMI_BACKEND_URL="file://$RUNNER_TEMP" pulumi package get-schema "$RUNNER_TEMP/pr" | jq -e '.version == "1.2.3" and .pluginDownloadURL == "https://github.com/cybermonklabs/legion/releases/download/envoy-infra-v${VERSION}"'
         working-directory: packages/envoy/infra
 
       - name: Report ci-ok when this job decides a merge-group run

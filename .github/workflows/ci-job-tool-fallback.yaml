@@ -640,7 +640,9 @@ jobs:
           "$proof" version-answers bun-linux-x64 "$(bun --version)" || wrong="$wrong bun-linux-x64"
           "$proof" version-answers elan "$(elan --version)" || wrong="$wrong elan"
           "$proof" version-answers uv "$("$LEGION_TEST_UV" --version)" || wrong="$wrong uv"
-          "$proof" version-answers pulumi-cli "$(pulumi version)" || wrong="$wrong pulumi-cli"
+          # A file backend: a pulumi command with no backend set that needs one logs in to a new
+          # ephemeral Pulumi Cloud account, and `version` gets one too so no edit here can reach one.
+          "$proof" version-answers pulumi-cli "$(PULUMI_BACKEND_URL="file://$RUNNER_TEMP" pulumi version)" || wrong="$wrong pulumi-cli"
           # The docker provider plugin prints no version of its own: nothing is installed, and
           # what the action hands back is the tarball the live tests are given. Its reading is
           # therefore the row's own digest, read by the one digest reader of this repository.

@@ -227,11 +227,13 @@ jobs:
       # install, so it is compared literally, and jq takes it as an --arg rather than reading it
       # as part of an expression. The binary's path is absolute: `pulumi package get-schema` reads
       # a path that starts with neither `/` nor `./` as a package name to resolve. The linux/amd64
-      # command prints the same version.
+      # command prints the same version. The CLI runs on a file backend: a pulumi command with no
+      # backend set that needs one logs in to a new ephemeral Pulumi Cloud account.
       - name: Smoke test
         if: steps.version.outputs.skip != 'true'
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          PULUMI_BACKEND_URL: file://${{ runner.temp }}
         run: |
           schema=$(pulumi package get-schema "$GITHUB_WORKSPACE/out/linux-amd64/pulumi-resource-envoy-infra")
           jq '{name, version, pluginDownloadURL}' <<<"$schema"
