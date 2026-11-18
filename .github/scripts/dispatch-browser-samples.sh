@@ -110,13 +110,13 @@ case "$mode" in
     # `=`, then unescapes each value (actions/runner, src/Runner.Common/ActionCommand.cs: the
     # property table is `\r` %0D, `\n` %0A, `:` %3A, `,` %2C, `%` %25). So a `,` is what would cut
     # a title short - a shard leg's title carries its matrix value (`shard ${{ matrix.shard }}`,
-    # dispatch-browser.yaml:756), and a value `1,2` would be read as a title of `shard 1` and a
+    # dispatch-browser.yaml:812), and a value `1,2` would be read as a title of `shard 1` and a
     # second property - while a single `:` ends nothing, and is encoded because the table holds
     # it. `%` is replaced first, matching the runner's unescape, which takes `%25` last; the other
     # way round would double-encode. `\r` and `\n` are left out: a matrix value written in YAML
     # flow form cannot hold either. No title of today's callers holds any of them - the shard
-    # matrix holds numbers alone (dispatch-browser.yaml:454), and the alone job passes the literal
-    # `alone` (:1098) - so this keeps a title true rather than fixing a fault anyone has seen.
+    # matrix holds numbers alone (dispatch-browser.yaml:473), and the alone job passes the literal
+    # `alone` (:1185) - so this keeps a title true rather than fixing a fault anyone has seen.
     title=${title//%/%25}
     title=${title//,/%2C}
     title=${title//:/%3A}

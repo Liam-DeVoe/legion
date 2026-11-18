@@ -2748,15 +2748,15 @@ GATES = [
         # No step reads these three: the `container:` key does, before the first step runs, so
         # the citation is that key's own line rather than a step of the job.
         (".github/ci-images.yaml",
-         "dispatch-browser.yaml:343 (shard) and :870 (alone) run in the image at the digest the "
+         "dispatch-browser.yaml:343 (shard) and :926 (alone) run in the image at the digest the "
          "one `built:` row of this file carries, so a row that moves moves what those two jobs "
          "run inside"),
         (".github/docker/browser.Dockerfile",
          "the Dockerfile that image is built from: its bytes are the browsers, their host "
-         "packages and the PostgreSQL the lanes of dispatch-browser.yaml:343 and :870 start"),
+         "packages and the PostgreSQL the lanes of dispatch-browser.yaml:343 and :926 start"),
         (".github/workflows/browser-image.yaml",
          "the build that publishes that image: its labels, platforms and action pins decide the "
-         "bytes the row at dispatch-browser.yaml:343 and :870 names"),
+         "bytes the row at dispatch-browser.yaml:343 and :926 names"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:12 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
     ) + envoy_client_dep("imported by packages/envoy-client/bin/dispatch.ts, which "
                          "packages/dispatch/e2e/inbox-cli.e2e.ts:328 runs")
