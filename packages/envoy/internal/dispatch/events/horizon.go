@@ -32,11 +32,14 @@
 // transaction T that owns an id g <= A and had not committed when S was taken. T is an event
 // writer of this database: it inserted g into this database's events, and the insert's column
 // default drew g, so T took its write lock before nextval handed it g and holds it until it ends.
-// No id is drawn any other way: no statement of the module names events_id_seq (but the offline
-// seed tool's setval) and no insert lists an explicit id, which
-// TestOnlyAnEventInsertsDefaultDrawsAnEventID holds beside TestOnlyTheBrokerInsertsEvents
-// (internal/dispatch/api). T held its transaction id before nextval handed it g: that is the
-// writer invariant, which Broker.Append must keep by taking its transaction id before it inserts.
+// No id is drawn any other way: no Go statement of the module names events_id_seq (but the
+// offline seed tool's setval), no insert lists an explicit id, no source but that tool copies
+// rows into events, and no migration the server runs names the sequence, in a function, view,
+// trigger or default. TestOnlyAnEventInsertsDefaultDrawsAnEventID and
+// TestOnlyTheBrokerInsertsEvents (internal/dispatch/api) hold the Go half, and
+// TestNoMigrationDrawsAnEventIDOutsideTheInsertDefault (internal/dispatch/store) the
+// migrations. T held its transaction id before nextval handed it g: that is the writer
+// invariant, which Broker.Append must keep by taking its transaction id before it inserts.
 // nextval handed out g before it handed out A, because events_id_seq has CACHE 1, so every
 // backend draws from the one shared counter in time order. A's row had committed before S was
 // taken, and X was assigned after S. So xid(T) < X, and once no event writer holding an id below X
