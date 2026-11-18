@@ -102,7 +102,7 @@ import { errorClass, isCleanUrl, requestForText, urlForText } from "@legion/cont
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { credentialDeadline, type RequestCredential } from "./bearer";
 import { reachedNothing } from "./errors";
-import { EXCERPT_SCAN_LIMIT, excerpt, redirectOrigin } from "./excerpt";
+import { bodyForText, excerpt, redirectOrigin } from "./excerpt";
 import { type WriteEvent, type WriteState, writeStep } from "./write-outcome";
 
 /** What names the Dispatch URL in a text where the URL does not parse (`urlForText`,
@@ -2145,9 +2145,12 @@ export class DispatchClient {
    * the write's state after it and what follows:
    * - `settle`: the answer is the call's (its payload, the refusal Dispatch decided, or a write
    *   Dispatch made whose answer is gone);
-   * - `retry`: asked again on `writeRetry`'s pacing, while attempts and time are left, and only
-   *   against a Dispatch that runs the keyed layer (`#runsKeyedLayer`), since a repeat elsewhere
-   *   would be a second write; with none left, the next event is `exhausted`;
+   * - `retry`: asked again on `writeRetry`'s pacing, while attempts and time are left. Once an
+   *   attempt may have landed, only against a Dispatch that runs the keyed layer
+   *   (`#runsKeyedLayer`), since a repeat elsewhere would be a second write; before that nothing
+   *   of the write reached Dispatch, so a repeat is no second write and nothing is asked first
+   *   (a fail-fast credential, which fails `/healthz`'s presentation too while its trade fails,
+   *   would otherwise end the write at the probe). With none left, the next event is `exhausted`;
    * - `retry-at-once`: the credential is told its token is not live (once per call), presents
    *   afresh, and the write goes again;
    * - `retry-route`: the write goes again after each of `NO_ROUTE_RETRY_DELAYS_MS`, jittered, as
@@ -2329,12 +2332,16 @@ export class DispatchClient {
             lastAsk
           );
           let again = scheduled !== undefined && this.#now() + wait <= latest;
-          if (again) {
-            // Dispatch's own refusal with no echo says its keyed layer did not judge this request.
-            const unjudged = last !== undefined && !last.echoed && last.error !== undefined;
+          // Dispatch's own refusal with no echo says its keyed layer did not judge this request.
+          const unjudged = last !== undefined && !last.echoed && last.error !== undefined;
+          if (again && state === "may-have-landed") {
             again = (last?.echoed ?? false) || (await this.#runsKeyedLayer(unjudged));
             progress.sawKeyedLayer ||= again;
             again &&= this.#now() + wait <= latest;
+          } else if (unjudged && state === "nothing-sent") {
+            // What the process remembered of the layer no longer holds, and no probe asks now: the
+            // next attempt that may land asks `/healthz` afresh.
+            KEYED_LAYER_SEEN.delete(this.#baseUrl);
           }
           if (!again) {
             event = "exhausted";
@@ -2617,18 +2624,7 @@ export class DispatchClient {
           error.mismatches
         );
       }
-      const quoted = excerpt(text, this.token);
-      let body: string;
-      if (quoted !== "") {
-        body = `a body that is not Dispatch's error JSON (${JSON.stringify(quoted)})`;
-      } else if (text === "") {
-        body = "an empty body";
-      } else {
-        const within =
-          text.length > EXCERPT_SCAN_LIMIT ? ` in its first ${EXCERPT_SCAN_LIMIT / 1024} KiB` : "";
-        const size = Buffer.byteLength(text).toLocaleString("en-US");
-        body = `a body of ${size} bytes and no readable text${within}`;
-      }
+      const body = bodyForText(text, this.token, "Dispatch's error JSON");
       const reasonPhrase = excerpt(response.statusText, this.token);
       const reason = reasonPhrase === "" ? "" : ` ${reasonPhrase}`;
       // A redirect is never followed (`#fetch`), so its error names where it pointed: the origin

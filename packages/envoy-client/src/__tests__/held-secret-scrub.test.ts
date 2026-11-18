@@ -47,8 +47,14 @@ describe("a server that echoes what it was sent", () => {
   )("the listener's refusal echoing the bearer (%s) prints none of it", async (part) => {
     const token = secret("env_");
     const shown = part === "whole" ? token : token.slice(4, 18);
+    // The listener's own refusal, its error JSON, whose text the message prints as the listener
+    // wrote it; a body that is not its error JSON is named through the excerpt, which redacts the
+    // bearer before the scrub sees it (transport.test.ts).
     const fetchImpl = (async () =>
-      new Response(`no session holds ${shown}`, { status: 404 })) as unknown as typeof fetch;
+      Response.json(
+        { error: `no session holds ${shown}` },
+        { status: 404 }
+      )) as unknown as typeof fetch;
     const client = createEnvoyClient({
       baseUrl: "http://listener.test",
       fetch: fetchImpl,

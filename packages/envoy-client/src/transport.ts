@@ -15,7 +15,7 @@ import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { z } from "zod";
 import { credentialDeadline, type RequestCredential } from "./bearer";
 import { messageFor, reachedNothing } from "./errors";
-import { excerpt, redirectOrigin } from "./excerpt";
+import { bodyForText, redirectOrigin } from "./excerpt";
 import { machineID } from "./machine";
 import { streamDeliversNothing } from "./stream-topics";
 import type { TmuxPlace } from "./tmux-place";
@@ -744,6 +744,14 @@ export class EnvoyApiError extends Error {
    *  whatever its state. */
   readonly claimReleased: boolean | undefined;
 
+  /**
+   * `details.responseBody` is the answer's body as it came, which the readers of a refusal's
+   * fields parse (a role's holder, `phase-reminder.ts`'s reason). The message names it only where
+   * it is the listener's error JSON; any other body was written by something in the listener's
+   * place, which can echo the request back, so the message names it through `bodyForText`: one
+   * line with `shown.token` (the credential's secret) and any `Authorization` or `Bearer` value
+   * redacted, and the origin a redirect pointed at (`shown.redirectTo`). Neither is kept.
+   */
   constructor(
     readonly details: {
       readonly method: string;
@@ -752,20 +760,25 @@ export class EnvoyApiError extends Error {
       readonly url: string;
       readonly status: number;
       readonly responseBody: string;
-    }
+    },
+    shown: { readonly token?: string; readonly redirectTo?: string | undefined } = {}
   ) {
     let parsed: z.infer<typeof ErrorWireSchema> | undefined;
     try {
       const result = ErrorWireSchema.safeParse(JSON.parse(details.responseBody));
       if (result.success) parsed = result.data;
     } catch {
-      // A non-JSON error remains useful in the transport diagnostic.
+      // A body that is not JSON is no error of the listener's: the message names it below.
     }
+    const redirected =
+      shown.redirectTo === undefined
+        ? ""
+        : ` (a redirect to ${shown.redirectTo}, which this client does not follow)`;
     // The reason joins the message: a refused registration must fail with the listener's own
     // machine-readable why in what the session is shown, not only in the client's field.
     super(
       parsed === undefined
-        ? `${details.method} ${details.url} failed with ${details.status}: ${details.responseBody}`
+        ? `${details.method} ${details.url} failed with ${details.status}${redirected}: ${bodyForText(details.responseBody, shown.token ?? "", "the listener's error JSON")}`
         : `${parsed.error}${parsed.reason === undefined ? "" : ` (reason: ${parsed.reason})`}${parsed.expected === undefined ? "" : ` (expected: ${parsed.expected.join(", ")})`}${refusalStateText(parsed)}`
     );
     this.expected = parsed?.expected;
@@ -927,6 +940,18 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
   /** `url` as a text names it: on a clean base, as built, and otherwise the base's phrase. */
   const shown = (url: string): string => requestForText(baseUrl, url, ENVOY_URL_SETTING);
 
+  /** `raw`, the body of a 2xx answer to `method` `path`, as JSON. One that is not JSON throws a
+   *  `SyntaxError` naming the body through `bodyForText`, never the parser's own message, which
+   *  quotes the word it stopped at: whatever answered in the listener's place chose that word. */
+  const answerJson = (raw: string, method: string, path: string): unknown => {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      const named = bodyForText(raw, credential?.secret() ?? "", "JSON");
+      throw new SyntaxError(`${method} ${shown(`${baseUrl}${path}`)} answered with ${named}`);
+    }
+  };
+
   /** A call that got no answer, as our own error: the runtime's own error repeats the host it
    *  dialed, which an unclean base names (`https://user:p@ssword` dials `ssword`), so it is named
    *  by its class and kept as no cause. */
@@ -1046,26 +1071,20 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       const { response, body } = outcome;
       if (response.ok) return body;
 
-      // A redirect is never followed (`attemptOnce`), and whatever answered it in the listener's
-      // place chose its body, which can echo the request back: it is printed as the Dispatch
-      // client prints a gateway's page, one redacted line (`excerpt`), with the origin the redirect
-      // pointed at, never whole.
-      let responseBody = body;
-      if (response.status >= 300 && response.status < 400) {
-        const secret = credential?.secret() ?? "";
-        const target = redirectOrigin(response, url, secret);
-        const named =
-          target === undefined
-            ? ""
-            : `a redirect to ${target}, which this client does not follow: `;
-        responseBody = `${named}${excerpt(body, secret)}`;
-      }
-      const error = new EnvoyApiError({
-        method: init.method ?? "GET",
-        url: shown(url),
-        status: response.status,
-        responseBody,
-      });
+      // A body that is not the listener's error JSON was written by something in its place, which
+      // can echo the request back: the error names it in one redacted line with the secret this
+      // credential presents, and a redirect, which is never followed (`attemptOnce`), by the
+      // origin it pointed at (`EnvoyApiError`).
+      const secret = credential?.secret() ?? "";
+      const error = new EnvoyApiError(
+        {
+          method: init.method ?? "GET",
+          url: shown(url),
+          status: response.status,
+          responseBody: body,
+        },
+        { token: secret, redirectTo: redirectOrigin(response, url, secret) }
+      );
       if (response.status >= 500) {
         options.onUnanswered?.();
         if (attempt + 1 < tries) {
@@ -1124,14 +1143,16 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
   return {
     subscribe: async (input) =>
       parseSubscribeAnswer(
-        JSON.parse(
+        answerJson(
           await post(
             "/v1/interests/subscribe",
             subscribeBody(input),
             // Every call below whose body names the session it acts for presents that session's
             // own credential, since the listener binds a broker token's session to it.
             { actingSession: input.sessionID }
-          )
+          ),
+          "POST",
+          "/v1/interests/subscribe"
         )
       ),
     unsubscribe: async (input) => {
@@ -1151,7 +1172,13 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       );
     },
     getInterest: async (sessionID) =>
-      InterestWireSchema.parse(JSON.parse(await request(`/v1/interests/${sessionID}`, {}))),
+      InterestWireSchema.parse(
+        answerJson(
+          await request(`/v1/interests/${sessionID}`, {}),
+          "GET",
+          `/v1/interests/${sessionID}`
+        )
+      ),
     send: async (input) => {
       const idempotencyKey = input.idempotencyKey ?? crypto.randomUUID();
       // An attempt the listener may have acted on keeps the send unconfirmed, whatever a later
@@ -1192,7 +1219,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
           }
         );
         // A 2xx whose body does not parse is the listener's word that cannot be read.
-        response = EnvelopeResponseSchema.parse(JSON.parse(answer));
+        response = EnvelopeResponseSchema.parse(answerJson(answer, "POST", "/v1/messages/send"));
       } catch (error) {
         const refused = notSent || (error instanceof EnvoyApiError && error.details.status < 500);
         if (refused && !unanswered) throw error;
@@ -1213,7 +1240,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
     publish: async (input) => {
       const idempotencyKey = input.idempotencyKey ?? crypto.randomUUID();
       const response = PublishResponseSchema.parse(
-        JSON.parse(
+        answerJson(
           await post(
             "/v1/messages/publish",
             {
@@ -1230,7 +1257,9 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
             input.sourceSessionID === undefined || input.sourceSessionID === ""
               ? {}
               : { actingSession: input.sourceSessionID }
-          )
+          ),
+          "POST",
+          "/v1/messages/publish"
         )
       );
       return {
@@ -1309,11 +1338,18 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         }
         throw error;
       }
-      return { claimed: true, interest: InterestWireSchema.parse(JSON.parse(raw)) };
+      return {
+        claimed: true,
+        interest: InterestWireSchema.parse(answerJson(raw, "POST", "/v1/roles/set")),
+      };
     },
     getRole: async (role) =>
       RoleWireSchema.parse(
-        JSON.parse(await request(`/v1/roles/${encodeURIComponent(role)}`, { method: "GET" }))
+        answerJson(
+          await request(`/v1/roles/${encodeURIComponent(role)}`, { method: "GET" }),
+          "GET",
+          `/v1/roles/${encodeURIComponent(role)}`
+        )
       ),
     listSessions: async (input = {}) => {
       const search = new URLSearchParams();
@@ -1321,7 +1357,9 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       if (input.title !== undefined) search.set("title", input.title);
       if (input.include !== undefined) search.set("include", input.include);
       const query = search.size === 0 ? "" : `?${search.toString()}`;
-      return SessionWireSchema.array().parse(JSON.parse(await request(`/v1/sessions${query}`, {})));
+      return SessionWireSchema.array().parse(
+        answerJson(await request(`/v1/sessions${query}`, {}), "GET", `/v1/sessions${query}`)
+      );
     },
   };
 }

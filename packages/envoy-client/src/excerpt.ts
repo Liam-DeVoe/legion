@@ -1,8 +1,11 @@
 // packages/envoy-client/src/excerpt.ts
 //
 // One line of someone else's text, safe to print: a body or a reason phrase that a gateway, a proxy
-// or anything else in a server's place wrote. The Dispatch client (`dispatch-http.ts`) quotes a
-// gateway's page through it, and the Envoy transport (`transport.ts`) a redirect's.
+// or anything else in a server's place wrote. Every client that names such a body in an error
+// names it through `bodyForText`: the Dispatch client (`dispatch-http.ts`) a gateway's page, the
+// Envoy transport (`transport.ts`) a body that is not the listener's error JSON, pi-shared's daemon
+// client one that is not the daemon's refusal, and the operator's live-events probe
+// (`scripts/e2e/lib/dispatch-live-events.ts`) a whoami answer with no event_head.
 
 import { textHead } from "./ask-answer";
 
@@ -81,6 +84,23 @@ export function excerpt(text: string, token: string): string {
       )
       .replace(/(\bbearer\s+)[^\s"'<>,;]+/gi, `$1${REDACTED}`)
   );
+}
+
+/**
+ * `text`, an answer's body that is not what its server writes (`notWhat`, such as "Dispatch's
+ * error JSON"), as an error names it: `a body that is not <notWhat> ("<excerpt>")`, one line with
+ * `token` and any `Authorization` or `Bearer` value redacted (`excerpt`); `an empty body`; or,
+ * where the excerpt reads no text, the body's size and that it holds none (within the first
+ * `EXCERPT_SCAN_LIMIT` characters where it runs past them). Never the body whole.
+ */
+export function bodyForText(text: string, token: string, notWhat: string): string {
+  const quoted = excerpt(text, token);
+  if (quoted !== "") return `a body that is not ${notWhat} (${JSON.stringify(quoted)})`;
+  if (text === "") return "an empty body";
+  const within =
+    text.length > EXCERPT_SCAN_LIMIT ? ` in its first ${EXCERPT_SCAN_LIMIT / 1024} KiB` : "";
+  const size = Buffer.byteLength(text).toLocaleString("en-US");
+  return `a body of ${size} bytes and no readable text${within}`;
 }
 
 /**

@@ -119,6 +119,34 @@ test("a refusal whose body is not the daemon's refusal shape keeps its status an
   expect((refused as LegionDaemonApiError).detail).toContain("not the daemon's refusal");
 });
 
+// The coordinator's ruling on the review of 81d860a8f7: a body that is not the daemon's refusal
+// was written by something in its place, which can echo the request back, so it is named in one
+// line, any `Authorization` or `Bearer` value redacted, never whole; nor does a parser's message
+// quote a piece of it.
+test("a proxy's page in the daemon's place is named in one redacted line, never whole", async () => {
+  const secret = fixtureSecret("proxy");
+  const page =
+    "<html><head><title>502 Bad Gateway</title></head>\n<body><h1>502 Bad Gateway</h1>\n" +
+    `<pre>Authorization: Bearer ${secret}</pre>\n${"<p>filler</p>\n".repeat(1500)}</body></html>`;
+  const client = createLegionDaemonClient(
+    "http://daemon.test",
+    daemon(() => new Response(page, { status: 502, headers: { "Content-Type": "text/html" } }))
+      .fetch
+  );
+
+  const refused = await client.register(registration).catch((error: unknown) => error);
+  expect(refused).toBeInstanceOf(LegionDaemonApiError);
+  expect(refused).toMatchObject({ status: 502, code: undefined });
+  const { detail, message } = refused as LegionDaemonApiError;
+  expect(detail).toStartWith(
+    `a body that is not the daemon's refusal shape ("502 Bad Gateway 502 Bad Gateway Authorization: Bearer [redacted] filler filler`
+  );
+  expect(detail).toEndWith(`…")`);
+  expect(message).not.toContain(secret);
+  expect(message).not.toContain("\n");
+  expect(message.length).toBeLessThan(400);
+});
+
 test("ready and exit post the claim wire's requests and accept only the empty 204", async () => {
   const { fetch, requests } = daemon(() => new Response(null, { status: 204 }));
   const client = createLegionDaemonClient("http://daemon.test", fetch);

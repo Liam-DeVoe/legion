@@ -1645,11 +1645,51 @@ describe("EnvoyClient", () => {
     expect(error).toBeInstanceOf(EnvoyApiError);
     const message = (error as EnvoyApiError).message;
     expect(message).toStartWith(
-      "POST http://listener/v1/messages/send failed with 308: a redirect to https://elsewhere.test, which this client does not follow: Moved Authorization: Bearer [redacted]"
+      "POST http://listener/v1/messages/send failed with 308 (a redirect to https://elsewhere.test, " +
+        "which this client does not follow): a body that is not the listener's error JSON " +
+        '("Moved Authorization: Bearer [redacted]'
     );
     expect(message).not.toContain(listenerToken);
     expect(message).not.toContain("\n");
     expect(message).not.toContain("pass@");
+    expect(message.length).toBeLessThan(400);
+  });
+
+  // F6's class (the coordinator's ruling on the review of 81d860a8f7): any answer whose body is not
+  // the listener's error JSON was written by something in its place, a proxy's or a load
+  // balancer's page, which can echo the request back, the bearer with it. The error names that
+  // body as the Dispatch client names a gateway's page: one line, the bearer and any
+  // `Authorization` or `Bearer` value redacted, never the page whole.
+  test.each([
+    [403, "Forbidden"],
+    [502, "Bad Gateway"],
+  ] as const)("a %i page a proxy answers in the listener's place prints as one redacted line", async (status, phrase) => {
+    const listenerToken = fixtureSecret("listener");
+    const page =
+      `<html><head><title>${status} ${phrase}</title><style>body{margin:0}</style></head>\n` +
+      `<body><h1>${status} ${phrase}</h1>\n<pre>GET /v1/interests/ses_sender\n` +
+      `Authorization: Bearer ${listenerToken}</pre>\n${"<p>filler</p>\n".repeat(400)}</body></html>`;
+    const client = createEnvoyClient({
+      baseUrl: "http://listener",
+      credential: bearerCredential(listenerToken),
+      retry: false,
+      fetch: (async () =>
+        new Response(page, {
+          status,
+          headers: { "Content-Type": "text/html" },
+        })) as unknown as typeof fetch,
+    });
+    const error = await client.getInterest("ses_sender").catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(EnvoyApiError);
+    const message = (error as EnvoyApiError).message;
+    expect(message).toStartWith(
+      `GET http://listener/v1/interests/ses_sender failed with ${status}: a body that is not the ` +
+        `listener's error JSON ("${status} ${phrase} ${status} ${phrase} GET /v1/interests/ses_sender ` +
+        "Authorization: Bearer [redacted]"
+    );
+    expect(message).not.toContain(listenerToken);
+    expect(message).not.toContain("\n");
+    expect(message).not.toContain("<");
     expect(message.length).toBeLessThan(400);
   });
 
@@ -2108,7 +2148,9 @@ describe("EnvoyClient", () => {
     expect(refused.requests[0]?.url.toLowerCase()).toBe(
       `${baseUrl}/v1/interests/ses_sender`.toLowerCase()
     );
-    expect(messages[0]).toContain(`GET ${shown} failed with 404: no such route`);
+    expect(messages[0]).toContain(
+      `GET ${shown} failed with 404: a body that is not the listener's error JSON ("no such route")`
+    );
     expect(messages[1]).toContain(
       `GET ${shown} answered 401, and this machine's Envoy credential could not be minted: ` +
         "the secrets broker did not answer"

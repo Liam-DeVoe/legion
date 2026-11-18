@@ -114,6 +114,11 @@
       "bun": "./src/errors.ts",
       "default": "./dist/errors.js"
     },
+    "./excerpt": {
+      "types": "./src/excerpt.ts",
+      "bun": "./src/excerpt.ts",
+      "default": "./dist/excerpt.js"
+    },
     "./machine": {
       "types": "./src/machine.ts",
       "bun": "./src/machine.ts",

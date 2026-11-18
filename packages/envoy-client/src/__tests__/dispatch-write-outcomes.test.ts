@@ -406,6 +406,13 @@ const KINDS: readonly Kind[] = [
     respond: () => page(408, "Request Timeout"),
   },
   {
+    name: "429 un-echoed",
+    role: "repeatable",
+    at: "attempt",
+    own: { as: "refusal", status: 429 },
+    respond: () => refused(429, "RATE_LIMITED", "too many requests"),
+  },
+  {
     name: "refused",
     role: "repeatable",
     at: "attempt",
@@ -497,8 +504,10 @@ const UNSETTLED: Ending = { as: "unsettled" };
 function oracle(events: readonly Kind[]): Decision[] {
   let landed = false;
   // Whether this call has seen the keyed layer: an answer that echoed its key, or a `/healthz`
-  // that said so, which the client asks before its first paced resend of an answer without the
-  // echo (the harness's says yes).
+  // that said so, which the client asks before a paced resend once an attempt may have landed
+  // (the harness's says yes); a resend before that asks nothing. What the call saw it keeps
+  // (`WriteProgress.sawKeyedLayer`): Dispatch's own refusal with no echo sets aside only what
+  // the process remembers, which the harness starts afresh for each run.
   let known = false;
   let running = false;
   let pauses = 0;
@@ -549,7 +558,7 @@ function oracle(events: readonly Kind[]): Decision[] {
         if (!allowed) return endAfter(event.own ?? UNSETTLED);
         pauses += 1;
         roundPauses += 1;
-        known = true;
+        if (landed) known = true;
         return { asks: true };
       }
       default:

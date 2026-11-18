@@ -5379,9 +5379,6 @@ describe("executeDispatchTool", () => {
       "rather than Dispatch's own answer";
     const answered = (status: string, text: string) =>
       `HTTP_${status.slice(0, 3)}: ${page(status, text)}`;
-    const unknown =
-      "; the reason may or may not have been posted, and the close was not sent: read the " +
-      "issue's messages before retrying, since retrying this call posts its reason again";
     const unknownSentence =
       " The reason may or may not have been posted, and the close was not sent: read the " +
       "issue's messages before retrying, since retrying this call posts its reason again";

@@ -48,13 +48,21 @@ body: |-
   each reach the caller as a plain refusal, which reads as nothing written and invited a resend
   under a new key that wrote twice. A credential whose trade goes on (`TradeRetryingError`, a
   trade still unanswered, a pod's registration still pending) is presented again on the write's
-  pacing; one refused for good ends the write at once with its refusal. No Dispatch or Envoy
-  request follows a redirect any more (`redirect: "manual"`): a 301, 302 or 303 turned a write's
-  POST into a GET whose 2xx read as the write's answer, and a 307 or 308 sent it again to another
-  origin. A 3xx is now the answer, and its error names the origin its `Location` points at, never
-  its path, query or user info; on a first attempt it says nothing reached Dispatch. The Envoy
-  client prints a 3xx's body as one line with the bearer redacted, as the Dispatch client prints
-  a gateway's page. The broker credential's pool identity follows no redirect either: a 307 or
+  pacing; one refused for good ends the write at once with its refusal. Before anything of a
+  write may have landed (a refused connection, a 408 or 429, a credential that could not
+  present), it is asked again without asking `/healthz` first, since a repeat then is no second
+  write; before, the probe came first, and a fail-fast credential, which fails the probe's
+  presentation too, ended the write there. No Dispatch or Envoy request follows a redirect any
+  more (`redirect: "manual"`): a 301, 302 or 303 turned a write's POST into a GET whose 2xx read
+  as the write's answer, and a 307 or 308 sent it again to another origin. A 3xx is now the
+  answer, and its error names the origin its `Location` points at, never its path, query or user
+  info; on a first attempt it says nothing reached Dispatch. Every body that is not the server's
+  own is named in one line with the bearer and any `Authorization` or `Bearer` value redacted
+  (`bodyForText`, the new `@legion/envoy-client/excerpt`), as the Dispatch client names a
+  gateway's page: the Envoy client's error for an answer that is not the listener's error JSON,
+  and for a 2xx whose body is not JSON (no longer the parser's message, which quotes the word it
+  stopped at), where it printed the body whole. The broker credential's pool identity follows no
+  redirect either: a 307 or
   308 from Google's security token service would have sent the projected token in its body on to
   another origin. The dead token's re-send happens once per write call. The markdown round-trip,
   a POST that writes nothing, is never read as a write that may have landed, so a 503 and then an
