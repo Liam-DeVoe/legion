@@ -79,8 +79,12 @@ envoy_send(session_id="<id>", message="Review complete: <url>", in_reply_to="<id
 - A card's `urgency` decides when an Oh My Pi host hands it to you.
   A `low` card of the Legion daemon, or a `low` card of a Dispatch event, goes into your stored context with no turn: you read it at your next turn, whatever starts that turn.
   Such a card wakes no released Legion pod either.
-  Every other card starts a turn as before: one of `med`, `high` or `blocking` urgency or none, a message from another session whatever its urgency, a message or mention that Dispatch delivers to your session, and an `ask.*` card of Dispatch.
   A session's own message is delivered whatever urgency it sets.
+  Every other card starts a turn as before:
+  - A card of `med`, `high` or `blocking` urgency, or of no urgency.
+  - A message from another session, whatever its urgency.
+  - A message or mention that Dispatch delivers to your session.
+  - An `ask.*` card of Dispatch.
 
 - Envoy's own notices say what happened to your inbound messages. Each opens with `envoy:` and `notice: <kind>`, and its fields follow:
   - `notice: messages may be missing` means that some messages published to your session may be gone.
