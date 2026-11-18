@@ -90,9 +90,6 @@ test("review event validation preserves approved byte hashes and their provenanc
   });
 });
 
-// A project.access_changed a release appended before Dispatch stored when a project's Slack
-// channels last changed carries no slack_channels_changed_at, and the event log keeps it as it was
-// written: it still reads. One written since carries the time, or null for a list never written.
 test("a project.access_changed payload without slack_channels_changed_at still reads", () => {
   const stored = {
     project: "CORE",

@@ -303,8 +303,8 @@ func (refusal slackChannelShared) Error() string {
 
 func (slackChannelShared) Unwrap() error { return ErrSlackChannelShared }
 
-// SharedSlackChannel answers the first of channels, in their order and then by key, that a private
-// project other than key lists, and that project; "" for both when none does.
+// SharedSlackChannel answers the first of channels, by id, that a private project other than key
+// lists, and that project, the first by key when several do; "" for both when none does.
 func SharedSlackChannel(ctx context.Context, q Querier, key string, channels []string) (channel, other string, err error) {
 	err = q.QueryRow(ctx, `
 		select key, c from projects, unnest(slack_channels) c

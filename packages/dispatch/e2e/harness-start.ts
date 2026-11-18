@@ -264,8 +264,6 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
   const interrupt = () => supervisor.interrupt();
   options.signal?.addEventListener("abort", interrupt, { once: true });
   if (options.signal?.aborted) interrupt();
-  // The harness's own directory, made the first time a row needs it: each held port's keeper
-  // socket and port file, and each file a row keeps. It goes when the harness stops.
   let harnessDir: string | undefined;
   const ownDir = () => (harnessDir ??= mkdtempSync(join(tmpdir(), "dispatch-e2e-held-")));
   const stop = async () => {
@@ -276,8 +274,6 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
   const kept = new Map<HarnessListener, Kept>();
   const processes: Watched[] = [];
   try {
-    // Each kept file's path, named before any row starts, so the row that writes it, every other
-    // row and the caller, through the `env` this returns, read the one path.
     for (const listener of listeners) {
       if (listener.fileVariable === undefined) continue;
       env[listener.fileVariable] = join(ownDir(), listener.id);

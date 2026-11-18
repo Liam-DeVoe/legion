@@ -703,8 +703,8 @@ DATABASE_URL=<a PostgreSQL this run may truncate> DISPATCH_E2E_ACCESS_ISSUER=1 \
   bash e2e/acceptance/with-harness.sh bash e2e/acceptance/membership-answer.sh
 ```
 
-Every driver here but `document-roundtrip.sh` and `omp-roundtrip.sh` sources
-`e2e/acceptance/lib.sh`, the preamble and the check vocabulary they
+Every driver here but `document-roundtrip.sh`, `omp-roundtrip.sh` and `outside-path-reach.sh`
+sources `e2e/acceptance/lib.sh`, the preamble and the check vocabulary they
 share: it refuses an unset input or a missing command with exit 2, reads the bearer from
 `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE` without printing it, unsetting both so no process the
 script starts inherits it, and holds the `pass`, `fail`, `skip`, `want_status`, `expect` and
