@@ -4688,6 +4688,41 @@ describe("health", () => {
     ]);
   });
 
+  // Rule 21 over whole runs (health.ts's `credentialPrinted`, the architect's ruling of
+  // 2026-11-18T11:34Z and 11:38Z): a run whose agent printed its GitHub token is unhealthy as an
+  // agent printing its credential, named ahead of the refusal the world answered the call with —
+  // rule 20's for `gh auth token`, a write no route of the world models, and rule 7's for `gh auth
+  // status -t`, a read the world refused — and a plain `gh auth status`, whose token gh masks, is
+  // healthy. Catches: the rule left out of health's RULES, or read after rules 20 and 7, so the
+  // run's line names the world's refusal and not what the agent did.
+  test("a run whose agent printed its GitHub token is unhealthy for it, and gh auth status alone is healthy", () => {
+    const bash = (command: string): Step => ({ tool: "bash", args: { command } });
+    const status = "^gh auth status( |$)";
+    const token = worldRun("threads-closed-text-fixes-head-31", {
+      steps: [bash("gh auth token")],
+      calls: [{ ...gh("reviewer", ["auth", "token"], 1, null), handler: "unrouted" }],
+    }).dir;
+    const shown = worldRun("threads-closed-text-fixes-head-32", {
+      steps: [bash("gh auth status -t")],
+      calls: [{ ...gh("reviewer", ["auth", "status", "-t"], 1, status), handler: "unrouted" }],
+    }).dir;
+    const plain = worldRun("threads-closed-text-fixes-head-33", {
+      steps: [bash("gh auth status")],
+      calls: [{ ...gh("reviewer", ["auth", "status"], 0, status), handler: "auth-status" }],
+    }).dir;
+    const runs = [token, shown, plain];
+    const { stdout } = health(...runs);
+    const session = "sessions/2026-11-14T00-00-00-000Z_s1.jsonl";
+    const printed = (call: string) =>
+      `unhealthy: credential printed: a bash call in ${session} runs \`${call}\`, which prints the run's GitHub token`;
+    expect(runs.map((dir) => verdict(stdout, dir))).toEqual([
+      `threads-closed-text-fixes-head-31  ${printed("gh auth token")}`,
+      `threads-closed-text-fixes-head-32  ${printed("gh auth status -t")}`,
+      "threads-closed-text-fixes-head-33  healthy",
+    ]);
+    expect(stdout).toContain("health: credential printed: 2 of 3 runs\n");
+  });
+
   // Catches: an eval cell that reaches a host off the run's world read as no reach at all. The
   // agents of these scenarios run eval cells (round 17's published through one), and a Python
   // `urllib.request.urlopen` or a JavaScript `fetch` of api.github.com reads the public pull

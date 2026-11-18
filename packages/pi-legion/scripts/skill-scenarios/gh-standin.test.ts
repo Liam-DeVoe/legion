@@ -50,6 +50,7 @@ import {
   RECORD_READ,
   shapeDiff,
   shapeOf,
+  stderrOf,
 } from "./production-shapes";
 import { roleApp } from "./rest-objects";
 import {
@@ -2467,7 +2468,10 @@ test("gh pr checks buckets every state of a check as gh does", () => {
 // `{"login":"widgets-reviewer[bot]"}`, which gh never prints, to every role; a stand-in that
 // reads the pane's token (CodeQL's alert at the wip head: the token's text flowed into the
 // answer), which prints its length or its text; and a flag the world does not model
-// (`--show-token`, `--json`) answered all the same.
+// (`--show-token`, `--json`) answered all the same. Production answers `-t` and `--show-token`,
+// alone or among joined short flags, and `gh auth token` with the token itself, which no stand-in
+// reads, so the world refuses each (the architect's ruling of 2026-11-18T11:34Z), and health's
+// rule 21 names the run that asked (`credentialPrinted`); catches one of them answered.
 test("gh auth status prints gh's text for the pane's own gh configuration, and no token", () => {
   const { dir } = runDir({ fixture: true });
   const config = path.join(dir, "pane-gh");
@@ -2504,13 +2508,18 @@ test("gh auth status prints gh's text for the pane's own gh configuration, and n
       SAME_SHAPE,
     ]);
   }
-  for (const flag of [["--show-token"], ["-t"], ["--json", "hosts"]])
+  for (const flag of [["--show-token"], ["-t"], ["-at"], ["-ta"], ["--json", "hosts"]])
     expect([flag, ...asked(dir, "reviewer", ["auth", "status", ...flag], pane)]).toEqual([
       flag,
       1,
       "",
       "gh: Not Found (HTTP 404)\n",
     ]);
+  expect(asked(dir, "implementer", ["auth", "token"], pane)).toEqual([
+    1,
+    "",
+    "gh: Not Found (HTTP 404)\n",
+  ]);
   expect(readFileSync(path.join(dir, "calls.jsonl"), "utf8")).not.toContain(token.slice(4));
 });
 
@@ -4185,22 +4194,50 @@ test("pr list lists the world's pull request where its filters match it, and not
   });
 }, 60_000);
 
-// Each pinned read of `gh pr view`, `gh pr list` and `gh pr diff` (production-shapes.json, every
-// one INFRA-764 round 25's runs made, read against cybermonklabs/legion #2827 at about 15:40Z on
-// 2026-11-17) made against the world in production's own words, its answer held to production's
-// shape, exit and stderr (the architect's ruling d). The world holds a review of the run's, its
-// reply's review and a comment on the conversation, so no list a read names is empty. Catches,
-// for each read: a field gh answers missing or in another kind, a field gh never prints, gh's text
-// answered as JSON, and an exit or a line gh does not give. The one difference is of state: gh
-// reads a review's `url` only past its first 100 reviews, which production's 137 reach. The pin's
-// later reads of these commands (read on 2026-11-18, production-shapes.ts's `laterReads`) are not
-// held here: some read states this world's one pull request is not in (#2827 was conflicting,
-// and its head reported no check run), and one names an App's slug (`<app>`).
+// Each pinned read of a gh command of its own — `gh pr view`, `gh pr list`, `gh pr diff`, `gh pr
+// checks`, `gh run view` and `gh run watch` — made against the world in production's own words,
+// its answer held to production's shape, exit and stderr (the architect's ruling d): every one
+// INFRA-764 round 25's runs made, read against cybermonklabs/legion #2827 at about 15:40Z on
+// 2026-11-17, and every one the world served with no pin, read on 2026-11-18 at about 08:45Z
+// against #2827, open, and #4326, merged (the tester's prod-reads-19.json), and at 08:55Z (the
+// implementer's readings), production-shapes.ts's `laterReads`. The world holds a review of the
+// run's, its reply's review and a comment on the conversation, so no list a read names is empty;
+// `<app>` is the implement App's slug, the App whose pull requests production's `--author` read
+// listed, and `<branch>` the world's issue branch. Catches, for each read: a field gh answers
+// missing or in another kind, a field gh never prints, gh's text answered as JSON, and an exit or
+// a line gh does not give. A difference of state is named with the reading's own reason
+// (PINNED_GH_STATE), and a reading of #2827 in a state no world's pull request is in is held to
+// production's reading of the same command on #4326, which is in the world's (`against`). One more
+// is of state for every read of `reviews`: gh reads a review's `url` only past its first 100
+// reviews, which production's 137 reach.
 const PINNED_GH = pinnedReads()
-  .filter(({ name, read_at }) => /^gh pr (view|list|diff) /.test(name) && read_at < "2026-11-18")
+  .filter(({ name }) => /^gh (pr|run) /.test(name))
   .map(({ name }) => name);
+/** The reads of PINNED_GH whose answer differs from the world's by the state of the pull request
+ * production read, each with the reason its reading gives: `against`, production's reading of the
+ * same command on a pull request in the state every world's is in, which the world's answer is
+ * held to instead; or `kinds`, the kinds the two answers differ in. */
+const PINNED_GH_STATE: Readonly<
+  Record<string, { against?: string; kinds?: string[]; state: string }>
+> = {
+  "gh pr view --json potentialMergeCommit": {
+    kinds: [".potentialMergeCommit: null in production, object in the world"],
+    state:
+      "#2827 conflicted with its base when read (`mergeable` CONFLICTING and `mergeStateStatus` DIRTY, read beside it at 08:44Z), so GitHub held no test merge of it; the world's head merges into its base cleanly, and its test merge is the commit the REST `merge_commit_sha` names (rest-objects.ts's `mergeCommit`)",
+  },
+  "gh pr view --json statusCheckRollup": {
+    against: "gh pr view --json statusCheckRollup (a pull request with check runs)",
+    state:
+      "#2827's head had reported no check run when read, and every world's head reports its concluded checks (rig.sh's concluded_checks); the tester read #4326's rollup for its check runs",
+  },
+  "gh pr checks (open)": {
+    against: "gh pr checks (merged, all concluded)",
+    state:
+      "#2827's head had reported no check run when read, so gh refused it, and every world's head reports its concluded checks (rig.sh's concluded_checks), as #4326's had",
+  },
+};
 /** Where the pinned reads' world is kept once it is built, with the run's writes in it, for each
- * row to copy: one build for the 55 reads, where a build each would be most of the suite. */
+ * row to copy: one build for the reads, where a build each would be most of the suite. */
 const pinnedCache = temporaryDirectory("gh-standin-pinned");
 function pinnedWorldCopy(): string {
   const kept = path.join(pinnedCache, "world");
@@ -4224,21 +4261,23 @@ function pinnedWorldCopy(): string {
   return dir;
 }
 for (const name of PINNED_GH)
-  test(`a gh read of the pull request answers in production's shape: ${name}`, () => {
+  test(`a gh command's read answers in production's shape: ${name}`, () => {
     const read = pinnedRead(name);
-    const values = { owner: "example", repo: "widgets", number: "1001" };
+    const state = PINNED_GH_STATE[name];
+    const held = state?.against === undefined ? read : pinnedRead(state.against);
+    const values = {
+      owner: "example",
+      repo: "widgets",
+      number: "1001",
+      app: rigValue("world_implement_app"),
+      branch: "legion/LWEVAL-1",
+    };
     const got = ghCall(pinnedWorldCopy(), ...argvOf(read, values));
-    let answer: unknown = got.out;
-    try {
-      answer = JSON.parse(got.out);
-    } catch {
-      // gh's text, whose shape is a string's.
-    }
-    const missing = ".reviews[]" in read.shape ? [".reviews[].url"] : [];
-    expect([got.code, got.err, shapeDiff(answer, read)]).toEqual([
-      read.exit,
-      read.stderr,
-      { ...SAME_SHAPE, missing },
+    const missing = ".reviews[]" in held.shape ? [".reviews[].url"] : [];
+    expect([got.code, got.err, shapeDiff(answerOf(got.out), held)]).toEqual([
+      held.exit,
+      stderrOf(held, values),
+      { ...SAME_SHAPE, missing, kinds: state?.kinds ?? [] },
     ]);
   }, 60_000);
 
@@ -4337,6 +4376,43 @@ test("a query GitHub refuses is refused with GitHub's message and the place it n
   );
   expect(listed).toEqual({ code: 0, out: "PRRT_kwDOrig0001\tfalse", err: "" });
 }, 60_000);
+
+// Each pinned GraphQL read made against the world in production's own words, as the gh reads
+// above are, its answer held to production's shape, exit and stderr: the 20 distinct queries of
+// review threads INFRA-764 round 25's runs made, read against #2827 on 2026-11-17, and those the
+// world served with no pin, read on 2026-11-18 (the viewer by every spelling of the endpoint, the
+// repository's and the pull request's fields, the timeline, and a variable sent or not sent). A
+// `--paginate` read is held as its pages, the form production's was kept in: #2827's threads,
+// more than 100, came on two pages, which gh printed back to back, and the world's fewer threads
+// come on one. The one difference is a place GitHub names in a query that names the repository:
+// production's owner and repository are five characters longer than the world's, so a column
+// after them is five more there (PINNED_GRAPHQL_PLACE). Catches, for each read: a field the query
+// selects answered missing or in another kind, a field it does not select, a connection's
+// `pageInfo` lost, pages printed otherwise than gh prints them, a refusal with no `locations` or
+// `extensions`, and an exit or a line gh does not give.
+const PINNED_GRAPHQL = pinnedReads()
+  .filter(({ name }) => /^gh api \/?graphql/.test(name))
+  .map(({ name }) => name);
+/** The place a pinned GraphQL refusal names, as production's stderr gave it and as the world's,
+ * by the read: GitHub's column of the query's end, after the repository's owner and name. */
+const PINNED_GRAPHQL_PLACE: Readonly<Record<string, readonly [string, string]>> = {
+  'gh api graphql query{repository(owner:"…",name:"…"){pullRequest(number:N){reviewThreads(first:N){nodes{id isResolved path comments(first:N){nodes{body author{login}}}}}}}':
+    ["at [1, 176]", "at [1, 171]"],
+};
+for (const name of PINNED_GRAPHQL)
+  test(`a GraphQL read answers in production's shape: ${name}`, () => {
+    const read = pinnedRead(name);
+    const values = { owner: "example", repo: "widgets", number: "1001" };
+    const got = ghCall(pinnedWorldCopy(), ...argvOf(read, values));
+    const answer = read.command.includes("--paginate") ? pagesOf(got.out) : answerOf(got.out);
+    const [there, here] = PINNED_GRAPHQL_PLACE[name] ?? [];
+    const stderr = stderrOf(read, values);
+    expect([got.code, got.err, shapeDiff(answer, read)]).toEqual([
+      read.exit,
+      there === undefined || here === undefined ? stderr : stderr.replace(there, here),
+      SAME_SHAPE,
+    ]);
+  }, 60_000);
 
 // GitHub answers `gh api repos/<o>/<r>/contents/<path>?ref=<sha>` with the file at that commit:
 // its own bytes under the raw media type, and GitHub's JSON of it otherwise. The first call is
@@ -4857,10 +4933,41 @@ test("the record is pinned by its shape with its roles and moves as lists, and r
 /** A shape no different from production's. */
 const SAME_SHAPE = { missing: [], extra: [], kinds: [] };
 /** What the world under `dir` answers `read`'s own command with, the world's repository and
- * `values` in its placeholders: its exit, stdout and stderr, and the stdout read as JSON. */
+ * `values` in its placeholders: its exit, stdout and stderr, and the stdout read as the pin keeps
+ * production's (`answerOf`). */
 function pinnedCall(dir: string, read: PinnedRead, values: Record<string, string> = {}) {
   const got = ghCall(dir, ...argvOf(read, { owner: "example", repo: "widgets", ...values }));
-  return { ...got, answer: JSON.parse(got.out) as unknown };
+  return { ...got, answer: answerOf(got.out) };
+}
+/** A gh call's stdout as the pin keeps production's answer: the JSON it holds, or its text where
+ * it holds none (gh's text views, a diff, a refusal's empty stdout), whose shape is a string's. */
+function answerOf(out: string): unknown {
+  try {
+    return JSON.parse(out);
+  } catch {
+    return out;
+  }
+}
+/** The pages a `gh api --paginate` call printed back to back (`{…}{…}`, gh's form of a paged
+ * GraphQL answer), as a list: the form production's paged answers are pinned in, each page one
+ * item. */
+function pagesOf(out: string): unknown[] {
+  const pages: unknown[] = [];
+  let [depth, start, quoted, escaped] = [0, 0, false, false];
+  for (let at = 0; at < out.length; at += 1) {
+    const character = out[at];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') quoted = false;
+    } else if (character === '"') quoted = true;
+    else if (character === "{" || character === "[") depth += 1;
+    else if ((character === "}" || character === "]") && --depth === 0) {
+      pages.push(JSON.parse(out.slice(start, at + 1)));
+      start = at + 1;
+    }
+  }
+  return pages;
 }
 /** The rules each world's one ruleset holds (rig.sh's base_ruleset_routes): production's seven, in
  * production's order, at production's values (cybermonklabs/legion ruleset 12331919, read on
@@ -5364,7 +5471,12 @@ test("every REST route the world serves answers every field GitHub's description
  * (a conversation comment, a reply), and `kinds`, the kinds production's answer and the world's
  * differ in for a reason of state, which `state` names. The pull request's comments are read in
  * review_world too, whose seeded comment stands on greet.test.ts, the CLI's tests as rig.sh's
- * fixture_cli writes them. */
+ * fixture_cli writes them. The reads of 2026-11-18 (the tester's prod-reads-19.json) are held
+ * too: the workflow runs, a run's jobs the repository has not got (GitHub's 404), a comparison as
+ * a diff, the base's ref, a directory as JSON and under the raw media type, which GitHub answers
+ * a directory as JSON all the same, and the App's read of its user (GitHub's 403). Production's
+ * directory was `.github/actions`, which holds directories alone, so the world's is `.github`,
+ * which holds `workflows` alone: a file's `download_url` is a string and a directory's null. */
 const PINNED_REST: readonly {
   name: string;
   worlds?: string[];
@@ -5419,6 +5531,13 @@ const PINNED_REST: readonly {
   },
   { name: "gh api GET repos/fernbrook/widgets/rules/branches/main" },
   { name: "gh api GET repos/fernbrook/widgets/branches/main" },
+  { name: "gh api GET actions/runs" },
+  { name: "gh api GET actions/runs/{id}/jobs (missing run)" },
+  { name: "gh api GET compare diff media" },
+  { name: "gh api GET git/ref/{ref}" },
+  { name: "gh api GET contents directory", path: ".github" },
+  { name: "gh api GET contents directory raw", path: ".github" },
+  { name: "gh api user" },
 ];
 
 // Catches, each read held to production's whole answer (every path production's holds, no path it
@@ -5431,7 +5550,9 @@ const PINNED_REST: readonly {
 // `position`; a reply that names no review, where GitHub files it in one of its own; a
 // conversation comment with no `url`, `reactions` or the App that made it; a check run with no
 // `pull_requests` or its App a name alone; a commit status's repository that is a name alone; a
-// comparison with no commits, links or file URLs; and a file or a branch in another shape.
+// comparison with no commits, links or file URLs; a file or a branch in another shape; a list of
+// workflow runs or a ref in another shape; a refusal of a run's jobs or of the user in another
+// body than GitHub's error; a diff answered as JSON; and a directory's entries in another shape.
 for (const pin of PINNED_REST)
   test(`a REST read answers in production's shape: ${pin.name}`, () => {
     const read = pinnedRead(pin.name);
@@ -5456,6 +5577,134 @@ for (const pin of PINNED_REST)
       ]);
     }
   }, 60_000);
+
+/** The reads the run's GitHub stand-in (github-standin.ts, which a run's Dispatch reads GitHub
+ * through) answers, each held to the pinned read of production's that asks GitHub the same:
+ * `path` asked with `accept`, the world's head and pull request in it, and `kinds`, the kinds the
+ * two answers differ in for a reason of state, which `state` names. Two are the gh stand-in's
+ * routes too, and their pins the same (`GET /repos/{owner}/{repo}` and `GET /repos/{owner}/{repo}/
+ * pulls/{number}`); two are Dispatch's alone, held to the implementer's readings of 2026-11-18
+ * (implementer-reads.json, items 33 and 35): a commit by its SHA under the SHA media type, and
+ * the pull requests of a commit. The fifth route a run's Dispatch asks, `GET /repos/{owner}/
+ * {repo}/installation`, is read with the App's JWT, which no pod holds: an installation token is
+ * refused it (`gh api repos/cybermonklabs/legion/installation`, exit 1, `gh: A JSON web token
+ * could not be decoded (HTTP 401)`, measured at about 08:47Z on 2026-11-18), so it has no pinned
+ * read and is held to rest-required.json alone (github-standin.test.ts); and the token's mint is
+ * no read. */
+const PINNED_HTTP: readonly {
+  name: string;
+  path: (head: string) => string;
+  accept?: string;
+  kinds?: string[];
+  state?: string;
+}[] = [
+  { name: "gh api GET repos/fernbrook/widgets", path: () => "/repos/example/widgets" },
+  {
+    name: "gh api GET repos/fernbrook/widgets/pulls/{n}",
+    path: () => "/repos/example/widgets/pulls/1001",
+  },
+  {
+    name: "gh api GET commits/{sha} sha media",
+    path: (head) => `/repos/example/widgets/commits/${head}`,
+    accept: "application/vnd.github.sha",
+  },
+  {
+    name: "gh api GET commits/{sha}/pulls",
+    path: (head) => `/repos/example/widgets/commits/${head}/pulls`,
+    kinds: [
+      ".[].closed_at: string in production, null in the world",
+      ".[].merged_at: string in production, null in the world",
+    ],
+    state:
+      "the implementer read the pull requests of #4326's head, which was merged, so its pull request's `closed_at` and `merged_at` were times; the world's pull request is open, and GitHub answers an open one's null, as its REST read of the open #2827 holds them (`gh api GET repos/fernbrook/widgets/pulls/{n}`)",
+  },
+];
+// Catches: the run's GitHub answering Dispatch a repository, a pull request, a commit or a
+// commit's pull requests in another shape than production's GitHub does — a field missing or in
+// another kind, one GitHub never gives, a SHA answered as a JSON object. Before this row the
+// stand-in's answers were held to GitHub's required fields alone (github-standin.test.ts), from a
+// world that row writes by hand; this one serves rig.sh's own world.
+test("each read of the run's GitHub stand-in answers in production's shape", async () => {
+  const dir = worldDir("approved_world");
+  const head = builtHead(dir);
+  const child = Bun.spawn(
+    ["bun", path.join(import.meta.dir, "github-standin.ts"), dir, "example/widgets", "main"],
+    { stdout: "pipe", stderr: "pipe" }
+  );
+  try {
+    const reader = child.stdout.getReader();
+    let log = "";
+    while (!/"listening":"127\.0\.0\.1:\d+"/.test(log)) {
+      const { value, done } = await reader.read();
+      if (done)
+        throw new Error(`github-standin.ts exited: ${await new Response(child.stderr).text()}`);
+      log += new TextDecoder().decode(value);
+    }
+    const origin = `http://127.0.0.1:${/"listening":"127\.0\.0\.1:(\d+)"/.exec(log)?.[1]}`;
+    const ask = async (method: string, route: string, bearer: string, accept?: string) => {
+      const answered = await fetch(`${origin}${route}`, {
+        method,
+        headers: {
+          Accept: accept ?? "application/vnd.github+json",
+          Authorization: `Bearer ${bearer}`,
+        },
+      });
+      // Read as the client reads it: JSON where the answer says it is (`Content-Type`).
+      const text = await answered.text();
+      const json = answered.headers.get("content-type")?.includes("json") === true;
+      return { status: answered.status, answer: json ? JSON.parse(text) : text };
+    };
+    // An App's JWT's shape, as Dispatch signs one, for the two calls that mint a token.
+    const jwt = "eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiJJdjEuZTJlZmFrZSJ9.c2lnbmVk";
+    const installation = await ask("GET", "/repos/example/widgets/installation", jwt);
+    const minted = await ask(
+      "POST",
+      `/app/installations/${installation.answer.id}/access_tokens`,
+      jwt
+    );
+    const token = String(minted.answer.token);
+    const verdicts: unknown[] = [];
+    for (const pin of PINNED_HTTP) {
+      const got = await ask("GET", pin.path(head), token, pin.accept);
+      verdicts.push([pin.name, got.status, shapeDiff(got.answer, pinnedRead(pin.name))]);
+    }
+    expect(verdicts).toEqual(
+      PINNED_HTTP.map(({ name, kinds }) => [name, 200, { ...SAME_SHAPE, kinds: kinds ?? [] }])
+    );
+  } finally {
+    child.kill();
+  }
+}, 60_000);
+
+// Every read production-shapes.json pins is compared with the world's answer by a row: one of this
+// file's tables (PINNED_GH, PINNED_GRAPHQL, PINNED_REST, PINNED_HTTP), each of whose reads a row
+// makes, or a row of a test file of this directory that names it, `pinnedRead("<name>")` (the
+// ruleset reads above, `gh auth status`, the issue record in daemon-standin.test.ts). Catches a
+// pin no row reaches, which is a claim no row holds: from 2026-11-17 to 2026-11-18 the 20 GraphQL
+// reads of round 25 were pinned, and the README counted them held, while no row compared one.
+test("every read the pin holds is compared by a row", () => {
+  const named = readdirSync(import.meta.dir)
+    .filter((file) => file.endsWith(".test.ts"))
+    .flatMap((file) =>
+      [
+        ...readFileSync(path.join(import.meta.dir, file), "utf8").matchAll(
+          /\bpinnedRead\(\s*("(?:[^"\\\n]|\\.)*"|RECORD_READ)\s*\)/g
+        ),
+      ].map(([, name = ""]) => (name === "RECORD_READ" ? RECORD_READ : JSON.parse(name)))
+    );
+  const held = new Set([
+    ...PINNED_GH,
+    ...PINNED_GRAPHQL,
+    ...PINNED_REST.map(({ name }) => name),
+    ...PINNED_HTTP.map(({ name }) => name),
+    ...named,
+  ]);
+  expect(
+    pinnedReads()
+      .map(({ name }) => name)
+      .filter((name) => !held.has(name))
+  ).toEqual([]);
+});
 
 // Catches (the architect's ruling 4 of 2026-11-17): `GET repos/<repo>/pulls/<n>` answered with
 // gh's `pr view` object, and a REST pull request that says something else than the world's other

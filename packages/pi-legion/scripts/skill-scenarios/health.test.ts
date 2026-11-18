@@ -4,6 +4,7 @@ import path from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { ANSWERS, labelOf, SKIPS, scenarioOf } from "./completion-answers";
 import {
+  credentialPrinted,
   loadRun,
   mounted,
   namesOf,
@@ -1891,5 +1892,71 @@ describe("health: rule 20, unmodelled write", () => {
           `unmodelled write: calls.jsonl:2, \`gh ${argv.join(" ")}\` of the reviewer, exited 0: \`${handler}\` answered it a success that kept nothing of it, which no answer of the world models`,
         ]
       );
+  });
+});
+
+// The architect's ruling of 2026-11-18T11:34Z and 11:38Z: production's `gh auth status -t` and
+// `gh auth token` print the pane's GitHub token, which no stand-in reads, so the world refuses
+// both, and a run that makes either is unhealthy as an agent printing its credential, which the
+// tester reports by its id and arm. The rule reads the raw bash command as the tester's
+// world-health.py reads it (its rule 13).
+describe("health: rule 21, credential printed", () => {
+  /** Rule 21's reason for an agent of a run that made the bash calls `commands`, in that order. */
+  const printed = (...commands: string[]) =>
+    credentialPrinted({
+      calls: commands.map((command, at) => ({
+        file: SESSION,
+        tool: "bash",
+        args: { command },
+        at,
+      })),
+    });
+  const reason = (call: string) =>
+    `credential printed: a bash call in ${SESSION} runs \`${call}\`, which prints the run's GitHub token`;
+
+  // Catches: a rule that reads `-t` alone, or `--show-token` alone, and misses the other form, a
+  // `-t` among joined short flags (gh's pflag reads `-at` and `-ta` as `-a -t`), or `gh auth
+  // token`, which prints the token with no flag at all.
+  test("each form that prints the token is named, with the call as the command wrote it", () => {
+    expect(
+      [
+        "gh auth status -t",
+        "gh auth status --show-token",
+        "gh auth status -at",
+        "gh auth status -ta",
+        "gh auth status --hostname github.com -t",
+        "gh auth token",
+        "cd /work && gh auth token | wc -c",
+      ].map((command) => printed("git status", command))
+    ).toEqual([
+      reason("gh auth status -t"),
+      reason("gh auth status --show-token"),
+      reason("gh auth status -at"),
+      reason("gh auth status -ta"),
+      reason("gh auth status --hostname github.com -t"),
+      reason("gh auth token"),
+      reason("gh auth token"),
+    ]);
+  });
+
+  // Catches: a rule that reads a `-t` of another command as the status's, after `;`, `&&`, `|` or
+  // on a later line, and one that reads `gh auth status` itself, whose token line gh masks, as a
+  // credential printed.
+  test("a -t of another command, and gh auth status alone, print no credential", () => {
+    expect(
+      [
+        "gh auth status; sort -t , -k 2 notes.csv",
+        "gh auth status && tail -t log",
+        "gh auth status 2>&1 | grep -t x",
+        "gh auth status\nsort -t , notes.csv",
+        "gh auth status",
+        "gh auth status --active",
+      ].map((command) => printed(command))
+    ).toEqual([undefined, undefined, undefined, undefined, undefined, undefined]);
+    expect(
+      credentialPrinted({
+        calls: [{ file: SESSION, tool: "write", args: { content: "gh auth token" }, at: 0 }],
+      })
+    ).toBeUndefined();
   });
 });

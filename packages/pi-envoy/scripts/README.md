@@ -584,8 +584,8 @@ scenario and case (today, threads-closed code-defect's reviewer: "the implemente
 reviewer nothing"), read from that table.
 
 `rig.sh health [--tmp-snapshot <file>] <run dir>...` says whether each run's world could take what
-its agents did, and whether the run stayed inside its own world. It reads seventeen things: the run
-finished: its boot record, `<run>/booted`, decides each role its scenario boots
+its agents did, and whether the run stayed inside its own world. It reads twenty-one things: the
+run finished: its boot record, `<run>/booted`, decides each role its scenario boots
 (`completion-answers.ts`'s `ANSWERS` `boots`) once, in that order, the first a `boot` of the first
 role and each other a `boot <role>` or a `skip <role> <reason>` whose reason
 `completion-answers.ts`'s `SKIPS` declares for the run's scenario and case (a relaunch's repeated
@@ -630,7 +630,11 @@ unless `health.ts`'s `DISPATCH_DECLARED` declares that answer for the scenario a
 (the agent booted last before the request began, by the opening line each daemon stand-in writes
 before its agent starts; `HANDOFF_NOT_FOUND` for the `plan` handoff, which no world records, is
 declared for every role, and for the `review` handoff for reviewer-text-findings' reviewer; a run
-with no such log is unhealthy); no tool call names a path under another run's directory;
+with no such log is unhealthy); the run's GitHub stand-in answered as GitHub does, by its own log,
+`<run>/logs/github.log` (no request it refused or holds no route of, no status GitHub does not
+give, and a worker world's log kept); every push of the pull request's branch was stored as
+Dispatch's head, by the head watcher's `<run>/logs/heads.log`, and the branch stands at a head
+the record stored; no tool call names a path under another run's directory;
 no tool call reads a path another of the runs given wrote last before the read, or, for a run from
 before the rig gave each run a namespace (one with no `<run>/namespace.txt`), a `/tmp` entry that
 was there before the run (its `scratch-before.txt`, or the `--tmp-snapshot` file of `/tmp` entries
@@ -639,7 +643,12 @@ batch); no tool call names a path its world hides (by `rig.sh world`: under the 
 issue workspaces, the work directory or any label's checkout, the other runs' given included)
 outside its own directory, `/tmp` and what its world shows again; no tool call reads another
 process's `/proc/<n>/environ` or `cmdline`; no tool call names a path under `/var/run/legion` or
-`/var/run/secrets`, by either name; no call reaches a host other than the loopback, the hosts
+`/var/run/secrets`, by either name; no `bash` call prints the run's GitHub token: `gh auth status`
+with `-t` or `--show-token`, alone or among joined short flags (`-at`), or `gh auth token`, read
+off the command's raw text as the tester's reader reads it (a `-t` after `;`, `&`, `|` or on a
+later line is another command's), which the run's line names ahead of the world's refusal of the
+call (`credential printed`, a residual of *Which of the world's answers are pinned*, below); no
+call reaches a host other than the loopback, the hosts
 its pane's URLs name and the model gateway its profile's `models.yml` names, but a GET or a HEAD
 with no body, or a `git ls-remote` (which reads refs alone; a fetch, a clone and a push stay off the
 world),
@@ -854,7 +863,7 @@ and error texts, never production's values:
 
 | Pin | What it holds | Read from | Made by |
 | --- | --- | --- | --- |
-| `production-shapes.json` | the exit, stderr and answer shape of the 5 reads of a branch a ruleset alone protects, the 90 distinct reads INFRA-764's round 25 made, and the `read_record` record | cybermonklabs/legion `main` at 2026-11-17T15:59:18Z, its pull request #2827 at about 15:40Z, and a Legion issue pod's own record at 16:49Z that day | `production-shapes.ts` |
+| `production-shapes.json` | the exit, stderr and answer shape of 173 reads: the 5 reads of a branch a ruleset alone protects, the 90 distinct reads INFRA-764's round 25 made, the `read_record` record, the tester's 68 reads of each read the world served with no pin, and the implementer's 9 reads that set does not hold | cybermonklabs/legion `main` at 2026-11-17T15:59:18Z, its pull request #2827 at about 15:40Z, and a Legion issue pod's own record at 16:49Z that day; the open #2827, the merged #4326 and the repository at about 08:45Z (the tester) and 08:55Z (the implementer) on 2026-11-18 | `production-shapes.ts` |
 | `rest-required.json` | the required field tree of the success answer of each REST operation the world serves | github/rest-api-description at `DESCRIPTION_COMMIT` (`c9c95fe34ced`) | `rest-required.ts` |
 | `graphql-schema.json` | the field and return type of each GraphQL type the world serves, which the world's query check reads | GitHub's introspection at 2026-11-17T21:20:23Z | `graphql-schema.ts` |
 | each label's own `LegionStateResponse` | every state body the daemon stand-in can serve, parsed before the label starts | the label's own checkout | `services_up`'s `label_contract` |
@@ -866,11 +875,20 @@ measurement each, named where the answer is described: a reply to a reply filed 
 one App's update of another's review, GitHub's 404 body for an endpoint it does not serve, and
 the merge state of an approved, green head on a merge-queue base. A few are stated as
 unmeasured: GitHub's 404 for another App's read of a pending review by id, and the
-rule-violation lines of a refused push beyond the three measured. Two differences are named
-residuals rather than defects: the `remote.origin.vcs` key that carries the world's remote, and
-a review's `url`, which gh asks for only past a pull request's 100th review. **A read with no
-pin, and an answer this section and the sections below do not name, is not claimed to answer as
-production does.**
+rule-violation lines of a refused push beyond the three measured. Three differences are named
+residuals rather than defects, each an answer the world cannot give as production gives it:
+
+- `remote.origin.vcs`, the key that carries the world's remote. No production clone has it. The
+  world's remote is the run's own, so a clone of it needs a transport of the world's.
+- A review's `url`, which gh asks for only past a pull request's 100th review. No world's pull
+  request holds 100 reviews.
+- `gh auth status -t` (`--show-token`) and `gh auth token`. Production prints the pane's token.
+  No stand-in reads a token, so the world refuses both calls (`gh: Not Found (HTTP 404)`, exit 1).
+  A run that makes either is unhealthy (`rig.sh health`'s rule 21, `credential printed`), and the
+  tester reports it as an agent printing its credential.
+
+**A read with no pin, and an answer this section and the sections below do not name, is not
+claimed to answer as production does.**
 
 ### What the gh world keeps, and where it stops
 
@@ -919,35 +937,90 @@ pin in `gh-standin.test.ts`, which runs every form the table holds through the w
 
 The world's reads are held to production's own answers by `production-shapes.json`: for each
 read, the command it was made with (production's values written as placeholders: `<owner>`,
-`<repo>`, `<number>`, `<head>`, `<base>`, `<review>`, `<comment>`, `<path>`, `<id>`), when it was
-read, its exit, its stderr and its answer's shape — each JSON path and the kind of the value there,
-a list's items read per variant (a rule's `type`) where they differ — and no value of it. It pins
-the five reads of a branch a ruleset alone protects (`rules/branches/main`, `rulesets`,
-`rulesets/<id>`, `branches/main` and `branches/main/protection`), read of cybermonklabs/legion at
-2026-11-17T15:59:18Z from a Legion issue pod with the role App token its gh gives, and the 90
-distinct reads the 44 runs of INFRA-764's round 25 made, read against a pull request of the same
-repository at about 15:40Z that day. `production-shapes.ts` derives it from those reads' own
-files, which stay out of the tree, and refuses to write a value of theirs into it: `bun
-production-shapes.ts <ruleset reads dir> <production reads json> <read_record json>
-production-shapes.json` writes it and formats it with the repository's biome (the third input is
-the issue record below). A row holds a world's answer to a pinned read with
-`shapeDiff`, which reports the paths production has that the world lacks, the paths the world
-has that production does not, and the paths whose kinds differ, none of them below a path whose
-kind differs. An array the world holds empty is not compared below itself, nor is a variant of a
-list the world holds none of, since how many items a list holds is the world's state and not its
-shape; an array production held empty pins no item shape, so an item the world holds there is a
-path production does not show. A review's `url` in `gh pr view --json reviews` is state too: gh
-asks GitHub for it only on the pages after its first 100 reviews, so production's #2827, of 137,
-holds it on its last 37 and no world, of fewer than 100, holds it (measured on 2026-11-17 on #2827,
-whose reviews from the 100th on carry it and no earlier one does, and on #4326, whose 2 carry
-none). `gh-standin.test.ts` holds each of the five ruleset reads to its pin, shape, exit and
-stderr, with no difference, and each of production's seven rules to production's rule of its
-type, none of them absent from the world. The branch's head is the world's developer's
-commit, signed with an SSH key of the developer's own: the world's GitHub holds the developer's
-account by the address the commit carries and the key it signs with (`rig.sh`'s
-`fixture_first_commit` writes `<run>/accounts.json` and `<run>/allowed-signers`), so the commit's
-`author` and `committer` are that account and its `verification` is the one `git verify-commit`
-gives against that key, as production's head is linked and verified.
+`<repo>`, `<number>`, `<head>`, `<base>`, `<review>`, `<comment>`, `<path>`, `<id>`, `<branch>`,
+`<app>`), when it was read, its exit, its stderr and its answer's shape — each JSON path and the
+kind of the value there, a list's items read per variant (a rule's `type`) where they differ — and
+no value of it. It pins 173 reads, each made in an issue pod, a gh read with the role App token
+its gh gives:
+
+- the five reads of a branch a ruleset alone protects (`rules/branches/main`, `rulesets`,
+  `rulesets/<id>`, `branches/main` and `branches/main/protection`), read of cybermonklabs/legion
+  at 2026-11-17T15:59:18Z;
+- the 90 distinct reads the 44 runs of INFRA-764's round 25 made, read against a pull request of
+  the same repository at about 15:40Z that day;
+- the issue record below, read at 16:49Z that day;
+- the tester's 68 reads of each read the world served with no pin (`prod-reads-19.json`, in
+  version 2 of the `infra-764-production-reads-tgz-b64` upload), read at about 08:45Z on
+  2026-11-18 against #2827, then open and conflicting, #4326, merged, and the repository;
+- the implementer's 9 reads that set does not hold (`implementer-reads.json`, uploaded as
+  `implementer-r26-w10-state-tgz-b64`), read at about 08:55Z that day: a commit by its SHA and a
+  commit's pull requests, as Dispatch reads them, `gh run view` and `gh run watch` naming no run,
+  the viewer by the implement App's token, and GraphQL sent to `gh api /graphql` and `gh api
+  'graphql?…'`.
+
+`production-shapes.ts` derives it from those reads' own files, which stay out of the tree, and
+refuses to write a value of theirs into it: `bun production-shapes.ts <ruleset reads dir>
+<production reads json> <read_record json> [<later reads json>...] production-shapes.json`
+writes it and formats it with the repository's biome. A row holds a world's answer to a pinned
+read with `shapeDiff`, which reports the paths production has that the world lacks, the paths
+the world has that production does not, and the paths whose kinds differ, none of them below a
+path whose kind differs. An array the world holds empty is not compared below itself, nor is a
+variant of a list the world holds none of, since how many items a list holds is the world's state
+and not its shape; an array production held empty pins no item shape, so an item the world holds
+there is a path production does not show.
+
+Every pinned read is compared by a row, which makes production's own command with the world's
+values in it:
+
+- the five ruleset reads, each with no difference, and each of production's seven rules to
+  production's rule of its type, none of them absent from the world (`gh-standin.test.ts`);
+- the 114 reads of gh's own commands, `gh pr view`, `list`, `diff` and `checks` and `gh run view`
+  and `watch`, 55 of round 25 and 59 of 2026-11-18 (`gh-standin.test.ts`'s `PINNED_GH`);
+- the 28 GraphQL reads, 20 of round 25 and 8 of 2026-11-18 (`PINNED_GRAPHQL`);
+- the 22 REST reads, 15 of round 25 and 7 of 2026-11-18 (`PINNED_REST`);
+- `gh auth status`, in its own row;
+- the two reads of Dispatch's alone, a commit by its SHA and a commit's pull requests, asked of
+  the run's GitHub stand-in, which the same row holds to the pins of the repository and the pull
+  request too (`PINNED_HTTP`);
+- the issue record, in `daemon-standin.test.ts`.
+
+The row `every read the pin holds is compared by a row` fails naming a pinned read no row
+compares. Until 2026-11-18 the 20 GraphQL reads of round 25 were pinned and no row compared one.
+
+A difference of state is named in its row, with the reason production's reading gives:
+
+- A review's `url` in `gh pr view --json reviews`: gh asks GitHub for it only on the pages after
+  its first 100 reviews, so production's #2827, of 137, holds it on its last 37 and no world, of
+  fewer than 100, holds it (measured on 2026-11-17 on #2827, whose reviews from the 100th on carry
+  it and no earlier one does, and on #4326, whose 2 carry none).
+- `potentialMergeCommit`: #2827 conflicted with its base when read (`mergeable` `CONFLICTING`), so
+  GitHub held no test merge and gh read null. The world's head merges cleanly, and its test merge
+  is an object.
+- `statusCheckRollup` and `gh pr checks` of #2827: its head had reported no check run, so the
+  rollup was empty and `gh pr checks` refused it (`no checks reported on the '<branch>' branch`,
+  exit 1). Every world's head reports its checks, so the world's answers are held to the tester's
+  readings of the same commands on #4326, whose head had them.
+- A commit's pull requests: the implementer read #4326's head, whose pull request was merged, so
+  its `closed_at` and `merged_at` were times. The world's pull request is open, and GitHub answers
+  an open one's null, as the REST read of the open #2827 holds them.
+- A commit's check runs: production read them while they ran (below).
+
+The world's values fill the placeholders: `<app>` is the implement App's slug, the App whose pull
+requests production's `gh pr list --author app/<app>` listed, and a directory read is the world's
+`.github`, which holds a directory alone, as production's `.github/actions` held directories
+alone (a directory's `download_url` is null and a file's a string). A GraphQL read made with
+`--paginate` is held as its pages, the form production's was kept in: #2827's threads, more than
+100, came on two pages, which gh printed back to back, and the world's come on one. GitHub's place
+in a refused query that names the repository is five columns less in the world than in
+production (`at [1, 171]` for `at [1, 176]`), since the world's owner and repository are five
+characters shorter.
+
+The branch's head is the world's developer's commit, signed with an SSH key of the developer's
+own: the world's GitHub holds the developer's account by the address the commit carries and the
+key it signs with (`rig.sh`'s `fixture_first_commit` writes `<run>/accounts.json` and
+`<run>/allowed-signers`), so the commit's `author` and `committer` are that account and its
+`verification` is the one `git verify-commit` gives against that key, as production's head is
+linked and verified.
 
 ### The base's ruleset: what each rule does in the world
 
@@ -1168,11 +1241,21 @@ The REST reads round 25 made are pinned to production's whole shape too, and
 and one review, a review's comments (GitHub's older shape of a review comment, with no `line`,
 `side` or start of its own), the pull request's review comments, its conversation, a commit's
 check runs and combined status, a comparison, a file at a ref, the base branch's rules and the
-base branch, beside the five ruleset reads above. Each answers with no difference but one of
-state: production read its check runs while they ran, so their `conclusion` and `completed_at`
-are null there and the world's, concluded, are strings. A REST read the pin does not hold — the
-workflow runs, a ref, the answer of a write — is held to the fields GitHub requires and no more,
-and is not claimed to answer in production's whole shape.
+base branch, beside the five ruleset reads above. So are the REST reads the tester made on
+2026-11-18: the workflow runs, the jobs of a run the repository has not got (GitHub's 404), a
+comparison as a diff, the base's ref, a directory as JSON and under the raw media type (GitHub
+answers a directory as JSON either way), and the App's read of its user (GitHub's 403). Each
+answers with no difference but one of state: production read its check runs while they ran, so
+their `conclusion` and `completed_at` are null there and the world's, concluded, are strings.
+The run's GitHub stand-in, which the run's Dispatch reads, answers the repository and the pull
+request in the same pinned shapes, and a commit by its SHA and a commit's pull requests in the
+implementer's (`PINNED_HTTP`). Its fifth read, `GET /repos/<o>/<r>/installation`, Dispatch makes
+with its App's JWT, which no pod holds. An installation token is refused it: `gh api
+repos/cybermonklabs/legion/installation` exited 1 with `gh: A JSON web token could not be decoded
+(HTTP 401)` (measured at about 08:47Z on 2026-11-18). So no pod can read production's answer, and
+the installation is held to `rest-required.json` alone. A REST read the pin does not hold — the
+installation, the answer of a write — is held to the fields GitHub requires and no more, and is
+not claimed to answer in production's whole shape.
 
 gh's own reads of the pull request — `gh pr view`, `gh pr list` and `gh pr diff` — are the gh
 stand-in's reading of the world as gh 2.98.0 prints it (`gh-standin.ts`'s `prRead`, `gh-view.ts`),
@@ -1203,11 +1286,35 @@ found for branch "<branch>"`, `GraphQL: Could not resolve to a Repository with t
 `--head`, `--base`, `--state`, `--label`, `--assignee`, `--draft`, `--author` and `--app` match
 it, as gh reads each. The record names both refusals (`calls.jsonl`'s `handler`), and `rig.sh
 health` declares both for every role, since production gives them to any role that makes the
-call. Each of the 55 `gh pr view`, `gh pr list` and `gh pr diff` reads round 25 made is pinned
-(`production-shapes.json`, read against #2827), and `gh-standin.test.ts` holds each to its
-shape, exit and stderr in a world holding a review, a reply and a comment of the run's, with no
-difference but the reviews' `url` above. A gh read with no pin is not claimed to answer in
-production's whole shape.
+call. Every pinned read of gh's own commands is held to its shape, exit and stderr in a world
+holding a review, a reply and a comment of the run's, with no difference but the states the pin
+section names: the 55 reads of `gh pr view`, `gh pr list` and `gh pr diff` round 25 made, and
+the 59 of `gh pr` and `gh run` read on 2026-11-18. A gh read with no pin is not claimed to answer
+in production's whole shape.
+
+`gh pr checks` prints the head's checks as gh 2.98.0 prints them to a pipe: five fields a tab
+apart (the name, the bucket, the time it ran as Go writes a duration, the link, and an empty
+description), failed checks first, then by name. It buckets each as gh's `aggregateChecks` does:
+a success passes; a skip and a neutral conclusion skip; a failure, a time-out and an action
+required fail; a cancel prints `fail` and counts as neither failed nor pending; every other state
+is pending. It exits 1 once one failed, else 8 while one is pending, else 0. A head that reports
+no check is refused as gh refuses it: `no checks reported on the '<branch>' branch`, nothing on
+stdout, exit 1 (measured on 2026-11-18 on #4326 and #2827, `prod-reads-19.json`).
+
+`gh auth status` prints gh's text for the pane's own gh configuration: the host, the account
+`x-access-token` and its `hosts.yml`, the account active, the git protocol, and the token masked
+as gh masks one (`ghs_` and a `*` for each character after it), with no scope line, since an
+installation token holds no scopes (measured on 2026-11-18 from two issue pods). The world writes
+the token line from the shape of the token the rig gives every pane (`daemon-pane.ts`'s
+`RIG_GH_TOKEN`), so no stand-in reads a token. `-a` prints the same. Every other flag is refused,
+`-t` and `--show-token` among them, and so is `gh auth token` (the residual above).
+
+`gh run view` and `gh run watch` are gh's refusals, since the world holds no workflow run.
+Naming a run, each prints `failed to get run: HTTP 404: Not Found
+(https://api.github.com/repos/<owner>/<repo>/actions/runs/<id>?exclude_pull_requests=true)`;
+naming none, gh's `run or job ID required when not running interactively` (`run ID required …`
+for `watch`) and the command's usage. Each exits 1 with nothing on stdout (measured on
+2026-11-18, `prod-reads-19.json` and the implementer's readings).
 
 GraphQL is read as GitHub's parser reads it (`gh-routes.ts`'s `readGraphql`): a query that is no
 GraphQL document is refused with that parser's message and the line and column of the token it
@@ -1221,7 +1328,20 @@ graphql-schema.json` reads with GitHub's introspection and formats; a field of a
 hold is not judged). Either is answered with no data, as gh prints it: GitHub's body with no line
 end, `gh: ` and each message on a line of its own, exit 1. A mutation GitHub refuses changes
 nothing. An object a query names that the world has not got is GitHub's `NOT_FOUND`, with its
-`locations`.
+`locations`. GraphQL names a bot under `author` as a `Bot` by its App's bare slug, with no
+`[bot]`, and under `viewer` and a thread's `resolvedBy` as a `User` with `[bot]`; REST names it
+with `[bot]` too (measured on 2026-11-18 against cybermonklabs/legion's merged pull requests).
+The viewer is the bot of the calling role's App: the implement App's for the implementer and the
+merger, the review App's for every other role (measured that day with each App's token).
+
+gh prints a `gh api` answer that no `--jq` reads as GitHub sent it, with no line end of its own:
+a paginated list's pages as the one list they make, every other answer's pages back to back
+(`{…}{…}`), and an error's body the same. What `--jq` prints, and the JSON of gh's own commands
+(`gh pr view --json`, `gh pr list --json`), end with a line end. GitHub's 404 body has two forms:
+for an endpoint GitHub does not serve, it is indented with `\r\n` line ends and names GitHub's
+REST reference; for an object a served endpoint does not hold, it is one line naming that
+endpoint's own page. Each was measured on 2026-11-18 from an issue pod with gh 2.98.0; the world
+had ended every answer with a line end and indented both 404 bodies with `\n`.
 
 A write is answered only where the world models it, each by a route of its own that names its
 verb and the one path it writes, the world's repository and pull request read whole: the create
@@ -1238,8 +1358,18 @@ GitHub refuses an endpoint it does not serve: `gh: Not Found (HTTP 404)` on stde
 body on stdout as gh prints it, exit 1, and nothing changed; `calls.jsonl` records it `unrouted`,
 which `rig.sh health` names. Until INFRA-764 round 25, one route answered every POST, PATCH and PUT
 no route above it took with `{id:6001}` and exit 0 and changed nothing, and a reviewer's update of
-its review's body read back unchanged with no rule seeing it. The daemon stand-in's writes follow
-the daemon the same way: a backward move the workflow has no row for, or by a role not running the
+its review's body read back unchanged with no rule seeing it. Each create of a review is a review
+of its own, with the next id (6001, then 6002), at every read. A write whose path carries a query
+string (`…/reviews?x=1`, `…/reviews/<id>/events?x=1`, `…/pulls/<n>?x=1`) is the write its path
+names, since GitHub reads a write's parameters from its JSON body. A flag's value is read as gh's
+flag parser (spf13/pflag) reads it: `--body=` carries nothing and `-b=` carries `=`, and `gh pr
+edit --body ""` leaves an empty body. An empty body is `null` through REST and `""` through
+GraphQL and gh (measured on 2026-11-18 on cybermonklabs/legion #612). A mutation sent to `gh api
+/graphql` or `gh api 'graphql?…'` is answered as GitHub's GraphQL endpoint answers it: gh posts
+each field as a key of the body, so the endpoint reads no variable from it, and gh prints
+GitHub's answer, errors and all, with exit 0 (measured on 2026-11-18). The daemon stand-in's
+writes follow the daemon the same way: a backward move the workflow has no row for, or by a role
+not running the
 issue's phase, is refused `BACKWARD_REFUSED` in the engine's sentence; one whose sentence, the
 message the move posts on the issue, Dispatch would refuse is refused before anything moves,
 `BACKWARD_REASON_DECISION_BLOCK` for a decision block in it and `BACKWARD_REASON_TOO_LONG` for one
@@ -1248,7 +1378,12 @@ reads it: the longest post its outbox could make of the sentence, read by the la
 Dispatch reader through the label's build of `daemon-pane.go` (`post-check`), and only where the
 label's workflow source holds those refusals; and one it takes moves the issue and posts its
 sentence (above). A request of a route the label's daemon does not register is answered as its
-catch-all answers it, 404 `{"error":"no route"}`. A completion naming a handoff record reads it
+catch-all answers it, 404 `{"error":"no route"}`. The stand-in serves only the routes an agent's
+plugin calls: the daemon's `GET /healthz`, `GET /readyz` and `GET /legion/v1/operator/claims`,
+which no plugin calls (`packages/pi-legion/src`, `packages/pi-shared/src` and
+`packages/claude-envoy/src` name none of them), are answered 404 too, as the daemon's catch-all
+answers a route it does not register; the label's daemon registers them, so `rig.sh health`'s
+routes rule makes a run that asked one unhealthy. A completion naming a handoff record reads it
 back from the run's own Dispatch and is
 refused `HANDOFF_RECORD_NOT_FOUND` or `HANDOFF_RECORD_MISMATCH` as the daemon refuses it, and
 `HANDOFF_SESSION_MISMATCH` where another session than the claim's wrote it (measured on round

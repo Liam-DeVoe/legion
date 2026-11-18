@@ -675,10 +675,12 @@ export interface DaemonPane {
 }
 
 /** The stand-in for the claim's GitHub App token: `daemon-pane.go` renders it into the claim's gh
- * files, and the pane's own `gh auth token` prints it. It has the shape of an installation token,
- * `ghs_` and 36 letters and digits, drawn afresh by each process, so no word of it is the rig's
- * (it was `ghs_rig_token`) and no literal of one is in the source a push's leak check reads. A
- * placeholder, never a secret: the gh stand-in reads no token. */
+ * files, where production's daemon renders the App's token. Production's `gh auth token` and `gh
+ * auth status -t` print that token; the world's gh refuses both, since no stand-in reads a token
+ * (gh-standin.ts's `authStatus`), and health's rule 21 names a run that makes either. It has the
+ * shape of an installation token, `ghs_` and 36 letters and digits, drawn afresh by each process,
+ * so no word of it is the rig's (it was `ghs_rig_token`) and no literal of one is in the source a
+ * push's leak check reads. A placeholder, never a secret. */
 const TOKEN_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 export const RIG_GH_TOKEN = `ghs_${Array.from(
   { length: 36 },
