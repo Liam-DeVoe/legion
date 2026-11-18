@@ -162,7 +162,7 @@ func TestThePlanRatingsWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 			Task: "default", Step: 2, Kind: "step", Role: "implementer", Type: "implementation", Agent: agent, Generation: 1, StartedAt: &earlierStepStarted}},
 		{name: "an earlier run's end of a step", kept: true, issue: issue, at: earlierStepEnded, payload: record.StepRecord{ID: earlierStep,
 			Task: "default", Step: 2, Kind: "step", Role: "implementer", Type: "implementation", Agent: agent, Generation: 1,
-			StartedAt: &earlierStepStarted, EndedAt: &earlierStepEnded, Result: new("failed")}},
+			StartedAt: &earlierStepStarted, EndedAt: &earlierStepEnded, Result: new("failed"), ReturnedTo: new(1)}},
 		{name: "an earlier run's rating", issue: issue, at: earlierRetroEnded, payload: record.StepRecord{ID: earlierRetro, Task: "default", Step: 0,
 			Kind: "retro", Role: "implementer", Agent: agent, Generation: 1, PlanRating: &record.PlanRating{Rating: 2, Reason: "The plan was late."}}},
 		{name: "the plan", issue: issue, at: run, payload: record.PlanRecord{ID: "5d6e7f80-91a2-5b3c-8d4e-5f6a7b8c9d0e", Generation: 2, Source: "default",
