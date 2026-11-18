@@ -2746,6 +2746,53 @@ test("a crumb draws its node's first line, cut at a word @phone @phone-only", as
       ),
       "a crumb is cut by its box, which cuts inside a word"
     ).toBe(0);
+    // A crumb is a word in a line of text and not a control box (`IssueTree.tsx`): below 1280 px
+    // the floor of `styles.css` made each crumb a box at least 44 by 44 px and the line 44 px
+    // tall, around a line of words 16 px tall. Its padding keeps it no shorter than WCAG 2.2's
+    // 24 px target (2.5.8). The two crumbs and the "/" after them fit on one line at 390 px, and
+    // that line is as tall as one line of a crumb's words and its padding.
+    const drawn = await crumbs.evaluateAll((all) => {
+      const [first] = all;
+      const line = first?.parentElement?.getBoundingClientRect();
+      const style = first === undefined ? null : getComputedStyle(first);
+      const crumbBox = first?.getBoundingClientRect();
+      return {
+        heights: all.map((crumb) => crumb.getBoundingClientRect().height),
+        line: line?.height ?? Number.NaN,
+        oneLine: [...(first?.parentElement?.children ?? [])].every((element) => {
+          const box = element.getBoundingClientRect();
+          return (
+            crumbBox !== undefined &&
+            box.top >= crumbBox.top - 1 &&
+            box.bottom <= crumbBox.bottom + 1
+          );
+        }),
+        oneLineTall:
+          style === null
+            ? Number.NaN
+            : Number.parseFloat(style.lineHeight) +
+              Number.parseFloat(style.paddingTop) +
+              Number.parseFloat(style.paddingBottom),
+      };
+    });
+    for (const [index, height] of drawn.heights.entries()) {
+      expect(
+        height,
+        `crumb ${index + 1} is a 44 px control box, not a word in a line of text`
+      ).toBeLessThan(44);
+      expect(
+        height,
+        `crumb ${index + 1} is shorter than WCAG 2.2's 24 px target`
+      ).toBeGreaterThanOrEqual(24);
+    }
+    expect(
+      drawn.oneLine,
+      'the crumbs and their "/" wrap at 390 px, where they fit on one line'
+    ).toBe(true);
+    expect(
+      drawn.line,
+      `the crumb line is taller than one line of a crumb's words and its padding, ${drawn.oneLineTall} px`
+    ).toBeLessThanOrEqual(drawn.oneLineTall + 1);
     // Nothing the zoom draws makes the page scroll sideways.
     await assertPageFits(page);
   });

@@ -811,15 +811,28 @@ export function IssueTree({
         >
           {breadcrumb.map((above) => (
             <button
-              // A crumb is a word in a line of text, not a control box: below 1280 px a plain
-              // button is 44 px tall (`styles.css`), which is a third of the head the first
-              // open question needs on a phone. Its hit box grows by padding instead.
+              // A crumb is a word in a line of text, not a control box. Below 1280 px every
+              // button takes the 44 px floor of `styles.css`, which is in no layer and whose one
+              // exemption for a button is a row's bullet and inline links (`[data-node-row]`),
+              // and the crumb line stands above the rows: `min-h-0!` and `min-w-0!` take the
+              // floor off, since a layered utility wins over an unlayered rule only with `!`. A
+              // 44 px crumb was a third of the head the first open question needs on a phone.
+              // Its hit box grows by the 6 px of padding above and below that
+              // `dispatch-inline-link` gives it instead: its box is its 16 px line, its hit box
+              // 28 px tall, over WCAG 2.2's 24 px (2.5.8). Measured in Chromium at 390 by 664 and
+              // 1024 by 768 px, on crumbs of one line of words each: each crumb 28 px tall (a
+              // five-character key's 34 px wide) and the line 28 px, one crumb tall, where the
+              // floor made each crumb at least 44 by 44 px and the line 44 px; on a copy of a long
+              // real issue at 390 by 664 px, the line one zoom draws is 28 px where it was 44, and
+              // the one a second zoom draws 96 px where it was 112. Its display is left to the
+              // floor's `inline-flex`: the line is a flex box, which makes each crumb a block box
+              // whatever its display, and `inline-block`, `inline` and `block` drew the same box.
               // It draws one line for a node, so it is the node's first line (`firstLineOf`),
               // cut at a word from the words every one-line drawing of a node is cut from
               // (`lineWords`), and it wraps rather than being cut again mid-word by its box; the
               // issue is named by its key, since the header above draws its title, and a node
               // with no words by its kind's word, never its id, which is no name a reader reads.
-              className="dispatch-inline-link max-w-full text-left underline [overflow-wrap:anywhere]"
+              className="dispatch-inline-link min-h-0! min-w-0! max-w-full text-left underline [overflow-wrap:anywhere]"
               data-crumb={above.id}
               key={above.id}
               onClick={() => zoomTo(above.id)}
