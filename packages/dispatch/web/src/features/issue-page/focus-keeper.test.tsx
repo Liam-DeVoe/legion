@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
-// biome-ignore lint/style/noRestrictedImports: the press case needs a press, a blur and a removal inside one task, and user-event's press awaits between its events.
+// biome-ignore lint/style/noRestrictedImports: the press case needs a press, a blur and a removal inside one task, and user-event's press awaits between its events; the tap case needs a tap's order, its pointer up before the blur its mousedown makes, and user-event moves the focus as its pointer goes down.
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import { jump, onFakeClock } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -362,10 +363,37 @@ test("a control removed with its wrapper hands the focus to the one beside where
 type LayerState = "open" | "hidden" | "removed";
 
 /**
- * A region holding an Opener and the two fallback buttons, and beside it, outside the region, a
- * layer: Details' `aside`, holding a Close as Details holds its own, and inside it a dialog of
- * its own drawn as an `aside`, holding a Field. The props remove the Opener, as a write does
- * while the layer is open; remove the Close, the layer's own control; and close the layer.
+ * A popover a control of Details opens, as Edit labels opens its list: drawn on the page's body,
+ * outside the layer and the region, it takes the focus as it opens, and its Done closes it and
+ * gives the focus back to the control that opened it.
+ */
+function Popover({ onDone }: { onDone: () => void }) {
+  const first = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    first.current?.focus();
+  }, []);
+  return createPortal(
+    <div>
+      <button ref={first} type="button">
+        Label one
+      </button>
+      <button type="button">Label two</button>
+      <button onClick={onDone} type="button">
+        Done
+      </button>
+    </div>,
+    document.body
+  );
+}
+
+/**
+ * A region holding an Opener, a Details control and the two fallback buttons, and beside it,
+ * outside the region, a layer: Details' `aside`, holding a Close as Details holds its own, an
+ * Edit labels that opens a popover, and inside it a dialog of its own drawn as an `aside`,
+ * holding a Field. The Details control hides the layer, and cancels its mousedown so a press of
+ * it leaves the focus where it is, as the header's own does. The props remove the Opener, as a
+ * write does while the layer is open; remove the Close, the layer's own control; and close the
+ * layer.
  */
 function LayerRegion({
   close = true,
@@ -377,6 +405,9 @@ function LayerRegion({
   opener?: boolean;
 }) {
   const region = useRef<HTMLDivElement>(null);
+  const editLabels = useRef<HTMLButtonElement>(null);
+  const [popover, setPopover] = useState(false);
+  const [shut, setShut] = useState(false);
   useFocusKeeper(region, [
     ({ root }) => root.querySelector<HTMLElement>("[data-fallback='first']"),
     ({ root }) => root.querySelector<HTMLElement>("[data-fallback='second']"),
@@ -385,6 +416,13 @@ function LayerRegion({
     <>
       <div ref={region}>
         {opener ? <button type="button">Opener</button> : null}
+        <button
+          onClick={() => setShut(true)}
+          onMouseDown={(event) => event.preventDefault()}
+          type="button"
+        >
+          Details
+        </button>
         <button data-fallback="first" type="button">
           First fallback
         </button>
@@ -393,8 +431,19 @@ function LayerRegion({
         </button>
       </div>
       {layer === "removed" ? null : (
-        <aside hidden={layer === "hidden"} {...{ [DETAILS_ATTRIBUTE]: "" }}>
+        <aside hidden={layer === "hidden" || shut} {...{ [DETAILS_ATTRIBUTE]: "" }}>
           {close ? <button type="button">Close</button> : null}
+          <button onClick={() => setPopover(true)} ref={editLabels} type="button">
+            Edit labels
+          </button>
+          {popover ? (
+            <Popover
+              onDone={() => {
+                editLabels.current?.focus();
+                setPopover(false);
+              }}
+            />
+          ) : null}
           <aside role="dialog">
             <button type="button">Field</button>
           </aside>
@@ -522,6 +571,192 @@ test("a layer closed after the focus left a dialog inside it for the layer's Clo
       view.rerender(<LayerRegion layer="hidden" opener={false} />);
       await jump(1);
       expect(button("First fallback")).toHaveFocus();
+    });
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a layer that closes after a popover it opened gave the focus back hands the focus to the first fallback", async () => {
+  const view = render(<LayerRegion />);
+  try {
+    await onFakeClock(async () => {
+      const user = userOnFakeClock();
+      await openLayer();
+      // Edit labels opens its popover, which takes the focus outside the layer and the region.
+      await user.click(button("Edit labels"));
+      expect(button("Label one")).toHaveFocus();
+      // The reader presses another control of the popover, and a write removes the Opener.
+      await user.click(button("Label two"));
+      view.rerender(<LayerRegion opener={false} />);
+      await jump(1);
+      // Done closes the popover and gives the focus back into the layer.
+      await user.click(button("Done"));
+      expect(button("Edit labels")).toHaveFocus();
+      view.rerender(<LayerRegion layer="hidden" opener={false} />);
+      await jump(1);
+      expect(button("First fallback")).toHaveFocus();
+    });
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a layer that closes with the focus in a popover it opened hands the focus to the first fallback", async () => {
+  const view = render(<LayerRegion />);
+  try {
+    await onFakeClock(async () => {
+      const user = userOnFakeClock();
+      await openLayer();
+      await user.click(button("Edit labels"));
+      // A press inside the popover moves the focus within it, outside the layer: it puts no
+      // focus on the page.
+      await user.click(button("Label two"));
+      view.rerender(<LayerRegion opener={false} />);
+      await jump(1);
+      expect(button("Label two")).toHaveFocus();
+      // The layer closes with the focus still in its popover, which goes with it.
+      view.rerender(<LayerRegion layer="removed" opener={false} />);
+      expect(document.body).toHaveFocus();
+      await jump(1);
+      expect(button("First fallback")).toHaveFocus();
+    });
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a press that keeps the focus where it is and closes the layer is no move of the reader's, though its opener is gone", async () => {
+  const view = render(<LayerRegion />);
+  try {
+    await onFakeClock(async () => {
+      const user = userOnFakeClock();
+      await openLayer();
+      view.rerender(<LayerRegion opener={false} />);
+      await jump(1);
+      // The press on Details, outside the layer, leaves the focus on the layer's Close, and its
+      // click hides the layer.
+      await user.click(button("Details"));
+      await jump(1);
+      expect(button("First fallback")).toHaveFocus();
+    });
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a tap on the page before the layer closes is the reader's move, though its opener is gone", async () => {
+  const view = render(<LayerRegion />);
+  try {
+    await onFakeClock(async () => {
+      await openLayer();
+      view.rerender(<LayerRegion opener={false} />);
+      await jump(1);
+      // A tap on a blank part of the page: its pointer goes down and up with the focus still on
+      // the layer's Close, and only the mousedown the browser sends after it blurs the Close to
+      // the body, before its click. user-event moves the focus as its pointer goes down.
+      fireEvent.pointerDown(document.body);
+      fireEvent.pointerUp(document.body);
+      expect(button("Close")).toHaveFocus();
+      act(() => button("Close").blur());
+      // The tap's click comes last, on the same blank part of the page.
+      fireEvent.click(document.body);
+      view.rerender(<LayerRegion layer="removed" opener={false} />);
+      await jump(1);
+      expect(document.body).toHaveFocus();
+    });
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a layer that closes after the focus came back into the region moves no focus, though its opener is gone", async () => {
+  const view = render(<LayerRegion />);
+  try {
+    await onFakeClock(async () => {
+      await openLayer();
+      // The reader comes back into the region while the layer is open, and a `blur()` then puts
+      // the focus on the body, which no press did and which loses nothing of the region's.
+      act(() => button("Second fallback").focus());
+      act(() => button("Second fallback").blur());
+      await act(async () => {});
+      view.rerender(<LayerRegion opener={false} />);
+      await jump(1);
+      view.rerender(<LayerRegion layer="removed" opener={false} />);
+      await jump(1);
+      expect(document.body).toHaveFocus();
+    });
+  } finally {
+    view.unmount();
+  }
+});
+
+/**
+ * A region whose Opener stands in a box beside the box's Chip, alone or inside a wrapper of its
+ * own that goes with it, and beside the region a layer with a Close. The keeper's first fallback
+ * finds the Chip from where the Opener stood, and adds each place it reads to `places`.
+ */
+function PlaceLayerRegion({
+  layer = "open",
+  opener = true,
+  places,
+  wrapped,
+}: {
+  layer?: LayerState;
+  opener?: boolean;
+  places: (HTMLElement | null)[];
+  wrapped: boolean;
+}) {
+  const region = useRef<HTMLDivElement>(null);
+  useFocusKeeper(region, [
+    ({ place }) => {
+      places.push(place);
+      return place?.closest("[data-box]")?.querySelector("button");
+    },
+    ({ root }) => root.querySelector<HTMLElement>("[data-fallback='first']"),
+  ]);
+  const control = <button type="button">Opener</button>;
+  const drawn = wrapped ? <span>{control}</span> : control;
+  return (
+    <>
+      <div ref={region}>
+        <div data-box>
+          {opener ? drawn : null}
+          <button type="button">Chip</button>
+        </div>
+        <button data-fallback="first" type="button">
+          First fallback
+        </button>
+      </div>
+      {layer === "removed" ? null : (
+        <aside hidden={layer === "hidden"} {...{ [DETAILS_ATTRIBUTE]: "" }}>
+          <button type="button">Close</button>
+        </aside>
+      )}
+    </>
+  );
+}
+
+test.each([
+  ["alone", false],
+  ["inside a wrapper that goes with it", true],
+] as const)("a layer that closes after a write removed its opener, %s, hands the focus to the control beside where it stood", async (_where, wrapped) => {
+  const places: (HTMLElement | null)[] = [];
+  const view = render(<PlaceLayerRegion places={places} wrapped={wrapped} />);
+  try {
+    await onFakeClock(async () => {
+      const box = document.querySelector("[data-box]");
+      await openLayer();
+      view.rerender(<PlaceLayerRegion opener={false} places={places} wrapped={wrapped} />);
+      await jump(1);
+      view.rerender(
+        <PlaceLayerRegion layer="removed" opener={false} places={places} wrapped={wrapped} />
+      );
+      await jump(1);
+      // The place is the box the Opener, or the wrapper it went with, was taken out of.
+      expect(places).toHaveLength(1);
+      expect(places[0]).toBe(box);
+      expect(button("Chip")).toHaveFocus();
     });
   } finally {
     view.unmount();
