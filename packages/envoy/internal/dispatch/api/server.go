@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -831,6 +832,12 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 	// addresses its row by, one value for both (resolveIDPrefixes, project_scope.go).
 	handler = s.resolveIDPrefixes(route, handler)
 	handler = s.refuseUnstorableParameters(route.Pattern, handler)
+	// One layer for the whole table rather than a call in each handler. A row a child adds is held
+	// once it declares its parameters, which every row must (shapelessRoutes). It stands outside
+	// every layer that reads the query, and outside the handler, so it runs before any read of the
+	// query by construction. And it refuses a repeated key no route declares as it refuses a
+	// declared one-value key, so no handler answers a repeat for its first value.
+	handler = s.refuseRepeatedQueryKeys(route, handler)
 	if len(route.OAuthScopes) > 0 {
 		// Ahead of the keyed layer and the project and session checks, so the row's own
 		// scopes are the first thing a request is held to once the read-only gate outside it
@@ -878,6 +885,43 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 	// wire. The two websockets register mounts beside the table carry no compressed answer: the
 	// upgrade is not a body, and the frames after it are the socket's (compressAnswers).
 	return accesslog.HandlerFunc(route.Pattern, compressAnswers(s.decideBrokerToken(trackTransactions(handler))))
+}
+
+// refuseRepeatedQueryKeys serves handler only when the request's query names no key more than
+// once other than the keys route's shape declares as lists, its Params' slice fields. Any other
+// key named twice - one the shape declares for one value, or one it does not declare at all - is
+// 400 INVALID_QUERY naming it (repeatedQueryKey), the first such key in name order, so the key a
+// refusal names does not depend on the order a map is walked in. The list keys are read once, when
+// the row is mounted; a row whose shape declares no Params declares no list.
+func (s *server) refuseRepeatedQueryKeys(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
+	var lists []string
+	if params := routeShapes[route.Method+" "+route.Pattern].Params; params != nil {
+		oneValue := oneValueQueryKeys(params)
+		for _, key := range queryKeysOf(params) {
+			if !slices.Contains(oneValue, key) {
+				lists = append(lists, key)
+			}
+		}
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.RawQuery == "" {
+			handler(w, r)
+			return
+		}
+		query := r.URL.Query()
+		keys := make([]string, 0, len(query))
+		for key := range query {
+			if !slices.Contains(lists, key) {
+				keys = append(keys, key)
+			}
+		}
+		slices.Sort(keys)
+		if err := repeatedQueryKey(query, keys); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		handler(w, r)
+	}
 }
 
 // liveSocketPattern is the path of the live socket, which register mounts beside the table.
@@ -1448,8 +1492,9 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 // when the body names the session the credential proved; a session the body alone names is not
 // proven.
 //
-// Only those routes read it: decodeJSON refuses an unknown field, so a body actor on a route
-// whose input struct does not declare one is a 400, and four of the mutating rows a person's
+// Only those routes read it: decodeJSON ignores a member its input struct does not declare and
+// logs it at debug (logUndeclaredMembers), so a body actor on a route whose input struct does not
+// declare one is ignored and logged, not refused, and four of the mutating rows a person's
 // scope opened are DELETEs with no body at all. A browser's actor names no agent (act is nil),
 // so there is nothing for a body to name, and its body actor is ignored here as it always was.
 func actSessionFromBody(w http.ResponseWriter, actor model.Actor, supplied *model.Actor) (model.Actor, bool) {
