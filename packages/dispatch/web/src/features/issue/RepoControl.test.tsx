@@ -830,3 +830,26 @@ test("the issue header's Repository trigger ends in the shared chevron, as every
     }
   }
 });
+
+// The badge's tooltip says what the badge means rather than the picked row's text, which is
+// Inherit for every issue with no repository of its own: an inherited repository is inherited or
+// the project's default, an issue's own repository is itself, and "No repository" says all there
+// is, so it shows none.
+test("the issue header's Repository badge's tooltip says what the badge means, never the Inherit row's text", async () => {
+  for (const [own, want] of [
+    [{ repo: null, resolvedRepo: "acme/widgets" }, "Inherited or the project's default"],
+    [{ repo: "acme/gadgets", resolvedRepo: "acme/gadgets" }, "acme/gadgets"],
+    [{ repo: null, resolvedRepo: null }, ""],
+  ] as const) {
+    const { unmount } = renderControl({ ...own });
+    try {
+      const shown = await screen.findByRole("button", { name: pickNamed(REPOSITORY) });
+      expect(
+        shown.querySelector(".truncate"),
+        `${own.repo ?? (own.resolvedRepo === null ? "no repository" : "inherited")}: the trigger's text`
+      ).toHaveAttribute("title", want);
+    } finally {
+      unmount();
+    }
+  }
+});

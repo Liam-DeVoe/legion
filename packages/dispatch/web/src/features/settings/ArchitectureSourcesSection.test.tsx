@@ -1,11 +1,10 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
-import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { listOf, panelOf, textBoxes } from "../../__tests__/list-picks";
+import { listOf, panelOf, pickFromLabelled, textBoxes } from "../../__tests__/list-picks";
 import { ApiError, api } from "../../api/client";
 import type { ArchitectureSource, Project } from "../../api/types";
 import { ArchitectureSourcesSection } from "./ArchitectureSourcesSection";
@@ -30,14 +29,6 @@ const core: Project = {
   open_asks: 0,
   gated_steps: [],
 };
-
-/** Picks `name` from the Source project list: its trigger is found by its label, and the option
- *  in the panel the trigger names, since the list is portalled out of the section. */
-async function pickSourceProject(user: UserEvent, name: string): Promise<void> {
-  const trigger = await screen.findByLabelText("Source project");
-  await user.click(trigger);
-  await user.click(within(panelOf(trigger)).getByRole("option", { name }));
-}
 
 /** The architecture source routes' server state as the Settings page reaches it: one row per
  *  project and repository, listed in the order they were added; a save of a repository the
@@ -107,7 +98,7 @@ test("a human adds an architecture source and the verified row appears", async (
     const section = within(await screen.findByRole("region", { name: "Architecture sources" }));
     expect(await section.findByText("No architecture sources yet.")).toBeDefined();
 
-    await pickSourceProject(user, "CORE · Core");
+    await pickFromLabelled(user, "Source project", "CORE · Core");
     await user.click(section.getByLabelText("Source repository"));
     await user.paste("legion/arch");
     await user.click(section.getByRole("button", { name: "Add source" }));
@@ -158,7 +149,7 @@ test("a failed architecture source access check shows the server's reason inline
     );
 
     const section = within(await screen.findByRole("region", { name: "Architecture sources" }));
-    await pickSourceProject(user, "CORE · Core");
+    await pickFromLabelled(user, "Source project", "CORE · Core");
     await user.click(section.getByLabelText("Source repository"));
     await user.paste("legion/arch");
     await user.click(section.getByRole("button", { name: "Add source" }));
@@ -258,7 +249,7 @@ test("each architecture source of a project is its own row, refreshed and delete
     expect(section.getByRole("cell", { name: "acme/infra" })).toBeDefined();
 
     // Saving a repository the project already has changes that source's branch: still one row.
-    await pickSourceProject(user, "CORE · Core");
+    await pickFromLabelled(user, "Source project", "CORE · Core");
     await user.click(section.getByLabelText("Source repository"));
     await user.paste("acme/infra");
     await user.clear(section.getByLabelText("Branch"));
@@ -382,7 +373,7 @@ test("with no project picked, Add source files nothing and says to choose a proj
     expect(view.putArchitectureSource, "a source was saved for no project").not.toHaveBeenCalled();
     expect(section.getByRole("alert")).toHaveTextContent("Choose a project.");
 
-    await pickSourceProject(user, "CORE · Core");
+    await pickFromLabelled(user, "Source project", "CORE · Core");
     expect(section.queryByRole("alert")).toBeNull();
     await user.click(section.getByRole("button", { name: "Add source" }));
     await waitFor(() =>

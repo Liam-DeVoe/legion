@@ -25,6 +25,7 @@ import {
   toggleAgentGroup,
 } from "./agents";
 import {
+  answerAsk,
   createAgentMessage,
   createAsk,
   createComment,
@@ -91,6 +92,7 @@ import {
 } from "./inbox-view";
 import { leaveFocus } from "./keyboard-issue";
 import { searchPath } from "./keyboard-palette";
+import { seedLegionDaemon } from "./legion-seed";
 import { bulkSnoozeMenu, bulkSnoozeTrigger, choiceOf, menuOf, pickFromMenu } from "./menus";
 import { sql } from "./psql";
 import { sessionIds } from "./session-ids";
@@ -618,9 +620,10 @@ function stripAtRest(strip: Locator): Promise<number> {
 
 /** Sixteen narrowings over the long Inbox that keep all twenty-two of its items: its four
  *  priorities and four urgencies, four kinds, and four projects of which CORE holds them all (the
- *  address keeps a project key no project has, which matches no row). Their chips are more than
- *  the row shows whole at once at any of `READING_WIDTHS`, and none is wider than the nine
- *  chips' widest, `Urgency: Blocking`, so each fits between the scroll buttons at 390 px. */
+ *  address keeps three project keys no project has, EDGE, MESH and PIER, which match no row).
+ *  Their chips are more than the row shows whole at once at any of `READING_WIDTHS`, and none is
+ *  wider than the nine chips' widest, `Urgency: Blocking`, so each fits between the scroll
+ *  buttons at 390 px. */
 const SIXTEEN_NARROWINGS = `/?${[
   "priority=P0,P1,P2,P3",
   "urgency=blocking,high,med,low",
@@ -2416,6 +2419,7 @@ test("the Agents page keeps every narrowing, grouping, count, key, pin and broad
   const main = page.getByTestId("main-content");
   const titles = shownAgentRows(page).locator("h2");
   const planner = agentRow(page, KEPT_AGENT.planner);
+  const plannerToggle = planner.getByRole("button", { exact: true, name: "Planner" });
   const reviewer = agentRow(page, KEPT_AGENT.reviewer);
   const tester = agentRow(page, KEPT_AGENT.tester);
   const everyRow = ["Planner", "Reviewer", "Auditor", "Tester", "Sleeper"];
@@ -2502,7 +2506,7 @@ test("the Agents page keeps every narrowing, grouping, count, key, pin and broad
   // shut again, and the focus left in it.
   await unread.click();
   await expect(unread, "opening the row left its replies unread").toHaveCount(0);
-  await planner.getByRole("button", { exact: true, name: "Planner" }).click();
+  await plannerToggle.click();
 
   // The page's own keys. `/` is the page's search box, shadowing the global search bar; `j` from
   // the box takes the first row, the one the press above left the focus in.
@@ -2554,7 +2558,6 @@ test("the Agents page keeps every narrowing, grouping, count, key, pin and broad
   // The read mark, read where the page draws it. The Planner answers a second message while its
   // row is shut, which marks nothing read, so its badge counts that one reply; a mark that was
   // lost would count the first reply too.
-  const plannerToggle = planner.getByRole("button", { exact: true, name: "Planner" });
   await plannerToggle.click();
   await expect(plannerToggle, "the Planner's row did not shut").toHaveAttribute(
     "aria-expanded",
@@ -3157,24 +3160,17 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
   await chips.filter({ hasText: "Priority: P0" }).click();
   await expect(listed).toHaveCount(rows.length);
 
-  // The six sorts, under no banding, and the seven groupings.
-  const assigneeOf = new Map(rows.map((row) => [row.id, row.assignee]));
+  // The six sorts, under no banding, and the seven groupings. Each sort's order is the client's
+  // (`sortRows`, `features/inbox/grouping.ts`), the assignee's as much as the others', which
+  // `sortedIds` models from the seed.
   await displayChoice(await openDisplay(page, peek), "Group by", "none").click();
   for (const sort of ["newest", "priority", "urgency", "type", "project", "assignee"] as const) {
     const menu = await openDisplay(page, peek);
     await displayChoice(menu, "Sort by", sort).click();
     await expect(displayChoice(menu, "Sort by", sort)).toBeChecked();
-    if (sort !== "assignee") {
-      await expect
-        .poll(() => drawnIds(peek), { message: `the drawer's ${sort} sort` })
-        .toEqual(sortedIds(rows, sort, at));
-      continue;
-    }
-    // Each person's rows together, the order of the people being the server's.
-    const runs = (await drawnIds(peek))
-      .map((id) => assigneeOf.get(id))
-      .filter((person, index, all) => index === 0 || person !== all[index - 1]);
-    expect(runs, "the drawer's assignee sort").toEqual([...new Set(runs)]);
+    await expect
+      .poll(() => drawnIds(peek), { message: `the drawer's ${sort} sort` })
+      .toEqual(sortedIds(rows, sort, at));
   }
   for (const group of [
     "priority",
@@ -3401,28 +3397,30 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
   await expect(peek).toHaveCount(0);
 });
 
-/** The classes of the project page's `Blocked on you · N` pill at the merge base,
- *  6ef60ff0ceeba4ccaf285f06f5bbe9b859b2e4d8, as a sorted set of tokens, so neither their order
- *  nor a repeat is read. That commit's `web/dist` was served by `DISPATCH_E2E_SERVER_WEB_DIST`
- *  (e2e/run-server.sh) over the row below's seed, and the pill's `textContent` and its `href`
- *  and `class` attributes were read at 1440x900 on `/projects/CORE/issues`: they answered
- *  `Blocked on you · 3`, `/` and the `class` these tokens make. Its colours are written by the
- *  three roles that base's `BlockedOnYou.tsx` drew them with, because no file here may write a
- *  colour utility of its own (`web/src/theme/no-raw-colors.test.ts`); `theme/classes.ts` gives
- *  each the value the base read. */
-const PILL_CLASSES_AT_THE_BASE = [
-  ...new Set(
-    [
-      "order-3 shrink-0 md:order-5 inline-flex min-h-11 items-center rounded-full px-3 text-xs",
-      "font-medium md:min-h-9 md:px-2",
-      theme.surfaceMutedStrongBg,
-      theme.textSecondaryOnSurface,
-      theme.textSecondaryHoverToPrimary,
-    ]
-      .join(" ")
-      .split(" ")
-  ),
-].sort();
+/** A `class` attribute's tokens as a sorted set, so neither their order nor a repeat is read. */
+function classTokens(text: string): string[] {
+  return [...new Set(text.split(/\s+/).filter((token) => token !== ""))].sort();
+}
+
+/** The classes of the project page's `Blocked on you · N` pill at
+ *  6ef60ff0ceeba4ccaf285f06f5bbe9b859b2e4d8, the merge base when they were read, as a sorted set
+ *  of tokens, so neither their order nor a repeat is read. That commit's `web/dist` was served by
+ *  `DISPATCH_E2E_SERVER_WEB_DIST` (e2e/run-server.sh) over the row below's seed, and the pill's
+ *  `textContent` and its `href` and `class` attributes were read at 1440x900 on
+ *  `/projects/CORE/issues`: they answered `Blocked on you · 3`, `/` and the `class` these tokens
+ *  make. Its colours are written by the three roles that base's `BlockedOnYou.tsx` drew them
+ *  with, because no file here may write a colour utility of its own
+ *  (`web/src/theme/no-raw-colors.test.ts`); `theme/classes.ts` gives each the value the base
+ *  read. */
+const PILL_CLASSES_AT_THE_BASE = classTokens(
+  [
+    "order-3 shrink-0 md:order-5 inline-flex min-h-11 items-center rounded-full px-3 text-xs",
+    "font-medium md:min-h-9 md:px-2",
+    theme.surfaceMutedStrongBg,
+    theme.textSecondaryOnSurface,
+    theme.textSecondaryHoverToPrimary,
+  ].join(" ")
+);
 
 // SLOW(>=2s): a seeded inbox of asks, threads and one credential request, read twice.
 test("the control in the row carries what the banner carried, and narrows the Inbox to what waits on the reader", async ({
@@ -3533,7 +3531,7 @@ test("the control in the row carries what the banner carried, and narrows the In
   // The pill's words were waited for above, so the classes read are the ones it is drawn with.
   const pillClass = (await pill.getAttribute("class")) ?? "";
   expect(
-    [...new Set(pillClass.split(/\s+/).filter((token) => token !== ""))].sort(),
+    classTokens(pillClass),
     "the project page's pill wears other classes than it wore at the base"
   ).toEqual(PILL_CLASSES_AT_THE_BASE);
 });
@@ -3578,6 +3576,9 @@ test("every table with no controls draws its rows in the shared markup and offer
       record_id: "bb22cc33dd44ee55ff6677889900aa11bb22cc33dd44ee55ff6677889900aa11",
     },
   ]);
+  // A daemon named for a project of its own, so the Legion daemons table draws a row of it
+  // rather than its empty line.
+  await seedLegionDaemon("http://legion.acme.internal:9731");
 
   /** Reads one plain table: it is inside the shared markup, it has rows, and it offers no
    *  search box, no panel trigger and no sort control of its own. */
@@ -3793,20 +3794,20 @@ async function drawnItems(items: Locator, list: string): Promise<DrawnItem[]> {
 }
 
 /**
- * What R8's four lists drew at the merge base, `fork_point(main@origin | @)`, commit
- * 6ef60ff0ceeba4ccaf285f06f5bbe9b859b2e4d8, in each project the row runs in: `chromium` at
- * 1440x900 and `iphone` at its own 390x664.
+ * What R8's four lists drew at commit 6ef60ff0ceeba4ccaf285f06f5bbe9b859b2e4d8, which was the
+ * merge base, `fork_point(main@origin | @)`, when this reading was made, in each project the row
+ * runs in: `chromium` at 1440x900 and `iphone` at its own 390x664.
  *
  * Measured, not written from the code. That commit's `packages/dispatch/web` was built in a
  * scratch tree by `vite build` with this workspace's `node_modules`; outside `web/src` only
- * documents, CI and tests differ between that commit and this change, so the server, the
- * contracts and the build are this change's own. The build was served to this row in place of
- * `web/dist` by `DISPATCH_E2E_SERVER_WEB_DIST` (e2e/run-server.sh), over the row's own seed, and
- * the row was run over it in both projects: `drawnItems` read each list until its reading was
- * the one written here, and a list whose reading never was would have been printed with each
- * value it drew instead. Every list's was, in both projects. The Delivery list's rows are found by
- * `tbody tr[aria-rowindex]`, because the base's carry no `data-pr-row`: both builds write
- * `aria-rowindex` on each pull request's row in the list's body.
+ * documents, CI and tests differed between that commit and the head the reading ran at, so the
+ * server, the contracts and the build were that head's own. The build was served to this row in
+ * place of `web/dist` by `DISPATCH_E2E_SERVER_WEB_DIST` (e2e/run-server.sh), over the row's own
+ * seed, and the row was run over it in both projects: `drawnItems` read each list until its
+ * reading was the one written here, and a list whose reading never was would have been printed
+ * with each value it drew instead. Every list's was, in both projects. The Delivery list's rows
+ * are found by `tbody tr[aria-rowindex]`, because the base's carry no `data-pr-row`: both builds
+ * write `aria-rowindex` on each pull request's row in the list's body.
  *
  * Every size kept as a number is one the CSS fixes, which a runner with other fonts draws the
  * same: none moved when this pod drew the lists in three other fonts (`linedHeights`). The Board
@@ -4044,10 +4045,11 @@ const ASSIGNEE_BADGE = 32;
 
 /** The issue header's `Repository:` line in its details rail from `md`, around the shared list
  *  trigger's wrapper: the 28 px of that wrapper (`badgeSelectRailWrapper`'s `md:min-h-7`), which
- *  the trigger overhangs below 1280 px (`badgeSelectRailTrigger`). The reference is the shared
- *  trigger's box, not the base's: at 6ef60ff0 the line holds main's visible text box, which this
- *  change replaces with the shared list's trigger, and the same read of that line, this row's run
- *  over that commit's build, measured 44 px at 1024x768. */
+ *  the trigger overhangs below 1280 px (`badgeSelectRailTrigger`). The reference is the head's own
+ *  shared trigger box, not a reading at the base: R3's intended difference from main's visible
+ *  text box, which this change replaces with the shared list's trigger. At 6ef60ff0, the merge
+ *  base when that line was read, the line holds that text box, and the same read of that line,
+ *  this row's run over that commit's build, measured 44 px at 1024x768. */
 const REPOSITORY_LINE = 28;
 
 // R8: "The rows, the cards, the reading pane and the panes' widths do not change." The Inbox's
@@ -4249,7 +4251,7 @@ test.describe("R8's rows and cards", () => {
     }
     expect(
       changed,
-      "a card or row draws other parts, or a box of another size, than it drew at the base"
+      "a card or row draws other parts, or a box of another size, than it drew at the base, or the Repository line is not the shared trigger's box"
     ).toEqual([]);
   });
 });
@@ -6287,6 +6289,89 @@ test("Add a priority opens its form in view with the focus on Priority to advanc
       if (placed !== "whole") {
         wrong.push(`${at}: Priority to advance stands ${placed}, out of the window or the rail`);
       }
+    }
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+// SLOW(>=2s): one issue's Conversation at two widths, its decided ask changed four times.
+// INFRA-3135, round 14 (the tester's, measured in builds Job infra-3135-r14flake at aa057a19):
+// Change answer on a decided ask takes itself away and puts the answer form in its place, as
+// Add a priority's + does, and the page's rescue decides where the focus lands. At the merge
+// base d85d81e6 the focus falls to the body in all three engines; at aa057a19 Chromium puts it
+// on the turn's 'Open live conversation' link, and Firefox and WebKit on the session button or
+// Pin, scrolling the page 65 px at 1440 on a click, so it lands on a control the reader did not
+// press and that differs by engine. The architect's hand-off ruling (2026-11-18T11:17Z) gives the
+// landing: the control now at the pressed one's place, the form's own first control. A focused
+// control taken away, for which these engines fire no `focusout`: the clause of the `webkit`
+// and `firefox` projects that names the page-own focus row (e2e/playwright.config.ts). By a
+// press of Enter and by a click, at 1440 and 390: the focus is in the answer form, whose first
+// choice stands whole in the window.
+test("Change answer opens the answer form with the focus in it, at 1440 and 390 @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Release train" });
+  const ask = await createAsk(
+    issue.key,
+    { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship it?" },
+    SURFACE_SESSION
+  );
+  await answerAsk(ask.id, { expected_edited_at: null, selected: ["Ship"] });
+  const wrong: string[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    for (const press of ["Enter", "click"] as const) {
+      const at = `${size.width}x${size.height}, by ${press}`;
+      await page.goto(`/issues/${issue.key}/conversation`);
+      const turn = page.locator(`[data-turn="ask:${ask.id}"]`);
+      await expect(turn).toContainText("Answered by alice");
+      const change = turn.getByRole("button", { name: "Change answer" });
+      await change.scrollIntoViewIfNeeded();
+      if (press === "Enter") {
+        await change.focus();
+        await page.keyboard.press("Enter");
+      } else {
+        await change.click();
+      }
+      const form = turn.locator("form").filter({ has: page.getByRole("radio", { name: "Ship" }) });
+      await expect(form, `${at}: Change answer opened no answer form`).toBeVisible();
+      const inForm = await expect(form.locator(":focus"))
+        .toHaveCount(1)
+        .then(
+          () => true,
+          () => false
+        );
+      if (!inForm) {
+        const holder = await page.evaluate(
+          () =>
+            `${document.activeElement?.tagName.toLowerCase()} "${document.activeElement?.getAttribute("aria-label") ?? document.activeElement?.textContent?.trim().slice(0, 40)}"`
+        );
+        wrong.push(`${at}: the focus is on ${holder}, not in the answer form`);
+      }
+      const ship = form.getByRole("radio", { name: "Ship" });
+      const whole = await expect
+        .poll(() =>
+          ship.evaluate((node) => {
+            const box = node.getBoundingClientRect();
+            return (
+              box.top >= 0 &&
+              box.bottom <= window.innerHeight &&
+              box.left >= 0 &&
+              box.right <= window.innerWidth
+            );
+          })
+        )
+        .toBe(true)
+        .then(
+          () => true,
+          () => false
+        );
+      if (!whole) wrong.push(`${at}: the form's first choice, Ship, is not whole in the window`);
     }
   }
   expect(wrong, wrong.join("; ")).toEqual([]);

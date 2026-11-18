@@ -1,12 +1,4 @@
-import {
-  type KeyboardEvent,
-  type ReactNode,
-  useEffect,
-  useId,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
+import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
 
 import {
   borderDefault,
@@ -102,12 +94,6 @@ interface SharedProps {
   /** The trigger is busy with what the last close committed: it stays focusable, and says so
    *  rather than looking actionable and doing nothing. */
   readonly ariaDisabled?: boolean;
-  /** Takes the focus on its trigger as it is drawn, when the focus is lost then: a list that is
-   *  the first control of a form the reader opened with a control the form takes the place of,
-   *  as **Add a priority**'s does, whose press took the focus away with that control. A list drawn
-   *  while the focus is anywhere else takes none, so a form drawn again without a press (a
-   *  remount on a live update) never pulls the focus from where the reader is. */
-  readonly autoFocus?: boolean;
   /** Shown under the list, e.g. a host's validation message for a rejected `onCreate`. */
   readonly error?: string | null;
   /** Shown in place of the list when nothing is left to choose or nothing matches the search. A
@@ -153,6 +139,11 @@ interface SharedProps {
    *  stands in a `<select>`'s place and has to take its box, the text's line is the place to
    *  say so (`features/settings/classes.ts`, `settingsListText`). */
   readonly triggerTextClassName?: string;
+  /** The `title` of the element that holds the trigger's text, beside the chevron, in place of
+   *  a single pick's picked row text: for a host whose children mean more than that row says, as
+   *  the issue header's Repository badge names the repository an issue inherits where its picked
+   *  row reads Inherit. An empty string shows no tooltip. */
+  readonly triggerTitle?: string;
 }
 
 /** Any number of values: a row ticks or unticks its value, and a `Clear` foot empties them. */
@@ -218,7 +209,6 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   const {
     ariaDisabled = false,
     children,
-    autoFocus = false,
     chevron = true,
     control,
     createLabel = (value: string) => `Create "${value}"`,
@@ -240,6 +230,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     triggerAriaLabel,
     triggerClassName = `rounded-lg border text-sm font-semibold ${controlPadding[size]} ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`,
     triggerTextClassName = "",
+    triggerTitle,
   } = props;
   const single = props.mode === "single";
   // What is picked now, a single pick's value as a list of one, so both modes read it alike.
@@ -265,13 +256,6 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // trigger opens it as a click does, on the value picked with an empty search.
   const openedBy = useRef<{ readonly key?: string; readonly query: string } | undefined>(undefined);
   const keysOnTrigger = props.mode === "single" && props.keysOnTrigger === true;
-  // In the commit that draws the list, so the focus is on its trigger before the browser hands a
-  // focus the commit took away to the page: Firefox and WebKit report that loss only afterwards,
-  // and the page's rescue then lands it elsewhere. Only a lost focus is taken (`focusLost`, which
-  // reads a focus still on the removed control as lost): one the reader holds elsewhere stays.
-  useLayoutEffect(() => {
-    if (autoFocus && focusLost()) triggerRef.current?.focus();
-  }, [autoFocus]);
 
   const searchText = query.trim();
   const needle = fold(searchText);
@@ -462,10 +446,14 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
           // gets: a block from its host's classes, or the flex box `styles.css` makes every
           // button below 1280 px, whose own text ends in no ellipsis (`TruncatedText`). The text
           // takes the room the chevron leaves and ends in an ellipsis where that is too little
-          // (a single pick's whole value is its `title`), and the chevron stays whole at the
-          // trigger's end, at the right edge of a trigger as wide as its box.
+          // (a single pick's whole value is its `title`, unless its host passes its own), and the
+          // chevron stays whole at the trigger's end, at the right edge of a trigger as wide as
+          // its box.
           <span className="flex min-w-0 grow items-center gap-1" id={single ? shownId : undefined}>
-            <TruncatedText className={`min-w-0 grow ${triggerTextClassName}`} title={pickedLabel}>
+            <TruncatedText
+              className={`min-w-0 grow ${triggerTextClassName}`}
+              title={triggerTitle ?? pickedLabel}
+            >
               {triggerText}
             </TruncatedText>
             <ChevronIcon expanded={open} />

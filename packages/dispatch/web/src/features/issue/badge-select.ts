@@ -33,7 +33,7 @@ const badgeSelectTriggerFrame =
 export const badgeSelectTrigger = `${badgeSelectTriggerFrame} md:max-xl:-my-1.5`;
 /** The same trigger in `badgeSelectRailWrapper` (the issue header's repository), which is 28 px
  *  from `md`: there the 44 px trigger overhangs it by 8 px above and below, so the rail's line is
- *  the 28 px it was when a native select lay over the badge. */
+ *  28 px from `md` (`md:min-h-7`), the height of the rail's other controls. */
 export const badgeSelectRailTrigger = `${badgeSelectTriggerFrame} md:max-xl:-my-2`;
 
 /** The handlers a badge-select wrapper spreads when its list reads its options only once the

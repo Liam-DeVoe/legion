@@ -351,10 +351,12 @@ const parallelProjects = [
   // A focused control taken away, itself or with a parent, which the HTML spec's focus fixup
   // does with no `focusout`, so the page's focus rescue sees it only by watching the page:
   // `table-controls`'s page-own focus row, its row whose focused row a live update takes
-  // away, and its row that Add a priority opens its form in view with the focus on Priority to
-  // advance, whose `+` takes itself away. Measured in WebKit as well as Firefox: neither fires a
-  // `focusout` for it. And a table scrolled while one of its rows holds the focus, whose row the
-  // virtual list takes away out of sight: `table-controls`'s scrolling-table row.
+  // away, its row that Add a priority opens its form in view with the focus on Priority to
+  // advance, whose `+` takes itself away, and its row that Change answer opens the answer form
+  // with the focus in it, whose button takes itself away. Measured in WebKit as well as Firefox:
+  // neither fires a `focusout` for it. And a table scrolled while one of its rows holds the
+  // focus, whose row the virtual list takes away out of sight: `table-controls`'s
+  // scrolling-table row.
   // The engine's own Tab order - a stop for each field of a date box, one for a radio group -
   // which decides when a Tab leaves a panel's last control, where the panel puts the focus on its
   // trigger: `table-controls`'s row that Tab and Escape never leave a panel for the page behind
@@ -445,8 +447,9 @@ const parallelProjects = [
   // A focused control taken away, itself or with a parent, for which this engine fires no
   // `focusout`, so the page's focus rescue sees it only by watching the page: `table-controls`'s
   // page-own focus row, its row whose focused row a live update takes away, its row that Add a
-  // priority opens its form in view with the focus on Priority to advance, and its
-  // scrolling-table row, whose focused row a scroll takes away.
+  // priority opens its form in view with the focus on Priority to advance, its row that Change
+  // answer opens the answer form with the focus in it, and its scrolling-table row, whose focused
+  // row a scroll takes away.
   // The engine's own Tab order - a stop for each field of a date box, one for a radio group -
   // which decides when a Tab leaves a panel's last control, where the panel puts the focus on its
   // trigger: `table-controls`'s row that Tab and Escape never leave a panel for the page behind

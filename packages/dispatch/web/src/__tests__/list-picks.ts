@@ -60,3 +60,17 @@ export async function pick(user: UserEvent, label: string, name: string): Promis
   const list = await openList(user, label);
   await user.click(await within(list).findByRole("option", { name }));
 }
+
+/** Picks the row named `name` from the list whose trigger is labelled `label`. The trigger is
+ *  awaited, since the form that holds it may not be drawn yet (a host may draw it only once its
+ *  own reads answer), and the row is found in the panel the trigger names, since the list is
+ *  portalled out of the host's container. */
+export async function pickFromLabelled(
+  user: UserEvent,
+  label: string,
+  name: string
+): Promise<void> {
+  const trigger = await screen.findByLabelText(label);
+  await user.click(trigger);
+  await user.click(within(panelOf(trigger)).getByRole("option", { name }));
+}

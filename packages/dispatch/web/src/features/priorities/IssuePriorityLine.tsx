@@ -56,11 +56,13 @@ function priorityLabels(rows: readonly PriorityRow[]): ReadonlyMap<string, strin
  * priorities to choose from is read only once the line has an entry to name or the control is
  * open, as the components line reads the architecture tree only while its picker is open.
  *
- * The control adds in two steps. `+` opens a small form: its Priority to advance is the shared
- * list's single pick (`MultiSelect`), whose text box narrows the priorities as the reader types,
- * and a pick stages the priority there; Add writes it, and Cancel drops it. The list says the
- * priorities are loading while their read is out, and that they could not be loaded where it
- * failed.
+ * The control adds in two steps. `+` opens a small form in its own place: its Priority to
+ * advance is the shared list's single pick (`MultiSelect`), whose text box narrows the priorities
+ * as the reader types, and a pick stages the priority there; Add writes it, and Cancel drops it.
+ * The press takes the focus away with the `+`, and the page's focus rescue lands it on the form's
+ * first control, the list's trigger, with no scroll, since the form stands where the `+` stood
+ * (`components/focus-place.ts`). The list says the priorities are loading while their read is
+ * out, and that they could not be loaded where it failed.
  */
 export function IssuePriorityLine({
   disabled,
@@ -158,9 +160,6 @@ export function IssuePriorityLine({
       ) : adding ? (
         <form className="flex shrink-0 items-center gap-2" onSubmit={add}>
           <MultiSelect
-            // The form takes the place of the `+` that opened it, which takes the focus away with
-            // it: the form's first control is where the focus goes, in view.
-            autoFocus
             emptyMessage={
               priorities.isPending
                 ? "Loading priorities…"

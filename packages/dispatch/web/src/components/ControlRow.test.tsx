@@ -1,13 +1,13 @@
 import { expect, mock, spyOn, test } from "bun:test";
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactNode, useState } from "react";
 
+import { afterRescue, RescuedMain } from "../__tests__/focus-rescue";
 import { KeymapProvider } from "../features/shell/KeymapProvider";
 import { appKeymap, type KeymapScope, useKeymapScope } from "../features/shell/keymap";
 import { ControlRow, type ControlRowProps } from "./ControlRow";
 import { DisplayMenu } from "./DisplayMenu";
-import { useFocusRescue } from "./focus-place";
 import { PanelTrigger } from "./PanelTrigger";
 
 /**
@@ -589,10 +589,8 @@ test("a page's own control that takes itself away hands the focus to the next co
 /** The shell's main content holding a row whose page slot draws exactly `names`, as a live update
  *  leaves them, with the page's focus rescue mounted on it as `app.tsx` mounts it. */
 function LivePage({ names }: { names: readonly string[] }) {
-  const main = useRef<HTMLElement>(null);
-  useFocusRescue(main);
   return (
-    <main ref={main}>
+    <RescuedMain>
       <ControlRow
         trigger={
           <button data-control="panel-trigger" type="button">
@@ -606,23 +604,8 @@ function LivePage({ names }: { names: readonly string[] }) {
           </button>
         ))}
       </ControlRow>
-    </main>
+    </RescuedMain>
   );
-}
-
-/** Lets the rescue's own check run: a frame and then a task after a loss, so a frame and two
- *  zero-delay turns of the event loop here come after it. */
-async function afterRescue(): Promise<void> {
-  await act(async () => {
-    const drawn = Promise.withResolvers<void>();
-    requestAnimationFrame(() => drawn.resolve());
-    await drawn.promise;
-    for (const _ of [0, 1]) {
-      const turn = Promise.withResolvers<void>();
-      setTimeout(turn.resolve, 0);
-      await turn.promise;
-    }
-  });
 }
 
 // INFRA-3135's review round 1, R10: a live update - the last unread item read in another tab -

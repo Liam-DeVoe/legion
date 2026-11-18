@@ -118,6 +118,11 @@ export function RepoControl({
       : repo === null
         ? `${resolvedRepo}, inherited or the project's default`
         : resolvedRepo;
+  // The badge's tooltip says what the badge means, which the picked row's text does not: an
+  // issue with no repository of its own has Inherit picked. "No repository" says all there is,
+  // so it shows none.
+  const title =
+    repo !== null ? repo : resolvedRepo !== null ? "Inherited or the project's default" : "";
   // What is read is what the server reads: it drops a `.git` suffix before it judges the name
   // (canonicalRepo), so a clone URL's name is no longer to the list than to the server. The list
   // offers no row for a text that names an option, so the typed text is never the value the
@@ -137,9 +142,6 @@ export function RepoControl({
       <span
         className={`${badgeSelectRailWrapper} ${disabled || held ? "opacity-50" : ""}`}
         {...badgeReachHandlers(() => setWanted(true))}
-        title={
-          repo === null && resolvedRepo !== null ? "Inherited or the project's default" : undefined
-        }
       >
         <MultiSelect
           ariaDisabled={held}
@@ -167,6 +169,7 @@ export function RepoControl({
           options={[INHERIT, ...options]}
           searchLabel="Search repositories"
           triggerClassName={badgeSelectRailTrigger}
+          triggerTitle={title}
           value={value}
         >
           {/* A single pick's trigger is named for its list and then for what it shows, and the
