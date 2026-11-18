@@ -2615,6 +2615,47 @@ test("the keys that would change the node's heading's level or lines leave it as
   );
 });
 
+// The editor answers Backspace, Delete and Enter itself, on its own selection, which it reads from
+// the page only once the browser reports a move of the caret, a task later. Measured in a Job like
+// CI's, Backspace pressed right after ArrowRight at a heading's start acted at the start, where
+// Milkdown lowers the heading a level: the editor refused that (`holdEditsToBlock`), and the
+// letter before the caret stayed. The row has the editor read the caret first (`confineKey`), so
+// Backspace there is the browser's delete of that letter. happy-dom moves no caret for an arrow
+// and deletes nothing for Backspace, so the case makes each move and each delete the browser
+// would, and drops happy-dom's report of a move made inside the call that makes it.
+test("Backspace right after ArrowRight at the node's heading's start deletes the letter before the caret", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, view } = await editLive(user, liveBlocks(heading("r1", 2, "YA heading")));
+  const before = blocksOf(view);
+  const restore = dropSelectionReports();
+  try {
+    const words = wordsOf(editable, "r1");
+    const ownOffset = () => view.state.selection.$head.parentOffset;
+    expect(
+      [caretBlock(), ownOffset()],
+      "the editor's own caret is not at the heading's start"
+    ).toEqual(["r1", 0]);
+    expect(pressIn(editable, "ArrowRight"), "ArrowRight was not left to the browser").toBe(true);
+    await act(async () => {
+      window.getSelection()?.collapse(words, 1);
+    });
+    expect(ownOffset(), "the editor read the move before the browser reported it").toBe(0);
+    if (pressIn(editable, "Backspace")) {
+      await changePage(() => {
+        words.deleteData(0, 1);
+        window.getSelection()?.collapse(words, 0);
+      });
+    }
+    expect(
+      blocksOf(view),
+      "Backspace right after ArrowRight did not delete the letter before the caret"
+    ).toEqual(withWords(before, "r1", "A heading"));
+  } finally {
+    restore();
+  }
+});
+
 // Milkdown's block shortcuts make the block the caret is in another: Ctrl+Alt+1 a heading,
 // Ctrl+Shift+B a quote around it, Ctrl+Alt+7 and Ctrl+Alt+8 a list around it, Ctrl+Alt+C a code
 // block, and `# ` typed at its start a heading. The editor refuses each in the node's paragraph
