@@ -24,11 +24,17 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/timewords"
 )
 
 // Prefix is the fixed text every line starts with, and the whole of what the alert policy
 // matches. It changes in neither repository alone.
 const Prefix = "LEGION FLEET ALERT"
+
+// ListSilentFor is how long the daemon's reads of Envoy's session list fail, or find no live
+// session, before the line of NoLiveSession or SessionListUnreadable is written (R6).
+const ListSilentFor = 20 * time.Minute
 
 // Case is one of the cases a person is told of: Word is what the line's `case` field holds and
 // the policy's documentation names, and Sentence is what the line says after Prefix. Every case
@@ -53,15 +59,16 @@ var (
 		Sentence: "the project's controller is out of reach of Envoy and the daemon cannot relaunch it; a person must look at its process",
 	})
 	// NoLiveSession is Envoy's whole session list, Legion's sessions and every other, holding no
-	// live session for 20 minutes.
+	// live session for ListSilentFor.
 	NoLiveSession = register(Case{
 		Word:     "envoy_no_live_session",
-		Sentence: "Envoy has listed no live session for 20 minutes, so no agent of the fleet can hear anything",
+		Sentence: "Envoy has listed no live session for " + timewords.Words(ListSilentFor) + ", so no agent of the fleet can hear anything",
 	})
-	// SessionListUnreadable is the daemon's reads of Envoy's session list failing for 20 minutes.
+	// SessionListUnreadable is the daemon's reads of Envoy's session list failing for
+	// ListSilentFor.
 	SessionListUnreadable = register(Case{
 		Word:     "envoy_session_list_unreadable",
-		Sentence: "the daemon has not read Envoy's session list for 20 minutes, so it cannot tell which roles are out of reach",
+		Sentence: "the daemon has not read Envoy's session list for " + timewords.Words(ListSilentFor) + ", so it cannot tell which roles are out of reach",
 	})
 	// NewerProcessRefused is a claim's newer process still refused by the worker stream 5 minutes
 	// after its first hello, because an older connection will not close (R3).

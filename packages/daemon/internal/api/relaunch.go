@@ -7,6 +7,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/timewords"
 )
 
 // RelaunchRequest is the controller's `relaunch` of a claim Envoy cannot reach (R5): the claim
@@ -55,7 +56,7 @@ func (s *server) claimRelaunch(w http.ResponseWriter, r *http.Request) {
 	}
 	if token == claim.ControllerToken(s.project) {
 		writeFailure(w, http.StatusConflict, "CLAIM_IS_CONTROLLER",
-			"the project's controller is relaunched by the daemon itself, once in 6 hours; nobody else can relaunch it")
+			"the project's controller is relaunched by the daemon itself, once in "+timewords.Words(supervise.RelaunchAgainAfter)+"; nobody else can relaunch it")
 		return
 	}
 	m, supervised := s.supervisor.Machine(token)

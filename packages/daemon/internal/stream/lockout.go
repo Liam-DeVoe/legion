@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fleetalert"
+	"github.com/sjawhar/legion/daemon/internal/timewords"
 )
 
 // A lock-out is a claim whose current process the stream refuses because an older generation's
@@ -46,9 +47,6 @@ const (
 	// within R3's 3 minutes, and well before LockOutReportAfter tells a person of a process that
 	// will not stop.
 	LockOutSilenceAfter = 2 * time.Minute
-	// lockOutReportWords is LockOutReportAfter as the controller's notice says it. It is written
-	// beside the constant, and moves with it, because `5m0s` is not a sentence.
-	lockOutReportWords = "5 minutes"
 )
 
 // LockOut is one such claim, as the daemon reports it: the generation refused, the generation
@@ -63,7 +61,7 @@ type LockOut struct {
 // Reason is the sentence the controller's record.WorkerLockedOutNotice carries.
 func (o LockOut) Reason() string {
 	return fmt.Sprintf("generation %d has been refused the worker stream for %s; generation %d is still connected",
-		o.Newer, lockOutReportWords, o.Older)
+		o.Newer, timewords.Words(LockOutReportAfter), o.Older)
 }
 
 // Clock is the time the stream waits on: a lock-out's report and its older connection's silence,

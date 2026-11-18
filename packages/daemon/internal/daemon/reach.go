@@ -18,23 +18,27 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/timewords"
 )
 
 // The bounds of R5 and R6 the keeper counts beside the 20 minutes a session may go unregistered
 // (supervise.UnreachableAfter): the guard's refusal that becomes a case for a person, the wait
 // after a relaunch before one that did not bring the claim back is, and the 20 minutes of failed
-// reads or of a list with no live session that write R6's line.
+// reads or of a list with no live session that write R6's line (fleetalert.ListSilentFor, which
+// that line's sentence names).
 const (
 	guardHeldAfter = 60 * time.Minute
 	notBackAfter   = 20 * time.Minute
-	silentListFor  = 20 * time.Minute
+	silentListFor  = fleetalert.ListSilentFor
 )
 
 // The causes the two relaunches record on the claim (supervise.RequestRelaunch.Cause), each read
 // after "because" in the cut-turn note the task the claim owed comes back behind.
-const (
-	relaunchedByController = "Envoy could not reach its session for 20 minutes, so the project's controller relaunched it on the same session"
-	relaunchedByDaemon     = "Envoy could not reach its session for 20 minutes, so the daemon relaunched it on the same session"
+var (
+	relaunchedByController = "Envoy could not reach its session for " + timewords.Words(supervise.UnreachableAfter) +
+		", so the project's controller relaunched it on the same session"
+	relaunchedByDaemon = "Envoy could not reach its session for " + timewords.Words(supervise.UnreachableAfter) +
+		", so the daemon relaunched it on the same session"
 )
 
 // reachKeeper is the daemon's reading of which claims Envoy cannot reach (R5), and what it tells
@@ -469,8 +473,8 @@ func (k *reachKeeper) sweep(ctx context.Context, claims []supervise.Claim) {
 			k.alerts.Open(fleetalert.NoLiveSession, "", "since", k.noLiveSince)
 			if !k.noLiveTold && k.loadNotices(ctx) && !k.noLiveTold {
 				notice := record.ControllerNotice{Kind: record.EnvoyNoLiveSessionNotice,
-					Reason: fmt.Sprintf("Envoy's session list has held no live session since %s, 20 minutes, so no agent of the fleet can hear anything; the daemon marks no claim out of reach while it holds none",
-						stamp(k.noLiveSince))}
+					Reason: fmt.Sprintf("Envoy's session list has held no live session since %s, %s, so no agent of the fleet can hear anything; the daemon marks no claim out of reach while it holds none",
+						stamp(k.noLiveSince), timewords.Words(silentListFor))}
 				k.tellController(ctx, notice, k.project, k.projectRecord(notice, k.project, "", 0, 0, true)...)
 			}
 		}
@@ -557,7 +561,7 @@ func (k *reachKeeper) judge(ctx context.Context, c supervise.Claim, now time.Tim
 			return rec, false
 		}
 		rec.Since, rec.LastSeen, rec.Generation = countedFrom, lastSeen, c.Generation
-		k.log.Warn("reach: the claim's session has not registered with Envoy for 20 minutes; it is out of reach, and keeps its state",
+		k.log.Warn("reach: the claim's session has not registered with Envoy for "+timewords.Words(supervise.UnreachableAfter)+"; it is out of reach, and keeps its state",
 			"claim", c.Token, "state", c.State, "since", countedFrom, "lastSeen", lastSeen)
 	}
 	if controller {
@@ -595,18 +599,18 @@ func (k *reachKeeper) tellOfMarked(ctx context.Context, c supervise.Claim, rec s
 		switch {
 		case guard == "":
 			rec = k.tellOf(ctx, c, rec, record.RelaunchReadyNotice, fmt.Sprintf(
-				"The relaunch guard refused to relaunch %s at %s, and would now let it through: its worker stream shows no step for 20 minutes, its session has sent no activity report for 20 minutes in a turn it is still in, its open call is none or a wait, and its last activity report shows nothing running. relaunch it again.",
-				c.Token, stamp(rec.GuardRefusedAt)), func(told *supervise.Reach) { told.ReadyTold = true })
+				"The relaunch guard refused to relaunch %s at %s, and would now let it through: its worker stream shows no step for %[3]s, its session has sent no activity report for %[3]s in a turn it is still in, its open call is none or a wait, and its last activity report shows nothing running. relaunch it again.",
+				c.Token, stamp(rec.GuardRefusedAt), timewords.Words(supervise.UnreachableAfter)), func(told *supervise.Reach) { told.ReadyTold = true })
 		case !rec.HeldTold && now.Sub(rec.GuardRefusedAt) >= guardHeldAfter:
 			rec = k.tellOf(ctx, c, rec, record.RelaunchGuardHeldNotice, fmt.Sprintf(
-				"The relaunch guard has refused to relaunch %s since %s, 60 minutes: %s. A process that still steps or reports in its turn runs while Envoy cannot reach it, and a frozen process sends nothing newer than the report that refuses it, so the guard will not let it through. This is a case for a person.",
-				c.Token, stamp(rec.GuardRefusedAt), guard), func(told *supervise.Reach) { told.HeldTold = true })
+				"The relaunch guard has refused to relaunch %s since %s, %s: %s. A process that still steps or reports in its turn runs while Envoy cannot reach it, and a frozen process sends nothing newer than the report that refuses it, so the guard will not let it through. This is a case for a person.",
+				c.Token, stamp(rec.GuardRefusedAt), timewords.Words(guardHeldAfter), guard), func(told *supervise.Reach) { told.HeldTold = true })
 		}
 	}
 	if rec.Relaunched && !rec.NotBackTold && now.Sub(rec.RelaunchedAt) >= notBackAfter {
 		rec = k.tellOf(ctx, c, rec, record.RelaunchNotBackNotice, fmt.Sprintf(
-			"relaunch reached %s at %s, and its session has not registered with Envoy in the 20 minutes since: the cause is in its pod or its connection, not in its process. This is a case for a person.",
-			c.Token, stamp(rec.RelaunchedAt)), func(told *supervise.Reach) { told.NotBackTold = true })
+			"relaunch reached %s at %s, and its session has not registered with Envoy in the %s since: the cause is in its pod or its connection, not in its process. This is a case for a person.",
+			c.Token, stamp(rec.RelaunchedAt), timewords.Words(notBackAfter)), func(told *supervise.Reach) { told.NotBackTold = true })
 	}
 	return rec
 }
@@ -641,12 +645,12 @@ func (k *reachKeeper) judgeController(ctx context.Context, c supervise.Claim, re
 	case rec.Relaunched:
 		if now.Sub(rec.RelaunchedAt) >= notBackAfter && !rec.NotBackTold {
 			k.alerts.Open(fleetalert.ControllerUnreachable, string(c.Token), "relaunchedAt", rec.RelaunchedAt,
-				"reason", "the daemon's relaunch did not bring it back: it has not registered with Envoy in the 20 minutes since")
+				"reason", "the daemon's relaunch did not bring it back: it has not registered with Envoy in the "+timewords.Words(notBackAfter)+" since")
 			rec.NotBackTold = true
 		}
 	case !rec.RelaunchedAt.IsZero() && now.Sub(rec.RelaunchedAt) < supervise.RelaunchAgainAfter:
 		k.alerts.Open(fleetalert.ControllerUnreachable, string(c.Token), "relaunchedAt", rec.RelaunchedAt,
-			"reason", "it is out of reach a second time within 6 hours of the daemon's relaunch of it, which is made once in 6 hours")
+			"reason", fmt.Sprintf("it is out of reach a second time within %[1]s of the daemon's relaunch of it, which is made once in %[1]s", timewords.Words(supervise.RelaunchAgainAfter)))
 	case k.relaunching == c.Token || k.relaunchController == nil:
 	default:
 		if why := supervise.RelaunchGuard(c, time.Time{}, now); why != "" {
@@ -733,8 +737,8 @@ func (k *reachKeeper) tellArchitect(ctx context.Context, c supervise.Claim, rec 
 		issue = c.Tree
 	}
 	notice := record.Notice{Kind: record.ClaimOutOfReachNotice, Role: c.Role, Claim: string(c.Token), Reason: fmt.Sprintf(
-		"%s's session has not registered with Envoy since %s, more than 20 minutes, so it cannot hear its notices. Its claim keeps its state. The project's controller decides whether to relaunch it; nothing is asked of you.",
-		c.Token, stamp(rec.Since))}
+		"%s's session has not registered with Envoy since %s, more than %s, so it cannot hear its notices. Its claim keeps its state. The project's controller decides whether to relaunch it; nothing is asked of you.",
+		c.Token, stamp(rec.Since), timewords.Words(supervise.UnreachableAfter))}
 	rec.ArchitectTold = true
 	marks := []reachMark{{token: c.Token, reach: rec}}
 	if err := k.enqueue(ctx, issue, notice, marks); err != nil {
