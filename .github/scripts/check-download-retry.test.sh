@@ -12973,14 +12973,24 @@ check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')
 # only through a variable, and that the variable is refused where the step sets it to such a
 # path: `flock /tmp/l "$s"` and `timeout 5 "$s"` after `s=.github/scripts/zz-c.sh`, and
 # `bash scripts/zz-c.sh` after `cd .github`, a name SCRIPT_CALL reads. The three were refused at
-# 548d180b already. A literal tool path, a glob naming no CI script, a glob with no `.github/`
-# and an argument of `echo` pass.
+# 548d180b already; since the variable reading below, `flock /tmp/l "$s"` is refused at the run
+# too. Round 38's next search found four more past 2eab0637, each exit 0 under a one-minute key:
+# a redirect's file read as no word, `bash /dev/stdin < .github/scripts/zz-c.s?` and the same
+# into r38-plain.py, a `.py` of shell text with no `#!` line; and a directory the step sets
+# literally, `d=.github/scripts`, then `flock /tmp/l "$d"/zz-c.s[h]` and `cp
+# "$d"/r38-plain.p? "$RUNNER_TEMP/zz"` before running the copy, a word with no literal
+# `.github/`. A redirect's file is read as any other word is, and a variable the same text sets
+# once to a literal value is read as that value. A literal tool path, a glob naming no CI script,
+# a glob with no `.github/`, an argument of `echo` and a literal redirect's file pass.
 echo "case: r37 W18 a word that could name a CI script that fetches is refused by name wherever it stands"
 root=$(fixture r37-w18-words)
 printf '%s\n. .github/scripts/ci-retry.sh\nretry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b\n' \
   '#!/usr/bin/env bash' > "$root/.github/scripts/zz-c.sh"
 printf '%s\n. .github/scripts/ci-retry.sh\nretry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b\n' \
   '#!/usr/bin/env python3' > "$root/.github/scripts/zz-x.py"
+printf '%s\n' '. .github/scripts/ci-retry.sh' \
+  'retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b' \
+  > "$root/.github/scripts/r38-plain.py"
 chmod +x "$root/.github/scripts/zz-c.sh" "$root/.github/scripts/zz-x.py"
 cat > "$root/.github/workflows/case.yaml" <<'YAML'
 name: Case
@@ -13072,6 +13082,25 @@ jobs:
         run: |
           s=.github/scripts/zz-c.sh
           cd .github && bash scripts/zz-c.sh
+      - name: Feed the script to bash through a question mark in a redirect
+        timeout-minutes: 1
+        run: |
+          bash /dev/stdin < .github/scripts/zz-c.s?
+      - name: Feed the Python file to bash through a question mark in a redirect
+        timeout-minutes: 1
+        run: |
+          bash /dev/stdin < .github/scripts/r38-plain.p?
+      - name: Hand the script to flock through a directory the step sets
+        timeout-minutes: 1
+        run: |
+          d=.github/scripts
+          flock /tmp/l "$d"/zz-c.s[h]
+      - name: Copy the Python file through a directory the step sets and run the copy
+        timeout-minutes: 1
+        run: |
+          d=.github/scripts
+          cp "$d"/r38-plain.p? "$RUNNER_TEMP/zz"
+          "$RUNNER_TEMP/zz"
       - name: Write words that name no CI script
         timeout-minutes: 1
         run: |
@@ -13079,6 +13108,7 @@ jobs:
           ls .github/workflows/*.yaml
           ls packages/*/package.json
           echo .github/scripts/zz-c.s[h]
+          wc -l < .github/workflows/ci.yaml
 YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
@@ -13112,6 +13142,7 @@ for refusal in "42	Run the script inside a test's substitution" \
 done
 for refusal in \
   "78	Hand a variable naming the script to flock	names .github/scripts/zz-c\.sh in a variable assignment, a place this check does not read as a call, and that script fetches" \
+  "79	Hand a variable naming the script to flock	writes .\$s. as an argument of .flock., $could" \
   "83	Run a variable naming the script behind timeout	names .github/scripts/zz-c\.sh in a variable assignment, a place this check does not read as a call, and that script fetches" \
   "84	Run a variable naming the script behind timeout	runs .\$s. as a command, whose last path element is an expansion, so this check cannot name the script that runs there" \
   "88	Run the script by a relative path after a cd	names .github/scripts/zz-c\.sh in a variable assignment, a place this check does not read as a call, and that script fetches" \
@@ -13120,12 +13151,22 @@ for refusal in \
   check "refuses '$step' at line $line, where a word with no literal .github/ names the script" \
     "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' $says")"
 done
-for line in "93	a literal tool path" "94	a glob naming no CI script" \
-  "95	a glob with no literal .github/" "96	an argument of echo"; do
+plain="which could name .github/scripts/r38-plain\.py, a script that fetches or a file this check does not read"
+for refusal in \
+  "93	Feed the script to bash through a question mark in a redirect	writes ..github/scripts/zz-c\.s.. as a file a redirect of .bash. names, $could" \
+  "97	Feed the Python file to bash through a question mark in a redirect	writes ..github/scripts/r38-plain\.p.. as a file a redirect of .bash. names, $plain" \
+  "102	Hand the script to flock through a directory the step sets	writes .\$d/zz-c\.s.h.. as an argument of .flock., $could" \
+  "107	Copy the Python file through a directory the step sets and run the copy	writes .\$d/r38-plain\.p.. as an argument of .cp., $plain"; do
+  IFS=$'\t' read -r line step says <<<"$refusal"
+  check "refuses '$step' by name, a redirect's file or a set directory read as a word" \
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' $says")"
+done
+for line in "112	a literal tool path" "113	a glob naming no CI script" \
+  "114	a glob with no literal .github/" "115	an argument of echo" "116	a literal redirect's file"; do
   IFS=$'\t' read -r at form <<<"$line"
   check "passes $form" "$(is "$(contains "$out" "file=.github/workflows/case.yaml,line=$at::")" false)"
 done
-check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 22)"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 27)"
 
 # F2. A heredoc line reading `timeout-minutes: 20` is text, no key: it took the block's one key,
 # so the job's own key went unpaired and the job passed under the 1200 s its block states. The
@@ -14315,7 +14356,7 @@ for refusal in "11	Hand a built name to a script that runs its arguments	as an a
   "27	Put a built name in an array and run it	as a word this check reads as a pattern rather than a run"; do
   IFS=$'\t' read -r line step place <<<"$refusal"
   check "refuses the built path '$step' writes, where it writes it" \
-    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' writes ..github/scripts/\$n\.sh. $place, which could name .github/scripts/[a-z-]*\.sh, .* a script that fetches or a file this check does not read")"
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' writes ..github/scripts/\$n\.sh. $place, which could name .github/scripts/r37-c\.sh, a script that fetches or a file this check does not read")"
 done
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 8)"
 

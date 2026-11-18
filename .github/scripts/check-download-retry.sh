@@ -172,11 +172,15 @@
 #      at a run's target it is read by its last element, whatever its directory, so `bash
 #      .github/scr*/x.s[h]`, `"$d"/x.s?` and `. .github/*/x.s*` are refused where x.sh fetches;
 #      anywhere else, but an argument of `echo` or `printf` and the places this tree writes an
-#      unread file, it is read as a whole path where its literal text holds `.github/`, so
-#      `flock /tmp/l .github/scripts/x.s[h]` and `ls .github/scripts/*.sh` are refused, behind
+#      unread file, a redirect's file included, it is read as a whole path where its literal
+#      text holds `.github/`, so `flock /tmp/l .github/scripts/x.s[h]`, `ls
+#      .github/scripts/*.sh` and `bash /dev/stdin < .github/scripts/x.s?` are refused, behind
 #      whatever program, a set with no end, and `ls .github/workflows/*.yaml` and `rm -rf
-#      "$dir"/*` pass (pattern_words; dispatch://INFRA-1545, round 38). A word with no literal
-#      `.github/` names such a file through a variable, refused where the text sets it to that
+#      "$dir"/*` pass (pattern_words; dispatch://INFRA-1545, round 38). In both, a variable the
+#      same text sets once to a literal value, `d=.github/scripts`, `local d=…` or `export d=…`,
+#      is read as that value, so `flock /tmp/l "$d"/x.s[h]` is refused too; one set more than
+#      once or from data stays an expansion (literal_values). A word with no literal `.github/`
+#      names such a file otherwise through a variable, refused where the text sets it to that
 #      file's literal path, `s=.github/scripts/x.sh`, or through a name SCRIPT_CALL reads, `cd
 #      .github && bash scripts/x.sh`; a variable built from data and handed to a program this
 #      check does not read as a run, `s=$(printf …); flock /tmp/l "$s"`, is read by no rule
@@ -1529,6 +1533,11 @@ class Command:
         self.piped = False
         self.quoted: list[bool] = []
         self.plain: list[frozenset[int]] = []
+        # The same two for each word of `redirected`, a redirect's file, and the span it is
+        # written at (pattern_words; dispatch://INFRA-1545, round 38).
+        self.redirected_quoted: list[bool] = []
+        self.redirected_plain: list[frozenset[int]] = []
+        self.redirected_spans: list[tuple[int, int]] = []
 
 
 class Scanner:
@@ -1790,7 +1799,7 @@ class CallScanner(Scanner):
     SAVED = ("words", "spans", "word", "chars", "started", "at_word_start", "redirect_target",
              "open_command", "command_line", "command_offset", "word_quoted", "quoted", "braces",
              "expansion", "redirect_out", "command_input", "command_writes", "command_redirected",
-             "plain", "word_plain")
+             "plain", "word_plain", "redirected_quoted", "redirected_plain", "redirected_spans")
 
     def __init__(self, first_line: int) -> None:
         super().__init__(first_line)
@@ -1813,6 +1822,12 @@ class CallScanner(Scanner):
         # each word of the command being read (Command.plain).
         self.plain: list[int] = []
         self.word_plain: list[frozenset[int]] = []
+        # Whether a quote or a backslash was written in each redirect's file of the command being
+        # read, where it holds a pattern character written unquoted, and its span
+        # (Command.redirected_plain).
+        self.redirected_quoted: list[bool] = []
+        self.redirected_plain: list[frozenset[int]] = []
+        self.redirected_spans: list[tuple[int, int]] = []
 
     def add(self, char: str, offset: int) -> None:
         super().add(char, offset)
@@ -1830,6 +1845,9 @@ class CallScanner(Scanner):
         elif self.started and self.redirect_target and span:
             self.redirects.append(span)
             self.command_redirected.append(self.word)
+            self.redirected_quoted.append(self.quoted)
+            self.redirected_plain.append(frozenset(self.plain))
+            self.redirected_spans.append(span)
             if self.redirect_out:
                 self.command_writes.append(self.word)
         if self.started:
@@ -1856,6 +1874,9 @@ class CallScanner(Scanner):
             command.input = self.command_input
             command.writes = self.command_writes
             command.redirected = self.command_redirected
+            command.redirected_quoted = self.redirected_quoted
+            command.redirected_plain = self.redirected_plain
+            command.redirected_spans = self.redirected_spans
             self.commands.append(command)
         else:
             self.written += self.command_writes
@@ -1868,6 +1889,9 @@ class CallScanner(Scanner):
         self.command_input = ""
         self.command_writes = []
         self.command_redirected = []
+        self.redirected_quoted = []
+        self.redirected_plain = []
+        self.redirected_spans = []
 
     def open_sub(self) -> dict:
         """The outer command, saved mid-word: the text of a `$(…)` or a backtick substitution is
@@ -1882,7 +1906,8 @@ class CallScanner(Scanner):
         self.braces, self.expansion = 0, False
         self.started, self.at_word_start, self.redirect_target = False, True, False
         self.open_command, self.command_input, self.command_writes = False, "", []
-        self.command_redirected = []
+        self.command_redirected, self.redirected_quoted, self.redirected_plain = [], [], []
+        self.redirected_spans = []
         return saved
 
     def close_sub(self, text: str, i: int) -> None:
@@ -6316,6 +6341,58 @@ def word_place(words: list[str], at: int | None, start: int) -> str:
     return f"as an argument of `{head}`"
 
 
+# The commands whose arguments set a shell variable as a word before a command does
+# (literal_values).
+DECLARERS = {"local", "export", "declare", "typeset", "readonly"}
+
+
+def literal_values(commands: list[Command]) -> dict[str, str]:
+    """The variables a text sets once, to a literal value, by name: an assignment written before
+    a command or alone, `d=.github/scripts`, or as an argument of a declaration, `local d=…` or
+    `export d=…`, whose value, its quotes removed, holds no expansion (pattern_words;
+    dispatch://INFRA-1545, round 38). A name set more than once, set from data, `d=$(…)`, or
+    written anywhere as a word of its own, as `read -r d`, `for d in` and `unset d` write it, is
+    none, since what it holds where a word expands it is the reading of a run, which this check
+    does not make."""
+    sets: dict[str, list[str | None]] = {}
+    bare: set[str] = set()
+    for command in commands:
+        words = command.words
+        reduced = reduce_words(words)[0]
+        start = len(words) - len(reduced)
+        declares = start < len(words) and words[start] in DECLARERS
+        for at, word in enumerate(words):
+            setting = re.fullmatch(r"([A-Za-z_]\w*)(=|\+=|\[)(.*)", word, re.DOTALL)
+            if setting and (at < start or declares):
+                literal = setting.group(2) == "=" and not expansions_in(setting.group(3))
+                sets.setdefault(setting.group(1), []).append(setting.group(3) if literal
+                                                             else None)
+            elif re.fullmatch(r"[A-Za-z_]\w*", word):
+                bare.add(word)
+    return {name: held[0] for name, held in sets.items()
+            if len(held) == 1 and held[0] is not None and name not in bare}
+
+
+def substituted(word: str, plain: frozenset[int],
+                values: dict[str, str]) -> tuple[str, frozenset[int]]:
+    """`word` with each `$name` or `${name}` of `values` written as its value, and the places of
+    its pattern characters written unquoted moved with the text around them (pattern_words;
+    dispatch://INFRA-1545, round 38). The value is written as text, its characters no pattern."""
+    out, places, shift, at = "", set(), 0, 0
+    for begin, end in expansions_in(word):
+        name = re.fullmatch(r"\$(?:([A-Za-z_]\w*)|\{([A-Za-z_]\w*)\})", word[begin:end])
+        key = (name.group(1) or name.group(2)) if name else None
+        if key not in values:
+            continue
+        out += word[at:begin] + values[key]
+        places |= {place + shift for place in plain if at <= place < begin}
+        shift += len(values[key]) - (end - begin)
+        at = end
+    places |= {place + shift for place in plain if place >= at}
+    return out + word[at:], frozenset(places)
+
+
+
 def pattern_words(text: str, first_line: int, action: str | None, elsewhere: bool,
                   within: str = "", depth: int = 0) -> list[tuple[int, int, str]]:
     """Each command of a body holding a word that is no literal path and could name a CI script
@@ -6335,7 +6412,11 @@ def pattern_words(text: str, first_line: int, action: str | None, elsewhere: boo
         `find -exec`, `taskset` and every other program that runs its argument included, a set
         with no end, which is why the word is read and not the program. A word naming no such
         file passes, `ls .github/workflows/*.yaml`, and so does one with no literal `.github/`,
-        `ls packages/*/package.json` or `rm -rf "$RUNNER_TEMP"/*`.
+        `ls packages/*/package.json` or `rm -rf "$RUNNER_TEMP"/*`. A redirect's file is such a
+        word too, `bash /dev/stdin < .github/scripts/x.s?`.
+    In both, a variable the same text sets once to a literal value (literal_values) is read as
+    that value (substituted), so `d=.github/scripts` and then `flock /tmp/l "$d"/x.s[h]` or `cp
+    "$d"/x.p? "$RUNNER_TEMP/zz"` is refused, which a reader of the text as written can see.
     A file a word names literally, which SCRIPT_CALL or unread_named reads by its name, is left to
     that reading, which charges a call or refuses it by name. A `cd` or a `pushd` in the text, or
     a working directory the step runs in (`elsewhere`), moves where a literal path is read from
@@ -6344,8 +6425,11 @@ def pattern_words(text: str, first_line: int, action: str | None, elsewhere: boo
     `taken[$leg]=$number` and `"$state_dir/$name.state"`, name no such file, and its three other
     words holding `.github/` and an expansion are `python3 "$root/.github/…"` arguments, two
     naming ci-fault-proxy.py by its name and one ci-tools.yaml, no file of .github/scripts/.
+    Measured again on main 958173da merged on 2eab0637, no redirect's file there holds
+    `.github/`, and the one word a literal variable makes hold it is an argument of `echo`.
     Until round 38 each of the 17 shapes the round's class search drove past the gate at
-    548d180b ran a 1050 s fetch, or a file this check does not read, under a one-minute key."""
+    548d180b, and the four found past 2eab0637, ran a 1050 s fetch, or a file this check does not
+    read, under a one-minute key."""
     scanner = CallScanner(first_line)
     commands = scanner.scan(text)
     elsewhere = elsewhere or any(reduce_words(command.words)[0][:1] in (["cd"], ["pushd"])
@@ -6353,46 +6437,60 @@ def pattern_words(text: str, first_line: int, action: str | None, elsewhere: boo
     runs = {index: run_places(commands, index, text)
             for index, _command, after_bar in commands_read(commands, text) if not after_bar}
     candidates = sorted(script_files | unread_files)
+    values = literal_values(commands)
     found = []
     for index, command in enumerate(commands):
         words = command.words
         reduced = reduce_words(words)[0]
         start = len(words) - len(reduced)
         head = PROGRAM.sub("", reduced[0]).rsplit("/", 1)[-1] if reduced else ""
-        plains = command.plain or [frozenset()] * len(words)
-        for at, word in [*enumerate(words), *((None, word) for word in command.redirected)]:
+        # Every word of the command and each redirect's file, with where it holds a pattern
+        # character written unquoted, whether a quote or a backslash was written in it, and its
+        # span (Command.plain, .quoted, .spans and their redirect twins).
+        written = [*((at, word, command.plain[at], command.quoted[at], command.spans[at])
+                     for at, word in enumerate(words)),
+                   *((None, *each) for each in zip(command.redirected, command.redirected_plain,
+                                                   command.redirected_quoted,
+                                                   command.redirected_spans))]
+        for at, word, plain, quoted, span in written:
             value = (word.partition("=")[2]
                      if "=" in word and (word.startswith("-") or ASSIGNMENT.match(word))
                      else word)
-            plain = plains[at] if at is not None and value == word else frozenset()
+            plain = plain if value == word else frozenset()
             if at in runs.get(index, ()) and value == word:
                 plain = plain if run_globs(command, at) else frozenset()
-                pattern = word_pattern(word, plain, action)
-                normal, spans, cut, patterns = target_parts(word, action, globs_in(word, plain))
-                last = [span for span in spans if span[0] > cut]
-                if pattern is None or not last or (
-                        not any(span in patterns for span in last)
-                        and sum(end - begin for begin, end in last) == len(normal) - cut - 1):
+                _normal, spans, cut, _patterns = target_parts(word, action, globs_in(word, plain))
+                if not any(begin > cut for begin, _end in spans):
                     continue
+                read, read_plain = substituted(word, plain, values)
+                pattern = word_pattern(read, read_plain, action)
+                normal, spans, cut, patterns = target_parts(read, action,
+                                                            globs_in(read, read_plain))
+                last = [span for span in spans if span[0] > cut]
+                if last and not any(span in patterns for span in last) and sum(
+                        end - begin for begin, end in last) == len(normal) - cut - 1:
+                    continue
+                name = pattern[1] if pattern is not None else re.escape(normal[cut + 1:])
                 files = [file for file in candidates
-                         if re.fullmatch(pattern[1], Path(file).name, re.DOTALL)]
+                         if re.fullmatch(name, Path(file).name, re.DOTALL)]
                 does = (f"sources `{word}`" if at > start and head in (".", "source")
                         else f"runs `{word}` with `{head}`" if at > start
                         else f"runs `{word}` as a command")
             else:
                 if at is not None and at > start and head in ("echo", "printf"):
                     continue
-                quoted = at is not None and at < len(command.quoted) and command.quoted[at]
-                pattern = word_pattern(value, plain, action)
-                if (pattern is None and not quoted) or not holds_github(value, plain):
+                if word_pattern(value, plain, action) is None and not quoted:
                     continue
+                read, read_plain = substituted(value, plain, values)
+                if not holds_github(read, read_plain):
+                    continue
+                pattern = word_pattern(read, read_plain, action)
                 whole = (pattern[0] if pattern is not None
-                         else re.escape(os.path.normpath(target_parts(value, action)[0])))
+                         else re.escape(os.path.normpath(target_parts(read, action)[0])))
                 files = [file for file in candidates
                          if re.fullmatch(whole, file, re.DOTALL)
                          or re.fullmatch(whole, "/" + file, re.DOTALL)]
                 does = f"writes `{word}` {word_place(words, at, start)}"
-            span = command.spans[at] if at is not None and at < len(command.spans) else None
             named = {str(SCRIPTS / match.group(1))
                      for match in SCRIPT_CALL.finditer(text[span[0]:span[1] + 1] if span else word)}
             named |= set(unread_named(value, action, elsewhere)[0])
