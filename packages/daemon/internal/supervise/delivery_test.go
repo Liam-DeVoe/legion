@@ -1095,16 +1095,18 @@ func TestALateRefusalForAnotherDeliveryIsDroppedAndLoggedOnce(t *testing.T) {
 }
 
 // A prompt refused after a foreign turn already confirmed the send (B1's matching) was never taken:
-// the confirmation is taken back and the refusal charged once. A prompt lost to the transport
-// takes the confirmation back too, at no charge — the shim answers the same id again without a
-// second turn if the turn was in fact the delivery's.
+// the confirmation is taken back. The refusal lands while the daemon's record holds the claim in
+// that turn, so it is the agent's busy answer whatever its words or its code (agentRefusalOutcome),
+// and is charged nothing. A prompt lost to the transport takes the confirmation back too, at no
+// charge — the shim answers the same id again without a second turn if the turn was in fact the
+// delivery's.
 func TestAFailedSendAfterAConfirmingTurnTakesTheConfirmationBack(t *testing.T) {
 	for _, failure := range []struct {
 		name    string
 		script  func(*gatedConn)
 		charged Budgets
 	}{
-		{"refused", func(g *gatedConn) { g.RefusePrompt("the model provider refused the request") }, Budgets{PromptFailures: 1}},
+		{"refused", func(g *gatedConn) { g.RefusePrompt("the model provider refused the request") }, Budgets{}},
 		{"transport", func(g *gatedConn) { g.FailPrompt(errBoom) }, Budgets{}},
 	} {
 		t.Run(failure.name, func(t *testing.T) {

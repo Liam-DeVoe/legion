@@ -1,6 +1,7 @@
 package supervise
 
 import (
+	"context"
 	"errors"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -11,9 +12,11 @@ import (
 // derived from the words of a sentence here. Whether an outcome charges a budget is Charges's
 // alone: each charge function asks it (chargePrompt, chargeDeath, and chargeLaunch, through which
 // relaunchAfterFailure counts), and each site that can charge names its outcome and decides
-// nothing. An outcome is never stored: what ended a failed claim is a FailureCause, a different
-// type whose doc says how the two differ, and failureCause is the one place a cause is derived
-// from an outcome.
+// nothing. The one outcome a site names from more than the frame is the agent's busy answer, and
+// one rule names it, from facts the daemon holds itself and never from words
+// (agentRefusalOutcome). An outcome is never stored: what ended a failed claim is a FailureCause,
+// a different type whose doc says how the two differ, and failureCause is the one place a cause is
+// derived from an outcome.
 
 // Charges is the one policy that decides whether an outcome charges the budget its site counts:
 // the prompt budget (chargePrompt), the death budget (chargeDeath) or the launch budget
@@ -94,8 +97,8 @@ func failureCause(o runtime.Outcome) FailureCause {
 // refusal of a prompt or of an adoption); else the runtime's own sentinel for the daemon's identity
 // mint and the shim's adoption; else, for an error that is no answer about the prompt at all — the
 // transport, or a refusal of the negotiation ahead of it, which mints nothing — the transport. A
-// prompt refusal that carries no member is OutcomeUnrecognised, which is charged: nothing here
-// reads the refusal's words.
+// prompt refusal that carries no member is OutcomeUnrecognised: nothing here reads the refusal's
+// words, and whether the agent was busy is the next rule's (agentRefusalOutcome).
 func sendOutcome(err error) runtime.Outcome {
 	if minted := runtime.RefusalOutcome(err); minted != runtime.OutcomeUnrecognised {
 		return minted
@@ -109,4 +112,55 @@ func sendOutcome(err error) runtime.Outcome {
 		return runtime.OutcomeIdentityUnavailable
 	}
 	return runtime.OutcomeTransportLost
+}
+
+// agentRefusalOutcome is the outcome of the agent's answer to a prompt of the task that ran no
+// turn, where o is what the stream minted from the answer's frame. It is the one rule for the
+// three places the agent gives that answer — the send refused outright (refused), the
+// acknowledged prompt refused (lateRefused), and its result saying it ran no turn
+// (promptResulted) — and each charges the outcome it returns through the one policy (Charges).
+// The same answers naming a prompt whose wait for its turn already ran out read it too
+// (waitedOutAnswer, from lateRefused's refusedElsewhere and from promptResulted): they charge
+// nothing, and a busy outcome records the turn there as it does on the pending prompt. So does a
+// replayed refusal of the pending prompt while the wait for its turn is armed (refusedElsewhere),
+// whose busy outcome is kept for that wait's end, which then charges nothing (answeredBusy,
+// noTurn).
+//
+// The answer is the agent's refusal when o is a refusal with no code (OutcomeUnrecognised), one
+// with a code other than the busy one (OutcomePromptRefused), or a result that ran no turn
+// (OutcomeNoTurnRun). Such a refusal is the agent's busy answer (OutcomeAgentBusy) when the agent is
+// in a turn, whatever its code says, and two facts tell the daemon so beside the code. The first is
+// its own record: the claim is working, in a turn the stream saw start or a busy answer recorded.
+// The second, asked only where the record does not hold the claim working, is the agent's own
+// state (get_state's isStreaming): the pinned Oh My Pi says it is streaming from a prompt's
+// admission through its turn. That is one ask per refusal, and refusals are rare. A turn running is
+// the collision: the agent is working, not refusing to work, and charging it would spend the
+// budget of the turn doing the work. Neither fact is the agent's words, and the code is read by
+// the stream alone, which mints OutcomeAgentBusy from code session_busy; so a busy outcome comes
+// back as it is, unasked, and so does every outcome that is no answer of the agent's (a lost
+// transport, a refused adoption, an identity the daemon could not mint). A refusal that neither
+// fact nor its code makes busy comes back as the stream minted it, and is charged.
+//
+// The facts are what keep a pod on the earlier worker image from being charged for being busy:
+// its Oh My Pi gives its busy refusal no code, and a pod moves onto this image only at its update
+// round, never when the daemon moves. The record is read first because it costs nothing, and
+// because the ask can time out, where charging a working agent is the worse mistake; an ask that
+// fails or times out says the agent is not streaming (isStreaming). So an agent of the earlier
+// image that refuses busy with no code, while the daemon's record does not hold the claim working,
+// and that does not answer get_state within the RPC bound, is still charged as unrecognised (as a
+// prompt that ran no turn, for a result) until its pod's update round; so is one whose turn ended
+// between its refusal and the ask.
+func (m *Machine) agentRefusalOutcome(ctx context.Context, o runtime.Outcome) runtime.Outcome {
+	switch o {
+	case runtime.OutcomeUnrecognised, runtime.OutcomePromptRefused, runtime.OutcomeNoTurnRun:
+	default:
+		return o
+	}
+	if m.claim.State == StateWorking {
+		return runtime.OutcomeAgentBusy
+	}
+	if conn, connected := m.deps.Conns.Conn(m.claim.Token); connected && m.isStreaming(ctx, conn) {
+		return runtime.OutcomeAgentBusy
+	}
+	return o
 }

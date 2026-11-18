@@ -2662,6 +2662,12 @@ The outbox start that queues such a task carries the wait it answers as `awaitin
 The claim's held delivery carries that wait in `pending_task_deliveries.resume`, and its task text stays empty until the daemon sends it.
 The sweep's send of such a resume again, for a claim its start never reached, writes that same start from the wait the architect's `phases` row keeps, so that task is written when it is sent too, and a changes request the person's approval has answered since is not told as standing.
 
+The release's image also pins an Oh My Pi whose refusal of a prompt sent while the agent is in a turn of its own carries `code: "session_busy"`, on the refusal and on the prompt's result, and the daemon reads a busy agent from that code and never from the refusal's words.
+Such a prompt charges the claim nothing, and its task is sent again when the turn ends.
+A pod moves onto the new image only at its update round, and until then its Oh My Pi sends that refusal with no code.
+The daemon reads it as busy all the same, charging nothing, when its own record holds the claim working or when the agent answers `get_state` that it is streaming.
+An agent on the earlier image that does not answer `get_state` within the RPC bound, while the daemon's record does not hold the claim working, is charged as unrecognised until its pod's update round.
+
 Store migration 20261112012123_issue_repository_correction adds the four `issues` columns the repository keys are read from — `repo_before`, `repo_corrected_at`, `repo_change_pending` and `repo_change_reason` — and `workspace_bundles.repo`, the repository a saved workspace bundle's work is of.
 Every row already there takes each column's default, and nothing is backfilled.
 The same migration widens the check on a bundle's restore attempt to a third outcome, `refused_repository`, which the daemon records for a bundle of a repository the issue has left, and creates `workspace_bundles_refused`, the table the daemon moves each such bundle to in the transaction that refuses it.

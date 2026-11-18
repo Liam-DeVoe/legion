@@ -1194,12 +1194,12 @@ type Machine struct {
 	outstanding []string
 	// answeredBusy is the id of the pending delivery whose acknowledged prompt the agent said,
 	// while the wait for its turn was armed, it could not take because it is in a turn of its
-	// own: a refusal the stream minted OutcomeAgentBusy for, which left the wait running
-	// (refusedElsewhere — the shim's replay of what Oh My Pi answered an earlier send of this same
-	// task). The wait's running out reads it (noTurn): the agent said it was in a turn, so the
-	// wait ended on that turn rather than on an agent that took the prompt and never turned. A
-	// delivery taken back clears it (takeBackPending), so it names no task after its wait. It is
-	// memory only, as the wait is.
+	// own: a refusal the one rule of the refusal paths read as OutcomeAgentBusy
+	// (agentRefusalOutcome), which left the wait running (refusedElsewhere — the shim's replay of
+	// what Oh My Pi answered an earlier send of this same task). The wait's running out reads it
+	// (noTurn): the agent said it was in a turn, so the wait ended on that turn rather than on an
+	// agent that took the prompt and never turned. A delivery taken back clears it
+	// (takeBackPending), so it names no task after its wait. It is memory only, as the wait is.
 	answeredBusy string
 	// askFirst is a restored claim whose agent an earlier daemon was talking to: a pending
 	// delivery it may already have sent, or a turn it saw start and may not have seen end. The

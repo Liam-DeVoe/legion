@@ -102,8 +102,9 @@ func (e *RefusedError) Is(target error) bool {
 // The refusal's words are never read to decide. They are a sentence for a person, free to change
 // with any release of the agent, and an outcome read from them would fail without a sound when
 // they did: a busy agent would be retired for being busy. An agent that says it is busy in words
-// alone is therefore unrecognised, and charged (supervise.Charges); promptRefusal logs each such
-// refusal so the mismatch is seen.
+// alone is therefore unrecognised here, and charged (supervise.Charges) unless the daemon's own
+// record or the agent's get_state shows it in a turn (supervise's agentRefusalOutcome);
+// promptRefusal logs each such refusal so the mismatch is seen.
 func PromptRefusalOutcome(code string) runtime.Outcome {
 	switch code {
 	case shimwire.CodeSessionBusy:
@@ -130,9 +131,10 @@ func (c *Conn) promptRefusal(reason, code string) runtime.Outcome {
 const codelessEvery = time.Minute
 
 // logCodeless writes, at warn and at most once per codelessEvery on this connection, that the
-// agent refused or failed a prompt with no code: that is charged whatever its words say, so an
-// agent that says it is busy in words alone is charged for being busy. The words are logged for
-// the person who reads the line, and compared with nothing. The hello names no release of the
+// agent refused or failed a prompt with no code: that is charged whatever its words say, unless
+// the daemon's own record or the agent's get_state shows the agent in a turn, so an agent that
+// says it is busy in words alone and shows neither is charged for being busy. The words are logged
+// for the person who reads the line, and compared with nothing. The hello names no release of the
 // agent, so the line names what the connection knows of it: the RPC protocol it speaks.
 func (c *Conn) logCodeless(reason string) {
 	c.mu.Lock()
@@ -145,8 +147,9 @@ func (c *Conn) logCodeless(reason string) {
 	unlogged := c.codelessUnlogged
 	c.codelessAt, c.codelessUnlogged = now, 0
 	c.mu.Unlock()
-	c.log.Warn("worker-stream: the agent refused a prompt with no machine-readable code, so it is charged whatever "+
-		"its words say: Legion reads a busy agent only from code session_busy (dispatch://INFRA-3538)",
+	c.log.Warn("worker-stream: the agent refused a prompt with no machine-readable code, so it is charged unless "+
+		"the daemon's record or the agent's get_state shows it in a turn: Legion reads a busy answer from code "+
+		"session_busy and never from a refusal's words (dispatch://INFRA-3538)",
 		"claim", c.claim, "error", reason, "agent", fmt.Sprintf("RPC protocol v%d, release not named by the hello", protocolVersion),
 		"unloggedSinceLast", unlogged)
 }

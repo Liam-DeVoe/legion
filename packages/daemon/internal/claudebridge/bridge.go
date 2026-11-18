@@ -38,12 +38,14 @@ const (
 	// 4.1 s, which leaves 0.9 s of the 5 s the shim gives it before killing it (shim.DefaultGrace)
 	// for the process to exit on a loaded machine; its inbox is gone 0.5 s before that.
 	flushTimeout = 500 * time.Millisecond
-	// Busy is the words of the bridge's refusal of a prompt that arrives during a turn, for a
-	// person reading a log. What the daemon reads is the code the refusal carries beside them,
-	// shimwire.CodeSessionBusy, from which its stream mints the agent's answer that it is in a
-	// turn of its own, so the task goes back unread, uncharged, and is sent again when the turn
-	// ends. Nothing reads these words.
-	Busy = "The Claude Code bridge is in a turn and takes a prompt only between turns"
+	// Busy is the words of the bridge's refusal of a prompt that arrives during a turn. They are
+	// the words the release before this one wrote, kept so a daemon rolled back to that release
+	// still reads the refusal as a turn of the agent's own: it reads a busy agent from the words'
+	// opening, which is Oh My Pi's own. This release's daemon reads only the code the refusal
+	// carries beside them, shimwire.CodeSessionBusy, from which its stream mints the agent's answer
+	// that it is in a turn of its own, so the task goes back unread, uncharged, and is sent again
+	// when the turn ends.
+	Busy = "Agent is already processing a turn; the Claude Code bridge takes a prompt only between turns"
 )
 
 var (

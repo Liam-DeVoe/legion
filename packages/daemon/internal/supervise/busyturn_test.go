@@ -157,6 +157,136 @@ func TestABusyAnswerHoldsTheTaskUntilTheTurnEnds(t *testing.T) {
 	}
 }
 
+// codelessBusy is the earlier pin's busy refusal of a send as the stream hands it on: Oh My Pi's
+// busy sentence and no code, which the stream mints as an outcome it cannot tell apart
+// (OutcomeUnrecognised).
+func codelessBusy() mintedRefusal {
+	return mintedRefusal{outcome: runtime.OutcomeUnrecognised, reason: busyWords}
+}
+
+// A pod still on the earlier worker image, until its update round, runs an Oh My Pi that answers a
+// prompt during a turn of its own with its busy sentence and no code, which the stream mints as
+// unrecognised (a refusal) or as a prompt that ran no turn (a result). The one rule of the three
+// paths that answer comes by (agentRefusalOutcome) reads it busy from what the daemon knows beside
+// the words: its own record holding the claim working — here the turn the stream saw start under
+// the prompt, which confirmed the task — or, where the record holds the claim ready, the agent
+// saying it is streaming when asked. Either way nothing is charged, the task goes back unconfirmed
+// and unread, a ready claim is recorded working, and the turn's end sends the task again. Where
+// neither fact holds — the agent says it is in no turn, or does not answer get_state — the answer
+// is charged as the stream minted it, and a result that ran no turn keeps the task's read mark.
+func TestACodelessBusyAnswerIsBusyWhereTheRecordOrTheAgentSaysSo(t *testing.T) {
+	paths := []struct {
+		name string
+		// answer delivers the task to the ready worker and has Oh My Pi answer its prompt with the
+		// code-less busy answer by this path, after a turn of the agent's own started under the
+		// prompt where turnSeen. It returns the connection the task's sends go through.
+		answer func(t *testing.T, h *harness, turnSeen bool) *fake.Conn
+		// read is whether a charged answer leaves the task's read mark standing.
+		read bool
+	}{
+		{name: "the send refused", answer: func(t *testing.T, h *harness, turnSeen bool) *fake.Conn {
+			if !turnSeen {
+				h.conn.FailPrompt(codelessBusy())
+				h.must(RequestDeliver{Claim: testToken, Task: "the task", Generation: 7})
+				return h.conn
+			}
+			// The turn starts while the send is out, so the refusal lands on a claim working.
+			gated := newGatedConn()
+			gated.FailPrompt(codelessBusy())
+			h.conns.Register(testToken, gated)
+			if err := h.m.Handle(h.ctx, RequestDeliver{Claim: testToken, Task: "the task", Generation: 7}); err != nil {
+				t.Fatal(err)
+			}
+			waitFor(t, "the send", gated.entered)
+			if err := h.m.Handle(h.ctx, StreamTurnStart{Claim: testToken}); err != nil {
+				t.Fatal(err)
+			}
+			// One release for this send and one for the send the turn's end makes.
+			gated.release <- struct{}{}
+			gated.release <- struct{}{}
+			h.m.Wait()
+			return gated.Conn
+		}},
+		{name: "the acknowledged prompt refused", answer: func(t *testing.T, h *harness, turnSeen bool) *fake.Conn {
+			h.must(RequestDeliver{Claim: testToken, Task: "the task", Generation: 7})
+			sent := h.wantPrompts(1)[0].DeliveryID
+			if turnSeen {
+				h.must(StreamTurnStart{Claim: testToken})
+			}
+			h.must(StreamLateRefusal{Claim: testToken, DeliveryID: sent, Error: busyWords, Outcome: runtime.OutcomeUnrecognised})
+			return h.conn
+		}},
+		{name: "the acknowledged prompt's result running no turn", read: true, answer: func(t *testing.T, h *harness, turnSeen bool) *fake.Conn {
+			h.must(RequestDeliver{Claim: testToken, Task: "the task", Generation: 7})
+			sent := h.wantPrompts(1)[0].DeliveryID
+			if turnSeen {
+				h.must(StreamTurnStart{Claim: testToken})
+			}
+			h.must(StreamPromptResult{Claim: testToken, DeliveryID: sent, Error: busyWords, Outcome: runtime.OutcomeNoTurnRun})
+			return h.conn
+		}},
+	}
+	for _, row := range []struct {
+		name     string
+		turnSeen bool
+		// agent is what the agent answers get_state with.
+		agent func(c *fake.Conn)
+		busy  bool
+	}{
+		// The agent would say it is in no turn if asked, so the record alone decides this row.
+		{name: "the record holds the claim working", turnSeen: true, agent: func(c *fake.Conn) { c.SetStreaming(false) }, busy: true},
+		{name: "the agent says it is streaming", agent: func(c *fake.Conn) { c.SetStreaming(true) }, busy: true},
+		{name: "the agent says it is in no turn", agent: func(c *fake.Conn) { c.SetStreaming(false) }},
+		// The remainder until the pod's update round: an agent in a turn that cannot say so in time.
+		{name: "the agent does not answer get_state", agent: func(c *fake.Conn) {
+			c.SetStreaming(true)
+			c.FailGetState(errors.New("the shim did not answer get_state in time"))
+		}},
+	} {
+		for _, path := range paths {
+			t.Run(path.name+", "+row.name, func(t *testing.T) {
+				h := newHarness(t)
+				h.reach(StateReady)
+				row.agent(h.conn)
+				conn := path.answer(t, h, row.turnSeen)
+
+				if sent := conn.Prompts(); len(sent) != 1 || sent[0].Message != "the task" {
+					t.Fatalf("sends after the answer = %d (%+v), want the one send of the task it answered", len(sent), sent)
+				}
+				p := h.pending()
+				if !p.ConfirmedAt.IsZero() {
+					t.Fatalf("pending after the answer = %+v, want it unconfirmed", p)
+				}
+				if !row.busy {
+					h.wantBudgets(Budgets{PromptFailures: 1})
+					h.wantState(StateReady)
+					if read := !p.DeliveredAt.IsZero(); read != path.read {
+						t.Fatalf("pending after the charged answer = %+v, read %t; want read %t", p, read, path.read)
+					}
+					return
+				}
+				h.wantBudgets(Budgets{})
+				h.wantState(StateWorking)
+				if stored := h.store.load(testToken); stored.State != StateWorking {
+					t.Fatalf("the stored claim is %s after the busy answer, want it working", stored.State)
+				}
+				if !p.DeliveredAt.IsZero() {
+					t.Fatalf("pending after the busy answer = %+v, want it unread", p)
+				}
+
+				conn.FailPrompt(nil)
+				conn.SetStreaming(false)
+				h.mustQuiet(StreamTurnEnd{Claim: testToken})
+				h.m.Wait()
+				if sent := conn.Prompts(); len(sent) != 2 || sent[1].Message != "the task" || sent[1].DeliveryID != h.pending().ID {
+					t.Fatalf("sends after the turn ended = %+v, want the task sent once more, under its pending id %s", sent, h.pending().ID)
+				}
+				h.wantBudgets(Budgets{})
+			})
+		}
+	}
+}
+
 // A busy answer can name an earlier prompt of the task, one whose wait for its turn already ran
 // out (noTurn) and took the task back under a new id: Oh My Pi answers each prompt once, and that
 // answer can come after the wait has moved on. It is the same statement that the agent's session
@@ -164,7 +294,9 @@ func TestABusyAnswerHoldsTheTaskUntilTheTurnEnds(t *testing.T) {
 // prompt (waitedOutAnswer, recordBusyTurn): no sweep or hello sends the task into the turn the
 // agent named, and the next send is the one that turn's end makes. Before, the claim stayed ready
 // and the next sweep sent the task into the busy agent. The wait's own charge stands, and nothing
-// more is charged.
+// more is charged. The earlier pin's busy answer, which carries no code, is read by the same rule
+// as on the pending prompt (agentRefusalOutcome): the agent says it is streaming when asked, so
+// the claim is recorded working the same way.
 //
 // Where a later prompt of the task is outstanding, the turn the agent is in is that prompt's
 // (Machine.outstanding): the claim is recorded working all the same, nothing more is sent, and that
@@ -208,6 +340,12 @@ func TestABusyAnswerToAWaitedOutPromptHoldsTheTaskUntilTheTurnEnds(t *testing.T)
 		}},
 		{name: "a late refusal answering busy", answer: func(h *harness, first string) {
 			h.must(StreamLateRefusal{Claim: testToken, DeliveryID: first, Error: busyWords, Outcome: runtime.OutcomeAgentBusy})
+		}},
+		{name: "its result answering busy with no code, the agent streaming when asked", answer: func(h *harness, first string) {
+			h.must(StreamPromptResult{Claim: testToken, DeliveryID: first, Error: busyWords, Outcome: runtime.OutcomeNoTurnRun})
+		}},
+		{name: "a late refusal answering busy with no code, the agent streaming when asked", answer: func(h *harness, first string) {
+			h.must(StreamLateRefusal{Claim: testToken, DeliveryID: first, Error: busyWords, Outcome: runtime.OutcomeUnrecognised})
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

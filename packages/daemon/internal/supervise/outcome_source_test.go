@@ -24,12 +24,14 @@ import (
 // a charge function. Nor can a type keep a site from reading those words: they reach the daemon as
 // an error and as strings, which it must hold to log a failure and to keep a delivery's last send
 // error, and the text of either is open to any function that holds it. So this test reads the
-// source and holds the four things the compiler cannot: every member of the set
+// source and holds the five things the compiler cannot: every member of the set
 // (runtime.Outcome, declared in internal/runtime) has a row in the policy; no site reads a
 // refusal's words to decide — not in this package, and not in internal/stream, which mints the
-// outcome where the frame is read, or internal/claudebridge, which writes the busy refusal; every
-// charge names a declared member; and no function but a charge function writes a budget counter
-// except to reset it to zero (budgetResets names each that may). Delete this test when a
+// outcome where the frame is read, or internal/claudebridge, which writes the busy refusal; no
+// site compares anything with the words of that busy refusal (claudebridge.Busy), which the bridge
+// keeps for a daemon rolled back to the release before this one, the one daemon that reads them;
+// every charge names a declared member; and no function but a charge function writes a budget
+// counter except to reset it to zero (budgetResets names each that may). Delete this test when a
 // chokepoint for that becomes possible.
 //
 // It type-checks each package's non-test source against the compiler's export data for its
@@ -99,6 +101,29 @@ func TestOutcomeSourceHoldsThePolicyAtItsSites(t *testing.T) {
 					}
 					for _, match := range taint.matches(decl) {
 						t.Errorf("%s, in %s.%s, %s on a refusal's words: the outcome is minted from the frame's code where the frame is read (stream.PromptRefusalOutcome), never from its words",
+							pkg.pos(match.at), pkg.pkg.Name(), in, match.what)
+					}
+				}
+			}
+		}
+	})
+
+	t.Run("no site compares the Claude Code bridge's busy words", func(t *testing.T) {
+		busy, _ := sources[claudebridgePath].pkg.Scope().Lookup("Busy").(*types.Const)
+		if busy == nil || busy.Val().Kind() != constant.String || constant.StringVal(busy.Val()) == "" {
+			t.Fatal("internal/claudebridge declares no string constant Busy, whose words this test holds every site from comparing")
+		}
+		for _, path := range []string{supervisePath, streamPath, claudebridgePath, runtimePath} {
+			pkg := sources[path]
+			taint := pkg.busyWords(constant.StringVal(busy.Val()))
+			for _, file := range pkg.files {
+				for _, decl := range file.Decls {
+					in := "a package-level declaration"
+					if fn, ok := decl.(*ast.FuncDecl); ok {
+						in = fn.Name.Name
+					}
+					for _, match := range taint.compared(decl) {
+						t.Errorf("%s, in %s.%s, %s the Claude Code bridge's busy words (claudebridge.Busy): they are kept for a daemon rolled back to the release before this one, and this one reads a busy agent from the refusal's code (shimwire.CodeSessionBusy), never from its words",
 							pkg.pos(match.at), pkg.pkg.Name(), in, match.what)
 					}
 				}
@@ -480,6 +505,9 @@ type refusalTaint struct {
 	// functions that return them.
 	fields  func(field *types.Var) bool
 	methods []string
+	// words is the words themselves where the package holds them as a constant (busyWords), and ""
+	// where they reach it only at run time.
+	words   string
 	tainted map[types.Object]bool
 }
 
@@ -517,21 +545,52 @@ func (s *goSource) refusalWords(t *testing.T) *refusalTaint {
 		}
 		taint.methods = []string{"Reason", "RefusalReason"}
 	}
-	given := s.assignments()
+	taint.spread(func(types.Object) bool { return true })
+	return taint
+}
+
+// spread taints every object carries admits that the package gives an expression the words reach
+// (assignments), until no more is.
+func (r *refusalTaint) spread(carries func(types.Object) bool) {
+	given := r.src.assignments()
 	for changed := true; changed; {
 		changed = false
 		for target, exprs := range given {
-			if taint.tainted[target] {
+			if r.tainted[target] || !carries(target) {
 				continue
 			}
 			for _, expr := range exprs {
-				if taint.reaches(expr) {
-					taint.tainted[target], changed = true, true
+				if r.reaches(expr) {
+					r.tainted[target], changed = true, true
 					break
 				}
 			}
 		}
 	}
+}
+
+// busyWords is the taint of the Claude Code bridge's busy words (claudebridge.Busy, whose value
+// is words) in the package: every constant expression with that value, however it is spelled —
+// the bridge's constant, a constant of the package's own given it, the sentence written out — and
+// every variable or constant of type string, []byte or error given an expression they reach. A
+// value of any other type carries them to no comparison: the frame the bridge writes them into is
+// one, and writing them is what they are for.
+func (s *goSource) busyWords(words string) *refusalTaint {
+	taint := &refusalTaint{src: s, fields: func(*types.Var) bool { return false }, words: words, tainted: map[types.Object]bool{}}
+	errorType := types.Universe.Lookup("error").Type()
+	taint.spread(func(object types.Object) bool {
+		if types.Identical(object.Type(), errorType) {
+			return true
+		}
+		switch under := object.Type().Underlying().(type) {
+		case *types.Basic:
+			return under.Info()&types.IsString != 0
+		case *types.Slice:
+			elem, ok := under.Elem().Underlying().(*types.Basic)
+			return ok && elem.Kind() == types.Byte
+		}
+		return false
+	})
 	return taint
 }
 
@@ -539,6 +598,12 @@ func (s *goSource) refusalWords(t *testing.T) *refusalTaint {
 func (r *refusalTaint) reaches(expr ast.Expr) bool {
 	found := false
 	ast.Inspect(expr, func(node ast.Node) bool {
+		if expr, ok := node.(ast.Expr); ok && r.words != "" {
+			if value := r.src.info.Types[expr].Value; value != nil && value.Kind() == constant.String && constant.StringVal(value) == r.words {
+				found = true
+				return false
+			}
+		}
 		switch node := node.(type) {
 		case *ast.SelectorExpr:
 			if selection := r.src.info.Selections[node]; selection != nil && selection.Kind() == types.FieldVal {
@@ -612,6 +677,72 @@ func (r *refusalTaint) matches(node ast.Node) []wordMatch {
 					found = append(found, wordMatch{at: node, what: "switches"})
 					break
 				}
+			}
+		}
+		return true
+	})
+	return found
+}
+
+// busyMatcher is whether fn matches one text, or one error, against another: a matcher of
+// package strings or of package bytes, any function or method of package regexp, and errors.Is
+// and errors.As.
+func busyMatcher(fn *types.Func) bool {
+	if fn == nil || fn.Pkg() == nil {
+		return false
+	}
+	switch fn.Pkg().Path() {
+	case "strings", "bytes":
+		return slices.Contains(stringMatchers, fn.Name()) || slices.Contains([]string{"Compare", "Equal", "LastIndex", "Count"}, fn.Name())
+	case "regexp":
+		return true
+	case "errors":
+		return fn.Name() == "Is" || fn.Name() == "As"
+	}
+	return false
+}
+
+// compared is every place in node that compares the bridge's busy words (busyWords) with
+// anything: a call of a matcher (busyMatcher) with them among its arguments or as its receiver,
+// an == or != with them on one side and anything but nil on the other, and a switch whose tag or
+// one of whose cases they reach. A refusal's words at run time are matched only against a string
+// constant (matches), but these are a reading whatever the other side is: the one text the busy
+// refusal's words can tell anything about is a refusal, so comparing them with any text reads the
+// agent's words.
+func (r *refusalTaint) compared(node ast.Node) []wordMatch {
+	isNil := func(expr ast.Expr) bool { return r.src.info.Types[expr].IsNil() }
+	var found []wordMatch
+	ast.Inspect(node, func(node ast.Node) bool {
+		switch node := node.(type) {
+		case *ast.CallExpr:
+			fn := r.src.callee(node)
+			if !busyMatcher(fn) {
+				return true
+			}
+			operands := slices.Clone(node.Args)
+			if selector, ok := ast.Unparen(node.Fun).(*ast.SelectorExpr); ok && r.src.info.Selections[selector] != nil {
+				operands = append(operands, selector.X)
+			}
+			if slices.ContainsFunc(operands, r.reaches) {
+				found = append(found, wordMatch{at: node, what: "calls " + fn.Pkg().Name() + "." + fn.Name() + " with"})
+			}
+		case *ast.BinaryExpr:
+			if (node.Op != gotoken.EQL && node.Op != gotoken.NEQ) || isNil(node.X) || isNil(node.Y) {
+				return true
+			}
+			if r.reaches(node.X) || r.reaches(node.Y) {
+				found = append(found, wordMatch{at: node, what: "compares with " + node.Op.String()})
+			}
+		case *ast.SwitchStmt:
+			if node.Tag == nil {
+				return true
+			}
+			reached := r.reaches(node.Tag)
+			for _, stmt := range node.Body.List {
+				reached = reached || slices.ContainsFunc(stmt.(*ast.CaseClause).List, r.reaches)
+			}
+			if reached {
+				found = append(found, wordMatch{at: node, what: "switches on"})
 			}
 		}
 		return true

@@ -512,16 +512,22 @@ func TestALateAcknowledgementOfARetiredTaskRecordsNothing(t *testing.T) {
 // turn is (OutcomeNoTurnStarted) — unless the replayed refusal was the agent's answer that it is
 // in a turn of its own, which is the one thing a wait that carries no words can learn of the
 // agent's turn (noTurn, answeredBusy): that wait ended on the agent's turn, and is charged
-// nothing.
+// nothing. The answer is read by the one rule of the refusal paths (agentRefusalOutcome), so the
+// earlier pin's busy refusal, which carries no code, is that answer too when the agent says it is
+// streaming when asked.
 func TestAReplayedRefusalOfAnUnconfirmedTaskKeepsItsWait(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		refusal string
 		outcome runtime.Outcome
-		charged int
+		// streaming is what the agent answers get_state with when the refusal arrives.
+		streaming bool
+		charged   int
 	}{
 		{name: "the agent refused the work", refusal: "the model provider refused the request", outcome: runtime.OutcomePromptRefused, charged: 1},
 		{name: "the agent is in a turn of its own", refusal: busyWords, outcome: runtime.OutcomeAgentBusy, charged: 0},
+		{name: "the agent is in a turn of its own, its refusal carrying no code and the agent streaming when asked",
+			refusal: busyWords, outcome: runtime.OutcomeUnrecognised, streaming: true, charged: 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
@@ -533,6 +539,7 @@ func TestAReplayedRefusalOfAnUnconfirmedTaskKeepsItsWait(t *testing.T) {
 			if prompts := replacement.Prompts(); len(prompts) != 0 {
 				t.Fatalf("the hello re-sent %+v, want the armed turn wait to hold it", prompts)
 			}
+			replacement.SetStreaming(tc.streaming)
 
 			h.must(StreamLateRefusal{Claim: testToken, DeliveryID: d, Error: tc.refusal, Outcome: tc.outcome, Replayed: true,
 				ConnSequence: replacement.Sequence()})

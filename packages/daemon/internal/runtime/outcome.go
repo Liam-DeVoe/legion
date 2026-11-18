@@ -22,14 +22,16 @@ const (
 	// hold. A prompt refusal that carries no code is this, as internal/stream mints it
 	// (stream.PromptRefusalOutcome) — Oh My Pi's busy sentence with no code among them, since its
 	// words are not read — and so is a prompt refusal whose error carries no minted member
-	// (supervise's sendOutcome).
+	// (supervise's sendOutcome). Such a refusal is charged unless the supervisor reads it as the
+	// agent's busy answer from what it knows besides the words (supervise's agentRefusalOutcome).
 	OutcomeUnrecognised Outcome = ""
 	// OutcomeAgentBusy is the agent answering that it is in a turn of its own, which it says by the
 	// code its answer carries (shimwire.CodeSessionBusy): Oh My Pi's refusal, and the Claude Code
 	// bridge's, read by internal/stream before the prompt's acknowledgement, after it, or as a
-	// result that ran no turn. A refusal that says it in words alone is not this. A late refusal is
-	// this also when the claim is in a turn the stream saw start, or the agent says it is streaming
-	// when asked (supervise's lateRefused).
+	// result that ran no turn. A refusal that says it in words alone is not this as the stream
+	// mints it. Any refusal of a prompt, and any result that ran no turn, is this also when the
+	// daemon's own record holds the claim in a turn, or the agent says it is streaming when asked
+	// (supervise's agentRefusalOutcome).
 	OutcomeAgentBusy Outcome = "agent_busy"
 	// OutcomePromptRefused is the agent refusing a prompt with a code other than the busy one — a
 	// provider that rejected before any turn began, an agent that will not take the work.
