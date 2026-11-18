@@ -4771,15 +4771,21 @@ test("a table that holds the keyboard focus scrolls freely, and the focus moves 
 // is portalled to the end of the body, outside the dialog it is opened in, so Tab from its last
 // control went past the end of the page and on to the page behind the search bar; and after
 // Shift+Tab out of the search bar's Project list every Escape was refused while the list stood
-// open, so the bar could not be closed from the keyboard. `@firefox` and `@webkit`: each engine
-// keeps a Tab order of its own - a stop for each field of a date box, one for a radio group - and
-// the panel follows the engine's, the clause of `playwright.config.ts` on the engine's own Tab
-// order.
+// open, so the bar could not be closed from the keyboard. And a list of the shared list's single
+// pick closed by Tab or Shift+Tab out of its text box leaves the focus on its trigger, on a page
+// and in a dialog (round 12). `@firefox` and `@webkit`: each engine keeps a Tab order of its own -
+// a stop for each field of a date box, one for a radio group - and the panel follows the engine's,
+// the clause of `playwright.config.ts` on the engine's own Tab order; and each engine takes the
+// focus out of a text box the close removes in its own way, the clause on how the engine takes
+// the focus out of one on Tab. The row reads where the focus ends, not which code put it there:
+// with the list's own hand-off to its trigger taken out (`focusLost` in `MultiSelect.tsx`'s close
+// effect read as a focus on the body), the page's rescue still put the focus on the trigger in
+// Firefox and WebKit, and this row passed in both (2026-11-18).
 test("Tab and Escape never leave a panel for the page behind it, in a dialog or on a page @firefox @webkit", async ({
   page,
 }) => {
   await page.setViewportSize({ height: 900, width: 1440 });
-  await seedAsk("Which lease holds?");
+  const { issueKey } = await seedAsk("Which lease holds?");
   const main = page.getByTestId("main-content");
 
   /** Focuses `last`, the last control of its panel, and presses Tab until the focus has left it:
@@ -4850,6 +4856,12 @@ test("Tab and Escape never leave a panel for the page behind it, in a dialog or 
     .click();
   await page.getByRole("combobox", { exact: true, name: "Search projects" }).focus();
   await page.keyboard.press("Shift+Tab");
+  await expect(
+    page
+      .getByRole("dialog", { name: "Filter" })
+      .getByRole("button", { exact: true, name: "Project" }),
+    "search bar: Shift+Tab out of the Project list's text box"
+  ).toBeFocused();
   await page.keyboard.press("Escape");
   await page.keyboard.press("Escape");
   await page.keyboard.press("Escape");
@@ -4857,6 +4869,22 @@ test("Tab and Escape never leave a panel for the page behind it, in a dialog or 
     palette,
     "the search bar is still open after Shift+Tab and three Escapes"
   ).toHaveCount(0);
+
+  // On a page: the issue header's Assignee list, which Tab out of its text box closes onto its
+  // trigger, the badge.
+  await page.goto(`/issues/${issueKey}`);
+  const assigneeTrigger = page.getByRole("button", {
+    name: new RegExp(`^Assignee of ${issueKey}\\b`),
+  });
+  await assigneeTrigger.click();
+  const assigneeBox = page.getByRole("combobox", { exact: true, name: "Search people" });
+  await expect(assigneeBox).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(assigneeBox, "issue header: Tab left the Assignee list open").toHaveCount(0);
+  await expect(
+    assigneeTrigger,
+    "issue header: Tab out of the Assignee list's text box"
+  ).toBeFocused();
 });
 
 // SLOW(>=2s): the Delivery page opened four times, in each view, at two widths.
@@ -5692,19 +5720,21 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
 // left - the trigger shows it with the focus back on it, or where the pick takes the trigger away
 // the panel hands the focus on. A list that holds no text box is named and the row goes on, so
 // one run names every such list.
-// `@firefox` and `@webkit`: the keys a text box takes - the typed word, Enter, Escape and Tab - as
-// each engine delivers them, the clause of `playwright.config.ts` the composer's Issue list is run
-// under; and the close a Tab makes, which an engine that moves the focus off a removed element
-// only at its next rendering update answers while it still names the text box the close took away
-// as focused (`focusLost`, `components/focus-place.ts`).
-test("every list of options a reader picks from holds a text box that narrows it, at 1440 and 390 @firefox @webkit", async ({
+// It runs in Chromium alone. What an engine decides here is one component's, the same in every
+// list, and two rows read it in Firefox and WebKit at a fraction of this row's cost: the keys the
+// list's text box takes, as each engine delivers them, in `keyboard-agents-picker`'s rows of the
+// composer's Issue list, and where a Tab or Shift+Tab out of the text box leaves the focus - on
+// the trigger - on a page and in a dialog, in the row that Tab and Escape never leave a panel for
+// the page behind it. This row in Firefox read no more than that one: with the list's own hand-off
+// to its trigger taken out, it passed there too (2026-11-18). In both engines it took 2.1 min of
+// its shard (full-lane run 44206548149), which put that shard over its 9-minute step.
+test("every list of options a reader picks from holds a text box that narrows it, at 1440 and 390", async ({
   page,
 }) => {
   // Nine page loads and a dialog at each width, with the lists read between them. Measured in
-  // an issue pod (two cores), with each of the fourteen lists opened three times: the row took
-  // 2.9 min in Chromium and 3.4 min in Firefox, which six minutes keeps under two thirds of the
-  // budget; with the eighteen it took 2.3 min in Chromium (2026-11-17), and Firefox has not been
-  // run with them. WebKit, which no pod runs, is given the same.
+  // an issue pod (two cores), with each of the eighteen lists opened three times: the row took
+  // 2.3 min in Chromium (2026-11-17), and 41.9 s in CI's Chromium (full-lane run 44206548149).
+  // Six minutes keeps the pod's time under two thirds of the budget.
   test.setTimeout(360_000);
   const seed = await seedPickLists();
   /** The lists the row could not read: no trigger, a trigger that names no list of its own, or
