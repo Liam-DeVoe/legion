@@ -399,6 +399,62 @@ func TestPodUpdateAskWaitsWhileItsClaimsLockIsHeldAndIsDeliveredOnce(t *testing.
 	}
 }
 
+// A round publishes its ask once per claim, and the answer a role gives stands for its round. So
+// an ask the sweep queued before the role answered, and that the outbox runs after the answer,
+// reaches nobody and marks nothing: the answer is what the ask was for. The same holds for a
+// claim the daemon started again in another pod while its ask waited: the round asks that claim
+// nothing, as the sweep asks it nothing. In both cases the row ends with nothing marked, because
+// no ask reached the role.
+//
+// There are two controls. The ask that runs with nothing between the enqueue and the row is
+// delivered once and marked, and so is the ask of a claim started again in the round's own pod,
+// which is still in the round.
+func TestPodUpdateAskQueuedBeforeTheClaimNeededNoneReachesNobody(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		between   func(*podUpdateRig)
+		delivered int
+	}{
+		{name: "the control: nothing happens between the enqueue and the row", between: func(*podUpdateRig) {}, delivered: 1},
+		{name: "the role answers before the row runs", between: func(rig *podUpdateRig) {
+			rig.signal(claim.RoleImplementer, "c0ffee")
+		}, delivered: 0},
+		{name: "the control: the role is started again in the round's own pod before the row runs", between: func(rig *podUpdateRig) {
+			rig.displacedInto(claim.RoleImplementer, podUpdatePod)
+		}, delivered: 1},
+		{name: "the role is started again in another pod before the row runs", between: func(rig *podUpdateRig) {
+			rig.displacedInto(claim.RoleImplementer, podUpdateReplacementPod)
+		}, delivered: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
+			rig.drifts(podUpdateDrift)
+			rig.tick()
+			rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+			row := rig.awaitAskQueued(claim.RoleImplementer, podUpdateRound)
+			rig.settleAll()
+			tc.between(rig)
+			if c := rig.claimOf(claim.RoleImplementer); c.UpdateRound != podUpdateRound || c.UpdateTaskedAt != nil {
+				t.Fatalf("the implementer before its row runs = %+v, want it in the round and unasked", c)
+			}
+
+			rig.runAsk(row)
+
+			if n := rig.deliveredTo(claim.RoleImplementer); n != tc.delivered {
+				t.Fatalf("the implementer's topic was delivered %d asks, want %d", n, tc.delivered)
+			}
+			var marked *time.Time
+			if err := rig.pool.QueryRow(rig.ctx, "select update_tasked_at from claims where token = $1",
+				string(rig.tokens[claim.RoleImplementer])).Scan(&marked); err != nil {
+				t.Fatalf("read the implementer's stored claim: %v", err)
+			}
+			if asked := rig.claimOf(claim.RoleImplementer).UpdateTaskedAt; (asked != nil) != (tc.delivered == 1) || (marked != nil) != (tc.delivered == 1) {
+				t.Fatalf("the implementer records an ask at %v, stored %v; want a mark only where the ask was delivered", asked, marked)
+			}
+		})
+	}
+}
+
 // stoppingPublisher delivers through the listener and then cancels the context its row runs
 // under, as a daemon stop does while a row is in its publish.
 type stoppingPublisher struct {

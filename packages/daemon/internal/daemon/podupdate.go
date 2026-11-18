@@ -1253,17 +1253,20 @@ func (s *supervision) askRound(ctx context.Context, issue string, group []superv
 		"issue", issue, "round", round, "pod", pod, "roles", namesOf(asking))
 }
 
-// unaskedClaims is every claim the round asks (askedClaims) whose own record shows this round,
-// no answer to it and no ask mark (supervise.Claim.UpdateTaskedAt): no ask of the round has
-// reached its session yet (supervise's Machine.PublishUpdateAsk). A claim that has not recorded
-// the round yet is asked at the tick after its post lands, so the ask and the round it names are
-// one claim's record. A claim that left the round's pod is asked nothing (supervise's
-// Claim.LeftPodRound): the ask names work that died with that pod, and no process the claim runs
-// now holds any of it.
+// unaskedClaims is every claim the round asks (askedClaims) whose own record still owes it an ask
+// of this round (supervise's Claim.OwesUpdateAsk): it records this round, no ask of the round has
+// reached its session yet (supervise.Claim.UpdateTaskedAt, marked by supervise's
+// Machine.PublishUpdateAsk), it has not answered the round, and it has not left the round's pod.
+// A claim that has not recorded the round yet is asked at the tick after its post lands, so the
+// ask and the round it names are one claim's record. A claim that left the round's pod is asked
+// nothing (supervise's Claim.LeftPodRound): the ask names work that died with that pod, and no
+// process the claim runs now holds any of it. The outbox's row asks the same predicate again
+// under the claim's lock before it publishes, because the claim can answer or leave the pod while
+// the row waits, so the sweep and the row cannot disagree about whom the round asks.
 func unaskedClaims(group []supervise.Claim, round string) []supervise.Claim {
 	var asking []supervise.Claim
 	for _, c := range askedClaims(group) {
-		if c.UpdateRound == round && c.UpdateTaskedAt == nil && !answered(c, round) && !c.LeftPodRound(round) {
+		if owed, _ := c.OwesUpdateAsk(round); owed {
 			asking = append(asking, c)
 		}
 	}

@@ -1625,7 +1625,41 @@ const (
 	UpdateAskAlreadyDelivered
 	// UpdateAskOutOfRound is an ask of a round the claim is not in: nothing is published.
 	UpdateAskOutOfRound
+	// UpdateAskAnswered is an ask of a round whose role has answered it while no ask of it had
+	// reached a session: nothing is published and nothing is marked, since the answer stands for
+	// its round and no ask reached the role.
+	UpdateAskAnswered
+	// UpdateAskLeftPodRound is an ask of a pod round the claim has left (Claim.LeftPodRound):
+	// nothing is published and nothing is marked, since the work the round asks about went with
+	// that round's pod and no process the claim runs now holds any of it.
+	UpdateAskLeftPodRound
 )
+
+// OwesUpdateAsk is whether this claim's own record still owes it an ask of round, and, when it
+// owes none, the outcome that says why: the claim is not in round, an ask of round already
+// reached a session of its role, its role has answered round, or the claim has left round's pod.
+// Each of those makes an ask of round needless, because the round publishes once per claim and
+// an answer stands for its round.
+//
+// It is the one statement of whom a round asks. The sweep reads it where it enqueues an ask
+// (internal/daemon's unaskedClaims), and the outbox's row reads it again under this claim's lock
+// where it publishes that ask (PublishUpdateAsk), because the row runs after the enqueue and the
+// claim can move in between: its role can answer, or the daemon can start it again in another
+// pod. Two statements of the rule would drift apart, and the one at the publish is the one that
+// decides what reaches the role.
+func (c Claim) OwesUpdateAsk(round string) (bool, UpdateAskOutcome) {
+	switch {
+	case c.UpdateRound != round:
+		return false, UpdateAskOutOfRound
+	case c.UpdateTaskedAt != nil:
+		return false, UpdateAskAlreadyDelivered
+	case c.answeredOpenRound():
+		return false, UpdateAskAnswered
+	case c.LeftPodRound(round):
+		return false, UpdateAskLeftPodRound
+	}
+	return true, 0
+}
 
 // PublishUpdateAsk publishes one ask of the claim's update round through publish, and marks the
 // claim asked (UpdateTaskedAt) when, and only when, that publish reached a session. publish
@@ -1646,10 +1680,12 @@ const (
 //     that waited would hold every role message of that issue behind that decision. Held, the
 //     call answers ErrMachineBusy having published nothing, and the row's next attempt is still
 //     the first publish.
-//  2. The claim is read under the lock: a claim no longer in round is published nothing, and so
-//     is one an earlier ask of round already reached. Two rows of one round — a row left by an
-//     older daemon beside the sweep's own — therefore deliver one ask between them, whichever
-//     order they run in and whichever of them finds a holder.
+//  2. The claim is read under the lock (OwesUpdateAsk): a claim no longer in round is published
+//     nothing, and so is one an earlier ask of round already reached, one whose role has answered
+//     round, and one that has left round's pod. Two rows of one round — a row left by an older
+//     daemon beside the sweep's own — therefore deliver one ask between them, whichever order
+//     they run in and whichever of them finds a holder, and a row that runs after the role
+//     answered, or after the claim left the round's pod, delivers none.
 //  3. The publish runs under the lock, so nothing else of this claim reads or writes the mark
 //     between the publish and the mark. The section holds the lock for at most the owed write's
 //     repair, the publish and the mark's write: the claim-write deadline twice and notify's
@@ -1683,13 +1719,11 @@ func (m *Machine) PublishUpdateAsk(ctx context.Context, round string, publish fu
 	}
 	defer m.unlock()
 	m.repair(ctx)
-	switch {
-	case m.claim.UpdateRound != round:
-		return UpdateAskOutOfRound, nil
-	case m.claim.UpdateTaskedAt != nil && m.owedWrite != nil:
-		return UpdateAskAlreadyDelivered, fmt.Errorf("the mark of the ask of round %s that reached the role waits on a claim write the store has not taken", round)
-	case m.claim.UpdateTaskedAt != nil:
-		return UpdateAskAlreadyDelivered, nil
+	if owed, why := m.claim.OwesUpdateAsk(round); !owed {
+		if why == UpdateAskAlreadyDelivered && m.owedWrite != nil {
+			return why, fmt.Errorf("the mark of the ask of round %s that reached the role waits on a claim write the store has not taken", round)
+		}
+		return why, nil
 	}
 	delivered, err := publish(ctx)
 	if err != nil {

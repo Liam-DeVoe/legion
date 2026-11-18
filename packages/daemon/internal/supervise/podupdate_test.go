@@ -434,6 +434,139 @@ func TestPodUpdatePublishUpdateAskMarksOnlyAnAskThatReachedASession(t *testing.T
 	})
 }
 
+// A round publishes its ask once per claim, and the answer a role gives stands for its round. So
+// an ask of the round that still waits in the outbox when the role answers is published to
+// nobody: the answer is what the ask was for. No delivery is marked either, since no ask reached
+// the role, and the answer stays as it was given. The control is the same claim before it
+// answers, whose ask is published once and marked.
+func TestPodUpdatePublishUpdateAskPublishesNothingOnceTheRoleAnswered(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		answered bool
+		calls    int
+	}{
+		{name: "the control: a claim that has not answered is asked once", answered: false, calls: 1},
+		{name: "a claim that answered while its ask waited is asked nothing", answered: true, calls: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := updateHarness(t, PodUpdateContract)
+			h.reach(StateReady)
+			h.openUpdate(testRound, testReasons)
+			if tc.answered {
+				h.signalUpdate("c0ffee")
+			}
+			if c := h.claim(); (c.UpdateSignalledAt != nil) != tc.answered || c.UpdateTaskedAt != nil {
+				t.Fatalf("the claim before its ask = %+v, want answered=%t and no ask marked", c, tc.answered)
+			}
+
+			reached := &askPublisher{delivered: true}
+			outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish)
+
+			if err != nil {
+				t.Fatalf("the ask = %v, %v; want no error", outcome, err)
+			}
+			if reached.calls != tc.calls {
+				t.Fatalf("the ask was published %d times to a claim with answered=%t, want %d", reached.calls, tc.answered, tc.calls)
+			}
+			c, stored := h.claim(), h.store.load(h.token)
+			if !tc.answered {
+				if outcome != UpdateAskDelivered || c.UpdateTaskedAt == nil || stored.UpdateTaskedAt == nil {
+					t.Fatalf("the control's ask = %v, marked %v, stored %v; want it delivered and marked", outcome, c.UpdateTaskedAt, stored.UpdateTaskedAt)
+				}
+				return
+			}
+			if outcome != UpdateAskAnswered || c.UpdateTaskedAt != nil || stored.UpdateTaskedAt != nil {
+				t.Fatalf("the ask to the answered claim = %v, marked %v, stored %v; want it refused as answered, with no mark", outcome, c.UpdateTaskedAt, stored.UpdateTaskedAt)
+			}
+			if c.UpdateSignalledAt == nil || c.UpdateHead != "c0ffee" || stored.UpdateSignalledAt == nil {
+				t.Fatalf("the claim after the ask = %+v, want its answer standing", c)
+			}
+		})
+	}
+}
+
+// A mark the store did not take is kept by the row however the claim moves on: a role that
+// answers while the mark of its delivered ask is still owed leaves the row answering an error,
+// and publishing nothing, until the write lands. The answer does not end the row early.
+func TestPodUpdatePublishUpdateAskAnAnswerBesideAnOwedMarkKeepsTheRow(t *testing.T) {
+	h := updateHarness(t, PodUpdateContract)
+	h.reach(StateReady)
+	h.openUpdate(testRound, testReasons)
+	reached := &askPublisher{delivered: true}
+	h.store.fail("PutClaim", errBoom)
+	if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish); !errors.Is(err, errBoom) || outcome != UpdateAskDelivered {
+		t.Fatalf("the delivered ask over a failing write = %v, %v; want it delivered, with the store's error", outcome, err)
+	}
+	if err := h.handle(PodUpdateSignalled{Claim: h.token, Generation: h.generation(), Session: session, Round: testRound, Head: "c0ffee"}); !errors.Is(err, errBoom) {
+		t.Fatalf("the answer over a failing write = %v, want the store's error", err)
+	}
+	if c := h.claim(); c.UpdateTaskedAt == nil || c.UpdateSignalledAt == nil {
+		t.Fatalf("the claim = %+v, want the mark and the answer held in memory, the write owed", c)
+	}
+
+	if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish); err == nil || outcome != UpdateAskAlreadyDelivered {
+		t.Fatalf("the next ask while the write stays owed = %v, %v; want it refused as already delivered, with an error that keeps the row", outcome, err)
+	}
+
+	h.store.fail("PutClaim", nil)
+	if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish); err != nil || outcome != UpdateAskAlreadyDelivered {
+		t.Fatalf("the next ask once the store answers = %v, %v; want it refused as already delivered", outcome, err)
+	}
+	if stored := h.store.load(h.token); stored.UpdateTaskedAt == nil || stored.UpdateSignalledAt == nil {
+		t.Fatalf("stored claim = %+v, want the owed mark and the answer written", stored)
+	}
+	if reached.calls != 1 {
+		t.Fatalf("the ask was published %d times, want once", reached.calls)
+	}
+}
+
+// A claim the daemon started again in another pod than its pod round's own has left that round:
+// the work the round asks about went with the dead pod's disk, and the round asks the process in
+// the new pod nothing. So an ask of the round that still waits in the outbox when the claim leaves
+// is published to nobody, and no delivery is marked. The control is a claim started again in the
+// round's own pod, which is still in the round and is asked once.
+func TestPodUpdatePublishUpdateAskPublishesNothingToAClaimThatLeftTheRoundsPod(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		pod   string
+		calls int
+	}{
+		{name: "the control: a claim started again in the round's own pod is asked once", pod: testRoundPod, calls: 1},
+		{name: "a claim started again in another pod is asked nothing", pod: testOtherPod, calls: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := updateHarness(t, PodUpdateContract)
+			h.inPod(testRoundPod)
+			h.openUpdate(testRound, testReasons)
+			h.diesIntoPod(tc.pod)
+			left := tc.pod != testRoundPod
+			if c := h.wantRound(testRound); c.LeftPodRound(testRound) != left || c.UpdateTaskedAt != nil {
+				t.Fatalf("the relaunched claim = %+v, want left=%t and no ask marked", c, left)
+			}
+
+			reached := &askPublisher{delivered: true}
+			outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish)
+
+			if err != nil {
+				t.Fatalf("the ask = %v, %v; want no error", outcome, err)
+			}
+			if reached.calls != tc.calls {
+				t.Fatalf("the ask was published %d times to a claim with left=%t, want %d", reached.calls, left, tc.calls)
+			}
+			c, stored := h.claim(), h.store.load(h.token)
+			if !left {
+				if outcome != UpdateAskDelivered || c.UpdateTaskedAt == nil || stored.UpdateTaskedAt == nil {
+					t.Fatalf("the control's ask = %v, marked %v, stored %v; want it delivered and marked", outcome, c.UpdateTaskedAt, stored.UpdateTaskedAt)
+				}
+				return
+			}
+			if outcome != UpdateAskLeftPodRound || c.UpdateTaskedAt != nil || stored.UpdateTaskedAt != nil {
+				t.Fatalf("the ask to the claim that left = %v, marked %v, stored %v; want it refused as out of the round's pod, with no mark", outcome, c.UpdateTaskedAt, stored.UpdateTaskedAt)
+			}
+		})
+	}
+}
+
 // The lock is taken without waiting: whatever holds it — a decision in flight, or a section that
 // is no decision, so that Deciding reads nothing — the ask answers ErrMachineBusy at once, having
 // published nothing and marked nothing, and the next ask once the lock is free is the first
