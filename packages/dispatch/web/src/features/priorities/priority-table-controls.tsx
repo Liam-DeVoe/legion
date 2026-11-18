@@ -14,7 +14,8 @@ import { SearchBox } from "../../components/SearchBox";
  * not one of its columns, so the row draws no filter trigger: every column's filter is set on
  * its own header (`ColumnFilter`). Its chip is drawn here as well, whether the column is shown
  * or hidden, so a column the reader hid with the columns menu keeps its narrowing in sight, and
- * the chip's press takes it off (INFRA-3135, R1).
+ * the chip's press takes it off (INFRA-3135, R1). Shift+V opens the display menu from the
+ * page, in the project scope the page pushes; with no filter trigger, Shift+F does nothing here.
  */
 export function TableToolbar<Row>({
   children,
@@ -59,6 +60,7 @@ export function TableToolbar<Row>({
           size="compact"
         />
       }
+      keyScope="project"
       search={
         <SearchBox
           className="w-full"

@@ -44,6 +44,11 @@ ticked rows. These include **Assign to me**, **Hand on**, **Un-snooze**, **Mark 
 `/` opens the palette for search alone, with your last search selected so that typing replaces
 it. `g p` opens it as a project list.
 
+In the palette, `Ctrl+Enter` (`⌘+Enter` on a Mac) opens the highlighted issue, document, project
+or recent page in a new tab. A `Ctrl`+click or a `⌘`+click on one of these rows does the same. The
+tab you are on stays as it was, and the palette stays open on the same words. On an action row,
+`Ctrl+Enter` does nothing. The palette's foot shows this key with its other keys.
+
 ## Global
 
 These work on every page.
@@ -91,6 +96,8 @@ the right column is showing. Below that width, and in the Inbox drawer, they act
 | `x` | Tick or untick the selected row |
 | `o` | Open the row's issue, document or thread |
 | `Shift+O` | Open the row's issue, document or thread in a new tab |
+| `Shift+F` | Open the filter panel |
+| `Shift+V` | Open the display menu |
 | `y` | Copy the selected row's reference |
 | `f` | Move the focus to the **Search asks** box above the list |
 | `Escape` | From the search box: to the selected row, or to the first row when none is selected. From the right column: back to the row you pressed `l` on, else the row it is showing. From a row: off it. With no row focused: drop every tick. |
@@ -141,6 +148,15 @@ opens the list and moves its highlight, and a letter opens the list with that le
 box. Neither changes the value. `Enter` or a click on a choice changes it. `Escape`, `Tab` and a
 click outside close the list, and nothing changes.
 
+## Panels
+
+`Shift+F` opens a page's filter panel, and `Shift+V` opens its display menu. The focus goes to the
+first control inside. On a panel that is already open, the key moves the focus into it and does
+not close it. In the panel, `Tab` moves between the controls. On a field, `Enter` opens its list:
+type to narrow the list, use the arrow keys to move, and press `Enter` to turn a value on or off.
+The arrow keys move between the choices of a group and select one. `Escape` closes the open list,
+then the panel. The focus then goes back to where it was before you pressed the key.
+
 ## Project
 
 | Keys | Action |
@@ -154,10 +170,23 @@ On the List table, `j` and `k` follow the current sorted, filtered page, skip co
 | `j` / `k` | Next / previous issue |
 | `o` | Open issue |
 | `Enter` | Open the focused issue (from the row) |
+| `Shift+O` | Open the focused issue in a new tab |
 | `x` | Select or deselect the focused issue |
+| `Shift+F` | Open the filter panel |
+| `Shift+V` | Open the display menu |
 
-`j`, `k`, `o` and `Enter` work the same way on the tables of the Priorities page and of a
-priority's page.
+`j`, `k`, `o`, `Enter` and `Shift+O` work the same way on the tables of the Priorities page and of
+a priority's page. On the Priorities page, `Shift+V` opens the display menu. On a priority's page,
+`Shift+F` opens the filter panel and `Shift+V` opens the display menu.
+
+On the project's Documents tab, the list of documents takes the same row keys:
+
+| Keys | Action |
+| --- | --- |
+| `j` / `k` | Next / previous document |
+| `o` | Open the focused document |
+| `Enter` | Open the focused document (from the row) |
+| `Shift+O` | Open the focused document in a new tab |
 
 ## Board
 
@@ -171,10 +200,12 @@ priority's page.
 | `Shift+L` / `Shift+H` | Move card to the next / previous status |
 | `o` | Open issue |
 | `Enter` | Open the focused card's issue (from the card) |
+| `Shift+O` | Open the focused card's issue in a new tab |
 | `p` | Open the card's priority menu |
 | `y` | Copy the card's issue reference |
 | `Shift+Y` | Copy the card's issue key |
 | `Escape` | Back to the card, then off it |
+| `Shift+F` | Open the filter panel |
 
 ## Architecture
 
@@ -186,6 +217,7 @@ priority's page.
 | `l` or `→` | Into the focused component's children |
 | `h` or `←` | Up one level |
 | `Escape` | Back to the component row, then off it |
+| `Shift+O` | Open the focused component's own link in a new tab |
 
 ## Delivery
 
@@ -195,6 +227,7 @@ On the Delivery page's list:
 | --- | --- |
 | `↓` / `↑` | Next / previous pull request, while a row is focused |
 | `o` or `Enter` | Open the focused pull request's details |
+| `Shift+F` | Open the filter panel, in the List and in the Timeline |
 
 ## Issue
 
@@ -282,6 +315,7 @@ After `Escape`, the next `Tab` goes back into the document, and the cursor is wh
 | `Shift+P` | Pin or unpin the focused agent |
 | `x` | Select or deselect the focused agent |
 | `Escape` | Close the issue picker, or go back to the agent row |
+| `Shift+F` | Open the filter panel |
 
 ## Dialogs
 

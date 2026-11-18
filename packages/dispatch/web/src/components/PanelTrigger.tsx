@@ -1,4 +1,4 @@
-import { type ReactNode, useRef } from "react";
+import { type ReactNode, useId, useRef } from "react";
 
 import { borderDefault, card, surfaceMutedBg, textSecondaryOnCanvas } from "../theme/classes";
 import { AnchoredPanel } from "./AnchoredPanel";
@@ -43,7 +43,9 @@ export interface PanelTriggerProps {
  * and a reader who learns one has learned them all. The panel is a `dialog` the trigger says it
  * opens, and whatever closes it — a choice inside, Escape, Tab or Shift+Tab past its last or
  * first control, a press outside — leaves the reader on the trigger rather than on the document,
- * so Tab never carries the reader out of a panel to the page behind it.
+ * so Tab never carries the reader out of a panel to the page behind it. While the panel is open
+ * the trigger names it (`aria-controls`), which is how a key finds the panel a trigger already
+ * holds open and moves the focus into it (`components/control-keys.ts`).
  *
  * A press that takes away the control holding the focus while the panel stays open - the search
  * bar's Project menu, whose trigger goes once a project is picked, or its Author box once an
@@ -67,6 +69,7 @@ export function PanelTrigger({
   triggerClassName,
 }: PanelTriggerProps): ReactNode {
   const trigger = useRef<HTMLButtonElement>(null);
+  const panelId = useId();
   // The panel's content, without a box of its own (`contents`), so the panel lays it out as it
   // always has: the container a focused control in the panel is counted in.
   const content = useRef<HTMLDivElement>(null);
@@ -85,6 +88,7 @@ export function PanelTrigger({
   return (
     <>
       <button
+        aria-controls={open ? panelId : undefined}
         aria-expanded={open}
         aria-haspopup="dialog"
         aria-label={title}
@@ -104,6 +108,7 @@ export function PanelTrigger({
           anchorRef={trigger}
           className={`flex max-h-[min(20rem,calc(100dvh-16px))] w-64 max-w-[calc(100vw-16px)] flex-col overflow-y-auto rounded-lg border text-sm font-normal shadow-lg ${stacked ? "items-start gap-2 p-2" : "p-1"} ${card}`}
           focusOnOpen={focusOnOpen}
+          id={panelId}
           label={title ?? (typeof label === "string" ? label : undefined)}
           onDismiss={() => onOpenChange(false)}
           role="dialog"

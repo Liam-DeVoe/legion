@@ -974,6 +974,7 @@ function AgentFilterBar({
     <ControlRow
       className="mb-3"
       chips={filterChips(chosen)}
+      keyScope="agents"
       search={
         <SearchBox
           className="w-full"

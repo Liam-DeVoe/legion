@@ -3,12 +3,15 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the form's own submit
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import type { Artifact } from "../../api/types";
+import { KeymapProvider } from "../shell/KeymapProvider";
+import { useKeymapScope } from "../shell/keymap";
 import { DocumentList } from "./DocumentList";
 
 function document(overrides: Partial<Artifact> = {}): Artifact {
@@ -226,6 +229,66 @@ test("the project document list shows no removal control", async () => {
     expect(screen.queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
   } finally {
     view.unmount();
+    listProjectArtifacts.mockRestore();
+  }
+});
+
+/** The `project` scope, which the project page pushes around its Documents tab. */
+function ProjectScope({ children }: { children: ReactNode }): ReactNode {
+  useKeymapScope("project");
+  return children;
+}
+
+// dispatch://INFRA-2160, R20: the Documents list takes the row keys every list of the project
+// scope shares.
+test("j and k walk the documents, o and Enter on the row open one in this tab, and Shift+O opens it in a new tab", async () => {
+  const user = userEvent.setup();
+  const listProjectArtifacts = spyOn(api, "listProjectArtifacts").mockResolvedValue([
+    document(),
+    document({ id: "artifact-2", name: "Goals", ref_key: "CORE/goals", slug: "goals" }),
+  ]);
+  const open = spyOn(window, "open").mockImplementation(() => null);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <MemoryRouter initialEntries={["/projects/CORE/documents"]}>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <ProjectScope>
+            <DocumentList project="CORE" />
+            <Location />
+          </ProjectScope>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const address = () => screen.getByTestId("location").textContent;
+  try {
+    const [first, second] = await screen.findAllByRole("listitem");
+    if (first === undefined || second === undefined) throw new Error("the list drew no two rows");
+    // From the page itself: `j` takes the first row, then the next; `k` the one before.
+    await user.keyboard("j");
+    expect(first).toHaveFocus();
+    await user.keyboard("j");
+    expect(second).toHaveFocus();
+    await user.keyboard("k");
+    expect(first).toHaveFocus();
+    await user.keyboard("j");
+
+    await user.keyboard("{Shift>}O{/Shift}");
+    const goals = screen.getByRole("link", { name: "Goals" });
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(open).toHaveBeenCalledWith((goals as HTMLAnchorElement).href, "_blank", "noopener");
+    expect(address()).toBe("/projects/CORE/documents");
+    expect(second).toHaveFocus();
+
+    await user.keyboard("o");
+    expect(address()).toBe("/projects/CORE/documents/goals");
+    act(() => first.focus());
+    await user.keyboard("{Enter}");
+    expect(address()).toBe("/projects/CORE/documents/design-notes");
+  } finally {
+    view.unmount();
+    open.mockRestore();
     listProjectArtifacts.mockRestore();
   }
 });

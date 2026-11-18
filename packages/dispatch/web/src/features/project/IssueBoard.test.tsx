@@ -703,6 +703,31 @@ test("Enter and o open the focused card once, p opens its priority menu, Escape 
   }
 });
 
+// dispatch://INFRA-2160, R20: Shift+O is `o` in a new tab, and the Board stays where it is.
+test("Shift+O opens the focused card's issue in a new tab, and the Board keeps its address and its focus", async () => {
+  const user = userEvent.setup();
+  const open = spyOn(window, "open").mockImplementation(() => null);
+  const { cleanup } = renderBoard({}, undefined, keyboardIssues);
+  try {
+    const board = await screen.findByRole("region", { name: "Project board" });
+    const alpha = within(board).getByRole("article", { name: "CORE-1 Alpha" });
+    await user.keyboard("{Shift>}O{/Shift}");
+    expect(open).not.toHaveBeenCalled();
+    await user.keyboard("j");
+    expect(alpha).toHaveFocus();
+    await user.keyboard("{Shift>}O{/Shift}");
+    expect(open).toHaveBeenCalledTimes(1);
+    const [href, target, features] = open.mock.calls[0] ?? [];
+    expect(new URL(String(href)).pathname).toBe("/issues/CORE-1");
+    expect([target, features]).toEqual(["_blank", "noopener"]);
+    expect(screen.getByTestId("current-route").textContent).toBe("/projects/CORE");
+    expect(alpha).toHaveFocus();
+  } finally {
+    cleanup();
+    open.mockRestore();
+  }
+});
+
 test("Space on a focused card lifts nothing, and the card's instructions name the registry keys, not dnd-kit's grammar", async () => {
   const user = userEvent.setup();
   const patchIssue = answerIssuePatches().mockResolvedValue(patched);
@@ -1406,6 +1431,49 @@ test("a panel the stored choice opens as the Board loads takes no focus, and a p
     expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("collapsed");
     await user.click(trigger);
     expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("expanded");
+    expect(
+      within(screen.getByRole("dialog", { name: "Filters" })).getByRole("button", {
+        name: "Labels · 1",
+      })
+    ).toHaveFocus();
+  } finally {
+    view.unmount();
+    getMyState.mockRestore();
+    listIssues.mockRestore();
+    window.localStorage.clear();
+  }
+});
+
+// dispatch://INFRA-2160, R24: Shift+F opens the panel into the focus, and on the panel the stored
+// choice opened it moves the focus there and closes nothing; Escape gives the focus back.
+test("Shift+F opens the filter panel on its first control, and on the panel the stored choice opened puts the focus in it and closes nothing", async () => {
+  const user = userEvent.setup();
+  window.localStorage.clear();
+  const { getMyState, listIssues, view } = renderControlRow(
+    [issue({ labels: ["bug"], title: "Core work" })],
+    {},
+    "/projects/CORE?label=bug"
+  );
+
+  try {
+    await screen.findByText("Core work");
+    const trigger = screen.getByRole("button", { name: "Filters · 1" });
+    const panel = screen.getByRole("dialog", { name: "Filters" });
+    const labels = within(panel).getByRole("button", { name: "Labels · 1" });
+    expect(document.activeElement).toBe(document.body);
+    await user.keyboard("{Shift>}F{/Shift}");
+    expect(screen.getByRole("dialog", { name: "Filters" })).toBe(panel);
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    expect(labels).toHaveFocus();
+    // Nothing the key did is the reader's open or close, so the stored choice stays unwritten.
+    expect(window.localStorage.getItem(PANEL_CHOICE)).toBeNull();
+    await user.keyboard("{Escape}");
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(document.activeElement).toBe(document.body);
+
+    // Shut, Shift+F opens it into the focus, as a press does.
+    await user.keyboard("{Shift>}F{/Shift}");
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
     expect(
       within(screen.getByRole("dialog", { name: "Filters" })).getByRole("button", {
         name: "Labels · 1",

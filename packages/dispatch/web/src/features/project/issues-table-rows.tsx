@@ -25,8 +25,9 @@ import { buildIssuePath } from "../refs/routes";
 import { issueStatuses, statusLabel } from "./board-model";
 import { columnFilterSpec, type Item } from "./issues-table-model";
 
-/** One issue's row: its cells, and the Start next the reader reaches by hovering it, which is
- *  held while a table action is out (`busy`) as a `StepButton` is, and for the same reason. */
+/** One issue's row: its cells, and the Start next the reader reaches by hovering it or by putting
+ *  the focus in it, which is held while a table action is out (`busy`) as a `StepButton` is, and
+ *  for the same reason. */
 export function IssueRow({
   busy,
   index,
@@ -63,7 +64,7 @@ export function IssueRow({
         trailing={
           queue !== undefined && queue > 1 ? (
             <button
-              className={`rounded-md border px-2 py-0.5 text-xs whitespace-nowrap opacity-0 group-hover:opacity-100 focus:opacity-100 ${borderDefault} ${surfaceBg}`}
+              className={`rounded-md border px-2 py-0.5 text-xs whitespace-nowrap opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 ${borderDefault} ${surfaceBg}`}
               {...heldPress(busy, () => onStartNext(issue.key))}
               type="button"
             >

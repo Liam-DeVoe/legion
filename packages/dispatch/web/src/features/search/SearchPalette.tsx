@@ -49,7 +49,14 @@ import {
   type DispatchReferenceRoute,
   nodeRouteFromHref,
 } from "../refs/routes";
-import { appKeymap, DIALOG_SCOPE, type KeymapAction, useKeymap } from "../shell/keymap";
+import {
+  appKeymap,
+  DIALOG_SCOPE,
+  type KeymapAction,
+  modKeyLabel,
+  useKeymap,
+} from "../shell/keymap";
+import { openInNewTab } from "../shell/new-tab";
 import { KeyHints } from "../shell/ShortcutHelp";
 import { useCloseOnNavigation, useDialog } from "../shell/useDialog";
 import { AskHitStatus } from "./AskHitStatus";
@@ -112,6 +119,14 @@ interface RecentRow {
  *  back into the offer to run it. */
 type PaletteRow = ActionRow | OfferRow | ProjectRow | RecentRow | ResultRow;
 
+/** The page a row opens, in this tab or in a new one: a project's own page, a recent page's own
+ *  path, or a hit's. An action or an offer opens none. */
+function rowPath(row: ProjectRow | RecentRow | ResultRow): string {
+  if (row.kind === "project")
+    return buildProjectPath({ kind: "project", project: row.project.key });
+  return row.kind === "recent" ? row.item.path : row.result.href;
+}
+
 function SearchResultIcon({ kind }: { kind: SearchResultKind }): ReactNode {
   const common = {
     "aria-hidden": true,
@@ -170,7 +185,8 @@ function SearchResultIcon({ kind }: { kind: SearchResultKind }): ReactNode {
 }
 
 /** One row of the listbox, a hit or a command: the selected outline and fill, and a click, Enter
- *  or Space selecting it. `layout` arranges the row's own content. */
+ *  or Space selecting it. A click or a key with Ctrl or Cmd held asks for the row in a new tab
+ *  (`newTab`), as the browser's own does for a link. `layout` arranges the row's own content. */
 function PaletteOption({
   active,
   children,
@@ -183,7 +199,7 @@ function PaletteOption({
   children: ReactNode;
   id: string;
   layout?: string;
-  onSelect: () => void;
+  onSelect: (newTab: boolean) => void;
   /** A hit's target, which makes the row a `RefPreview` trigger. */
   reference?: DispatchReferenceRoute;
 }): ReactNode {
@@ -194,11 +210,11 @@ function PaletteOption({
         active ? selectedCardBorder : ""
       }`}
       id={id}
-      onClick={onSelect}
+      onClick={(event) => onSelect(event.ctrlKey || event.metaKey)}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
-          onSelect();
+          onSelect(event.ctrlKey || event.metaKey);
         }
       }}
       role="option"
@@ -224,7 +240,7 @@ function ResultOption({
 }: {
   active: boolean;
   muted: boolean;
-  onSelect: () => void;
+  onSelect: (newTab: boolean) => void;
   result: SearchResult;
 }): ReactNode {
   // The server reads the hit's snippet for display and marks the words that matched in the
@@ -284,7 +300,7 @@ function CommandOption({
   hint: ReactNode;
   id: string;
   label: string;
-  onSelect: () => void;
+  onSelect: (newTab: boolean) => void;
 }): ReactNode {
   return (
     <PaletteOption
@@ -334,7 +350,7 @@ function CommandGroup({
   section,
 }: {
   activeId: string | undefined;
-  onSelect: (row: PaletteRow) => void;
+  onSelect: (row: PaletteRow, newTab: boolean) => void;
   section: CommandSection;
 }): ReactNode {
   if (section.options.length === 0) {
@@ -358,7 +374,7 @@ function CommandGroup({
             id={row.id}
             key={row.id}
             label={label}
-            onSelect={() => onSelect(row)}
+            onSelect={(newTab) => onSelect(row, newTab)}
           />
         ))}
       </fieldset>
@@ -798,7 +814,17 @@ function PaletteDialog({
 
   useCloseOnNavigation(true, onClose);
 
-  const selectRow = (row: PaletteRow) => {
+  const selectRow = (row: PaletteRow, newTab = false) => {
+    if (newTab) {
+      // Ctrl or Cmd (R20): the row's page in a new tab, and this tab as it was - the bar open on
+      // the same words and the same highlight, with the focus back in its box for the next key.
+      // An action and an offer have no page, and a key that only opens a tab writes nothing, so
+      // on one of them it does nothing.
+      if (row.kind === "action" || row.kind === "offer") return;
+      openInNewTab(rowPath(row));
+      inputRef.current?.focus();
+      return;
+    }
     if (row.kind === "offer") {
       // The rows that write, each pressed through the row it carries rather than through the
       // offer behind it. The new issue is made with the bar still open, so the person reads
@@ -812,13 +838,7 @@ function PaletteDialog({
     if (row.kind === "action") {
       onAction(row.action.run);
     } else {
-      navigate(
-        row.kind === "project"
-          ? buildProjectPath({ kind: "project", project: row.project.key })
-          : row.kind === "recent"
-            ? row.item.path
-            : row.result.href
-      );
+      navigate(rowPath(row));
     }
     onClose();
   };
@@ -852,7 +872,7 @@ function PaletteDialog({
       setActive({ hits: listedQuery, id: rows[next]?.id ?? null });
     } else if (event.key === "Enter" && activeRow !== undefined) {
       event.preventDefault();
-      selectRow(activeRow);
+      selectRow(activeRow, event.ctrlKey || event.metaKey);
     }
   };
 
@@ -999,7 +1019,7 @@ function PaletteDialog({
                           active={activeRow?.id === row.id}
                           muted={muted}
                           key={row.id}
-                          onSelect={() => selectRow(row)}
+                          onSelect={(newTab) => selectRow(row, newTab)}
                           result={row.result}
                         />
                       ))}
@@ -1081,7 +1101,8 @@ function PaletteDialog({
           {/* The palette is a keyboard surface and never said so: the keys that drive it sit
               at its foot, quieter than any hit above them - and only where there is a pointer
               that can hover, since a touch reader has none of these keys and the row would
-              cost them 33px of hits. */}
+              cost them 33px of hits. The `?` help leaves the bar's own keys to this row (R13),
+              so the row names the new-tab key too: ⌘+Enter on a Mac, Ctrl+Enter elsewhere. */}
           <div
             className={`hidden shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t px-3 py-2 text-xs pointer-fine:flex ${borderDefault} ${textMutedOnSurface}`}
             data-testid="search-keyboard-hints"
@@ -1094,6 +1115,12 @@ function PaletteDialog({
             <span className="inline-flex items-center gap-1">
               <kbd className={`rounded px-1 py-0.5 font-medium ${kbdHint}`}>Enter</kbd>
               to open
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <kbd className={`rounded px-1 py-0.5 font-medium ${kbdHint}`}>
+                {modKeyLabel()}+Enter
+              </kbd>
+              to open in a new tab
             </span>
             <span className="inline-flex items-center gap-1">
               <kbd className={`rounded px-1 py-0.5 font-medium ${kbdHint}`}>Esc</kbd>

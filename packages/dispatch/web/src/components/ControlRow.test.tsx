@@ -1,10 +1,14 @@
 import { expect, mock, spyOn, test } from "bun:test";
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useRef, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 
+import { KeymapProvider } from "../features/shell/KeymapProvider";
+import { appKeymap, type KeymapScope, useKeymapScope } from "../features/shell/keymap";
 import { ControlRow, type ControlRowProps } from "./ControlRow";
+import { DisplayMenu } from "./DisplayMenu";
 import { useFocusRescue } from "./focus-place";
+import { PanelTrigger } from "./PanelTrigger";
 
 /**
  * Tailwind's own definitions of the utilities the row's height rule is written in. happy-dom
@@ -675,4 +679,222 @@ test("a press on a scroll button takes no focus, so a chip that held it keeps it
   } finally {
     view.unmount();
   }
+});
+
+// dispatch://INFRA-2160, R12: the scroll buttons are buttons the row shows, so Tab reaches them.
+test("Tab reaches a scroll button, and Enter on it that brings the strip to its end hands the focus to the chip there", async () => {
+  const user = userEvent.setup();
+  const view = render(
+    <ControlRow
+      chips={
+        <>
+          <button type="button">Alpha</button>
+          <button type="button">Beta</button>
+        </>
+      }
+    />
+  );
+  try {
+    // happy-dom lays nothing out, so the strip is told it holds more than it shows, and a scroll
+    // of it reads that again: the right button is drawn. Its press scrolls to the strip's end,
+    // where it holds nothing more to show, and the button goes.
+    const beta = screen.getByRole("button", { name: "Beta" });
+    const strip = beta.parentElement;
+    if (strip === null) throw new Error("the chip is drawn outside the strip");
+    const overflow = (width: number) =>
+      act(() => {
+        Object.defineProperty(strip, "scrollWidth", { configurable: true, value: width });
+        strip.dispatchEvent(new Event("scroll"));
+      });
+    overflow(1000);
+    spyOn(strip, "scrollBy").mockImplementation(() => overflow(0));
+    spyOn(beta, "scrollIntoView").mockImplementation(() => {});
+    act(() => beta.focus());
+    await user.tab();
+    const right = screen.getByRole("button", { name: "Scroll filters right" });
+    expect(right).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(screen.queryByRole("button", { name: "Scroll filters right" })).toBeNull();
+    expect(beta).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+/** The `scope` pushed, as the page that draws a row pushes its own. */
+function Scoped({ children, scope }: { children: ReactNode; scope: KeymapScope }) {
+  useKeymapScope(scope);
+  return children;
+}
+
+/**
+ * A page's row with a filter panel and a display menu, its keys under `keyScope`, in the Inbox's
+ * scope. `storedOpen` opens the filter panel as the row is drawn, moving no focus into it, as the
+ * Board's stored choice does.
+ */
+function KeyedRow({
+  keyScope,
+  storedOpen = false,
+}: {
+  keyScope?: ControlRowProps["keyScope"];
+  storedOpen?: boolean;
+}) {
+  const [filterOpen, setFilterOpen] = useState(storedOpen);
+  const [pressedOpen, setPressedOpen] = useState(false);
+  const [viewOpen, setViewOpen] = useState(false);
+  const [sort, setSort] = useState("newest");
+  return (
+    <ControlRow
+      display={
+        <DisplayMenu
+          label="View"
+          onOpenChange={setViewOpen}
+          open={viewOpen}
+          sections={[
+            {
+              id: "sort",
+              label: "Sort by",
+              onChange: setSort,
+              options: [
+                { label: "Newest first", value: "newest" },
+                { label: "Priority", value: "priority" },
+              ],
+              value: sort,
+            },
+          ]}
+        />
+      }
+      keyScope={keyScope}
+      search={<input aria-label="Search" type="search" />}
+      trigger={
+        <PanelTrigger
+          focusOnOpen={pressedOpen}
+          label="Filter"
+          onOpenChange={(open) => {
+            setPressedOpen(open);
+            setFilterOpen(open);
+          }}
+          open={filterOpen}
+          stacked
+        >
+          {() => (
+            <>
+              <button type="button">Project</button>
+              <button type="button">Priority</button>
+            </>
+          )}
+        </PanelTrigger>
+      }
+    >
+      <button type="button">Mark all read</button>
+    </ControlRow>
+  );
+}
+
+/** Takes the focus off whatever holds it, onto the page itself. */
+function focusPage(): void {
+  act(() => {
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  });
+}
+
+// dispatch://INFRA-2160, R24.
+test("in the page's scope Shift+F and Shift+V open the filter panel and the display menu on their first control, and Escape hands the focus back to where it was", async () => {
+  const user = userEvent.setup();
+  const view = render(
+    <KeymapProvider>
+      <Scoped scope="inbox">
+        <KeyedRow keyScope="inbox" />
+      </Scoped>
+    </KeymapProvider>
+  );
+  try {
+    // From the page itself, with nothing focused: Escape leaves the reader there.
+    focusPage();
+    await user.keyboard("{Shift>}F{/Shift}");
+    expect(screen.getByRole("dialog", { name: "Filter" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Project" })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Filter" })).toBeNull();
+    expect(document.activeElement).toBe(document.body);
+
+    // From a control of the row: Escape goes back to it, and Tab out goes to the trigger.
+    const markAll = screen.getByRole("button", { name: "Mark all read" });
+    act(() => markAll.focus());
+    await user.keyboard("{Shift>}V{/Shift}");
+    expect(screen.getByRole("dialog", { name: "View" })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "Newest first" })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "View" })).toBeNull();
+    expect(markAll).toHaveFocus();
+    await user.keyboard("{Shift>}F{/Shift}");
+    await user.tab();
+    await user.tab();
+    expect(screen.queryByRole("dialog", { name: "Filter" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Filter" })).toHaveFocus();
+
+    // Typed into the search box, Shift+F is a capital F.
+    const search = screen.getByRole("searchbox", { name: "Search" });
+    await user.click(search);
+    await user.keyboard("{Shift>}F{/Shift}");
+    expect(search).toHaveValue("F");
+    expect(screen.queryByRole("dialog", { name: "Filter" })).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+test("Shift+F on a filter panel that already stands open puts the focus in it and closes nothing", async () => {
+  const user = userEvent.setup();
+  const view = render(
+    <KeymapProvider>
+      <Scoped scope="board">
+        <KeyedRow keyScope="board" storedOpen />
+      </Scoped>
+    </KeymapProvider>
+  );
+  try {
+    const trigger = screen.getByRole("button", { name: "Filter" });
+    const panel = screen.getByRole("dialog", { name: "Filter" });
+    expect(trigger).toHaveAttribute("aria-controls", panel.id);
+    focusPage();
+    await user.keyboard("{Shift>}F{/Shift}");
+    expect(screen.getByRole("dialog", { name: "Filter" })).toBe(panel);
+    expect(screen.getByRole("button", { name: "Project" })).toHaveFocus();
+    await user.keyboard("{Shift>}F{/Shift}");
+    expect(screen.getByRole("dialog", { name: "Filter" })).toBe(panel);
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Filter" })).toBeNull();
+    expect(document.activeElement).toBe(document.body);
+    // The Board has no display menu, so its Shift+V opens nothing.
+    await user.keyboard("{Shift>}V{/Shift}");
+    expect(screen.queryByRole("dialog", { name: "View" })).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+test("each scope's row registers its own scope's actions, the drawer's the Inbox's, and a row with no scope registers none", () => {
+  const registered = (keyScope?: ControlRowProps["keyScope"]) => {
+    const view = render(
+      <KeymapProvider>
+        <KeyedRow keyScope={keyScope} />
+      </KeymapProvider>
+    );
+    try {
+      return appKeymap
+        .describe()
+        .filter((entry) => entry.id === "filter" || entry.id === "display")
+        .map((entry) => `${entry.scope} ${entry.id} ${entry.keys.join(",")}`);
+    } finally {
+      view.unmount();
+    }
+  };
+  expect(registered("inbox")).toEqual(["inbox filter Shift+F", "inbox display Shift+V"]);
+  expect(registered("dialog")).toEqual(["dialog filter Shift+F", "dialog display Shift+V"]);
+  expect(registered("project")).toEqual(["project filter Shift+F", "project display Shift+V"]);
+  expect(registered("board")).toEqual(["board filter Shift+F"]);
+  expect(registered("agents")).toEqual(["agents filter Shift+F"]);
+  expect(registered("delivery")).toEqual(["delivery filter Shift+F"]);
+  expect(registered(undefined)).toEqual([]);
 });

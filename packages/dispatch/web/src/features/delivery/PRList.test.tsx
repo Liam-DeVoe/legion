@@ -1,10 +1,11 @@
 import { expect, spyOn, test } from "bun:test";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
+import type { ReactNode } from "react";
 
 import type { DeliveryPR } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
-import { appKeymap } from "../shell/keymap";
+import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { OVERSCAN_ROWS, ROW_HEIGHT_PX, scrollTopToShowRow, visibleRowRange } from "./lib/prList";
 import { PRList } from "./PRList";
 
@@ -71,6 +72,12 @@ function measureBoxAt(height: number): () => void {
   };
 }
 
+/** The `delivery` scope, which `DeliveryPage` pushes around the list in both of its views. */
+function DeliveryScope({ children }: { children: ReactNode }): ReactNode {
+  useKeymapScope("delivery");
+  return children;
+}
+
 function renderList(
   rows: DeliveryPR[],
   onSelect = (_id: string) => {},
@@ -78,22 +85,24 @@ function renderList(
 ) {
   return render(
     <KeymapProvider>
-      <PRList
-        allRepos={["acme/widgets"]}
-        colorBy="repo"
-        colorScale={new Map()}
-        columnFilters={[]}
-        facetCounts={{}}
-        issueTitles={{}}
-        onColumnFiltersChange={() => {}}
-        onSelect={onSelect}
-        onSelectRun={onSelectRun}
-        onSortingChange={() => {}}
-        prs={rows}
-        selectedId={undefined}
-        sessionGroups={[]}
-        sorting={[{ id: "merged", desc: true }]}
-      />
+      <DeliveryScope>
+        <PRList
+          allRepos={["acme/widgets"]}
+          colorBy="repo"
+          colorScale={new Map()}
+          columnFilters={[]}
+          facetCounts={{}}
+          issueTitles={{}}
+          onColumnFiltersChange={() => {}}
+          onSelect={onSelect}
+          onSelectRun={onSelectRun}
+          onSortingChange={() => {}}
+          prs={rows}
+          selectedId={undefined}
+          sessionGroups={[]}
+          sorting={[{ id: "merged", desc: true }]}
+        />
+      </DeliveryScope>
     </KeymapProvider>
   );
 }

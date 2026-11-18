@@ -65,13 +65,15 @@ const openedFrom = new WeakMap<HTMLElement, HTMLElement>();
 /**
  * Notes, for the panel `anchor` is about to open, the element that has the focus now, so that
  * Escape in that panel hands the focus back there rather than to the anchor: a key that presses
- * a panel's trigger from a row leaves the reader on that row when they back out, where a press
- * on the trigger itself leaves them on the trigger. Called by the key's binding just before it
- * presses the anchor; the note holds until the panel that opens closes, however it closes.
+ * a panel's trigger from a row leaves the reader on that row when they back out, and one pressed
+ * with nothing focused leaves them on the page itself, where a press on the trigger itself
+ * leaves them on the trigger. Called by the key's binding just before it presses the anchor, or
+ * moves the focus into the panel the anchor already holds open; the note holds until that panel
+ * closes, however it closes.
  */
 export function noteOpenedFrom(anchor: HTMLElement): void {
   const focused = document.activeElement;
-  if (focused instanceof HTMLElement && focused !== document.body) openedFrom.set(anchor, focused);
+  if (focused instanceof HTMLElement) openedFrom.set(anchor, focused);
   else openedFrom.delete(anchor);
 }
 
@@ -328,7 +330,14 @@ export function AnchoredPanel({
       event.preventDefault();
       event.stopPropagation();
       const noted = anchor === null ? undefined : openedFrom.get(anchor);
-      (back.current?.() ?? (noted?.isConnected ? noted : anchorRef.current))?.focus();
+      const to = back.current?.() ?? (noted?.isConnected ? noted : anchorRef.current);
+      // The page itself, where a key opened the panel with nothing focused: only taking the
+      // focus off the control that holds it puts it back there.
+      if (to === document.body) {
+        if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+      } else {
+        to?.focus();
+      }
       dismiss.current("escape");
     };
     document.addEventListener("focusin", followFocus, true);

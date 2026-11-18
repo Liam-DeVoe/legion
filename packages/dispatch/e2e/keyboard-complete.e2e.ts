@@ -11,7 +11,8 @@
  *  work out in `e2e/keyboard-complete.ts`. */
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { setLiveSessions } from "./agents";
+import { CONTROL } from "../web/src/components/control-names";
+import { openAgents, setLiveSessions, shownAgentRows } from "./agents";
 import {
   answerAsk,
   baseUrl,
@@ -38,7 +39,9 @@ import {
   withOpenedAsk,
 } from "./api";
 import { recordClipboard } from "./clipboard";
+import { seedDeliveryFixture, TIMELINE_FIXTURE_QUERY } from "./delivery-seed";
 import { barAction, documentEditor, openSpec, placeCaret, selectEditorText } from "./editor";
+import { control, controlRow, displayChoice, listOf } from "./filters";
 import { drawer } from "./inbox-drawer";
 import { inboxPane, inboxRow, paneScroller, selectedRow, selectRow } from "./inbox-pane";
 import {
@@ -59,6 +62,7 @@ import {
   THREAD_SESSION,
 } from "./inbox-threads";
 import {
+  ARCHITECTURE_LEAF,
   answerWrites,
   asker,
   contrastOf,
@@ -77,7 +81,11 @@ import {
   reviewWrites,
   type SeededApproval,
   seedApprovalAtVersionTwo,
+  seedArchitectureLeaf,
+  seedAsksOverTwoProjects,
+  seedPriorityWithWork,
   seedTallAsks,
+  seedTwoMachines,
   snoozedUntil,
   snoozeWrites,
   unsnoozeWrites,
@@ -86,6 +94,8 @@ import {
 import { openIssue } from "./keyboard-issue";
 import type { KeyedWrite } from "./keyed-writes";
 import { commentWithBody } from "./margin-helpers";
+import { sessionIds } from "./session-ids";
+import { openIssuesTab } from "./table-controls";
 import { type BrowserContext, expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -2526,6 +2536,599 @@ test("k-new-tab: Shift+O on the Inbox opens the item o opens in a new page, besi
   await expect(inDrawer, "k-new-tab: in the drawer, j focuses a row").toHaveCount(1);
   await shiftOOpens(context, page, await ownerAddress(inDrawer), "in the drawer");
   await expect(drawer(page), "k-new-tab: the drawer stays open").toBeVisible();
+});
+
+// ---------------------------------------------------------------------------
+// k-new-tab (R20), every other place: the project List, the Board, the Priorities page, a
+// priority's page, the Architecture page, the project's Documents list and the command bar.
+// ---------------------------------------------------------------------------
+
+/** The absolute address `link` points at: the link `o` follows for the item in hand. */
+function hrefOf(link: Locator): Promise<string> {
+  return link.evaluate((node) => (node as HTMLAnchorElement).href);
+}
+
+/** Shift+O on `page` opens `link`'s address in one new page and leaves `page` where it is
+ *  (`shiftOOpens`); `o` then opens that same address in `page` itself, which is what makes it
+ *  the address `o` opens. */
+async function opensWhereOOpens(
+  context: BrowserContext,
+  page: Page,
+  link: Locator,
+  place: string
+): Promise<void> {
+  const address = await hrefOf(link);
+  await shiftOOpens(context, page, address, place);
+  await page.keyboard.press("o");
+  await expect(page, `k-new-tab: ${place}, o opens the same address in this page`).toHaveURL(
+    address
+  );
+}
+
+/** Takes the focus off whatever holds it, onto the page itself, and reads that it is there. */
+async function focusPage(page: Page, step: string): Promise<void> {
+  await page.evaluate(() => {
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  });
+  await expectFocusOnPage(page, step);
+}
+
+/** Reads that the focus is on the page's body, the element that had it before a key. */
+async function expectFocusOnPage(page: Page, step: string): Promise<void> {
+  await expect
+    .poll(() => page.evaluate(() => document.activeElement === document.body), { message: step })
+    .toBe(true);
+}
+
+// SLOW(>=2s): three pages of the project, each with a page opened from it.
+test("k-new-tab: Shift+O on the project List, the Board and the Architecture page opens the item o opens in a new page, and the first page keeps its address", async ({
+  context,
+  page,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  await seedPriorityWithWork("CORE", "Ledger replay");
+  await createIssue({ project: "CORE", title: "Mirror audit" });
+  await seedArchitectureLeaf("CORE");
+  await page.setViewportSize(WIDE);
+
+  // The List: `j` from the page focuses its first row.
+  await openIssuesTab(page, "CORE", "List");
+  await expect(page.locator("[data-issue-row]")).toHaveCount(2);
+  await focusPage(page, "k-new-tab: on the List, the focus starts on the page");
+  await page.keyboard.press("j");
+  const row = page.locator("[data-issue-row]:focus");
+  await expect(row, "k-new-tab: on the List, j focuses a row").toHaveCount(1);
+  await opensWhereOOpens(context, page, row.locator("[data-issue-link]"), "on the project List");
+
+  // The Board: `j` from the page focuses the first card.
+  await openIssuesTab(page, "CORE", "Board");
+  await expect(page.locator("[data-board-card]")).toHaveCount(2);
+  await focusPage(page, "k-new-tab: on the Board, the focus starts on the page");
+  await page.keyboard.press("j");
+  const card = page.locator("[data-board-card]:focus");
+  await expect(card, "k-new-tab: on the Board, j focuses a card").toHaveCount(1);
+  await opensWhereOOpens(context, page, card.locator("[data-issue-link]"), "on the Board");
+
+  // The Architecture page: the one component, which has no children, by its own link.
+  await page.goto("/projects/CORE/architecture");
+  const component = page.locator(`[data-component-row="${ARCHITECTURE_LEAF.id}"]`);
+  await expect(component).toBeVisible();
+  await focusPage(page, "k-new-tab: on the Architecture page, the focus starts on the page");
+  await page.keyboard.press("j");
+  await expect(
+    component,
+    "k-new-tab: on the Architecture page, j focuses the component"
+  ).toBeFocused();
+  await opensWhereOOpens(
+    context,
+    page,
+    component.getByRole("link", { exact: true, name: ARCHITECTURE_LEAF.title }),
+    "on the Architecture page"
+  );
+});
+
+// SLOW(>=2s): the Priorities page and a priority's page, each with a page opened from it.
+test("k-new-tab: Shift+O on the Priorities page and on a priority's page opens the item o opens in a new page, and the first page keeps its address", async ({
+  context,
+  page,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const { issueKey } = await seedPriorityWithWork("CORE", "Ledger replay");
+  await page.setViewportSize(WIDE);
+
+  // The Priorities page: `j` focuses the one priority, whose `o` opens its own page.
+  await page.goto("/priorities");
+  await expect(page.locator("[data-priority-row]")).toHaveCount(1);
+  await focusPage(page, "k-new-tab: on the Priorities page, the focus starts on the page");
+  await page.keyboard.press("j");
+  const priority = page.locator("[data-priority-row]:focus");
+  await expect(priority, "k-new-tab: on the Priorities page, j focuses a priority").toHaveCount(1);
+  await opensWhereOOpens(
+    context,
+    page,
+    priority.locator("[data-priority-link]"),
+    "on the Priorities page"
+  );
+
+  // That `o` opened the priority's page, whose table lists the work under it.
+  const work = page.locator(`[data-issue-row="${issueKey}"]`);
+  await expect(work, "k-new-tab: the priority's page lists its work").toBeVisible();
+  await focusPage(page, "k-new-tab: on a priority's page, the focus starts on the page");
+  await page.keyboard.press("j");
+  await expect(work, "k-new-tab: on a priority's page, j focuses its work").toBeFocused();
+  await opensWhereOOpens(context, page, work.locator("[data-issue-link]"), "on a priority's page");
+});
+
+// SLOW(>=2s): the Documents list with two pages opened from it and two loads of it.
+test("k-new-tab: on the project's Documents list j and k walk the documents, Shift+O opens the focused one in a new page, and o and Enter open it in this page", async ({
+  context,
+  page,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  for (const [name, line] of [
+    ["Runbook", "Restart, reseed, reopen."],
+    ["Roster", "Who holds the pager this week."],
+  ] as const) {
+    await createProjectDocument("CORE", { content: `# ${name}\n\n${line}\n`, name }, asker);
+  }
+  await page.setViewportSize(WIDE);
+  await page.goto("/projects/CORE/documents");
+  const documents = page
+    .getByRole("region", { name: "Project documents" })
+    .locator("li[aria-label]");
+  await expect(documents).toHaveCount(2);
+  // A project document's row holds one link, its name, which `o` follows.
+  const [first, second] = [documents.nth(0), documents.nth(1)];
+
+  await focusPage(page, "k-new-tab: on the Documents list, the focus starts on the page");
+  await page.keyboard.press("j");
+  await expect(
+    first,
+    "k-new-tab: on the Documents list, j focuses the first document"
+  ).toBeFocused();
+  await page.keyboard.press("j");
+  await expect(
+    second,
+    "k-new-tab: on the Documents list, j focuses the second document"
+  ).toBeFocused();
+  await page.keyboard.press("k");
+  await expect(first, "k-new-tab: on the Documents list, k goes back to the first").toBeFocused();
+  await page.keyboard.press("j");
+  await expect(second).toBeFocused();
+  await opensWhereOOpens(context, page, second.getByRole("link").first(), "on the Documents list");
+
+  // Enter on the row itself opens it too.
+  await page.goBack();
+  await expect(documents).toHaveCount(2);
+  const firstAddress = await hrefOf(first.getByRole("link").first());
+  await focusPage(page, "k-new-tab: back on the Documents list, the focus starts on the page");
+  await page.keyboard.press("j");
+  await expect(first).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page, "k-new-tab: Enter on a document's row opens it in this page").toHaveURL(
+    firstAddress
+  );
+});
+
+// SLOW(>=2s): two searches of the command bar, each with a page opened from it.
+test("k-new-tab: in the command bar Ctrl+Enter on an issue's hit and a Ctrl+click on a document's hit open it in a new page, and the first page and the bar stay as they were", async ({
+  context,
+  page,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Ledger rollout" });
+  const runbook = await createProjectDocument(
+    "CORE",
+    { content: "# Runbook\n\nRestart, reseed, reopen.\n", name: "Runbook" },
+    asker
+  );
+  await page.setViewportSize(WIDE);
+  await page.goto("/projects/CORE");
+  await expect(page.getByRole("button", { exact: true, name: "Board" })).toBeVisible();
+  const before = page.url();
+  await focusPage(page, "k-new-tab: before the command bar, the focus is on the page");
+  await page.keyboard.press("Control+k");
+  const bar = page.getByRole("dialog", { name: "Search" });
+  const box = bar.getByRole("combobox", { name: "Search" });
+  await expect(box, "k-new-tab: the command bar opens with the focus in its box").toBeFocused();
+
+  // Ctrl+Enter on the issue's hit, which its key puts at the head of the list.
+  await box.fill(issue.key);
+  const issueHit = `search-option-issue-${issue.key}`;
+  await expect(
+    bar.locator(`[id="${issueHit}"]`),
+    "k-new-tab: the bar lists the issue"
+  ).toBeVisible();
+  await expect(box, "k-new-tab: the issue's hit is highlighted").toHaveAttribute(
+    "aria-activedescendant",
+    issueHit
+  );
+  const fromKey =
+    await test.step("k-new-tab: in the command bar, Ctrl+Enter opens a new page", () =>
+      newPageAt(context, () => box.press("Control+Enter")));
+  expect(
+    new URL(fromKey.url()).pathname,
+    "k-new-tab: Ctrl+Enter opens the issue's page in the new page"
+  ).toBe(`/issues/${issue.key}`);
+  await fromKey.close();
+  expect(page.url(), "k-new-tab: after Ctrl+Enter the first page keeps its address").toBe(before);
+  await expect(box, "k-new-tab: after Ctrl+Enter the bar keeps its words").toHaveValue(issue.key);
+  await expect(box, "k-new-tab: after Ctrl+Enter the bar keeps its highlight").toHaveAttribute(
+    "aria-activedescendant",
+    issueHit
+  );
+  await expect(box, "k-new-tab: after Ctrl+Enter the focus is in the bar's box").toBeFocused();
+
+  // A Ctrl+click on the document's hit.
+  await box.fill("reseed");
+  const documentHit = bar.getByRole("option", { name: /^doc / });
+  await expect(documentHit, "k-new-tab: the bar lists the document").toBeVisible();
+  await expect(documentHit).toHaveAttribute("aria-selected", "true");
+  const fromClick =
+    await test.step("k-new-tab: in the command bar, a Ctrl+click opens a new page", () =>
+      newPageAt(context, () => documentHit.click({ modifiers: ["Control"] })));
+  expect(fromClick.url(), "k-new-tab: a Ctrl+click opens the document in the new page").toMatch(
+    new RegExp(`/projects/CORE/documents/${runbook.artifact.slug}\\?q=reseed$`)
+  );
+  await fromClick.close();
+  expect(page.url(), "k-new-tab: after a Ctrl+click the first page keeps its address").toBe(before);
+  await expect(bar, "k-new-tab: after a Ctrl+click the bar stays open").toBeVisible();
+  await expect(box, "k-new-tab: after a Ctrl+click the bar keeps its words").toHaveValue("reseed");
+  await expect(
+    documentHit,
+    "k-new-tab: after a Ctrl+click the bar keeps its highlight"
+  ).toHaveAttribute("aria-selected", "true");
+  await expect(box, "k-new-tab: after a Ctrl+click the focus is in the bar's box").toBeFocused();
+});
+
+// ---------------------------------------------------------------------------
+// k-filter-keys (R24): Shift+F opens a page's filter panel and Shift+V its display menu, each on
+// its first control; the panel's controls work from the keyboard, and Escape closes an open list,
+// then the panel, and puts the focus back where it was before the key.
+// ---------------------------------------------------------------------------
+
+/** Presses Shift+F and reads that the page's filter panel opened with the focus on `first`, its
+ *  first control. The panel is `Filter` on the Inbox, the Agents page and the Delivery page, and
+ *  `Filters` on the project List and the Board. */
+async function shiftFOpens(page: Page, first: Locator, place: string): Promise<Locator> {
+  await page.keyboard.press("Shift+F");
+  const panel = page.getByRole("dialog", { name: /^Filters?$/ });
+  await expect(panel, `k-filter-keys: ${place}, Shift+F opens the filter panel`).toBeVisible();
+  await expect(
+    first,
+    `k-filter-keys: ${place}, the focus is on the panel's first control`
+  ).toBeFocused();
+  return panel;
+}
+
+/** Works a field of an open panel from the keyboard: Enter on its trigger opens its list,
+ *  `typed` narrows the list to the one value `option` names, and ArrowDown and Enter turn that
+ *  value on, since the list's active row starts on its first; Escape then closes the list alone,
+ *  with the focus back on the field. */
+async function tickField(
+  page: Page,
+  field: Locator,
+  typed: string,
+  option: RegExp,
+  place: string
+): Promise<void> {
+  await expect(field, `k-filter-keys: ${place}, the focus is on the field`).toBeFocused();
+  await page.keyboard.press("Enter");
+  const list = listOf(field);
+  await expect(list, `k-filter-keys: ${place}, Enter opens the field's list`).toBeVisible();
+  await page.keyboard.type(typed);
+  const options = list.getByRole("option");
+  await expect(
+    options,
+    `k-filter-keys: ${place}, typing narrows the list to one value`
+  ).toHaveCount(1);
+  await expect(options).toHaveAccessibleName(option);
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await expect(
+    options,
+    `k-filter-keys: ${place}, ArrowDown and Enter turn the value on`
+  ).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("Escape");
+  await expect(list, `k-filter-keys: ${place}, Escape closes the field's list`).toBeHidden();
+  await expect(
+    field,
+    `k-filter-keys: ${place}, Escape leaves the focus on the field`
+  ).toBeFocused();
+}
+
+/** Presses Escape in an open panel and reads that it closed and that the focus went back to
+ *  `before`, the element that had it before the key; the page itself when that is null. */
+async function escapeCloses(
+  page: Page,
+  panel: Locator,
+  before: Locator | null,
+  place: string
+): Promise<void> {
+  await page.keyboard.press("Escape");
+  await expect(panel, `k-filter-keys: ${place}, Escape closes the panel`).toBeHidden();
+  const step = `k-filter-keys: ${place}, Escape puts the focus back where it was before the key`;
+  if (before === null) await expectFocusOnPage(page, step);
+  else await expect(before, step).toBeFocused();
+}
+
+/** Presses Shift+V and reads that the View menu opened with the focus on the first choice of
+ *  its first section. */
+async function shiftVOpens(page: Page, section: string, place: string): Promise<Locator> {
+  await page.keyboard.press("Shift+V");
+  const menu = page.getByRole("dialog", { name: "View" });
+  await expect(menu, `k-filter-keys: ${place}, Shift+V opens the View menu`).toBeVisible();
+  await expect(
+    menu.getByRole("group", { name: section }).getByRole("radio").first(),
+    `k-filter-keys: ${place}, the focus is on the menu's first control`
+  ).toBeFocused();
+  return menu;
+}
+
+/** In an open View menu, with the focus on the choice `from` of `section`: ArrowDown selects the
+ *  choice after it, `to`, with the focus on it, as a group of radios does. */
+async function arrowToNext(
+  page: Page,
+  menu: Locator,
+  section: string,
+  [from, to]: readonly [string, string],
+  place: string
+): Promise<void> {
+  await expect(displayChoice(menu, section, from)).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  const next = displayChoice(menu, section, to);
+  await expect(
+    next,
+    `k-filter-keys: ${place}, ArrowDown selects the next ${section} choice`
+  ).toBeChecked();
+  await expect(next).toBeFocused();
+}
+
+/** Two projects of two questions each, at P1 and P2 (`seedAsksOverTwoProjects`), and a third
+ *  issue of CORE in another status with no question, labelled `ledger` with CORE's P1 issue. */
+async function seedFilterKeys(): Promise<void> {
+  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: "OPS", name: "Ops" });
+  const asks = await seedAsksOverTwoProjects(["CORE", "OPS"]);
+  const quiet = await createIssue({ project: "CORE", title: "Mirror audit" });
+  await patchIssue(quiet.key, { labels: ["ledger"], status: "in_progress" });
+  const first = asks.find((ask) => ask.project === "CORE" && ask.priority === 1);
+  if (first === undefined) throw new Error("k-filter-keys: the seed holds no P1 question of CORE");
+  await patchIssue(first.issueKey, { labels: ["ledger"] });
+}
+
+// SLOW(>=2s): the Inbox opened twice, with its filter panel worked by key in each.
+test("k-filter-keys: on the Inbox page and in its drawer Shift+F opens the Filter panel on its first field, whose keys narrow the list, and Escape twice hands the focus back", async ({
+  page,
+}) => {
+  await seedFilterKeys();
+
+  // The Inbox page, from the page itself.
+  const inbox = await openInboxAt(page, "the reading pane", 4);
+  const rows = inbox.scope.locator("[data-inbox-row]");
+  await focusPage(page, "k-filter-keys: on the Inbox, the focus starts on the page");
+  const field = page.getByRole("button", { name: "Filter by priority" });
+  const panel = await shiftFOpens(page, field, "on the Inbox");
+  await tickField(page, field, "P1", /^P1,/, "on the Inbox");
+  await expect(rows, "k-filter-keys: on the Inbox, the field narrows the list").toHaveCount(2);
+  await escapeCloses(page, panel, null, "on the Inbox");
+  await expect(rows, "k-filter-keys: on the Inbox, the narrowing stays").toHaveCount(2);
+  await expect(page).toHaveURL(/[?&]priority=P1(&|$)/);
+
+  // The drawer, from its first row.
+  const peek = await openInboxAt(page, "the drawer", 4);
+  const inDrawer = peek.scope.locator("[data-inbox-row]");
+  await page.keyboard.press("j");
+  const row = peek.scope.locator("[data-inbox-row]:focus");
+  await expect(row, "k-filter-keys: in the drawer, j focuses a row").toHaveCount(1);
+  const drawerId = await row.getAttribute("data-inbox-row");
+  expect(drawerId, "k-filter-keys: the drawer's focused row has an id").not.toBeNull();
+  const drawerRow = rowOf(peek, String(drawerId));
+  const drawerField = page.getByRole("button", { name: "Filter by priority" });
+  const drawerPanel = await shiftFOpens(page, drawerField, "in the drawer");
+  await tickField(page, drawerField, "P1", /^P1,/, "in the drawer");
+  await expect(inDrawer, "k-filter-keys: in the drawer, the field narrows the list").toHaveCount(2);
+  await escapeCloses(page, drawerPanel, drawerRow, "in the drawer");
+  await expect(inDrawer, "k-filter-keys: in the drawer, the narrowing stays").toHaveCount(2);
+  await expect(drawer(page), "k-filter-keys: the drawer stays open").toBeVisible();
+});
+
+// SLOW(>=2s): the Inbox opened twice, with its View menu worked by key in each.
+test("k-filter-keys: on the Inbox page and in its drawer Shift+V opens the View menu on its first choice, whose arrows sort and group the list, and Escape hands the focus back", async ({
+  page,
+}) => {
+  await seedFilterKeys();
+
+  // The Inbox page: Sort by, then Group by, which Tab reaches.
+  const inbox = await openInboxAt(page, "the reading pane", 4);
+  await focusPage(page, "k-filter-keys: on the Inbox, the focus starts on the page");
+  const menu = await shiftVOpens(page, "Sort by", "on the Inbox");
+  await arrowToNext(page, menu, "Sort by", ["newest", "priority"], "on the Inbox");
+  await expect(page, "k-filter-keys: on the Inbox, the list is sorted by priority").toHaveURL(
+    /[?&]sort=priority(&|$)/
+  );
+  await page.keyboard.press("Tab");
+  await arrowToNext(page, menu, "Group by", ["priority", "urgency"], "on the Inbox");
+  await expect(page, "k-filter-keys: on the Inbox, the list is grouped by urgency").toHaveURL(
+    /[?&]group=urgency(&|$)/
+  );
+  await expect(
+    inbox.scope.getByRole("button", { name: /^Medium \(4\)$/ }),
+    "k-filter-keys: on the Inbox, the list is banded by urgency"
+  ).toBeVisible();
+  await escapeCloses(page, menu, null, "the Inbox's View menu");
+
+  // The drawer, from its first row: Tab to Group by.
+  const peek = await openInboxAt(page, "the drawer", 4);
+  await page.keyboard.press("j");
+  const row = peek.scope.locator("[data-inbox-row]:focus");
+  await expect(row, "k-filter-keys: in the drawer, j focuses a row").toHaveCount(1);
+  const drawerId = await row.getAttribute("data-inbox-row");
+  expect(drawerId, "k-filter-keys: the drawer's focused row has an id").not.toBeNull();
+  const drawerRow = rowOf(peek, String(drawerId));
+  const drawerMenu = await shiftVOpens(page, "Sort by", "in the drawer");
+  await page.keyboard.press("Tab");
+  await arrowToNext(page, drawerMenu, "Group by", ["priority", "urgency"], "in the drawer");
+  await expect(
+    peek.scope.getByRole("button", { name: /^Medium \(4\)$/ }),
+    "k-filter-keys: in the drawer, the list is banded by urgency"
+  ).toBeVisible();
+  await escapeCloses(page, drawerMenu, drawerRow, "the drawer's View menu");
+  await expect(drawer(page), "k-filter-keys: the drawer stays open").toBeVisible();
+});
+
+// SLOW(>=2s): the List, the Board, a reload of it and the Priorities page, each worked by key.
+test("k-filter-keys: on the project List, the Board and the Priorities page Shift+F and Shift+V open the panel and the menu, whose keys narrow and group the list, and on the Board's open panel Shift+F moves the focus into it", async ({
+  page,
+}) => {
+  await seedFilterKeys();
+  await seedPriorityWithWork("CORE", "Ledger replay");
+  await seedPriorityWithWork("CORE", "Mirror cutover");
+  await page.setViewportSize(WIDE);
+
+  // The List: its panel holds chips, the first of which is Needs you.
+  await openIssuesTab(page, "CORE", "List");
+  const rows = page.locator("[data-issue-row]");
+  await expect(rows).toHaveCount(5);
+  await focusPage(page, "k-filter-keys: on the List, the focus starts on the page");
+  const listChip = page
+    .getByRole("dialog", { name: "Filters" })
+    .getByRole("button", { exact: true, name: "Needs you" });
+  const listPanel = await shiftFOpens(page, listChip, "on the List");
+  await page.keyboard.press("Space");
+  await expect(rows, "k-filter-keys: on the List, Space on the chip narrows the list").toHaveCount(
+    2
+  );
+  await escapeCloses(page, listPanel, null, "on the List");
+  await expect(rows, "k-filter-keys: on the List, the narrowing stays").toHaveCount(2);
+  const listMenu = await shiftVOpens(page, "Group by", "on the List");
+  const listGroups = listMenu.getByRole("group", { name: "Group by" }).getByRole("radio");
+  await page.keyboard.press("ArrowDown");
+  await expect(
+    listGroups.nth(1),
+    "k-filter-keys: on the List, ArrowDown selects the next grouping"
+  ).toBeChecked();
+  await expect(
+    page.getByRole("button", { name: /^Collapse .+, .*\bissues?\b/ }).first(),
+    "k-filter-keys: on the List, the list is grouped"
+  ).toBeVisible();
+  await escapeCloses(page, listMenu, null, "the List's View menu");
+
+  // The Board: a field, Labels, and a chip, Needs you.
+  await openIssuesTab(page, "CORE", "Board");
+  const cards = page.locator("[data-board-card]");
+  await expect(cards).toHaveCount(5);
+  await focusPage(page, "k-filter-keys: on the Board, the focus starts on the page");
+  const labels = page
+    .getByRole("dialog", { name: "Filters" })
+    .getByRole("button", { name: /^Labels/ });
+  const boardPanel = await shiftFOpens(page, labels, "on the Board");
+  await tickField(page, labels, "led", /^ledger/, "on the Board");
+  await expect(cards, "k-filter-keys: on the Board, the field narrows the board").toHaveCount(2);
+  await page.keyboard.press("Tab");
+  const boardChip = boardPanel.getByRole("button", { exact: true, name: "Needs you" });
+  await expect(boardChip, "k-filter-keys: on the Board, Tab moves to the chip").toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(
+    cards,
+    "k-filter-keys: on the Board, Enter on the chip narrows the board"
+  ).toHaveCount(1);
+  await escapeCloses(page, boardPanel, null, "on the Board");
+  await expect(cards, "k-filter-keys: on the Board, the narrowing stays").toHaveCount(1);
+
+  // The Board with its panel open from the stored choice, which a load opens with no focus in it:
+  // Shift+F opens it (and stores that), and the load after it opens it again on its own.
+  await shiftFOpens(page, labels, "on the Board again");
+  await page.reload();
+  const trigger = control(controlRow(page.getByTestId("main-content")), CONTROL.panelTrigger);
+  await expect(trigger, "k-filter-keys: the load opens the Board's panel").toHaveAttribute(
+    "aria-expanded",
+    "true"
+  );
+  await expect(cards).toHaveCount(1);
+  await focusPage(page, "k-filter-keys: on the Board's open panel, the focus starts on the page");
+  const openPanel = await shiftFOpens(page, labels, "on the Board's open panel");
+  await expect(
+    trigger,
+    "k-filter-keys: Shift+F leaves the Board's open panel open"
+  ).toHaveAttribute("aria-expanded", "true");
+  await escapeCloses(page, openPanel, null, "on the Board's open panel");
+
+  // The Priorities page: its View menu's Group by.
+  await page.goto("/priorities");
+  await expect(page.locator("[data-priority-row]")).toHaveCount(2);
+  await focusPage(page, "k-filter-keys: on the Priorities page, the focus starts on the page");
+  const prioritiesMenu = await shiftVOpens(page, "Group by", "on the Priorities page");
+  const priorityGroups = prioritiesMenu.getByRole("group", { name: "Group by" }).getByRole("radio");
+  await page.keyboard.press("ArrowDown");
+  await expect(
+    priorityGroups.nth(1),
+    "k-filter-keys: on the Priorities page, ArrowDown selects the next grouping"
+  ).toBeChecked();
+  await expect(
+    page.getByRole("button", { name: /^Collapse .+, .*\bpriorit/ }).first(),
+    "k-filter-keys: on the Priorities page, the list is grouped"
+  ).toBeVisible();
+  await escapeCloses(page, prioritiesMenu, null, "the Priorities page's View menu");
+});
+
+// SLOW(>=2s): the Agents page and both views of the Delivery page, each worked by key.
+test("k-filter-keys: on the Agents page and the Delivery page, in both of its views, Shift+F opens the Filter panel on its first field, whose keys narrow the list, and Escape twice hands the focus back", async ({
+  page,
+}) => {
+  // Two live sessions on two machines; the first asked a question, which puts it in Needs you
+  // and leaves the second alone in Idle.
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Ledger rollout" });
+  await seedTwoMachines(Date.now());
+  await createAsk(
+    issue.key,
+    { question: "Which mirror replays first?" },
+    { actor: { id: sessionIds.observer, kind: "session" as const }, as: "agent" as const }
+  );
+  await seedDeliveryFixture();
+  await page.setViewportSize(WIDE);
+
+  // The Agents page: its first field is Group.
+  await openAgents(page);
+  const agents = shownAgentRows(page);
+  await expect(agents).toHaveCount(2);
+  await focusPage(page, "k-filter-keys: on the Agents page, the focus starts on the page");
+  const group = page.getByRole("button", { name: "Filter by group" });
+  const agentsPanel = await shiftFOpens(page, group, "on the Agents page");
+  await tickField(page, group, "Idl", /^Idle/, "on the Agents page");
+  await expect(agents, "k-filter-keys: on the Agents page, the field narrows the list").toHaveCount(
+    1
+  );
+  await escapeCloses(page, agentsPanel, null, "on the Agents page");
+  await expect(agents, "k-filter-keys: on the Agents page, the narrowing stays").toHaveCount(1);
+
+  // The Delivery page's List view: its first field is Repository. The fixture's pull requests
+  // are all of one repository, so the pick keeps both, and the narrowing is read off its chip and
+  // the address.
+  await page.goto(`/delivery?${TIMELINE_FIXTURE_QUERY}&mode=list`);
+  const pulls = page.locator("tbody tr[data-pr-row]");
+  await expect(pulls).toHaveCount(2);
+  await focusPage(page, "k-filter-keys: on the Delivery list, the focus starts on the page");
+  const repository = page.getByRole("button", { name: /^Repository:/ });
+  const deliveryPanel = await shiftFOpens(page, repository, "on the Delivery list");
+  await tickField(page, repository, "widg", /^acme\/widgets,/, "on the Delivery list");
+  await escapeCloses(page, deliveryPanel, null, "on the Delivery list");
+  await expect(
+    controlRow(page.getByTestId("main-content")).getByRole("button", {
+      name: /Repository: acme\/widgets/,
+    }),
+    "k-filter-keys: on the Delivery list, the narrowing stays as its chip"
+  ).toBeVisible();
+  await expect(page).toHaveURL(/[?&]repo=acme%2Fwidgets(&|$)/);
+  await expect(pulls).toHaveCount(2);
+
+  // The Timeline view takes the same key.
+  await page.goto(`/delivery?${TIMELINE_FIXTURE_QUERY}`);
+  await expect(page.getByRole("button", { exact: true, name: "List" })).toBeVisible();
+  await focusPage(page, "k-filter-keys: on the Delivery timeline, the focus starts on the page");
+  const timelinePanel = await shiftFOpens(page, repository, "on the Delivery timeline");
+  await escapeCloses(page, timelinePanel, null, "on the Delivery timeline");
 });
 
 // ---------------------------------------------------------------------------

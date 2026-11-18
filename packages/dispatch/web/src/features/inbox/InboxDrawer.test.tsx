@@ -1,6 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
@@ -258,6 +258,42 @@ test("Shift+O on a row of the drawer opens what o opens in a new tab, and the dr
   } finally {
     view.unmount();
     open.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+// dispatch://INFRA-2160, R24: the drawer's Filter panel and View menu take their keys too, under
+// the drawer's own scope, and Escape out of either leaves the drawer open.
+test("Shift+F and Shift+V in the drawer open its Filter panel and its View menu, and Escape hands the focus back and keeps the drawer", async () => {
+  const user = userEvent.setup();
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([issueAsk()]);
+  const getAsk = mockAskReads([issueAsk()]);
+  const view = renderDrawer();
+  try {
+    await user.click(screen.getByRole("button", { name: "Open inbox" }));
+    const dialog = await screen.findByRole("dialog", { name: "Inbox" });
+    const row = within(dialog).getByTestId("ask-ask-a").closest<HTMLElement>("[data-inbox-row]");
+    if (row === null) throw new Error("ask-a row missing");
+    act(() => row.focus());
+
+    await user.keyboard("{Shift>}F{/Shift}");
+    const panel = screen.getByRole("dialog", { name: "Filter" });
+    expect(within(panel).getByRole("button", { name: "Filter by priority" })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Filter" })).toBeNull();
+    expect(row).toHaveFocus();
+
+    await user.keyboard("{Shift>}V{/Shift}");
+    const menu = screen.getByRole("dialog", { name: "View" });
+    // Sort by and Thread order both offer Newest first; Sort by's is the menu's first control.
+    expect(within(menu).getAllByRole("radio", { name: "Newest first" })[0]).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "View" })).toBeNull();
+    expect(row).toHaveFocus();
+    expect(screen.getByRole("dialog", { name: "Inbox" })).toBe(dialog);
+  } finally {
+    view.unmount();
     getAsk.mockRestore();
     getInbox.mockRestore();
   }

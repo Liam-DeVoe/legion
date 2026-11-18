@@ -119,12 +119,16 @@ type ToolbarPanel = "flags" | "view";
  * is drawn here as well, so a column the reader hid keeps its narrowing in sight.
  */
 export function IssueTableToolbar({
+  keyScope,
   searchRef,
   selection,
   stateKey,
   table,
   unclaimedUnchecked,
 }: {
+  /** Where the row's Shift+F and Shift+V are registered (`ControlRow`): the project scope for
+   *  the page's one table, or its main one, and none for a table drawn beside it. */
+  keyScope?: "project";
   /** The search box, which the selection bar hands the focus to when no row is left for it. */
   searchRef: RefObject<HTMLInputElement | null>;
   /** The chip of the issues a link names, which the row draws first among its chips. */
@@ -262,6 +266,7 @@ export function IssueTableToolbar({
             size="compact"
           />
         }
+        keyScope={keyScope}
         onClear={narrowed ? clearFilters : undefined}
         search={
           <SearchBox

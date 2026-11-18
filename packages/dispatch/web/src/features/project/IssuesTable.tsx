@@ -87,6 +87,7 @@ const ISSUE_TABLE_NAMES: DataTableNames = {
   keymap: {
     next: "project.next",
     open: "project.open",
+    openInNewTab: "project.open-new-tab",
     openOnEnter: "project.open-enter",
     previous: "project.previous",
     scope: "project",
@@ -458,6 +459,9 @@ export function IssuesTable({
         ) : null}
 
         <IssueTableToolbar
+          // Shift+F and Shift+V belong to the page's one table, or its main one: a table drawn
+          // beside it leaves them to that one.
+          keyScope={moveFrom === "page" ? "project" : undefined}
           searchRef={searchRef}
           selection={pickedChip}
           stateKey={stateKey}

@@ -367,7 +367,7 @@ export function ThreadCard({
 
   return (
     <>
-      {/* biome-ignore lint/a11y/useAriaPropsSupportedByRole: the card exposes its expand/collapse state to the margin bridge */}
+      {/* biome-ignore lint/a11y/useAriaPropsSupportedByRole lint/a11y/useKeyWithClickEvents: the card exposes its expand/collapse state to the margin bridge; and it takes no focus, so no key ever reached a handler of its own (dispatch://INFRA-2160, R12): a press on it is the pointer's way to its thread, and the keyboard's is the controls inside it */}
       <article
         aria-current={active ? "true" : undefined}
         aria-busy={pendingAction || undefined}
@@ -385,16 +385,6 @@ export function ThreadCard({
           ) {
             focusBlock(thread.anchor.block_id);
           }
-        }}
-        onKeyDown={(event) => {
-          if (
-            event.target !== event.currentTarget ||
-            (event.key !== "Enter" && event.key !== " ")
-          ) {
-            return;
-          }
-          event.preventDefault();
-          onSelect?.();
         }}
         onClick={(event) => {
           if (

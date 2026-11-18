@@ -11,7 +11,7 @@ import type { CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../
 import { readLayout } from "../../components/table-storage";
 import { readSelectedIssues } from "../search/bar-scope";
 import { KeymapProvider } from "../shell/KeymapProvider";
-import { useKeymapScope } from "../shell/keymap";
+import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { SendStoppedError } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { IssuesTable } from "./IssuesTable";
@@ -97,6 +97,7 @@ function table(
   { full, open }: { full?: Promise<IssueSummary[]>; open?: Promise<IssueSummary[]> } = {},
   props: {
     listing?: IssueListing;
+    moveFrom?: "page" | "row";
     priorityTitles?: ReadonlyMap<string, string>;
     stateKey?: string;
   } = {}
@@ -223,6 +224,57 @@ test("j and k focus table issues and o and Enter open the issue rather than its 
   second.focus();
   await user.keyboard("{Enter}");
   await waitFor(() => expect(screen.getByTestId("route").textContent).toBe("/issues/CORE-2"));
+});
+
+// dispatch://INFRA-2160, R20: Shift+O is `o` in a new tab, and the List stays where it is.
+test("Shift+O opens the issue o opens in a new tab, and the List keeps its address and its focus", async () => {
+  const user = userEvent.setup();
+  const open = spyOn(window, "open").mockImplementation(() => null);
+  restores.push(() => open.mockRestore());
+  table([issue("CORE-1", { parent: "CORE-9" }), issue("CORE-2")]);
+  const first = await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  await user.keyboard("j");
+  expect(first).toHaveFocus();
+  await user.keyboard("{Shift>}O{/Shift}");
+  expect(open).toHaveBeenCalledTimes(1);
+  const [href, target, features] = open.mock.calls[0] ?? [];
+  expect(new URL(String(href)).pathname).toBe("/issues/CORE-1");
+  expect([target, features]).toEqual(["_blank", "noopener"]);
+  expect(screen.getByTestId("route").textContent).toBe("/projects/CORE/issues");
+  expect(first).toHaveFocus();
+});
+
+// dispatch://INFRA-2160, R24.
+test("Shift+F opens the List's filter panel and Shift+V its display menu on their first control, and Escape hands the focus back", async () => {
+  const user = userEvent.setup();
+  table([issue("CORE-1"), issue("CORE-2")]);
+  const first = await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  await user.keyboard("{Shift>}F{/Shift}");
+  const panel = screen.getByRole("dialog", { name: "Filters" });
+  expect(within(panel).getAllByRole("button")[0]).toHaveFocus();
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("dialog", { name: "Filters" })).toBeNull();
+  expect(document.activeElement).toBe(document.body);
+
+  // From a row, Escape goes back to the row.
+  await user.keyboard("j");
+  expect(first).toHaveFocus();
+  await user.keyboard("{Shift>}V{/Shift}");
+  const menu = screen.getByRole("dialog", { name: "View" });
+  expect(within(menu).getByRole("radio", { name: "Nothing" })).toHaveFocus();
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("dialog", { name: "View" })).toBeNull();
+  expect(first).toHaveFocus();
+});
+
+test("a table drawn beside the page's main one leaves Shift+F and Shift+V to that one", async () => {
+  table([issue("CORE-1")], "", {}, { moveFrom: "row" });
+  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  expect(
+    appKeymap
+      .describe()
+      .filter((entry) => entry.scope === "project" && ["filter", "display"].includes(entry.id))
+  ).toEqual([]);
 });
 
 test("typed title and every picked label match case-insensitively, as on Board", async () => {

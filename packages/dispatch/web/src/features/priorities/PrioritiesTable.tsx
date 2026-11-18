@@ -52,6 +52,7 @@ const NAMES: DataTableNames = {
   keymap: {
     next: "project.next",
     open: "project.open",
+    openInNewTab: "project.open-new-tab",
     openOnEnter: "project.open-enter",
     previous: "project.previous",
     scope: "project",

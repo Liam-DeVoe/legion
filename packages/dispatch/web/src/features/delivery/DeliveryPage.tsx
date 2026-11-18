@@ -35,6 +35,7 @@ import {
   textPrimaryOnSurfaceMuted,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
+import { useKeymapScope } from "../shell/keymap";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { DeliverySettingsForm } from "./DeliverySettingsForm";
 import { DrillDown } from "./DrillDown";
@@ -546,6 +547,7 @@ function DeliveryControls({
   return (
     <ControlRow
       chips={filterChips(chosen, "compact")}
+      keyScope="delivery"
       search={
         <SearchBox
           className="w-full"
@@ -614,6 +616,9 @@ function DeliveryControls({
  *  timeline. */
 export function DeliveryPage(): ReactNode {
   useDocumentTitle("Delivery · Dispatch");
+  // The page's own keys - the row's Shift+F in both views, and the list's keys while the List
+  // view draws it - are answered in this scope, which stays pushed whichever view is drawn.
+  useKeymapScope("delivery");
   const [state, setState] = useDeliveryUrlState();
   const [selection, setSelection] = useState<TimelineSelection | null>(null);
   const search = useSettled(state.filters.search.trim(), SEARCH_DEBOUNCE_MS);

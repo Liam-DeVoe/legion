@@ -283,6 +283,34 @@ test("j/k rove the rows, l/h descend and ascend, Enter opens a parent's children
   }
 });
 
+// dispatch://INFRA-2160, R20: Shift+O opens what `o` opens, the row's own link, in a new tab.
+test("Shift+O opens the row's own link in a new tab, on a component with children and on a leaf, and the page stays where it is", async () => {
+  const user = userEvent.setup();
+  const open = spyOn(window, "open").mockImplementation(() => null);
+  const pane = renderPane(fixture());
+  const opened = (call: number) => new URL(String(open.mock.calls[call]?.[0])).search;
+  try {
+    await screen.findByRole("list", { name: "Components" });
+    await user.keyboard("{Shift>}O{/Shift}");
+    expect(open).not.toHaveBeenCalled();
+    await user.keyboard("j");
+    expect(rowFor("Legion")).toHaveFocus();
+    await user.keyboard("{Shift>}O{/Shift}");
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(opened(0)).toBe("?component=legion");
+    expect(open.mock.calls[0]?.slice(1)).toEqual(["_blank", "noopener"]);
+    await user.keyboard("j");
+    expect(rowFor("Docs")).toHaveFocus();
+    await user.keyboard("{Shift>}O{/Shift}");
+    expect(opened(1)).toBe("?component=docs");
+    expect(screen.getByTestId("location").textContent).toBe("");
+    expect(rowFor("Docs")).toHaveFocus();
+  } finally {
+    pane.restore();
+    open.mockRestore();
+  }
+});
+
 test("the details list open work first by status then activity, fold the done issues, mark attachments, and show code & definition", async () => {
   const user = userEvent.setup();
   const pane = renderPane(fixture(), "?component=web");

@@ -29,11 +29,20 @@ test("the panel is on the page only while it is open, and the trigger names what
     expect(trigger).toHaveAttribute("data-control", "panel-trigger");
     expect(trigger).toHaveAttribute("aria-haspopup", "dialog");
     expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(trigger).not.toHaveAttribute("aria-controls");
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 
     await user.click(trigger);
-    expect(screen.getByRole("dialog", { name: "Columns" })).toBeTruthy();
+    const panel = screen.getByRole("dialog", { name: "Columns" });
     expect(trigger).toHaveAttribute("aria-expanded", "true");
+    // While it is open the trigger names the panel it holds open, by its id, which is what a
+    // key that moves the focus into an open panel reads (`control-keys.ts`).
+    expect(panel.id).not.toBe("");
+    expect(trigger).toHaveAttribute("aria-controls", panel.id);
+    expect(document.getElementById(panel.id)).toBe(panel);
+
+    await user.click(trigger);
+    expect(trigger).not.toHaveAttribute("aria-controls");
   } finally {
     view.unmount();
   }

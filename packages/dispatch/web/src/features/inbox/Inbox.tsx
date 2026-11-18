@@ -67,7 +67,13 @@ import {
   NO_FILTER_VALUE,
 } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
-import { type KeymapScope, PANEL_ATTRIBUTE, useKeymap, useKeymapScope } from "../shell/keymap";
+import {
+  DIALOG_SCOPE,
+  type KeymapScope,
+  PANEL_ATTRIBUTE,
+  useKeymap,
+  useKeymapScope,
+} from "../shell/keymap";
 import type { KeymapActionId } from "../shell/keymap-catalogue";
 import { linkHref, openInNewTab } from "../shell/new-tab";
 import { closestMatching, focusedMatching, roveFocus } from "../shell/roving";
@@ -2225,6 +2231,9 @@ export function Inbox({
       <ControlRow
         chips={chips}
         display={displayMenu}
+        // Shift+F and Shift+V under the scope the rest of this list's keys take: the page's own,
+        // or the drawer's `dialog`.
+        keyScope={keymapScope === DIALOG_SCOPE ? "dialog" : "inbox"}
         onClear={clearFilters}
         search={
           <SearchBox

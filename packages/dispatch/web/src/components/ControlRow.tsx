@@ -8,6 +8,7 @@ import {
   textSecondaryOnCanvas,
 } from "../theme/classes";
 import { restingChip } from "./Chip";
+import { type ControlRowScope, useControlRowKeys } from "./control-keys";
 import { CONTROL, type ControlSize, controlIn } from "./control-names";
 import { useFocusPlace } from "./focus-place";
 import { useScrollEnds } from "./useScrollEnds";
@@ -101,11 +102,14 @@ function scrollPage(strip: HTMLElement, side: ScrollSide): void {
   strip.scrollBy({ behavior: "smooth", left: by });
 }
 
-/** One scroll button of the chips line, at its `side` of the strip. It takes no Tab stop: the
- *  Tab key reaches every chip already and scrolls it into view, and this is the pointer's way.
- *  A press takes no focus either (`preventDefault` on `mousedown`, where the browser moves it):
- *  the press that brings the strip to its end takes the button away, and a focus it held would
- *  drop onto the page with it. The focus stays where the reader had it, a chip included. */
+/** One scroll button of the chips line, at its `side` of the strip. Tab reaches it, as it reaches
+ *  every other button of the row (dispatch://INFRA-2160, R12), so the keyboard can page the strip
+ *  too, though Tab reaches every chip already and scrolls it into view. A pointer's press takes no
+ *  focus (`preventDefault` on `mousedown`, where the browser moves it): the press that brings the
+ *  strip to its end takes the button away, and a focus it held would drop onto the page with it,
+ *  so the focus stays where the reader had it, a chip included. A key's press on the focused
+ *  button that brings the strip to its end hands the focus, as the button goes, to the chip at
+ *  that end, which the press has brought into view. */
 function ScrollButton({
   className,
   side,
@@ -116,6 +120,20 @@ function ScrollButton({
   strip: HTMLElement | null;
 }): ReactNode {
   const { glyph, label, place } = SCROLL_SIDE[side];
+  const button = useRef<HTMLButtonElement>(null);
+  const paged = useRef(strip);
+  paged.current = strip;
+  // Run as the button goes: React runs it before the button leaves the page, so the button
+  // still holds the focus it had.
+  useLayoutEffect(() => {
+    const own = button.current;
+    return () => {
+      const at = paged.current;
+      if (own === null || at === null || document.activeElement !== own) return;
+      const chip = side === "left" ? at.firstElementChild : at.lastElementChild;
+      if (chip !== null) focusableOf(chip)?.focus();
+    };
+  }, [side]);
   return (
     <button
       aria-label={label}
@@ -124,7 +142,7 @@ function ScrollButton({
         if (strip !== null) scrollPage(strip, side);
       }}
       onMouseDown={(event) => event.preventDefault()}
-      tabIndex={-1}
+      ref={button}
       type="button"
     >
       <span aria-hidden="true">{glyph}</span>
@@ -187,6 +205,11 @@ export interface ControlRowProps {
    *  chip, and right after the trigger while there is none (the project List's search text and
    *  the open statuses it opens on draw no chip in the row). */
   readonly onClear?: () => void;
+  /** The scope of the page that draws the row, in which Shift+F opens its filter panel and
+   *  Shift+V its display menu (`useControlRowKeys`): the Inbox's own, `dialog` in its drawer, and
+   *  the project's, the Board's, the Agents page's and the Delivery page's. Unset, the row
+   *  registers neither key, as the command bar's does not. */
+  readonly keyScope?: ControlRowScope;
   /** The page's search box, at the head of the row. */
   readonly search?: ReactNode;
   /** How much room the row's own controls take (`ControlSize`): **Clear filters** and the two
@@ -230,8 +253,9 @@ export interface ControlRowProps {
  *   wheel scrolls the page, not the strip (Shift and the wheel, or a sideways wheel or swipe,
  *   do scroll it), so the buttons are a pointer's way to every chip. They are laid over the
  *   strip's two ends rather than beside it, so one appearing never narrows the strip and moves
- *   the chips under the pointer, and they take no Tab stop, since Tab reaches every chip
- *   already;
+ *   the chips under the pointer. Tab reaches them too, as it reaches every button the row
+ *   draws, and a key's press that brings the strip to its end hands the focus to the chip there
+ *   as the button goes;
  * - every narrowing is also in the page's filter panel.
  *
  * The scroll bar is not drawn, because on a phone its height would be more than the one line the
@@ -259,6 +283,10 @@ export interface ControlRowProps {
  * else to the one before it, else to the trigger, else to the search box (`useFocusPlace`).
  * **Clear filters**' own rule, the trigger, comes first wherever it sits.
  *
+ * Shift+F and Shift+V, in the scope the page names (`keyScope`), open the row's filter panel and
+ * its display menu, or move the focus into the one already open, and Escape there hands the focus
+ * back to where it was before the key (`components/control-keys.ts`).
+ *
  * Beside its slots it draws **Clear filters** and the two scroll buttons, and nothing else. The
  * panel a trigger opens is not in it (`AnchoredPanel` portals to the body and is placed `fixed`,
  * so it covers the page rather than taking room), and neither is the selection bar
@@ -270,6 +298,7 @@ export function ControlRow({
   children,
   className,
   display,
+  keyScope,
   onClear,
   search,
   size = "comfortable",
@@ -277,6 +306,7 @@ export function ControlRow({
 }: ControlRowProps): ReactNode {
   const { leading, node, ref, trailing } = useScrollEnds();
   const rowRef = useRef<HTMLDivElement>(null);
+  useControlRowKeys(keyScope, rowRef);
   const handOff = useRef<HandOff | null>(null);
   // After every commit of the row: a removal a click started hands the focus on once it has
   // committed.

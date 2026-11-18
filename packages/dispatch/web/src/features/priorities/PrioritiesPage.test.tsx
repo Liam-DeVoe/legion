@@ -632,7 +632,9 @@ test("the priorities table stacks its title's header in a box under 640 px", asy
 // priority", though the table selects nothing, so the shortcut help listed a key that did
 // nothing. It registers no select key, as the Delivery list does. The issue tables beside it
 // share the project scope's row actions (INFRA-2160), and their `x` selects their own rows, so
-// from a priority's row the help lists that key as not available.
+// from a priority's row the help lists that key as not available. INFRA-2160 adds Shift+O, which
+// opens the priority's page in a new tab, and the control row's Shift+F and Shift+V (R24): the
+// row draws a display menu and no filter trigger, so Shift+F is not available here.
 test("the priorities table registers no select key, so from its rows the shortcut help greys x", async () => {
   page(FIFTEEN);
   const priorities = await screen.findByRole("table", { name: "Priorities table" });
@@ -640,14 +642,43 @@ test("the priorities table registers no select key, so from its rows the shortcu
   act(() => rowsOf(priorities, "data-priority-row")[0]?.focus());
   const described = appKeymap.describe().filter((entry) => entry.scope === "project");
   expect(Object.fromEntries(described.map((entry) => [entry.id, entry.keys]))).toEqual({
+    display: ["Shift+V"],
+    filter: ["Shift+F"],
     next: ["j"],
     open: ["o"],
     "open-enter": ["Enter"],
+    "open-new-tab": ["Shift+O"],
     previous: ["k"],
     select: ["x"],
   });
-  expect(described.find((entry) => entry.id === "select")?.enabled).toBe(false);
-  expect(described.find((entry) => entry.id === "open")?.enabled).toBe(true);
+  const enabled = (id: string) => described.find((entry) => entry.id === id)?.enabled;
+  expect(enabled("select")).toBe(false);
+  expect(enabled("filter")).toBe(false);
+  expect(enabled("open")).toBe(true);
+  expect(enabled("open-new-tab")).toBe(true);
+  expect(enabled("display")).toBe(true);
+});
+
+// dispatch://INFRA-2160, R20: Shift+O opens the priority `o` opens in a new tab.
+test("Shift+O on a priority's row opens the priority's page in a new tab, and this page stays", async () => {
+  const user = userEvent.setup();
+  const open = spyOn(window, "open").mockImplementation(() => null);
+  try {
+    page(FIFTEEN);
+    const priorities = await screen.findByRole("table", { name: "Priorities table" });
+    await within(priorities).findByRole("row", { name: "P1 Legion works reliably first" });
+    await user.keyboard("j");
+    const [first] = rowsOf(priorities, "data-priority-row");
+    expect(first).toHaveFocus();
+    const link = first?.querySelector<HTMLAnchorElement>("[data-priority-link]");
+    if (link === null || link === undefined) throw new Error("the row draws no priority link");
+    await user.keyboard("{Shift>}O{/Shift}");
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(open).toHaveBeenCalledWith(link.href, "_blank", "noopener");
+    expect(first).toHaveFocus();
+  } finally {
+    open.mockRestore();
+  }
 });
 
 /** The rows `table` draws under `attribute`, in the order it draws them. */

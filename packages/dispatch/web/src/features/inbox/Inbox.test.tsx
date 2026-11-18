@@ -4890,6 +4890,45 @@ test("Shift+O opens what o opens in a new tab and leaves the Inbox where it is",
   }
 });
 
+// dispatch://INFRA-2160, R24: Shift+F opens the Filter panel and Shift+V the View menu from the
+// page, and Escape puts the focus back where it was before the key.
+test("Shift+F opens the Filter panel and Shift+V the View menu on their first control, and Escape hands the focus back to where it was", async () => {
+  const user = userEvent.setup();
+  const rows = [inboxIssue("ask-a", "CORE-1", "Which approach?")];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const { unmount } = renderInbox("/");
+
+  try {
+    await screen.findByTestId("ask-ask-a");
+    act(() => {
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    });
+    await user.keyboard("{Shift>}F{/Shift}");
+    const panel = screen.getByRole("dialog", { name: "Filter" });
+    expect(within(panel).getByRole("button", { name: "Filter by priority" })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Filter" })).toBeNull();
+    expect(document.activeElement).toBe(document.body);
+
+    const row = shortRow("ask-a");
+    act(() => row.focus());
+    await user.keyboard("{Shift>}V{/Shift}");
+    const menu = screen.getByRole("dialog", { name: "View" });
+    // Sort by and Thread order both offer Newest first; Sort by's is the menu's first control.
+    expect(within(menu).getAllByRole("radio", { name: "Newest first" })[0]).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "View" })).toBeNull();
+    expect(row).toHaveFocus();
+  } finally {
+    unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
 /** The schema a decision block is built with, so a test can construct the node view the real
  *  editor constructs for every `ask` node of the document (`ProofDocument.decisions.test.tsx`
  *  does the same against the same fake editor). */

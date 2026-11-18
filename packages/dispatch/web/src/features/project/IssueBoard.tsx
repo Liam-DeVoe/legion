@@ -53,6 +53,7 @@ import { closeRefPreview, referenceTriggerProps } from "../refs/RefPreview";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { useActionKeys } from "../shell/keymap-keys";
+import { linkHref, openInNewTab } from "../shell/new-tab";
 import { closestMatching } from "../shell/roving";
 import { useUserPreference } from "../shell/userPreference";
 import {
@@ -666,6 +667,17 @@ export function IssueBoard({
       when: () => document.activeElement?.matches(CARD_SELECTOR) === true,
     },
     {
+      // R20: `o` in a new tab, from the card itself or a control of it; this page stays.
+      action: "board.open-new-tab",
+      run: () => {
+        const href = linkHref(
+          cardAround(document.activeElement)?.querySelector(ISSUE_LINK) ?? null
+        );
+        if (href !== null) openInNewTab(href);
+      },
+      when: focusedCard,
+    },
+    {
       // A card in Done draws its priority disabled, so the key is offered on the cards whose
       // menu would open.
       action: "board.priority",
@@ -710,6 +722,7 @@ export function IssueBoard({
       <ControlRow
         chips={filterChips(activeFilters)}
         className="mb-4"
+        keyScope="board"
         search={
           <SearchBox
             className="w-full"

@@ -95,8 +95,14 @@ export interface KeymapAction {
 
 export const DIALOG_SCOPE: KeymapScope = "dialog";
 const IS_MAC = navigator.userAgent.includes("Mac");
+/** How `$mod` is shown to the reader, read from the browser's name as it is now: the Command
+ *  glyph on a Mac, `Ctrl` elsewhere. A hint that a test draws under another browser's name
+ *  reads it as it draws (the command bar's Ctrl+Enter); every other reads `MOD_KEY_LABEL`. */
+export function modKeyLabel(): string {
+  return navigator.userAgent.includes("Mac") ? "⌘" : "Ctrl";
+}
 /** How `$mod` is shown to the reader: the Command glyph on a Mac, `Ctrl` elsewhere. */
-export const MOD_KEY_LABEL = IS_MAC ? "⌘" : "Ctrl";
+export const MOD_KEY_LABEL = modKeyLabel();
 /** How `Alt` is shown to the reader: the Option glyph on a Mac, `Alt` elsewhere. */
 export const ALT_KEY_LABEL = IS_MAC ? "⌥" : "Alt";
 /** How long a chord waits for its next key (`g` then `i`). */

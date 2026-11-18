@@ -15,6 +15,7 @@ import { Link, MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
+import { whoAmIQuery } from "../../api/queries";
 import type { IssueReferenceSummary, Project, SearchResponse, SearchResult } from "../../api/types";
 import { CONTROL } from "../../components/control-names";
 import { issue as issueFixture, specArtifact } from "../margin/margin-fixture";
@@ -22,6 +23,7 @@ import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap } from "../shell/keymap";
 import { ANSWER_PREVIEW_CHARS } from "./AskHitStatus";
+import { recordRecent } from "./recents";
 import { SearchPalette } from "./SearchPalette";
 import { searchAnswer } from "./search-fixture";
 import { optionId } from "./search-model";
@@ -152,6 +154,9 @@ interface RenderPaletteOptions {
   control?: ReactNode;
   entries?: string[];
   index?: number;
+  /** Who is signed in, read before the bar opens, as the shell has it: the recent pages the
+   *  bar lists are that person's. */
+  login?: string;
   onClose?: () => void;
 }
 
@@ -159,9 +164,13 @@ function renderPalette({
   control,
   entries = ["/"],
   index,
+  login,
   onClose = () => {},
 }: RenderPaletteOptions = {}): { queryClient: QueryClient; unmount: () => void } {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (login !== undefined) {
+    queryClient.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login });
+  }
   const view = render(
     <MemoryRouter initialEntries={entries} initialIndex={index}>
       <QueryClientProvider client={queryClient}>
@@ -538,6 +547,156 @@ test("arrow keys move aria-activedescendant and Enter navigates to the active hr
     search.mockRestore();
     view.unmount();
     view.queryClient.clear();
+  }
+});
+
+// dispatch://INFRA-2160, R20: Ctrl+Enter, Cmd+Enter and a Ctrl or Cmd click open a row's page in a
+// new tab, and this tab stays as it was, the bar included.
+test("Ctrl+Enter, Cmd+Enter and a Ctrl+click on a hit open it in a new tab, and the bar stays open with its words, its highlight and the focus in its box", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const open = spyOn(window, "open").mockImplementation(() => null);
+  const closes: string[] = [];
+  const view = renderPalette({ onClose: () => closes.push("close") });
+
+  try {
+    const input = await searchFor(user, "astrolabe");
+    const [first, second] = screen.getAllByRole("option");
+    if (first === undefined || second === undefined)
+      throw new Error("the palette listed fewer than two options");
+    const secondHit = results.find((result) => optionId(result) === second.id);
+    if (secondHit === undefined) throw new Error("the second option is no hit");
+
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    expect(open).toHaveBeenLastCalledWith(
+      "/issues/LEGION-2/spec?q=astrolabe",
+      "_blank",
+      "noopener"
+    );
+    await user.keyboard("{Meta>}{Enter}{/Meta}");
+    expect(open).toHaveBeenCalledTimes(2);
+    expect(open).toHaveBeenLastCalledWith(
+      "/issues/LEGION-2/spec?q=astrolabe",
+      "_blank",
+      "noopener"
+    );
+
+    await user.keyboard("{Control>}");
+    await user.click(second);
+    await user.keyboard("{/Control}");
+    expect(open).toHaveBeenCalledTimes(3);
+    expect(open).toHaveBeenLastCalledWith(secondHit.href, "_blank", "noopener");
+
+    expect(screen.getByTestId("current-route").textContent).toBe("/");
+    expect(closes).toEqual([]);
+    expect(screen.getByRole("dialog", { name: "Search" })).toBeInTheDocument();
+    expect(input).toHaveFocus();
+    expect(input).toHaveValue("astrolabe");
+    expect(input).toHaveAttribute("aria-activedescendant", first.id);
+
+    // A plain Enter still opens the hit here, as it always has.
+    await user.keyboard("{Enter}");
+    expect(screen.getByTestId("current-route").textContent).toBe(
+      "/issues/LEGION-2/spec?q=astrolabe"
+    );
+    expect(open).toHaveBeenCalledTimes(3);
+  } finally {
+    open.mockRestore();
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("Ctrl+Enter on a project row and on a recent page opens it in a new tab, and on an action row runs nothing", async () => {
+  const user = userOnFakeClock();
+  const ran: string[] = [];
+  const unregister = registerClose(ran);
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([
+    {
+      created_at: "2026-09-01T00:00:00Z",
+      gated_steps: [],
+      key: "INFRA",
+      name: "Infra",
+      open_asks: 0,
+    },
+  ]);
+  const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
+    event_head: "0",
+    kind: "user",
+    login: "alice",
+  });
+  recordRecent("alice", { label: "LEGION-7 Lens grinding", path: "/issues/LEGION-7" });
+  const open = spyOn(window, "open").mockImplementation(() => null);
+  const closes: string[] = [];
+  const view = renderPalette({ login: "alice", onClose: () => closes.push("close") });
+
+  try {
+    // The box is empty, so the bar opens on the recent pages, the first highlighted.
+    const recent = await screen.findByRole("option", { name: "LEGION-7 Lens grinding" });
+    const input = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
+    expect(input).toHaveAttribute("aria-activedescendant", recent.id);
+    await user.click(input);
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    expect(open).toHaveBeenLastCalledWith("/issues/LEGION-7", "_blank", "noopener");
+
+    await searchFor(user, "infra");
+    const project = await screen.findByRole("option", { name: /^Infra/ });
+    expect(input).toHaveAttribute("aria-activedescendant", project.id);
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    expect(open).toHaveBeenCalledTimes(2);
+    expect(open).toHaveBeenLastCalledWith("/projects/INFRA", "_blank", "noopener");
+
+    // An action has no page, and a key that only opens a tab writes nothing.
+    await searchFor(user, "clo");
+    await waitFor(() => expect(input).toHaveAttribute("aria-activedescendant", CLOSE_ROW));
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    await user.keyboard("{Control>}");
+    await user.click(screen.getByRole("option", { name: "Close issue" }));
+    await user.keyboard("{/Control}");
+    expect(ran).toEqual([]);
+    expect(open).toHaveBeenCalledTimes(2);
+    expect(closes).toEqual([]);
+    expect(screen.getByTestId("current-route").textContent).toBe("/");
+  } finally {
+    open.mockRestore();
+    whoAmI.mockRestore();
+    listProjects.mockRestore();
+    search.mockRestore();
+    unregister();
+    window.localStorage.clear();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("the key hint row names Ctrl+Enter for a new tab, and ⌘+Enter under a Mac's browser", async () => {
+  // The key's own box, and what the row says it does beside it.
+  const expectHint = (key: string) => {
+    const hints = screen.getByTestId("search-keyboard-hints");
+    const kbd = within(hints).getByText(/\+Enter$/);
+    expect(kbd).toHaveTextContent(key);
+    expect(kbd.closest("span")).toHaveTextContent("to open in a new tab");
+  };
+  const view = renderPalette();
+  try {
+    expectHint("Ctrl+Enter");
+  } finally {
+    view.unmount();
+    view.queryClient.clear();
+  }
+  Object.defineProperty(navigator, "userAgent", {
+    configurable: true,
+    value: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 Safari/605.1.15",
+  });
+  const mac = renderPalette();
+  try {
+    expectHint("⌘+Enter");
+  } finally {
+    Reflect.deleteProperty(navigator, "userAgent");
+    mac.unmount();
+    mac.queryClient.clear();
   }
 });
 

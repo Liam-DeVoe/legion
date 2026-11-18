@@ -111,6 +111,10 @@ value in it carries how many rows it holds, counted inside what the other four f
 already narrowed — so a value that reads 3 has three rows behind it, and picking it never empties
 the list.
 
+`Shift+F` opens **Filter** and `Shift+V` opens **View**, on the page and in the drawer. The focus
+goes to the first control inside. `Escape` closes an open list, then the panel, and the focus goes
+back to where it was before the key.
+
 Type is the field that tells the kinds apart: Question, Decision, Approval, Reply and Agent
 message.
 

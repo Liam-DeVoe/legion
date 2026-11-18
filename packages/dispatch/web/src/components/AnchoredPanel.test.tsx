@@ -304,6 +304,34 @@ test("Escape goes back to where a key noted it opened the panel from, and the no
   }
 });
 
+// dispatch://INFRA-2160, R24: a key pressed on the page itself, with nothing focused, opens a
+// panel from there, and Escape puts the reader back on the page rather than on the anchor.
+test("Escape in a panel a key opened with nothing focused leaves the focus on the page, and Tab still goes to the anchor", async () => {
+  const user = userEvent.setup();
+  const view = render(<ReturningPanel toRow={false} />);
+  try {
+    const open = screen.getByRole("button", { name: "Open" });
+    const fromPage = () =>
+      act(() => {
+        if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+        noteOpenedFrom(open);
+        open.click();
+      });
+    fromPage();
+    expect(screen.getByRole("button", { name: "Inside" })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("menu", { name: "Panel" })).toBeNull();
+    expect(document.activeElement).toBe(document.body);
+
+    fromPage();
+    await user.tab();
+    expect(screen.queryByRole("menu", { name: "Panel" })).toBeNull();
+    expect(open).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
 /** A panel beside a control that keeps its own press from propagating, as an ask card's hand-on
  *  keeps its press from the row it sits in. */
 function PanelBesideAStoppedPress({ dismissals }: { dismissals: PanelDismissal[] }) {

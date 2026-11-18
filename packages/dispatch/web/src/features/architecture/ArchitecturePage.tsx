@@ -38,6 +38,7 @@ import {
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
+import { linkHref, openInNewTab } from "../shell/new-tab";
 import { closestMatching, roveFocus } from "../shell/roving";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { AttachmentLists, type AttachmentView } from "./AttachmentLists";
@@ -54,6 +55,8 @@ import {
 import { ComponentDetails } from "./ComponentDetails";
 
 const ROW_SELECTOR = "[data-component-row]";
+/** The row's own link, its title: what `o` follows on a leaf and Shift+O opens on every row. */
+const COMPONENT_LINK = "[data-component-link]";
 const rowFocusRing = `outline-none focus-visible:ring-2 ${focusVisibleRing}`;
 
 function rowAround(node: Element | null): HTMLElement | null {
@@ -310,6 +313,18 @@ function ArchitectureTreeView({
         }
       },
       when: () => rowAround(document.activeElement) !== null,
+    },
+    {
+      // R20: what `o` opens, in a new tab: the row's own link, on a leaf its details and on a
+      // component with children the level of them, which is the same address.
+      action: "architecture.open-new-tab",
+      run: () => {
+        const href = linkHref(
+          rowAround(document.activeElement)?.querySelector(COMPONENT_LINK) ?? null
+        );
+        if (href !== null) openInNewTab(href);
+      },
+      when: () => rowAround(document.activeElement)?.querySelector(COMPONENT_LINK) != null,
     },
   ]);
 
@@ -638,6 +653,7 @@ function ComponentRow({
               <div className="flex min-w-0">
                 <Link
                   className={`flex min-h-11 min-w-0 flex-1 items-center py-2 font-medium md:min-h-0 md:py-0 ${textPrimaryOnSurface} ${linkHoverText}`}
+                  data-component-link=""
                   to={{ search: rowSearch(component.id) }}
                 >
                   <TruncatedText className="min-w-0 flex-1" title={component.title}>

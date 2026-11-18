@@ -31,7 +31,6 @@ import {
   textMutedOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { useKeymapScope } from "../shell/keymap";
 import { type ColorFacet, colorKeyFor, PLACEHOLDER_COLOR } from "./lib/colorScale";
 import {
   DEPLOYED_LABELS,
@@ -170,11 +169,11 @@ const PR_LAYOUT_COLUMNS: LayoutColumns = {
 /** This list's own words, which the table core reads and never invents. The keys are the ones
  *  the list has always answered, and only while a row holds the focus (`moveFrom: "row"`):
  *  arrow up and down walk the rows, and Enter opens the focused one. Anywhere else on the page
- *  the arrows are the page's, which scrolls. They are registered in this list's own `delivery`
- *  scope, which the list pushes while it is drawn - the List view alone - so no key of this
- *  table is answered on a page that does not draw it. The list selects nothing, so it names no
- *  select key. Home and End are the row's own, below: the core's keymap names a next, a
- *  previous and an open, and has no slot for them. */
+ *  the arrows are the page's, which scrolls. They are registered in the page's `delivery` scope,
+ *  which `DeliveryPage` pushes in both of its views, while this list is drawn - the List view
+ *  alone - so no key of this table is answered on a page that does not draw it. The list selects
+ *  nothing, so it names no select key. Home and End are the row's own, below: the core's keymap
+ *  names a next, a previous and an open, and has no slot for them. */
 const PR_TABLE_NAMES: DataTableNames = {
   groupAttribute: "data-pr-group",
   keymap: {
@@ -493,9 +492,6 @@ export function PRList({
   sessionGroups: readonly DeliverySessionGroup[];
   sorting: SortingState;
 }): ReactNode {
-  // The list's own keys are answered while the list is drawn and nowhere else, so the List
-  // view's arrows do not reach a reader on the Timeline.
-  useKeymapScope("delivery");
   const layout = useTableLayout(PR_LAYOUT_KEY, PR_LAYOUT_COLUMNS);
   const [openFilter, setOpenFilter] = useState<string>();
   const rows = useMemo(
