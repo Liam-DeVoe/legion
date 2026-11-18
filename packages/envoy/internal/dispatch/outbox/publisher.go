@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
@@ -111,6 +112,14 @@ type Deps struct {
 	// unexported, so only this package sets it and no importer can shorten the wait cmd/dispatch
 	// runs.
 	forwardAckWait time.Duration
+	// holdOptions are the options this outbox takes the publisher hold under (tryHold), and zero
+	// is publisherHoldOptions, which is what cmd/dispatch runs. A test whose subject is not the
+	// hold sets a TTL longer than its own run, so that no turn of the hold ends lost while a loaded
+	// machine starves its renewals, with the next turn sending again what that one had sent and not
+	// yet recorded: then what the test counts is the outbox's sends rather than the machine's load.
+	// It is unexported, as forwardAckWait is, so only this package sets it and no importer can
+	// change the take-over bound cmd/dispatch runs.
+	holdOptions duty.HoldOptions
 	// PublishFailures counts a destination of a publish attempt that did not reach it, by
 	// reason (countPublishFailure), and RoleForwardsHeld a role forward its holder's resolution
 	// held pending, by that holder's state (countRoleForwardHeld). cmd/dispatch registers both
@@ -133,6 +142,15 @@ func (d Deps) forwardAckTimeout() time.Duration {
 		return d.forwardAckWait
 	}
 	return roleForwardAckTimeout
+}
+
+// publisherHoldOptions are the options this outbox takes the publisher hold under (tryHold), from
+// holdOptions.
+func (d Deps) publisherHoldOptions() duty.HoldOptions {
+	if d.holdOptions == (duty.HoldOptions{}) {
+		return publisherHoldOptions
+	}
+	return d.holdOptions
 }
 
 // countPublishFailure counts one destination of a publish attempt that did not reach it, under
