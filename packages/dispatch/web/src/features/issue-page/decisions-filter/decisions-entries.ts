@@ -58,9 +58,8 @@ type DecisionsRead = "decisions" | "asks";
  *  answers, and which of them was refused and how to ask it again. */
 interface DecisionsEntries extends DecisionsParts {
   /** Whether the decisions read and the asks each hold an answer: the reads that say which
-   *  questions and decisions there are. The comments and the decisions document's blocks only
-   *  move a decision between the review list and the reader's own, so they are not waited for.
-   *  A read that failed holds none. */
+   *  questions and decisions there are. The comments only move a decision between the review
+   *  list and the reader's own, so they are not waited for. A read that failed holds none. */
   readonly readsHeld: boolean;
   /** Asks `read` alone again, by its own query's refetch. */
   readonly retry: (read: DecisionsRead) => void;
@@ -98,9 +97,6 @@ export function useDecisionsEntries({
     queryFn: () => api.listComments(issue.key),
     queryKey: ["comments", issue.key],
   }).data;
-  // No document plays the decisions part any more: decisions are nodes of the spec, so the
-  // issue names no decisions document (`roleDocument`) and no blocks of one are read. A Change
-  // stands under the first decision whose words hold its quote (`decision-review.ts`).
   // The comments only move a decision between parts, so they are not waited for.
   const readsHeld = decisions !== undefined && asks !== undefined;
   // A read was refused before it first answered where it holds no answer and is in error. A

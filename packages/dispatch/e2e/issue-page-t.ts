@@ -213,6 +213,9 @@ export async function drawnRowReadings(
   page: Page,
   { bodies = true }: { readonly bodies?: boolean } = {}
 ): Promise<RowReading[]> {
+  // One reading of the rows as the page draws them at this instant, which is all this helper
+  // claims: a caller that needs the rows settled reads it inside `steadily` or a poll, and the
+  // walk below fails where a row moved before its body was read.
   const drawn = await page.evaluate(readPageRows, {
     alsoUnder: CONTROL_LABELS.also_under,
     focused: null,
@@ -233,6 +236,8 @@ async function focusedBody(page: Page, index: number, row: PageRow): Promise<Pag
   await target.focus();
   await expect(target, `${where} never took the focus`).toBeFocused();
   await expect(rowBody(target), `${where} drew no body with the focus`).toHaveCount(1);
+  // The two expects above waited for the focus and the body, so this one reading is of a settled
+  // row, and a row other than the one read before means the rows moved, not a page still drawing.
   const [focused] = await page.evaluate(readPageRows, {
     alsoUnder: CONTROL_LABELS.also_under,
     focused: index,
@@ -304,6 +309,8 @@ function readPageRows({ alsoUnder, focused }: PageRead): PageRow[] {
   };
   const rows = [...document.querySelectorAll("[data-issue-page] [data-node-row]")];
   const levels = rows.map((row) => {
+    // `readPageRows` runs in the page through `page.evaluate`, one synchronous pass over the DOM
+    // that no render can interleave, so this level is the one the row drew at that instant.
     const level = Number(row.getAttribute("aria-level") ?? "");
     return Number.isInteger(level) && level > 0 ? level : null;
   });
@@ -360,6 +367,8 @@ function readPageRows({ alsoUnder, focused }: PageRead): PageRow[] {
         name: text(name) ?? "",
       };
     });
+    // Read in the same synchronous pass over the DOM as every other field of the row, so the
+    // state it records is the one the row drew at the instant the whole reading stands for.
     const token = row.getAttribute("data-node-state");
     const word = text(margin?.querySelector("[data-node-state]"));
     const unsure = text(margin?.querySelector("[data-node-unsure]"));
@@ -1007,8 +1016,8 @@ export function decisionTimes(
 /** Whether the seed's decisions are nodes of the tree read `answer`: it holds a decision node of
  *  this issue, and every decision the decisions read answers is one - a decision node of this
  *  issue whose id is the decision's `block_id`, in the document the decision's `ref` names where
- *  the node names its document - where a section of `decisions.md` is none. The check is this
- *  file's own, so the page's matching of decisions to nodes can move under it. */
+ *  the node names its document. The check is this file's own, so the page's matching of
+ *  decisions to nodes can move under it. */
 export function decisionsAreNodes(
   answer: IssueTreeAnswer,
   read: DecisionsRead | undefined
@@ -1127,31 +1136,29 @@ export function decisionsViewGate(requests: readonly ApiRequest[], key: string):
   };
 }
 
-/** What `decisionNodesGate` and `partUGate` read where they are not met: the seed's decisions
- *  are sections of `decisions.md`. */
-const DECISIONS_ARE_SECTIONS =
-  "the seed's decisions are sections of decisions.md here, not nodes of the tree read";
+/** What `decisionNodesGate` and `partUGate` read where they are not met: the seed's decisions,
+ *  written as decision blocks of the spec, are no nodes of the tree read this base answers. */
+const DECISIONS_ARE_NO_NODES =
+  "the seed's decisions are no nodes of the tree read this base answers";
 
-/** The decisions work that makes each decision a node of the tree read, and the seeds that then
- *  write their decisions so (`decisionsAreNodes`). */
+/** The decisions work that makes each decision a node of the tree read (`decisionsAreNodes`). */
 export function decisionNodesGate(answer: IssueTreeAnswer, read: DecisionsRead | undefined): Gate {
   return {
     met: decisionsAreNodes(answer, read),
     owed:
-      "owed until decisions are nodes of the tree read, and the seeds write theirs so, on this " +
-      `branch's base: ${DECISIONS_ARE_SECTIONS}; ${OWED_BY}`,
+      "owed until decisions are nodes of the tree read on this branch's base: " +
+      `${DECISIONS_ARE_NO_NODES}; ${OWED_BY}`,
   };
 }
 
 /** The page drawing the decisions from the tree read's nodes, which waits on the decisions work
- *  that makes them nodes reaching this branch's base, the seeds then writing them so
- *  (`decisionsAreNodes`). */
+ *  that makes them nodes reaching this branch's base (`decisionsAreNodes`). */
 export function partUGate(answer: IssueTreeAnswer, read: DecisionsRead | undefined): Gate {
   return {
     met: decisionsAreNodes(answer, read),
     owed:
       "owed until the page draws the decisions from the tree read's nodes, once decisions are " +
-      `nodes of the tree read on this branch's base: ${DECISIONS_ARE_SECTIONS}; ${OWED_BY}`,
+      `nodes of the tree read on this branch's base: ${DECISIONS_ARE_NO_NODES}; ${OWED_BY}`,
   };
 }
 

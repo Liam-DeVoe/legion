@@ -59,7 +59,8 @@ interface DeferredCheck {
 }
 
 // Per QueryClient, keyed by query hash: when each query's last fetch began (from the cache's
-// `fetch` action), the moment each owed refresh was asked for, the timer that will start a
+// `fetch` action, or, for a fetch that waited before it sent, from that send:
+// `recordFetchSent`), the moment each owed refresh was asked for, the timer that will start a
 // refresh the interval holds back, and the checks waiting for the response of a fetch that is out
 // (a first load or a refetch) to land. Every entry of a hash leaves when its query is removed.
 interface SchedulerState {
@@ -142,6 +143,22 @@ function schedulerFor(queryClient: QueryClient): SchedulerState {
  */
 export function trackQueryFetches(queryClient: QueryClient): void {
   schedulerFor(queryClient);
+}
+
+/**
+ * Records that a fetch of the query `queryKey` names exactly, which is out, sends its request now:
+ * from now on it is the fetch's start, for the interval and for every refresh owed. A query
+ * function that waits before it sends - the issue page's tree and view reads wait until no write
+ * is out (`tree-read.ts`' `readTree`) - calls it as it sends, since the cache's `fetch` action, the
+ * start recorded otherwise, came as the wait began: a refresh asked while it waited is answered by
+ * the request it then sends, and is not fetched a second time once that fetch lands.
+ */
+export function recordFetchSent(queryClient: QueryClient, queryKey: QueryKey): void {
+  const query = queryClient.getQueryCache().find({ exact: true, queryKey });
+  if (query === undefined) {
+    return;
+  }
+  schedulerFor(queryClient).started.set(query.queryHash, Date.now());
 }
 
 /** Marks a query stale and, while something renders it or a fetch of it is out, records that it

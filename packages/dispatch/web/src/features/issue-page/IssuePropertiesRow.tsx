@@ -44,8 +44,9 @@ import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
 import { type WaitingPress, waitingOnReader } from "./waiting";
 
 /**
- * How the count's five reads are kept fresh: the tree's `EVENT_FRESH` (`useIssueTree.ts`), which
- * that file keeps to itself, so the header holds this copy. They are refreshed by events, never
+ * How the count's reads are kept fresh, but for the tree read, which keeps its own (`TREE_FRESH`):
+ * the four others take the tree's `EVENT_FRESH` (`useIssueTree.ts`), which that file keeps to
+ * itself, so the header holds this copy. They are refreshed by events, never
  * by age (decision 180): the feed's rules read the decisions, the coverage, the comments and the
  * tree again when an event can change them, the reader's login does not change while the page
  * is open, and a window focus fetches again only a read in error (`refetchFailedOnFocus`).

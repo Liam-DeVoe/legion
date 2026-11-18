@@ -17,7 +17,9 @@ import { typefaceAddress as stylesheetTypefaceAddress, TYPEFACE } from "./issue-
 import { assertWhole } from "./unclipped";
 
 // The typeface's readers are `issue-page-typeface.ts`'s, the one copy every row reads; this
-// module passes them on to its own rows, which import them from here.
+// module passes `TYPEFACE` and `typefaceStatuses` on to its own rows unchanged, which import them
+// from here, and wraps `typefaceAddress` in one of its own (below), which throws where the shared
+// one answers null.
 export { TYPEFACE, typefaceStatuses } from "./issue-page-typeface";
 
 declare global {
