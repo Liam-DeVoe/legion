@@ -56,6 +56,7 @@ import {
   type MyAnswersResponse,
   type MyRepliesResponse,
   NO_ROUTE_RETRY_DELAYS_MS,
+  ProjectAccessChangedEventPayloadSchema,
   type ReferenceChangesPayload,
   type ReplyBlock,
   ReplyBlockSchema,
@@ -85,6 +86,31 @@ test("review event validation preserves approved byte hashes and their provenanc
     artifact_id: "doc-1",
     version: 2,
   });
+});
+
+// A project.access_changed a release appended before Dispatch stored when a project's Slack
+// channels last changed carries no slack_channels_changed_at, and the event log keeps it as it was
+// written: it still reads. One written since carries the time, or null for a list never written.
+test("a project.access_changed payload without slack_channels_changed_at still reads", () => {
+  const stored = {
+    project: "CORE",
+    owner: "alice@example.com",
+    visibility: "public",
+    people: [],
+    groups: [],
+    slack_channels: ["C012345678"],
+    not_signed_in: [],
+    change: "slack_channels",
+  } as const;
+  expect(ProjectAccessChangedEventPayloadSchema.safeParse(stored).success).toBe(true);
+  for (const changedAt of ["2026-11-18T18:12:30Z", null]) {
+    expect(
+      ProjectAccessChangedEventPayloadSchema.parse({
+        ...stored,
+        slack_channels_changed_at: changedAt,
+      }).slack_channels_changed_at
+    ).toBe(changedAt);
+  }
 });
 
 test("delivery modes are exactly the closed capability list", () => {
