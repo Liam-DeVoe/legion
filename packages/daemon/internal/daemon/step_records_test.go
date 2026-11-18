@@ -47,7 +47,8 @@ const (
 	stepRecordsHead = "5e7f00d5a1b2c3d4e5f60718293a4b5c6d7e8f90"
 	// stepRecordsPerson is the account with write access whose reviews decide each round.
 	stepRecordsPerson = "a-person"
-	// stepRecordsModel is the model every agent of the walk answers with, as Oh My Pi's
+	// stepRecordsModel is the model an agent of the walk answers with when its launch's spec names
+	// none, as every launch of Legion's own roles does (stepClaimant.model), as Oh My Pi's
 	// message_end names it: provider and model.
 	stepRecordsModel = "stand-in/model"
 	// stepRecordsWait bounds each wait of the walk on the daemon, which a loaded machine slows.
@@ -408,8 +409,8 @@ func (r *stepRecordsRig) retroCompletion(rating int, reason string) api.HandoffC
 	return req
 }
 
-// work is one role's turn of the walk: it takes the task, answering with stepRecordsModel, and
-// finishes it.
+// work is one role's turn of the walk: it takes the task, answering with the model its launch
+// named (stepClaimant.model), and finishes it.
 func (r *stepRecordsRig) work(role claim.Role, word string, req api.HandoffCompleteRequest, next phase.Phase) {
 	r.t.Helper()
 	c := r.worker(role)
@@ -777,6 +778,10 @@ type stepClaimant struct {
 	bootToken string
 	prompts   chan shimwire.Prompt
 	mu        sync.Mutex
+	// model is the model the agent's answers name, as Oh My Pi's message_end names it: the model
+	// its launch's spec named (runtime.SpawnSpec.Model, a role of the deployment's own model), and
+	// stepRecordsModel for a launch that named none.
+	model string
 	// sh is the shim's connection to the daemon now running, which a restart replaces.
 	sh *shim
 	// open is the id of each prompt whose turn has started and not ended.
@@ -797,7 +802,11 @@ func (r *stepRecordsRig) worker(role claim.Role) *stepClaimant {
 	r.built.mu.Lock()
 	address := r.built.address
 	r.built.mu.Unlock()
-	c := &stepClaimant{r: r, token: token, issue: r.key, role: role, session: "ses_" + string(role) + "_" + randomSuffix(t)[:6],
+	model := launch.Model
+	if model == "" {
+		model = stepRecordsModel
+	}
+	c := &stepClaimant{r: r, token: token, issue: r.key, role: role, session: "ses_" + string(role) + "_" + randomSuffix(t)[:6], model: model,
 		bootToken: launch.BootToken, sh: dialShim(t, address, launch.BootToken), prompts: make(chan shimwire.Prompt, 8)}
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: c.session, OmpSessionFile: "/sessions/" + c.session + ".jsonl",
@@ -922,11 +931,17 @@ func (c *stepClaimant) waitState(state supervise.ClaimState) {
 	}
 }
 
-// answer is the agent's model answering, as Oh My Pi's message_end names it.
+// answer is the agent's model answering, as Oh My Pi's message_end names it: c.model, the model its
+// launch's spec named, as message.provider and message.model. A model that names no provider, as a
+// role's `model` setting may (checker-model), is message.model alone, which the daemon records as
+// it is (superviseEvent).
 func (c *stepClaimant) answer() {
 	t := c.r.t
 	t.Helper()
-	provider, model, _ := strings.Cut(stepRecordsModel, "/")
+	provider, model, named := strings.Cut(c.model, "/")
+	if !named {
+		provider, model = "", c.model
+	}
 	frame, err := json.Marshal(map[string]any{"type": "message_end", "message": map[string]any{"role": "assistant", "provider": provider, "model": model}})
 	if err != nil {
 		t.Fatal(err)
