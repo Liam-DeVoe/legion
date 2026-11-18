@@ -53,7 +53,7 @@ func (a *Answer) toolPath() string {
 
 // leakGuard is the shared leak guard's read of the call, the one check a Legion write to a public
 // GitHub repository passes before it writes (internal/leakguard). It runs where a pane's own gh
-// runs it, between the owner the call was routed to and the gh about to be started
+// runs it, between the directory the call was routed to and the gh about to be started
 // (cmd/legion's runGh), and its error — a *leakguard.Refusal, about the text the call carries, or
 // a *leakguard.SetupFailure, a check that could not be made to run — refuses the call with the
 // guard's own message: a check that did not run has cleared nothing.
@@ -88,8 +88,9 @@ func (a *Answer) leakGuard(ctx context.Context, argv []string, target ghroute.Ta
 }
 
 // targetRepo is the repository a call writes to, "<owner>/<name>", and "" where it names no one
-// repository: a call naming none at all, and one naming an owner alone or two repositories of
-// one owner, which is a destination the guard is better told nothing of than told wrongly.
+// repository: a call naming none at all, and one naming an owner alone, two repositories, or one
+// repository by both of the names a configured rename gives it, which is a destination the guard
+// is better told nothing of than told wrongly.
 func targetRepo(target ghroute.Target) string {
 	if target.Owner == "" || target.Repo == "" {
 		return ""
@@ -115,9 +116,9 @@ func targetRepo(target ghroute.Target) string {
 //     tool runs and never the answer's GH_PATH wrapper, which runs `legion gh` and would call a
 //     guard of its own over the read. The daemon's own PATH stays behind them, so the check
 //     finds the shell, the engine and everything else it runs.
-//   - GH_CONFIG_DIR the routed owner's, the directory the call itself runs with, so that read
-//     reaches GitHub as the agent's App — the one identity this call is made under — and sees
-//     what that App sees of the repository.
+//   - GH_CONFIG_DIR the directory the call itself runs with, the one its repository routes to
+//     (Answer.route), so that read reaches GitHub as the agent's App — the one identity this call
+//     is made under — and sees what that App sees of the repository.
 //   - GH_TOKEN and GITHUB_TOKEN dropped, and GH_PATH with them. A token of the daemon's own
 //     would answer in the App's place, so the visibility read would be made as whoever started
 //     the daemon rather than as the agent; and a GH_PATH of the daemon's would name gh's git
@@ -145,15 +146,19 @@ func (a *Answer) guardEnv(configDir string) []string {
 	return append(env, "PATH="+a.toolPath()+path, "GH_CONFIG_DIR="+configDir)
 }
 
-// route reads the repository argv targets, and its owner, as a pane's `legion gh` reads them
-// (ghroute.TargetOf, from the real gh's own help, read under the call's environment with the
-// issue owner's directory, as a pane reads it), and answers the target, the owner the call runs
-// as and the gh directory it runs with: the repository's own, `<owner>/<repo>`, whose token
-// reaches that one repository, where the command names one repository and the bundle holds its
-// directory, and the owner's otherwise (repositoryDir). The bundle's default, the issue's owner,
+// route reads the repositories argv targets, and their owners, as a pane's `legion gh` reads
+// them (ghroute.TargetOf, from the real gh's own help, read under the call's environment with the
+// bundle's default directory, as a pane reads it), routes them by the pick a pane's makes, over
+// the answer's own bundle (ghroute.DirFor), and answers the target, the owner the call runs as
+// and the gh directory it runs with. That directory is the one every repository and owner the
+// command names routes to: the owner's own, whose lease reaches every repository its
+// installation holds, except for a repository a configured rename moved, which is answered from
+// the directory of the owner holding it now. The owner is the one that directory is named for
+// (ghconfig.Dir). The bundle's default, the directory the issue's own repository routes to,
 // serves a command naming none. The working directory is the answer's empty one, which has no
-// git remotes. A command TargetOf refuses, and one naming an owner the bundle holds no directory
-// for, are refused.
+// git remotes. A command TargetOf refuses is refused: among them one whose repositories route to
+// two directories, one naming an owner the bundle holds no directory for (an owner the role's App
+// is not installed on), and one naming a repository a configured rename moved to such an owner.
 func (a *Answer) route(ctx context.Context, argv []string) (ghroute.Target, string, string, error) {
 	env := a.env(ghconfig.Dir(a.owners, a.bundle.Default))
 	vars := make(map[string]string, len(env))
@@ -162,33 +167,16 @@ func (a *Answer) route(ctx context.Context, argv []string) (ghroute.Target, stri
 		vars[name] = value
 	}
 	noRemotes := func() ([]ghroute.Remote, error) { return nil, nil }
-	target, err := ghroute.TargetOf(argv, vars, a.help(ctx, env), noRemotes)
+	dirFor := func(owner, name string) (string, error) { return ghroute.DirFor(a.owners, owner, name) }
+	target, err := ghroute.TargetOf(argv, vars, a.help(ctx, env), noRemotes, dirFor)
 	if err != nil {
 		return ghroute.Target{}, "", "", err
 	}
-	owner := target.Owner
-	if owner == "" {
-		return target, a.bundle.Default, ghconfig.Dir(a.owners, a.bundle.Default), nil
+	dir := target.Dir
+	if dir == "" {
+		dir = ghconfig.Dir(a.owners, a.bundle.Default)
 	}
-	if _, ok := a.bundle.Dirs[owner]; !ok {
-		return ghroute.Target{}, "", "", fmt.Errorf("%q is not an owner of this project: the agent's credentials hold no gh directory for it", owner)
-	}
-	return target, owner, a.repositoryDir(owner, target.Repo), nil
-}
-
-// repositoryDir is the gh directory a call targeting owner's repository repo runs with: the
-// repository's own, `<owner>/<repo>`, where the command named one repository and the bundle
-// holds its directory, and the owner's own otherwise — a command naming no one repository, and
-// one whose repository the bundle holds no directory for, which is every repository of an owner
-// the role writes to one of. The name is the one the bundle's directory is named for
-// (ghroute.RepositoryName, which the reader already keyed the target by).
-func (a *Answer) repositoryDir(owner, repo string) string {
-	if name := owner + "/" + ghroute.RepositoryName(repo); repo != "" && ghconfig.IsDirName(name) {
-		if _, ok := a.bundle.Dirs[name]; ok {
-			return ghconfig.Dir(a.owners, name)
-		}
-	}
-	return ghconfig.Dir(a.owners, owner)
+	return target, filepath.Base(dir), dir, nil
 }
 
 // help is the real gh's help of a command path, `gh <path> --help`, run as a call runs, refused

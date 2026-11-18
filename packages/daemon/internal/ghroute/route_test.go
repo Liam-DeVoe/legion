@@ -552,6 +552,9 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		{argv: []string{"search", "issues", "--owner", "acme", "bug"}, owner: "acme"},
 		{argv: []string{"issue", "transfer", "3", "sjawhar/legion", "-R", "sjawhar/other"}, owner: "sjawhar"},
 		{argv: []string{"secret", "set", "TOKEN", "--org", "acme"}, owner: "acme"},
+		// A managed user's login ends in `_<shortcode>`, which is a GitHub login, and is keyed
+		// lowercased as every owner is.
+		{argv: []string{"pr", "view", "1", "-R", "Mona-Cat_Octo/widgets"}, owner: "mona-cat_octo"},
 		// Refusals.
 		{argv: []string{"pr", "view", "1", "--bogus"}, err: `"--bogus" is no option`},
 		{argv: []string{"pr", "view", "1", "-Z"}, err: "names -Z"},
@@ -589,7 +592,7 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		if listed == nil {
 			listed = noGitRepository
 		}
-		target, err := TargetOf(tc.argv, tc.env, help, listed)
+		target, err := TargetOf(tc.argv, tc.env, help, listed, ghroutetest.OwnersOwnDirectories)
 		switch {
 		case tc.err != "":
 			if err == nil || !strings.Contains(err.Error(), tc.err) {
@@ -601,17 +604,16 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 	}
 }
 
-// Beside the owner, TargetOf reads the repository a command names, which is the directory
-// `legion gh` runs it with where the bundle holds one: a `<repository>` argument, -R, a pull
-// request's URL, OWNER/REPO#N where the leaf reads it, a search repo: qualifier, `gh api`'s
-// repos/<owner>/<repo>/… endpoint, GH_REPO and the working directory's remotes each name one.
-// The name is keyed as the directory holding its token is named for it, so `Legion` and
+// Beside the owner, TargetOf reads the repository a command names, which is the repository the
+// leak guard is told the call acts on (leakguard.GhRequest.Repo): a `<repository>` argument, -R,
+// a pull request's URL, OWNER/REPO#N where the leaf reads it, a search repo: qualifier, `gh
+// api`'s repos/<owner>/<repo>/… endpoint, GH_REPO and the working directory's remotes each name
+// one. The name is keyed as gh reads a name of it (ghconfig.RepositoryName), so `Legion` and
 // `widgets.git` are `legion` and `widgets`, and two spellings of one repository are one. They
 // must all name the one repository: a command naming none, one naming two of the one owner, and
-// one where a selector
-// named the owner alone — an `<owner>` argument, orgs/<owner>/ or users/<owner>/, an
-// owner:/org:/user: qualifier, a team, an owner option — name none, and the command runs as the
-// owner.
+// one where a selector named the owner alone — an `<owner>` argument, orgs/<owner>/ or
+// users/<owner>/, an owner:/org:/user: qualifier, a team, an owner option — name none, and the
+// command runs with the owner's directory all the same.
 func TestGhTargetOfNamesTheOneRepositoryEverySelectorNames(t *testing.T) {
 	remotes := func(listed ...Remote) func() ([]Remote, error) {
 		return func() ([]Remote, error) { return listed, nil }
@@ -673,7 +675,7 @@ func TestGhTargetOfNamesTheOneRepositoryEverySelectorNames(t *testing.T) {
 		if listed == nil {
 			listed = noGitRepository
 		}
-		target, err := TargetOf(tc.argv, tc.env, savedGhHelp, listed)
+		target, err := TargetOf(tc.argv, tc.env, savedGhHelp, listed, ghroutetest.OwnersOwnDirectories)
 		if err != nil || target.Owner != tc.owner || target.Repo != tc.repo {
 			t.Errorf("TargetOf(%q, %v) = %+v, %v; want the owner %q and the repository %q", tc.argv, tc.env, target, err, tc.owner, tc.repo)
 		}
@@ -692,7 +694,7 @@ func TestGhTargetOfRefusalsSayHowToNameTheRepository(t *testing.T) {
 		"search issues (repo:acme/w)":    "pass -R <owner>/<repo>",
 		"api search/issues?q=(repo:a/b)": "name it in the endpoint",
 	} {
-		_, err := TargetOf(strings.Fields(argv), nil, savedGhHelp, noGitRepository)
+		_, err := TargetOf(strings.Fields(argv), nil, savedGhHelp, noGitRepository, ghroutetest.OwnersOwnDirectories)
 		if err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "sends no token") {
 			t.Errorf("TargetOf(%q) = %v, want a refusal saying it sends no token and %q", argv, err, want)
 		}
@@ -713,7 +715,7 @@ func TestTargetOfNamesTheLeafCommand(t *testing.T) {
 		{[]string{"--version"}, nil},
 		{[]string{"help", "pr", "view"}, nil},
 	} {
-		target, err := TargetOf(tc.argv, nil, savedGhHelp, noGitRepository)
+		target, err := TargetOf(tc.argv, nil, savedGhHelp, noGitRepository, ghroutetest.OwnersOwnDirectories)
 		if err != nil || !slices.Equal(target.Command, tc.want) {
 			t.Errorf("TargetOf(%q) = %+v, %v; want the command %q", tc.argv, target, err, tc.want)
 		}
@@ -875,7 +877,7 @@ func TestGhTargetOfReadsTheFilesTheCallWouldSend(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			target, err := TargetOf(tc.argv, nil, savedGhHelp, noGitRepository)
+			target, err := TargetOf(tc.argv, nil, savedGhHelp, noGitRepository, ghroutetest.OwnersOwnDirectories)
 			if err != nil {
 				t.Fatalf("TargetOf(%q) = %v", tc.argv, err)
 			}

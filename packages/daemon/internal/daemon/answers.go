@@ -54,9 +54,14 @@ func (w *workflowRuntime) attachAnswers(cfg config.Config, p plan, s *supervisio
 	// itself (runtime/tmux's resolveLeakCheck), while this guard runs in this process, in this
 	// environment, so it resolves them itself at every call — the same three places, and the
 	// copy the check has published by then rather than the one that was there at boot.
+	//
+	// Credential builds a role's bundle as a pane's is built, over the daemon's token source
+	// whole (w.apps), since a bundle reads the owners each App is installed on. It records what it
+	// read in no record of the daemon's (plan.installed, plan.left): those are what the daemon's
+	// launches and its drift check read, and an answer's bundle is neither.
 	host := ghtool.Host{
 		GH: p.answers.gh, Git: p.tools["git"], Legion: legion, StateDir: cfg.StateDir, Environ: os.Environ(),
-		Credential: appauth.GitHubCredential(w.tokens, p.repositories.Accepted, cfg.RepositoryRenames, appauth.NewLeftOut(), w.log), Calls: st, Log: w.log, Now: time.Now,
+		Credential: appauth.GitHubCredential(w.apps, p.repositories.Accepted, cfg.RepositoryRenames, nil, nil, w.log), Calls: st, Log: w.log, Now: time.Now,
 	}
 	w.answers.loop = answerloop.New(answerloop.Config{
 		Project: p.project, Answers: *cfg.Answers, Store: st, Dispatch: client,

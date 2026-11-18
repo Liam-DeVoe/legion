@@ -1,9 +1,10 @@
 // Package ghtool is the `gh` tool of the daemon's answer loop: GitHub's own command line, run for
 // an agent that is not running, with the GitHub access that agent's pane has. Per answer, Open
-// writes the agent's credential bundle as a pane gets its own (its role's App with full access to
-// its issue's repository owner, read-only to the project's other owners) and Close removes it;
-// Run runs one call the model makes. A call runs only when it is one of the tool's commands (the
-// allow list, checked before any process starts), routed to the owner it names as a pane's
+// writes the agent's credential bundle as a pane gets its own (one directory per owner its role's
+// App is installed on, each holding that installation's lease at the role's own permissions, and
+// the configured renames it routes by) and Close removes it; Run runs one call the model makes.
+// A call runs only when it is one of the tool's commands (the allow list, checked before any
+// process starts), routed to the one gh directory its repositories route to as a pane's
 // `legion gh` routes it (internal/ghroute), cleared by the shared leak guard as every Legion
 // write to a public repository is (internal/leakguard, the guard a pane's `legion gh` runs), with
 // the agent's Legion footer on every comment or review it posts, under a scrubbed environment, a
@@ -74,7 +75,8 @@ type Recorder interface {
 // this binary, absolute, which the wrapper GH_PATH names runs as `legion gh`. StateDir is the
 // daemon's state directory, under whose answers/ each answer's directory lives. Credential is the
 // function a pane's bundle comes from, appauth.GitHubCredential over the daemon's App tokens and
-// the project's owners. Calls records each call, Log takes its line, Now is the clock.
+// every owner the role's App is installed on. Calls records each call, Log takes its line, Now is
+// the clock.
 //
 // The last two are the leak guard's, which every call passes before gh is handed anything
 // (Answer.leakGuard). LeakCheck is the shared public leak check this daemon resolved on its own
@@ -229,20 +231,20 @@ const noRepository = "not a git repository"
 // in a form the agent's footer cannot be added to; a review is refused after reading its pull
 // request's head, with the review itself never run, when that head is not the one the agent's
 // recorded round read (Answer.headRefusal); a call is refused after reading gh's help, with the
-// command itself never run, when the owner it targets cannot be read for certain or is none of
-// the bundle's, or gh's help names its command otherwise than its words do, and when the leak
-// guard refuses it or could not be made to run (Answer.leakGuard), which is checked last of all,
-// once the call's repository and the files it would send are known and before anything is
-// recorded or started. Every other call runs with the footer added to what it posts (a review's
-// naming the head its round read), the routed owner's gh directory, the scrubbed environment,
-// the working directory the answer's empty one, the gh_seconds bound and the gh_output_chars
-// bound. It is routed by its arguments as the model gave them (Answer.route), since the footer
-// adds a body and names no repository; the call with the footer is what the leak guard reads and
-// what gh runs. A call that ran and failed for naming no repository (noRepository) has the
-// agent's usage after gh's output. Every call is recorded with what the model reads of it: an
-// allowed one before gh starts and finished after it ends, a refused one with its refusal; one
-// whose start cannot be recorded does not run. Each logs one `answers: gh` line, and a call the
-// guard refused one line of its own before it.
+// command itself never run, when the gh directory it needs cannot be read for certain or the
+// bundle holds none for it, or gh's help names its command otherwise than its words do, and when
+// the leak guard refuses it or could not be made to run (Answer.leakGuard), which is checked last
+// of all, once the call's repository and the files it would send are known and before anything
+// is recorded or started. Every other call runs with the footer added to what it posts (a
+// review's naming the head its round read), the gh directory it was routed to, the scrubbed
+// environment, the working directory the answer's empty one, the gh_seconds bound and the
+// gh_output_chars bound. It is routed by its arguments as the model gave them (Answer.route),
+// since the footer adds a body and names no repository; the call with the footer is what the
+// leak guard reads and what gh runs. A call that ran and failed for naming no repository
+// (noRepository) has the agent's usage after gh's output. Every call is recorded with what the
+// model reads of it: an allowed one before gh starts and finished after it ends, a refused one
+// with its refusal; one whose start cannot be recorded does not run. Each logs one `answers: gh`
+// line, and a call the guard refused one line of its own before it.
 func Run(ctx context.Context, call Call) Result {
 	a := call.Answer
 	started := a.host.Now()

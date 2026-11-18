@@ -46,7 +46,7 @@ func TestGhCallModeDecidesTheUncheckedCallsBeforeTheReadGrammar(t *testing.T) {
 		leakguard.VisibilityReadWithHeadersArgs("acme/widgets"),
 		leakguard.VisibilityGraphQLArgs("acme/widgets"),
 	} {
-		if target, err := ghroute.TargetOf(argv, nil, savedGhHelp, noGitRepository); err != nil || target.WritesNothing {
+		if target, err := ghroute.TargetOf(argv, nil, savedGhHelp, noGitRepository, ghroutetest.OwnersOwnDirectories); err != nil || target.WritesNothing {
 			t.Errorf("ghroute.TargetOf(%q) = %+v, %v; want a visibility read outside every read grammar", argv, target, err)
 		}
 	}
@@ -186,7 +186,7 @@ func TestLegionGhChecksAReadAndReadsNoVisibility(t *testing.T) {
 			if want := "gh " + strings.Join(args, " ") + "\n" + ghRigReadEnv + "stdin " + strings.TrimSuffix(stdin, "\n") + "\n"; got.gh != want {
 				t.Errorf("gh recorded %q, want %q", got.gh, want)
 			}
-			target, err := ghroute.TargetOf(args, nil, savedGhHelp, noGitRepository)
+			target, err := ghroute.TargetOf(args, nil, savedGhHelp, noGitRepository, ghroutetest.OwnersOwnDirectories)
 			if err != nil {
 				t.Fatalf("ghroute.TargetOf(%q) = %v", args, err)
 			}
@@ -214,7 +214,7 @@ func TestLegionGhRefusesAReadThatCarriesACredential(t *testing.T) {
 		{"api", "-H", "Authorization: token " + ghFakeToken, "repos/acme/widgets/pulls"},
 	} {
 		t.Run(strings.Join(args[:2], " "), func(t *testing.T) {
-			if target, err := ghroute.TargetOf(args, nil, savedGhHelp, noGitRepository); err != nil || !target.WritesNothing {
+			if target, err := ghroute.TargetOf(args, nil, savedGhHelp, noGitRepository, ghroutetest.OwnersOwnDirectories); err != nil || !target.WritesNothing {
 				t.Fatalf("ghroute.TargetOf(%q) = %+v, %v; want a call that writes nothing", args, target, err)
 			}
 			got := run(t, ghCheckAt(t, ghCheckRefusesACredential), "", args...)

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/ghroute"
 )
 
 const gitCredentialUsage = "usage: legion git-credential get|store|erase  (git's credential helper for a shared clone; git runs it, never a person)"
@@ -27,18 +28,22 @@ var gitCredentialStdin io.Reader = os.Stdin
 
 // runGitCredential is every shared clone's credential helper (workspace.GitHubCredentialHelper),
 // which git runs with its operation and the request on stdin. `get` answers a request for
-// https://github.com with the installation-token username and the token of the repository the
-// request's path names (credential.useHttpPath, which every shared clone sets): its first segment
-// is the owner and its second the repository, and the token comes from the hosts.yml in that
-// repository's own directory of LEGION_GH_OWNERS_DIR, `<owner>/<repo>`, where the bundle holds
-// one, from the owner's directory otherwise (repositoryGHConfigDir), and from nothing else. A
-// repository the bundle holds no directory for — the one the role writes to, every repository of
-// an owner it writes to none of, and a name no bundle directory can hold — is the owner's
-// directory's to answer. Any other host or protocol, a request with no path, a path whose owner
-// is no GitHub login or one the bundle holds no directory for, an unset LEGION_GH_OWNERS_DIR,
-// and a hosts.yml with no token answer nothing, exit 1, naming why on stderr, and git, which every
-// shared clone tells credential.interactive=false, then fails rather than prompts. `store` and
-// `erase` change nothing: the daemon is the one writer of the gh files.
+// https://github.com with the installation-token username and the token of the gh directory that
+// answers for the repository the request's path names (credential.useHttpPath, which every
+// shared clone sets): its first two segments are that repository, and the directory is the one
+// the bundle under LEGION_GH_OWNERS_DIR holds for it (ghroute.DirFor) and nothing else. A role's
+// bundle holds one directory per owner the role's App is installed on, and the lease in it
+// reaches every repository that installation holds, so the owner's own directory answers for
+// every repository of that owner but one a configured rename moved to another owner: that one is
+// answered from the directory of the owner it moved to, which the bundle's pairs file names, and
+// the path's second segment is what tells the two apart. Any other host or
+// protocol, a request with no path, a path whose owner is no GitHub login or one the bundle
+// holds no directory for — an owner the role's App is not installed on — a pair whose `to`
+// owner has no directory, an unset
+// LEGION_GH_OWNERS_DIR, and a hosts.yml with no token answer nothing, exit 1, naming why on
+// stderr, and git, which every shared clone tells credential.interactive=false, then fails
+// rather than prompts. `store` and `erase` change nothing: the daemon is the one writer of the
+// gh files.
 func runGitCredential(_ context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 1 && helpRequested(args[0]) {
 		fmt.Fprintln(stderr, gitCredentialUsage)
@@ -88,8 +93,10 @@ func runGitCredential(_ context.Context, args []string, stdout, stderr io.Writer
 		fmt.Fprintf(stderr, "legion git-credential: the path %s names the owner %q, which is no GitHub login; answering nothing\n", request["path"], segment)
 		return 1
 	}
-	repo, _, _ := strings.Cut(rest, "/")
-	dir, err := repositoryGHConfigDir(ownersDir, owner, repo)
+	// The second segment is the repository, which is what tells a repository a configured rename
+	// moved from every other repository of its owner; a path with none names the owner alone.
+	name, _, _ := strings.Cut(rest, "/")
+	dir, err := ghroute.DirFor(ownersDir, owner, ghconfig.RepositoryName(name))
 	if err != nil {
 		fmt.Fprintf(stderr, "legion git-credential: %v; answering nothing\n", err)
 		return 1
@@ -123,23 +130,4 @@ func readCredentialRequest(r io.Reader) map[string]string {
 		}
 	}
 	return request
-}
-
-// repositoryGHConfigDir is the gh directory the bundle under ownersDir answers for owner's
-// repository repo (ghconfig.RepositoryDir): the repository's own, `<owner>/<repo>`, whose token
-// reaches that one repository, where the bundle holds it, and the owner's own otherwise. That
-// helper normalizes the name for a directory (ghconfig.RepositoryName), so a caller — the gh
-// wrapper's target (internal/ghroute) as much as a git credential request's path — may hand it
-// as it was given it; the gh wrapper keys a repository by that same name as it reads a command,
-// so two spellings of one repository are one repository, and normalizing it again there changes
-// nothing for any name GitHub holds.
-// A repo no bundle directory could be named for (ghconfig.IsDirName) is one the bundle holds
-// none for, so the owner's is answered rather than a refusal. An owner the bundle holds no
-// directory for at all is refused here, which is this caller's own answer to the helper's miss:
-// owner is then no owner of this project, and an answer of nothing would have git prompt.
-func repositoryGHConfigDir(ownersDir, owner, repo string) (string, error) {
-	if dir := ghconfig.RepositoryDir(ownersDir, owner, repo); dir != "" {
-		return dir, nil
-	}
-	return "", fmt.Errorf("%q is not an owner of this project: %s holds no gh directory for it", owner, ownersDir)
 }

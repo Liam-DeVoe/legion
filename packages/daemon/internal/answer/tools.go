@@ -28,10 +28,11 @@ var tools = []tool{{name: "gh", description: ghDescription, schema: ghSchema, ru
 // it adds. A description naming no command and no repository had a model probe the tool with
 // --version and --help and calls naming no repository until its bound was spent.
 func ghDescription(req Request) string {
-	return "Run GitHub's own gh command line. The daemon runs it for you as your role's App, with full access to " +
-		"your issue's repository owner and read access to the project's other owners, each call routed to the owner it " +
-		"names. " + req.Agent.GHUsage.String() + " Use it to read code at any commit, pull requests, reviews, checks " +
-		"and runs, and to write (comment, review, merge, rerun) when the message asks for it and you judge you should. " +
+	return "Run GitHub's own gh command line. The daemon runs it for you as your role's App, with its own access " +
+		"on every owner your role's App is installed on, each call routed to the owner its repositories are under " +
+		"now (for a renamed repository, the owner holding it). " + req.Agent.GHUsage.String() + " Use it to read " +
+		"code at any commit, pull requests, reviews, checks and runs, and to write (comment, review, merge, rerun) " +
+		"when the message asks for it and you judge you should. " +
 		"Every comment or review it posts carries your Legion footer, which the tool adds. Commands and options unsafe " +
 		"on the daemon's host are refused with the reason."
 }

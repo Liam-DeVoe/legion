@@ -85,7 +85,8 @@
 # embedded-postgres binaries with Debian's pgvector), nats-server, the recording proxy, the Envoy
 # inbox, the listener, Dispatch, each daemon and its private tmux server. The run's GitHub writes
 # are on the smoke repository (A17, A18, A19's pull requests, comments and reviews, each recorded by
-# id and closed or deleted on exit) and A17's refused write on the second owner's repository.
+# id and closed or deleted on exit) and A17's refused write of a workflow file on the second
+# owner's repository, which GitHub refuses the review App for want of its `workflows` permission.
 set -Eeuo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -2460,8 +2461,12 @@ check_a17() {
     refused_write_absent "$listing" "$marker" "$leak_marker" && leak_reason_quoted "$reply" "$leak_reason" &&
       first_line_where "$lines" leak_refusal_is "${agent[$store:implementer.issue]}" implementer "$repo" "$leak_reason" >/dev/null && ok_leak=1
   fi
+  # The write is a workflow file because the review App's lease holds no `workflows` permission
+  # (appauth's writePermissions): every gh directory of a bundle holds the role's own lease on that
+  # owner, contents write included, so a plain file there could land, while GitHub refuses a
+  # workflow file to an App that lacks the permission, which is the refusal this leg reads.
   sent=$(envoy_ask_text session "${agent[$store:pre_change.session]}" \
-    "Using your gh tool, create the file answer-loop-$marker.md on the default branch of $second_repo (gh api -X PUT repos/$second_repo/contents/answer-loop-$marker.md -f message=proof -f content=cHJvb2YK). Then tell me exactly what GitHub answered." \
+    "Using your gh tool, create the file .github/workflows/answer-loop-$marker.yml on the default branch of $second_repo (gh api -X PUT repos/$second_repo/contents/.github/workflows/answer-loop-$marker.yml -f message=proof -f content=cHJvb2YK). Then tell me exactly what GitHub answered." \
     "a17-review-$run_tag-$store")
   event=${sent#* }
   if soft_wait 300 "the reviewer's reply" inbox_reply "$event"; then

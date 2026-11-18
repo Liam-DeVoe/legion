@@ -18,30 +18,39 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ghroute"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
 
-const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's or pod's PATH: runs LEGION_GH_PATH with GH_CONFIG_DIR set to the gh directory of the repository the command names, or of its owner where the bundle holds the repository none, under LEGION_GH_OWNERS_DIR)"
+const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's or pod's PATH: runs LEGION_GH_PATH with GH_CONFIG_DIR set to the gh directory of the owner the command names, under LEGION_GH_OWNERS_DIR)"
 
-// runGh is `legion gh`, the gh a pane or pod runs. It reads the repository the command acts on,
-// and its owner, as gh resolves them (ghroute.TargetOf) and execs the real gh (LEGION_GH_PATH)
+// runGh is `legion gh`, the gh a pane or pod runs. It reads the repositories the command acts on,
+// and their owners, as gh resolves them (ghroute.TargetOf) and execs the real gh (LEGION_GH_PATH)
 // as `gh` with its arguments untouched and GH_CONFIG_DIR set to a gh directory under
-// LEGION_GH_OWNERS_DIR: the repository's own, `<owner>/<repo>`, whose token reaches that one
-// repository, when every selector of the command named that one repository and the bundle holds
-// its directory, and the owner's otherwise (repositoryGHConfigDir) — a command naming no
-// repository, one naming two repositories of the one owner, one where a selector named the owner
-// alone beside a repository, and one whose repository the bundle holds no directory for, which
-// is every repository of an owner the role writes to one of. A command naming no owner at all,
-// in a working directory whose git remotes name none, keeps GH_CONFIG_DIR, the issue's owner's.
-// A command it cannot read for certain, one naming two owners, and one naming an owner the
-// bundle holds no directory for are refused, exit 2, naming why, and the real gh never runs: no
-// token but the target repository's or its owner's is ever sent. Under a GH_TOKEN or GITHUB_TOKEN,
-// which gh sends in place of any directory's token, every command is refused the same way but
-// these: the guard's own visibility reads, which run with that token (ghVisibilityRead), the
-// shared check's visibility read (sharedCheckVisibilityRead), the exact `gh api rate_limit`
-// (ghRateLimitRead) and `gh auth git-credential`.
+// LEGION_GH_OWNERS_DIR: the one directory that answers for every repository the command names
+// (ghroute.DirFor), which is the owner's own — the one directory the bundle holds for that
+// account, whose token reaches every repository its installation holds — except for a
+// repository a configured rename moved to another owner, which is answered from the directory
+// of the owner holding it now. Every repository the command names is routed so, each on its own,
+// and every owner a selector names alone is routed to that owner's own directory, and they must
+// all be one directory: a command naming one or two of an owner's repositories no rename moved,
+// or the owner alone, runs with the owner's one directory, since the bundle holds no narrower
+// token to run it with, and one naming a moved repository by both of its names runs with the
+// directory of the owner holding it now. A command naming no owner at all, in a working
+// directory whose git remotes name none, keeps GH_CONFIG_DIR: the directory the issue's
+// repository routes to (ghconfig.RouteDir), or a controller's default owner's. A command it
+// cannot read for certain, one whose repositories route to two directories (two owners'
+// repositories, or a repository a rename moved beside another of the owner it moved from), one
+// naming an owner the bundle holds no directory for — an owner the role's App is not installed
+// on — and one naming a repository a pair moved to an owner the bundle holds no directory for are
+// refused, exit 2, naming why, and the real gh never runs: no token is ever sent for a repository
+// it cannot reach. Under a GH_TOKEN or GITHUB_TOKEN, which gh sends in place of any directory's
+// token, every command is refused the same way but these: the guard's own visibility reads, which
+// run with that token (ghVisibilityRead), the shared check's visibility read
+// (sharedCheckVisibilityRead), the exact `gh api rate_limit` (ghRateLimitRead) and `gh auth
+// git-credential`.
 //
 // Before gh is handed anything, the leak guard reads the call (leakguard.GhCall): a call it
 // refuses, and one whose checks could not be made to run, are refused here, exit 2, with the
@@ -59,7 +68,7 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // The git gh runs itself (a clone, a fetch of a fork's parent, `pr checkout`) authenticates
 // through the credential helper gh names after its own executable, GH_PATH: runGh sets it to the
 // `gh` wrapper first on PATH, so that helper is `legion gh auth git-credential`, which answers as
-// `legion git-credential` does, from the directory of the repository in git's path (useHttpPath set
+// `legion git-credential` does, from the directory of the owner in git's path (useHttpPath set
 // for github.com through GIT_CONFIG_COUNT), never with GH_CONFIG_DIR's token; when PATH's first gh
 // is no such wrapper it refuses. The child also runs with gh's update check and prompts off, which a TTY
 // would otherwise reach. Each of the three variables is runtime-set and required; an unset one is
@@ -110,7 +119,12 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	if rateLimitRead || callerTokenRead {
 		target.Command = []string{"api"}
 	} else {
-		target, err = ghroute.TargetOf(args, env, func(path []string) (string, error) { return ghroute.ReadHelp(gh, path) }, ghroute.ReadGitRemotes)
+		// Every repository the command names is routed through the bundle's own pick, and the
+		// command refused where they route to two directories (ghroute.TargetOf), before the
+		// guard reads anything of it.
+		ownersDir := env["LEGION_GH_OWNERS_DIR"]
+		target, err = ghroute.TargetOf(args, env, func(path []string) (string, error) { return ghroute.ReadHelp(gh, path) }, ghroute.ReadGitRemotes,
+			func(owner, name string) (string, error) { return ghroute.DirFor(ownersDir, owner, name) })
 		if err != nil {
 			fmt.Fprintf(stderr, "legion gh: %v\n", err)
 			return 2
@@ -120,9 +134,9 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	if target.Owner != "" && target.Repo != "" {
 		repo = target.Owner + "/" + target.Repo
 	}
-	// The guard, between the owner this command resolved and the gh it is about to run. The whole
-	// argv is what it reads, rather than the options a parser calls text: the shared check's own
-	// gh-guard reads full argv, and a private name is refusable wherever it stands. The call's
+	// The guard, between the directory this command resolved and the gh it is about to run. The
+	// whole argv is what it reads, rather than the options a parser calls text: the shared check's
+	// own gh-guard reads full argv, and a private name is refusable wherever it stands. The call's
 	// standard input goes with it, and whatever the guard read of it comes back to hand gh in
 	// this process's place (runGhChild).
 	//
@@ -165,11 +179,21 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		// that request, so logging it again would count one wrapped call twice.
 		logCall = false
 		// Its token is the repository's, which ghVisibilityRead matched to the read's exact argv.
-		// The GraphQL read names that repository only in variables, read above as an owner alone.
-		// Under the caller's token it keeps GH_CONFIG_DIR: gh sends that token in place of any
-		// directory's.
+		// The GraphQL read names that repository only in variables, read above as an owner alone,
+		// so the directory this process resolved from the argv is that owner's. Route it by the
+		// repository instead: a configured rename serves the repository from the `to` owner's
+		// directory, and the `from` owner's token cannot read it (ghroute.DirFor, INFRA-2543).
+		//
+		// Under the caller's token it keeps GH_CONFIG_DIR and is routed by nothing, because gh
+		// sends that token in place of any directory's: the bundle may hold no directory for the
+		// read's repository at all, and this routing would then refuse a read the caller's token
+		// can make, which is the second reason #4219 gives for running these reads under it.
 		if !callerTokenRead {
-			target.Owner, target.Repo = strings.ToLower(visibilityRead.Owner()), ghroute.RepositoryName(visibilityRead.Name())
+			target.Owner, target.Repo = strings.ToLower(visibilityRead.Owner()), ghconfig.RepositoryName(visibilityRead.Name())
+			if target.Dir, err = ghroute.DirFor(env["LEGION_GH_OWNERS_DIR"], target.Owner, target.Repo); err != nil {
+				fmt.Fprintf(stderr, "legion gh: %v\n", err)
+				return 2
+			}
 		}
 	case ghReadCall, ghGuardedCall:
 		guard := leakguard.New(leakguard.Options{
@@ -195,11 +219,12 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		}
 	}
 	dir := env["GH_CONFIG_DIR"]
-	if target.Owner != "" {
-		if dir, err = repositoryGHConfigDir(env["LEGION_GH_OWNERS_DIR"], target.Owner, target.Repo); err != nil {
-			fmt.Fprintf(stderr, "legion gh: %v\n", err)
-			return 2
-		}
+	// Every mode runs with the directory the command's repositories route to: ghroute.TargetOf
+	// chose it by the one rule (ghroute.DirFor) and refused a command whose repositories route
+	// to two, and the visibility arm above re-chose it for the repository its own variable
+	// names. No mode picks a directory any other way.
+	if target.Dir != "" {
+		dir = target.Dir
 	}
 	set := map[string]string{"GH_CONFIG_DIR": dir, "GH_PATH": wrapper, "GH_NO_UPDATE_NOTIFIER": "1", "GH_PROMPT_DISABLED": "1"}
 	// A call no private-name pass read runs no program the environment names: such a program
@@ -379,9 +404,9 @@ func trimGhCallLog(path string) {
 // argv without `--include`, is not one of them (sharedCheckVisibilityRead).
 //
 // A caller's GH_TOKEN or GITHUB_TOKEN, which refuses every other call that reads the command
-// (ghTargetOf), does not refuse these reads. runGh runs them with that token, which gh sends in
-// place of any directory's token. That token, and not the bundle's directory for the repository
-// or its owner, is the credential of these reads on purpose:
+// (ghroute.TargetOf), does not refuse these reads. runGh runs them with that token, which gh
+// sends in place of any directory's token. That token, and not the bundle's directory for the
+// repository or its owner, is the credential of these reads on purpose:
 //
 //   - The guard reads a visibility under a caller's token for a write made with that token, such
 //     as a git push whose credential helper answers with GH_TOKEN. That token writes the

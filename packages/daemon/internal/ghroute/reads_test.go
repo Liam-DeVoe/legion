@@ -35,7 +35,7 @@ func TestGhWritesNothingReadsTheLeafAndTheMethod(t *testing.T) {
 		{guardedAPI, false},
 	} {
 		for _, argv := range calls.argvs {
-			target, err := TargetOf(argv, nil, savedGhHelp, noGitRepository)
+			target, err := TargetOf(argv, nil, savedGhHelp, noGitRepository, ghroutetest.OwnersOwnDirectories)
 			if err != nil {
 				t.Errorf("TargetOf(%q) = %v", argv, err)
 				continue
@@ -87,7 +87,7 @@ func TestGhReadLeafCallsCoverEveryReadLeaf(t *testing.T) {
 		if _, listed := readLeaves[leaf]; !listed {
 			t.Errorf("ghroutetest.ReadLeafCalls holds %q, which readLeaves does not list", leaf)
 		}
-		if target, err := TargetOf(argv, nil, savedGhHelp, noGitRepository); err != nil || strings.Join(target.Command, " ") != leaf {
+		if target, err := TargetOf(argv, nil, savedGhHelp, noGitRepository, ghroutetest.OwnersOwnDirectories); err != nil || strings.Join(target.Command, " ") != leaf {
 			t.Errorf("TargetOf(%q) = %+v, %v; want the leaf %q", argv, target, err, leaf)
 		}
 		families[strings.Fields(leaf)[0]] = true

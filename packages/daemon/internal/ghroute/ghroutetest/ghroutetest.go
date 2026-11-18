@@ -1,9 +1,10 @@
 // Package ghroutetest holds what the tests of internal/ghroute and the tests of `legion gh`
 // (cmd/legion) both read of gh calls: gh's saved help, answered as the real gh answers it
-// (SavedHelp); the calls that write nothing and the calls that do (calls.go), which ghroute's
-// tests hold its read rule (ghroute.Target.WritesNothing) to and `legion gh`'s tests run end to
-// end; and a port of the pinned shared check's own read of a call (PinnedCheckReads), which
-// ghroute's tests prove the rule against and `legion gh`'s stand-in check answers with.
+// (SavedHelp); the routing of a bundle that holds every owner's directory and no rename
+// (OwnersOwnDirectories); the calls that write nothing and the calls that do (calls.go), which
+// ghroute's tests hold its read rule (ghroute.Target.WritesNothing) to and `legion gh`'s tests
+// run end to end; and a port of the pinned shared check's own read of a call (PinnedCheckReads),
+// which ghroute's tests prove the rule against and `legion gh`'s stand-in check answers with.
 //
 // It is an ordinary package rather than a _test.go file of one of them because cmd/legion is
 // package main, which can import no other package's test-only helpers (internal/leakguard's
@@ -17,6 +18,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 )
 
 // SavedHelp answers gh's help of a command path from dir, which holds the real gh's help saved
@@ -38,4 +41,13 @@ func SavedHelp(dir string) func(path []string) (string, error) {
 		}
 		return "", fmt.Errorf("unknown command %q for \"gh\"", path[0])
 	}
+}
+
+// OwnersOwnDirectories is the routing of a bundle under /owners that holds a directory for every
+// owner and configures no rename (ghroute.DirFor's answer over such a bundle), for a test that
+// reads a call as ghroute.TargetOf does: every repository, and every owner named alone, is
+// answered from its owner's own directory, so a command naming two owners routes to two
+// directories.
+func OwnersOwnDirectories(owner, _ string) (string, error) {
+	return ghconfig.Dir("/owners", owner), nil
 }

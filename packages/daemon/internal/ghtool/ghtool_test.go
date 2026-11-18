@@ -51,19 +51,25 @@ func servedRepositories() []ghrepo.Repository {
 	}
 }
 
-// fakeTokens mints a lease per App role and scope, a read-only one marked as such, as
-// appauth.Manager does, and records what it was asked.
+// fakeTokens mints a lease per App role and owner, a read-only one marked as such, as
+// appauth.Manager does, and records what it was asked. It answers that each App is installed on
+// the two owners of servedRepositories (appauth.OwnerInstallations), which a bundle reads at
+// every build.
 type fakeTokens struct {
 	mu    sync.Mutex
 	asked []string
 }
 
-func (f *fakeTokens) Token(_ context.Context, role appauth.AppRole, repo ghrepo.Repository) (appauth.Lease, error) {
-	return f.lease("ghs_" + string(role) + "_" + strings.ToLower(repo.Owner()))
+func (f *fakeTokens) Token(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
+	return f.lease("ghs_" + string(role) + "_" + strings.ToLower(owner))
 }
 
-func (f *fakeTokens) ReadToken(_ context.Context, role appauth.AppRole, owner string, _ []string) (appauth.Lease, error) {
+func (f *fakeTokens) ReadToken(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
 	return f.lease("ghs_" + string(role) + "_" + owner + "_read")
+}
+
+func (f *fakeTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+	return []string{"acme", "sjawhar"}, nil
 }
 
 func (f *fakeTokens) lease(token string) (appauth.Lease, error) {
@@ -219,7 +225,7 @@ func newFixture(t *testing.T, agent Agent, b behaviour) *fixture {
 	f.host = Host{
 		GH: filepath.Join(f.stand, "gh"), Git: filepath.Join(root, "gitbin", "git"), Legion: filepath.Join(root, "legion"),
 		StateDir: filepath.Join(root, "state"), Calls: f.calls, Log: slog.New(slog.NewJSONHandler(f.logs, nil)), Now: time.Now,
-		Credential: appauth.GitHubCredential(f.tokens, servedRepositories, ghrepo.Renames{}, nil, slog.New(slog.DiscardHandler)),
+		Credential: appauth.GitHubCredential(f.tokens, servedRepositories, ghrepo.Renames{}, nil, nil, slog.New(slog.DiscardHandler)),
 		// The guard's own two seams, as the daemon fills them: the check a stand-in of this
 		// test's, since the real one is a script no clone of this repository holds, and the
 		// environment this process's own with the record file the stand-in writes to added, and
@@ -365,9 +371,10 @@ func (f *fixture) wantEnv(owner string) []string {
 }
 
 // Open writes the agent's bundle as a pane's is written: the role's App (implement for an
-// implementer, review for a reviewer) with the write lease for the issue's owner, the default, and
-// a read-only lease for every other owner of the project, under a fresh 0700
-// <state_dir>/answers/<question>/gh, what an earlier run left there gone; Close removes it.
+// implementer, review for a reviewer) with its own installation lease, at the role's own
+// permissions, in a directory for every owner the App is installed on, the issue's owner's the
+// default, under a fresh 0700 <state_dir>/answers/<question>/gh, what an earlier run left there
+// gone; Close removes it.
 func TestOpenWritesTheAgentsBundleAsAPanesAndCloseRemovesIt(t *testing.T) {
 	for _, tc := range []struct {
 		agent Agent
@@ -384,7 +391,7 @@ func TestOpenWritesTheAgentsBundleAsAPanesAndCloseRemovesIt(t *testing.T) {
 		tokens := &fakeTokens{}
 		host := Host{
 			GH: "/opt/gh/gh", Legion: "/opt/legion/legion", StateDir: stale, Calls: newFakeRecorder(), Log: slog.New(slog.DiscardHandler), Now: time.Now,
-			Credential: appauth.GitHubCredential(tokens, servedRepositories, ghrepo.Renames{}, nil, slog.New(slog.DiscardHandler)),
+			Credential: appauth.GitHubCredential(tokens, servedRepositories, ghrepo.Renames{}, nil, nil, slog.New(slog.DiscardHandler)),
 		}
 		answer, err := Open(context.Background(), host, tc.agent, question)
 		if err != nil {
@@ -396,7 +403,7 @@ func TestOpenWritesTheAgentsBundleAsAPanesAndCloseRemovesIt(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, "leftover")); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("%s: what an earlier run left in %s is still there (%v)", tc.app, dir, err)
 		}
-		for owner, want := range map[string]string{"acme": "ghs_" + tc.app + "_acme", "sjawhar": "ghs_" + tc.app + "_sjawhar_read"} {
+		for owner, want := range map[string]string{"acme": "ghs_" + tc.app + "_acme", "sjawhar": "ghs_" + tc.app + "_sjawhar"} {
 			hosts, err := os.ReadFile(filepath.Join(dir, "owners", owner, ghconfig.HostsFile))
 			if err != nil {
 				t.Fatal(err)
@@ -419,9 +426,10 @@ func TestOpenWritesTheAgentsBundleAsAPanesAndCloseRemovesIt(t *testing.T) {
 
 // Every refused form never starts gh: a command outside the allow list, an option opening a
 // browser, gh api's --hostname, and every write form whose text the tool cannot add the footer to;
-// arguments that are no JSON array of strings. A command whose owner cannot be read for certain or
-// is none of the project's is refused once gh's help is read, the command itself never run. Each
-// refusal names what it refuses, is what the model reads, and is recorded with no exit.
+// arguments that are no JSON array of strings. A command whose gh directory cannot be read for
+// certain, or that names an owner the role's App is not installed on, is refused once gh's help
+// is read, the command itself never run. Each refusal names what it refuses, is what the model
+// reads, and is recorded with no exit.
 func TestRefusedFormsNeverRun(t *testing.T) {
 	f := newFixture(t, implementer, behaviour{Stdout: "ran"})
 	for i, tc := range []struct {
@@ -471,7 +479,7 @@ func TestRefusedFormsNeverRun(t *testing.T) {
 		{argv: []string{"pr", "create", "-R", "acme/widgets", "--recover", "state.json"}, want: "reads a file on the daemon's host"},
 		{raw: `pr view 5`, want: "takes gh's arguments as a JSON array of strings"},
 		{raw: `["pr", 5]`, want: "takes gh's arguments as a JSON array of strings"},
-		{argv: []string{"api", "repos/other/thing"}, want: `"other" is not an owner of this project`, readHelp: true},
+		{argv: []string{"api", "repos/other/thing"}, want: `the role's GitHub App is not installed on "other"`, readHelp: true},
 		{argv: []string{"pr", "view", "5", "-R", "acme/widgets", "--bogus"}, want: `"--bogus" is no option`, readHelp: true},
 		{argv: []string{"pr", "view", "https://github.com/sjawhar/legion/pull/1", "-R", "acme/widgets"}, want: "more than one owner", readHelp: true},
 		// An absolute endpoint that is not GitHub's own https://api.github.com/…: gh sends the
@@ -854,6 +862,47 @@ func TestACallIsRoutedByTheModelsArgumentsAndRunsWithItsFooter(t *testing.T) {
 		if checked := f.checked(); !strings.Contains(checked, "checked gh-guard "+strings.Join(run, " ")) {
 			t.Errorf("the check was handed %q, want the whole call with its footer, %q", checked, run)
 		}
+	}
+}
+
+// A call is routed by the pick a pane's `legion gh` makes, over the answer's own bundle
+// (ghroute.DirFor), the configured renames that bundle carries included: a repository a pair moved
+// to another owner is answered from the directory of the owner holding it now, every other
+// repository of the owner it moved from from that owner's own, and the owner the call runs as is
+// the one whose directory it runs with. A call whose repositories route to two directories is
+// refused, naming both, as `legion gh` refuses it.
+func TestACallNamingARenamedRepositoryRunsWithTheDirectoryOfTheOwnerHoldingIt(t *testing.T) {
+	root := t.TempDir()
+	moved := ghrepo.MustRenames(ghrepo.MustRename("acme/legacy", "Sjawhar/legion"))
+	host := Host{
+		GH: filepath.Join(standInGH(t, behaviour{}), "gh"), Legion: filepath.Join(root, "legion"), StateDir: filepath.Join(root, "state"),
+		Calls: newFakeRecorder(), Log: slog.New(slog.DiscardHandler), Now: time.Now,
+		Credential: appauth.GitHubCredential(&fakeTokens{}, servedRepositories, moved, nil, nil, slog.New(slog.DiscardHandler)),
+	}
+	answer, err := Open(context.Background(), host, implementer, question)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = answer.Close() })
+	ctx := context.Background()
+	for _, tc := range []struct {
+		argv             []string
+		owner, repo, dir string
+	}{
+		{[]string{"pr", "view", "1", "-R", "acme/legacy"}, "acme", "legacy", "sjawhar"},
+		{[]string{"api", "repos/acme/legacy/pulls/1"}, "acme", "legacy", "sjawhar"},
+		{[]string{"pr", "view", "1", "-R", "acme/widgets"}, "acme", "widgets", "acme"},
+		{[]string{"pr", "view", "1", "-R", "sjawhar/legion"}, "sjawhar", "legion", "sjawhar"},
+	} {
+		target, owner, dir, err := answer.route(ctx, tc.argv)
+		if err != nil || target.Owner != tc.owner || target.Repo != tc.repo || owner != tc.dir || dir != filepath.Join(answer.owners, tc.dir) {
+			t.Errorf("gh %q routes to %+v as %s with %s, %v; want %s/%s as %s with %s's directory", tc.argv, target, owner, dir, err, tc.owner, tc.repo, tc.dir, tc.dir)
+		}
+	}
+	argv := []string{"search", "issues", "--repo", "acme/legacy", "--repo", "acme/widgets"}
+	if target, _, _, err := answer.route(ctx, argv); err == nil || !strings.Contains(err.Error(), "more than one owner") ||
+		!strings.Contains(err.Error(), "sjawhar (--repo acme/legacy)") || !strings.Contains(err.Error(), "acme (--repo acme/widgets)") {
+		t.Errorf("gh %q routes to %+v, %v; want a refusal naming both directories", argv, target, err)
 	}
 }
 
