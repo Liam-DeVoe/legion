@@ -632,6 +632,20 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	return errors.Join(liveErr, stopErr)
 }
 
+// publishClaimStates turns the state events of the claim writes on (store.Store.PublishState) for
+// run, the id of this daemon run, under the workflow's Dispatch project, and routes their wake as
+// the role-holder publication's is routed: once a claim write that queued a state row commits, the
+// store tells it, and the project's state lane is woken (workflowRuntime.wakeOutbox), which every
+// state row of the project names by the bare project key in its issue column. Only a daemon with a
+// workflow runs the outbox that sends the rows, so only that daemon calls it; and it is called
+// before supervision restores a claim, as PublishRoleHolders is, so that no claim write of the boot
+// goes without its event.
+func publishClaimStates(st *store.Store, workflow *workflowRuntime, run string) {
+	st.PublishState(workflow.dispatchProject, run, func() {
+		workflow.wakeOutbox(workflow.dispatchProject, record.OutboxKindStateChange)
+	})
+}
+
 // awaitStop waits, once the stop has begun (stopping), for the daemon's own work to end and report
 // on lived, until the stop's budget runs out (stopBy). Then it logs each claim still deciding and
 // leaves it to the next boot; a start that failed, reported on failed before the stop began, is

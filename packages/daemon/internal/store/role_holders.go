@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 
@@ -52,22 +51,6 @@ func roleHolder(state supervise.ClaimState, session string) string {
 		return ""
 	}
 	return session
-}
-
-// storedRoleHolder is the holder the row of c names before c is written, read under the row's lock
-// so that no other write of the claim lands between this read and the write that replaces it. A
-// claim the store does not hold yet names none. A claim's first row is its admission (AdmitClaim),
-// which is globally serialized, so two first writes of one claim never race past this read.
-func storedRoleHolder(ctx context.Context, tx pgx.Tx, c supervise.Claim) (string, error) {
-	var state, session string
-	err := tx.QueryRow(ctx, `select state, session from claims where token = $1 for update`, string(c.Token)).Scan(&state, &session)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("read the role holder the row of %s names: %w", c.Token, err)
-	}
-	return roleHolder(supervise.ClaimState(state), session), nil
 }
 
 // EnqueueRoleHolders writes the one role_holders_publish row of issue, due at nextAt. The payload
@@ -119,18 +102,7 @@ func (s *Store) PublishRoleHolders(woken func(issue string)) {
 // queuesRoleHolders is whether a write of claim c can queue a role-holder publication at all: the
 // daemon has turned the publication on (PublishRoleHolders), and c's session can hold a role of an
 // issue (holdsIssueRole). Neither depends on the stored row, so each is read before a transaction
-// opens, and a write for which it is false needs none (PutClaim).
+// opens, and a write for which it is false needs none for its holder (PutClaim).
 func (s *Store) queuesRoleHolders(c supervise.Claim) bool {
 	return s.roleHoldersQueued.Load() != nil && holdsIssueRole(c)
-}
-
-// committedClaim is told each claim write whose transaction has committed, queued whether that
-// write queued the publication of its issue.
-func (s *Store) committedClaim(c supervise.Claim, queued bool) {
-	if !queued {
-		return
-	}
-	if woken := s.roleHoldersQueued.Load(); woken != nil {
-		(*woken)(c.Issue)
-	}
 }
