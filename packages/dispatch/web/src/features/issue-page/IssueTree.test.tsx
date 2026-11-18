@@ -1,4 +1,4 @@
-import { afterEach, expect, jest, setSystemTime, spyOn, test } from "bun:test";
+import { afterEach, expect, jest, type Mock, setSystemTime, spyOn, test } from "bun:test";
 import { macBaseKeymap } from "@milkdown/kit/prose/commands";
 import { Schema } from "@milkdown/kit/prose/model";
 import { EditorState, TextSelection } from "@milkdown/kit/prose/state";
@@ -1250,8 +1250,8 @@ test("the row the reader is editing in places nothing of its own as it grows", a
 // room is left under it gets half the room, and the page is scrolled just far enough to show it.
 // The editor is made editable before it has read its document, and holds no block for the caret
 // or the box until then, so nothing is placed until it has drawn the document's blocks.
-// happy-dom lays nothing out, so the box, and the block 1,500 px down the document it scrolls,
-// are given, under a band of 60 px at the top and over a box of 100 px at the foot.
+// happy-dom lays nothing out, so the row, its box, and the block 1,500 px down the document it
+// scrolls, are given (`pageAroundEditingRow`), here a row that draws nothing over or under its box.
 test("the row's editor opens at the node's block, in a box that ends at the foot of the window", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -1264,29 +1264,9 @@ test("the row's editor opens at the node's block, in a box that ends at the foot
     id: KEY,
     type: "issue",
   });
-  const documentHeight = 3000;
-  let stands = 200;
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: HTMLElement
-  ) {
-    const box = this.closest<HTMLElement>(`[${EDITOR_BOX_ATTRIBUTE}]`);
-    if (box === null) return new DOMRect();
-    if (box === this) {
-      const cap = Number.parseFloat(box.style.maxHeight);
-      return new DOMRect(0, stands, 800, Number.isNaN(cap) ? documentHeight : cap);
-    }
-    return this.dataset.blockId === "r1"
-      ? new DOMRect(0, stands + 1500 - box.scrollTop, 800, 24)
-      : new DOMRect();
-  });
-  // The second look after the drawing above the block settles watches the editor's size.
-  const sizes = sizesByHand();
-  const scrolled = spyOn(window, "scrollBy").mockImplementation(() => {});
-  const published = document.documentElement.style;
-  published.setProperty(IDENTITY_HEIGHT_PROPERTY, "60px");
-  published.setProperty(FOOT_HEIGHT_PROPERTY, "100px");
-  const floor = window.innerHeight - 100;
-  const room = floor - 60;
+  const layout: RowLayout = { above: 0, below: 0, drawn: 3000, stands: 200 };
+  const page = pageAroundEditingRow(layout);
+  const { floor, room, scrolled } = page;
   try {
     const view = renderTree(root, {
       artifacts: [spec],
@@ -1329,7 +1309,7 @@ test("the row's editor opens at the node's block, in a box that ends at the foot
     await drawText();
     const box = await editorBox();
     expect(box.style.maxHeight, "the box does not end at the foot of the window").toBe(
-      `${floor - stands}px`
+      `${floor - layout.stands}px`
     );
     expect(box.scrollTop, "the box was not scrolled to the statement's block").toBe(1500);
     expect(scrolled, "the page around the row moved").not.toHaveBeenCalled();
@@ -1338,7 +1318,7 @@ test("the row's editor opens at the node's block, in a box that ends at the foot
     // Low on the screen, with less than half the room under it.
     await user.keyboard("{Escape}");
     await waitFor(() => expect(view.edited.at(-1)).toBeUndefined());
-    stands = floor - 40;
+    layout.stands = floor - 40;
     await user.keyboard("{Enter}");
     await drawText();
     const low = await editorBox();
@@ -1350,15 +1330,217 @@ test("the row's editor opens at the node's block, in a box that ends at the foot
     expect(
       (scrolled.mock.calls[0]?.[0] as ScrollToOptions | undefined)?.top ?? 0,
       "the page did not bring the low row's box over the foot"
-    ).toBeGreaterThanOrEqual(stands + cap - floor);
+    ).toBeGreaterThanOrEqual(layout.stands + cap - floor);
   } finally {
-    sizes.restore();
-    boxes.mockRestore();
-    scrolled.mockRestore();
-    published.removeProperty(IDENTITY_HEIGHT_PROPERTY);
-    published.removeProperty(FOOT_HEIGHT_PROPERTY);
+    page.restore();
   }
 });
+
+// The tester's red row `a row that edits a statement is no taller than the window, and the page
+// around it stays put`, its second half: the row's body - its facts, Keep open, Copy reference -
+// stands under its editor's box, and a box held to the room under its top alone left that body
+// under the window: a long statement the reader moved to and edited made a row of 971 px in a
+// window 900 px tall. The box is held so the whole row fits the room between the band and the
+// foot: a row whose top is at the band gets the room less what the row draws over and under its
+// box, and the page moves not at all.
+test("a row whose body stands under its editor's box is no taller than the room", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  // The row's top at the band, 60 px down: 2 px of it over the box, and a body of 120 px under it.
+  const layout: RowLayout = { above: 2, below: 120, drawn: 3000, stands: 62 };
+  const page = pageAroundEditingRow(layout);
+  try {
+    const { box } = await heldEditorBox(user, page);
+    expect(box.style.maxHeight, "the box leaves the row taller than the room").toBe(
+      `${page.room - layout.above - layout.below}px`
+    );
+    expect(page.scrolled, "the page around the row moved").not.toHaveBeenCalled();
+  } finally {
+    page.restore();
+  }
+});
+
+// Low on the screen, with less than half the room the row leaves its box under the box's top
+// once the body under it is counted: the box takes that half, and the page is scrolled just as
+// far as brings the whole row, its body too, over the foot's box.
+test("a low row whose body stands under its editor's box takes half the room the row leaves it, and is brought on screen whole", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const layout: RowLayout = { above: 2, below: 120, drawn: 3000, stands: 0 };
+  const page = pageAroundEditingRow(layout);
+  layout.stands = page.floor - 40;
+  try {
+    const { box } = await heldEditorBox(user, page);
+    const cap = Math.floor((page.room - layout.above - layout.below) / 2);
+    expect(box.style.maxHeight, "the box of a low row is not half the room the row leaves it").toBe(
+      `${cap}px`
+    );
+    expect(page.scrolled, "the page did not bring the low row on screen").toHaveBeenCalledTimes(1);
+    expect(
+      (page.scrolled.mock.calls[0]?.[0] as ScrollToOptions | undefined)?.top ?? 0,
+      "the page did not bring the low row's body over the foot"
+    ).toBeGreaterThanOrEqual(layout.stands + cap + layout.below - page.floor);
+  } finally {
+    page.restore();
+  }
+});
+
+// A body taller than the room leaves the box no room at all: the box still takes three of the
+// editor's lines (`node-caret.ts`'s `LEAST_BOX_LINES`), and the page, which shows that box
+// already, stays where it was.
+test("a row whose body is taller than the room still holds its editor's box to three of its lines", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const layout: RowLayout = { above: 2, below: 0, drawn: 3000, stands: 62 };
+  const page = pageAroundEditingRow(layout);
+  layout.below = page.room + 100;
+  try {
+    const { box } = await heldEditorBox(user, page);
+    expect(
+      box.style.maxHeight,
+      "the box under a body taller than the room is not three of the editor's lines"
+    ).toBe(`${3 * EDITOR_LINE}px`);
+    expect(page.scrolled, "the page moved though the box was on screen").not.toHaveBeenCalled();
+  } finally {
+    page.restore();
+  }
+});
+
+// The body can grow after the editor opened, as the page's reads answer - a requirement's counts
+// come with the coverage read - and the second look after the editor's drawing settles holds the
+// box again, so the row still fits the room.
+test("a body grown by the time the editor's drawing settles is counted when the box is held again", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const layout: RowLayout = { above: 2, below: 120, drawn: 3000, stands: 62 };
+  const page = pageAroundEditingRow(layout);
+  try {
+    const { box, editable } = await heldEditorBox(user, page);
+    layout.below = 180;
+    layout.drawn = 3200;
+    await page.resized(editable);
+    await waitFor(
+      () =>
+        expect(box.style.maxHeight, "the box was not held again once the body grew").toBe(
+          `${page.room - layout.above - layout.below}px`
+        ),
+      { timeout: 2_000 }
+    );
+    expect(page.scrolled, "the page around the row moved").not.toHaveBeenCalled();
+  } finally {
+    page.restore();
+  }
+});
+
+/** Where the statement's row and its editor stand on the window, laid out by hand: the editor's
+ *  box `stands` px down the window, the row `above` px over the box's top and `below` px - its
+ *  body - under the box's foot, and the editor's drawing of the document `drawn` px tall, which
+ *  the box is as tall as until it is held to a height. A case moves them as it goes. */
+interface RowLayout {
+  above: number;
+  below: number;
+  drawn: number;
+  stands: number;
+}
+
+/** How tall a line of the editor `heldEditorBox` draws is. */
+const EDITOR_LINE = 24;
+
+/** The page around the statement's row while it holds its editor (`pageAroundEditingRow`). */
+interface EditingPage {
+  /** How far down the window the box at the foot starts. */
+  readonly floor: number;
+  /** Calls by hand the size observers watching `target`, or every one (`sizesByHand`). */
+  readonly resized: (target?: Element) => Promise<void>;
+  /** Puts back what the page was laid out by. */
+  readonly restore: () => void;
+  /** The room between the band at the top and the box at the foot. */
+  readonly room: number;
+  /** The page's scroll, which moves nothing. */
+  readonly scrolled: Mock<typeof window.scrollBy>;
+}
+
+/**
+ * The page around the statement's row while it holds its editor, by hand, since happy-dom lays
+ * nothing out and observes no size: the row, its editor's box, the editor's drawing and the
+ * statement's block 1,500 px down the document stand where `layout` says, and nothing else
+ * draws; the page's scroll is watched and moves nothing; its size observers are called by hand
+ * (`sizesByHand`), as the second look after the drawing above the block settles watches the
+ * editor's size; and a band of 60 px stands at the top, over a box of 100 px at the foot.
+ * Answers the line the foot's box starts at, the room between the two, the page's scroll, its
+ * size observers, and what puts it all back.
+ */
+function pageAroundEditingRow(layout: RowLayout): EditingPage {
+  const boxRect = (box: HTMLElement) => {
+    const cap = Number.parseFloat(box.style.maxHeight);
+    return new DOMRect(0, layout.stands, 800, Number.isNaN(cap) ? layout.drawn : cap);
+  };
+  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    const held = this.matches("[data-node-row]")
+      ? this.querySelector<HTMLElement>(`[${EDITOR_BOX_ATTRIBUTE}]`)
+      : null;
+    if (held !== null) {
+      const box = boxRect(held);
+      return new DOMRect(0, box.top - layout.above, 800, layout.above + box.height + layout.below);
+    }
+    const box = this.closest<HTMLElement>(`[${EDITOR_BOX_ATTRIBUTE}]`);
+    if (box === null) return new DOMRect();
+    if (box === this) return boxRect(box);
+    if (this.matches('[contenteditable="true"]')) {
+      return new DOMRect(0, layout.stands - box.scrollTop, 800, layout.drawn);
+    }
+    return this.dataset.blockId === "r1"
+      ? new DOMRect(0, layout.stands + 1500 - box.scrollTop, 800, 24)
+      : new DOMRect();
+  });
+  const sizes = sizesByHand();
+  const scrolled = spyOn(window, "scrollBy").mockImplementation(() => {});
+  const published = document.documentElement.style;
+  published.setProperty(IDENTITY_HEIGHT_PROPERTY, "60px");
+  published.setProperty(FOOT_HEIGHT_PROPERTY, "100px");
+  const floor = window.innerHeight - 100;
+  return {
+    floor,
+    resized: sizes.resized,
+    restore: () => {
+      sizes.restore();
+      boxes.mockRestore();
+      scrolled.mockRestore();
+      published.removeProperty(IDENTITY_HEIGHT_PROPERTY);
+      published.removeProperty(FOOT_HEIGHT_PROPERTY);
+    },
+    room: floor - 60,
+    scrolled,
+  };
+}
+
+/** The statement's row on `page` with Enter pressed on it, once its editor - an editable of
+ *  `EDITOR_LINE` px lines - has drawn the statement's document and the row has held the editor's
+ *  box to a height. The page's scroll is watched from the drawing on: the move to the row
+ *  before it placed the row as every move does. Answers the box and the editable. */
+async function heldEditorBox(
+  user: UserEvent,
+  page: EditingPage
+): Promise<{ readonly box: HTMLElement; readonly editable: HTMLElement }> {
+  const { editable } = await enterStatement(
+    user,
+    <div
+      contentEditable
+      style={{ lineHeight: `${EDITOR_LINE}px` }}
+      suppressContentEditableWarning
+    />
+  );
+  page.scrolled.mockClear();
+  await drawStatementBlocks(editable);
+  const box = editable.closest<HTMLElement>(`[${EDITOR_BOX_ATTRIBUTE}]`);
+  if (box === null) throw new Error("the row's editor stands in no box");
+  await waitFor(() =>
+    expect(box.style.maxHeight, "the row's editor was not held to the window").not.toBe("")
+  );
+  return { box, editable };
+}
 
 /** Blocks of the statement's document as its editor draws them, each by its `data-block-id` and
  *  its words: by default the words above the statement (`r0`), then the statement (`r1`). */

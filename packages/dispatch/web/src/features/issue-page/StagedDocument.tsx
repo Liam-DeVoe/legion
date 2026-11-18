@@ -82,10 +82,13 @@ export function StagedDocument({
  * where the reader had it. It is never taller than the room between the band that
  * stays at the top (`--issue-identity-height`) and the box at the foot of the screen
  * (`--issue-composer-height`, `identity-block.ts`), and once the editor is in it the row narrows
- * it to the room left under where it stands (`node-caret.ts`'s `holdEditorAtBlock`). A row so low
- * on the screen that less than half that room is left under it gets half the room instead, and
- * the page scrolls just as far as brings the box on screen. A scroll that reaches either end of
- * the box stops there, rather than going on to move the page.
+ * it so the whole row - what it draws over the box, the box, and the body under it - fits that
+ * room and ends above the foot's box (`node-caret.ts`'s `holdEditorAtBlock`). A row so low on
+ * the screen that less than half the room the row leaves the box is left under it gets that half
+ * instead, and the page scrolls just as far as brings the row on screen. A body so tall that it
+ * leaves the box fewer than three of the editor's lines still leaves it three, and the row is
+ * then taller than the window. A scroll that reaches either end of the box stops there, rather
+ * than going on to move the page.
  *
  * The box takes no part in scroll anchoring (`overflow-anchor: none`, as the sidebar's in
  * `app.tsx`). The editor draws the names of the issues a document cites after the caret is in,
