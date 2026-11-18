@@ -2648,6 +2648,7 @@ A daemon whose `nats_urls` names no NATS, which only `runtime: tmux` allows, boo
 The pieces reach a deployment in this order, so nothing is used before it exists:
 
 1. the envoy-infra release whose grants carry the bucket: the daemon user's create, update, reads and writes of it and the purge of its old delete markers (`core.DaemonPermissions`), and the listener user's reads (`ListenerPermissions` and `ListenerHostPermissions`), while no session user gets anything of it;
+   applying it changes the rendered user data of a `gcp:NatsHub` that has a listener or daemon user, which replaces that hub's VM, so the hub's NATS is down while the new VM boots (`packages/envoy/infra/docs/nats-hub.md`, "Updating a hub");
 
 2. the listener image of this release, which watches the bucket and relays the values;
 

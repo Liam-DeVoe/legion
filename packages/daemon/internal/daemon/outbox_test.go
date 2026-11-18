@@ -1578,9 +1578,9 @@ func TestOutboxStartRelaunchesAFailedClaim(t *testing.T) {
 }
 
 // A claim that holds its phase's task when a re-admitted tree's promotion starts it (its launches
-// failed, the tree's close retired it, or it never got past queued) is given that task once it is
-// ready. The promotion's start carries the phase's resume task, which is not delivered as well,
-// whichever of the start and the close's queued suspend runs first: one prompt, not two.
+// failed, the tree's close retired it, or it never got past queued) is given that task to take
+// once it is ready. The promotion's start carries the phase's resume task, which is not queued as
+// well, whichever of the start and the close's queued suspend runs first: one task, not two.
 func TestAResumeStartGivesAClaimHoldingThePhasesTaskThatTaskOnce(t *testing.T) {
 	for _, tc := range []struct {
 		name string
