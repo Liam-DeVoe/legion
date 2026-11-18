@@ -7,6 +7,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
@@ -1237,12 +1238,19 @@ describe("launch", () => {
     const run = path.join(work, "runs", "0123456789abcdef");
     const profile = path.join(work, "profiles", "fedcba9876543210");
     const bin = freshDir("launch-bin");
-    for (const dir of ["cwd", "sessions"]) mkdirSync(path.join(run, dir), { recursive: true });
+    for (const dir of ["cwd", "sessions", "tmp"])
+      mkdirSync(path.join(run, dir), { recursive: true });
     for (const dir of ["pi-envoy", "pi-legion"])
       mkdirSync(path.join(profile, dir), { recursive: true });
-    writeFileSync(path.join(profile, "checkout"), "/checkouts/ablate-head\n");
+    // The label's checkout, which every agent's view hides, and the map's link to its profile.
+    const checkout = freshDir("launch-checkout");
+    writeFileSync(path.join(profile, "checkout"), `${checkout}\n`);
     mkdirSync(path.join(work, "services"));
-    mkdirSync(path.join(work, "maps"));
+    mkdirSync(path.join(work, "maps", "profiles"), { recursive: true });
+    symlinkSync(
+      "../../profiles/fedcba9876543210",
+      path.join(work, "maps", "profiles", "ablate-head")
+    );
     writeFileSync(path.join(run, "prompt.txt"), "The person answered your asks on LWEVAL-2.\n");
     writeFileSync(path.join(run, "pane.env"), `PATH=${bin}:${process.env.PATH ?? ""}\n`);
     writeFileSync(path.join(run, "out.txt"), "the first turn\nexit=0\n");
@@ -1267,12 +1275,12 @@ describe("launch", () => {
 tmux() { case $1 in new-session) printf '%s\\n' "$4" >"$R/session"; (command sleep 0.3 && bash -c "\${@: -1}") & ;; esac; }
 sleep() { command sleep 0.05; }`;
     const result = bash(
-      `${fn("fail")}\n${fn("pinned_omp")}\n${fn("launch")}\n${standIns}\nR=$1 P=$2 work=$3 tag=t pin=omp@pin\nlaunch${args}\ncp "$R/out.txt" "$R/seen"`,
+      `${fn("fail")}\n${fn("pinned_omp")}\n${fn("launch")}\n${standIns}\nR=$1 P=$2 work=$3 maps=$3/maps tag=t pin=omp@pin\nlaunch${args}\ncp "$R/out.txt" "$R/seen"`,
       [run, profile, work],
       { PATH: `${bin}:${childEnv.PATH}`, ...env }
     );
     const read = (name: string) => readFileSync(path.join(run, name), "utf8");
-    return { ...result, run, bin, read, work, profile };
+    return { ...result, run, bin, read, work, profile, checkout };
   }
 
   // Catches: a later turn that reads the previous turn's `exit=` line as its own and returns at
@@ -1300,13 +1308,16 @@ sleep() { command sleep 0.05; }`;
   });
 
   // Catches: an agent that can learn its label or case from what it sees: the map (<work>/maps),
-  // another run's directory, the profile's records (its checkout's path names the label), or the
-  // batch's command line in the process table; and a tmux session named after the run.
-  test("the agent runs under bwrap, in a PID namespace of its own, with <work> empty but for its run, its label's plugins and the services", () => {
-    const { code, read, run, work, profile } = launchRun("");
+  // another run's directory, the profile's records (its checkout's path names the label), the
+  // batch's command line in the process table, another run's scratch files in the machine's /tmp,
+  // or another label's texts in its checkout; and a tmux session named after the run.
+  test("the agent runs under bwrap, in a PID namespace of its own, with <work> empty but for its run, its label's plugins and the services, its own /tmp, and every label's checkout empty", () => {
+    const { code, read, run, work, profile, checkout } = launchRun("");
     expect(code).toBe(0);
     expect(read("view").split("\n").filter(Boolean)).toEqual([
       ...["--dev-bind", "/", "/", "--tmpfs", work, "--bind", run, run],
+      ...["--bind", `${run}/tmp`, "/tmp", "--tmpfs", "/var/tmp", "--tmpfs", "/dev/shm"],
+      ...["--tmpfs", checkout],
       ...["--ro-bind", `${profile}/pi-envoy`, `${profile}/pi-envoy`],
       ...["--ro-bind", `${profile}/pi-legion`, `${profile}/pi-legion`],
       ...["--ro-bind", `${work}/services`, `${work}/services`],

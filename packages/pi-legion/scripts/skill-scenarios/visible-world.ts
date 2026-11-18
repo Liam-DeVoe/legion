@@ -23,8 +23,10 @@
 // and with --live, while the run's agent runs:
 //   process    the environment and command line of each process that carries the run's
 //              SKILL_SCENARIO_RUN
-//   visible    the command line of each process the agent's own /proc shows, and the names under
-//              <work> as the agent's mount namespace shows them (/proc/<pid>/root)
+//   visible    the command line of each process the agent's own /proc shows, the names under
+//              <work> as the agent's mount namespace shows them (/proc/<pid>/root), whether its
+//              /tmp is its run's own tmp (the machine's is every run's), the names in its /var/tmp
+//              and /dev/shm, and whether each label's checkout is empty in its view
 //   dispatch   the run's Dispatch database (pg_dump of the database its dispatch.json names), the
 //              store its `dispatch` commands read
 //
@@ -299,7 +301,7 @@ function staticWorld(runDir: string, terms: Term[]) {
   return files.length;
 }
 
-function liveWorld(runDir: string, work: string, terms: Term[]): number {
+function liveWorld(runDir: string, work: string, terms: Term[], map: RunMap): number {
   const marker = `SKILL_SCENARIO_RUN=${runDir}\0`;
   const pids = readdirSync("/proc").filter((pid) => {
     if (!/^\d+$/.test(pid)) return false;
@@ -387,6 +389,35 @@ function liveWorld(runDir: string, work: string, terms: Term[]): number {
         term: terms.find((term) => term.kind === "map") as Term,
         context: "the agent's mount namespace shows the map",
       });
+    // The agent's scratch directories: its /tmp must be its run's own tmp, and /var/tmp and
+    // /dev/shm hold nothing, since the machine's are every run's.
+    const own = statSync(path.join(runDir, "tmp"));
+    const tmp = statSync(`${root}/tmp`);
+    if (tmp.dev !== own.dev || tmp.ino !== own.ino)
+      hits.push({
+        channel: "visible",
+        where: "/tmp",
+        term: terms.find((term) => term.kind === "case-file") as Term,
+        context: "the agent's /tmp is not its run's own tmp: it is the machine's, every run's",
+      });
+    for (const shared of ["/var/tmp", "/dev/shm"]) {
+      const entries = readdirSync(`${root}${shared}`);
+      count(`visible ${shared} entries`, entries.length);
+      for (const name of entries)
+        search("visible", `${shared}/${name}`, `${shared}/${name}`, terms);
+    }
+    // Every label's checkout is empty in its view, so no agent reads another label's texts.
+    for (const { checkout } of map.checkouts) {
+      const entries = existsSync(`${root}${checkout}`) ? readdirSync(`${root}${checkout}`) : [];
+      count("visible checkouts");
+      if (entries.length > 0)
+        hits.push({
+          channel: "visible",
+          where: checkout,
+          term: terms.find((term) => term.kind === "checkout") as Term,
+          context: `the agent's view shows ${entries.length} entries of a label's checkout`,
+        });
+    }
   }
   const dispatchFile = path.join(runDir, "dispatch.json");
   if (existsSync(dispatchFile)) {
@@ -433,7 +464,7 @@ if (import.meta.main) {
     `run ${map.own.name} (${runDir}): scenario ${map.own.scenario}, case ${map.own.case || "none"}, label ${map.own.label}; ${terms.length} terms from ${map.runs.length} runs and ${map.labels.length} labels`
   );
   const files = staticWorld(runDir, terms);
-  const agents = live ? liveWorld(runDir, work, terms) : -1;
+  const agents = live ? liveWorld(runDir, work, terms, map) : -1;
   for (const hit of hits)
     console.log(
       `${hit.channel}\t${hit.where}\t${hit.term.kind}${hit.term.own ? " (own)" : ""}\t${hit.term.text}\t…${hit.context}…`

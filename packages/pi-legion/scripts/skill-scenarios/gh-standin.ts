@@ -95,6 +95,19 @@ function exit(status: number): never {
   );
   process.exit(status);
 }
+// `gh api --input <file>` sends the file's bytes as the request's JSON body, and GitHub refuses a
+// body that is not JSON before any route acts on it: gh prints its answer and exits 1. Answering
+// such a call as the route does told an agent its review had posted (in the third round, one wrote
+// its review's JSON with an unescaped quote in it).
+const inputBody = as === "gh" && args[0] === "api" && input ? files[input] : undefined;
+if (inputBody !== undefined) {
+  try {
+    JSON.parse(inputBody);
+  } catch {
+    console.error("gh: Problems parsing JSON (HTTP 400)");
+    exit(1);
+  }
+}
 if (!route) {
   console.error(as === "gh" ? "gh: Not Found (HTTP 404)" : `unknown command: ${args.join(" ")}`);
   exit(1);

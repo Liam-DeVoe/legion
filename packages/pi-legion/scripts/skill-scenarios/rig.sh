@@ -670,7 +670,7 @@ EOF
 # so this wait is not an until_true. A spec run's later turn passes --continue. Each launch starts
 # out.txt again, so its wait reads only its own exit line.
 launch() {
-  local system='' extra='' omp scope bwrap memory_max=${SKILL_SCENARIOS_MEMORY_MAX:-8G} view dir
+  local system='' extra='' omp scope bwrap memory_max=${SKILL_SCENARIOS_MEMORY_MAX:-8G} view dir record checkout
   omp=$(pinned_omp "$pin") || exit 1
   # The agent runs in a systemd user scope of its own, capped at SKILL_SCENARIOS_MEMORY_MAX (8G)
   # with no swap: an agent that grows past it is killed alone (exit 137 in out.txt), and never
@@ -680,9 +680,20 @@ launch() {
   # the batch's command line, which names its labels), and with <work> an empty tmpfs but for the
   # run's directory, the label's plugins and model key, and the batch's services: no map, no other
   # run, and none of the profile's own records (checkout, built-from), which name the label's
-  # checkout. bwrap reaches the namespaces through the user namespace AppArmor lets it make.
+  # checkout. Its /tmp is the run's own $R/tmp, and /var/tmp and /dev/shm are empty: the machine's
+  # are shared by every run, and in the third round 27 agents wrote scratch files there under fixed
+  # names (`/tmp/lweval1_review.json` by five), which another run could read. Every label's
+  # checkout is an empty tmpfs too, so no agent reads another label's texts by a path no tool call
+  # names (`find / -name …`): it runs from its label's packed plugins alone. bwrap reaches the
+  # namespaces through the user namespace AppArmor lets it make.
   bwrap=$(command -v bwrap) || fail "bwrap is not on PATH: a run's agent runs in a PID namespace and a view of <work> of its own"
-  view=(--dev-bind / / --tmpfs "$work" --bind "$R" "$R")
+  view=(--dev-bind / / --tmpfs "$work" --bind "$R" "$R" --bind "$R/tmp" /tmp --tmpfs /var/tmp --tmpfs /dev/shm)
+  for record in "$maps"/profiles/*/checkout; do
+    [ -f "$record" ] || continue
+    checkout=$(<"$record")
+    case $R/ in "$checkout"/*) fail "label checkout $checkout holds the run's directory $R" ;; esac
+    [ ! -d "$checkout" ] || view+=(--tmpfs "$checkout")
+  done
   for dir in "$P/pi-envoy" "$P/pi-legion" "$P/model-key" "$P/key" "$work/services"; do
     [ ! -e "$dir" ] || view+=(--ro-bind "$dir" "$dir")
   done
