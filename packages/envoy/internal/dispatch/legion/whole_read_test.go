@@ -14,7 +14,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -26,7 +25,7 @@ import (
 func TestMain(m *testing.M) { os.Exit(storetest.Run(func() int { return testnats.Main(m) })) }
 
 // fakeDaemon is a Legion daemon stand-in whose state document and status the test moves between
-// passes, counting the reads it served.
+// reads, counting the reads it served.
 type fakeDaemon struct {
 	*httptest.Server
 	mu     sync.Mutex
@@ -73,20 +72,28 @@ func (d *fakeDaemon) served() int {
 	return d.reads
 }
 
-// stateOf is a one-issue state document: the issue in phase, with planner or implementer holding
-// the only claim.
+// stateOf is a one-issue state document of INFRA's daemon at state sequence 1: the issue in
+// phase, with planner or implementer holding the only claim. Its daemon block and the
+// dispatch_url of its settings are what make a whole read of it a good one (fetchWhole).
 func stateOf(phase, role string) string {
-	return fmt.Sprintf(`{"issues":{"INFRA-1":{"key":"INFRA-1","phase":%q,"status":"doing",
+	return fmt.Sprintf(`{"daemon":{"project":"INFRA","stateSeq":1},
+		"settings":{"dispatch_url":"http://dispatch.internal.example"},
+		"issues":{"INFRA-1":{"key":"INFRA-1","phase":%q,"status":"doing",
 		"slot":{"index":0,"admittedAt":"2026-11-03T10:00:00Z"},
 		"workers":{%q:{"claim":{"session":"s-1","state":"working"},"rounds":1}}}}}`, phase, role)
 }
 
-// configured is a store with project INFRA naming daemon, and a sampler on it.
-func configured(t *testing.T, daemonURL string) (*store.Store, *Sampler) {
+// settingsObserved is the observation the settings of every stateOf document write, as
+// observations lists it.
+const settingsObserved = `/settings={"dispatch_url": "http://dispatch.internal.example"}`
+
+// configured is a store with project INFRA naming daemonURL, and that setting, which a whole read
+// reads.
+func configured(t *testing.T, daemonURL string) (*store.Store, Settings) {
 	t.Helper()
 	database := storetest.Open(t)
 	seedLegionProject(t, database, "INFRA", daemonURL)
-	return database, NewSampler(database.Pool)
+	return database, Settings{Project: "INFRA", StateURL: daemonURL}
 }
 
 func seedLegionProject(t *testing.T, database *store.Store, project, daemonURL string) {
@@ -98,6 +105,16 @@ func seedLegionProject(t *testing.T, database *store.Store, project, daemonURL s
 	if _, err := PutSettings(context.Background(), database.Pool, project, daemonURL,
 		model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
 		t.Fatalf("set the Legion setting of %s: %v", project, err)
+	}
+}
+
+// readDaemon reads setting's daemon whole for ReadReasonStart (ReadWhole), and fails the test on
+// the one error ReadWhole answers: a record the database refused, and refused again as a failed
+// read.
+func readDaemon(t *testing.T, database *store.Store, setting Settings) {
+	t.Helper()
+	if err := ReadWhole(t.Context(), database.Pool, setting, ReadReasonStart); err != nil {
+		t.Fatalf("read the daemon of %s whole: %v", setting.Project, err)
 	}
 }
 
@@ -125,71 +142,38 @@ func observations(t *testing.T, database *store.Store, project string) []string 
 	return listed
 }
 
-// readRow is one legion_reads row.
-type readRow struct {
-	ok    bool
-	error *string
-	bytes int
-}
-
-func reads(t *testing.T, database *store.Store, project string) []readRow {
-	t.Helper()
-	rows, err := database.Pool.Query(context.Background(), `
-		select ok, error, bytes from legion_reads where project = $1 order by id
-	`, project)
-	if err != nil {
-		t.Fatalf("read the reads: %v", err)
-	}
-	defer rows.Close()
-	var listed []readRow
-	for rows.Next() {
-		var row readRow
-		if err := rows.Scan(&row.ok, &row.error, &row.bytes); err != nil {
-			t.Fatalf("scan a read: %v", err)
-		}
-		listed = append(listed, row)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("read the reads: %v", err)
-	}
-	return listed
-}
-
-// TestAChangedValueWritesOneRowAndAnUnchangedValueWritesNone is the sampler's whole rule: a pass
+// TestAChangedValueWritesOneRowAndAnUnchangedValueWritesNone is a whole read's rule: a read
 // writes a row for each value that moved and nothing for the rest, a field the issue carries none
 // of writes no first null, and a role the read no longer names is written null, since its claim is
-// gone from the daemon's state.
+// gone from the daemon's state. Each read is one legion_reads row of kind `read` naming its
+// reason, and the cursor takes the sequence the daemon's state reflects.
 func TestAChangedValueWritesOneRowAndAnUnchangedValueWritesNone(t *testing.T) {
 	daemon := newFakeDaemon(t, stateOf("planning", "planner"))
-	database, sampler := configured(t, daemon.URL)
+	database, setting := configured(t, daemon.URL)
 
-	sampler.Pass(t.Context())
+	readDaemon(t, database, setting)
 	first := observations(t, database, "INFRA")
 	want := []string{
 		`INFRA-1/claim.planner="working"`,
 		`INFRA-1/phase="planning"`,
+		settingsObserved,
 		`INFRA-1/slot=0`,
 	}
-	if len(first) != len(want) {
-		t.Fatalf("the first pass wrote %v, want %v: a field the issue carries none of writes no first row", first, want)
-	}
-	for index, row := range want {
-		if first[index] != row {
-			t.Errorf("observation %d = %s, want %s", index, first[index], row)
-		}
+	if !slices.Equal(first, want) {
+		t.Fatalf("the first read wrote %v, want %v: a field the issue carries none of writes no first row", first, want)
 	}
 
 	// Nothing moved, so nothing is written.
-	sampler.Pass(t.Context())
+	readDaemon(t, database, setting)
 	if again := observations(t, database, "INFRA"); len(again) != len(first) {
-		t.Fatalf("a pass over an unchanged state wrote %d more rows: %v", len(again)-len(first), again)
+		t.Fatalf("a read of an unchanged state wrote %d more rows: %v", len(again)-len(first), again)
 	}
 
 	// The phase moves and the planner hands over to the implementer: the phase and the new
-	// claim are written, the status and the slot are not, and the planner's claim, which this
-	// read no longer carries, is written null.
+	// claim are written, the status, the slot and the settings are not, and the planner's claim,
+	// which this read no longer carries, is written null.
 	daemon.serves(stateOf("implementing", "implementer"))
-	sampler.Pass(t.Context())
+	readDaemon(t, database, setting)
 	moved := observations(t, database, "INFRA")[len(first):]
 	wantMoved := []string{
 		`INFRA-1/claim.implementer="working"`,
@@ -197,53 +181,63 @@ func TestAChangedValueWritesOneRowAndAnUnchangedValueWritesNone(t *testing.T) {
 		`INFRA-1/phase="implementing"`,
 	}
 	if !slices.Equal(moved, wantMoved) {
-		t.Errorf("the third pass wrote %v, want %v", moved, wantMoved)
+		t.Errorf("the third read wrote %v, want %v", moved, wantMoved)
 	}
 
-	if served := reads(t, database, "INFRA"); len(served) != 3 {
-		t.Fatalf("legion_reads = %v, want one row per pass", served)
-	} else {
-		for index, row := range served {
-			if !row.ok || row.error != nil || row.bytes == 0 {
-				t.Errorf("read %d = %+v, want a successful read with its bytes", index, row)
-			}
+	served := readRecords(t, database, "INFRA")
+	if len(served) != 3 {
+		t.Fatalf("legion_reads = %v, want one row per read", served)
+	}
+	for index, row := range served {
+		requireWholeRead(t, row, ReadReasonStart, true)
+		if row.error != nil || row.bytes == 0 {
+			t.Errorf("read %d = %s, want a successful read with its bytes", index, row)
 		}
 	}
+	if current := cursorOf(t, database, "INFRA"); current.readOwed {
+		t.Errorf("the cursor after three good reads = %+v, want no read owed", current)
+	}
+	requireLastSeq(t, database, "INFRA", 1)
 }
 
 // TestAFailedReadRecordsTheFailureAndLeavesTheObservationsAlone: a daemon that refuses, and one
 // that answers something other than the route's JSON, each leave the last good observations where
-// they are and show up as the last failure.
+// they are and show up as the last failure, with the read owed and the cursor's sequence kept.
 func TestAFailedReadRecordsTheFailureAndLeavesTheObservationsAlone(t *testing.T) {
 	daemon := newFakeDaemon(t, stateOf("planning", "planner"))
-	database, sampler := configured(t, daemon.URL)
+	database, setting := configured(t, daemon.URL)
 
-	sampler.Pass(t.Context())
+	readDaemon(t, database, setting)
 	good := observations(t, database, "INFRA")
 	if len(good) == 0 {
-		t.Fatal("the first pass wrote nothing")
+		t.Fatal("the first read wrote nothing")
 	}
 
 	daemon.refuses(http.StatusServiceUnavailable)
-	sampler.Pass(t.Context())
+	readDaemon(t, database, setting)
 	daemon.serves(`{"issues": {`)
-	sampler.Pass(t.Context())
+	readDaemon(t, database, setting)
 
 	if after := observations(t, database, "INFRA"); len(after) != len(good) {
 		t.Fatalf("a failed read changed the observations: %v, want the %d the good read left", after, len(good))
 	}
-	served := reads(t, database, "INFRA")
+	served := readRecords(t, database, "INFRA")
 	if len(served) != 3 {
-		t.Fatalf("legion_reads = %v, want one row per pass, failures included", served)
+		t.Fatalf("legion_reads = %v, want one row per read, failures included", served)
 	}
 	for index, row := range served[1:] {
-		if row.ok || row.error == nil || *row.error == "" {
-			t.Errorf("failed read %d = %+v, want ok false and the failure named", index+1, row)
+		requireWholeRead(t, row, ReadReasonStart, false)
+		if row.error == nil || *row.error == "" {
+			t.Errorf("failed read %d = %s, want the failure named", index+1, row)
 		}
 	}
 	if served[2].bytes == 0 {
 		t.Errorf("the unparseable read's bytes = 0, want what the daemon sent")
 	}
+	if current := cursorOf(t, database, "INFRA"); !current.readOwed {
+		t.Errorf("the cursor after a failed read = %+v, want the read owed", current)
+	}
+	requireLastSeq(t, database, "INFRA", 1)
 }
 
 // TestANULInAStringDoesNotLoseTheRead: jsonb refuses the NUL escape ("unsupported Unicode escape
@@ -253,16 +247,18 @@ func TestAFailedReadRecordsTheFailureAndLeavesTheObservationsAlone(t *testing.T)
 // characters of text and no NUL, and is stored as the daemon sent it.
 func TestANULInAStringDoesNotLoseTheRead(t *testing.T) {
 	daemon := newFakeDaemon(t, stateOf("planning", "planner"))
-	database, sampler := configured(t, daemon.URL)
-	sampler.Pass(t.Context())
+	database, setting := configured(t, daemon.URL)
+	readDaemon(t, database, setting)
 
-	daemon.serves(`{"issues":{"INFRA-1":{"key":"INFRA-1","phase":"awaiting_person",
+	daemon.serves(`{"daemon":{"project":"INFRA","stateSeq":2},
+		"settings":{"dispatch_url":"http://dispatch.internal.example"},
+		"issues":{"INFRA-1":{"key":"INFRA-1","phase":"awaiting_person",
 		"slot":{"index":0},
 		"waitingOn":{"kind":"ask","detail":"a\u0000b","path":"c\\u0000d"},
 		"workers":{"planner":{"claim":{"state":"working"}}}}}}`)
-	sampler.Pass(t.Context())
+	readDaemon(t, database, setting)
 
-	served := reads(t, database, "INFRA")
+	served := readRecords(t, database, "INFRA")
 	if len(served) != 2 || !served[1].ok || served[1].error != nil {
 		t.Fatalf("legion_reads = %v, want the second read stored as a good read", served)
 	}
@@ -292,83 +288,41 @@ func TestANULInAStringDoesNotLoseTheRead(t *testing.T) {
 	}
 }
 
-// TestTwoProcessesStoreEachChangeOnce is acceptance A4: production runs two envoy-dispatch
-// processes against one Postgres, each with a pool of its own (storetest.SecondProcess), and the
-// `legion-state` lease is what makes one of them serve a period. Both tick for the same moment;
-// one pass runs, one daemon read is made, and each change is stored once.
-func TestTwoProcessesStoreEachChangeOnce(t *testing.T) {
+// TestAReadOfADaemonNoSettingNamesRecordsNothing: a whole read records what legion_settings names
+// and nothing else. A read of a daemon whose setting was removed, or now names another daemon,
+// records neither a read nor an observation, and what was observed stays.
+func TestAReadOfADaemonNoSettingNamesRecordsNothing(t *testing.T) {
 	daemon := newFakeDaemon(t, stateOf("planning", "planner"))
-	database, first := configured(t, daemon.URL)
-	second := storetest.SecondProcess(t, database)
-	other := NewSampler(second.Pool)
+	database, setting := configured(t, daemon.URL)
 
-	firstLeases := storetest.Leases(t, database.Pool)
-	secondLeases := storetest.Leases(t, second.Pool)
-
-	// The two ticks a RunLeased loop makes for one period, with the moment each was due: the
-	// value the ticker delivered, which is the same on both processes.
-	due := time.Now()
-	ranFirst := duty.Exclusive(t.Context(), firstLeases, SampleLease, due, SampleInterval, first.Pass)
-	ranSecond := duty.Exclusive(t.Context(), secondLeases, SampleLease, due, SampleInterval, other.Pass)
-
-	if ranFirst == ranSecond {
-		t.Fatalf("first ran = %v, second ran = %v: exactly one process serves a period", ranFirst, ranSecond)
-	}
-	if served := daemon.served(); served != 1 {
-		t.Errorf("the daemon served %d reads for one period, want one", served)
-	}
-	if rows := reads(t, database, "INFRA"); len(rows) != 1 {
-		t.Errorf("legion_reads = %v, want one row for one period", rows)
-	}
-	stored := observations(t, database, "INFRA")
-	if len(stored) != 3 {
-		t.Fatalf("observations = %v, want each change stored once", stored)
-	}
-
-	// The next period, with the phase moved: whichever process serves it stores that one change
-	// once, and the other stores nothing.
-	daemon.serves(stateOf("implementing", "planner"))
-	next := due.Add(SampleInterval)
-	duty.Exclusive(t.Context(), secondLeases, SampleLease, next, SampleInterval, other.Pass)
-	duty.Exclusive(t.Context(), firstLeases, SampleLease, next, SampleInterval, first.Pass)
-	if moved := observations(t, database, "INFRA")[len(stored):]; len(moved) != 1 || moved[0] != `INFRA-1/phase="implementing"` {
-		t.Fatalf("the second period wrote %v, want the one change once", moved)
-	}
-}
-
-// TestAProjectWithNoSettingIsNeverRead: the sampler reads what legion_settings names and nothing
-// else, and a setting removed stops its reads while what was observed stays.
-func TestAProjectWithNoSettingIsNeverRead(t *testing.T) {
-	daemon := newFakeDaemon(t, stateOf("planning", "planner"))
-	database, sampler := configured(t, daemon.URL)
-
-	sampler.Pass(t.Context())
+	readDaemon(t, database, setting)
 	before := observations(t, database, "INFRA")
 
+	daemon.serves(stateOf("implementing", "implementer"))
 	deleted, err := DeleteSettings(t.Context(), database.Pool, "INFRA")
 	if err != nil || !deleted {
 		t.Fatalf("delete the setting: deleted=%v err=%v", deleted, err)
 	}
-	sampler.Pass(t.Context())
+	readDaemon(t, database, setting)
+	other := newFakeDaemon(t, stateOf("testing", "tester"))
+	seedLegionProject(t, database, "INFRA", other.URL)
+	readDaemon(t, database, setting)
 
-	if served := daemon.served(); served != 1 {
-		t.Errorf("the daemon served %d reads, want only the one made while it was configured", served)
+	if after := observations(t, database, "INFRA"); !slices.Equal(after, before) {
+		t.Errorf("observations = %v, want the %v the configured read left", after, before)
 	}
-	if after := observations(t, database, "INFRA"); len(after) != len(before) {
-		t.Errorf("observations = %v, want the %d the configured read left", after, len(before))
-	}
-	if rows := reads(t, database, "INFRA"); len(rows) != 1 {
-		t.Errorf("legion_reads = %v, want the one read", rows)
+	if rows := readRecords(t, database, "INFRA"); len(rows) != 1 {
+		t.Errorf("legion_reads = %v, want the one read made while the setting named the daemon", rows)
 	}
 }
 
-// TestAPassPrunesTheReadsPastTheirRetention: legion_reads gains a row per project per minute and
-// nothing but this deletes them, so a pass drops every read older than ReadRetention — and keeps
-// each project's newest whatever its age, because that row is the freshness the board's header
-// shows.
-func TestAPassPrunesTheReadsPastTheirRetention(t *testing.T) {
+// TestPruneReadsDropsTheReadsPastTheirRetention: legion_reads gains a row per whole read and per
+// batch of state events and nothing but this deletes them, so a prune drops every read older than
+// ReadRetention, and keeps each project's newest whatever its age, because that row is the
+// freshness the board's header shows.
+func TestPruneReadsDropsTheReadsPastTheirRetention(t *testing.T) {
 	daemon := newFakeDaemon(t, stateOf("planning", "planner"))
-	database, sampler := configured(t, daemon.URL)
+	database, setting := configured(t, daemon.URL)
 	// A project whose daemon nothing reads any more: its setting was removed, and the reads it
 	// left stay (DeleteSettings). It is here to prove the prune keeps a project's newest read
 	// however old it is, since that row is the freshness the board's header shows.
@@ -388,33 +342,35 @@ func TestAPassPrunesTheReadsPastTheirRetention(t *testing.T) {
 	}
 	aged("LINUX", 30*24*time.Hour)
 
-	sampler.Pass(t.Context())
-
-	// INFRA: the read this pass made, and the one inside the retention; its two older rows are
-	// gone. LINUX's one ancient row stays, because it is that project's newest.
-	if rows := reads(t, database, "INFRA"); len(rows) != 2 {
-		t.Errorf("INFRA's reads = %v, want the pass's own and the one inside the retention", rows)
+	readDaemon(t, database, setting)
+	if pruned, err := PruneReads(t.Context(), database.Pool); err != nil || pruned != 2 {
+		t.Fatalf("the prune deleted %d (err %v), want INFRA's two reads past the retention", pruned, err)
 	}
-	if rows := reads(t, database, "LINUX"); len(rows) != 1 {
+
+	// INFRA: the whole read just made, and the one inside the retention; its two older rows are
+	// gone. LINUX's one ancient row stays, because it is that project's newest.
+	if rows := readRecords(t, database, "INFRA"); len(rows) != 2 {
+		t.Errorf("INFRA's reads = %v, want the whole read's own and the one inside the retention", rows)
+	}
+	if rows := readRecords(t, database, "LINUX"); len(rows) != 1 {
 		t.Errorf("LINUX's reads = %v, want the one it had, old as it is", rows)
 	}
 
-	// A second pass with nothing to delete leaves the rows where they are.
+	// A second prune with nothing to delete leaves the rows where they are.
 	if pruned, err := PruneReads(t.Context(), database.Pool); err != nil || pruned != 0 {
 		t.Errorf("a second prune deleted %d (err %v), want none", pruned, err)
 	}
 }
 
-// Every read a pass makes is announced on StateChannel, with the project as the payload, a read
-// that failed as much as one that moved something: that announcement is the one thing that wakes
-// an open Legion board, since nothing commits in Dispatch when a remote daemon's state moves, and
-// the board's header carries the read's own time and failure (spec R2, the `/ws/live` view
-// `legion` pushing the change with no new request). The live view's own tests announce on the
-// channel themselves, so a sampler that stopped announcing would leave every open board frozen at
-// its first answer while every one of them still passed.
-func TestEachReadOfAPassIsAnnouncedToTheOpenBoards(t *testing.T) {
+// Every whole read is announced on StateChannel, with the project as the payload, a read that
+// failed as much as one that moved something: that announcement is what wakes an open Legion
+// board, and the board's header carries the read's own time and failure (spec R2, the `/ws/live`
+// view `legion` pushing the change with no new request). The live view's own tests announce on
+// the channel themselves, so a read that stopped announcing would leave every open board frozen
+// at its first answer while every one of them still passed.
+func TestEachWholeReadIsAnnouncedToTheOpenBoards(t *testing.T) {
 	daemon := newFakeDaemon(t, stateOf("planning", "planner"))
-	database, sampler := configured(t, daemon.URL)
+	database, setting := configured(t, daemon.URL)
 	listener, err := database.Pool.Acquire(t.Context())
 	if err != nil {
 		t.Fatalf("take a connection to listen on: %v", err)
@@ -436,11 +392,11 @@ func TestEachReadOfAPassIsAnnouncedToTheOpenBoards(t *testing.T) {
 		}
 	}
 
-	sampler.Pass(t.Context())
+	readDaemon(t, database, setting)
 	announced("a read that moved the observations")
 
 	daemon.refuses(http.StatusServiceUnavailable)
-	sampler.Pass(t.Context())
+	readDaemon(t, database, setting)
 	announced("a read that failed")
 }
 
@@ -472,23 +428,27 @@ func TestAReadWhoseObservationsAreRefusedLeavesNoReadSayingItSucceeded(t *testin
 
 // TestTheNewestReadsAnswerTheNewestGoodReadAndKeepAnIssueItDropped: ReadCurrent answers the newest
 // good read. Its Newest, the board's cards, holds no field that read no longer carries, and the
-// project's own admission block under AdmissionKey; its Reported, by which the board and the
-// metrics place an issue in a tree, keeps an issue that left the daemon's state after Dispatch
-// observed a phase of it, with no tree, since its `tree` left with it, and names no issue for the
-// admission block. It reads legion_current, which the trigger keeps equal to the newest row of
-// each field the history holds, `null` rows included.
+// project's own admission block and settings under AdmissionKey; its Reported, by which the board
+// and the metrics place an issue in a tree, keeps an issue that left the daemon's state after
+// Dispatch observed a phase of it, with no tree, since its `tree` left with it, and names no issue
+// for the admission block. It reads legion_current, which the trigger keeps equal to the newest
+// row of each field the history holds, `null` rows included.
 func TestTheNewestReadsAnswerTheNewestGoodReadAndKeepAnIssueItDropped(t *testing.T) {
-	daemon := newFakeDaemon(t, `{"issues":{
+	daemon := newFakeDaemon(t, `{"daemon":{"project":"INFRA","stateSeq":1},
+		"settings":{"dispatch_url":"http://dispatch.internal.example"},
+		"issues":{
 		"INFRA-1":{"key":"INFRA-1","phase":"implementing","tree":"INFRA-1",
 			"workers":{"implementer":{"claim":{"state":"working"}}}},
 		"INFRA-2":{"key":"INFRA-2","phase":"testing","tree":"INFRA-1"}}}`)
-	database, sampler := configured(t, daemon.URL)
-	sampler.Pass(t.Context())
+	database, setting := configured(t, daemon.URL)
+	readDaemon(t, database, setting)
 	// The second read moves INFRA-1 on, drops its implementer's claim, no longer carries INFRA-2,
 	// and carries an admission block.
-	daemon.serves(`{"issues":{"INFRA-1":{"key":"INFRA-1","phase":"reviewing","tree":"INFRA-1"}},
+	daemon.serves(`{"daemon":{"project":"INFRA","stateSeq":2},
+		"settings":{"dispatch_url":"http://dispatch.internal.example"},
+		"issues":{"INFRA-1":{"key":"INFRA-1","phase":"reviewing","tree":"INFRA-1"}},
 		"admission":{"cap":2}}`)
-	sampler.Pass(t.Context())
+	readDaemon(t, database, setting)
 
 	state, err := ReadCurrent(t.Context(), database.Pool, "INFRA")
 	if err != nil {
@@ -499,7 +459,7 @@ func TestTheNewestReadsAnswerTheNewestGoodReadAndKeepAnIssueItDropped(t *testing
 		cards = append(cards, one.IssueKey+"/"+one.Field+"="+string(one.Value))
 	}
 	slices.Sort(cards)
-	if want := []string{`/admission={"cap": 2}`, `INFRA-1/phase="reviewing"`, `INFRA-1/tree="INFRA-1"`}; !slices.Equal(cards, want) {
+	if want := []string{`/admission={"cap": 2}`, settingsObserved, `INFRA-1/phase="reviewing"`, `INFRA-1/tree="INFRA-1"`}; !slices.Equal(cards, want) {
 		t.Errorf("the newest observations are %v, want %v: the newest read carries nothing else", cards, want)
 	}
 	if want := map[string]string{"INFRA-1": "INFRA-1", "INFRA-2": ""}; !maps.Equal(state.Reported, want) {

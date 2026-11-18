@@ -387,9 +387,10 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 	return conn, nil
 }
 
-// LeasePoolSize bounds the pool the once-overall leases (duty.Exclusive) and the delivery intakes'
-// holds (duty.Hold) are taken on. The requirement is one connection per caller that can be using
-// one at the same moment, and it is a caller and not a lease or a hold that needs one.
+// LeasePoolSize bounds the pool the once-overall leases (duty.Exclusive) and the intakes' holds
+// (duty.Hold: the two delivery intakes' and the Legion state intake's) are taken on. The
+// requirement is one connection per caller that can be using one at the same moment, and it is a
+// caller and not a lease or a hold that needs one.
 //
 // Exclusive takes its connection before it learns whether the lease is held, so a pass that skips
 // because the other process holds the lease holds a connection for that round trip too. These
@@ -399,11 +400,10 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // the term-statistics refresh, the GitHub webhook redelivery sweep, the CI reconcile pass
 // (cireconcile.Lease), the architecture import, the delivery reconcile, the edit-notice sweep, the
 // document settlement resumption (docs.Service.RunSettlementResumption), the repair of closed and
-// reopened issues' asks (api.RunIssueAskRepair), the Legion sampler's read of each project's
-// daemon (legion.RunSampler, one pass a minute, one process at a time), one per delivery durable
-// for the intake's take-over (delivery.consumerLease, a name each for delivery-events and
-// delivery-jobs) and the server process registry's prune (processes.RunPrune), the embeddings
-// project_key fill (api.RunEmbeddingProjectKeyFill) and the display tree fill
+// reopened issues' asks (api.RunIssueAskRepair), one per durable for its intake's take-over
+// (delivery.consumerLease, a name each for delivery-events, delivery-jobs and the Legion state
+// intake's legion-state-events) and the server process registry's prune (processes.RunPrune), the
+// embeddings project_key fill (api.RunEmbeddingProjectKeyFill) and the display tree fill
 // (texttreefill.fillLease) - one caller each, since each intake
 // takes its own durable's name from its own goroutine, so each of them can be inside Exclusive
 // at once. The fill is the one that is no loop of a cadence: it labels in a single pass of one
@@ -414,12 +414,12 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // each of its pages holds for update serialises two processes by itself
 // (api/suggestion_outcomes.go).
 //
-// Each of the two intakes also holds its durable's hold, whose every statement is one statement
+// Each of the three intakes also holds its durable's hold, whose every statement is one statement
 // on a connection of this pool for that statement alone. Two can be in flight per intake at once:
 // the hold's renewal goroutine (duty.Hold's renew, every 5 s, each bounded by the renew interval),
 // and the intake's own goroutine (duty.HoldToken, duty.TryHold, SetToken, Release, one at a time),
 // whose SetToken runs inside the take-over and so needs a connection beside the one its lease is
-// held on. That is four more callers.
+// held on. That is six more callers.
 //
 // LeasePoolSize is exactly those callers: the headroom is zero. A renewal that waited
 // for a connection behind a compaction pass, which holds its lease for minutes, would see its hold
@@ -430,12 +430,14 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // through. The document compaction holds only its lease here: each document it compacts reads and
 // writes on the compaction pool (Pool.Compaction).
 //
-// The Legion sampler is one of those callers, and one connection is what it costs the instance: a
-// serving process opens at most 113 rather than the 112 it would without it
-// (ConnectionsPerProcess), and the default tier's 500 connections less PostgreSQL's 3 reserved
-// slots still admit four app pods holding connections at once (452 of 497) and still refuse five
-// (565), exactly as they do at 112 (448 and 560), so it moves no replica boundary. A deployment on
-// another tier reads SHOW max_connections against its own roll, as sharedPoolSize's note says.
+// The Legion state intake (legion.Intake) is three of those callers - its durable's consumer
+// lease, its hold's statements and its hold's renewal (legion.ReserveLeases) - and three
+// connections is what it costs the instance: a serving process opens at most 115 rather than the
+// 112 it would without it (ConnectionsPerProcess), and the default tier's 500 connections less
+// PostgreSQL's 3 reserved slots still admit four app pods holding connections at once (460 of
+// 497) and still refuse five (575), exactly as they do at 112 (448 and 560), so it moves no
+// replica boundary. A deployment on another tier reads SHOW max_connections against its own roll,
+// as sharedPoolSize's note says.
 //
 // Nothing counts the callers by hand. Each of them reserves one of these connections by name
 // before the server starts any of its loops, whether or not this configuration runs that loop
@@ -449,7 +451,7 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // goroutine added inside a caller that has reserved already, and one reservation passed to a
 // second consumer, take a connection nothing counted, and the count still matches: each caller
 // that can hold a connection while another does needs a reservation of its own.
-const LeasePoolSize = 22
+const LeasePoolSize = 24
 
 // Leases is the registry of the lease pool's callers. A periodic maintenance loop takes the
 // connection it holds its lease on here, so that only one process runs each pass
@@ -457,8 +459,8 @@ const LeasePoolSize = 22
 // the length of the pass and dies with it; a connection of the shared pool held that long would
 // be one fewer for every request, and a pass that then read through the shared pool - which is
 // what a pass does - would be a caller holding two of its connections (ErrNestedAcquire). The
-// delivery intakes take and renew their holds here too (duty.Hold), so a renewal never waits
-// behind a request for a shared connection.
+// intakes, the delivery intakes and the Legion state intake, take and renew their holds here too
+// (duty.Hold), so a renewal never waits behind a request for a shared connection.
 //
 // The pool itself is not handed out: a caller reaches a connection only through the reservation
 // it takes by name (For), which is what ties LeasePoolSize to the callers the process really

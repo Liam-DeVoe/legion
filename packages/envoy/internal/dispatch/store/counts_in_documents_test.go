@@ -58,7 +58,7 @@ func TestTheDocumentsStateTheCountsThisPackageHolds(t *testing.T) {
 			Says:   "the connections one server opens for the work it runs once across the servers"},
 		{File: site, Pattern: `That is\s+` + number + `\s+connections for one server at its ceiling`,
 			Number: ConnectionsPerProcess, Says: "the connections one server opens at its ceiling"},
-		{File: readme, Pattern: `callers of the two intakes' holds, ` + number,
+		{File: readme, Pattern: `callers of the three intakes' holds, ` + number,
 			Number: LeasePoolSize,
 			Says:   "the lease pool's connections, one per leased name and per hold caller"},
 		{File: readme, Pattern: `= ` + number + ` connections to Postgres`,
@@ -70,9 +70,9 @@ func TestTheDocumentsStateTheCountsThisPackageHolds(t *testing.T) {
 			Number: LeasePoolSize, Says: "the lease pool's row of the pool table"},
 		{File: readme, Pattern: `Two processes at their ceiling hold ` + number,
 			Number: 2 * ConnectionsPerProcess, Says: "two processes at their ceiling"},
-		{File: storeArch, Pattern: `per caller of a delivery intake's hold, ` + number,
+		{File: storeArch, Pattern: `per caller of the three intakes' holds, ` + number,
 			Number: LeasePoolSize,
-			Says:   "the lease pool's connections, one per leased loop and per hold caller"},
+			Says:   "the lease pool's connections, one per leased name and per hold caller"},
 
 		// The rest of the pool table, each row stating the constant beside its name, and the
 		// site page's enumeration of the same pools in prose, where four of the counts are

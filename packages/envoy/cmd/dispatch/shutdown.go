@@ -104,7 +104,8 @@ func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *h
 // documentShutdownTimeout once those requests are done, or httpDrainBeforeDocuments after the
 // signal with some still running. waitBackground then waits for the delivery hub, every live
 // socket and the subscriptions they ran to finish their Lifetime-driven shutdown, and waitIntakes
-// for the GitHub intakes to finish their stop (delivery.StartIntakes' stop), which began at the
+// for the intakes to finish their stop (the GitHub intakes' delivery.StartIntakes stop and the
+// Legion state intake's legion.StartIntake stop, both held durables), which began at the
 // signal, beside the HTTP drain and the document shutdown: a message in its handler finishes and is
 // acknowledged, or is given up and handed back to NATS, delivery's intakeStopBudget (15 s) after
 // the signal at the latest, the one deadline of that stop, which counts from the signal and which a
