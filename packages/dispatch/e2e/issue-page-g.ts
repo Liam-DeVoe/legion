@@ -210,6 +210,8 @@ export async function unfoldEveryBranch(page: Page): Promise<void> {
   });
   for (let pressed = 0; pressed < BRANCHES_OPENED_AT_MOST; pressed += 1) {
     const first = controls.first();
+    // Every caller runs this inside an expect.poll that reads the rows after it, so a shut branch
+    // drawn after this count is opened on the poll's next pass.
     if ((await first.count()) === 0) {
       await focusThePage(page);
       return;
