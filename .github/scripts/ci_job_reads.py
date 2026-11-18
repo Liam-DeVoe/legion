@@ -1781,6 +1781,7 @@ SMOKE_IMAGE_STEP = "Build the listener image the smoke test runs against"
 BASE_IMAGES_STEP = "Read the smoke image's base images"
 FOLD_CHECK_STEP = "Check every changelog fragment renders"
 CHECK_STEP = "Check every CI filter matches every file its job reads"
+SPEC_GUARD_STEP = "Check that no CI file of this repository compares the spec files"
 GUIDES_STEP = "Check the guides' semantic line breaks"
 COPY_STEP = "Copy every image the package does not hold"
 PACKAGE_STEP = "Check the package holds every row of .github/ci-images.yaml"
@@ -2672,10 +2673,9 @@ GATES = [
     # envoy-go's fast half: its format and generated-code checks, the seven shell-script tests
     # and the build and pack of the envoy commands (ci.yaml's comment on envoy-go-checks says why
     # they are split out), with the tests of the architecture-note and spec-file rules and their
-    # commands, the note check over this repository's notes through the composite action, the
-    # spec-file check over its spec directory through the other one, and the guard that no CI
-    # file compares the spec files with the approved spec. Its gofmt step reads the whole module,
-    # so no closure stands for it.
+    # commands, the note check over this repository's notes through the composite action, and the
+    # spec-file check over its spec directory through the other one. Its gofmt step reads the
+    # whole module, so no closure stands for it.
     gate("envoy_go_checks", "envoy-go-checks", runs=[
         step_run("envoy-go-checks", "Build envoy services", "go build ./cmd/dispatch ./cmd/listener", ENVOY,
                  ["./cmd/dispatch", "./cmd/listener"], mode="build"),
@@ -2691,14 +2691,6 @@ GATES = [
                         (ENVOY, ["./cmd/dispatch"],
                          "go run ./cmd/dispatch openapi --check, which emits the document from the "
                          "route table and compares it with the committed one", {"mode": "build"}),
-                    ]),
-        # The guard that no CI file runs the comparison of the spec files with the approved spec:
-        # `go run` again, so pinned whole, and the Run stands for the command it builds.
-        pinned_step("envoy-go-checks", "Check that no CI file of this repository compares the spec files", ENVOY,
-                    "go run ./cmd/spec-check guard --root ../..", [
-                        (ENVOY, ["./cmd/spec-check"],
-                         "go run ./cmd/spec-check guard, which builds the command and runs it over the "
-                         "repository root", {"mode": "build"}),
                     ]),
         # One linux build of the listener per architecture the loop reads from the target list.
         pinned_step("envoy-go-checks", PACK_STEP, ENVOY, PACK_SCRIPT, [
@@ -2773,9 +2765,6 @@ GATES = [
          f"{at('envoy-go-checks', './.github/actions/spec-check')} judges the action's default path "
          "(.github/actions/spec-check/action.yml:17), which check.sh:70 resolves against GITHUB_WORKSPACE "
          "and the command it runs at check.sh:80 reads"),
-        *[(glob, f"{at('envoy-go-checks', 'Check that no CI file of this repository compares the spec files')}: "
-                 "spec-check guard reads every file under it")
-          for glob in (".github/workflows/**", ".github/actions/**", ".github/scripts/**", "scripts/**")],
     ) + setup_go("envoy-go-checks", f"{ENVOY}/go.mod") + bun_job("envoy-go-checks")),
 
 
@@ -3093,7 +3082,9 @@ GATES = [
     # This check itself: it lists every module's packages (vet mode: each package directory, its
     # dependencies' and the test files, without the files tests read), reads the target lists
     # the runs above expand, reads every workflow of .github/workflows, and is its own script,
-    # engine, data, rules and path model.
+    # engine, data, rules and path model. The job also runs the guard that no CI file compares
+    # the spec files with the approved spec, here because this filter already takes every
+    # workflow file, so a change to one job's own file starts no other job for the guard.
     gate("ci_filters", "ci-filters", runs=[
         run(DAEMON, ["./..."], f"{at('ci-filters', CHECK_STEP)}: go list over the daemon module", mode="vet", step=CHECK_STEP,
             text=".github/scripts/check-ci-filters.sh"),
@@ -3101,6 +3092,14 @@ GATES = [
             text=".github/scripts/check-ci-filters.sh"),
         run(INFRA, ["./..."], f"{at('ci-filters', CHECK_STEP)}: go list over the envoy-infra module", mode="vet", step=CHECK_STEP,
             text=".github/scripts/check-ci-filters.sh"),
+    ], exact=[
+        # `go run` is not one of the three forms the reducer reads, so the step is pinned whole,
+        # and the Run stands for the command it builds.
+        pinned_step("ci-filters", SPEC_GUARD_STEP, ENVOY, "go run ./cmd/spec-check guard --root ../..", [
+            (ENVOY, ["./cmd/spec-check"],
+             "go run ./cmd/spec-check guard, which builds the command and runs it over the "
+             "repository root", {"mode": "build"}),
+        ]),
     ], reads=reads(
         ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.go", "the pi_legion gate's go run -overlay compiles it"),
         (".github/scripts/check-ci-filters.sh", at("ci-filters", CHECK_STEP)),
@@ -3127,6 +3126,8 @@ GATES = [
         # request that does start it goes red for a commit of its own that changed nothing here.
         ("**/*_test.go", "rule 17 of check-ci-filters.sh writes each filter's exclusions out of the repository's Go "
                          "test files, so one added or deleted changes this check's own answer"),
+        *[(glob, f"{at('ci-filters', SPEC_GUARD_STEP)}: spec-check guard reads every file under it")
+          for glob in (".github/workflows/**", ".github/actions/**", ".github/scripts/**", "scripts/**")],
     ) + reads(*((path, f"check-ci-filters.sh holds its on.push.paths equal to the {name} filter (PUSH_WORKFLOWS)")
                 for name, path in PUSH_WORKFLOWS.items()))
       + setup_go("ci-filters", f"{DAEMON}/go.mod")),

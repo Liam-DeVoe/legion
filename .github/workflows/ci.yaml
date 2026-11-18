@@ -2801,12 +2801,6 @@ jobs:
               # main holds no spec file yet, and check-ci-filters.sh refuses a pattern that
               # matches no file (its rule 9).
               - '.dispatch/**'
-              # The step "Check that no CI file of this repository compares the spec files" reads
-              # every file under these four.
-              - '.github/workflows/**'
-              - '.github/actions/**'
-              - '.github/scripts/**'
-              - 'scripts/**'
             # `go test -tags memory ./cmd/dispatch`. memory_profile_test.go reads four guides only
             # when DISPATCH_EDIT_PROFILE_OUT is set (its line 126), which CI never sets, so they are
             # not here. cmd/dispatch/nats_unreachable_test.go, which carries no tag, starts the
@@ -4441,7 +4435,9 @@ jobs:
             # reads: every file whose change can move a Go closure (Go code anywhere, the modules'
             # embedded files and testdata, every module and workspace file, the target lists the go
             # commands expand over), every workflow file, and the check's own script, engine, data,
-            # rules and path model.
+            # rules and path model. The same job runs the guard that no CI file compares the spec
+            # files, which reads every file under .github/workflows, .github/actions, .github/scripts
+            # and scripts.
             ci_filters:
               # The directory rather than the four workflows the check names one by one (this
               # file, docs-pages.yaml, docs-site.yaml and ci-caches.yaml): its rules read every
@@ -4467,6 +4463,11 @@ jobs:
               - '**/go.work.sum'
               - 'packages/daemon/**'
               - 'packages/envoy/**'
+              # The step "Check that no CI file of this repository compares the spec files" reads
+              # every file under these three and under .github/workflows above.
+              - '.github/actions/**'
+              - '.github/scripts/**'
+              - 'scripts/**'
             # ci.yaml's tool-fallback and tool-fallback-arm jobs, the live proof of the second
             # source every tool install reads when the first source does not serve the bytes:
             # the manifest that names both sources of each row, the fetch helper every install
@@ -5119,8 +5120,7 @@ jobs:
   # which run in the merge queue and on a pull request labelled `full-ci`, while these checks
   # must come back on every push. No Postgres service: nothing here opens a database. It
   # restores go-envoy rather than go-envoy-test, which is the slow half's family alone (the test
-  # binary of every package of the envoy module). It also runs the guard that no CI file of this
-  # repository compares the spec files with the approved spec.
+  # binary of every package of the envoy module).
   envoy-go-checks:
     needs: changes
     if: needs.changes.outputs.envoy_go_checks == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
@@ -5536,7 +5536,9 @@ jobs:
 
   # Holds every filter in `changes` to every file its job reads, recomputing each Go job's closure
   # with go list (.github/scripts/check-ci-filters.sh). go list runs with GOPROXY=off over an empty
-  # module cache, so the job needs Go but downloads no module and restores no cache.
+  # module cache of its own, so that check downloads no module. The job also runs the guard that no
+  # CI file of this repository compares the spec files with the approved spec, whose `go run`
+  # downloads the modules ./cmd/spec-check imports; the job restores no cache.
   ci-filters:
     needs: changes
     if: needs.changes.outputs.ci_filters == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
