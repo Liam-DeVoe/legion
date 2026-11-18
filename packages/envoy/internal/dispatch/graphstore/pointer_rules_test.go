@@ -3,6 +3,7 @@ package graphstore
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -414,6 +415,121 @@ func TestTheStoreHoldsEachPointerToItsTypeRule(t *testing.T) {
 		}
 		requireKinds(t, ctx, database, lensKindless, kindInversion)
 	})
+}
+
+// TestTheStoreHoldsARisksCheckToTheRisksProject holds a risk's prevented_by to a check of the
+// risk's own project (dispatch://INFRA-1950/spec#b-r-constraint-risk, pointerRules' ownProject): a
+// check of another issue of that project is taken, as the pre-mortem conversion writes one, and a
+// check of another project is refused, before anything is appended, with an InvalidPointerError
+// naming both projects and the check - through Write, through a write that makes its risk, and
+// through Retarget, which leaves the pointer where it was. NamedAt names that check by the address
+// a route read it at, and leaves any other refusal as it is.
+func TestTheStoreHoldsARisksCheckToTheRisksProject(t *testing.T) {
+	fixture := newPointerFixture(t)
+	database := fixture.database
+	ctx := context.Background()
+	// checkOf is the check block chk of the spec of a new issue of project, number number in it.
+	checkOf := func(project string, number int) string {
+		t.Helper()
+		if project != pointerProject {
+			if _, err := database.Pool.Exec(ctx,
+				`insert into projects (key, name, default_assignee) values ($1, 'Elsewhere', 'alice')`, project); err != nil {
+				t.Fatalf("create the project %s: %v", project, err)
+			}
+		}
+		issue := fmt.Sprintf("%s-%d", project, number)
+		if _, err := database.Pool.Exec(ctx, `
+			insert into issues (key, project_key, number, title, created_by, rank)
+			values ($1, $2, $3, 'A check of its own', '{"kind":"user","id":"alice"}', 'n')
+		`, issue, project, number); err != nil {
+			t.Fatalf("create the issue %s: %v", issue, err)
+		}
+		var artifact, refKey string
+		if err := database.Pool.QueryRow(ctx, `
+			insert into artifacts (issue_key, project_key, slug, name, kind, created_by)
+			values ($1, $2, 'spec', 'spec.md', 'doc', '{"kind":"user","id":"alice"}')
+			returning id::text, ref_key
+		`, issue, project).Scan(&artifact, &refKey); err != nil {
+			t.Fatalf("create the spec of %s: %v", issue, err)
+		}
+		check := pointerNode(blockKind, refKey+"#chk")
+		check.Project = project
+		writeInOneTransaction(t, ctx, database.Pool, []Node{check}, nil, "the check of "+issue)
+		if _, err := database.Pool.Exec(ctx, `
+			insert into document_blocks (artifact_id, block_id, node_id, node_kind, node_address, type, text_sha256, excerpt, changed_version, changed_at)
+			values ($1::uuid, 'chk', $2, $3, $2, $4, '', '', 1, now())
+		`, artifact, check.ID, blockKind, BlockTypeCheck); err != nil {
+			t.Fatalf("write the row of the check of %s: %v", issue, err)
+		}
+		return check.ID
+	}
+	ownProjects, foreign := checkOf(pointerProject, 2), checkOf("FAR", 1)
+	const (
+		refused = "the prevented_by tuple from a risk of project " + pointerProject + " at the check block %s of project FAR " +
+			"breaks its type rule: prevented_by points from a risk at a check block of the same project"
+		address = "dispatch://FAR-1/spec#b-chk"
+	)
+
+	held := pointerTuple(KindRisk, riskPlaced, TuplePreventedBy, blockKind, ownProjects)
+	writeInOneTransaction(t, ctx, database.Pool, nil, []Tuple{held}, "a risk prevented by a check of another issue of its project")
+	requireHolds(t, ctx, database, held)
+
+	before := countTuples(t, ctx, database)
+	for _, write := range []struct {
+		name  string
+		write func(context.Context, pgx.Tx) error
+	}{
+		{"Write, a stored risk at a check of another project",
+			tuplesOnly(pointerTuple(KindRisk, riskPlaced, TuplePreventedBy, blockKind, foreign))},
+		{"Write, a risk written with its check of another project", func(ctx context.Context, tx pgx.Tx) error {
+			return Write(ctx, tx, []Node{pointerNode(KindRisk, "risk-astray-project")}, []Tuple{
+				pointerTuple(KindRisk, "risk-astray-project", TuplePartOf, KindLens, lensPreMortem),
+				pointerTuple(KindRisk, "risk-astray-project", TuplePreventedBy, blockKind, foreign),
+			})
+		}},
+		{"Retarget, from the risk's check to one of another project", func(ctx context.Context, tx pgx.Tx) error {
+			return Retarget(ctx, tx, held, blockKind, foreign)
+		}},
+	} {
+		t.Run(write.name, func(t *testing.T) {
+			tx, err := database.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin: %v", err)
+			}
+			defer tx.Rollback(ctx)
+			err = write.write(ctx, tx)
+			requirePointerRefused(t, err, fmt.Sprintf(refused, foreign))
+			var refusal *InvalidPointerError
+			errors.As(err, &refusal)
+			if named := refusal.NamedAt(blockKind, foreign, address); named.Error() != fmt.Sprintf(refused, address) {
+				t.Errorf("the refusal named at %s reads %q, want %q", address, named.Error(), fmt.Sprintf(refused, address))
+			}
+			if other := refusal.NamedAt(blockKind, ownProjects, address); other != refusal {
+				t.Errorf("the refusal named at another far end reads %q, want it as it was", other.Error())
+			}
+			if err := tx.Rollback(ctx); err != nil {
+				t.Fatalf("roll the refused write back: %v", err)
+			}
+			if after := countTuples(t, ctx, database); after != before {
+				t.Errorf("the log holds %d tuples after the refused write, %d before it", after, before)
+			}
+		})
+	}
+	requireNoNode(t, ctx, database, KindRisk, "risk-astray-project")
+	requireHolds(t, ctx, database, held)
+
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	var typeRefusal *InvalidPointerError
+	if !errors.As(Write(ctx, tx, nil, []Tuple{pointerTuple(KindRisk, riskPlaced, TuplePreventedBy, blockKind, fixture.paragraph)}), &typeRefusal) {
+		t.Fatal("a prevented_by at a paragraph was taken")
+	}
+	if named := typeRefusal.NamedAt(blockKind, fixture.paragraph, address); named != typeRefusal {
+		t.Errorf("a refusal of the far end's type named at %s reads %q, want it as it was", address, named.Error())
+	}
 }
 
 // tuplesOnly is a write of tuples alone, through Write.
