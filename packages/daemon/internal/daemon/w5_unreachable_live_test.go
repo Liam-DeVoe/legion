@@ -623,7 +623,7 @@ func (r *w5Run) checkArchitectRows(from time.Time) {
 			Claim string `json:"claim"`
 		}
 		_ = json.Unmarshal([]byte(life.payload), &payload)
-		if payload.Kind != w5NoticeClaimUnreachable || life.written.Before(from) {
+		if payload.Kind != w5NoticeClaimOutOfReach || life.written.Before(from) {
 			continue
 		}
 		names = append(names, fmt.Sprintf("row %d %s written %s finished %s", life.id, payload.Claim, clockAt(life.written), clockAt(life.finished)))
@@ -635,7 +635,7 @@ func (r *w5Run) checkArchitectRows(from time.Time) {
 		}
 	}
 	sort.Strings(names)
-	r.record("first block: the architect's claim-unreachable notice rows: %v", names)
+	r.record("first block: the architect's claim-out-of-reach notice rows: %v", names)
 	r.check("architect-row-names-the-implementer", namesImpl == 1, "%d architect rows name %s", namesImpl, impl)
 	r.check("no-architect-row-names-its-own-claim", namesOwn == 0, "%d architect rows name the architect's own claim %s", namesOwn, arch)
 }

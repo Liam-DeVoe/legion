@@ -39,8 +39,8 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'role_holders_publish'));
 
 update outbox set kind = 'reach_notice'
-  where kind = 'notice' and payload->>'kind' = 'claim-unreachable';
+  where kind = 'notice' and payload->>'kind' = 'claim-out-of-reach';
 update outbox set kind = 'reach_controller_notice'
   where kind = 'controller_notice' and payload->>'kind' in ('unreachable-claims', 'relaunch-ready',
     'relaunch-guard-held', 'relaunch-not-back', 'unreachable-exit', 'envoy-no-live-session',
-    'worker-locked-out', 'claim-unreachable');
+    'worker-locked-out', 'claim-out-of-reach');

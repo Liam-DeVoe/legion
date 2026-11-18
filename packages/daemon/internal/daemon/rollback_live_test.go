@@ -55,7 +55,7 @@ const (
 // Text, since that release has no names for them.
 var rollbackNoticeKinds = []string{
 	"unreachable-claims", "relaunch-ready", "relaunch-guard-held", "relaunch-not-back",
-	"unreachable-exit", "envoy-no-live-session", "worker-locked-out", "claim-unreachable",
+	"unreachable-exit", "envoy-no-live-session", "worker-locked-out", "claim-out-of-reach",
 }
 
 // rollbackCanaryKind is the ordinary controller notice the seed queues beside them, which every

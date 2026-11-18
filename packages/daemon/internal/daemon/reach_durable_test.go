@@ -227,7 +227,7 @@ var (
 	unreachableExit = record.ControllerNotice{Kind: record.UnreachableExitNotice}
 	noLiveSession   = record.ControllerNotice{Kind: record.EnvoyNoLiveSessionNotice}
 	lockedOut       = record.ControllerNotice{Kind: record.WorkerLockedOutNotice}
-	architectToldOf = record.Notice{Kind: record.ClaimUnreachableNotice}
+	architectToldOf = record.Notice{Kind: record.ClaimOutOfReachNotice}
 )
 
 // delivered is how many rows of notice's kind the outbox holds, under the outbox kind that notice

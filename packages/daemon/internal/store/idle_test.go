@@ -553,7 +553,7 @@ func TestAnArchitectsNoticeOfAClaimOutOfReachWaitsForARoleOfThePod(t *testing.T)
 	if view := idleViewOf(t, st, rootIssue); view.Waiting {
 		t.Fatalf("view = %+v before any row is queued, want nothing waiting", view)
 	}
-	row, err := record.NewOutboxRow(rootIssue, record.Notice{Kind: record.ClaimUnreachableNotice, Role: claim.RoleImplementer,
+	row, err := record.NewOutboxRow(rootIssue, record.Notice{Kind: record.ClaimOutOfReachNotice, Role: claim.RoleImplementer,
 		Claim: "legion-legion-legion-208-implementer", Reason: "its session has not registered with Envoy for 20 minutes"}, time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
@@ -562,7 +562,7 @@ func TestAnArchitectsNoticeOfAClaimOutOfReachWaitsForARoleOfThePod(t *testing.T)
 		t.Fatalf("queue the architect's %s row: %v", row.Kind, err)
 	}
 	if view := idleViewOf(t, st, rootIssue); !view.Waiting {
-		t.Fatalf("the view reads nothing waiting, though the architect's %s notice is queued as %s", record.ClaimUnreachableNotice, row.Kind)
+		t.Fatalf("the view reads nothing waiting, though the architect's %s notice is queued as %s", record.ClaimOutOfReachNotice, row.Kind)
 	}
 }
 

@@ -44,7 +44,7 @@ func TestTheOutboxTakesTheReachNoticeKindsWith20261116082000(t *testing.T) {
 	written := map[string]struct{ kind, payload string }{
 		"list":      {"controller_notice", `{"kind":"unreachable-claims","unreachable":[{"claim":"legion-legion-209-implementer"}]}`},
 		"locked":    {"controller_notice", `{"kind":"worker-locked-out","role":"implementer","claim":"legion-legion-209-implementer","reason":"r"}`},
-		"architect": {"notice", `{"kind":"claim-unreachable","role":"implementer","claim":"legion-legion-209-implementer","reason":"r"}`},
+		"architect": {"notice", `{"kind":"claim-out-of-reach","role":"implementer","claim":"legion-legion-209-implementer","reason":"r"}`},
 		"tick":      {"controller_notice", `{"kind":"tick"}`},
 		"finished":  {"notice", `{"kind":"phase-finished","role":"implementer","summary":"done"}`},
 	}

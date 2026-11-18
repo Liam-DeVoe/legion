@@ -873,7 +873,7 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "review-stuck", Role: claim.RoleReviewer, Phase: phase.Reviewing, Summary: "alice", Reason: "the review round has not ended",
 			Topic: "notifications.role.legion-LEGION-208-reviewer"},
 		{Kind: "status-reasserted", Role: claim.RoleArchitect, Reason: "session ses_1 set LEGION-208 to todo, and the daemon set it back to in_progress"},
-		{Kind: ClaimUnreachableNotice, Role: claim.RoleImplementer, Phase: phase.Implementing, Claim: "legion-LEGION-208-implementer",
+		{Kind: ClaimOutOfReachNotice, Role: claim.RoleImplementer, Phase: phase.Implementing, Claim: "legion-LEGION-208-implementer",
 			Reason: "Envoy has not heard from this claim's session since 2026-11-08T08:00:00Z, more than 20 minutes ago; it keeps its state and the controller decides whether to relaunch it"},
 	}
 

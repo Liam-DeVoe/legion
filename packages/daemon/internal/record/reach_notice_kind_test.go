@@ -48,7 +48,7 @@ func reachNotices(at time.Time) []OutboxPayload {
 			Reason: "its process exits at its Envoy role claim; this is a case for a person"},
 		ControllerNotice{Kind: WorkerLockedOutNotice, Role: claim.RoleImplementer, Claim: "legion-LEGION-836-implementer",
 			Reason: "generation 7 has been refused the worker stream for 5 minutes; generation 6 is still connected"},
-		Notice{Kind: ClaimUnreachableNotice, Role: claim.RoleImplementer, Claim: "legion-LEGION-836-implementer",
+		Notice{Kind: ClaimOutOfReachNotice, Role: claim.RoleImplementer, Claim: "legion-LEGION-836-implementer",
 			Reason: "its session's last registration with Envoy is more than 20 minutes old"},
 	}
 }
@@ -187,7 +187,7 @@ func TestTheArchitectsReachNoticeIsAmongItsTreesNotices(t *testing.T) {
 	inTx(t, st, func(tx pgx.Tx) {
 		must(t, records.PutIssue(ctx, tx, issueFixture("LEGION-209")))
 		var err error
-		reach, err = NewOutboxRow("LEGION-209", Notice{Kind: ClaimUnreachableNotice, Role: claim.RoleImplementer,
+		reach, err = NewOutboxRow("LEGION-209", Notice{Kind: ClaimOutOfReachNotice, Role: claim.RoleImplementer,
 			Claim: "legion-legion-209-implementer", Reason: "r"}, now.Add(time.Minute))
 		must(t, err)
 		later, err = NewOutboxRow("LEGION-209", Notice{Kind: "phase-finished", Role: claim.RoleImplementer, Summary: "done"}, now)

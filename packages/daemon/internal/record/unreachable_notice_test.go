@@ -37,11 +37,11 @@ func TestTheUnreachableNoticesAreTheControllersAndKeyedPerClaim(t *testing.T) {
 // The tree's architect is told of each unreachable claim of its tree but its own, so that kind is
 // an architect's notice and not the controller's.
 func TestTheArchitectsUnreachableNoticeIsAnArchitectsKind(t *testing.T) {
-	if !validNoticeKind(ClaimUnreachableNotice) {
-		t.Errorf("%s is not an architect's notice kind", ClaimUnreachableNotice)
+	if !validNoticeKind(ClaimOutOfReachNotice) {
+		t.Errorf("%s is not an architect's notice kind", ClaimOutOfReachNotice)
 	}
-	if controllerOnlyNoticeKind(ClaimUnreachableNotice) {
-		t.Errorf("%s is the controller's alone; the tree's architect is told of its own tree's claims", ClaimUnreachableNotice)
+	if controllerOnlyNoticeKind(ClaimOutOfReachNotice) {
+		t.Errorf("%s is the controller's alone; the tree's architect is told of its own tree's claims", ClaimOutOfReachNotice)
 	}
 }
 
@@ -62,7 +62,7 @@ func TestAnUnreachableNoticeIsAValidOutboxPayload(t *testing.T) {
 			Reason: "its process exits at its Envoy role claim; this is a case for a person"},
 		ControllerNotice{Kind: WorkerLockedOutNotice, Role: claim.RoleImplementer, Claim: "legion-LEGION-836-implementer",
 			Reason: "generation 7 has been refused the worker stream for 5 minutes; generation 6 is still connected"},
-		Notice{Kind: ClaimUnreachableNotice, Role: claim.RoleImplementer, Claim: "legion-LEGION-836-implementer",
+		Notice{Kind: ClaimOutOfReachNotice, Role: claim.RoleImplementer, Claim: "legion-LEGION-836-implementer",
 			Reason: "its session's last registration with Envoy is more than 20 minutes old"},
 	} {
 		if _, err := NewOutboxRow("LEGION-836", payload, at); err != nil {

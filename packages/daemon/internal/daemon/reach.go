@@ -732,7 +732,7 @@ func (k *reachKeeper) tellArchitect(ctx context.Context, c supervise.Claim, rec 
 	if c.Role == claim.RoleArchitect {
 		issue = c.Tree
 	}
-	notice := record.Notice{Kind: record.ClaimUnreachableNotice, Role: c.Role, Claim: string(c.Token), Reason: fmt.Sprintf(
+	notice := record.Notice{Kind: record.ClaimOutOfReachNotice, Role: c.Role, Claim: string(c.Token), Reason: fmt.Sprintf(
 		"%s's session has not registered with Envoy since %s, more than 20 minutes, so it cannot hear its notices. Its claim keeps its state. The project's controller decides whether to relaunch it; nothing is asked of you.",
 		c.Token, stamp(rec.Since))}
 	rec.ArchitectTold = true

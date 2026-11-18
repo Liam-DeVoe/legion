@@ -9,7 +9,7 @@ Each of them but `envoy-no-live-session`, which is about no one claim, names the
 
 - `unreachable-claims` (`{kind: "unreachable-claims", unreachable: [{claim, issue, role, state, lastSeen}, …]}`): every claim that has become unreachable since the last such notice.
   Relaunch each one.
-  The tree's architect is told of each claim of its tree other than its own in a `claim-unreachable` notice, which asks nothing of it, because the relaunch is yours.
+  The tree's architect is told of each claim of its tree other than its own in a `claim-out-of-reach` notice, which asks nothing of it, because the relaunch is yours.
 
 - `relaunch-ready` (`{kind: "relaunch-ready", claim, role, reason}`): a claim whose relaunch the guard refused and would now let through.
   Relaunch it again.

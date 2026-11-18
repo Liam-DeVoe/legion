@@ -598,7 +598,7 @@ func TestTheArchitectIsToldOfItsTreesClaimsButItsOwn(t *testing.T) {
 	if len(told) != 1 || len(told[0].notice.Unreachable) != 2 {
 		t.Fatalf("the controller was told %+v, want one list of both claims", told)
 	}
-	if notices := r.architectNotices("LEGION-209"); len(notices) != 1 || notices[0].Kind != record.ClaimUnreachableNotice ||
+	if notices := r.architectNotices("LEGION-209"); len(notices) != 1 || notices[0].Kind != record.ClaimOutOfReachNotice ||
 		notices[0].Claim != string(worker.Token) {
 		t.Fatalf("the architect's notices on LEGION-209 = %+v, want one naming the implementer's claim", notices)
 	}

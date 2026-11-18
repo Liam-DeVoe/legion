@@ -76,18 +76,18 @@ const w5ResultsEnv = "W5_RESULTS_FILE"
 
 // The daemon's own words a step reads, as literals so the file builds over the base.
 const (
-	w5FleetAlertPrefix       = "LEGION FLEET ALERT: "
-	w5NoticeUnreachable      = "unreachable-claims"
-	w5NoticeRelaunchReady    = "relaunch-ready"
-	w5NoticeGuardHeld        = "relaunch-guard-held"
-	w5NoticeNotBack          = "relaunch-not-back"
-	w5NoticeExit             = "unreachable-exit"
-	w5NoticeNoLive           = "envoy-no-live-session"
-	w5NoticeClaimUnreachable = "claim-unreachable"
-	w5CaseNoLive             = "envoy_no_live_session"
-	w5CaseListUnreadable     = "envoy_session_list_unreadable"
-	w5CaseControllerGone     = "controller_unreachable"
-	w5CaseControllerRefused  = "controller_relaunch_refused"
+	w5FleetAlertPrefix      = "LEGION FLEET ALERT: "
+	w5NoticeUnreachable     = "unreachable-claims"
+	w5NoticeRelaunchReady   = "relaunch-ready"
+	w5NoticeGuardHeld       = "relaunch-guard-held"
+	w5NoticeNotBack         = "relaunch-not-back"
+	w5NoticeExit            = "unreachable-exit"
+	w5NoticeNoLive          = "envoy-no-live-session"
+	w5NoticeClaimOutOfReach = "claim-out-of-reach"
+	w5CaseNoLive            = "envoy_no_live_session"
+	w5CaseListUnreadable    = "envoy_session_list_unreadable"
+	w5CaseControllerGone    = "controller_unreachable"
+	w5CaseControllerRefused = "controller_relaunch_refused"
 )
 
 // w5Claim is one claim the check seeds: its issue, where that issue stands in its tree, the role

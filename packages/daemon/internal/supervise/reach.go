@@ -55,7 +55,7 @@ type Reach struct {
 	Generation uint64 `json:"generation,omitempty"`
 	// Reported is whether the controller has been told of this episode in an unreachable-claims
 	// notice (record.UnreachableClaimsNotice), and ArchitectTold whether the tree's architect has
-	// been told in its own (record.ClaimUnreachableNotice). They are two because the controller's
+	// been told in its own (record.ClaimOutOfReachNotice). They are two because the controller's
 	// list is one wake per project, which a list still waiting unsent holds back, while the
 	// architect's notice is a row of its own.
 	Reported      bool `json:"reported,omitempty"`

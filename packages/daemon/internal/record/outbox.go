@@ -764,11 +764,12 @@ const (
 	EnvoyNoLiveSessionNotice NoticeKind = "envoy-no-live-session"
 	WorkerLockedOutNotice    NoticeKind = "worker-locked-out"
 
-	// ClaimUnreachableNotice is the one unreachable notice an architect is told: one for each
+	// ClaimOutOfReachNotice is the one unreachable notice an architect is told: one for each
 	// claim of its tree other than its own (R5). It asks nothing of the architect, since the
 	// controller decides the relaunch, and an architect that is itself out of reach is never told
-	// of its own claim, which it could not hear.
-	ClaimUnreachableNotice NoticeKind = "claim-unreachable"
+	// of its own claim, which it could not hear. Its word is not the architect stall arm's
+	// (ArchitectClaimUnreachable), which names a failed or missing architect claim instead.
+	ClaimOutOfReachNotice NoticeKind = "claim-out-of-reach"
 )
 
 // reachNoticeKind says whether a notice of kind is one of the unreachable-claim notices, which the
@@ -779,7 +780,7 @@ const (
 func reachNoticeKind(kind NoticeKind) bool {
 	switch kind {
 	case UnreachableClaimsNotice, RelaunchReadyNotice, RelaunchGuardHeldNotice, RelaunchNotBackNotice,
-		UnreachableExitNotice, EnvoyNoLiveSessionNotice, WorkerLockedOutNotice, ClaimUnreachableNotice:
+		UnreachableExitNotice, EnvoyNoLiveSessionNotice, WorkerLockedOutNotice, ClaimOutOfReachNotice:
 		return true
 	default:
 		return false
@@ -1946,7 +1947,7 @@ var validNoticeKinds = []NoticeKind{
 	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
 	"catch-up", "checks-red", "review-stuck", "status-reasserted",
 	"session-lost", "session-store-fault",
-	ClaimUnreachableNotice,
+	ClaimOutOfReachNotice,
 }
 
 // validNoticeKind says whether kind is a notice an architect is told.
@@ -2007,7 +2008,7 @@ func validateNoticeEscalation(kind NoticeKind, reason, escalation string) error 
 func validateUnreachableNotice(kind NoticeKind, claimToken string, unreachable []UnreachableClaim) error {
 	switch kind {
 	case RelaunchReadyNotice, RelaunchGuardHeldNotice, RelaunchNotBackNotice, UnreachableExitNotice,
-		WorkerLockedOutNotice, ClaimUnreachableNotice:
+		WorkerLockedOutNotice, ClaimOutOfReachNotice:
 		if claimToken == "" {
 			return fmt.Errorf("a %s notice names the claim it speaks for", kind)
 		}

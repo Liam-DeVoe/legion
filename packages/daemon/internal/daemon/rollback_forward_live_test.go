@@ -116,7 +116,7 @@ func TestARollbackSeedIsWrittenByTheNewerReleaseLive(t *testing.T) {
 				Reason: "its process exits at its Envoy role claim; this is a case for a person"}},
 			{root, record.ControllerNotice{Kind: record.WorkerLockedOutNotice, Role: claim.RoleImplementer, Claim: string(implementer),
 				Reason: "generation 3 has been refused the worker stream for 5 minutes; generation 2 is still connected"}},
-			{root, record.Notice{Kind: record.ClaimUnreachableNotice, Role: claim.RoleImplementer, Claim: string(implementer),
+			{root, record.Notice{Kind: record.ClaimOutOfReachNotice, Role: claim.RoleImplementer, Claim: string(implementer),
 				Reason: "its session has not registered with Envoy for more than 20 minutes; nothing is asked of you"}},
 		}
 		if err := p.st.Tx(ctx, func(tx pgx.Tx) error {
@@ -204,7 +204,7 @@ func TestARolledForwardDaemonDeliversTheNoticesTheRollbackLeftLive(t *testing.T)
 		controller, toArchitect := p.published(notify.ControllerTopic(p.project)), p.published(architect)
 		for _, row := range left {
 			topic, published := notify.ControllerTopic(p.project), controller
-			if row.noticeKind == string(record.ClaimUnreachableNotice) {
+			if row.noticeKind == string(record.ClaimOutOfReachNotice) {
 				topic, published = architect, toArchitect
 			}
 			var delivered []publishedNotice
@@ -220,7 +220,7 @@ func TestARolledForwardDaemonDeliversTheNoticesTheRollbackLeftLive(t *testing.T)
 			p.note("row %d: %s delivered on %s, naming claim %q", row.id, delivered[0].Kind, topic, delivered[0].Claim)
 		}
 		if !slices.ContainsFunc(toArchitect, func(n publishedNotice) bool {
-			return n.Kind == string(record.ClaimUnreachableNotice) && n.Claim == implementer
+			return n.Kind == string(record.ClaimOutOfReachNotice) && n.Claim == implementer
 		}) {
 			t.Errorf("the architect was told %+v, want the notice naming %s", toArchitect, implementer)
 		}
