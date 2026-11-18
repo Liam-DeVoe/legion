@@ -228,6 +228,99 @@ describe("the search for a start that refuses or creates its Postgres before it 
     ]);
   });
 
+  test("under set -e, or a trap on ERR that exits, each command before the removal whose failure nothing tests is a refusal, unless it reads only the start's inputs", () => {
+    const lock = "lock=/run/planted.lock";
+    // Each driver: its lines before the removal, and whether the search must find a refusal.
+    const drivers: Record<string, { readonly lines: string[]; readonly refuses: boolean }> = {
+      flock: { lines: ["set -Eeuo pipefail", lock, 'exec 9>"$lock"; flock -n 9'], refuses: true },
+      "no-file": { lines: ["set -euo pipefail", lock, '[ ! -e "$lock" ]'], refuses: true },
+      "free-port": {
+        lines: ["set -euo pipefail", 'test -z "$(ss -Hltn "sport = :5432")"'],
+        refuses: true,
+      },
+      "lock-dir": { lines: ["set -euo pipefail", lock, 'mkdir "$lock.d"'], refuses: true },
+      "held-output": {
+        lines: ["set -euo pipefail", lock, 'held=$(flock -n "$lock" true)'],
+        refuses: true,
+      },
+      "a function's last test": {
+        lines: ["set -euo pipefail", lock, 'held() { [ ! -e "$lock" ]; }', "held"],
+        refuses: true,
+      },
+      "set -o errexit": { lines: ["set -o errexit", lock, 'mkdir "$lock.d"'], refuses: true },
+      "a trap on ERR": { lines: ["trap 'exit 1' ERR", lock, 'mkdir "$lock.d"'], refuses: true },
+      "control: no set -e": { lines: [lock, 'mkdir "$lock.d"'], refuses: false },
+      "control: set +e after it": {
+        lines: ["set -euo pipefail", "set +e", lock, 'mkdir "$lock.d"'],
+        refuses: false,
+      },
+      "control: a status that is tested": {
+        lines: [
+          "set -euo pipefail",
+          lock,
+          'mkdir "$lock.d" || true',
+          'if [ -e "$lock" ]; then :; fi',
+        ],
+        refuses: false,
+      },
+      "control: what reads only the start's inputs": {
+        lines: [
+          "set -euo pipefail",
+          'root=$(cd "$(dirname "$0")/../.." && pwd)',
+          'cd "$root/scripts"',
+          '[ -n "$PLANTED_KEY" ]',
+          'echo "start of $(basename "$0")"',
+          "export PLANTED_AT=$(date +%s)",
+          "cat <<EOF",
+          "usage",
+          "EOF",
+        ],
+        refuses: false,
+      },
+    };
+    const planted = plant(
+      "set-e",
+      Object.fromEntries(
+        Object.entries(drivers).map(([name, { lines }]) => [
+          `${name.replace(/[^a-z]+/g, "-")}.sh`,
+          [...head, ...lines, 'remove_leftover_postgres || fail "no removal"'],
+        ])
+      )
+    );
+    const { drivers: read, findings } = sweepOrder(planted);
+    expect(read).toHaveLength(Object.keys(drivers).length);
+    const refusing = new Set(findings.map((f) => f.driver));
+    expect(
+      Object.fromEntries(
+        Object.keys(drivers).map((name) => [
+          name,
+          refusing.has(`scripts/e2e/${name.replace(/[^a-z]+/g, "-")}.sh`),
+        ])
+      )
+    ).toEqual(
+      Object.fromEntries(Object.entries(drivers).map(([name, { refuses }]) => [name, refuses]))
+    );
+  });
+
+  // The red test runs four planted drivers, each beside a lock holder it starts and ends after
+  // half a second, and the search over each: about 10 s on a shared Linux machine under load.
+  const redTestMs = 120_000;
+  test(
+    "the acceptance's red test of the refusals that set -e makes passes over this tree's search: each form ends a planted start before its removal, and the search names it",
+    () => {
+      const red = Bun.spawnSync([
+        "bash",
+        join(import.meta.dir, "order-search-set-e-refusal.test.sh"),
+        root,
+      ]);
+      expect({ code: red.exitCode, out: red.stdout.toString() }).toEqual({
+        code: 0,
+        out: expect.stringContaining("PASS: every form is found"),
+      });
+    },
+    redTestMs
+  );
+
   test("the search's command says UNKNOWN, not clean, where it read no driver", () => {
     const empty = mkdtempSync(join(scratch, "empty-"));
     const run = Bun.spawnSync(["bun", join(import.meta.dir, "sweep-order.ts"), empty]);

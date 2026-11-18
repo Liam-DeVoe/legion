@@ -14,22 +14,31 @@
  *
  * The search reads a refusal by what it does, not by its name. A refusal is a command that ends
  * the start: an `exit` whose status is not 0; a `return` whose status is not 0 in a function the
- * start calls as a command of its own, which `set -e` makes the start's end; and a call of a
+ * start calls as a command of its own, which `set -e` makes the start's end; a call of a
  * function that always ends the start, such as `fail`: one whose body runs such an `exit` as a
- * command of its own and holds no `return`. Its check is each thing that decides whether it runs:
- * the condition of each `if`, `elif`, `while` and `until` around it, the words of each `for` and
- * `case` around it, each command before it in its `&&` and `||` list and in its pipeline, each
- * `return` before it in its function, and the same for each call on its way to it.
+ * command of its own and holds no `return`; and, where `set -e` (or `set -o errexit`) is on or a
+ * `trap` on ERR exits, each command whose status nothing tests (no `if`, `while`, `until`, `!`,
+ * `&&` or `||` around it, and outside a command substitution): `flock -n 9`, `[ ! -e "$lock" ]`,
+ * `mkdir "$lock.d"`, `held=$(flock …)` and a function whose last test fails each end the start
+ * where they fail. Its check is each thing that decides whether it runs: the condition of each
+ * `if`, `elif`, `while` and `until` around it, the words of each `for` and `case` around it, each
+ * command before it in its `&&` and `||` list and in its pipeline, each `return` before it in its
+ * function, and the same for each call on its way to it; a command that `set -e` makes a refusal
+ * is its own whole check, whatever decides that it runs.
  *
  * The rule. A check reads only the start's inputs where each of its commands is `[`, `[[` or
- * `test` with no test of a file, `command -v`, `echo`, `printf`, `:`, `true`, `false` or a builtin
- * that sets a variable or a parameter, with no redirection but to /dev/null or to a descriptor, and
- * where each variable it reads is an input: one that no assignment in the driver or its libraries
- * gives a command's output (a command substitution, `read`, `mapfile`, `printf -v`, a `for` over
- * such words, `$?`, `$!` or an indirect `${!name}`), or a positional parameter that every call
- * gives such words. So a check of an input, of a tool on PATH or of the model route can come
- * before the removal. Every other check can read what a dead run left, as far as a program can
- * tell, and so can a refusal that no check decides: the removal must come before it.
+ * `test` with no test of a file, `command -v`, `echo`, `printf`, `:`, `true`, `false`, `dirname`,
+ * `basename`, `pwd`, `compgen`, `cat` with no operand, a builtin that sets a variable or a
+ * parameter, or `cd`, `.` or `source` of a path the start's inputs name (one that starts with an
+ * expansion of such words, as `"$(dirname "$0")/../.."` and `"$root/scripts"` do), with no
+ * redirection but to /dev/null or to a descriptor, and where each variable it reads is an input:
+ * one that no assignment in the driver or its libraries gives the output of a command that reads
+ * more (a command substitution, `read`, `mapfile`, `printf -v`, a `for` over such words, `$?`, `$!`
+ * or an indirect `${!name}`), or a positional parameter that every call gives such words. So a
+ * check of an input, of a tool on PATH, of the model route or of where the start's own scripts are
+ * can come before the removal. Every other check can read what a dead run left, as far as a
+ * program can tell (a `mktemp`, a `mkdir` or a transcript on a disk a dead run filled), and so can a
+ * refusal that no check decides: the removal must come before it.
  *
  * The search reads every shell script under `scripts/` and `packages/` of ROOT as bash parses it:
  * each command after `;`, `&&`, `||`, `|`, `then`, `do`, `else`, `elif`, `if`, `while`, `until`,

@@ -42,7 +42,18 @@ set -euo pipefail
 unset NATS_NKEY_SEED NATS_NKEY_SEED_FILE NATS_DAEMON_NKEY_SEED NATS_DAEMON_NKEY_SEED_FILE
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
-# The model route first, and under box-login the one-at-a-time lock (lib/box-login.sh), before the
+# The Postgres of a dead stack goes first, before the lock and each other command of the start but
+# one that reads only its own inputs (lib/sweep-order.ts): a pane that a dead run left still holds
+# the lock, under set -e a command that fails ends the start, and one that fails for what a dead run
+# left would end every later start with that Postgres still there. This run's own carries its mark
+# (lib/leftovers.sh).
+# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
+. "$root/scripts/e2e/lib/leftovers.sh"
+remove_leftover_postgres || {
+  echo "FAIL setup: the removal of the Postgres of dead stacks could not run" >&2
+  exit 1
+}
+# Then the model route, and under box-login the one-at-a-time lock (lib/box-login.sh), before the
 # run makes its work directory or anything else: a run the lock refuses leaves nothing behind.
 # shellcheck source-path=SCRIPTDIR source=lib/box-login.sh
 . "$root/scripts/e2e/lib/box-login.sh"
@@ -63,16 +74,6 @@ if [ "$model_route" = box-login ] && [ -n "${LEGION_OMP_PATH:-}" ]; then
   echo "FAIL setup: LEGION_OMP_PATH is set ($LEGION_OMP_PATH); under LEGION_E2E_MODEL_ROUTE=box-login the panes run the operator's own Oh My Pi build alone, so unset LEGION_OMP_PATH" >&2
   exit 1
 fi
-# The Postgres of a dead stack goes before the lock and each other check of the start but one of its
-# own inputs (lib/sweep-order.ts): a pane that a dead run left still holds the lock, and a check that
-# refuses the start for what a dead run left would end every later start with that Postgres still
-# there. This run's own carries its mark (lib/leftovers.sh).
-# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
-. "$root/scripts/e2e/lib/leftovers.sh"
-remove_leftover_postgres || {
-  echo "FAIL setup: the removal of the Postgres of dead stacks could not run" >&2
-  exit 1
-}
 if [ "$model_route" = box-login ] && ! take_box_login_lock; then
   echo "FAIL setup: another box-login proof is running on this box (the holder is named above)" >&2
   exit 1

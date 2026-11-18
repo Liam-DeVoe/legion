@@ -118,6 +118,17 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
+# The Postgres of a dead stack goes first, before each command of the start but one that reads only
+# its own inputs (lib/sweep-order.ts): under set -e a command that fails ends the start, and one that
+# fails for what a dead run left, as the session database's port that its container still
+# publishes, would end every later start with that Postgres still there. This run's own carries its
+# mark (lib/leftovers.sh).
+# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
+. "$root/scripts/e2e/lib/leftovers.sh"
+remove_leftover_postgres || {
+  echo "FAIL setup: the removal of the Postgres of dead stacks could not run" >&2
+  exit 1
+}
 namespace=legion
 # The rigs' worker-stream port, within the devbox's admitted range. Overridable
 # (LEGION_E2E_WORKER_STREAM_PORT, see Inputs, above) so two runs — two Stage 4a's, or a Stage 4a
@@ -195,19 +206,11 @@ fail() {
 . "$root/scripts/e2e/lib/teardown.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/github-apps.sh
 . "$root/scripts/e2e/lib/github-apps.sh"
-# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
-. "$root/scripts/e2e/lib/leftovers.sh"
 
 trap cleanup EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
-
-# The Postgres of a dead stack goes first, before each check of the start but one of its own inputs
-# (lib/sweep-order.ts): a check that refuses the start for what a dead run left, as the session
-# database's port that its container still publishes, would end every later start with that Postgres
-# still there. This run's own carries its mark (lib/leftovers.sh).
-remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
 
 begin prerequisites
 for tool in go kubectl curl ss agent-secrets diff docker jq bun; do command -v "$tool" >/dev/null || fail "$tool is required"; done

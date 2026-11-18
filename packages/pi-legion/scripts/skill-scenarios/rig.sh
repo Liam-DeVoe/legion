@@ -208,12 +208,26 @@ set -euo pipefail
 # exports ENVOY_URL, DISPATCH_URL and their token files, a developer's shell can hold NATS
 # credentials (packages/dispatch/e2e/run-server.sh strips the same three families), and e2e/api.ts,
 # which seed.ts calls, addresses PLAYWRIGHT_BASE_URL with E2E_AGENT_TOKEN whenever it is set.
-for name in $(compgen -e); do
-  case $name in DISPATCH_* | ENVOY_* | NATS_* | PLAYWRIGHT_BASE_URL | E2E_AGENT_TOKEN) unset "$name" ;; esac
+for inherited in $(compgen -e); do
+  case $inherited in DISPATCH_* | ENVOY_* | NATS_* | PLAYWRIGHT_BASE_URL | E2E_AGENT_TOKEN) unset "$inherited" ;; esac
 done
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 root=$(cd "$here/../../../.." && pwd -P)
+note() { printf 'skill-scenarios: %s\n' "$*"; }
+fail() {
+  echo "skill-scenarios: $*" >&2
+  exit 1
+}
+
+# A batch removes the Postgres of dead stacks first, before each check of its start but one of its
+# own inputs (scripts/e2e/lib/sweep-order.ts): a check that refuses the batch for what a dead batch
+# of this work directory left, as lock_services's of the lock it leaves, would end every later
+# batch with that Postgres still there (scripts/e2e/lib/leftovers.sh).
+# shellcheck source-path=SCRIPTDIR/../../../.. source=scripts/e2e/lib/leftovers.sh
+. "$root/scripts/e2e/lib/leftovers.sh"
+case "${1:-}" in batch) remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run" ;; esac
+
 work=${SKILL_SCENARIOS_WORK:-${TMPDIR:-/tmp}/skill-scenarios}
 work=$(realpath -m -- "$work")
 
@@ -221,12 +235,6 @@ work=$(realpath -m -- "$work")
 # run_tester_proof sets once seed.ts has filed it.
 worker_key=''
 worker_repo=example/widgets
-
-note() { printf 'skill-scenarios: %s\n' "$*"; }
-fail() {
-  echo "skill-scenarios: $*" >&2
-  exit 1
-}
 
 # omp_ancestor DIR prints DIR/.omp, or the .omp of the nearest directory above DIR that holds one,
 # and fails when none holds one. Oh My Pi reads a `.omp` in any directory from a session's cwd up
@@ -244,14 +252,6 @@ omp_ancestor() {
     dir=$(dirname -- "$dir")
   done
 }
-
-# A batch removes the Postgres of dead stacks first, before each check of its start but one of its
-# own inputs (scripts/e2e/lib/sweep-order.ts): a check that refuses the batch for what a dead batch
-# of this work directory left, as lock_services's of the lock it leaves, would end every later
-# batch with that Postgres still there (scripts/e2e/lib/leftovers.sh).
-# shellcheck source-path=SCRIPTDIR/../../../.. source=scripts/e2e/lib/leftovers.sh
-. "$root/scripts/e2e/lib/leftovers.sh"
-case "${1:-}" in batch) remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run" ;; esac
 case "$work/" in "$root"/*) fail "SKILL_SCENARIOS_WORK $work is inside the checkout $root, where jj would snapshot it" ;; esac
 if found=$(omp_ancestor "$work"); then
   fail "SKILL_SCENARIOS_WORK $work is under $found: Oh My Pi reads that .omp as the configuration of every run's cwd, so a run would load its plugins and not its label's; give a work directory with no .omp in it or above it"

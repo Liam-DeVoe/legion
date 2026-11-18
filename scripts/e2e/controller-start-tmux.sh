@@ -22,6 +22,16 @@ set -euo pipefail
 unset NATS_NKEY_SEED NATS_NKEY_SEED_FILE NATS_DAEMON_NKEY_SEED NATS_DAEMON_NKEY_SEED_FILE
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
+# The Postgres of a dead stack goes first, before each command of the start but one that reads only
+# its own inputs (lib/sweep-order.ts): under set -e a command that fails ends the start, and one that
+# fails for what a dead run left would end every later start with that Postgres still there. This
+# run's own carries its mark (lib/leftovers.sh).
+# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
+. "$root/scripts/e2e/lib/leftovers.sh"
+remove_leftover_postgres || {
+  echo "FAIL setup: the removal of the Postgres of dead stacks could not run" >&2
+  exit 1
+}
 work=$(mktemp -d "/tmp/legion-e2e-controller.$$.XXXXXXXX")
 evidence=${CONTROLLER_START_EVIDENCE_DIR:-$(mktemp -d /tmp/legion-e2e-controller-evidence.XXXXXXXX)}
 mkdir -p "$evidence/logs" "$evidence/checks"
@@ -63,8 +73,6 @@ pass() { echo "ok $check"; }
 fail() { echo "FAIL $check: $*" >&2; exit 1; }
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
-# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
-. "$root/scripts/e2e/lib/leftovers.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/omp-home.sh
 . "$root/scripts/e2e/lib/omp-home.sh"
 
@@ -115,10 +123,6 @@ env_of() { tr '\0' '\n' <"/proc/$1/environ" | sed -n "s/^$2=//p"; }
 
 # ---- setup -----------------------------------------------------------------------------------------
 for tool in go docker jq curl python3 tmux bun mise; do command -v "$tool" >/dev/null || fail "$tool is required"; done
-# The Postgres of a dead stack goes first, before each check of the start but one of its own inputs
-# (lib/sweep-order.ts): a check that refuses the start for what a dead run left would end every
-# later start with that Postgres still there. This run's own carries its mark (lib/leftovers.sh).
-remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
 mkdir -p "$state" "$work/xdg" "$work/tmux"
 make_omp_home "$omp_home"
 export XDG_STATE_HOME=$work/xdg TMUX_TMPDIR=$work/tmux

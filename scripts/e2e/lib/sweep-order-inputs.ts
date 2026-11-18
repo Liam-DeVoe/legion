@@ -26,7 +26,11 @@ export type Guard =
   | { readonly words: readonly Word[]; readonly ctx: string | null };
 
 // The commands that read nothing of the machine: they test or print what they are given, or set a
-// variable or a parameter. `[`, `[[` and `test` only with no test of a file.
+// variable or a parameter, or work on the text of a path (`dirname`, `basename`), or print the
+// start's own working directory (`pwd`) or the names of its own shell (`compgen`). `[`, `[[` and
+// `test` only with no test of a file. `cat` with no operand reads only its standard input, as a
+// usage text written as a here-document does; `cd`, `.` and `source` only of a path the start's
+// inputs name (`Flow.rooted`), such as its own checkout.
 const inputCommands: Record<string, true> = {
   "[": true,
   "[[": true,
@@ -50,7 +54,13 @@ const inputCommands: Record<string, true> = {
   set: true,
   shopt: true,
   let: true,
+  dirname: true,
+  basename: true,
+  pwd: true,
+  compgen: true,
 };
+// The commands that read only a path of the start's inputs where each operand is one (`Flow.rooted`).
+const rootedCommands: Record<string, true> = { cd: true, ".": true, source: true };
 const fileTests = /^-([abcdefgGhkLNOprsStuwx]|nt|ot|ef)$/;
 // The variables the shell sets from what a command did, whatever the scripts assign.
 const shellSet = ["BASH_REMATCH", "REPLY", "MAPFILE", "OPTARG", "PIPESTATUS", "COPROC"];
@@ -69,7 +79,10 @@ export class Flow {
   // A function that sets the variable its Nth argument names (`printf -v "$1"`, `read "$2"`).
   private readonly dynamic: { fn: string; index: number }[] = [];
 
-  constructor(scripts: readonly Script[], functions: ReadonlyMap<string, readonly Definition[]>) {
+  constructor(
+    scripts: readonly Script[],
+    private readonly functions: ReadonlyMap<string, readonly Definition[]>
+  ) {
     for (const script of scripts)
       eachCommand(script.top, null, (c, ctx) => this.collect(c, ctx, functions));
     const called = new Set(this.calls.map((c) => c.fn));
@@ -176,9 +189,30 @@ export class Flow {
     }
   }
 
-  /** Whether a word can hold a command's output. */
+  /** Whether a word can hold a command's output: a command substitution in it that reads more
+   *  than the start's inputs (`commandReads`, a call of a function counted as such a read), or a
+   *  parameter that can. `$(cd "$(dirname "$0")/../.." && pwd)` reads only the place of the
+   *  checkout the start runs from, and `$(compgen -e)` only the names of its own environment. */
   impure(w: Word, ctx: string | null): boolean {
-    return w.subs.length > 0 || w.vars.some((v) => this.variable(v, ctx) !== undefined);
+    return (
+      w.subs.some((sub) => {
+        const out = new Set<string>();
+        eachCommand(sub, ctx, (c, inner) =>
+          commandReads(c, inner, out, this, (name) =>
+            this.functions.has(name) ? [name] : undefined
+          )
+        );
+        return out.size > 0;
+      }) || w.vars.some((v) => this.variable(v, ctx) !== undefined)
+    );
+  }
+
+  /** Whether the word `w` names a path that the start's inputs name: it starts with an expansion,
+   *  and it holds nothing but inputs (`impure`). `"$(dirname "$0")/.."`, `"$root/scripts"` and
+   *  `"$here/../.."` are such words, where `root` and `here` hold only the checkout's place; an
+   *  absolute path written in the script is not, since a dead run can leave a file there. */
+  rooted(w: Word, ctx: string | null): boolean {
+    return /^"?\$/.test(w.text) && !this.impure(w, ctx);
   }
 
   /** Why a parameter can hold a command's output, or undefined where it holds only inputs. */
@@ -231,42 +265,11 @@ export class Reader {
   /** One command alone: its words' parameters, its redirections and, for a function, its body;
    *  eachCommand reaches each command inside it. */
   private command(c: Command, ctx: string | null, out: Set<string>): void {
-    if (c.k === "function") return;
-    if (c.k === "arith") {
-      for (const v of c.vars) {
-        const why = this.flow.variable(v, ctx);
-        if (why !== undefined) out.add(why);
-      }
-      return;
-    }
-    for (const r of c.redirects) {
-      const dup = /[<>]&$/.test(r.op) && /^(\d+-?|-)$/.test(r.target.text);
-      const quiet = /^["']?\/dev\/(null|stdout|stderr|fd\/\d+)["']?$/.test(r.target.text);
-      if (/<<<$/.test(r.op)) this.vars(r.target, ctx, out);
-      else if (!heredocOp.test(r.op) && !dup && !quiet) out.add(`${r.op} ${r.target.text}`);
-    }
-    if (c.k === "for") for (const w of c.words) this.vars(w, ctx, out);
-    if (c.k === "case")
-      for (const w of [c.subject, ...c.arms.flatMap((a) => a.patterns)]) this.vars(w, ctx, out);
-    if (c.k !== "simple") return;
-    for (const a of c.assigns) for (const w of a.values) this.vars(w, ctx, out);
-    for (const w of c.words) this.vars(w, ctx, out);
-    let words = c.words;
-    if (words[0]?.text === "command") {
-      if (words[1]?.text === "-v" || words[1]?.text === "-V") return;
-      words = words.slice(words[1]?.text === "-p" ? 2 : 1);
-    }
-    if (words.length === 0) return;
-    const name = nameOf(words);
-    if (name === undefined) out.add(`a command named by ${words[0].text}`);
-    else if (this.functions.has(name)) {
-      for (const r of this.body(name)) out.add(r.includes(" in ") ? r : `${r} in ${name}`);
-    } else if (name === "exec" && words.length === 1) {
-      // `exec` with redirections alone: the redirections above are what it reads.
-    } else if (inputCommands[name] !== true) out.add(name);
-    else if (name === "[" || name === "[[" || name === "test") {
-      for (const w of words) if (fileTests.test(w.text)) out.add(`${name} ${w.text}`);
-    }
+    commandReads(c, ctx, out, this.flow, (name) =>
+      this.functions.has(name)
+        ? this.body(name).map((r) => (r.includes(" in ") ? r : `${r} in ${name}`))
+        : undefined
+    );
   }
 
   /** What a function's body reads, each of its definitions. */
@@ -312,5 +315,66 @@ export class Reader {
       if (this.functions.has(name) && this.reporter(name)) return true;
     }
     return false;
+  }
+}
+
+/** What one command alone reads that is not an input, added to `out`: its words' parameters
+ *  (`flow.variable`), its redirections, and its program, unless that is one of `inputCommands` (a
+ *  file test aside), `cat` with no operand, or one of `rootedCommands` whose every operand is a
+ *  path of the start's inputs (`flow.rooted`); for a function, what `body` answers of its body,
+ *  or undefined where the name is no function. */
+function commandReads(
+  c: Command,
+  ctx: string | null,
+  out: Set<string>,
+  flow: Flow,
+  body: (name: string) => readonly string[] | undefined
+): void {
+  const vars = (w: Word) => {
+    for (const v of w.vars) {
+      const why = flow.variable(v, ctx);
+      if (why !== undefined) out.add(why);
+    }
+  };
+  if (c.k === "function") return;
+  if (c.k === "arith") {
+    for (const v of c.vars) {
+      const why = flow.variable(v, ctx);
+      if (why !== undefined) out.add(why);
+    }
+    return;
+  }
+  for (const r of c.redirects) {
+    const dup = /[<>]&$/.test(r.op) && /^(\d+-?|-)$/.test(r.target.text);
+    const quiet = /^["']?\/dev\/(null|stdout|stderr|fd\/\d+)["']?$/.test(r.target.text);
+    if (/<<<$/.test(r.op)) vars(r.target);
+    else if (!heredocOp.test(r.op) && !dup && !quiet) out.add(`${r.op} ${r.target.text}`);
+  }
+  if (c.k === "for") for (const w of c.words) vars(w);
+  if (c.k === "case") for (const w of [c.subject, ...c.arms.flatMap((a) => a.patterns)]) vars(w);
+  if (c.k !== "simple") return;
+  for (const a of c.assigns) for (const w of a.values) vars(w);
+  for (const w of c.words) vars(w);
+  let words = c.words;
+  if (words[0]?.text === "command") {
+    if (words[1]?.text === "-v" || words[1]?.text === "-V") return;
+    words = words.slice(words[1]?.text === "-p" ? 2 : 1);
+  }
+  if (words.length === 0) return;
+  const name = nameOf(words);
+  const called = name === undefined ? undefined : body(name);
+  if (name === undefined) out.add(`a command named by ${words[0].text}`);
+  else if (called !== undefined) {
+    for (const r of called) out.add(r);
+  } else if (name === "exec" && words.length === 1) {
+    // `exec` with redirections alone: the redirections above are what it reads.
+  } else if (name === "cat" && words.length === 1) {
+    // `cat` with no operand reads its standard input, whose redirection is read above.
+  } else if (rootedCommands[name] === true) {
+    const operands = words.slice(1).filter((w) => w.text !== "--");
+    if (operands.length === 0 || !operands.every((w) => flow.rooted(w, ctx))) out.add(name);
+  } else if (inputCommands[name] !== true) out.add(name);
+  else if (name === "[" || name === "[[" || name === "test") {
+    for (const w of words) if (fileTests.test(w.text)) out.add(`${name} ${w.text}`);
   }
 }

@@ -16,6 +16,18 @@
 # so the OMP it names is a stub that answers the gate's load probe and nothing else, under a home
 # of the run's own that holds the checkout's plugin manifest where the gate reads it.
 set -euo pipefail
+root=$(cd "$(dirname "$0")/../.." && pwd)
+# The Postgres of a dead stack goes first, on every run, before each command of the start but one
+# that reads only its own inputs (lib/sweep-order.ts), as each start of a stack removes it: under
+# set -e a command that fails ends the start, and one that fails for what a dead run left would end
+# every later start with that Postgres still there. CI passes its service's DSN; the devbox brings
+# its own container on an ephemeral port, which carries this run's mark (lib/leftovers.sh).
+# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
+. "$root/scripts/e2e/lib/leftovers.sh"
+remove_leftover_postgres || {
+  echo "FAIL setup: the removal of the Postgres of dead stacks could not run" >&2
+  exit 1
+}
 
 pid=
 # lib/rig.sh's start_kept and keep_port set these: the daemon's pid, copied to pid on each start,
@@ -71,7 +83,6 @@ stop_daemon() {
   pid=
 }
 
-root=$(cd "$(dirname "$0")/../.." && pwd)
 trap cleanup EXIT
 mkdir -p "$work/state" "$work/xdg" "$work/home"
 # The daemon runs from here, so mise resolves its tmux from here too, whatever directory the run
@@ -137,14 +148,6 @@ readyz_200() {
 }
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
-# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
-. "$root/scripts/e2e/lib/leftovers.sh"
-# The Postgres of a dead stack goes first, on every run, before each check of the start but one of
-# its own inputs (lib/sweep-order.ts), as each start of a stack removes it: a check that refuses the
-# start for what a dead run left would end every later start with that Postgres still there. CI
-# passes its service's DSN; the devbox brings its own container on an ephemeral port, which carries
-# this run's mark (lib/leftovers.sh).
-remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
 # A devbox's first tmux can be a wrapper script or a mise shim. mise runs it from the daemon's
 # working directory, under the daemon's tmux environment, which moves the XDG directories under the
 # state directory; this run's own HOME (pane_home, below) has the same effect. From a working

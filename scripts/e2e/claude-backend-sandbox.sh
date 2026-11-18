@@ -189,6 +189,17 @@
 set -Eeuo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
+# The Postgres of a dead stack goes first, before each command of the start but one that reads only
+# its own inputs (lib/sweep-order.ts): under set -e a command that fails ends the start, and one that
+# fails for what a dead run left, as its containers, its processes, the session database port its
+# container still publishes or a disk it filled, would end every later start with that Postgres
+# still there. This run's own carries its mark (lib/leftovers.sh).
+# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
+. "$root/scripts/e2e/lib/leftovers.sh"
+remove_leftover_postgres || {
+  echo "FAIL setup: the removal of the Postgres of dead stacks could not run" >&2
+  exit 1
+}
 work=$(mktemp -d "${TMPDIR:-/tmp}/legion-e2eccs.$$.XXXXXXXX")
 evidence=${CLAUDE_SANDBOX_E2E_EVIDENCE_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/legion-e2eccs-evidence.XXXXXXXX")}
 mkdir -p "$evidence/logs" "$evidence/transcripts"
@@ -309,8 +320,6 @@ fail() { printf 'FAIL %s: %s\n' "$check" "$*" >&2; exit 1; }
 . "$root/scripts/e2e/lib/namespace-rig.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/bridge-tunnel.sh
 . "$root/scripts/e2e/lib/bridge-tunnel.sh"
-# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
-. "$root/scripts/e2e/lib/leftovers.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/session-db.sh
 . "$root/scripts/e2e/lib/session-db.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/role-namespaces.sh
@@ -1148,13 +1157,7 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# The Postgres of a dead stack goes first, before each check of the start but one of its own inputs
-# (lib/sweep-order.ts): a check that refuses the start for what a dead run left, as its containers,
-# its processes and the session database port its container still publishes, would end every
-# later start with that Postgres still there. This run's own carries its mark (lib/leftovers.sh).
-remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
-
-# Then the operator's inputs, before the run reads a tool, a key or the cluster: an unset one is a
+# The operator's inputs, before the run reads a tool, a key or the cluster: an unset one is a
 # run that was never going to happen, and it is refused by its own name.
 begin prerequisites
 [ -n "$runtime_context" ] ||

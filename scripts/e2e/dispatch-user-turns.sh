@@ -51,6 +51,17 @@ set -euo pipefail
 unset NATS_NKEY_SEED NATS_NKEY_SEED_FILE NATS_DAEMON_NKEY_SEED NATS_DAEMON_NKEY_SEED_FILE
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
+# The Postgres of a dead stack goes first, before each command of the start but one that reads only
+# its own inputs (lib/sweep-order.ts): under set -e a command that fails ends the start, and one that
+# fails for what a dead run left, as refuse_leftovers's refusal of what the same dead run left,
+# would end every later start with that Postgres still there. This run's own carries its mark
+# (lib/leftovers.sh).
+# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
+. "$root/scripts/e2e/lib/leftovers.sh"
+remove_leftover_postgres || {
+  echo "FAIL setup: the removal of the Postgres of dead stacks could not run" >&2
+  exit 1
+}
 work=$(mktemp -d "/tmp/legion-e2e-user-turns.$$.XXXXXXXX")
 evidence=${DISPATCH_USER_TURNS_EVIDENCE_DIR:-$(mktemp -d /tmp/legion-e2e-user-turns-evidence.XXXXXXXX)}
 mkdir -p "$evidence/logs" "$evidence/checks"
@@ -78,8 +89,6 @@ pass() { echo "ok $check"; }
 fail() { echo "FAIL $check: $*" >&2; exit 1; }
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
-# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
-. "$root/scripts/e2e/lib/leftovers.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/omp-home.sh
 . "$root/scripts/e2e/lib/omp-home.sh"
 
@@ -206,10 +215,6 @@ launch_session() {
 for tool in go docker jq curl python3 tmux bun mise; do command -v "$tool" >/dev/null || fail "$tool is required"; done
 omp_tool=${DISPATCH_USER_TURNS_OMP:-$(<"$root/.omp-pin")}
 mkdir -p "$session_cwd"
-# The Postgres of a dead stack goes first, before refuse_leftovers, whose refusal of what the same
-# dead run left would end the start with that Postgres still there; this run's carries its mark
-# (lib/leftovers.sh).
-remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
 refuse_leftovers legion-e2e-user-turns
 make_omp_home "$omp_home"
 mise where "$omp_tool" >/dev/null 2>&1 || mise install "$omp_tool" >&2

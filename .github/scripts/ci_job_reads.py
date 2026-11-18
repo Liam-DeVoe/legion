@@ -2279,20 +2279,20 @@ GATES = [
         ]),
     ], reads=reads(
         ("scripts/e2e/stage1-skeleton.sh", at("daemon-go", "Stage 1 live proof")),
-        ("scripts/e2e/lib/rig.sh", "scripts/e2e/stage1-skeleton.sh:139 sources it"),
+        ("scripts/e2e/lib/rig.sh", "scripts/e2e/stage1-skeleton.sh:150 sources it"),
         ("scripts/e2e/lib/loopback-dsn.sh", "scripts/e2e/lib/rig.sh:93 sources it"),
         ("scripts/e2e/lib/port-file.sh", "scripts/e2e/lib/rig.sh:102 sources it"),
         ("scripts/e2e/lib/held-port.py", "scripts/e2e/lib/rig.sh:143,157 runs it to hold a port for the daemon"),
-        ("scripts/e2e/lib/built-from.sh", "scripts/e2e/stage1-skeleton.sh:180 runs it over the checkout"),
-        ("scripts/e2e/lib/leftovers.sh", "scripts/e2e/stage1-skeleton.sh:141 sources it, and :147 runs its "
+        ("scripts/e2e/lib/built-from.sh", "scripts/e2e/stage1-skeleton.sh:183 runs it over the checkout"),
+        ("scripts/e2e/lib/leftovers.sh", "scripts/e2e/stage1-skeleton.sh:26 sources it, and :27 runs its "
                                          "remove_leftover_postgres"),
         ("packages/dispatch/e2e/postgres-mark.ts", "scripts/e2e/lib/leftovers.sh:24,32 runs it with bun"),
         ("packages/dispatch/e2e/harness-postgres-marks.ts", "packages/dispatch/e2e/postgres-mark.ts:21-27 imports it"),
         ("packages/dispatch/e2e/harness-postgres-removal.ts", "packages/dispatch/e2e/postgres-mark.ts:28 imports it"),
-        ("packages/dispatch/e2e/harness-postgres-processes.ts", "packages/dispatch/e2e/harness-postgres-removal.ts:97-102 imports it"),
-        ("packages/pi-legion/package.json", "scripts/e2e/stage1-skeleton.sh:237 copies its name, version and legion "
+        ("packages/dispatch/e2e/harness-postgres-processes.ts", "packages/dispatch/e2e/harness-postgres-removal.ts:101-106 imports it"),
+        ("packages/pi-legion/package.json", "scripts/e2e/stage1-skeleton.sh:240 copies its name, version and legion "
                                             "block with jq into the pi-legion plugin the proof's home holds"),
-        ("packages/pi-envoy/package.json", "scripts/e2e/stage1-skeleton.sh:238 copies its name and version with jq "
+        ("packages/pi-envoy/package.json", "scripts/e2e/stage1-skeleton.sh:241 copies its name and version with jq "
                                            "into the pi-envoy plugin the proof's home holds"),
         (".github/actions/install-uv/**", at("daemon-go", "./.github/actions/install-uv")),
         (".github/ci-tools.yaml", ".github/actions/install-uv/action.yml:25 installs the uv row's binary"),
@@ -2385,7 +2385,7 @@ GATES = [
                                                    "runs it with bun for each driver's mark, as lib/leftovers.sh does (leftovers.sh:24,32)"),
         ("packages/dispatch/e2e/harness-postgres-marks.ts", "packages/dispatch/e2e/postgres-mark.ts:21-27 imports it"),
         ("packages/dispatch/e2e/harness-postgres-removal.ts", "packages/dispatch/e2e/postgres-mark.ts:28 imports it"),
-        ("packages/dispatch/e2e/harness-postgres-processes.ts", "packages/dispatch/e2e/harness-postgres-removal.ts:97-102 imports it"),
+        ("packages/dispatch/e2e/harness-postgres-processes.ts", "packages/dispatch/e2e/harness-postgres-removal.ts:101-106 imports it"),
         ("packages/pi-legion/scripts/skill-scenarios/rig.sh", "scripts/e2e/lib/sweep-order.test.ts:72,98,443 reads and runs it, a shell stack's start"),
         ("scripts/dispatch/**", f"{at('test', 'Lint the Dispatch census script')}, typecheck and test; "
                                 "scripts/priorities-seed.test.ts:3 imports __tests__/held-deadlines.ts"),
@@ -2618,7 +2618,7 @@ GATES = [
         ("deploy/kubernetes/daemon/controller.yaml.example", "packages/pi-legion/src/skills-guard.test.ts:199-203, a root of the list at :194"),
         ("AGENTS.md", "packages/pi-legion/src/skills-guard.test.ts:199-203, a root of the list at :195"),
         ("README.md", "packages/pi-legion/src/skills-guard.test.ts:199-203, a root of the list at :196"),
-        ("scripts/e2e/lib/**", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:6 imports scripts/e2e/lib/script-functions; rig.sh:275 sources scripts/e2e/lib/rig.sh"),
+        ("scripts/e2e/lib/**", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:6 imports scripts/e2e/lib/script-functions; rig.sh:283 sources scripts/e2e/lib/rig.sh"),
         (".omp-pin", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:1168-1170 copies .omp-pin"),
         ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts", "writes the overlay and runs go run (:29-30)"),
     ) + envoy_client_dep("packages/pi-legion/tsconfig.json paths @legion/envoy-client/*; scripts/skill-scenarios/*.ts "

@@ -11,6 +11,7 @@ import {
   alone,
   type Command,
   type Definition,
+  declarers,
   type List,
   nameOf,
   type Script,
@@ -53,6 +54,8 @@ interface Event {
   readonly from: string | undefined;
   readonly via: readonly string[];
   readonly guards: readonly Guard[];
+  /** Whether `guards` is the command's own run alone (`Walk.failure`), which no caller adds to. */
+  readonly own?: true;
 }
 type Step =
   | { readonly k: "event"; readonly event: Event }
@@ -60,13 +63,16 @@ type Step =
   | { readonly k: "loop"; readonly body: readonly Step[] };
 
 /** Where the walk is: the function it is in, the checks around it in that function, the checks
- *  of each `return` it already passed there, whether a status that is not 0 ends the start, and
- *  the driver's own command through which a library's top-level commands run. */
+ *  of each `return` it already passed there, whether a status that is not 0 ends the start,
+ *  whether the walk is inside a command or process substitution, whose commands `set -e` does
+ *  not end the start on, and the driver's own command through which a library's top-level
+ *  commands run. */
 interface Frame {
   readonly fn: string | null;
   readonly local: readonly Guard[];
   readonly early: Guard[];
   readonly plain: boolean;
+  readonly substitution: boolean;
   readonly through: string | undefined;
 }
 
@@ -74,6 +80,10 @@ interface Frame {
 class Walk {
   private readonly memo = new Map<string, readonly Step[]>();
   private readonly sourced = new Set<string>();
+  /** Whether a failed command ends the start where its status is not tested: `set -e` (or
+   *  `set -o errexit`) is on, or a `trap` on ERR ends it, as far as the walk has come. */
+  private errexit = false;
+  private errTrap = false;
 
   constructor(
     private readonly reader: Reader,
@@ -82,7 +92,14 @@ class Walk {
 
   start(top: List): Step[] {
     const out: Step[] = [];
-    const frame = { fn: null, local: [], early: [], plain: true, through: undefined };
+    const frame = {
+      fn: null,
+      local: [],
+      early: [],
+      plain: true,
+      substitution: false,
+      through: undefined,
+    };
     this.list(top, frame, out, undefined);
     return out;
   }
@@ -119,7 +136,8 @@ class Walk {
   }
 
   private subs(words: readonly Word[], frame: Frame, out: Step[], begins: string): void {
-    for (const w of words) for (const sub of w.subs) this.list(sub, frame, out, begins);
+    for (const w of words)
+      for (const sub of w.subs) this.list(sub, { ...frame, substitution: true }, out, begins);
   }
 
   private command(c: Command, frame: Frame, out: Step[], begins: string): void {
@@ -212,11 +230,69 @@ class Walk {
     return { k: "event", event: { kind, name, at, begins, from, via: [], guards } };
   }
 
+  /** A command whose failure ends the start where `set -e` is on or a `trap` on ERR ends it, and
+   *  nothing tests its status. Its own run is its whole check (`checks`): whatever decides that it
+   *  runs, whether it fails is decided by what it reads, so it counts unless that is only the
+   *  start's inputs, as `[ -n "$x" ]` and `true` read. */
+  private failure(
+    c: Command & { k: "simple" },
+    shown: string,
+    checks: readonly Guard[],
+    frame: Frame,
+    out: Step[],
+    begins: string
+  ): void {
+    if (!(this.errexit || this.errTrap) || !frame.plain || frame.substitution) return;
+    const from = frame.fn === null ? (frame.through ?? c.at) : undefined;
+    const name = `${shown} under set -e`;
+    out.push({
+      k: "event",
+      event: { kind: "refusal", name, at: c.at, begins, from, via: [], guards: checks, own: true },
+    });
+  }
+
+  /** What a `set` or a `trap` command does to whether a failure ends the start. */
+  private options(name: string, args: readonly string[]): void {
+    if (name === "set") {
+      for (let i = 0; i < args.length; i++) {
+        const arg = args[i] ?? "";
+        if (arg === "--" || arg === "-") return;
+        if ((arg === "-o" || arg === "+o") && args[i + 1] === "errexit")
+          this.errexit = arg === "-o";
+        else if (/^-[A-Za-z]+$/.test(arg) && arg.includes("e")) this.errexit = true;
+        else if (/^\+[A-Za-z]+$/.test(arg) && arg.includes("e")) this.errexit = false;
+      }
+      return;
+    }
+    // `trap ACTION ... ERR`: an action that exits, or calls a function that always does, ends
+    // the start on each failure as `set -e` does; `trap - ERR` and `trap '' ERR` do not.
+    if (!args.slice(1).includes("ERR")) return;
+    const action = (args[0] ?? "").replace(/^(['"])(.*)\1$/s, "$2");
+    this.errTrap =
+      /(^|[\s;&|])exit([\s;&|]|$)/.test(action) ||
+      action
+        .split(/[\s;&|]+/)
+        .some((word) => this.reader.functions.has(word) && this.reader.reporter(word));
+  }
+
   private simple(c: Command & { k: "simple" }, frame: Frame, out: Step[], begins: string): void {
     const words = [...c.assigns.flatMap((a) => a.values), ...c.words];
     this.subs(words, frame, out, begins);
     const name = nameOf(c.words);
-    if (name === undefined) return;
+    const self = [{ list: alone(c), ctx: frame.fn }];
+    if (name === undefined) {
+      if (c.words.length > 0) {
+        this.failure(c, c.words[0]?.text ?? "", self, frame, out, begins);
+        return;
+      }
+      // Assignments alone have the status of their last command substitution, and none fails
+      // where they hold none.
+      const subs = words.flatMap((w) => w.subs.map((list) => ({ list, ctx: frame.fn })));
+      if (subs.length > 0) {
+        this.failure(c, `${c.assigns[0]?.name ?? ""}=$(…)`, subs, frame, out, begins);
+      }
+      return;
+    }
     if (name === sweep || name === mark) {
       out.push(this.event(name === sweep ? "removal" : "mark", name, c.at, frame, begins));
       return;
@@ -242,19 +318,37 @@ class Walk {
       return;
     }
     const definitions = this.reader.functions.get(name);
-    if (definitions === undefined) return;
+    if (definitions === undefined) {
+      if (name === "set" || name === "trap") {
+        this.options(
+          name,
+          c.words.slice(1).map((w) => w.text)
+        );
+        return;
+      }
+      // `local`, `export` and the like give their own status, not that of what they assign.
+      if (declarers[name] !== true) this.failure(c, name, self, frame, out, begins);
+      return;
+    }
     if (this.reader.reporter(name)) {
       out.push(this.event("refusal", name, c.at, frame, begins));
       return;
     }
-    const key = `${name} ${frame.plain}`;
+    const key = `${name} ${frame.plain} ${frame.substitution} ${this.errexit} ${this.errTrap}`;
     let inner = this.memo.get(key);
     if (inner === undefined) {
       this.memo.set(key, []);
       const arms = definitions.map((d) => {
         const steps: Step[] = [];
         const body = d.body.k === "group" ? d.body.body : alone(d.body);
-        const own = { fn: name, local: [], early: [], plain: frame.plain, through: undefined };
+        const own = {
+          fn: name,
+          local: [],
+          early: [],
+          plain: frame.plain,
+          substitution: frame.substitution,
+          through: undefined,
+        };
         this.list(body, own, steps, undefined);
         return steps;
       });
@@ -271,7 +365,12 @@ class Walk {
         const via = [name, ...e.via];
         return {
           k: "event",
-          event: { ...e, from: e.from ?? from, via, guards: [...prefix, ...e.guards] },
+          event: {
+            ...e,
+            from: e.from ?? from,
+            via,
+            guards: e.own === true ? e.guards : [...prefix, ...e.guards],
+          },
         };
       });
     out.push(...place(inner));

@@ -22,6 +22,16 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
+# The Postgres of a dead stack goes first, before each command of the start but one that reads only
+# its own inputs (lib/sweep-order.ts): under set -e a command that fails ends the start, and one that
+# fails for what a dead run left would end every later start with that Postgres still there. This
+# run's own carries its mark (lib/leftovers.sh).
+# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
+. "$root/scripts/e2e/lib/leftovers.sh"
+remove_leftover_postgres || {
+  echo "FAIL setup: the removal of the Postgres of dead stacks could not run" >&2
+  exit 1
+}
 evidence=${CONTROLLER_SWEEP_EVIDENCE_DIR:-$(mktemp -d /tmp/legion-e2e-controller-sweep-evidence.XXXXXXXX)}
 mkdir -p "$evidence"
 # shellcheck source-path=SCRIPTDIR source=lib/transcript.sh
@@ -29,8 +39,6 @@ mkdir -p "$evidence"
 transcript_to "$evidence/transcript.log"
 # shellcheck source-path=SCRIPTDIR source=lib/kind-sandbox.sh
 . "$root/scripts/e2e/lib/kind-sandbox.sh"
-# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
-. "$root/scripts/e2e/lib/leftovers.sh"
 
 # The store's image: the pinned Postgres the repository's CI tests against.
 pg_image=mirror.gcr.io/pgvector/pgvector@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
@@ -83,11 +91,6 @@ left() {
   [ -z "$objects" ] || fail "the legion namespace still holds $(tr '\n' ' ' <<<"$objects")"
   note "kubectl -n legion get sandboxes,persistentvolumeclaims: none"
 }
-
-# The Postgres of a dead stack goes first, before each check of the start but one of its own inputs
-# (lib/sweep-order.ts): a check that refuses the start for what a dead run left would end every
-# later start with that Postgres still there. This run's own carries its mark (lib/leftovers.sh).
-remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
 
 begin prerequisites
 [ "$(uname -m)" = x86_64 ] || fail "the proof runs on amd64 (x86_64) only, since the gVisor release it installs and the driver it builds are amd64; this host is $(uname -m)"
