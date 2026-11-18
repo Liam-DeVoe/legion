@@ -3,6 +3,7 @@ package pmdoc
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -132,22 +133,96 @@ func DeleteBlock(doc *Node, blockID string) (*Node, error) {
 // DeleteBlock is DeleteBlock of d's tree without validating it again; the zero ValidDocument wants
 // a document. The tree it returns is a new one, which it validates as DeleteBlock does.
 func (d ValidDocument) DeleteBlock(blockID string) (*Node, error) {
+	return d.deleteBlock("DeleteBlock", blockID, nil)
+}
+
+// ErrKeptBlocksDoNotFit is a delete whose kept blocks (DeleteBlockKeeping) cannot stand where the
+// block it deletes stood.
+var ErrKeptBlocksDoNotFit = errors.New("the blocks kept from the deleted block cannot stand where it stood")
+
+// DeleteBlockKeeping is DeleteBlock, except that the blocks inside the deleted block that held
+// does not name stay where it stood. held is the ids the block and the blocks inside it carried
+// when the caller's edit began, so every other block inside it is one an earlier write of that
+// edit put there - list content an insert joined to the list it was anchored on, a paragraph an
+// insert wrote into a typed block - which a delete of the block holding it now does not name
+// (keptBlocks). A nil held keeps nothing, as DeleteBlock does. The tree it returns is a new one,
+// which it validates: kept blocks that cannot stand where the block stood are
+// ErrKeptBlocksDoNotFit, beside the rule they break.
+func (d ValidDocument) DeleteBlockKeeping(blockID string, held map[string]struct{}) (*Node, error) {
+	return d.deleteBlock("DeleteBlockKeeping", blockID, held)
+}
+
+// deleteBlock is DeleteBlockKeeping, method naming the call a missing document refuses.
+func (d ValidDocument) deleteBlock(method, blockID string, held map[string]struct{}) (*Node, error) {
 	if d.doc == nil {
-		return nil, wantsDocument("DeleteBlock")
+		return nil, wantsDocument(method)
 	}
 	path, _, ok := findBlock(d.doc, blockID)
 	if !ok {
 		return nil, fmt.Errorf("%w: block %q", ErrTargetNotFound, blockID)
 	}
 	out := cloneNode(d.doc)
-	removeAtPath(out, path)
+	kept := keptBlocks(nodeAtPath(out, path), held)
+	if len(kept) == 0 {
+		removeAtPath(out, path)
+	} else {
+		parent, index := nodeAtPath(out, path[:len(path)-1]), path[len(path)-1]
+		parent.Children = slices.Concat(parent.Children[:index], kept, parent.Children[index+1:])
+	}
 	if len(out.Children) == 0 {
 		out.Children = []*Node{{Type: "paragraph"}}
 	}
 	if err := out.Validate(); err != nil {
+		if len(kept) > 0 {
+			return nil, fmt.Errorf("%w: %w", ErrKeptBlocksDoNotFit, err)
+		}
 		return nil, err
 	}
 	return out, nil
+}
+
+// keptBlocks is what stands in node's place when node, a block held names, is deleted: every
+// block inside it that held does not name, whole and in document order. A list holding such
+// blocks stays a list, and a list item whose kept blocks open with a paragraph stays an item, each
+// under a new id and holding those blocks alone, so kept items stay items; a list item whose kept
+// blocks are lists alone gives way to their items, as DeleteTextblock hoists a nested list; any
+// other block gives way to the blocks it holds. A block carrying no id is node's own, and a nil
+// held keeps nothing.
+func keptBlocks(node *Node, held map[string]struct{}) []*Node {
+	if held == nil {
+		return nil
+	}
+	var kept []*Node
+	for _, child := range node.Children {
+		if isInlineNodeType(child.Type) {
+			continue
+		}
+		if id, ok := storedBlockID(child); ok {
+			if _, own := held[id]; !own {
+				kept = append(kept, child)
+				continue
+			}
+		}
+		kept = append(kept, keptBlocks(child, held)...)
+	}
+	switch {
+	case len(kept) == 0:
+		return nil
+	case isList(node), node.Type == "list_item" && kept[0].Type == "paragraph":
+		shell := &Node{Type: node.Type, Attrs: cloneAttrs(node.Attrs), Children: kept}
+		if shell.Attrs == nil {
+			shell.Attrs = Attrs{}
+		}
+		shell.Attrs[BlockIDAttr] = mintBlockID()
+		return []*Node{shell}
+	case node.Type == "list_item" && !slices.ContainsFunc(kept, func(block *Node) bool { return !isList(block) }):
+		var items []*Node
+		for _, list := range kept {
+			items = append(items, list.Children...)
+		}
+		return items
+	}
+	return kept
 }
 
 // TableIndexError describes a row or column index that cannot be applied to a

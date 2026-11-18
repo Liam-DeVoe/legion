@@ -4763,9 +4763,10 @@ Each item below names an operation and its required fields, then its behavior.
   A `find` that crosses a span's edge, covering text inside it and text outside it (`wrote this`, where only `this` is a link), is `400 FIND_CROSSES_SPAN` with nothing written: narrow it to the span's inside, or spell the whole span's markup in it (`wrote [this](https://example.com/Sami)`), which then replaces the markup too.
   Each span is weighed alone: `wrote [this](https://a.example/1) and that`, where `that` is a second link, spells the first link and crosses the second's edge, so it is refused naming `that`.
 
-- `delete` (`find`)
+- `delete` (`find` or `block`)
 
-  Delete one plain-text target.
+  Delete one plain-text target; a `find` that is a block's whole text removes the block, and `block` removes the block with that id and everything it holds.
+  A `find` that opens with a list marker and matches no text as written selects an item of that kind of list whose text starts with the rest, and the delete removes that whole item, the items nested in it included, where it removed only the text the `find` matched and left the rest of the item standing.
 
 - `insert` (`markdown`, exactly one of `after` or `before`)
 
@@ -4775,6 +4776,10 @@ Each item below names an operation and its required fields, then its behavior.
   `"start"` and `"end"` select document edges.
   Pipe-table row fragments at a table-cell target are the exception: they extend that table before or after the containing row.
   Use `replace` for inline continuation.
+
+The operations of one request apply in order, each reading the document as the operations before it left it, and none removes or changes a block it does not name.
+A delete of a block removes what that block held when the request began: list content an earlier `insert` joined to a list it was anchored on, or a paragraph it wrote into a typed block, stays where the deleted block stood, a list keeping it as a list of its own, where the delete took it with the block.
+An operation whose target an earlier operation of the request removed is `400 TARGET_REMOVED_IN_BATCH`, and nothing in the request is written.
 
 Table-row fragments contain body rows only: omit the table header and delimiter row.
 Short rows are padded to the table width while all operations in the edit request add at most 10,000 cells;
@@ -4900,6 +4905,12 @@ Each item below names a status and code, then its meaning.
   An `insert` writes markdown the block it lands in cannot hold where the anchor puts it: a `requirement`, a `check` or a `plan_task` holds paragraphs alone, an `ask` the paragraphs of its question and then one bullet list of options, and a list item opens with its text, so no other block stands before it; nothing in the batch is written.
   Such an insert was written after the typed block, at the document's level, so a requirement's words stood outside every requirement and no check's `serves` reached them, or before the whole list.
   The message names the operation, the anchor, the block it lands in and its id, its rule and what breaks it, and the anchor on that block itself that writes the markdown outside it instead: `operation 0: insert after "block:<id>" lands inside the requirement block "r1", whose content rule, paragraph+, cannot hold a heading there; …`.
+
+- `400 TARGET_REMOVED_IN_BATCH`
+
+  An operation names a block (`block`, or a `block:<id>` anchor), quotes text (`find`, or a quote anchor) or names a heading (`heading:<title>`) that an earlier operation of the same request removed, since each operation reads the document as the operations before it left it; nothing in the batch is written.
+  Such an operation was `404 TARGET_NOT_FOUND`, or `400 INVALID_OP` for a block a `delete {block:…}` removed, and neither named the operation that removed its target.
+  The message names the operation, its field and what that holds, and the operation that removed it: `operation 2: after "block:<id>" names a block that operation 1, delete {block:"<id>"}, removed earlier in this edit; …`.
 
 - `400 TABLE_WIDTH`
 

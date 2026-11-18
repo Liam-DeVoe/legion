@@ -210,6 +210,28 @@ func (f *QuoteFinder) FindSpelling(quote string, occurrence, near *int) (Range, 
 	return match.Range, f.text.spelling(match), nil
 }
 
+// FindWritten is Find over the matchers that read a quote as written - exactly, then with its
+// whitespace normalized (writtenCascade) - and not as markdown: a quote that opens with a list
+// item's marker selects an item where it matches no text as written (FindListItem), and the
+// markdown reading, which takes the marker for list syntax and drops it, comes after that
+// selection. Only a document edit asks it; the range is Find's for a quote either matcher holds.
+func (f *QuoteFinder) FindWritten(quote string, occurrence *int) (Range, error) {
+	if err := f.prepare(); err != nil {
+		return Range{}, err
+	}
+	var matches []quoteMatch
+	for _, matcher := range writtenCascade {
+		if matches = matcher(f.text, quote); len(matches) > 0 {
+			break
+		}
+	}
+	match, err := f.choose(quote, matches, occurrence, nil)
+	if err != nil {
+		return Range{}, err
+	}
+	return match.Range, nil
+}
+
 // FindListItem answers a quote that opens with a list item's marker (ParseListItemQuote) by the
 // items it selects (listItemQuoteMatches), choosing among them as Find chooses among a quote's
 // matches, and the markup the item's text spells over the range it matched, as FindSpelling
@@ -729,8 +751,12 @@ func (s Spelling) spells(markType string, from, to int) bool {
 // quoteCascade is the matcher cascade a plain quote runs through, in its order: exact text first,
 // then whitespace-normalized text, then the quote read as markdown against inline markup. A quote
 // takes the matches of the first matcher that has any (quoteMatches), and a list item's quote the
-// first that has any at a start of an item it selects (listItemQuoteMatches).
-var quoteCascade = [...]func(flattenedText, string) []quoteMatch{exactQuoteMatches, normalizedQuoteMatches, markdownQuoteMatches}
+// first that has any at a start of an item it selects (listItemQuoteMatches). writtenCascade is
+// its first two, which read the quote as written (FindWritten).
+var (
+	quoteCascade   = [...]func(flattenedText, string) []quoteMatch{exactQuoteMatches, normalizedQuoteMatches, markdownQuoteMatches}
+	writtenCascade = quoteCascade[:2]
+)
 
 // quoteMatches is the matches of quote's first matcher in the cascade (quoteCascade) that has
 // any, and none where no matcher has any.
