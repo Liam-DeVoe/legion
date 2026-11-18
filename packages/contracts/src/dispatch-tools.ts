@@ -1720,10 +1720,13 @@ export const dispatchToolSpecs = [
       "command sends what a result keeps of observed, as the project form does. " +
       "A pass that counts a failed, a skipped or an excluded case contradicts itself, and is " +
       "400 RESULT_CONTRADICTS. " +
-      "Dispatch asks GitHub whether the repository of the check's issue holds the commit. A " +
-      "commit that repository does not hold is 400 RESULT_COMMIT_UNKNOWN, which names the " +
-      "commit and that owner/repo. Record the result after the commit is pushed. A repository " +
-      "Dispatch cannot read records the result as before. " +
+      "Dispatch asks GitHub whether the repository of the check's issue holds the commit, and " +
+      "then the repository of each open or merged pull request of that issue, which for a pull " +
+      "request the issue links may be another repository. A result at the head of such a pull " +
+      "request needs no question. A commit that none of them holds is 400 " +
+      "RESULT_COMMIT_UNKNOWN, which names the commit and each owner/repo. Record the result " +
+      "after the commit is pushed. A repository Dispatch cannot read records the result as " +
+      "before. " +
       "The result is recorded against the check's own issue, so a child's run of a parent's " +
       "check appears under that check. A closed issue takes a result only for a check whose " +
       "when is after_merge or default_branch, the production check after the merge. It refuses " +
@@ -1863,7 +1866,8 @@ export const dispatchToolSpecs = [
       "there.`; `no, as it holds no result.`; `not known, as pass <id> and fail <id> count at " +
       "this commit.`, which a later pass does not end and a retraction of the wrong one does; " +
       "or `not known, as Dispatch could not read CI run <run> there.`. A merged pull request's " +
-      "head prints as `#<number> (merged)` and a branch head as `branch <name>`. A reviewer and " +
+      "head prints as `#<number> (merged)`, a pull request of another repository than the " +
+      "issue's as `<owner>/<repo>#<number>`, and a branch head as `branch <name>`. A reviewer and " +
       "a tester read the line of their own head. Then `  The <m> merged pull requests decide " +
       "nothing while one is open.`, where an open head and a merged one are both compared with. " +
       "An after_merge or default_branch check takes its newest result that counts on a branch: " +

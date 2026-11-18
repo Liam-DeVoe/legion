@@ -2,9 +2,10 @@ import { describe, expect, test } from "bun:test";
 import type { IssueCheckResults } from "@legion/contracts";
 import { formatCheckResults } from "../dispatch-commands/check-results";
 
-// results-each-head.test.ts holds `dispatch results` to R9 to R12 of the spec of several open pull
-// requests: one line for each open head under a `before_merge` check, with its state, its roles
-// and the ids of the results that decide it; one line that counts the merged pull requests; the
+// results-each-head.test.ts holds `dispatch results` to R9 to R12 and R18 of the spec of several
+// open pull requests: one line for each open head under a `before_merge` check, with its state, its
+// roles and the ids of the results that decide it, and the repository of a pull request of another
+// repository than the issue's beside its number; one line that counts the merged pull requests; the
 // pass and the fail at one head, and what ends that state; and the newest result that decides a
 // check compared with a branch. Each answer is in the wire shape of the server, typed as unknown,
 // so the file builds against a client that predates these fields and fails there on its own
@@ -347,6 +348,44 @@ describe("dispatch results: the state at each head", () => {
       "    Pull request line: - Check c1 (before_merge): CI run docs has no result (absent)",
       `  - #702 at ${h702}: yes, from ci. Pass ci-run:9001 decides it.`,
       `    Pull request line: - Check c1 (before_merge): pass at ${h702}, from CI run docs. The words of c1.`,
+    ]);
+  });
+
+  // R18: ACME-1's repository is acme/app. #70 is its own open pull request, and #9 is an open pull
+  // request of acme/infra that ACME-1 links, whose basis names its repository. Each head has a line
+  // of its own; the line of #9 names acme/infra#9, and the line of #70 names #70.
+  test("names the repository of a pull request in another repository", () => {
+    const [h70, h9] = [hex("7"), hex("9")];
+    const pass = "eeeeeeee-0000-4000-8000-000000000001";
+    const infraHead = { ...openHead(9, h9), repo: "acme/infra" };
+    const lines = printed(
+      answer(
+        check("k1", "before_merge", {
+          compared_with: [openHead(70, h70), infraHead],
+          results: [
+            result(
+              pass,
+              "tester",
+              "pass",
+              h9,
+              { answer: "at_basis", basis: infraHead },
+              "2026-11-18T00:00:00Z"
+            ),
+          ],
+          pass_stands: {
+            answer: "no",
+            subjects: [
+              { basis: openHead(70, h70), answer: "no", reason: "no_result" },
+              { basis: infraHead, answer: "yes", roles: ["tester"], results: [pass] },
+            ],
+          },
+        })
+      )
+    );
+    expect(checkBlock(lines, "k1").slice(0, 3)).toEqual([
+      "- k1 (before_merge). Compared with the heads of 2 open pull requests. A pass stands: no, as 1 of 2 heads read yes.",
+      `  - #70 at ${h70}: no, as it holds no result.`,
+      `  - acme/infra#9 at ${h9}: yes, from tester. Pass ${pass} decides it.`,
     ]);
   });
 });

@@ -7,11 +7,17 @@ import type { CheckBasis, CheckBlock, PassStandsSubject } from "./dispatch-api";
 
 /**
  * A head's place, as its line names it: `#<number>` for an open pull request's head,
- * `#<number> (merged)` for a merged one's final head, and `branch <name>` for a branch head.
+ * `#<number> (merged)` for a merged one's final head, and `branch <name>` for a branch head. A
+ * pull request in another repository than the issue's, whose basis names that repository, is
+ * `<owner>/<repo>#<number>`, since a number alone does not say which repository holds it (R18 of
+ * the spec of several open pull requests).
  */
 export function subjectPlace(basis: CheckBasis): string {
   if (basis.kind === "branch_head") return `branch ${basis.branch ?? "unnamed"}`;
-  const number = basis.pull_request === undefined ? "a pull request" : `#${basis.pull_request}`;
+  const number =
+    basis.pull_request === undefined
+      ? "a pull request"
+      : `${basis.repo ?? ""}#${basis.pull_request}`;
   return basis.merged === true ? `${number} (merged)` : number;
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
@@ -301,12 +302,16 @@ func (c *comparisonReader) headBases(ctx context.Context, issueKey string) compa
 		slog.Warn("dispatch: read the pull request heads of a check's issue", "issue", issueKey, "error", err)
 		return noBases(model.ReasonReadFailed)
 	}
+	var issueRepo *string
+	if len(heads) > 0 {
+		issueRepo, _ = c.repositoryOf(ctx, issueKey)
+	}
 	open := slices.ContainsFunc(heads, func(head delivery.AttributedHead) bool { return head.Open })
 	bases := make([]model.CheckBasis, 0, len(heads))
 	var subjects []model.CheckBasis
 	newestMerged := -1
 	for index, head := range heads {
-		basis := headBasis(head)
+		basis := headBasis(head, issueRepo)
 		bases = append(bases, basis)
 		switch {
 		case open && head.Open:
@@ -426,9 +431,18 @@ func (c *comparisonReader) branchHeadOf(ctx context.Context, repo, branch string
 // times wins, so a head a webhook moved after the last complete read prints GitHub's own update
 // time, named model.BasisLearnedUpdatedAt, and never an older read time. A row carrying neither
 // time names none.
-func headBasis(head delivery.AttributedHead) model.CheckBasis {
+//
+// issueRepo is the repository the check's issue resolves to (repositoryOf). A head of a pull
+// request in another repository, which an issue's link makes its own (R19), names its repository
+// beside its number, compared without case (R18); a head of the issue's own repository names
+// none, and nor does any head where Dispatch cannot name the issue's repository (a nil issueRepo),
+// so each prints with its number alone, as before.
+func headBasis(head delivery.AttributedHead, issueRepo *string) model.CheckBasis {
 	number := head.Number
 	basis := model.CheckBasis{Kind: model.CheckBasisPullRequest, Commit: head.HeadSHA, PullRequest: &number, Merged: !head.Open}
+	if issueRepo != nil && !strings.EqualFold(head.Repo, *issueRepo) {
+		basis.Repo = head.Repo
+	}
 	switch {
 	case head.EventAt != nil && (head.CheckedAt == nil || head.EventAt.After(*head.CheckedAt)):
 		basis.LearnedAt = &model.BasisLearnedAt{At: *head.EventAt, Kind: model.BasisLearnedUpdatedAt}

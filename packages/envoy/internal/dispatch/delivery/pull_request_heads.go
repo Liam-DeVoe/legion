@@ -1,10 +1,12 @@
 package delivery
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -22,10 +24,12 @@ import (
 // merged one, attributed to the check's own issue. pull_request_heads holds that head for
 // every pull request Dispatch has seen an event for, in any repository and by any author — not
 // the merged population delivery_pull_requests keeps — and the issue Dispatch's own attribution
-// picks for it (attribution.go): the first issue its ranked sources name that resolves to the
-// repository the pull request is in, and only where the head branch is in that same repository,
-// never a fork's (headAttribution). A child's pull request is attributed to the child, so it
-// answers for the child's own checks alone and never for a check of an issue above it.
+// picks for it (attribution.go): the first issue its ranked sources name that is held to it — the
+// issue that links the pull request's own URL in any repository, any other only where it resolves
+// to the repository the pull request is in (attributionHeldFor) — and only where the head branch is
+// in the pull request's own repository, never a fork's (headAttribution). A child's pull request is
+// attributed to the child, so it answers for the child's own checks alone and never for a check of
+// an issue above it.
 //
 // Three writers keep it: the `pull_request` envelope (intake.go, every action), the read-through
 // made for a commit that is no head Dispatch knows (ReadThroughCommitPulls) — by a recorded
@@ -505,6 +509,28 @@ func HeadsAttributedTo(ctx context.Context, pool *store.Pool, issueKey string) (
 	return heads, nil
 }
 
+// RepositoriesOfIssue is the repository of each open or merged pull request of issueKey, each
+// once and in name order. It reads them through HeadsAttributedTo, so it follows the one rule that
+// gives a pull request its issue: a pull request an issue links may be in another repository than
+// the issue's own (attributionHeldFor). The record route asks each of these repositories, after
+// the issue's own, whether it holds a result's commit (api/results.go, refuseUnknownCommit). Two
+// spellings of one name are one repository, as every comparison of a repository here is without
+// case; the answer keeps the spelling that sorts first.
+func RepositoriesOfIssue(ctx context.Context, pool *store.Pool, issueKey string) ([]string, error) {
+	heads, err := HeadsAttributedTo(ctx, pool, issueKey)
+	if err != nil {
+		return nil, err
+	}
+	repos := make([]string, 0, len(heads))
+	for _, head := range heads {
+		repos = append(repos, head.Repo)
+	}
+	slices.SortFunc(repos, func(a, b string) int {
+		return cmp.Or(cmp.Compare(strings.ToLower(a), strings.ToLower(b)), cmp.Compare(a, b))
+	})
+	return slices.CompactFunc(repos, strings.EqualFold), nil
+}
+
 // NewestHead is the one pull request head the results read derives a check CI proves at: the
 // repository the row is stored under, the pull request's number and its head commit.
 type NewestHead struct {
@@ -778,20 +804,24 @@ type headAttributionResult struct {
 
 // headAttribution resolves the issue a pull request belongs to from what GitHub said about it,
 // through the same ranked candidates every other attribution reads
-// (resolveAttributionCandidates): the first of them whose issue resolves to the repository the
-// pull request is in. It holds the head to that repository too.
+// (resolveAttributionCandidates): the first of them held to the pull request — the issue that
+// links its own URL in any repository, any other only where its issue resolves to the
+// repository the pull request is in (attributionHeldFor). It holds the head to that repository.
 //
 // Both holdings are what keep the results read honest. A pull request's title, body and branch
 // are text any account that can open one writes, this row is written for any author and any
 // repository the App watches, and an attributed row is exactly what a `before_merge` result's
 // commit stands at (HeadAttributedTo), which is the reviewer's approval condition. So a
-// candidate whose issue resolves to another repository, or to none, is passed over for the next
-// one and a pull request no candidate of which resolves here attributes nobody; and neither
-// does a pull request whose head is not in this repository, since on a public repository anyone
-// may open one from a fork at any commit of their choosing — including an earlier one that
-// already carries a recorded pass — and title it after an issue, which would make that commit
-// a basis the recorded pass stands at again. Either way the row is still written, since the
-// reconcile and the head itself are wanted either way, but with no issue and the source "none".
+// candidate named by that text whose issue resolves to another repository, or to none, is passed
+// over for the next one and a pull request no candidate of which is held attributes nobody. A
+// link to the pull request's URL is no such text: a person of Dispatch writes it on the issue, so
+// it holds in any repository (R19 of the spec of several open pull requests). Neither attributes
+// a pull request whose head is not in this repository, linked or not, since on a public
+// repository anyone may open one from a fork at any commit of their choosing — including an
+// earlier one that already carries a recorded pass — and title it after an issue, or open it
+// at a URL an issue already links, which would make that commit a basis the recorded pass stands
+// at again. Either way the row is still written, since the reconcile and the head itself are
+// wanted either way, but with no issue and the source "none".
 //
 // The head is tested before any candidate is taken, since a fork's head attributes nobody
 // whatever the title names. This is the one place it is tested (headInOwnRepository), and the

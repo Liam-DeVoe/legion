@@ -3799,6 +3799,7 @@ export interface components {
       learned_at?: components["schemas"]["BasisLearnedAt"];
       merged?: boolean;
       pull_request?: number;
+      repo?: string;
     };
     CheckBlock: {
       artifact_id: string;

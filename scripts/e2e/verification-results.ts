@@ -138,6 +138,10 @@ const session = "verification-results-e2e";
 /** The repository the proof's issues resolve to, and the one the App is not installed on. */
 const repo = "acme/verification-live";
 const hiddenRepo = "acme/verification-hidden";
+/** The attribution rule the server judges a pull request by and stamps on each row it writes
+ *  (delivery.AttributionRuleVersion): 3, which holds the issue's own link to a pull request's URL
+ *  in any repository. A row stored under an older rule is one the reconcile judges again. */
+const attributionRule = 3;
 
 /** The commits the proof's repository holds, which is every commit a case records against it:
  *  the record route asks GitHub whether the repository the check's issue resolves to holds a
@@ -1611,7 +1615,7 @@ await runCase("k-attribution-what-decides-a-pull-request-issue", async () => {
     });
   }
   for (const envelope of envelopes) {
-    const wanted = `${envelope.want} (open at ${envelope.head.slice(0, 12)}, rule 2)`;
+    const wanted = `${envelope.want} (open at ${envelope.head.slice(0, 12)}, rule ${attributionRule})`;
     const stored = await awaitStoredHead(envelope.number, wanted);
     note(`#${envelope.number} on ${envelope.head_ref}, titled ${JSON.stringify(envelope.title)}`);
     note(`  is stored as ${stored}`);
@@ -1693,7 +1697,7 @@ await runCase("k-attribution-what-decides-a-pull-request-issue", async () => {
     note(`#${row.number} is stored ${row.state}, credited to ${parent} by title_body under rule 1`);
   }
   for (const row of stored) {
-    const wanted = `${child} by title_body (${row.state} at ${row.head.slice(0, 12)}, rule 2)`;
+    const wanted = `${child} by title_body (${row.state} at ${row.head.slice(0, 12)}, rule ${attributionRule})`;
     const seen = await awaitStoredHead(row.number, wanted);
     note(`the reconcile re-judged #${row.number}: ${seen}`);
     if (seen !== wanted) return `#${row.number} reads ${seen} after the reconcile, want ${wanted}`;
@@ -1734,7 +1738,7 @@ await runCase("k-attribution-what-decides-a-pull-request-issue", async () => {
     updated_at: new Date().toISOString(),
     url: `https://github.com/${repo}/pull/41`,
   });
-  const wantedHead = `${child} by branch (open at ${commits.attributionBranchMoved.slice(0, 12)}, rule 2)`;
+  const wantedHead = `${child} by branch (open at ${commits.attributionBranchMoved.slice(0, 12)}, rule ${attributionRule})`;
   const movedHead = await awaitStoredHead(41, wantedHead);
   note(`#41 after the push is stored as ${movedHead}`);
   if (movedHead !== wantedHead) return `#41 after the push is stored as ${movedHead}`;

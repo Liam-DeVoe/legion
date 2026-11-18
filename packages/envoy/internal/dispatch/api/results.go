@@ -189,11 +189,12 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The one repository the check's issue resolves to, read once for the two callers below:
-	// the refusal of a commit it does not hold, and the read-through of the pull requests
-	// GitHub names for that commit after the write. It is nil when there is nothing to ask
-	// GitHub about — a deployment with no App key, an issue that resolves to no repository,
-	// and a read of Dispatch's own rows that failed, which is logged and stores the result as
-	// every answer but the proof of absence does.
+	// the refusal of a commit that it, and every other repository of the issue's pull requests,
+	// does not hold, and the read-through of the pull requests GitHub names for that commit after
+	// the write. It is nil when there is nothing to ask GitHub about — a deployment with no App
+	// key, an issue that resolves to no repository, and a read of Dispatch's own rows that
+	// failed, which is logged and stores the result as every answer but the proof of absence
+	// does.
 	//
 	// It is the check's issue's repository, not the recording issue's: readThroughPullRequests
 	// and the results read both resolve check_issue_key, and a refusal keyed on the recording
@@ -223,10 +224,17 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// Asked here for the reason resolveCheck is asked here, before the transaction opens: it is
 	// a GitHub round trip, and the comment over that resolve records what a slow read under the
 	// two issue row locks costs. Nothing is written before it, so a refusal leaves no row and no
-	// event behind.
-	if err := s.refuseUnknownCommit(r.Context(), checkRepo, input.Commit); err != nil {
+	// event behind. The answer is the repository that held the commit, where one did: the
+	// read-through after the write reads through it, since for a pull request the issue links it
+	// may be another repository than the issue's own.
+	heldIn, err := s.refuseUnknownCommit(r.Context(), check.IssueKey, checkRepo, input.Commit)
+	if err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	readThrough := checkRepo
+	if heldIn != nil {
+		readThrough = heldIn
 	}
 
 	tx, err := s.begin(r.Context())
@@ -326,7 +334,7 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// result.recorded, and no later event refreshes it, so a tab that read the results before
 	// the pull request row landed would show this result standing at no basis until something
 	// else happened.
-	s.readThroughPullRequests(r.Context(), check.IssueKey, result.CommitSHA, checkRepo)
+	s.readThroughPullRequests(r.Context(), check.IssueKey, result.CommitSHA, readThrough)
 	s.publish(r.Context(), event)
 	WriteJSON(w, http.StatusCreated, checkResultRecorded{
 		Line:   checkResultLine(check, result),
@@ -661,48 +669,104 @@ func (s *server) refuseResultScreenshots(ctx context.Context, q queryer, issueKe
 	return nil
 }
 
-// refuseUnknownCommit refuses a result at a commit repo definitely does not hold: 400
-// RESULT_COMMIT_UNKNOWN, naming the commit and that `owner/repo`. repo is the repository the
-// check's issue resolves to, which recordCheckResult reads once for this refusal and for the
-// read-through after the write; a nil repo is nothing to ask GitHub about and no refusal. A
-// deployment with no App key resolves none, so the key is not checked again here.
+// refuseUnknownCommit refuses a result at a commit that no repository of the check's issue holds:
+// 400 RESULT_COMMIT_UNKNOWN, naming the commit and each repository it asked. repo is the
+// repository the check's issue resolves to, which recordCheckResult reads once for this refusal
+// and for the read-through after the write; a nil repo is nothing to ask GitHub about and no
+// refusal. A deployment with no App key resolves none, so the key is not checked again here.
+//
+// The repositories of the issue are its own and the repository of each open or merged pull
+// request of the issue (delivery.RepositoriesOfIssue), which for a pull request the issue links
+// may be another one (R17 of the spec of several open pull requests). A commit that is the head
+// of such a pull request is taken with no read of GitHub at all (delivery.HeadAttributedTo): its
+// row says which repository holds it. Every other commit is asked of the issue's own repository,
+// then of each other one in name order, until one holds it, and the answer is the repository that
+// held it, which the read-through after the write reads through. A commit at no head may be one a
+// CI job pushed to a branch of the other repository, so the other repositories are asked too.
 //
 // It runs before the transaction opens, so a refused result leaves no check_results row and no
 // result.recorded event behind. Dispatch stored a result at a mistyped commit no repository
 // held once, and a reader could not tell it from the real head, since both print as twelve
 // characters.
 //
-// It refuses on nothing but GitHub's proof that the repository does not hold the commit, which
-// delivery.RepositoryHoldsCommit defines as the one 422 whose message says GitHub found no
-// commit for the SHA. No other GitHub answer can block the result a closed issue takes, the
-// production check's after-merge result — whose merge commit is on the branch its pull request
-// merged into and is held anyway.
-func (s *server) refuseUnknownCommit(ctx context.Context, repo *string, sha string) error {
+// It refuses on nothing but GitHub's proof, from each repository asked, that the repository does
+// not hold the commit, which delivery.RepositoryHoldsCommit defines as the one 422 whose message
+// says GitHub found no commit for the SHA. Any other GitHub answer from any of them, and a read of
+// Dispatch's own rows that failed, stores the result: no such answer can block the result a closed
+// issue takes, the production check's after-merge result — whose merge commit is on the branch its
+// pull request merged into and is held anyway.
+func (s *server) refuseUnknownCommit(ctx context.Context, checkIssueKey string, repo *string, sha string) (*string, error) {
 	if repo == nil {
-		return nil
+		return nil, nil
 	}
-	held, err := delivery.RepositoryHoldsCommit(ctx, s.deps.GitHub, *repo, sha)
+	pool := s.deps.Store.Pool
+	known, err := delivery.HeadAttributedTo(ctx, pool, checkIssueKey, sha)
 	if err != nil {
-		slog.Info("dispatch: GitHub could not say whether a recorded result's commit is held",
-			"repo", *repo, "commit", sha, "error", err)
-		return nil
+		slog.Warn("dispatch: read the pull request heads of a recorded result's commit",
+			"issue", checkIssueKey, "commit", sha, "error", err)
 	}
-	if held {
-		return nil
+	if known {
+		return nil, nil
 	}
-	return errorf(http.StatusBadRequest, "RESULT_COMMIT_UNKNOWN",
-		"%s holds no commit %s: record the result once the commit is pushed", *repo, sha)
+	repos := []string{*repo}
+	proven := true
+	others, err := delivery.RepositoriesOfIssue(ctx, pool, checkIssueKey)
+	if err != nil {
+		slog.Warn("dispatch: read the repositories of a recorded result's issue",
+			"issue", checkIssueKey, "error", err)
+		proven = false
+	}
+	for _, other := range others {
+		if !strings.EqualFold(other, *repo) {
+			repos = append(repos, other)
+		}
+	}
+	for _, asked := range repos {
+		held, err := delivery.RepositoryHoldsCommit(ctx, s.deps.GitHub, asked, sha)
+		if err != nil {
+			slog.Info("dispatch: GitHub could not say whether a recorded result's commit is held",
+				"repo", asked, "commit", sha, "error", err)
+			proven = false
+			continue
+		}
+		if held {
+			return &asked, nil
+		}
+	}
+	if !proven {
+		return nil, nil
+	}
+	return nil, errorf(http.StatusBadRequest, "RESULT_COMMIT_UNKNOWN",
+		"%s %s no commit %s: record the result once the commit is pushed",
+		joinRepositories(repos), pluralHold(len(repos)), sha)
+}
+
+// joinRepositories names repos as one phrase: `a`, `a and b`, `a, b and c`.
+func joinRepositories(repos []string) string {
+	if len(repos) < 2 {
+		return strings.Join(repos, "")
+	}
+	return strings.Join(repos[:len(repos)-1], ", ") + " and " + repos[len(repos)-1]
+}
+
+// pluralHold is the verb of a refusal that names count repositories.
+func pluralHold(count int) string {
+	if count == 1 {
+		return "holds"
+	}
+	return "hold"
 }
 
 // readThroughPullRequests teaches Dispatch the pull requests GitHub names for a result's
 // commit when that commit is the head of none it already knows for the check's issue, so a
 // result recorded at the head of a pull request no event has reached Dispatch for stands at
-// that head at once. It asks about the check's own issue and reads through repo, the one
-// repository that issue resolves to, which recordCheckResult resolved before the write: the
-// issue comparisonReader.headBases names the heads of. A nil repo — a deployment with no App
-// key, an issue resolving to no repository, or a resolve that failed — leaves nothing to read
-// through, and it is answered before the database is read, since no head this read found
-// could be used.
+// that head at once. It asks about the check's own issue and reads through repo: the repository
+// refuseUnknownCommit found holds the commit, which for a pull request the issue links may be
+// another than the issue's own, else the one repository that issue resolves to, which
+// recordCheckResult resolved before the write: the issue comparisonReader.headBases names the
+// heads of. A nil repo — a deployment with no App key, an issue resolving to no repository, or a
+// resolve that failed — leaves nothing to read through, and it is answered before the database
+// is read, since no head this read found could be used.
 //
 // It never fails the record: the row is written, and a head Dispatch could not learn leaves
 // the result read exactly as it would have been without the call.

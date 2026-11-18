@@ -1371,13 +1371,19 @@ const (
 // `named`, a `pull_request` and a `branch_head` basis, Branch for a `branch` and a `branch_head`
 // one, and PullRequest is the number of the pull request whose head the commit is. Merged is
 // set on a `pull_request` basis whose pull request merged, whose commit is its final head: a
-// reader tells it from an open pull request's head, and counts it apart.
+// reader tells it from an open pull request's head, and counts it apart. Repo is set on a
+// `pull_request` basis whose pull request is in another repository than the one the check's issue
+// resolves to, compared without case: `owner/repo`, which a reader names beside the number, since
+// a number alone does not say which repository holds the pull request (R18 of the spec of several
+// open pull requests). It is empty for a pull request of the issue's own repository, and for every
+// basis where Dispatch cannot name the issue's repository.
 type CheckBasis struct {
 	Kind        string          `json:"kind" enum:"named,pull_request,branch,branch_head"`
 	Commit      string          `json:"commit,omitempty"`
 	Branch      string          `json:"branch,omitempty"`
 	PullRequest *int            `json:"pull_request,omitempty"`
 	Merged      bool            `json:"merged,omitempty"`
+	Repo        string          `json:"repo,omitempty"`
 	LearnedAt   *BasisLearnedAt `json:"learned_at,omitempty"`
 }
 

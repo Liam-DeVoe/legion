@@ -284,8 +284,10 @@ function ComparedWith({ check }: { check: CheckBlock }): ReactNode {
 
 /** R13: one row for each head a pass of the check must stand at, under the pill: the pull request,
  *  its whole head, its state and its roles, in the words `dispatch results` prints on the line of
- *  that head (`subjectStateWords`); then the line that counts the merged pull requests, which
- *  decide nothing while one is open. The pill keeps the answer of the whole check. */
+ *  that head (`subjectPlace`, `subjectStateWords`), so a pull request of another repository than
+ *  the issue's names that repository beside its number (R18); then the line that counts the merged
+ *  pull requests, which decide nothing while one is open. The pill keeps the answer of the whole
+ *  check. */
 function Heads({ check }: { check: CheckBlock }): ReactNode {
   const subjects = check.pass_stands.subjects ?? [];
   if (subjects.length === 0) return null;
@@ -298,7 +300,7 @@ function Heads({ check }: { check: CheckBlock }): ReactNode {
             className={`text-sm break-words ${textSecondaryOnSurface}`}
             data-pass-stands={subject.answer}
             data-testid="verification-check-head"
-            key={`${subject.basis.kind}-${subject.basis.pull_request ?? subject.basis.branch ?? ""}-${subject.basis.commit ?? ""}`}
+            key={`${subject.basis.kind}-${subject.basis.repo ?? ""}-${subject.basis.pull_request ?? subject.basis.branch ?? ""}-${subject.basis.commit ?? ""}`}
           >
             {subjectPlace(subject.basis)} at{" "}
             <code className="break-all">{subject.basis.commit ?? "an unnamed commit"}</code>:{" "}

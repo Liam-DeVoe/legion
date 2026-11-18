@@ -2370,8 +2370,9 @@ This is not `delivery_pull_requests`, which keeps the merged pull requests of th
 this table holds open ones too, by any author and in any repository, one row per pull request.
 A row names the `repo` and `number`, the repository under the canonical name it is called today (`refs.CanonicalRepo`), so one repository stored under two names keeps one row and one attribution (`20261105075455_repo_projects_renamed_to`, below);
 then the `head_sha` (on a merge, the final head of the merged work), the `head_ref` and `base_ref`, the `state` (`open`, `closed` or `merged`), the `issue_key` Dispatch's attribution picks and which of its five sources named it, the title and URL, the pull request's `updated_at` as the event reported it, and when the reconcile or a read-through last read it through the App.
-That key is the first issue the five sources name that resolves to the repository the pull request is in, not the first key they name (`attributionCandidates`, `attributionHeld` in `delivery/attribution.go`):
-a pull request titled after another repository's issue therefore keeps its own, and one no candidate of which resolves to its repository is attributed to nobody, with the source `none`, as is one whose head branch is in another repository (`headInOwnRepository`).
+That key is the first issue the five sources name that is held to the pull request, not the first key they name (`attributionCandidates`, `attributionHeldFor` in `delivery/attribution.go`):
+the issue whose external link is the pull request's own URL is held in any repository, since a person links an issue to one pull request, and an issue any other source names is held only where it resolves to the repository the pull request is in (`attributionHeld`).
+A pull request titled after another repository's issue therefore keeps its own, a pull request of another repository that an issue links is that issue's, and one no candidate of which is held is attributed to nobody, with the source `none`, as is one whose head branch is in another repository, linked or not (`headInOwnRepository`).
 The hold is the server's own repository-resolution rule spliced into the statement that reads the candidates (`refs.IssueRepoTerms`, `attributionCandidatesQuery`), so the attribution and the issue page cannot disagree, and a pull request's best 25 candidates are the ones read (`attributionCandidateBound`).
 One rule picks both attributions: this row's `issue_key` (`headAttribution`) and the issue of a `delivery_pull_requests` row, which the reconcile resolves again from the database alone (`AttributePullRequests`).
 An older event arriving after a newer one leaves the row as it is, and the reconcile re-reads an open row older than five minutes.
@@ -2382,6 +2383,7 @@ The head pass also takes every merged row credited to nobody that the rule the r
 — one no read of GitHub has reached, and one an older rule judged
 — and offers such a row once per rule version (`delivery.AttributionRuleVersion`, `20261105070440_pull_request_heads_attribution_rule` below):
 a `pull_request` envelope naming no head repository attributes nobody, a pull request merged under an older rule keeps whatever that rule concluded, and nothing else ever looks at a merged row again, so without that arm a result at such a merged head would stand at no basis for good.
+The rule is 3: it holds the issue's own link to a pull request's URL in any repository, so a pull request of another repository that an issue links, merged under rule 2, is judged once more and becomes that issue's.
 The row is written outside the reconcile by the `pull_request` envelope, and by the read-through made for a commit that heads no pull request Dispatch knows (`delivery.ReadThroughCommitPulls`):
 a recorded result makes one, and so does the read of an issue's results, which spends at most one such read per repository and commit every `delivery.CommitPullReadStaleAfter` (`GET /api/v1/issues/{key}/results`, Routes below).
 `pull_request_heads_issue_head` answers the heads one issue's checks are compared with, `pull_request_heads_open_stale` the reconcile's open batch, `pull_request_heads_merged_unread` and `pull_request_heads_merged_rule` its merged arm
@@ -4315,6 +4317,8 @@ Each item below names a path with its method and identity, then its purpose.
   Each result carries `commit_stands`, where its own commit stands against those, `check_words_moved`, and `retracted` where a retraction stands against it.
 
   - A `before_merge` check is compared with every head Dispatch holds for the check's own issue: the head of an `open` pull request, and the final head of a `merged` one, attributed to that issue; the basis of a merged one carries `merged: true`.
+    A pull request the issue links may be in another repository than the issue's own; its basis carries `repo`, that `owner/repo`, compared without case, so `dispatch results` and the Verification tab name it beside the number (`acme/infra#9`).
+    A basis of the issue's own repository, and every basis where Dispatch cannot name the issue's repository, carries no `repo`.
     After them, in name order, it is compared with the head of each branch that a result a CI job recorded on that issue names, `{kind: "branch_head", branch, commit}`, where `commit` is the branch's head as GitHub answers it on that read (`GET /repos/{owner}/{repo}/git/ref/heads/{branch}`, under a 10-second deadline):
     a CI job runs on a push of its change's branch, so its pass stands at that branch's head before any pull request opens.
     A branch whose head a pull request head already names adds nothing, and a branch GitHub no longer holds, deleted once its change merged, adds no basis.
@@ -4428,10 +4432,12 @@ Each item below names a path with its method and identity, then its purpose.
   - From a role, `role` is at most 32 characters of `[a-z-]`, `verdict` is `pass` or `fail`, `commit` is 40 lowercase hex, and absent counts are 0;
     a `pass` counting any failed, skipped or excluded case is `400 RESULT_CONTRADICTS`, and any other malformed field `400 RESULT_INPUT`.
 
-  - Dispatch asks GitHub whether the repository the check's issue resolves to holds that commit, before it writes anything, and refuses a result at one it does not with `400 RESULT_COMMIT_UNKNOWN`, naming the commit and that `owner/repo`.
+  - Before it writes anything, Dispatch takes a result at a commit that the repository the check's issue resolves to holds, or that the repository of an open or merged pull request of that issue holds: a pull request the issue links may be in another repository (`delivery.RepositoriesOfIssue`).
+    A commit that is the head of such a pull request is taken with no read of GitHub; any other commit is asked of the issue's repository, then of each other one in name order, until one holds it, and the record route reads the pull requests of that commit through the repository that held it.
+    It refuses a result with `400 RESULT_COMMIT_UNKNOWN` only when each of those repositories answers that it holds no such commit, naming the commit and each `owner/repo`.
 
-  - Only GitHub's `422 No commit found for SHA` refuses:
-    a deployment with no App key, an issue resolving to no repository, a repository the App cannot read (GitHub answers `404` for that), a rate limit, a timeout and a failed read all store the result as before.
+  - Only GitHub's `422 No commit found for SHA`, from each repository asked, refuses:
+    a deployment with no App key, an issue resolving to no repository, a repository the App cannot read (GitHub answers `404` for that), a rate limit, a timeout, a `5xx` and a failed read, from any of them, all store the result as before.
 
   - A screenshot names an image document of the recording issue or of the check's issue.
 

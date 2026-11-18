@@ -8,6 +8,7 @@ import {
   createProject,
   editArtifact,
   getArtifactText,
+  patchIssue,
   putRepoProject,
   recordCheckResult,
   retractCheckResult,
@@ -29,6 +30,10 @@ import { asUser } from "./users";
 const repository = "acme/widgets";
 const firstHead = "1".repeat(40);
 const secondHead = "2".repeat(40);
+/** Another repository than the issue's, whose pull request the issue links, and that pull
+ *  request's head. */
+const otherRepository = "acme/infra";
+const thirdHead = "3".repeat(40);
 
 /** The spec the checks serve. A `serves` pointer is refused unless it names a block that
  *  exists, so the requirements are written with the issue, before any check points at one. */
@@ -347,10 +352,10 @@ A retracted pass stands for nothing.
   }
 });
 
-// SLOW(>=2s): a project, its default repository, two open pull requests in the fake GitHub, a
-// Verification document of one check, two recorded results, each record route reading through to
-// that fake for its pull request's head, one run of the real `dispatch results`, then one load of
-// the tab at a desktop width and one at a phone width.
+// SLOW(>=2s): a project, its default repository, two open pull requests in the fake GitHub and one
+// of another repository the issue links, a Verification document of one check, three recorded
+// results, two of them reading through to that fake for their pull request's head, one run of the
+// real `dispatch results`, then one load of the tab at a desktop width and one at a phone width.
 test("the Verification tab shows the state at each open head", async ({ browser }, testInfo) => {
   await createProject({ key: "VER", name: "Verification" });
   await putRepoProject(repository, { default: true, project: "VER" });
@@ -365,6 +370,13 @@ test("the Verification tab shows the state at each open head", async ({ browser 
         "7": { head_sha: firstHead, state: "open", title: `${issue.key} the first change` },
         "8": { head_sha: secondHead, state: "open", title: `${issue.key} the second change` },
       },
+    },
+    [otherRepository]: {
+      commit_pulls: { [thirdHead]: [9] },
+      contents: "read",
+      installation_id: 256,
+      pull_requests: "read",
+      pulls: { "9": { head_sha: thirdHead, state: "open", title: "Move the deploy job" } },
     },
   });
   await createIssueArtifact(issue.key, {
@@ -393,6 +405,24 @@ A pass must stand at each open head.
     role: "tester",
     verdict: "fail",
   });
+  // A pull request of another repository that the issue links by its URL is the issue's (R19), so
+  // its head is a head of the check like the others. The harness runs with NATS disabled, so the
+  // head is staged as the `pull_request` envelope would have stored it: one `pull_request_heads`
+  // row, attributed to the issue by its link. A result at that head is taken with no read of
+  // GitHub (R17), and its line and its row name its repository beside its number (R18).
+  const infraPull = `https://github.com/${otherRepository}/pull/9`;
+  await patchIssue(issue.key, { external_links: [{ url: infraPull }] });
+  await sql(
+    `INSERT INTO pull_request_heads (repo, number, head_sha, state, issue_key, attribution_source, title, url, checked_at)
+     VALUES ('${otherRepository}', 9, '${thirdHead}', 'open', '${issue.key}', 'external_link', 'Move the deploy job', '${infraPull}', now())`
+  );
+  const infra = await recordCheckResult(issue.key, {
+    check: "c-each",
+    commit: thirdHead,
+    observed: "12 passed",
+    role: "tester",
+    verdict: "pass",
+  });
 
   // The lines of the heads that the real command prints for the same issue.
   const home = mkdtempSync(join(tmpdir(), "dispatch-verification-each-head-"));
@@ -402,7 +432,7 @@ A pass must stand at each open head.
     expect(read.code, read.stderr).toBe(0);
     printed = read.stdout
       .split("\n")
-      .filter((line) => /^ {2}- #\d+ at /.test(line))
+      .filter((line) => /^ {2}- (?:[\w.-]+\/[\w.-]+)?#\d+ at /.test(line))
       .map((line) => line.slice(4));
   } finally {
     rmSync(home, { force: true, recursive: true });
@@ -412,6 +442,7 @@ A pass must stand at each open head.
   const wanted = [
     `#7 at ${firstHead}: yes, from tester. Pass ${pass.result.id} decides it.`,
     `#8 at ${secondHead}: no, as fail ${fail.result.id} counts there.`,
+    `${otherRepository}#9 at ${thirdHead}: yes, from tester. Pass ${infra.result.id} decides it.`,
   ];
   expect([...printed].sort()).toEqual(wanted);
 

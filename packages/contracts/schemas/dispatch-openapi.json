@@ -15402,6 +15402,9 @@
           },
           "pull_request": {
             "type": "integer"
+          },
+          "repo": {
+            "type": "string"
           }
         },
         "required": [

@@ -122,10 +122,10 @@ The agent that develops the change records its results this way before the merge
 blocks a check is fixed, not skipped (*When no surface reaches the changed path*, below).
 
 **Record a result after the commit is pushed.** Dispatch asks GitHub whether the repository of
-the check's issue holds the commit, and refuses a result at one it does not hold with `400
-RESULT_COMMIT_UNKNOWN`, naming the commit and the repository; a commit that is still only local
-is such a commit. Where Dispatch cannot read the repository at all it stores the result as
-before, and says so when the results are read.
+the check's issue, or of one of the issue's pull requests, holds the commit, and refuses a result
+at one that none of them holds with `400 RESULT_COMMIT_UNKNOWN`, naming the commit and each
+repository; a commit that is still only local is such a commit. Where Dispatch cannot read a
+repository it stores the result as before, and says so when the results are read.
 
 **A check that cannot fail is not a result.** Before a check counts as evidence, show it
 failing: the negative control is that demonstration, run on the same command with a deliberately
@@ -146,13 +146,15 @@ results recorded against it and the commit each one was recorded at;
 `dispatch read --issue <issue>` names each requirement of the spec no check serves.
 Where a result's commit stands is read, not stored. A `before_merge` result is compared only with
 the heads of the pull requests attributed to the check's issue, with no fallback to the default
-branch. Dispatch attributes a pull request to the first issue its five ranked sources name in the
-pull request's repository (`packages/envoy/internal/dispatch/delivery/attribution.go`): the issue
-whose external link is the pull request, the issue linked to a GitHub issue its body cites, a key
-in its head branch, a key in its title or body, and a key in its commit messages. So a result reads
-as at another commit (`older` in a client before pi-envoy 17.1.0) when its commit is an earlier
-head, when no attributed head is its commit, as when the pull request is attributed to another
-issue, or when any field of the check changed after it was recorded.
+branch. Dispatch attributes a pull request to the first issue its five ranked sources name
+(`packages/envoy/internal/dispatch/delivery/attribution.go`): the issue whose external link is the
+pull request, in any repository, and then, only where the issue resolves to the pull request's
+repository, the issue linked to a GitHub issue its body cites, a key in its head branch, a key in
+its title or body, and a key in its commit messages. A pull request whose head is in a fork is
+attributed to no issue. So a result reads as at another commit (`older` in a client before
+pi-envoy 17.1.0) when its commit is an earlier head, when no attributed head is its commit, as
+when the pull request is attributed to another issue, or when any field of the check changed
+after it was recorded.
 
 **An issue is proved by its own checks.** Approval is gated by the `before_merge` checks of its
 own Verification document, read at its own head, so a result a child recorded proves nothing for
