@@ -69,18 +69,18 @@ export function IssueTitleRow({
   // Set by a key that ends the edit, and read once the heading is drawn again: the focus goes
   // back to it.
   const returning = useRef(false);
-  // The draft this edit sent since the reader last changed it, trimmed as it went, or null: a
-  // switch or a hide sends it, and a change the reader makes clears it (the editor's `onChange`).
-  // A draft goes once: neither a later switch nor the end of the edit sends it again.
-  // `requestTitleSubmit` would send it a second time after its write was refused or stopped, or
-  // in the moment between its landing and the page drawing the issue it answered, while the
-  // issue's title read here is still the old one. A text the reader writes after that is theirs
-  // to send, though it may be the same text: another reader's write can have changed the title
-  // since, and the draft, not changed, took that title.
+  // The draft a switch or a hide of this edit sent since the reader last changed it, trimmed as
+  // it went, or null. It is set only when its write went (`submitTitle` answers "sent"): a draft
+  // queued behind a write still out has not gone, and a refusal of that write leaves it the
+  // reader's to send as the edit ends. A change the reader makes clears it (the editor's
+  // `onChange`), and so does the next edit (`openEdit`). A draft goes once: neither a later switch
+  // nor the end of the edit sends it again, which `requestTitleSubmit` would do after its write
+  // was refused or stopped. A text the reader writes after that is theirs to send, though it may
+  // be the same text: another reader's write can have changed the title since, and the draft, not
+  // changed, took that title.
   const sent = useRef<string | null>(null);
   // The editor's text as the reader last wrote it in this edit. The draft takes that text trimmed
-  // as a write of it lands with the edit open (`onIssueSuccess`), or as a switch finds it the
-  // issue's title but for spaces at its ends (`requestTitleSubmit`). While the draft is the
+  // as a write of it lands with the edit open (`onIssueSettled`). While the draft is the
   // reader's text trimmed, the editor and the heading under it hold the reader's text, so the
   // editor's value does not change under them: a space typed before the next word stays, and the
   // caret stays where it was.
@@ -124,15 +124,16 @@ export function IssueTitleRow({
   // Sends a changed draft while the reader is away, and leaves the edit open with their text and
   // caret (decision 295): today's page sends the draft as the window loses the focus, and a tab
   // the browser discards, a tab closed while away or a close of the issue elsewhere would lose it.
-  // A draft is changed when it is not empty once trimmed, differs from the title it is compared
-  // with - the title of the write still out while one is, else the issue's (`titleDirty`;
-  // `requestTitleSubmit` sends nothing for one that differs from it only by spaces at its ends) -
-  // and is not the draft this edit already sent. An empty draft sends nothing and says nothing
+  // A draft is changed when it is not empty once trimmed, differs once trimmed from the title it
+  // is judged against - the title of the write still out while one is, else the issue's
+  // (`titleDirty`) - and is not the draft this edit already sent. A draft the hook only queued
+  // behind the write still out is not marked sent: should that write be refused, the draft is
+  // still the reader's to send as the edit ends. An empty draft sends nothing and says nothing
   // while the reader is away: its "Title is required." waits for the end of the edit.
   const sendAway = () => {
     const draft = drafts.title.trim();
     if (isClosed || !drafts.titleDirty || draft === "" || draft === sent.current) return;
-    if (drafts.requestTitleSubmit()) sent.current = draft;
+    if (drafts.submitTitle() === "sent") sent.current = draft;
   };
   // Ends the edit as the editor's blur does: the draft is sent unless this edit already sent it,
   // and a press under way holds the heading at the editor's height until it ends.
@@ -249,7 +250,8 @@ export function IssueTitleRow({
             // compositionend, with `isComposing` false and keyCode 229 (WebKit bug 165004).
             if (event.nativeEvent.isComposing || event.keyCode === 229) return;
             if (event.key === "Escape") {
-              // Puts back the issue's title, which a write still out replaces as it lands.
+              // Puts back the issue's title, or while a write is out the title it carries, which
+              // the issue is about to hold (decision 316).
               drafts.discardTitle();
               returning.current = true;
               setEditing(false);

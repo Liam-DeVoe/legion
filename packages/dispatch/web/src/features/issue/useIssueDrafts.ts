@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 
 import type { Issue } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -10,6 +10,10 @@ export interface IssueUpdateMutation {
   variables: IssueUpdateInput | undefined;
 }
 
+/** What a request to send a field's draft did: sent it, queued it behind the write still out,
+ *  found nothing to send, or refused it (a closed issue, or a value Dispatch would not take). */
+export type SubmitOutcome = "sent" | "queued" | "unchanged" | "refused";
+
 export interface IssueDrafts {
   discardTitle: () => void;
   discardRoute: () => void;
@@ -19,8 +23,11 @@ export interface IssueDrafts {
   requestParentSubmit: () => boolean;
   requestRouteSubmit: () => boolean;
   requestStatusSubmit: (status: string) => boolean;
+  /** `submitTitle`, answering whether the title was sent or queued. */
   requestTitleSubmit: () => boolean;
   retry: () => void;
+  /** The end of an edit of the title: asks for the draft to be sent, and says what came of it. */
+  submitTitle: () => SubmitOutcome;
   parent: string;
   parentDirty: boolean;
   route: string;
@@ -36,241 +43,227 @@ export interface IssueDrafts {
 
 const routePattern = /^(role:[a-z0-9-]+|session:[0-9a-f-]{16,})$/;
 
+/** One field's draft (decision 315). */
+interface FieldState {
+  /** The issue's value as last read: a prop, or a write's landing. */
+  server: string;
+  /** The value of this field's write still out, or null. */
+  out: string | null;
+  /** The reader's text, raw. */
+  draft: string;
+  /** What the draft would send now, once a send was asked for; else null. */
+  queued: string | null;
+}
+
+/** What one field's draft is: the value a text sends, which values Dispatch takes, and the write
+ *  that sends one. */
+interface FieldRules {
+  normalize: (text: string) => string;
+  valid: (value: string) => boolean;
+  wire: (value: string) => IssueUpdateInput;
+}
+
+type Field = "title" | "route" | "parent";
+
+type FieldEvent =
+  | { type: "write"; text: string }
+  | { type: "request"; closed: boolean }
+  | { type: "discard" }
+  | { type: "sent"; value: string }
+  | { type: "server"; value: string }
+  | { type: "settled"; landed: boolean };
+
+const fieldRules: Readonly<Record<Field, FieldRules>> = {
+  title: {
+    normalize: (text) => text.trim(),
+    valid: (value) => value !== "",
+    wire: (title) => ({ title }),
+  },
+  route: {
+    normalize: (text) => text,
+    valid: (value) => value === "" || routePattern.test(value),
+    wire: (route) => ({ route }),
+  },
+  // An empty draft clears the parent: the wire form is null, never "".
+  parent: {
+    normalize: (text) => text.trim(),
+    valid: () => true,
+    wire: (parent) => ({ parent: parent === "" ? null : parent }),
+  },
+};
+/** The three fields, in the order a drain sends them. */
+const fields: readonly Field[] = ["title", "route", "parent"];
+
+/** Until the write out lands the issue still holds the old value, so a draft is judged against
+ *  the value out while there is one: a reader who types the old value back is undoing the write. */
+const reference = (state: FieldState): string => state.out ?? state.server;
+
+const changed = (rules: FieldRules, state: FieldState): boolean =>
+  rules.normalize(state.draft) !== reference(state);
+
+/** The value the draft would send now: a changed draft Dispatch would take, else null. */
+function wouldSend(rules: FieldRules, state: FieldState): string | null {
+  const value = rules.normalize(state.draft);
+  return value !== reference(state) && rules.valid(value) ? value : null;
+}
+
+/** A send asked for follows the draft and its reference; with none asked for, none is made. */
+const requeued = (rules: FieldRules, state: FieldState): FieldState => ({
+  ...state,
+  queued: state.queued === null ? null : wouldSend(rules, state),
+});
+
+function requestOutcome(
+  rules: FieldRules,
+  state: FieldState,
+  closed: boolean
+): Exclude<SubmitOutcome, "sent"> {
+  if (closed || !rules.valid(rules.normalize(state.draft))) return "refused";
+  return changed(rules, state) ? "queued" : "unchanged";
+}
+
+/**
+ * One field's draft, as one pure step per event. `reference` is the value out, else the
+ * issue's; a draft is `changed` when its text normalized differs from it, and `wouldSend` is
+ * that text, if Dispatch would take it.
+ *
+ * - `write(text)`, the reader's typing: the draft is the text, and a send asked for follows it,
+ *   so a draft typed back to the reference asks for nothing.
+ * - `request`, the end of an edit, a blur, a switch's send: refused for a closed issue or a
+ *   value Dispatch would not take, which asks for nothing; an unchanged draft takes the
+ *   reference and asks for nothing; a changed one is queued as its text normalized, which the
+ *   hook's drain then sends.
+ * - `discard`, Escape or Cancel: the draft takes the reference and asks for nothing. While a
+ *   write is out that is the value out, the value the issue is about to hold (decision 316).
+ * - `sent(value)`, the guard let the write go: the value is out, and nothing is queued.
+ * - `server(value)`, a prop change or a landing's answer: an unchanged draft with nothing out
+ *   takes the value. While a value is out the reference stays that value.
+ * - `settled(landed)`, this field's write ended: a landed write's draft that is still its value
+ *   takes the value it landed with. A refusal keeps the draft, which is then changed against the
+ *   issue's value: the reader's unsent choice, which Retry and the end of the next edit send.
+ *
+ * After `server` and `settled` a send asked for follows the draft against its new reference.
+ */
+function reduceField(rules: FieldRules, state: FieldState, event: FieldEvent): FieldState {
+  switch (event.type) {
+    case "write":
+      return requeued(rules, { ...state, draft: event.text });
+    case "request": {
+      const outcome = requestOutcome(rules, state, event.closed);
+      if (outcome === "queued") return { ...state, queued: rules.normalize(state.draft) };
+      return {
+        ...state,
+        draft: outcome === "unchanged" ? reference(state) : state.draft,
+        queued: null,
+      };
+    }
+    case "discard":
+      return { ...state, draft: reference(state), queued: null };
+    case "sent":
+      return { ...state, out: event.value, queued: null };
+    case "server": {
+      const follows = state.out === null && !changed(rules, state);
+      return requeued(rules, {
+        ...state,
+        draft: follows ? event.value : state.draft,
+        server: event.value,
+      });
+    }
+    case "settled": {
+      if (state.out === null) return state;
+      const took = event.landed && rules.normalize(state.draft) === state.out;
+      return requeued(rules, { ...state, draft: took ? state.server : state.draft, out: null });
+    }
+  }
+}
+
+const fieldAt = (value: string): FieldState => ({
+  server: value,
+  out: null,
+  draft: value,
+  queued: null,
+});
+
+const asked = (outcome: SubmitOutcome): boolean => outcome === "sent" || outcome === "queued";
+
 export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): IssueDrafts {
-  const [title, setTitle] = useState(issue.title);
-  const [titleDirty, setTitleDirty] = useState(false);
+  // Read and written synchronously: a request and the drain it starts run in one task, and so do
+  // a landing and its settle.
+  const states = useRef<Record<Field, FieldState>>({
+    title: fieldAt(issue.title),
+    route: fieldAt(issue.route ?? ""),
+    parent: fieldAt(issue.parent ?? ""),
+  });
+  const [, drawAgain] = useReducer((count: number) => count + 1, 0);
   const [titleError, setTitleError] = useState<string | null>(null);
-  const [titlePendingSubmit, setTitlePendingSubmit] = useState<string | null>(null);
-  const [route, setRoute] = useState(issue.route ?? "");
-  const [routeDirty, setRouteDirty] = useState(false);
-  const [routePendingSubmit, setRoutePendingSubmit] = useState<string | null>(null);
-  const [parent, setParent] = useState(issue.parent ?? "");
-  const [parentDirty, setParentDirty] = useState(false);
-  const [parentPendingSubmit, setParentPendingSubmit] = useState<string | null>(null);
-  const titleRef = useRef(title);
-  const routeRef = useRef(route);
-  const parentRef = useRef(parent);
-  const titleDirtyRef = useRef(false);
-  const routeDirtyRef = useRef(false);
-  const parentDirtyRef = useRef(false);
-  const titlePendingRef = useRef<string | null>(null);
-  const routePendingRef = useRef<string | null>(null);
-  const parentPendingRef = useRef<string | null>(null);
-  // The value each field's write still out carries, or null. Until that write lands the issue
-  // still holds the old value, so a draft is changed, and has something to send, against the
-  // value out: a reader who types the old value back is undoing the write.
-  const titleOutRef = useRef<string | null>(null);
-  const routeOutRef = useRef<string | null>(null);
-  const parentOutRef = useRef<string | null>(null);
   const updateIssueGuard = useSubmitGuard();
 
-  const setPendingTitle = (value: string | null) => {
-    titlePendingRef.current = value;
-    setTitlePendingSubmit(value);
-  };
-  const setPendingRoute = (value: string | null) => {
-    routePendingRef.current = value;
-    setRoutePendingSubmit(value);
-  };
-  const setPendingParent = (value: string | null) => {
-    parentPendingRef.current = value;
-    setParentPendingSubmit(value);
-  };
-  const setTitleDraftDirty = (dirty: boolean) => {
-    titleDirtyRef.current = dirty;
-    setTitleDirty(dirty);
-  };
-  const setRouteDraftDirty = (dirty: boolean) => {
-    routeDirtyRef.current = dirty;
-    setRouteDirty(dirty);
-  };
-  const setParentDraftDirty = (dirty: boolean) => {
-    parentDirtyRef.current = dirty;
-    setParentDirty(dirty);
-  };
-  const writeTitle = useCallback(
-    (next: string) => {
-      titleRef.current = next;
-      setTitle(next);
-      const dirty = next !== (titleOutRef.current ?? issue.title);
-      titleDirtyRef.current = dirty;
-      setTitleDirty(dirty);
-      setTitleError(null);
-    },
-    [issue.title]
-  );
-  const writeRoute = useCallback(
-    (next: string) => {
-      routeRef.current = next;
-      setRoute(next);
-      const dirty = next !== (routeOutRef.current ?? issue.route ?? "");
-      routeDirtyRef.current = dirty;
-      setRouteDirty(dirty);
-    },
-    [issue.route]
-  );
-  const writeParent = useCallback(
-    (next: string) => {
-      parentRef.current = next;
-      setParent(next);
-      const dirty = next !== (parentOutRef.current ?? issue.parent ?? "");
-      parentDirtyRef.current = dirty;
-      setParentDirty(dirty);
-    },
-    [issue.parent]
-  );
-  const applyServerTitle = useCallback((next: string) => {
-    titleRef.current = next;
-    setTitle(next);
-  }, []);
-  const applyServerRoute = useCallback((next: string) => {
-    routeRef.current = next;
-    setRoute(next);
-  }, []);
-  const applyServerParent = useCallback((next: string) => {
-    parentRef.current = next;
-    setParent(next);
-  }, []);
-
-  // Each value is marked out inside the guard, as its write goes: a write the guard holds back
-  // is not out, and stays a draft to send.
-  function drainPendingSubmits(): void {
-    const pendingTitle = titlePendingRef.current;
-    if (pendingTitle !== null) {
-      updateIssueGuard.guard(() => {
-        titleOutRef.current = pendingTitle;
-        updateIssue.mutate({ title: pendingTitle });
-      });
+  const apply = useCallback((field: Field, event: FieldEvent) => {
+    const state = states.current[field];
+    const next = reduceField(fieldRules[field], state, event);
+    if (
+      next.server === state.server &&
+      next.out === state.out &&
+      next.draft === state.draft &&
+      next.queued === state.queued
+    ) {
       return;
     }
-    const pendingRoute = routePendingRef.current;
-    if (pendingRoute !== null) {
-      updateIssueGuard.guard(() => {
-        routeOutRef.current = pendingRoute;
-        updateIssue.mutate({ route: pendingRoute });
+    states.current[field] = next;
+    drawAgain();
+  }, []);
+
+  // A value is marked out inside the guard, as its write goes: a write the guard holds back is
+  // not out, and its value stays queued. Answers the field it sent, or null.
+  function drainPendingSubmits(): Field | null {
+    for (const field of fields) {
+      const value = states.current[field].queued;
+      if (value === null) continue;
+      const went = updateIssueGuard.guard(() => {
+        apply(field, { type: "sent", value });
+        updateIssue.mutate(fieldRules[field].wire(value));
       });
-      return;
+      return went ? field : null;
     }
-    const pendingParent = parentPendingRef.current;
-    if (pendingParent !== null) {
-      // An empty draft clears the parent: the wire form is null, never "".
-      updateIssueGuard.guard(() => {
-        parentOutRef.current = pendingParent;
-        updateIssue.mutate({ parent: pendingParent === "" ? null : pendingParent });
-      });
-    }
+    return null;
   }
 
-  function requestTitleSubmit(): boolean {
-    const submitted = titleRef.current.trim();
-    if (issue.closed_at !== null || submitted === "") {
-      setPendingTitle(null);
-      setTitleError("Title is required.");
-      return false;
-    }
-    setTitleError(null);
-    if (submitted === (titleOutRef.current ?? issue.title)) {
-      applyServerTitle(submitted);
-      setTitleDraftDirty(false);
-      // A draft that is the title of the write still out stays pending with that write until it
-      // lands. With nothing pending the issue's old title is put back over it while the write is
-      // out, and after a refusal Retry has only that old title, which sends nothing.
-      setPendingTitle(titleOutRef.current);
-      return false;
-    }
-    setPendingTitle(submitted);
-    drainPendingSubmits();
-    return true;
+  function submit(field: Field): SubmitOutcome {
+    const closed = issue.closed_at !== null;
+    const outcome = requestOutcome(fieldRules[field], states.current[field], closed);
+    apply(field, { type: "request", closed });
+    if (outcome !== "queued") return outcome;
+    return drainPendingSubmits() === field ? "sent" : "queued";
   }
 
-  function requestRouteSubmit(): boolean {
-    const submitted = routeRef.current;
-    if (issue.closed_at !== null || (submitted !== "" && !routePattern.test(submitted))) {
-      setPendingRoute(null);
-      return false;
-    }
-    if (submitted === (routeOutRef.current ?? issue.route ?? "")) {
-      setRouteDraftDirty(false);
-      // As the title's: a draft that is the route of the write still out stays pending with it.
-      setPendingRoute(routeOutRef.current);
-      return false;
-    }
-    setPendingRoute(submitted);
-    drainPendingSubmits();
-    return true;
+  function submitTitle(): SubmitOutcome {
+    const outcome = submit("title");
+    setTitleError(outcome === "refused" ? "Title is required." : null);
+    return outcome;
   }
 
-  function requestParentSubmit(): boolean {
-    const submitted = parentRef.current.trim();
-    if (issue.closed_at !== null) {
-      setPendingParent(null);
-      return false;
-    }
-    if (submitted === (parentOutRef.current ?? issue.parent ?? "")) {
-      applyServerParent(submitted);
-      setParentDraftDirty(false);
-      // As the title's: a draft that is the parent of the write still out stays pending with it.
-      setPendingParent(parentOutRef.current);
-      return false;
-    }
-    setPendingParent(submitted);
-    drainPendingSubmits();
-    return true;
-  }
+  const requestTitleSubmit = () => asked(submitTitle());
+  const requestRouteSubmit = () => asked(submit("route"));
+  const requestParentSubmit = () => asked(submit("parent"));
 
+  // The field a write carried takes the value it carried: a write that landed with no answer is
+  // passed the issue as it was, and a later read brings any value Dispatch normalized. The other
+  // fields take the answer's: another field's write can land while this field's write waits
+  // behind it in the issue's line (a title saved after a status pick), and while a value is out
+  // a draft stays judged against it. An Escape or a Cancel while a write is out puts back the
+  // value out (decision 316), the value the issue is about to hold, so the landing finds that
+  // draft still the value out, and `settled` gives it the value the write landed with.
   const onIssueSuccess = (next: Issue, input: IssueUpdateInput) => {
-    if (input.title !== undefined && titlePendingRef.current === input.title) {
-      setPendingTitle(null);
+    for (const field of fields) {
+      const carried = input[field];
+      const value = (carried === undefined ? next[field] : carried) ?? "";
+      apply(field, { type: "server", value });
     }
-    if (input.route !== undefined && routePendingRef.current === input.route) {
-      setPendingRoute(null);
-    }
-    if (input.parent !== undefined && parentPendingRef.current === (input.parent ?? "")) {
-      setPendingParent(null);
-    }
-    // A draft that is not changed takes the value the write lands with, a draft a discard put
-    // back while the write was out too: it is the issue's value, and marked changed it would send
-    // the old value over the new one. Another field's write can land while this field's write
-    // waits behind it in the issue's line (a title saved after a status pick), with the value
-    // that write is about to replace: the draft is judged against the value out then, as it is
-    // while the reader types.
-    const titleBase = (input.title === undefined ? titleOutRef.current : null) ?? next.title;
-    const routeBase = (input.route === undefined ? routeOutRef.current : null) ?? next.route ?? "";
-    const parentBase =
-      (input.parent === undefined ? parentOutRef.current : null) ?? next.parent ?? "";
-    if (!titleDirtyRef.current || titleRef.current.trim() === titleBase) {
-      applyServerTitle(titleBase);
-    }
-    if (!routeDirtyRef.current) {
-      applyServerRoute(routeBase);
-    }
-    if (!parentDirtyRef.current) {
-      applyServerParent(parentBase);
-    }
-    setTitleDraftDirty(titleRef.current.trim() !== titleBase);
-    setRouteDraftDirty(routeRef.current !== routeBase);
-    setParentDraftDirty(parentRef.current.trim() !== parentBase);
   };
+  // One write of these fields is out at a time (the guard), so one field at most has a value out,
+  // and `settled` leaves the others as they are.
   const onIssueSettled = (error: unknown) => {
-    // A write that ended without landing left the issue's value as it was, so a draft marked
-    // against that write's value is marked against the issue's again. A draft that was the value
-    // out is then changed: left marked not changed, the next landing of another field's write
-    // would put the issue's value back over it.
-    if (error !== null) {
-      if (titleOutRef.current !== null) {
-        setTitleDraftDirty(titleRef.current !== issue.title);
-      }
-      if (routeOutRef.current !== null) {
-        setRouteDraftDirty(routeRef.current !== (issue.route ?? ""));
-      }
-      if (parentOutRef.current !== null) {
-        setParentDraftDirty(parentRef.current !== (issue.parent ?? ""));
-      }
-    }
-    // The write is over, landed or not: a draft is changed against the issue's value again.
-    titleOutRef.current = null;
-    routeOutRef.current = null;
-    parentOutRef.current = null;
+    for (const field of fields) apply(field, { type: "settled", landed: error === null });
     updateIssueGuard.release();
     if (error === null) {
       drainPendingSubmits();
@@ -296,40 +289,31 @@ export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): 
     updateIssueGuard.retryLast(updateIssue);
   };
   const discardTitle = () => {
-    applyServerTitle(issue.title);
-    setTitleDraftDirty(false);
+    apply("title", { type: "discard" });
     setTitleError(null);
-    setPendingTitle(null);
   };
-  const discardRoute = () => {
-    applyServerRoute(issue.route ?? "");
-    setRouteDraftDirty(false);
-    setPendingRoute(null);
+  const discardRoute = () => apply("route", { type: "discard" });
+  const discardParent = () => apply("parent", { type: "discard" });
+  const writeTitle = (next: string) => {
+    apply("title", { type: "write", text: next });
+    setTitleError(null);
   };
-  const discardParent = () => {
-    applyServerParent(issue.parent ?? "");
-    setParentDraftDirty(false);
-    setPendingParent(null);
-  };
+  const writeRoute = (next: string) => apply("route", { type: "write", text: next });
+  const writeParent = (next: string) => apply("parent", { type: "write", text: next });
   const requestStatusSubmit = (status: string): boolean =>
     updateIssueGuard.guard(() => updateIssue.mutate({ status }));
 
   useEffect(() => {
-    if (!titleDirty && !titleDirtyRef.current && titlePendingSubmit === null) {
-      applyServerTitle(issue.title);
-    }
-  }, [applyServerTitle, issue.title, titleDirty, titlePendingSubmit]);
+    apply("title", { type: "server", value: issue.title });
+  }, [apply, issue.title]);
   useEffect(() => {
-    if (!routeDirty && !routeDirtyRef.current && routePendingSubmit === null) {
-      applyServerRoute(issue.route ?? "");
-    }
-  }, [applyServerRoute, issue.route, routeDirty, routePendingSubmit]);
+    apply("route", { type: "server", value: issue.route ?? "" });
+  }, [apply, issue.route]);
   useEffect(() => {
-    if (!parentDirty && !parentDirtyRef.current && parentPendingSubmit === null) {
-      applyServerParent(issue.parent ?? "");
-    }
-  }, [applyServerParent, issue.parent, parentDirty, parentPendingSubmit]);
+    apply("parent", { type: "server", value: issue.parent ?? "" });
+  }, [apply, issue.parent]);
 
+  const { title, route, parent } = states.current;
   return {
     discardTitle,
     discardRoute,
@@ -340,14 +324,15 @@ export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): 
     requestRouteSubmit,
     requestTitleSubmit,
     retry,
-    parent,
-    parentDirty,
-    route,
-    routeDirty,
-    routeIsValid: route === "" || routePattern.test(route),
-    title,
+    submitTitle,
+    parent: parent.draft,
+    parentDirty: changed(fieldRules.parent, parent),
+    route: route.draft,
+    routeDirty: changed(fieldRules.route, route),
+    routeIsValid: fieldRules.route.valid(route.draft),
+    title: title.draft,
     requestStatusSubmit,
-    titleDirty,
+    titleDirty: changed(fieldRules.title, title),
     titleError,
     writeParent,
     writeRoute,
