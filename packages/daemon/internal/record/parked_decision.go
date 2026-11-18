@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // RelayOutcome is what RelayParkedDecision did with one decision, which is what its caller logs.
@@ -142,13 +143,18 @@ func RelayParkedDecision(ctx context.Context, tx pgx.Tx, store Store, issue stri
 // start or catch-up to name — and its kind and its author are what the task's text says of it
 // (workflow.KeptDecisionsTask), which is rewritten from these marks whenever a held task is
 // narrowed at send time (supervise's Deps.RootTask). The issue is also what says which tree the
-// decision is owed to now, which is what that narrowing and the telling both read.
+// decision is owed to now, which is what that narrowing and the telling both read. Options are
+// the options a person's answer chose, and Answer the words of the act, which a catch-up names
+// as words by the person; a mark an older daemon wrote has neither. Its JSON is
+// texts.DecisionMark's, with the decision a DecisionKind here.
 type DecisionMark struct {
 	Ref      string       `json:"ref"`
 	At       time.Time    `json:"at"`
 	Issue    string       `json:"issue,omitempty"`
 	Decision DecisionKind `json:"decision,omitempty"`
 	Actor    string       `json:"actor,omitempty"`
+	Options  []string     `json:"options,omitempty"`
+	Answer   string       `json:"answer,omitempty"`
 }
 
 // KeptApproval is the approval a root's re-admission kept for its next architect start
@@ -156,7 +162,8 @@ type DecisionMark struct {
 // version they approved, and the version that document has reached since. The zero value is no
 // kept approval. The step is what says which document the task names, since a deployment that
 // gates more than one step can keep a pair of any of them. KeptDecisions embeds it, so the pair
-// travels to the architect as it was kept, with nothing copied field by field.
+// travels to the architect as it was kept, with nothing copied field by field. Its JSON is
+// texts.KeptApproval's, with the step a DesignStep here.
 type KeptApproval struct {
 	Step     DesignStep `json:"step,omitempty"`
 	Approved int        `json:"approved,omitempty"`
@@ -176,7 +183,7 @@ type KeptApproval struct {
 //
 // The approval it names is the kept approval itself (KeptApproval), embedded: encoding/json
 // writes an embedded struct's own fields as fields of this one, so the stored shape is the
-// decisions and the three fields of the pair, as it has always been.
+// decisions and the three fields of the pair, as it has always been: texts.KeptFacts's shape.
 //
 // A record written before a deployment could gate more than one step carries no step, and the
 // task it is written again from reads it as the spec step, the one step that release gated.
@@ -231,11 +238,11 @@ const (
 // hear.
 func SpecDecision(kind NoticeKind) (DecisionKind, bool) {
 	switch kind {
-	case "design-approved":
+	case texts.DesignApproved:
 		return DecisionDesignApproved, true
-	case "design-changes-requested":
+	case texts.DesignChangesRequested:
 		return DecisionDesignChangesRequested, true
-	case "carried-gate-opened":
+	case texts.CarriedGateOpened:
 		return DecisionCarriedGateOpened, true
 	default:
 		return "", false

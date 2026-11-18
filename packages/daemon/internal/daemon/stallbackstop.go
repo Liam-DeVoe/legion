@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // backstopStalledTurns ends the turn of every claim the sweep finds in one whose recorded last
@@ -210,9 +211,9 @@ func (s *supervision) enqueueStallNotice(ctx context.Context, c supervise.Claim,
 	return s.enqueue(ctx, c.Issue, rows...)
 }
 
-// stallBackstopNotice is the kind of the notice above (record's validNoticeKind), beside
-// `worker-died`, which is what the architect hears of a claim that died rather than stalled.
-const stallBackstopNotice = "worker-stalled"
+// stallBackstopNotice is the kind of the notice above on the one list, beside `worker-died`,
+// which is what the architect hears of a claim that died rather than stalled.
+const stallBackstopNotice = texts.WorkerStalled
 
 // stallBackstopRecord is what the owner is told and what the log line carries: the record the
 // daemon read, in one sentence, and what it did about it. It is the same text either way, so a

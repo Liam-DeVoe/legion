@@ -11,11 +11,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // workerSilentNotice is the notice of a worker that stopped between turns, which the daemon
 // repairs; `worker-stalled` is the one of a worker that stopped stepping inside a turn.
-const workerSilentNotice record.NoticeKind = "worker-silent"
+const workerSilentNotice = texts.WorkerSilent
 
 // workerSilent applies one intake.WorkerSilent, deciding on the record read inside the fact's own
 // transaction (the sweep only filters: daemon's tellSilentPhaseWorkers).
@@ -188,7 +189,7 @@ func workerSilentRecord(issue record.Issue, role claim.Role, lastStep time.Time,
 
 // workerBackgroundNotice is the notice of a worker waiting on background work of its own that
 // has stood too long, which the daemon tells of and never prompts.
-const workerBackgroundNotice record.NoticeKind = "worker-background-stalled"
+const workerBackgroundNotice = texts.WorkerBackgroundStalled
 
 // workerBackgroundStalled applies one intake.WorkerBackgroundStalled, deciding on the record read
 // inside the fact's own transaction as workerSilent does, and returning store errors as it does.

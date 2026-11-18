@@ -40,7 +40,10 @@ func TestAHookPromptReachesItsRolesOwnTopicAndEndsTheRow(t *testing.T) {
 	if len(published) != 1 || published[0].topic != topic {
 		t.Fatalf("publishes = %#v, want the one hook prompt to %s", published, topic)
 	}
-	want := firedHook.Message("LEGION-208")
+	want, err := firedHook.Message("LEGION-208")
+	if err != nil {
+		t.Fatalf("the hook prompt's text: %v", err)
+	}
 	if published[0].message != want || published[0].payload != any(want) {
 		t.Fatalf("the implementer was told\n\t%q\nwant\n\t%q", published[0].message, want)
 	}

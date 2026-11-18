@@ -1661,7 +1661,11 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 	} else if woken {
 		return wait.Errorf("the %s hook's prompt for %s waits for its %s's released pod to come back", payload.Hook, row.Issue, payload.Role)
 	}
-	if _, err := r.publishToRole(ctx, row, notify.RoleTopicPrefix+string(token), payload.Message(row.Issue),
+	message, err := payload.Message(row.Issue)
+	if err != nil {
+		return fmt.Errorf("write the %s hook's prompt for %s: %w", payload.Hook, row.Issue, err)
+	}
+	if _, err := r.publishToRole(ctx, row, notify.RoleTopicPrefix+string(token), message,
 		"outbox hook prompt finished undelivered: no live session holds the role",
 		"row", row.ID, "issue", row.Issue, "hook", payload.Hook, "role", payload.Role, "count", payload.Count); err != nil {
 		return fmt.Errorf("publish the %s hook's prompt for %s to its %s: %w", payload.Hook, row.Issue, payload.Role, err)

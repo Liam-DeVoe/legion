@@ -6,11 +6,12 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // ChildrenFirstNoticeKind is the kind of the notice below, and the one kind that says a parent's
 // own work waits for the work under it.
-const ChildrenFirstNoticeKind = record.NoticeKind("children-first")
+const ChildrenFirstNoticeKind = texts.ChildrenFirst
 
 // ChildCycleReason is what the daemon says of a cycle the children-first judgement found
 // (record.ChildWait's Cycle): an open child held by a Dispatch blocked_by link that names an
