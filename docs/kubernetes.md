@@ -2084,7 +2084,8 @@ A rollback needs one SQL statement, the one in **Activity reports go back to the
 
 - **No fleet alert line is written during the rollback.**
   The earlier release has no `LEGION FLEET ALERT` line at all and reads no row of `fleet_alert_lines`, so no case of this release reaches a person while it runs.
-  At the roll forward, the first sweep closes every stored line whose case no longer holds: a case the daemon judges that has ended, and a case this configuration does not judge.
+  At the roll forward, every sweep closes the stored lines of each case this configuration does not judge (the controller's when the daemon does not run its controller, every list and controller line when no session list is read), and each controller line whose controller is not marked out of reach.
+  The session list's two lines close at the first list read that answers: one that answers closes the unreadable line, and one that answers with a live session closes the no-live line.
   So a case that ended during the rollback does not silence the next line of the same case and claim.
   A stored line whose case still holds stays open, and the daemon does not write it again.
 
@@ -2094,9 +2095,10 @@ A rollback needs one SQL statement, the one in **Activity reports go back to the
   Run it with the daemon stopped, before you start the earlier release:
 
   ```sh
-  psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 -c 'update claims set activity_at = activity_sent_at where activity_sent_at is not null'
+  psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 -c 'update claims set activity_at = activity_sent_at where activity_sent_at is not null and activity_sent_generation = generation'
   ```
 
+  The generation condition keeps a report of an earlier launch from being written onto a later launch that has not reported.
   A daemon rolled forward again orders a claim's reports by `activity_sent_at` from its next report on.
 
 #### Rolling back the release whose update round ends at its bound
