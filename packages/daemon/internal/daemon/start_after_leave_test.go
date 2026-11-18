@@ -30,9 +30,13 @@ func TestAStartBetweenItsReadAndItsCreateWhenTheLeaveCommitsRetiresItsClaim(t *t
 	putOutboxIssue(t, pool, records, root)
 	putOutboxIssue(t, pool, records, child)
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
+	// The claims are stored as the daemon stores them, so the record's claims are what the tree's
+	// cleanup reads (store's pendingTreeClaims: every claim of the tree not retired).
+	trees := outboxTreeStore(t, pool, parent)
+	sup.deps.Store, sup.store = trees, trees
 	provisioning, released := make(chan struct{}), make(chan struct{})
 	runner := &outbox{log: quietLogger(), dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup, notices: &outboxPublisher{},
-		trees: outboxTreeStore(t, pool, parent), tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
+		trees: trees, tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
 		provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
 			close(provisioning)
 			<-released
@@ -61,9 +65,29 @@ func TestAStartBetweenItsReadAndItsCreateWhenTheLeaveCommitsRetiresItsClaim(t *t
 		t.Fatalf("the start stored no claim %s: the case's premise", token)
 	}
 	if got := machine.Claim().State; got != supervise.StateRetired {
-		t.Fatalf("the start's new claim of an issue that left is %s, want retired", got)
+		t.Errorf("the start's new claim of an issue that left is %s, want retired", got)
 	}
 	if spawns := rt.CallsOf("Spawn"); len(spawns) != 0 {
-		t.Fatalf("the runtime was asked %d spawns, want none", len(spawns))
+		t.Errorf("the runtime was asked %d spawns, want none", len(spawns))
+	}
+	var pending []string
+	rows, err := pool.Query(ctx, `select token from claims where project = 'legion' and tree = $1 and state <> 'retired' order by token`, parent)
+	if err != nil {
+		t.Fatalf("read the tree's pending claims: %v", err)
+	}
+	for rows.Next() {
+		var pendingToken string
+		if err := rows.Scan(&pendingToken); err != nil {
+			t.Fatalf("read a pending claim: %v", err)
+		}
+		pending = append(pending, pendingToken)
+	}
+	rows.Close()
+	var stored int
+	if err := pool.QueryRow(ctx, `select count(*) from claims where token = $1`, string(token)).Scan(&stored); err != nil || stored != 1 {
+		t.Fatalf("the record holds %d rows of %s (%v), want the one the start stored: the case's premise", stored, token, err)
+	}
+	if len(pending) != 0 {
+		t.Errorf("the tree's cleanup waits for %v, want nothing: the start's claim of an issue that left must not hold it", pending)
 	}
 }
