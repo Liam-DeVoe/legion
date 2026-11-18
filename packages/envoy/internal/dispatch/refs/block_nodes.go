@@ -105,12 +105,14 @@ func indexedVersionRecord(ctx context.Context, tx pgx.Tx, artifactID string, ver
 	`, artifactID, version).Scan(&document.refKey, &project, &session, &authors); err != nil {
 		return indexedDocument{}, fmt.Errorf("read version %d of %s for its block index: %w", version, artifactID, err)
 	}
+	var projectKey, conversation string
 	if project != nil {
-		document.project = *project
+		projectKey = *project
 	}
 	if session != nil {
-		document.parties = []string{graphstore.PartySession(*session)}
+		conversation = *session
 	}
+	document.project, document.parties = graphstore.SessionScope(projectKey, conversation)
 	writers, err := storedActors(authors)
 	if err != nil {
 		return indexedDocument{}, fmt.Errorf("decode the authors of version %d of %s: %w", version, artifactID, err)

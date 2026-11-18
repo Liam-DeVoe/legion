@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -28,15 +29,14 @@ type objectKind struct {
 	kind, start string
 	// read is one batch of its rows its marker does not mark (unmarked), after the id $1 and at
 	// most $2 of them, in the order of the index that keys them, as (id, created_at, author,
-	// project, session, root author, root target, own event). session is a conversation's, for a
+	// project, session, root author, root target, own event, row identity). session is a conversation's, for a
 	// document or an ask on one; the root columns are a message's on no issue alone: the author and
 	// the target of its thread's root, its parties (graphstore.ThreadParties). own event is a
 	// document's own create event (ownCreateEvent), null for the other kinds and for a row that has
 	// none; the row's node is stated under it.
 	read string
-	// rows answers, of the ids $1, each a row of the kind holds now, with its created_at: what
-	// tells the row the batch read from another a build before this one wrote at the same address
-	// since, which a node built from the first would misdate.
+	// rows answers each address of ids $1 with its stable row identity. A document's UUID
+	// distinguishes replacements even when their created_at values are equal.
 	rows string
 	// owners answers, for a kind some writer deletes rows of, the owner row each row of the ids $1
 	// stands under, as (issue, document id, id): the row that writer takes before anything else
@@ -94,26 +94,26 @@ func ownCreateEvent(a string) string {
 // objectKinds are the kinds the backfill writes a node for from their rows.
 var objectKinds = []objectKind{
 	{kind: graphstore.KindIssue, read: `
-		select i.key, i.created_at, i.created_by, i.project_key, null::text, null::jsonb, null::text, null::bigint
+		select i.key, i.created_at, i.created_by, i.project_key, null::text, null::jsonb, null::text, null::bigint, i.key
 		from issues i
 		where i.key > $1 and ` + unmarked(graphstore.KindIssue, "i.key") + `
 		order by i.key limit $2`,
-		rows: `select key, created_at from issues where key = any($1::text[])`},
+		rows: `select key, key from issues where key = any($1::text[])`},
 	{kind: graphstore.KindArtifact, read: `
-		select a.ref_key, a.created_at, a.created_by, a.project_key, a.session_id, null::jsonb, null::text, ` + ownCreateEvent("a") + `
+		select a.ref_key, a.created_at, a.created_by, a.project_key, a.session_id, null::jsonb, null::text, ` + ownCreateEvent("a") + `, a.id::text
 		from artifacts a
 		where a.ref_key > $1 and octet_length(a.ref_key) <= ` + strconv.Itoa(graphstore.MaxAddressBytes) + `
 		  and ` + unmarkedDocument("a") + `
 		order by a.ref_key limit $2`,
-		rows:   `select ref_key, created_at from artifacts where ref_key = any($1::text[])`,
+		rows:   `select ref_key, id::text from artifacts where ref_key = any($1::text[])`,
 		owners: `select coalesce(issue_key, ''), id::text, ref_key from artifacts where ref_key = any($1::text[])`},
 	{kind: graphstore.KindAsk, start: zeroUUID, read: `
 		select k.id::text, k.created_at, k.author, coalesce(i.project_key, a.project_key),
-		       case when coalesce(i.project_key, a.project_key) is null then a.session_id end, null::jsonb, null::text, null::bigint
+		       case when coalesce(i.project_key, a.project_key) is null then a.session_id end, null::jsonb, null::text, null::bigint, k.id::text
 		from asks k left join issues i on i.key = k.issue_key left join artifacts a on a.id = k.artifact_id
 		where k.id > $1::uuid and ` + unmarked(graphstore.KindAsk, "k.id::text") + `
 		order by k.id limit $2`,
-		rows: `select id::text, created_at from asks where id = any($1::text[]::uuid[])`},
+		rows: `select id::text, id::text from asks where id = any($1::text[]::uuid[])`},
 	{kind: graphstore.KindMessage, start: zeroUUID, read: `
 		with recursive batch as (
 			select m.id, m.issue_key, m.in_reply_to, m.created_at, m.author
@@ -126,22 +126,29 @@ var objectKinds = []objectKind{
 			union all
 			select walk.message, parent.id, parent.in_reply_to from walk join messages parent on parent.id = walk.in_reply_to
 		)
-		select batch.id::text, batch.created_at, batch.author, i.project_key, null::text, root.author, root.target, null::bigint
+		select batch.id::text, batch.created_at, batch.author, i.project_key, null::text, root.author, root.target, null::bigint, batch.id::text
 		from batch
 		left join issues i on i.key = batch.issue_key
 		left join walk on walk.message = batch.id and walk.in_reply_to is null
 		left join messages root on root.id = walk.at
 		order by batch.id`,
-		rows: `select id::text, created_at from messages where id = any($1::text[]::uuid[])`},
+		rows: `select id::text, id::text from messages where id = any($1::text[]::uuid[])`},
 }
 
 // ObjectRowStands answers whether a row of kind stands at id, for a kind the backfill writes a
 // node for from its rows (objectKinds), and false for any other kind. The erase reads it to refuse
-// a node of these kinds while its row holds its text (grapherase's Erasure.read).
+// a node of these kinds while its row holds its text (grapherase's Erasure.read). An ask's and a
+// message's row is keyed by a uuid, so an id that is no uuid names no row of them; it answers false
+// for it rather than let the cast in objectKind.rows abort the erase's transaction.
 func ObjectRowStands(ctx context.Context, q graphstore.Queryer, kind, id string) (bool, error) {
 	for _, known := range objectKinds {
 		if known.kind != kind {
 			continue
+		}
+		if known.start == zeroUUID {
+			if _, err := uuid.Parse(id); err != nil {
+				return false, nil
+			}
 		}
 		standing, err := readStanding(ctx, q, known, []string{id})
 		if err != nil {
@@ -152,17 +159,16 @@ func ObjectRowStands(ctx context.Context, q graphstore.Queryer, kind, id string)
 	return false, nil
 }
 
-// readStanding reads, of ids, each row of kind that stands, with its created_at (objectKind.rows).
-func readStanding(ctx context.Context, q graphstore.Queryer, kind objectKind, ids []string) (map[string]time.Time, error) {
+// readStanding reads each address of ids with the stable identity of its current row.
+func readStanding(ctx context.Context, q graphstore.Queryer, kind objectKind, ids []string) (map[string]string, error) {
 	rows, err := q.Query(ctx, kind.rows, ids)
 	if err != nil {
 		return nil, err
 	}
-	standing := make(map[string]time.Time, len(ids))
-	var id string
-	var created time.Time
-	if _, err := pgx.ForEachRow(rows, []any{&id, &created}, func() error {
-		standing[id] = created
+	standing := make(map[string]string, len(ids))
+	var id, identity string
+	if _, err := pgx.ForEachRow(rows, []any{&id, &identity}, func() error {
+		standing[id] = identity
 		return nil
 	}); err != nil {
 		return nil, err
@@ -238,51 +244,58 @@ func statedOf(nodes []graphstore.Node) int64 {
 	return stated
 }
 
+// objectRow keeps the row's identity separate from its reusable graph address.
+type objectRow struct {
+	graphstore.Node
+	identity string
+}
+
 // readObjectNodes reads one batch of a kind's rows their marker does not mark, and answers the node its
 // kind's writer writes for each (graphstore.IssueNode and its siblings), caused by the row's own
 // create event where the read found one, and at the sentinel otherwise.
-func readObjectNodes(ctx context.Context, database *store.Store, kind, read, after string, limit int) ([]graphstore.Node, error) {
+func readObjectNodes(ctx context.Context, database *store.Store, kind, read, after string, limit int) ([]objectRow, error) {
 	rows, err := database.Pool.Query(ctx, read, after, limit)
 	if err != nil {
 		return nil, fmt.Errorf("read the %s rows their marker does not mark: %w", kind, err)
 	}
 	defer rows.Close()
-	var nodes []graphstore.Node
+	var nodes []objectRow
 	for rows.Next() {
-		var id string
+		var id, identity string
 		var createdAt time.Time
 		var authorJSON, rootAuthorJSON []byte
 		var project, session, rootTarget *string
 		var ownEvent *int64
-		if err := rows.Scan(&id, &createdAt, &authorJSON, &project, &session, &rootAuthorJSON, &rootTarget, &ownEvent); err != nil {
+		if err := rows.Scan(&id, &createdAt, &authorJSON, &project, &session, &rootAuthorJSON, &rootTarget, &ownEvent, &identity); err != nil {
 			return nil, fmt.Errorf("read a %s row its marker does not mark: %w", kind, err)
 		}
 		var author model.Actor
 		if err := json.Unmarshal(authorJSON, &author); err != nil {
 			return nil, fmt.Errorf("read the author of %s %s: %w", kind, id, err)
 		}
-		var parties []string
-		if session != nil {
-			parties = []string{graphstore.PartySession(*session)}
-		}
+		_, parties := graphstore.SessionScope(derefText(project), derefText(session))
+		var node graphstore.Node
 		switch kind {
 		case graphstore.KindIssue:
-			nodes = append(nodes, graphstore.IssueNode(id, derefText(project), author, createdAt))
+			node = graphstore.IssueNode(id, derefText(project), author, createdAt)
 		case graphstore.KindArtifact:
-			nodes = append(nodes, graphstore.ArtifactNode(id, derefText(project), derefText(session), author, createdAt))
+			node = graphstore.ArtifactNode(id, derefText(project), derefText(session), author, createdAt)
 		case graphstore.KindAsk:
-			nodes = append(nodes, graphstore.AskNode(id, derefText(project), parties, author, createdAt))
+			node = graphstore.AskNode(id, derefText(project), parties, author, createdAt)
 		case graphstore.KindMessage:
 			if project == nil {
 				if parties, err = threadParties(id, rootAuthorJSON, rootTarget); err != nil {
 					return nil, err
 				}
 			}
-			nodes = append(nodes, graphstore.MessageNode(id, derefText(project), parties, author, createdAt))
+			node = graphstore.MessageNode(id, derefText(project), parties, author, createdAt)
+		default:
+			return nil, fmt.Errorf("the backfill writes no node of kind %q", kind)
 		}
 		if ownEvent != nil {
-			nodes[len(nodes)-1].SourceEvent = *ownEvent
+			node.SourceEvent = *ownEvent
 		}
+		nodes = append(nodes, objectRow{Node: node, identity: identity})
 	}
 	return nodes, rows.Err()
 }
@@ -322,12 +335,10 @@ func derefText(value *string) string {
 // (objectKind.owners) the transaction first takes the owner row each of its rows stands under
 // (lockObjectOwners): api's removeArtifact takes the document's issue row before it states the
 // node gone and deletes the row, and a removal of a build before this one takes it too and states
-// nothing. Under those rows it reads which of the batch's rows stand and when each was created
-// (objectKind.rows), and writes the node of each row that is still the row the batch read, and of
-// no other: a row a removal deleted before the lock has its node left as the removal left it, and
-// a row a build before this one wrote at the same address since has another created_at, so the
-// node the batch built from the first would misdate it; it is left for the next run, which the
-// report's remaining count says. A removal that waits for this batch removes a row whose node is
+// nothing. Under those rows it reads the stable identity of each row that still stands
+// (objectKind.rows), and writes only the node of the same row the batch read. A replacement
+// document has another UUID even when its created_at is identical; it is left for the next run,
+// which the report's remaining count names. A removal waiting for this batch removes a row whose node is
 // live, and this build's removal then states that node gone. The owner rows come first and the
 // nodes after them, the order every writer of these nodes takes (a document's create, its removal,
 // the erase). A kind no writer deletes a row of takes no lock and is read again the same way.
@@ -348,7 +359,7 @@ func derefText(value *string) string {
 // A node between a party graphstore.PartiesValue refuses is skipped, counted in Skipped, and
 // left for the census to name: one such row of an earlier build would otherwise fail every batch
 // it falls in, and every run of the backfill with it.
-func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKind, nodes []graphstore.Node) (KindBackfill, error) {
+func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKind, nodes []objectRow) (KindBackfill, error) {
 	ids := make([]string, len(nodes))
 	for index, node := range nodes {
 		ids[index] = node.ID
@@ -372,8 +383,9 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 		// taken holds, by id, the gone statement of each node a live writer left live for an
 		// earlier row, which goes in before that node's live one, under the same cause.
 		taken := map[string]graphstore.Node{}
-		for _, node := range nodes {
-			if created, stands := standing[node.ID]; !stands || !created.Equal(node.MadeAt) {
+		for _, row := range nodes {
+			node := row.Node
+			if identity, stands := standing[node.ID]; !stands || identity != row.identity {
 				continue
 			}
 			if partiesRefused(node.Parties) {
@@ -510,13 +522,13 @@ var scopeKinds = []struct{ kind, read string }{
 		join comments c on c.id = n.id::uuid
 		left join issues i on i.key = c.issue_key
 		left join artifacts owner on owner.id = c.artifact_id
-		where n.kind = 'comment' and n.id > $1 and n.project_key is null and n.parties is null
+		where n.kind = '` + graphstore.KindComment + `' and n.id > $1 and n.project_key is null and n.parties is null
 		order by n.id limit $2`},
 	{refs.BlockNodeKind, `
 		select n.id, a.project_key, case when a.project_key is null then a.session_id end
 		from graph_nodes n
 		join artifacts a on a.ref_key = split_part(n.id, '#', 1)
-		where n.kind = 'block' and n.id > $1 and n.project_key is null and n.parties is null
+		where n.kind = '` + refs.BlockNodeKind + `' and n.id > $1 and n.project_key is null and n.parties is null
 		order by n.id limit $2`},
 }
 
@@ -611,10 +623,8 @@ func readScopes(ctx context.Context, database *store.Store, kind, read, after st
 		if err := rows.Scan(&scope.ID, &project, &session); err != nil {
 			return nil, fmt.Errorf("read a %s node naming no project: %w", kind, err)
 		}
-		scope.Kind, scope.Project = kind, derefText(project)
-		if session != nil {
-			scope.Parties = []string{graphstore.PartySession(*session)}
-		}
+		scope.Kind = kind
+		scope.Project, scope.Parties = graphstore.SessionScope(derefText(project), derefText(session))
 		scopes = append(scopes, scope)
 	}
 	return scopes, rows.Err()

@@ -35,7 +35,7 @@ import (
 // then reads what the run wrote, so the run it followed is the one that committed.
 func TestEveryBackfillBatchTakesTheStoreLockOrder(t *testing.T) {
 	t.Run("writeBlockRefBatch takes the owner row, the fence, its block_refs rows, then the tuple append, and no node row", requireTheBlockRefBatchLockOrder)
-	t.Run("writeCommentBatch takes no owner row, then every node row ascending, then the tuple append and the comments rows", requireTheCommentBatchLockOrder)
+	t.Run("writeCommentBatch takes its comments' owner rows, then every node row ascending, then the tuple append and the comments rows", requireTheCommentBatchLockOrder)
 	t.Run("writeRoleBatch takes no owner row, then its node rows ascending and the part_of tuple", requireTheRoleBatchLockOrder)
 	t.Run("writeSessionBatch takes no owner row, then its node rows ascending", requireTheSessionBatchLockOrder)
 }
@@ -123,11 +123,14 @@ func requireTheBlockRefBatchLockOrder(t *testing.T) {
 	}
 }
 
-// requireTheCommentBatchLockOrder holds writeCommentBatch to its steps. The batch writes every
-// node it writes - its comments' and their authors' - in one store write, which takes their rows
-// in ascending (kind, id) and then appends every tuple: the facts each comment row projects, and
-// each author's authored_by and aliases (graphstore.AuthorFacts). Only then does it name the
-// nodes on the comments rows. It runs under no owner row and appends no event.
+// requireTheCommentBatchLockOrder holds writeCommentBatch to its steps. The batch first takes the
+// owner row of each of its comments (heldCommentRows, events.LockOwnerRows), the rows the erase
+// takes first, and reads under them which comments still stand unmarked, so a batch read before
+// another run marked a comment and the erase removed it writes nothing for it. It then writes every
+// node it writes - its comments' and their authors' - in one store write, which takes their rows in
+// ascending (kind, id) and then appends every tuple: the facts each comment row projects, and each
+// author's authored_by and aliases (graphstore.AuthorFacts). Only then does it name the nodes on the
+// comments rows. It appends no event.
 //
 // Three comments are written with comment.created events, so every tuple carries a cause other
 // than the sentinel and so a repeat key a hold can stand on. Their ids order them c1, c2, c3, which
@@ -197,8 +200,11 @@ func requireTheCommentBatchLockOrder(t *testing.T) {
 		}, []graphstore.Node{node}, nil)
 	}
 
-	owner := lockstep.HoldRow(t, database, &lockstep.Hold{Name: "issue CENS-1's row", Step: lockstep.StepOwner},
-		`select 1 from issues where key = $1 for update`, "CENS-1")
+	owner := lockstep.HoldRow(t, database, &lockstep.Hold{
+		Name: "issue CENS-1's row", Step: lockstep.StepOwner, Taken: true,
+		Statement: "select closed_at is null from issues where key = $1 for no key update",
+		Unlocked:  []string{"graph_nodes", "graph_tuples"},
+	}, `select 1 from issues where key = $1 for update`, "CENS-1")
 	project := lockstep.HoldRow(t, database, &lockstep.Hold{Name: "project CENS's row", Step: lockstep.StepEvent},
 		`select 1 from projects where key = $1 for update`, "CENS")
 	firstComment := nodeHold("comment c1's node row", graphstore.KindComment, c1.id, commentNode(c1.id))

@@ -37,7 +37,7 @@
 # addresses the harness's server with the agent bearer the harness pins (`e2e-token`), signs in
 # `alice`, whom the harness seeds, creates a project of its own, adds an agent session of its own
 # to the fake Envoy's session list and puts the list back when it ends, and builds
-# `envoy-dispatch` from this checkout where PATH holds none.
+# `envoy-dispatch` from this checkout and runs that build, whatever PATH holds.
 #
 # The node writers' own grep, where a reader wants one: `graphstore\.(WriteUncaused|Write|WriteArms)\(|graphstore\.Node\{`,
 # with api/comment_create.go as its control. `graphstore.Caused` is left out on purpose: it names
@@ -88,13 +88,10 @@ readonly origin="${base%%://*}://${base_host%%/*}"
 readonly person="$DEV_SIGNIN_LOGIN"
 # shellcheck disable=SC2153 # PROJECT and DATABASE_URL are the caller's inputs, checked by name above
 readonly project="$PROJECT" database_url="$DATABASE_URL"
-case "$database_url" in
-  *@127.0.0.1:* | *@localhost:* | *@\[::1\]:* | *@127.0.0.1/* | *@localhost/*) ;;
-  *)
-    printf 'node-projects.sh: DATABASE_URL names no loopback host; this driver deletes a node and runs only on its own test database\n' >&2
-    exit 2
-    ;;
-esac
+if ! loopback_database_url "$database_url"; then
+  printf 'node-projects.sh: DATABASE_URL names no loopback host or overrides its host; this driver deletes a node and runs only on its own test database\n' >&2
+  exit 2
+fi
 stamp="$(date +%s)-$$"
 readonly stamp
 readonly session="node-projects-$stamp"
@@ -143,16 +140,19 @@ printf '%s\n' -b "$work/jar" -H "Origin: $origin" >"$work/person.args"
 actor() { jq -cn --arg s "$session" '{kind: "session", id: $s}'; }
 
 # Under the harness the driver makes what its inputs would otherwise name (the header says what).
+# The census, the backfill and the erase it runs are this checkout's: it builds envoy-dispatch and
+# puts it first on PATH, so an envoy-dispatch installed on the machine, of another build, is never
+# the one under test.
 if [[ -n "$harness" ]]; then
-  if ! command -v envoy-dispatch >/dev/null; then
-    require_commands go
-    mkdir "$work/bin"
-    go -C "$script_dir/../../../envoy" build -o "$work/bin/envoy-dispatch" ./cmd/dispatch 2>"$work/build" ||
-      fail setup "build envoy-dispatch from this checkout" "$(tail -n 5 "$work/build")"
-    # shellcheck disable=SC2031 # this shell's own PATH, which every command after it reads
-    PATH="$work/bin:$PATH"
-    pass setup "built envoy-dispatch from this checkout"
-  fi
+  require_commands go
+  mkdir "$work/bin"
+  go -C "$script_dir/../../../envoy" build -o "$work/bin/envoy-dispatch" ./cmd/dispatch 2>"$work/build" ||
+    fail setup "build envoy-dispatch from this checkout" "$(tail -n 5 "$work/build")"
+  # shellcheck disable=SC2031 # this shell's own PATH, which every command after it reads
+  PATH="$work/bin:$PATH"
+  [[ "$(command -v envoy-dispatch)" == "$work/bin/envoy-dispatch" ]] ||
+    fail setup "run this checkout's envoy-dispatch" "PATH finds $(command -v envoy-dispatch)"
+  pass setup "built envoy-dispatch from this checkout"
   curl -sS -o /dev/null -c "$work/jar" "$base/auth/_dev/signin?login=$(q "$person")" 2>"$work/curl" ||
     fail setup "sign $person in" "$(<"$work/curl")"
   send POST /api/v1/projects "$(jq -cn --arg k "$project" --arg p "$person" --argjson a "$(actor)" \

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"testing"
@@ -83,13 +84,13 @@ func TestEveryDocumentARemovalCanTakeIsReadByItsCreateEvent(t *testing.T) {
 			}
 			return errRollBack
 		})
-		switch err.(type) {
-		case nil:
+		var refused errShapeRefused
+		switch {
+		case err == nil:
 			t.Fatalf("%s: the shape's transaction committed", name)
-		case errShapeRefused:
+		case errors.As(err, &refused):
 			continue
-		}
-		if err != errRollBack {
+		case !errors.Is(err, errRollBack):
 			t.Fatalf("%s: %v", name, err)
 		}
 	}
@@ -162,4 +163,4 @@ func insertDocumentShape(ctx context.Context, tx pgx.Tx, index int, shape docume
 type errShapeRefused struct{ error }
 
 // errRollBack rolls a shape's transaction back once it is read.
-var errRollBack = fmt.Errorf("roll the shape back")
+var errRollBack = errors.New("roll the shape back")

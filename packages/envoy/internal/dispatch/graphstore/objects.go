@@ -50,13 +50,22 @@ func IssueNode(key, project string, who model.Actor, at time.Time) Node {
 
 // ArtifactNode is a document's node, addressed by its ref_key (ArtifactRefKey), as its upload
 // writes it. A document of an issue or a project is in that project; an agent conversation's
-// document is in none, and is between the parties of that conversation, its session.
+// document is in none, and is between the parties of that conversation, its session (SessionScope).
 func ArtifactNode(refKey, project, session string, who model.Actor, at time.Time) Node {
-	var parties []string
-	if session != "" {
-		parties = []string{PartySession(session)}
-	}
+	project, parties := SessionScope(project, session)
 	return objectNode(KindArtifact, refKey, SupertagDocument, project, parties, who, at)
+}
+
+// SessionScope is the scope of a document, or of what belongs to one, whose project is project and
+// whose agent conversation is session: the project, or for a document no project owns the party of
+// that conversation's session. A document has one of the two (the artifacts_one_owner check,
+// 0071_agent_artifacts.up.sql). Every writer of a document's node, of an ask, a comment or a block
+// on a document, and the census's sessionParties, follow this one rule.
+func SessionScope(project, session string) (string, []string) {
+	if project == "" && session != "" {
+		return "", []string{PartySession(session)}
+	}
+	return project, nil
 }
 
 // AskNode is an ask's node, addressed by the ask's id, in the project of the issue or the document
@@ -159,13 +168,15 @@ func ScopeOf(ctx context.Context, q Queryer, issueKey, artifactID *string) (proj
 	`, issueKey, artifactID).Scan(&projectKey, &session); err != nil {
 		return "", nil, fmt.Errorf("read the project of what an item belongs to: %w", err)
 	}
-	switch {
-	case projectKey != nil:
-		return *projectKey, nil, nil
-	case session != nil:
-		return "", []string{PartySession(*session)}, nil
+	var owner, conversation string
+	if projectKey != nil {
+		owner = *projectKey
 	}
-	return "", nil, nil
+	if session != nil {
+		conversation = *session
+	}
+	project, parties = SessionScope(owner, conversation)
+	return project, parties, nil
 }
 
 // ThreadParties is the parties a message on no issue is between, read off its thread's root: who

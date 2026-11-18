@@ -18,6 +18,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 )
 
 // A document's node is addressed by its ref_key, and the build before this one writes none, so
@@ -57,7 +59,7 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 	t.Run("this build removes a document and the previous build makes it again", func(t *testing.T) {
 		removed := makeUntouchedDocument(t, current, issue, "Made again.md")
 		removeUntouchedDocument(t, current, removed)
-		requireDocumentNodeState(t, builds, removed.ref, "gone")
+		requireDocumentNodeState(t, builds, removed.ref, graphstore.StateGone)
 		again := makeUntouchedDocument(t, previous, issue, "Made again.md")
 		if again.ref != removed.ref {
 			t.Fatalf("the %s made the document at %s, want the removed one's address %s, so this row proves nothing",
@@ -67,13 +69,13 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 		requireProjectLine(t, census, "artifact", "gone=1", "orphaned=0")
 		requireIncompleteLines(t, census, "artifact "+again.ref+": gone; run envoy-dispatch backfill-graph-store")
 		runCurrentCommand(t, builds, []int{0}, "backfill-graph-store")
-		requireDocumentNodeState(t, builds, again.ref, "live")
+		requireDocumentNodeState(t, builds, again.ref, graphstore.StateLive)
 		requireIncompleteLines(t, runStoreCensus(t, builds))
 	})
 
 	t.Run("this build makes a document and the previous build removes it", func(t *testing.T) {
 		document := makeUntouchedDocument(t, current, issue, "Removed by the previous build.md")
-		requireDocumentNodeState(t, builds, document.ref, "live")
+		requireDocumentNodeState(t, builds, document.ref, graphstore.StateLive)
 		removeUntouchedDocument(t, previous, document)
 		erase := "envoy-dispatch erase --node artifact:" + document.ref
 		census := runStoreCensus(t, builds)
@@ -82,7 +84,7 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 			t.FailNow()
 		}
 		runCurrentCommand(t, builds, []int{0}, "backfill-graph-store")
-		requireDocumentNodeState(t, builds, document.ref, "live")
+		requireDocumentNodeState(t, builds, document.ref, graphstore.StateLive)
 		census = runStoreCensus(t, builds)
 		if !requireIncompleteLines(t, census, "artifact "+document.ref+": orphaned; remove it with: "+erase) {
 			t.FailNow()
@@ -94,7 +96,7 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 			t.Fatalf("the printed command %q listed no digest:\n%s", printed, listing)
 		}
 		runPrinted(t, builds, 0, printed+" --confirm "+digest[1])
-		requireDocumentNodeState(t, builds, document.ref, "(no node)")
+		requireDocumentNodeState(t, builds, document.ref, noDocumentNode)
 		requireIncompleteLines(t, runStoreCensus(t, builds))
 	})
 
@@ -105,7 +107,7 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 		if again.ref != document.ref {
 			t.Fatalf("this build made the document at %s, want the removed one's address %s, so this row proves nothing", again.ref, document.ref)
 		}
-		requireDocumentNodeState(t, builds, again.ref, "live")
+		requireDocumentNodeState(t, builds, again.ref, graphstore.StateLive)
 		requireIncompleteLines(t, runStoreCensus(t, builds))
 	})
 
@@ -121,7 +123,7 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 		requireProjectLine(t, census, "artifact", "gone=1", "orphaned=0")
 		requireIncompleteLines(t, census, "artifact "+again.ref+": gone; run envoy-dispatch backfill-graph-store")
 		runCurrentCommand(t, builds, []int{0}, "backfill-graph-store")
-		requireDocumentNodeState(t, builds, again.ref, "live")
+		requireDocumentNodeState(t, builds, again.ref, graphstore.StateLive)
 		requireIncompleteLines(t, runStoreCensus(t, builds))
 	})
 }
@@ -152,14 +154,17 @@ func removeUntouchedDocument(t *testing.T, p *dispatchProcess, document untouche
 	p.call(t, http.MethodDelete, "/api/v1/artifacts/"+document.id, "", http.StatusNoContent)
 }
 
+// noDocumentNode is what requireDocumentNodeState reads for an address the store holds no node at.
+const noDocumentNode = "(no node)"
+
 // requireDocumentNodeState fails unless the store holds the document node at ref in state, or
-// holds none when state is "(no node)".
+// holds none when state is noDocumentNode.
 func requireDocumentNodeState(t *testing.T, builds *twoBuilds, ref, state string) {
 	t.Helper()
 	var held string
 	if err := builds.database.Pool.QueryRow(context.Background(), `
-		select coalesce((select state from graph_nodes where kind = 'artifact' and id = $1), '(no node)')
-	`, ref).Scan(&held); err != nil {
+		select coalesce((select state from graph_nodes where kind = $1 and id = $2), $3)
+	`, graphstore.KindArtifact, ref, noDocumentNode).Scan(&held); err != nil {
 		t.Fatalf("read the node of %s: %v", ref, err)
 	}
 	if held != state {

@@ -87,13 +87,16 @@ func sessionParties(session string) string {
 }
 
 // scopedRows is every row of a project-owned kind whose node the store must hold, as (kind, id,
-// project, parties, row_id, removable): the address its node is written under, the project or the
-// parties that node must carry, by the rule its writer follows - graphstore.ScopeOf for an ask and
-// a comment, graphstore.ThreadParties for a message on no issue, the document's own for a block -
-// and, for a document, its row's id and whether a removal can take the row away, which a later
-// row's create then takes the address of again (removableDocument, ownLiveStatement). A row whose
-// address is past the store's bound is left out, as every writer leaves it out of the store: a
-// document whose ref_key is, and a comment one of whose relations names such a document.
+// project, parties, row_id, owner_key, removable, past_bound): the address its node is written
+// under, the project or the parties that node must carry, by the rule its writer follows -
+// graphstore.ScopeOf for an ask and a comment, graphstore.ThreadParties for a message on no issue,
+// the document's own for a block - and, for a document, its row's id, its issue and whether a
+// removal can take the row away, which a later row's create then takes the address of again
+// (removableDocument, ownLiveStatement). past_bound marks a row whose address is past the store's
+// bound, which every writer leaves out of the store - a document whose ref_key is, a block whose
+// address is, and a comment one of whose relations names such a document - and which the census
+// counts as a class of its own rather than as a row without a node. Each kind is named by its
+// constant, filled in by scopedRowsSQL, so a renamed kind cannot leave its rows uncounted.
 const scopedRows = `
 	with recursive threads (id, root) as (
 		select m.id, m.id from messages m where m.issue_key is null and m.in_reply_to is null
@@ -101,40 +104,45 @@ const scopedRows = `
 		select m.id, thread.root from messages m join threads thread on m.in_reply_to = thread.id
 		where m.issue_key is null
 	),
-	scoped (kind, id, project, parties, row_id, owner_key, removable) as (
-		select 'issue', i.key, i.project_key, null::text[], null::text, null::text, false from issues i
+	scoped (kind, id, project, parties, row_id, owner_key, removable, past_bound) as (
+		select 'KIND_ISSUE', i.key, i.project_key, null::text[], null::text, null::text, false, false from issues i
 		union all
-		select 'artifact', a.ref_key, a.project_key, ` + `ARTIFACT_PARTIES` + `, a.id::text, a.issue_key, ` + `REMOVABLE_DOCUMENT` + `
-		from artifacts a where octet_length(a.ref_key) <= ADDRESS_BOUND
+		select 'KIND_ARTIFACT', a.ref_key, a.project_key, ARTIFACT_PARTIES, a.id::text, a.issue_key, REMOVABLE_DOCUMENT,
+		       octet_length(a.ref_key) > ADDRESS_BOUND
+		from artifacts a
 		union all
-		select 'ask', k.id::text, coalesce(i.project_key, a.project_key),
-		       case when coalesce(i.project_key, a.project_key) is null then ` + `ASK_PARTIES` + ` end, null::text, null::text, false
+		select 'KIND_ASK', k.id::text, coalesce(i.project_key, a.project_key),
+		       case when coalesce(i.project_key, a.project_key) is null then ASK_PARTIES end, null::text, null::text, false, false
 		from asks k left join issues i on i.key = k.issue_key left join artifacts a on a.id = k.artifact_id
 		union all
-		select 'message', m.id::text, i.project_key,
-		       case when m.issue_key is null then ` + `MESSAGE_PARTIES` + ` end, null::text, null::text, false
+		select 'KIND_MESSAGE', m.id::text, i.project_key,
+		       case when m.issue_key is null then MESSAGE_PARTIES end, null::text, null::text, false, false
 		from messages m
 		left join issues i on i.key = m.issue_key
 		left join threads thread on thread.id = m.id
 		left join messages root on root.id = thread.root
 		union all
-		select 'comment', c.id::text, coalesce(i.project_key, owner.project_key),
-		       case when coalesce(i.project_key, owner.project_key) is null then ` + `COMMENT_PARTIES` + ` end, null::text, null::text, false
+		select 'KIND_COMMENT', c.id::text, coalesce(i.project_key, owner.project_key),
+		       case when coalesce(i.project_key, owner.project_key) is null then COMMENT_PARTIES end, null::text, null::text, false,
+		       c.node_kind is null and (octet_length(anchor.ref_key) > ADDRESS_BOUND or octet_length(owner.ref_key) > ADDRESS_BOUND)
 		from comments c
 		left join issues i on i.key = c.issue_key
 		left join artifacts anchor on anchor.id = (c.anchor->>'artifact_id')::uuid
 		left join artifacts owner on owner.id = c.artifact_id
-		where c.node_kind is not null
-		   or ((anchor.ref_key is null or octet_length(anchor.ref_key) <= ADDRESS_BOUND)
-		       and (owner.ref_key is null or octet_length(owner.ref_key) <= ADDRESS_BOUND))
 		union all
-		select 'block', d.node_id, a.project_key, ` + `BLOCK_PARTIES` + `, null::text, null::text, false
+		select 'KIND_BLOCK', d.node_id, a.project_key, BLOCK_PARTIES, null::text, null::text, false,
+		       octet_length(d.node_id) > ADDRESS_BOUND
 		from document_blocks d join artifacts a on a.id = d.artifact_id
-		where octet_length(d.node_id) <= ADDRESS_BOUND
 	)`
 
 // scopedRowsSQL is scopedRows with its parts filled in.
 var scopedRowsSQL = strings.NewReplacer(
+	"KIND_ISSUE", graphstore.KindIssue,
+	"KIND_ARTIFACT", graphstore.KindArtifact,
+	"KIND_ASK", graphstore.KindAsk,
+	"KIND_MESSAGE", graphstore.KindMessage,
+	"KIND_COMMENT", graphstore.KindComment,
+	"KIND_BLOCK", refs.BlockNodeKind,
 	"ADDRESS_BOUND", strconv.Itoa(graphstore.MaxAddressBytes),
 	"ARTIFACT_PARTIES", sessionParties("a.session_id"),
 	"ASK_PARTIES", sessionParties("a.session_id"),
@@ -232,8 +240,11 @@ func ownLiveStatement(node, rowID, ownerKey string) string {
 		left join events e on e.id = s.source_event), false)`
 }
 
-// rowClass is the class of one row of scopedRows against its node n, null for a complete one.
+// rowClass is the class of one row of scopedRows against its node n, null for a complete one and
+// for a row whose address is past the store's bound, which no writer projects and the census
+// counts as a class of its own (ProjectKindReport.PastBound).
 var rowClass = `case
+		when scoped.past_bound then null
 		when n.id is null then '` + classMissing + `'
 		when scoped.kind in (` + orphanKindList + `) and n.state <> '` + graphstore.StateLive + `' then '` + classGone + `'
 		when scoped.removable and not ` + ownLiveStatement("n", "scoped.row_id", "scoped.owner_key") + ` then '` + classGone + `'
@@ -243,15 +254,15 @@ var rowClass = `case
 
 // classedRows follows scopedRowsSQL: every row of scoped with its class against its node, null for
 // a complete one, and every live node of an object kind that no row of scoped stands behind, as
-// orphaned, each with whether it is a row and whether the row names a party the store refuses
-// (refusedPartySQL).
+// orphaned, each with whether it is a row the store projects, whether its address is past the
+// store's bound, and whether the row names a party the store refuses (refusedPartySQL).
 var classedRows = `,
-	classed (kind, id, class, is_row, refused) as (
-		select scoped.kind, scoped.id, ` + rowClass + `, true, ` + refusedPartySQL("scoped.parties") + `
+	classed (kind, id, class, is_row, past_bound, refused) as (
+		select scoped.kind, scoped.id, ` + rowClass + `, not scoped.past_bound, scoped.past_bound, ` + refusedPartySQL("scoped.parties") + `
 		from scoped
-		left join graph_nodes n on n.kind = scoped.kind and n.id = scoped.id
+		left join graph_nodes n on n.kind = scoped.kind and n.id = scoped.id and not scoped.past_bound
 		union all
-		select n.kind, n.id, '` + classOrphaned + `', false, false
+		select n.kind, n.id, '` + classOrphaned + `', false, false, false
 		from graph_nodes n
 		where n.kind in (` + orphanKindList + `) and n.state = '` + graphstore.StateLive + `'
 		  and not exists (select 1 from scoped where scoped.kind = n.kind and scoped.id = n.id)
@@ -269,10 +280,14 @@ func refusedPartySQL(parties string) string {
 // ProjectKindReport is what the project census read of one kind: how many rows it holds, and how
 // many of them are in each class, and, for a kind whose rows only its own creates write, how many
 // of its rows name a node that is not live and how many of its live nodes no row stands behind.
+// PastBound is how many of its rows have an address past the store's bound (graphstore.
+// MaxAddressBytes): no writer projects them, so they are a class of their own, in no other count
+// and no finding, as the store census counts its own (KindReport.PastBound).
 type ProjectKindReport struct {
 	Kind                                       string
 	Rows                                       int64
 	Missing, Gone, Differs, Unscoped, Orphaned int64
+	PastBound                                  int64
 }
 
 // Findings is how many rows and nodes of the kind are incomplete, over the five classes.
@@ -282,8 +297,9 @@ func (r ProjectKindReport) Findings() int64 {
 
 // ProjectCensus reads, for every project-owned kind, how many rows it holds and how many of them
 // have no node, a node that is not live, a node with no project or parties, or a node in another
-// project or between other parties than the row's, and how many live nodes of an orphan kind no
-// row stands behind, in one statement over q, which the store census runs in its snapshot.
+// project or between other parties than the row's, how many live nodes of an orphan kind no row
+// stands behind, and how many rows have an address past the store's bound, in one statement over
+// q, which the store census runs in its snapshot.
 func ProjectCensus(ctx context.Context, q graphstore.Queryer) ([]ProjectKindReport, error) {
 	rows, err := q.Query(ctx, scopedRowsSQL+classedRows+`
 		select kind, count(*) filter (where is_row),
@@ -291,7 +307,8 @@ func ProjectCensus(ctx context.Context, q graphstore.Queryer) ([]ProjectKindRepo
 		       count(*) filter (where class = '`+classGone+`'),
 		       count(*) filter (where class = '`+classDiffers+`'),
 		       count(*) filter (where class = '`+classUnscoped+`'),
-		       count(*) filter (where class = '`+classOrphaned+`')
+		       count(*) filter (where class = '`+classOrphaned+`'),
+		       count(*) filter (where past_bound)
 		from classed group by kind
 	`)
 	if err != nil {
@@ -301,7 +318,8 @@ func ProjectCensus(ctx context.Context, q graphstore.Queryer) ([]ProjectKindRepo
 	read := map[string]ProjectKindReport{}
 	for rows.Next() {
 		var kind ProjectKindReport
-		if err := rows.Scan(&kind.Kind, &kind.Rows, &kind.Missing, &kind.Gone, &kind.Differs, &kind.Unscoped, &kind.Orphaned); err != nil {
+		if err := rows.Scan(&kind.Kind, &kind.Rows, &kind.Missing, &kind.Gone, &kind.Differs, &kind.Unscoped, &kind.Orphaned,
+			&kind.PastBound); err != nil {
 			return nil, fmt.Errorf("read the project census: %w", err)
 		}
 		read[kind.Kind] = kind
@@ -318,12 +336,15 @@ func ProjectCensus(ctx context.Context, q graphstore.Queryer) ([]ProjectKindRepo
 	return reports, nil
 }
 
-// writeProjectCensus prints one line per kind, in the form the operator's runbook reads
-// (cmd/dispatch/README.md, "The node and tuple store census").
+// writeProjectCensus prints two lines per kind, in the form the operator's runbook reads
+// (cmd/dispatch/README.md, "The node and tuple store census"): its rows and classes, and its rows
+// whose address is past the store's bound, on a line of its own so a reader of the first finds it
+// unchanged.
 func writeProjectCensus(w io.Writer, kinds []ProjectKindReport) {
 	for _, kind := range kinds {
 		fmt.Fprintf(w, "census: project kind=%s rows=%d missing=%d gone=%d differs=%d unscoped=%d orphaned=%d\n",
 			kind.Kind, kind.Rows, kind.Missing, kind.Gone, kind.Differs, kind.Unscoped, kind.Orphaned)
+		fmt.Fprintf(w, "census: project past_bound kind=%s addresses=%d\n", kind.Kind, kind.PastBound)
 	}
 }
 

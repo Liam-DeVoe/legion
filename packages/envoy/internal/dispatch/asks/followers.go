@@ -105,11 +105,9 @@ func Follow(ctx context.Context, tx pgx.Tx, askID, sessionID string, who model.A
 	if made == 1 {
 		followed.Uncaused.Nodes = nodes
 		if event == graphstore.NoEvent {
-			facts, err := graphstore.BaseAttributeFacts(nodes)
-			if err != nil {
+			if followed.Uncaused.Tuples, err = graphstore.BaseAttributeFacts(nodes); err != nil {
 				return Followed{}, err
 			}
-			followed.Uncaused.Tuples = facts
 		}
 	}
 	return followed, nil

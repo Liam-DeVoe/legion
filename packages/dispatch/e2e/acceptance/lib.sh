@@ -29,6 +29,29 @@ require_env() {
   done
 }
 
+# loopback_database_url URL: succeeds only for a single loopback postgres URL authority.
+# A path or a query value cannot name its host. Connection overrides and escaped parameter names
+# are refused: libpq can otherwise replace even an explicit loopback authority with a remote host.
+loopback_database_url() {
+  local url="$1" authority host query parameter name
+  [[ "$url" == postgres://* || "$url" == postgresql://* ]] || return 1
+  [[ "$url" != *\#* ]] || return 1
+  authority="${url#*://}"
+  authority="${authority%%[/?]*}"
+  host="${authority##*@}"
+  [[ "$host" =~ ^(127\.0\.0\.1|localhost|\[::1\])(:[0-9]+)?$ ]] || return 1
+  if [[ "$url" == *\?* ]]; then
+    query="${url#*\?}"
+    while :; do
+      parameter="${query%%&*}"
+      name="${parameter%%=*}"
+      case "$name" in host | hostaddr | service | *%*) return 1 ;; esac
+      [[ "$query" == *'&'* ]] || break
+      query="${query#*&}"
+    done
+  fi
+}
+
 # require_commands COMMAND…: refuses the first named command that is not on PATH.
 require_commands() {
   local command
@@ -140,8 +163,10 @@ cli() {
     if [[ -n "$saved_tmpdir" ]]; then
       export TMPDIR="$saved_tmpdir"
     fi
+    # shellcheck disable=SC2154 # session is set by the driver that sources this file
     export DISPATCH_HOST=omp DISPATCH_SESSION_ID="$session" DISPATCH_URL="$base"
     export DISPATCH_TOKEN="$token"
+    # shellcheck disable=SC2154 # cli_entry is set by the driver that sources this file
     exec "$bun_bin" "$cli_entry" "$@"
   )
 }

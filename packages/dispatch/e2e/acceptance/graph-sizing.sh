@@ -507,13 +507,9 @@ read_production_series() {
 }
 
 # C1: the inputs. The database is on this machine and is the one the server serves.
-host="${database_url#*://}"
-host="${host#*@}"
-host="${host%%[:/]*}"
-case "$host" in
-  127.0.0.1 | ::1 | localhost) pass C1 "DATABASE_URL names this machine ($host)" ;;
-  *) fail C1 "DATABASE_URL names this machine" "host $host is not loopback; this driver reads this pod's own test database and never a deployment's" ;;
-esac
+loopback_database_url "$database_url" ||
+  fail C1 "DATABASE_URL names this machine" "the URL must name one loopback host with no connection override; this driver reads this pod's own test database, never a deployment's"
+pass C1 "DATABASE_URL names this machine"
 [[ -r "$census_source" ]] || fail C1 "read the census limit" "$census_source is unreadable"
 limit_expression="$(sed -n 's/^const CensusTableLimit int64 = \(.*\)$/\1/p' "$census_source")"
 [[ -n "$limit_expression" ]] ||

@@ -404,13 +404,9 @@ refused() {
 }
 
 # E1: the inputs, and the database this run works on.
-host="${database_url#*://}"
-host="${host#*@}"
-host="${host%%[:/]*}"
-case "$host" in
-  127.0.0.1 | ::1 | localhost) pass E1 "DATABASE_URL names this machine ($host)" ;;
-  *) fail E1 "DATABASE_URL names this machine" "host $host is not loopback; this driver erases rows and reads this pod's own test database, never a deployment's" ;;
-esac
+loopback_database_url "$database_url" ||
+  fail E1 "DATABASE_URL names this machine" "the URL must name one loopback host with no connection override; this driver erases rows and reads this pod's own test database, never a deployment's"
+pass E1 "DATABASE_URL names this machine"
 
 # E2: the issue, the document whose version holds the secret, and the person's approval of it.
 send POST "/api/v1/issues" "$(jq -cn --arg p "$project" --arg s "$session" \
