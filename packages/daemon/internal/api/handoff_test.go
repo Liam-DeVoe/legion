@@ -271,8 +271,10 @@ func (h *harness) completeRaw(grant, members string) *httptest.ResponseRecorder 
 }
 
 // refused holds a response to the status and the stable code of one credential, workflow or claim
-// refusal, which carries a sentence beside its code, and returns that sentence. It is the one such
-// check of this package's tests.
+// refusal, which carries a sentence beside its code, and returns that sentence; refusedSaying holds
+// the sentence too. The two are this package's tests' one check of a coded refusal: a test that
+// reads a refusal for another end decodes it itself, as a golden that writes its code down, a
+// repeat that takes either of two codes, or a read of the sentence alone does.
 func refused(t *testing.T, recorder *httptest.ResponseRecorder, status int, code string) string {
 	t.Helper()
 	if recorder.Code != status {
@@ -284,6 +286,14 @@ func refused(t *testing.T, recorder *httptest.ResponseRecorder, status int, code
 		t.Fatalf("failure = %+v, want code %s and a sentence", failure, code)
 	}
 	return failure.Error
+}
+
+// refusedSaying is refused with the refusal's sentence held to message, whole.
+func refusedSaying(t *testing.T, recorder *httptest.ResponseRecorder, status int, code, message string) {
+	t.Helper()
+	if got := refused(t, recorder, status, code); got != message {
+		t.Fatalf("the %s refusal says %q, want %q", code, got, message)
+	}
 }
 
 // completion asserts recorder is an accepted completion and returns its answer.
@@ -1495,12 +1505,9 @@ func TestAConflictPassesCompletionIsTheNewPassesAndNotTheLastOnes(t *testing.T) 
 
 	// It merges main forward, pushes, and completes without writing a new handoff: the newest
 	// record of the phase is still the first pass's.
-	stale := complete("merged", first, 1)
-	var failure Failure
-	decodeInto(t, stale, &failure)
-	if stale.Code != http.StatusConflict || failure.Code != "HANDOFF_NOT_NEW" ||
-		!strings.Contains(failure.Error, "named handoff record "+first+" for its previous phase of LEGION-208; write this phase's handoff with `dispatch handoff-write --issue LEGION-208 --phase implement") {
-		t.Fatalf("the completion with no new handoff = %d %+v, want 409 HANDOFF_NOT_NEW naming the record and the handoff to write", stale.Code, failure)
+	if message := refused(t, complete("merged", first, 1), http.StatusConflict, "HANDOFF_NOT_NEW"); !strings.Contains(message,
+		"named handoff record "+first+" for its previous phase of LEGION-208; write this phase's handoff with `dispatch handoff-write --issue LEGION-208 --phase implement") {
+		t.Fatalf("the completion with no new handoff says %q, want it to name the record and the handoff to write", message)
 	}
 	if got := phaseNow(); got != phase.Implementing {
 		t.Fatalf("after the refused completion the issue is in %s, want implementing", got)

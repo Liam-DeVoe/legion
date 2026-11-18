@@ -439,15 +439,9 @@ func TestCredentialAndWorkflowRoutesRefuseAMissingFieldWithACode(t *testing.T) {
 		{"/legion/v1/children/park", `{"grantId":"g"}`, "issue"},
 		{"/legion/v1/children/rerun", `{"grantId":"g"}`, "issue"},
 	} {
-		recorder := h.request(http.MethodPost, route.path, route.body, nil)
-		if recorder.Code != http.StatusBadRequest {
-			t.Fatalf("%s %s = %d, want 400; body %s", route.path, route.body, recorder.Code, recorder.Body)
-		}
-		var failure Failure
-		decodeInto(t, recorder, &failure)
-		if failure.Code != "MISSING_FIELD" || failure.Error != route.field+" is required" {
-			t.Fatalf("%s %s = %+v, want MISSING_FIELD naming %s", route.path, route.body, failure, route.field)
-		}
+		t.Run(route.path+" "+route.body, func(t *testing.T) {
+			refusedSaying(t, h.request(http.MethodPost, route.path, route.body, nil), http.StatusBadRequest, "MISSING_FIELD", route.field+" is required")
+		})
 	}
 	wantRefusal(t, h.request(http.MethodPost, "/legion/v1/claims/ready", `{"claimToken":"c","sessionId":"s","generation":1}`, nil),
 		http.StatusBadRequest, "secret is required")

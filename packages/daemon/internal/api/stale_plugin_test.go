@@ -134,17 +134,7 @@ func TestStaleClaimIsRefusedOnReadyAndGrantsAndLogsAWarn(t *testing.T) {
 	grantsRecorder := h.request(http.MethodPost, "/legion/v1/grants", GrantRequest{
 		SessionID: session, Secret: current.Secret, Tree: "LEGION-208", Issue: "LEGION-208",
 	}, nil)
-	if grantsRecorder.Code != http.StatusConflict {
-		t.Fatalf("stale grants status = %d, want 409; body %s", grantsRecorder.Code, grantsRecorder.Body)
-	}
-	var failure Failure
-	decodeInto(t, grantsRecorder, &failure)
-	if failure.Code != "STALE_PLUGIN_CONTRACT" {
-		t.Fatalf("stale grants code = %q, want STALE_PLUGIN_CONTRACT", failure.Code)
-	}
-	if failure.Error != sentence {
-		t.Fatalf("grants refusal sentence = %q, want %q", failure.Error, sentence)
-	}
+	refusedSaying(t, grantsRecorder, http.StatusConflict, "STALE_PLUGIN_CONTRACT", sentence)
 
 	logged := logs.String()
 	if !strings.Contains(logged, `"msg":"api: refused a call from a process on another plugin contract"`) {
@@ -176,17 +166,7 @@ func TestStaleClaimIsRefusedOnHandoffComplete(t *testing.T) {
 	h.makeStale(t, implementer.token, implementer.session, implementer.secret, stale)
 
 	recorder := h.complete(HandoffCompleteRequest{GrantID: grantID, Summary: "implemented", Commit: "aabbcc"})
-	if recorder.Code != http.StatusConflict {
-		t.Fatalf("handoff/complete status = %d, want 409; body %s", recorder.Code, recorder.Body)
-	}
-	var failure Failure
-	decodeInto(t, recorder, &failure)
-	if failure.Code != "STALE_PLUGIN_CONTRACT" {
-		t.Fatalf("handoff/complete code = %q, want STALE_PLUGIN_CONTRACT", failure.Code)
-	}
-	if want := claim.StalePluginContract(stale, DaemonAPIVersion).Message; failure.Error != want {
-		t.Fatalf("handoff/complete refusal sentence = %q, want %q", failure.Error, want)
-	}
+	refusedSaying(t, recorder, http.StatusConflict, "STALE_PLUGIN_CONTRACT", claim.StalePluginContract(stale, DaemonAPIVersion).Message)
 }
 
 // endTurn ends the turn of token's worker, through the stream event the agent's turn ending posts
@@ -471,17 +451,7 @@ func TestOperatorControllersStaleGrantIsRefused(t *testing.T) {
 
 	recorder := h.controllerSessionGrant("ses_operator", registration.Secret)
 
-	if recorder.Code != http.StatusConflict {
-		t.Fatalf("stale controller grant status = %d, want 409; body %s", recorder.Code, recorder.Body)
-	}
-	var failure Failure
-	decodeInto(t, recorder, &failure)
-	if failure.Code != "STALE_PLUGIN_CONTRACT" {
-		t.Fatalf("stale controller grant code = %q, want STALE_PLUGIN_CONTRACT", failure.Code)
-	}
-	if want := claim.StaleControllerContract(stale, DaemonAPIVersion).Message; failure.Error != want {
-		t.Fatalf("controller grant refusal sentence = %q, want %q", failure.Error, want)
-	}
+	refusedSaying(t, recorder, http.StatusConflict, "STALE_PLUGIN_CONTRACT", claim.StaleControllerContract(stale, DaemonAPIVersion).Message)
 }
 
 // An operator-bearer grant (the Controller: true grant `legion status` redeems on
