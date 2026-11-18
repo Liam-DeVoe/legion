@@ -834,7 +834,7 @@ func (p *podRuntime) relaunchCalls(token claim.Token, from time.Time) []podRelau
 // overrides is rig.overrides with the pods runtime handed to the daemon.
 func (w *w5Rig) overrides() overrides {
 	return overrides{
-		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Tokens,
+		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Source,
 			_ func(context.Context, string) (ghrepo.Repository, string, error), _ *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
 			w.built.mu.Lock()
 			defer w.built.mu.Unlock()

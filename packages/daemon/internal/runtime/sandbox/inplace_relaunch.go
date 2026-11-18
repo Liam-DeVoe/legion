@@ -95,7 +95,9 @@ func (r *Runtime) StopForRelaunch(ctx context.Context, loc runtime.Locator, mayR
 // runs in between: it suspends the Sandbox naming the live pod as displaced (suspendDisplacing,
 // launchReplacement), so the pod's end is read as the daemon's own act and not a death, and waits
 // the pod out (awaitPodGone). The Resume that follows finds the Sandbox Suspended and makes a new
-// pod. A pod that is not loc's, or has ended, holds no process of loc's, and nothing is done. A pod
+// pod; a pod its node never started (neverStarted) ran no role, so its suspension names nothing
+// displaced, as relaunch's does. A pod that is not loc's, or has ended, holds no process of loc's,
+// and nothing is done. A pod
 // still there when the wait ends is runtime.ErrProcessOutlivedStop, carrying what the cluster
 // answered, and the claim stays watched; a suspension the API server refused ended nothing, and is
 // returned as it is.
@@ -121,8 +123,9 @@ func (r *Runtime) endPod(ctx context.Context, loc runtime.Locator) error {
 		r.forgetIf(loc)
 		return nil
 	}
+	_, _, unstarted := neverStarted(pod, r.now(), r.bootTimeout)
 	switch {
-	case notLive(s, pod) == "":
+	case notLive(s, pod) == "" && !unstarted:
 		if s, err = r.suspendDisplacing(ctx, s, pod.UID, launchReplacement); err != nil {
 			return fail("suspend its sandbox", err)
 		}

@@ -414,7 +414,7 @@ func (r *rig) holdPortAgain() {
 // workflow's App tokens stood in for.
 func (r *rig) overrides() overrides {
 	return overrides{
-		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Tokens,
+		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Source,
 			_ func(context.Context, string) (ghrepo.Repository, string, error), _ *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
 			r.built.mu.Lock()
 			defer r.built.mu.Unlock()
