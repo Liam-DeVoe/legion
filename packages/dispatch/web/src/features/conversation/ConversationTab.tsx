@@ -212,7 +212,6 @@ function ConversationReply({
   const text = useAgentText();
   const targetName = recipientOf(reply.deliveries ?? [], root.root.target);
   const retry = useKeyedWrite({
-    issue: issueKey,
     label: (delivery: MessageDeliveryMode) =>
       `Delivery to ${text.part(targetName)} again, as ${MODE_LABELS[delivery]}`,
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["issue-messages", issueKey] }),

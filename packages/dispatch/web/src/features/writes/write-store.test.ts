@@ -172,15 +172,15 @@ function storeOf(tab = keptTab(), login = "alice", files = memoryFiles()) {
 /** The write `writes` holds now, at `index` in press order. */
 const row = (writes: Writes, index = 0): Write | undefined => writes.rows()[index];
 
-/** A page that has just resumed one write on CORE-1, kept in `tab` under `key` as it stood
- *  (`state`) when the page that pressed it went away, as the request it last went out as: a
- *  status pick unless a row names another. */
-function resuming(
+/** One write on CORE-1 kept in `tab` under `key` as it stood (`state`) when the page that pressed
+ *  it went away, as the request it last went out as: a status pick unless a row names another.
+ *  It is kept as the release before the issue was kept wrote it, with no `issue`. */
+function keptEntry(
   tab: KeptTab,
   key: string,
   state: KeptState,
   request: WriteRequest = patch
-): Writes {
+): void {
   tab.storage.setItem(
     `dispatch.write:${key}`,
     JSON.stringify({
@@ -198,6 +198,16 @@ function resuming(
       version: 1,
     })
   );
+}
+
+/** A page that has just resumed the one write kept in `tab` under `key` (`keptEntry`). */
+function resuming(
+  tab: KeptTab,
+  key: string,
+  state: KeptState,
+  request: WriteRequest = patch
+): Writes {
+  keptEntry(tab, key, state, request);
   const writes = new Writes(signedIn(), tab.page(), memoryFiles());
   writes.resume("alice");
   return writes;
@@ -471,6 +481,61 @@ test("a write survives a reload and resumes once, PUT included, and an old one c
       expect(resumed?.status === "refused" ? resumed.refusal : undefined).toBeInstanceOf(
         SendInterruptedError
       );
+    } finally {
+      send.mockRestore();
+      tab.close();
+    }
+  });
+});
+
+// A write keeps the issue its caller named, so one resumed after a reload is a write of that
+// issue again, though its request's path - a Keep's, under the document - names none. An entry
+// kept before the issue was kept holds none, and resumes naming the issue of its request's path.
+test("a resumed write names the issue it was kept with, or else its request's path", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const send = spyOn(api, "send").mockResolvedValue({ kept: true } as never);
+    const keep: WriteRequest = {
+      body: { text_sha256: "sha" },
+      method: "POST",
+      path: "/api/v1/artifacts/artifact-1/blocks/block-1/keep",
+    };
+    const before = new Writes(signedIn(), tab.page(), memoryFiles());
+    try {
+      void before
+        .run({
+          detail: null,
+          issue: "CORE-1",
+          kind: plainWrite,
+          label: "Keep",
+          presentation: "indicator",
+          write: attemptOf(keep, () => Promise.withResolvers<never>().promise),
+        })
+        .catch(() => {});
+      await settle();
+      const key = row(before)?.key ?? "";
+      expect(tab.kept(key)).toMatchObject({ issue: "CORE-1" });
+
+      const after = new Writes(signedIn(), tab.page(), memoryFiles());
+      const told: string[] = [];
+      const stop = after.onIssueWrite("CORE-1", (phase, write) =>
+        told.push(`${write.label}: ${phase}`)
+      );
+      after.resume("alice");
+      await settle();
+      stop();
+      expect(told).toEqual(["Keep: out", "Keep: landed"]);
+
+      keptEntry(tab, "unnamed", { status: "sending" });
+      const older = new Writes(signedIn(), tab.page(), memoryFiles());
+      const toldOlder: string[] = [];
+      const stopOlder = older.onIssueWrite("CORE-1", (phase, write) =>
+        toldOlder.push(`${write.label}: ${phase}`)
+      );
+      older.resume("alice");
+      await settle();
+      stopOlder();
+      expect(toldOlder).toEqual(["CORE-1 set to done: out", "CORE-1 set to done: landed"]);
     } finally {
       send.mockRestore();
       tab.close();

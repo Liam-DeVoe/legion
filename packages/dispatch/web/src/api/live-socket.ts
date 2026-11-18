@@ -812,8 +812,8 @@ export function liveSocketFor(queryClient: QueryClient): LiveSocket {
  *  it started by Dispatch (`events_start`) since the page last sent it, with no send of it waiting
  *  (`LiveSocket.eventsUp`). False where it has no socket, which this makes none of, as
  *  `liveSocketFor` would: a reader asking how the feed stands - the issue page's tree read, on a
- *  window focus, on a write the page puts in the cache, and on a refresh, which it holds back
- *  while a write of the issue is out (`subscribeTreeFreshness`) - opens nothing. */
+ *  window focus and as the hold of the issue's writes ends (`subscribeTreeFreshness`) - opens
+ *  nothing. */
 export function liveFeedUp(queryClient: QueryClient): boolean {
   return sockets.get(queryClient)?.eventsUp() === true;
 }

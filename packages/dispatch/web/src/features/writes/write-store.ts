@@ -62,8 +62,10 @@ export interface WriteBase<D = unknown> {
   readonly target: string | undefined;
   /** The issue the write changes, where it names one: its press's (`WriteSpec.issue`), or the
    *  issue of a request under `/api/v1/issues/{key}`, known from the press for a write made from
-   *  its request and from its first attempt's request for one made by an attempt. A write of an
-   *  issue is told to that issue's listeners from going out to settling (`onIssueWrite`). */
+   *  its request and from its first attempt's request for one made by an attempt. It is kept with
+   *  the write, so one resumed after a reload names it again, and one kept before the issue was
+   *  kept names the issue of its kept request's path. A write of an issue is told to that issue's
+   *  listeners from going out to settling (`onIssueWrite`). */
   readonly issue: string | undefined;
   readonly pressedAt: number;
   /** Its place in its target's line, in the order writes joined it; a Retry joins at the back. */
@@ -243,12 +245,22 @@ export type WriteOutcome =
 
 /** Where a write of an issue stands for that issue's listeners (`onIssueWrite`): gone out - from
  *  its press, or from its first attempt where only that names the issue - or settled: landed,
- *  refused, or let go unmade (discarded, or dropped with every write of its person). A Retry of a
- *  refused one goes out again. */
+ *  refused, or discarded, a write let go wherever it stood: discarded while queued, or dropped by a
+ *  sign-out, another person's sign-in, a quiet write's expiry or a `409 LOGIN_CHANGED`. A
+ *  discarded write may have been made. A Retry of a refused one goes out again. */
 export type IssueWritePhase = "out" | "landed" | "refused" | "discarded";
 
+/** How a write of an issue stands, as `onIssueWrite` tells it: its phase, the write, and, for a
+ *  landing, whether the store refreshed every query the app holds as it landed (`#landed`: a
+ *  landing with no answer, or one nothing awaited), so a listener need not ask for those again. */
+export type IssueWriteListener = (
+  phase: IssueWritePhase,
+  write: Write,
+  refreshedAll: boolean
+) => void;
+
 /** The issue a request names in its path (`/api/v1/issues/{key}`), or none. */
-export function issueOfPath(path: string | undefined): string | undefined {
+function issueOfPath(path: string | undefined): string | undefined {
   const match = path === undefined ? null : /^\/api\/v1\/issues\/([^/?]+)/u.exec(path);
   return match === null ? undefined : decodeURIComponent(match[1] ?? "");
 }
@@ -361,7 +373,7 @@ export class Writes {
   #rows: readonly Write[] = NO_WRITES;
   readonly #listeners = new Set<() => void>();
   readonly #outcomes = new Set<(outcome: WriteOutcome) => void>();
-  readonly #issueWrites = new Map<string, Set<(phase: IssueWritePhase, write: Write) => void>>();
+  readonly #issueWrites = new Map<string, Set<IssueWriteListener>>();
   #ids = 0;
   #joins = 0;
   #resumed = false;
@@ -414,10 +426,7 @@ export class Writes {
 
   /** Tells `listener` each time a write of issue `issue` goes out or settles (`IssueWritePhase`),
    *  from now on. */
-  readonly onIssueWrite = (
-    issue: string,
-    listener: (phase: IssueWritePhase, write: Write) => void
-  ): (() => void) => {
+  readonly onIssueWrite = (issue: string, listener: IssueWriteListener): (() => void) => {
     let listeners = this.#issueWrites.get(issue);
     if (listeners === undefined) {
       listeners = new Set();
@@ -432,9 +441,11 @@ export class Writes {
 
   /** The writes of issue `issue` gone out and not settled yet. */
   writesOutOf(issue: string): readonly Write[] {
-    return [...this.#entries.values()]
-      .filter((entry) => entry.out && entry.write.issue === issue)
-      .map((entry) => entry.write);
+    const out: Write[] = [];
+    for (const entry of this.#entries.values()) {
+      if (entry.out && entry.write.issue === issue) out.push(entry.write);
+    }
+    return out;
   }
 
   /** Makes `spec`'s write, stamped with the person signed in now, and answers with Dispatch's 2xx,
@@ -860,7 +871,7 @@ export class Writes {
         detail,
         id: this.#nextId(),
         inline: false,
-        issue: issueOfPath(request?.path),
+        issue: kept.issue ?? issueOfPath(request?.path),
         joined: this.#nextJoin(),
         key: kept.key,
         kind: kept.kind,
@@ -1007,7 +1018,7 @@ export class Writes {
         entry.request = request;
         const issue = entry.write.issue ?? issueOfPath(request.path);
         if (entry.write.sent) {
-          entry.write = { ...entry.write, issue };
+          if (issue !== entry.write.issue) entry.write = { ...entry.write, issue };
           this.#keep(entry);
         } else {
           this.#update(entry, { ...entry.write, issue, sent: true });
@@ -1109,10 +1120,11 @@ export class Writes {
     } else {
       this.#remove(entry);
     }
+    const refreshedAll = kind?.landed === undefined && (!awaited || answer === null);
     if (kind?.landed !== undefined) kind.landed(this.#client, entry.write, answer, awaited);
-    else if (!awaited || answer === null) void this.#client.invalidateQueries();
+    else if (refreshedAll) void this.#client.invalidateQueries();
     this.#emit({ answer, kind: "landed", write: entry.write });
-    this.#settleOut(entry, "landed");
+    this.#settleOut(entry, "landed", refreshedAll);
     this.#advance(entry.write.target);
   }
 
@@ -1226,6 +1238,7 @@ export class Writes {
     this.#kept.keep({
       carried: this.#carried.get(write.key) ?? null,
       detail: kind?.keep === undefined ? write.detail : kind.keep(write.detail),
+      issue: write.issue ?? null,
       key: write.key,
       kind: write.kind,
       label: write.label,
@@ -1264,15 +1277,18 @@ export class Writes {
     const { issue } = entry.write;
     if (entry.out || issue === undefined) return;
     entry.out = true;
-    for (const listener of this.#issueWrites.get(issue) ?? []) listener("out", entry.write);
+    for (const listener of this.#issueWrites.get(issue) ?? []) listener("out", entry.write, false);
   }
 
-  /** Tells the issue of `entry`'s write, where it was told the write went out, how it settled. */
-  #settleOut(entry: Entry, phase: Exclude<IssueWritePhase, "out">): void {
+  /** Tells the issue of `entry`'s write, where it was told the write went out, how it settled:
+   *  with `refreshedAll` where the store refreshed every query as it landed. */
+  #settleOut(entry: Entry, phase: Exclude<IssueWritePhase, "out">, refreshedAll = false): void {
     const { issue } = entry.write;
     if (!entry.out || issue === undefined) return;
     entry.out = false;
-    for (const listener of this.#issueWrites.get(issue) ?? []) listener(phase, entry.write);
+    for (const listener of this.#issueWrites.get(issue) ?? []) {
+      listener(phase, entry.write, refreshedAll);
+    }
   }
 
   #nextId(): number {
