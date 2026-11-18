@@ -10,6 +10,7 @@ package tests3
 import (
 	"bytes"
 	"context"
+	_ "embed"
 	"io"
 	"net/http"
 	"strings"
@@ -29,33 +30,23 @@ import (
 // a single-line string constant.
 const Image = "ghcr.io/cybermonklabs/legion/ci@sha256:bb05d66d2963b1cc48073190781c3dd29e2c4c88a2ae2986bf58e38c86d89c6e"
 
-// collection holds every object the server stores. SeaweedFS keeps a bucket's objects in a
-// collection of the bucket's name and makes that collection's volumes when the bucket's first
-// object is written, and that growth races the volume server's heartbeat: the master can take
-// the collection's first volume back while the write waits on it, and the write then fails after
-// 10 s and every later write fails at once. So Start gives the filer one rule, every path into
-// this collection, and grows its volumes before anything is written; a growth with no write
-// waiting on it survives the race, since the next heartbeat lists the volume again. The shard job
-// of .github/workflows/dispatch-browser.yaml does the same for the browser suite's server.
+// collection holds every object the server stores. one-collection.sh gives the server one rule,
+// every path into this collection, and grows its volumes before anything is written, so no write
+// grows a collection; that file says why a write must not.
 const collection = "tests3"
 
-// rule is the first thing Start runs inside the container: the rule, then a directory made after
-// it under /etc/seaweedfs. fs.configure only stores the rule; the filer puts it in force when it
-// processes that change, in order with every change under /etc/seaweedfs, and logs each one
-// ("procesing", spelt so), so the directory's log line says the rule before it is in force.
-const rule = `printf 'fs.configure -locationPrefix=/ -collection=` + collection + ` -apply\nfs.mkdir /etc/seaweedfs/` + marker + `\n' |
-  weed shell -master=localhost:9333 -filer=localhost:8888`
+// oneCollection is one-collection.sh, the one implementation of that rule, which the shard job of
+// .github/workflows/dispatch-browser.yaml runs for the browser suite's server too.
+//
+//go:embed one-collection.sh
+var oneCollection string
 
-// marker is the directory rule makes after the rule.
-const marker = "rule-in-force"
-
-// grow makes the collection's seven volumes, retried while the volume server has not yet
-// registered with the master.
-const grow = `for attempt in $(seq 1 60); do
-  wget -q -O /dev/null "http://localhost:9333/vol/grow?collection=` + collection + `&count=7" && exit 0
-  sleep 1
-done
-exit 1`
+// scriptPath is where the container holds one-collection.sh, and serverLog where its server
+// writes the log that script reads.
+const (
+	scriptPath = "/one-collection.sh"
+	serverLog  = "/tmp/weed.log"
+)
 
 // Start runs an S3-compatible server holding the empty bucket, removed when t ends, points this
 // process's AWS SDK at it for the rest of t (filestest.PointSDKAt), so files.NewS3(ctx, bucket)
@@ -64,8 +55,53 @@ exit 1`
 func Start(t testing.TB, bucket string) string {
 	t.Helper()
 	ctx := context.Background()
+	container, endpoint := startServer(ctx, t, oneCollection)
+	if code, output := runScript(ctx, t, container, "prepare"); code != 0 {
+		t.Fatalf("give the S3-compatible server its one collection: exit %d:\n%s", code, output)
+	}
+	// The server creates a bucket on an anonymous PUT of its name.
+	if status, body := call(ctx, t, http.MethodPut, endpoint+"/"+bucket, ""); status != http.StatusOK {
+		t.Fatalf("create bucket %s: %d %s", bucket, status, body)
+	}
+	// The first object, written, read back and deleted, which proves the server takes one.
+	object := endpoint + "/" + bucket + "/tests3-readiness"
+	if status, body := call(ctx, t, http.MethodPut, object, "ready"); status != http.StatusOK {
+		t.Fatalf("write the first object: %d %s", status, body)
+	}
+	if status, body := call(ctx, t, http.MethodGet, object, ""); status != http.StatusOK || body != "ready" {
+		t.Fatalf("read back the first object: %d %q, want 200 %q", status, body, "ready")
+	}
+	if status, body := call(ctx, t, http.MethodDelete, object, ""); status != http.StatusNoContent {
+		t.Fatalf("delete the first object: %d %s", status, body)
+	}
+	if code, output := runScript(ctx, t, container, "check"); code != 0 {
+		t.Fatalf("check the S3-compatible server after its first write: exit %d:\n%s", code, output)
+	}
+	// The same check when the test is done with the server, so a write of the test's own that
+	// grew storage fails it by name. A cleanup registered after CleanupContainer's runs before it.
+	t.Cleanup(func() {
+		if code, output := runScript(ctx, t, container, "check"); code != 0 {
+			t.Errorf("check the S3-compatible server after the test: exit %d:\n%s", code, output)
+		}
+	})
+	filestest.PointSDKAt(t, endpoint)
+	return endpoint
+}
+
+// startServer runs the server in a container removed when t ends, with script at scriptPath,
+// and answers the container and its S3 endpoint once that port answers.
+func startServer(ctx context.Context, t testing.TB, script string) (testcontainers.Container, string) {
+	t.Helper()
 	container, err := testcontainers.Run(ctx, Image,
+		// The image's own entrypoint, which adds the server's volume flags, with the server's
+		// output in serverLog, where one-collection.sh reads it, rather than the container's log.
+		testcontainers.WithEntrypoint("sh", "-c", `exec /entrypoint.sh "$@" > `+serverLog+` 2>&1`, "sh"),
 		testcontainers.WithCmd("server", "-s3", "-dir=/data", "-ip=0.0.0.0", "-s3.port=8333"),
+		testcontainers.WithFiles(testcontainers.ContainerFile{
+			Reader:            strings.NewReader(script),
+			ContainerFilePath: scriptPath,
+			FileMode:          0o755,
+		}),
 		testcontainers.WithExposedPorts("8333/tcp"),
 		testcontainers.WithWaitStrategy(wait.ForHTTP("/").WithPort("8333/tcp").WithStartupTimeout(90*time.Second)),
 		// One CPU and 1 GiB, as every container the repository's tests start is capped on a shared
@@ -83,73 +119,22 @@ func Start(t testing.TB, bucket string) string {
 	if err != nil {
 		t.Fatalf("S3-compatible server endpoint: %v", err)
 	}
-	if code, output := execIn(ctx, t, container, rule); code != 0 {
-		t.Fatalf("give the S3-compatible server its one collection: exit %d: %s", code, output)
-	}
-	waitForRule(ctx, t, container)
-	if code, output := execIn(ctx, t, container, grow); code != 0 {
-		t.Fatalf("grow the S3-compatible server's one collection: exit %d: %s", code, output)
-	}
-	// The server creates a bucket on an anonymous PUT of its name.
-	if status, body := call(ctx, t, http.MethodPut, endpoint+"/"+bucket, ""); status != http.StatusOK {
-		t.Fatalf("create bucket %s: %d %s", bucket, status, body)
-	}
-	// The first object, written, read back and deleted. The rule held only if it went into the
-	// one collection and the server holds no other, which collection.list then says.
-	object := endpoint + "/" + bucket + "/tests3-readiness"
-	if status, body := call(ctx, t, http.MethodPut, object, "ready"); status != http.StatusOK {
-		t.Fatalf("write the first object: %d %s", status, body)
-	}
-	if status, body := call(ctx, t, http.MethodGet, object, ""); status != http.StatusOK || body != "ready" {
-		t.Fatalf("read back the first object: %d %q, want 200 %q", status, body, "ready")
-	}
-	if status, body := call(ctx, t, http.MethodDelete, object, ""); status != http.StatusNoContent {
-		t.Fatalf("delete the first object: %d %s", status, body)
-	}
-	_, collections := execIn(ctx, t, container, "echo collection.list | weed shell -master=localhost:9333 -filer=localhost:8888")
-	if strings.Count(collections, `collection:"`) != 1 || !strings.Contains(collections, `collection:"`+collection+`"`) {
-		t.Fatalf("the S3-compatible server holds a collection other than %s, so a write can grow one: %s", collection, collections)
-	}
-	filestest.PointSDKAt(t, endpoint)
-	return endpoint
+	return container, endpoint
 }
 
-// execIn runs script with sh inside c and answers its exit code and its output.
-func execIn(ctx context.Context, t testing.TB, c testcontainers.Container, script string) (int, string) {
+// runScript runs step of one-collection.sh inside c, for collection and serverLog, and answers
+// its exit code and its output.
+func runScript(ctx context.Context, t testing.TB, c testcontainers.Container, step string) (int, string) {
 	t.Helper()
-	code, reader, err := c.Exec(ctx, []string{"sh", "-c", script}, tcexec.Multiplexed())
+	code, reader, err := c.Exec(ctx, []string{scriptPath, step, collection, serverLog}, tcexec.Multiplexed())
 	if err != nil {
-		t.Fatalf("run %q in the S3-compatible server's container: %v", script, err)
+		t.Fatalf("run one-collection.sh %s in the S3-compatible server's container: %v", step, err)
 	}
 	output, err := io.ReadAll(reader)
 	if err != nil {
-		t.Fatalf("read the output of %q: %v", script, err)
+		t.Fatalf("read the output of one-collection.sh %s: %v", step, err)
 	}
 	return code, string(output)
-}
-
-// waitForRule waits, within a minute, for the server's log line that it processed marker.
-func waitForRule(ctx context.Context, t testing.TB, c testcontainers.Container) {
-	t.Helper()
-	var logged string
-	for deadline := time.Now().Add(time.Minute); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
-		reader, err := c.Logs(ctx)
-		if err != nil {
-			t.Fatalf("read the S3-compatible server's log: %v", err)
-		}
-		all, err := io.ReadAll(reader)
-		_ = reader.Close()
-		if err != nil {
-			t.Fatalf("read the S3-compatible server's log: %v", err)
-		}
-		logged = string(all)
-		for _, line := range strings.Split(logged, "\n") {
-			if strings.Contains(line, "procesing") && strings.Contains(line, marker) {
-				return
-			}
-		}
-	}
-	t.Fatalf("the S3-compatible server did not put the rule for %s in force within a minute; its log:\n%s", collection, logged)
 }
 
 // call sends one anonymous request with body and answers the status and the body of the answer.

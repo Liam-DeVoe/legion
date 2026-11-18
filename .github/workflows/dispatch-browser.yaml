@@ -486,6 +486,7 @@ jobs:
             -volume.max=0 -master.volumePreallocate -master.volumeSizeLimitMB=1024 \
             > "$RUNNER_TEMP/weed.log" 2>&1 &
       - name: Wait for the S3-compatible server
+        id: file-store
         # The readiness wait of the step that started it. An anonymous PUT makes the bucket, as
         # each stack makes its own (dispatch-e2e-files-worker-N) with the same request
         # (e2e/harness-pool.ts). Then an object is written, read back and deleted, because a
@@ -496,56 +497,19 @@ jobs:
         # this step's name, with the log the step above redirected -- which is what a job in a
         # container has in place of `docker logs`.
         #
-        # ONE COLLECTION, GROWN BEFORE ANYTHING IS WRITTEN. SeaweedFS keeps a bucket's objects
-        # in a collection of the bucket's own name and makes that collection's seven volumes when
-        # the bucket's first object is written. That growth races the volume server's heartbeat:
-        # the master can read a heartbeat collected before the collection's first volume
-        # existed, take the volume back and drop the collection's layout while the write waits
-        # on it. The write fails after 10 s, and every later write fails at once ("Connection
-        # wait stopped: context canceled" in the store's log) until the store is restarted. Run
-        # 44292015929 met it in shard 2: the first object of dispatch-e2e-files-worker-2 was a
-        # row's upload, Dispatch answered it 502 FILE_STORE_UNAVAILABLE, and the row and its
-        # retry each waited 45 s for a Download link that could not come. The race is rare, not
-        # absent: 1 of the 1,066 growths of the 265 shard legs of 200 ci.yaml runs, read from
-        # their record artifacts on 2026-11-18 (10:02 to 13:06Z), which is one leg in 265.
-        #
-        # So nothing a run writes grows a collection. `fs.configure` gives the filer one rule,
-        # every path into $collection, so each stack's bucket and the filer's own files share
-        # one collection, and `/vol/grow` makes its seven volumes before the first write. A
-        # growth with no write waiting on it survives the race: the next heartbeat lists the
-        # volume again. The readiness object below is the first write and proves the store
-        # takes one; `collection.list` after it proves the rule held, since without the rule
-        # that object makes a collection of the bucket's name. The grow is retried because the
-        # master can answer before the volume server has registered with it.
-        #
-        # `fs.configure` stores the rule and returns; the filer puts it in force only when it
-        # processes that change, in order with every change under /etc/seaweedfs. Measured on a
-        # dev box, that came 0.2 s after a readiness write that had started at once, so the write
-        # grew a collection of its bucket's name. So the step makes a directory there after the
-        # rule and waits for the filer's log line for that directory (`filer_on_meta_event.go`'s
-        # "procesing", spelt so): once it is logged, the rule before it is in force.
+        # ONE COLLECTION, GROWN BEFORE ANYTHING IS WRITTEN, so that no write the run makes grows
+        # a collection: packages/envoy/internal/tests3/one-collection.sh says why a write must not,
+        # and it is the one implementation of the rule, which the Go tests' SeaweedFS container
+        # (tests3.Start) runs too. Its `prepare` runs once the S3 port answers and before the
+        # first write, and its `check` after the readiness object below; the step after the
+        # browser step runs `check` again over the whole run.
         run: |
           for attempt in $(seq 1 60); do
             curl -sf -o /dev/null http://127.0.0.1:18333/ && break
             [ "$attempt" -lt 60 ] || { cat "$RUNNER_TEMP/weed.log"; exit 1; }
             sleep 1
           done
-          collection=dispatch-e2e-objects
-          marker="rule-in-force-$$"
-          shell="weed shell -master=127.0.0.1:9333 -filer=127.0.0.1:8888"
-          printf 'fs.configure -locationPrefix=/ -collection=%s -apply\nfs.mkdir /etc/seaweedfs/%s\n' "$collection" "$marker" |
-            $shell > "$RUNNER_TEMP/weed-shell.log" 2>&1 ||
-            { echo "::error::weed shell did not give the filer its one collection"; cat "$RUNNER_TEMP/weed-shell.log"; exit 1; }
-          for attempt in $(seq 1 60); do
-            grep -q "procesing.*$marker" "$RUNNER_TEMP/weed.log" && break
-            [ "$attempt" -lt 60 ] || { echo "::error::the filer did not put the rule for $collection in force"; cat "$RUNNER_TEMP/weed-shell.log" "$RUNNER_TEMP/weed.log"; exit 1; }
-            sleep 1
-          done
-          for attempt in $(seq 1 60); do
-            curl -sf -o /dev/null "http://127.0.0.1:9333/vol/grow?collection=$collection&count=7" && break
-            [ "$attempt" -lt 60 ] || { echo "::error::the master grew no volumes for $collection"; cat "$RUNNER_TEMP/weed.log"; exit 1; }
-            sleep 1
-          done
+          packages/envoy/internal/tests3/one-collection.sh prepare dispatch-e2e-objects "$RUNNER_TEMP/weed.log"
           store=http://127.0.0.1:18333/dispatch-e2e-files
           curl -sf -X PUT -o /dev/null "$store" || { cat "$RUNNER_TEMP/weed.log"; exit 1; }
           # The write is retried: the bucket exists as soon as the filer answers, while the
@@ -557,12 +521,7 @@ jobs:
           done
           [ "$(curl -sf "$store/readiness")" = ready ] || { echo "::error::the file store did not serve back what it stored"; cat "$RUNNER_TEMP/weed.log"; exit 1; }
           curl -sf -X DELETE -o /dev/null "$store/readiness"
-          # One line per collection, `collection:"<name>"` then its counts, after the shell's
-          # prompt.
-          echo "collection.list" | $shell > "$RUNNER_TEMP/weed-collections.txt" 2>&1
-          [ "$(grep -c 'collection:"' "$RUNNER_TEMP/weed-collections.txt")" = 1 ] &&
-            grep -q "collection:\"$collection\"" "$RUNNER_TEMP/weed-collections.txt" ||
-            { echo "::error::the store holds a collection other than $collection, so a write can grow one"; cat "$RUNNER_TEMP/weed-collections.txt"; exit 1; }
+          packages/envoy/internal/tests3/one-collection.sh check dispatch-e2e-objects "$RUNNER_TEMP/weed.log"
       - name: Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 4)
         # `bun run e2e` builds the SPA itself, which would rebuild it a second time in this job.
         # Calling Playwright directly reuses the "Build dispatch dashboard" step's dist above and
@@ -733,6 +692,15 @@ jobs:
         env:
           DISPATCH_E2E_FILE_STORE_ENDPOINT: http://127.0.0.1:18333
           DISPATCH_E2E_FILE_STORE_BUCKET: dispatch-e2e-files
+      # The file store's `check` again, over the whole run: no write of the suite grew storage,
+      # and the one collection is still the store's only one
+      # (packages/envoy/internal/tests3/one-collection.sh). After a failed suite as after a green
+      # one, since a write that grew storage is what a failed upload row then needs said by name,
+      # and only when the step that waits for the store passed, since without it there is nothing
+      # to check.
+      - name: Check that no write grew the file store
+        if: always() && steps.file-store.outcome == 'success'
+        run: packages/envoy/internal/tests3/one-collection.sh check dispatch-e2e-objects "$RUNNER_TEMP/weed.log"
       # This leg's half of the run's report. Always, not on failure alone: the merge job reads
       # every leg's blob, and a leg whose blob is missing fails it by name.
       #

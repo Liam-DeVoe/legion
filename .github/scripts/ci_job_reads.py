@@ -1887,6 +1887,9 @@ BROWSER_SELECT_STEP = "Take the newest attempt of each leg's blob report"
 BROWSER_READ_ONE_STEP = "Reading one, the rows"
 BROWSER_BLOBS_REFUSED_STEP = "Report a refused blob download as a refused read"
 BROWSER_PG_STEP = "Read the lanes' PostgreSQL and time its provider"
+# The shard job's two steps that run the file store's one-collection script.
+BROWSER_STORE_WAIT_STEP = "Wait for the S3-compatible server"
+BROWSER_STORE_CHECK_STEP = "Check that no write grew the file store"
 # The visual job's own step, which runs e2e/visual-run.sh: that script seeds on the host, where
 # e2e/run-server.sh's `go build` of the Dispatch server has already run, and then runs Playwright
 # in the pinned container. That build compiles ./cmd/dispatch, which the multiprocess job's
@@ -2726,6 +2729,9 @@ GATES = [
         (".github/scripts/gh-read.sh",
          "dispatch-browser-run-reads.sh:79 sources it, so the merge job's read of its own attempt's "
          "jobs takes its retry ladder, and the blobs-refused mode makes no request"),
+        (f"{ENVOY}/internal/tests3/one-collection.sh",
+         f"{at_browser(BROWSER_STORE_WAIT_STEP)} and {at_browser(BROWSER_STORE_CHECK_STEP)} run it on "
+         "the file store the shard job starts"),
         # The container the shard and alone jobs run in, and what decides which bytes it is.
         # No step reads these three: the `container:` key does, before the first step runs, so
         # the citation is that key's own line rather than a step of the job.

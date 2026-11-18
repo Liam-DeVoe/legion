@@ -2596,6 +2596,10 @@ jobs:
               # dispatch-browser-run-reads.sh:79 sources it, so the merge job's read of its own
               # attempt's jobs takes its retry ladder, and the blobs-refused mode makes no request.
               - '.github/scripts/gh-read.sh'
+              # The file store's one-collection rule, which the shard job's wait step and the step
+              # after its browser step run; internal/tests3 embeds the same file for the Go tests'
+              # server, which envoy-go's packages/envoy/** already selects.
+              - 'packages/envoy/internal/tests3/one-collection.sh'
               # The container image the shard and alone jobs run in and everything that decides
               # which bytes it is: the row that pins its digest, the Dockerfile it is built from
               # and the workflow that builds it. A change to any of them changes what those jobs
