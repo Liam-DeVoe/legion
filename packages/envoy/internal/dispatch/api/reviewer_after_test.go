@@ -16,13 +16,29 @@ import (
 )
 
 // The reviewer's writes that are never held (INFRA-3231's R5 and Decisions 8 and 26): a person's
-// own typed command, posted at once with no review; a document version, saved at once and
-// reviewed after the save; and an agent's edit of a posted ask, comment or issue title, saved at
-// once and reviewed after the save, with nothing more happening when the writer does not act.
+// own typed command, posted at once with no review; a reply a plugin generated, a send to an agent,
+// a handoff and a person's own ask, each posted at once with no review; a document version, saved
+// at once and reviewed after the save; and an agent's edit of a posted ask, comment or issue title,
+// saved at once and reviewed after the save, with nothing more happening when the writer does not
+// act.
 
 // asWriterTyped writes as the rig's writer session with Dispatch-Person-Typed: 1, as the dispatch
 // command does for a line a person typed in that session.
 func (rig *reviewRig) asWriterTyped(method, target string, body map[string]any) *httptest.ResponseRecorder {
+	rig.t.Helper()
+	return rig.asWriterMarked(contracts.PersonTypedHeader, method, target, body)
+}
+
+// asWriterGenerated writes as the rig's writer session with Dispatch-Generated-Text: 1, as a
+// plugin posts text it generated rather than its agent wrote: a person's !command report, a slash
+// command's output.
+func (rig *reviewRig) asWriterGenerated(method, target string, body map[string]any) *httptest.ResponseRecorder {
+	rig.t.Helper()
+	return rig.asWriterMarked(contracts.GeneratedTextHeader, method, target, body)
+}
+
+// asWriterMarked writes as the rig's writer session with the header marker set to 1.
+func (rig *reviewRig) asWriterMarked(marker, method, target string, body map[string]any) *httptest.ResponseRecorder {
 	rig.t.Helper()
 	withActor := map[string]any{"actor": map[string]any{"kind": "session", "id": heldWriter}}
 	for key, value := range body {
@@ -35,7 +51,7 @@ func (rig *reviewRig) asWriterTyped(method, target string, body map[string]any) 
 	request := httptest.NewRequest(method, target, bytes.NewReader(data))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer agent-token")
-	request.Header.Set(contracts.PersonTypedHeader, "1")
+	request.Header.Set(marker, "1")
 	response := httptest.NewRecorder()
 	rig.handler.ServeHTTP(response, request)
 	return response
@@ -120,6 +136,205 @@ func TestPersonTypedCommentPostsAtOnceUnderHold(t *testing.T) {
 	rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues/"+rig.issue+"/comments", map[string]any{
 		"body": "Status\nWe spin up the node. " + vacuousPhrase,
 	}), "the agent's own comment")
+}
+
+// messageToWriter is alice's message to the writer session, sent as a btw: its id, whose attempt
+// 1 the writer answers.
+func (rig *reviewRig) messageToWriter(body string) string {
+	rig.t.Helper()
+	sent := dispatchRequest(rig.t, rig.handler, http.MethodPost, "/api/v1/agents/"+heldWriter+"/messages", map[string]any{"body": body, "delivery": "btw"}, "alice")
+	if sent.Code != http.StatusCreated {
+		rig.t.Fatalf("alice's message to the writer: %d %s", sent.Code, sent.Body.String())
+	}
+	return decodeBody[model.Message](rig.t, sent).ID
+}
+
+// mentionOfWriter is alice's comment on the rig's issue that mentions the writer session, once its
+// delivery settled: its id, whose attempt 1 the writer answers.
+func (rig *reviewRig) mentionOfWriter(body string) string {
+	rig.t.Helper()
+	comment := decodeMentionedComment(rig.t, postMentionedComment(rig.t, rig.handler, rig.issue, map[string]any{
+		"body": body, "mentions": []map[string]any{{"target": "session:" + heldWriter}},
+	}))
+	settledCommentDeliveries(rig.t, rig.database, comment.ID)
+	return comment.ID
+}
+
+// A reply a plugin marks as generated (Dispatch-Generated-Text: 1, which pi-envoy sends with a
+// person's !command report) posts at once on the reply route of a delivered message and of a
+// delivered mention, with the reviewer holding comments and messages: the answer carries no held
+// object, alice reads the reply at once, no text is held, the reviewer is never called, and the
+// writing check records the reply exempt_generated with alice as its reader. The same reply with
+// no header is held on each route (the negative control).
+func TestAGeneratedReplyPostsAtOnceUnderHold(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Comments: ReviewHold, Messages: ReviewHold, WriterWindow: time.Minute}, nil)
+	const report = "Status\nWe spin up the node. " + vacuousPhrase
+	routes := []struct {
+		pattern string
+		// delivered is the reply route of a new delivery to the writer.
+		delivered func() string
+		// read is the reply id's body as alice reads it in its thread.
+		read func(id string) string
+	}{
+		{
+			"/api/v1/messages/{id}/reply",
+			func() string { return "/api/v1/messages/" + rig.messageToWriter("Is it done?") + "/reply" },
+			func(id string) string {
+				read := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/messages/"+id, nil, "alice")
+				if read.Code != http.StatusOK {
+					t.Fatalf("alice's read of the reply %s: %d %s", id, read.Code, read.Body.String())
+				}
+				for _, reply := range decodeBody[messageRead](t, read).Replies {
+					if reply.ID == id {
+						return reply.Body
+					}
+				}
+				t.Fatalf("alice's read of the thread holds no reply %s: %s", id, read.Body.String())
+				return ""
+			},
+		},
+		{
+			"/api/v1/comments/{id}/reply",
+			func() string { return "/api/v1/comments/" + rig.mentionOfWriter("Is it done?") + "/reply" },
+			func(id string) string { return readCommentThread(t, rig.handler, id).Comment.Body },
+		},
+	}
+	for _, route := range routes {
+		response := rig.asWriterGenerated(http.MethodPost, route.delivered(), map[string]any{"attempt": 1, "body": report})
+		if response.Code != http.StatusCreated || strings.Contains(response.Body.String(), `"held"`) {
+			t.Fatalf("the generated reply on %s: %d %s, want it posted at once", route.pattern, response.Code, response.Body.String())
+		}
+		id := decodeBody[heldWriteAnswer](t, response).ID
+		if body := route.read(id); body != report {
+			t.Fatalf("alice reads the generated reply on %s as %q, want %q", route.pattern, body, report)
+		}
+		if generated := countRows(t, rig.database, `
+			select count(*) from writing_check_events
+			where method = 'POST' and route = $1 and outcome = $2 and reader = 'alice'`, route.pattern, writingCheckGenerated); generated != 1 {
+			t.Fatalf("%d %s rows with reader alice for the reply on %s, want 1", generated, writingCheckGenerated, route.pattern)
+		}
+		if rows := countRows(t, rig.database, `select count(*) from writing_check_events where method = 'POST' and route = $1`, route.pattern); rows != 1 {
+			t.Fatalf("%d writing_check_events rows for the reply on %s, want its one", rows, route.pattern)
+		}
+	}
+	time.Sleep(300 * time.Millisecond)
+	if calls := rig.reviewCalls("We spin up the node."); calls != 0 {
+		t.Fatalf("the reviewer read the generated replies %d times, want none", calls)
+	}
+	if held := countRows(t, rig.database, `select count(*) from held_texts`); held != 0 {
+		t.Fatalf("%d held texts for generated replies, want none", held)
+	}
+	if outcomes := rig.outcomes(); len(outcomes) != 0 {
+		t.Fatalf("the reviewer recorded %v for generated replies, want nothing", outcomes)
+	}
+	// The negative control: the agent's own reply, with no header, is held on each route.
+	for _, route := range routes {
+		rig.held(rig.asWriter(http.MethodPost, route.delivered(), map[string]any{"attempt": 1, "body": report}), "the agent's own reply on "+route.pattern)
+	}
+}
+
+// An agent session's send to another session (POST /api/v1/agents/{session_id}/messages, with its
+// person's token acting for it) whose body is the sentence the stand-in flags answers 201 at once
+// with the reviewer holding messages: no held object, no held text, no review call, and the
+// message reaches the recipient session. No person reads a send to an agent, so the writing check
+// records it exempt_no_reader.
+func TestASendToAnAgentPostsAtOnceUnderHold(t *testing.T) {
+	rig := newEditRig(t, ReviewerConfig{Messages: ReviewHold, WriterWindow: time.Minute})
+	const recipient = "s-reader"
+	rig.listener.start(recipient)
+	sent := rig.writeAsPerson(http.MethodPost, "/api/v1/agents/"+recipient+"/messages", map[string]any{
+		"body": vacuousPhrase, "delivery": "btw",
+	})
+	if sent.Code != http.StatusCreated || strings.Contains(sent.Body.String(), `"held"`) {
+		t.Fatalf("the writer's send to %s: %d %s, want it posted at once", recipient, sent.Code, sent.Body.String())
+	}
+	message := decodeBody[model.Message](t, sent)
+	if message.Body != vacuousPhrase || message.Author.Act == nil || message.Author.Act.Session != heldWriter {
+		t.Fatalf("the send = %+v, want the sentence written for the writer session", message)
+	}
+	pollUntil(t, 10*time.Second, "the send's delivery to "+recipient, func() bool { return rig.listener.deliveredTo(recipient, message.ID) })
+	if unread := countRows(t, rig.database, `
+		select count(*) from writing_check_events
+		where method = 'POST' and route = '/api/v1/agents/{session_id}/messages' and outcome = $1`, writingCheckNoReader); unread != 1 {
+		t.Fatalf("%d %s rows for the send, want 1", unread, writingCheckNoReader)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if calls := rig.reviewCalls(vacuousPhrase); calls != 0 {
+		t.Fatalf("the reviewer read the send %d times, want none", calls)
+	}
+	if held := countRows(t, rig.database, `select count(*) from held_texts`); held != 0 {
+		t.Fatalf("%d held texts for a send to an agent, want none", held)
+	}
+}
+
+// everyKindHeld is the reviewer holding every kind it may hold, and reviewing a document version,
+// which is never held, after its save.
+func everyKindHeld() ReviewerConfig {
+	return ReviewerConfig{
+		Asks: ReviewHold, Issues: ReviewHold, Comments: ReviewHold, Messages: ReviewHold,
+		Documents: ReviewAfter, DecisionBlocks: ReviewHold, WriterWindow: time.Minute,
+	}
+}
+
+// An agent's handoff (POST /api/v1/issues/{key}/handoffs/{phase}) whose body holds the sentence the
+// stand-in flags answers 201 at once with the reviewer holding every kind: no held object, no held
+// text, no review call, and the phase's latest handoff reads back the body exactly as written.
+func TestAHandoffPostsAtOnceWithEveryKindHeld(t *testing.T) {
+	rig := newReviewRig(t, everyKindHeld(), nil)
+	body := `{"summary":"` + vacuousPhrase + `","next":"review"}`
+	written := rig.asWriter(http.MethodPost, "/api/v1/issues/"+rig.issue+"/handoffs/implement", map[string]any{"body": body})
+	if written.Code != http.StatusCreated || strings.Contains(written.Body.String(), `"held"`) {
+		t.Fatalf("the writer's handoff: %d %s, want it recorded at once", written.Code, written.Body.String())
+	}
+	summary := decodeBody[model.HandoffSummary](t, written)
+	latest := agentRequest(t, rig.handler, http.MethodGet, "/api/v1/issues/"+rig.issue+"/handoffs/implement/latest", nil, "agent-token")
+	if latest.Code != http.StatusOK {
+		t.Fatalf("the latest implement handoff: %d %s", latest.Code, latest.Body.String())
+	}
+	if read := decodeBody[model.Handoff](t, latest); read.ID != summary.ID || read.Version != 1 || read.Body != body {
+		t.Fatalf("the latest implement handoff = %+v, want version 1 %s with the body %q", read, summary.ID, body)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if calls := rig.reviewCalls(vacuousPhrase); calls != 0 {
+		t.Fatalf("the reviewer read the handoff %d times, want none", calls)
+	}
+	if held := countRows(t, rig.database, `select count(*) from held_texts`); held != 0 {
+		t.Fatalf("%d held texts for a handoff, want none", held)
+	}
+}
+
+// A person's own ask, written in the web app (the X-Dispatch-User identity this suite signs a
+// person in with, in place of the browser's cookie), posts at once with the reviewer holding asks:
+// the answer carries no held object, another person reads the ask at once, no text is held and the
+// reviewer is never called. The agent session's same ask is held (the negative control).
+func TestAPersonsAskPostsAtOnceUnderHold(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Asks: ReviewHold, WriterWindow: time.Minute}, nil)
+	question := "Ship the reviewer?\n" + vacuousPhrase
+	ask := map[string]any{"question": question, "options": writtenOptions}
+	asked := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/issues/"+rig.issue+"/asks", ask, "alice")
+	if asked.Code != http.StatusCreated || strings.Contains(asked.Body.String(), `"held"`) {
+		t.Fatalf("alice's ask: %d %s, want it posted at once", asked.Code, asked.Body.String())
+	}
+	id := decodeBody[heldWriteAnswer](t, asked).ID
+	read := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/asks/"+id, nil, "bob")
+	if read.Code != http.StatusOK {
+		t.Fatalf("bob's read of alice's ask: %d %s", read.Code, read.Body.String())
+	}
+	if got := decodeBody[askRead](t, read).Ask.Question; got != question {
+		t.Fatalf("bob reads alice's ask as %q, want %q", got, question)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if calls := rig.reviewCalls(vacuousPhrase); calls != 0 {
+		t.Fatalf("the reviewer read alice's ask %d times, want none", calls)
+	}
+	if held := countRows(t, rig.database, `select count(*) from held_texts`); held != 0 {
+		t.Fatalf("%d held texts for a person's ask, want none", held)
+	}
+	if outcomes := rig.outcomes(); len(outcomes) != 0 {
+		t.Fatalf("the reviewer recorded %v for a person's ask, want nothing", outcomes)
+	}
+	// The negative control: the agent session's same ask is held.
+	rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues/"+rig.issue+"/asks", ask), "the agent's same ask")
 }
 
 // An agent's document version saves at once with DISPATCH_REVIEWER_DOCUMENTS=after, and its

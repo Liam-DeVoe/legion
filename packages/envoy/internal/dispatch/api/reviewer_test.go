@@ -155,6 +155,32 @@ func (l *fakeReviewListener) stop(session string) {
 	delete(l.live, session)
 }
 
+// start makes session one of the listener's running sessions.
+func (l *fakeReviewListener) start(session string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.live[session] = true
+}
+
+// deliveredTo reports whether the listener was sent the message id for session: a send to it whose
+// frame carries that id.
+func (l *fakeReviewListener) deliveredTo(session, id string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, send := range l.sends {
+		payload, _ := send["payload"].(string)
+		var frame struct {
+			Event struct {
+				Payload map[string]any `json:"payload"`
+			} `json:"event"`
+		}
+		if send["target_session"] == session && json.Unmarshal([]byte(payload), &frame) == nil && frame.Event.Payload["id"] == id {
+			return true
+		}
+	}
+	return false
+}
+
 // frames are the findings frames the listener was sent: the delivered event of each send whose
 // actor is Dispatch's reviewer.
 func (l *fakeReviewListener) frames() []map[string]any {
@@ -468,6 +494,43 @@ func TestTheReviewerPostsAHeldCommentItsWriterEdited(t *testing.T) {
 	}
 	if body := rig.commentBody(answer.ID); body != "Rows wait in the table until the sweep." {
 		t.Fatalf("the posted comment reads %q, want the edit", body)
+	}
+	if outcomes := rig.outcomes(); !slices.Equal(outcomes, []string{reviewHeld, reviewEdited, reviewPassed}) {
+		t.Fatalf("outcomes = %v", outcomes)
+	}
+}
+
+// A held message on an issue a person holds is edited through the held text's own route as a
+// message is: an edit of a field a message does not hold is refused 400 HELD_EDIT_INPUT, and the
+// writer's edit of its body is reviewed again and posts, recorded passed. The reader reads nothing
+// of the message while it is held, and then the edited text.
+func TestTheReviewerPostsAHeldMessageItsWriterEdited(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Messages: ReviewHold, WriterWindow: time.Minute}, nil)
+	const edit = "Status\nThe test fails on its first call."
+	answer := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues/"+rig.issue+"/messages", map[string]any{
+		"body": "Status\nWe spin up the node. " + vacuousPhrase,
+	}), "the agent's message")
+	rig.waitHeld(answer.ID, heldAwaitingWriter)
+	if read := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/messages/"+answer.ID, nil, "alice"); read.Code != http.StatusNotFound {
+		t.Fatalf("alice's read of the held message: %d %s, want 404", read.Code, read.Body.String())
+	}
+	if refused := rig.asWriter(http.MethodPatch, "/api/v1/held/"+answer.ID, map[string]any{"title": "No"}); refused.Code != http.StatusBadRequest ||
+		!strings.Contains(refused.Body.String(), `"code":"HELD_EDIT_INPUT"`) {
+		t.Fatalf("an edit of a field a message does not hold: %d %s, want 400 HELD_EDIT_INPUT", refused.Code, refused.Body.String())
+	}
+	edited := rig.asWriter(http.MethodPatch, "/api/v1/held/"+answer.ID, map[string]any{"body": edit})
+	if edited.Code != http.StatusOK {
+		t.Fatalf("the writer's edit: %d %s", edited.Code, edited.Body.String())
+	}
+	if posted := rig.waitHeld(answer.ID, heldPosted); posted.outcome != reviewPassed {
+		t.Fatalf("the edited message posted %s (%s), want passed", posted.outcome, posted.detail)
+	}
+	read := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/messages/"+answer.ID, nil, "alice")
+	if read.Code != http.StatusOK {
+		t.Fatalf("alice's read of the posted message: %d %s", read.Code, read.Body.String())
+	}
+	if body := decodeBody[messageRead](t, read).Message.Body; body != edit {
+		t.Fatalf("alice reads the posted message as %q, want the edit %q", body, edit)
 	}
 	if outcomes := rig.outcomes(); !slices.Equal(outcomes, []string{reviewHeld, reviewEdited, reviewPassed}) {
 		t.Fatalf("outcomes = %v", outcomes)
@@ -1210,7 +1273,8 @@ func TestAHeldWriteIsRefusedAtOnceForWhatItsPathRefuses(t *testing.T) {
 }
 
 // An agent's reply to a person's message that a plugin posts is held, and posts through the reply
-// route under the id the hold reserved; one marked as generated posts at once.
+// route under the id the hold reserved. One marked as generated posts at once
+// (TestAGeneratedReplyPostsAtOnceUnderHold).
 func TestTheReviewerHoldsAnAgentsReplyToAPersonsMessage(t *testing.T) {
 	rig := newReviewRig(t, ReviewerConfig{Messages: ReviewHold, WriterWindow: time.Minute}, nil)
 	send := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/agents/"+heldWriter+"/messages", map[string]any{"body": "Is it done?", "delivery": "btw"}, "alice")

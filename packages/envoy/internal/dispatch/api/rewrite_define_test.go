@@ -741,6 +741,26 @@ func TestADefinitionKeepsTheAgentsAnswerWithNoMessageAndNoEvent(t *testing.T) {
 	}
 }
 
+// A Define use is counted on its day: GET /api/v1/writing-check/counts for that day gives the
+// person define_uses 1 on the ask's project, beside no text and no word question, which count the
+// texts the person wrote.
+func TestADefineUseIsCountedOnItsDay(t *testing.T) {
+	rig := newRewriteRig(t, nil)
+	askID := rig.ask(rewriteQuestion + " The store holds it.")
+	rig.define("alice", map[string]any{"ask_id": askID, "words": []string{"store"}})
+	day := time.Now().UTC().Format(time.DateOnly)
+	response := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/writing-check/counts?first="+day+"&last="+day, nil, "bob")
+	if response.Code != http.StatusOK {
+		t.Fatalf("the counts of %s: %d %s", day, response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"define_uses":1`) {
+		t.Fatalf("the counts of %s name no define_uses of 1: %s", day, response.Body.String())
+	}
+	if got := row(decodeBody[store.WritingCheckCounts](t, response), day, "RWD", "alice"); got.DefineUses != 1 || got.Texts != 0 || got.WordQuestions != 0 {
+		t.Fatalf("alice's counts of %s on RWD = %+v, want one Define use and no text", day, got)
+	}
+}
+
 // Definitions are kept for their person alone: another person reads none of them, by id or in
 // their own list, and a Define of words in a document reads the record alone, with no side
 // question.

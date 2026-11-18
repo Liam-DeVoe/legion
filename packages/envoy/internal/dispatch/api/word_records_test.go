@@ -333,6 +333,79 @@ func TestWordRecordsRetryAFailedTextUntilTheModelAnswers(t *testing.T) {
 	}
 }
 
+// A person's replies posted through the server that quote the agent's words are read by the
+// records job with the quoted lines as the part the reply points to and the lines the person typed
+// as their text (INFRA-3231's check 5fb14fc7): "> holds rows that a delete already removed", then
+// "What does that mean?", is recorded as a word question about the quoted clause; "> What is a
+// store?", then "Done.", is recorded with verdict none and no words, though the stand-in reads
+// "What is a store?" in the person's own lines as a question about store. The reader's words route
+// then answers the clause alone.
+func TestWordRecordsReadAQuotedReplyByThePersonsOwnLines(t *testing.T) {
+	const clause = "holds rows that a delete already removed"
+	rig := newRecordsRig(t)
+	// The person's part of a request: what stands between its tags.
+	personPart := func(r modeltest.Request) string {
+		_, rest, _ := strings.Cut(r.Text, "<person_text kind=\"comment\">\n")
+		part, _, _ := strings.Cut(rest, "\n</person_text>")
+		return part
+	}
+	stand := modeltest.New(t,
+		modeltest.Rule{
+			Match: func(r modeltest.Request) bool {
+				return strings.Contains(personPart(r), "What does that mean?") &&
+					strings.Contains(r.Text, "<quoted_part>\n"+clause+"\n</quoted_part>")
+			},
+			Reply: modeltest.Reply{Text: `{"verdict":"asks_word_meaning","words":["` + clause + `"]}`},
+		},
+		modeltest.Rule{
+			Match: func(r modeltest.Request) bool { return strings.Contains(personPart(r), "What is a store?") },
+			Reply: modeltest.Reply{Text: aboutStore},
+		},
+		modeltest.Rule{Reply: modeltest.Reply{Text: notAbout}},
+	)
+	ask := rig.agentAsk("The mirror " + clause + ". What is a store, and which one holds the cache?")
+	replies := []struct {
+		body, verdict string
+		words         []string
+		event         int64
+	}{
+		{body: "> " + clause + "\nWhat does that mean?", verdict: wordrecords.WordMeaning, words: []string{clause}},
+		{body: "> What is a store?\nDone.", verdict: wordrecords.None},
+	}
+	for i := range replies {
+		written := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/issues/"+rig.issue+"/comments", map[string]any{
+			"body": replies[i].body, "ask_id": ask,
+		}, "alice")
+		if written.Code != http.StatusCreated {
+			t.Fatalf("alice's reply %q: %d %s", replies[i].body, written.Code, written.Body.String())
+		}
+		comment := decodeBody[model.Comment](t, written).ID
+		if err := rig.database.Pool.QueryRow(context.Background(), `
+			select id from events where type = 'comment.created' and payload->>'id' = $1`, comment).Scan(&replies[i].event); err != nil {
+			t.Fatalf("read the comment.created event of %q: %v", replies[i].body, err)
+		}
+	}
+	rig.run(rig.job(stand, time.Now().Add(-time.Hour)))
+	pollUntil(t, 30*time.Second, "both replies recorded with a verdict", func() bool { return rig.done() == 2 })
+	records := rig.records()
+	if len(records) != 2 {
+		t.Fatalf("records = %+v, want one for each reply", records)
+	}
+	for _, reply := range replies {
+		at := slices.IndexFunc(records, func(r wordRecord) bool { return r.EventID == reply.event })
+		if at < 0 {
+			t.Errorf("no record of %q (event %d) among %+v", reply.body, reply.event, records)
+			continue
+		}
+		if got := records[at]; got.Person != "alice" || got.Verdict != reply.verdict || !slices.Equal(got.Words, reply.words) {
+			t.Errorf("the record of %q = %+v, want alice's %s with words %q", reply.body, got, reply.verdict, reply.words)
+		}
+	}
+	if words := rig.words("alice"); !slices.Equal(words, []string{clause}) {
+		t.Errorf("alice's words = %q, want the quoted clause alone", words)
+	}
+}
+
 // fixtureEvent appends an event to the rig's issue as a write would, at a time of the fixture's.
 func (rig *recordsRig) fixtureEvent(eventType string, actor, payload map[string]any, at time.Time) int64 {
 	rig.t.Helper()
