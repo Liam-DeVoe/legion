@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -1904,6 +1905,12 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		if err := r.mergerWaitsForTheDesignGate(ctx, issue, payload.Role); err != nil {
 			return err
 		}
+		// A role the issue's live pod was built before waits on this row, before it creates,
+		// retrees or hands anything to a claim: a launch into that pod would replace it with the
+		// issue's disk, and only the pod's update round or its release may (ruling 18).
+		if err := r.roleWaitsForItsPod(issue, payload.Role); err != nil {
+			return err
+		}
 		// A child carried into a tree of its own — a finished root's hand-over, or a person's label
 		// on a child its tree left mid-run — may still run a role of its old tree: one in a turn when
 		// the old tree's close held its suspension, which that close's row, now of an earlier
@@ -2865,6 +2872,27 @@ func (r *outbox) mergerWaitsForTheDesignGate(ctx context.Context, issue record.I
 		return err
 	}
 	return wait.Errorf("the merger of %s waits for the design gate of %s to open", issue.Key, issue.Tree)
+}
+
+// roleWaitsForItsPod is the fence a start of role carries where the issue's live pod was built
+// before the deployment defined role (runtime.IssuePodRoles): the pod has no launcher, Secret or
+// volume of the role, and a launch into it would replace it, ending every role in it and taking
+// the issue's disk with everything they did not push. It answers a wait, whose text begins with
+// pods.StartWaitsForPodPrefix and which is runtime.ErrAwaitsPodUpdate too, and the row tries
+// again on its own backoff; once the pod is gone — released, or replaced by its update round —
+// the start creates the claim, whose launch builds the new pod with every role. A runtime with no
+// pods answers nothing, and the start goes on as before.
+func (r *outbox) roleWaitsForItsPod(issue record.Issue, role claim.Role) error {
+	podRoles, ok := r.supervisor.deps.Runtime.(runtime.IssuePodRoles)
+	if !ok {
+		return nil
+	}
+	pod, lacks := podRoles.PodLacksRole(issue.Key, role)
+	if !lacks {
+		return nil
+	}
+	return wait.Errorf("%s%s of %s: the pod %s was built before the deployment defined %s; its update round or its release replaces it: %w",
+		pods.StartWaitsForPodPrefix, role, issue.Key, pod, role, runtime.ErrAwaitsPodUpdate)
 }
 
 // checkLookHolds is the production check a check start row still has a look to start in, nil for
