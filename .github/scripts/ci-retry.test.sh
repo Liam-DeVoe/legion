@@ -238,6 +238,19 @@ check "it returns the last attempt's status" "$(is "$refusing_status" 1)"
 check "and its last line is still the exhaustion annotation" \
   "$(is "$(tail -n 1 <<<"$refusing_err")" '::error::the refusing tool failed to download after 5 attempts (last exit 1)')"
 
+echo "case: a command that fails at once on every attempt fails about 150 s after its first, naming the download"
+# The refusing tool above fails at once on each of its five attempts, so the span from its first
+# start to its fifth is the helper's four sleeps and nothing else: 10 + 20 + 40 + 80 = 150 s.
+# Read off the start times that case wrote, so this one adds no seconds to the suite. A start
+# that case did not write reads as 0 here, so a missing attempt fails the span rather than
+# skipping it.
+refusing_span=$((${refusing_starts[4]:-0} - ${refusing_starts[0]:-0}))
+echo "  measured: ${#refusing_starts[@]} attempts, the fifth starting ${refusing_span}s after the first, exit $refusing_status"
+check "the fifth attempt started 150 s after the first" "$(near "$refusing_span" 150 2)"
+check "it returns 1, the last attempt's status" "$(is "$refusing_status" 1)"
+check "and its last line is the error annotation, naming the download and the attempts" \
+  "$(is "$(tail -n 1 <<<"$refusing_err")" '::error::the refusing tool failed to download after 5 attempts (last exit 1)')"
+
 echo "case: a hostile body stays inside the stop block, under each caller's own shell options"
 # Round 22 of dispatch://INFRA-1545 caught a branch that passed when driven bare and KILLED THE
 # CALLER when driven under the flags a caller really sets, so this case drives the helper under
