@@ -70,7 +70,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -250,12 +249,7 @@ func newRolePromptRuleLive(t *testing.T) *rolePromptRuleLive {
 		panes:          map[claim.Token]*paneStandin{},
 		launched:       map[claim.Token]launchedPrompt{},
 	}
-	version, err := exec.Command(omp, "--version").Output()
-	if err != nil {
-		t.Fatalf("read the Oh My Pi version of %s: %v", omp, err)
-	}
-	r.note("Oh My Pi %s at %s (the pod's build, which is the fleet's pin and not this branch's fetch)",
-		strings.TrimSpace(string(version)), omp)
+	r.noteOmpVersion()
 
 	root := proofCheckoutRoot(t)
 	work := t.TempDir()

@@ -103,7 +103,13 @@ stays the one listener slot it is, written only by the paths that establish a Le
 
 `test/omp-harness.ts` runs the real Oh My Pi binary (`LEGION_TEST_OMP`) for each plugin's
 `*-omp.test.ts`; `test/omp-natives.ts` shares one natives cache per binary with the Go tests;
-`test/host-registry.ts` is the `AgentRegistry` stand-in every plugin suite's mock spreads in.
+`test/omp-offline.ts`'s `ompOffline` keeps the binary off the network: under a fresh HOME the pin
+fetches model catalogs over HTTPS at every session start, so every start of it, the harness's own
+(`ompEnv`) included, gets `HTTPS_PROXY` naming a listener of the test's own that refuses every
+request, and the binary is started with `Bun.spawn`, never `Bun.spawnSync`, since that listener
+answers only while the event loop runs (`.github/scripts/check-omp-offline.sh` refuses a start
+without it); `test/host-registry.ts` is the `AgentRegistry` stand-in every plugin suite's mock
+spreads in.
 `spawnRpc` takes **absolute** extension paths — this module lives in another package than its
 callers, so `import.meta.dir` here is not the caller's — and pi-envoy's `dispatch-first-omp.test.ts`
 passes `path.join(import.meta.dir, "envoy.ts")`. `spawnInteractive` starts interactive `omp` (the
@@ -142,7 +148,7 @@ it returns reads back as `turns`, `selfChecks`, `toolResults` and `transcriptEnt
 | Skills guard rules | `test/skills-guard.ts` | What `packages/pi-envoy/src/skills-guard.test.ts` and `packages/pi-legion/src/skills-guard.test.ts` run over each plugin's staged partition: `stageSkills(<package name>)` stages it through `scripts/pi-plugin-prepack.sh --stage-skills`, exactly as the prepack does; `oversizedFiles` (a file at or over Oh My Pi's 51,200-byte spill threshold), `longSkillBodies` (a `SKILL.md` of 500 lines or more), `misnamedSkills` (a frontmatter `name` that is not the directory's), `brokenSkillLinks` (a `skill://<name>/<path>[#anchor]` link naming a missing file or heading, resolved against the repository's `skills/`, where both partitions live), `brokenRelativeLinks` (a `](../…)` or `](./…)` link outside a code fence that leaves the staged partition or names no file: a cross-partition link is written `skill://<name>/<path>`), and, for the Envoy guard, `unresolvedAgentDispatches` (a `task(agent="<name>")` read whole, fences included, as the daemon's gate reads a prompt, naming an agent in neither `shippedAgents(<package root>)`, the `*.md` under its `agents/`, nor `bundledAgents(<omp>)`, what the pinned binary's `omp agents unpack` writes under a fresh HOME) |
 | Skills partition | `test/skills-partition.test.ts` | Stages both partitions and holds them to the repository's `skills/`: together they are every skill directory, none is in both, each staged skill is a copy of the repository's, and a package the prepack does not know (`@sjawhar/pi-shared`) has none |
 | No cross import | `test/cross-imports.ts` | `shippedSources(<package root>)` is every `.ts` under its `extensions/` and `src/` that is not a `*.test.ts`; `crossImports(<package root>, <sibling root>)` reports each relative import of those files that resolves into the sibling's directory. `packages/pi-envoy/src/no-cross-import.test.ts` and `packages/pi-legion/src/no-cross-import.test.ts` each run it against the other plugin |
-| Real-binary harness | `test/omp-harness.ts`, `test/omp-natives.ts`, `test/omp-natives.test.ts`, `test/host-registry.ts` | Above |
+| Real-binary harness | `test/omp-harness.ts`, `test/omp-natives.ts`, `test/omp-natives.test.ts`, `test/omp-offline.ts`, `test/host-registry.ts` | Above |
 
 ## Checks
 

@@ -69,7 +69,7 @@ func TestThePinnedOhMyPiRefusesToResumeAClaudeCodeTranscript(t *testing.T) {
 		defer cancel()
 		cmd := exec.CommandContext(ctx, shell, "-c", inner)
 		cmd.Dir = work
-		cmd.Env = []string{"HOME=" + home, "OMP_PROFILE=legion", "PATH=/usr/bin:/bin", "AWS_EC2_METADATA_DISABLED=true"}
+		cmd.Env = []string{"HOME=" + home, "OMP_PROFILE=legion", "PATH=/usr/bin:/bin", "AWS_EC2_METADATA_DISABLED=true", testbin.OMPOffline(t)}
 		// One RPC request, then end of input: a session that started answers it and exits.
 		cmd.Stdin = strings.NewReader(`{"type":"get_state","id":"1"}` + "\n")
 		var out, errOut bytes.Buffer

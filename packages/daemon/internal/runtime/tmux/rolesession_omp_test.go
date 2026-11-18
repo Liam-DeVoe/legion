@@ -47,7 +47,7 @@ func TestEveryRolesOhMyPiHasAsyncAndAutoBackgroundOnInAPodAndInAPane(t *testing.
 			t.Fatal(err)
 		}
 	}
-	bare := []string{"HOME=" + home, "PATH=/usr/bin:/bin"}
+	bare := []string{"HOME=" + home, "PATH=/usr/bin:/bin", testbin.OMPOffline(t)}
 	keys := []string{"async.enabled", "bash.autoBackground.enabled"}
 	// read is what omp answers for key under env, in the working directory a role starts in.
 	read := func(t *testing.T, key string, env []string) bool {
