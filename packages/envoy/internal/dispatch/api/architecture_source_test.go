@@ -667,6 +667,10 @@ func TestArchitectureSourceInputValidation(t *testing.T) {
 		"dot-dot after .git trim":  {"legion/...git", "main"},
 		"dot after .git trim":      {"legion/..git", "main"},
 		"empty after .git trim":    {"legion/.git", "main"},
+		// The stored form is held to the rule too: canonicalising trims one `.git`, and every
+		// later read trims another.
+		"empty after two .git trims":   {"acme/.git.git", "main"},
+		"dot-dot after two .git trims": {"acme/...git.git", "main"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			response := dispatchRequest(t, handler, http.MethodPut, sourcePath("CORE", input.repo), map[string]string{"branch": input.branch}, "alice")

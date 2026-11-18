@@ -413,19 +413,20 @@ func (r *Reconcile) reconcileMergedPullRequests(ctx context.Context, settings De
 
 // searchResultRepo recovers "owner/repo" from a search result's HTML URL
 // (https://github.com/<owner>/<repo>/pull/<n>): GitHub's search-issues response does not carry a
-// separate repository field, only the issue/PR's own URL.
+// separate repository field, only the issue/PR's own URL. It cuts the URL itself rather than
+// through splitRepo, whose name rule refuses the "repo/pull/N" the URL's tail is; the name it
+// answers meets that rule again where any read splits it into a GitHub path.
 func (r *Reconcile) searchResultRepo(pr FetchedPullRequest) (string, error) {
 	const prefix = "https://github.com/"
 	if len(pr.URL) <= len(prefix) || pr.URL[:len(prefix)] != prefix {
 		return "", fmt.Errorf("pull request URL %q does not start with %s", pr.URL, prefix)
 	}
-	rest := pr.URL[len(prefix):]
-	owner, repoTail, err := splitRepo(rest)
-	if err != nil {
-		return "", fmt.Errorf("pull request URL %q: %w", pr.URL, err)
-	}
-	// repoTail is "repo/pull/N"; keep only the repo segment.
+	// The tail is "owner/repo/pull/N"; keep only the owner and repo segments.
+	owner, repoTail, _ := strings.Cut(pr.URL[len(prefix):], "/")
 	repoName, _, found := strings.Cut(repoTail, "/")
+	if owner == "" || repoName == "" {
+		return "", fmt.Errorf("pull request URL %q: no owner/repo", pr.URL)
+	}
 	if !found {
 		return "", fmt.Errorf("pull request URL %q: no /pull/ segment", pr.URL)
 	}

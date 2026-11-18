@@ -192,21 +192,28 @@ func (s *server) readCIRunPages(ctx context.Context, owner, repo, sha string, na
 }
 
 // ciUnreadDetail is the detail of a check whose runs at head GitHub could not be read for, err
-// the read's error. Where GitHub refused the read (githubapp.StatusError) or rate-limited it
-// (githubapp.RateLimitError), the error's text ends with GitHub's whole body, up to the 16 MiB a
-// page of check runs may take: the body is replaced by the `message` GitHub writes in the JSON it
-// refuses a request with, and left out where it holds none, so the status stays. Any other error
-// keeps its text. The sentence is then cut to ciUnreadDetailRunes.
+// the read's error, worded by gitHubErrorText: the error's text ends with GitHub's whole body
+// where GitHub refused or rate-limited the read, up to the 16 MiB a page of check runs may take,
+// and that body gives way to GitHub's `message`, so the status stays. The sentence is then cut
+// to ciUnreadDetailRunes.
 func ciUnreadDetail(head delivery.NewestHead, err error) string {
-	reason := err.Error()
+	return text.HeadRunes(fmt.Sprintf("GitHub could not be read for the check runs of %s at %s: %s.",
+		head.Repo, head.HeadSHA, gitHubErrorText(err)), ciUnreadDetailRunes)
+}
+
+// gitHubErrorText is the text of err, a GitHub read's error. Where GitHub refused the read
+// (githubapp.StatusError) or rate-limited it (githubapp.RateLimitError), the body the error's
+// text ends with is replaced by the `message` GitHub writes in the JSON it refuses a request
+// with, and left out where it holds none (withGitHubMessage). Any other error keeps its text.
+func gitHubErrorText(err error) string {
 	var refused *githubapp.StatusError
 	if errors.As(err, &refused) {
-		reason = withGitHubMessage(reason, refused.Body, refused.Message())
-	} else if limited, ok := githubapp.AsRateLimit(err); ok {
-		reason = withGitHubMessage(reason, limited.Body, limited.Message())
+		return withGitHubMessage(err.Error(), refused.Body, refused.Message())
 	}
-	return text.HeadRunes(fmt.Sprintf("GitHub could not be read for the check runs of %s at %s: %s.",
-		head.Repo, head.HeadSHA, reason), ciUnreadDetailRunes)
+	if limited, ok := githubapp.AsRateLimit(err); ok {
+		return withGitHubMessage(err.Error(), limited.Body, limited.Message())
+	}
+	return err.Error()
 }
 
 // withGitHubMessage is reason, an error's text, with body, which ends it after ": ", replaced by

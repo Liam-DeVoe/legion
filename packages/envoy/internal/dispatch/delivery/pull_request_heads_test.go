@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"strconv"
 	"sync/atomic"
@@ -299,6 +300,55 @@ func TestHeadStoredAtFindsARowWrittenUnderGitHubsOwnSpelling(t *testing.T) {
 	if err != nil || elsewhere {
 		t.Fatalf("HeadStoredAt(acme/gadgets) = %v, %v; want false: another repository's commit is not this one's",
 			elsewhere, err)
+	}
+}
+
+// A link names a pull request only where its owner and its name are GitHub's own characters —
+// letters, digits and `-` for an owner, and `.` and `_` beside them for a name — and the name is
+// not `.` or `..`. The reads build `/repos/{owner}/{repo}/...` from the two parts and
+// url.PathEscape keeps a dot, so `https://github.com/../x/pull/1` would send the installation
+// read to `/repos/../x/installation`. Such a URL stays a link of the issue and names no pull
+// request, and neither does one whose owner or name holds a character GitHub's never do; a name
+// with a dot inside it, as `tools.js` and `.github` are, is GitHub's own and names one.
+func TestALinkNamesAPullRequestOnlyOfARepositoryGitHubCanName(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	issue := seedHeadIssue(t, ctx, pool, 80)
+	// deliveryTestPool clears only the delivery tables, so the links an earlier run wrote go
+	// first.
+	if _, err := pool.Exec(ctx, `delete from issue_external_links where issue_key = $1`, issue); err != nil {
+		t.Fatalf("drop the links of %s: %v", issue, err)
+	}
+	for _, url := range []string{
+		"https://github.com/../linkcheck/pull/1",
+		"https://github.com/./linkcheck/pull/2",
+		"https://github.com/linkcheck/../pull/3",
+		"https://github.com/linkcheck/./pull/4",
+		"https://github.com/link.check/tools/pull/5",
+		"https://github.com/link_check/tools/pull/6",
+		"https://github.com/link%2Fcheck/tools/pull/7",
+		"https://github.com/linkcheck/to%2E%2E/pull/8",
+		"https://github.com/linkcheck/tools.js/pull/9",
+		"https://github.com/linkcheck/.github/pull/10",
+		"https://github.com/linkcheck/tools/pull/11",
+	} {
+		if _, err := pool.Exec(ctx, `
+			insert into issue_external_links (issue_key, url, kind) values ($1, $2, 'url')
+		`, issue, url); err != nil {
+			t.Fatalf("link %s to %s: %v", issue, url, err)
+		}
+	}
+
+	pulls, err := LinkedPullRequests(ctx, pool, issue)
+	if err != nil {
+		t.Fatalf("read the pull requests %s links: %v", issue, err)
+	}
+	named := map[string]bool{}
+	for _, pull := range pulls {
+		named[fmt.Sprintf("%s#%d", pull.Repo, pull.Number)] = true
+	}
+	want := map[string]bool{"linkcheck/tools.js#9": true, "linkcheck/.github#10": true, "linkcheck/tools#11": true}
+	if !maps.Equal(named, want) {
+		t.Fatalf("the links of %s name the pull requests %v, want %v alone", issue, named, want)
 	}
 }
 

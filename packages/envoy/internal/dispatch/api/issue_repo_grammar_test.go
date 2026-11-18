@@ -14,7 +14,8 @@ import (
 // with a hyphen, a repository named `.` or `..`, a repository name longer than GitHub's 100
 // characters, a character GitHub allows in neither half — is refused at the write, as any other
 // value that is not `owner/name` is (R3), and a name GitHub holds is taken whatever its case or
-// `.git` suffix.
+// `.git` suffix. The name is judged as it is stored: `acme/.git.git` and `acme/...git.git` are
+// `acme/.git` and `acme/...git` stored, which every later read refuses once it trims that `.git`.
 func TestAnIssuesRepositoryIsRefusedUnlessGitHubCouldHoldIt(t *testing.T) {
 	for _, value := range []string{
 		"x/..",
@@ -23,6 +24,8 @@ func TestAnIssuesRepositoryIsRefusedUnlessGitHubCouldHoldIt(t *testing.T) {
 		"own%er/x",
 		"owner/na me",
 		"owner/" + strings.Repeat("a", 101),
+		"acme/.git.git",
+		"acme/...git.git",
 	} {
 		raw, _ := json.Marshal(value)
 		if repo, _, err := parseIssueRepo(raw); err == nil {

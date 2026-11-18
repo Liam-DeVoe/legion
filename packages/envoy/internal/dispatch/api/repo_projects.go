@@ -70,21 +70,23 @@ type putRepoProjectInput struct {
 // the project it left too, deleted:true there. lockRepoProjectWrite orders the write against
 // every other one.
 //
-// Renamed_to is the full `owner/name` this repository is called today, canonicalised as the
-// route's own path is (externalRef). **Absent, and JSON null, leave the stored pair exactly as
-// it is**, as Default does, and `""` clears it: the page and the client that write this route
-// send `{project, default}` and nothing else (packages/dispatch/web/src/api/client.ts,
-// putRepoProject), so clearing on absence would drop an operator's rename every time someone
-// moved a mapping's project or its default in the dashboard. A pair naming this mapping's own
+// Renamed_to is the full `owner/name` this repository is called today, canonicalised and held to
+// GitHub's names as a source repository is (parseRepoRename). **Absent, and JSON null, leave the
+// stored pair exactly as it is**, as Default does, and `""` clears it: the page and the client
+// that write this route send `{project, default}` and nothing else
+// (packages/dispatch/web/src/api/client.ts, putRepoProject), so clearing on absence would drop an
+// operator's rename every time someone moved a mapping's project or its default in the
+// dashboard. A pair naming this mapping's own
 // repository, one naming a repository that is itself renamed, and one on a repository another
 // mapping is already renamed to are each refused (400 INVALID_REPO_PROJECT), so the canonical
 // name of a repository is reached in one step and no cycle exists (refs.CanonicalRepo).
 func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
-	repo, err := repoProjectPath(r)
+	owner, name, err := repoProjectPath(r)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	repo := owner + "/" + name
 	var input putRepoProjectInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
@@ -203,6 +205,9 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 // repository is any owner/name and needs no mapping, so an issue that names this repository
 // keeps it and still resolves to it. An issue that names none resolves, as before, through its
 // parent chain and then its project's default, which is gone where this mapping was that default.
+// Its path is read as every mapping's path was before the PUT held its own to GitHub's names
+// (storedRepoProjectPath), so a mapping stored then under a name the PUT now refuses can still be
+// removed.
 func (s *server) deleteRepoProject(w http.ResponseWriter, r *http.Request) {
 	var input actorInput
 	if !s.decodeOptionalJSON(w, r, &input) {
@@ -212,7 +217,7 @@ func (s *server) deleteRepoProject(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	repo, err := repoProjectPath(r)
+	repo, err := storedRepoProjectPath(r)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -389,25 +394,52 @@ func (s *server) repoProject(ctx context.Context, repo string) (string, error) {
 	return "", err
 }
 
-func repoProjectPath(r *http.Request) (string, error) {
+// repoProjectPath reads the {owner}/{repo} path of a mapping write, and of the App's installation
+// read (getAppInstallation), as parseSourceRepo reads a repository (sourcePathRepo): an owner and
+// a name of the characters GitHub allows, and never a name of `.` or `..`, before or after a
+// trailing `.git` is trimmed, canonicalised, held to that rule as it is stored, and answered as
+// its two halves. A path the rule refuses is 400 INVALID_REPO_PROJECT. The mapping's repository
+// becomes the repository of every issue of its project that names none, whose halves delivery
+// puts into GitHub paths, and the installation read puts its halves into one at once; `...git`
+// and `.git` are no dot segments, so the mux does not clean them, and the trailing `.git`
+// canonicalRepo trims would leave `..` or an empty name behind.
+func repoProjectPath(r *http.Request) (owner, name string, err error) {
+	owner, name, err = sourcePathRepo(r)
+	if err != nil {
+		return "", "", errorf(http.StatusBadRequest, "INVALID_REPO_PROJECT", `the path must name a repository "owner/name" (got %q)`,
+			r.PathValue("owner")+"/"+r.PathValue("repo"))
+	}
+	return owner, name, nil
+}
+
+// storedRepoProjectPath reads the {owner}/{repo} path of a mapping removal as every mapping's path
+// was read before repoProjectPath held it to GitHub's names: canonicalised by externalRef alone.
+// A mapping stored then under a name that rule refuses, `acme/..` among them, is one only this
+// reading names, and removing it is the repair; no GitHub path is built from it here.
+func storedRepoProjectPath(r *http.Request) (string, error) {
 	repo, _, err := externalRef(r.PathValue("owner") + "/" + r.PathValue("repo") + "#1")
 	return repo, err
 }
 
 // parseRepoRename reads the `renamed_to` of a mapping write: nil for an absent or null field,
 // which leaves the stored pair alone, nil for `""`, which clears it, and otherwise the
-// canonical `owner/name` the value names, validated the way this route validates its own path
-// (externalRef). A pair naming the mapping's own repository is refused here, where the one
-// cycle a single row can hold is cheapest to see; the database refuses it too, so direct SQL is
-// held to it (migration 20261105075455_repo_projects_renamed_to).
+// canonical `owner/name` the value names. The value is held to the rule a source repository is
+// (parseSourceRepo): an owner and a name of the characters GitHub allows, and never a name of
+// `.` or `..`, before or after a trailing `.git` is trimmed, in the form it is stored. The pair
+// becomes the name every comparison of the repository asks GitHub about, and delivery puts its
+// two halves into GitHub paths as they are (delivery's splitRepo), so `acme/..` would ask about
+// a path above the repository's. A pair naming the mapping's own repository is refused here,
+// where the one cycle a single row can hold is cheapest to see; the database refuses it too, so
+// direct SQL is held to it (migration 20261105075455_repo_projects_renamed_to).
 func parseRepoRename(repo string, raw *string) (*string, error) {
 	if raw == nil || strings.TrimSpace(*raw) == "" {
 		return nil, nil
 	}
-	canonical, _, err := externalRef(strings.TrimSpace(*raw) + "#1")
+	owner, name, err := parseSourceRepo(*raw)
 	if err != nil {
 		return nil, errorf(http.StatusBadRequest, "INVALID_REPO_PROJECT", `renamed_to must be "owner/name" (got %q)`, *raw)
 	}
+	canonical := owner + "/" + name
 	if canonical == repo {
 		return nil, errorf(http.StatusBadRequest, "INVALID_REPO_PROJECT", "%s cannot be renamed to itself", repo)
 	}

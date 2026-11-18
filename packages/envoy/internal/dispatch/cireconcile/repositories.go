@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -82,7 +81,7 @@ func (r *Reconciler) resolve(ctx context.Context, row string, mapped bool, c *co
 	owner, name, ok := splitRepo(row)
 	if !ok {
 		c.mappingsSkipped++
-		r.Logger.Warn("ci reconcile skipped a repository whose name is not owner/name", "repository", row)
+		r.Logger.Warn("ci reconcile skipped a repository whose name is not an owner/name GitHub allows", "repository", row)
 		return reconciled{}, nil
 	}
 	see(&r.seenRows, row)
@@ -356,11 +355,12 @@ func (r *Reconciler) openPullRequests(ctx context.Context, id int64, owner, name
 }
 
 // splitRepo is the owner and the name of an `owner/name`, and false for anything that is not
-// one: no slash, or a side of it empty.
+// one GitHub allows (refs.SplitGitHubRepo, the one rule every place that builds a GitHub path
+// reads): no slash, a side of it empty, a character GitHub's names do not take, or a name of `.`
+// or `..` before or after a trailing `.git` is trimmed. A mapping or a renamed_to stored before
+// the settings route held it to that rule is such a name, and `..` in a path would ask GitHub
+// about the one above the repository's, so the pass skips it before it asks GitHub anything.
 func splitRepo(full string) (owner, name string, ok bool) {
-	owner, name, found := strings.Cut(full, "/")
-	if !found || owner == "" || name == "" {
-		return "", "", false
-	}
-	return owner, name, true
+	owner, name, err := refs.SplitGitHubRepo(full)
+	return owner, name, err == nil
 }

@@ -91,15 +91,20 @@ function Screenshot({ reference }: { reference: string }): ReactNode {
 }
 
 /** What one basis is, in words: the commit a reader named in the request, the head of a pull
- *  request, or a branch. The commit itself is drawn beside this, whole. */
+ *  request, or a branch. The commit itself is drawn beside this, whole. A basis in a repository
+ *  the issue links a pull request in and does not resolve to names that repository (`repo`), so
+ *  it reads apart from a pull request or a branch of the issue's own repository: `owner/repo#7`
+ *  is GitHub's own name for that pull request. */
 function basisWords(basis: CheckBasis): string {
   if (basis.kind === "branch") {
-    return `branch ${basis.branch ?? ""}`;
+    const branch = `branch ${basis.branch ?? ""}`;
+    return basis.repo === undefined ? branch : `${branch} of ${basis.repo}`;
   }
   if (basis.kind === "pull_request") {
-    return basis.pull_request === undefined
-      ? "the head of the pull request"
-      : `the head of pull request ${basis.pull_request}`;
+    if (basis.pull_request === undefined) return "the head of the pull request";
+    return basis.repo === undefined
+      ? `the head of pull request ${basis.pull_request}`
+      : `the head of ${basis.repo}#${basis.pull_request}`;
   }
   return "the commit this read named";
 }
@@ -128,9 +133,21 @@ function Basis({ basis }: { basis: CheckBasis }): ReactNode {
   );
 }
 
+/** Why one result's commit could not be placed where the server names `repo`, the repository the
+ *  answer is about: a result whose commit is taken to be of a repository the issue links a pull
+ *  request in is decided by that repository, and "the repository" would read as the issue's own.
+ *  Keyed by the reason, so a reason the server adds is a type error until it has words here. */
+const REPO_REASON_WORDS: Record<
+  NonNullable<ResultCommitStands["reason"]>,
+  (repo: string) => string
+> = {
+  read_failed: (repo) => `A read Dispatch made of ${repo} did not answer.`,
+  repository_unreadable: (repo) => `Dispatch cannot read ${repo}.`,
+};
+
 /** The first fact of each result: where its commit stands against what its check compared
  *  with. At one of those commits, naming which; at another commit; or not known, with the
- *  reason Dispatch could not say. */
+ *  reason Dispatch could not say. An answer a linked repository decided names it (`repo`). */
 function CommitStands({ stands }: { stands: ResultCommitStands | undefined }): ReactNode {
   if (stands === undefined) {
     return undefined;
@@ -145,11 +162,18 @@ function CommitStands({ stands }: { stands: ResultCommitStands | undefined }): R
     );
   }
   if (stands.answer === "other_commit") {
-    return "At another commit";
+    return stands.repo === undefined ? "At another commit" : `At another commit of ${stands.repo}`;
   }
   // The reason is the server's to give and may be absent, so an unknown answer stands on its
   // own where there is none.
-  return stands.reason === undefined ? "Not known." : `Not known. ${REASON_WORDS[stands.reason]}`;
+  if (stands.reason === undefined) {
+    return stands.repo === undefined ? "Not known." : `Not known in ${stands.repo}.`;
+  }
+  const reason =
+    stands.repo === undefined
+      ? REASON_WORDS[stands.reason]
+      : REPO_REASON_WORDS[stands.reason](stands.repo);
+  return `Not known. ${reason}`;
 }
 
 /** The second fact of each result: whether the check's words moved after the result was
