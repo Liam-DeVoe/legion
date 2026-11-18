@@ -11,6 +11,7 @@ import {
   stubProjectNames,
   tagged,
 } from "./configurations";
+import { expectTimeout } from "./expect-timeout";
 import { harnessProcessCount } from "./harness-processes";
 import { harnessSignIn } from "./harness-signin";
 import { measuring } from "./measure";
@@ -178,10 +179,6 @@ if (clockFile !== undefined) {
 if (projectsOnCommandLine(process.argv).includes(askCardPicturesProject)) {
   process.env[askCardPicturesVariable] = "1";
 }
-
-// The default wait for asynchronous server and rendering readiness. A spec only sets its own
-// timeout when that deadline is its observable contract (the keyboard chord-expiry test).
-const expectTimeout = 15_000;
 
 // The per-test budget, measured rather than inherited. Playwright's own default is 30 s, chosen
 // when this suite ran one row at a time; it now runs four workers on a four-core runner. Read from
