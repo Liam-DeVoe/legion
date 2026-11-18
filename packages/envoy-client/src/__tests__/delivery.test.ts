@@ -2249,33 +2249,38 @@ describe("what a card carries", () => {
     for (const roles of sendersRoles) {
       for (const expectsReply of [undefined, false, "optional", "required"] as const) {
         for (const topic of [`notifications.agent.${reader}`, `notifications.role.${readerRole}`]) {
-          const where = `${topic}, ${roles.length} roles, expects_reply ${String(expectsReply)}`;
-          const raw = sessionMessage(words, {
-            topic,
-            // A sender's list can name a role twice; the card names it once.
-            sender: { session_id: sender, title, roles: [...roles, ...roles] },
-            ...(expectsReply === undefined ? {} : { expects_reply: expectsReply }),
-          });
-          const content = renderInbound(JSON.stringify(raw), reader, topic).content;
-          const card = cardOf<Record<string, unknown>>(content);
+          // A session a broker token proved sends with no source_session in its body: the
+          // listener's sender stamp alone names it, and only the daemon's own publish has neither.
+          for (const by of ["source_session", "sender stamp"] as const) {
+            const where = `${topic}, ${roles.length} roles, expects_reply ${String(expectsReply)}, by ${by}`;
+            const raw = sessionMessage(words, {
+              topic,
+              ...(by === "source_session" ? {} : { source_session: undefined }),
+              // A sender's list can name a role twice; the card names it once.
+              sender: { session_id: sender, title, roles: [...roles, ...roles] },
+              ...(expectsReply === undefined ? {} : { expects_reply: expectsReply }),
+            });
+            const content = renderInbound(JSON.stringify(raw), reader, topic).content;
+            const card = cardOf<Record<string, unknown>>(content);
 
-          expect(content, where).not.toContain("reply_with");
-          expect(content, where).not.toContain("reply_role");
-          expect(card.envoy.from, where).toBe(`${sender} (${title})`);
-          expect(card.envoy.at, where).toBe("2026-11-14T21:05:01Z");
-          expect(card.envoy.id, where).toBe("d77bf664a3c94f0e8d1b2a7c5e6f9d01");
-          const named = roles.length === 1 ? [card.envoy.role] : (card.envoy.roles ?? []);
-          expect(named, where).toEqual(roles);
-          for (const once of [sender, title, "2026-11-14T21:05:01Z", raw.event_id, ...roles]) {
-            expect(times(content, String(once)), `${where}: ${String(once)}`).toBe(1);
+            expect(content, where).not.toContain("reply_with");
+            expect(content, where).not.toContain("reply_role");
+            expect(card.envoy.from, where).toBe(`${sender} (${title})`);
+            expect(card.envoy.at, where).toBe("2026-11-14T21:05:01Z");
+            expect(card.envoy.id, where).toBe("d77bf664a3c94f0e8d1b2a7c5e6f9d01");
+            const named = roles.length === 1 ? [card.envoy.role] : (card.envoy.roles ?? []);
+            expect(named, where).toEqual(roles);
+            for (const once of [sender, title, "2026-11-14T21:05:01Z", raw.event_id, ...roles]) {
+              expect(times(content, String(once)), `${where}: ${String(once)}`).toBe(1);
+            }
+            // Nothing names the reader: neither its session nor the role the message reached.
+            expect(content, where).not.toContain(reader);
+            expect(content, where).not.toContain(readerRole);
+            expect(card.envoy.to, where).toBe(
+              topic.startsWith("notifications.agent.") ? "you" : undefined
+            );
+            expect(card.blocks, where).toEqual([{ tag: "message", name: "message", text: words }]);
           }
-          // Nothing names the reader: neither its session nor the role the message reached.
-          expect(content, where).not.toContain(reader);
-          expect(content, where).not.toContain(readerRole);
-          expect(card.envoy.to, where).toBe(
-            topic.startsWith("notifications.agent.") ? "you" : undefined
-          );
-          expect(card.blocks, where).toEqual([{ tag: "message", name: "message", text: words }]);
         }
       }
     }

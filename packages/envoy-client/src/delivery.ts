@@ -603,14 +603,24 @@ export async function wholeCarriedBody(
 }
 
 export function senderLabel(envelope: DeliveryEnvelope): string {
-  const sender = envelope.source_session ?? envelope.source ?? "unknown";
+  const sender = sendingSession(envelope) ?? envelope.source ?? "unknown";
   return envelope.sender?.title === undefined ? sender : `${sender} (${envelope.sender.title})`;
 }
 
-/** Whether the Legion daemon sent `envelope`: its source is `agent`, and it names no
- *  `source_session`. A message of a session names that session. */
-export function daemonSent(envelope: Pick<InboundEnvelope, "source" | "source_session">): boolean {
-  return envelope.source === "agent" && (envelope.source_session ?? "") === "";
+/** The session that sent `envelope`: the `source_session` its body names, else the session the
+ *  listener's sender stamp names (`sender.session_id`), which is the session a broker token
+ *  proved where the body named none. Undefined where neither names one: only the Legion daemon's
+ *  own publish names no session. */
+function sendingSession(envelope: DeliveryEnvelope): string | undefined {
+  const session = envelope.source_session || envelope.sender?.session_id;
+  return session === undefined || session === "" ? undefined : session;
+}
+
+/** Whether the Legion daemon sent `envelope`: its source is `agent`, and it names no session,
+ *  neither as `source_session` nor in the listener's sender stamp (`sendingSession`). A message of
+ *  a session names that session in one of the two. */
+export function daemonSent(envelope: DeliveryEnvelope): boolean {
+  return envelope.source === "agent" && sendingSession(envelope) === undefined;
 }
 
 /** The `dispatch` command line that answers a Dispatch event, which its card prints. */
@@ -1500,12 +1510,14 @@ export function renderInbound(
     }
   }
 
-  // What a card shows of a payload that is not a Dispatch event's. A message of another session is
+  // What a card shows of a payload that is not a Dispatch event's. A message of another session
+  // (`sendingSession`: its `source_session`, or the session the listener's sender stamp names) is
   // its sender's words, so it goes in a block whole, JSON text too: no key of it reads as a field
   // of the card. A notice or a role message of the Legion daemon (`agent`, with no session) shows
   // its fields as lines (`daemonFields`), and one it publishes as text (the hook prompt) goes in a
   // block. Every other source shows its payload as one `message` field.
-  const sessionSent = envelope.source !== "dispatch" && (envelope.source_session ?? "") !== "";
+  const sender = sendingSession(envelope);
+  const sessionSent = envelope.source !== "dispatch" && sender !== undefined;
   const fromDaemon = daemonSent(envelope);
   let message: unknown;
   let messageText: string | undefined;
@@ -1545,7 +1557,7 @@ export function renderInbound(
   const namedSessions: string[] = [];
   for (const part of [envelope.payload_summary ?? "", envelope.payload ?? ""]) {
     for (const [id] of part.matchAll(FOREIGN_SESSION_ID)) {
-      if (id !== envelope.source_session && id !== sessionID && id !== askAuthor) {
+      if (id !== sender && id !== sessionID && id !== askAuthor) {
         namedSessions.push(id);
       }
     }

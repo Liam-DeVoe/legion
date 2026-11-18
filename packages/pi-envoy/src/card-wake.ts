@@ -247,11 +247,12 @@ export type StoredCardMarker = { readonly handOver: "inert"; readonly urgency: "
  *  extension hands itself): `card`, a card; `aside`, a targeted Aside; `stored`, a `low` card. */
 export type CardMode = "card" | "aside" | "stored";
 
-/** Whether a rendered card is `low`: the daemon's (`daemonSent`: source `agent`, no
- *  `source_session`) or a Dispatch event's that is no message or mention Dispatch delivers to the
- *  session (no `delivery`) and no ask's (`ask.*`), with an envelope that says `low`. Every other
- *  card is delivered whatever its urgency: one from another session, and an ask's card, since a
- *  Dispatch that copies an ask's urgency onto its envelope must hold no answer back. */
+/** Whether a rendered card is `low`: the daemon's (`daemonSent`: source `agent`, no session in
+ *  `source_session` or in the sender stamp) or a Dispatch event's that is no message or mention
+ *  Dispatch delivers to the session (no `delivery`) and no ask's (`ask.*`), with an envelope that
+ *  says `low`. Every other card is delivered whatever its urgency: one from another session, and an
+ *  ask's card, since a Dispatch that copies an ask's urgency onto its envelope must hold no answer
+ *  back. */
 export function lowCard(
   card: Pick<RenderInboundResult, "envelope" | "delivery" | "dispatchType">
 ): boolean {

@@ -44,7 +44,7 @@ Read this in a Legion pane before you touch a role claim, or when a Legion role 
 
 - A `low` publish of the Legion daemon's own, one that names no sender session, raises no wake.
   The daemon sends such a text when its reader can act on it at its next turn: Envoy keeps it for a released role in the same way, and the role reads it at its next turn once it runs again.
-  A session's own message always names its sender session, so a `low` message of a session still wakes the role.
+  A session's own message names its sender session, in its `source_session` or through the broker token it publishes with, so a `low` message of a session still wakes the role.
 
 - Never forward these failure payloads to an architect, because the daemon already acts on them.
 

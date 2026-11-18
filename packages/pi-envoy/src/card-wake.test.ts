@@ -392,6 +392,13 @@ describe("which cards are low", () => {
       false,
     ],
     [
+      // A session a broker token proved, whose body named no source_session: the listener's sender
+      // stamp names it, and only the daemon's own publish has neither.
+      "another session's card that says low and names its session only in the sender stamp",
+      frame({ source: "agent", sender: { session_id: "ses_peer" }, urgency: "low" }),
+      false,
+    ],
+    [
       "a Dispatch event's card that says low",
       frame({ source: "dispatch", urgency: "low", payload: JSON.stringify(comment) }),
       true,
