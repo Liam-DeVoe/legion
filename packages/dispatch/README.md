@@ -225,8 +225,9 @@ first (`scripts/e2e/lib/leftovers.sh`). A start reads three places: the
 lists with the label, wherever their stack ran; and `/proc`, for each postmaster
 of its own user whose working directory is a stack's data directory in a run
 directory that its listing does not read (another `TMPDIR`'s, or one renamed
-after its stack started), which that directory's `postmaster.pid` names by the
-pid the postmaster's own PID namespace gives it. A name only finds a candidate;
+after its stack started, a start's claim of it included), which that
+directory's `postmaster.pid` names by the pid the postmaster's own PID
+namespace gives it. A name only finds a candidate;
 the mark decides. The start reads a mark only where no other user can have
 written it (each directory of its path, read without following a link, is
 root's or the user's,
@@ -238,17 +239,19 @@ the kernel shows running as this user from that data directory with the mark's
 `postgres` for its program, and then the data and socket directories. It runs
 no program that a mark names. It leaves the Postgres of a process that still
 runs without a word, and it names each one it leaves, one line per kind. A
-removal that fails is one line, and the start goes on. The logs of a killed run
-stay in its directory.
+removal that fails is one line, and the start goes on. A start whose own
+`TMPDIR` is gone still reads the containers and `/proc`, and names that
+`TMPDIR` on one line. The logs of a killed run stay in its directory.
 
 Two starts at once on one dead stack act on each of its parts once. A
 directory, and the postmaster that serves from a data directory, are claimed by
 a rename to `<path>.removing-<pid>-<start>`, the claimer's pid and start; a
 container is claimed by Docker's own removal, which removes it for one
 `docker rm` and refuses it, or finds it gone, for the other. The start that
-holds the claim removes the part and says "removed"; the other says that
-another start removed it first. A start that finds a claim whose claimer still
-runs says so on one line and waits for it, for at most 140 s: twice the
+holds the claim removes the part and says "removed", of a postmaster only where
+its own signal reached it; the other says that another start removed it first.
+A start that finds a claim whose claimer still runs says so on one line and
+waits for it, for at most 140 s: twice the
 claimer's longest stop of a postmaster (60 s after SIGQUIT, as `pg_ctl` waits,
 and 10 s after SIGKILL), so the removal of the directory after the stop has as
 long again; the removal of a data directory of 20,000 files took under a second
@@ -277,6 +280,10 @@ What a start leaves and names, and what you do to remove it by hand:
 - A run directory renamed after its stack was killed (to keep its logs, say):
   its marks name the old directory, so a start trusts none of them and names
   the postmaster that serves from it. Stop it by hand as above.
+- The mark of a container, read by a start with no `docker` on its `PATH`: that
+  start cannot tell whether the container still runs, so it keeps the mark and
+  the socket directory and names them. Run a start where `docker` is on `PATH`,
+  or remove the container (`docker rm -f -v <id>`) and then the run directory.
 - A mark, or a path it names, that another user could have written or that a
   link leads through is never acted on: read who owns it before you remove it.
 
