@@ -16,11 +16,16 @@
  * the start: an `exit` whose status is not 0; a `return` whose status is not 0 in a function the
  * start calls as a command of its own, which `set -e` makes the start's end; a call of a
  * function that always ends the start, such as `fail`: one whose body runs such an `exit` as a
- * command of its own and holds no `return`; and, where `set -e` (or `set -o errexit`) is on or a
- * `trap` on ERR exits, each command whose status nothing tests (no `if`, `while`, `until`, `!`,
- * `&&` or `||` around it, and outside a command substitution): `flock -n 9`, `[ ! -e "$lock" ]`,
- * `mkdir "$lock.d"`, `held=$(flock …)` and a function whose last test fails each end the start
- * where they fail. Its check is each thing that decides whether it runs: the condition of each
+ * command of its own and holds no `return`; and, where `set -e` (or `set -o errexit`, or `-e` on
+ * the script's first line, `#!/bin/bash -e`) is on or a `trap` on ERR exits, each command whose
+ * status nothing tests (no `if`, `while`, `until`, `!`, `&&` or `||` around it, and outside a
+ * command substitution): `flock -n 9`, `[ ! -e "$lock" ]`, `mkdir "$lock.d"`, `held=$(flock …)`,
+ * `(( $(stat …) == 0 ))` and a function whose last test fails each end the start where they fail.
+ * Bash keeps those options per shell, and so does the search: a `set +e` in a subshell, a command
+ * substitution, a function whose body is in parentheses, a pipeline of more than one command or a
+ * list in the background leaves the start's own as they were, and one in a branch, a list or a
+ * loop that may not run leaves them on where they were on (`Options` of lib/sweep-order-policy.ts).
+ * Its check is each thing that decides whether it runs: the condition of each
  * `if`, `elif`, `while` and `until` around it, the words of each `for` and `case` around it, each
  * command before it in its `&&` and `||` list and in its pipeline, each `return` before it in its
  * function, and the same for each call on its way to it; a command that `set -e` makes a refusal

@@ -303,23 +303,36 @@ describe("the search for a start that refuses or creates its Postgres before it 
   });
 
   // The red test runs four planted drivers, each beside a lock holder it starts and ends after
-  // half a second, and the search over each: about 10 s on a shared Linux machine under load.
+  // half a second, and the search over each: about 10 s on a shared Linux machine under load. Each
+  // red test below runs its planted drivers twice each and the search once each: under 20 s at a
+  // load of 500 on a shared Linux machine on 2026-11-18, so 120 s holds each.
   const redTestMs = 120_000;
-  test(
-    "the acceptance's red test of the refusals that set -e makes passes over this tree's search: each form ends a planted start before its removal, and the search names it",
-    () => {
-      const red = Bun.spawnSync([
-        "bash",
-        join(import.meta.dir, "order-search-set-e-refusal.test.sh"),
-        root,
-      ]);
-      expect({ code: red.exitCode, out: red.stdout.toString() }).toEqual({
-        code: 0,
-        out: expect.stringContaining("PASS: every form is found"),
-      });
-    },
-    redTestMs
-  );
+  for (const [script, title] of [
+    [
+      "order-search-set-e-refusal.test.sh",
+      "the acceptance's red test of the refusals that set -e makes passes over this tree's search: each form ends a planted start before its removal, and the search names it",
+    ],
+    [
+      "order-search-errexit-shebang-arith.test.sh",
+      "the acceptance's red test of errexit from a script's first line and of a command substitution in (( … )) passes over this tree's search: each form ends a planted start before its removal, and the search names it",
+    ],
+    [
+      "order-search-errexit-scope.test.sh",
+      "a set +e that bash does not apply to the start's own shell leaves set -e on for the search: in a branch, a list, a loop or a case arm that does not run, a subshell, a command substitution, a function in parentheses, a pipeline and a list in the background, each form ends a planted start before its removal, and the search names the check that ends it",
+    ],
+  ] as const) {
+    test(
+      title,
+      () => {
+        const red = Bun.spawnSync(["bash", join(import.meta.dir, script), root]);
+        expect({ code: red.exitCode, out: red.stdout.toString() }).toEqual({
+          code: 0,
+          out: expect.stringContaining("PASS: every form is found"),
+        });
+      },
+      redTestMs
+    );
+  }
 
   test("the search's command says UNKNOWN, not clean, where it read no driver", () => {
     const empty = mkdtempSync(join(scratch, "empty-"));

@@ -69,14 +69,22 @@ export type Command =
       readonly redirects: Redirect[];
     }
   | { readonly k: "function"; readonly at: string; readonly name: string; readonly body: Command }
-  | { readonly k: "arith"; readonly at: string; readonly text: string; readonly vars: string[] };
+  | {
+      readonly k: "arith";
+      readonly at: string;
+      readonly text: string;
+      readonly vars: string[];
+      readonly subs: List[];
+    };
 interface Pipeline {
   readonly negated: boolean;
   readonly commands: Command[];
 }
-/** Pipelines joined by `&&` and `||`. */
+/** Pipelines joined by `&&` and `||`, and whether the list runs in the background (`&`), in a
+ *  subshell of its own. */
 export interface AndOr {
   readonly pipelines: Pipeline[];
+  readonly background?: true;
 }
 export type List = AndOr[];
 
@@ -479,8 +487,9 @@ class Parser {
       this.lines();
       const t = this.peek();
       if (t.t === "end" || stop(t)) return items;
-      items.push(this.andOr());
+      const ao = this.andOr();
       const after = this.peek();
+      items.push(op(after, "&") ? { ...ao, background: true } : ao);
       if (op(after, ";", "&") || after.t === "newline") this.take();
     }
   }
@@ -522,8 +531,9 @@ class Parser {
     if (op(t, "((")) {
       this.take();
       const vars: string[] = [];
-      const text = this.lx.arithmetic(vars, []);
-      return { k: "arith", at, text, vars };
+      const subs: List[] = [];
+      const text = this.lx.arithmetic(vars, subs);
+      return { k: "arith", at, text, vars, subs };
     }
     if (t.t === "word") {
       switch (t.word.text) {
@@ -653,8 +663,9 @@ class Parser {
     if (op(this.peek(), "((")) {
       this.take();
       const vars: string[] = [];
-      const text = this.lx.arithmetic(vars, []);
-      words.push({ text: `((${text}))`, at, subs: [], vars });
+      const subs: List[] = [];
+      const text = this.lx.arithmetic(vars, subs);
+      words.push({ text: `((${text}))`, at, subs, vars });
     } else {
       const t = this.take();
       if (t.t !== "word") return this.lx.fail("a for with no name");
@@ -714,12 +725,27 @@ export interface Definition {
   readonly body: Command;
 }
 
-/** One script, parsed: its top-level list, every function it defines, and each library of
- *  scripts/e2e/lib it sources, by its path under the root. */
+/** One script, parsed: its top-level list, every function it defines, each library of
+ *  scripts/e2e/lib it sources, by its path under the root, and the options its first line gives
+ *  bash where the script runs as a program (`firstLineOptions`). */
 export interface Script {
   readonly top: List;
   readonly definitions: readonly Definition[];
   readonly libraries: readonly string[];
+  readonly options: readonly string[];
+}
+
+/** The options a script's first line gives bash where the script runs as a program, the words
+ *  after the `bash` (or `sh`) it names, as `set` reads them: `-e` of `#!/bin/bash -e`, which Linux
+ *  hands bash as one word, and of `#!/usr/bin/env -S bash -e`, which `env` splits. Empty where the
+ *  line names no such shell. */
+function firstLineOptions(text: string): string[] {
+  const end = text.indexOf("\n");
+  const line = end === -1 ? text : text.slice(0, end);
+  if (!line.startsWith("#!")) return [];
+  const words = line.slice(2).trim().split(/\s+/);
+  const shell = words.findIndex((word) => /(^|\/)(ba)?sh$/.test(word));
+  return shell === -1 ? [] : words.slice(shell + 1);
 }
 
 // A library of scripts/e2e/lib a script sources: `. "$root/scripts/e2e/lib/<name>.sh"`.
@@ -745,7 +771,10 @@ export function eachCommand(
       one(c.body, c.name);
       return;
     }
-    if (c.k === "arith") return;
+    if (c.k === "arith") {
+      for (const sub of c.subs) eachCommand(sub, ctx, visit);
+      return;
+    }
     words(
       c.redirects.map((r) => r.target),
       ctx
@@ -799,8 +828,8 @@ export function nameOf(words: readonly Word[]): string | undefined {
 }
 
 /** `text`, the script at `shown` under the root, parsed: its top-level list, every function it
- *  defines and each library of scripts/e2e/lib it sources. Throws `Unparsed`, naming the line,
- *  where it cannot parse it. */
+ *  defines, each library of scripts/e2e/lib it sources and the options of its first line. Throws
+ *  `Unparsed`, naming the line, where it cannot parse it. */
 export function readScript(text: string, shown: string): Script {
   const top = new Parser(new Lexer(text, shown)).program();
   const definitions: Definition[] = [];
@@ -810,5 +839,5 @@ export function readScript(text: string, shown: string): Script {
     const lib = sourcedLibrary(c);
     if (lib !== undefined) libraries.push(lib);
   });
-  return { top, definitions, libraries };
+  return { top, definitions, libraries, options: firstLineOptions(text) };
 }
