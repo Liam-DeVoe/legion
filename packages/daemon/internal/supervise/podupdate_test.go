@@ -470,14 +470,18 @@ func TestPodUpdatePublishUpdateAskPublishesNothingOnceTheRoleAnswered(t *testing
 // The control is the same owed mark with nothing in between, which keeps the row the same way. In
 // each, the ask is published once in all.
 //
-// The failure is the machine's own (fail): the claim's process dies while its launch budget has
-// one launch left, and the relaunch that death asks for spends it. The leave is set under the
-// machine's lock by the call the launch makes (leftPodRoundAt), because the launch that would
-// start the claim in another pod writes the claim first, and the store refuses that write too,
-// so the launch is tried again later and starts no process (launchNow).
+// The failure is the machine's own (fail), on both paths a death takes to it: the claim's process
+// dies with no work outstanding while its launch budget has one launch left, and the relaunch that
+// death asks for spends it; or the process dies while the claim works a task, and that death with
+// work outstanding reaches the same limit (chargeDeath). The leave is set under the machine's lock
+// by the call the launch makes (leftPodRoundAt), because the launch that would start the claim in
+// another pod writes the claim first, and the store refuses that write too, so the launch is tried
+// again later and starts no process (launchNow).
 func TestPodUpdatePublishUpdateAskAnOwedMarkKeepsTheRowWhateverTheClaimBecomes(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
+		name string
+		// before is what the claim does before the round opens over it, nil for nothing.
+		before  func(*harness)
 		between func(*harness)
 		// became is whether the claim, in memory or as the store holds it, is what between made.
 		became func(Claim) bool
@@ -496,6 +500,21 @@ func TestPodUpdatePublishUpdateAskAnOwedMarkKeepsTheRowWhateverTheClaimBecomes(t
 			}
 			h.wantFailure(CauseDied, "launch failures ran out", h.clock.Now())
 		}, became: func(c Claim) bool { return c.State == StateFailed }},
+		{name: "a death with work outstanding that fails the claim beside the owed mark keeps the row and is published once", before: func(h *harness) {
+			h.must(RequestDeliver{Claim: h.token, Task: "implement the plan"})
+			h.must(StreamTurnStart{Claim: h.token})
+			if c := h.claim(); c.State != StateWorking || c.Pending == nil {
+				h.t.Fatalf("the claim before the round is %s holding %+v, want it working its task, or this case shows nothing", c.State, c.Pending)
+			}
+		}, between: func(h *harness) {
+			h.m.deps.Limits.LaunchFailures = 1
+			if err := h.handle(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now()}}); !errors.Is(err, errBoom) {
+				h.t.Fatalf("the death over a failing write = %v, want the store's error", err)
+			}
+			h.wantFailure(CauseDied, "deaths with work outstanding ran out", h.clock.Now())
+		}, became: func(c Claim) bool {
+			return c.State == StateFailed && strings.Contains(c.Failure, "deaths with work outstanding ran out")
+		}},
 		{name: "a leave of the round's pod beside the owed mark keeps the row and is published once", between: func(h *harness) {
 			h.m.mu.Lock()
 			h.m.leftPodRoundAt(podProcess(testOtherPod, 2))
@@ -505,6 +524,9 @@ func TestPodUpdatePublishUpdateAskAnOwedMarkKeepsTheRowWhateverTheClaimBecomes(t
 		t.Run(tc.name, func(t *testing.T) {
 			h := updateHarness(t, PodUpdateContract)
 			h.inPod(testRoundPod)
+			if tc.before != nil {
+				tc.before(h)
+			}
 			h.openUpdate(testRound, testReasons)
 			reached := &askPublisher{delivered: true}
 			h.store.fail("PutClaim", errBoom)

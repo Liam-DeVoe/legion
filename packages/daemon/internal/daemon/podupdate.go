@@ -1484,9 +1484,10 @@ func roundTold(group []supervise.Claim, round string) bool {
 }
 
 // blockingClaims is every claim of the group with a session, failed ones included: one whose agent
-// has run and may hold unpushed work. The round waits for each of them but a failed one
-// (askedClaims, waitingClaims). Every claim the sweep groups is live already (reconcilePodUpdates
-// drops the retired ones), and a claim with no session has never had a worker.
+// has run and may hold unpushed work. The round waits for each of them but a failed one and one
+// that has left the round's pod (askedClaims, waitingClaims). Every claim the sweep groups is live
+// already (reconcilePodUpdates drops the retired ones), and a claim with no session has never had
+// a worker.
 func blockingClaims(group []supervise.Claim) []supervise.Claim {
 	var blocking []supervise.Claim
 	for _, c := range group {
