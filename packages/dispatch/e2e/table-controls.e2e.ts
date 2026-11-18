@@ -8,6 +8,7 @@
 import { IDEMPOTENCY_KEY_COMMITTED } from "@legion/contracts";
 import type { Locator, Route } from "@playwright/test";
 import { CONTROL } from "../web/src/components/control-names";
+import * as theme from "../web/src/theme/classes";
 import {
   agentFilter,
   agentGroupToggle,
@@ -3348,14 +3349,18 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
  *  nor a repeat is read. That commit's `web/dist` was served by `DISPATCH_E2E_SERVER_WEB_DIST`
  *  (e2e/run-server.sh) over the row below's seed, and the pill's `textContent` and its `href`
  *  and `class` attributes were read at 1440x900 on `/projects/CORE/issues`: they answered
- *  `Blocked on you · 3`, `/` and the `class` written here as it came. */
+ *  `Blocked on you · 3`, `/` and the `class` these tokens make. Its colours are written by the
+ *  three roles that base's `BlockedOnYou.tsx` drew them with, because no file here may write a
+ *  colour utility of its own (`web/src/theme/no-raw-colors.test.ts`); `theme/classes.ts` gives
+ *  each the value the base read. */
 const PILL_CLASSES_AT_THE_BASE = [
   ...new Set(
     [
       "order-3 shrink-0 md:order-5 inline-flex min-h-11 items-center rounded-full px-3 text-xs",
-      "font-medium md:min-h-9 md:px-2 bg-slate-200 dark:bg-slate-700 text-slate-700",
-      "dark:text-slate-300 text-slate-700 dark:text-slate-300 hover:text-slate-900",
-      "dark:hover:text-slate-100",
+      "font-medium md:min-h-9 md:px-2",
+      theme.surfaceMutedStrongBg,
+      theme.textSecondaryOnSurface,
+      theme.textSecondaryHoverToPrimary,
     ]
       .join(" ")
       .split(" ")
@@ -5753,7 +5758,9 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       // inherits it, are what its name goes on to after its label and are never shown.
       name: "the issue header's Repository",
       trigger: repository,
-      value: async () => (await repository.locator('[aria-hidden="true"]').innerText()).trim(),
+      // The badge, the one hidden element of the trigger that is not its chevron's `svg`.
+      value: async () =>
+        (await repository.locator('[aria-hidden="true"]:not(svg)').innerText()).trim(),
       word: repositoryWord,
       left: [repositoryOption],
       picked: repositoryPicked,
