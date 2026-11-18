@@ -5608,6 +5608,11 @@ const READ_RULES: readonly ReadRule[] = [
   { read: "tree", state: "inFlightRefused", observed: true, way: "feedWhole", now: 1 },
   { read: "spec", state: "inFlightRefused", observed: true, way: "focusDown", now: 1 },
   { read: "spec", state: "inFlightRefused", observed: true, way: "feedWhole", now: 1 },
+  // An answered Plan or Verification view at a new load: read once, as the Spec view is.
+  { read: "plan", state: "answered", observed: true, way: "reload", now: 1 },
+  { read: "plan", state: "answered", observed: false, way: "reload", now: 0, back: 1 },
+  { read: "verification", state: "answered", observed: true, way: "reload", now: 1 },
+  { read: "verification", state: "answered", observed: false, way: "reload", now: 0, back: 1 },
 ];
 
 describe("the rule for when a read of the tree or of a view starts", () => {
