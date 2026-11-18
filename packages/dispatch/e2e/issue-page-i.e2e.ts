@@ -3096,8 +3096,16 @@ test("the keys of a row's editor move its caret and edit inside the node's own b
       // ProseMirror writes its own selection back over the page's 20 ms after it takes the focus
       // (prosemirror-view's focus handler), undoing a caret move it has not read yet: an arrow
       // pressed in that window is put back, and the key after it acts at the old place. A reader
-      // is never that quick, so the row waits that window out before its first key.
-      await page.waitForTimeout(50);
+      // is never that quick, so the row waits that window out before its first key, on the page's
+      // own clock: a wait in this process lets the next key go out while that timer is still
+      // queued, and a busy page runs a queued key before a timer already due, while a timer the
+      // page sets after ProseMirror's runs after it, so the key is sent only once the write is
+      // made.
+      await page.evaluate(() => {
+        const waited = Promise.withResolvers<void>();
+        setTimeout(waited.resolve, 50);
+        return waited.promise;
+      });
     };
     /** One edit through the row `focus` focuses: Enter, `keys` pressed, `paste` pasted as a
      *  browser sends a paste, a `Y` typed and Escape. The document `artifactId` then stores
@@ -3244,9 +3252,12 @@ test("the keys of a row's editor move its caret and edit inside the node's own b
 // editor draws outside the node's block to the first tab stop after the editor's box, and
 // Shift+Tab to the row, the outline's one tab stop; each ends the editing, as a Tab out of the
 // outline and Escape do, and edits nothing. The seeded spec holds the open question's `ask` block
-// after its statements, and the ask's card draws controls of its own inside the editor. Nothing
-// of the page's own takes the focus after the outline at this head, so a stand-in control under
-// it is the tab stop Tab goes to (`standInControlBelow`).
+// after its statements, and the ask's card draws controls of its own inside the editor. The
+// statement is the third, which no comment or ask is on, so the editor draws no references
+// button of its own block (the next row reads one), and the second's, which the seed's anchored
+// comment draws, is another block's, passed over too. Nothing of the page's own takes the focus
+// after the outline at this head, so a stand-in control under it is the tab stop Tab goes to
+// (`standInControlBelow`).
 // SLOW(>=2s): the whole issue seeded and loaded, then the row's editor opened twice, each waited
 // on until it takes the caret and the ask's card is drawn in it, and until it closes again.
 test("Tab and Shift+Tab from a row's editor pass over the controls of an ask another block draws, and end the editing", async ({
@@ -3257,7 +3268,7 @@ test("Tab and Shift+Tab from a row's editor pass over the controls of an ask ano
   try {
     await expectTreeDrawn(page);
     const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
-    const statementBlock = requirementBlockId(2);
+    const statementBlock = requirementBlockId(3);
     const statement = blockNodeId(specSlug, statementBlock);
     const before = await storedMarkdown(seeded.specArtifactId);
     const row = nodeRow(page, statement).first();
@@ -3330,4 +3341,90 @@ test("Tab and Shift+Tab from a row's editor pass over the controls of an ask ano
   } finally {
     await context.close();
   }
+});
+
+// A document draws a button for each block with comments or asks on it, which shows them and puts
+// the reader in that block, in an aside of its own beside the editor, outside every block
+// (`ProofDocument.tsx`'s "Block references"). The node's own block's button is the node's: Tab
+// from the row's editor stops at it, as the browser's own Tab did, and the editing stays; Tab from
+// it goes on past every other block's button to the first tab stop after the editor's box, and
+// ends the editing. The seed anchors a comment on the second statement, and the row anchors one on
+// the first and one on the third, so another block's button stands before the statement's and one
+// after it. A comment's quote is anchored to the innermost block that holds it - the paragraph
+// inside a statement's typed block, by the id the editor gave it - so each button names a block
+// inside its statement's (`data-block-references`). The buttons are found by their names, and the
+// one Tab reaches is read by the statement whose block holds the block it names.
+// SLOW(>=2s): the whole issue seeded with two more anchored comments and loaded, then the row's
+// editor opened and waited on until it takes the caret and draws the references buttons.
+test("Tab from a row's editor stops at the references button of the node's own block, and at no other block's", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(
+    browser,
+    async () => {
+      const seeded = await seedWholeIssue();
+      for (const index of [1, 3]) {
+        await createComment(seeded.key, {
+          anchor: { artifact: "spec", quote: requirementText(index) },
+          body: `A comment on requirement ${index}, so its block draws a references button.`,
+        });
+      }
+      return seeded;
+    },
+    async (page, seeded) => {
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectTreeDrawn(page);
+      const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
+      const statementBlock = requirementBlockId(2);
+      const statement = blockNodeId(specSlug, statementBlock);
+      const row = nodeRow(page, statement).first();
+      const editable = row.locator('[contenteditable="true"]');
+      const references = row
+        .locator("[data-editor-box]")
+        .getByRole("button", { name: /references on block$/ });
+      const below = await standInControlBelow(page);
+
+      await focusRow(page, statement);
+      await page.keyboard.press("Enter");
+      await expect
+        .poll(() => caretInRowBlock(page, statementBlock), {
+          message: "Enter put no caret in the statement",
+        })
+        .toBe(true);
+      await expect
+        .poll(() => references.count(), {
+          message: "the row's editor draws no references button for each statement commented on",
+        })
+        .toBeGreaterThanOrEqual(3);
+      await page.keyboard.press("Tab");
+      const reached = await page.evaluate((block) => {
+        const active = document.activeElement;
+        const named = active?.getAttribute("data-block-references") ?? null;
+        const editable = active
+          ?.closest("[data-editor-box]")
+          ?.querySelector('[contenteditable="true"]');
+        const drawn =
+          named === null ? null : editable?.querySelector(`[data-block-id="${CSS.escape(named)}"]`);
+        return {
+          inStatement: (drawn?.closest(`[data-block-id="${block}"]`) ?? null) !== null,
+          name: active?.getAttribute("aria-label") ?? active?.textContent?.slice(0, 40) ?? "",
+          named,
+        };
+      }, statementBlock);
+      expect(
+        reached.inStatement,
+        `Tab from the row's editor went to "${reached.name}", naming block ${reached.named}, not the statement's references button`
+      ).toBe(true);
+      await expect(editable, "the editing ended at the statement's references button").toHaveCount(
+        1
+      );
+      await page.keyboard.press("Tab");
+      await expect(
+        below.control,
+        "Tab from the statement's references button did not go past every other block's to the first tab stop after the editor's box"
+      ).toBeFocused();
+      await expect(editable, "Tab out of the editor's box did not end the editing").toHaveCount(0);
+    }
+  );
 });

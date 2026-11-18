@@ -3100,6 +3100,92 @@ test("Tab from the row's editor stops at each control of the action bar its sele
   );
 });
 
+// A document draws a button for each block with comments or asks on it, which shows them and puts
+// the reader in that block, in an aside of its own beside the editor, outside every block
+// (`doc/ProofDocument.tsx`'s "Block references", each marked with its block's id). The node's own
+// block's button is the node's: Tab from the row's editor stops at it, and the editing stays;
+// Shift+Tab from it goes back to the editable, and the next Tab from there to it again, and on to
+// the first tab stop after the box, which ends the editing. Another block's button, before the
+// node's in the aside and after it, is never a stop either way. The editor here is the document's
+// own (`LiveEditor`), which draws no aside, so the case draws one beside it as the page does.
+test("Tab from the row's editor stops at the references button of the node's own block, and at no other block's", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable } = await editLive(user, [
+    paragraph("r0", "The words above the statement."),
+    paragraph("r1", "A statement of the spec."),
+    taskServing("t2", "The task below the statement."),
+  ]);
+  const outside = controlOutside();
+  const row = editable.closest<HTMLElement>("[data-node-row]");
+  const box = editable.closest<HTMLElement>(`[${EDITOR_BOX_ATTRIBUTE}]`);
+  if (row === null || box === null) throw new Error("the statement's row does not hold the editor");
+  const aside = document.createElement("aside");
+  aside.setAttribute("aria-label", "Block references");
+  for (const id of ["r0", "r1", "t2"]) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.setAttribute("aria-label", `1 references on block ${id}`);
+    button.setAttribute("data-block-references", id);
+    aside.append(button);
+  }
+  box.append(aside);
+  /** The block whose references button holds the focus, the editable, or `elsewhere`. */
+  const focused = () => {
+    const active = document.activeElement;
+    if (active === editable) return "the editable";
+    return active?.getAttribute("data-block-references") ?? "elsewhere";
+  };
+
+  await user.tab();
+  expect(focused(), "Tab did not stop at the node's block's references button").toBe("r1");
+  await nextFrame();
+  expect(
+    row.querySelector('[contenteditable="true"]') === editable,
+    "the editing ended at the node's block's references button"
+  ).toBe(true);
+  await user.tab({ shift: true });
+  expect(
+    focused(),
+    "Shift+Tab from the node's references button did not go back to the editable"
+  ).toBe("the editable");
+  await user.tab();
+  expect(focused(), "Tab did not stop at the node's block's references button again").toBe("r1");
+  await user.tab();
+  expect(
+    document.activeElement === outside.control,
+    `Tab from the node's references button went to ${focused()}, not the first tab stop after the editor's box`
+  ).toBe(true);
+  await waitFor(() =>
+    expect(rowLetGo(row), "the row kept its editing, its body or its focused look").toBe(true)
+  );
+});
+
+// A comment's quote is anchored to the innermost block that holds it: driving the page, a comment
+// on a statement's words named the paragraph inside the statement's typed block, by the id the
+// editor gave that paragraph, and the references button named the same. So a button that names a
+// block inside the node's block is the node's too, and Tab from the row's editor stops at it; one
+// that names a block beside the node's, or a block the editor does not draw, is not.
+test("a references button of a block inside the node's block is a tab stop of the row's editor, and one of a block beside it is not", () => {
+  const row = document.createElement("div");
+  const buttons = ["r0", "p1", "r1", "gone", "t2"]
+    .map((id) => `<button data-block-references="${id}" type="button">1</button>`)
+    .join("");
+  row.innerHTML = `<div ${EDITOR_BOX_ATTRIBUTE}><div contenteditable="true"><p data-block-id="r0">Above.</p><section data-block-id="r1"><p data-block-id="p1">The statement.</p></section><p data-block-id="t2">Below.</p></div><aside>${buttons}</aside></div>`;
+  document.body.append(row);
+  try {
+    const editable = row.querySelector('[contenteditable="true"]');
+    if (editable === null) throw new Error("the stand-in draws no editable");
+    const stops = nodeCaret.tabStopsFrom(row, "r1", editable, false) ?? [];
+    expect(
+      stops.flatMap((stop) => stop.getAttribute("data-block-references") ?? []),
+      "the references buttons Tab stops at are not those of the node's block and the block in it"
+    ).toEqual(["p1", "r1"]);
+  } finally {
+    row.remove();
+  }
+});
+
 // Backspace and Delete at the start of a list's first item lift it out of its list
 // (LiftFirstListItem), which the editor refuses (`holdEditsToBlock`) for a block in that item.
 test("Backspace and Delete at the start of a list's first item leave the node's block in it", async () => {

@@ -272,21 +272,34 @@ const TAB_STOPS = [
  *  hidden with an inline `display: none` while the selection holds no text. */
 const ACTION_BAR = ".dispatch-action-bar";
 
+/** The mark of the button a document draws for each block with comments or asks on it, which
+ *  names that block's id (`doc/ProofDocument.tsx`'s "Block references"): the buttons stand in an
+ *  aside of their own beside the editor, inside the editor's box, outside every block. */
+const BLOCK_REFERENCES_ATTRIBUTE = "data-block-references";
+
 /**
  * Where Tab - Shift+Tab where `back` - may take the focus from `from`, inside the box the editor
  * of the row `row` scrolls in (`EDITOR_BOX_ATTRIBUTE`), while that editor draws `blockId`'s
  * block: the browser's own tab stops in the key's direction, nearest first, in the order it steps
  * through them - the page's order, which nothing in Dispatch changes with a positive `tabindex` -
  * passing over every one the editor draws outside that block: another block's link or button.
- * Its editable and what the node's block draws stay among them, and so does the action bar while
- * it shows (`ACTION_BAR`): the editor draws the bar outside every block, but its Comment, Suggest
- * and Ask act on the selection, which the row holds inside the node's block
- * (`selectionIntoBlock`), so they are the node's controls as much as the block's own, and Tab
- * reaches them as it did before the rest of the editor's were passed over. A bar hidden is read
- * by its own inline `display: none`, not through the layout, so a page with none answers as the
- * browser does, which gives no hidden control the focus. Shift+Tab past the box's start goes to
- * the row itself, the outline's one tab stop, where the editing began. Null where `from` is not
- * inside that box, or the editor draws no such block.
+ * Its editable and what the node's block draws stay among them, and so do two controls drawn
+ * outside every block that act on the node's own:
+ *
+ * - the action bar while it shows (`ACTION_BAR`): its Comment, Suggest and Ask act on the
+ *   selection, which the row holds inside the node's block (`selectionIntoBlock`). A bar hidden
+ *   is read by its own inline `display: none`, not through the layout, so a page with none
+ *   answers as the browser does, which gives no hidden control the focus;
+ * - the references button of the node's block, or of a block inside it
+ *   (`BLOCK_REFERENCES_ATTRIBUTE`), which shows the comments and asks on that block and puts the
+ *   reader in it. A comment's quote is anchored to the innermost block that holds it: measured
+ *   in Chromium, a comment on a statement's words named the paragraph inside the statement's
+ *   typed block, by the id the editor gave that paragraph, and its button named the same. Another
+ *   block's button takes the reader to that block, and the box with it, away from the node's.
+ *
+ * Tab reaches those as it did before the rest of the editor's were passed over. Shift+Tab past
+ * the box's start goes to the row itself, the outline's one tab stop, where the editing began.
+ * Null where `from` is not inside that box, or the editor draws no such block.
  */
 export function tabStopsFrom(
   row: HTMLElement,
@@ -302,15 +315,19 @@ export function tabStopsFrom(
   const shownBar = bar !== null && bar.style.display !== "none" ? bar : null;
   // An ancestor of `from` stands before it in the page's order, and a descendant after it.
   const side = back ? Node.DOCUMENT_POSITION_PRECEDING : Node.DOCUMENT_POSITION_FOLLOWING;
-  const stops = Array.from(document.querySelectorAll<HTMLElement>(TAB_STOPS)).filter(
-    (stop) =>
-      (from.compareDocumentPosition(stop) & side) !== 0 &&
-      (!box.contains(stop) ||
-        stop === editable ||
-        block.contains(stop) ||
-        shownBar?.contains(stop) === true) &&
-      isTabStop(stop)
-  );
+  const stops = Array.from(document.querySelectorAll<HTMLElement>(TAB_STOPS)).filter((stop) => {
+    if ((from.compareDocumentPosition(stop) & side) === 0 || !isTabStop(stop)) return false;
+    if (
+      !box.contains(stop) ||
+      stop === editable ||
+      block.contains(stop) ||
+      shownBar?.contains(stop) === true
+    ) {
+      return true;
+    }
+    const named = stop.getAttribute(BLOCK_REFERENCES_ATTRIBUTE) ?? undefined;
+    return named !== undefined && (named === blockId || blockIn(block, named) !== null);
+  });
   return back ? [...stops.filter((stop) => box.contains(stop)).reverse(), row] : stops;
 }
 
