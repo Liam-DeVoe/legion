@@ -485,8 +485,38 @@ func TestRepoProjectMappingPathIsHeldToTheNamesGitHubAllows(t *testing.T) {
 	}{
 		{"a name that is .. once .git is trimmed", "acme/...git"},
 		{"a name that is empty once .git is trimmed", "acme/.git"},
-		// The path is held to the rule as it is stored: canonicalising trims one `.git`, and
-		// every later read trims another.
+	} {
+		response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/"+refused.path,
+			map[string]any{"project": "CORE", "default": true}, "alice")
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status=%d body=%s, want 400", refused.what, response.Code, response.Body.String())
+		}
+	}
+	listed := dispatchRequest(t, handler, http.MethodGet, "/api/v1/settings/repo-projects", nil, "alice")
+	if listed.Code != http.StatusOK {
+		t.Fatalf("list the mappings: status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	for _, mapping := range decodeBody[[]repoProjectResponse](t, listed) {
+		if mapping.Repo == "acme/.." || mapping.Repo == "acme/" {
+			t.Fatalf("a refused write stored a mapping of %q", mapping.Repo)
+		}
+	}
+}
+
+// A mapping's path is held to the rule in the form it is stored: canonicalising trims one `.git`,
+// and every later read of the stored name trims another, so `acme/.git.git` would be stored as
+// `acme/.git`, a name no later read accepts.
+func TestRepoProjectMappingPathIsHeldToTheNameAsItIsStored(t *testing.T) {
+	handler := newTestHandler(t)
+	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+		"key": "CORE", "name": "Core",
+	}, "alice"); response.Code != http.StatusCreated {
+		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, refused := range []struct {
+		what string
+		path string
+	}{
 		{"a name that is empty once .git is trimmed twice", "acme/.git.git"},
 		{"a name that is .. once .git is trimmed twice", "acme/...git.git"},
 	} {
@@ -501,7 +531,7 @@ func TestRepoProjectMappingPathIsHeldToTheNamesGitHubAllows(t *testing.T) {
 		t.Fatalf("list the mappings: status=%d body=%s", listed.Code, listed.Body.String())
 	}
 	for _, mapping := range decodeBody[[]repoProjectResponse](t, listed) {
-		if mapping.Repo == "acme/.." || mapping.Repo == "acme/" || mapping.Repo == "acme/.git" || mapping.Repo == "acme/...git" {
+		if mapping.Repo == "acme/.git" || mapping.Repo == "acme/...git" {
 			t.Fatalf("a refused write stored a mapping of %q", mapping.Repo)
 		}
 	}
