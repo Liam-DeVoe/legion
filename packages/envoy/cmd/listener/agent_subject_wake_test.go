@@ -675,7 +675,7 @@ func TestAnAgentMessageIsTheSessionConsumersAlone(t *testing.T) {
 			t.Cleanup(client.Close)
 			harness := newListenerDeliveryHarnessOn(t, client)
 			harness.sessions.StopWatch()
-			registrar, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+			registrar, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 			if err != nil {
 				t.Fatalf("open the registering listener's session registry: %v", err)
 			}

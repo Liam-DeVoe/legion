@@ -14,7 +14,7 @@ import (
 // the horizon plus an hour, not as the constant, so the test names the age it requires.
 func TestANewSessionBucketOutlivesTheGoneHorizon(t *testing.T) {
 	client := setupNATS(t)
-	registry, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1))
+	registry, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}

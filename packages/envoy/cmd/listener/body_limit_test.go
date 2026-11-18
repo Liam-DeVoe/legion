@@ -48,11 +48,11 @@ func newBodyLimitRig(t *testing.T) *bodyLimitRig {
 	t.Helper()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
-	legionAgents, err := legionagents.Open(client.Conn, legionagents.WithReplicas(1))
+	legionAgents, err := legionagents.Open(t.Context(), client.Conn, legionagents.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the legion agent registry: %v", err)
 	}
-	ciStore, err := cistore.Open(client.Conn, logging.New("test"), cistore.WithReplicas(1))
+	ciStore, err := cistore.Open(t.Context(), client.Conn, logging.New("test"), cistore.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the CI store: %v", err)
 	}

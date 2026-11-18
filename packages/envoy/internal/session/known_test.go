@@ -27,7 +27,7 @@ import (
 func openKnown(t *testing.T, now func() time.Time) *KnownSessions {
 	t.Helper()
 	client := setupNATS(t)
-	known, err := OpenKnownSessions(client.Conn, WithKnownSessionReplicas(1), WithKnownSessionClock(now))
+	known, err := OpenKnownSessions(t.Context(), client.Conn, WithKnownSessionReplicas(1), WithKnownSessionClock(now))
 	if err != nil {
 		t.Fatalf("open the known-session store: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestAKnownBucketOpenWhileNATSReconnectsFailsByName(t *testing.T) {
 	}
 
 	logs := &lockedWriter{}
-	known, err := OpenKnownSessions(client.Conn,
+	known, err := OpenKnownSessions(t.Context(), client.Conn,
 		WithKnownSessionReplicas(1),
 		WithKnownSessionLogger(slog.New(slog.NewTextHandler(logs, nil))),
 		// The retry waits an hour, so the start's own attempt is the one the WARN reports.
@@ -247,7 +247,7 @@ func TestAKnownSessionStoreOpensItsDeniedBucketOnceTheGrantArrives(t *testing.T)
 	logged := logs.String
 
 	started := time.Now()
-	known, err := OpenKnownSessions(conn,
+	known, err := OpenKnownSessions(t.Context(), conn,
 		WithKnownSessionReplicas(1),
 		WithKnownSessionLogger(slog.New(slog.NewTextHandler(logs, nil))),
 		// The production schedule's first wait is a second and its cap five minutes, which a
@@ -347,7 +347,7 @@ func TestABucketOpenedAfterTheStartAnswersTheRecordsItHolds(t *testing.T) {
 	// whole question, and a handful of records would be filled whether it waits or not.
 	const records = 2000
 	const topic = "notifications.team.late-open"
-	filling, err := OpenKnownSessions(conn, WithKnownSessionReplicas(1))
+	filling, err := OpenKnownSessions(t.Context(), conn, WithKnownSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the store that fills the bucket: %v", err)
 	}
@@ -367,7 +367,7 @@ func TestABucketOpenedAfterTheStartAnswersTheRecordsItHolds(t *testing.T) {
 
 	// The grant goes away, as it is away on every listener started before it is applied.
 	grant.Grant(t, "nothing.this.store.uses")
-	known, err := OpenKnownSessions(conn,
+	known, err := OpenKnownSessions(t.Context(), conn,
 		WithKnownSessionReplicas(1),
 		withKnownSessionRetry(100*time.Millisecond, 500*time.Millisecond))
 	if err != nil {
@@ -452,7 +452,7 @@ func TestAStoreWhoseFirstScanTimedOutOpensOnlyOnceItsRescanCompletes(t *testing.
 	client := setupNATS(t)
 	const topic = "notifications.team.timed-out-scan"
 	ids := []string{"ses_timeout_1", "ses_timeout_2", "ses_timeout_3"}
-	filling, err := OpenKnownSessions(client.Conn, WithKnownSessionReplicas(1))
+	filling, err := OpenKnownSessions(t.Context(), client.Conn, WithKnownSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the store that fills the bucket: %v", err)
 	}
@@ -525,7 +525,7 @@ func knownOverGrant(t *testing.T, first, longest time.Duration, extra ...KnownSe
 		WithKnownSessionLogger(slog.New(slog.NewTextHandler(logs, nil))),
 		withKnownSessionRetry(first, longest),
 	}, extra...)
-	known, err := OpenKnownSessions(conn, options...)
+	known, err := OpenKnownSessions(t.Context(), conn, options...)
 	if err != nil {
 		t.Fatalf("open the known-session store: %v", err)
 	}
@@ -845,7 +845,7 @@ func TestAFailedMoveDuringTheFirstReadOfALateOpenIsRepairedByTheStore(t *testing
 	// The records the late open is to answer once the store is repaired.
 	const topic = "notifications.team.late-open-repair"
 	held := []string{"ses_late_repair_1", "ses_late_repair_2", "ses_late_repair_3"}
-	filling, err := OpenKnownSessions(conn, WithKnownSessionReplicas(1))
+	filling, err := OpenKnownSessions(t.Context(), conn, WithKnownSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the store that fills the bucket: %v", err)
 	}
@@ -871,7 +871,7 @@ func TestAFailedMoveDuringTheFirstReadOfALateOpenIsRepairedByTheStore(t *testing
 	grant.Grant(t, "nothing.this.store.uses")
 	logs := &lockedWriter{}
 	logged := logs.String
-	known, err := OpenKnownSessions(conn,
+	known, err := OpenKnownSessions(t.Context(), conn,
 		WithKnownSessionReplicas(1),
 		WithKnownSessionLogger(slog.New(slog.NewTextHandler(logs, nil))),
 		withKnownSessionRetry(100*time.Millisecond, 500*time.Millisecond),
@@ -964,7 +964,7 @@ func TestAWatchThatEndsBeforeTheFirstReadOfALateOpenIsRepairedByTheStore(t *test
 		t.Fatalf("connect as the user whose grant does not carry the bucket: %v", err)
 	}
 	t.Cleanup(conn.Close)
-	known, err := OpenKnownSessions(conn,
+	known, err := OpenKnownSessions(t.Context(), conn,
 		WithKnownSessionReplicas(1),
 		withKnownSessionRetry(100*time.Millisecond, 500*time.Millisecond))
 	if err != nil {

@@ -96,10 +96,14 @@ func TestAJetStreamSendWhileNATSReconnectsFailsByName(t *testing.T) {
 			_, err := OpenKeyValue(ctx, owner.Conn, handed, bucket)
 			return err
 		}, want: named},
-		{what: "a bucket's age set through a context its caller handed it", send: func() error {
-			_, err := SetKeyValueMaxAge(owner.Conn, handed, bucket, time.Hour)
+		{what: "a bucket's ensure through a context its caller handed it", send: func() error {
+			_, err := EnsureKeyValue(ctx, owner.Conn, handed, &nats.KeyValueConfig{Bucket: bucket})
 			return err
-		}, want: "set KV_" + bucket + " max age: " + named, refused: true},
+		}, want: "KV_" + bucket + " STREAM.INFO: " + named},
+		{what: "a bucket's age set through a context its caller handed it", send: func() error {
+			_, err := SetKeyValueMaxAge(ctx, owner.Conn, handed, bucket, time.Hour)
+			return err
+		}, want: "set KV_" + bucket + " max age: KV_" + bucket + " STREAM.INFO: " + named, refused: true},
 	} {
 		t.Run(row.what, func(t *testing.T) {
 			err := row.send()

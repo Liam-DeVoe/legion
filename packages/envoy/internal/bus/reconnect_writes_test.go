@@ -36,7 +36,7 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByName(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
-	kv, err := bus.EnsureKeyValue(client.Conn, client.JS(), &natsgo.KeyValueConfig{Bucket: "reconnect-writes"})
+	kv, err := bus.EnsureKeyValue(t.Context(), client.Conn, client.JS(), &natsgo.KeyValueConfig{Bucket: "reconnect-writes"})
 	if err != nil {
 		t.Fatalf("open the bucket: %v", err)
 	}

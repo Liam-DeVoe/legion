@@ -104,11 +104,20 @@ func JetStreamOn(conn *nats.Conn, opts ...nats.JSOpt) (nats.JetStreamContext, er
 }
 
 // namedJetStream is js, a context a caller handed this package, with its requests named
-// (namedRequests); conn is the connection js sends on. A context that names them already, such as
-// Client.JS's, is returned as it is.
+// (namedRequests); conn is the connection js sends on. A context that names them already is
+// returned as it is: a namedRequests, or a context that reads the server's refusals over one
+// (refusalReads), which is the shape of Client.JS's (Client.readsOwnRefusals over JetStreamOn's
+// context). A refusalReads over a context that names nothing gets the names under its refusal
+// reads, in the same order: so a refusal the server reports on the connection is returned as the
+// server's answer (ErrPublishDenied, refusedBy) and is never named a reconnect, and a caller that
+// then reads the refusals too (readsRefusals) finds them read already and adds nothing.
 func namedJetStream(conn *nats.Conn, js nats.JetStreamContext) nats.JetStreamContext {
-	if _, named := js.(namedRequests); named {
+	switch wrapped := js.(type) {
+	case namedRequests:
 		return js
+	case refusalReads:
+		wrapped.JetStreamContext = namedJetStream(conn, wrapped.JetStreamContext)
+		return wrapped
 	}
 	return namedRequests{JetStreamContext: js, conn: conn}
 }
