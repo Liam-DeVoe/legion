@@ -2274,9 +2274,11 @@ jobs:
               - 'packages/envoy-client/src/**'
               # extensions/legion-role-claim.test.ts:46 reaches the Envoy plugin's own test helper
               # for a registration answer (packages/envoy-client/test/subscribe-answer.ts), which
-              # packages/pi-shared/test/omp-harness.ts:17 imports too, so the tsc program of this
-              # package compiles that file and the tests read it.
+              # packages/pi-shared/test/omp-harness.ts:18 imports too, beside the keyed layer its
+              # stand-in serves behind (packages/envoy-client/test/keyed-layer.ts, line 17), so the
+              # tsc program of this package compiles both files and the tests read them.
               - 'packages/envoy-client/test/subscribe-answer.ts'
+              - 'packages/envoy-client/test/keyed-layer.ts'
               # And @legion/broker-client with it (ci_job_reads.py's envoy_client_dep).
               - 'packages/broker-client/**'
               - 'packages/contracts/src/**'
