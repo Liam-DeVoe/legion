@@ -55,20 +55,22 @@ func decodedBeforeTheRating(payload []byte) error {
 	return decoder.Decode(&value)
 }
 
-// routeOf is the Dispatch route a write of payload goes to, under /api/v1/issues/{key}/, as the
-// daemon's client sends it (dispatch's PutPlan and PutStep): a plan on its own id, a step record
-// on its own, and a step record carrying a rating on that record's rating route.
-func routeOf(payload record.OutboxPayload) string {
+// writeOf is how the daemon names a write of payload in the error of a run that failed (its
+// executors: "write the plan record %s of %s", "write the step record %s of %s"), and the Dispatch
+// route the write goes to, under /api/v1/issues/{key}/, as the daemon's client sends it (dispatch's
+// PutPlan and PutStep): a plan on its own id, a step record on its own, and a step record carrying
+// a rating on that record's rating route.
+func writeOf(payload record.OutboxPayload) (what, route string) {
 	switch write := payload.(type) {
 	case record.PlanRecord:
-		return "plans/" + write.ID
+		return "plan record " + write.ID, "plans/" + write.ID
 	case record.StepRecord:
 		if write.PlanRating != nil {
-			return "steps/" + write.ID + "/rating"
+			return "step record " + write.ID, "steps/" + write.ID + "/rating"
 		}
-		return "steps/" + write.ID
+		return "step record " + write.ID, "steps/" + write.ID
 	default:
-		return ""
+		return "", ""
 	}
 }
 
@@ -78,8 +80,9 @@ func routeOf(payload record.OutboxPayload) string {
 // (record.NewOutboxRow): a plan, the retro's rating, the start and the end of a step, the retro's
 // own end, whose record id is the rating's, and a status write of the issue. A plan, a rating and a
 // step's start and end of an earlier run stand again as rows waiting to retry, as an older
-// Dispatch's NOT_FOUND leaves a row (the daemon's RetryOutbox): attempts counted, the last error
-// kept and a retry time ahead. The block runs as the migration's header carries it, as one exec
+// Dispatch's NOT_FOUND leaves a row (the daemon's RetryOutbox) once the daemon has stopped for the
+// rollback: attempts counted, the last error kept and the retry time its backoff set, now past. The
+// block runs as the migration's header carries it, as one exec
 // (the simple protocol a psql run uses). Then the plans and the ratings are gone, waiting or not,
 // and every other row is still there with its payload and its retry state: none of them is a
 // write the earlier image is owed less than this one.
@@ -107,14 +110,19 @@ func TestThePlanRatingsWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 	earlierRetro := "2b3c4d5e-6f70-5a8b-9c0d-1e2f3a4b5c6d"
 	earlierStep := "3c4d5e6f-7081-5b9c-8d0e-2f3a4b5c6d7e"
 	defaultSteps := []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}
-	// retryAt is the retry time an older Dispatch's NOT_FOUND leaves on a row, and waitingError the
-	// error of the attempt it answered, as the daemon writes it of the row that met it: the wait its
-	// outbox raises (its execute, "outbox row %d (%s) of %s waits for a Dispatch that serves the
-	// route: %v"), over Dispatch's own refusal of a route it does not serve.
-	retryAt := time.Now().Add(time.Hour).UTC().Truncate(time.Microsecond)
-	waitingError := func(id int64, kind record.OutboxKind, route string) string {
-		return fmt.Sprintf("outbox row %d (%s) of %s waits for a Dispatch that serves the route: NOT_FOUND: no route for PUT /api/v1/issues/%s/%s",
-			id, kind, issue, issue, route)
+	// retryAt is the retry time a row's third failed run leaves it, as the daemon's outbox sets it:
+	// the row is first due at started, and each run adds its backoff (retryBackoff, one second
+	// doubled at each attempt), 1, 2 and 4 seconds, so its third run, at started+3s, sets started+7s.
+	// The daemon is stopped for the rollback, so that time is past when the way back runs.
+	// waitingError is the error that run stored, as the daemon writes it of the row that met it:
+	// the wait its outbox raises (its execute, "outbox row %d (%s) of %s waits for a Dispatch that
+	// serves the route: %v") over the executor's error ("write the step record %s of %s: %w"),
+	// which wraps Dispatch's own refusal of a route it does not serve.
+	retryAt := started.Add((1 + 2 + 4) * time.Second)
+	waitingError := func(id int64, kind record.OutboxKind, payload record.OutboxPayload) string {
+		what, route := writeOf(payload)
+		return fmt.Sprintf("outbox row %d (%s) of %s waits for a Dispatch that serves the route: write the %s of %s: NOT_FOUND: no route for PUT /api/v1/issues/%s/%s",
+			id, kind, issue, what, issue, issue, route)
 	}
 	queued := []struct {
 		name    string
@@ -162,7 +170,7 @@ func TestThePlanRatingsWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 			t.Fatalf("insert %s: %v", q.name, err)
 		}
 		if q.waiting {
-			waits[ids[i]] = waitingError(ids[i], row.Kind, routeOf(q.payload))
+			waits[ids[i]] = waitingError(ids[i], row.Kind, q.payload)
 			if _, err := store.Pool().Exec(ctx, `update outbox set last_error = $2 where id = $1`, ids[i], waits[ids[i]]); err != nil {
 				t.Fatalf("stamp the error of %s: %v", q.name, err)
 			}
