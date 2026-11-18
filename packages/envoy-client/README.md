@@ -668,8 +668,8 @@ rather than 1, which a caller reads as a refusal and runs again under a new key,
 The session keeps every request such a call sent at `resend/<key>.json`, never changing one it
 holds (`writeResendRecord`), and a call under that key sends each write it sends to the same route
 under the same key as its first call sent it, whatever it built this time (a body edited since, a
-revision read afresh, a picture changed), saying so where the two differ (`dispatch: warning: this
-call sent … as its first call sent it, not as this call built it`): Dispatch answers each write it
+revision read afresh, a picture changed, a different working directory), saying so where the two
+differ (`dispatch: warning: this call sent … as its first call sent it, not as this call built it`): Dispatch answers each write it
 ran with that write's first answer, or `409 KEY_COMMITTED` (a landing, exit 0), and runs only the
 writes it never got. Any other request under the key (one built again elsewhere, where a multipart
 boundary or the session it names differs) is refused `422 KEY_REUSED`, never run. Dispatch keeps a
@@ -691,8 +691,9 @@ n-th) and what to do, by what the call learned of Dispatch's keyed layer (`unset
 The command runs in the directory the call ran in (`cd <dir> && dispatch …`, `inDirectory`; AskGate
 lets one `cd <path> &&` stand before a write), so a relative path it holds, such as a picture,
 reads there. It is the argv with `--idempotency-key <key>` added unless it names the key already, each
-word quoted as `commandLine` quotes one (a word that opens with `=` too, which zsh would expand
-bare). Every text the call read from stdin or a `--<field>-file`, and every value over 500
+word quoted as `commandLine` quotes one: an apostrophe closes the single quotes and stands alone in
+double quotes (`'it'"'"'s'`), the one form of it AskGate's literal grammar reads, and a word that
+opens with `=` is quoted too, which zsh would expand bare. Every text the call read from stdin or a `--<field>-file`, and every value over 500
 characters given inline to a flag with a file twin, is kept in a copy at
 `resend/<key>.<place>.<16 hex of its SHA-256>` (`writeResendInput`, never replaced by a later
 call), which the command reads instead (`rerunWords`), so it needs no stdin. A command longer than

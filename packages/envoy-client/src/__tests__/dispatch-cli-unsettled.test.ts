@@ -821,7 +821,7 @@ describe("a write whose answer is lost", () => {
     const again = await run([...own, "--idempotency-key", key], dispatch.fetchImpl);
     expect(again.code, again.stdout).toBe(0);
     expect(again.stdout).toContain(
-      `\n${SWAPPED} POST ${MESSAGE_WRITE.path} under idempotency key ${key} as its first call sent it, not as this call built it, which differs: Dispatch holds the first call's request, and this call's change was not sent.\n`
+      `\n${SWAPPED} POST ${MESSAGE_WRITE.path} under idempotency key ${key} as its first call sent it, not as this call built it, which differs (in its text, its files or the directory it ran in): Dispatch holds the first call's request, and what differs in this call was not sent.\n`
     );
     expect(dispatch.landed).toHaveLength(1);
   });

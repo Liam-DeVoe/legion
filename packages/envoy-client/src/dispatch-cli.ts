@@ -760,7 +760,7 @@ export async function runDispatchCli(
   // body edited since): the agent is told its change was not sent.
   for (const write of commandKey.swappedWrites) {
     notes.push(
-      `dispatch: warning: this call sent ${write.method} ${write.path} under idempotency key ${write.key} as its first call sent it, not as this call built it, which differs: Dispatch holds the first call's request, and this call's change was not sent.`
+      `dispatch: warning: this call sent ${write.method} ${write.path} under idempotency key ${write.key} as its first call sent it, not as this call built it, which differs (in its text, its files or the directory it ran in): Dispatch holds the first call's request, and what differs in this call was not sent.`
     );
   }
   const withLine = (line: string): ResultInput => ({

@@ -692,13 +692,15 @@ function appendedItem(
 /** A Dispatch issue key, `PROJECT-N`. */
 const ISSUE_KEY = /^[A-Z][A-Z0-9]*-\d+$/;
 
-/** A shell word: bare when it needs no quoting, otherwise POSIX single-quoted. A word that opens
- *  with `=` is quoted too: zsh's EQUALS option reads a bare `=word` as the path of the command
- *  `word`. */
+/** A shell word: bare when it needs no quoting, otherwise POSIX single-quoted, an apostrophe in it
+ *  closing the quotes and standing in double quotes alone (`'it'"'"'s'`): bash and zsh read the
+ *  same word, and so does AskGate's literal grammar, which refuses the backslash of `'\''`. A word
+ *  that opens with `=` is quoted too: zsh's EQUALS option reads a bare `=word` as the path of the
+ *  command `word`. */
 function quoteWord(value: string): string {
   return BARE_WORD.test(value) && !value.startsWith("=")
     ? value
-    : `'${value.replaceAll("'", "'\\''")}'`;
+    : `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
 /** `--flag value`, or `--flag=value` when the value itself starts with `--`. */

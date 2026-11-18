@@ -113,6 +113,13 @@ describe("the dispatch command surface", () => {
     const words = ["message", "--body", "it's\ntwo lines", "--issue", "LEGION-2", "--x=--y", ""];
     expect(shellWords(dispatchLine(words))).toEqual(["dispatch", ...words]);
     expect(dispatchLine(["read", "LEGION-2"])).toBe("dispatch read LEGION-2");
+    // An apostrophe closes the single quotes and stands alone in double quotes: AskGate's literal
+    // grammar reads that, and refuses the backslash of `'\''`. A `!` stays in single quotes, where
+    // an interactive shell expands no history.
+    expect(dispatchLine(["message", "--body", "it's !done"])).toBe(
+      `dispatch message --body 'it'"'"'s !done'`
+    );
+    expect(dispatchLine(["message", "--body", "it's !done"])).not.toContain("\\");
   });
 
   // The command that sends a call again reads what the call read: each text a flag read from a
