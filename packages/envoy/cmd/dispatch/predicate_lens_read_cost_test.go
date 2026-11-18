@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
@@ -805,8 +806,11 @@ func predicateCostShapePhrase(shape string) string { return predicateCostPhrase 
 // tuples into a node, the backlink counts, the issue tree (the list of the shape's issue's
 // children, each shape's issue holding predicateCostChildren), GET /api/v1/lenses with its chains,
 // the coverage read and the references panel read, each named with its route. The base build is the
-// commit BASELINE_SHA names, or, where it is unset, `git merge-base origin/main HEAD` (baseBuild),
-// serving a database of its own (startCostArms). Both builds are read in one loop, one reading on
+// commit BASELINE_SHA names, which c-read-cost's run string sets, where it is unset, to the merge
+// base with legion/INFRA-1150, the release this child lands after; a base whose tree holds no
+// migration 20261109013400 (graph_store) is refused before anything is built, naming the base
+// (predicateCostBaseHoldsTheStore), since a base with no store measures nothing this child changed.
+// The base serves a database of its own (startCostArms). Both builds are read in one loop, one reading on
 // each in each turn, the build that goes first alternating, after one warm-up reading on each that
 // is not counted (costInterleaved). The corpus is vacuumed and analysed after the seed and the
 // backfill (costArm.vacuumAnalyze), and the block-index lease of each build is held while the
@@ -830,6 +834,7 @@ func TestThePredicateAndTheLensReadsGetNoSlower(t *testing.T) {
 	}
 	sizes := predicateCostSizesOf(t)
 	control := predicateCostControlOf(t)
+	predicateCostBaseHoldsTheStore(t)
 	t.Log(costGVisorNote)
 	t.Log("how each build is driven: both are server processes of their own build, each serving a " +
 		"database of its own which that build migrated at boot, and each is driven over its own HTTP " +
@@ -958,4 +963,25 @@ func TestThePredicateAndTheLensReadsGetNoSlower(t *testing.T) {
 		t.Skipf("%s=%g: this run wrote and read that share of the check's sizes, a smoke of this test whose readings are printed above "+
 			"and no reading of c-read-cost", predicateCostScaleEnv, sizes.scale)
 	}
+}
+
+// predicateCostStoreMigration is the migration that made the store, which every base this check
+// measures against holds.
+const predicateCostStoreMigration = "packages/envoy/internal/dispatch/store/migrations/20261109013400_graph_store.up.sql"
+
+// predicateCostBaseHoldsTheStore refuses a base build whose tree holds no store
+// (predicateCostStoreMigration), naming the base: the default of baseBuild, `git merge-base
+// origin/main HEAD`, is such a base while the branches this child stacks on are unmerged, and over
+// it every reading of a read this child changed would compare the store with no store. It is not
+// in baseBuild, whose other callers (dispatch://INFRA-1149's census and cost tests) measure the
+// store against a base from before it.
+func predicateCostBaseHoldsTheStore(t *testing.T) {
+	t.Helper()
+	root := gitOutput(t, ".", "rev-parse", "--show-toplevel")
+	commit, named := baseCommit(t, root)
+	if err := exec.Command("git", "-C", root, "cat-file", "-e", commit+":"+predicateCostStoreMigration).Run(); err != nil {
+		t.Fatalf("the base %s (%s) holds no migration %s (graph_store), so it is a build with no store and c-read-cost would measure nothing this child changed: set %s to the release this branch lands after, the merge base with legion/INFRA-1150",
+			commit, named, predicateCostStoreMigration, baselineEnv)
+	}
+	t.Logf("the base %s (%s) holds the migration that made the store, %s", commit, named, predicateCostStoreMigration)
 }
