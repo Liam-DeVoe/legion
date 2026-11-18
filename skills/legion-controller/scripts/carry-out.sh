@@ -1,10 +1,11 @@
 #!/bin/sh
 # carry-out.sh: rebuilds the work a Legion issue pod's workspace holds and GitHub lacks into a git
 # bundle, from the two tar archives that step 1 of docs/kubernetes.md, "Carrying unpushed work out
-# of an issue's pod", copies out of the pod. It is that section's step 2 for a controller pod,
-# which has no Docker: the rebuild runs in a user, network, mount and PID namespace of its own,
-# under an empty environment, where the docs run a throwaway container. The controller's procedure
-# is skills/legion-controller/references/operations.md, "A pod delete with nothing lost".
+# of an issue's pod", copies out of the pod. It is that section's step 2, the one rebuild both of
+# its routes run, under an empty environment and with no network. A controller pod, which has no
+# Docker, runs it in a user, network, mount and PID namespace of its own; the docs' route runs it as
+# the entrypoint of a throwaway container. The controller's procedure is
+# skills/legion-controller/references/operations.md, "A pod delete with nothing lost".
 #
 # Usage: carry-out.sh <KEY> <workspace path in the pod> <git.tar> <tree.tar> <out.bundle>
 #
@@ -13,10 +14,12 @@
 # unpushed, git refuses the empty bundle ("Refusing to create empty bundle") and the script exits
 # with git's status.
 #
-# The script runs in three stages, which CARRY_OUT_STAGE names. Unset, it checks its arguments and
-# runs itself again under unshare. In `namespace` it checks that it is isolated, mounts a tmpfs
-# over /run and over $HOME, and runs itself again under `env -i`. In `rebuild` it checks that it
-# is isolated again and runs the docs' step 2. A stage it does not start in its namespace refuses.
+# The script runs in stages, which CARRY_OUT_STAGE names. Unset, it checks its arguments and runs
+# itself again under unshare. In `namespace` it checks that it is isolated, mounts a tmpfs over
+# /run and over $HOME, and runs itself again under `env -i`. In `container`, which the docs' Docker
+# route sets, the container is the namespace: the stage checks its arguments and that it is
+# isolated, and runs itself again under `env -i`. In `rebuild` it checks that it is isolated again
+# and runs step 2. A stage it does not start in its namespace or its container refuses.
 set -eu
 
 usage='usage: carry-out.sh <KEY> <workspace path in the pod> <git.tar> <tree.tar> <out.bundle>'
@@ -30,7 +33,7 @@ refuse() {
 # reads is that namespace's own, and its network namespace holds no interface but lo.
 isolated() {
   [ "$$" -eq 1 ] ||
-    refuse "this shell is process $$, not process 1 of its own PID namespace: run carry-out.sh with CARRY_OUT_STAGE unset"
+    refuse "this shell is process $$, not process 1 of its own PID namespace: run carry-out.sh with CARRY_OUT_STAGE unset, or as a container's entrypoint with CARRY_OUT_STAGE=container"
   read -r self _ </proc/self/stat
   [ "$self" = 1 ] || refuse "/proc is not the namespace's own: it shows this shell as process $self"
   interfaces=$(sed -n '3,$s/^ *\([^:]*\):.*/\1/p' /proc/net/dev)
@@ -38,8 +41,9 @@ isolated() {
     refuse "the network namespace holds interfaces other than lo: $(printf '%s' "$interfaces" | tr '\n' ' ')"
 }
 
-case ${CARRY_OUT_STAGE-} in
-'')
+# arguments refuses arguments that are not the usage's: an issue key, the workspace's absolute path
+# in the pod, two archives that are files, and a bundle in a directory that exists.
+arguments() {
   [ $# -eq 5 ] || refuse "$usage"
   printf '%s\n' "$1" | grep -Eqx '[A-Z][A-Z0-9]*-[0-9]+' || refuse "$1 is not an issue key such as ACME-41"
   case $2 in /*) ;; *) refuse "$2 is not an absolute path" ;; esac
@@ -47,6 +51,22 @@ case ${CARRY_OUT_STAGE-} in
     [ -f "$archive" ] || refuse "$archive is not a file"
   done
   [ -d "$(dirname -- "$5")" ] || refuse "$(dirname -- "$5") is not a directory"
+}
+
+# rebuild runs this script again as its `rebuild` stage, under an empty environment whose $HOME is
+# its first argument, on the five arguments after it and a fresh scratch directory beside the
+# bundle, which the rebuild removes when it ends.
+rebuild() {
+  home=$1
+  shift
+  scratch=$(mktemp -d "$(dirname -- "$5")/carry-out.XXXXXX")
+  exec /usr/bin/env -i PATH=/usr/bin:/bin HOME="$home" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+    CARRY_OUT_STAGE=rebuild /bin/sh "$0" "$1" "$2" "$3" "$4" "$5" "$scratch"
+}
+
+case ${CARRY_OUT_STAGE-} in
+'')
+  arguments "$@"
   script=$(readlink -f -- "$0")
   git=$(readlink -f -- "$3")
   tree=$(readlink -f -- "$4")
@@ -74,9 +94,24 @@ namespace)
   [ -f "$3" ] && [ -f "$4" ] && [ -d "$(dirname -- "$5")" ] ||
     refuse "the namespace hides $3, $4 or the directory of $5: put them under \$TMPDIR, outside /run and \$HOME"
   home=$(mktemp -d /run/home.XXXXXX)
-  scratch=$(mktemp -d "$(dirname -- "$5")/carry-out.XXXXXX")
-  exec /usr/bin/env -i PATH=/usr/bin:/bin HOME="$home" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
-    CARRY_OUT_STAGE=rebuild /bin/sh "$0" "$1" "$2" "$3" "$4" "$5" "$scratch"
+  rebuild "$home" "$@"
+  ;;
+container)
+  # The docs' Docker route: a container run with `--network none` and this script as its
+  # entrypoint is a PID and network namespace of its own, and its /run and $HOME are the image's,
+  # with nothing of the host's mounted there, so this stage mounts nothing over them. It still
+  # refuses a container that shows a credential directory of a pod.
+  isolated
+  arguments "$@"
+  for hidden in /var/run/legion /var/run/secrets; do
+    [ ! -e "$hidden" ] || [ -z "$(ls -A -- "$hidden")" ] ||
+      refuse "$hidden shows entries inside the container"
+  done
+  home=$(mktemp -d)
+  git=$(readlink -f -- "$3")
+  tree=$(readlink -f -- "$4")
+  out=$(readlink -f -- "$5")
+  rebuild "$home" "$1" "$2" "$git" "$tree" "$out"
   ;;
 rebuild)
   isolated
@@ -87,7 +122,7 @@ rebuild)
   ;;
 esac
 
-# The docs' step 2, from here on in a fresh directory the namespace stage made.
+# Step 2, from here on in a fresh directory the namespace or the container stage made.
 K=$1 ws=$2 git=$3 tree=$4 out=$5 scratch=$6
 trap 'cd / && rm -rf -- "$scratch"' EXIT
 cd "$scratch"
@@ -111,12 +146,12 @@ sed -nE 's/^[^"]*"(([^"\\]|\\.)*)".*/\1/p' tree.list >names
 bad=$(grep -iE '(^|/)\.(git|jj)(/|$)' names || true)
 test -z "$bad" || refuse "$tree holds an entry through .git or .jj: $bad"
 
-# The tree is unpacked in the controller's own pod, not in a throwaway container, so its symlinks
-# are held to two rules. First, no entry may run through a symlink of the archive: a tar of a real
-# directory never writes one under a link, and tar would write it where the link points rather
-# than where its name says. Second, a relative target may not lead above the tree's root: it is
-# walked one component at a time from the link's own directory, `.` dropped and `..` taking one
-# away, and where the path so far is a symlink entry of the archive, the walk goes on from that
+# The tree may be unpacked in the controller's own pod, not in a throwaway container, so its
+# symlinks are held to two rules. First, no entry may run through a symlink of the archive: a tar
+# of a real directory never writes one under a link, and tar would write it where the link points
+# rather than where its name says. Second, a relative target may not lead above the tree's root:
+# it is walked one component at a time from the link's own directory, `.` dropped and `..` taking
+# one away, and where the path so far is a symlink entry of the archive, the walk goes on from that
 # entry's own target, from that entry's directory, so a link through `d -> .` that ends in `..` is
 # caught; a walk that loops, or that passes through more than 40 links, is refused too. An in-tree
 # link that climbs and comes back down, as every Bun workspace's node_modules holds, passes, and so
@@ -209,11 +244,11 @@ test -z "$bad" || refuse "$tree holds a symlink whose target passes through more
 bad=$(sed -n 's/^through //p' findings)
 test -z "$bad" || refuse "$tree holds an entry through a symlink of the tree: $bad"
 
-# tar runs as the namespace's uid 0, which restores each entry's owner and mode by default; the
-# owner, uid 1000 of the pod, is not mapped here, so it takes neither, as the docs' non-root
-# container did.
+# In the controller's namespace tar runs as uid 0, which restores each entry's owner and mode by
+# default; the owner, uid 1000 of the pod, is not mapped there, so it takes neither. The docs'
+# container runs as the caller's own uid, which cannot restore them either.
 git init -q --bare pod.git
-# shellcheck disable=SC2046 # packed-refs is a member name or nothing, as in the docs
+# shellcheck disable=SC2046 # packed-refs is a member name or nothing
 tar -C pod.git --no-same-owner --no-same-permissions --exclude=objects/info -xf "$git" objects refs \
   $(tar -tf "$git" | grep -x packed-refs || true)
 id=

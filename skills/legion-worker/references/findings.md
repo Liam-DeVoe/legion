@@ -95,7 +95,8 @@ replies under your comment with the issue it filed.
 
 You file nothing, and you wait for nothing. An architect and its own tree's workers keep their
 Envoy messages: a phase worker sends a fix its pull request cannot carry to its own tree's
-architect with `envoy_publish`, as `skill://legion-worker` says. A production check's recorded
+architect with `envoy_publish`, as the Completion section of its role prompt says
+(`packages/daemon/internal/prompts/roles/mechanics/headless.md`). A production check's recorded
 result names your comment, `dispatch://<KEY>/comment/<id>`, and the `fail` that records it closes
 the check, so that look names no next look of its own.
 

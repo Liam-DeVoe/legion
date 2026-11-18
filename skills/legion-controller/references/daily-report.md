@@ -119,9 +119,13 @@ every issue by its `dispatch://` link and what it does for the reader, every pul
   `skill://legion-controller/references/wakes.md` says for `tick`. With none open, say nothing of
   them.
 - **Operations you lack.** Each operation of
-  `skill://legion-controller/references/operations.md` that you did not run because a
-  `kubectl auth can-i` read answered `no`: the operation, the work it was for, and the read with its
-  answer. You ask no other session to do it. With none, say nothing of them.
+  `skill://legion-controller/references/operations.md` that you did not run because that
+  reference sends it here: a `kubectl auth can-i` read that answered `no`, a `kubectl` command that
+  failed, a restart whose daemon pod your deployment instructions give no label for or whose read
+  lists no pod or more than one, a `carry-out.sh` that refused with a `refused:` line naming
+  `unshare` or the namespace, and an `agent-secrets` denial (exit 77, with no grant line). Give the
+  operation, the work it was for, and the read or the command with its answer. You ask no other
+  session to do it. With none, say nothing of them.
 - **The week** (on the report of your first turn of each UTC week only, from
   `skill://legion-controller/references/weekly-audit.md`): the window's two times; the forced
   creates by filer with the no-answer creates apart; the tree sizes in the five buckets with the

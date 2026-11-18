@@ -2023,6 +2023,11 @@ Each moved claim then stays suspended until the operator resumes it with `legion
 Leave the statement out, and the earlier release repairs each such claim as one the daemon suspended.
 The two checks keep the new names after the rollback, and the rollback needs no statement for them: an earlier release never writes them, so the checks refuse nothing that release writes.
 
+**`runtime.kubernetes.pod.controller_service_account` must go before the earlier image is pinned.**
+This release adds that key, and an earlier release's key table has no row for it, so its loader refuses the file by name (`unknown key runtime.kubernetes.pod.controller_service_account`) and its daemon does not start while the key stands.
+Where `legion.yaml` sets it, remove the key before you pin the earlier image.
+The earlier release then runs the controller's pod as `runtime.kubernetes.pod.service_account`, the account of every other pod, so the rights that an account of its own gave the controller, such as `create pods/exec` and `delete pods`, go with the key.
+
 #### Rolling back the release that publishes each issue's role sessions to Dispatch
 
 This release adds one outbox kind, `role_holders_publish`, and its migration `20261116165926_role_holders_publish` adds the name to the outbox's kind check (`outbox_kind_check`).
@@ -2202,7 +2207,7 @@ The daemon reads nothing of the pod's disk before it replaces the pod: a role's 
 A role whose running plugin predates the contract that added the op is asked all the same:
 its message tells it to push its work and end its turn, and its round ends at the bound whatever it does, so its pod is replaced like every other and the role resumes in its own session on the new image.
 A role on Claude Code, whose plugin is its pod image's own and which no install can move, is carried by that same path and needs no operator step either ("Contract discipline" below).
-What holds a round past its bound is a claim an operator's own suspension holds, a pod replacement the cluster refuses, no process in the round's pod, or two pods at once,
+What holds a round past its bound is a claim under a suspension that holds (the operator's, the controller's or an architect's, which the notice names with its holder), a pod replacement the cluster refuses, no process in the round's pod, or two pods at once,
 and the daemon reports such a round to the project's controller as `update-stalled`, once, after the bound has passed.
 After this release deploys, move the project's controller onto this release's `skills/legion-controller`.
 The earlier playbook reads an `update-stalled` notice by its `waiting` entries, and for a role that did not answer and is not suspended it opens no ask: it sends that role the round's steps instead.
@@ -4832,7 +4837,8 @@ Run no `git` or `jj` in the pod, and bring no credential into it, for two reason
   `tar` reads no configuration.
 
 So the pod runs only `tar`, and every `git` that touches the pod's bytes runs in a throwaway container on your machine with no network and no credential, inside the container's own filesystem.
-It reads the two archives from your directory and writes only a git bundle back, and fetching a bundle runs nothing.
+That container runs step 2 as `skills/legion-controller/scripts/carry-out.sh`, the one rebuild that this route and the controller's route both run, which the worker image holds at `/opt/legion/pi-legion/dist/skills/legion-controller/scripts/carry-out.sh`.
+It reads the two archives from your directory and writes only a git bundle back, rebuilding in a scratch directory beside the bundle that it removes when it ends, and step 3 fetches that bundle with git's object check.
 Run the steps from an empty directory, run no git on anything but the bundle outside the container, and delete the directory once the push is done:
 
 ```sh
@@ -4849,50 +4855,23 @@ kubectl -n legion exec "$pod" -c roles -- sh -c 'set -e; cd -P "$1/.git"
 kubectl -n legion exec "$pod" -c roles -- sh -c 'set -e; cd -P "$1"; test "$(pwd -P)" = "$1"
   tar --hard-dereference --ignore-case --exclude=.git --exclude=.jj --exclude=./.codegraph \
   -cf - .' sh "$ws" > "$K-tree.tar"
-# 2. In a throwaway container: rebuild the work under configurations git init wrote, and bundle
-#    what origin lacks.
-docker run --rm -i --network none --cap-drop ALL --security-opt no-new-privileges \
-  --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/w" --entrypoint sh "$image" \
-  -s "$K" "$ws" <<'EOF'
-set -eu
-K=$1 ws=$2 git=/w/$K-git.tar tree=/w/$K-tree.tar
-refuse() { echo "refused: $*" >&2; exit 1; }
-bad=$(tar -tvf "$git" | awk '$1 !~ /^[-d]/'); test -z "$bad" || refuse "$git holds $bad"
-bad=$(tar -tvf "$tree" | awk '$1 !~ /^[-dl]/'); test -z "$bad" || refuse "$tree holds $bad"
-cd "$(mktemp -d)" && git init -q --bare pod.git
-tar -C pod.git --exclude=objects/info -xf "$git" objects refs \
-  $(tar -tf "$git" | grep -x packed-refs || true)
-id=
-for g in $(tar -tf "$git" | grep '^worktrees/[^/]*/gitdir$'); do
-  case $(tar -xOf "$git" "$g") in "$ws/.git" | */"${ws#/legion/}/.git") id=${g%/gitdir} ;; esac
-done
-test -n "$id" || refuse "no worktree record names $ws"
-base=$(tar -xOf "$git" "$id/HEAD")
-echo "$base" | grep -Eqx '[0-9a-f]{40}' || refuse "$id/HEAD is not a commit id"
-git -C pod.git update-ref refs/rescue-base "$base"
-git init -q work && cd work
-git fetch -q ../pod.git 'refs/jj/*:refs/jj/*' 'refs/heads/*:refs/rescue/*' \
-  'refs/remotes/origin/*:refs/remotes/origin/*' refs/rescue-base:refs/rescue-base
-git symbolic-ref HEAD "refs/heads/rescue-$K" && git reset -q "$base"
-tar -xf "$tree"
-git -c core.excludesFile=/dev/null add -A
-git status --short
-git diff --cached --quiet ||
-  git -c user.name=rescue -c user.email=rescue@invalid commit -q -m "Edits left in $K's workspace"
-echo "unpushed commits of other branches, not in the bundle:"
-git log --oneline --glob=refs/rescue/ --not --remotes=origin "rescue-$K"
-git bundle create "/w/$K.bundle" "rescue-$K" --not --remotes=origin
-EOF
+# 2. In a throwaway container of the worker image, carry-out.sh as its entrypoint: it checks both
+#    archives, rebuilds the work under an empty environment, and bundles what origin lacks.
+#    CARRY_OUT_STAGE=container makes the container its namespace.
+docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges \
+  --user "$(id -u):$(id -g)" -e CARRY_OUT_STAGE=container -v "$PWD:/w" --entrypoint /bin/sh "$image" \
+  /opt/legion/pi-legion/dist/skills/legion-controller/scripts/carry-out.sh \
+  "$K" "$ws" "/w/$K-git.tar" "/w/$K-tree.tar" "/w/$K.bundle"
 # 3. In a clone of your own, fetched from GitHub first: read what the bundle adds, then push it.
 git fetch origin
-git fetch "<dir>/$K.bundle" "rescue-$K:refs/remotes/rescue/$K"
+git -c fetch.fsckObjects=true fetch "<dir>/$K.bundle" "rescue-$K:refs/remotes/rescue/$K"
 git log --stat --oneline "origin/legion/$K..rescue/$K"
 git push origin "refs/remotes/rescue/$K:refs/heads/legion/$K"
 ```
 
 The workspace's git worktree record (`<clone>/.git/worktrees/<id>/HEAD`, the entry whose `gitdir` names the workspace's `.git`, absolute or relative) names the parent of jj's working-copy commit as of jj's last command there, or a commit a role made with `git commit` since;
 the files carry everything after it, snapshotted or not.
-Step 2 names that commit with a ref of its own in the bare repository, so the fetch reaches it and every unpushed commit below it, bookmarked or not.
+Step 2 names that commit with a ref of its own (`refs/rescue-base`) in a bare repository of the archives' objects, so its fetch reaches that commit and every unpushed commit below it, bookmarked or not.
 The rebuild resets the index to that commit and lays the files over it, so a file the repository tracks stays as the tree holds it even when a `.gitignore` names it, a submodule's gitlink stays, and every new file the tree holds is added, those over jj's `snapshot.max-new-file-size` included.
 `objects/info` stays out of the bare repository, so no alternates file borrows objects from elsewhere.
 `git status --short` prints the edits left out of a commit, and the next log the unpushed commits on other branches, which the bundle leaves out; none of either and `Refusing to
@@ -4900,31 +4879,37 @@ create empty bundle` together mean nothing below the working copy was left unpus
 The bundle is as trustworthy as a push of the role's own:
 read the log's `--stat` before pushing, and refuse a change under `.github/workflows/` unless the implement App holds `workflows: write`, since your own credential may push a workflow the App could not.
 The log fails when the issue never pushed `legion/<KEY>`; read `git log --stat --oneline rescue/<KEY>` then, and the push creates the branch.
-`git fetch` refuses the bundle when your clone lacks a commit it builds on, such as one since force-pushed away on GitHub;
-drop `--not --remotes=origin` and run step 2 again.
+`git fetch` refuses the bundle when your clone lacks a commit it builds on, such as one since force-pushed away on GitHub: the bundle holds only what origin lacks, so that commit is on no branch GitHub has and only the pod's clone holds it.
+Keep the pod then, and tell the issue's architect, as the controller's route does.
+`fetch.fsckObjects` has git check each object of the bundle before it stores any, and a malformed object refuses the fetch (`fatal: fsck error in packed object`); keep the pod then too.
 `git push` refuses anything but a fast-forward of GitHub's branch; when it does, push to a branch of another name and merge from there.
-The pod's agents run while you copy, so finish steps 1 and 2 while it is still there, and repeat step 1 when step 2 refuses an archive;
-step 2 starts in a fresh directory of the container each run.
+The pod's agents run while you copy, so finish steps 1 and 2 while it is still there, and repeat step 1 when step 2 refuses an archive or exits on a git error;
+step 2 starts in a fresh scratch directory each run.
 
-**The controller's route.**
-A project's controller carries an issue pod's unpushed work itself before it deletes the pod, where its own pod holds `create pods/exec` and `delete pods` in `legion` (`skills/legion-controller/references/operations.md`, "A pod delete with nothing lost").
-It runs steps 1 and 3 as above, step 3 through the worker image's `git` wrapper with the implement App token the secrets broker lends.
-Its pod has no Docker, so step 2 runs in that pod, as `skills/legion-controller/scripts/carry-out.sh`:
-the script runs itself under `unshare --user --map-root-user --net --mount --pid --fork --mount-proc`, mounts a tmpfs over `/run` and over `$HOME`, and runs step 2 there under `env -i` with `GIT_CONFIG_NOSYSTEM=1` and `GIT_CONFIG_GLOBAL=/dev/null`.
-It refuses to run outside that namespace, and stops where `unshare` is refused, so it never rebuilds with the network.
-It also refuses an entry of the tree archive through a `.git` or `.jj` directory, at any depth and in any case, and an entry under a symlink of the archive.
+**What step 2 checks, on either route.**
+`carry-out.sh` refuses to rebuild unless it is process 1 of a PID namespace of its own, reads that namespace's own `/proc`, and sees no network interface but `lo`; `docker run --network none` with the script as its entrypoint gives all three, and `CARRY_OUT_STAGE=container` tells the script that the container is its namespace.
+It then runs the rebuild under `env -i` with `GIT_CONFIG_NOSYSTEM=1` and `GIT_CONFIG_GLOBAL=/dev/null`, and a refusal prints one `refused:` line and exits 1.
+It refuses an entry of the tree archive through a `.git` or `.jj` directory, at any depth and in any case, and an entry under a symlink of the archive.
 It refuses a symlink whose relative target, walked from the link's own directory and on through each symlink of the archive it meets, climbs above the tree's root, loops, or passes through more than 40 links;
 an in-tree link that climbs and comes back down, as a Bun workspace's `node_modules` holds, passes.
 An absolute target, such as a virtualenv's `bin/python -> /usr/bin/python3`, passes, and ends the walk of any link that reaches it:
 no entry under a link is unpacked, GNU tar replaces a name it meets again rather than write through it, and `git add` stores a link as a link without following it, so such a target carries no write out of the tree.
 The tree archive holds ignored files too, since step 1 leaves out only `.git`, `.jj` and `.codegraph`:
 `node_modules` and a `.venv` are in it and are checked, and the repository's `.gitignore` keeps them out of the rebuilt commit, so a link git never adds can still refuse a pod, but only as an entry under a link or by its relative target's walk.
-It extracts with `--no-same-owner`, since the namespace does not map the pod's uid 1000 that the archives record.
-Its residual risk is a crafted object that exploits a bug of git or tar:
-it runs inside that namespace in the controller's own pod, with no network and with `/run` (the credential files under `/var/run/legion` and `/var/run/secrets`) and `$HOME` hidden, but not in a container of its own.
+It extracts with `--no-same-owner`, since the controller's namespace does not map the pod's uid 1000 that the archives record.
 An absolute link that `git add -A` takes, tracked or new and named by no `.gitignore`, can reach the bundle, as it would in a role's own push;
 so can a file that a `.gitignore` which is itself a symlink would have ignored, because git does not read a `.gitignore` that is a symlink.
 GNU tar 1.35 and git 2.47.3 were measured doing each of these: tar replaced a repeated name without writing through the link, `git add -A` staged an absolute link as mode 120000, and git did not read a symlinked `.gitignore`.
+
+**The controller's route.**
+A project's controller carries an issue pod's unpushed work itself before it deletes the pod, where its own pod holds `create pods/exec` and `delete pods` in `legion` (`skills/legion-controller/references/operations.md`, "A pod delete with nothing lost").
+It runs steps 1 and 3 as above, step 3 through the worker image's `git` wrapper with the implement App token the secrets broker lends.
+Its pod has no Docker, so it runs step 2's script in that pod with `CARRY_OUT_STAGE` unset:
+the script runs itself under `unshare --user --map-root-user --net --mount --pid --fork --mount-proc`, mounts a tmpfs over `/run` and over `$HOME`, and runs the rebuild there.
+It stops where `unshare` is refused, so it never rebuilds with the network.
+Its residual risk is a crafted object that exploits a bug of git or tar:
+in step 2 it runs inside that namespace in the controller's own pod, with no network and with `/run` (the credential files under `/var/run/legion` and `/var/run/secrets`) and `$HOME` hidden, but not in a container of its own;
+step 3 runs outside the namespace, with the network and the pod's credentials in reach, and `fetch.fsckObjects` is its one check of the objects the bundle brings from the pod.
 
 ### Running a workload in the cluster from a role
 
@@ -5400,7 +5385,7 @@ each answers for a different verb — creating a Sandbox, creating a pod, `exec`
 Two costs are shared and are the reason a role cleans up after itself rather than waiting for a deadline.
 One quota covers that whole namespace and is shared with the team's builds, so a workload left running is charged against both:
 measured on 2026-10-25, the namespace's quota for Jobs counted `requests.cpu` 4 for each of these workloads while it existed, 48 with twelve at once, and was back at 0 once the last of them was deleted.
-And every project's pods run as the account that project's configuration names (`service_account`), so the agents of every project that names the same account hold one identity: a password written into a Job is readable by every other agent of that identity, and any of them may delete any workload there.
+And every project's issue pods run as the account that project's configuration names (`service_account`), and so does its daemon-launched controller's pod unless `controller_service_account` names another, so the agents of every project that names the same account hold one identity: a password written into a Job is readable by every other agent of that identity, and any of them may delete any workload there.
 The other half is reach: the ingress rule admits the namespace Legion's pods run in rather than an identity, naming no pod and no port, so every pod there
 — every project's agents, with a Kubernetes credential or without one
 — reaches a labelled workload at its Service name, and the password in the Job, which every holder of the identity can read, is the only lock on it.
@@ -5905,11 +5890,12 @@ a replacement waits its pod out and a sweep interval at worst, so one made where
 What the last sweep decided under the two limits is one line of `legion claims list` ("Contract discipline" above).
 
 A round that outlives its bound is told to the project's controller once, as an `update-stalled` notice, when the bound has passed and something still holds the round (`tellLateRound`):
-an operator's suspension of a claim the round asks, a `ReplacePod` the cluster refuses, no claim recording a process in the round's pod or in any pod (`roundWithNoProcessInItsPod`, `tellPodlessRound`), or claims recording two pods at once.
+a suspension that holds over a claim the round asks — the operator's, the controller's or an architect's, each named with its holder and with who can resume it (`holdSentences`) — a `ReplacePod` the cluster refuses, no claim recording a process in the round's pod or in any pod (`roundWithNoProcessInItsPod`, `tellPodlessRound`), or claims recording two pods at once.
 Its `reason` names that hold, and the notice names the issue, the round, the pod, the drift and every claim the round asked, with that claim's state and whether it answered (`skill://legion-controller/references/escalation.md`).
 One round is told once, however many sweeps find it open.
 A round that waits for its roles before its bound is told to nobody, since the bound ends that wait by itself.
-An operator's suspension is the one hold only a person can clear: the daemon replaces the pod only after the operator resumes each such claim.
+A suspension that holds is the one hold the bound never steps over: the daemon replaces the pod only after a resume lifts each such suspension.
+Only the operator's needs the operator, who alone resumes it; the controller resumes its own and an architect's, and an architect that owns the issue resumes an architect's.
 A pod that goes before its round is over, replaced where it stood for a failure of its own, has the daemon write on the issue which roles had not answered and that the work they did not push went with the disk.
 Three readings say the pod went:
 the runtime answering that the pod the claims record is not there; the claims recording another pod in its place; and, while no claim of the issue records a pod at all, the runtime answering that the issue's Sandbox holds another pod or none.
@@ -7555,6 +7541,8 @@ The image probe's pod runs as `service_account`, so the probe at boot does not c
 create that ServiceAccount in `runtime.kubernetes.namespace` before naming it.
 It is the `legion-daemon` service's own pod because `BROKER_SERVICES` maps the account it runs as to `legion-daemon`.
 A service may name several accounts, so a controller given an account of its own keeps that service's secrets only when `BROKER_SERVICES` also names that account for `legion-daemon`.
+With `agent_secrets.exchange_audience` set, the controller's pod also projects an exchange token of its own account and trades it as an issue pod does (`exchangeTokenProjection`, `manifest.go`), and the broker refuses a pod-sessions registration of an account that neither `BROKER_EXCHANGE_ACCOUNTS` nor `BROKER_EXCHANGE_READ_ACCOUNTS` lists (`403 POD_ACCOUNT_NOT_LISTED`, `packages/envoy/internal/broker/api/handlers_pod_sessions.go`).
+So a controller given an account of its own loses that trade unless one of those two lists names its account too.
 Its `slack_post` replies with `LEGION_SLACK_BOT_TOKEN`, the Slack app's bot token, which the operator stores as a shared agent secret (owner `shared`, tier `agent`), so the broker grants it with no person asked to every session enrolled with it, the controller's and every issue pod's among them, whatever service or person the session belongs to.
 Legion sets no affinity on it, so under Karpenter it lands wherever the pool has room for it (on GKE Autopilot it usually gets a node of its own, [Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)), and it is annotated `karpenter.sh/do-not-disrupt:
 "true"` and `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`:

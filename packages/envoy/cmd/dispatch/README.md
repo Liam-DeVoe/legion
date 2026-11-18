@@ -4273,7 +4273,7 @@ Each item below names a path with its method and identity, then its purpose.
   a bearer reading a direct message names its session in `?session=` (`400 SESSION_REQUIRED`, `403 THREAD_FORBIDDEN`).
   While the message is owed a block index, `indexed` is `false` and `blocks` empty; the read writes nothing.
 
-- `/api/v1/issues/{key}/results` (GET, POST; cookie, trusted header, or bearer)
+- `/api/v1/issues/{key}/results` (GET; cookie, trusted header, or bearer)
 
   GET lists the `check` blocks of the issue's Verification document in document order:
   `{issue, verification_artifact_id, checks}`, each check with its attributes (`when`, `surface`, `run`, `negative_control`, `ci_check`), the version its words last changed in, their digest, and every result recorded against it from any issue, newest first.
@@ -4367,6 +4367,8 @@ Each item below names a path with its method and identity, then its purpose.
   The issue a result was recorded on is read for nothing here, so a child's pull request is never a basis for a check above it.
   Nothing is written on a push: a push that moves a pull request's head leaves the result at the old head standing at no basis, by itself.
   An issue with no Verification document answers no checks.
+
+- `/api/v1/issues/{key}/results` (POST; cookie, trusted header, or bearer)
 
   POST records one result: `{check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?, actor?}`.
   What it takes, and what it refuses:

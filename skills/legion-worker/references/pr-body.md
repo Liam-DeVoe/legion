@@ -121,16 +121,18 @@ The agent that develops the change records its results this way before the merge
 blocks a check is fixed, not skipped (*When no surface reaches the changed path*, below).
 
 **Record a result after the commit is pushed.** Dispatch asks GitHub whether the repository of
-the check's issue holds the commit. If it does not, Dispatch also asks each repository in which
-the issue's external links name an open or merged pull request. Dispatch refuses a result at a
-commit that none of these repositories holds with `400 RESULT_COMMIT_UNKNOWN`, naming the
-commit and each repository it asked; a commit that is still only local is such a commit. So,
-for work in a second repository, link the issue to that repository's pull request before you
-record a result at its head; the results read then compares a `before_merge` check with that
-pull request's head, as it does with a pull request of the issue's own repository. A pull
-request that closed without a merge does not count. Where Dispatch cannot read a repository or
-a pull request, it stores the result as before; where it cannot read the issue's own
-repository, it says so when the results are read.
+the check's issue holds the commit. When GitHub says it does not, or does not answer, Dispatch
+also reads the issue's external links: a repository in which they name an open or merged pull
+request counts, if Dispatch's GitHub App is installed on it, and Dispatch asks it about the
+commit. One record reads at most 10 linked pull requests. Dispatch refuses a result at a commit
+that none of these repositories holds with `400 RESULT_COMMIT_UNKNOWN`, naming the commit, each
+repository it asked and, where the bound left links unread, how many; a commit that is still only
+local is such a commit. So, for work in a second repository, link the issue to that
+repository's pull request before you record a result at its head; the results read then compares
+a `before_merge` check with that pull request's head, as it does with a pull request of the
+issue's own repository. Where Dispatch cannot read a repository or a pull request, it stores the
+result as before; where it cannot read the issue's own repository, it says so when the results
+are read.
 
 **A check that cannot fail is not a result.** Before a check counts as evidence, show it
 failing: the negative control is that demonstration, run on the same command with a deliberately

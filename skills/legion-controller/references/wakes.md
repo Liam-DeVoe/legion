@@ -44,6 +44,13 @@ every-turn steps. The wake's work is the parked-root walk
 end is past (`skill://legion-controller/SKILL.md#merge-holds`). Every tick turn then runs the
 [prioritization pass](skill://legion-controller/references/backlog-stewardship.md#the-prioritization-pass).
 
+Every tick turn's summary also names the roots that Legion runs no longer while Dispatch still
+shows them at work, as step 1 of the skill's start procedure does
+(`skill://legion-controller/SKILL.md#what-happened-before-you-started`), because no wake tells you
+of a root taken out of the workflow in the middle of a session. Read `read_state` with
+`phase: "done"`, and name each root among those issues (its `tree` is its own key) whose `status`
+is `in_progress`, `testing`, `needs_review` or `retro`.
+
 `openCapabilities`, when present, names the open capability rows; `read_state`'s `capabilities`
 gives each one's `detail`. A deployment row (the secrets broker, model fallback, a role's CPU and
 memory limits, the pool's capacity at boot) has a `configLine`, the `legion.yaml` line
@@ -435,8 +442,11 @@ stepped for longer than the `worker_stall_backstop_hours` the deployment gives t
 daemon tried to start a replacement in its place, every try was refused, and that ran the
 architect's launch budget out, so its claim is failed and nothing relaunches it. You get this
 notice only for that end. Every other end of a stall leaves the architect's task owed to it and
-fails nothing, and the architect alone is told of it. You get this one because every other notice
-of the tree goes to that architect, and nobody inside the tree is left to read it.
+fails nothing, and the architect alone is told of it. The architect then opens the finding ask for
+a stop the runtime did not confirm and for stalls that come again and again
+(`skill://legion-architect/references/wake-routing.md`, its `worker-stalled` row), so you open
+none for those ends. You get this one because every other notice of the tree goes to that
+architect, and nobody inside the tree is left to read it.
 
 The `reason` is the record the daemon read: when the agent last stepped and how long ago that was,
 the bound it passed, when the turn began, and the last call the daemon saw, with its tool, its call
@@ -454,8 +464,9 @@ re-admit nothing, set no status, and start nothing.
 
 ## `update-stalled on <KEY>` (`{kind: "update-stalled", reason, update}`)
 
-The update round over the issue's pod has passed its bound, and something still holds it: an
-operator's suspension, a refused pod replacement, no process in the pod, or two pods. Handle it as
+The update round over the issue's pod has passed its bound, and something still holds it: a
+suspension that holds, the operator's, yours or an architect's, which the notice names with who
+can resume each claim; a refused pod replacement; no process in the pod; or two pods. Handle it as
 `skill://legion-controller/references/escalation.md#an-update-round-that-is-not-finishing-update-stalled`
 says.
 
@@ -519,8 +530,12 @@ read found running, or one whose session is being compacted. A claim whose proce
 would not answer for, one that records no process to read, and one that moved under your
 request and that a second read finds no longer working or gone once more are refused
 `CLAIM_UNSETTLED`, each left exactly as your request found it, so ask again once the runtime
-answers; a claim that moved is otherwise answered as that second read finds it. A claim under a relaunch the wake pacing parks is refused
-`CLAIM_UNSETTLED` too.
+answers; a claim that moved is otherwise answered as that second read finds it. A claim under a
+relaunch the wake pacing parks is refused `CLAIM_UNSETTLED` too. A claim the operator's own
+suspension holds, landed or held for its turn, is refused `SUSPENDED_BY_OPERATOR` by
+`fresh_session` before any read of its process, and `compact` refuses it as above:
+`CLAIM_NOT_RUNNING` where that suspension landed, and `CLAIM_IN_A_TURN` or `CLAIM_UNSETTLED`
+where it is held (`skill://legion-controller/references/operations.md#a-claim-the-operator-holds`).
 
 ## GitHub mentions
 

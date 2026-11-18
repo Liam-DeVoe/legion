@@ -57,7 +57,8 @@ because Envoy keeps no copy of a wake sent while no controller ran.
    `heldFrom` and the failed claim's `failure` beside it, and
    each root whose `architect.state` is `failed` and whose `phase` is not `done`, as its wake says.
    Name in your summary each root at `phase: done` whose `status` is `in_progress`, `testing`,
-   `needs_review` or `retro`: Legion runs it no longer, and no wake tells you of it. Someone
+   `needs_review` or `retro`: Legion runs it no longer, and no wake tells you of it, so every `tick`
+   names it again (`skill://legion-controller/references/wakes.md`). Someone
    else moved it there while it waited for a slot, or it waited on a person (`awaiting_person`) and
    lost its label or its Dispatch claim, which leaves the `in_progress` it ran with.
 2. Triage the roots handed to Legion while you were away, as
@@ -75,7 +76,7 @@ Wake details: `skill://legion-controller/references/wakes.md`.
 |---|---|
 | `triage on <KEY>` | `skill://legion-controller/references/triage.md` |
 | `slot-free on <KEY>`, `todo on <KEY>` | Start the [prioritization pass](skill://legion-controller/references/backlog-stewardship.md#the-prioritization-pass) and the intake your deployment instructions give |
-| `tick on <PROJECT>` | The parked-root walk (`skill://legion-controller/references/parked-decisions.md#the-walk`), then the merge holds whose end is past ([Merge holds](#merge-holds)). Every tick turn then runs the [prioritization pass](skill://legion-controller/references/backlog-stewardship.md#the-prioritization-pass) |
+| `tick on <PROJECT>` | The parked-root walk (`skill://legion-controller/references/parked-decisions.md#the-walk`), then the merge holds whose end is past ([Merge holds](#merge-holds)). Every tick turn then runs the [prioritization pass](skill://legion-controller/references/backlog-stewardship.md#the-prioritization-pass), and its summary names each root at `phase: done` that Dispatch still shows at work, as step 1 of [What happened before you started](#what-happened-before-you-started) does |
 | `tree-stalled on <KEY>` | Read the tree and decide: ask a role what it waits on, move an issue back a phase, or park the tree only as [Rules](#rules) allows |
 | `architect-stalled on <KEY>` | Read the root's architect claim in `read_state`, then for the first arm take nothing while it is `working`, since the task reaches it when that turn ends, and name it in the day's report, or else `compact` that claim and use `fresh_session` only when it still does not take its task; for the second, `fresh_session` on a failed or retired claim; for the third, decide what the time means (`skill://legion-controller/references/wakes.md`) |
 | `parked-decision on <KEY>` | `skill://legion-controller/references/parked-decisions.md#deciding` |

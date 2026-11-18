@@ -90,9 +90,12 @@ sent to one asks its architect to fold work that is already finished.
 
 Each nudge is one `dispatch comment` on the tree's root, naming what you counted and asking the
 architect to fold what can ride in an open pull request of the tree. End the comment with
-`descendants: <n>, levels: <m>`, the counts you sent it at. When the daemon's state names an
-architect for the tree (`read_state`'s `issues.<KEY>`), send the same text to that architect's
-role topic with `envoy_publish`.
+`descendants: <n>, levels: <m>`, the counts you sent it at. The comment mentions the tree's
+architect, as the skill's Rules send your own request to an architect:
+`--mention 'role:<token>'`, with the token `issues.<ROOT>.architect.locator.claim` names in
+`read_state`, or, when it names none, `legion-<project>-<root key, lower case>-architect`, the form
+`roleToken` builds (`skill://legion-worker/references/findings.md#write-to-the-owner`). Dispatch
+delivers the mention and retries it, so send the architect nothing else.
 
 Send no new comment to a tree whose architect replied in the thread of your newest nudge comment
 there, until the tree's descendants pass the number that comment ends with. A tree whose children

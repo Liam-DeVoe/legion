@@ -105,7 +105,7 @@ a comment on a pull request in a repository that your `gh` does not reach. Take 
 narrowed to the one repository, in this form:
 
 ```sh
-agent-secrets LEGION_IMPLEMENT_APP --reason '<KEY>: <the write, and why>' --github-owner <owner> --github-repo <repo> --github-token -- sh -c '<one curl call that reads "$LEGION_IMPLEMENT_APP">'
+agent-secrets LEGION_IMPLEMENT_APP --reason '<KEY>: <the write, and why>' --github-owner <owner> --github-repo <repo> --github-token -- sh -c 'printf "Authorization: Bearer %s\n" "$LEGION_IMPLEMENT_APP" | curl -fsS -X POST -H @- <the rest of one curl call>'
 ```
 
 - `--github-owner` and `--github-repo` narrow the token to the one repository. `--github-token`
@@ -113,7 +113,8 @@ agent-secrets LEGION_IMPLEMENT_APP --reason '<KEY>: <the write, and why>' --gith
   answers `401`.
 - Make the call with `curl` to `https://api.github.com`, never with `gh`: the `gh` wrapper refuses
   a set `GH_TOKEN`. Keep the call in single quotes, so that the child shell reads
-  `$LEGION_IMPLEMENT_APP` (`skill://agent-secrets`). Never print the token.
+  `$LEGION_IMPLEMENT_APP`, and give `curl` the header on standard input (`-H @-`), so that the
+  token is in no command's arguments (`skill://agent-secrets`). Never print the token.
 - Name in `--reason` the write, why you make it, and your issue's key.
 - After the grant, `agent-secrets` writes one line, `agent-secrets: LEGION_IMPLEMENT_APP from
   <source>`, and the exit status is then `curl`'s. Without that line the status is the client's
@@ -122,7 +123,7 @@ agent-secrets LEGION_IMPLEMENT_APP --reason '<KEY>: <the write, and why>' --gith
 A comment on the pull request `<n>`, with `<the comment>` its text:
 
 ```sh
-agent-secrets LEGION_IMPLEMENT_APP --reason '<KEY>: comment on <owner>/<repo>#<n>, which my gh does not reach' --github-owner <owner> --github-repo <repo> --github-token -- sh -c 'curl -fsS -X POST -H "Authorization: Bearer $LEGION_IMPLEMENT_APP" --data-binary "$1" https://api.github.com/repos/<owner>/<repo>/issues/<n>/comments' sh "$(jq -nc --arg body '<the comment>' '{body: $body}')"
+agent-secrets LEGION_IMPLEMENT_APP --reason '<KEY>: comment on <owner>/<repo>#<n>, which my gh does not reach' --github-owner <owner> --github-repo <repo> --github-token -- sh -c 'printf "Authorization: Bearer %s\n" "$LEGION_IMPLEMENT_APP" | curl -fsS -X POST -H @- --data-binary "$1" https://api.github.com/repos/<owner>/<repo>/issues/<n>/comments' sh "$(jq -nc --arg body '<the comment>' '{body: $body}')"
 ```
 
 It worked when `curl` exits 0: GitHub answered `201`, and the answer holds the comment's
@@ -146,7 +147,7 @@ the person's words, to you by a mention, and tells an agent that asks it to writ
 
 **The steps.** `<head sha>` is the one head that every step names.
 
-1. Read the pull request, as the merger's step 1 reads it:
+1. Read the pull request:
 
    ```sh
    gh pr view <n> -R <owner>/<repo> --json id,number,title,state,headRefName,baseRefName,headRefOid,mergeStateStatus,autoMergeRequest
@@ -170,7 +171,7 @@ the person's words, to you by a mention, and tells an agent that asks it to writ
    that names `<owner>/<repo>` or `all`, and whose end is not past, holds the enqueue: enqueue
    nothing, and name the hold in your summary. The `merge-holds-changed` notice reaches you only
    for an issue in `accepting`, so read the document again on each wake before you enqueue.
-4. Read the base, with the merger's step 2 command:
+4. Read the base:
 
    ```bash
    base=$(gh pr view <n> -R <owner>/<repo> --json baseRefName -q .baseRefName) && \
@@ -187,13 +188,13 @@ the person's words, to you by a mention, and tells an agent that asks it to writ
 5. On a merge-queue base, enqueue the pull request at that head:
 
    ```sh
-   agent-secrets LEGION_IMPLEMENT_APP --reason '<KEY>: enqueue <owner>/<repo>#<n> at <head sha>, which a review approved and no merger merges' --github-owner <owner> --github-repo <repo> --github-token -- sh -c 'curl -fsS -X POST -H "Authorization: Bearer $LEGION_IMPLEMENT_APP" --data-binary "$1" https://api.github.com/graphql' sh "$(jq -nc --arg pr '<pull request id>' --arg head '<head sha>' '{query: "mutation($pr:ID!,$head:GitObjectID!){enqueuePullRequest(input:{pullRequestId:$pr,expectedHeadOid:$head}){mergeQueueEntry{state position}}}", variables: {pr: $pr, head: $head}}')"
+   agent-secrets LEGION_IMPLEMENT_APP --reason '<KEY>: enqueue <owner>/<repo>#<n> at <head sha>, which a review approved and no merger merges' --github-owner <owner> --github-repo <repo> --github-token -- sh -c 'printf "Authorization: Bearer %s\n" "$LEGION_IMPLEMENT_APP" | curl -fsS -X POST -H @- --data-binary "$1" https://api.github.com/graphql' sh "$(jq -nc --arg pr '<pull request id>' --arg head '<head sha>' '{query: "mutation($pr:ID!,$head:GitObjectID!){enqueuePullRequest(input:{pullRequestId:$pr,expectedHeadOid:$head}){mergeQueueEntry{state position}}}", variables: {pr: $pr, head: $head}}')"
    ```
 
    On any other base, arm auto-merge at that head, with the merger's subject and an empty body:
 
    ```sh
-   agent-secrets LEGION_IMPLEMENT_APP --reason '<KEY>: arm auto-merge of <owner>/<repo>#<n> at <head sha>, which a review approved and no merger merges' --github-owner <owner> --github-repo <repo> --github-token -- sh -c 'curl -fsS -X POST -H "Authorization: Bearer $LEGION_IMPLEMENT_APP" --data-binary "$1" https://api.github.com/graphql' sh "$(jq -nc --arg pr '<pull request id>' --arg head '<head sha>' --arg title '<pull request title> (#<n>)' '{query: "mutation($pr:ID!,$head:GitObjectID!,$title:String!){enablePullRequestAutoMerge(input:{pullRequestId:$pr,expectedHeadOid:$head,mergeMethod:SQUASH,commitHeadline:$title,commitBody:\"\"}){pullRequest{autoMergeRequest{enabledAt mergeMethod}}}}", variables: {pr: $pr, head: $head, title: $title}}')"
+   agent-secrets LEGION_IMPLEMENT_APP --reason '<KEY>: arm auto-merge of <owner>/<repo>#<n> at <head sha>, which a review approved and no merger merges' --github-owner <owner> --github-repo <repo> --github-token -- sh -c 'printf "Authorization: Bearer %s\n" "$LEGION_IMPLEMENT_APP" | curl -fsS -X POST -H @- --data-binary "$1" https://api.github.com/graphql' sh "$(jq -nc --arg pr '<pull request id>' --arg head '<head sha>' --arg title '<pull request title> (#<n>)' '{query: "mutation($pr:ID!,$head:GitObjectID!,$title:String!){enablePullRequestAutoMerge(input:{pullRequestId:$pr,expectedHeadOid:$head,mergeMethod:SQUASH,commitHeadline:$title,commitBody:\"\"}){pullRequest{autoMergeRequest{enabledAt mergeMethod}}}}", variables: {pr: $pr, head: $head, title: $title}}')"
    ```
 
    GitHub answers in JSON, and `curl` exits 0 on a refusal too, so read the answer. The call
@@ -215,13 +216,13 @@ the person's words, to you by a mention, and tells an agent that asks it to writ
    auto-merge off, at once. Then begin again at step 1. Out of the queue:
 
    ```sh
-   agent-secrets LEGION_IMPLEMENT_APP --reason '<KEY>: take <owner>/<repo>#<n> out of the merge queue: its head moved from <head sha>' --github-owner <owner> --github-repo <repo> --github-token -- sh -c 'curl -fsS -X POST -H "Authorization: Bearer $LEGION_IMPLEMENT_APP" --data-binary "$1" https://api.github.com/graphql' sh "$(jq -nc --arg pr '<pull request id>' '{query: "mutation($pr:ID!){dequeuePullRequest(input:{pullRequestId:$pr}){mergeQueueEntry{state}}}", variables: {pr: $pr}}')"
+   agent-secrets LEGION_IMPLEMENT_APP --reason '<KEY>: take <owner>/<repo>#<n> out of the merge queue: its head moved from <head sha>' --github-owner <owner> --github-repo <repo> --github-token -- sh -c 'printf "Authorization: Bearer %s\n" "$LEGION_IMPLEMENT_APP" | curl -fsS -X POST -H @- --data-binary "$1" https://api.github.com/graphql' sh "$(jq -nc --arg pr '<pull request id>' '{query: "mutation($pr:ID!){dequeuePullRequest(input:{id:$pr}){mergeQueueEntry{position state}}}", variables: {pr: $pr}}')"
    ```
 
    Auto-merge off:
 
    ```sh
-   agent-secrets LEGION_IMPLEMENT_APP --reason '<KEY>: turn off auto-merge of <owner>/<repo>#<n>: its head moved from <head sha>' --github-owner <owner> --github-repo <repo> --github-token -- sh -c 'curl -fsS -X POST -H "Authorization: Bearer $LEGION_IMPLEMENT_APP" --data-binary "$1" https://api.github.com/graphql' sh "$(jq -nc --arg pr '<pull request id>' '{query: "mutation($pr:ID!){disablePullRequestAutoMerge(input:{pullRequestId:$pr}){pullRequest{autoMergeRequest{enabledAt}}}}", variables: {pr: $pr}}')"
+   agent-secrets LEGION_IMPLEMENT_APP --reason '<KEY>: turn off auto-merge of <owner>/<repo>#<n>: its head moved from <head sha>' --github-owner <owner> --github-repo <repo> --github-token -- sh -c 'printf "Authorization: Bearer %s\n" "$LEGION_IMPLEMENT_APP" | curl -fsS -X POST -H @- --data-binary "$1" https://api.github.com/graphql' sh "$(jq -nc --arg pr '<pull request id>' '{query: "mutation($pr:ID!){disablePullRequestAutoMerge(input:{pullRequestId:$pr}){pullRequest{autoMergeRequest{enabledAt}}}}", variables: {pr: $pr}}')"
    ```
 
    The read of step 6 then shows `mergeQueueEntry` and `autoMergeRequest` null.

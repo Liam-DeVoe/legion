@@ -112,17 +112,21 @@ One round wakes you once, however many sweeps find it open, so handle it when it
 Read `read_state` and the issue first, as for every wake: a round that finished since needs
 nothing.
 
-Take the wake by what its `reason` names:
+Take the wake by what its `reason` names. A `reason` can name more than one hold, one sentence
+for each holder: do what the row of each says.
 
 | `reason` names | What holds the round | What you do |
 |---|---|---|
-| an operator's suspension | An operator suspended a role the round asked. The daemon does not replace the pod until the operator resumes each such role, whatever the bound. | Open a finding ask naming the issue and each suspended role, so the operator resumes it. |
+| `An operator suspended`, then `Only the operator can resume` | The operator's suspension holds a role the round asked. The daemon does not replace the pod until a resume lifts it, whatever the bound. | Open a finding ask naming the issue and each role the operator suspended, so the operator resumes it. |
+| `The controller suspended`, then `The controller can resume` | Your own suspension holds a role the round asked, with the same effect. | It is yours: `resume` that claim once the cause you suspended it for is gone (`skill://legion-controller/references/operations.md#a-claims-state`), or keep it held, and the pod waits. Open no ask for it. |
+| `An architect suspended`, then `An architect that owns the issue, or the controller, can resume` | The suspension of an architect of the tree holds a role the round asked, with the same effect. | It is that architect's to resume: write to the tree's architect by a mention on the issue that names the round and each role it holds (`skill://legion-worker/references/findings.md#write-to-the-owner`). Open no ask for it. |
 | a refused pod replacement | The runtime refused `ReplacePod`. The daemon tries again at each sweep. | Open a finding ask naming the issue, the round and the `ReplacePod` error, so an operator reads the pod. |
 | no process in the pod | No claim of the issue records a process in the round's pod, or in any pod, so the daemon has nothing to replace the pod through. The round waits for a role of the issue to run again. | Open a finding ask naming the issue, the round and `reason`, so an operator reads the pod. |
 | two pods | The claims of the issue record two pods, so a replacement is in flight, and the round waits for it. | Open a finding ask naming the issue, the round and `reason`, so an operator reads the pod. |
 | anything no row above names | An earlier release can send a `reason` that no row above names, for example that the round waited for its workers to answer. | Open a finding ask naming the issue, the round and `reason`, so an operator reads it. |
 
-Send no role a message about the round. The daemon published the round's message itself, and a
-message from you starts a turn that answers nothing. Park nothing and write no status for this
+Send no role any other message about the round. The daemon published the round's message itself,
+and a message from you starts a turn that answers nothing; the mention above asks an architect for
+the one act that ends its own hold. Park nothing and write no status for this
 wake. The issue's workflow runs on while the round waits, and replacing the pod is the daemon's
 own move once the hold that `reason` names clears.
