@@ -363,6 +363,7 @@ CLAUDE_ENVOY_JOB = CLAUDE_ENVOY_BUILD + reads(
                              "packages/claude-envoy/tests/answers-claude.test.ts:312,338 runs"),
         ("packages/envoy-client/test/**", "packages/claude-envoy/tests/envoy-channel-stall.test.ts:5-12 imports three of its modules, and tsc puts four files of that directory in the claude-envoy program"),
         (f"{FIX}/daemon-api/**", "packages/claude-envoy/tests/daemon-api-version.test.ts:15, legion-claim.test.ts:43-44, legion-pane-mcp.test.ts:19-20, legion-tool.test.ts:13"),
+        ("packages/pi-shared/test/daemon-state.ts", f"{at('claude-envoy', 'Typecheck Claude Envoy plugin')}: packages/claude-envoy/tests/legion-tool.test.ts:8 imports @legion/pi-shared/test/daemon-state, so tsc compiles it in that program"),
         (".claude-plugin/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:9"),
 )
 
@@ -516,13 +517,13 @@ RULES = {
     # holds those copies to the guide, in the text-check job (dispatch://INFRA-1413).
     f"{DAEMON}/internal/textcheck/way_back_doc_test.go": reads(
         ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:485 reads it under ../../../.. "
-                               "for way_back_doc_test.go:150 (shippedText)"),
+                               "for way_back_doc_test.go:181 (shippedText)"),
         (f"{DAEMON}/internal/daemon/upgrade_way_back_extract.txt",
          "internal/textcheck/waiting_line_texts_test.go:475 reads it as ../daemon/upgrade_way_back_extract.txt for "
-         "way_back_doc_test.go:127, the committed copy it holds the guide's block to (quotedBody)"),
+         "way_back_doc_test.go:129, the committed copy it holds the guide's block to (quotedBody)"),
         (f"{DAEMON}/internal/daemon/upgrade_architect_entry_way_back_extract.txt",
          "internal/textcheck/waiting_line_texts_test.go:475 reads it as ../daemon/upgrade_architect_entry_way_back_extract.txt "
-         "for way_back_doc_test.go:127, the committed copy it holds the guide's contract 146 block to (quotedBody)")),
+         "for way_back_doc_test.go:129, the committed copy it holds the guide's contract 146 block to (quotedBody)")),
     # This test reads the store's migrations through migrations.All: its import puts their embed
     # in the go list closure of the text-check run, which needs no row, so the guide is its one row.
     f"{DAEMON}/internal/textcheck/phase_entry_migrations_doc_test.go": reads(
@@ -534,8 +535,8 @@ RULES = {
     # one's one row.
     f"{DAEMON}/internal/textcheck/plan_ratings_way_back_doc_test.go": reads(
         ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:485 reads it under ../../../.. "
-                               "for plan_ratings_way_back_doc_test.go:40 (wayBackBlockOfTheGuide, way_back_doc_test.go:150) "
-                               "and :71 (entryLinkIn of shippedText)")),
+                               "for plan_ratings_way_back_doc_test.go:35 (assertIsTheGuidesBlock, way_back_doc_test.go:165, "
+                               "through wayBackBlockOfTheGuide, :181) and :49 (entryLinkIn of shippedText)")),
     f"{DAEMON}/internal/textcheck/waiting_line_texts_test.go": reads(
         # The four copies of the shipped texts, each committed beside the package whose own
         # test is held to it and read here through readExtract.
@@ -2390,6 +2391,7 @@ GATES = [
         (f"{ENVOY}/cmd/dispatch/README.md", "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts:783 names it and :791 reads it ('states the rule'): the CLI guide's sentence on an assignee move names the project's default assignee"),
         (TEST_FIXTURES_SRC, "packages/envoy-client/src/__tests__ import @legion/test-fixtures"),
         ("scripts/e2e/lib/plan-ratings-read.test.ts", f"{at('envoy-client', 'Typecheck Envoy client')}: packages/envoy-client/tsconfig.json includes it, so the typecheck holds its typed answer to the contract"),
+        ("scripts/e2e/lib/fake-dispatch-command.ts", f"{at('envoy-client', 'Typecheck Envoy client')}: scripts/e2e/lib/plan-ratings-read.test.ts:8 imports it, so tsc compiles it in that program"),
         (f"{ENVOY}/internal/brokerclient/testdata/wire.json", "packages/broker-client/src/__tests__/wire.test.ts:84 reads the Go package's own corpus by relative path (CORPUS_PATH :27-29) - that file itself, never a copy, so the two clients are held to one wire"),
         (f"{ENVOY}/internal/bus/testdata/private-stream-subjects.json", "packages/envoy-client/src/__tests__/stream-topics.test.ts:131 reads the listener's own cases by relative path (SHARED_CASES :118-121), which packages/envoy/internal/bus's TestReachesPrivateStreamSubjectBoundsInterests reads too"),
     ) + bun_job("envoy-client")),
