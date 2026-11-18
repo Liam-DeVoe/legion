@@ -16,9 +16,12 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 )
 
@@ -27,8 +30,9 @@ import (
 //
 //   - This build removes a document, stating its node gone, and the previous build makes a
 //     document of the same issue and name, which takes the same address: the row stands behind a
-//     gone node. The census names it gone, and envoy-dispatch backfill-graph-store makes the node
-//     live from the row's own content.
+//     gone node. This build's block-index tick makes the node live from the row's own content
+//     (docs' writeObjectNodesAnotherBuildWrote, the backfill's object pass), so the roll needs no
+//     second envoy-dispatch backfill-graph-store.
 //   - This build makes a document, writing its node, and the previous build removes it: the node
 //     stands live behind no row. The census names it orphaned, with the command that removes it,
 //     the backfill leaves it as it is, and that command, run as the census printed it, removes it.
@@ -36,16 +40,28 @@ import (
 //     finds the orphaned node at the free address and states it gone, then live, under its own
 //     event, and the census names nothing.
 //   - The previous build removes this build's document and makes it again itself: the live node is
-//     the first row's, by its create event, so the census names the second row gone, and the
-//     backfill states the node gone, then live, under the second row's own event.
+//     the first row's, by its create event, so the second row stands behind another row's node.
+//     This build's tick states the node gone, then live, under the second row's own event, with no
+//     backfill run.
 //
-// After each cure the census names no project row or node at all. Each order has its control. The
-// first, second and fourth are this file run in the tree at the branch's head before these classes
-// and their cures: there this build's removal states nothing gone and the census prints no gone or
-// orphaned field, so the first order fails at the node's state and the second and fourth at their
-// first census. The third's is the gone step taken out of this build's create (api's
-// storeArtifact): the node then keeps the removed row's live statement, and the census names the
-// new row gone.
+// The tick runs under the block-index lease, which both builds' processes compete for each period,
+// and a period the previous build serves is one this build's tick waits out: while both serve, the
+// tick cures the first and fourth orders' rows only in a period this build happens to win. So the
+// test reads their cure once the previous build has stopped, as the end of a roll stops it: this
+// build's next tick then serves the period, finds the fleet alone after another build or joins its
+// build's cursor, and runs the object pass. The second order runs first, since the backfill it
+// runs would cure those two rows too, and every census read before the end reads only the lines
+// that name its own row. The cure is read three ways: each row's node is live, the census names
+// no row at all, and this build's ticks wrote at least the two rows' nodes (their object_nodes=).
+//
+// After the last cure the census names no project row or node at all. Each order has its control.
+// The first and fourth orders' is the tick's object pass taken out of docs' ReconcileBlockIndex:
+// the census then names both rows gone for as long as the test waits after the previous build
+// stopped. The second's is this file run in the tree at the branch's head before these classes and
+// their cures, where this build's removal states nothing gone and the census prints no orphaned
+// field, so it fails at its first census. The third's is the gone step taken out of this build's
+// create (api's storeArtifact): the node then keeps the removed row's live statement, and the
+// census names the new row gone.
 func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T) {
 	builds := newTwoBuilds(t)
 	builds.startPrevious(t, nil)
@@ -55,6 +71,35 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 	project := uniqueProjectKey(t, "NODE")
 	current.createProject(t, project, "Two builds' document nodes")
 	issue, _ := createDocument(t, current, project, "Documents two builds remove and make", "The spec.\n")
+	// The rows this build's tick cures, read once the previous build has stopped.
+	var forTheTick []string
+
+	t.Run("this build makes a document and the previous build removes it", func(t *testing.T) {
+		document := makeUntouchedDocument(t, current, issue, "Removed by the previous build.md")
+		requireDocumentNodeState(t, builds, document.ref, graphstore.StateLive)
+		removeUntouchedDocument(t, previous, document)
+		erase := "envoy-dispatch erase --node artifact:" + document.ref
+		census := runTwoBuildStoreCensus(t, builds)
+		requireProjectLine(t, census, "artifact", "orphaned=1")
+		if !requireIncompleteLinesNaming(t, census, document.ref, "artifact "+document.ref+": orphaned; remove it with: "+erase) {
+			t.FailNow()
+		}
+		runCurrentCommand(t, builds, []int{0}, "backfill-graph-store")
+		requireDocumentNodeState(t, builds, document.ref, graphstore.StateLive)
+		census = runTwoBuildStoreCensus(t, builds)
+		if !requireIncompleteLinesNaming(t, census, document.ref, "artifact "+document.ref+": orphaned; remove it with: "+erase) {
+			t.FailNow()
+		}
+		printed := strings.TrimPrefix(incompleteLinesNaming(census, document.ref)[0], "artifact "+document.ref+": orphaned; remove it with: ")
+		listing := runPrinted(t, builds, 1, printed)
+		digest := regexp.MustCompile(`(?m)^  listing digest: ([0-9a-f]{64})$`).FindStringSubmatch(listing)
+		if digest == nil {
+			t.Fatalf("the printed command %q listed no digest:\n%s", printed, listing)
+		}
+		runPrinted(t, builds, 0, printed+" --confirm "+digest[1])
+		requireDocumentNodeState(t, builds, document.ref, noDocumentNode)
+		requireIncompleteLinesNaming(t, runTwoBuildStoreCensus(t, builds), document.ref)
+	})
 
 	t.Run("this build removes a document and the previous build makes it again", func(t *testing.T) {
 		removed := makeUntouchedDocument(t, current, issue, "Made again.md")
@@ -65,39 +110,7 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 			t.Fatalf("the %s made the document at %s, want the removed one's address %s, so this row proves nothing",
 				builds.previousName(), again.ref, removed.ref)
 		}
-		census := runTwoBuildStoreCensus(t, builds)
-		requireProjectLine(t, census, "artifact", "gone=1", "orphaned=0")
-		requireIncompleteLines(t, census, "artifact "+again.ref+": gone; run envoy-dispatch backfill-graph-store")
-		runCurrentCommand(t, builds, []int{0}, "backfill-graph-store")
-		requireDocumentNodeState(t, builds, again.ref, graphstore.StateLive)
-		requireIncompleteLines(t, runTwoBuildStoreCensus(t, builds))
-	})
-
-	t.Run("this build makes a document and the previous build removes it", func(t *testing.T) {
-		document := makeUntouchedDocument(t, current, issue, "Removed by the previous build.md")
-		requireDocumentNodeState(t, builds, document.ref, graphstore.StateLive)
-		removeUntouchedDocument(t, previous, document)
-		erase := "envoy-dispatch erase --node artifact:" + document.ref
-		census := runTwoBuildStoreCensus(t, builds)
-		requireProjectLine(t, census, "artifact", "gone=0", "orphaned=1")
-		if !requireIncompleteLines(t, census, "artifact "+document.ref+": orphaned; remove it with: "+erase) {
-			t.FailNow()
-		}
-		runCurrentCommand(t, builds, []int{0}, "backfill-graph-store")
-		requireDocumentNodeState(t, builds, document.ref, graphstore.StateLive)
-		census = runTwoBuildStoreCensus(t, builds)
-		if !requireIncompleteLines(t, census, "artifact "+document.ref+": orphaned; remove it with: "+erase) {
-			t.FailNow()
-		}
-		printed := strings.TrimPrefix(incompleteLines(census)[0], "artifact "+document.ref+": orphaned; remove it with: ")
-		listing := runPrinted(t, builds, 1, printed)
-		digest := regexp.MustCompile(`(?m)^  listing digest: ([0-9a-f]{64})$`).FindStringSubmatch(listing)
-		if digest == nil {
-			t.Fatalf("the printed command %q listed no digest:\n%s", printed, listing)
-		}
-		runPrinted(t, builds, 0, printed+" --confirm "+digest[1])
-		requireDocumentNodeState(t, builds, document.ref, noDocumentNode)
-		requireIncompleteLines(t, runTwoBuildStoreCensus(t, builds))
+		forTheTick = append(forTheTick, again.ref)
 	})
 
 	t.Run("the previous build removes this build's document and this build makes it again", func(t *testing.T) {
@@ -108,7 +121,7 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 			t.Fatalf("this build made the document at %s, want the removed one's address %s, so this row proves nothing", again.ref, document.ref)
 		}
 		requireDocumentNodeState(t, builds, again.ref, graphstore.StateLive)
-		requireIncompleteLines(t, runTwoBuildStoreCensus(t, builds))
+		requireIncompleteLinesNaming(t, runTwoBuildStoreCensus(t, builds), again.ref)
 	})
 
 	t.Run("the previous build removes this build's document and makes it again", func(t *testing.T) {
@@ -119,12 +132,43 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 			t.Fatalf("the %s made the document at %s, want the removed one's address %s, so this row proves nothing",
 				builds.previousName(), again.ref, document.ref)
 		}
-		census := runTwoBuildStoreCensus(t, builds)
-		requireProjectLine(t, census, "artifact", "gone=1", "orphaned=0")
-		requireIncompleteLines(t, census, "artifact "+again.ref+": gone; run envoy-dispatch backfill-graph-store")
-		runCurrentCommand(t, builds, []int{0}, "backfill-graph-store")
-		requireDocumentNodeState(t, builds, again.ref, graphstore.StateLive)
-		requireIncompleteLines(t, runTwoBuildStoreCensus(t, builds))
+		forTheTick = append(forTheTick, again.ref)
+	})
+
+	t.Run("the previous build stops and this build's tick cures what it left", func(t *testing.T) {
+		if len(forTheTick) != 2 {
+			t.Fatalf("the orders left %d row(s) for the tick, want the first and fourth orders' two", len(forTheTick))
+		}
+		t.Logf("before the previous build stops, the census names %q", incompleteLines(runTwoBuildStoreCensus(t, builds)))
+		var commits []string
+		if err := builds.database.Pool.QueryRow(context.Background(), `
+			select coalesce(array_agg(commit || ' heartbeat ' || round(extract(epoch from now() - heartbeat_at))::text || 's ago' order by started_at), '{}')
+			from server_processes
+		`).Scan(&commits); err != nil {
+			t.Fatalf("read the registry: %v", err)
+		}
+		t.Logf("the registry holds %q", commits)
+		stop(t, previous)
+		for _, ref := range forTheTick {
+			awaitTheTicksCure(t, builds, ref)
+		}
+		var ticks []string
+		written := 0
+		for _, line := range strings.Split(current.Output.String(), "\n") {
+			if !strings.Contains(line, `msg="dispatch: block index"`) {
+				continue
+			}
+			ticks = append(ticks, line)
+			if field := regexp.MustCompile(`\bobject_nodes=([0-9]+)\b`).FindStringSubmatch(line); field != nil {
+				count, _ := strconv.Atoi(field[1])
+				written += count
+			}
+		}
+		t.Logf("this build's block-index ticks: %q", ticks)
+		if written < len(forTheTick) {
+			t.Errorf("this build's ticks wrote %d object node(s) in all, want at least the %d the orders left: no backfill ran after those rows were made, so a tick has to be what cured them",
+				written, len(forTheTick))
+		}
 	})
 }
 
@@ -170,6 +214,56 @@ func requireDocumentNodeState(t *testing.T, builds *twoBuilds, ref, state string
 	if held != state {
 		t.Errorf("the node of %s is %s, want %s", ref, held, state)
 	}
+}
+
+// awaitTheTicksCure waits, for at most three block-index intervals and a margin, until a tick of
+// this build, once the previous build has stopped, has written the live node of the row at ref and
+// the census names no project row or node at all. No backfill is run: the tick's object pass is
+// the cure. It fails naming what the census still names once the wait is over.
+func awaitTheTicksCure(t *testing.T, builds *twoBuilds, ref string) {
+	t.Helper()
+	deadline := time.Now().Add(3*docs.BlockIndexReconcileInterval + 30*time.Second)
+	for {
+		census := runTwoBuildStoreCensus(t, builds)
+		var held string
+		if err := builds.database.Pool.QueryRow(context.Background(), `
+			select coalesce((select state from graph_nodes where kind = $1 and id = $2), $3)
+		`, graphstore.KindArtifact, ref, noDocumentNode).Scan(&held); err != nil {
+			t.Fatalf("read the node of %s: %v", ref, err)
+		}
+		if held == graphstore.StateLive && len(incompleteLines(census)) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("this build's ticks left the node of %s %s and the census naming %q, %s after the previous build made the row, with no backfill run: the tick's object pass did not cure it",
+				ref, held, incompleteLines(census), 3*docs.BlockIndexReconcileInterval+30*time.Second)
+		}
+		time.Sleep(5 * time.Second)
+	}
+}
+
+// incompleteLinesNaming is every `census: project incomplete` line of the census that names the
+// document at ref, without that head.
+func incompleteLinesNaming(census, ref string) []string {
+	var lines []string
+	for _, line := range incompleteLines(census) {
+		if strings.HasPrefix(line, "artifact "+ref+": ") {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+// requireIncompleteLinesNaming fails the test, and answers false, unless the census named exactly
+// want as incomplete of the document at ref, in that order; lines naming other rows are not read.
+func requireIncompleteLinesNaming(t *testing.T, census, ref string, want ...string) bool {
+	t.Helper()
+	got := incompleteLinesNaming(census, ref)
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("the census named %q as incomplete of %s, want %q:\n%s", got, ref, want, census)
+		return false
+	}
+	return true
 }
 
 // runTwoBuildStoreCensus runs this tree's `envoy-dispatch census --store` and answers what it printed. It
@@ -253,16 +347,4 @@ func incompleteLines(census string) []string {
 		}
 	}
 	return lines
-}
-
-// requireIncompleteLines fails the test, and answers false, unless the census named exactly want as
-// incomplete, in that order.
-func requireIncompleteLines(t *testing.T, census string, want ...string) bool {
-	t.Helper()
-	got := incompleteLines(census)
-	if strings.Join(got, "\n") != strings.Join(want, "\n") {
-		t.Errorf("the census named %q as incomplete, want %q:\n%s", got, want, census)
-		return false
-	}
-	return true
 }

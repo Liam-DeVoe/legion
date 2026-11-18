@@ -3075,7 +3075,7 @@ Once the fleet serves this build alone, the first tick that finds it so marks on
 A rollback or a roll forward that stops one build before it starts the other never has two builds serving at once, so a process's first tick that reads a proven horizon also reads once, from the newest cursor any build left through the newest event.
 That start is the highest `event_id` of every row: this build's own where it ran last, and the cursor the build before it stopped reading at where this build holds no row yet.
 A process that boots while others of this build run reads only the few events since their last tick, and one that boots after an absence reads every event since, one page a tick.
-The cursor moves with each tick, so each tick reads only the events since the last one, and nothing scans a whole table.
+The cursor moves with each tick, so each tick reads only the events since the last one, and the marking scans no whole table.
 The cursor is one row per build commit of `block_index_event_cursors`, a table migration `20261118115645` creates and the previous release never reads.
 Its `event_id` is the highest event id the build's ticks have read or passed, `another_build_seen` says whether the last tick found another build, and `read_through` is the newest event id the log held when a tick found another build serving, found the fleet alone right after one that did, or was its process's first tick with a proven horizon.
 The ticks read on until `event_id` reaches `read_through`: a process leaves the registry only after every event it wrote has committed, so the last versions a departing process wrote are read even where the safe horizon lags the log for a tick or two.
@@ -3085,6 +3085,12 @@ A full page moves the cursor to the last event it read and brings the next tick 
 The mark is the backfill's own, set in one statement that takes the documents' `document_block_versions` rows in ascending `artifact_id` order and no owner row, and the marks and the cursor's move commit together.
 The tick's `dispatch: block index` line carries `events=`, the events it read, `marked=`, the documents it marked, and `another_build=`, whether another build served (`TestAVersionThePreviousReleaseWritesAfterTheDrainReachesTheStore`, `TestAVersionThePreviousReleaseWritesWhileThisBuildIsStoppedReachesTheStore`, `TestAVersionThePreviousReleaseWritesBeforeTheNextBuildStartsReachesTheStore`).
 The migration's census answers `0`: the table is new and holds no row at deploy.
+
+That release also writes an issue, a document, an ask and a message with no node, and a file it uploads to an agent's conversation appends no event at all, so the marking cannot find every such row.
+So on the ticks the marking reads the log on - another build serves, the first tick that finds the fleet alone after one did, and each process's first tick with a proven horizon - the tick then runs the backfill's object pass (`graphcensus.WriteOwedObjectNodes`), which reads rows, not events.
+It writes the node of every row its marker does not mark, through the backfill's own batch, after the marking has committed, so a roll leaves no project-owned row without its node and needs no second `backfill-graph-store` for a `missing` or `gone` row; an `orphaned` node still needs the erase its census line prints.
+A pass that fails runs again on the next tick, and the tick's line carries `object_nodes=`, the rows it wrote a node for (`TestARowThePreviousReleaseWritesDuringARollGetsItsNodeFromTheTick`).
+The pass reads the four tables whole, so it runs on a roll's ticks alone: at production's row counts (2,000 issues, 4,000 documents, 8,000 asks and 6,000 messages, a tenth of `dispatch-seed --scale 1`'s) one with nothing to write took 97 to 190 ms, and at ten times them 0.9 to 1.8 s, with one run of seven at 8.6 s.
 
 A row the release before this one deleted is nothing the run reads.
 That release, indexing a version of a document the store has stated, deletes the `document_blocks` row of each block the version drops and the `block_refs` row of each link a block stops holding, and it states no node `gone` and retracts no tuple.

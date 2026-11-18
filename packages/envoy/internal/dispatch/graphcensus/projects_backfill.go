@@ -199,28 +199,9 @@ const zeroUUID = "00000000-0000-0000-0000-000000000000"
 func backfillObjectNodes(ctx context.Context, database *store.Store) ([]KindBackfill, error) {
 	var done []KindBackfill
 	for _, kind := range objectKinds {
-		report := KindBackfill{Kind: kind.kind}
-		after := kind.start
-		for {
-			nodes, err := readObjectNodes(ctx, database, kind.kind, kind.read, after, backfillBatch)
-			if err != nil {
-				return done, err
-			}
-			if len(nodes) == 0 {
-				break
-			}
-			after = nodes[len(nodes)-1].ID
-			written, err := writeObjectBatch(ctx, database, kind, nodes)
-			if err != nil {
-				return done, err
-			}
-			report.Rows += written.Rows
-			report.Nodes += written.Nodes
-			report.Tuples += written.Tuples
-			report.Skipped += written.Skipped
-			if len(nodes) < backfillBatch {
-				break
-			}
+		report, err := writeObjectKind(ctx, database, kind)
+		if err != nil {
+			return done, err
 		}
 		var remaining int64
 		if err := database.Pool.QueryRow(ctx, `select count(*) from (`+kind.read+`) as remaining`, kind.start, nil).Scan(&remaining); err != nil {
@@ -231,6 +212,54 @@ func backfillObjectNodes(ctx context.Context, database *store.Store) ([]KindBack
 		done = append(done, report)
 	}
 	return done, nil
+}
+
+// WriteOwedObjectNodes is the backfill's object pass (backfillObjectNodes) without its count of
+// the rows that remain, for docs' block-index tick, which runs it while a build before this one
+// may write rows beside this one: while a process of another build serves, on the first tick
+// after it, and on each process's first tick (docs' markVersionsAnotherBuildWrote). That build
+// creates an issue, a document, an ask and a message with no node, and a conversation's file with
+// no event either, so the pass reads rows, not events: it writes, through writeObjectBatch alone,
+// the node of every row its marker does not mark, as the backfill does, and answers how many rows
+// it wrote a node for.
+func WriteOwedObjectNodes(ctx context.Context, database *store.Store) (int64, error) {
+	var rows int64
+	for _, kind := range objectKinds {
+		report, err := writeObjectKind(ctx, database, kind)
+		rows += report.Rows
+		if err != nil {
+			return rows, err
+		}
+	}
+	return rows, nil
+}
+
+// writeObjectKind walks kind's rows its marker does not mark, one batch at a time from the
+// start of its key, and writes each batch's nodes (writeObjectBatch), answering what it wrote.
+func writeObjectKind(ctx context.Context, database *store.Store, kind objectKind) (KindBackfill, error) {
+	report := KindBackfill{Kind: kind.kind}
+	after := kind.start
+	for {
+		nodes, err := readObjectNodes(ctx, database, kind.kind, kind.read, after, backfillBatch)
+		if err != nil {
+			return report, err
+		}
+		if len(nodes) == 0 {
+			return report, nil
+		}
+		after = nodes[len(nodes)-1].ID
+		written, err := writeObjectBatch(ctx, database, kind, nodes)
+		if err != nil {
+			return report, err
+		}
+		report.Rows += written.Rows
+		report.Nodes += written.Nodes
+		report.Tuples += written.Tuples
+		report.Skipped += written.Skipped
+		if len(nodes) < backfillBatch {
+			return report, nil
+		}
+	}
 }
 
 // statedOf is how many base attributes the node write states for nodes it makes: visibility and

@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -145,21 +146,26 @@ var markVersionedDocuments = `
 // `for update` throughout, so a tick that fails moves nothing and the next reads the same events
 // again; a document already marked keeps its mark and its time. A document marked here is listed
 // by the owed documents this same tick reads next, and drained by it when its batch has room.
-func (s *Service) markVersionsAnotherBuildWrote(ctx context.Context, tick *BlockIndexTick) (full bool, err error) {
+//
+// It answers, as roll, whether this tick is one on which a build before this one may have written
+// rows since the tick before it: another build serves, the tick before found one, or this process
+// joins its build's cursor (writeObjectNodesAnotherBuildWrote runs on it). It answers roll only
+// once its transaction has committed, and false where it fails.
+func (s *Service) markVersionsAnotherBuildWrote(ctx context.Context, tick *BlockIndexTick) (full, roll bool, err error) {
 	safe, err := s.blockIndexHorizon().Safe(ctx)
 	if err != nil {
-		return false, fmt.Errorf("read the event log's safe horizon: %w", err)
+		return false, false, fmt.Errorf("read the event log's safe horizon: %w", err)
 	}
 	live, err := processes.Live(ctx, s.store.Pool)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	tick.AnotherBuild = slices.ContainsFunc(live, func(process processes.Process) bool {
 		return process.Commit != s.buildCommit
 	})
 	tx, err := s.store.Pool.Begin(ctx)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	defer tx.Rollback(ctx)
 	// A safe of 0 is a horizon that has proven nothing yet, as a process's first observation
@@ -174,7 +180,7 @@ func (s *Service) markVersionsAnotherBuildWrote(ctx context.Context, tick *Block
 			select $1, coalesce(max(event_id), $2) from block_index_event_cursors
 			on conflict (build_commit) do nothing
 		`, s.buildCommit, safe); err != nil {
-			return false, fmt.Errorf("start this build's block-index event cursor: %w", err)
+			return false, false, fmt.Errorf("start this build's block-index event cursor: %w", err)
 		}
 	}
 	var cursor, readThrough int64
@@ -184,21 +190,23 @@ func (s *Service) markVersionsAnotherBuildWrote(ctx context.Context, tick *Block
 		where build_commit = $1 for update
 	`, s.buildCommit).Scan(&cursor, &seen, &readThrough); {
 	case errors.Is(err, pgx.ErrNoRows):
-		return false, nil
+		// No horizon is proven yet, so the cursor is not started: nothing is read, and the tick
+		// is a roll's only where another build serves.
+		return false, tick.AnotherBuild, nil
 	case err != nil:
-		return false, fmt.Errorf("read this build's block-index event cursor: %w", err)
+		return false, false, fmt.Errorf("read this build's block-index event cursor: %w", err)
 	}
 	if joining {
 		var left int64
 		if err := tx.QueryRow(ctx, `select max(event_id) from block_index_event_cursors`).Scan(&left); err != nil {
-			return false, fmt.Errorf("read the newest cursor a build left: %w", err)
+			return false, false, fmt.Errorf("read the newest cursor a build left: %w", err)
 		}
 		cursor = max(cursor, left)
 	}
 	if tick.AnotherBuild || seen || joining {
 		var newest int64
 		if err := tx.QueryRow(ctx, `select coalesce(max(id), 0) from events`).Scan(&newest); err != nil {
-			return false, fmt.Errorf("read the newest event: %w", err)
+			return false, false, fmt.Errorf("read the newest event: %w", err)
 		}
 		readThrough = max(readThrough, newest)
 	}
@@ -210,7 +218,7 @@ func (s *Service) markVersionsAnotherBuildWrote(ctx context.Context, tick *Block
 		if err := tx.QueryRow(ctx, markVersionedDocuments, cursor, safe, blockIndexEventPage).Scan(
 			&tick.Events, &last, &tick.Marked,
 		); err != nil {
-			return false, fmt.Errorf("mark the documents the version events after the cursor name: %w", err)
+			return false, false, fmt.Errorf("mark the documents the version events after the cursor name: %w", err)
 		}
 		if full = tick.Events == blockIndexEventPage; full {
 			next = *last
@@ -220,15 +228,47 @@ func (s *Service) markVersionsAnotherBuildWrote(ctx context.Context, tick *Block
 		update block_index_event_cursors set event_id = $2, another_build_seen = $3, read_through = $4
 		where build_commit = $1
 	`, s.buildCommit, next, tick.AnotherBuild, readThrough); err != nil {
-		return false, fmt.Errorf("move this build's block-index event cursor: %w", err)
+		return false, false, fmt.Errorf("move this build's block-index event cursor: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return false, fmt.Errorf("commit the documents the version events after the cursor name: %w", err)
+		return false, false, fmt.Errorf("commit the documents the version events after the cursor name: %w", err)
 	}
 	if joining {
 		s.eventCursorJoined.Store(true)
 	}
-	return full, nil
+	return full, tick.AnotherBuild || seen || joining, nil
+}
+
+// writeObjectNodesAnotherBuildWrote is the block-index tick's second step: on a tick of a roll
+// (markVersionsAnotherBuildWrote's roll), it writes the node of every issue, document, ask and
+// message whose row names none, through the backfill's object pass (graphcensus's
+// WriteOwedObjectNodes), and counts in tick how many rows it wrote a node for.
+//
+// The release before this one writes those four kinds' rows with no node, as it writes a
+// version's block rows with none, and nothing else would give them one until someone ran the
+// backfill again: an issue it creates, its spec, a document it uploads, a conversation's file,
+// whose upload appends no event, an ask and a message. So the pass reads rows, not events, on the
+// triggers the marking reads the log on: while a process of another build serves, on the first
+// tick that finds this build serving alone after one did, when that build's last rows have
+// committed (a process deregisters once its drain has ended), and on each process's first tick,
+// after a deploy that stopped every process of one build before it started the other's. It runs
+// after the marking has committed and outside its transaction, each batch in a transaction of
+// its own that takes its rows' owner rows first (graphcensus's writeObjectBatch), so it holds no
+// lock of the marking's while it takes them. A pass that fails is run again on every tick until
+// one succeeds (objectNodesOwed), so a failure on the tick that finds the fleet alone, after
+// which the marking reads on no more, leaves no row without its node.
+func (s *Service) writeObjectNodesAnotherBuildWrote(ctx context.Context, tick *BlockIndexTick, roll bool) error {
+	if !roll && !s.objectNodesOwed.Load() {
+		return nil
+	}
+	written, err := graphcensus.WriteOwedObjectNodes(ctx, s.store)
+	tick.ObjectNodes = int(written)
+	if err != nil {
+		s.objectNodesOwed.Store(true)
+		return fmt.Errorf("write the nodes of the rows another build wrote: %w", err)
+	}
+	s.objectNodesOwed.Store(false)
+	return nil
 }
 
 // blockIndexHorizon is the events.Horizon the block-index tick reads the event log's safe horizon

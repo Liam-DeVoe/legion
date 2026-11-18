@@ -168,6 +168,10 @@ type Service struct {
 	// code last read, whatever the previous release wrote while none ran
 	// (markVersionsAnotherBuildWrote).
 	eventCursorJoined atomic.Bool
+	// objectNodesOwed is whether the last object pass a block-index tick of this process ran
+	// failed, so the next tick runs it again whatever the marking answers
+	// (writeObjectNodesAnotherBuildWrote).
+	objectNodesOwed atomic.Bool
 	// maxPendingItems is the pending queue the service's rooms decode their stored state under
 	// (Server.MaxPendingItems, which New sets from it and ygo reads as each room loads) and the
 	// queue the check a room's load is compared with takes (validateUpdate). New sets it to
