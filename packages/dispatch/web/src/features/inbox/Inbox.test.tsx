@@ -1223,9 +1223,9 @@ test("the reader's own answer leaves the Inbox at once, even though their focus 
     fireEvent.pointerOver(row);
     await user.click(await within(card).findByRole("radio", { name: "Ship" }));
     const answer = within(card).getByRole("button", { name: "Answer" });
-    answer.focus();
+    act(() => answer.focus());
     await user.click(answer);
-    answer.focus();
+    act(() => answer.focus());
 
     await waitFor(() => expect(screen.queryByTestId("ask-ask-b")).not.toBeInTheDocument());
     expect(screen.getByTestId("ask-ask-a")).toBeTruthy();
@@ -1282,14 +1282,14 @@ test("after the reader's own answer fails, an answer from elsewhere still holds 
     await user.click(field);
     await user.paste("JSON");
     const answer = within(card).getByRole("button", { name: "Answer" });
-    answer.focus();
+    act(() => answer.focus());
     await user.click(answer);
     // The optimistic removal does not take the row from under the reader: it stays, and the
     // failure shows on it.
     await waitFor(() => expect(within(card).getByRole("alert")).toBeTruthy());
     expect(answerAsk).toHaveBeenCalledTimes(1);
     expect(within(card).getByLabelText<HTMLTextAreaElement>("Your answer").value).toBe("JSON");
-    field.focus();
+    act(() => field.focus());
 
     // Bob answers it meanwhile: the reader is still in the row, so it stays.
     threadB = {
@@ -4084,12 +4084,12 @@ test("Enter pressed inside the column belongs to the control holding it, and sti
     // and the Inbox's own binding - which would move the focus to the answer box and swallow
     // the key with `preventDefault` - stands down.
     const option = within(pane).getByRole("radio", { name: "Ship" });
-    option.focus();
+    act(() => option.focus());
     await user.keyboard("{Enter}");
     expect(option).toHaveFocus();
 
     // From the list it does its own job: the row hands the focus to the column's answer box.
-    shortRow("ask-a").focus();
+    act(() => shortRow("ask-a").focus());
     await user.keyboard("{Enter}");
     expect(pane.querySelector("[data-ask-answer]")).toHaveFocus();
   } finally {

@@ -2541,7 +2541,7 @@ test("AskCard compact variant hands focus to the row when Answer disables under 
     const card = view.getByTestId("ask-ask-1");
     await user.click(await within(card).findByRole("radio", { name: "Ship" }));
     const answer = within(card).getByRole("button", { name: "Answer" });
-    answer.focus();
+    act(() => answer.focus());
     expect(answer).toHaveFocus();
     await user.click(answer);
     await waitFor(() => expect(answer.hasAttribute("disabled")).toBe(true));
