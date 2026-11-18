@@ -1725,6 +1725,123 @@ test("a title typed back to the issue's title and ended while a write of another
   }
 });
 
+// The reader saves a new title, opens the edit again while its write is out and ends it with
+// nothing typed. The draft is the title of that write, so nothing is sent, and the heading keeps
+// it: the issue's old title is not put back while the write is out. Dispatch then refuses the
+// write, and the draft is still the reader's title, so Retry sends it.
+test("an edit ended with nothing typed while a title's write is out leaves the heading on that title, and Retry sends it once that write is refused", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const landing = Promise.withResolvers<IssueDetails>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => landing.promise)
+    .mockImplementationOnce(async () => ({ ...issue, title: "Review the plan" }));
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    const { heading } = await editTitle(user, "Review the plan");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
+    await waitFor(() => expect(heading).toHaveFocus());
+
+    // The write is out. The reader opens the edit again and ends it with nothing typed.
+    await user.click(heading);
+    const reopened = await screen.findByRole("textbox", { name: "Issue title" });
+    await waitFor(() => expect(reopened).toHaveFocus());
+    expect(reopened).toHaveValue("Review the plan");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(heading).toHaveFocus());
+    expect(heading).toHaveTextContent(/^Review the plan$/);
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      landing.reject(new ApiError(400, { code: "INVALID_ISSUE", error: "the write was refused" }));
+      await landing.promise.catch(() => undefined);
+    });
+    await screen.findByText("Could not update this issue.");
+    expect(heading).toHaveTextContent(/^Review the plan$/);
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+    expect(patchIssue).toHaveBeenLastCalledWith(
+      "CORE-1",
+      { title: "Review the plan" },
+      keyedAttempt
+    );
+    await titleLanded(queryClient, "Review the plan");
+    expect(heading).toHaveTextContent(/^Review the plan$/);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// The same edit ended with nothing typed, and the write Dispatch then refuses: the issue keeps its
+// old title, so the draft is a change again, and the reader's. A status pick's write then lands
+// with the old title, and the heading keeps the reader's: marked not changed, the draft would take
+// the old title, and Retry would have nothing to send.
+test("a title an edit ended with nothing typed while its write was out stays the reader's after that write is refused and a status pick lands, and Retry sends it", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const landing = Promise.withResolvers<IssueDetails>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => landing.promise)
+    .mockImplementationOnce(async () => ({ ...issue, status: "in_progress" }))
+    .mockImplementationOnce(async () => ({
+      ...issue,
+      status: "in_progress",
+      title: "Review the plan",
+    }));
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    const { heading } = await editTitle(user, "Review the plan");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(heading).toHaveFocus());
+    await user.click(heading);
+    const reopened = await screen.findByRole("textbox", { name: "Issue title" });
+    await waitFor(() => expect(reopened).toHaveFocus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(heading).toHaveFocus());
+
+    await act(async () => {
+      landing.reject(new ApiError(400, { code: "INVALID_ISSUE", error: "the write was refused" }));
+      await landing.promise.catch(() => undefined);
+    });
+    await screen.findByText("Could not update this issue.");
+    expect(heading).toHaveTextContent(/^Review the plan$/);
+
+    await user.selectOptions(screen.getByLabelText("Status"), "in_progress");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { status: "in_progress" }, keyedAttempt)
+    );
+    await waitFor(() =>
+      expect(queryClient.getQueryData<IssueDetails>(["issue", "CORE-1"])?.status).toBe(
+        "in_progress"
+      )
+    );
+    expect(heading).toHaveTextContent(/^Review the plan$/);
+
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(3));
+    expect(patchIssue).toHaveBeenLastCalledWith(
+      "CORE-1",
+      { title: "Review the plan" },
+      keyedAttempt
+    );
+    await titleLanded(queryClient, "Review the plan");
+    expect(heading).toHaveTextContent(/^Review the plan$/);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
 // Another reader can change the title while a write of another field is out, and that write
 // lands with the issue as Dispatch then holds it. A title draft the reader never touched takes
 // the title it lands with: left on the old title it would read as changed, and the end of the
@@ -1756,6 +1873,68 @@ test("a title draft the reader never touched takes the title a status pick's wri
     await endTitleEditByPress(user);
     expect(heading).toHaveTextContent(/^Plan the review$/);
     expect(patchIssue).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// A status pick and a title saved after it go in the issue's line one after the other, so the
+// title's write is out, waiting, as the pick lands, and the pick's answer still carries the old
+// title. The reader has the edit open again on the title they saved, and has typed a character
+// and taken it back out: the pick's landing leaves the editor on the title of the write out
+// rather than putting the old title back under them, and nothing sends a title again.
+test("a status pick that lands while a title saved after it waits behind it leaves the reopened editor on that title, and nothing sends a title again", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const pick = Promise.withResolvers<IssueDetails>();
+  const landing = Promise.withResolvers<IssueDetails>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => pick.promise)
+    .mockImplementationOnce(() => landing.promise);
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    await user.selectOptions(await screen.findByLabelText("Status"), "in_progress");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { status: "in_progress" }, keyedAttempt)
+    );
+    const { heading } = await editTitle(user, "Review the plan");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(heading).toHaveFocus());
+    // The title's write waits behind the pick in the issue's line.
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+
+    await user.click(heading);
+    const reopened = await screen.findByRole("textbox", { name: "Issue title" });
+    await waitFor(() => expect(reopened).toHaveFocus());
+    await user.keyboard("s{Backspace}");
+    expect(reopened).toHaveValue("Review the plan");
+
+    await act(async () => {
+      pick.resolve({ ...issue, status: "in_progress" });
+      await pick.promise;
+    });
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+    expect(patchIssue).toHaveBeenLastCalledWith(
+      "CORE-1",
+      { title: "Review the plan" },
+      keyedAttempt
+    );
+    expect(reopened).toHaveValue("Review the plan");
+    await endTitleEditByPress(user);
+    expect(heading).toHaveTextContent(/^Review the plan$/);
+
+    await act(async () => {
+      landing.resolve({ ...issue, status: "in_progress", title: "Review the plan" });
+      await landing.promise;
+    });
+    await titleLanded(queryClient, "Review the plan");
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    expect(heading).toHaveTextContent(/^Review the plan$/);
+    expect(patchIssue).toHaveBeenCalledTimes(2);
   } finally {
     view.unmount();
     patchIssue.mockRestore();

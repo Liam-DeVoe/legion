@@ -172,7 +172,10 @@ export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): 
     if (submitted === (titleOutRef.current ?? issue.title)) {
       applyServerTitle(submitted);
       setTitleDraftDirty(false);
-      setPendingTitle(null);
+      // A draft that is the title of the write still out stays pending with that write until it
+      // lands. With nothing pending the issue's old title is put back over it while the write is
+      // out, and after a refusal Retry has only that old title, which sends nothing.
+      setPendingTitle(titleOutRef.current);
       return false;
     }
     setPendingTitle(submitted);
@@ -188,7 +191,8 @@ export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): 
     }
     if (submitted === (routeOutRef.current ?? issue.route ?? "")) {
       setRouteDraftDirty(false);
-      setPendingRoute(null);
+      // As the title's: a draft that is the route of the write still out stays pending with it.
+      setPendingRoute(routeOutRef.current);
       return false;
     }
     setPendingRoute(submitted);
@@ -205,7 +209,8 @@ export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): 
     if (submitted === (parentOutRef.current ?? issue.parent ?? "")) {
       applyServerParent(submitted);
       setParentDraftDirty(false);
-      setPendingParent(null);
+      // As the title's: a draft that is the parent of the write still out stays pending with it.
+      setPendingParent(parentOutRef.current);
       return false;
     }
     setPendingParent(submitted);
@@ -225,21 +230,43 @@ export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): 
     }
     // A draft that is not changed takes the value the write lands with, a draft a discard put
     // back while the write was out too: it is the issue's value, and marked changed it would send
-    // the old value over the new one.
-    if (!titleDirtyRef.current || titleRef.current.trim() === next.title) {
-      applyServerTitle(next.title);
+    // the old value over the new one. Another field's write can land while this field's write
+    // waits behind it in the issue's line (a title saved after a status pick), with the value
+    // that write is about to replace: the draft is judged against the value out then, as it is
+    // while the reader types.
+    const titleBase = (input.title === undefined ? titleOutRef.current : null) ?? next.title;
+    const routeBase = (input.route === undefined ? routeOutRef.current : null) ?? next.route ?? "";
+    const parentBase =
+      (input.parent === undefined ? parentOutRef.current : null) ?? next.parent ?? "";
+    if (!titleDirtyRef.current || titleRef.current.trim() === titleBase) {
+      applyServerTitle(titleBase);
     }
     if (!routeDirtyRef.current) {
-      applyServerRoute(next.route ?? "");
+      applyServerRoute(routeBase);
     }
     if (!parentDirtyRef.current) {
-      applyServerParent(next.parent ?? "");
+      applyServerParent(parentBase);
     }
-    setTitleDraftDirty(titleRef.current.trim() !== next.title);
-    setRouteDraftDirty(routeRef.current !== (next.route ?? ""));
-    setParentDraftDirty(parentRef.current.trim() !== (next.parent ?? ""));
+    setTitleDraftDirty(titleRef.current.trim() !== titleBase);
+    setRouteDraftDirty(routeRef.current !== routeBase);
+    setParentDraftDirty(parentRef.current.trim() !== parentBase);
   };
   const onIssueSettled = (error: unknown) => {
+    // A write that ended without landing left the issue's value as it was, so a draft marked
+    // against that write's value is marked against the issue's again. A draft that was the value
+    // out is then changed: left marked not changed, the next landing of another field's write
+    // would put the issue's value back over it.
+    if (error !== null) {
+      if (titleOutRef.current !== null) {
+        setTitleDraftDirty(titleRef.current !== issue.title);
+      }
+      if (routeOutRef.current !== null) {
+        setRouteDraftDirty(routeRef.current !== (issue.route ?? ""));
+      }
+      if (parentOutRef.current !== null) {
+        setParentDraftDirty(parentRef.current !== (issue.parent ?? ""));
+      }
+    }
     // The write is over, landed or not: a draft is changed against the issue's value again.
     titleOutRef.current = null;
     routeOutRef.current = null;

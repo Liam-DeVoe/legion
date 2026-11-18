@@ -1116,6 +1116,49 @@ test("IssuePage gives a parent draft cancelled while its write is out the parent
   }
 });
 
+// A parent cleared while its write is out is a change: the issue has no parent yet, but the write
+// out is about to set the one the reader took out. The landing leaves the cleared draft, and Save
+// then clears the parent the write set.
+test("IssuePage keeps a parent draft cleared while its write is out as that write lands, and Save clears the parent", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  const firstSave = Promise.withResolvers<Issue>();
+  patchIssue.mockImplementationOnce(() => firstSave.promise);
+  const { queryClient, unmount } = renderIssuePage();
+
+  try {
+    await user.click(await screen.findByRole("button", { name: "None, set parent issue" }));
+    let parent = (await screen.findByLabelText("Parent")) as HTMLInputElement;
+    await user.click(parent);
+    await user.paste("CORE-9");
+    await user.click(screen.getByRole("button", { name: "Save parent" }));
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { parent: "CORE-9" }, keyedAttempt)
+    );
+    // The write is out, so the issue has no parent yet.
+    await user.click(await screen.findByRole("button", { name: "None, set parent issue" }));
+    parent = (await screen.findByLabelText("Parent")) as HTMLInputElement;
+    expect(parent.value).toBe("CORE-9");
+    await user.clear(parent);
+
+    await act(async () => {
+      firstSave.resolve(narrowIssue({ ...issue, parent: "CORE-9" }));
+    });
+    await waitFor(() =>
+      expect(queryClient.getQueryData<IssueDetails>(["issue", "CORE-1"])?.parent).toBe("CORE-9")
+    );
+    expect(parent.value).toBe("");
+    await user.click(screen.getByRole("button", { name: "Save parent" }));
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { parent: null }, keyedAttempt)
+    );
+    expect(patchIssue).toHaveBeenCalledTimes(2);
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
 test("IssuePage clears the parent with an empty editor save", async () => {
   const user = userEvent.setup();
   const { getIssue, patchIssue, restore } = stubIssueApi();
