@@ -1,0 +1,13 @@
+kind: Changed
+custom:
+  Issue: pr4396
+body: |-
+  `POST /v1/oauth/exchange/pod-sessions` admits a registration only from a registrar that
+  `BROKER_POD_REGISTRARS` pairs with the pod's account, and answers every other caller
+  `403 POD_REGISTRAR_NOT_LISTED`, naming both accounts. A broker with the list unset admits no
+  registration, so a deployment sets the list before its first daemon sets `exchange_audience`.
+  A session name now belongs to the registrar that registered it: another registrar's
+  registration of a name that a live registration holds is `409 SESSION_HELD_BY_ANOTHER_REGISTRAR`,
+  and the exchange admits a pod under a name only when the registrar that holds the name
+  registered that pod. Migration 0033 records the registrar. Before you roll the broker back past
+  it, unset `exchange_audience` in every daemon.
