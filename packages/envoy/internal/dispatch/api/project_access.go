@@ -139,14 +139,23 @@ func (s *server) principalWrite(w http.ResponseWriter, r *http.Request, kind, pr
 // locks access.LockForAccessWrite takes in the one order every access write takes them (group,
 // the group the write names, or "" for none), so an owner change committed meanwhile is read
 // rather than raced and a delete of the group is ordered against the write. Anyone else is 403
-// PROJECT_OWNER_REQUIRED before anything is written. It publishes what the write appended once it
-// commits, and answers the project's access as the write left it.
+// PROJECT_OWNER_REQUIRED before anything is written. The write runs as the person carrying the
+// request's own credential, whose list of projects decides what a refusal may name
+// (access.SetSlackChannels); every write records the actor without it (model.Actor.Recorded). It
+// publishes what the write appended once it commits, and answers the project's access as the
+// write left it.
 func (s *server) ownerWrite(w http.ResponseWriter, r *http.Request, group string,
 	write func(ctx context.Context, tx pgx.Tx, key string, by model.Actor) (model.ProjectAccess, []model.Event, error)) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
 		return
 	}
+	caller, _, err := s.optionalActor(r)
+	if err != nil {
+		s.writeAuthenticationError(w, err)
+		return
+	}
+	actor.Credential = caller.Credential
 	key := r.PathValue("key")
 	tx, err := s.begin(r.Context())
 	if err != nil {
@@ -202,6 +211,7 @@ func (s *server) writeAccessError(w http.ResponseWriter, err error) {
 		{access.ErrGroupFull, "GROUP_FULL", http.StatusConflict},
 		{access.ErrSlackChannelInput, "INVALID_SLACK_CHANNEL", http.StatusBadRequest},
 		{access.ErrSlackChannelsFull, "CAP_EXCEEDED", http.StatusBadRequest},
+		{access.ErrSlackChannelShared, "SLACK_CHANNEL_SHARED", http.StatusConflict},
 	} {
 		if errors.Is(err, refusal.match) {
 			writeError(w, refusal.code, refusal.status, err.Error())

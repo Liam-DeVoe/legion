@@ -25,6 +25,7 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
+import { Timestamp } from "../refs/Timestamp";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
 /** One change of a project's access, as the owner presses it: the project given to another
@@ -265,6 +266,7 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
   const notSignedIn = new Set(access.data.not_signed_in ?? []);
   const listedGroups = access.data.groups ?? [];
   const channelsText = (access.data.slack_channels ?? []).join(" ");
+  const channelsChangedAt = access.data.slack_channels_changed_at ?? null;
   const refusal =
     viewer === undefined
       ? "Checking who you are…"
@@ -427,6 +429,14 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
             Save channels
           </RefusableButton>
         </form>
+        {channelsChangedAt === null ? null : (
+          <p
+            className={`mt-2 text-sm ${textMutedOnCanvas}`}
+            data-testid="access-slack-channels-changed"
+          >
+            Changed <Timestamp at={channelsChangedAt} />
+          </p>
+        )}
         {refusalIn("slack")}
       </section>
 

@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -111,5 +112,146 @@ func TestSetSlackChannelsStoresASortedList(t *testing.T) {
 		if got := slackChannelsOf(t, database.Pool, "PUB"); !slices.Equal(got, want) {
 			t.Errorf("%s: the stored list moved to %v under a refused write", refused.name, got)
 		}
+	}
+}
+
+// changedAtOf reads project key's slack_channels_changed_at, nil while it is null.
+func changedAtOf(t *testing.T, q Querier, key string) *time.Time {
+	t.Helper()
+	var changedAt *time.Time
+	if err := q.QueryRow(context.Background(), `select slack_channels_changed_at from projects where key = $1`, key).Scan(&changedAt); err != nil {
+		t.Fatalf("read %s's channels time: %v", key, err)
+	}
+	return changedAt
+}
+
+// TestTheChannelsTimeMovesOnlyWhenTheListChanges: slack_channels_changed_at is when a project's
+// Slack channels last changed, null until its first write. The first write sets it to the
+// transaction's now(); a write of the same list, in another order and over a stored list in
+// another order, leaves it; a write of a different list moves it to that transaction's now(). The
+// write's answer and event, ReadProject and the membership answer carry it. Control: set the time
+// on every write, and the second row fails naming the project.
+func TestTheChannelsTimeMovesOnlyWhenTheListChanges(t *testing.T) {
+	ctx := context.Background()
+	database := seedAccess(t)
+	broker := events.NewBroker()
+	by := model.Actor{Kind: "user", ID: olga}
+	write := func(channels ...string) (time.Time, model.ProjectAccess, model.Event) {
+		t.Helper()
+		var now time.Time
+		var answer model.ProjectAccess
+		var event model.Event
+		if err := inTx(t, database, func(tx pgx.Tx) error {
+			if err := tx.QueryRow(ctx, `select now()`).Scan(&now); err != nil {
+				return err
+			}
+			var err error
+			answer, event, err = SetSlackChannels(ctx, tx, broker, "PUB", channels, by)
+			return err
+		}); err != nil {
+			t.Fatalf("write PUB's channels %v: %v", channels, err)
+		}
+		return now, answer, event
+	}
+	if got := changedAtOf(t, database.Pool, "PUB"); got != nil {
+		t.Fatalf("PUB's channels time before any write = %v, want null", got)
+	}
+	if read, err := ReadProject(ctx, database.Pool, "PUB"); err != nil || read.SlackChannelsChangedAt != nil {
+		t.Fatalf("ReadProject of PUB before any write = %+v, %v; want its channels time null", read, err)
+	}
+
+	first, answer, event := write("GABCDEFGH1", "C012345678")
+	if got := changedAtOf(t, database.Pool, "PUB"); got == nil || !got.Equal(first) {
+		t.Fatalf("PUB's first write left its channels time at %v, want the transaction's now(), %v", got, first)
+	}
+	payload, _ := event.Payload.(model.ProjectAccessEventPayload)
+	read, readErr := ReadProject(ctx, database.Pool, "PUB")
+	membership, answerErr := Answer(ctx, database.Pool, "PUB", "")
+	for _, carried := range []struct {
+		name string
+		at   *time.Time
+	}{
+		{"the write's answer", answer.SlackChannelsChangedAt},
+		{"the write's project.access_changed", payload.SlackChannelsChangedAt},
+		{"ReadProject", read.SlackChannelsChangedAt},
+		{"the membership answer", membership.SlackChannelsChangedAt},
+	} {
+		if readErr != nil || answerErr != nil || carried.at == nil || !carried.at.Equal(first) {
+			t.Errorf("%s carries PUB's channels time as %v (read %v, answer %v), want %v", carried.name, carried.at, readErr, answerErr, first)
+		}
+	}
+
+	// The same list, written in another order over a list stored in another order by a direct
+	// write, which leaves the time alone.
+	if _, err := database.Pool.Exec(ctx, `update projects set slack_channels = '{GABCDEFGH1,C012345678}' where key = 'PUB'`); err != nil {
+		t.Fatalf("store PUB's list in another order: %v", err)
+	}
+	write("GABCDEFGH1", "C012345678", "GABCDEFGH1")
+	if got := changedAtOf(t, database.Pool, "PUB"); got == nil || !got.Equal(first) {
+		t.Fatalf("a write of PUB's own list in another order moved PUB's channels time from %v to %v, want it left as it was", first, got)
+	}
+
+	third, _, _ := write("C012345678")
+	if got := changedAtOf(t, database.Pool, "PUB"); got == nil || !got.Equal(third) || !third.After(first) {
+		t.Fatalf("a write of a different list left PUB's channels time at %v, want that transaction's now(), %v, after %v", got, third, first)
+	}
+}
+
+// TestASharedSlackChannelNamesItsProjectOnlyToACallerWhoSeesIt: a Slack channel belongs to one
+// private project, so a write of a private project's list naming a channel another private project
+// lists is refused with ErrSlackChannelShared and writes nothing. The refusal names the other
+// project only to a caller who sees it: its person sees it by the membership answer, and its
+// credential lists no projects or lists it; anyone else reads the refusal that names no project.
+// A public project's list is never refused for sharing a channel. OTHER is private and names
+// C0SHARED001 here; each write is of PRIV's list, or PUB's. Controls: drop the credential's part
+// of the rule, and olga's token listing PRIV alone fails naming it; refuse a public project's
+// write too, and PUB's row fails.
+func TestASharedSlackChannelNamesItsProjectOnlyToACallerWhoSeesIt(t *testing.T) {
+	ctx := context.Background()
+	database := seedAccess(t)
+	broker := events.NewBroker()
+	if _, err := database.Pool.Exec(ctx, `update projects set slack_channels = '{C0SHARED001}' where key = 'OTHER'`); err != nil {
+		t.Fatalf("name OTHER's channel: %v", err)
+	}
+	const (
+		named  = "C0SHARED001 is listed by OTHER, a private project; a Slack channel belongs to one private project"
+		hidden = "C0SHARED001 is listed by a private project you cannot see"
+	)
+	// acting is the actor an owner's write runs as: the person, carrying the request's credential,
+	// which lists projects when it is a token that names some.
+	acting := func(login, token string, projects ...string) model.Actor {
+		return model.Actor{Kind: "user", ID: login, Credential: &model.Credential{Scopes: model.Scopes, TokenID: token, Projects: projects}}
+	}
+	for _, row := range []struct {
+		name string
+		by   model.Actor
+		want string
+	}{
+		{"olga, OTHER's owner, at her browser", acting(olga, ""), named},
+		{"dave, a full member of the group OTHER lists", acting(dave, ""), named},
+		{"carol, whom PRIV lists and OTHER does not", acting(carol, ""), hidden},
+		{"olga's token listing PRIV alone", acting(olga, "token-of-olga", "PRIV"), hidden},
+		{"olga's token listing OTHER and PRIV", acting(olga, "token-of-olga", "OTHER", "PRIV"), named},
+		{"olga as an actor carrying no credential", model.Actor{Kind: "user", ID: olga}, named},
+	} {
+		err := inTx(t, database, func(tx pgx.Tx) error {
+			_, _, err := SetSlackChannels(ctx, tx, broker, "PRIV", []string{"C0SHARED001"}, row.by)
+			return err
+		})
+		if !errors.Is(err, ErrSlackChannelShared) || err.Error() != row.want {
+			t.Errorf("%s: a write of PRIV's list naming OTHER's channel = %v, want ErrSlackChannelShared reading %q", row.name, err, row.want)
+		}
+		if got := slackChannelsOf(t, database.Pool, "PRIV"); len(got) != 0 || changedAtOf(t, database.Pool, "PRIV") != nil {
+			t.Errorf("%s: PRIV's list moved to %v under a refused write", row.name, got)
+		}
+	}
+	if err := inTx(t, database, func(tx pgx.Tx) error {
+		_, _, err := SetSlackChannels(ctx, tx, broker, "PUB", []string{"C0SHARED001"}, cookie(olga))
+		return err
+	}); err != nil {
+		t.Errorf("a write of public PUB's list naming OTHER's channel = %v, want it stored: a public project's list is never refused for sharing", err)
+	}
+	if got := slackChannelsOf(t, database.Pool, "PUB"); !slices.Equal(got, []string{"C0SHARED001"}) {
+		t.Errorf("PUB's list = %v, want OTHER's channel", got)
 	}
 }
