@@ -40,14 +40,19 @@
 #       existing requirement block under the header of one of alice's runs, whose ends_at psql first
 #       sets a day ahead on both sides in one transaction, so the run's window decides no result,
 #       and one lens on the shared bearer e2e-token whose body names a session no other row names.
-#       It keeps an inventory of those writes. Last, alice routes the issue to a role and comments
+#       It keeps an inventory of those writes. Then alice routes the issue to a role and comments
 #       on it, one message addressed to that role, whose node and page this head's events outbox
-#       writes, publishing through the run's NATS. Before any further backfill the census, run
-#       whole, exits 0 and reads the person, the session, the role and the page kinds at zero
-#       differences: the shared bearer proves no author, so that lens is the project's and settles
-#       nothing, yet it names the session its body names as its writer through authored_by and its
-#       write stated that session's node (spec v46 R12), so the session is on both sides; the
-#       driver reads that authored_by tuple.
+#       writes, publishing through the run's NATS. Last, so that no kind of the store is checked
+#       over no row, a second issue's spec holds an ask block that alice answers and a session
+#       follows, and an agent's decision with a shaped pointer at a requirement, a from_ask to that
+#       ask and a reading under it, which give the eight kinds cybermonklabs/legion#4173 adds
+#       (shaped, from_ask, decided_by, followed_by, reading_parent, ask_parent, ask_anchor and
+#       ask_answer) a row each. Before any further backfill the census, run whole, exits 0 and
+#       reads the person, the session, the role and the page kinds and each of those eight at zero
+#       differences over more than zero rows: the shared bearer proves no author, so that lens is
+#       the project's and settles nothing, yet it names the session its body names as its writer
+#       through authored_by and its write stated that session's node (spec v46 R12), so the session
+#       is on both sides; the driver reads that authored_by tuple.
 #   B2  The base build again, as in a rollback, through run-server.sh, booted beside this head's
 #       server, which still serves: two builds serve the one database at once, each on a port of
 #       its own, and both sign cookies with the run's one dev sign-in key. While both serve, alice
@@ -76,9 +81,10 @@
 #       apart from the inventory's: a run the migration lost shows in the first and never in the
 #       second. Run whole, it exits 0, every kind of the store checked and none read apart, and it
 #       reads zero differences for the interaction and frame kinds, for both block projections of
-#       cybermonklabs/legion#3178, for comment, person, session, role and page, and for the visibility
-#       and state of every node of this child's kinds, each kind having checked more than zero
-#       rows, the moved nodes counted as live ones are, and every interaction at `author`. Then,
+#       cybermonklabs/legion#3178, for comment, person, session, role and page, for the eight kinds
+#       of cybermonklabs/legion#4173, and for the visibility and state of every node of this child's
+#       kinds, each kind having checked more than zero rows, the moved nodes counted as live ones
+#       are, and every interaction at `author`. Then,
 #       with psql, one interaction node no going_requests row projects, a copy of bob's run's node
 #       under an id no row names, and one frame value no going_events row projects, of the run row
 #       written by hand at the sequence after its one frame's: the census exits 1 and reads each as
@@ -200,10 +206,12 @@ unset DISPATCH_E2E_NATS_URLS
 stamp="$(date +%s)-$$"
 readonly stamp
 # The session every bearer write names, the session the identity table says the server proved
-# carol's, and the session the lens on the shared bearer names, which no other row names.
+# carol's, the session the lens on the shared bearer names, which no other row names, and the
+# session that follows the ask alice answers (H2), which no other row names either.
 readonly session="census-$stamp"
 readonly carol_session="census-carol-$stamp"
 readonly bearer_session="census-bearer-lens-$stamp"
+readonly follower_session="census-follower-$stamp"
 readonly project=CENSUS
 # The two seeded people, the person of the identity table, karol, a login one character from
 # hers, who must stay a person of his own, dave, a login no other row names, whose only node is a
@@ -407,15 +415,18 @@ at() {
 }
 
 # census_kind FILE KIND: KIND's counts in the census report FILE, into $c_nodes, $c_rows,
-# $c_row_differences and $c_node_differences.
+# $c_row_differences and $c_node_differences, and into $c_side what its store side counts: node,
+# or tuple for a kind the census holds triple by triple (graphcensus's KindReport.Triples), whose
+# line counts tuples where every other kind's counts nodes.
 census_kind() {
   local line
-  line="$(grep -m 1 -E "^census: store kind=$2 nodes=" "$1")" || return 1
-  [[ "$line" =~ nodes=([0-9,]+)\ rows=([0-9,]+)\ .*\ rows_without_a_node=([0-9,]+)\ nodes_without_a_row=([0-9,]+) ]] || return 1
-  c_nodes="${BASH_REMATCH[1]//,/}"
-  c_rows="${BASH_REMATCH[2]//,/}"
-  c_row_differences="${BASH_REMATCH[3]//,/}"
-  c_node_differences="${BASH_REMATCH[4]//,/}"
+  line="$(grep -m 1 -E "^census: store kind=$2 (nodes|tuples)=" "$1")" || return 1
+  [[ "$line" =~ (node|tuple)s=([0-9,]+)\ rows=([0-9,]+)\ .*\ rows_without_a_(node|tuple)=([0-9,]+)\ (node|tuple)s_without_a_row=([0-9,]+) ]] || return 1
+  c_side="${BASH_REMATCH[1]}"
+  c_nodes="${BASH_REMATCH[2]//,/}"
+  c_rows="${BASH_REMATCH[3]//,/}"
+  c_row_differences="${BASH_REMATCH[5]//,/}"
+  c_node_differences="${BASH_REMATCH[7]//,/}"
 }
 
 # census_zero SECTION NAME KIND: the census NAME read KIND at zero differences in both directions,
@@ -424,10 +435,52 @@ census_zero() {
   census_kind "$work/census.$2" "$3" || fail "$1" "the census reads the kind $3" "no line of it in: $(<"$work/census.$2")"
   [[ "$c_row_differences" == 0 && "$c_node_differences" == 0 ]] ||
     fail "$1" "the census reads $3 at zero differences" \
-      "$c_row_differences row(s) without a node and $c_node_differences node(s) without a row: $(grep -E "^census: store kind=$3 " "$work/census.$2" | tr '\n' ' ')"
+      "$c_row_differences row(s) without a $c_side and $c_node_differences $c_side(s) without a row: $(grep -E "^census: store kind=$3 " "$work/census.$2" | tr '\n' ' ')"
   [[ "$c_rows" -gt 0 ]] ||
     fail "$1" "the census checked more than zero rows of the kind $3" "it checked $c_rows rows of $3, so it proves nothing of it"
-  pass "$1" "the census reads $3 at zero differences: it checked $c_rows row(s) against $c_nodes node(s)"
+  pass "$1" "the census reads $3 at zero differences: it checked $c_rows row(s) against $c_nodes $c_side(s)"
+}
+
+# The eight kinds of the store cybermonklabs/legion#4173 adds: a decision's shaped, from_ask and
+# decided_by, an ask's followers, a reading's parent, and an ask's placement, anchor and answer.
+# The census refuses none of them for holding no row and no tuple (graphcensus's emptyAgrees: a
+# deployment holds none until a decision is written or an ask answered), so a census that read
+# one of them over no row would pass while proving nothing of it. H2 writes a row of each, and
+# every census of the store as its writers left it reads each through census_zero, which fails
+# on a kind that checked no row, naming it.
+readonly -a decision_kinds=(shaped from_ask decided_by followed_by reading_parent ask_parent ask_anchor ask_answer)
+
+# wait_settled SECTION WHAT: waits, 120 s at most, until no document owes a settlement
+# (doc_settlements_pending) or its block index (a document_block_versions row with a null version),
+# so the census that follows reads every write before it, as decision-nodes.sh waits.
+readonly owed_sql="select (select count(*) from doc_settlements_pending)
+  + (select count(*) from document_block_versions where version is null)"
+wait_settled() {
+  local waited=0
+  query "$1" "read what the documents owe" "$owed_sql"
+  until [[ "$answer" == 0 ]]; do
+    [[ "$waited" -lt 120 ]] ||
+      fail "$1" "$2: every document settles within 120 s" "$answer settlement(s) and block index(es) still owed"
+    sleep 1
+    waited=$((waited + 1))
+    query "$1" "read what the documents owe" "$owed_sql"
+  done
+}
+
+# wait_ask SECTION ISSUE BLOCK: waits, 60 s at most, for the one ask of ISSUE whose block is BLOCK,
+# whose row settlement opens once the block is written, and sets $ask_id to its id.
+wait_ask() {
+  local waited=0
+  while true; do
+    request agent GET "/api/v1/issues/$2/asks?state=all"
+    want_status 200 "$1" "read the asks of $2"
+    ask_id="$(jq -r --arg b "$3" '[.[] | select(.block_id == $b)] | if length == 1 then .[0].id else "" end' "$work/body")" ||
+      fail "$1" "read the asks of $2" "unreadable: $(body)"
+    [[ -z "$ask_id" ]] || return 0
+    [[ "$waited" -lt 60 ]] || fail "$1" "the ask of block $3 of $2 opens within 60 s" "no single ask of $2 names block $3: $(body)"
+    sleep 1
+    waited=$((waited + 1))
+  done
 }
 
 # census_differences SECTION NAME: the census NAME read zero differences over every kind.
@@ -922,12 +975,55 @@ want_value H2 "the node of the role $role and its page, role/$role, are made by 
    from graph_nodes where (kind = 'role' and id = '$role') or (kind = 'page' and id = 'role/$role')"
 pass H2 "$key is routed to the role $role, and this head's events outbox wrote the role's node and its page, role/$role (waited ${waited} s)"
 
+# The eight kinds of cybermonklabs/legion#4173 (decision_kinds): no write above gives any of them a
+# row, and the census refuses none of them for holding none, so each would be read over no row.
+# Through this head, as decision-nodes.sh writes its own half: the agent bearer creates a second
+# issue of the project and writes an ask block into its spec, whose row settlement opens and places
+# in that spec (ask_parent, ask_anchor); alice answers it (ask_answer), and the session
+# $follower_session follows it (followed_by). The bearer then writes into the same spec a decision
+# with a shaped pointer at its requirement r1 (shaped) and a from_ask to that ask (from_ask), whose
+# decided_by the server takes from the write that introduced the block (decided_by), and a reading
+# under it (reading_parent). They stand in a second issue's spec, which no later write of this
+# driver edits, so the base build's version of the first issue's spec (B2) moves none of them. The
+# driver waits until no document owes a settlement or its block index, so the census reads them.
+request agent POST /api/v1/issues "$(jq -cn --arg p "$project" --argjson a "$(actor)" '{project: $p,
+  title: "Census check: an ask and a decision", force: true, actor: $a,
+  spec: ":::requirement{#r1}\nThe decision of this spec shapes this requirement.\n:::\n\n:::requirement{#r2}\nThe ask of this spec stands below this requirement.\n:::\n"}')"
+want_status 201 H2 "the agent bearer creates a second issue of $project through this head"
+decision_key="$(jq -er '.key' "$work/body")" || fail H2 "create a second issue of $project" "no key: $(body)"
+readonly decision_key
+request agent POST "/api/v1/issues/$decision_key/artifacts/spec/edits" "$(jq -cn --argjson a "$(actor)" '{ops: [{op: "insert", after: "end",
+  markdown: ":::ask{#a1 urgency=\"med\"}\nWhich transport does every service speak?\n\n- REST: Plain HTTP\n- gRPC: Streaming\n:::"}], actor: $a}')"
+[[ "$status" == 200 || "$status" == 201 ]] ||
+  fail H2 "the agent bearer writes the ask block a1 into the spec of $decision_key" "HTTP $status: $(body)"
+wait_ask H2 "$decision_key" a1
+readonly decision_ask="$ask_id"
+pass H2 "the agent bearer wrote the ask block a1 into the spec of $decision_key, whose row settlement opened: ask $decision_ask"
+request "cookie:$alice" POST "/api/v1/asks/$decision_ask/answer" \
+  '{"text":"Plain HTTP, which every service already speaks.","selected":["REST"],"expected_edited_at":null}'
+want_status 200 H2 "$alice answers the ask $decision_ask in her own words"
+request agent PUT "/api/v1/asks/$decision_ask/followers/$(q "$follower_session")" \
+  "$(jq -cn --arg s "$follower_session" '{actor: {kind: "session", id: $s}}')"
+[[ "$status" =~ ^20[04]$ ]] || fail H2 "the session $follower_session follows the ask $decision_ask" "HTTP $status: $(body)"
+pass H2 "$alice answered the ask $decision_ask, and the session $follower_session follows it"
+wait_settled H2 "the answer of the ask $decision_ask"
+request agent POST "/api/v1/issues/$decision_key/artifacts/spec/edits" "$(jq -cn --arg s "dispatch://$decision_key/spec#b-r1" \
+  --arg f "dispatch://$decision_key/ask/$decision_ask" --argjson a "$(actor)" '{ops: [{op: "insert", after: "end",
+  markdown: ("::::decision{#d1 shaped=\"" + $s + "\" from_ask=\"" + $f + "\"}\nPlain HTTP for every service this quarter.\n\n:::reading{#g1}\nThe agent reads the answer so.\n:::\n::::")}], actor: $a}')"
+[[ "$status" == 200 || "$status" == 201 ]] ||
+  fail H2 "the agent bearer writes the decision d1 into the spec of $decision_key" "HTTP $status: $(body)"
+wait_settled H2 "the decision d1 of $decision_key"
+pass H2 "the agent bearer wrote the decision d1 into the spec of $decision_key, shaping r1, settling the ask $decision_ask and holding the reading g1"
+
 # Straight after those writes, before any further backfill: the census, run whole, exits 0.
 take_census H2 h2 0
 census_zero H2 h2 person
 census_zero H2 h2 session
 census_zero H2 h2 role
 census_zero H2 h2 page
+for kind in "${decision_kinds[@]}"; do
+  census_zero H2 h2 "$kind"
+done
 census_differences H2 h2
 # The census's session node side is every session node (graphcensus's session kind), so were
 # $bearer_session not on its row side, its node, which the lens's check above read, would be a node
@@ -1188,6 +1284,9 @@ census_zero C h3 person
 census_zero C h3 session
 census_zero C h3 role
 census_zero C h3 page
+for kind in "${decision_kinds[@]}"; do
+  census_zero C h3 "$kind"
+done
 for kind in interaction lens finding risk constraint lens_kind; do
   census_zero C h3 "${kind}_visibility_state"
 done
@@ -1557,6 +1656,9 @@ census_zero E erased person
 census_zero E erased session
 census_zero E erased role
 census_zero E erased page
+for kind in "${decision_kinds[@]}"; do
+  census_zero E erased "$kind"
+done
 for kind in interaction lens finding risk constraint lens_kind; do
   census_zero E erased "${kind}_visibility_state"
 done
