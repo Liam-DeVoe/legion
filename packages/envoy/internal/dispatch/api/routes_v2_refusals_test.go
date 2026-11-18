@@ -14,11 +14,12 @@ import (
 // package reaches it: a missing issue's comments are 404 ISSUE_NOT_FOUND; the route tour's
 // missing-objects subtest covers every route whose path names an object Dispatch stores; a route
 // whose path names a session, and the app-installation read, answer as /api/v1 does; and a parent
-// loop and a dependency loop are declared with one code. The document's code list equalling the
-// declared codes is TestTheV2DocumentListsEveryCodeItCanAnswer (openapi_test.go), which leaves out
-// API_V1_ENDED because only /api/v1 answers it; one condition with one code is
-// TestOneConditionOneCode; the unknown path, /auth/callback and the origin guard are
-// TestAuthAndOriginRefusalsCarryACode in the routes package.
+// loop and a dependency loop are declared with one code and answer it, each sent to PATCH
+// /api/v2/issues/{key}. The document's code list equalling the declared codes is
+// TestTheV2DocumentListsEveryCodeItCanAnswer (openapi_test.go), which leaves out API_V1_ENDED
+// because only /api/v1 answers it; one condition with one code is TestOneConditionOneCode; the
+// unknown path, /auth/callback and the origin guard are TestAuthAndOriginRefusalsCarryACode in the
+// routes package.
 func TestV2Refusals(t *testing.T) {
 	tour := newRouteTour(t)
 
@@ -83,6 +84,44 @@ func TestV2Refusals(t *testing.T) {
 			t.Fatalf("the parent loop is declared %s %d and the dependency loop %s %d, want both 409 ISSUE_CYCLE",
 				parent.Name(), parent.Status(), dependency.Name(), dependency.Status())
 		}
+
+		// The declaration is the row's and the answer is the handler's, so both loops are sent to
+		// PATCH /api/v2/issues/{key} (its parent and blocked_by members): each answers 409
+		// ISSUE_CYCLE and leaves the issue it names as it stood, with no parent and no blocker.
+		project := tour.project(t)
+		create := func(title string, fields map[string]any) string {
+			t.Helper()
+			body := map[string]any{"project": project, "title": title, "force": true}
+			maps.Copy(body, fields)
+			created := dispatchRequest(t, tour.handler, http.MethodPost, "/api/v1/issues", body, "alice")
+			if created.Code != http.StatusCreated {
+				t.Fatalf("create %q: %d %s", title, created.Code, created.Body.String())
+			}
+			return decodeBody[tourIssue](t, created).Key
+		}
+		refusesTheLoop := func(loop, key string, patch map[string]any) {
+			t.Helper()
+			refused := dispatchRequest(t, tour.handler, http.MethodPatch, "/api/v2/issues/"+key, patch, "alice")
+			if code, _ := refusalOf(t, refused); refused.Code != http.StatusConflict || code != "ISSUE_CYCLE" {
+				t.Errorf("%s: PATCH /api/v2/issues/%s answered %d %s, want 409 ISSUE_CYCLE", loop, key, refused.Code, refused.Body.String())
+			}
+			read := dispatchRequest(t, tour.handler, http.MethodGet, "/api/v2/issues/"+key, nil, "alice")
+			if read.Code != http.StatusOK {
+				t.Fatalf("%s: GET /api/v2/issues/%s answered %d %s", loop, key, read.Code, read.Body.String())
+			}
+			if issue := decodeBody[struct {
+				Parent    *string  `json:"parent"`
+				BlockedBy []string `json:"blocked_by"`
+			}](t, read); issue.Parent != nil || len(issue.BlockedBy) != 0 {
+				t.Errorf("%s: %s reads %s after the refusal, want it as it stood, with no parent and no blocked_by", loop, key, read.Body.String())
+			}
+		}
+		root := create("A loop's root", nil)
+		child := create("A loop's child", map[string]any{"parent": root})
+		refusesTheLoop("a parent loop", root, map[string]any{"parent": child})
+		blocker := create("A loop's blocker", nil)
+		waiter := create("A loop's waiter", map[string]any{"blocked_by": []string{blocker}})
+		refusesTheLoop("a dependency loop", blocker, map[string]any{"blocked_by": []string{waiter}})
 	})
 }
 

@@ -14,8 +14,8 @@ import (
 // right about. What catches a row added or removed by accident is the committed index
 // testdata/routes.txt, which TestRouteIndexListsEveryRouteSortedByPathThenMethod compares the
 // table against. That index lists no test hook, since a server mounts them only when its hooks are
-// enabled, so of the test-hook routes only their number is pinned: len(routes)+2*14 in
-// TestRoutesTablePinsEveryRegisteredRoute, fourteen hooks at two paths each.
+// enabled, so of the test-hook routes only their number is pinned: len(routes)+2*15 in
+// TestRoutesTablePinsEveryRegisteredRoute, fifteen hooks at two paths each.
 func TestRouteShapesCoverEveryRouteTheTableMounts(t *testing.T) {
 	if shapeless := shapelessRoutes((&server{deps: Deps{TestHooksEnabled: true}}).routes()); len(shapeless) > 0 {
 		t.Fatalf("mounted rows with no shape: %v", shapeless)
