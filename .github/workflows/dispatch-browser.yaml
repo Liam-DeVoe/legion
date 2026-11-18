@@ -396,7 +396,7 @@ jobs:
           path: packages/envoy/out/dispatch-e2e-binaries-2
       # The step budget note above does not count this step, which is new here. It copies one
       # 106 MB artifact on the runner's disk (141 ms for those bytes on a pod), and the 16 s
-      # that rounding up to 22 minutes leaves hold it.
+      # that rounding up to 23 minutes leaves hold it.
       - name: Place the binaries of the attempt that completed
         env:
           FIRST: ${{ steps.binaries.outcome }}
