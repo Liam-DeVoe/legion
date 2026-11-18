@@ -16,6 +16,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // SignInScopes are the only scopes a person's sign-in asks for: who they are and their address.
@@ -71,7 +72,7 @@ func (d *DeviceFlow) discover(ctx context.Context) (*oauth2.Config, error) {
 	if d.config != nil {
 		return d.config, nil
 	}
-	provider, err := gooidc.NewProvider(d.context(ctx), d.Issuer)
+	provider, err := redact.OAuth2(gooidc.NewProvider(d.context(ctx), d.Issuer))
 	if err != nil {
 		return nil, fmt.Errorf("read the sign-in issuer %s: %w", d.Issuer, err)
 	}
@@ -98,7 +99,7 @@ func (d *DeviceFlow) Start(ctx context.Context) (*oauth2.DeviceAuthResponse, err
 	if err != nil {
 		return nil, err
 	}
-	answer, err := config.DeviceAuth(d.context(ctx))
+	answer, err := redact.OAuth2(config.DeviceAuth(d.context(ctx)))
 	if err != nil {
 		return nil, fmt.Errorf("ask %s for a sign-in code: %w", d.Issuer, err)
 	}
@@ -115,7 +116,7 @@ func (d *DeviceFlow) Wait(ctx context.Context, authorization *oauth2.DeviceAuthR
 	if err != nil {
 		return nil, err
 	}
-	token, err := config.DeviceAccessToken(d.context(ctx), authorization)
+	token, err := redact.OAuth2(config.DeviceAccessToken(d.context(ctx), authorization))
 	if err != nil {
 		return nil, fmt.Errorf("wait for the sign-in at %s: %w", d.Issuer, err)
 	}
@@ -137,10 +138,9 @@ func (d *DeviceFlow) Refresh(ctx context.Context, refreshToken string) (*SignIn,
 	if err != nil {
 		return nil, err
 	}
-	token, err := config.TokenSource(d.context(ctx), &oauth2.Token{RefreshToken: refreshToken}).Token()
+	token, err := redact.OAuth2(config.TokenSource(d.context(ctx), &oauth2.Token{RefreshToken: refreshToken}).Token())
 	if err != nil {
-		var refused *oauth2.RetrieveError
-		if errors.As(err, &refused) && refused.ErrorCode == "invalid_grant" {
+		if redact.RefusalCode(err) == redact.InvalidGrant {
 			return nil, fmt.Errorf("%s %w; run: %s", d.Issuer, ErrSignInEnded, SignInCommand)
 		}
 		return nil, fmt.Errorf("renew the sign-in at %s: %w", d.Issuer, err)

@@ -29,6 +29,11 @@
       "bun": "./src/legion-api.ts",
       "default": "./dist/legion-api.js"
     },
+    "./remote-text": {
+      "types": "./src/remote-text.ts",
+      "bun": "./src/remote-text.ts",
+      "default": "./dist/remote-text.js"
+    },
     "./trailing-slash": {
       "types": "./src/trailing-slash.ts",
       "bun": "./src/trailing-slash.ts",
@@ -42,7 +47,7 @@
     "check:go": "bun run scripts/gen-go.ts --check",
     "gen:api": "bun run scripts/gen-api.ts",
     "check:api": "bun run scripts/gen-api.ts --check",
-    "build": "bun build src/index.ts src/repo.ts src/dispatch-snippet.ts src/dispatch-tools.ts src/legion-api.ts src/trailing-slash.ts --outdir dist --target bun --format esm",
+    "build": "bun build src/index.ts src/repo.ts src/dispatch-snippet.ts src/dispatch-tools.ts src/legion-api.ts src/remote-text.ts src/trailing-slash.ts --outdir dist --target bun --format esm",
     "build:dispatch": "bun build src/index.ts src/repo.ts src/dispatch-snippet.ts src/dispatch-tools.ts --outdir dist --target bun --format esm",
     "typecheck": "bunx tsc --noEmit",
     "test": "bun test",

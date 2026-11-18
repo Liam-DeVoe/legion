@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // clientTimeout bounds every request a Client makes. It sits past the broker's own request
@@ -189,7 +190,7 @@ func (c *Client) DeviceLogin(t *testing.T, key *ecdsa.PrivateKey, person, host s
 		t.Fatalf("sign %s's machine-login request for %s: %v", person, host, err)
 	}
 	config, ctx := c.deviceClient(t, key)
-	da, err := config.DeviceAuth(ctx, oauth2.SetAuthURLParam("request", request), oauth2.SetAuthURLParam("dpop_jkt", jkt))
+	da, err := redact.OAuth2(config.DeviceAuth(ctx, oauth2.SetAuthURLParam("request", request), oauth2.SetAuthURLParam("dpop_jkt", jkt)))
 	if err != nil {
 		t.Fatalf("POST /v1/oauth/device_authorization (%s at %s): %v", person, c.Addr, err)
 	}
@@ -222,7 +223,7 @@ func (c *Client) DeviceToken(t *testing.T, key *ecdsa.PrivateKey, da *oauth2.Dev
 	// mutation of the device authorization its caller still holds and may exchange again.
 	poll := *da
 	poll.Interval = pollInterval
-	return config.DeviceAccessToken(ctx, &poll)
+	return redact.OAuth2(config.DeviceAccessToken(ctx, &poll))
 }
 
 // Refresh redeems token's refresh token for a fresh pair, over the same DPoP transport, as the
@@ -234,7 +235,7 @@ func (c *Client) Refresh(t *testing.T, key *ecdsa.PrivateKey, token *oauth2.Toke
 	stale := *token
 	stale.Expiry = time.Now().Add(-time.Minute)
 	config, ctx := c.deviceClient(t, key)
-	return config.TokenSource(ctx, &stale).Token()
+	return redact.OAuth2(config.TokenSource(ctx, &stale).Token())
 }
 
 // EnrollSession enrolls a session under the launcher credential, proving the credential with the

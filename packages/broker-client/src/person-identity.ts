@@ -5,6 +5,7 @@
 // and `DeviceFlow.Refresh` (`packages/envoy/internal/brokerclient/device.go`), with
 // `openid-client` in the place of x/oauth2.
 
+import { callLibrary, LibraryError } from "@legion/contracts/remote-text";
 import {
   allowInsecureRequests,
   ClientSecretPost,
@@ -12,7 +13,6 @@ import {
   type CustomFetch,
   customFetch,
   discovery,
-  ResponseBodyError,
   refreshTokenGrant,
   type ServerMetadata,
   type TokenEndpointResponse,
@@ -20,7 +20,7 @@ import {
 import { messageOf } from "./error-text";
 import { SIGNIN_COMMAND, type SignInFlow, type SignInRecord } from "./signins";
 import type { SubjectToken, TokenSource } from "./source";
-import { requestInit, SignInEndedError, statusOf } from "./token-client";
+import { requestInit, SignInEndedError } from "./token-client";
 import { SUBJECT_TOKEN_TYPE_PERSON } from "./wire";
 
 /** Bounds each call to the issuer, as the Go client's `HTTPClient` bounds each of its calls
@@ -42,18 +42,22 @@ export interface PersonIdentityOptions {
  * What the issuer said in `error`: the OAuth error it answered, or the status and message of a
  * failure that is none. `openid-client` reports a request that never got an answer as "something
  * went wrong" and hangs the reason off `cause`, so the direct cause's message is named too, and
- * no deeper one: a parser's message further down can quote the answer's body.
+ * no deeper one: a parser's message further down can quote the answer's body. Every error here
+ * crossed {@link callLibrary}, so its words are {@link LibraryError}'s, each printing only as the
+ * rule for remote text reads it.
  */
 function issuerSaid(error: unknown): string {
-  if (error instanceof ResponseBodyError) {
-    const description = error.error_description ?? "";
-    return `HTTP ${error.status} ${error.error}${description === "" ? "" : `: ${description}`}`;
+  if (!(error instanceof LibraryError)) return messageOf(error);
+  if (error.name === "ResponseBodyError") {
+    return error.description.isEmpty
+      ? `HTTP ${error.status} ${error.code}`
+      : `HTTP ${error.status} ${error.code}: ${error.description}`;
   }
-  let message = messageOf(error);
-  const cause = error instanceof Error ? error.cause : undefined;
-  if (cause instanceof Error && cause.message !== message) message += `: ${cause.message}`;
-  const status = statusOf(error);
-  return status === 0 ? message : `HTTP ${status}: ${message}`;
+  let message = error.message;
+  if (!error.causeMessage.isEmpty && !error.causeMessage.equals(message)) {
+    message += `: ${error.causeMessage}`;
+  }
+  return error.status === 0 ? message : `HTTP ${error.status}: ${message}`;
 }
 
 /**
@@ -99,12 +103,14 @@ export function personIdentity(
   /** The issuer's metadata, as one discovery request reads it. */
   const discover = async (signal: AbortSignal | undefined): Promise<ServerMetadata> => {
     try {
-      const config = await discovery(new URL(flow.issuer), flow.clientId, undefined, undefined, {
-        [customFetch]: through(signal),
-        timeout: ISSUER_TIMEOUT_SECONDS,
-        ...(insecure ? { execute: [allowInsecureRequests] } : {}),
-      });
-      return config.serverMetadata();
+      const config = await callLibrary(() =>
+        discovery(new URL(flow.issuer), flow.clientId, undefined, undefined, {
+          [customFetch]: through(signal),
+          timeout: ISSUER_TIMEOUT_SECONDS,
+          ...(insecure ? { execute: [allowInsecureRequests] } : {}),
+        })
+      );
+      return callLibrary(() => config.serverMetadata());
     } catch (error) {
       throw new Error(`read the sign-in issuer ${flow.issuer}: ${issuerSaid(error)}`, {
         cause: error,
@@ -126,18 +132,26 @@ export function personIdentity(
       }
       let answered: TokenEndpointResponse;
       try {
-        const config = new Configuration(
-          metadata,
-          flow.clientId,
-          undefined,
-          ClientSecretPost(flow.clientSecret)
+        const config = callLibrary(
+          () =>
+            new Configuration(
+              metadata,
+              flow.clientId,
+              undefined,
+              ClientSecretPost(flow.clientSecret)
+            )
         );
-        if (insecure) allowInsecureRequests(config);
+        if (insecure) callLibrary(() => allowInsecureRequests(config));
         config.timeout = ISSUER_TIMEOUT_SECONDS;
         config[customFetch] = through(signal);
-        answered = await refreshTokenGrant(config, refreshToken);
+        answered = await callLibrary(() => refreshTokenGrant(config, refreshToken));
       } catch (error) {
-        if (error instanceof ResponseBodyError && error.error === INVALID_GRANT) {
+        if (
+          error instanceof LibraryError &&
+          error.name === "ResponseBodyError" &&
+          error.code.equals(INVALID_GRANT)
+        ) {
+          // The cause is the boundary's error, which holds none of the issuer's words.
           throw new SignInEndedError(flow.issuer, person, { cause: error });
         }
         // No `cause`: an answer the library refused hangs off its error, and that answer can hold

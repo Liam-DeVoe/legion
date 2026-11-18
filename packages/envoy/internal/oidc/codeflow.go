@@ -13,6 +13,8 @@ import (
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // tokenTimeout bounds one call to the issuer's token endpoint, a code exchange or a refresh, and
@@ -96,7 +98,7 @@ func NewCodeFlow(issuer, clientID, clientSecret, hostedDomain string) *CodeFlow 
 // authorization_endpoint or token_endpoint offers no sign-in, and fails discovery. One that names
 // no revocation_endpoint is accepted, and Revoke fails against it.
 func discoverCodeFlow(ctx context.Context, issuer, clientID, clientSecret string) (*codeFlowIssuer, error) {
-	provider, err := gooidc.NewProvider(ctx, issuer)
+	provider, err := redact.OAuth2(gooidc.NewProvider(ctx, issuer))
 	if err != nil {
 		return nil, fmt.Errorf("oidc: discovering issuer %s: %w", issuer, err)
 	}
@@ -107,7 +109,7 @@ func discoverCodeFlow(ctx context.Context, issuer, clientID, clientSecret string
 	var revocation struct {
 		Endpoint string `json:"revocation_endpoint"`
 	}
-	if err := provider.Claims(&revocation); err != nil {
+	if _, err := redact.OAuth2(struct{}{}, provider.Claims(&revocation)); err != nil {
 		return nil, fmt.Errorf("oidc: read issuer %s's revocation_endpoint: %w", issuer, err)
 	}
 	return &codeFlowIssuer{
@@ -186,7 +188,7 @@ func (f *CodeFlow) exchange(ctx context.Context, redirectURL, code, nonce string
 	}
 	config := issuer.config
 	config.RedirectURL = redirectURL
-	token, err := config.Exchange(f.tokenContext(ctx), code, options...)
+	token, err := redact.OAuth2(config.Exchange(f.tokenContext(ctx), code, options...))
 	if err != nil {
 		return Session{}, fmt.Errorf("oidc: exchange code: %w", err)
 	}
@@ -273,7 +275,7 @@ func (f *CodeFlow) Refresh(ctx context.Context, refreshToken string) (Session, e
 	if err != nil {
 		return Session{}, err
 	}
-	token, err := issuer.config.TokenSource(f.tokenContext(ctx), &oauth2.Token{RefreshToken: refreshToken}).Token()
+	token, err := redact.OAuth2(issuer.config.TokenSource(f.tokenContext(ctx), &oauth2.Token{RefreshToken: refreshToken}).Token())
 	if err != nil {
 		if grantRefused(err) {
 			return Session{}, fmt.Errorf("oidc: refresh: %w: %w", ErrGrantRefused, err)
@@ -290,7 +292,7 @@ func (f *CodeFlow) Refresh(ctx context.Context, refreshToken string) (Session, e
 // grantRefused reports whether err is the token endpoint's 400 or 401 naming invalid_grant.
 func grantRefused(err error) bool {
 	var retrieve *oauth2.RetrieveError
-	if !errors.As(err, &retrieve) || retrieve.ErrorCode != "invalid_grant" || retrieve.Response == nil {
+	if !errors.As(err, &retrieve) || redact.RefusalCode(err) != redact.InvalidGrant || retrieve.Response == nil {
 		return false
 	}
 	return retrieve.Response.StatusCode == http.StatusBadRequest || retrieve.Response.StatusCode == http.StatusUnauthorized
@@ -300,8 +302,9 @@ func grantRefused(err error) bool {
 // (RFC 7009), as the client with HTTP Basic, as Cognito's /oauth2/revoke requires of a client with
 // a secret; the issuer ends every token it issued from it. An issuer answers 200 for a token it
 // has revoked already or does not know, so that is success too. Any other answer, a redirect
-// included, is an error naming the HTTP status and the OAuth error code the body names, if any;
-// the error never carries the token.
+// included, is an error naming the HTTP status and the OAuth error code the body names, if any, as
+// it prints itself (redact.RemoteText), since the code is the issuer's word; the error never
+// carries the token.
 func (f *CodeFlow) Revoke(ctx context.Context, refreshToken string) error {
 	issuer, err := f.discovery.discover(ctx)
 	if err != nil {
@@ -326,10 +329,10 @@ func (f *CodeFlow) Revoke(ctx context.Context, refreshToken string) error {
 		return nil
 	}
 	var body struct {
-		Error string `json:"error"`
+		Error redact.RemoteText `json:"error"`
 	}
 	// A body that is not an OAuth error (a proxy's page) names no code; the status still stands.
-	if json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&body) != nil || body.Error == "" {
+	if json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&body) != nil || body.Error.IsEmpty() {
 		return fmt.Errorf("oidc: revoke: the issuer answered HTTP %d", response.StatusCode)
 	}
 	return fmt.Errorf("oidc: revoke: the issuer answered HTTP %d %s", response.StatusCode, body.Error)
@@ -371,7 +374,7 @@ type workspaceClaims struct {
 // which is the only place a claim a person or a caller is admitted on may come from.
 func readWorkspaceClaims(token *gooidc.IDToken, claims *Claims) error {
 	var workspace workspaceClaims
-	if err := token.Claims(&workspace); err != nil {
+	if _, err := redact.OAuth2(struct{}{}, token.Claims(&workspace)); err != nil {
 		return fmt.Errorf("payload is not a claim set: %w", err)
 	}
 	claims.Email = jsonString(workspace.Email)

@@ -17,6 +17,8 @@ import (
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google/externalaccount"
+
+	"github.com/sjawhar/envoy/oauth2call"
 )
 
 // The pod-local metadata endpoint, which an issue pod's launcher serves when the pod runs in a GKE
@@ -356,7 +358,7 @@ func (s *metadataServer) token(w http.ResponseWriter, r *http.Request) {
 	source, err := s.tokenSource(scopes)
 	var token *oauth2.Token
 	if err == nil {
-		token, err = source.Token()
+		token, err = oauth2call.Call(source.Token())
 	}
 	if err != nil {
 		s.exchangeFailed(scopes, err)
@@ -404,17 +406,17 @@ func (s *metadataServer) tokenSource(scopes []string) (oauth2.TokenSource, error
 	if source, ok := s.sources[key]; ok {
 		return source, nil
 	}
-	source, err := externalaccount.NewTokenSource(s.ctx, externalaccount.Config{
+	source, err := oauth2call.Call(externalaccount.NewTokenSource(s.ctx, externalaccount.Config{
 		Audience:         s.audience,
 		SubjectTokenType: subjectTokenType,
 		TokenURL:         s.tokenURL,
 		Scopes:           scopes,
 		CredentialSource: &externalaccount.CredentialSource{File: s.tokenFile},
-	})
+	}))
 	if err != nil {
 		return nil, err
 	}
-	source = oauth2.ReuseTokenSourceWithExpiry(nil, source, tokenEarlyRefresh)
+	source = oauth2.ReuseTokenSourceWithExpiry(nil, oauth2call.TokenSource(source), tokenEarlyRefresh)
 	if len(s.sources) >= maxTokenSources {
 		for evicted := range s.sources {
 			delete(s.sources, evicted)

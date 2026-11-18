@@ -27,6 +27,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/googleidentity"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // credentialsFileVar is the variable Google's own libraries read a credentials file from.
@@ -140,11 +141,11 @@ func (e *ExternalAccountIdentity) Token(ctx context.Context) (string, string, er
 	if e.HTTP != nil {
 		ctx = context.WithValue(ctx, oauth2.HTTPClient, e.HTTP)
 	}
-	creds, err := google.CredentialsFromJSONWithType(ctx, e.CredentialsJSON, google.ExternalAccount, poolScope)
+	creds, err := redact.OAuth2(google.CredentialsFromJSONWithType(ctx, e.CredentialsJSON, google.ExternalAccount, poolScope))
 	if err != nil {
 		return "", "", fmt.Errorf("read the external_account credential %s names: %w", credentialsFileVar, err)
 	}
-	access, err := creds.TokenSource.Token()
+	access, err := redact.OAuth2(creds.TokenSource.Token())
 	if err != nil {
 		return "", "", fmt.Errorf("mint %s's access token with the external_account credential %s names: %w", e.ServiceAccount, credentialsFileVar, err)
 	}

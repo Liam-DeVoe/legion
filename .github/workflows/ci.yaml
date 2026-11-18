@@ -690,6 +690,9 @@ jobs:
               - 'packages/envoy/subjectforms/*'
               - 'packages/envoy/natsversion/*'
               - 'packages/envoy/testnatsimages/*'
+              # The x/oauth2 boundary a module outside envoy calls through (internal/redact's
+              # OAuth2 and TokenSource, for the launcher's and the session proxy's token exchange).
+              - 'packages/envoy/oauth2call/*'
             # The Dispatch server, `go list -deps ./cmd/dispatch` in packages/envoy (its embedded
             # migrations and pmdoc schema included): what the daemon's outbox test builds
             # (internal/testbuild/testbuild.go:112, called from
@@ -878,6 +881,7 @@ jobs:
               - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/redact/*'
+              - 'packages/envoy/oauth2call/*'
               - 'packages/envoy/internal/redirects/*'
               - 'packages/envoy/listenfd/*'
               # packages/envoy/migrationid is the identifier rule the daemon's embedded
@@ -917,6 +921,7 @@ jobs:
               - 'packages/envoy/internal/metrics/*'
               - 'packages/envoy/internal/oidc/*'
               - 'packages/envoy/internal/ratelimit/*'
+              - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/internal/roles/*'
               - 'packages/envoy/internal/session/*'
               - 'packages/envoy/internal/store/*'
@@ -1076,6 +1081,7 @@ jobs:
               - *dispatch_server
               - 'packages/envoy/daemonpermissions/*'
               - 'packages/envoy/dispatchbody/*'
+              - 'packages/envoy/oauth2call/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/sessiontiming/*'
@@ -2097,6 +2103,7 @@ jobs:
               - 'packages/envoy/internal/metrics/*'
               - 'packages/envoy/internal/oidc/*'
               - 'packages/envoy/internal/ratelimit/*'
+              - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/internal/roles/*'
               - 'packages/envoy/internal/session/*'
               - 'packages/envoy/internal/store/*'
@@ -2360,6 +2367,9 @@ jobs:
               - 'packages/envoy/internal/dispatch/pmdoc/**'
               - 'packages/envoy/internal/dispatch/text/*'
               - 'packages/envoy/internal/fold/*'
+              # The x/oauth2 boundary the daemon's launcher and session proxy call through.
+              - 'packages/envoy/internal/redact/*'
+              - 'packages/envoy/oauth2call/*'
               - 'packages/envoy/migrationid/*'
               - 'packages/envoy/roleholder/*'
               - 'packages/envoy/sessiontiming/*'
@@ -2431,6 +2441,7 @@ jobs:
               - 'packages/contracts/src/index.ts'
               - 'packages/contracts/src/legion-roles.ts'
               - 'packages/contracts/src/related-forms.ts'
+              - 'packages/contracts/src/remote-text.ts'
               - 'packages/contracts/src/repo.ts'
               - 'packages/contracts/src/sha256.ts'
               - 'packages/contracts/src/slack.ts'
@@ -2545,6 +2556,7 @@ jobs:
               - 'packages/contracts/src/index.ts'
               - 'packages/contracts/src/legion-roles.ts'
               - 'packages/contracts/src/related-forms.ts'
+              - 'packages/contracts/src/remote-text.ts'
               - 'packages/contracts/src/repo.ts'
               - 'packages/contracts/src/sha256.ts'
               - 'packages/contracts/src/slack.ts'
@@ -3062,6 +3074,7 @@ jobs:
               - 'packages/contracts/src/index.ts'
               - 'packages/contracts/src/legion-roles.ts'
               - 'packages/contracts/src/related-forms.ts'
+              - 'packages/contracts/src/remote-text.ts'
               - 'packages/contracts/src/repo.ts'
               - 'packages/contracts/src/sha256.ts'
               - 'packages/contracts/src/slack.ts'
@@ -3155,6 +3168,7 @@ jobs:
               - 'packages/contracts/src/index.ts'
               - 'packages/contracts/src/legion-roles.ts'
               - 'packages/contracts/src/related-forms.ts'
+              - 'packages/contracts/src/remote-text.ts'
               - 'packages/contracts/src/repo.ts'
               - 'packages/contracts/src/sha256.ts'
               - 'packages/contracts/src/slack.ts'
@@ -3815,6 +3829,7 @@ jobs:
               - 'packages/envoy/internal/pgmigrate/*'
               - 'packages/envoy/internal/ratelimit/*'
               - 'packages/envoy/internal/redact/*'
+              - 'packages/envoy/internal/redact/redacttest/*'
               - 'packages/envoy/internal/redirects/*'
               - 'packages/envoy/internal/roles/*'
               - 'packages/envoy/internal/routing/*'
@@ -3972,6 +3987,7 @@ jobs:
               - 'packages/envoy/internal/oidc/*'
               - 'packages/envoy/internal/pglisten/*'
               - 'packages/envoy/internal/pgmigrate/*'
+              - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/internal/stacktest/*'
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/migrationid/*'
@@ -4001,6 +4017,7 @@ jobs:
               - '!packages/envoy/internal/oidc/**/*_test.go'
               - '!packages/envoy/internal/pglisten/**/*_test.go'
               - '!packages/envoy/internal/pgmigrate/**/*_test.go'
+              - '!packages/envoy/internal/redact/**/*_test.go'
               - '!packages/envoy/internal/stacktest/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               # END generated
@@ -4096,6 +4113,7 @@ jobs:
               - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/redact/*'
+              - 'packages/envoy/oauth2call/*'
               - 'packages/envoy/internal/redirects/*'
               - 'packages/envoy/listenfd/*'
               # packages/envoy/migrationid is the identifier rule the daemon's embedded

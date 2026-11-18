@@ -508,7 +508,7 @@ func (w *writer) record(class string, res callResult) {
 	if c.Codes == nil {
 		c.Codes = map[string]int{}
 	}
-	code := strconv.Itoa(res.status) + " " + res.errorCode()
+	code := strconv.Itoa(res.status) + " " + res.errorCode().String()
 	if res.err != nil {
 		code = errClass(res.err)
 	}

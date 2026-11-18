@@ -1,0 +1,1468 @@
+{
+  "about": "The inventory packages/envoy/scripts/check-redact-remote-text.sh and cmd/redact-gate run: each row a requirement of the redaction of remote text, a test, and for a print-site row its function, the name its test captures the production output under, and its mutation. A Go row's package is relative to packages/envoy; a Bun row's file and every mutation's file are relative to the repository root, and a Bun row's test is its full name in Bun's JUnit report.",
+  "gate": {
+    "about": "cmd/redact-gate's configuration. base is the ref whose merge base with HEAD is the change's base. rule and printers are the Go functions (types.Func.FullName) and ts_rule the TypeScript declarations (file#name) whose every call the change adds a row's mutation must name; exempt_files are the rule's own definition, which the fixture and control (1) hold; exempt are calls that print nothing.",
+    "base": "origin/main",
+    "rule": [
+      "github.com/sjawhar/envoy/internal/redact.Remote",
+      "github.com/sjawhar/envoy/internal/redact.Field",
+      "github.com/sjawhar/envoy/internal/redact.Cause",
+      "github.com/sjawhar/envoy/internal/redact.Error",
+      "github.com/sjawhar/envoy/internal/redact.AnswerText",
+      "(github.com/sjawhar/envoy/brokeraddr.Address).Words",
+      "(github.com/sjawhar/envoy/brokeraddr.Address).Cause",
+      "(github.com/sjawhar/envoy/brokeraddr.Address).Error"
+    ],
+    "printers": [
+      "github.com/sjawhar/envoy/internal/redact.ruled",
+      "github.com/sjawhar/envoy/internal/redact.sanitized"
+    ],
+    "ts_rule": [
+      "packages/contracts/src/remote-text.ts#readRemoteText",
+      "packages/contracts/src/remote-text.ts#redactRemoteText"
+    ],
+    "exempt_files": [
+      "packages/envoy/internal/redact/remote.go",
+      "packages/contracts/src/remote-text.ts"
+    ],
+    "exempt": [
+      {
+        "file": "packages/envoy/internal/broker/helper/broker.go",
+        "function": "github.com/sjawhar/envoy/internal/broker/helper.oauthBrokerError",
+        "why": "it compares the redactor's text with redact.AnswerText to tell the broker's own answer, and prints neither"
+      }
+    ],
+    "box": {
+      "type": "github.com/sjawhar/envoy/internal/redact.RemoteText",
+      "field": "text",
+      "rule": [
+        "github.com/sjawhar/envoy/internal/redact.Field",
+        "github.com/sjawhar/envoy/internal/redact.Remote",
+        "github.com/sjawhar/envoy/internal/redact.ruled"
+      ],
+      "comparisons": [
+        "strings.HasPrefix",
+        "strings.HasSuffix",
+        "strings.Contains",
+        "strings.EqualFold"
+      ],
+      "parses": ["time.Parse", "strconv.ParseInt"],
+      "ts_parses": ["test", "new Date"],
+      "ts_file": "packages/contracts/src/remote-text.ts",
+      "ts_class": "RemoteText",
+      "ts_rule": ["redactRemoteText", "readRemoteText"]
+    },
+    "holders": [
+      {
+        "holder": "github.com/sjawhar/envoy/internal/brokerclient.RefusedError",
+        "test": "print-brokerclient.RefusedError"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/internal/brokerclient.tokenAnswer",
+        "test": "print-brokerclient.tokenAnswer"
+      },
+      {
+        "holder": "(*github.com/sjawhar/envoy/internal/oidc.CodeFlow).Revoke struct{Error redact.RemoteText \"json:\\\"error\\\"\"}",
+        "test": "print-oidc.CodeFlow.Revoke.body"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/internal/broker/helper.BrokerError",
+        "test": "print-helper.BrokerError"
+      },
+      {
+        "holder": "(*github.com/sjawhar/envoy/internal/broker/helper.Broker).do struct{Code redact.RemoteText \"json:\\\"code\\\"\"; Error redact.RemoteText \"json:\\\"error\\\"\"}",
+        "test": "print-helper.Broker.do.envelope"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/cmd/agent-secrets.apiError",
+        "test": "print-agent-secrets.apiError"
+      },
+      {
+        "holder": "(*github.com/sjawhar/envoy/cmd/agent-secrets.client).doStatus struct{Code redact.RemoteText \"json:\\\"code\\\"\"; Error redact.RemoteText \"json:\\\"error\\\"\"; AnswerID redact.RemoteText \"json:\\\"answer_id\\\"\"}",
+        "test": "print-agent-secrets.client.doStatus.envelope"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/cmd/agent-secrets-devrelay.apiError",
+        "test": "print-devrelay.apiError"
+      },
+      {
+        "holder": "(*github.com/sjawhar/envoy/cmd/agent-secrets-devrelay.apiClient).do struct{Code redact.RemoteText \"json:\\\"code\\\"\"; Error redact.RemoteText \"json:\\\"error\\\"\"}",
+        "test": "print-devrelay.apiClient.do.envelope"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/internal/dispatch/auth.CallbackError",
+        "test": "print-auth.CallbackError"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/internal/dispatch/githubapp.StatusError",
+        "test": "print-githubapp.StatusError"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/internal/dispatch/envoy.RefillingError",
+        "test": "print-envoy.RefillingError"
+      },
+      {
+        "holder": "(*github.com/sjawhar/envoy/internal/dispatch/envoy.Client).lapsedRoleHolder struct{Error redact.RemoteText \"json:\\\"error\\\"\"; Holder redact.RemoteText \"json:\\\"holder\\\"\"; HolderState envoy.holderState \"json:\\\"holder_state\\\"\"}",
+        "test": "print-envoy.Client.lapsedRoleHolder.refusal"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/internal/dispatch/envoy.unavailableGetStatus struct{Error redact.RemoteText \"json:\\\"error\\\"\"}",
+        "test": "print-envoy.unavailableGetStatus.failure"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/internal/dispatch/envoy.listenerResponseError struct{Error redact.RemoteText \"json:\\\"error\\\"\"}",
+        "test": "print-envoy.listenerResponseError.body"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/internal/dispatch/envoy.listFailure struct{Error redact.RemoteText \"json:\\\"error\\\"\"; Code redact.RemoteText \"json:\\\"code\\\"\"}",
+        "test": "print-envoy.listFailure.body"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/loadtest.seedError",
+        "test": "print-loadtest.seedError"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/loadtest.errorCode struct{Code redact.RemoteText \"json:\\\"code\\\"\"}",
+        "test": "print-loadtest.errorCode.refusal"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/loadtest.reqRec",
+        "test": "print-loadtest.reqRec"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/loadtest.population",
+        "test": "print-loadtest.population"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/loadtest.step",
+        "test": "print-loadtest.step"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/loadtest.requestLoad",
+        "test": "print-loadtest.requestLoad"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/internal/redact.RemoteNumber",
+        "test": "print-redact.RemoteNumber"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/internal/redact.OAuthAnswer",
+        "test": "print-redact.OAuthAnswer"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/internal/redact.LibraryError",
+        "test": "print-redact.LibraryError"
+      },
+      {
+        "holder": "packages/broker-client/src/token-client.ts#BrokerRefusedError",
+        "test": "print-broker-client.BrokerRefusedError"
+      },
+      {
+        "holder": "packages/broker-client/src/token-client.ts#BrokerTokenClient",
+        "test": "print-broker-client.BrokerTokenClient"
+      },
+      {
+        "holder": "packages/broker-client/src/environment.ts#MadeBrokerClient",
+        "test": "print-broker-client.MadeBrokerClient"
+      },
+      {
+        "holder": "packages/envoy-client/src/broker-credential.ts#Made",
+        "test": "print-envoy-client.Made"
+      },
+      {
+        "holder": "packages/envoy-client/src/broker-credential.ts#Held",
+        "test": "print-envoy-client.Held"
+      },
+      {
+        "holder": "packages/contracts/src/remote-text.ts#LibraryError",
+        "test": "print-LibraryError"
+      }
+    ],
+    "reflection": [
+      {
+        "file": "packages/envoy/cmd/agent-secrets/secret_signal_linux.go",
+        "function": "github.com/sjawhar/envoy/cmd/agent-secrets.sigaction",
+        "operands": [
+          "*github.com/sjawhar/envoy/cmd/agent-secrets.linuxSigaction",
+          "unsafe.Pointer"
+        ],
+        "why": "rt_sigaction's struct, passed to the system call by address"
+      },
+      {
+        "file": "packages/envoy/internal/dispatch/pmdoc/update.go",
+        "function": "github.com/sjawhar/envoy/internal/dispatch/pmdoc.yTextStartField",
+        "operands": ["*github.com/reearth/ygo/crdt.YXmlText", "unsafe.Pointer"],
+        "why": "the head of a ygo text's item list, at the offset reflect finds by name"
+      },
+      {
+        "file": "packages/envoy/infra/aws/seeds.go",
+        "function": "github.com/sjawhar/envoy/infra/aws.refuseSeedInputs",
+        "operands": [
+          "*github.com/sjawhar/envoy/infra/aws.NatsServiceArgs",
+          "*github.com/sjawhar/envoy/infra/aws.WebhookListenerArgs",
+          "github.com/sjawhar/envoy/infra/aws.NatsServiceArgs",
+          "github.com/sjawhar/envoy/infra/aws.WebhookListenerArgs",
+          "[]github.com/pulumi/pulumi/sdk/v3/go/pulumi.StringInput",
+          "github.com/pulumi/pulumi/sdk/v3/go/pulumi.StringArrayOutput",
+          "github.com/pulumi/pulumi/sdk/v3/go/pulumi.StringOutput",
+          "github.com/pulumi/pulumi/sdk/v3/go/pulumi.StringPtrOutput"
+        ],
+        "why": "a component's Pulumi args, walked for an nkey seed"
+      },
+      {
+        "file": "packages/envoy/infra/aws/seeds.go",
+        "function": "github.com/sjawhar/envoy/infra/aws.seedPath",
+        "operands": [
+          "*github.com/sjawhar/envoy/infra/aws.NatsServiceArgs",
+          "*github.com/sjawhar/envoy/infra/aws.WebhookListenerArgs",
+          "github.com/sjawhar/envoy/infra/aws.NatsServiceArgs",
+          "github.com/sjawhar/envoy/infra/aws.WebhookListenerArgs",
+          "[]github.com/pulumi/pulumi/sdk/v3/go/pulumi.StringInput",
+          "github.com/pulumi/pulumi/sdk/v3/go/pulumi.StringArrayOutput",
+          "github.com/pulumi/pulumi/sdk/v3/go/pulumi.StringOutput",
+          "github.com/pulumi/pulumi/sdk/v3/go/pulumi.StringPtrOutput"
+        ],
+        "why": "a component's Pulumi args, walked for an nkey seed"
+      },
+      {
+        "file": "packages/envoy/infra/seed/awsstore.go",
+        "function": "github.com/sjawhar/envoy/infra/seed.seedPath",
+        "operands": [
+          "github.com/aws/aws-sdk-go-v2/aws.Config",
+          "github.com/aws/aws-sdk-go-v2/config.SharedConfig"
+        ],
+        "why": "the AWS configuration a seed store writes with, walked for an nkey seed"
+      }
+    ],
+    "external_errors": ["golang.org/x/oauth2.RetrieveError"],
+    "row_timeout": "10m",
+    "leaks": [
+      {
+        "row": "site-oidc-client-check",
+        "base": "25bfa0a5ad",
+        "files": [
+          "packages/envoy/internal/oidc/boundary_rows_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "oidc.check-client"
+      },
+      {
+        "row": "site-device-refresh",
+        "base": "e0915c551e",
+        "files": [
+          "packages/envoy/internal/brokerclient/boundary_rows_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "brokerclient.device-refresh"
+      },
+      {
+        "row": "site-ts-token-type-minted",
+        "base": "25bfa0a5ad",
+        "files": ["packages/broker-client/src/__tests__/boundary-leaks.test.ts"],
+        "capture": "leak"
+      },
+      {
+        "row": "site-ts-issuer-said",
+        "base": "25bfa0a5ad",
+        "files": ["packages/broker-client/src/__tests__/boundary-leaks.test.ts"],
+        "capture": "leak"
+      },
+      {
+        "row": "site-ts-signin-ended",
+        "base": "25bfa0a5ad",
+        "files": ["packages/broker-client/src/__tests__/boundary-leaks.test.ts"],
+        "capture": "leak"
+      },
+      {
+        "row": "leak-launcher-exchange-failed",
+        "base": "e0915c551e",
+        "files": [
+          "packages/daemon/internal/launcher/metadata_redact_test.go",
+          "packages/daemon/internal/launcher/metadata_test.go"
+        ],
+        "capture": "launcher.exchange-failed"
+      },
+      {
+        "row": "site-oidc-discovery",
+        "base": "25bfa0a5ad",
+        "files": [
+          "packages/envoy/internal/oidc/boundary_rows_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "oidc.discovery"
+      },
+      {
+        "row": "site-gcloud-stderr",
+        "base": "e0915c551e",
+        "files": [
+          "packages/envoy/cmd/agent-secrets/remote_boundary_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "agent-secrets.gcloud-sign-in"
+      },
+      {
+        "row": "site-gcp-userinfo",
+        "base": "e0915c551e",
+        "files": [
+          "packages/envoy/cmd/agent-secrets/remote_boundary_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "agent-secrets.userinfo"
+      },
+      {
+        "row": "site-gcp-secret-manager-token",
+        "base": "e0915c551e",
+        "files": [
+          "packages/envoy/cmd/agent-secrets/secret_gcp_token_refusal_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "agent-secrets.secret-manager-token"
+      }
+    ],
+    "required": [
+      "fixture-go",
+      "fixture-ts",
+      "fixture-ts-probe",
+      "results-ci",
+      "r4-refused-refresh",
+      "brokeraddr-words",
+      "r4-withheld-beside-credential",
+      "r4-refusal-words",
+      "r4-clean-url-error",
+      "r4-real-peer",
+      "r4-class",
+      "r4-answered",
+      "r4-printable",
+      "print-box",
+      "print-ts-box"
+    ]
+  },
+  "go": [
+    {
+      "id": "fixture-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted",
+      "production": "redact.Remote, redact.Field"
+    },
+    {
+      "id": "r4-refusal-words",
+      "requirement": "r4-unchanged",
+      "package": "./internal/brokerclient",
+      "test": "TestARefusalCarriesTheBrokersWordsThroughTheRedaction",
+      "production": "brokerclient.RefusedError"
+    },
+    {
+      "id": "r4-clean-url-error",
+      "requirement": "r4-unchanged",
+      "package": "./internal/redact",
+      "test": "TestErrorLeavesACleanURLsErrorAsItIs",
+      "production": "redact.Error"
+    },
+    {
+      "id": "r4-real-peer",
+      "requirement": "r4-unchanged",
+      "package": "./internal/redact",
+      "test": "TestErrorKeepsARealPeersCause",
+      "production": "redact.Error"
+    },
+    {
+      "id": "r4-class",
+      "requirement": "r4-unchanged",
+      "package": "./internal/redact",
+      "test": "TestErrorPrintsOnlyTheClassForAURLItWillNotPrint",
+      "production": "redact.Error"
+    },
+    {
+      "id": "r4-answered",
+      "requirement": "r4-unchanged",
+      "package": "./internal/redact",
+      "test": "TestErrorPrintsAnOAuthAnswerWholeOnlyWhenItIsTheBrokersOwnWords",
+      "production": "redact.Error"
+    },
+    {
+      "id": "r4-printable",
+      "requirement": "r4-unchanged",
+      "package": "./internal/redact",
+      "test": "TestErrorPrintsAPrintablesTextOnlyDirectlyOverATrustedAnswer",
+      "production": "redact.Printable"
+    },
+    {
+      "id": "r4-withheld-beside-credential",
+      "requirement": "r4-unchanged",
+      "package": "./brokeraddr",
+      "test": "TestAnAnswersWordsPrintOnlyBesideACleanAddress",
+      "production": "brokeraddr.Address.Words"
+    },
+    {
+      "id": "e2e-brokerclient-renewal-log",
+      "requirement": "r3-each-site",
+      "package": "./internal/brokerclient",
+      "test": "TestTheRenewalLoopLogsTheBrokersWordsAsTheRuleReadsThem",
+      "production": "brokerclient.Client.Run: the line prints the refusal through redact.Error, which reads its words again; the sentence's and sanitized's rows each hold one of the two"
+    },
+    {
+      "id": "e2e-helper-stopped-trade",
+      "requirement": "r3-each-site",
+      "package": "./internal/broker/helper",
+      "test": "TestTheStoppedTradeLogsTheBrokersWordsAsTheRuleReadsThem",
+      "production": "helper.Broker.Start: the ERROR line prints through brokeraddr.Address.Error; the sentence's and sanitized's rows each hold one of the two"
+    },
+    {
+      "id": "e2e-helper-login",
+      "requirement": "r3-each-site",
+      "package": "./internal/broker/helper",
+      "test": "TestALoginRefusalPrintsNoCredentialItsDescriptionRepeats",
+      "production": "helper.oauthBrokerError"
+    },
+    {
+      "id": "e2e-helper-enrol",
+      "requirement": "r3-each-site",
+      "package": "./internal/broker/helper",
+      "test": "TestAnEnrollRefusalPrintsNoCredentialItsWordsRepeat",
+      "production": "helper.Server.enrollLoop"
+    },
+    {
+      "id": "e2e-agent-secrets-withheld",
+      "requirement": "r3-each-site",
+      "package": "./cmd/agent-secrets",
+      "test": "TestABrokerRefusalPrintsNoCredentialItsWordsRepeat",
+      "production": "agent-secrets status, cmdEnroll --pod"
+    },
+    {
+      "id": "held-refused-error",
+      "requirement": "r2-held",
+      "package": "./internal/brokerclient",
+      "test": "TestARefusalPrintsTheBrokersWordsAsTheRuleReadsThem",
+      "production": "%s %q %v %+v %#v %x %X, Error(), LogValue, slog, held in an unexported field"
+    },
+    {
+      "id": "held-broker-error",
+      "requirement": "r2-held",
+      "package": "./internal/broker/helper",
+      "test": "TestABrokerErrorPrintsTheBrokersWordsAsTheRuleReadsThem",
+      "production": "%s %q %v %+v %#v %x %X, Error(), LogValue, slog, held in an unexported field"
+    },
+    {
+      "id": "held-agent-secrets-api-error",
+      "requirement": "r2-held",
+      "package": "./cmd/agent-secrets",
+      "test": "TestAStatusRefusalPrintsTheBrokersWordsAsTheRuleReadsThem",
+      "production": "%s %q %v %+v %#v %x %X, Error(), LogValue, slog, held in an unexported field"
+    },
+    {
+      "id": "held-devrelay-api-error",
+      "requirement": "r2-held",
+      "package": "./cmd/agent-secrets-devrelay",
+      "test": "TestABrokerRefusalPrintsItsWordsAsTheRuleReadsThem",
+      "production": "%s %q %v %+v %#v %x %X, Error(), LogValue, slog, held in an unexported field"
+    },
+    {
+      "id": "held-refilling-error",
+      "requirement": "r2-held",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestTheListenersRefusalPrintsItsWordsAsTheRuleReadsThem",
+      "production": "%s %q %v %+v %#v %x %X, Error(), LogValue, slog, held in an unexported field"
+    },
+    {
+      "id": "held-status-error",
+      "requirement": "r2-held",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestAStatusErrorPrintsGitHubsBodyAsTheRuleReadsIt",
+      "production": "%s %q %v %+v %#v %x %X, Error(), LogValue, slog, held in an unexported field"
+    },
+    {
+      "id": "held-callback-error",
+      "requirement": "r2-held",
+      "package": "./internal/dispatch/auth",
+      "test": "TestACallbackErrorPrintsTheIssuersWordsAsTheRuleReadsThem",
+      "production": "%s %q %v %+v %#v %x %X, Error(), LogValue, slog, held in an unexported field"
+    },
+    {
+      "id": "held-seed-error",
+      "requirement": "r2-held",
+      "package": "./loadtest",
+      "test": "TestASeedErrorPrintsDispatchsCodeAsTheRuleReadsIt",
+      "production": "%s %q %v %+v %#v %x %X, Error(), LogValue, slog, held in an unexported field"
+    },
+    {
+      "id": "brokeraddr-words",
+      "requirement": "r3-each-site",
+      "package": "./brokeraddr",
+      "test": "TestEachMarkerNamesItsOwnCase",
+      "production": "(github.com/sjawhar/envoy/brokeraddr.Address).Words",
+      "function": "(github.com/sjawhar/envoy/brokeraddr.Address).Words",
+      "capture": "brokeraddr.Words",
+      "mutation": {
+        "file": "packages/envoy/brokeraddr/brokeraddr.go",
+        "preimage": "redact.Field(text)",
+        "replacement": "text"
+      }
+    },
+    {
+      "id": "agent-secrets-error-withheld",
+      "requirement": "r3-each-site",
+      "package": "./cmd/agent-secrets",
+      "test": "TestARefusalBesideAnAddressThatIsNotCleanPrintsItsStatusAlone",
+      "production": "(*github.com/sjawhar/envoy/cmd/agent-secrets.apiError).Error: its rule call is the box's own printer now"
+    },
+    {
+      "id": "agent-secrets-answered-code",
+      "requirement": "r3-each-site",
+      "package": "./cmd/agent-secrets",
+      "test": "TestAPodRefusalPrintsTheBrokersWordsAsTheRuleReadsThem",
+      "production": "(*github.com/sjawhar/envoy/cmd/agent-secrets.apiError).answered: its rule call is the box's own printer now"
+    },
+    {
+      "id": "agent-secrets-renew",
+      "requirement": "r3-each-site",
+      "package": "./cmd/agent-secrets",
+      "test": "TestARenewRefusalPrintsTheBrokersWordsAsTheRuleReadsThem",
+      "production": "github.com/sjawhar/envoy/cmd/agent-secrets.renewLoop: its rule call is the box's own printer now"
+    },
+    {
+      "id": "brokerclient-signin",
+      "requirement": "r3-each-site",
+      "package": "./internal/brokerclient",
+      "test": "TestARefusedSignInLogsTheBrokersCodeAsTheRuleReadsIt",
+      "production": "(*github.com/sjawhar/envoy/internal/brokerclient.SignInAuthority).Current: its rule call is the box's own printer now"
+    },
+    {
+      "id": "results-ci",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/api",
+      "test": "TestACheckRunsReadRefusalPrintsGitHubsMessageAsTheRuleReadsIt",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/api.ciUnreadDetail: its rule call is the box's own printer now"
+    },
+    {
+      "id": "listener-build-unsubscribe",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestARequestTheClientCannotBuildNamesNoCredentialTheConfiguredURLCarries",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/envoy.Client).Unsubscribe",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/envoy.Client).Unsubscribe",
+      "capture": "envoy.build-unsubscribe",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/envoy/client.go",
+        "preimage": "unsubscribe request: %v\", ErrUnavailable, redact.Cause(err, c.baseURL)",
+        "replacement": "unsubscribe request: %v\", ErrUnavailable, err"
+      }
+    },
+    {
+      "id": "listener-unsubscribe",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestAListenerCallNamesNoCredentialTheConfiguredURLCarries",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/envoy.Client).Unsubscribe",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/envoy.Client).Unsubscribe",
+      "capture": "envoy.Client.Unsubscribe",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/envoy/client.go",
+        "preimage": "\"%w: POST /v1/interests/unsubscribe: %v\", ErrUnavailable, redact.Cause(err, c.baseURL)",
+        "replacement": "\"%w: POST /v1/interests/unsubscribe: %v\", ErrUnavailable, err"
+      }
+    },
+    {
+      "id": "listener-build-get",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestARequestTheClientCannotBuildNamesNoCredentialTheConfiguredURLCarries",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/envoy.Client).get",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/envoy.Client).get",
+      "capture": "envoy.build-get",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/envoy/client.go",
+        "preimage": "\"%w: build GET %s request: %v\", ErrUnavailable, route, redact.Cause(err, c.baseURL)",
+        "replacement": "\"%w: build GET %s request: %v\", ErrUnavailable, route, err"
+      }
+    },
+    {
+      "id": "listener-get",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestAListenerCallNamesNoCredentialTheConfiguredURLCarries",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/envoy.Client).get",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/envoy.Client).get",
+      "capture": "envoy.Client.Sessions",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/envoy/client.go",
+        "preimage": "\"%w: GET %s: %v\", ErrUnavailable, route, redact.Cause(err, c.baseURL)",
+        "replacement": "\"%w: GET %s: %v\", ErrUnavailable, route, err"
+      }
+    },
+    {
+      "id": "listener-unavailable-get-status",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestAReadsRefusalPrintsTheListenersWordsAsTheRuleReadsThem",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/envoy.unavailableGetStatus: its rule call is the box's own printer now"
+    },
+    {
+      "id": "listener-build-send",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestARequestTheClientCannotBuildNamesNoCredentialTheConfiguredURLCarries",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/envoy.Client).Send",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/envoy.Client).Send",
+      "capture": "envoy.build-send",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/envoy/client.go",
+        "preimage": "send request: %v\", ErrUnavailable, redact.Cause(err, c.baseURL)",
+        "replacement": "send request: %v\", ErrUnavailable, err"
+      }
+    },
+    {
+      "id": "listener-send",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestAListenerCallNamesNoCredentialTheConfiguredURLCarries",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/envoy.Client).Send",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/envoy.Client).Send",
+      "capture": "envoy.Client.Send",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/envoy/client.go",
+        "preimage": "sendTransportError(redact.Cause(err, c.baseURL), written.Load())",
+        "replacement": "sendTransportError(err, written.Load())"
+      }
+    },
+    {
+      "id": "oidc-revoke",
+      "requirement": "r3-each-site",
+      "package": "./internal/oidc",
+      "test": "TestARefusedRevocationPrintsTheIssuersCodeAsTheRuleReadsIt",
+      "production": "(*github.com/sjawhar/envoy/internal/oidc.CodeFlow).Revoke: its rule call is the box's own printer now"
+    },
+    {
+      "id": "redact-checked-sanitized",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestAPrintablesTextPrintsTheAnswersWordsAsTheRuleReadsThem",
+      "production": "github.com/sjawhar/envoy/internal/redact.checked",
+      "function": "github.com/sjawhar/envoy/internal/redact.checked",
+      "capture": "redact.printable-Error",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/url.go",
+        "preimage": "return sanitized(text, re), true",
+        "replacement": "return text, true"
+      }
+    },
+    {
+      "id": "redact-sanitized-field",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestAPrintablesTextPrintsTheAnswersWordsAsTheRuleReadsThem",
+      "production": "github.com/sjawhar/envoy/internal/redact.sanitized",
+      "function": "github.com/sjawhar/envoy/internal/redact.sanitized",
+      "capture": "redact.printable-Error",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/url.go",
+        "preimage": "fields = append(fields, field, Field(field))",
+        "replacement": "fields = append(fields, field, field)"
+      }
+    },
+    {
+      "id": "redact-checked-answer",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestAnOAuthAnswerPrintsItsWordsAsTheRuleReadsThem",
+      "production": "github.com/sjawhar/envoy/internal/redact.checked",
+      "function": "github.com/sjawhar/envoy/internal/redact.checked",
+      "capture": "redact.answer-Error",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/url.go",
+        "preimage": "return AnswerText(re), true",
+        "replacement": "return re.Error(), true"
+      }
+    },
+    {
+      "id": "redact-answer-code",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestAnOAuthAnswerPrintsItsWordsAsTheRuleReadsThem",
+      "production": "github.com/sjawhar/envoy/internal/redact.AnswerText",
+      "function": "github.com/sjawhar/envoy/internal/redact.AnswerText",
+      "capture": "redact.answer-Error",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/url.go",
+        "preimage": "ruled(re.ErrorCode)",
+        "replacement": "re.ErrorCode"
+      }
+    },
+    {
+      "id": "redact-answer-description",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestAnOAuthAnswerPrintsItsWordsAsTheRuleReadsThem",
+      "production": "github.com/sjawhar/envoy/internal/redact.AnswerText",
+      "function": "github.com/sjawhar/envoy/internal/redact.AnswerText",
+      "capture": "redact.answer-Error",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/url.go",
+        "preimage": "ruled(re.ErrorDescription)",
+        "replacement": "re.ErrorDescription"
+      }
+    },
+    {
+      "id": "redact-ruled",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestAnOAuthAnswerPrintsItsWordsAsTheRuleReadsThem",
+      "production": "github.com/sjawhar/envoy/internal/redact.ruled",
+      "function": "github.com/sjawhar/envoy/internal/redact.ruled",
+      "capture": "redact.answer-Error",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/url.go",
+        "preimage": "if shown, ok := Remote(field); ok {",
+        "replacement": "if shown, ok := field, true; ok {"
+      }
+    },
+    {
+      "id": "loadtest-quote-refused",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestARefusedQuoteLogsDispatchsCodeAsTheRuleReadsIt",
+      "production": "(*github.com/sjawhar/envoy/loadtest.replaySeeder).anchored: its rule call is the box's own printer now"
+    },
+    {
+      "id": "site-brokerclient-token-answer",
+      "requirement": "r3-each-site",
+      "package": "./internal/brokerclient",
+      "test": "TestATokenAnswersFieldsAreReadOnlyThroughTheBox",
+      "production": "brokerclient.Client.read"
+    },
+    {
+      "id": "site-listener-holder",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestARoleRefusalsHolderIsSentBackOnlyAsTheRulePrintsIt",
+      "production": "envoy.Client.lapsedRoleHolder, redact.RemoteText.SendBack"
+    },
+    {
+      "id": "box-string",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestTheBoxPrintsNoSecretByAnyPrinterAtAnyPlacement",
+      "production": "(github.com/sjawhar/envoy/internal/redact.RemoteText).String",
+      "function": "(github.com/sjawhar/envoy/internal/redact.RemoteText).String",
+      "capture": "print/redact.RemoteText/words/String()/value",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/remotetext.go",
+        "preimage": "return Field(*t.text)",
+        "replacement": "return *t.text"
+      }
+    },
+    {
+      "id": "box-send-back",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestARoleRefusalsHolderIsSentBackOnlyAsTheRulePrintsIt",
+      "production": "(github.com/sjawhar/envoy/internal/redact.RemoteText).SendBack",
+      "function": "(github.com/sjawhar/envoy/internal/redact.RemoteText).SendBack",
+      "capture": "envoy.role-sent-back",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/remotetext.go",
+        "preimage": "shown := Field(*t.text)",
+        "replacement": "shown := *t.text"
+      }
+    },
+    {
+      "id": "site-loadtest-reports",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestTheReportsPrintDispatchsCodeAsTheRuleReadsIt",
+      "production": "summarizeRequests, writer.record, loopAnswerCode"
+    },
+    {
+      "id": "held-retrieve-error",
+      "requirement": "r2-held",
+      "package": "./internal/redact",
+      "test": "TestNewRetrieveErrorHoldsTheRulesReading",
+      "production": "redact.NewRetrieveError"
+    },
+    {
+      "id": "held-refusal-answer",
+      "requirement": "r2-held",
+      "package": "./internal/brokerclient",
+      "test": "TestARefusalUnwrapsToTheRulesReadingAndItsCode",
+      "production": "brokerclient.RefusedError.Unwrap"
+    },
+    {
+      "id": "r4-refusal-code",
+      "requirement": "r4-unchanged",
+      "package": "./internal/redact",
+      "test": "TestTheRuleNeverChangesWhichOAuthCodeAFieldIs",
+      "production": "redact.RefusalCode"
+    },
+    {
+      "id": "r4-refused-refresh",
+      "requirement": "r4-unchanged",
+      "package": "./internal/broker/helper",
+      "test": "TestARefusedRefreshTakesTheDropBranchWhateverItsWordsQuote",
+      "production": "helper.Broker refresh, redact.RefusalCode"
+    },
+    {
+      "id": "r4-rule-twice",
+      "requirement": "r4-unchanged",
+      "package": "./internal/redact",
+      "test": "TestTheRuleReadsItsOwnReadingOfEveryFixtureRowAsItIs",
+      "production": "redact.Remote"
+    },
+    {
+      "id": "boundary-oauth2",
+      "requirement": "r2-held",
+      "package": "./internal/redact",
+      "test": "TestOAuth2HoldsEveryAnswerAsTheRuleReadsIt",
+      "production": "redact.OAuth2, redact.OAuthAnswer"
+    },
+    {
+      "id": "site-oidc-client-check",
+      "requirement": "r3-each-site",
+      "package": "./internal/oidc",
+      "test": "TestACheckClientsErrorPrintsNoneOfTheIssuersWords",
+      "production": "oidc.CheckClient"
+    },
+    {
+      "id": "site-device-refresh",
+      "requirement": "r3-each-site",
+      "package": "./internal/brokerclient",
+      "test": "TestARenewedSignInsErrorPrintsNoneOfTheIssuersWords",
+      "production": "brokerclient.DeviceFlow.Refresh"
+    },
+    {
+      "id": "r4-quoted-refusal",
+      "requirement": "r4-unchanged",
+      "package": "./internal/brokerclient",
+      "test": "TestARefusalWhoseWordsTheRuleQuotesStillPrintsThemQuoted",
+      "production": "brokerclient.RefusedError"
+    },
+    {
+      "id": "boundary-answer-code",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestTheBoundarysAnswerPrintsNoSecretItsWordsQuote",
+      "production": "github.com/sjawhar/envoy/internal/redact.newOAuthAnswer",
+      "function": "github.com/sjawhar/envoy/internal/redact.newOAuthAnswer",
+      "capture": "redact.oauth2-answer",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/oauth2.go",
+        "preimage": "ruled(re.ErrorCode)",
+        "replacement": "re.ErrorCode"
+      }
+    },
+    {
+      "id": "boundary-answer-description",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestTheBoundarysAnswerPrintsNoSecretItsWordsQuote",
+      "production": "github.com/sjawhar/envoy/internal/redact.newOAuthAnswer",
+      "function": "github.com/sjawhar/envoy/internal/redact.newOAuthAnswer",
+      "capture": "redact.oauth2-answer",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/oauth2.go",
+        "preimage": "ruled(re.ErrorDescription)",
+        "replacement": "re.ErrorDescription"
+      }
+    },
+    {
+      "id": "boundary-answer-uri",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestTheBoundarysAnswerPrintsNoSecretItsWordsQuote",
+      "production": "github.com/sjawhar/envoy/internal/redact.newOAuthAnswer",
+      "function": "github.com/sjawhar/envoy/internal/redact.newOAuthAnswer",
+      "capture": "redact.oauth2-answer",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/oauth2.go",
+        "preimage": "ruled(re.ErrorURI)",
+        "replacement": "re.ErrorURI"
+      }
+    },
+    {
+      "id": "boundary-answer-body",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestTheBoundarysAnswerPrintsNoSecretItsWordsQuote",
+      "production": "github.com/sjawhar/envoy/internal/redact.newOAuthAnswer",
+      "function": "github.com/sjawhar/envoy/internal/redact.newOAuthAnswer",
+      "capture": "redact.oauth2-body",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/oauth2.go",
+        "preimage": "[]byte(Field(string(re.Body)))",
+        "replacement": "[]byte(string(re.Body))"
+      }
+    },
+    {
+      "id": "box-reading",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestTheBoundarysAnswerPrintsNoSecretItsWordsQuote",
+      "production": "(github.com/sjawhar/envoy/internal/redact.RemoteText).reading",
+      "function": "(github.com/sjawhar/envoy/internal/redact.RemoteText).reading",
+      "capture": "redact.new-retrieve-error",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/remotetext.go",
+        "preimage": "return ruled(*t.text)",
+        "replacement": "return *t.text"
+      }
+    },
+    {
+      "id": "leak-launcher-exchange-failed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/launcher",
+      "test": "TestAFailedExchangesLogLinePrintsNoCredentialTheServicesWordsQuote",
+      "production": "launcher metadataServer.exchangeFailed, oauth2call.Call"
+    },
+    {
+      "id": "boundary-token-source",
+      "requirement": "r2-held",
+      "package": "./internal/redact",
+      "test": "TestATokenSourceBehindTheBoundaryRefusesWithTheRulesReading",
+      "production": "redact.TokenSource"
+    },
+    {
+      "id": "site-oidc-discovery",
+      "requirement": "r3-each-site",
+      "package": "./internal/oidc",
+      "test": "TestADiscoveryErrorPrintsNoneOfTheIssuersWords",
+      "production": "oidc.discoverCodeFlow, redact.LibraryError"
+    },
+    {
+      "id": "site-gcloud-stderr",
+      "requirement": "r3-each-site",
+      "package": "./cmd/agent-secrets",
+      "test": "TestAGcloudRefusalPrintsNoneOfItsWords",
+      "production": "gcpBackend.signInWithGcloud, runGcloud"
+    },
+    {
+      "id": "site-gcp-userinfo",
+      "requirement": "r3-each-site",
+      "package": "./cmd/agent-secrets",
+      "test": "TestTheUserinfoReadPrintsNoneOfGooglesWords",
+      "production": "gcpUserinfo, redact.TokenSource"
+    },
+    {
+      "id": "site-gcp-secret-manager-token",
+      "requirement": "r3-each-site",
+      "package": "./cmd/agent-secrets",
+      "test": "TestASecretManagerCallsTokenRefusalPrintsNoneOfItsWords",
+      "production": "gcpCredentialsFile, gcpClientDial, redact.TokenSource"
+    },
+    {
+      "id": "print-redact.LibraryError",
+      "requirement": "r2-held",
+      "package": "./internal/redact",
+      "test": "TestTheBoundarysLibraryErrorPrintsNoSecretByAnyPrinterAtAnyPlacement",
+      "production": "redact.LibraryError: every printer at every placement"
+    },
+    {
+      "id": "print-box",
+      "requirement": "r2-held",
+      "package": "./internal/redact",
+      "test": "TestTheBoxPrintsNoSecretByAnyPrinterAtAnyPlacement",
+      "production": "redact.RemoteText: String, GoString, Format, MarshalJSON, MarshalText, LogValue"
+    },
+    {
+      "id": "print-brokerclient.RefusedError",
+      "requirement": "r2-held",
+      "package": "./internal/brokerclient",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/brokerclient.RefusedError",
+      "production": "github.com/sjawhar/envoy/internal/brokerclient.RefusedError: every printer at every placement"
+    },
+    {
+      "id": "print-brokerclient.tokenAnswer",
+      "requirement": "r2-held",
+      "package": "./internal/brokerclient",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/brokerclient.tokenAnswer",
+      "production": "github.com/sjawhar/envoy/internal/brokerclient.tokenAnswer: every printer at every placement"
+    },
+    {
+      "id": "print-oidc.CodeFlow.Revoke.body",
+      "requirement": "r2-held",
+      "package": "./internal/oidc",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/oidc.CodeFlow.Revoke.body",
+      "production": "(*github.com/sjawhar/envoy/internal/oidc.CodeFlow).Revoke struct{Error redact.RemoteText \"json:\\\"error\\\"\"}: every printer at every placement"
+    },
+    {
+      "id": "print-helper.BrokerError",
+      "requirement": "r2-held",
+      "package": "./internal/broker/helper",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/helper.BrokerError",
+      "production": "github.com/sjawhar/envoy/internal/broker/helper.BrokerError: every printer at every placement"
+    },
+    {
+      "id": "print-helper.Broker.do.envelope",
+      "requirement": "r2-held",
+      "package": "./internal/broker/helper",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/helper.Broker.do.envelope",
+      "production": "(*github.com/sjawhar/envoy/internal/broker/helper.Broker).do struct{Code redact.RemoteText \"json:\\\"code\\\"\"; Error redact.RemoteText \"json:\\\"error\\\"\"}: every printer at every placement"
+    },
+    {
+      "id": "print-agent-secrets.apiError",
+      "requirement": "r2-held",
+      "package": "./cmd/agent-secrets",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/agent-secrets.apiError",
+      "production": "github.com/sjawhar/envoy/cmd/agent-secrets.apiError: every printer at every placement"
+    },
+    {
+      "id": "print-agent-secrets.client.doStatus.envelope",
+      "requirement": "r2-held",
+      "package": "./cmd/agent-secrets",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/agent-secrets.client.doStatus.envelope",
+      "production": "(*github.com/sjawhar/envoy/cmd/agent-secrets.client).doStatus struct{Code redact.RemoteText \"json:\\\"code\\\"\"; Error redact.RemoteText \"json:\\\"error\\\"\"; AnswerID redact.RemoteText \"json:\\\"answer_id\\\"\"}: every printer at every placement"
+    },
+    {
+      "id": "print-devrelay.apiError",
+      "requirement": "r2-held",
+      "package": "./cmd/agent-secrets-devrelay",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/devrelay.apiError",
+      "production": "github.com/sjawhar/envoy/cmd/agent-secrets-devrelay.apiError: every printer at every placement"
+    },
+    {
+      "id": "print-devrelay.apiClient.do.envelope",
+      "requirement": "r2-held",
+      "package": "./cmd/agent-secrets-devrelay",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/devrelay.apiClient.do.envelope",
+      "production": "(*github.com/sjawhar/envoy/cmd/agent-secrets-devrelay.apiClient).do struct{Code redact.RemoteText \"json:\\\"code\\\"\"; Error redact.RemoteText \"json:\\\"error\\\"\"}: every printer at every placement"
+    },
+    {
+      "id": "print-auth.CallbackError",
+      "requirement": "r2-held",
+      "package": "./internal/dispatch/auth",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/auth.CallbackError",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/auth.CallbackError: every printer at every placement"
+    },
+    {
+      "id": "print-githubapp.StatusError",
+      "requirement": "r2-held",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/githubapp.StatusError",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/githubapp.StatusError: every printer at every placement"
+    },
+    {
+      "id": "print-envoy.RefillingError",
+      "requirement": "r2-held",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/envoy.RefillingError",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/envoy.RefillingError: every printer at every placement"
+    },
+    {
+      "id": "print-envoy.Client.lapsedRoleHolder.refusal",
+      "requirement": "r2-held",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/envoy.Client.lapsedRoleHolder.refusal",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/envoy.Client).lapsedRoleHolder struct{Error redact.RemoteText \"json:\\\"error\\\"\"; Holder redact.RemoteText \"json:\\\"holder\\\"\"; HolderState envoy.holderState \"json:\\\"holder_state\\\"\"}: every printer at every placement"
+    },
+    {
+      "id": "print-envoy.unavailableGetStatus.failure",
+      "requirement": "r2-held",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/envoy.unavailableGetStatus.failure",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/envoy.unavailableGetStatus struct{Error redact.RemoteText \"json:\\\"error\\\"\"}: every printer at every placement"
+    },
+    {
+      "id": "print-envoy.listenerResponseError.body",
+      "requirement": "r2-held",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/envoy.listenerResponseError.body",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/envoy.listenerResponseError struct{Error redact.RemoteText \"json:\\\"error\\\"\"}: every printer at every placement"
+    },
+    {
+      "id": "print-envoy.listFailure.body",
+      "requirement": "r2-held",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/envoy.listFailure.body",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/envoy.listFailure struct{Error redact.RemoteText \"json:\\\"error\\\"\"; Code redact.RemoteText \"json:\\\"code\\\"\"}: every printer at every placement"
+    },
+    {
+      "id": "print-loadtest.seedError",
+      "requirement": "r2-held",
+      "package": "./loadtest",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/loadtest.seedError",
+      "production": "github.com/sjawhar/envoy/loadtest.seedError: every printer at every placement"
+    },
+    {
+      "id": "print-loadtest.errorCode.refusal",
+      "requirement": "r2-held",
+      "package": "./loadtest",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/loadtest.errorCode.refusal",
+      "production": "github.com/sjawhar/envoy/loadtest.errorCode struct{Code redact.RemoteText \"json:\\\"code\\\"\"}: every printer at every placement"
+    },
+    {
+      "id": "print-loadtest.reqRec",
+      "requirement": "r2-held",
+      "package": "./loadtest",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/loadtest.reqRec",
+      "production": "github.com/sjawhar/envoy/loadtest.reqRec: every printer at every placement"
+    },
+    {
+      "id": "print-loadtest.population",
+      "requirement": "r2-held",
+      "package": "./loadtest",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/loadtest.population",
+      "production": "github.com/sjawhar/envoy/loadtest.population: every printer at every placement"
+    },
+    {
+      "id": "print-loadtest.step",
+      "requirement": "r2-held",
+      "package": "./loadtest",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/loadtest.step",
+      "production": "github.com/sjawhar/envoy/loadtest.step: every printer at every placement"
+    },
+    {
+      "id": "print-loadtest.requestLoad",
+      "requirement": "r2-held",
+      "package": "./loadtest",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/loadtest.requestLoad",
+      "production": "github.com/sjawhar/envoy/loadtest.requestLoad: every printer at every placement"
+    },
+    {
+      "id": "print-redact.RemoteNumber",
+      "requirement": "r2-held",
+      "package": "./internal/redact",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/redact.RemoteNumber",
+      "production": "github.com/sjawhar/envoy/internal/redact.RemoteNumber: every printer at every placement"
+    },
+    {
+      "id": "print-redact.OAuthAnswer",
+      "requirement": "r2-held",
+      "package": "./internal/redact",
+      "test": "TestTheBoundarysHolderPrintsNoSecretByAnyPrinterAtAnyPlacement",
+      "production": "github.com/sjawhar/envoy/internal/redact.OAuthAnswer: every printer at every placement"
+    }
+  ],
+  "bun": [
+    {
+      "id": "fixture-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture: the marker is WORDS_NOT_READABLE, every required category has a row, and no id repeats",
+      "production": "readRemoteText"
+    },
+    {
+      "id": "fixture-ts-probe",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row probe reads as the fixture says",
+      "production": "readRemoteText, redactRemoteText"
+    },
+    {
+      "id": "e2e-ts-pending",
+      "requirement": "r3-each-site",
+      "file": "packages/broker-client/src/__tests__/remote-words.test.ts",
+      "test": "a registration still pending prints the refusal's words as the rule reads them: user information and a query value",
+      "production": "RegistrationPendingError.constructor"
+    },
+    {
+      "id": "ts-refusal-code-alone",
+      "requirement": "r3-each-site",
+      "file": "packages/broker-client/src/__tests__/remote-words.test.ts",
+      "test": "a refusal prints the broker's words as the rule reads them: the code, with no description",
+      "production": "BrokerRefusedError.constructor: its rule call is the box's own printer now"
+    },
+    {
+      "id": "ts-refusal-code",
+      "requirement": "r3-each-site",
+      "file": "packages/broker-client/src/__tests__/remote-words.test.ts",
+      "test": "a refusal prints the broker's words as the rule reads them: the code, with a description",
+      "production": "BrokerRefusedError.constructor: its rule call is the box's own printer now"
+    },
+    {
+      "id": "ts-refusal-description",
+      "requirement": "r3-each-site",
+      "file": "packages/broker-client/src/__tests__/remote-words.test.ts",
+      "test": "a refusal prints the broker's words as the rule reads them: the description: user information and a query value",
+      "production": "BrokerRefusedError.constructor: its rule call is the box's own printer now"
+    },
+    {
+      "id": "ts-credential-expires-at",
+      "requirement": "r3-each-site",
+      "file": "packages/broker-client/src/__tests__/remote-words.test.ts",
+      "test": "an answer's credential_expires_at prints as the rule reads it: user information and a query value",
+      "production": "BrokerTokenClient.#read: its rule call is the box's own printer now"
+    },
+    {
+      "id": "held-ts-refusal",
+      "requirement": "r2-held",
+      "file": "packages/broker-client/src/__tests__/remote-words.test.ts",
+      "test": "a refusal prints the broker's words as the rule reads them: the description: words the rule cannot read",
+      "production": "BrokerRefusedError, JSON.stringify, Bun.inspect"
+    },
+    {
+      "id": "site-ts-token-answer",
+      "requirement": "r3-each-site",
+      "file": "packages/broker-client/src/__tests__/remote-words.test.ts",
+      "test": "an answer whose credential_expires_at is not this grant's quotes it only as the rule reads it",
+      "production": "BrokerTokenClient #read, RemoteText.date"
+    },
+    {
+      "id": "boundary-ts",
+      "requirement": "r2-held",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "callLibrary turns what a library throws or rejects with into a LibraryError that keeps no words",
+      "production": "callLibrary, LibraryError"
+    },
+    {
+      "id": "site-ts-token-type-minted",
+      "requirement": "r3-each-site",
+      "file": "packages/broker-client/src/__tests__/boundary-leaks.test.ts",
+      "test": "a token type the library refuses prints neither the broker's words nor the token it minted",
+      "production": "BrokerTokenClient #trade, #refusal"
+    },
+    {
+      "id": "site-ts-issuer-said",
+      "requirement": "r3-each-site",
+      "file": "packages/broker-client/src/__tests__/boundary-leaks.test.ts",
+      "test": "an issuer's refusal whose a description quotes a credential's URL prints none of it",
+      "production": "personIdentity issuerSaid"
+    },
+    {
+      "id": "site-ts-signin-ended",
+      "requirement": "r3-each-site",
+      "file": "packages/broker-client/src/__tests__/boundary-leaks.test.ts",
+      "test": "a sign-in the issuer ended with words that quote a credential's URL prints none of them",
+      "production": "personIdentity, SignInEndedError"
+    },
+    {
+      "id": "print-ts-box",
+      "requirement": "r2-held",
+      "file": "packages/contracts/src/remote-text-print.test.ts",
+      "test": "box print test: RemoteText prints no secret by any printer at any placement",
+      "production": "RemoteText: toString, toJSON, Symbol.toPrimitive, inspect.custom"
+    },
+    {
+      "id": "print-broker-client.BrokerRefusedError",
+      "requirement": "r2-held",
+      "file": "packages/broker-client/src/__tests__/holders-print.test.ts",
+      "test": "box print test: broker-client.BrokerRefusedError prints no secret by any printer at any placement",
+      "production": "packages/broker-client/src/token-client.ts#BrokerRefusedError: every printer at every placement"
+    },
+    {
+      "id": "print-broker-client.BrokerTokenClient",
+      "requirement": "r2-held",
+      "file": "packages/broker-client/src/__tests__/holders-print.test.ts",
+      "test": "box print test: broker-client.BrokerTokenClient prints no secret by any printer at any placement",
+      "production": "packages/broker-client/src/token-client.ts#BrokerTokenClient: every printer at every placement"
+    },
+    {
+      "id": "print-broker-client.MadeBrokerClient",
+      "requirement": "r2-held",
+      "file": "packages/broker-client/src/__tests__/holders-print.test.ts",
+      "test": "box print test: broker-client.MadeBrokerClient prints no secret by any printer at any placement",
+      "production": "packages/broker-client/src/environment.ts#MadeBrokerClient: every printer at every placement"
+    },
+    {
+      "id": "print-envoy-client.Made",
+      "requirement": "r2-held",
+      "file": "packages/envoy-client/src/__tests__/holders-print.test.ts",
+      "test": "box print test: envoy-client.Made prints no secret by any printer at any placement",
+      "production": "packages/envoy-client/src/broker-credential.ts#Made: every printer at every placement"
+    },
+    {
+      "id": "print-envoy-client.Held",
+      "requirement": "r2-held",
+      "file": "packages/envoy-client/src/__tests__/holders-print.test.ts",
+      "test": "box print test: envoy-client.Held prints no secret by any printer at any placement",
+      "production": "packages/envoy-client/src/broker-credential.ts#Held: every printer at every placement"
+    },
+    {
+      "id": "print-LibraryError",
+      "requirement": "r2-held",
+      "file": "packages/contracts/src/remote-text-print.test.ts",
+      "test": "box print test: LibraryError prints no secret by any printer at any placement",
+      "production": "packages/contracts/src/remote-text.ts#LibraryError: every printer at every placement"
+    }
+  ],
+  "recall": [
+    {
+      "site": "the helper's ERROR line when the broker stops trading this machine's identity",
+      "source": "the brief's probe",
+      "guard": "e2e-helper-stopped-trade"
+    },
+    {
+      "site": "brokerclient's renewal loop line",
+      "source": "the brief's probe",
+      "guard": "e2e-brokerclient-renewal-log"
+    },
+    {
+      "site": "a token in a URL fragment's value",
+      "source": "the coordinator's widening of the brief",
+      "guard": "fixture-go"
+    },
+    {
+      "site": "githubapp.StatusError's body",
+      "source": "the review of #4368 at f0d00b1c26",
+      "holder": "github.com/sjawhar/envoy/internal/dispatch/githubapp.StatusError"
+    },
+    {
+      "site": "githubapp/deliveries.go StatusError.Error",
+      "source": "the review of #4368 at f0d00b1c26",
+      "guard": "held-status-error"
+    },
+    {
+      "site": "brokerclient.go RefusedError: the code with no description",
+      "source": "the review of #4368 at f0d00b1c26, F7 surviving mutant",
+      "guard": "held-refused-error"
+    },
+    {
+      "site": "brokerclient.go RefusedError: the code",
+      "source": "the review of #4368 at f0d00b1c26, F7 surviving mutant",
+      "guard": "held-refused-error"
+    },
+    {
+      "site": "brokerclient.go RefusedError: the description",
+      "source": "the review of #4368 at f0d00b1c26, F7 surviving mutant",
+      "guard": "held-refused-error"
+    },
+    {
+      "site": "brokerclient.go RefusedError, held",
+      "source": "the review of #4368 at f0d00b1c26, F7 surviving mutant",
+      "holder": "github.com/sjawhar/envoy/internal/brokerclient.RefusedError"
+    },
+    {
+      "site": "brokerclient.go tokenAnswer's error fields",
+      "source": "the review of #4368 at f0d00b1c26, F7 surviving mutant",
+      "holder": "github.com/sjawhar/envoy/internal/brokerclient.tokenAnswer"
+    },
+    {
+      "site": "auth/callback.go CallbackError's code",
+      "source": "the review of #4368 at f0d00b1c26, F7 surviving mutant",
+      "guard": "held-callback-error"
+    },
+    {
+      "site": "dispatch envoy client.go listenerRefusal",
+      "source": "the review of #4368 at f0d00b1c26, F7 surviving mutant",
+      "guard": "held-refilling-error"
+    },
+    {
+      "site": "dispatch envoy client.go listFailure",
+      "source": "the review of #4368 at f0d00b1c26, F7 surviving mutant",
+      "guard": "held-refilling-error"
+    },
+    {
+      "site": "dispatch envoy client.go unavailableGetStatus",
+      "source": "the review of #4368 at f0d00b1c26, F7 surviving mutant",
+      "guard": "listener-unavailable-get-status"
+    },
+    {
+      "site": "dispatch envoy client.go get, the configured URL",
+      "source": "the review of #4368 at f0d00b1c26, F7 surviving mutant",
+      "guard": "listener-get"
+    },
+    {
+      "site": "dispatch envoy client.go Send, the configured URL",
+      "source": "the review of #4368 at f0d00b1c26, F7 surviving mutant",
+      "guard": "listener-send"
+    },
+    {
+      "site": "dispatch envoy client.go Unsubscribe, the configured URL",
+      "source": "the review of #4368 at f0d00b1c26, F7 surviving mutant",
+      "guard": "listener-unsubscribe"
+    },
+    {
+      "site": "dispatch envoy client.go RefillingError",
+      "source": "the review of #4368 at f0d00b1c26, F7 surviving mutant",
+      "holder": "github.com/sjawhar/envoy/internal/dispatch/envoy.RefillingError"
+    },
+    {
+      "site": "token-client.ts BrokerRefusedError: the code",
+      "source": "the review of #4368 at f0d00b1c26, F7 surviving mutant",
+      "guard": "ts-refusal-code"
+    },
+    {
+      "site": "token-client.ts BrokerRefusedError: the description",
+      "source": "the review of #4368 at f0d00b1c26, F7 surviving mutant",
+      "guard": "ts-refusal-description"
+    },
+    {
+      "site": "token-client.ts #read: credential_expires_at",
+      "source": "the review of #4368 at f0d00b1c26, F7 surviving mutant",
+      "guard": "ts-credential-expires-at"
+    },
+    {
+      "site": "token-client.ts RegistrationPendingError's description",
+      "source": "the review of #4368 at f0d00b1c26, F7 surviving mutant",
+      "guard": "e2e-ts-pending"
+    },
+    {
+      "site": "token-client.ts BrokerRefusedError, held",
+      "source": "the review of #4368 at f0d00b1c26",
+      "holder": "packages/broker-client/src/token-client.ts#BrokerRefusedError"
+    },
+    {
+      "site": "loadtest seedError's code",
+      "source": "the spec's census",
+      "holder": "github.com/sjawhar/envoy/loadtest.seedError"
+    },
+    {
+      "site": "oidc CodeFlow.Revoke's code",
+      "source": "the spec's census",
+      "guard": "oidc-revoke"
+    },
+    {
+      "site": "token-client.ts:661, a token type openid-client refuses, with the token the broker minted",
+      "source": "the whole-value listing at 25bfa0a5ad",
+      "guard": "site-ts-token-type-minted"
+    },
+    {
+      "site": "person-identity.ts:49 and :50, the issuer's error and error_description",
+      "source": "the whole-value listing at 25bfa0a5ad",
+      "guard": "site-ts-issuer-said"
+    },
+    {
+      "site": "person-identity.ts:141, the issuer's answer kept as a sign-in error's cause",
+      "source": "the whole-value listing at 25bfa0a5ad",
+      "guard": "site-ts-signin-ended"
+    },
+    {
+      "site": "oidc/clientcheck.go, x/oauth2's answer wrapped with %w",
+      "source": "the review of #4368 at f0d00b1c26, F1",
+      "guard": "site-oidc-client-check"
+    },
+    {
+      "site": "brokerclient/device.go:146, x/oauth2's answer wrapped with %w",
+      "source": "the review of #4368 at f0d00b1c26, F1",
+      "guard": "site-device-refresh"
+    },
+    {
+      "site": "oidc/clientcheck.go:67, a token endpoint that answers nothing",
+      "source": "the leak rows' base run",
+      "guard": "site-oidc-client-check",
+      "note": "not a leak: the transport failure carries no answer, so this sub-row passes at the base too"
+    },
+    {
+      "site": "daemon launcher metadata.go exchangeFailed, the STS exchange's error",
+      "source": "the boundary census over every Go module at f46a2cf50c",
+      "guard": "leak-launcher-exchange-failed"
+    },
+    {
+      "site": "oidc discovery's error, from go-oidc",
+      "source": "the boundary census at d99a7a444a",
+      "guard": "site-oidc-discovery"
+    },
+    {
+      "site": "agent-secrets runGcloud, gcloud's standard error quoting Google's refresh answer",
+      "source": "the boundary census at d99a7a444a",
+      "guard": "site-gcloud-stderr"
+    },
+    {
+      "site": "agent-secrets gcpUserinfo, a refused userinfo read's status and body",
+      "source": "the boundary census at d99a7a444a",
+      "guard": "site-gcp-userinfo"
+    },
+    {
+      "site": "agent-secrets gcpUserinfo, the token source's refusal inside the userinfo client's *url.Error",
+      "source": "the boundary census at d99a7a444a",
+      "guard": "site-gcp-userinfo"
+    },
+    {
+      "site": "agent-secrets secret forms, the credentials' token refusal inside the Secret Manager client's error (the auth library prints the answer's body)",
+      "source": "the token-source hand-off census at a87a6767ca",
+      "guard": "site-gcp-secret-manager-token"
+    },
+    {
+      "site": "the refusal sentence's rows watched a capture their test never wrote",
+      "source": "the gate's first full run at 52d6db30c5",
+      "guard": "held-refused-error"
+    }
+  ]
+}
