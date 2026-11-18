@@ -413,6 +413,8 @@ func reapOrphans(log func(string)) {
 // reapExited waits, with WNOHANG, on every process /proc lists but this one and PID 1, and answers
 // how many it reaped. A process that is not this one's child answers ECHILD and is passed over.
 func reapExited() (int, error) {
+	// host-proc: a pass reaps only this process's own children, since Wait4 answers ECHILD for
+	// every other process, so another process listed changes neither what it reaps nor its count.
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return 0, err

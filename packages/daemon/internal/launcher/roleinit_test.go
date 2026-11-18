@@ -601,6 +601,10 @@ func runGeneration(plan stagePlan, layout agentPlan, generation uint64, label st
 
 // detachedProcess says whether any process of the machine still runs the detached command the
 // role started, once the role's init has exited.
+//
+// host-proc: the role's PID namespace ends with its init, so only the machine's /proc can show a
+// process of it left behind, and marker is a number of the test process's own (its pid), which
+// no process the test did not start names.
 func detachedProcess(marker string) string {
 	var unreadable string
 	gone := testwait.Holds(10*time.Second, 50*time.Millisecond, func() bool {
@@ -945,6 +949,9 @@ func TestTheUncoverProbeReportsAnUnlockedCoverRemoved(t *testing.T) {
 const uncoverControlEnv = "LEGION_ROLE_INIT_TEST_UNCOVER"
 
 // processes is how many processes the role can see.
+//
+// host-proc: it runs inside the role's namespaces, where /proc is the role's own (role-init mounts
+// it), and what it counts is what the role sees.
 func processes() int {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {

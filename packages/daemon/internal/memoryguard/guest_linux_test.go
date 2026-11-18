@@ -14,6 +14,9 @@ import (
 // to another process's oom_score_adj that needs no privilege, while the test process, which the
 // classifier names the role's agent, keeps its score. The classifier names no other process, so the
 // scan writes no score but these two's.
+//
+// host-proc: a score write the kernel takes is what this proves, and the classifier names the test
+// process and its child alone, so no other process the scan lists is scored or judged.
 func TestGuestRaisesARealChild(t *testing.T) {
 	self := filepath.Join("/proc", "self", "oom_score_adj")
 	start, err := readScore(self, make([]byte, 64))

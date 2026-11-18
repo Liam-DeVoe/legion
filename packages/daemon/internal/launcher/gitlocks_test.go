@@ -462,6 +462,9 @@ func roleNamespaceHolder(t *testing.T, dir, lock string) int {
 // childOf is the pid of parent's one child in the container's own /proc, and 0 while it has none:
 // every process's status names its parent's pid there, which is how a process of a role's
 // namespaces is found from outside them.
+//
+// host-proc: the child is in PID namespaces of its own, so only the container's /proc names it,
+// and parent is the test's own role-init, which no process the test did not start has for parent.
 func childOf(t *testing.T, parent int) int {
 	t.Helper()
 	entries, err := os.ReadDir("/proc")

@@ -207,6 +207,10 @@ func (g *pidGuard) reap(skip ...int) (bool, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	held := g.held()
+	// host-proc: what a test reads from a pass is which of its own children it reaped, since Wait4
+	// answers ECHILD for every process that is not this one's child; whether any other process is
+	// left is read by the drain alone, which runs only as PID 1 (cleanExitedGeneration), and a test
+	// is PID 1 only of a PID namespace of its own, whose /proc is its own (runAsPIDOne).
 	listed, err := listNamespace("/proc", held)
 	if err != nil {
 		return false, fmt.Errorf("list role namespace processes: %w", err)
@@ -228,6 +232,8 @@ func (g *pidGuard) signalNamespace(sig syscall.Signal) error {
 	if len(held) == 0 {
 		return signalGeneration(0, sig)
 	}
+	// host-proc: only the drain signals, and it runs only as PID 1 (cleanExitedGeneration): a test
+	// is PID 1 only of a PID namespace of its own, whose /proc is its own (runAsPIDOne).
 	listed, err := listNamespace("/proc", held)
 	if err != nil {
 		return fmt.Errorf("list role namespace processes: %w", err)
@@ -252,6 +258,8 @@ func signalEach(pids []int, sig syscall.Signal, kill func(int, syscall.Signal) e
 // delaying a resident worker's next turn, and never takes the exit status a generation's own wait
 // reports. It answers whether any process of the namespace is left but PID 1 and skip's.
 func reapNamespace(skip ...int) (bool, error) {
+	// host-proc: role-init's alone, which runs as PID 1 of the role's own PID namespace after it
+	// has mounted that namespace's own /proc (prepareRoleNamespace).
 	pids, err := procPIDs("/proc")
 	if err != nil {
 		return false, fmt.Errorf("list role namespace processes: %w", err)

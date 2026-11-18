@@ -1020,6 +1020,9 @@ func TestWorkspaceInitHoldEndsWithItsTest(t *testing.T) {
 
 // killProcessesRunning is every process whose command line names path, as "pid <n>: <argv>", each
 // killed once found so a failing run leaves none behind.
+//
+// host-proc: path is a file under the test's own TempDir, which no process the test did not start
+// names.
 func killProcessesRunning(t *testing.T, path string) []string {
 	t.Helper()
 	entries, err := os.ReadDir("/proc")

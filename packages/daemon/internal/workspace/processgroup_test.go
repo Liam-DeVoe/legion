@@ -108,6 +108,10 @@ func TestFetchKillsGitsWholeProcessTreeWhenItsTimeoutFires(t *testing.T) {
 // request's own CredentialDir never appears in any git argv — the credential helper reaches git
 // through GIT_CONFIG_VALUE_1 (clone.go), not a path — so scanning for it finds nothing whether or
 // not a process leaked.
+//
+// host-proc: a git the fetch leaked is a process of the machine, outside any root the test could
+// give it, and the marker is the URL of the test's own server, which only a process reaching that
+// server names.
 func gitProcessesUnder(t *testing.T, marker string) []string {
 	t.Helper()
 	entries, err := os.ReadDir("/proc")

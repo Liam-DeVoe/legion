@@ -683,6 +683,9 @@ func procEnviron(t *testing.T, pid int) map[string]string {
 
 // descendant is the first process under root, walking children breadth first, whose argv[0] is
 // named name — how the Stage 2 proof finds a pane's OMP.
+//
+// host-proc: the walk goes down from root, a process the test started, and no process the test did
+// not start descends from it.
 func descendant(t *testing.T, root int, name string) int {
 	t.Helper()
 	found := 0

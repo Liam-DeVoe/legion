@@ -187,7 +187,11 @@ type gitLockSweep struct {
 // anywhere else (by hand inside a role) sees that role's processes alone and would remove a lock
 // another role's git or jj holds. Any other launcher logs one line, sweeps nothing, and answers a
 // channel already closed. No manager then holds a sweep (manager.gitLocks), so a role start
-// learns nothing (learn) and runs its restore over the clone as the clone stands.
+// learns nothing (learn) and runs its restore over the clone as it stands.
+//
+// host-proc gate containerInit: in a test, a launcher passes containerInit only as PID 1 of a PID
+// namespace of its own, whose /proc is its own, or where the test stood its process in for PID 1
+// (useContainerInit), which gives the sweep a /proc of the test's own.
 func serveGitLockSweep(ctx context.Context, managers []*manager) <-chan struct{} {
 	if !containerInit() {
 		managers[0].log.linef("launcher: git lock sweep: off reason=the launcher is pid %d, not the container's first process, so it cannot see every process that may hold a lock",

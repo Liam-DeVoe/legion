@@ -96,6 +96,9 @@ const (
 // with its time (`at=`), so a pod the kernel ends keeps every line written before the end. The
 // last line is `live: verdict PASS` or `live: verdict FAIL reason=…`, except in a run the kernel
 // ends, which is what the guard off is expected to end in.
+//
+// host-proc: the guard on a machine's own processes and memory is what this measures, so it reads
+// this machine's /proc on purpose, and it runs only in a pod made for it, where liveEnv is 1.
 func TestMemoryGuardLiveSandbox(t *testing.T) {
 	if os.Getenv(liveHolderEnv) == "1" {
 		holdMemory()
