@@ -1,7 +1,8 @@
 kind: Changed
 body: |-
   `registrationTopics` no longer leaves out a topic that the stream subjects of this build do not
-  capture. It still leaves out a topic that reaches the private stream subject of another session.
+  capture. It still leaves out a topic that reaches a private stream subject that is not of this
+  session (`reachesPrivateStreamSubject`).
   `expandSubscriptionTopics` now always carries the base `X` of an `X.>` topic. The listener reads
   the subjects of the deployed stream again before it judges a topic. During a roll, these
   subjects include the subjects of a newer build. Before this change, a client of an older build
@@ -26,6 +27,15 @@ body: |-
   `session_delivery.go:367-376` at that tag). A listener from #2603 (`legion-envoy-v30.8.0`) to
   `legion-envoy-v30.36.0` leaves the topic out with its own warning and stores the other topics
   (`api.go:2611-2617` and `api.go:2683-2685` at `legion-envoy-v30.8.0`).
+
+  The list of private stream subjects in `stream-topics.ts` now also has the kept lane
+  (`notifications.envoy.kept.>`) and the resume lane (`notifications.envoy.resume.>`) of the
+  listener, as the list of the listener has since #2603 (`privateStreamSubjects` in
+  `packages/envoy/internal/bus/stream.go`). Only the listener reads these lanes. Before this
+  change, `registrationTopics` sent a topic on one of them to the listener. A
+  listener from #2603 did not store that topic and returned a warning for it. Now
+  `registrationTopics` leaves out such a topic, also on the resume lane of this session.
+  `replayFollowedSubjects` also leaves it out, so a restart does not follow it again.
 time: 2026-11-17T02:00:01.000000000Z
 custom:
     Issue: pr2404

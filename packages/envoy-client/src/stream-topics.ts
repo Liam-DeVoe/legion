@@ -11,17 +11,26 @@ import type { Interest } from "./transport";
 export const EXCEPTION_TOPIC_PREFIX = "notifications.envoy.exceptions.";
 
 /**
- * The stream subjects whose topics carry one agent session's private payload: each session's
- * inbox, the Legion daemon's notices for a project's controller, a failed delivery's report on a
- * session's subject (a session's own lane included), and a failed delivery on a team topic, which
- * carries the undelivered payload and the session it was for as the agent lane does. This is the
- * listener's own list, `privateStreamSubjects` in packages/envoy/internal/bus/stream.go.
+ * The stream subjects whose topics carry one agent session's private payload, or the listener's
+ * own record: each session's inbox, the Legion daemon's notices for a project's controller, a
+ * failed delivery's report on a session's subject (a session's own lane included), a failed
+ * delivery on a team topic, which carries the undelivered payload and the session it was for as
+ * the agent lane does, the kept lane (the role messages the listener could not deliver and the
+ * drain cursors over them, `notifications.envoy.kept.`, which is `KeptTopicPrefix` in
+ * packages/envoy/internal/bus/stream.go), and the resume lane (where a deleted session consumer
+ * stopped, `notifications.envoy.resume.`, which is `SessionResumeSubjectPrefix` in
+ * packages/envoy/internal/bus/session_resume.go). The listener alone reads the last two, so no
+ * session registers a topic under them, its own included. `@legion/contracts` exports neither
+ * prefix, so both are written here as the Go constants spell them. This is the listener's own
+ * list, `privateStreamSubjects` in packages/envoy/internal/bus/stream.go.
  */
 const PRIVATE_STREAM_SUBJECTS = [
   `${AGENT_TOPIC_PREFIX}>`,
   `${LEGION_NOTICE_TOPIC_PREFIX}>`,
   `${EXCEPTION_TOPIC_PREFIX}${AGENT_TOPIC_PREFIX}>`,
   `${EXCEPTION_TOPIC_PREFIX}notifications.team.>`,
+  "notifications.envoy.kept.>",
+  "notifications.envoy.resume.>",
 ];
 
 /** What a controller notice lane ends with; every other subject of that family names an issue. */
@@ -65,8 +74,10 @@ export function subjectsOverlap(a: string, b: string): boolean {
  * Whether a topic reaches a private stream subject that is not this session's: it overlaps one
  * under NATS wildcard rules, so another session's agent subject, a failed-delivery lane
  * (`notifications.envoy.exceptions.notifications.agent.<id>`, the session's own included, and the
- * team lane beside it), another project's controller lane, and every wildcard reaching any of
- * them (`notifications.agent.*`, `notifications.>`, `notifications.*.<x>`,
+ * team lane beside it), another project's controller lane, the kept lane
+ * (`notifications.envoy.kept.role.<role>`, `notifications.envoy.kept.cursor.<role>`), the resume
+ * lane (`notifications.envoy.resume.<id>`, the session's own included), and every wildcard
+ * reaching any of them (`notifications.agent.*`, `notifications.>`, `notifications.*.<x>`,
  * `notifications.envoy.>`) count. Two literal subjects are this session's own: `ownAgentSubject`,
  * in either form (its new form under a project, `NO_PROJECT` or a wildcard over every project,
  * whose old form `legacyTwin` reads back), and the controller notice lane of a project whose

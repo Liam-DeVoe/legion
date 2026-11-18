@@ -142,7 +142,9 @@ subject it holds for a role, and a topic reaching a private stream subject.
 `privateStreamSubjects` and `ReachesPrivateStreamSubject` in
 `packages/envoy/internal/bus/stream.go`, which a host's registration applies too: another session's
 agent subject, a failed-delivery lane on an agent subject or a team topic, a controller notice lane
-of a project whose controller role `roles` does not name, or a wildcard reaching one. A session
+of a project whose controller role `roles` does not name, the listener's kept lane
+(`notifications.envoy.kept.`) and resume lane (`notifications.envoy.resume.`, the session's own
+included), which only the listener reads, or a wildcard reaching one. A session
 holding that role registers its own project's lane, since its consumer is the only way the notice
 reaches it (`controllerNoticeRole` names the role a lane is for). `rememberedTopics(topics)` is what
 a restore follows again from a persisted state: every subject but agent subjects and role lanes.
