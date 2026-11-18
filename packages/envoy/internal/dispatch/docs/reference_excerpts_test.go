@@ -351,7 +351,7 @@ func TestADocumentTheExcerptReconciliationCannotRecordIsDeferredAndStaysOwed(t *
 // since the attempt before it: the pass defers a document only after its read has failed, to the
 // database's own now() plus the base doubled once per failure already counted, plus up to a fifth
 // again of jitter (refs.DeferExcerpts, refs/excerpts.go:224-239), and the loop holds its one timer
-// to that moment (reconcileExcerptPass, reference_excerpts.go:281-289). A product that retried on
+// to that moment (reconcileExcerptPass, reference_excerpts.go:283-291). A product that retried on
 // every pass fails at retry 1, and one whose wait stopped doubling fails at retry 2. The 20 ms is
 // for the two clocks the bound crosses, since the database stamps next_attempt_at from its own
 // now() and the loop waits out time.Until on this process's. Above, retry n must come within the

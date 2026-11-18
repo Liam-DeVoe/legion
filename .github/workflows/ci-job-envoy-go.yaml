@@ -64,7 +64,7 @@ jobs:
     # internal/dispatch/pmdoc's 766.2 s in the package list, against the 60 s of pmdoc's
     # perCallReportMargin (internal/dispatch/pmdoc/linear_test.go:1169); 14m leaves 426.1 s over
     # the documents package's 413.9 s in the race-impossible call, against the 30 s of its
-    # roomWaitMargin (internal/dispatch/docs/settlement_credit_test.go:555); and 3m leaves 101.2 s
+    # roomWaitMargin (internal/dispatch/docs/settlement_credit_test.go:546); and 3m leaves 101.2 s
     # over cmd/dispatch's 78.8 s in the shutdown call, against the 30 s of horizontest.Drain
     # (internal/dispatch/horizontest/horizontest.go:96), which the shutdown test's wait for its
     # event feed (waitEventsStart) leaves of the deadline so that its failure prints rather than
