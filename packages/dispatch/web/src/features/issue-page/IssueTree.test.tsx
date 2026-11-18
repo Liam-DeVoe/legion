@@ -4424,6 +4424,92 @@ test("a zoom into a row taller than the window places its crumb line, and the ro
   }
 });
 
+// `.` zooms into a row of the outline's top level and `,` draws the whole outline again with the
+// focus still on that row: it took no new focus, so nothing of its own placed it, and a zoom back
+// out to the issue placed nothing either - at 1440 by 900 on a long issue the row stood 2,000 to
+// 40,000 px below the window until the next key. Once the outline is drawn the row is brought on
+// screen by the page's one rule and held there while the rows above it grow, as the cycle key's
+// row is. A row `,` moves the focus to - the zoom's own, from a row under it - places itself as it
+// takes the focus, and the zoom places it no second time. happy-dom lays nothing out, so the boxes
+// are given, moved by each scroll, and the size observers watching the page are called by hand.
+test(", from the row . zoomed into brings that row on screen and holds it there as the page grows", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  let scrolledTo = 0;
+  // The one row given a box: how tall it is, and where it stands down the page. Every other row
+  // is given none, which reads as whole on screen.
+  let given = { height: 40, id: "comment-2", top: 300 };
+  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    return this.matches("[data-node-row]") && this.dataset.nodeId === given.id
+      ? new DOMRect(0, given.top - scrolledTo, 800, given.height)
+      : new DOMRect();
+  });
+  const scrolled = spyOn(window, "scrollBy").mockImplementation(((options: ScrollToOptions) => {
+    scrolledTo += options.top ?? 0;
+  }) as typeof window.scrollBy);
+  const sizes = sizesByHand();
+  try {
+    const view = renderTree(twoCommentsTree());
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+    await user.keyboard("{End}");
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-2"));
+    await user.keyboard(".");
+    await waitFor(() =>
+      expect(view.container.querySelector(`[data-crumb="${KEY}"]`)).not.toBeNull()
+    );
+    scrolled.mockClear();
+
+    // The whole outline drawn again puts the 40 px row 2,000 px below the window's foot.
+    given = { ...given, top: scrolledTo + window.innerHeight + 2000 };
+    await user.keyboard(",");
+    await waitFor(() => expect(view.container.querySelector("[data-crumb]")).toBeNull());
+    expect(focusedRow(view.container), "the key back out moved the focus off the row").toBe(
+      "comment-2"
+    );
+    // Its foot is brought 8 px clear of the screen's (`identity-block.ts`'s `bringOnScreen`).
+    expect(
+      scrolled,
+      "the key back out of the row . zoomed into left that row off screen"
+    ).toHaveBeenCalledWith({ top: 2000 + 40 + CLEARANCE });
+
+    // The rows above it grow by 500 px more, which puts it below the window's foot again.
+    given = { ...given, top: given.top + 500 };
+    await sizes.resized(document.body);
+    expect(
+      scrolled,
+      "the row was not held on screen as the rows above it grew"
+    ).toHaveBeenLastCalledWith({ top: 500 });
+
+    // `,` from the reply under the first comment's zoom moves the focus to the first comment,
+    // a row taller than the window, which places itself once: at its top just under the band.
+    await user.keyboard("{Home}");
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+    await user.keyboard(".");
+    await waitFor(() =>
+      expect(view.container.querySelector(`[data-crumb="${KEY}"]`)).not.toBeNull()
+    );
+    await user.keyboard("j");
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1a"));
+    scrolled.mockClear();
+    given = {
+      height: 2 * window.innerHeight,
+      id: "comment-1",
+      top: scrolledTo + window.innerHeight + 2000,
+    };
+    await user.keyboard(",");
+    await waitFor(() => expect(view.container.querySelector("[data-crumb]")).toBeNull());
+    expect(focusedRow(view.container)).toBe("comment-1");
+    expect(scrolled, "the row , moved the focus to was placed twice").toHaveBeenCalledTimes(1);
+    expect(scrolled).toHaveBeenCalledWith({ top: window.innerHeight + 2000 - CLEARANCE });
+  } finally {
+    sizes.restore();
+    boxes.mockRestore();
+    scrolled.mockRestore();
+  }
+});
+
 // The cycle key holds the focused row on screen while the bodies it draws above the row grow
 // (`holdOnScreen`), and a focus `f` left on a chip of the row is the row's own: the hold ended as
 // soon as the page grew with the focus on the chip rather than on the row itself, and the row was

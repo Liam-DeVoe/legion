@@ -355,15 +355,23 @@ export function IssueTree({
   // focus through it, or the one the key takes the focus to (`zoomLanding`) - places nothing of
   // its own from the render that draws the zoom until the reader's next act, so nothing of the
   // row's undoes where the line and the row are placed. A zoom back out to the issue draws no
-  // line, and its row places itself as every move's does.
+  // line, and the row it moves the focus to places itself as every move's does: the zoom's own
+  // row, which `,` takes the focus to from a row under it or from the page itself. The row that
+  // keeps the focus through it - `,` on the zoom's own row, or Left there where the tree is read
+  // one node at a time - takes no new focus, so nothing of its own places it: the zoom brings
+  // that row (`zoomedOutOn`) on screen once the whole outline is drawn (`zooms`). A press on the
+  // issue's crumb takes the focus out of the tree, so no row keeps it.
+  const zoomedOutOn = useRef<HTMLElement | null>(null);
   const rootId = root.id;
   const zoomTo = useCallback(
     (id: string) => {
       setZoom(id);
       setZooms((held) => held + 1);
       const lined = id !== rootId;
+      const row = focusedRowIn(body.current);
       zoomLanding.current = lined;
-      setUnplaced(lined ? focusedRowIn(body.current)?.dataset.rowKey : undefined);
+      zoomedOutOn.current = lined ? null : row;
+      setUnplaced(lined ? row?.dataset.rowKey : undefined);
     },
     [rootId]
   );
@@ -444,13 +452,27 @@ export function IssueTree({
   // than the room under the band went to its top just under the band and took the line back
   // under it, as it did again each time it grew - rows of 1,634 and 1,464 px left the line at
   // 15 to 59 and at -53 to 59 px under a band 51 px tall. Until the reader's next act the row
-  // places nothing of its own (`zoomTo`). This runs after the effect above, which focuses the row
-  // a zoom key asked for, so the row it reads is that one.
+  // places nothing of its own (`zoomTo`). A zoom back out to the issue draws the whole outline
+  // again around the row that kept the focus through it (`zoomedOutOn`), which took no new focus
+  // and so placed nothing of its own: at 1440 by 900 px on a long issue it stood 2,000 to 40,000
+  // px below the window until the next key. A key that moves no focus still keeps the focused row
+  // on screen, so once that outline is drawn the row is brought on screen by the page's one rule
+  // and held there while the rows above it still grow (`holdOnScreen`), until the reader's next
+  // act, as the cycle key's row is. A row the zoom moved the focus to is another element, which
+  // placed itself as it took the focus and is left where it put itself. This runs after the
+  // effect above, which focuses the row a zoom key asked for, so the row it reads is that one.
   const zoomHold = useRef<AbortController | undefined>(undefined);
   useEffect(() => () => zoomHold.current?.abort(), []);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: each zoom is placed once, so a new zoom is what runs this; a run with no zoom key since finds `zoomLanding` false.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: each zoom is placed once, so a new zoom is what runs this; a run with no zoom key since finds `zoomLanding` false and `zoomedOutOn` null.
   useEffect(() => {
-    if (!zoomLanding.current) return;
+    const kept = zoomedOutOn.current;
+    zoomedOutOn.current = null;
+    if (!zoomLanding.current) {
+      if (kept === null || focusedRowIn(body.current) !== kept) return;
+      bringOnScreen(kept);
+      holdInPlaceOf(kept, onScreenHold);
+      return;
+    }
     zoomLanding.current = false;
     zoomHold.current?.abort();
     zoomHold.current = abortOnReaderAct(() => setUnplaced(undefined));
