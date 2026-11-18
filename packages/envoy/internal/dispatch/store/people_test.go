@@ -1,7 +1,6 @@
 package store
 
 import (
-	"bytes"
 	"context"
 	"log/slog"
 	"net/http"
@@ -101,12 +100,14 @@ func storedRefreshToken(t *testing.T, database *Store, email string) *string {
 	return stored
 }
 
-// captureLogs sends slog's default logger to a buffer until t ends.
-func captureLogs(t *testing.T) *bytes.Buffer {
+// captureLogs sends slog's default logger to a buffer until t ends. The buffer is logtest's, whose
+// own lock makes a read safe while the code under test still logs on a goroutine of its own, as a
+// migration does while its row waits for the line that says it tries again.
+func captureLogs(t *testing.T) *logtest.Buffer {
 	t.Helper()
-	var logs bytes.Buffer
-	logtest.SetDefault(t, slog.NewTextHandler(&logs, nil))
-	return &logs
+	logs := &logtest.Buffer{}
+	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
+	return logs
 }
 
 // revokingPool is a sign-in pool on this machine with Dispatch's app client and the revocation
@@ -145,7 +146,7 @@ func migratedEmptyStore(t *testing.T) *Store {
 }
 
 // retireLines counts the lines logging a refresh token the pool did not revoke.
-func retireLines(logs *bytes.Buffer) int {
+func retireLines(logs *logtest.Buffer) int {
 	return strings.Count(logs.String(), "the sign-in pool did not revoke a refresh token stored in plain text")
 }
 
