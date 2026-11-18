@@ -6,7 +6,7 @@ import { EditorView } from "@milkdown/kit/prose/view";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { prosemirrorJSONToYXmlFragment } from "y-prosemirror";
 import * as Y from "yjs";
@@ -1406,6 +1406,26 @@ test("a row whose body is taller than the room still holds its editor's box to t
   }
 });
 
+// A line height of `normal`, which a computed style keeps as the word rather than a length, is
+// read as 1.2 times the editor's font size (`node-caret.ts`'s `NORMAL_LINE_HEIGHT`): the box under
+// a body taller than the room takes three lines of 1.2 x 20 px.
+test("a box held to three of the editor's lines reads a line of normal height as 1.2 times the editor's font size", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const layout: RowLayout = { above: 2, below: 0, drawn: 3000, stands: 62 };
+  const page = pageAroundEditingRow(layout);
+  layout.below = page.room + 100;
+  try {
+    const { box } = await heldEditorBox(user, page, { fontSize: "20px", lineHeight: "normal" });
+    expect(
+      box.style.maxHeight,
+      "the box of an editor whose lines are of normal height is not three lines of 1.2 times its font size"
+    ).toBe("72px");
+  } finally {
+    page.restore();
+  }
+});
+
 // The body can grow after the editor opened, as the page's reads answer - a requirement's counts
 // come with the coverage read - and the second look after the editor's drawing settles holds the
 // box again, so the row still fits the room.
@@ -1516,21 +1536,19 @@ function pageAroundEditingRow(layout: RowLayout): EditingPage {
   };
 }
 
-/** The statement's row on `page` with Enter pressed on it, once its editor - an editable of
- *  `EDITOR_LINE` px lines - has drawn the statement's document and the row has held the editor's
- *  box to a height. The page's scroll is watched from the drawing on: the move to the row
- *  before it placed the row as every move does. Answers the box and the editable. */
+/** The statement's row on `page` with Enter pressed on it, once its editor - an editable drawn in
+ *  `style`, by default in lines of `EDITOR_LINE` px - has drawn the statement's document and the
+ *  row has held the editor's box to a height. The page's scroll is watched from the drawing on:
+ *  the move to the row before it placed the row as every move does. Answers the box and the
+ *  editable. */
 async function heldEditorBox(
   user: UserEvent,
-  page: EditingPage
+  page: EditingPage,
+  style: CSSProperties = { lineHeight: `${EDITOR_LINE}px` }
 ): Promise<{ readonly box: HTMLElement; readonly editable: HTMLElement }> {
   const { editable } = await enterStatement(
     user,
-    <div
-      contentEditable
-      style={{ lineHeight: `${EDITOR_LINE}px` }}
-      suppressContentEditableWarning
-    />
+    <div contentEditable style={style} suppressContentEditableWarning />
   );
   page.scrolled.mockClear();
   await drawStatementBlocks(editable);
