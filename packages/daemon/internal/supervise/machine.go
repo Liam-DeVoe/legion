@@ -801,7 +801,7 @@ func (c Claim) RuleHoldError() error {
 	case SuspendedByController:
 		return fmt.Errorf("the claim is suspended by %s; it waits for the controller's or the operator's resume: %w", SuspendedByController, ErrHeldByController)
 	}
-	return fmt.Errorf("the claim is suspended by %s; it waits for the operator's resume: %w", SuspendedByOperator, ErrHeldByOperator)
+	return fmt.Errorf("the claim is suspended by %s; it waits for the operator's resume: %w", c.Holder(), ErrHeldByOperator)
 }
 
 // ClaimView is a claim as its machine last published it (Machine.View), with what only the decision
@@ -1814,9 +1814,9 @@ func (c Claim) ReleasedLaunch() bool {
 // StartedBy records the outbox row of the start being run against this claim, so a stop written
 // before it can be told apart from one written after. A stop is retried until the runtime takes
 // it, and a retry that lands after this start would suspend the run this start began. That
-// includes a held suspension (holdSuspension), which the start drops — unless it is the operator's:
-// a claim an operator's suspension holds records no start and answers ErrHeldByOperator, so the
-// start waits for the operator to resume the claim.
+// includes a held suspension (holdSuspension), which the start drops — unless it is one that holds:
+// a claim the operator's, the controller's or an architect's suspension holds records no start and
+// answers that holder's wait (RuleHoldError), so the start waits for a resume to lift it.
 //
 // It is also what releases a task held because its root had no architect to hear it (sendPending,
 // Deps.RootHears): this start is the root running again, so the held task goes now, before the
@@ -3764,7 +3764,7 @@ func claimOf(ev Event) claim.Token {
 		return ev.Claim
 	case RequestRetry:
 		return ev.Claim
-	case RequestOperatorRetry:
+	case RequestAskedRetry:
 		return ev.Claim
 	case RequestForgetSession:
 		return ev.Claim

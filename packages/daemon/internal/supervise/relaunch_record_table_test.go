@@ -178,7 +178,7 @@ func relaunchesOntoTheCurrentPlugin(c *letGoCell) {
 
 // stopsForTheOperator is the operator's stop (stop, end, retire), which records what it ended
 // under its own cause (endStopped) and puts the claim where the operator's retry reaches it:
-// retired (RequestOperatorRetry's row, operatorRetry).
+// retired (RequestAskedRetry's row, operatorRetry).
 func stopsForTheOperator(c *letGoCell) {
 	c.h.t.Helper()
 	c.h.must(RequestStop{Claim: c.h.token, By: SuspendedByOperator})
@@ -280,7 +280,7 @@ func resumedByTheOperator(h *harness) {
 // (operatorRetry, retry, revive).
 func retriedByTheOperator(h *harness) {
 	h.t.Helper()
-	h.must(RequestOperatorRetry{Claim: h.token, By: SuspendedByOperator})
+	h.must(RequestAskedRetry{Claim: h.token, By: SuspendedByOperator})
 	h.relaunched()
 }
 

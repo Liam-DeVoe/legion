@@ -7,16 +7,17 @@ capacity (an architect says its tree cannot run what it needs under the slots it
 between trees is not one of them: the architect that finds it writes to the other tree's
 architect itself (`skill://legion-architect`, "Escalation judgment"). An issue-design decision is
 not one either: the owning architect writes it as a decision block and opens its own finding
-asks. Send a design decision back to that architect with `envoy_publish` to its role, because it
-is not yours to make.
+asks. Send a design decision back to that architect as a Dispatch comment on the owning issue that
+mentions its role (`skill://legion-controller/SKILL.md#rules`), because it is not yours to make.
 
 For capacity, the only lever is order. You cannot change `admission.cap`: it is the operator's
 `legion.yaml` setting, and `set_status` is your only admission move. The cap counts the issues the
 daemon has started, a root or a child, not trees, and an issue holds one as
 [Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label) says, so a tree's own children compete for it with every other
 tree's. Read `admission.active`, `admission.waiting` and `admission.trees`, tell the architect
-where its tree's issues stand in the line with `envoy_publish`, and
-open a finding ask when the deployment needs a larger cap.
+where its tree's issues stand in the line, as a Dispatch comment on the owning issue that mentions
+its role (`skill://legion-controller/SKILL.md#rules`), and open a finding ask when the deployment
+needs a larger cap.
 
 ## An escalated hold
 

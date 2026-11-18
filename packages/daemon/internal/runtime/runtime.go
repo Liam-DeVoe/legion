@@ -121,7 +121,7 @@ type Runtime interface {
 	// non-empty answer: the round asks each role of that place to push its work and answer (api's
 	// claims/ready-for-update), and replaces the place (ReplacePod) once every asked role has
 	// answered and no turn runs, or at the round's bound (pod_update_grace_minutes) whatever the
-	// roles answered, an operator's suspension excepted.
+	// roles answered, a holding suspension excepted.
 	//
 	// ErrPodGone is the place the locator records not being there, or being ended for something
 	// other than this round's own replacement, which is neither drift nor a failure to ask:

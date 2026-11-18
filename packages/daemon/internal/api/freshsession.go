@@ -107,7 +107,7 @@ const freshSessionReason = "a fresh session was asked for"
 // which no role names (claimDoor). request is the word for the request the stop, the
 // suspension and the resume each make as a single event to the claim's machine, which the
 // daemon's stop and the machine's refusals name it by (claimEventOperation, postClaimEvent,
-// operatorFailure), and did is what the log line of one of the operator's four that ran says
+// operationFailure), and did is what the log line of one of the operator's four that ran says
 // the caller did to the claim (answerClaimOperation). The retry starts the claim through the
 // operator's retry rather than one event, so it leaves request empty (claimRetry, retryStart);
 // the two recoveries write their own answers and log lines, and leave both empty.
@@ -116,7 +116,7 @@ const freshSessionReason = "a fresh session was asked for"
 // is answered as a claim in a turn (refuseClaimOperation, refuseClaimInATurn): the resume's
 // alone is, since a resume reaches no claim in a turn, and reaches names the states it does
 // reach. The stop's is not: the machine refuses a stop of a working claim only for a tree's
-// root, and that is the root's own refusal, in the machine's words (operatorFailure). Nor is the
+// root, and that is the root's own refusal, in the machine's words (operationFailure). Nor is the
 // suspension's, which is held for a turn rather than refused for it. The retry reaches no claim
 // in a turn either, and refuses one from claimRetry's own read of the claim's state before the
 // machine is asked anything, so it leaves refusesATurn false and names its states in reaches.
@@ -381,16 +381,16 @@ func roleList() string {
 // contrast, leaves no way at all to drop the session the request was for.
 //
 // The resume goes before the phase's restart, so the claim is back in its new session before
-// anything the workflow may refuse is asked for. Only an operator's own suspension holds the
-// start a restart queues (supervise's Claim.RuleHolds, which the outbox's start row and
-// supervise.Machine.StartedBy both answer with a wait): a claim the daemon suspended, and one
-// an idle release suspended, has no such hold. A restart run first on such a claim wakes the
-// outbox lane on the committed fact, the lane's start row finds a claim the rule may resume and
-// resumes it, and this route's own resume then meets a launching claim, which the table ignores
-// and the machine answers a refusal for (supervise's onResume rows): the caller reads a 409 for
-// a claim that is already relaunching. Run first, the resume has the claim launching before the
-// fact commits, and the lane's rule resume finds a live claim with nothing left to do
-// (supervise's onRuleResume rows).
+// anything the workflow may refuse is asked for. Only a suspension that holds, the operator's,
+// the controller's or an architect's, holds the start a restart queues (supervise's
+// Claim.RuleHolds, which the outbox's start row and supervise.Machine.StartedBy both answer with
+// a wait): a claim the daemon suspended, and one an idle release suspended, has no such hold. A
+// restart run first on such a claim wakes the outbox lane on the committed fact, the lane's start
+// row finds a claim the rule may resume and resumes it, and this route's own resume then meets a
+// launching claim, which the table ignores and the machine answers a refusal for (supervise's
+// onResume rows): the caller reads a 409 for a claim that is already relaunching. Run first, the
+// resume has the claim launching before the fact commits, and the lane's rule resume finds a live
+// claim with nothing left to do (supervise's onRuleResume rows).
 //
 // A restart the workflow refuses is therefore no refusal of the fresh session — not a fact the
 // store would not apply, not the workflow's own refusal of it, not an issue the retry leaves
@@ -529,7 +529,7 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	// fact wakes starts the claim, and a start that found the session still recorded would resume
 	// the very session this call is leaving behind (operator_test's
 	// TestTheOperatorsFreshSessionRetryForgetsTheSessionBeforeTheRestartIsApplied). The ask rides
-	// the retry as well (RequestOperatorRetry.FreshSession, intake.RestartPhase.FreshSession), so
+	// the retry as well (RequestAskedRetry.FreshSession, intake.RestartPhase.FreshSession), so
 	// the start the workflow raises spawns rather than resumes whatever the claim still records.
 	// forgot is whether the forget below dropped a recorded session, which a refusal of the
 	// resume after it must say: the claim is no longer the one the request found.
@@ -553,7 +553,7 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 				"claim", token, "session", session, "error", err)
 			return http.StatusOK, notStartedAgain(token, m.Claim().State, "the forget of the session it recorded", err), false, true
 		case err != nil:
-			s.operatorFailure(w, "forget-session", token, err)
+			s.operationFailure(w, "forget-session", token, err)
 			return 0, "", false, false
 		}
 		forgot = true
@@ -586,7 +586,7 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 		s.refuseHold(w, token, freshSessionOp, by, err, outcome)
 		return 0, "", false, false
 	case err != nil:
-		s.operatorFailure(w, "resume", token, err)
+		s.operationFailure(w, "resume", token, err)
 		return 0, "", false, false
 	}
 	// A phase worker that owes no task is handed one by its issue's phase, through the same
@@ -935,7 +935,7 @@ func storedWorking(state supervise.ClaimState) bool {
 // held claim takes (refuseHeldSuspension). A suspension refused by a landed suspension that
 // outranks the caller — the controller's or an architect's, met by a suspend outranking it that
 // landed under the request — is that hold's refusal (refuseHold). Every other refusal is the
-// machine's own answer, in the words operatorFailure gives it. It reports false when it answered
+// machine's own answer, in the words operationFailure gives it. It reports false when it answered
 // the caller. by is the caller's own source (freshSession).
 func (s *server) suspendForFreshSession(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token,
 	by supervise.SuspendSource) bool {
@@ -953,7 +953,7 @@ func (s *server) suspendForFreshSession(w http.ResponseWriter, r *http.Request, 
 		s.refuseHold(w, token, freshSessionOp, by, err, nothingChanged)
 		return false
 	case err != nil:
-		s.operatorFailure(w, "suspend", token, err)
+		s.operationFailure(w, "suspend", token, err)
 		return false
 	}
 	return true

@@ -107,8 +107,9 @@ A root architect whose claim on its root was refused waits, holding its slot, an
 when the holder lets go. Take each key of the `read_state` summary's `active` line whose own line
 reads `<KEY> admitted <status>`; with none, read nothing more. Read those keys with `read_state`
 and `issues: [<keys>]`, at most ten a call, and `dispatch read` each whose `tree` is its own key.
-When `Claimed by:` is `nobody` or ends `· not running`, `envoy_publish` `<KEY>: the claim is free;
-claim it again.` to `notifications.role.<issues.<KEY>.architect.locator.claim>`.
+When `Claimed by:` is `nobody` or ends `· not running`, post `<KEY>: the claim is free; claim it
+again.` as a Dispatch comment on `<KEY>` that mentions `role:<issues.<KEY>.architect.locator.claim>`
+([Rules](#rules)).
 
 ## Issues handed to Legion
 

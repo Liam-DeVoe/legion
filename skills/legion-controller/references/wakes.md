@@ -154,8 +154,10 @@ Read `issues.<KEY>.treeMovedAt`, when the daemon last saw anything of the tree m
 carries the same pair, so read it on any of them. A tree the record shows no movement for reads
 `quietHours` 2562047.788, which means "it has never moved" and is no fault of its own.
 
-Read the tree and decide what it needs. Ask a role what it waits on (`envoy_publish` to its role
-topic). Move an issue back a phase where the phase it stands in has nobody to work it. Park the
+Read the tree and decide what it needs. Ask a role what it waits on: an architect as a Dispatch
+comment on the owning issue that mentions its role (`skill://legion-controller/SKILL.md#rules`),
+and any other role with `envoy_publish` to its role topic. Move an issue back a phase where the
+phase it stands in has nobody to work it. Park the
 tree only as the rule for a move to `backlog` or `icebox` allows
 ([Rules](skill://legion-controller/SKILL.md#rules)), and for a tree that waits on an event outside
 Legion, do as [A tree that waits on an event outside Legion](#a-tree-that-waits-on-an-event-outside-legion) says.

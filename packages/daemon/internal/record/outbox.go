@@ -629,7 +629,7 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // of the two the controller runs its prioritization pass and its deployment's intake. A tick is
 // the daemon's periodic wake, whose issue is the project key. An update-stalled notice names an
 // issue whose update round has passed its bound (`pod_update_grace_minutes` after it opened)
-// while something still holds it: an operator's suspension of a role the round asks, a
+// while something still holds it: a holding suspension of a role the round asks, a
 // ReplacePod the runtime refused, no claim recording a process in the round's pod (or in any
 // pod), or claims recording two pods. It is told once per round (the daemon's
 // reconcilePodUpdates). A provider-errors notice names an issue whose role has ended six turns in

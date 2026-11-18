@@ -74,7 +74,7 @@ var ErrCompactProcessGone = errors.New("the claim lost its process while its ses
 // the claim owes was not sent.
 //
 // What becomes of that task is the hold's own, and settle is what decides it. A suspension by
-// a source that resumes this same claim in the same phase — an operator's hold, and a
+// a source that resumes this same claim in the same phase — one that holds, and a
 // released claim's — keeps the task through the suspension, and it goes when the claim runs
 // again (SuspendSource.RetiresPhaseTask, settle). The daemon's own suspension ends the
 // claim's phase, so settle retires the task queued for that phase with it and nothing sends

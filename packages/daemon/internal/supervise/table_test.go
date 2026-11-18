@@ -169,7 +169,7 @@ func samples(t *testing.T) map[string][]Event {
 		"RequestIssueClose":    {RequestIssueClose{}},
 		"RequestOperatorClose": {RequestOperatorClose{}},
 		"RequestRetry":         {RequestRetry{}},
-		"RequestOperatorRetry": {RequestOperatorRetry{}},
+		"RequestAskedRetry":    {RequestAskedRetry{}},
 		"RequestForgetSession": {RequestForgetSession{}},
 		"RequestDeliver":       {RequestDeliver{}},
 		"RequestExit":          {RequestExit{}},
@@ -345,8 +345,8 @@ func fenced(ev Event, c Claim) Event {
 		return RequestStop{Claim: c.Token, By: SuspendedByOperator}
 	case RequestRetry:
 		return RequestRetry{Claim: c.Token}
-	case RequestOperatorRetry:
-		return RequestOperatorRetry{Claim: c.Token, By: SuspendedByOperator}
+	case RequestAskedRetry:
+		return RequestAskedRetry{Claim: c.Token, By: SuspendedByOperator}
 	case RequestForgetSession:
 		return RequestForgetSession{Claim: c.Token, Session: c.Session, By: SuspendedByOperator}
 	case RequestDeliver:
@@ -467,7 +467,7 @@ func TestAnEventForAnotherClaimIsAnError(t *testing.T) {
 func wantsRefusal(ev Event) bool {
 	switch ev.(type) {
 	case RequestSpawn, RequestRegister, RequestReady, RequestSuspend, RequestResume, RequestStop,
-		RequestRetry, RequestOperatorRetry, RequestForgetSession, RequestDeliver, RequestExit, RequestCompact,
+		RequestRetry, RequestAskedRetry, RequestForgetSession, RequestDeliver, RequestExit, RequestCompact,
 		RequestTurnOutcome, PodUpdateSignalled:
 		return true
 	}

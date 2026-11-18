@@ -147,7 +147,7 @@ func TestTheRuleResumesEverySuspensionButTheOperators(t *testing.T) {
 			}
 			h.wantState(StateSuspended)
 			h.wantCalls("Resume", 0)
-			if lines := h.logs.lines(`msg="supervise: not resumed by rule: its suspension holds until the operator resumes it"`); len(lines) != 1 {
+			if lines := h.logs.lines(`msg="supervise: not resumed by rule: its suspension holds until a resume lifts it"`); len(lines) != 1 {
 				t.Errorf("hold lines %q, want one saying the suspension holds", lines)
 			}
 		})

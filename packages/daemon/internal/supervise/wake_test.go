@@ -383,7 +383,7 @@ func TestAnOperatorsRetryRefusedByTheParkedClaimLeavesItsWakeItsTurn(t *testing.
 	h.clock.Advance(wakeInterval / 4)
 	second.Wait()
 
-	err := h.postTo(second, RequestOperatorRetry{Claim: secondToken, By: SuspendedByOperator})
+	err := h.postTo(second, RequestAskedRetry{Claim: secondToken, By: SuspendedByOperator})
 
 	var refused *RefusedError
 	if !errors.As(err, &refused) || refused.State != StateSuspended {
@@ -406,7 +406,7 @@ func TestAnOperatorsRetryRefusedByTheParkedClaimLeavesItsWakeItsTurn(t *testing.
 // after a deploy asks it of every claim it held — so each takes its turn behind the wake ahead of
 // it, as every launch the pacing holds does, and launches at that turn.
 //
-// The negative control is exemptWake letting every RequestResume and RequestOperatorRetry
+// The negative control is exemptWake letting every RequestResume and RequestAskedRetry
 // through whoever names it, as it did: the controller's and the architects' rows then launch at
 // once, and this test reads that at the runtime's starts.
 func TestOnlyTheOperatorsResumeAndRetryAreLetPastThePacing(t *testing.T) {
@@ -420,9 +420,9 @@ func TestOnlyTheOperatorsResumeAndRetryAreLetPastThePacing(t *testing.T) {
 		{"the operator's resume", StateSuspended, SuspendedByDaemon, RequestResume{Claim: secondToken, By: SuspendedByOperator}, false},
 		{"the controller's resume", StateSuspended, SuspendedByDaemon, RequestResume{Claim: secondToken, By: SuspendedByController}, true},
 		{"an architect's resume", StateSuspended, SuspendedByArchitect, RequestResume{Claim: secondToken, By: SuspendedByArchitect}, true},
-		{"the operator's retry", StateFailed, "", RequestOperatorRetry{Claim: secondToken, By: SuspendedByOperator}, false},
-		{"the controller's retry", StateFailed, "", RequestOperatorRetry{Claim: secondToken, By: SuspendedByController}, true},
-		{"an architect's retry", StateFailed, "", RequestOperatorRetry{Claim: secondToken, By: SuspendedByArchitect}, true},
+		{"the operator's retry", StateFailed, "", RequestAskedRetry{Claim: secondToken, By: SuspendedByOperator}, false},
+		{"the controller's retry", StateFailed, "", RequestAskedRetry{Claim: secondToken, By: SuspendedByController}, true},
+		{"an architect's retry", StateFailed, "", RequestAskedRetry{Claim: secondToken, By: SuspendedByArchitect}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := pacedHarness(t, wakeRate)

@@ -92,7 +92,7 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 // (internal/supervise/table.go), so the kept session relaunches with fresh budgets. What nothing
 // does by itself is queue that start: no rule the daemon runs starts a retired claim, the boot's
 // repair reads only a suspension, and the operator's retry refuses a claim that has not failed
-// (supervise.RequestOperatorRetry). So the rule this report states is unchanged in meaning — a
+// (supervise.RequestAskedRetry). So the rule this report states is unchanged in meaning — a
 // claim no queued start will reach — and what was wrong was the states it read.
 //
 // Two shapes of retired worker reach the report through record.Issue.WorkingPhase. One is a
@@ -104,11 +104,12 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 // role switch: a running tree whose architect a close retired has nothing but its own tree's
 // admission to start it, so it is stranded while no admission start is queued.
 //
-// A suspension that holds for the operator is stranded whatever starts are queued for it: each one
-// waits, on its row's backoff, until the operator resumes the claim (the outbox's start answers
-// supervise.ErrHeldByOperator), so a queued start wakes nothing. The claim is held by the hold
-// itself, whatever task it kept: the stop timeout takes a confirmed task back for the resume, and
-// an unconfirmed phase task stays through the suspension (supervise's settle).
+// A claim under a suspension that holds — the operator's, the controller's or an architect's
+// (supervise.SuspendSource.Holds) — is stranded whatever starts are queued for it: each one waits,
+// on its row's backoff, until a resume lifts that suspension (the outbox's start answers its
+// holder's wait, supervise.Claim.RuleHoldError), so a queued start wakes nothing. The claim is
+// held by the hold itself, whatever task it kept: the stop timeout takes a confirmed task back for
+// the resume, and an unconfirmed phase task stays through the suspension (supervise's settle).
 //
 // The move that brings each one back is api.StrandedClaim.Move's.
 //

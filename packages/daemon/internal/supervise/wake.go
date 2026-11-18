@@ -720,7 +720,7 @@ func operatorDelivery(ev Event) bool {
 }
 
 // exemptWake is whether the launch a request raises is one the wake pacing lets through: the
-// operator's own resume and retry (RequestResume.By, RequestOperatorRetry.By naming the operator),
+// operator's own resume and retry (RequestResume.By, RequestAskedRetry.By naming the operator),
 // which a person is waiting on, and a spawn whose caller marked it exempt, which is the
 // operator's spawn route and nothing else — the project controller is exempt by identity, in the
 // gate itself, which covers the launches no request raises as well (reserveWake,
@@ -738,7 +738,7 @@ func exemptWake(ev Event) bool {
 		return ev.Exempt
 	case RequestResume:
 		return ev.By == SuspendedByOperator
-	case RequestOperatorRetry:
+	case RequestAskedRetry:
 		return ev.By == SuspendedByOperator
 	}
 	return false

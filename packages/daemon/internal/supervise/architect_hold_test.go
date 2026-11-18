@@ -2,6 +2,7 @@ package supervise
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -14,6 +15,36 @@ func TestSuspensionRankPutsTheArchitectUnderTheDaemonAndTheController(t *testing
 	for i, source := range ordered {
 		if got, want := suspensionRank(source), i+1; got != want {
 			t.Errorf("suspensionRank(%q) = %d, want %d", source, got, want)
+		}
+	}
+}
+
+// A start or a delivery that meets a suspension that holds waits, and RuleHoldError says why: it
+// names the source that holds the claim, landed or held for its agent's turn, and wraps that
+// holder's own wait, which says whose resume lifts it. A controller's or an architect's hold
+// named as the operator's would send its reader to the operator for a resume the controller or
+// an architect makes.
+//
+// The negative control is RuleHoldError without its controller's and architect's arms: their rows
+// then wrap the operator's wait.
+func TestARuleHoldErrorNamesTheSuspensionThatHolds(t *testing.T) {
+	for _, tc := range []struct {
+		by   SuspendSource
+		wait error
+	}{
+		{SuspendedByOperator, ErrHeldByOperator},
+		{SuspendedByController, ErrHeldByController},
+		{SuspendedByArchitect, ErrHeldByArchitect},
+	} {
+		for _, c := range []Claim{
+			{State: StateSuspended, SuspendedBy: tc.by},
+			{State: StateWorking, SuspensionHeld: true, SuspensionHeldBy: tc.by},
+		} {
+			err := c.RuleHoldError()
+			if want := "the claim is suspended by " + string(tc.by) + ";"; !errors.Is(err, tc.wait) || !strings.HasPrefix(err.Error(), want) {
+				t.Errorf("RuleHoldError of a claim %s with a suspension held %t, held by %q, suspended by %q = %v; want it to begin %q and wrap %v",
+					c.State, c.SuspensionHeld, c.SuspensionHeldBy, c.SuspendedBy, err, want, tc.wait)
+			}
 		}
 	}
 }
@@ -299,7 +330,7 @@ func TestTheDaemonsSuspensionTakesOverAnArchitectsPlacedBeforeIt(t *testing.T) {
 		if err := h.handle(RequestStop{Claim: testToken, By: SuspendedByArchitect}); !errors.As(err, &refused) || !errors.Is(err, ErrNotTheArchitectsSuspension) {
 			h.t.Errorf("the architect's stop after the park returned %v, want a refusal naming ErrNotTheArchitectsSuspension", err)
 		}
-		if err := h.handle(RequestOperatorRetry{Claim: testToken, By: SuspendedByArchitect}); !errors.As(err, &refused) {
+		if err := h.handle(RequestAskedRetry{Claim: testToken, By: SuspendedByArchitect}); !errors.As(err, &refused) {
 			h.t.Errorf("the architect's retry after its stop returned %v, want the refusal of a retry of a claim that has not failed or retired", err)
 		}
 	}

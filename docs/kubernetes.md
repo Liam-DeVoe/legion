@@ -4838,23 +4838,20 @@ Run no `git` or `jj` in the pod, and bring no credential into it, for two reason
 
 So the pod runs only `tar`, and every `git` that touches the pod's bytes runs in a throwaway container on your machine with no network and no credential, inside the container's own filesystem.
 That container runs step 2 as `skills/legion-controller/scripts/carry-out.sh`, the one rebuild that this route and the controller's route both run, which the worker image holds at `/opt/legion/pi-legion/dist/skills/legion-controller/scripts/carry-out.sh`.
-It reads the two archives from your directory and writes only a git bundle back, rebuilding in a scratch directory beside the bundle that it removes when it ends, and step 3 fetches that bundle with git's object check.
-Run the steps from an empty directory, run no git on anything but the bundle outside the container, and delete the directory once the push is done:
+It reads the two archives from your directory and writes only the git bundle back to it: it rebuilds in a scratch directory of the container's own `/tmp`, beside the empty `$HOME` it makes there (`rebuild`, `dirname "$home"`), so the unpacked tree and both repositories never land in your directory, and it removes that scratch directory when it ends.
+Step 3 fetches the bundle with git's object check.
+Run the steps from an empty directory, run no git on anything but the bundle outside the container, and delete the directory once the push is done.
+
+Step 1 is the two `tar` commands of `skills/legion-controller/references/operations.md`, "A pod delete with nothing lost", step 1, written once there because the controller reads that file from its plugin and cannot read this one.
+The controller runs them from its own pod; you run them from your machine, with your own `kubectl` context, in that empty directory, with `<namespace>` the deployment's namespace (`legion` here), `<pod>` the issue's pod and `<key>` the issue key lower-cased.
+One thing differs: replace each command's `"$TMPDIR/<KEY>-git.tar"` and `"$TMPDIR/<KEY>-tree.tar"` with `<KEY>-git.tar` and `<KEY>-tree.tar`, so the archives land in the directory you run from, because step 2 mounts that directory into its container and reads them there.
+Then run steps 2 and 3:
 
 ```sh
-pod=<pod> K=<KEY> image=<runtime.kubernetes.image>   # the daemon's worker image, by digest
-clone=/legion/repos/github.com/<owner>/<repo>
+K=<KEY> image=<runtime.kubernetes.image>   # the daemon's worker image, by digest
 ws=/legion/workspaces/<owner>/<repo>/<issue key lowercased>
-# 1. In the pod, tar alone: the clone's refs, worktree records and objects, and the workspace's
-#    files. Each refuses a directory reached through a symlink; the tree drops every .git and .jj.
-#    An exit of 1 after "file changed as we read it" (the agents still write) is not a failure.
-kubectl -n legion exec "$pod" -c roles -- sh -c 'set -e; cd -P "$1/.git"
-  test "$(pwd -P)" = "$1/.git"
-  tar --hard-dereference -cf - refs worktrees $(test -f packed-refs && echo packed-refs) objects
-  ' sh "$clone" > "$K-git.tar"
-kubectl -n legion exec "$pod" -c roles -- sh -c 'set -e; cd -P "$1"; test "$(pwd -P)" = "$1"
-  tar --hard-dereference --ignore-case --exclude=.git --exclude=.jj --exclude=./.codegraph \
-  -cf - .' sh "$ws" > "$K-tree.tar"
+# 1. In the pod, tar alone: the two commands of operations.md's step 1, as above, which leave
+#    "$K-git.tar" and "$K-tree.tar" here.
 # 2. In a throwaway container of the worker image, carry-out.sh as its entrypoint: it checks both
 #    archives, rebuilds the work under an empty environment, and bundles what origin lacks.
 #    CARRY_OUT_STAGE=container makes the container its namespace.
@@ -5960,21 +5957,21 @@ The daemon cannot save that work: it reads a workspace only over a role process,
 A start inside the idle period therefore finds the workspace as the stopped roles left it, in the pod that is still there, and a start after the release provisions the workspace afresh from the issue's pushed branch.
 
 Of the reasons that hold such a pod past the idle period, the daemon writes three to its hold records, each under a name of its own:
-a claim of the issue still records a process (`unowned_claim_process`), an operator's own suspension holds a claim (`unowned_operator_suspended`), and a task, notice, message or start waits for delivery to a role of the issue (`unowned_delivery_waiting`).
+a claim of the issue still records a process (`unowned_claim_process`), a suspension that holds — the operator's, the controller's or an architect's — is over a claim (`unowned_operator_suspended`, a name that says the operator's alone and stands for all three), and a task, notice, message or start waits for delivery to a role of the issue (`unowned_delivery_waiting`).
 The rule answers six reasons more, which the daemon counts in the per-pass line of its log and writes to no record:
 the issue's Sandbox has gone already (`unowned_sandbox_gone`), the issue or its tree root has left the workflow or lingers (`unowned_tree_not_live`), a release of the pod is already running (`unowned_releasing`), a live claim holds the pod again (`unowned_claim_live`), the record holds no claim of the issue at all (`unowned_no_claim`), and the pod did something inside the period (`unowned_not_idle`).
 `unowned_sandbox_gone` is the word an operator reads most, and it is no fault.
 Nothing takes a released issue out of the list the pass decides, because this release changes no claim, so the rule reads every issue whose pod it has taken on every later pass and holds it under that word, once a minute, until a start makes a claim of the issue live, which builds its pod again, or the issue or its tree root leaves the workflow or lingers.
 A pass line whose `held` counts are mostly `unowned_sandbox_gone` is the ordinary state of a deployment that has released pods, and the two numbers to read beside it are `decided` and `released`.
-An operator's suspension holds the pod because it is the one suspension the daemon never ends by itself.
-The operator ends that pod by resuming the claim, which starts the role in the pod that is still there, or by stopping it, which retires the claim and leaves the issue to this rule.
+A suspension that holds keeps the pod because it is one that the daemon never ends by itself (`RuleMayResume`).
+Its holder ends that pod, or a resume or a stop that outranks the holder does: resuming the claim starts the role in the pod that is still there, and stopping it retires the claim and leaves the issue to this rule.
 
 A release is three acts, in this order, and the daemon gives it an id (`issue_releases.id`) that its mark, its bundle and the restore report of the pod that puts that bundle back all carry:
 
 - the workspace's unpushed work is saved as a git bundle in the daemon's own database (below);
 
 - each live claim of the pod is suspended with a source of its own, `released` (`supervise.SuspendedByReleased`).
-  That source keeps the claim's phase, its place in that phase and the task it holds, which every other source but the operator's retires (`SuspendSource.RetiresPhaseTask`), and the boot's resume by rule passes it over (`booted`, `internal/workflow/resume.go`).
+  That source keeps the claim's phase, its place in that phase and the task it holds, which every other source but the three that hold (the operator's, the controller's and an architect's) retires (`SuspendSource.RetiresPhaseTask`), and the boot's resume by rule passes it over (`booted`, `internal/workflow/resume.go`).
   A wake starts a released claim again, and two other steps do too, both below: admission's pass, for a claim that stands behind the entry its phases row names, and the first boot of this release, for each merger that the `awaiting_merge` cutover left stopped (`cutoverMergerRepair`);
 
 - the issue's Sandbox is set `Suspended`, its pod is waited out, and the Sandbox and the six role Secrets it owns are deleted (`SuspendIssue`, `internal/runtime/sandbox/issue_suspend.go`), the teardown an issue's stop already runs ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
@@ -6006,8 +6003,8 @@ The wakes are these:
 The merge-queue removal message tells a merger that GitHub took its pull request out of the merge queue at the head the record holds, and that the daemon's read of the pull request found no merge, or that no read of it succeeded.
 While the root's design gate is closed, that message wakes no released merger, and it waits for the gate to open.
 The message can also wait for a merger that has no claim yet, because the merger's start is still owed.
-The message wakes no merger that an operator suspended, since a wake acts only on a released claim (`wakeForDelivery`, `internal/daemon/wake.go`).
-It waits for that merger too, and it reaches the merger when the operator resumes the claim.
+The message wakes no merger that the operator, the controller or an architect suspended, since a wake acts only on a released claim (`wakeForDelivery`, `internal/daemon/wake.go`).
+It waits for that merger too, and it reaches the merger when a resume lifts that suspension.
 While it waits, the message holds the issue's pod, as any row of the role-message lane does.
 The idle release does not take that pod, and the other roles of the issue keep running in it.
 
@@ -6042,7 +6039,9 @@ The daemon deletes the bundle once the launcher confirms the restore, and delete
 A bundle is offered to one pod and one only: the first pod of the issue that is not the pod the work came off to ask for it, which in an ordinary release is the pod the teardown's next launch made.
 That pod is sent the bundle when it was created after the save, and refused when it was not — a pod the release did not replace, or the replacement itself on a node whose clock runs ahead of the API server's — and either way no later pod is sent it, because the roles of the pod that asked go on working and pushing from the workspace their own fetch provisioned.
 A restore that fails, and a refusal, each keep the work: it is still in the database and no pod has it, so the daemon holds the issue's next pod open rather than release it again over a workspace that never had that work, which is the `bundle_unrestored` hold above, and the work stays there for an operator to carry out of the database by hand.
-The row's `bundle` column is a git bundle, so an operator reads it out with `psql '<postgres_dsn>' -XAt -c "select encode(bundle, 'base64') from workspace_bundles where issue = '<KEY>'" | base64 -d > <KEY>.bundle`, checks it with `git bundle list-heads <KEY>.bundle`, and unbundles it into any clone of the repository, where the row's `head` is the working copy's commit and `bookmarks` maps each bookmark to its commit.
+The row's `bundle` column is a git bundle, so an operator reads it out with `psql '<postgres_dsn>' -XAt -c "select encode(bundle, 'base64') from workspace_bundles where issue = '<KEY>'" | base64 -d > <KEY>.bundle` and checks it with `git bundle list-heads <KEY>.bundle`.
+Then, in a clone of the repository fetched from GitHub first, the operator fetches it with git's object check, as step 3 of [Carrying unpushed work out of an issue's pod](#carrying-unpushed-work-out-of-an-issues-pod) fetches its bundle: `git -c fetch.fsckObjects=true fetch <dir>/<KEY>.bundle 'refs/legion-bundle/*:refs/remotes/bundle-<KEY>/*'`, with `<dir>` the directory the `psql` command wrote it to, where the row's `head` is the working copy's commit and `bookmarks` maps each bookmark to its commit.
+Git makes that check of a bundle's objects from 2.46.0 on (`VERIFY_BUNDLE_FSCK`, `bundle.h`), so this fetch needs git 2.46 or later: an earlier git takes the option and fetches the bundle unchecked.
 A bundle stays through a linger and a park, and goes when its issue is done or its tree closes.
 A release of a pod no claim owns neither takes a bundle nor deletes one, so a bundle an earlier release of the same issue saved stays where it is, and the issue's next pod is offered it as before.
 The `bundle_unrestored` hold does not keep such a pod either, since that release saves no bundle over the one the database holds.

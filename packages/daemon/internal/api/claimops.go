@@ -339,7 +339,7 @@ func (s *server) claimEventOperation(w http.ResponseWriter, r *http.Request, op 
 // suspension the caller may not get past in that hold's own code (refuseHold), a claim stored
 // working that the operation does not reach as a claim in a turn (claimOp.refusesATurn,
 // refuseClaimInATurn), and every other refusal as the operator's door answers it, in the
-// machine's own words (operatorFailure).
+// machine's own words (operationFailure).
 func (s *server) refuseClaimOperation(w http.ResponseWriter, target claimTarget, err error, op claimOp) {
 	var refused *supervise.RefusedError
 	switch {
@@ -348,7 +348,7 @@ func (s *server) refuseClaimOperation(w http.ResponseWriter, target claimTarget,
 	case op.refusesATurn && errors.As(err, &refused) && refused.State == supervise.StateWorking:
 		refuseClaimInATurn(w, target.token, op)
 	default:
-		s.operatorFailure(w, op.request, target.token, err)
+		s.operationFailure(w, op.request, target.token, err)
 	}
 }
 

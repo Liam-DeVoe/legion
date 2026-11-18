@@ -498,7 +498,7 @@ type RequestRetry struct {
 	FreshSession bool
 }
 
-// RequestOperatorRetry is the operator relaunching a claim through the API: the retry RequestRetry
+// RequestAskedRetry is a caller relaunching a claim through the API: the retry RequestRetry
 // makes, fresh budgets and the same session, for an architect and for a phase worker
 // (operatorRetry). It is its own event, as the closes are, so the table answers each caller's
 // retry its own way. FreshSession is `legion claims retry --fresh-session`, as RequestRetry takes
@@ -517,7 +517,7 @@ type RequestRetry struct {
 // dispatch://INFRA-956 R3 asked to be made of `legion` commands alone. The claim's tree lifecycle
 // still decides whether the relaunch runs at all: a tree whose cleanup is reserved refuses the
 // launch (revive, Store.AdmitClaim), as it refuses the workflow's own retry of a retired claim.
-type RequestOperatorRetry struct {
+type RequestAskedRetry struct {
 	Claim        claim.Token
 	FreshSession bool
 	By           SuspendSource
@@ -666,7 +666,7 @@ func (RequestTreeClose) isEvent()     {}
 func (RequestIssueClose) isEvent()    {}
 func (RequestOperatorClose) isEvent() {}
 func (RequestRetry) isEvent()         {}
-func (RequestOperatorRetry) isEvent() {}
+func (RequestAskedRetry) isEvent()    {}
 func (RequestForgetSession) isEvent() {}
 func (RequestDeliver) isEvent()       {}
 func (RequestExit) isEvent()          {}
@@ -788,7 +788,7 @@ func kindOf(ev Event) eventKind {
 		return onOperatorClose
 	case RequestRetry:
 		return onRetry
-	case RequestOperatorRetry:
+	case RequestAskedRetry:
 		return onOperatorRetry
 	case RequestForgetSession:
 		return onForgetSession
@@ -823,7 +823,7 @@ func requestName(ev Event) (string, bool) {
 		return "stop", true
 	case RequestTreeClose, RequestOperatorClose, RequestIssueClose:
 		return "close", true
-	case RequestRetry, RequestOperatorRetry:
+	case RequestRetry, RequestAskedRetry:
 		return "retry", true
 	case RequestForgetSession:
 		return "forget-session", true
@@ -1117,7 +1117,7 @@ func fillTable(t *builder) {
 	t.ignore(onResume, failedClaim, StateFailed)
 	t.ignore(onResume, retiredClaim, StateRetired)
 
-	t.row(onRuleResume, "resume the same session by rule, unless the operator suspended it", resumeByRule,
+	t.row(onRuleResume, "resume the same session by rule, unless a suspension that holds is over it", resumeByRule,
 		[]ClaimState{StateLaunching, StateFailed}, StateSuspended)
 	t.row(onRuleResume, "the claim runs: nothing to resume", nothingToDo, nil, live...)
 	t.row(onRuleResume, "a queued claim is spawned by its start, not resumed", nothingToDo, nil, StateQueued)
@@ -2467,7 +2467,7 @@ func resume(m *Machine, ctx context.Context, ev Event) error {
 func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 	rule := ev.(RequestRuleResume).Reason
 	if !m.claim.RuleMayResume() {
-		m.log.Info("supervise: not resumed by rule: its suspension holds until the operator resumes it", "rule", rule, "suspendedBy", m.claim.SuspendedBy)
+		m.log.Info("supervise: not resumed by rule: its suspension holds until a resume lifts it", "rule", rule, "suspendedBy", m.claim.SuspendedBy)
 		return nil
 	}
 	m.log.Info("supervise: resuming by rule", "rule", rule, "suspendedBy", m.claim.SuspendedBy)
@@ -2523,14 +2523,14 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 // reaches the machine (api's retryStart starts the phase itself for every other one). The
 // daemon's controller has a retry of its own, its keeper, so it alone is refused. A claim's role
 // never changes, so the refusal cannot race the decision it guards. The retry names who asks
-// (RequestOperatorRetry.By, askedBy), which is what the wake pacing reads (exemptWake).
+// (RequestAskedRetry.By, askedBy), which is what the wake pacing reads (exemptWake).
 //
 // It relaunches the session the claim records, unless the retry asks for a new one
-// (RequestOperatorRetry.FreshSession) or the provider refused that session out of the claim's
+// (RequestAskedRetry.FreshSession) or the provider refused that session out of the claim's
 // launch budget: retry forgets the session in either case, so the launch spawns a fresh agent,
 // because resuming a session whose turns the provider refused would be refused again.
 func operatorRetry(m *Machine, ctx context.Context, ev Event) error {
-	if err := askedBy(m, "retry", ev.(RequestOperatorRetry).By); err != nil {
+	if err := askedBy(m, "retry", ev.(RequestAskedRetry).By); err != nil {
 		return err
 	}
 	if m.claim.Role == claim.RoleController {
@@ -2651,8 +2651,8 @@ func forgottenBy(by SuspendSource) string {
 	return "an operator cleared it with `legion claims forget-session` or `legion claims retry --fresh-session`, so this claim starts fresh"
 }
 
-// askedBy refuses a resume, a stop, a forget of the session or an operator's retry
-// (RequestResume.By, RequestStop.By, RequestForgetSession.By, RequestOperatorRetry.By) that names a
+// askedBy refuses a resume, a stop, a forget of the session or a caller's retry
+// (RequestResume.By, RequestStop.By, RequestForgetSession.By, RequestAskedRetry.By) that names a
 // source other than the three that ask one: the operator, the controller and an architect. The
 // source decides which suspensions refuse the request (Claim.ResumeRefusal,
 // Claim.StopOrSuspendRefusal) and whether the wake pacing lets its launch through (exemptWake), so
@@ -2758,10 +2758,10 @@ func deliverNow(m *Machine, ctx context.Context, ev Event) error {
 }
 
 // deliverResuming queues a task on a suspended claim and resumes it for that task. The workflow's
-// task (an outbox delivery, which carries a durable id) resumes a claim unless an operator
-// suspended it: an operator's suspension answers ErrHeldByOperator, queuing
-// nothing, and its start waits for the operator's resume. The operator's own delivery resumes the
-// claim whoever suspended it.
+// task (an outbox delivery, which carries a durable id) resumes a claim unless a suspension that
+// holds is over it: the operator's, the controller's or an architect's answers that holder's wait
+// (RuleHoldError), queuing nothing, and its start waits for a resume to lift it. The operator's
+// own delivery resumes the claim whoever suspended it.
 //
 // Which of the two it is decides the pacing too, and the id is what says which (RequestDeliver.ID,
 // which the API's deliver route leaves empty). The workflow's own task is a wake of the daemon's
