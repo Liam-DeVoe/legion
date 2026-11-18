@@ -77,6 +77,11 @@ import (
 //
 // A write without the header runs as it always did, unkeyed, and is logged at DEBUG: a script, a
 // test and the Legion daemon's outbox send writes that name no intent, and are expected to.
+//
+// A keyed write whose caller does not resolve runs unkeyed, as a write without the header does,
+// but its handler is handed the layer's refusal as the caller (resolvedCallerKey) rather than
+// resolving the caller again: it refuses the request as it always has, nothing is kept, and a
+// lookup that failed here and then succeeded cannot make the write with no key.
 
 const (
 	// keyedAnswerKept is the largest answer a key keeps. A larger one is still answered in full, but
@@ -209,9 +214,10 @@ type requestKeyClaimKey struct{}
 // them (broker_token.go).
 type resolvedCallerKey struct{}
 
-// resolvedCaller is that decision. err is the refusal where the credential did not resolve,
-// which only a decision made before the request's own layers carries: a caller refused once is
-// told why rather than told its spent proof did not verify.
+// resolvedCaller is that decision. err is the refusal where the credential did not resolve, which
+// a decision made before the handler carries: decideBrokerToken's, so a caller refused once is
+// told why rather than told its spent proof did not verify, and keyedWrites', so a handler never
+// resolves again a caller the keyed layer could not, and never writes with no key.
 type resolvedCaller struct {
 	actor model.Actor
 	human bool
@@ -252,8 +258,15 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 		}
 		actor, human, err := s.optionalActor(r)
 		if err != nil {
-			// The handler refuses a caller it cannot resolve as it always has, and nothing is kept.
-			handler(w, r)
+			// The handler refuses a caller it cannot resolve as it always has, and nothing is
+			// kept. It is handed this refusal as its caller rather than left to resolve the caller
+			// again: a failure that cleared between the two lookups - a store or an issuer down for
+			// a moment - ran the write with no key, and the retry under the key made it a second
+			// time. So the request is answered as one without a key is, by whichever refusal it
+			// meets first, the handler's own (a bearer-only route's 403 to a request with no
+			// bearer) or this one (a 401, a broker's 429, a 5xx), and no key was claimed, so no
+			// answer is kept and none names the key back.
+			handler(w, r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{err: err})))
 			return
 		}
 		r = r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{actor: actor, human: human}))

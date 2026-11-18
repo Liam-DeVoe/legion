@@ -1066,7 +1066,8 @@ func (s *server) optionalActor(r *http.Request) (model.Actor, bool, error) {
 	// The caller may already be decided: a keyed write resolves before its handler
 	// (keyedWrites), and a DPoP presentation is decided once a request however many layers
 	// resolve it (decideBrokerToken), which is why a refusal rides along — a proof spent on
-	// the first resolution cannot answer the second.
+	// the first resolution cannot answer the second, and a keyed write's handler that resolved
+	// a caller the keyed layer could not would write with no key.
 	if caller, ok := r.Context().Value(resolvedCallerKey{}).(resolvedCaller); ok {
 		return caller.actor, caller.human, caller.err
 	}
