@@ -13,7 +13,7 @@ later phase keeps it current rather than replacing it:
 ## For the reviewer
 
 **Outcome:** <one sentence a user of this repository would recognise: what someone can now do, or what stops going wrong>
-**Why:** <the problem, one or two sentences, ending with the Dispatch key in parentheses — the key only, never a URL, and no other issue's key before it>
+**Why:** <the problem, one or two sentences, ending with the Dispatch key in parentheses — the key only, never a URL>
 **Change:**
 - <two to five bullets, each one behaviour a user or operator meets, never a file name>
 **Look at first:** <one to three `path:line` places where a wrong decision would hurt> (the reviewer writes this line)
@@ -154,10 +154,6 @@ in its head branch, a key in its title or body, and a key in its commit messages
 as at another commit (`older` in a client before pi-envoy 17.1.0) when its commit is an earlier
 head, when no attributed head is its commit, as when the pull request is attributed to another
 issue, or when any field of the check changed after it was recorded.
-So the title names no other issue's key, and the body names its own key before any other and
-cites another pull request or issue as `owner/repo#N`, never as a bare `#N`, which Dispatch reads
-as a GitHub issue the body cites, ranked above any key: a pull request attributed to another issue
-proves no result of yours, at a head that never moved.
 
 **An issue is proved by its own checks.** Approval is gated by the `before_merge` checks of its
 own Verification document, read at its own head, so a result a child recorded proves nothing for
