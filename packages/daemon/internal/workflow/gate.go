@@ -977,7 +977,7 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	// it.
 	recipients := make([]roleRecipient, 0, len(members)+1)
 	for _, member := range members {
-		if role := RoleFor(member.Phase); role != claim.RoleArchitect {
+		if role := member.RoleAt(member.Phase); role != claim.RoleArchitect {
 			recipients = append(recipients, roleRecipient{issue: member.Key, role: role, row: member.Key})
 		}
 	}

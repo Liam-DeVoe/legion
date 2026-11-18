@@ -288,7 +288,7 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 	if woken != claim.RoleArchitect {
 		recipients = append(recipients, roleRecipient{issue: issue.Tree, role: claim.RoleArchitect, row: issue.Key})
 	}
-	for _, role := range []claim.Role{RoleFor(issue.Phase), claim.RoleImplementer} {
+	for _, role := range []claim.Role{issue.RoleAt(issue.Phase), claim.RoleImplementer} {
 		if role == claim.RoleArchitect || role == woken {
 			continue
 		}

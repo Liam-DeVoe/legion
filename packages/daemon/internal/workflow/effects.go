@@ -105,7 +105,7 @@ func SilentPhaseWorker(issue, root record.Issue, gate record.TreeGate, role clai
 }
 
 // unpromptedPhaseWorker is the half of SilentPhaseWorker that is not about a moment: a live claim
-// of the role that works issue's phase (OpenPhaseRole), on an issue at work in a tree that does
+// of the worker of issue's open phase (OpenRoleOf), on an issue at work in a tree that does
 // not linger, up and between turns, in no update round, holding no task it still works, with no
 // acting stop and no queued start and recorded in root's tree. Ready and idle are both a process
 // waiting to be prompted; the role, not the state, tells a fault from health. The last three
@@ -119,7 +119,7 @@ func unpromptedPhaseWorker(issue, root record.Issue, gate record.TreeGate, role 
 	if run.Claim == nil {
 		return false
 	}
-	if working := OpenPhaseRole(issue.Phase); working == "" || working != role {
+	if working := OpenRoleOf(issue); working == "" || working != role {
 		return false
 	}
 	if !record.AtWork(issue, gate) || root.Lingers() {
