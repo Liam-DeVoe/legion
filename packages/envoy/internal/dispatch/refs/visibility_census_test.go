@@ -192,6 +192,9 @@ var readsWithoutAViewer = map[string]string{
 	"ItemBlockAt":      nodeDetail,
 	"ItemsOwedWindows": serverWork,
 	"ListOwed":         serverWork,
+	"NamedBlock": "it answers a node id and nothing of any node: the pinned read of a block names the node an address " +
+		"names, which it then reads through Node and holds to the block's predicate at that node, so a block who may not " +
+		"see answers what an address nobody holds answers",
 	"NewReader":        serverWork + " - the index-time resolver acts for no person, and every edge it lets a write store is held to the predicates of both its ends when it is read",
 	"NextExcerptRetry": serverWork,
 	"OwedItemBlocks":   serverWork,

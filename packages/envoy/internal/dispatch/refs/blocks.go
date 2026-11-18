@@ -267,7 +267,11 @@ func IndexBlocks(
 	}
 	firstIndexing := len(stored) == 0
 	nodes, long, longest := uniqueBlocks(blocks)
+	// The blocks past the bound are no nodes, but an issue room records the document of each, as it
+	// does every other block's (reconcileRoomBlocks).
+	var pastBound []model.ArtifactBlock
 	if long > 0 {
+		pastBound = pastBoundBlocks(blocks)
 		slog.Warn("dispatch: block ids past the bound are not graph nodes; a mention inside one of their blocks starts at the block holding it",
 			"artifact", artifactID, "version", version, "blocks", long, "longest_bytes", longest, "bound_bytes", text.MaxBlockIDBytes)
 	}
@@ -278,8 +282,12 @@ func IndexBlocks(
 	}
 	// The documents whose fragments of an issue room hold this version's blocks, where the
 	// document indexed is an issue's tree artifact: each block's in_document names its fragment's
-	// document, and its rank stands in that document's band (dispatch://INFRA-1253 R5).
-	fragments, err := fragmentDocuments(ctx, tx, artifactID, nodes)
+	// document, and its rank stands in that document's band (R5 of this branch's spec).
+	fragmented := nodes
+	if len(pastBound) > 0 {
+		fragmented = slices.Concat(nodes, pastBound)
+	}
+	fragments, err := fragmentDocuments(ctx, tx, artifactID, fragmented)
 	if err != nil {
 		return nil, false, graphstore.Uncaused{}, false, err
 	}
@@ -590,7 +598,7 @@ func IndexBlocks(
 	}
 	// An issue room's blocks name their documents in issue_room_blocks, beside their
 	// document_blocks rows under the tree artifact, in this transaction (D16).
-	moves, err := reconcileRoomBlocks(ctx, tx, artifactID, document, nodes, fits, fragments, deleted)
+	moves, err := reconcileRoomBlocks(ctx, tx, artifactID, document, nodes, fits, pastBound, fragments, deleted)
 	if err != nil {
 		return nil, false, graphstore.Uncaused{}, false, err
 	}
@@ -1302,7 +1310,8 @@ const documentsOwedWindowsQuery = `
 	left join document_rooms moved on moved.artifact_id = v.artifact_id
 	left join lateral (
 		select 1 from document_blocks b
-		left join issue_room_blocks room_block on room_block.tree_artifact_id = b.artifact_id and room_block.block_id = b.block_id
+		left join issue_room_blocks room_block on room_block.tree_artifact_id = b.artifact_id
+		  and block_id_key(room_block.block_id) = block_id_key(b.block_id) and room_block.block_id = b.block_id
 		where v.version is null and b.artifact_id = coalesce(moved.room, v.artifact_id)
 		  and coalesce(room_block.document_id, b.artifact_id) = v.artifact_id
 		limit 1
@@ -1322,7 +1331,11 @@ func uuidAfter(after string) string {
 }
 
 // citedBlocks is, of the document's blocks named by ids, each that a source cites (a refs or a
-// block_refs row points at its node), as a block target.
+// block_refs row points at it), as a block target at its node. A citation keeps the address it was
+// written at, so a block of an issue room, whose node is the room tree's, is cited at its node or
+// at the same block id under any document of the room (document_rooms), each of which resolves to
+// that node (ResolvedBlockSQL, block_room_address), as documentRoomBlockAddresses reads them for
+// the read of a document; a document that is its own room holds no such address.
 func citedBlocks(ctx context.Context, tx pgx.Tx, artifactID string, ids []string) ([]Target, error) {
 	if len(ids) == 0 {
 		return nil, nil
@@ -1330,12 +1343,16 @@ func citedBlocks(ctx context.Context, tx pgx.Tx, artifactID string, ids []string
 	cited, err := scanTargets(tx.Query(ctx, `
 		select 'block', b.node_id
 		from (
-			select a.ref_key || '#' || t.id as node_id
+			select a.ref_key || '#' || t.id as node_id,
+			       array[a.ref_key || '#' || t.id] || array(
+			         select joined_document.ref_key || '#' || t.id from document_rooms joined
+			         join artifacts joined_document on joined_document.id = joined.artifact_id
+			         where joined.room = $1::uuid) as addresses
 			from unnest($2::text[]) as t (id)
 			cross join (select ref_key from artifacts where id = $1::uuid) a
 		) b
-		where exists (select 1 from refs r where r.to_kind = 'block' and r.to_id = b.node_id)
-		   or exists (select 1 from block_refs r where r.to_kind = 'block' and r.to_id = b.node_id)
+		where exists (select 1 from refs r where r.to_kind = 'block' and r.to_id = any(b.addresses))
+		   or exists (select 1 from block_refs r where r.to_kind = 'block' and r.to_id = any(b.addresses))
 	`, artifactID, ids))
 	if err != nil {
 		return nil, fmt.Errorf("read the cited blocks of %s: %w", artifactID, err)
@@ -1732,14 +1749,13 @@ func replaceBlockRefs(
 // pair but a block's mention whose target is a block: a `block[]` attribute's, a decision's or an
 // ask block's tie (pointerPairs) - to the node it resolves to now (ResolvedBlockSQL), read in one
 // statement. A far end that resolves to no block - its block deleted - takes the address the
-// resolution's two steps name without asking for a row (block_address_walk, then
-// block_room_address), where a block_refs row of document artifactID holds that address: so the
-// pair keeps the far end its row and its tuple already name, and its row stays, as the row of a
-// pointer at a deleted block of a document that is its own room stays; a later version that drops
-// the pointer retracts that tuple. Any other far end stays as written. Two pointers of one block
-// and one kind that name two addresses of one node are one link once resolved, so it answers
-// pairs with each such repeat after the first left out, a slice of its own where there is one and
-// pairs itself where there is none.
+// resolution's two steps name without asking for a row (UnheldBlockSQL), where a block_refs row of
+// document artifactID holds that address: so the pair keeps the far end its row and its tuple
+// already name, and its row stays, as the row of a pointer at a deleted block of a document that is
+// its own room stays; a later version that drops the pointer retracts that tuple. Any other far end
+// stays as written. Two pointers of one block and one kind that name two addresses of one node are
+// one link once resolved, so it answers pairs with each such repeat after the first left out, a
+// slice of its own where there is one and pairs itself where there is none.
 func resolvePointerPairs(ctx context.Context, q Queryer, artifactID string, pairs []blockPair) ([]blockPair, error) {
 	pointer := func(pair blockPair) bool { return pair.kind != "mentions" && pair.target.Kind == BlockNodeKind }
 	var addresses []string
@@ -1756,10 +1772,7 @@ func resolvePointerPairs(ctx context.Context, q Queryer, artifactID string, pair
 		from (select distinct unnest($2::text[]) as address) p
 		cross join lateral (
 			select coalesce(`+ResolvedBlockSQL("p.address")+`, (
-				select named.address from (
-					select coalesce(block_room_address(walked.reached), walked.reached) as address
-					from (select block_address_walk(p.address) as reached) walked
-				) named
+				select named.address from (select `+UnheldBlockSQL("p.address")+` as address) named
 				where exists (select 1 from block_refs held
 					where held.artifact_id = $1::uuid and held.to_kind = '`+BlockNodeKind+`' and held.to_id = named.address)
 			)) as node_id
@@ -1884,7 +1897,9 @@ func scanBlockRefRows(rows pgx.Rows, err error) ([]blockRefRow, error) {
 // issue's room, written at the document's own address, reaches the room's node. A pointer's link
 // counts only while the block it reaches has a type the pointer allows, tested as the arm of
 // graph_edges that answers the row tests it (blockRefListed). A link either of whose blocks who
-// may not see drops out the same way, since neither end resolves to a node.
+// may not see drops out the same way: the statement that reads the links, which reads the store
+// where it resolves a far end, binds each end's predicate (VisibleKind), as every read of a block
+// does, and the nodes read after it answer neither end.
 //
 // It reads no document's address and follows no document's move: it takes the two documents by
 // uuid, and a document the pre-mortem conversion retired, whose address moved to a lens
@@ -1903,7 +1918,8 @@ func BlockLinks(ctx context.Context, q Queryer, who model.Actor, fromArtifact, t
 		where r.artifact_id = `+DocumentRoomSQL("$1::uuid")+` and r.to_kind = 'block'
 		  and `+BlockDocumentSQL("f")+` = $1::uuid and `+BlockDocumentSQL("t")+` = $2::uuid
 		  and `+blockRefListed("r", "t.node_id")+`
-		order by r.created_at desc, r.from_node, t.node_id`, fromArtifact, toArtifact)
+		  and `+VisibleKind(BlockNodeKind, "r.from_node", "$3")+` and `+VisibleKind(BlockNodeKind, "t.node_id", "$3")+`
+		order by r.created_at desc, r.from_node, t.node_id`, fromArtifact, toArtifact, VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("list the block links from %s to %s: %w", fromArtifact, toArtifact, err)
 	}
@@ -2110,6 +2126,20 @@ func BlockTargets(ctx context.Context, q Queryer, artifactID string, written []m
 // Dispatch knows no first version of it, and every column is null, as for a block with no
 // recorded text.
 func blockFirstVersion(alias, artifact, block string) string {
+	return blockFirstVersionOr(alias, artifact, block, "")
+}
+
+// blockFirstVersionOr is blockFirstVersion with document, SQL text answering a uuid, as the
+// document a text row of the block records a version of where no issue_room_blocks row names the
+// block (BlockDocumentOrSQL), in place of the row's own artifact; "" keeps the row's own. A reader
+// of a block a version deleted from an issue room, whose issue_room_blocks row went with it, reads
+// the room's rows of its text and passes the document it read the block's address in, which is the
+// only record left of which fragment held it.
+func blockFirstVersionOr(alias, artifact, block, document string) string {
+	owner := BlockDocumentSQL("t")
+	if document != "" {
+		owner = BlockDocumentOrSQL("t", document)
+	}
 	return `left join lateral (
 		select t.version,
 		       t.version = 1 or exists (
@@ -2117,7 +2147,7 @@ func blockFirstVersion(alias, artifact, block string) string {
 		       ) as known,
 		       v.authors, v.created_at
 		from document_block_texts t
-		cross join lateral (select ` + BlockDocumentSQL("t") + ` as id) owner
+		cross join lateral (select ` + owner + ` as id) owner
 		left join artifact_versions v on v.artifact_id = owner.id and v.number = t.version
 		where t.artifact_id = ` + artifact + ` and t.block_id = ` + block + ` and t.text is not null
 		  and not ` + MovedRoomBlockSQL(artifact, block) + `
@@ -2164,7 +2194,10 @@ func (f blockFirst) maker() ([]model.Actor, *time.Time, error) {
 // the document at the latest version a block-aware build indexed below removedVersion, the last
 // one known to hold it (null when none is), and at the state and visibility the store holds for
 // it (storedNode), which the index pass that deleted it stated gone. The caller adds its pin.
-// Authors that do not decode (storedActors) fail the read.
+// Authors that do not decode (storedActors) fail the read. The block's text rows are the room's
+// the document is edited in (DocumentRoomSQL), at the document's own version numbers, and the
+// deletion took the issue_room_blocks row that named the document, so they are read as the
+// document's (blockFirstVersionOr); its versions and indexed versions are the document's own.
 func RemovedBlockNode(ctx context.Context, q Queryer, document model.GraphNode, nodeID, blockID string, removedVersion int) (model.GraphNode, error) {
 	var first blockFirst
 	var removedBy []byte
@@ -2176,8 +2209,8 @@ func RemovedBlockNode(ctx context.Context, q Queryer, document model.GraphNode, 
 		select `+blockFirstColumns("first")+`, removed.authors, removed.created_at,
 		       (select max(i.version) from document_indexed_versions i where i.artifact_id = b.artifact_id and i.version < $3),
 		       `+storedNode(BlockNodeKind, "$4")+`
-		from (select $1::uuid as artifact_id, $2::text as block_id) b
-		`+blockFirstVersion("first", "b.artifact_id", "b.block_id")+`
+		from (select $1::uuid as artifact_id, `+DocumentRoomSQL("$1::uuid")+` as room, $2::text as block_id) b
+		`+blockFirstVersionOr("first", "b.room", "b.block_id", "b.artifact_id")+`
 		left join artifact_versions removed on removed.artifact_id = b.artifact_id and removed.number = $3
 	`, documentID, blockID, removedVersion, nodeID).Scan(append(first.targets(), &removedBy, &removedAt, &held, &stored)...); err != nil {
 		return model.GraphNode{}, fmt.Errorf("read the facts of removed block %q of %s: %w", blockID, documentID, err)
@@ -2235,6 +2268,25 @@ func uniqueBlocks(blocks []model.ArtifactBlock) (nodes []model.ArtifactBlock, lo
 		nodes = append(nodes, block)
 	}
 	return nodes, long, longest
+}
+
+// pastBoundBlocks keeps, in order, the first block of each id longer than text.MaxBlockIDBytes,
+// the blocks uniqueBlocks skips for their length, of the ids a Postgres text[] can hold: no node
+// of the store, whose documents an issue room records all the same (reconcileRoomBlocks).
+func pastBoundBlocks(blocks []model.ArtifactBlock) []model.ArtifactBlock {
+	var long []model.ArtifactBlock
+	seen := map[string]struct{}{}
+	for _, block := range blocks {
+		if len(block.ID) <= text.MaxBlockIDBytes || !text.Storable(block.ID) {
+			continue
+		}
+		if _, dup := seen[block.ID]; dup {
+			continue
+		}
+		seen[block.ID] = struct{}{}
+		long = append(long, block)
+	}
+	return long
 }
 
 // innermostBlocks names, for each start (ascending), the index of the tightest block whose

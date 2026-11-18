@@ -358,7 +358,9 @@ func TestSettlingAProposedNodeIsOneWriteByAPersonOrItsAuthor(t *testing.T) {
 		PrimaryArtifactID string `json:"primary_artifact_id"`
 	}](t, created)
 	spec := "dispatch://" + issue.Key + "/spec"
-	refKey := issue.Key + "/spec"
+	// The spec is a document of its issue's room, whose tree keys its requirements' nodes, which
+	// the store's reads below take.
+	room := readDecisionDocument(t, rig.database, issue.Key, "spec")
 
 	const (
 		firstSession  = "ses_first_agent_0001"
@@ -415,7 +417,7 @@ func TestSettlingAProposedNodeIsOneWriteByAPersonOrItsAuthor(t *testing.T) {
 	// requireMadeBy holds the requirement blockID to the author who wrote it: the test's premise.
 	requireMadeBy := func(blockID string, author model.Actor) {
 		t.Helper()
-		node, held, err := graphstore.ReadNode(ctx, rig.database.Pool, refs.BlockNodeKind, refKey+"#"+blockID)
+		node, held, err := graphstore.ReadNode(ctx, rig.database.Pool, refs.BlockNodeKind, room.address(blockID))
 		if err != nil || !held || !node.MadeBy.SameCredential(author) || node.MadeBy.Proven != author.Proven {
 			t.Fatalf("%s is made by %+v (held %t, %v), want %+v: the test's premise is who wrote each requirement", blockID, node.MadeBy, held, err, author)
 		}
@@ -467,7 +469,7 @@ func TestSettlingAProposedNodeIsOneWriteByAPersonOrItsAuthor(t *testing.T) {
 			t.Fatalf("%s settles %s: status=%d body=%s, want 200", name, blockID, response.Code, response.Body.String())
 		}
 		requireNodeState(t, rig.handler, requirement(blockID), "alice", graphstore.StateSettled)
-		if newest := newestStateTuple(t, rig.database, refs.BlockNodeKind, refKey+"#"+blockID); newest.ToID != graphstore.StateSettled || !newest.Who.SameAs(writer) {
+		if newest := newestStateTuple(t, rig.database, refs.BlockNodeKind, room.address(blockID)); newest.ToID != graphstore.StateSettled || !newest.Who.SameAs(writer) {
 			t.Fatalf("%s's newest state tuple is %s written by %+v, want settled written by %+v", blockID, newest.ToID, newest.Who, writer)
 		}
 	}
@@ -508,7 +510,7 @@ func TestSettlingAProposedNodeIsOneWriteByAPersonOrItsAuthor(t *testing.T) {
 		t.Fatalf("write the requirement of alice's first token: status=%d body=%s", written.Code, written.Body.String())
 	}
 	aliceLogin := "alice"
-	if node, held, err := graphstore.ReadNode(ctx, rig.database.Pool, refs.BlockNodeKind, refKey+"#r-token"); err != nil || !held ||
+	if node, held, err := graphstore.ReadNode(ctx, rig.database.Pool, refs.BlockNodeKind, room.address("r-token")); err != nil || !held ||
 		!node.MadeBy.SameCredential(model.Actor{Kind: "session", ID: firstTokenSession, Owner: &aliceLogin}) {
 		t.Fatalf("r-token is made by %+v (held %t, %v), want the session alice's first token named, hers", node.MadeBy, held, err)
 	}
@@ -580,7 +582,7 @@ func TestSettlingAProposedNodeIsOneWriteByAPersonOrItsAuthor(t *testing.T) {
 	// proposal is still settled, before the first agent's own move of it.
 	stateTuples := func(blockID string) int {
 		t.Helper()
-		history, err := graphstore.History(ctx, rig.database.Pool, refs.BlockNodeKind, refKey+"#"+blockID, graphstore.AttributeState)
+		history, err := graphstore.History(ctx, rig.database.Pool, refs.BlockNodeKind, room.address(blockID), graphstore.AttributeState)
 		if err != nil {
 			t.Fatalf("read the state history of %s: %v", blockID, err)
 		}
@@ -616,7 +618,7 @@ func TestSettlingAProposedNodeIsOneWriteByAPersonOrItsAuthor(t *testing.T) {
 		t.Fatalf("the first agent's move of its own settled proposal answers %+v, want it moved from settled to live", written)
 	}
 	requireNodeState(t, rig.handler, requirement("r-first"), "alice", graphstore.StateLive)
-	if newest := newestStateTuple(t, rig.database, refs.BlockNodeKind, refKey+"#r-first"); newest.ToID != graphstore.StateLive ||
+	if newest := newestStateTuple(t, rig.database, refs.BlockNodeKind, room.address("r-first")); newest.ToID != graphstore.StateLive ||
 		!newest.Who.SameAs(model.Actor{Kind: "session", ID: firstSession}) {
 		t.Fatalf("r-first's newest state tuple is %s written by %+v, want live written by the first agent", newest.ToID, newest.Who)
 	}
@@ -953,9 +955,11 @@ func TestAStateWriteKeepsTheCauseOfTheBlockItMoves(t *testing.T) {
 	if edited.Code != http.StatusOK {
 		t.Fatalf("rewrite the opening paragraph: status=%d body=%s", edited.Code, edited.Body.String())
 	}
+	// The spec's blocks are read where the block index keeps them, in its issue's room
+	// (refs.DocumentRoomBlocksSQL).
 	var indexed bool
 	if err := rig.database.Pool.QueryRow(ctx, `
-		select exists (select 1 from document_blocks where artifact_id = $1::uuid and excerpt like '%rewritten opening%')
+		select exists (select 1 from document_blocks d where `+refs.DocumentRoomBlocksSQL("d", "$1::uuid")+` and d.excerpt like '%rewritten opening%')
 	`, specID).Scan(&indexed); err != nil || !indexed {
 		t.Fatalf("the block index holds no block of the rewritten paragraph (%v), so no index pass of the new version ran", err)
 	}

@@ -927,7 +927,8 @@ func TestAPinnedReferenceWhoseTextReturnedIsUnchanged(t *testing.T) {
 // A2, pinned: a reference pinned to a version that held a block deleted since still shows that
 // version's text and says which version removed it, with no link, since the graph lists none to a
 // deleted block; the unpinned reference answers 404. Restored with its id, the block reads as its
-// text compares again.
+// text compares again. The spec is a document of its issue's room, whose tree keys the block's
+// node, which the pinned read names.
 func TestAPinnedReferenceToADeletedBlockSaysItWasRemoved(t *testing.T) {
 	handler, database := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -947,7 +948,7 @@ func TestAPinnedReferenceToADeletedBlockSaysItWasRemoved(t *testing.T) {
 	// Version 1 made the block, the deletion is its last change, and version 2, the latest indexed
 	// before it, is the last that held it. The index pass that deleted it stated its node gone.
 	want := model.GraphNode{
-		Kind: "block", ID: issue.Key + "/spec#ship_it", BlockID: "ship_it", IssueKey: &issueKey, Project: "CORE", Ref: blockRef, Document: specRef,
+		Kind: "block", ID: readDecisionDocument(t, database, issue.Key, "spec").address("ship_it"), BlockID: "ship_it", IssueKey: &issueKey, Project: "CORE", Ref: blockRef, Document: specRef,
 		MadeBy: alice, MadeAt: &madeAt, ChangedBy: alice, ChangedAt: &removedAt,
 		Parent: &model.NodeParent{Kind: "artifact", ID: issue.PrimaryArtifactID, Ref: specRef}, ParentVersion: new(deleted.Number - 1),
 		State: graphstore.StateGone, Visibility: graphstore.VisibilityProject,

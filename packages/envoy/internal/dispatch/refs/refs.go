@@ -331,10 +331,15 @@ var countedKinds = [...]string{"issue", "ask", "artifact", "block"}
 // targets do not allow, a block no document holds, or a block outside the issues and documents
 // the attribute may point into (pmdoc.CheckBlockPointers). A browser's edit is never refused, so
 // a pointer it leaves at a block no document holds stays unresolved.
+//
+// A block is named as the read of its reference answers it (resolveBlockTargets): by the node its
+// far end names, which for a block of a document converted into its issue's room is the room's
+// node however the citation spells it, and by the document holding it, never the room's tree.
+// Two far ends that name one node name it once.
 func CountedChanges(ctx context.Context, q Queryer, changed []Target) (model.ReferenceChanges, error) {
 	issueKeys := []string{}
 	askIDs := []string{}
-	artifactKeys := []string{}
+	artifactKeys, blockAddresses := []string{}, []string{}
 	ordered := make([]Target, 0, len(changed))
 	seen := make(map[[2]string]struct{}, len(changed))
 	for _, target := range changed {
@@ -360,9 +365,7 @@ func CountedChanges(ctx context.Context, q Queryer, changed []Target) (model.Ref
 			artifactKeys = append(artifactKeys, target.ID)
 			ordered = append(ordered, target)
 		case "block":
-			// A block is resolved through its document, the ref_key before the first '#'.
-			document, _, _ := strings.Cut(target.ID, "#")
-			artifactKeys = append(artifactKeys, document)
+			blockAddresses = append(blockAddresses, target.ID)
 			ordered = append(ordered, target)
 		}
 	}
@@ -378,6 +381,11 @@ func CountedChanges(ctx context.Context, q Queryer, changed []Target) (model.Ref
 	if err != nil {
 		return model.ReferenceChanges{}, err
 	}
+	blocks, err := resolveBlockTargets(ctx, q, blockAddresses)
+	if err != nil {
+		return model.ReferenceChanges{}, err
+	}
+	namedBlocks := make(map[string]struct{}, len(blocks))
 	references := make([]model.ChangedReference, 0, len(ordered))
 	for _, target := range ordered {
 		switch target.Kind {
@@ -394,15 +402,12 @@ func CountedChanges(ctx context.Context, q Queryer, changed []Target) (model.Ref
 				references = append(references, reference)
 			}
 		case "block":
-			document, blockID, _ := strings.Cut(target.ID, "#")
-			if reference, found := artifacts[document]; found {
-				references = append(references, model.ChangedReference{
-					Kind:       "block",
-					ID:         target.ID,
-					ArtifactID: &reference.ID,
-					Ref:        BlockRef(reference.Ref, blockID),
-				})
+			reference, found := blocks[target.ID]
+			if _, named := namedBlocks[reference.ID]; !found || named {
+				continue
 			}
+			namedBlocks[reference.ID] = struct{}{}
+			references = append(references, reference)
 		}
 	}
 	named := make(map[string]int, len(countedKinds))
@@ -543,6 +548,52 @@ func resolveArtifactTargets(ctx context.Context, q Queryer, refKeys []string) (m
 			Kind: "artifact",
 			ID:   id,
 			Ref:  ArtifactRef(issueKey, project, session, slug, kind, primary),
+		}
+	}
+	return found, rows.Err()
+}
+
+// resolveBlockTargets resolves cited blocks, by the far ends `refs` and `block_refs` store for
+// them, into the entry a block's own read and its document's panel are matched by, keyed by the
+// far end: the node the far end names (NamedBlockSQL), which the block's read answers for its
+// reference; the uuid of the document holding the block, read off the block's row
+// (BlockDocumentSQL) while one stands, else, for a block a version deleted from an issue room, the
+// document that room last held it in (RoomBlockDocumentSQL), else the document the far end names
+// before its '#'; and the block's reference at that document's address (BlockRef). A far end whose
+// document no row holds is absent.
+func resolveBlockTargets(ctx context.Context, q Queryer, addresses []string) (map[string]model.ChangedReference, error) {
+	found := map[string]model.ChangedReference{}
+	if len(addresses) == 0 {
+		return found, nil
+	}
+	rows, err := q.Query(ctx, `
+		select p.address, named.node_id, document.id::text, document.issue_key, coalesce(document.project_key, ''),
+		       document.session_id, document.slug, document.kind, document.is_primary
+		from unnest($1::text[]) as p (address)
+		cross join lateral (select `+NamedBlockSQL("p.address")+` as node_id) named
+		left join artifacts keyed on keyed.ref_key = split_part(named.node_id, '#', 1)
+		join artifacts document on document.id = coalesce(
+			(select `+BlockDocumentSQL("held")+` from document_blocks held where held.node_id = named.node_id limit 1),
+			`+RoomBlockDocumentSQL("keyed.id", "substr(named.node_id, strpos(named.node_id, '#') + 1)")+`,
+			(select written.id from artifacts written where written.ref_key = split_part(p.address, '#', 1)))
+	`, addresses)
+	if err != nil {
+		return nil, fmt.Errorf("resolve changed block references: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var address, node, id, project, slug, kind string
+		var issueKey, session *string
+		var primary bool
+		if err := rows.Scan(&address, &node, &id, &issueKey, &project, &session, &slug, &kind, &primary); err != nil {
+			return nil, fmt.Errorf("scan changed block reference: %w", err)
+		}
+		_, blockID, _ := strings.Cut(node, "#")
+		found[address] = model.ChangedReference{
+			Kind:       "block",
+			ID:         node,
+			ArtifactID: &id,
+			Ref:        BlockRef(ArtifactRef(issueKey, project, session, slug, kind, primary), blockID),
 		}
 	}
 	return found, rows.Err()

@@ -372,8 +372,9 @@ func TestACommentCitingATargetPastTheBoundPosts(t *testing.T) {
 // comment anchored in it and, asked for by kind, its block's part_of edge, ?from= its attached_to
 // edge to its issue, its block is read by its block reference, and block-links reads it either
 // side. A comment no one wrote, its id past the bound, is 404 NOT_FOUND as any missing node is.
+// The document is a document of its issue's room, whose tree keys its block's node.
 func TestALongNamedDocumentIsReadByItsOwnReference(t *testing.T) {
-	_, handler, _ := browserDocumentService(t)
+	_, handler, database := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Reads long targets", "Context paragraph.\n")
 	// The slug of `<hex>.md` is `<hex>-md`, so the reference key `<key>/<hex>-md` is 2600 bytes.
 	name := randomBlockID(t, 2600-len(issue.Key+"/-md")) + ".md"
@@ -397,6 +398,7 @@ func TestALongNamedDocumentIsReadByItsOwnReference(t *testing.T) {
 	}
 	comment := decodeBody[model.Comment](t, commented)
 	document := "dispatch://" + issue.Key + "/artifact/" + artifact.Slug
+	blockNode := readDecisionDocument(t, database, issue.Key, artifact.Slug).address("x")
 
 	hasEdge := func(edges []model.GraphEdge, kind, nodeKind, nodeID string) bool {
 		for _, edge := range edges {
@@ -410,13 +412,13 @@ func TestALongNamedDocumentIsReadByItsOwnReference(t *testing.T) {
 	if in.Node.Kind != "artifact" || in.Node.ID != artifact.ID || !hasEdge(in.Edges, "anchored_to", "comment", comment.ID) {
 		t.Fatalf("?to= the long-named document = node %s %.60q… edges %#v, want it with the comment anchored in it", in.Node.Kind, in.Node.ID, in.Edges)
 	}
-	if parts := graphEdges(t, handler, url.Values{"to": {document}, "kind": {"part_of"}}); !hasEdge(parts.Edges, "part_of", "block", artifact.RefKey+"#x") {
+	if parts := graphEdges(t, handler, url.Values{"to": {document}, "kind": {"part_of"}}); !hasEdge(parts.Edges, "part_of", "block", blockNode) {
 		t.Fatalf("?to= the long-named document's part_of edges = %#v, want its block x", parts.Edges)
 	}
 	if out := graphEdges(t, handler, url.Values{"from": {document}}); !hasEdge(out.Edges, "attached_to", "issue", issue.Key) {
 		t.Fatalf("?from= the long-named document = %#v, want its attached_to edge to %s", out.Edges, issue.Key)
 	}
-	if block := graphEdges(t, handler, url.Values{"to": {document + "#b-x"}}); block.Node.Kind != "block" || block.Node.ID != artifact.RefKey+"#x" {
+	if block := graphEdges(t, handler, url.Values{"to": {document + "#b-x"}}); block.Node.Kind != "block" || block.Node.ID != blockNode {
 		t.Fatalf("?to= a block of the long-named document = node %s %.60q…, want block x", block.Node.Kind, block.Node.ID)
 	}
 	spec := "dispatch://" + issue.Key + "/spec"

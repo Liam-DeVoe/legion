@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/pmdoctest"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -245,7 +246,8 @@ func TestAWriteRefusesABlockPointerOutsideItsIssueOrDocument(t *testing.T) {
 
 // A browser's write is never refused: a settled browser tree whose pointer names a block no
 // document holds writes its version and stores the pointer, which stays an unresolved reference,
-// as any citation of an absent block is.
+// as any citation of an absent block is. checks.md is a document of its issue's room, whose
+// settlement, and the row that says it is owed, are the room's.
 func TestABrowserWritePointingAtAMissingBlockIsSavedAndUnresolved(t *testing.T) {
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	documents, handler, database := browserDocumentService(t)
@@ -264,7 +266,9 @@ func TestABrowserWritePointingAtAMissingBlockIsSavedAndUnresolved(t *testing.T) 
 	// nothing. SettleIssueDocuments runs the owed settlement itself, and again when a write
 	// supersedes it. The upload's live write already owes it, so the call cannot find none owed.
 	var owed bool
-	if err := database.Pool.QueryRow(context.Background(), `select exists(select 1 from doc_settlements_pending where artifact_id = $1)`, checks.ID).Scan(&owed); err != nil {
+	if err := database.Pool.QueryRow(context.Background(), `
+		select exists(select 1 from doc_settlements_pending where artifact_id = `+refs.DocumentRoomSQL("$1::uuid")+`)
+	`, checks.ID).Scan(&owed); err != nil {
 		t.Fatalf("read checks.md's pending settlement: %v", err)
 	}
 	if !owed {

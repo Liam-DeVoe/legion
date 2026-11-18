@@ -576,9 +576,10 @@ func TestReferencesSinceWithholdsEveryMentionAboveAnOpenLowerEvent(t *testing.T)
 // (child_of), its own documents (attached_to), and a document elsewhere that cites it, listed
 // from the block holding the mention, whose excerpt is that block. Read from the citing document
 // the same mention points out at the issue; read from the issue's spec the structural edge points
-// out at it.
+// out at it. The issue is born converted, so its own documents are its spec, its tree and its
+// decisions query, each attached to it.
 func TestReferencesIncludeStructuralEdgesAndDocumentBlockExcerpts(t *testing.T) {
-	handler := newTestHandler(t)
+	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	createReferenceAPIProject(t, handler, "OPS")
 	parent := createReferenceAPIIssue(t, handler, "CORE")
@@ -591,13 +592,18 @@ func TestReferencesIncludeStructuralEdgesAndDocumentBlockExcerpts(t *testing.T) 
 	child := decodeBody[model.Issue](t, childResponse)
 	design := createProjectDocument(t, handler, "OPS", "Design notes", "# Design\n\nIntroduction paragraph.\n\nThe plan lives in dispatch://"+parent.Key+" and nowhere else.\n")
 
+	attachedArtifacts := issueArtifactsAttached(t, database, parent.Key)
 	incoming := graphEdges(t, handler, url.Values{"to": {"dispatch://" + parent.Key}})
 	byKind := make(map[string]model.GraphEdge, len(incoming.Edges))
+	var attached model.GraphEdge
 	for _, edge := range incoming.Edges {
 		byKind[edge.Kind] = edge
+		if edge.Kind == "attached_to" && edge.Node.ID == parent.PrimaryArtifactID {
+			attached = edge
+		}
 	}
-	if len(incoming.Edges) != 3 || len(byKind) != 3 {
-		t.Fatalf("issue edges = %#v; want one mention, one child_of, one attached_to", incoming.Edges)
+	if len(incoming.Edges) != 2+attachedArtifacts || len(byKind) != 3 {
+		t.Fatalf("issue edges = %#v; want one mention, one child_of, and one attached_to for each of its %d artifacts", incoming.Edges, attachedArtifacts)
 	}
 	for index := 1; index < len(incoming.Edges); index++ {
 		if incoming.Edges[index].CreatedAt.After(incoming.Edges[index-1].CreatedAt) {
@@ -618,7 +624,7 @@ func TestReferencesIncludeStructuralEdgesAndDocumentBlockExcerpts(t *testing.T) 
 	if childOf.Node.Kind != "issue" || childOf.Node.ID != child.Key || childOf.Node.Ref != "dispatch://"+child.Key || childOf.Excerpt == nil || childOf.Excerpt.Text != "Child work" || childOf.SourceSeq != nil {
 		t.Fatalf("child_of edge = %#v; want the child issue with its title and no source_seq", childOf)
 	}
-	attached := byKind["attached_to"]
+	// Its spec is one of the artifacts attached to it.
 	if attached.Node.Kind != "artifact" || attached.Node.ID != parent.PrimaryArtifactID || attached.Node.Ref != "dispatch://"+parent.Key+"/spec" || attached.Excerpt == nil || attached.Excerpt.Text != "spec.md" {
 		t.Fatalf("attached_to edge = %#v; want the issue's spec", attached)
 	}
@@ -670,20 +676,26 @@ func TestReferencesAnswerAroundAnEdgeOfAKindThisBuildCannotAddress(t *testing.T)
 		{"comment", comment.ID, "future", "x#y"},
 	})
 
-	// The target's own spec is attached to it and the comment cites it, from its block: two edges
-	// this build can address, and the header counts the same edges the panel lists.
+	// The target's own artifacts are attached to it - its spec, and the tree and the decisions
+	// query an issue born converted is made with - and the comment cites it, from its block: the
+	// edges this build can address, and the header counts the same edges the panel lists.
+	attachedArtifacts := issueArtifactsAttached(t, database, target.Key)
 	incoming := graphRequest(t, handler, url.Values{"to": {"dispatch://" + target.Key}})
 	if incoming.Code != http.StatusOK {
 		t.Errorf("GET references to %s: status=%d body=%s", target.Key, incoming.Code, incoming.Body.String())
 	} else {
 		edges := decodeBody[model.GraphReferences](t, incoming).Edges
 		byKind := make(map[string]model.GraphEdge, len(edges))
+		var attached model.GraphEdge
 		for _, edge := range edges {
 			byKind[edge.Kind] = edge
+			if edge.Kind == "attached_to" && edge.Node.ID == target.PrimaryArtifactID {
+				attached = edge
+			}
 		}
-		mention, attached := byKind["mentions"], byKind["attached_to"]
-		if len(edges) != 2 || !blockOf(mention.Node, "comment", comment.ID) || attached.Node.Kind != "artifact" || attached.Node.ID != target.PrimaryArtifactID {
-			t.Errorf("backlinks of %s = %#v; want the comment's mention, from its block, and the attached spec, nothing of kind future", target.Key, edges)
+		mention := byKind["mentions"]
+		if len(edges) != 1+attachedArtifacts || !blockOf(mention.Node, "comment", comment.ID) || attached.Node.Kind != "artifact" || attached.Node.ID != target.PrimaryArtifactID {
+			t.Errorf("backlinks of %s = %#v; want the comment's mention, from its block, and its %d attached artifacts, the spec among them, nothing of kind future", target.Key, edges, attachedArtifacts)
 		}
 	}
 
@@ -703,9 +715,23 @@ func TestReferencesAnswerAroundAnEdgeOfAKindThisBuildCannotAddress(t *testing.T)
 	}
 	if count := decodeBody[struct {
 		ReferencedByCount int `json:"referenced_by_count"`
-	}](t, detail).ReferencedByCount; count != 2 {
-		t.Errorf("issue %q referenced_by_count = %d; want 2, the edges its panel lists", target.Key, count)
+	}](t, detail).ReferencedByCount; count != 1+attachedArtifacts {
+		t.Errorf("issue %q referenced_by_count = %d; want %d, the edges its panel lists", target.Key, count, 1+attachedArtifacts)
 	}
+}
+
+// issueArtifactsAttached is how many artifacts the issue key holds of the kinds attached to it,
+// each of which its references read lists as an attached_to backlink, and fails unless they are
+// the three an issue born converted is made with: its spec, its tree and its decisions query.
+func issueArtifactsAttached(t *testing.T, database *store.Store, key string) int {
+	t.Helper()
+	var attached int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select count(*) from artifacts where issue_key = $1 and kind in ('doc', 'tree')
+	`, key).Scan(&attached); err != nil || attached != 3 {
+		t.Fatalf("the artifacts of %s = %d (%v), want its spec, its tree and its decisions query", key, attached, err)
+	}
+	return attached
 }
 
 // A document's references read skips an edge of a node kind this build cannot address on both

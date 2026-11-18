@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -43,6 +44,8 @@ func TestFindNodeUnderIssueDecodesTheStoreAddress(t *testing.T) {
 	}
 	otherComment := createThreadComment(t, fixture.handler, other.Key, map[string]any{"body": "A remark elsewhere."}, "alice").ID
 	document := "dispatch://" + fixture.refKey
+	// The spec's blocks are nodes of its issue's room, each named by its own id inside the spec.
+	_, firstBlock, _ := strings.Cut(fixture.first, "#")
 
 	lens, risk, privateRisk, otherLens := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
 	finding := graphstore.KindLens + "/" + lens + "#finding"
@@ -83,7 +86,7 @@ func TestFindNodeUnderIssueDecodesTheStoreAddress(t *testing.T) {
 		{"the issue by its dispatch address", "dispatch://" + fixture.issue, reader, "issue", fixture.issue, graphstore.VisibilityProject},
 		{"the spec by its ref_key", "artifact/" + fixture.refKey, reader, "artifact", fixture.specID, graphstore.VisibilityProject},
 		{"a block of the spec by its node id", fixture.first, reader, refs.BlockNodeKind, fixture.first, graphstore.VisibilityProject},
-		{"a block of the spec by its dispatch address", refs.BlockRef(document, "first"), reader, refs.BlockNodeKind, fixture.first, graphstore.VisibilityProject},
+		{"a block of the spec by its dispatch address", refs.BlockRef(document, firstBlock), reader, refs.BlockNodeKind, fixture.first, graphstore.VisibilityProject},
 		{"a comment by its store address", "comment/" + fixture.publicComment, reader, graphstore.KindComment, fixture.publicComment, graphstore.VisibilityProject},
 		{"a comment by its dispatch address", "dispatch://" + fixture.issue + "/comment/" + fixture.publicComment, reader, graphstore.KindComment, fixture.publicComment, graphstore.VisibilityProject},
 		{"the private block to its author", fixture.private, author, refs.BlockNodeKind, fixture.private, graphstore.VisibilityAuthor},
@@ -140,7 +143,7 @@ func TestFindNodeUnderIssueDecodesTheStoreAddress(t *testing.T) {
 		{"nothing", fixture.issue, "", reader},
 		{"a dispatch address that names nothing", fixture.issue, "dispatch://" + fixture.issue + "/nothing", reader},
 		{"the private block to another reader", fixture.issue, fixture.private, reader},
-		{"the private block's dispatch address to another reader", fixture.issue, refs.BlockRef(document, privateBlockID), reader},
+		{"the private block's dispatch address to another reader", fixture.issue, refs.BlockRef(document, fixture.privateBlock), reader},
 		{"the private comment to another reader", fixture.issue, "comment/" + fixture.privateComment, reader},
 	} {
 		t.Run(test.name, func(t *testing.T) {

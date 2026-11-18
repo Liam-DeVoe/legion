@@ -372,13 +372,16 @@ func (s *server) sinceHorizon(ctx context.Context) (int64, error) {
 // blockReferenceNode is the block node ref names (query addresses it), with its whole current
 // text. Unpinned, it is the block the address resolves to (resolvedBlockNode: its moved_to tuples
 // first, then its document's room, then itself), and answers 404 where it resolves to none.
-// Pinned to a version N that held the block, the node carries what N recorded (model.BlockPin),
-// "unchanged" or "changed" by comparing the current text with N's, or "removed" with the version
-// that deleted it, as a node with no text or changed version whose facts are a removed block's
-// (refs.RemovedBlockNode); a pin to a current block carries the current block's facts. A pin to
-// a version the document lacks, to one whose blocks are not on record (an older build wrote it and
-// none indexed it) or to one that did not hold the block answers 404, each saying which. A block
-// who may not see answers, pinned or not, what an address nobody holds answers (refs/visibility.go).
+// Pinned to a version N that held the block, the node is the one the address names
+// (refs.NamedBlock: the block it resolves to, or where none stands now the node the same two steps
+// name, the room's node for a block of a document converted into its issue's room), and it carries
+// what N recorded (model.BlockPin), "unchanged" or "changed" by comparing the current text with
+// N's, or "removed" with the version that deleted it, as a node with no text or changed version
+// whose facts are a removed block's (refs.RemovedBlockNode); a pin to a current block carries the
+// current block's facts. A pin to a version the document lacks, to one whose blocks are not on
+// record (an older build wrote it and none indexed it) or to one that did not hold the block
+// answers 404, each saying which. A block who may not see answers, pinned or not, what an address
+// nobody holds answers (refs/visibility.go), its predicate read at the node the address names.
 func (s *server) blockReferenceNode(ctx context.Context, who model.Actor, query refs.Query, ref text.Ref) (model.GraphNode, error) {
 	pool := s.deps.Store.Pool
 	documentKey, _, _ := strings.Cut(query.ID, "#")
@@ -392,7 +395,11 @@ func (s *server) blockReferenceNode(ctx context.Context, who model.Actor, query 
 	if ref.Pin == 0 {
 		return s.resolvedBlockNode(ctx, who, query.ID, ref, document)
 	}
-	node, current, err := refs.Node(ctx, pool, who, "block", query.ID, true)
+	named, err := refs.NamedBlock(ctx, pool, query.ID)
+	if err != nil {
+		return model.GraphNode{}, err
+	}
+	node, current, err := refs.Node(ctx, pool, who, "block", named, true)
 	if err != nil {
 		return model.GraphNode{}, err
 	}
@@ -409,8 +416,8 @@ func (s *server) blockReferenceNode(ctx context.Context, who model.Actor, query 
 	hidden := false
 	if !current && at.Text != nil {
 		if err := pool.QueryRow(ctx, `select not `+refs.VisibleKind("block", "$1", "$2"),
-			query.ID, refs.VisibilityArg(who)).Scan(&hidden); err != nil {
-			return model.GraphNode{}, fmt.Errorf("read whether the reader may see block %s: %w", query.ID, err)
+			named, refs.VisibilityArg(who)).Scan(&hidden); err != nil {
+			return model.GraphNode{}, fmt.Errorf("read whether the reader may see block %s: %w", named, err)
 		}
 	}
 	switch {
@@ -427,7 +434,7 @@ func (s *server) blockReferenceNode(ctx context.Context, who model.Actor, query 
 	pin := &model.BlockPin{Version: ref.Pin, Ref: blockRef + "@v" + strconv.Itoa(ref.Pin), Text: *at.Text}
 	if !current {
 		pin.State, pin.RemovedVersion = "removed", at.RemovedVersion
-		removed, err := refs.RemovedBlockNode(ctx, pool, document, query.ID, ref.Block, at.RemovedVersion)
+		removed, err := refs.RemovedBlockNode(ctx, pool, document, named, ref.Block, at.RemovedVersion)
 		if err != nil {
 			return model.GraphNode{}, err
 		}

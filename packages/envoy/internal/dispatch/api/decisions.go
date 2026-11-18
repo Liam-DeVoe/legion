@@ -952,7 +952,8 @@ func decisionNodeAddress(ctx context.Context, q queryer, document model.Artifact
 	var key string
 	err := q.QueryRow(ctx, `
 		select room.ref_key from issue_room_blocks b join artifacts room on room.id = b.tree_artifact_id
-		where b.tree_artifact_id = $1::uuid and b.block_id = $2 and b.document_id = $3::uuid
+		where b.tree_artifact_id = $1::uuid and block_id_key(b.block_id) = block_id_key($2::text) and b.block_id = $2
+		  and b.document_id = $3::uuid
 	`, document.Room, id, document.ID).Scan(&key)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil

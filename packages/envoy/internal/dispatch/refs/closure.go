@@ -51,7 +51,8 @@ type Member struct {
 var documentBlockHeld = `left join lateral (
 				select resolved.node_id, coalesce(
 					(select owner.ref_key from document_blocks held
-					 join issue_room_blocks room_block on room_block.tree_artifact_id = held.artifact_id and room_block.block_id = held.block_id
+					 join issue_room_blocks room_block on room_block.tree_artifact_id = held.artifact_id
+					   and block_id_key(room_block.block_id) = block_id_key(held.block_id) and room_block.block_id = held.block_id
 					 join artifacts owner on owner.id = room_block.document_id
 					 where held.node_id = resolved.node_id limit 1),
 					split_part(resolved.node_id, '#', 1)) as ref_key

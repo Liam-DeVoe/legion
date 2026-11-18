@@ -194,13 +194,12 @@ func (e *Erasure) ownDocument(ctx context.Context, tx pgx.Tx) (*ownDocument, str
 // blockDocument reads the document the block of document stands in, whose versions, search rows,
 // windows and events hold the block's text and which is its issue's spec or not. A block of an
 // issue room is a row keyed by the room's tree artifact (ownDocument), and the document it stands
-// in is the one its issue_room_blocks row names (refs.BlockDocumentSQL), at that document's own
-// version numbers (T12a of this branch's plan); a block a version dropped has no such row left,
-// and its document is the one its node's last asserted in_document names, since the index states
-// the block's membership of each document it moves into and retracts none when the block is
-// dropped. A block of a one-document room stands in the document its address names, which its
-// in_document names too, and a block neither names stands in document. Any other node answers
-// nil.
+// in is the one its room records (refs.RoomBlockDocumentSQL): its issue_room_blocks row, at that
+// document's own version numbers (T12a of this branch's plan), or for a block a version dropped,
+// which has no such row left, the document its node's last asserted in_document names, since the
+// index states the block's membership of each document it moves into and retracts none when the
+// block is dropped. A block of a one-document room stands in the document its address names, and
+// so does a block no record names. Any other node answers nil.
 func (e *Erasure) blockDocument(ctx context.Context, tx pgx.Tx, document *ownDocument, blockID string) (*ownDocument, error) {
 	if document == nil {
 		return nil, nil
@@ -210,13 +209,8 @@ func (e *Erasure) blockDocument(ctx context.Context, tx pgx.Tx, document *ownDoc
 		select d.id::text, d.ref_key, coalesce(d.issue_key, ''), coalesce(d.project_key, ''),
 		       d.is_primary and d.issue_key is not null
 		from artifacts d
-		where d.id = coalesce(
-			(select r.document_id from issue_room_blocks r
-			 where r.tree_artifact_id = $1::uuid and r.block_id = $2),
-			(select named.id from graph_tuples t join artifacts named on named.ref_key = t.to_id
-			 where t.from_kind = $3 and t.from_id = $4 and t.kind = $5 and t.to_kind = $6 and t.asserted
-			 order by t.seq desc limit 1),
-			$1::uuid)`, document.artifact, blockID, e.Kind, e.ID, refs.TupleInDocument, graphstore.KindArtifact).Scan(
+		where d.id = coalesce(`+refs.RoomBlockDocumentSQL("$1::uuid", "$2::text")+`, $1::uuid)`,
+		document.artifact, blockID).Scan(
 		&stands.artifact, &stands.refKey, &stands.issue, &stands.project, &stands.spec); err != nil {
 		return nil, fmt.Errorf("read the document %s:%s stands in: %w", e.Kind, e.ID, err)
 	}

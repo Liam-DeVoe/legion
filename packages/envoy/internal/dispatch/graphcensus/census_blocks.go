@@ -3,12 +3,14 @@ package graphcensus
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // blockProjections are the census's kinds of the document blocks (projections): a block against
@@ -161,12 +163,17 @@ var blockProjections = []projection{{
 	note: "the document each block of an issue room is in, held triple by triple: each issue_room_blocks row is the" +
 		" in_document of the block its tree artifact and id name, to the node of the document it names, against every" +
 		" in_document a present block node of a tree artifact states now, so a row whose block states another document," +
-		" or none, and a block of a room no row names, are each a difference; a store that holds no tree reads none",
+		" or none, and a block of a room no row names, are each a difference; a row of a block whose id is past the" +
+		" block id bound, which the room records and which is no node, is past the bound; a store that holds no tree" +
+		" reads none",
 	// The rows are issue_room_blocks' alone, each with the node of the document_blocks row it
 	// projects beside, so a row whose block no document_blocks row holds names no node, and a
 	// document_blocks row of a tree no issue_room_blocks row names leaves its block's in_document a
 	// tuple no row projects. The tuple side reads the block nodes whose id starts with a tree
-	// artifact's ref_key, the part of a block node's id before its first '#'.
+	// artifact's ref_key, the part of a block node's id before its first '#'. A row of a block
+	// whose id is past text.MaxBlockIDBytes, which the room's index records with no document_blocks
+	// row (refs' reconcileRoomBlocks), projects no node, so it is counted past the bound with a row
+	// whose address is.
 	rows: `
 		select 'room_block ' || tree.ref_key || '#' || r.block_id, d.node_kind, d.node_address,
 		       '` + refs.TupleInDocument + `', '` + graphstore.KindArtifact + `', document.ref_key
@@ -174,7 +181,7 @@ var blockProjections = []projection{{
 		join artifacts tree on tree.id = r.tree_artifact_id
 		join artifacts document on document.id = r.document_id
 		left join document_blocks d on d.artifact_id = r.tree_artifact_id and d.block_id = r.block_id
-		where octet_length(tree.ref_key || '#' || r.block_id) <= ` + addressBound,
+		where octet_length(r.block_id) <= ` + blockIDBound + ` and octet_length(tree.ref_key || '#' || r.block_id) <= ` + addressBound,
 	tuples: `
 		select n.kind, n.id, held.kind, held.to_kind, held.to_id
 		from artifacts tree
@@ -188,9 +195,13 @@ var blockProjections = []projection{{
 	pastBound: `
 		select count(*) from issue_room_blocks r
 		join artifacts tree on tree.id = r.tree_artifact_id
-		where octet_length(tree.ref_key || '#' || r.block_id) > ` + addressBound,
+		where octet_length(r.block_id) > ` + blockIDBound + ` or octet_length(tree.ref_key || '#' || r.block_id) > ` + addressBound,
 	emptyAgrees: true,
 }, blockAuthorProjection}
+
+// blockIDBound is the bound past which a block id is no node of the store (text.MaxBlockIDBytes)
+// as a statement spells it, written into the text as addressBound is.
+var blockIDBound = strconv.Itoa(text.MaxBlockIDBytes)
 
 // outsideArtifact starts the part_of link the block kind reads an authored node's place by where
 // that place is no block of the node's own artifact, followed by that artifact's ref_key: the

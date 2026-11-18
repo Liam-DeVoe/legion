@@ -1126,8 +1126,9 @@ func (st *settlement) blockVersions(ctx context.Context, fragments []roomFragmen
 	}
 	if len(left) > 0 {
 		rows, err := st.tx.Query(ctx, `
-			select block_id, document_id::text from issue_room_blocks
-			where tree_artifact_id = $1::uuid and block_id = any($2::text[])`, st.room, left)
+			select r.block_id, r.document_id::text from issue_room_blocks r
+			join unnest($2::text[]) as l (block_id) on block_id_key(r.block_id) = block_id_key(l.block_id) and r.block_id = l.block_id
+			where r.tree_artifact_id = $1::uuid`, st.room, left)
 		if err != nil {
 			return nil, fmt.Errorf("read the documents of the blocks that left room %s: %w", st.room, err)
 		}

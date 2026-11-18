@@ -215,9 +215,46 @@ func BlockDocumentSQL(alias string) string {
 // owes that index, whose typed nodes the typed-node pass placed in it (IndexDecisionNodes) -
 // passes that document, which is the only record of it, and the row's own artifact after it.
 func BlockDocumentOrSQL(alias, fallback string) string {
-	return `coalesce((select room_block.document_id from issue_room_blocks room_block
-		where room_block.tree_artifact_id = ` + alias + `.artifact_id and room_block.block_id = ` + alias + `.block_id), ` +
-		fallback + `)`
+	return `coalesce(` + roomBlockRowSQL(alias+".artifact_id", alias+".block_id") + `, ` + fallback + `)`
+}
+
+// roomBlockRowSQL is the document that the issue_room_blocks row of block block (SQL text) under
+// the tree artifact tree (SQL text answering a uuid) names, as SQL text answering a uuid, null
+// where no row names the block. The table is keyed by block_id_key(block_id) (migration
+// 20261118230000_issue_tree_room_blocks_key), which holds an id of any length, so the row is read
+// through that key, and the id itself is compared beside it.
+func roomBlockRowSQL(tree, block string) string {
+	return `(select room_block.document_id from issue_room_blocks room_block
+		where room_block.tree_artifact_id = ` + tree + ` and block_id_key(room_block.block_id) = block_id_key(` + block + `)
+		  and room_block.block_id = ` + block + `)`
+}
+
+// RoomBlockDocumentSQL is the document whose fragment of the issue room under the tree artifact
+// tree (SQL text answering a uuid) holds, or last held, the block block (SQL text), as SQL text
+// answering a uuid, null where none is on record: the document its issue_room_blocks row names
+// while the room holds the block, else, for a block a version dropped from the room, whose row
+// went with it, the document the last asserted in_document of its node, `<tree ref_key>#<block>`,
+// names, since the block index states a block's membership of each document it moves into and
+// retracts none when the block is dropped. An artifact that is no issue's tree holds no record
+// here. Every reader that takes the document of a room's block that may have left the room - an
+// ask's block (AskBlockDocumentSQL), an erased block (grapherase), a block a write's event names
+// (CountedChanges) - takes it from here.
+func RoomBlockDocumentSQL(tree, block string) string {
+	// The node's address is read first, behind a fence, and the tuples are read in a lateral keyed
+	// on it, so they are probed on the node (from_id) and never scanned by kind. An in_document
+	// always runs to an artifact (the join below reads it), so the probe names no to_kind, which
+	// would lead the planner to the inbound indexes.
+	return `coalesce(` + roomBlockRowSQL(tree, block) + `,
+		(select stood.id
+		 from (select room_tree.ref_key || '#' || ` + block + ` as address from artifacts room_tree
+		       where room_tree.id = ` + tree + ` and room_tree.kind = 'tree' offset 0) node
+		 cross join lateral (
+		   select stood_in.to_id from graph_tuples stood_in
+		   where stood_in.from_kind = '` + BlockNodeKind + `' and stood_in.from_id = node.address
+		     and stood_in.kind = '` + TupleInDocument + `' and stood_in.asserted
+		   order by stood_in.seq desc limit 1
+		 ) stood_in
+		 join artifacts stood on stood.ref_key = stood_in.to_id))`
 }
 
 // DocumentRoomBlocksSQL is true of the document_blocks row aliased alias while it is a block of
@@ -232,15 +269,14 @@ func DocumentRoomBlocksSQL(alias, document string) string {
 
 // AskBlockDocumentSQL is the document holding the block of the ask aliased alias, as SQL text
 // answering a uuid: an ask of an issue room is keyed by the room's tree artifact (its
-// block_artifact_id), and its block is in the document whose fragment the room's index records it
-// in (issue_room_blocks.document_id); every other ask's block is in its block_artifact_id. Every
-// reader that takes an ask's block document - to show it, to look a document's asks up, or to
-// write into the fragment holding the block - takes it from here, and looks a document's asks up
-// under that document's room (DocumentRoomSQL).
+// block_artifact_id), and its block is in the document whose fragment the room records it in
+// (RoomBlockDocumentSQL: its issue_room_blocks row, a block past text.MaxBlockIDBytes included, or
+// for a block gone from the room its node's last in_document); every other ask's block is in its
+// block_artifact_id. Every reader that takes an ask's block document - to show it, to look a
+// document's asks up, or to write into the fragment holding the block - takes it from here, and
+// looks a document's asks up under that document's room (DocumentRoomSQL).
 func AskBlockDocumentSQL(alias string) string {
-	return `coalesce((select room_block.document_id from issue_room_blocks room_block
-		where room_block.tree_artifact_id = ` + alias + `.block_artifact_id and room_block.block_id = ` + alias + `.block_id), ` +
-		alias + `.block_artifact_id)`
+	return `coalesce(` + RoomBlockDocumentSQL(alias+".block_artifact_id", alias+".block_id") + `, ` + alias + `.block_artifact_id)`
 }
 
 // AsksOfDocumentSQL is true of the ask aliased alias while its block is in the document the uuid
@@ -291,6 +327,42 @@ func ResolvedBlockSQL(address string) string {
 		  and not exists (select 1 from graph_tuples moved where moved.from_kind = '` + BlockNodeKind + `'
 		    and moved.from_id = ` + address + ` and moved.kind = '` + graphstore.TupleMovedTo + `')
 		limit 1), block_moved_to(` + address + `))`
+}
+
+// UnheldBlockSQL is the node address a block far end names without asking for a row, as SQL text
+// answering a node id, null where its moved_to tuples run in a cycle or past their bound: the
+// address its current moved_to tuples reach (block_address_walk), the same block id in the room
+// its document's document_rooms row names where the document has one (block_room_address), the
+// two steps ResolvedBlockSQL takes before it asks for a document_blocks row. It is where a far end
+// whose block a version deleted stood: the block index's writer keeps a pointer at such a block
+// there (resolvePointerPairs), and a reader naming the node of a block no current version holds
+// reads it through NamedBlockSQL.
+func UnheldBlockSQL(address string) string {
+	return `(select coalesce(block_room_address(walked.reached), walked.reached)
+		from (select block_address_walk(` + address + `) as reached) walked)`
+}
+
+// NamedBlockSQL is the node a block far end names whether or not a block stands there, as SQL
+// text answering a node id: the node it resolves to (ResolvedBlockSQL) where one does, else the
+// address the resolution's two steps name without asking for a row (UnheldBlockSQL), else the far
+// end itself. So the address of a block a version deleted from a document converted into its
+// issue's room names the room's node the block stood at, whose state and facts the store still
+// holds, as the address of such a block of a document that is its own room names its own node.
+func NamedBlockSQL(address string) string {
+	return `coalesce(` + ResolvedBlockSQL(address) + `, ` + UnheldBlockSQL(address) + `, ` + address + `)`
+}
+
+// NamedBlock is the node one block far end names (NamedBlockSQL), read in one statement that
+// calls block_moved_to alone where NamedBlockSQL probes document_blocks first, as
+// graphstore.MovedTo reads one address: the probe answers what the function answers, and is
+// there for a statement over many far ends.
+func NamedBlock(ctx context.Context, q Queryer, address string) (string, error) {
+	var node string
+	if err := q.QueryRow(ctx, `select coalesce(block_moved_to($1::text), `+UnheldBlockSQL("$1::text")+`, $1::text)`,
+		address).Scan(&node); err != nil {
+		return "", fmt.Errorf("read the node %s names: %w", address, err)
+	}
+	return node, nil
 }
 
 // ResolveFarEnds reads, in one statement, the node each of addresses (block far ends, node ids)
@@ -1780,15 +1852,21 @@ func blockBands(document indexedDocument, nodes []model.ArtifactBlock, fragments
 }
 
 // reconcileRoomBlocks keeps issue_room_blocks, the projection of each in_document of an issue
-// room's blocks (D16 of dispatch://INFRA-1253's plan), level with the version the pass indexes
-// under the issue's tree artifact, artifactID, in the pass's transaction: the row of each block
-// the version dropped goes with its document_blocks row, each block the version holds names its
-// fragment's document (fragmentDocuments), or the tree artifact for a block of the tree's own
-// fragment, and a block whose document moved - a block cut from one fragment and pasted into
-// another - takes one retraction of the in_document it held and one assertion of the new one,
-// dated at the pass's own time, which it answers for the caller to append with the pass's other
-// facts. A block whose row it inserts states its in_document where its document_blocks row is
-// inserted (IndexBlocks). A document that is not an issue's tree writes nothing here.
+// room's blocks (D16 of this branch's plan) and the one record of the document whose fragment
+// holds each block of the room, level with the version the pass indexes under the issue's tree
+// artifact, artifactID, in the pass's transaction: the row of each block the version dropped goes
+// with its document_blocks row, each block the version holds names its fragment's document
+// (fragmentDocuments), or the tree artifact for a block of the tree's own fragment, and a block
+// whose document moved - a block cut from one fragment and pasted into another - takes one
+// retraction of the in_document it held and one assertion of the new one, dated at the pass's own
+// time, which it answers for the caller to append with the pass's other facts. A block whose row
+// it inserts states its in_document where its document_blocks row is inserted (IndexBlocks). The
+// blocks of pastBound, whose ids are past text.MaxBlockIDBytes, are no nodes and have no
+// document_blocks row, but the room records their documents as it does every other block's (the
+// table is keyed through block_id_key, migration 20261118230000_issue_tree_room_blocks_key), so
+// the ask of such a block reads the document holding it (AskBlockDocumentSQL); such a row states
+// no in_document, and goes once the version holds the block no more. A document that is not an
+// issue's tree writes nothing here.
 func reconcileRoomBlocks(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -1796,6 +1874,7 @@ func reconcileRoomBlocks(
 	document indexedDocument,
 	nodes []model.ArtifactBlock,
 	fits []bool,
+	pastBound []model.ArtifactBlock,
 	fragments map[string]fragmentDocument,
 	deleted []string,
 ) ([]graphstore.UncausedTuple, error) {
@@ -1804,22 +1883,38 @@ func reconcileRoomBlocks(
 	}
 	if len(deleted) > 0 {
 		if _, err := tx.Exec(ctx, `
-			delete from issue_room_blocks where tree_artifact_id = $1::uuid and block_id = any($2)
+			delete from issue_room_blocks r using unnest($2::text[]) as d (block_id)
+			where r.tree_artifact_id = $1::uuid and block_id_key(r.block_id) = block_id_key(d.block_id) and r.block_id = d.block_id
 		`, artifactID, deleted); err != nil {
 			return nil, fmt.Errorf("delete the room blocks version of %s no longer holds: %w", artifactID, err)
 		}
 	}
-	ids := make([]string, 0, len(nodes))
-	documents := make([]string, 0, len(nodes))
+	ids := make([]string, 0, len(nodes)+len(pastBound))
+	documents := make([]string, 0, len(nodes)+len(pastBound))
+	ownerOf := func(block model.ArtifactBlock) string {
+		if _, ok := fragments[block.Document]; ok {
+			return block.Document
+		}
+		return artifactID
+	}
 	for index, block := range nodes {
 		if !fits[index] {
 			continue
 		}
-		owner := artifactID
-		if _, ok := fragments[block.Document]; ok {
-			owner = block.Document
-		}
-		ids, documents = append(ids, block.ID), append(documents, owner)
+		ids, documents = append(ids, block.ID), append(documents, ownerOf(block))
+	}
+	// The rows of the blocks past the bound the version no longer holds: no document_blocks row
+	// says which they are (deleted), so they are read off the tree's own rows by their length.
+	held := make([]string, len(pastBound))
+	for index, block := range pastBound {
+		held[index] = block.ID
+		ids, documents = append(ids, block.ID), append(documents, ownerOf(block))
+	}
+	if _, err := tx.Exec(ctx, `
+		delete from issue_room_blocks r
+		where r.tree_artifact_id = $1::uuid and octet_length(r.block_id) > $2 and not (r.block_id = any($3::text[]))
+	`, artifactID, text.MaxBlockIDBytes, held); err != nil {
+		return nil, fmt.Errorf("delete the room blocks past the bound version of %s no longer holds: %w", artifactID, err)
 	}
 	if len(ids) == 0 {
 		return nil, nil
@@ -1832,11 +1927,12 @@ func reconcileRoomBlocks(
 			from unnest($2::text[], $3::text[]) as w (block_id, document_id)
 		), held as (
 			select r.block_id, r.document_id from issue_room_blocks r
-			where r.tree_artifact_id = $1::uuid and r.block_id = any($2)
+			join wanted on block_id_key(r.block_id) = block_id_key(wanted.block_id) and r.block_id = wanted.block_id
+			where r.tree_artifact_id = $1::uuid
 		), written as (
 			insert into issue_room_blocks (tree_artifact_id, block_id, document_id)
 			select $1::uuid, wanted.block_id, wanted.document_id from wanted
-			on conflict (tree_artifact_id, block_id) do update set document_id = excluded.document_id
+			on conflict (tree_artifact_id, block_id_key(block_id)) do update set document_id = excluded.document_id
 			where issue_room_blocks.document_id is distinct from excluded.document_id
 		)
 		select held.block_id, old.ref_key, new.ref_key
@@ -1854,6 +1950,10 @@ func reconcileRoomBlocks(
 		var id, was, now string
 		if err := rows.Scan(&id, &was, &now); err != nil {
 			return nil, fmt.Errorf("record the documents of the room blocks of %s: %w", artifactID, err)
+		}
+		if len(id) > text.MaxBlockIDBytes {
+			// A block past the bound is no node, and states no in_document.
+			continue
 		}
 		address := blockNodeAddress(document.refKey, id)
 		for _, membership := range []struct {
