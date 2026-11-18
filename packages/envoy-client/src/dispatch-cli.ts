@@ -350,10 +350,11 @@ export async function runDispatchCli(
   // comment or a message, and its first such write after each compaction, is refused once, to
   // show the rules for the person who reads it. The call runs first with its writes held, which
   // sends nothing and gives the route and the body of its write; its pictures are left out, so
-  // that write is the call's own and no picture upload. It asks Dispatch, so it comes after
-  // AskGate's block, which refuses before any request, and before AskGate's warn-mode ledger
-  // line, so a refused call records no unreviewed write. It answers the exit code of a refusal,
-  // or undefined when the call goes on.
+  // that write is the call's own and no picture upload. For a write AskGate gates, it runs before
+  // AskGate's marker is spent, so a write it refuses keeps its marker for the resend; it asks
+  // Dispatch, so in block mode that request comes before AskGate's refusal of a call with no
+  // marker. It runs before AskGate's warn-mode ledger line, so a refused call records no
+  // unreviewed write. It answers the exit code of a refusal, or undefined when the call goes on.
   let rulesChecked = false;
   const writingRulesExit = async (): Promise<number | undefined> => {
     rulesChecked = true;
@@ -436,6 +437,8 @@ export async function runDispatchCli(
           files.push({ ...file, sha256: bytes === undefined ? null : bytesDigest(bytes) });
           if (file.flag === "--path" && file.operand === parsed.args.path) uploadBytes = bytes;
         }
+        const rulesExit = await writingRulesExit();
+        if (rulesExit !== undefined) return rulesExit;
         const spent = consumeMarker(gate.stores, argv, parsed.args, files, Date.now());
         // The asks this write would open for a person, counted from the write's own text: the
         // one number pi-envoy's record of an unmarked write carries, so a session holding a
@@ -464,8 +467,6 @@ export async function runDispatchCli(
             { mode: "block", why: spent.why, asksCarried }
           );
         }
-        const rulesExit = await writingRulesExit();
-        if (rulesExit !== undefined) return rulesExit;
         if (!spent.ok) {
           // The ledger line that tells pi-envoy this write went out unreviewed is written before
           // the write is sent, on its own: a ledger that cannot take it stops the write here, so

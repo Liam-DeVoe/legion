@@ -1,5 +1,12 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import type { ArtifactBlock } from "@legion/contracts";
 import {
@@ -9,6 +16,7 @@ import {
   PROJECT_KEY_RULE,
 } from "@legion/contracts";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { mintMarker, selfOwner, setRecordMode } from "../askgate-marker";
 import { cliRefusals, fitOutput, runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
 import { forgetKeyedLayerMemory, KEYED_LAYER_MEMORY_MS } from "../dispatch-http";
@@ -2272,6 +2280,62 @@ describe("the dispatch CLI's subscription note", () => {
     const { code } = await run(["projects"], withListener);
     expect(code).toBe(0);
     expect(requests.some((request) => request.path.startsWith("/v1/interests/"))).toBe(false);
+  });
+});
+
+// The written rules' refusal (writing-rules.ts, INFRA-3231's R6) and AskGate's marker for the same
+// write: the refusal runs before the marker is spent, so the write it refuses keeps its marker, and
+// the resend, the one the refusal asks for, is the write AskGate reviewed.
+describe("the written rules before AskGate's marker", () => {
+  const MESSAGE = ["message", "--issue", "DSP-1", "--body", "Deliverable landed."];
+  const RULES = "Say what each word means the first time you use it.";
+
+  /** A Dispatch whose written rules are on: its settings route says so and its rules route sends
+   *  RULES; every other request reaches the test server. */
+  const rulesOn = (async (input: string | URL | Request, init?: RequestInit) => {
+    const request = new Request(input, init);
+    const { pathname } = new URL(request.url);
+    if (request.method === "GET" && pathname === "/api/v1/settings/writing-rules") {
+      return Response.json({ refusal: "on", extra: [] });
+    }
+    if (request.method === "POST" && pathname === "/api/v1/writing-rules") {
+      return Response.json({ text: RULES });
+    }
+    return fetch(request);
+  }) as typeof fetch;
+
+  test("a write the rules refuse keeps its marker, and the resend spends it and posts with no AskGate warning", async () => {
+    // The record a live gate writes in warn mode, with this test process as its owner, and the
+    // one marker the gate minted for this argv.
+    const owner = selfOwner(stateDir);
+    setRecordMode(join(stateDir, "sessions", "ses-1"), owner, "warn");
+    mintMarker(
+      owner.store,
+      { argv: MESSAGE, args: null, files: [], toolCallId: "call-1", outcome: "verdict" },
+      Date.now()
+    );
+    const markers = () =>
+      readdirSync(join(owner.store, "markers")).filter((name) => !name.startsWith("."));
+    const messagePosts = () =>
+      requests.filter((r) => r.method === "POST" && r.path === "/api/v1/issues/DSP-1/messages");
+    expect(markers()).toHaveLength(1);
+
+    const refused = await run(MESSAGE, omp, "", rulesOn);
+    expect(refused.code).toBe(1);
+    expect(refused.stdout).toContain(
+      "dispatch message was not called: this call is the first write"
+    );
+    expect(refused.stdout).toContain(RULES);
+    expect(messagePosts()).toHaveLength(0);
+    expect(markers()).toHaveLength(1);
+
+    nextProcess("ses-1");
+    const sent = await run(MESSAGE, omp, "", rulesOn);
+    expect(sent.code).toBe(0);
+    expect(messagePosts()).toHaveLength(1);
+    expect(markers()).toHaveLength(0);
+    expect(`${sent.stdout}${sent.stderr}`).not.toContain("AskGate");
+    expect(ledger("ses-1").filter((line) => "askgate" in line)).toEqual([]);
   });
 });
 

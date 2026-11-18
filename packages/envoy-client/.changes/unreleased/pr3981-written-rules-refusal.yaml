@@ -10,3 +10,5 @@ body: |-
   writes held, which sends nothing (`DispatchClient`'s `holdWrites` option and the
   `DispatchWriteHeld` error). The host plugin counts each compaction with `noteCompaction`.
   A command a person typed is never refused.
+  A write AskGate gates is checked against the rules before its AskGate marker is spent, so a
+  write the rules refuse keeps its marker, and the call run again is the one AskGate reviewed.
