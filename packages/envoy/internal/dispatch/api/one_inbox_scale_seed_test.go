@@ -21,9 +21,10 @@ import (
 // The corpus dispatch://INFRA-1152's c-p99 names, seeded the way inbox_dismissed_scale_seed_test.go
 // seeds a14's: the piles in bulk SQL through the database's own pool, inside transactions, with
 // every trigger firing as it does for any insert, and what only a server writes whole (a project,
-// an issue, an ask, a message and its delivery) through that server's API. One seed serves both
-// measurements of one_inbox_scale_test.go: this build's handler in the process for the participant
-// set, and the base build booted as a process for the write baseline, so both read one corpus.
+// an issue, an ask, a message and its delivery) through that server's API. One seed serves every
+// measurement over it: this build's handler for the participant set, the base build booted as a
+// process for the write baseline, and both builds for c-p99 (one_inbox_p99_test.go), so all of
+// them read one corpus.
 //
 // Every shape is named, written, and asserted before anything is read off it
 // (assertOneInboxCorpus), because a measurement over a seed that did not land is worse than none:
@@ -33,9 +34,9 @@ import (
 //   - a thread of one participant;
 //   - a reply chain exactly oneInboxCommentThreadDepth links long, the depth the outbox's walk up
 //     a reply_to chain stops at;
-//   - one person whose history (the threads their user_threads rows name) is oneInboxHeavyFactor
-//     times the median person's, among oneInboxWidestThread ordinary people whose histories sit
-//     around that median;
+//   - one person whose history (the threads their user_threads rows name, and the conversations
+//     they started with a session) is oneInboxHeavyFactor times the median person's, among
+//     oneInboxWidestThread ordinary people whose histories sit around that median;
 //   - one person with no history at all;
 //
 // and what each write path the baseline times needs: an issue message thread, open asks on an
@@ -44,6 +45,14 @@ import (
 // oneInboxDefaultAsks open asks wait on (putProjectDefaultAssignee), an ask the heavy person
 // snoozes, and a session's conversation with a person: one direct root it answered and one per
 // reading it has not, which are also where a broadcast and a Clear land.
+//
+// It fills both tables the one read's plan is held on to scale: comments with the threads above,
+// and messages with each person's conversations, a session of their own answering each one-off
+// message they sent it (seedOneInboxConversations) - at the 205 messages the threads alone hold,
+// the planner chose sequential scans inside the read's message walks, and none once messages held
+// 150,205 rows (T10). And it holds the two sorts of ask each write that moves who an ask waits on is
+// counted over (seedOneInboxMoves): one whose old person also wrote in its thread, and one whose old
+// person holds nothing else there.
 
 const (
 	// oneInboxParticipantBound is R4's bound on the live participants of one thread, which the
@@ -67,7 +76,8 @@ const (
 	// for the reading taken first and not counted.
 	oneInboxReadings = 200
 	// oneInboxDefaultAsks is how many open asks the moving project's default assignee is the only
-	// person waiting for: more than one, so that write moves several.
+	// person waiting for: more than one, so that write moves several. A count's move of many asks
+	// moves as many (seedOneInboxMoves), half of each sort.
 	oneInboxDefaultAsks = 10
 )
 
@@ -84,23 +94,38 @@ const (
 )
 
 // The sessions of the corpus: the one that answers the corpus's threads, asks its questions and
-// holds its conversation, and a second one a broadcast reaches beside it.
+// holds its conversation, a second one a broadcast reaches beside it, and the one the heavy person
+// converses with. Ordinary person i converses with a session of their own,
+// oneInboxPersonSession(i).
 const (
 	oneInboxSession      = "scale-agent"
 	oneInboxOtherSession = "scale-other"
+	oneInboxHeavySession = "scale-heavy"
 )
 
 // The ordinary people who act in a write path. Each is one of the population, so the history the
-// median is read from is theirs too.
+// median is read from is theirs too. oneInboxMedianReader is a median person no write path names,
+// the reader of the read measured over the widest thread, which every ordinary person writes in;
+// oneInboxMovers are the people the counted moves of who an ask waits on hand asks between.
 var (
-	oneInboxCommenter = oneInboxPerson(1)
-	oneInboxAssignees = [2]string{oneInboxPerson(3), oneInboxPerson(4)}
-	oneInboxAskedOf   = [2]string{oneInboxPerson(5), oneInboxPerson(6)}
-	oneInboxDefaults  = [2]string{oneInboxPerson(7), oneInboxPerson(8)}
-	oneInboxAnswerer  = oneInboxPerson(9)
-	oneInboxConverser = oneInboxPerson(10)
-	oneInboxMessagers = [2]string{oneInboxPerson(11), oneInboxPerson(12)}
+	oneInboxCommenter    = oneInboxPerson(1)
+	oneInboxAssignees    = [2]string{oneInboxPerson(3), oneInboxPerson(4)}
+	oneInboxAskedOf      = [2]string{oneInboxPerson(5), oneInboxPerson(6)}
+	oneInboxDefaults     = [2]string{oneInboxPerson(7), oneInboxPerson(8)}
+	oneInboxAnswerer     = oneInboxPerson(9)
+	oneInboxConverser    = oneInboxPerson(10)
+	oneInboxMessagers    = [2]string{oneInboxPerson(11), oneInboxPerson(12)}
+	oneInboxMedianReader = oneInboxPerson(17)
+	oneInboxMovers       = [7]string{
+		oneInboxPerson(901), oneInboxPerson(902), oneInboxPerson(903), oneInboxPerson(904),
+		oneInboxPerson(905), oneInboxPerson(906), oneInboxPerson(907),
+	}
 )
+
+// oneInboxPersonSession is the session ordinary person i converses with.
+func oneInboxPersonSession(i int) string {
+	return fmt.Sprintf("scale-c%04d", i)
+}
 
 // oneInboxPerson is ordinary person i's login, as the people seed spells it in SQL.
 func oneInboxPerson(i int) string {
@@ -145,6 +170,30 @@ type oneInboxCorpus struct {
 	// it has not, each holding attempt 1, one per reading of the session's reply.
 	answeredRoot string
 	directRoots  []string
+	// moves are the counted moves of who an ask waits on, over the two sorts of ask.
+	moves []oneInboxMove
+}
+
+// oneInboxMovedAsk is one ask a counted move moves: the person it waits on before the move, and
+// the tuple rows its move appends - three where that person also wrote in its thread, whose own
+// write keeps their participates_in, four where they hold nothing else there.
+type oneInboxMovedAsk struct {
+	id, from string
+	rows     int
+}
+
+// oneInboxMove is one counted move of a write that moves who asks wait on (patchIssue,
+// putAskAskedOf, putProjectDefaultAssignee): the request that makes it, the person the asks wait
+// on after it, and the asks it moves. many marks the write's move whose statements are held to
+// its moves of one ask: a move of many asks, or, for putAskAskedOf, which moves one ask by its
+// nature, the move of one ask among many on its issue.
+type oneInboxMove struct {
+	write, what  string
+	method, path string
+	body         map[string]any
+	to           string
+	asks         []oneInboxMovedAsk
+	many         bool
 }
 
 // seedOneInboxCorpus writes the corpus through database and server and asserts it.
@@ -172,6 +221,7 @@ func seedOneInboxCorpus(t *testing.T, database *store.Store, server oneInboxCall
 	corpus.chainDeepest = seedOneInboxChain(t, database, corpus.issue)
 	seedOneInboxOrdinaryThreads(t, database, corpus.issue)
 	corpus.heavyRead, corpus.heavyUnread = seedOneInboxHeavyThreads(t, database, corpus.issue)
+	seedOneInboxConversations(t, database)
 
 	corpus.messageRoot = seedOneInboxMessageThread(t, server, corpus.issue)
 	for reading := range oneInboxReadings + 1 {
@@ -192,12 +242,20 @@ func seedOneInboxCorpus(t *testing.T, database *store.Store, server oneInboxCall
 		corpus.directRoots = append(corpus.directRoots,
 			sendOneInboxDirect(t, server, fmt.Sprintf("Direct question %d, awaiting the session's reply.", reading)))
 	}
+	corpus.moves = seedOneInboxMoves(t, server)
 
 	assertOneInboxCorpus(t, database, corpus)
-	t.Logf("seeded the corpus in %s: a widest thread of %d participants, %d ordinary people around a median history of %d, "+
-		"a heavy person of %d threads (%d unread), a chain of %d links",
+	var comments, messages int64
+	if err := database.Pool.QueryRow(context.Background(), `select (select count(*) from comments), (select count(*) from messages)`).
+		Scan(&comments, &messages); err != nil {
+		t.Fatalf("count the corpus's comments and messages: %v", err)
+	}
+	t.Logf("seeded the corpus in %s: a widest thread of %d participants, %d ordinary people around a median history of %d "+
+		"threads and as many conversations, a heavy person of %d threads (%d unread) and %d conversations, a chain of %d links; "+
+		"comments=%d messages=%d",
 		time.Since(started).Round(time.Millisecond), oneInboxWidestThread, oneInboxWidestThread, oneInboxMedianHistory,
-		len(corpus.heavyRead)+len(corpus.heavyUnread), len(corpus.heavyUnread), oneInboxCommentThreadDepth)
+		len(corpus.heavyRead)+len(corpus.heavyUnread), len(corpus.heavyUnread), oneInboxHeavyFactor*oneInboxMedianHistory,
+		oneInboxCommentThreadDepth, comments, messages)
 	return corpus
 }
 
@@ -428,6 +486,181 @@ func seedOneInboxHeavyThreads(t *testing.T, database *store.Store, issue string)
 	return read, unread
 }
 
+// seedOneInboxConversations writes each person's conversations with a session of their own: as
+// many one-off messages from ordinary person i to oneInboxPersonSession(i) as their history holds
+// threads (oneInboxHistory(i)), and oneInboxHeavyFactor times the median from the heavy person to
+// oneInboxHeavySession, each answered by that session thirty seconds later, the answer carrying its
+// root's target as a session's reply does (insertSessionReply); then the person's read mark on that
+// session (user_agent_read), at now, as a person who has read their conversations has it. It writes
+// a hundred people a statement, in one transaction.
+//
+// Each message is owed a block index and its embedding windows by its insert trigger (migrations
+// 0144 and 20261107194001), which the base build's reconciliation pays off a batch a tick and this
+// build's handler in the process never does. The seed takes both debts off the messages it wrote,
+// in its own transaction, so neither build holds the blocks or windows of a body no read under
+// measurement reads, and the base build settles (settleOneInboxBase) on what the threads owe it
+// alone rather than on 40,000 more bodies: with the window debt left on them, the first c-p99 run
+// found the base build paying it off at about 2,400 items a minute.
+func seedOneInboxConversations(t *testing.T, database *store.Store) {
+	t.Helper()
+	const batch = 100
+	var logins, sessions []string
+	var conversations, newest, step []int
+	for i := 1; i <= oneInboxWidestThread; i++ {
+		logins = append(logins, oneInboxPerson(i))
+		sessions = append(sessions, oneInboxPersonSession(i))
+		conversations = append(conversations, oneInboxHistory(i))
+		newest, step = append(newest, i*60+30), append(step, 1)
+	}
+	logins = append(logins, oneInboxHeavy)
+	sessions = append(sessions, oneInboxHeavySession)
+	conversations = append(conversations, oneInboxHeavyFactor*oneInboxMedianHistory)
+	newest, step = append(newest, 0), append(step, 2)
+	ctx := context.Background()
+	oneInboxTransaction(t, database, "the conversations", func(tx pgx.Tx) error {
+		for first := 0; first < len(logins); first += batch {
+			last := min(first+batch, len(logins))
+			want := 0
+			for _, count := range conversations[first:last] {
+				want += 2 * count
+			}
+			var written []string
+			if err := tx.QueryRow(ctx, `
+				with people as (
+					select * from unnest($1::text[], $2::text[], $3::int[], $4::int[], $5::int[])
+					  as people(login, session, conversations, newest, step)
+				),
+				roots as (
+					insert into messages (issue_key, author, body, target, created_at)
+					select null, jsonb_build_object('kind', 'user', 'id', people.login),
+					       'Question ' || j || ' of ' || people.login || ' to its session.', 'session:' || people.session,
+					       now() - ((people.newest + people.step * j) || ' minutes')::interval - interval '20 seconds'
+					from people, generate_series(1, people.conversations) j
+					returning id, target, created_at
+				),
+				replies as (
+					insert into messages (issue_key, author, body, target, in_reply_to, created_at)
+					select null, jsonb_build_object('kind', 'session', 'id', substr(roots.target, length('session:') + 1)),
+					       'The session answers.', roots.target, roots.id, roots.created_at + interval '30 seconds'
+					from roots
+					returning id
+				)
+				select array(select id::text from roots) || array(select id::text from replies)
+			`, logins[first:last], sessions[first:last], conversations[first:last], newest[first:last], step[first:last]).
+				Scan(&written); err != nil {
+				return fmt.Errorf("people %d-%d: %w", first+1, last, err)
+			}
+			if len(written) != want {
+				return fmt.Errorf("people %d-%d: wrote %d messages, want %d", first+1, last, len(written), want)
+			}
+			tag, err := tx.Exec(ctx, `
+				update message_block_state set owed_at = null, windows_owed_at = null where message_id = any($1::uuid[])
+			`, written)
+			if err != nil {
+				return fmt.Errorf("people %d-%d: take the block index and windows the messages owe off them: %w", first+1, last, err)
+			}
+			if tag.RowsAffected() != int64(want) {
+				return fmt.Errorf("people %d-%d: took the block index off %d messages, want %d", first+1, last, tag.RowsAffected(), want)
+			}
+		}
+		tag, err := tx.Exec(ctx, `
+			insert into user_agent_read (login, session_id, read_through)
+			select login, session, now() from unnest($1::text[], $2::text[]) as marks(login, session)
+		`, logins, sessions)
+		if err == nil && tag.RowsAffected() != int64(len(logins)) {
+			err = fmt.Errorf("wrote %d read marks, want %d", tag.RowsAffected(), len(logins))
+		}
+		return err
+	})
+}
+
+// seedOneInboxMoves writes, through server, the asks each counted move of who an ask waits on
+// moves, over the two sorts of ask - the first, whose old person also wrote in its thread (a
+// comment of theirs on the ask), and the second, whose old person holds nothing else there - and
+// answers the moves, in the order they are counted: per write, its moves of one ask, then its move
+// of many. Every ask is asked by the session, so no old person is its asker.
+//
+//   - patchIssue moves every open ask of the issue handed to nobody: an issue holding one ask of
+//     each sort, then one holding oneInboxDefaultAsks, half of each sort.
+//   - putAskAskedOf moves the one ask it hands on, which waits on the person it was handed to
+//     before: one ask of each sort, then the second sort's ask on an issue holding
+//     oneInboxDefaultAsks, whose count of statements is held to the one ask's.
+//   - putProjectDefaultAssignee moves every open ask that falls through to the project's default:
+//     a project holding one, then one holding oneInboxDefaultAsks, half of each sort.
+func seedOneInboxMoves(t *testing.T, server oneInboxCaller) []oneInboxMove {
+	t.Helper()
+	movers := oneInboxMovers
+	const project = "SORT"
+	createOneInboxProject(t, server, project, oneInboxHeavy)
+	opened := func(issue string, count int) []string {
+		ids := make([]string, 0, count)
+		for index := range count {
+			ids = append(ids, openOneInboxAsk(t, server, issue, fmt.Sprintf("Which way does counted question %d of %s go?", index, issue)))
+		}
+		return ids
+	}
+	// sorted has from write in the thread of the first `first` of asks, which makes them the first
+	// sort, and answers each with the rows its move appends.
+	sorted := func(issue string, asks []string, from string, first int) []oneInboxMovedAsk {
+		moved := make([]oneInboxMovedAsk, 0, len(asks))
+		for index, id := range asks {
+			rows := 4
+			if index < first {
+				rows = 3
+				oneInboxExpect(t, from+" writes in the thread of ask "+id, server.call(t, from, http.MethodPost,
+					"/api/v1/issues/"+issue+"/comments", map[string]any{
+						"body": "A word in this question's thread from the person it waits on.", "ask_id": id,
+					}), http.StatusCreated)
+			}
+			moved = append(moved, oneInboxMovedAsk{id: id, from: from, rows: rows})
+		}
+		return moved
+	}
+	type counted struct {
+		what        string
+		asks, first int
+		many        bool
+	}
+	many := fmt.Sprintf("%d asks, half of each sort", oneInboxDefaultAsks)
+	var moves []oneInboxMove
+	for _, c := range []counted{{"one ask, first sort", 1, 1, false}, {"one ask, second sort", 1, 0, false}, {many, oneInboxDefaultAsks, oneInboxDefaultAsks / 2, true}} {
+		issue := createOneInboxIssue(t, server, project, "Counted questions that change hands with their issue: "+c.what, movers[0])
+		moved := sorted(issue, opened(issue, c.asks), movers[0], c.first)
+		moves = append(moves, oneInboxMove{
+			write: "patchIssue", what: c.what, method: http.MethodPatch, path: "/api/v1/issues/" + issue,
+			body: map[string]any{"assignee": movers[1]}, to: movers[1], asks: moved, many: c.many,
+		})
+	}
+	for _, c := range []counted{
+		{"one ask, first sort", 1, 1, false}, {"one ask, second sort", 1, 0, false},
+		{fmt.Sprintf("one ask of an issue holding %d, second sort", oneInboxDefaultAsks), oneInboxDefaultAsks, 0, true},
+	} {
+		issue := createOneInboxIssue(t, server, project, "Counted questions handed on: "+c.what, movers[2])
+		ask := opened(issue, c.asks)[0]
+		oneInboxExpect(t, "hand ask "+ask+" to "+movers[3], server.call(t, oneInboxHeavy, http.MethodPut,
+			"/api/v1/asks/"+ask+"/asked-of", map[string]any{"asked_of": movers[3]}), http.StatusOK)
+		moved := sorted(issue, []string{ask}, movers[3], c.first)
+		moves = append(moves, oneInboxMove{
+			write: "putAskAskedOf", what: c.what, method: http.MethodPut, path: "/api/v1/asks/" + ask + "/asked-of",
+			body: map[string]any{"asked_of": movers[4]}, to: movers[4], asks: moved, many: c.many,
+		})
+	}
+	for index, c := range []counted{{"one ask, second sort", 1, 0, false}, {many, oneInboxDefaultAsks, oneInboxDefaultAsks / 2, true}} {
+		key := project + string(rune('A'+index))
+		createOneInboxProject(t, server, key, movers[5])
+		issue := createOneInboxIssue(t, server, key, "Counted questions nobody holds: "+c.what, oneInboxHeavy)
+		oneInboxExpect(t, "unassign "+issue, server.call(t, oneInboxHeavy, http.MethodPatch,
+			"/api/v1/issues/"+issue, map[string]any{"assignee": nil}), http.StatusOK)
+		moved := sorted(issue, opened(issue, c.asks), movers[5], c.first)
+		moves = append(moves, oneInboxMove{
+			write: "putProjectDefaultAssignee", what: c.what, method: http.MethodPut,
+			path: "/api/v1/projects/" + key + "/default-assignee",
+			body: map[string]any{"assignee": movers[6]}, to: movers[6], asks: moved, many: c.many,
+		})
+	}
+	return moves
+}
+
 // seedOneInboxMessageThread starts an issue message thread as the first messager and answers it
 // as the second, so the thread the baseline's issue messages reply into holds two people.
 func seedOneInboxMessageThread(t *testing.T, server oneInboxCaller, issue string) string {
@@ -565,6 +798,64 @@ func assertOneInboxCorpus(t *testing.T, database *store.Store, corpus *oneInboxC
 	}
 	if empty != 0 {
 		t.Fatalf("the person with no history holds %d threads (-1 is no such person), want 0", empty)
+	}
+
+	// Conversations are the one-off messages a person sent a session, read over the same people
+	// (messages_direct_roots' own predicate), and the median reader holds the median of both.
+	var conversations, heavyConversations, emptyConversations, readerConversations, readerThreads int64
+	if err := database.Pool.QueryRow(ctx, `
+		with conversations as (
+			select p.email, count(m.id) as n
+			from people p
+			left join messages m on m.issue_key is null and m.in_reply_to is null and m.target like 'session:%'
+			  and m.author->>'kind' = 'user' and lower(m.author->>'id') = p.email
+			where p.email like '%' || $1::text
+			group by p.email
+		)
+		select percentile_disc(0.5) within group (order by n),
+		       coalesce(max(n) filter (where email = $2), -1), coalesce(max(n) filter (where email = $3), -1),
+		       coalesce(max(n) filter (where email = $4), -1), (select count(*) from user_threads where login = $4)
+		from conversations
+	`, oneInboxDomain, oneInboxHeavy, oneInboxEmpty, oneInboxMedianReader).
+		Scan(&conversations, &heavyConversations, &emptyConversations, &readerConversations, &readerThreads); err != nil {
+		t.Fatalf("read the corpus's conversations: %v", err)
+	}
+	t.Logf("the corpus's conversations: median %d, the heavy person %d, the empty one %d; the median reader %s holds %d threads and %d conversations",
+		conversations, heavyConversations, emptyConversations, oneInboxMedianReader, readerThreads, readerConversations)
+	switch {
+	case conversations != oneInboxMedianHistory:
+		t.Fatalf("the median person holds %d conversations, want %d", conversations, oneInboxMedianHistory)
+	case heavyConversations != oneInboxHeavyFactor*conversations:
+		t.Fatalf("the heavy person holds %d conversations, want %d times the median's %d", heavyConversations, oneInboxHeavyFactor, conversations)
+	case emptyConversations != 0:
+		t.Fatalf("the person with no history holds %d conversations (-1 is no such person), want 0", emptyConversations)
+	case readerThreads != oneInboxMedianHistory || readerConversations != oneInboxMedianHistory:
+		t.Fatalf("the median reader %s holds %d threads and %d conversations, want %d of each",
+			oneInboxMedianReader, readerThreads, readerConversations, oneInboxMedianHistory)
+	}
+
+	// Each counted move's asks are open and wait on the person the move takes them from, and that
+	// person wrote in the thread of each ask of the first sort and of no ask of the second.
+	for _, move := range corpus.moves {
+		for _, ask := range move.asks {
+			var waiting *string
+			var wrote int64
+			if err := database.Pool.QueryRow(ctx, `
+				select `+askedOfPersonExpression+`,
+				       (select count(*) from comments c where c.ask_id = a.id and c.author->>'id' = $2)
+				from asks a`+askedOfPersonJoins+`
+				where a.id = $1 and a.state = 'open'
+			`, ask.id, ask.from).Scan(&waiting, &wrote); err != nil {
+				t.Fatalf("read ask %s of %s's move %q: %v", ask.id, move.write, move.what, err)
+			}
+			if waiting == nil || *waiting != ask.from {
+				t.Fatalf("ask %s of %s's move %q waits on %v, want %s", ask.id, move.write, move.what, waiting, ask.from)
+			}
+			if (wrote > 0) != (ask.rows == 3) {
+				t.Fatalf("%s wrote %d times in the thread of ask %s, whose move appends %d rows (three is the sort they wrote in)",
+					ask.from, wrote, ask.id, ask.rows)
+			}
+		}
 	}
 }
 

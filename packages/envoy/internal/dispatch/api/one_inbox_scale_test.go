@@ -17,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -126,20 +127,39 @@ func TestOneInboxWriteBaseline(t *testing.T) {
 	}
 	t.Cleanup(database.Pool.Close)
 
-	corpus := seedOneInboxCorpus(t, database, server)
+	base := &oneInboxSide{name: "the base build", server: server, database: database}
+	base.corpus = seedOneInboxCorpus(t, database, server)
 	settleOneInboxBase(t, database)
-	// Statistics, as a production table has them, and the visibility map a freshly loaded table
-	// lacks: without them the planner reads this corpus as the empty tables it was migrated as.
-	if _, err := database.Pool.Exec(ctx, "vacuum analyze"); err != nil {
-		t.Fatalf("vacuum the corpus: %v", err)
-	}
+	analyzeOneInbox(t, base)
 
 	t.Logf("measurement-two: base build %s, %d readings of each write path after one not counted, taken_at=%s",
 		commit, oneInboxReadings, oneInboxNow())
-	for _, path := range oneInboxWritePaths(server, database, corpus) {
-		measureOneInboxPath(t, path)
+	for _, path := range oneInboxWritePaths() {
+		measureOneInboxPath(t, path, base)
 	}
-	countOneInboxCommentRows(t, server, database, corpus)
+	installOneInboxAudit(t, database)
+	countOneInboxCommentRows(t, "measurement-two", base)
+}
+
+// oneInboxSide is one build a measurement drives: the server it calls over loopback, the database
+// behind that server, and the corpus seeded on it.
+type oneInboxSide struct {
+	name     string
+	server   *baselineServer
+	database *store.Store
+	corpus   *oneInboxCorpus
+}
+
+// analyzeOneInbox gives side's corpus the statistics a production table has, and the visibility
+// map a freshly loaded table lacks: without them the planner reads the corpus as the empty tables
+// it was migrated as.
+func analyzeOneInbox(t *testing.T, side *oneInboxSide) {
+	t.Helper()
+	started := time.Now()
+	if _, err := side.database.Pool.Exec(context.Background(), "vacuum analyze"); err != nil {
+		t.Fatalf("vacuum and analyze %s's corpus: %v", side.name, err)
+	}
+	t.Logf("vacuumed and analyzed %s's corpus in %s", side.name, time.Since(started).Round(time.Millisecond))
 }
 
 // handlerCaller sends the corpus's requests to this build's handler in the process: a person by
@@ -188,14 +208,18 @@ func settleOneInboxBase(t *testing.T, database *store.Store) {
 	}
 }
 
-// oneInboxPath is one write path the baseline times: its name in the printed line, one reading of
-// it, and what the line prints beside the times, read once every reading is in. A reading puts back
-// off the clock whatever it moved that the next reading would otherwise find moved, or writes to a
-// target of its own the seed made one of per reading, so every reading measures the same write.
+// oneInboxPath is one write path a measurement times, on whichever build side names: its name in
+// the printed line, one reading of it, and what the line prints beside the times, read once every
+// reading is in. A reading puts back off the clock whatever it moved that the next reading would
+// otherwise find moved, or writes to a target of its own the seed made one of per reading, so every
+// reading measures the same write, and each build's readings write to its own corpus's targets.
+// many marks a path that moves more than one ask a reading, whose times c-p99 prints with the
+// count it moved and holds to no bound (R11).
 type oneInboxPath struct {
 	name   string
-	run    func(t *testing.T, reading int) time.Duration
-	beside func(t *testing.T) string
+	run    func(t *testing.T, side *oneInboxSide, reading int) time.Duration
+	beside func(t *testing.T, side *oneInboxSide) string
+	many   bool
 }
 
 // oneInboxWritePaths are the write paths R11 names, each found in the route table by its handler,
@@ -204,136 +228,143 @@ type oneInboxPath struct {
 // answer (answerAsk), a dismissal (dismissInbox), Mark all read (markInboxRead), a thread read
 // (putThreadRead), an agent's Clear and read (putUserAgentState), a snooze (putAskSnooze), and the
 // three writes that move the person an ask waits on: patchIssue, putAskAskedOf and
-// putProjectDefaultAssignee. The inbox writes are the heavy person's, over their own history.
-func oneInboxWritePaths(server *baselineServer, database *store.Store, corpus *oneInboxCorpus) []oneInboxPath {
-	issue := "/api/v1/issues/" + corpus.issue
+// putProjectDefaultAssignee. The inbox writes are the heavy person's, over their own history. The
+// mention names a session: a mention of a person is a write of T13's, which adds that case here.
+func oneInboxWritePaths() []oneInboxPath {
+	issue := func(side *oneInboxSide) string { return "/api/v1/issues/" + side.corpus.issue }
 	return []oneInboxPath{
-		{name: "comment", run: func(t *testing.T, reading int) time.Duration {
+		{name: "comment", run: func(t *testing.T, side *oneInboxSide, reading int) time.Duration {
 			// Into the thread at the bound, by one of its participants, so the participant set the
 			// write moves stays the bound's.
-			return oneInboxExpect(t, "a comment at the bound", server.call(t, oneInboxCommenter, http.MethodPost, issue+"/comments",
-				map[string]any{"body": fmt.Sprintf("Reading %d of a comment at the bound.", reading), "reply_to": corpus.widestRoot}),
-				http.StatusCreated).took
+			return oneInboxExpect(t, side.name+": a comment at the bound", side.server.call(t, oneInboxCommenter, http.MethodPost,
+				issue(side)+"/comments", map[string]any{
+					"body": fmt.Sprintf("Reading %d of a comment at the bound.", reading), "reply_to": side.corpus.widestRoot,
+				}), http.StatusCreated).took
 		}},
-		{name: "comment-mention", run: func(t *testing.T, reading int) time.Duration {
-			return oneInboxExpect(t, "a comment mentioning the session", server.call(t, oneInboxSolo, http.MethodPost, issue+"/comments",
-				map[string]any{
-					"body": fmt.Sprintf("Reading %d of a mention.", reading), "reply_to": corpus.soloRoot,
+		{name: "comment-mention", run: func(t *testing.T, side *oneInboxSide, reading int) time.Duration {
+			return oneInboxExpect(t, side.name+": a comment mentioning the session", side.server.call(t, oneInboxSolo, http.MethodPost,
+				issue(side)+"/comments", map[string]any{
+					"body": fmt.Sprintf("Reading %d of a mention.", reading), "reply_to": side.corpus.soloRoot,
 					"mentions": []map[string]string{{"target": "session:" + oneInboxSession}},
 				}), http.StatusCreated).took
 		}},
-		{name: "issue-message", run: func(t *testing.T, reading int) time.Duration {
-			return oneInboxExpect(t, "an issue message", server.call(t, oneInboxMessagers[0], http.MethodPost, issue+"/messages",
-				map[string]any{"body": fmt.Sprintf("Reading %d of an issue message.", reading), "in_reply_to": corpus.messageRoot}),
-				http.StatusCreated).took
+		{name: "issue-message", run: func(t *testing.T, side *oneInboxSide, reading int) time.Duration {
+			return oneInboxExpect(t, side.name+": an issue message", side.server.call(t, oneInboxMessagers[0], http.MethodPost,
+				issue(side)+"/messages", map[string]any{
+					"body": fmt.Sprintf("Reading %d of an issue message.", reading), "in_reply_to": side.corpus.messageRoot,
+				}), http.StatusCreated).took
 		}},
-		{name: "broadcast", run: func(t *testing.T, reading int) time.Duration {
-			return oneInboxExpect(t, "a broadcast", server.call(t, oneInboxConverser, http.MethodPost, "/api/v1/broadcasts",
+		{name: "broadcast", run: func(t *testing.T, side *oneInboxSide, reading int) time.Duration {
+			return oneInboxExpect(t, side.name+": a broadcast", side.server.call(t, oneInboxConverser, http.MethodPost, "/api/v1/broadcasts",
 				map[string]any{
 					"body": fmt.Sprintf("Reading %d of a broadcast.", reading), "delivery": "btw",
 					"session_ids": []string{oneInboxSession, oneInboxOtherSession},
 				}), http.StatusCreated).took
 		}},
-		{name: "direct-reply", run: func(t *testing.T, reading int) time.Duration {
-			return oneInboxExpect(t, "the session's direct reply", server.call(t, "", http.MethodPost,
-				"/api/v1/messages/"+corpus.directRoots[reading]+"/reply", map[string]any{
+		{name: "direct-reply", run: func(t *testing.T, side *oneInboxSide, reading int) time.Duration {
+			return oneInboxExpect(t, side.name+": the session's direct reply", side.server.call(t, "", http.MethodPost,
+				"/api/v1/messages/"+side.corpus.directRoots[reading]+"/reply", map[string]any{
 					"actor": oneInboxSessionActor(), "attempt": 1, "body": fmt.Sprintf("Reading %d of a session's reply.", reading),
 				}), http.StatusCreated).took
 		}},
-		{name: "ask-answer", run: func(t *testing.T, reading int) time.Duration {
-			return oneInboxExpect(t, "an ask's answer", server.call(t, oneInboxAnswerer, http.MethodPost,
-				"/api/v1/asks/"+corpus.answerAsks[reading]+"/answer", map[string]any{
+		{name: "ask-answer", run: func(t *testing.T, side *oneInboxSide, reading int) time.Duration {
+			return oneInboxExpect(t, side.name+": an ask's answer", side.server.call(t, oneInboxAnswerer, http.MethodPost,
+				"/api/v1/asks/"+side.corpus.answerAsks[reading]+"/answer", map[string]any{
 					"text": fmt.Sprintf("Reading %d of an answer.", reading), "expected_edited_at": nil,
 				}), http.StatusOK).took
 		}},
-		{name: "dismissal", run: func(t *testing.T, _ int) time.Duration {
+		{name: "dismissal", run: func(t *testing.T, side *oneInboxSide, _ int) time.Duration {
 			// A thread the heavy person has read, so the dismissal moves no read mark, put back in
 			// their Inbox afterwards. The version it carries is read first, as a page carries it.
-			rows := []string{inboxDismissReplyPrefix + corpus.heavyRead[0]}
-			body := dismissBody(t, database, oneInboxHeavy, rows)
-			answer := oneInboxExpect(t, "a dismissal", server.call(t, oneInboxHeavy, http.MethodPost, "/api/v1/me/inbox/dismiss", body),
-				http.StatusOK)
-			requireOneInboxCount(t, "the dismissal", answer, "dismissed", 1)
-			restored := oneInboxExpect(t, "the dismissal's restore", server.call(t, oneInboxHeavy, http.MethodPost,
+			rows := []string{inboxDismissReplyPrefix + side.corpus.heavyRead[0]}
+			body := dismissBody(t, side.database, oneInboxHeavy, rows)
+			answer := oneInboxExpect(t, side.name+": a dismissal", side.server.call(t, oneInboxHeavy, http.MethodPost,
+				"/api/v1/me/inbox/dismiss", body), http.StatusOK)
+			requireOneInboxCount(t, side.name+": the dismissal", answer, "dismissed", 1)
+			restored := oneInboxExpect(t, side.name+": the dismissal's restore", side.server.call(t, oneInboxHeavy, http.MethodPost,
 				"/api/v1/me/inbox/dismiss", map[string]any{"threads": rows, "restore": true}), http.StatusOK)
-			requireOneInboxCount(t, "the dismissal's restore", restored, "dismissed", 1)
+			requireOneInboxCount(t, side.name+": the dismissal's restore", restored, "dismissed", 1)
 			return answer.took
 		}},
-		{name: "mark-all-read", run: func(t *testing.T, _ int) time.Duration {
-			answer := oneInboxExpect(t, "Mark all read", server.call(t, oneInboxHeavy, http.MethodPost, "/api/v1/me/inbox/read",
-				map[string]any{"read_through": oneInboxMoment(0), "kind": []string{"reply", "agent"}}), http.StatusOK)
-			requireOneInboxCount(t, "Mark all read", answer, "marked", len(corpus.heavyUnread))
-			unreadOneInbox(t, database, corpus.heavyUnread)
+		{name: "mark-all-read", run: func(t *testing.T, side *oneInboxSide, _ int) time.Duration {
+			answer := oneInboxExpect(t, side.name+": Mark all read", side.server.call(t, oneInboxHeavy, http.MethodPost,
+				"/api/v1/me/inbox/read", map[string]any{"read_through": oneInboxMoment(0), "kind": []string{"reply", "agent"}}),
+				http.StatusOK)
+			requireOneInboxCount(t, side.name+": Mark all read", answer, "marked", len(side.corpus.heavyUnread))
+			unreadOneInbox(t, side.database, side.corpus.heavyUnread)
 			return answer.took
 		}},
-		{name: "thread-read", run: func(t *testing.T, _ int) time.Duration {
-			thread := corpus.heavyUnread[0]
-			answer := oneInboxExpect(t, "a thread read", server.call(t, oneInboxHeavy, http.MethodPut, "/api/v1/me/threads/"+thread+"/read",
-				map[string]any{"read_through": oneInboxMoment(0)}), http.StatusNoContent)
-			unreadOneInbox(t, database, []string{thread})
+		{name: "thread-read", run: func(t *testing.T, side *oneInboxSide, _ int) time.Duration {
+			thread := side.corpus.heavyUnread[0]
+			answer := oneInboxExpect(t, side.name+": a thread read", side.server.call(t, oneInboxHeavy, http.MethodPut,
+				"/api/v1/me/threads/"+thread+"/read", map[string]any{"read_through": oneInboxMoment(0)}), http.StatusNoContent)
+			unreadOneInbox(t, side.database, []string{thread})
 			return answer.took
 		}},
-		{name: "agent-clear-and-read", run: func(t *testing.T, _ int) time.Duration {
-			return oneInboxExpect(t, "an agent's Clear and read", server.call(t, oneInboxConverser, http.MethodPut,
+		{name: "agent-clear-and-read", run: func(t *testing.T, side *oneInboxSide, _ int) time.Duration {
+			return oneInboxExpect(t, side.name+": an agent's Clear and read", side.server.call(t, oneInboxConverser, http.MethodPut,
 				"/api/v1/me/agents/"+oneInboxSession+"/state", map[string]any{
 					"cleared_before": oneInboxMoment(0), "read_through": oneInboxMoment(0),
 				}), http.StatusOK).took
 		}},
-		{name: "snooze", run: func(t *testing.T, _ int) time.Duration {
-			snooze := "/api/v1/me/asks/" + corpus.snoozeAsk + "/snooze"
-			answer := oneInboxExpect(t, "a snooze", server.call(t, oneInboxHeavy, http.MethodPut, snooze,
+		{name: "snooze", run: func(t *testing.T, side *oneInboxSide, _ int) time.Duration {
+			snooze := "/api/v1/me/asks/" + side.corpus.snoozeAsk + "/snooze"
+			answer := oneInboxExpect(t, side.name+": a snooze", side.server.call(t, oneInboxHeavy, http.MethodPut, snooze,
 				map[string]any{"snoozed_until": oneInboxMoment(24 * time.Hour)}), http.StatusOK)
-			oneInboxExpect(t, "the snooze's undo", server.call(t, oneInboxHeavy, http.MethodDelete, snooze, nil), http.StatusNoContent)
+			oneInboxExpect(t, side.name+": the snooze's undo", side.server.call(t, oneInboxHeavy, http.MethodDelete, snooze, nil),
+				http.StatusNoContent)
 			return answer.took
 		}},
-		{name: "patch-issue-assignee", run: func(t *testing.T, reading int) time.Duration {
+		{name: "patch-issue-assignee", run: func(t *testing.T, side *oneInboxSide, reading int) time.Duration {
 			// The seed set the first assignee, so each reading hands the issue, and the one ask it
 			// holds, to the other one.
-			return oneInboxExpect(t, "an assignee change", server.call(t, oneInboxHeavy, http.MethodPatch, "/api/v1/issues/"+corpus.movingIssue,
-				map[string]any{"assignee": oneInboxAssignees[(reading+1)%2]}), http.StatusOK).took
-		}, beside: func(t *testing.T) string {
-			return fmt.Sprintf("asks_moved=%d", oneInboxAsksWaitingOn(t, database, `a.id = $1 and a.asked_of is null`,
-				corpus.movingAsk, oneInboxAssignees[(oneInboxReadings+1)%2]))
+			return oneInboxExpect(t, side.name+": an assignee change", side.server.call(t, oneInboxHeavy, http.MethodPatch,
+				"/api/v1/issues/"+side.corpus.movingIssue, map[string]any{"assignee": oneInboxAssignees[(reading+1)%2]}),
+				http.StatusOK).took
+		}, beside: func(t *testing.T, side *oneInboxSide) string {
+			return fmt.Sprintf("asks_moved=%d", oneInboxAsksWaitingOn(t, side.database, `a.id = $1 and a.asked_of is null`,
+				side.corpus.movingAsk, oneInboxAssignees[(oneInboxReadings+1)%2]))
 		}},
-		{name: "ask-asked-of", run: func(t *testing.T, reading int) time.Duration {
+		{name: "ask-asked-of", run: func(t *testing.T, side *oneInboxSide, reading int) time.Duration {
 			// The ask waits on its issue's assignee, so each reading hands it to one of two people who
 			// are not, in turn.
-			return oneInboxExpect(t, "an ask handed on", server.call(t, oneInboxHeavy, http.MethodPut, "/api/v1/asks/"+corpus.movingAsk+"/asked-of",
-				map[string]any{"asked_of": oneInboxAskedOf[reading%2]}), http.StatusOK).took
-		}, beside: func(t *testing.T) string {
-			return fmt.Sprintf("asks_moved=%d", oneInboxAsksWaitingOn(t, database, `a.id = $1 and a.asked_of is not null`,
-				corpus.movingAsk, oneInboxAskedOf[oneInboxReadings%2]))
+			return oneInboxExpect(t, side.name+": an ask handed on", side.server.call(t, oneInboxHeavy, http.MethodPut,
+				"/api/v1/asks/"+side.corpus.movingAsk+"/asked-of", map[string]any{"asked_of": oneInboxAskedOf[reading%2]}),
+				http.StatusOK).took
+		}, beside: func(t *testing.T, side *oneInboxSide) string {
+			return fmt.Sprintf("asks_moved=%d", oneInboxAsksWaitingOn(t, side.database, `a.id = $1 and a.asked_of is not null`,
+				side.corpus.movingAsk, oneInboxAskedOf[oneInboxReadings%2]))
 		}},
-		{name: "project-default-assignee", run: func(t *testing.T, reading int) time.Duration {
-			return oneInboxExpect(t, "a project's default moved", server.call(t, oneInboxHeavy, http.MethodPut,
-				"/api/v1/projects/"+corpus.moveProject+"/default-assignee",
+		{name: "project-default-assignee", many: true, run: func(t *testing.T, side *oneInboxSide, reading int) time.Duration {
+			return oneInboxExpect(t, side.name+": a project's default moved", side.server.call(t, oneInboxHeavy, http.MethodPut,
+				"/api/v1/projects/"+side.corpus.moveProject+"/default-assignee",
 				map[string]any{"assignee": oneInboxDefaults[(reading+1)%2]}), http.StatusOK).took
-		}, beside: func(t *testing.T) string {
-			moved := oneInboxAsksWaitingOn(t, database, `p.key = $1 and a.asked_of is null and i.assignee is null`,
-				corpus.moveProject, oneInboxDefaults[(oneInboxReadings+1)%2])
+		}, beside: func(t *testing.T, side *oneInboxSide) string {
+			moved := oneInboxAsksWaitingOn(t, side.database, `p.key = $1 and a.asked_of is null and i.assignee is null`,
+				side.corpus.moveProject, oneInboxDefaults[(oneInboxReadings+1)%2])
 			if moved != oneInboxDefaultAsks {
-				t.Fatalf("the project's default moved %d asks, want the %d nobody holds", moved, oneInboxDefaultAsks)
+				t.Fatalf("%s: the project's default moved %d asks, want the %d nobody holds", side.name, moved, oneInboxDefaultAsks)
 			}
 			return fmt.Sprintf("asks_moved=%d", moved)
 		}},
 	}
 }
 
-// measureOneInboxPath takes one reading of path that is not counted - the first run of a statement
-// on a fresh connection pays for the pages every later run finds cached - then oneInboxReadings
-// that are, and prints their p50, p95 and p99, each the nearest-rank reading so every number is a
-// run that happened.
-func measureOneInboxPath(t *testing.T, path oneInboxPath) {
+// measureOneInboxPath takes one reading of path on side that is not counted - the first run of a
+// statement on a fresh connection pays for the pages every later run finds cached - then
+// oneInboxReadings that are, and prints their p50, p95 and p99, each the nearest-rank reading so
+// every number is a run that happened.
+func measureOneInboxPath(t *testing.T, path oneInboxPath, side *oneInboxSide) {
 	t.Helper()
-	path.run(t, 0)
+	path.run(t, side, 0)
 	taken := make([]time.Duration, 0, oneInboxReadings)
 	for reading := 1; reading <= oneInboxReadings; reading++ {
-		taken = append(taken, path.run(t, reading))
+		taken = append(taken, path.run(t, side, reading))
 	}
 	sorted := slices.Sorted(slices.Values(taken))
 	beside := ""
 	if path.beside != nil {
-		beside = " " + path.beside(t)
+		beside = " " + path.beside(t, side)
 	}
 	t.Logf("measurement-two: %s p50=%.2fms p95=%.2fms p99=%.2fms n=%d%s taken_at=%s", path.name,
 		msOf(percentileOfDismissedScale(sorted, 0.50)), msOf(percentileOfDismissedScale(sorted, 0.95)),
@@ -393,31 +424,90 @@ type oneInboxWritten struct {
 	rows                int64
 }
 
-// countOneInboxCommentRows writes one comment into the widest thread and counts the rows its
-// transaction wrote: the per-participant ones, which are its user_threads rows, and the fixed ones,
-// every other table's, each printed apart. It fails where the per-participant rows pass two for
-// each participant of the bound, the append and the update R4 allows; that failure is the stop
-// rule's.
+// countOneInboxCommentRows writes one comment into side's widest thread and counts the rows its
+// transaction wrote: the per-participant ones - its user_threads rows, and the tuples it appended
+// that name a participant of the thread other than its author (the delivered_to of R4's append,
+// and the end of a dismissal of theirs) - and the fixed ones, every other row, each printed apart
+// under prefix. It fails where the per-participant rows pass two for each participant of the
+// thread, the append and the update R4 allows; that failure is the stop rule's. The author's own
+// tuples - authored_by, their participates_in and their read mark - are one each whatever the
+// thread holds, so they are fixed rows.
 //
-// The rows are counted by an audit installed for this one write (installOneInboxAudit), because
-// a row's xmin alone undercounts: the base build's background work rewrites rows the write left -
-// the outbox its event, the block index its owed marks - moments after it commits.
-func countOneInboxCommentRows(t *testing.T, server *baselineServer, database *store.Store, corpus *oneInboxCorpus) {
+// The rows are counted by an audit installed on side's database before this write
+// (installOneInboxAudit), because a row's xmin alone undercounts: the base build's background work
+// rewrites rows the write left - the outbox its event, the block index its owed marks - moments
+// after it commits.
+func countOneInboxCommentRows(t *testing.T, prefix string, side *oneInboxSide) {
 	t.Helper()
 	ctx := context.Background()
-	installOneInboxAudit(t, database)
-	id := oneInboxID(t, "the comment whose rows are counted", server.call(t, oneInboxCommenter, http.MethodPost,
-		"/api/v1/issues/"+corpus.issue+"/comments",
-		map[string]any{"body": "The comment whose rows are counted.", "reply_to": corpus.widestRoot}), http.StatusCreated)
+	database := side.database
+	var before int64
+	if err := database.Pool.QueryRow(ctx, `select coalesce(max(seq), 0) from graph_tuples`).Scan(&before); err != nil {
+		t.Fatalf("%s: read the store's last tuple before the comment: %v", side.name, err)
+	}
+	id := oneInboxID(t, side.name+": the comment whose rows are counted", side.server.call(t, oneInboxCommenter, http.MethodPost,
+		"/api/v1/issues/"+side.corpus.issue+"/comments",
+		map[string]any{"body": "The comment whose rows are counted.", "reply_to": side.corpus.widestRoot}), http.StatusCreated)
 	var xid int64
 	if err := database.Pool.QueryRow(ctx, `select xmin::text::bigint from comments where id = $1`, id).Scan(&xid); err != nil {
-		t.Fatalf("read the transaction that wrote the comment: %v", err)
+		t.Fatalf("%s: read the transaction that wrote the comment: %v", side.name, err)
 	}
-	rows, err := database.Pool.Query(ctx, `
+	var participants, carried, tuples int64
+	if err := database.Pool.QueryRow(ctx, `
+		with participants as (select lower(login) as login from user_threads where thread_id = $1)
+		select (select count(*) from participants),
+		       (select count(*) from user_threads where thread_id = $1 and xmin::text::bigint = $2),
+		       (select count(*) from graph_tuples t
+		        where t.seq > $3 and t.xmin::text::bigint = $2
+		          and ((t.to_kind = $4 and t.to_id <> $5 and t.to_id in (select login from participants))
+		            or (t.from_kind = $4 and t.from_id <> $5 and t.from_id in (select login from participants))))
+	`, side.corpus.widestRoot, xid, before, graphstore.KindPerson, oneInboxCommenter).Scan(&participants, &carried, &tuples); err != nil {
+		t.Fatalf("%s: read the widest thread's rows and the tuples the comment appended: %v", side.name, err)
+	}
+	var threads, fixed, comments int64
+	var parts []string
+	for _, part := range oneInboxWrittenBy(t, database, xid) {
+		rows := part.rows
+		switch {
+		case part.relation == "user_threads":
+			threads += rows
+			continue
+		case part.relation == "graph_tuples" && part.operation == "INSERT":
+			rows -= tuples
+		case part.relation == "comments" && part.operation == "INSERT":
+			comments += rows
+		}
+		if rows > 0 {
+			fixed += rows
+			parts = append(parts, fmt.Sprintf("%s.%s=%d", part.relation, strings.ToLower(part.operation), rows))
+		}
+	}
+	if comments != 1 {
+		t.Fatalf("%s: transaction %d inserted %d comments by the audit, want the one written: it is not the comment's", side.name, xid, comments)
+	}
+	if carried != threads {
+		t.Fatalf("%s: the comment wrote %d user_threads rows by the audit and %d of the widest thread's rows carry its transaction",
+			side.name, threads, carried)
+	}
+	perParticipant := threads + tuples
+	t.Logf("%s: rows of one comment in the thread of %d participants on %s: per_participant=%d (user_threads=%d tuples=%d) "+
+		"fixed=%d (%s) bound=%d taken_at=%s",
+		prefix, participants, side.name, perParticipant, threads, tuples, fixed, strings.Join(parts, " "), 2*participants, oneInboxNow())
+	if perParticipant > 2*participants {
+		t.Errorf("stop rule: one comment in the thread of %d participants on %s wrote %d per-participant rows, above two for each",
+			participants, side.name, perParticipant)
+	}
+}
+
+// oneInboxWrittenBy is every table's rows each operation of transaction xid wrote, as the audit
+// recorded them (installOneInboxAudit).
+func oneInboxWrittenBy(t *testing.T, database *store.Store, xid int64) []oneInboxWritten {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(), `
 		select relation, operation, sum(rows)::bigint from one_inbox_written where xid = $1 group by 1, 2 order by 1, 2
 	`, xid)
 	if err != nil {
-		t.Fatalf("read the rows the comment wrote: %v", err)
+		t.Fatalf("read the rows transaction %d wrote: %v", xid, err)
 	}
 	written, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (oneInboxWritten, error) {
 		var part oneInboxWritten
@@ -425,40 +515,9 @@ func countOneInboxCommentRows(t *testing.T, server *baselineServer, database *st
 		return part, err
 	})
 	if err != nil {
-		t.Fatalf("read the rows the comment wrote: %v", err)
+		t.Fatalf("read the rows transaction %d wrote: %v", xid, err)
 	}
-	var perParticipant, fixed, comments int64
-	var parts []string
-	for _, part := range written {
-		if part.relation == "user_threads" {
-			perParticipant += part.rows
-			continue
-		}
-		fixed += part.rows
-		parts = append(parts, fmt.Sprintf("%s.%s=%d", part.relation, strings.ToLower(part.operation), part.rows))
-		if part.relation == "comments" && part.operation == "INSERT" {
-			comments += part.rows
-		}
-	}
-	if comments != 1 {
-		t.Fatalf("transaction %d inserted %d comments by the audit, want the one written: it is not the comment's", xid, comments)
-	}
-	var participants, carried int64
-	if err := database.Pool.QueryRow(ctx, `
-		select count(*), count(*) filter (where xmin::text::bigint = $2) from user_threads where thread_id = $1
-	`, corpus.widestRoot, xid).Scan(&participants, &carried); err != nil {
-		t.Fatalf("read the widest thread's rows: %v", err)
-	}
-	if carried != perParticipant {
-		t.Fatalf("the comment wrote %d user_threads rows by the audit and %d of the widest thread's rows carry its transaction",
-			perParticipant, carried)
-	}
-	t.Logf("measurement-two: rows of one comment in the thread of %d participants: per_participant=%d fixed=%d (%s) bound=%d taken_at=%s",
-		participants, perParticipant, fixed, strings.Join(parts, " "), 2*oneInboxParticipantBound, oneInboxNow())
-	if perParticipant > 2*oneInboxParticipantBound {
-		t.Errorf("stop rule: one comment in the thread of %d participants wrote %d per-participant rows, above two for each of R4's %d",
-			participants, perParticipant, oneInboxParticipantBound)
-	}
+	return written
 }
 
 // installOneInboxAudit records, for every statement that writes a table of the schema, the

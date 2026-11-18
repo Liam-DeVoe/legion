@@ -144,30 +144,64 @@ type apiAnswer struct {
 	took   time.Duration
 }
 
-// baselineServer is the base build serving on a loopback port: the process, the dashboard origin
+// baselineServer is a server a check drives over loopback: the base build's process, or this
+// build's handler served by httptest (serveOnLoopback), whose process is nil. It holds the origin
 // every request names (dev sign-in answers only that Host, and a cookie write must carry it as its
-// Origin), the agent bearer it trusts, and one signed-in client per person it has been asked to
-// act as. signInKey is its DISPATCH_DEV_SIGNIN_SHARED_KEY, which a second process booted over the
-// same database must carry too, since a process holding a key of its own is refused beside it.
+// Origin), the agent bearer it trusts, and how it is told who a person is: by the header
+// identityHeader names, which it trusts, or, where that is empty, by the session cookie of one
+// signed-in client per person it has been asked to act as. signInKey is its
+// DISPATCH_DEV_SIGNIN_SHARED_KEY, which a second process booted over the same database must carry
+// too, since a process holding a key of its own is refused beside it. trees has every person's
+// request ask for display trees (Dispatch-Trees: 1), as the dashboard's client asks on every read
+// and write it sends (web/src/api/client.ts); an agent's call asks for none, as no other client
+// does.
 type baselineServer struct {
-	process   *cmdtest.Process
-	origin    string
-	token     string
-	signInKey string
-	transport *http.Transport
-	agent     *http.Client
-	people    map[string]*http.Client
+	process        *cmdtest.Process
+	origin         string
+	token          string
+	signInKey      string
+	identityHeader string
+	trees          bool
+	transport      *http.Transport
+	agent          *http.Client
+	people         map[string]*http.Client
 }
+
+// baselineIdentityHeader is the header a server trusting a header identity reads a person from:
+// the one the in-process test server reads (headerIdentity), so both builds of a measurement are
+// told who a person is by one request.
+const baselineIdentityHeader = "X-Dispatch-User"
+
+// baselineRuntime is the Go runtime's own settings a check runs under (the pod's rule: one Go
+// process at a time, each held to these), which the base build is booted with too where the check
+// set them, so it runs on the processors, the collector and the memory limit this process runs on.
+var baselineRuntime = []string{"GOMAXPROCS", "GOGC", "GOMEMLIMIT"}
 
 // bootBaseline starts binary over databaseURL on a loopback port it holds from the moment the
 // kernel chose it (cmdtest.HoldPort, inherited as DISPATCH_LISTEN_FD), with the environment
-// lib-baseline.sh's baseline_boot gives a server and nothing of the caller's: dev sign-in over a
-// cookie identity, NATS off, a home and a TMPDIR of its own, and a stand-in Envoy listener
-// (standInListener) in place of baseline_boot's port 1, because the write paths a check times
-// deliver to sessions and a delivery refused at once is not the write a session's own listener
-// answers. It returns once the process has said it serves and /healthz answers 200, and stops it
-// when the test ends.
+// lib-baseline.sh's baseline_boot gives a server and nothing of the caller's but the Go runtime's
+// settings (baselineRuntime): dev sign-in over a cookie identity, NATS off, a home and a TMPDIR of
+// its own, and a stand-in Envoy listener (standInListener) in place of baseline_boot's port 1,
+// because the write paths a check times deliver to sessions and a delivery refused at once is not
+// the write a session's own listener answers. It returns once the process has said it serves and
+// /healthz answers 200, and stops it when the test ends.
 func bootBaseline(t *testing.T, binary, databaseURL string) *baselineServer {
+	t.Helper()
+	return startBaseline(t, binary, databaseURL, "")
+}
+
+// bootBaselineTrustingHeader is bootBaseline with the person read from baselineIdentityHeader, as
+// DISPATCH_IDENTITY=header:<name> reads one, in place of dev sign-in's cookie: a measurement that
+// times one request on the base build against the same request on this build's in-process server,
+// which reads the same header, then pays one identity's cost on both sides.
+func bootBaselineTrustingHeader(t *testing.T, binary, databaseURL string) *baselineServer {
+	t.Helper()
+	return startBaseline(t, binary, databaseURL, baselineIdentityHeader)
+}
+
+// startBaseline is bootBaseline, resolving a person by the header identityHeader names where it is
+// set and by dev sign-in's cookie where it is empty.
+func startBaseline(t *testing.T, binary, databaseURL, identityHeader string) *baselineServer {
 	t.Helper()
 	home := t.TempDir()
 	webDist := filepath.Join(home, "web-dist")
@@ -175,16 +209,14 @@ func bootBaseline(t *testing.T, binary, databaseURL string) *baselineServer {
 		t.Fatalf("make the base build's web directory: %v", err)
 	}
 	held := cmdtest.HoldPort(t)
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.MaxIdleConnsPerHost = 16
-	t.Cleanup(transport.CloseIdleConnections)
+	transport := loopbackTransport(t)
 	server := &baselineServer{
-		origin:    "http://" + held.Addr,
-		token:     randomBaselineSecret(t),
-		signInKey: randomBaselineSecret(t),
-		transport: transport,
-		agent:     &http.Client{Transport: transport},
-		people:    map[string]*http.Client{},
+		origin:         "http://" + held.Addr,
+		token:          randomBaselineSecret(t),
+		identityHeader: identityHeader,
+		transport:      transport,
+		agent:          &http.Client{Transport: transport},
+		people:         map[string]*http.Client{},
 	}
 	cmd := exec.Command(binary)
 	cmd.Dir = home
@@ -197,10 +229,6 @@ func bootBaseline(t *testing.T, binary, databaseURL string) *baselineServer {
 		"XDG_DATA_HOME=" + home,
 		"DATABASE_URL=" + databaseURL,
 		"DISPATCH_AGENT_TOKEN=" + server.token,
-		"DISPATCH_DEV_SIGNIN=1",
-		"DISPATCH_DEV_SIGNIN_SHARED_KEY=" + server.signInKey,
-		"DISPATCH_IDENTITY=cookie",
-		"DISPATCH_INSECURE_COOKIE=1",
 		"DISPATCH_LISTEN_HOST=127.0.0.1",
 		"DISPATCH_PORT=" + strconv.Itoa(held.Port),
 		"DISPATCH_SERVER_URL=" + server.origin,
@@ -208,10 +236,55 @@ func bootBaseline(t *testing.T, binary, databaseURL string) *baselineServer {
 		"DISPATCH_WEB_DIST=" + webDist,
 		"ENVOY_URL=" + standInListener(t),
 	}
+	if identityHeader == "" {
+		server.signInKey = randomBaselineSecret(t)
+		cmd.Env = append(cmd.Env,
+			"DISPATCH_DEV_SIGNIN=1",
+			"DISPATCH_DEV_SIGNIN_SHARED_KEY="+server.signInKey,
+			"DISPATCH_IDENTITY=cookie",
+			"DISPATCH_INSECURE_COOKIE=1",
+		)
+	} else {
+		cmd.Env = append(cmd.Env, "DISPATCH_IDENTITY=header:"+identityHeader, "DISPATCH_IDENTITY_HEADER_TRUSTED=1")
+	}
+	for _, name := range baselineRuntime {
+		if value, set := os.LookupEnv(name); set {
+			cmd.Env = append(cmd.Env, name+"="+value)
+		}
+	}
 	held.Pass(cmd, "DISPATCH_LISTEN_FD")
 	server.process = cmdtest.Start(t, "the base build", cmd)
 	server.waitHealthy(t, `msg="dispatch: listening" addr=`+held.Addr)
 	return server
+}
+
+// serveOnLoopback serves handler, a server of this build in the process, on a loopback port of
+// httptest's, driven as the base build is driven: a person by baselineIdentityHeader, which the
+// handler's headerIdentity reads, and an agent by token, the bearer it was built to trust. It is
+// closed when the test ends, before the cleanups the handler registered earlier.
+func serveOnLoopback(t *testing.T, handler http.Handler, token string) *baselineServer {
+	t.Helper()
+	served := httptest.NewServer(handler)
+	t.Cleanup(served.Close)
+	transport := loopbackTransport(t)
+	return &baselineServer{
+		origin:         served.URL,
+		token:          token,
+		identityHeader: baselineIdentityHeader,
+		transport:      transport,
+		agent:          &http.Client{Transport: transport},
+		people:         map[string]*http.Client{},
+	}
+}
+
+// loopbackTransport is the transport every server a check drives is called through, one per
+// server, so two servers called in turn are called the same way.
+func loopbackTransport(t *testing.T) *http.Transport {
+	t.Helper()
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConnsPerHost = 16
+	t.Cleanup(transport.CloseIdleConnections)
+	return transport
 }
 
 // waitHealthy waits for the listening line, then for /healthz to answer 200 while the process
@@ -242,9 +315,25 @@ func (s *baselineServer) waitHealthy(t *testing.T, listening string) {
 }
 
 // call sends body to path as login, or on the agent bearer when login is empty, and answers what
-// the base build answered. A person is signed in through dev sign-in the first time a call names
-// them, off the clock; the clock covers the request and the reading of its whole answer.
+// the server answered. A person is named by the server's identity header where it trusts one, and
+// is otherwise signed in through dev sign-in the first time a call names them, off the clock; the
+// clock covers the request and the reading of its whole answer.
 func (s *baselineServer) call(t *testing.T, login, method, path string, body any) apiAnswer {
+	t.Helper()
+	return s.send(t, login, method, path, body, true)
+}
+
+// read is call for a GET whose answer is timed and not read back: an answer of 200 is read to its
+// last byte, on the clock, and dropped, so a reading of a large answer leaves none of it to collect
+// in this process, which also runs this build's server; any other answer is kept, for the failure
+// that names it.
+func (s *baselineServer) read(t *testing.T, login, path string) apiAnswer {
+	t.Helper()
+	return s.send(t, login, http.MethodGet, path, nil, false)
+}
+
+// send is call, keeping the body of an answer of 200 only where keep is set.
+func (s *baselineServer) send(t *testing.T, login, method, path string, body any, keep bool) apiAnswer {
 	t.Helper()
 	var payload []byte
 	if body != nil {
@@ -260,20 +349,31 @@ func (s *baselineServer) call(t *testing.T, login, method, path string, body any
 	}
 	request.Header.Set("Content-Type", "application/json")
 	client := s.agent
-	if login == "" {
+	switch {
+	case login == "":
 		request.Header.Set("Authorization", "Bearer "+s.token)
-	} else {
+	case s.identityHeader != "":
+		request.Header.Set(s.identityHeader, login)
+	default:
 		client = s.person(t, login)
 		// A cookie write is held to the dashboard origin (the router's enforceCookieOrigin), as
 		// the page's own same-origin request carries it.
 		request.Header.Set("Origin", s.origin)
+	}
+	if login != "" && s.trees {
+		request.Header.Set(displayTreesHeader, "1")
 	}
 	started := time.Now()
 	response, err := client.Do(request)
 	if err != nil {
 		t.Fatalf("%s %s as %q: %v", method, path, login, err)
 	}
-	answer, err := io.ReadAll(response.Body)
+	var answer []byte
+	if keep || response.StatusCode != http.StatusOK {
+		answer, err = io.ReadAll(response.Body)
+	} else {
+		_, err = io.Copy(io.Discard, response.Body)
+	}
 	took := time.Since(started)
 	_ = response.Body.Close()
 	if err != nil {
