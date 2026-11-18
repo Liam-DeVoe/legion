@@ -221,7 +221,9 @@ export class DispatchWriteUnsettledError extends Error {
  * A write Dispatch made whose answer is gone, so the caller cannot be shown what it made: a repeat
  * under its key answered `409 IDEMPOTENCY_KEY_COMMITTED` (the write landed before its answer was
  * lost, and Dispatch will not run it again) or a replayed 2xx reading
- * `IDEMPOTENCY_ANSWER_NOT_KEPT` (its first answer was larger than Dispatch keeps). The write took
+ * `IDEMPOTENCY_ANSWER_NOT_KEPT` (Dispatch gives no copy of its first answer: one larger than it
+ * keeps, or one that names a deleted comment or message, or a document one was anchored on, which
+ * would give back text the delete withdrew). The write took
  * effect, so this is no refusal and deliberately no `DispatchServiceError`; it is never asked
  * again. Its message is the one line a session reads: what was made, that its answer was lost,
  * and to read it back.
@@ -238,7 +240,8 @@ export class DispatchWriteLandedError extends Error {
   ) {
     const lost =
       code === IDEMPOTENCY_ANSWER_NOT_KEPT
-        ? "Dispatch kept no copy of its answer, which was too large"
+        ? "Dispatch gives no copy of its answer, which was too large to keep or names a deleted " +
+          "comment or message, or the document one was anchored on"
         : "its answer was lost on the way back";
     const request = `${method} ${withoutUserinfo(url)}`;
     super(

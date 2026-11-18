@@ -34,7 +34,7 @@ export function passageItem<T extends { readonly id: string }>(
  *  removed the passage, the quote says so in place of its text. Once the parent's author
  *  deleted the parent, the quote says that instead of either: no read of the parent gives its
  *  body, and a reply's read carries the quote with the parent's mark and no text (only the
- *  reply's own event keeps the preview it froze).
+ *  reply's own events keep the preview they froze).
  *
  *  A parent its author edited carries ` · edited` after its author's name, as its own byline
  *  does (`edited`); without a loaded parent there is no author and no edit to mark.

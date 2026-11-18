@@ -421,7 +421,7 @@
       ],
       "outcome": "result",
       "text": [
-        "Deleted comment 01234567-0000-4000-8000-000000000001 on DSP-1. No read of it gives its body again; a reply's own event keeps the preview of it the reply froze, and the version event of an accepted suggestion keeps the name the accept gave the version."
+        "Deleted comment 01234567-0000-4000-8000-000000000001 on DSP-1. No read of it gives its body again; a reply's own events keep the preview of it the reply froze, and the document's events written before the delete keep the name an accepted suggestion gave its version."
       ]
     },
     {

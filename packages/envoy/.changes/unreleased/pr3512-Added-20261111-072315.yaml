@@ -8,13 +8,19 @@ body: |-
   the time, at most 200 in one answer; a delete writes an entry of its own, and of a deleted post
   they give the deleted mark and each entry's actor and time, with no body. A deleted post keeps
   its place in its thread, and no read of it gives any part of its body, a read of its own events
-  included. Two kinds of event keep text of it: a reply's post and delete events keep the preview
-  of it the reply froze, and the artifact.version event of an accepted suggestion keeps the name it gave
-  the document version, which was the comment's body. The delete renames that version to the
-  change the suggestion made, so the document's versions no longer give the body. A write whose
-  answer is the post (an edit, a resolve, reopen, accept or reject, a create, or a session's
-  reply), repeated under its Idempotency-Key, answers the post as it stands now; a delivery
-  retry's repeat answers the attempt it kept, which holds no body.
+  included. Two kinds of event keep text of it: every event of a reply (its post, its edits and
+  its delete) keeps the preview of it the reply froze, and the document's events written before
+  the delete keep the name an accepted suggestion gave the document version, which was the
+  comment's body: the accept's artifact.version, and an artifact.renamed or artifact.removed,
+  which carry every version. The delete renames that version to the change the suggestion made,
+  so the document's versions no longer give the body. A write whose answer is the post (an edit,
+  a resolve, reopen, accept or reject, or a session's reply), repeated under its
+  Idempotency-Key, answers the post as it stands now. No other kept answer is replayed once it
+  names a deleted comment or issue message, or a document a deleted comment was anchored on: its
+  repeat is the first answer's status with ANSWER_NOT_KEPT, as for an answer too large to keep.
+  GET /api/v1/issues/{key}/references takes its ETag from a hash of its answer, so a cached
+  answer that held a version name the delete renamed, or a document's old name, is no longer
+  answered 304.
 time: 2026-11-11T07:23:15.742008842Z
 custom:
     Issue: pr3512

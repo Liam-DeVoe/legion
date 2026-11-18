@@ -143,8 +143,14 @@ export const MAX_BROADCAST_RECIPIENTS = 100;
  * `IDEMPOTENCY_REPLAYED_HEADER` and the resource read afresh in the first answer's shape (a
  * broadcast with the first answer's `excluded`), so a recipient whose attempt a live sender holds
  * can still read `pending`, and a repeat after a lost answer is that replay, never
- * `409 IDEMPOTENCY_KEY_COMMITTED`. A write without the header is run as it always was, with no
- * replay (the IETF `Idempotency-Key` draft; Google AIP-155).
+ * `409 IDEMPOTENCY_KEY_COMMITTED`. Eight routes answer a repeat with the comment or the issue
+ * message their first answer was, read afresh, under the first answer's status: a comment's
+ * edit, resolve, reopen, accept and reject, an issue message's edit, and a session's reply to a
+ * comment or a message. No other stored answer is replayed once it names a comment or an issue
+ * message that is deleted, or a document a deleted comment was anchored on: such a repeat is the
+ * first answer's status with `IDEMPOTENCY_ANSWER_NOT_KEPT`, since that answer may hold text the
+ * delete withdrew. A write without the header is run as it always was, with no replay (the IETF
+ * `Idempotency-Key` draft; Google AIP-155).
  */
 export const IDEMPOTENCY_KEY_HEADER = "Idempotency-Key";
 
@@ -177,9 +183,11 @@ export const IDEMPOTENCY_KEY_COMMITTED = "KEY_COMMITTED";
  *  `KEY_COMMITTED` are. */
 export const IDEMPOTENCY_KEY_INVALID = "KEY_INVALID";
 
-/** The code a replay's body carries when the first answer was larger than Dispatch keeps (1 MiB):
- *  the replay has the first answer's status and this body instead of the first's. A 2xx with it
- *  means the write ran; the client reads the resource again rather than this body. */
+/** The code a replay's body carries when Dispatch gives no copy of the first answer: one larger
+ *  than it keeps (1 MiB), or one that names a comment or an issue message that is deleted, or a
+ *  document a deleted comment was anchored on. The replay has the first answer's status and this
+ *  body instead of the first's. A 2xx with it means the write ran; the client reads the resource
+ *  again rather than this body. */
 export const IDEMPOTENCY_ANSWER_NOT_KEPT = "ANSWER_NOT_KEPT";
 
 /**

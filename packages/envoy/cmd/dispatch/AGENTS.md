@@ -744,7 +744,11 @@ attempt runs again; and a repeat whose first request committed a write but whose
 `Retry-After`, never run again, which a client treats as a landing. The issue message, both
 comment routes, the single-session send and the broadcast commit a recovery point with what they
 made, so their repeat answers `201` from a fresh read instead and resumes what delivery it owes,
-which the delivery sweep also finishes on its own. Keys belong to the caller's login and are kept
+which the delivery sweep also finishes on its own. A comment's edit, resolve, reopen, accept and
+reject, an issue message's edit, and a session's reply to a comment or a message answer a repeat
+with that post read afresh (`keyedRereads`). No other stored answer is replayed once it names a
+comment or an issue message that is deleted, or a document a deleted comment was anchored on: its
+repeat is the stored status with `ANSWER_NOT_KEPT` (`answerEndedByDelete`). Keys belong to the caller's login and are kept
 24 hours (`request_keys`, migration `0137`, swept by the maintenance sweep's pass once a minute).
 A write without the header runs unkeyed, as before. `PUT` and `DELETE` take no key. Every write
 route, `PUT` and `DELETE` included, that names its presser in `Dispatch-Login` runs only as that

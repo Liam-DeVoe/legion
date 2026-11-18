@@ -996,8 +996,8 @@ describe("DispatchClient's writes", () => {
     expect(await (form.get("file") as Blob).text()).toBe("# Spec");
   });
 
-  // A write Dispatch made whose answer is gone is no refusal: a replay of a first answer larger
-  // than Dispatch keeps (2xx ANSWER_NOT_KEPT), or 409 KEY_COMMITTED (the write landed before its
+  // A write Dispatch made whose answer is gone is no refusal: a replay of a first answer Dispatch
+  // gives no copy of (2xx ANSWER_NOT_KEPT), or 409 KEY_COMMITTED (the write landed before its
   // answer was lost, and Dispatch will not run it again). It is never asked again, and its one line
   // says what was made and to read it back.
   test("a write whose answer is gone is a landing, never resent", async () => {
@@ -1009,7 +1009,8 @@ describe("DispatchClient's writes", () => {
         }),
         IDEMPOTENCY_ANSWER_NOT_KEPT,
         201,
-        "Dispatch kept no copy of its answer, which was too large",
+        "Dispatch gives no copy of its answer, which was too large to keep or names a deleted " +
+          "comment or message, or the document one was anchored on",
       ],
       [
         refusal(409, IDEMPOTENCY_KEY_COMMITTED, "the write landed and its answer was lost"),

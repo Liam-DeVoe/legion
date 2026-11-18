@@ -3338,10 +3338,12 @@ Each item below names a status and code, then its meaning.
 
   A repeat under a key whose first request finished, with the same method, route, path values, query, media type and body:
   the stored status, every header the first answer set and its body, and nothing runs again.
+  On the eight routes whose answer is one comment or issue message (a comment's edit, resolve, reopen, accept and reject, an issue message's edit, and a session's reply to a comment or a message), the body is that post read afresh, so a repeat after its author edited or deleted it gives it as it stands now.
 
 - The first status with `ANSWER_NOT_KEPT`
 
-  That repeat, when the first answer was larger than the 1 MiB a key keeps: the write ran, and the caller reads what it wrote again.
+  That repeat, when the first answer was larger than the 1 MiB a key keeps, or names a comment or an issue message that is deleted, or a document a deleted comment was anchored on, since such an answer may hold text the delete withdrew:
+  the write ran, and the caller reads what it wrote again.
 
 - `409 KEY_IN_FLIGHT`, `Retry-After: 1`
 

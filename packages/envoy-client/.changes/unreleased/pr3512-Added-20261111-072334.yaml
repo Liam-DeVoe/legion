@@ -12,9 +12,11 @@ body: |-
   token as the person: it takes an edit of that person's own comment and keeps no earlier body,
   refuses that edit on a closed issue with ISSUE_CLOSED, and refuses an edit of the comment of a
   session the token names with NOT_AUTHOR; the command passes each of those answers on as it is. A
-  delete says that no read of the post gives its body again, that a reply's own event keeps the
-  preview of it the reply froze, and, of a comment, that the version event of an accepted suggestion
-  keeps the name the accept gave the version. An edit an older server does take is reported as the
+  delete says that no read of the post gives its body again, that a reply's own events keep the
+  preview of it the reply froze, and, of a comment, that the document's events written before the
+  delete keep the name an accepted suggestion gave its version. A repeated write Dispatch answers
+  ANSWER_NOT_KEPT is reported as made, with no copy of its answer because that answer was too
+  large to keep or names a deleted comment or message, or the document one was anchored on. An edit an older server does take is reported as the
   edit that landed and nothing more: what became of the body it replaced is the history read's to
   answer.
 time: 2026-11-11T07:23:34.685796308Z

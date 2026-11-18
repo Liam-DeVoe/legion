@@ -118,9 +118,8 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 
 // eventFeedETag hashes what one page of an issue's activity feed is made of: the issue whose feed
 // it is, that issue's newest event sequence and the query that pages it, closed with the lines
-// both lists' ETags carry (listETag). It is referencesETag's shape - one line per part, then the
-// hash of them - and it names no issue key: a validator is compared against the one URL that gave
-// it.
+// both lists' ETags carry (listETag): one line per part, then the hash of them. It names no issue
+// key: a validator is compared against the one URL that gave it.
 //
 // The issue is named by its created_at rather than its key, because the key is the one part of it
 // that comes back. last_seq is a counter of the row, so a key taken by a new issue stands at
@@ -445,7 +444,7 @@ type postKey struct {
 // post's creation, beside the body as it stood then, so without the post's own mark a read of
 // the log would print that body as if nobody had replaced it since. Of a deleted post it also
 // takes the body out of the payload: a read of the post's own events says that it is deleted and
-// gives no part of what it said, while a reply's own event keeps the preview it froze of it
+// gives no part of what it said, while a reply's own events keep the preview they froze of it
 // (below). The stored row is never rewritten - the log is the record of
 // what happened - so the marks are read here, at every read, which is why readEventRows calls it
 // for readEvents and readEventsAfterID alike. The time of each edit stays the created_at of the
@@ -457,10 +456,13 @@ type postKey struct {
 // payload's body anyway.
 //
 // The frozen previews of another post stay, as the delete leaves them: the reply_body and the
-// reply_block.text of a message reply's message.answered, and the reply_block.text of a comment
-// reply's comment.created or comment.answered, and of each later event of that reply. Each is
-// part of an event of the post that quoted it, and only the quoted post's own events are marked
-// here.
+// reply_block.text of a message reply's message.answered and of every later event of that reply
+// (its message.edited and message.deleted), and the reply_block.text of a comment reply's
+// comment.created or comment.answered and of every later event of that reply. Each is part of an
+// event of the post that quoted it, and only the quoted post's own events are marked here. So
+// are the document events of an accepted suggestion, which are no event of the post: the
+// accept's artifact.version, and an artifact.renamed or artifact.removed written before the
+// delete, which carry every version, keep the name the accept gave the version.
 func (s *server) attachPostMarks(ctx context.Context, events []model.Event) error {
 	// The ids the page names, by the kind of post each is an id of; that kind names the table
 	// readPostMarks reads it in.

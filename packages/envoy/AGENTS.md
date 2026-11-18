@@ -5539,6 +5539,8 @@ The row holds a SHA-256 of the method, the route pattern, its path values, the q
   A different request under the key is `422 KEY_REUSED`, whose message names the method and path that used it; nothing runs.
   A first request still running is `409 KEY_IN_FLIGHT` with `Retry-After: 1`, which a client asks again after.
   A finished one is replayed: its stored status, every header its handler set (`request_keys.headers`, a `Content-Type` among them) and its body, with `Idempotency-Replayed: ?1`, and the handler does not run again.
+  Eight routes whose answer is one comment or issue message - a comment's edit, resolve, reopen, accept and reject, an issue message's edit, and a session's reply to a comment or a message (`keyedRereads`) - answer that post read afresh instead, under the stored status and headers, so a repeat after its author edited or deleted it gives the post as it stands now.
+  No other stored answer is replayed once it names a comment or an issue message that is deleted, or a document a deleted comment was anchored on (`answerEndedByDelete`): its repeat is the stored status with the body `ANSWER_NOT_KEPT`, since the answer may hold text the delete withdrew (R3 of dispatch://INFRA-1523), and a recovery replay (below) keeps none of its members.
   The table's checks hold a row to those states: an answered row holds no lease, and nothing of an answer is stored without its status.
 
 - The handler finishes whatever its client does:
@@ -5558,7 +5560,7 @@ The row holds a SHA-256 of the method, the route pattern, its path values, the q
   A repeat of a keyed mint that minted is `409 KEY_COMMITTED` once the first has finished (`409 KEY_IN_FLIGHT` while it still runs), never a replay of the token, and no second token is minted;
   a mint refused with a 4xx commits nothing, so its key is released and a repeat runs it again.
   A route whose answer holds a credential is the one exception to "a 2xx or a 4xx is stored and replayed", and the mint is the one such route.
-  An answer past 1 MiB is answered in full but kept as its status alone, and its replay is that status with the body `ANSWER_NOT_KEPT` (`IDEMPOTENCY_ANSWER_NOT_KEPT`):
+  An answer past 1 MiB is answered in full but kept as its status alone, and its replay is that status with the body `ANSWER_NOT_KEPT` (`IDEMPOTENCY_ANSWER_NOT_KEPT`), as is the replay of an answer a delete ended (above):
   the write ran, and the client reads what it wrote again.
 
 - Every transaction a keyed request commits that wrote - one holding the `ROW EXCLUSIVE` lock an `INSERT`, `UPDATE`, `DELETE` or `MERGE` takes on a table other than `request_keys` - sets the row's `committed_at` in that same transaction (`markRequestKeyCommitted`, through `store.WithBeforeCommit`, the pool's hook), so the key knows the write landed even when its answer never made it into the row;

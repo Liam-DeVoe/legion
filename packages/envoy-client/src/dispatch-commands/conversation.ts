@@ -172,17 +172,19 @@ export async function editCommentCommand(context: CommandContext): Promise<Dispa
 }
 
 /** What each delete command says the delete leaves readable: no read of the post gives its body
- *  again, and the event log keeps what its events already wrote. A reply's own event keeps the
- *  preview of the post it froze when it was written (`reply_block.text` of a reply naming a
- *  block, `reply_body` of a message reply, which holds one whether or not the reply named a
- *  block). Of a comment, the `artifact.version` event of an accepted suggestion also keeps the
- *  name the accept gave the version, which was the comment's body; the version itself is
- *  renamed by the delete. */
+ *  again, and the event log keeps what its events already wrote. Every event of a reply - its
+ *  post, its edits and its delete - keeps the preview of the post it froze when it was written
+ *  (`reply_block.text` of a reply naming a block, `reply_body` of a message reply, which holds one
+ *  whether or not the reply named a block). Of a comment, the document's events written before
+ *  the delete also keep the name an accepted suggestion gave its version, which was the comment's
+ *  body: the accept's `artifact.version`, and an `artifact.renamed` or `artifact.removed`, which
+ *  carry every version. The version itself is renamed by the delete. */
 const DELETED_MESSAGE_READS =
-  "No read of it gives its body again; a reply's own event keeps the preview of it the reply froze.";
+  "No read of it gives its body again; a reply's own events keep the preview of it the reply froze.";
 const DELETED_COMMENT_READS =
-  "No read of it gives its body again; a reply's own event keeps the preview of it the reply " +
-  "froze, and the version event of an accepted suggestion keeps the name the accept gave the version.";
+  "No read of it gives its body again; a reply's own events keep the preview of it the reply " +
+  "froze, and the document's events written before the delete keep the name an accepted " +
+  "suggestion gave its version.";
 
 /** `dispatch delete-comment`: the author withdraws their own comment. */
 export async function deleteCommentCommand(context: CommandContext): Promise<DispatchToolResult> {
