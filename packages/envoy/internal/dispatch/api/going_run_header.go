@@ -25,10 +25,11 @@ import (
 //
 // The run must be one the record holds, live - now() < ends_at, whatever frames it has stored -
 // and the caller's, by the test the stream holds its reader to (goingRunIsTheCallers: the whole
-// credential, and an author that proves somebody). A header sent twice, one that is no uuid, a run
-// nobody recorded, one past its window and one that is anybody else's are each answered what the
-// stream answers for a run nobody holds (writeGoingRequestNotFound), before the handler runs, so
-// the write stores nothing. A caller that does not resolve is answered as the stream answers it.
+// credential, model.Actor.SameCredential, of an author that names one,
+// graphstore.NamesCredential). A header sent twice, one that is no uuid, a run nobody recorded,
+// one past its window and one that is anybody else's are each answered what the stream answers
+// for a run nobody holds (writeGoingRequestNotFound), before the handler runs, so the write
+// stores nothing. A caller that does not resolve is answered as the stream answers it.
 // A request that names no run runs as it always did and costs nothing new: the header is read
 // from the request alone, and only a request that carries it resolves its caller here or sends a
 // query (readLiveGoingRun), so a write with no header sends no statement more than it did before,

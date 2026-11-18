@@ -5634,7 +5634,7 @@ A caller that resolves to nobody (a lapsed cookie) keeps the route's own `401`, 
 
 A write made for a run of the command bar names the run in the `Dispatch-Going-Run` request header (`contracts.GoingRunHeader`), which `api.GoingCaller.Do` sends on every write for its `Run`.
 `withinGoingRun` (`internal/dispatch/api/going_run_header.go`) is its one reader, wrapped around every `POST`, `PATCH`, `PUT` and `DELETE` route inside the project and session scope checks and outside the key layer.
-The run must be one `going_requests` holds, live (`now() < ends_at`, whatever frames it holds) and the caller's whole credential's (`goingRunIsTheCallers`: `graphstore.ProvesAuthor` and `model.Actor.SameCredential`);
+The run must be one `going_requests` holds, live (`now() < ends_at`, whatever frames it holds) and the caller's whole credential's (`goingRunIsTheCallers`: `graphstore.NamesCredential` and `model.Actor.SameCredential`);
 anything else, a header sent twice or no uuid among it, is `404 GOING_REQUEST_NOT_FOUND`, the stream's answer for a run nobody holds, before the write runs, so nothing is stored and no key is claimed.
 A request without the header costs nothing new: it resolves no caller there and sends no query.
 The admitted run rides on the request's context (`graphstore.WithRun`), and `graphstore.Write` and `graphstore.Caused` append one `changed_by_run` tuple from each node the write marks changed (`graphstore.Node.Changed`, `graphstore.Tuple.Changes`) to `interaction/<uuid>`, in the write's own transaction and under its own cause, once for each node and run.
