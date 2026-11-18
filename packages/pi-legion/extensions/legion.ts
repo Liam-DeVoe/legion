@@ -416,6 +416,10 @@ export default function legionExtension(pi: PiApi): void {
     void stallWatch?.sweep();
   };
   const armStallWatch = (session: LegionSessionKind): void => {
+    // The detector's own book of open calls: the process host's first rung counts a tool's open
+    // calls in it, and the teller reads it before each re-send of a notice, which it ends once
+    // the notice's call is no longer there.
+    const openCalls = () => stallWatch?.openCalls() ?? [];
     stallWatch = createStallWatchdog({
       now: Date.now,
       limits,
@@ -431,7 +435,7 @@ export default function legionExtension(pi: PiApi): void {
           const file = paneContext?.sessionManager.getSessionFile();
           return file?.endsWith(".jsonl") === true ? file : undefined;
         },
-        openCalls: () => stallWatch?.openCalls() ?? [],
+        openCalls,
         backgroundJobs: () => paneContext?.getAsyncJobSnapshot?.()?.running ?? [],
         log: logger,
       }),
@@ -443,6 +447,7 @@ export default function legionExtension(pi: PiApi): void {
         readState: (signal) => roleDaemon().state({ signal }),
         publisher,
         appendEntry: (customType, data) => pi.appendEntry(customType, data),
+        openCalls,
         log: logger,
       }),
       aborter: createStallAborter({

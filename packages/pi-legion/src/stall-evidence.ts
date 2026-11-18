@@ -17,6 +17,7 @@ import {
   RECORD_READ_BOUND_MS,
   withBound,
 } from "@legion/pi-shared/phase-reminder";
+import { DEFAULT_STALL_LIMITS } from "@legion/pi-shared/stall-limits";
 import type {
   StallCall,
   StallEvidence,
@@ -551,15 +552,17 @@ export function stallNoticeTopic(input: StallNoticeInput): StallNotice {
   return { kind: "topic", topic: roleTopic(token) };
 }
 
-/** The teller's log: the detector's two levels, and `info` for the one piece of good news here,
- * a notice that told its owner only on a re-send. */
+/** The teller's log: the detector's two levels, and `info` for the news that needs no one to act:
+ * a notice that told its owner only on a re-send, and a notice not sent again because what it
+ * says is no longer true. */
 export interface StallTellerLog extends StallWatchdogLog {
   readonly info: (message: string, context?: Record<string, unknown>) => void;
 }
 
 /** The wait before a notice whose publish failed is first sent again, and the longest any wait
  * grows to: each failed attempt doubles the wait before the next, so a listener back within a
- * second is asked again a second later, and one that stays down is asked once a minute. */
+ * second is asked again a second later, and one that stays down is asked once a minute until
+ * `RESEND_CAP_MS` ends the re-sends. */
 const RESEND_FIRST_WAIT_MS = 1_000;
 const RESEND_LONGEST_WAIT_MS = 60_000;
 
@@ -568,21 +571,49 @@ function resendWaitMs(attempt: number): number {
   return Math.min(RESEND_FIRST_WAIT_MS * 2 ** (attempt - 1), RESEND_LONGEST_WAIT_MS);
 }
 
+/**
+ * The longest a notice is sent again for, counted from its first attempt: two of the ladder's step
+ * gaps at their default (`DEFAULT_STALL_LIMITS.stepMs`), 4 minutes, which is how long the ladder
+ * takes from the overdue notice to its last step. By then the ladder has decided the call: it
+ * returned, which ends the overdue notice's re-sends at once (`createStallTeller`); it ended this
+ * process, which ends them with it; or it stopped short, and the stop's own notice supersedes the
+ * overdue one. An overdue notice still not stored by then would reach its owner behind the news
+ * that overtook it. A stop's notice is bounded by this alone: what it says, that the ladder
+ * stopped short for this call, stays true once the call ends — which the ladder's own abort
+ * usually brings about — so its call ending does not end its re-sends, and this bound does. Both
+ * end long before a notice is stale for whoever reads it: the listener itself holds a role
+ * message for its next live holder for an hour, and a listener that stays down is asked at most
+ * nine times in these four minutes (the waits of `resendWaitMs`). It is the default's number
+ * rather than this worker's own `LEGION_STALL_STEP_MS`, which a test sets to 0, and a bound of 0
+ * would leave no re-send at all.
+ */
+const RESEND_CAP_MS = 2 * DEFAULT_STALL_LIMITS.stepMs;
+
 /** The re-send's wait in production: a timer that holds no process open. The re-sends go on for
- * as long as the listener keeps failing, and a process with nothing else left to do is ending,
- * which takes this process's copy of the notice with it however long it waited. */
+ * `RESEND_CAP_MS` at most, and a process with nothing else left to do is ending, which takes this
+ * process's copy of the notice with it whatever it waited for. */
 function unheldSleep(ms: number): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
   setTimeout(resolve, ms).unref();
   return promise;
 }
 
+/** The two reasons an overdue notice still being sent again stops saying what is true, each logged
+ * once at `info` as the reason it is not sent again. A stop's notice has neither. */
+const CALL_ENDED = "legion: the stall notice is not sent again, because its tool call has ended";
+const STOP_SUPERSEDES =
+  "legion: the stall notice is not sent again, because the ladder's stop notice supersedes it";
+
 /**
  * Whether a publish's failure is decided, so that sending the same notice again gets the same
  * answer: a 4xx is the listener's own refusal of it — 400 or 413 for the request, 403 for the
- * capability or the grant, 404 for a role whose keep failed. 408 and 429 are the two 4xx answers
- * that say "later" rather than "no" (the listener answers 429, with a `Retry-After`, when the
- * broker token checks from this address run over: `refuseBrokerToken` in
+ * capability or the grant, 404 for a role with no live holder whose keep kept nothing under a rule
+ * (`roleSend.noHolder` in `packages/envoy/cmd/listener/confirmed.go`; a keep that failed on NATS —
+ * a full stream, a publish not answered, a connection down — is answered the bus-unavailable 503
+ * instead, and is sent again), and 409 for a message the stream refuses however often it is sent
+ * (`streamRefusedPrefix` in `packages/envoy/cmd/listener/api.go`). 408 and 429 are the two 4xx
+ * answers that say "later" rather than "no" (the listener answers 429, with a `Retry-After`, when
+ * the broker token checks from this address run over: `refuseBrokerToken` in
  * `packages/envoy/cmd/listener/apiauth.go`), so they are not decided. Nor is anything else: a 5xx,
  * 504 `delivery_failed` and 503 among them, a timeout, a connection that failed, a 2xx whose body
  * did not parse, a credential that could not be minted. The status is read from the Envoy
@@ -596,8 +627,10 @@ function refusedForGood(error: unknown): boolean {
 }
 
 /** What one attempt of a notice came to: the listener `stored` it or `kept` it, `refused` it for
- * good (`refusedForGood`), or the attempt `failed` for a reason no rule decides. */
-type NoticeAttempt = "stored" | "kept" | "refused" | "failed";
+ * good (`refusedForGood`), or the attempt `failed` for a reason no rule decides, with its error. */
+type NoticeAttempt =
+  | { readonly kind: "stored" | "kept" | "refused" }
+  | { readonly kind: "failed"; readonly error: string };
 
 /** One publish of a notice: the same topic, message, payload and idempotency key every attempt,
  * answered with the part of the listener's answer this teller reads. */
@@ -619,6 +652,11 @@ export interface StallTellerDeps {
   readonly publisher: () => EnvoyPublish | undefined;
   /** Writes one record to the session's transcript (`pi.appendEntry`). */
   readonly appendEntry: (customType: string, data: unknown) => void;
+  /** The calls the detector holds open now (`StallWatchdog.openCalls`), read before each re-send
+   * of an overdue notice: a call the detector has closed — it returned, or its turn or its session
+   * ended — is no longer stuck, so its overdue notice is not sent again. A stop's notice does not
+   * read it (`RESEND_CAP_MS`). */
+  readonly openCalls: () => readonly StallCall[];
   readonly log: StallTellerLog;
   /** The bound on one daemon read; `RECORD_READ_BOUND_MS` when it is left out. */
   readonly recordBoundMs?: number;
@@ -636,8 +674,8 @@ export interface StallTellerDeps {
  * anyone again; this teller holds that answer by call id as well, so a second telling of the same
  * call publishes nothing whatever reaches it, and starts no second run of the re-sends below.
  *
- * **A publish no rule decides is sent again until the listener stores it.** A 5xx, a timeout or a
- * connection that failed (`refusedForGood` names what is decided) leaves the owner untold, and
+ * **A publish no rule decides is sent again while the notice is still true.** A 5xx, a timeout or
+ * a connection that failed (`refusedForGood` names what is decided) leaves the owner untold, and
  * nothing that reads this teller's answer will send the notice later: the ladder goes on whatever
  * it is told. So the teller sends the same notice again — the same topic, message, payload and
  * idempotency key — a second later, then after a wait that doubles each time up to a minute, until
@@ -646,6 +684,14 @@ export interface StallTellerDeps {
  * answer is the first attempt's, `ownerTold` false, and the attempt that tells the owner logs that
  * it told it late. The re-sends live in this process, so the ladder's last step, which ends the
  * process, ends them too.
+ *
+ * **A notice that is no longer true is not sent again, and none is sent again for ever.** Before
+ * each re-send of an overdue notice the teller reads the detector's open calls (`openCalls`): a
+ * call that returned, or whose turn or session ended, is no longer stuck, so its overdue notice is
+ * not sent again. Nor is it once the ladder has stopped short for its call: the stop's notice is
+ * the newer news about it. Either is logged once, at `info`, with the notice's key. And no attempt
+ * of any notice starts past `RESEND_CAP_MS` from the first: the failure that would have waited
+ * past it is the last, logged with one warning that names the notice and its attempts.
  *
  * **What a rule decides is not sent again.** A publish the listener refuses (a 4xx, but for 408
  * and 429), a publish it keeps for the owner's role while no live session holds it — kept, so not
@@ -657,8 +703,9 @@ export interface StallTellerDeps {
  * cap, an unreadable counter file and unwritten evidence — the cases where the worker will not
  * take the step that would free it — so the owner hears about each of them once, and the "one
  * message per stuck call" rule above is about the overdue notice that opens the ladder. A stop's
- * notice is sent again on the same terms as the overdue one, and a stop already told starts no
- * second run of its re-sends.
+ * notice is sent again as the overdue one is but for how its re-sends end: it says that the ladder
+ * stopped short for the call, which stays true once the call ends, so only an answer or
+ * `RESEND_CAP_MS` ends them. A stop already told starts no second run of its re-sends.
  */
 export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
   const sleep = deps.sleep ?? unheldSleep;
@@ -667,6 +714,8 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
   const told = new Map<string, StallTold>();
   /** The stops already told, by call and reason. */
   const stopsTold = new Set<string>();
+  /** The calls the ladder stopped short for: the stop's notice supersedes the overdue one. */
+  const stoppedCalls = new Set<string>();
 
   const write = (record: StallWatchRecord): boolean => {
     try {
@@ -700,7 +749,8 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
     }
   };
 
-  /** One attempt of a notice, logged, and what it came to. Nothing here throws. */
+  /** One attempt of a notice, and what it came to. Nothing here throws, and every outcome but a
+   * failure no rule decides is logged here: what follows a failure is the re-sends' to say. */
   const attemptNotice = async (
     send: NoticeSend,
     attempt: number,
@@ -718,7 +768,7 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
           ...where,
           attempt,
         });
-        return "kept";
+        return { kind: "kept" };
       }
       if (attempt > 1) {
         deps.log.info("legion: the owner was told late about this session's stuck tool call", {
@@ -726,7 +776,7 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
           attempt,
         });
       }
-      return "stored";
+      return { kind: "stored" };
     } catch (error) {
       if (refusedForGood(error)) {
         deps.log.warn("legion: the owner was not told about this session's stuck tool call", {
@@ -734,24 +784,56 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
           attempt,
           error: messageFor(error),
         });
-        return "refused";
+        return { kind: "refused" };
       }
-      deps.log.warn("legion: the stall notice was not stored, so it is sent again", {
-        ...where,
-        attempt,
-        againInMs: resendWaitMs(attempt),
-        error: messageFor(error),
-      });
-      return "failed";
+      return { kind: "failed", error: messageFor(error) };
     }
   };
 
-  /** The re-sends of a notice whose first attempt failed for a reason no rule decides, each after
-   * the wait `resendWaitMs` names, until one is stored or kept or refused for good. */
-  const resend = async (send: NoticeSend, where: Record<string, unknown>): Promise<void> => {
-    for (let attempt = 2; ; attempt += 1) {
-      await sleep(resendWaitMs(attempt - 1));
-      if ((await attemptNotice(send, attempt, where)) !== "failed") return;
+  /**
+   * The re-sends of a notice whose first attempt, at `since`, failed for a reason no rule decides:
+   * each after the wait `resendWaitMs` names, until one is stored or kept or refused for good, the
+   * notice says what is no longer true (`stale`, read just before each re-send, so nothing goes
+   * out after it; a stop's notice has none), or the next attempt would start past `RESEND_CAP_MS`
+   * from the first. Each failed attempt leaves one line, saying which of the two comes next:
+   * another attempt, or none.
+   */
+  const resend = async (
+    send: NoticeSend,
+    where: Record<string, unknown>,
+    notice: {
+      readonly key: string;
+      readonly since: number;
+      readonly stale?: () => string | undefined;
+    },
+    firstError: string
+  ): Promise<void> => {
+    let error = firstError;
+    for (let failed = 1; ; failed += 1) {
+      const againInMs = resendWaitMs(failed);
+      const sentForMs = deps.now() - notice.since;
+      if (sentForMs + againInMs > RESEND_CAP_MS) {
+        deps.log.warn(
+          "legion: the stall notice is not sent again, because its re-sends reached their cap",
+          { ...where, key: notice.key, attempts: failed, sentForMs, capMs: RESEND_CAP_MS, error }
+        );
+        return;
+      }
+      deps.log.warn("legion: the stall notice was not stored, so it is sent again", {
+        ...where,
+        attempt: failed,
+        againInMs,
+        error,
+      });
+      await sleep(againInMs);
+      const stale = notice.stale?.();
+      if (stale !== undefined) {
+        deps.log.info(stale, { ...where, key: notice.key, attempts: failed });
+        return;
+      }
+      const next = await attemptNotice(send, failed + 1, where);
+      if (next.kind !== "failed") return;
+      error = next.error;
     }
   };
 
@@ -760,7 +842,14 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
    * decides starts the re-sends and is answered at once. */
   const publishNotice = async (
     notice: StallNotice,
-    input: { readonly message: string; readonly payload: string; readonly key: string },
+    input: {
+      readonly message: string;
+      readonly payload: string;
+      readonly key: string;
+      /** Why the notice says what is no longer true, read before each re-send; undefined while
+       * it is still true. An overdue notice's alone: a stop's notice stays true (`RESEND_CAP_MS`). */
+      readonly stale?: () => string | undefined;
+    },
     context: Record<string, unknown>
   ): Promise<boolean> => {
     if (notice.kind === "none") {
@@ -791,18 +880,21 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
         idempotencyKey: input.key,
         sourceSessionID: claim.sessionID,
       });
+    const since = deps.now();
     const first = await attemptNotice(send, 1, where);
-    if (first === "failed") {
+    if (first.kind === "failed") {
       // Never awaited: the ladder has its answer. A wait or a log line that throws ends the
       // re-sends with a line of their own, never an unhandled rejection.
-      resend(send, where).catch((error: unknown) => {
-        deps.log.warn("legion: the stall notice's re-sends stopped", {
-          ...where,
-          error: messageFor(error),
-        });
-      });
+      resend(send, where, { key: input.key, since, stale: input.stale }, first.error).catch(
+        (error: unknown) => {
+          deps.log.warn("legion: the stall notice's re-sends stopped", {
+            ...where,
+            error: messageFor(error),
+          });
+        }
+      );
     }
-    return first === "stored";
+    return first.kind === "stored";
   };
 
   const noticeFor = async (): Promise<StallNotice> => {
@@ -852,6 +944,10 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
           message: stallNoticeMessage(record),
           payload: JSON.stringify(record),
           key: `legion-stall:${toolCallId}`,
+          stale: () => {
+            if (!deps.openCalls().some((open) => open.toolCallId === toolCallId)) return CALL_ENDED;
+            return stoppedCalls.has(toolCallId) ? STOP_SUPERSEDES : undefined;
+          },
         },
         { toolCallId, tool: record.tool }
       );
@@ -892,6 +988,7 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
         tool: call.toolName,
         reason,
       });
+      stoppedCalls.add(call.toolCallId);
       const key = `${call.toolCallId}:${reason}`;
       if (stopsTold.has(key)) return;
       stopsTold.add(key);
@@ -905,6 +1002,8 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
             "The evidence for the call is in that session's transcript.",
           payload: JSON.stringify({ toolCallId: call.toolCallId, tool: call.toolName, reason }),
           key: `legion-stall-stopped:${call.toolCallId}`,
+          // No `stale`: that the ladder stopped short stays true once the call ends, which its
+          // abort usually brings about, so only an answer or `RESEND_CAP_MS` ends the re-sends.
         },
         { toolCallId: call.toolCallId, tool: call.toolName, reason }
       );

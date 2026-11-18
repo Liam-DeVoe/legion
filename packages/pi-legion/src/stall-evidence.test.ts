@@ -302,6 +302,9 @@ function tellerRig(
     claim?: ClaimCapability | undefined;
     project?: string;
     now?: () => number;
+    /** The detector's book of open calls the teller reads before each re-send of an overdue
+     * notice; the stuck call alone, open for the whole case, when it is left out. */
+    openCalls?: () => readonly StallCall[];
   } = {}
 ): TellerRig {
   const state: Omit<TellerRig, "teller"> = {
@@ -349,6 +352,7 @@ function tellerRig(
       warn: (message, context) => state.warnings.push({ message, ...(context ? { context } : {}) }),
     },
     recordBoundMs: 200,
+    openCalls: options.openCalls ?? (() => [callOf()]),
     sleep: (ms) => {
       const { promise, resolve } = Promise.withResolvers<void>();
       state.waits.push({ ms, end: resolve });
@@ -592,7 +596,8 @@ test("each step and each stop is recorded, and a stop is told once", async () =>
 });
 
 // ---------------------------------------------------------------------------------------------
-// The re-sends: a publish no rule decides is sent again until the listener stores it.
+// The re-sends: a publish no rule decides is sent again until the listener stores it, while the
+// notice is still true, for four minutes at most.
 // ---------------------------------------------------------------------------------------------
 
 test("a publish no rule decides is sent again under its one key until the listener stores it", async () => {
@@ -656,6 +661,15 @@ test("a 4xx refusal is final, and only a failure no rule decides is sent again",
     { status: 403, error: "this session's capability does not reach that topic" },
     { status: 404, error: "no session holds the role", reason: "unclaimed" },
     { status: 413, error: "the message is larger than the listener takes" },
+    // The stream's own refusal of the message itself (`streamRefusedPrefix`,
+    // `packages/envoy/cmd/listener/api.go`): the bus answered, and answers the same however often
+    // the notice is sent, so the listener's 409 carries no `Retry-After`.
+    {
+      status: 409,
+      error:
+        "envoy: the message bus stream refused the message, and refuses it however often it is " +
+        "sent: nats: API error: code=400 err_code=10054 description=message size exceeds maximum allowed",
+    },
   ]) {
     const rig = tellerRig();
     rig.failures.push(listenerAnswered(body.status, body));
@@ -770,6 +784,150 @@ test("a stop's notice is sent again the same way, and a stop already told starts
   ]);
 });
 
+test("an overdue notice the ladder's stop notice supersedes is sent no more", async () => {
+  const rig = tellerRig();
+  rig.failures.push(listenerAnswered(503, { error: BROKER_DOWN }));
+  await rig.teller.tellOverdue(evidenceOf());
+  await settled();
+  expect(rig.waits.map((wait) => wait.ms)).toEqual([1_000]);
+
+  // The ladder stops short for the same call while the overdue notice's re-send waits, and the
+  // stop's own notice is stored.
+  await rig.teller.tellStopped(callOf(), "the exit cap was reached");
+  expect(rig.published.map((notice) => notice.idempotencyKey)).toEqual([
+    "legion-stall:toolu_stuck",
+    "legion-stall-stopped:toolu_stuck",
+  ]);
+
+  // The wait's end sends the overdue notice no more and asks for no further wait: the owner has
+  // the stop, which is the newer news about the same call.
+  rig.waits[0]?.end();
+  await settled();
+  expect(rig.published).toHaveLength(2);
+  expect(rig.waits).toHaveLength(1);
+  expect(rig.infos).toEqual([
+    {
+      message:
+        "legion: the stall notice is not sent again, because the ladder's stop notice supersedes it",
+      context: expect.objectContaining({ key: "legion-stall:toolu_stuck", attempts: 1 }),
+    },
+  ]);
+});
+
+test("a stop's notice whose call has ended is still sent again until it is stored or the cap ends it", async () => {
+  // The call ends while the stop's notice is being sent again, as the ladder's own abort usually
+  // ends it: that the ladder stopped short for the call is still true, so the re-sends go on.
+  let open: StallCall[] = [callOf()];
+  const stored = tellerRig({ openCalls: () => open });
+  stored.failures.push(new Error(UNREACHABLE), new Error(UNREACHABLE));
+  await stored.teller.tellStopped(callOf(), "the exit cap was reached");
+  await settled();
+  stored.waits[0]?.end();
+  await settled();
+  expect(stored.published).toHaveLength(2);
+  expect(stored.waits).toHaveLength(2);
+
+  open = [];
+  stored.waits[1]?.end();
+  await settled();
+  expect(stored.published).toHaveLength(3);
+  expect(stored.waits).toHaveLength(2);
+  expect(stored.infos).toEqual([
+    {
+      message: "legion: the owner was told late about this session's stuck tool call",
+      context: expect.objectContaining({ attempt: 3, reason: "the exit cap was reached" }),
+    },
+  ]);
+
+  // A call already ended when the ladder stopped short: the stop's notice is sent again until the
+  // cap ends its re-sends, and nothing else ends them.
+  let clock = START;
+  const capped = tellerRig({ now: () => clock, openCalls: () => [] });
+  capped.failures.push(
+    ...Array.from({ length: 20 }, () => listenerAnswered(503, { error: BROKER_DOWN }))
+  );
+  await capped.teller.tellStopped(callOf(), "the exit cap was reached");
+  await settled();
+  for (let wait = 0; wait < 20; wait += 1) {
+    const next = capped.waits[wait];
+    if (next === undefined) break;
+    clock += next.ms;
+    next.end();
+    await settled();
+  }
+  expect(capped.published).toHaveLength(9);
+  expect(capped.infos).toEqual([]);
+  expect(capped.warnings).toContainEqual({
+    message: "legion: the stall notice is not sent again, because its re-sends reached their cap",
+    context: expect.objectContaining({ key: "legion-stall-stopped:toolu_stuck", attempts: 9 }),
+  });
+});
+
+test("a notice the listener keeps failing is sent again for four minutes at most, then given up with one warning", async () => {
+  const capMessage =
+    "legion: the stall notice is not sent again, because its re-sends reached their cap";
+  for (const notice of [
+    {
+      key: "legion-stall:toolu_stuck",
+      tell: (teller: StallWatchdogTeller) => teller.tellOverdue(evidenceOf()),
+    },
+    {
+      key: "legion-stall-stopped:toolu_stuck",
+      tell: (teller: StallWatchdogTeller) =>
+        teller.tellStopped(callOf(), "the exit cap was reached"),
+    },
+  ]) {
+    let clock = START;
+    const rig = tellerRig({ now: () => clock });
+    rig.failures.push(
+      ...Array.from({ length: 20 }, () => listenerAnswered(503, { error: BROKER_DOWN }))
+    );
+    await notice.tell(rig.teller);
+    await settled();
+    // Each wait passes on the teller's clock before the rig ends it. Twenty waits are far past the
+    // cap, so a loop the cap does not end runs until the failures are spent and a late attempt is
+    // stored, rather than waiting on a wait nobody ends.
+    for (let wait = 0; wait < 20; wait += 1) {
+      const next = rig.waits[wait];
+      if (next === undefined) break;
+      clock += next.ms;
+      next.end();
+      await settled();
+    }
+    // The next wait, a minute, would start the tenth attempt 243 seconds after the first, past the
+    // ladder's two step gaps: the ninth failure is the last.
+    expect(rig.waits.map((wait) => wait.ms)).toEqual([
+      1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 60_000, 60_000,
+    ]);
+    expect(rig.published).toHaveLength(9);
+    expect(rig.warnings.filter((line) => line.message === capMessage)).toEqual([
+      {
+        message: capMessage,
+        context: expect.objectContaining({
+          key: notice.key,
+          attempts: 9,
+          sentForMs: 183_000,
+          capMs: 2 * DEFAULT_STALL_LIMITS.stepMs,
+          error: expect.stringContaining(BROKER_DOWN),
+        }),
+      },
+    ]);
+    // The ninth failure is that warning alone, never also a promise of a tenth attempt.
+    expect(
+      rig.warnings
+        .filter(
+          (line) => line.message === "legion: the stall notice was not stored, so it is sent again"
+        )
+        .map((line) => line.context?.attempt)
+    ).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(rig.infos).toEqual([]);
+
+    await settled();
+    expect(rig.published).toHaveLength(9);
+    expect(rig.waits).toHaveLength(8);
+  }
+});
+
 // ---------------------------------------------------------------------------------------------
 // Driven by the detector itself: one message per stuck call, and none for a call that ends.
 // ---------------------------------------------------------------------------------------------
@@ -828,4 +986,47 @@ test("a call that ends before the bound sends nothing at all", async () => {
 
   expect(rig.published).toEqual([]);
   expect(rig.entries).toEqual([]);
+});
+
+test("an overdue notice whose call returns while it is sent again is sent no more", async () => {
+  let clock = START;
+  let watchdog: StallWatchdog | undefined;
+  // The teller reads the detector's own book of open calls, as the entry wires it
+  // (`extensions/legion.ts`, `armStallWatch`).
+  const rig = tellerRig({ now: () => clock, openCalls: () => watchdog?.openCalls() ?? [] });
+  watchdog = watchdogWith(rig.teller, () => clock);
+  rig.failures.push(
+    ...Array.from({ length: 4 }, () => listenerAnswered(503, { error: BROKER_DOWN }))
+  );
+  watchdog.callRequested({ toolName: "eval", toolCallId: "toolu_stuck", input: { code: "1" } });
+  watchdog.executionStarted({ toolName: "eval", toolCallId: "toolu_stuck", input: { code: "1" } });
+  clock += 61 * MINUTE;
+  await watchdog.sweep();
+  await settled();
+  expect(rig.published).toHaveLength(1);
+  expect(rig.waits.map((wait) => wait.ms)).toEqual([1_000]);
+
+  // While the call is open, a re-send goes out.
+  rig.waits[0]?.end();
+  await settled();
+  expect(rig.published).toHaveLength(2);
+  expect(rig.waits).toHaveLength(2);
+
+  // The call returns while the second wait runs: the wait's end sends nothing and asks for no
+  // further wait, and the log says why, once.
+  watchdog.executionEnded({ toolCallId: "toolu_stuck" });
+  rig.waits[1]?.end();
+  await settled();
+  expect(rig.published).toHaveLength(2);
+  expect(rig.waits).toHaveLength(2);
+  expect(rig.infos).toEqual([
+    {
+      message: "legion: the stall notice is not sent again, because its tool call has ended",
+      context: expect.objectContaining({
+        toolCallId: "toolu_stuck",
+        key: "legion-stall:toolu_stuck",
+        attempts: 2,
+      }),
+    },
+  ]);
 });

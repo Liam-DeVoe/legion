@@ -5,4 +5,8 @@ body: |-
   The stall notice to a stuck call's owner is sent again after a publish that failed for a reason
   no rule decides - a 5xx, a 408 or 429, a timeout or a failed connection - under the same
   idempotency key, after a wait from 1 s doubling to 60 s, until the listener stores or keeps it or
-  refuses it with another 4xx. Before, it was logged and dropped.
+  refuses it with another 4xx, the 409 of a stream that refuses the message among them. The
+  overdue notice's re-sends stop once its call has returned or its turn has ended, or once the
+  ladder has stopped short, whose own notice supersedes it; the stop's notice is still sent again
+  after its call ends. No attempt starts more than 4 minutes after the first. Before, it was
+  logged and dropped.

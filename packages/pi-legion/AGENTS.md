@@ -776,8 +776,14 @@ architect or, for a root architect's own call, to the controller, also sends no 
 a kept answer reports that no owner was told. A publish of that notice that fails for a reason no
 rule decides — a 5xx, a 408 or 429, a timeout, a connection that failed — is sent again in the
 background under the same idempotency key, a second later and then after a wait that doubles up to
-a minute, until the listener stores it, keeps it, or refuses it with any other 4xx; the ladder
-does not wait for it. A kept notice that no session takes in its hour comes back to this worker's
+a minute, until the listener stores it, keeps it, or refuses it with any other 4xx (the 409 of a
+message the stream refuses however often it is sent among them); the ladder does not wait for it.
+The overdue notice's re-sends also end once it is no longer true — its call returned or its turn
+ended, or the ladder stopped short and the stop's own notice says so. The stop's notice goes on
+after its call ends, which the ladder's abort usually brings about, since what it says stays
+true. No attempt of either starts more than four minutes, the ladder's two default step gaps,
+after the first: the last failure is one warning naming the notice and its attempts. A kept
+notice that no session takes in its hour comes back to this worker's
 session as a dead letter, an Envoy card that names it, unless Envoy
 drops it more than an hour late. A reminder is dropped when the daemon's record says this role no
 longer works this phase or that the daemon has failed this role's claim (the `read_record` state,
