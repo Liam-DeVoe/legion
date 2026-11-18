@@ -63,11 +63,12 @@ function installResizeObserver() {
  * `ROWS` rows of cut words, with the frames the page asks for run by the test and a clock that
  * moves `readMs` on each read of a box's height. Each such read notes how many rows were drawn
  * cut when it was made, in the list of the frame it was made in. Every box lays out where `box`
- * says, a 600 px box at the top by default; `observer` false draws the rows in a browser with no
- * intersection observer, and `fonts` stands for the page's font set.
+ * says, by default a 600 px box right under the view, where a row is near and wholly outside the
+ * view; `observer` false draws the rows in a browser with no intersection observer, and `fonts`
+ * stands for the page's font set.
  */
 function drawRows({
-  box = () => new DOMRect(0, 0, 600, 600),
+  box = () => new DOMRect(0, window.innerHeight, 600, 600),
   fonts,
   observer = true,
   readMs = 0,
@@ -232,7 +233,7 @@ test("a row the observer calls near but laid out two screens away is not read, a
     box: (element) => {
       if (element === far) return new DOMRect(0, 5000, 600, 600);
       if (element === unsized && !sized) return new DOMRect(0, 0, 0, 0);
-      return new DOMRect(0, 0, 600, 600);
+      return new DOMRect(0, window.innerHeight, 600, 600);
     },
   });
   [far, unsized] = drawn.words;
@@ -304,15 +305,16 @@ test("a row that goes away keeps its cut, and the typeface's arrival measures th
 /**
  * `drawRows` laid out as a page the test scrolls: the rows (`[data-node-row]`) stand one under
  * another, each `whole` px while its words are whole, or its cut and a 24 px "more" once cut, and
- * `window.scrollBy` moves the page. `read` holds the place of every row whose box, or whose
- * words' box, was read; `scrolls` holds each scroll, with how many rows were drawn cut when it
- * was made.
+ * `window.scrollBy` moves the page. The page mounts scrolled a screen above its first row, so the
+ * mount's own pass, which `mountPass` lets run, finds no row in view, and every cut is a batch's.
+ * `read` holds the place of every row whose box, or whose words' box, was read; `scrolls` holds
+ * each scroll, with how many rows were drawn cut when it was made.
  */
 function stackRows(whole: number) {
   const MORE = 24;
   let words: HTMLElement[] = [];
   let rows: Element[] = [];
-  let scrolled = 0;
+  let scrolled = -window.innerHeight;
   const read = new Set<number>();
   const wordsHeight = (element: HTMLElement | undefined) => {
     const cut = Number.parseFloat(element?.style.maxHeight ?? "");
@@ -367,6 +369,8 @@ function stackRows(whole: number) {
   return {
     cutCount,
     drawn,
+    /** Lets the pass the rows' mount asked for run: it finds no row in view. */
+    mountPass: () => act(async () => {}),
     near,
     pageTop,
     read,
@@ -378,16 +382,25 @@ function stackRows(whole: number) {
   };
 }
 
-// A long jump into the middle of the page lands on rows not measured yet, which are cut a frame
-// later. A slice that cuts rows below the view alone scrolls nothing and reads no other row's
-// box; one that cuts rows above the view and in it holds the first row wholly in view where it
-// stood, by one scroll in the same frame, after every cut. The rows are 300 px whole.
-test("a slice that cuts rows above and in the view holds the first row wholly in view, and one that cuts rows below it scrolls nothing", () => {
-  const { cutCount, drawn, near, pageTop, read, scrollTo, scrolls, topOf } = stackRows(300);
+/** Where rows `from` up to `to` stand, as `topOf` reads them. */
+function topsOf(topOf: (at: number) => number, from: number, to: number): number[] {
+  return Array.from({ length: to - from }, (_unused, at) => topOf(from + at));
+}
+
+// A long jump into the middle of the page lands on rows not measured yet. A slice that cuts rows
+// below the view alone scrolls nothing and reads no other row's box. After the jump, a slice
+// cuts the rows above the view and below it and leaves every row in view whole, wholly or in
+// part, and the rows in view stand where they stood, by one scroll in the same frame, after
+// every cut. The rows are 300 px whole on a 768 px view.
+test("a slice cuts the rows above and below the view and leaves the rows in view whole and where they stood, and one that cuts rows below it alone scrolls nothing", async () => {
+  const { cutCount, drawn, mountPass, near, pageTop, read, scrollTo, scrolls, topOf } =
+    stackRows(300);
+  await mountPass();
   const screen = window.innerHeight;
 
   // Rows 0 and 1 stand wholly in view and row 2 crosses its foot; rows 3 to 5 lie below it,
   // within a screen.
+  scrollTo(0);
   expect(topOf(3), "row 3 is not below the view").toBeGreaterThanOrEqual(screen);
   near(3, 6, true);
   read.clear();
@@ -402,50 +415,131 @@ test("a slice that cuts rows above and in the view holds the first row wholly in
     "the slice read another row's box"
   ).toEqual([3, 4, 5]);
 
-  // The jump: row 20 crosses the view's top and row 21 is the first row wholly in view; rows 17
-  // to 25, whole, come within a screen of it and rows 3 to 5 go away.
+  // The jump: row 20 crosses the view's top, rows 21 and 22 stand wholly in view and row 23
+  // crosses its foot; rows 17 to 25, whole, come within a screen of the view and rows 3 to 5 go
+  // away.
   near(3, 6, false);
   scrollTo(pageTop(20) + 150);
-  const before = topOf(21);
-  expect(before, "row 21 does not stand wholly in view").toBeGreaterThanOrEqual(0);
-  expect(before + 300, "row 21 does not stand wholly in view").toBeLessThanOrEqual(screen);
   expect(topOf(20), "row 20 does not cross the view's top").toBeLessThan(0);
+  expect(topOf(23), "row 23 does not cross the view's foot").toBeLessThan(screen);
+  expect(topOf(24), "row 24 is not below the view").toBeGreaterThanOrEqual(screen);
+  const before = topsOf(topOf, 20, 24);
   near(17, 26, true);
   drawn.runFrame();
   expect(
-    drawn.words.slice(17, 26).map((element) => drawn.cut(element)),
-    "a row near the view was not cut"
-  ).toEqual(Array.from({ length: 9 }, () => true));
+    topsOf(topOf, 20, 24).map((top, at) => top - (before[at] ?? 0)),
+    "a row in view moved as the rows around it were cut"
+  ).toEqual([0, 0, 0, 0]);
   expect(
-    Math.abs(topOf(21) - before),
-    "the first row wholly in view moved as the rows above it were cut"
-  ).toBeLessThanOrEqual(1);
+    drawn.words.slice(17, 26).map((element) => drawn.cut(element)),
+    "a row in view was cut, or a row outside it was not"
+  ).toEqual([true, true, true, false, false, false, false, true, true]);
   expect(scrolls, "the page was scrolled other than once, after every cut of the slice").toEqual([
     { cut: cutCount(), top: expect.any(Number) },
   ]);
 });
 
-// Rows taller than the view leave no row wholly in view: the slice holds the row whose box spans
-// the view's top, here row 10, as the row above it is cut. The rows are 1,000 px whole on a
-// 768 px view.
-test("where no row stands wholly in view, a slice holds the row that spans the view's top", () => {
-  const { cutCount, drawn, near, pageTop, scrollTo, scrolls, topOf } = stackRows(1000);
-  const screen = window.innerHeight;
+// Rows taller than the view leave no row wholly in view. The one that spans the view's top, row
+// 10, keeps its whole length though only part of it is in view, and the slice holds it where it
+// stood as the row above it is cut. The rows are 1,000 px whole on a 768 px view.
+test("a row taller than the view that spans its top keeps its whole length, and stands where it stood as the row above it is cut", async () => {
+  const { cutCount, drawn, mountPass, near, pageTop, scrollTo, scrolls, topOf } = stackRows(1000);
+  await mountPass();
   scrollTo(pageTop(10) + 200);
   const before = topOf(10);
   expect(before, "row 10 does not span the view's top").toBeLessThan(0);
-  expect(topOf(11), "row 11 does not start below the view").toBeGreaterThanOrEqual(screen);
+  expect(topOf(11), "row 11 does not start below the view").toBeGreaterThanOrEqual(
+    window.innerHeight
+  );
   near(9, 12, true);
   drawn.runFrame();
   expect(
-    drawn.words.slice(9, 12).map((element) => drawn.cut(element)),
-    "a row near the view was not cut"
-  ).toEqual([true, true, true]);
-  expect(
-    Math.abs(topOf(10) - before),
+    topOf(10) - before,
     "the row that spans the view's top moved as the row above it was cut"
-  ).toBeLessThanOrEqual(1);
+  ).toBe(0);
+  expect(
+    drawn.words.slice(9, 12).map((element) => drawn.cut(element)),
+    "the row in view was cut, or a row outside it was not"
+  ).toEqual([true, false, true]);
   expect(scrolls, "the page was scrolled other than once, after every cut of the slice").toEqual([
     { cut: cutCount(), top: expect.any(Number) },
   ]);
+});
+
+// A row a slice leaves whole in view is put in the next slice by every scroll. A scroll that
+// leaves it in view measures nothing; one that leaves it wholly above the view cuts it, and the
+// row that spans the view's top then stands where it stood. The rows are 1,000 px whole.
+test("a row left whole in view is cut once a scroll leaves it wholly outside the view, and not before", async () => {
+  const { cutCount, drawn, mountPass, near, pageTop, scrollTo, scrolls, topOf } = stackRows(1000);
+  await mountPass();
+  scrollTo(pageTop(10) + 200);
+  near(9, 12, true);
+  drawn.runFrame();
+  expect(drawn.cut(drawn.words[10]), "the row in view was cut").toBe(false);
+
+  scrollTo(pageTop(10) + 500);
+  document.dispatchEvent(new Event("scroll"));
+  expect(drawn.frames, "a scroll asked for no batch").toHaveLength(1);
+  drawn.runFrame();
+  expect(drawn.cutWhenRead.at(-1), "a scroll that left the row in view measured it").toEqual([]);
+  expect(drawn.cut(drawn.words[10]), "the row still in view was cut").toBe(false);
+
+  scrollTo(pageTop(11) + 50);
+  const before = topOf(11);
+  expect(topOf(10) + 1000, "row 10 does not lie wholly above the view").toBeLessThanOrEqual(0);
+  document.dispatchEvent(new Event("scroll"));
+  drawn.runFrame();
+  expect(drawn.cut(drawn.words[10]), "the row that left the view was not cut").toBe(true);
+  expect(
+    topOf(11) - before,
+    "the row that spans the view's top moved as the row above it was cut"
+  ).toBe(0);
+  expect(scrolls.at(-1), "the last write of the slice was not its scroll").toEqual({
+    cut: cutCount(),
+    top: expect.any(Number),
+  });
+});
+
+// A row spans the view's top where its top is at or above the view's top and its foot below it:
+// a row taller than the view whose top is exactly at the view's top is held as the row above it
+// is cut. The rows are 1,000 px whole on a 768 px view.
+test("a row taller than the view whose top is at the view's top stands where it stood as the row above it is cut", async () => {
+  const { drawn, mountPass, near, pageTop, scrollTo, topOf } = stackRows(1000);
+  await mountPass();
+  scrollTo(pageTop(10));
+  expect(topOf(10), "row 10's top is not at the view's top").toBe(0);
+  near(9, 12, true);
+  drawn.runFrame();
+  expect(
+    topOf(10),
+    "the row whose top is at the view's top moved as the row above it was cut"
+  ).toBe(0);
+  expect(
+    drawn.words.slice(9, 12).map((element) => drawn.cut(element)),
+    "the row in view was cut, or a row outside it was not"
+  ).toEqual([true, false, true]);
+});
+
+// The rows in view as the page mounts are measured once the commit's layout effects have run and
+// drawn cut before the page is painted: with no animation frame run, and every read of them
+// before any cut. A row outside the view is left to the batches. Rows 0 to 2 stand in view.
+test("the rows in view as they mount are cut before the page is painted, every read before any write, and the rows outside the view are left to the batches", async () => {
+  let rows: (Element | null)[] = [];
+  const drawn = drawRows({
+    box: (element) => {
+      const at = rows.indexOf(element.closest("li"));
+      return new DOMRect(0, at * 300, 600, element.matches("p") ? 600 : 300);
+    },
+  });
+  rows = [...drawn.view.container.querySelectorAll("li")];
+  await act(async () => {});
+  expect(
+    drawn.words.slice(0, 6).map((element) => drawn.cut(element)),
+    "a row in view as it mounted was not cut before a frame ran, or a row outside it was"
+  ).toEqual([true, true, true, false, false, false]);
+  expect(drawn.frames, "the rows in view asked for a frame to be cut").toEqual([]);
+  expect(
+    drawn.cutWhenRead.flat(),
+    "a row in view was read other than once, or a read came after a cut"
+  ).toEqual([0, 0, 0]);
 });
