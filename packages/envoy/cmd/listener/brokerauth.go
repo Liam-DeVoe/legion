@@ -162,7 +162,7 @@ func (b *brokerTokens) open(conn *nats.Conn, replicas int) error {
 	verifier, err := brokertoken.New(brokertoken.Options{
 		BrokerURL: b.config.BrokerURL,
 		Account:   b.config.account(),
-		Origin:    strings.TrimSuffix(b.config.Origin, "/"),
+		Origins:   []string{strings.TrimSuffix(b.config.Origin, "/")},
 		Replay:    spentProofs{kv: kv},
 		// The listener trusts no forwarding header for this: it has no proxy-trust setting of
 		// its own, and a bucket keyed on a header a caller writes bounds nothing. The connection

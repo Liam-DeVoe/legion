@@ -104,7 +104,7 @@ func TestARoleKeysProofsAreNotInterchangeable(t *testing.T) {
 		Replay:         func(context.Context, string, time.Time) (bool, error) { return true, nil },
 	}
 	resource, err := brokertoken.New(brokertoken.Options{
-		BrokerURL: rig.URL, Account: listenerAccount(rig.ListenerToken), Origin: resourceOrigin,
+		BrokerURL: rig.URL, Account: listenerAccount(rig.ListenerToken), Origins: []string{resourceOrigin},
 		Replay: newSpentProofs(), Address: func(*http.Request) string { return "192.0.2.10" },
 	})
 	if err != nil {

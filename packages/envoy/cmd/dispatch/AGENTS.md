@@ -558,13 +558,17 @@ write identity errors with `identity.WriteError`.
   never falls through to a bearer branch, and the bearer branches above are
   untouched. `internal/brokertoken` does the deciding: the broker is asked what
   the token is (RFC 7662 introspection) and the caller is held to the `jkt` that
-  answer carries. `brokerTokenVerifier` builds it from settings Dispatch already
-  has and adds none: `DISPATCH_AGENT_SECRETS_URL` (the broker the approval
-  relays already call), `DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` (the
-  projected ServiceAccount token every broker call presents, read at call time)
-  and `DISPATCH_SERVER_URL` (the origin a proof's `htu` is checked against,
-  never a forwarded header). Spent proofs go in Dispatch's own `dpop_proofs`
-  (migration `0150`), swept beside the idempotency keys. A verified caller is
+  answer carries. `brokerTokenVerifier` builds it from
+  `DISPATCH_AGENT_SECRETS_URL` (the broker the approval relays already call),
+  `DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` (the projected ServiceAccount
+  token every broker call presents, read at call time), `DISPATCH_SERVER_URL`
+  and `DISPATCH_PROOF_ORIGINS`, its one setting of its own: a proof's `htu` is
+  checked against `DISPATCH_SERVER_URL`'s origin or each origin
+  `DISPATCH_PROOF_ORIGINS` adds (`proofOrigins`; the in-cluster address pods
+  and daemons call), plus the request's path, never a forwarded header, and a
+  proof is spent once whichever it names. Spent proofs go in Dispatch's own
+  `dpop_proofs` (migration `0150`), swept beside the idempotency keys. A
+  verified caller is
   `{kind: "session", id: <the token's session>}` carrying either `owner`, the
   person it acts for, or `service`, the fleet of a machine nobody has signed
   in on or the service a read entry names — never both and never neither —
