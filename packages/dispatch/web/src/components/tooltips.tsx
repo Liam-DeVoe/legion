@@ -33,6 +33,7 @@ export interface PageWords {
     | "approval_version_of"
     | "cancel"
     | "choose_priority"
+    | "close"
     | "components_inherited_from"
     | "components_none"
     | "components_not_attached"

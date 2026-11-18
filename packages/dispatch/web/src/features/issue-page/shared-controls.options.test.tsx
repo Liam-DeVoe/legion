@@ -4612,13 +4612,14 @@ test("inside NoTooltips Approve leaves a focus the reader moved elsewhere where 
 
 // A dialog that drops its focus to the body is a keyboard trap broken open. While a change request
 // is out, and inside `NoTooltips` until the read after it is drawn as well, the Request changes
-// dialog refuses. Inside, its text box is read-only and its Request changes and Cancel are
-// `aria-disabled`, in place of the `disabled` that drops the focus in a browser: the focus stays
-// where it is, a press sends no second request and Cancel closes nothing. Once the new approval is
-// read the dialog closes and gives the focus back to the header's Request changes, which opened it
-// and is `aria-disabled` too while the write is out. Outside `NoTooltips` the text box, both
-// buttons and the header's Request changes are `disabled` while the write is out, and Escape
-// closes the dialog then, as on `main`.
+// dialog refuses. Inside, its text box is read-only and its Request changes `aria-disabled`, in
+// place of the `disabled` that drops the focus in a browser: the focus stays where it is and a
+// press sends no second request. Its Cancel reads Close then and is not refused, since a press of
+// it closes the dialog as Escape does and leaves the write going. Once the new approval is read
+// the dialog closes and gives the focus back to the header's Request changes, which opened it and
+// is `aria-disabled` too while the write is out. Outside `NoTooltips` the text box, both buttons
+// and the header's Request changes are `disabled` while the write is out, and Escape closes the
+// dialog then, as on `main`.
 test("inside NoTooltips the Request changes dialog keeps its focus until the change request is read", async () => {
   const user = userEvent.setup();
   const reason = "The plan names no owner";
@@ -4669,21 +4670,20 @@ test("inside NoTooltips the Request changes dialog keeps its focus until the cha
 
       expect(box.hasAttribute("disabled")).toBe(false);
       expect(box.hasAttribute("readonly")).toBe(true);
-      for (const control of [cancel, requestChanges]) {
-        expect(control.getAttribute("aria-disabled")).toBe("true");
-        expect(control.hasAttribute("disabled")).toBe(false);
-      }
+      expect(dialog.queryByRole("button", { name: "Cancel" })).toBeNull();
+      const close = dialog.getByRole("button", { name: "Close" });
+      expect(close).toBe(cancel);
+      expect(close.hasAttribute("aria-disabled")).toBe(false);
+      expect(close.hasAttribute("disabled")).toBe(false);
+      expect(requestChanges.getAttribute("aria-disabled")).toBe("true");
+      expect(requestChanges.hasAttribute("disabled")).toBe(false);
       expectRefusedHoldingFocus(submit);
       await user.keyboard("{Enter}");
       await settleReads();
       expect(createArtifactReview).toHaveBeenCalledTimes(1);
       expectRefusedHoldingFocus(submit);
       expect(requestChanges.getAttribute("aria-disabled")).toBe("true");
-      cancel.focus();
-      await user.keyboard("{Enter}");
-      await settleReads();
       expect(scope.queryByRole("dialog")).not.toBeNull();
-      expectRefusedHoldingFocus(cancel);
 
       // The change request lands, and the read after it is held.
       submit.focus();
@@ -4828,6 +4828,114 @@ test("inside NoTooltips Escape closes the Request changes dialog while its chang
       expect(approve.hasAttribute("aria-disabled")).toBe(false);
       expect(scope.queryByRole("dialog")).toBeNull();
       expect(createArtifactReview).toHaveBeenCalledTimes(1);
+    } finally {
+      written.reject(new Error("the connection dropped"));
+      createArtifactReview.mockRestore();
+      undraw(view);
+      unemulate();
+    }
+  }
+});
+
+// Inside `NoTooltips`, while a change request is out, the Request changes dialog's Cancel reads
+// Close and closes the dialog as Escape does, by Enter and by the pointer alike, and leaves the
+// write going: the dialog gives the focus back to the header's Request changes, which stays
+// `aria-disabled` beside Approve, a press of either doing nothing, until the change request lands
+// and its read is drawn, and one change request goes out in all. Once the write has ended, the
+// dialog opened next reads Cancel again. Outside `NoTooltips` the button reads Cancel and is
+// `disabled` while the write is out, as on `main`.
+test("inside NoTooltips the Request changes dialog's Close closes it while its change request is out and leaves the write going", async () => {
+  const user = userEvent.setup();
+  const reason = "The plan names no owner";
+  const changesRequested = doc(SPEC_ID, "spec.md", {
+    latest_version: 2,
+    state: "changes_requested",
+    version: 2,
+  });
+  for (const press of ["Enter", "click", "outside"] as const) {
+    const unemulate = emulateChromiumFocusFixup();
+    stubs.getArtifact.mockResolvedValue(awaitingSpec());
+    const written = Promise.withResolvers<ArtifactReview>();
+    const createArtifactReview = spyOn(api, "createArtifactReview").mockImplementation(
+      () => written.promise
+    );
+    const view = draw(
+      <KeymapProvider>
+        <ReadApprovalChip id={SPEC_ID} />
+      </KeymapProvider>,
+      press === "outside" ? "outside" : "inside"
+    );
+    try {
+      const scope = within(view.container);
+      const { approve, requestChanges } = await sendChangeRequest(
+        user,
+        view,
+        createArtifactReview,
+        reason
+      );
+      if (approve === null) throw new Error("the chip draws no Approve");
+      const dialog = within(scope.getByRole("dialog", { name: "Request changes" }));
+
+      if (press === "outside") {
+        expect(dialog.queryByRole("button", { name: "Close" })).toBeNull();
+        expectDisabledAsOnMain(dialog.getByRole("button", { name: "Cancel" }));
+        continue;
+      }
+
+      expect(dialog.queryByRole("button", { name: "Cancel" })).toBeNull();
+      const close = dialog.getByRole("button", { name: "Close" });
+      expect(close.hasAttribute("aria-disabled")).toBe(false);
+      expect(close.hasAttribute("disabled")).toBe(false);
+      if (press === "Enter") {
+        close.focus();
+        await user.keyboard("{Enter}");
+      } else {
+        await user.click(close);
+      }
+      await waitFor(() => expect(scope.queryByRole("dialog")).toBeNull());
+      await settleReads();
+
+      // The write goes on: the review was not let go of, so both actions are still refused.
+      expectRefusedHoldingFocus(requestChanges);
+      await user.keyboard("{Enter}");
+      await settleReads();
+      expect(scope.queryByRole("dialog")).toBeNull();
+      expectRefusedHoldingFocus(requestChanges);
+      approve.focus();
+      expectRefusedHoldingFocus(approve);
+      await user.keyboard("{Enter}");
+      await settleReads();
+      expectRefusedHoldingFocus(approve);
+      expect(createArtifactReview).toHaveBeenCalledTimes(1);
+
+      // The change request lands, and the read after it is held: both are still refused.
+      requestChanges.focus();
+      const answerReread = await landHeld(stubs.getArtifact, () =>
+        written.resolve(specReview("changes_requested", reason))
+      );
+      await user.keyboard("{Enter}");
+      await settleReads();
+      expect(scope.queryByRole("dialog")).toBeNull();
+      expectRefusedHoldingFocus(requestChanges);
+      expect(approve.getAttribute("aria-disabled")).toBe("true");
+
+      answerReread(changesRequested);
+      await scope.findByRole("button", { name: "Changes requested" });
+      await waitFor(() => expect(requestChanges.hasAttribute("aria-disabled")).toBe(false));
+      await settleReads();
+      expect(document.activeElement).toBe(requestChanges);
+      expect(approve.hasAttribute("aria-disabled")).toBe(false);
+      expect(scope.queryByRole("dialog")).toBeNull();
+      expect(createArtifactReview).toHaveBeenCalledTimes(1);
+
+      // With the write ended, the dialog opened next reads Cancel again.
+      await user.keyboard("{Enter}");
+      const next = within(await scope.findByRole("dialog", { name: "Request changes" }));
+      await settleReads();
+      expect(next.getByRole("button", { name: "Cancel" }).hasAttribute("aria-disabled")).toBe(
+        false
+      );
+      expect(next.queryByRole("button", { name: "Close" })).toBeNull();
     } finally {
       written.reject(new Error("the connection dropped"));
       createArtifactReview.mockRestore();
