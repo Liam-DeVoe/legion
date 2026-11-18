@@ -2,6 +2,7 @@ package text
 
 import (
 	"maps"
+	"math/rand/v2"
 	"slices"
 	"strings"
 	"testing"
@@ -72,9 +73,14 @@ func shapeOf(value string, limit int) string {
 
 // headRunesAlphabet holds each byte that decides a cut: a letter; EF BF BD, the three bytes of
 // U+FFFD, which alone or as a pair are bytes that are not UTF-8; FF, which is never UTF-8;
-// E7 95 8C, the three bytes of 界; and F0 9F, which with 95 8C are the four bytes of U+1F54C,
-// a character outside the BMP.
-const headRunesAlphabet = "a\xef\xbf\xbd\xff\xe7\x95\x8c\xf0\x9f"
+// E7 95 8C, the three bytes of 界; F0 9F, which with 95 8C are the four bytes of U+1F54C, a
+// character outside the BMP; and C3 A9, the two bytes of é, each of which alone is not UTF-8.
+const headRunesAlphabet = "a\xef\xbf\xbd\xff\xe7\x95\x8c\xf0\x9f\xc3\xa9"
+
+// headRunesCharacters are the characters that the bytes of the alphabet make. A seeded value is
+// built of them and of single bytes of the alphabet, so it holds runs of whole characters as well
+// as bytes that are not UTF-8.
+var headRunesCharacters = []string{"a", "é", "界", "\uFFFD", "\U0001F54C"}
 
 // sink keeps each answer of an allocation row, so an answer that the cut copied lives on the heap
 // and is counted.
@@ -83,13 +89,20 @@ var sink string
 // HeadRunes counts a rune of any script as one, and a document edit's read-back cuts its last
 // block with it. The first row compares it with headRunesReference on every value of 0 to 5 bytes
 // of the alphabet, to each limit from 0 to 6: every pair, no sample. Five bytes is the shortest
-// value on which a guard that reads the start of the value, not the place of the rune, takes a
-// real U+FFFD for a byte that is not UTF-8: a letter, U+FFFD and a letter.
+// value on which a guard that reads the start of the value, not the place of the rune, changes
+// what HeadRunes does: it copies the cut of a letter, U+FFFD and a letter, and it keeps as it is a
+// byte that is not UTF-8 after a U+FFFD that starts the value.
+//
+// The second row compares the two on seeded values of 6 to 64 bytes, to each limit from 0 to 70,
+// so a fault that needs a longer value fails it too, such as a guard that reads only the first six
+// runes it keeps. The seed is fixed, so a failure repeats.
 //
 // An answer that is, by the reference, the value's own first bytes is a slice of the value, and
 // HeadRunes copies nothing for it. One row for each shape of such a pair (shapeOf) cuts every
 // pair of that shape and wants no allocation, so a copy of any one pair fails its row. The last
-// rows hold values longer than five bytes, each cut to a slice with no copy.
+// rows hold values longer than five bytes, each cut to a slice with no copy. Among them, a cut
+// after characters outside the BMP fails a count of UTF-16 units, and a cut before a combining
+// mark fails a count that keeps a mark with its letter: a character is one code point.
 func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 	const longest, limits = 5, 6
 	var values []string
@@ -123,6 +136,44 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 		}
 		if differ > 0 {
 			t.Errorf("%d of %d pairs differ from the reference", differ, len(values)*(limits+1))
+		}
+	})
+
+	t.Run("every seeded value of 6 to 64 bytes agrees with the reference", func(t *testing.T) {
+		const seeded, longLimits = 20000, 70
+		for _, character := range headRunesCharacters {
+			for i := range len(character) {
+				if strings.IndexByte(headRunesAlphabet, character[i]) < 0 {
+					t.Fatalf("%q holds the byte %#x, which the alphabet does not", character, character[i])
+				}
+			}
+		}
+		random := rand.New(rand.NewPCG(1, 6))
+		differ := 0
+		for range seeded {
+			length := 6 + random.IntN(59)
+			built := make([]byte, 0, length+3)
+			for len(built) < length {
+				if random.IntN(4) == 0 {
+					built = append(built, headRunesAlphabet[random.IntN(len(headRunesAlphabet))])
+				} else {
+					built = append(built, headRunesCharacters[random.IntN(len(headRunesCharacters))]...)
+				}
+			}
+			value := string(built[:length])
+			for limit := 0; limit <= longLimits; limit++ {
+				got, want := HeadRunes(value, limit), headRunesReference(value, limit)
+				if got == want {
+					continue
+				}
+				if differ < 10 {
+					t.Errorf("HeadRunes(%q, %d) = %q, want %q", value, limit, got, want)
+				}
+				differ++
+			}
+		}
+		if differ > 0 {
+			t.Errorf("%d of %d seeded pairs differ from the reference", differ, seeded*(longLimits+1))
 		}
 	})
 
@@ -163,9 +214,11 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 		limit       int
 		want        string
 	}{
+		{name: "characters outside the BMP are cut at the limit", value: strings.Repeat("𠀀", 10), limit: 4, want: strings.Repeat("𠀀", 4)},
 		{name: "2,001 Chinese characters are cut at 1,967", value: strings.Repeat("界", 2001), limit: 1967, want: strings.Repeat("界", 1967)},
 		{name: "100 pairs of a letter and U+FFFD are cut at 50", value: strings.Repeat("a\uFFFD", 100), limit: 50, want: strings.Repeat("a\uFFFD", 25)},
 		{name: "a byte that is not UTF-8 past the cut is left out", value: strings.Repeat("界", 10) + "\xff", limit: 5, want: strings.Repeat("界", 5)},
+		{name: "a combining mark after the cut is left out", value: strings.Repeat("a\u0301", 10), limit: 3, want: "a\u0301a"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			allocations := testing.AllocsPerRun(100, func() { sink = HeadRunes(row.value, row.limit) })
