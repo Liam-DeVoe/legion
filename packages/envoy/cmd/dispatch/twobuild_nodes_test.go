@@ -65,12 +65,12 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 			t.Fatalf("the %s made the document at %s, want the removed one's address %s, so this row proves nothing",
 				builds.previousName(), again.ref, removed.ref)
 		}
-		census := runStoreCensus(t, builds)
+		census := runTwoBuildStoreCensus(t, builds)
 		requireProjectLine(t, census, "artifact", "gone=1", "orphaned=0")
 		requireIncompleteLines(t, census, "artifact "+again.ref+": gone; run envoy-dispatch backfill-graph-store")
 		runCurrentCommand(t, builds, []int{0}, "backfill-graph-store")
 		requireDocumentNodeState(t, builds, again.ref, graphstore.StateLive)
-		requireIncompleteLines(t, runStoreCensus(t, builds))
+		requireIncompleteLines(t, runTwoBuildStoreCensus(t, builds))
 	})
 
 	t.Run("this build makes a document and the previous build removes it", func(t *testing.T) {
@@ -78,14 +78,14 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 		requireDocumentNodeState(t, builds, document.ref, graphstore.StateLive)
 		removeUntouchedDocument(t, previous, document)
 		erase := "envoy-dispatch erase --node artifact:" + document.ref
-		census := runStoreCensus(t, builds)
+		census := runTwoBuildStoreCensus(t, builds)
 		requireProjectLine(t, census, "artifact", "gone=0", "orphaned=1")
 		if !requireIncompleteLines(t, census, "artifact "+document.ref+": orphaned; remove it with: "+erase) {
 			t.FailNow()
 		}
 		runCurrentCommand(t, builds, []int{0}, "backfill-graph-store")
 		requireDocumentNodeState(t, builds, document.ref, graphstore.StateLive)
-		census = runStoreCensus(t, builds)
+		census = runTwoBuildStoreCensus(t, builds)
 		if !requireIncompleteLines(t, census, "artifact "+document.ref+": orphaned; remove it with: "+erase) {
 			t.FailNow()
 		}
@@ -97,7 +97,7 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 		}
 		runPrinted(t, builds, 0, printed+" --confirm "+digest[1])
 		requireDocumentNodeState(t, builds, document.ref, noDocumentNode)
-		requireIncompleteLines(t, runStoreCensus(t, builds))
+		requireIncompleteLines(t, runTwoBuildStoreCensus(t, builds))
 	})
 
 	t.Run("the previous build removes this build's document and this build makes it again", func(t *testing.T) {
@@ -108,7 +108,7 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 			t.Fatalf("this build made the document at %s, want the removed one's address %s, so this row proves nothing", again.ref, document.ref)
 		}
 		requireDocumentNodeState(t, builds, again.ref, graphstore.StateLive)
-		requireIncompleteLines(t, runStoreCensus(t, builds))
+		requireIncompleteLines(t, runTwoBuildStoreCensus(t, builds))
 	})
 
 	t.Run("the previous build removes this build's document and makes it again", func(t *testing.T) {
@@ -119,12 +119,12 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 			t.Fatalf("the %s made the document at %s, want the removed one's address %s, so this row proves nothing",
 				builds.previousName(), again.ref, document.ref)
 		}
-		census := runStoreCensus(t, builds)
+		census := runTwoBuildStoreCensus(t, builds)
 		requireProjectLine(t, census, "artifact", "gone=1", "orphaned=0")
 		requireIncompleteLines(t, census, "artifact "+again.ref+": gone; run envoy-dispatch backfill-graph-store")
 		runCurrentCommand(t, builds, []int{0}, "backfill-graph-store")
 		requireDocumentNodeState(t, builds, again.ref, graphstore.StateLive)
-		requireIncompleteLines(t, runStoreCensus(t, builds))
+		requireIncompleteLines(t, runTwoBuildStoreCensus(t, builds))
 	})
 }
 
@@ -172,13 +172,13 @@ func requireDocumentNodeState(t *testing.T, builds *twoBuilds, ref, state string
 	}
 }
 
-// runStoreCensus runs this tree's `envoy-dispatch census --store` and answers what it printed. It
+// runTwoBuildStoreCensus runs this tree's `envoy-dispatch census --store` and answers what it printed. It
 // takes exit 0, a census that passed, and exit 1, one that refused: on a database holding no role,
 // page or person the store census refuses those kinds for having no row to check, which says
 // nothing of a document's node. Exit 2 is a census that could not be taken and printed no report,
 // and fails the test, as does a report holding no line for the document kind: a cure is read from
 // the report alone.
-func runStoreCensus(t *testing.T, builds *twoBuilds) string {
+func runTwoBuildStoreCensus(t *testing.T, builds *twoBuilds) string {
 	t.Helper()
 	census := runCurrentCommand(t, builds, []int{0, 1}, "census", "--store")
 	if !strings.Contains(census, "\ncensus: project kind=artifact ") && !strings.HasPrefix(census, "census: project kind=artifact ") {
