@@ -458,7 +458,6 @@ func TestPromptRefusesAPasteOfMoreThanOneLineAndLeavesNothingForTheShell(t *test
 // through its closing mark however long a gap splits it, as one lost packet over ssh can, so it is
 // refused whole and nothing of it is left for the shell or echoed.
 func TestPromptReadsABracketedPasteThroughItsEnd(t *testing.T) {
-	t.Parallel()
 	controller, terminal, got := typeAtPromptInWrites(t, 300*time.Millisecond, "\x1b[200~line1\n", "line2\x1b[201~")
 	if !errors.Is(got.err, errMoreThanOneLine) {
 		t.Fatalf("readHidden = %q, %v; want errMoreThanOneLine", got.line, got.err)
@@ -475,7 +474,6 @@ func TestPromptReadsABracketedPasteThroughItsEnd(t *testing.T) {
 // marks: ending in a line ending, which is dropped, or followed by Enter, with its marks whole or
 // split across reads.
 func TestPromptAcceptsABracketedPasteOfOneLine(t *testing.T) {
-	t.Parallel()
 	for _, writes := range [][]string{
 		{"\x1b[200~value\n\x1b[201~"},
 		{"\x1b[200~value\r\n\x1b[201~"},
@@ -657,9 +655,9 @@ func TestPromptCtrlCEndsTheProcessBySIGINT(t *testing.T) {
 			}
 			select {
 			case <-done:
-			case <-time.After(10 * time.Second):
+			case <-time.After(promptJobWait):
 				_ = cmd.Process.Kill()
-				t.Fatalf("the process did not end within 10s of Ctrl-C; the terminal showed %q", shown(t, controller))
+				t.Fatalf("the process did not end within promptJobWait (%s) of Ctrl-C; the terminal showed %q", promptJobWait, shown(t, controller))
 			}
 			status := cmd.ProcessState.Sys().(syscall.WaitStatus)
 			out := shown(t, controller)
@@ -710,9 +708,9 @@ func TestPromptQuitEndsTheProcessBySIGQUITWithNoCore(t *testing.T) {
 	}
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second):
+	case <-time.After(promptJobWait):
 		_ = cmd.Process.Kill()
-		t.Fatal("the process did not quit within 10s of Ctrl-\\")
+		t.Fatalf("the process did not quit within promptJobWait (%s) of Ctrl-\\", promptJobWait)
 	}
 	status := cmd.ProcessState.Sys().(syscall.WaitStatus)
 	out := shown(t, controller)

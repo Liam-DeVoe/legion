@@ -54,7 +54,7 @@ func bindBoundDurable(t *testing.T, client *bus.Client, consumer string, handler
 		t.Fatalf("bind the durable: %v", err)
 	}
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
-	if err := awaitDurableBound(context.Background(), client, consumer, 25*time.Millisecond, 10*time.Second); err != nil {
+	if err := awaitDurableBound(context.Background(), client, consumer, 25*time.Millisecond, listenerWait); err != nil {
 		t.Fatalf("wait for the server to report the durable bound: %v", err)
 	}
 	return sub

@@ -134,7 +134,6 @@ func TestAStampChangesWhenAPruneAndAnAppendRepeatAVersionNumber(t *testing.T) {
 // row is old the fold point is the head row, and the stamp moves while the version and the document
 // stay as they were; when the head row is young the fold point is below it, and the stamp stays.
 func TestACompactionChangesTheStampAndKeepsTheDocument(t *testing.T) {
-	t.Parallel()
 	database := storetest.Open(t)
 	versioned := NewPgVersioned(database)
 	for _, test := range []struct {
@@ -354,11 +353,8 @@ func newReadCacheService(t *testing.T, database *store.Store, persistence Versio
 		ServerURL:   "https://dispatch.example",
 		Settle:      time.Hour,
 	})
-	cleanupAndRelease(t, func() {
-		if err := service.Shutdown(context.Background()); err != nil {
-			t.Errorf("shutdown read-cache service: %v", err)
-		}
-	})
+	service.srv.RoomIdleTimeout = testRoomIdleTimeout
+	cleanupAndRelease(t, func() { shutdownTestService(t, service) })
 	return service
 }
 
@@ -472,8 +468,10 @@ func TestRepeatedColdReadsLoadAnUnchangedDocumentOnce(t *testing.T) {
 	}
 }
 
+// Serial: the shared fold runs under the product's coldReadTimeout (60 s, read_cache.go:81), armed
+// as the fold starts, which ends the gated load as the caller's cancellation would and sets
+// canceled: every step from the fold's start to the release must come inside it.
 func TestCancelledColdReaderLeavesTheFoldForOtherReaders(t *testing.T) {
-	t.Parallel()
 	database := storetest.Open(t)
 	persistence := &gatedLoadStore{
 		VersionedStore: NewPgVersioned(database),

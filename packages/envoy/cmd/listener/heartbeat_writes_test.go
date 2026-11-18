@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -45,14 +44,17 @@ func TestHeartbeatKVWritesPerHeartbeat(t *testing.T) {
 	sessionOf := func(index int) string { return fmt.Sprintf("ses_heartbeat_%02d", index) }
 	roleOf := func(index int) string { return fmt.Sprintf("heartbeat-role-%02d", index) }
 	registry, sessions := setupSessionsTest(t, nil, nil)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := registry.WaitForCacheReady(ctx); err != nil {
-		t.Fatalf("interest cache not ready: %v", err)
+	// Each wait below is bounded on its own at listenerWait, so a slow one leaves the next no less.
+	ready := func(what string, cache interface{ WaitForCacheReady(context.Context) error }) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
+		defer cancel()
+		if err := cache.WaitForCacheReady(ctx); err != nil {
+			t.Fatalf("%s cache not ready: %v", what, err)
+		}
 	}
-	if err := sessions.WaitForCacheReady(ctx); err != nil {
-		t.Fatalf("session cache not ready: %v", err)
-	}
+	ready("interest", registry)
+	ready("session", sessions)
 	routes := http.NewServeMux()
 	// withRoleClaimDrain, because each session's first registration here makes it live and so
 	// hands it the kept lane of the role whose claim record it read (runKeptRoleDrain). That
@@ -90,7 +92,10 @@ func TestHeartbeatKVWritesPerHeartbeat(t *testing.T) {
 	// and before anything is counted: the heartbeats counted below are identical to each other.
 	for index := range sessionCount {
 		claim := store.RoleClaimRequest{SessionID: sessionOf(index), MachineID: "test-machine", ClientInstanceID: instance, Role: roleOf(index)}
-		if _, err := registry.SetRoleWithPrevious(ctx, claim); err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
+		_, err := registry.SetRoleWithPrevious(ctx, claim)
+		cancel()
+		if err != nil {
 			t.Fatalf("claim %s for %s: %v", roleOf(index), sessionOf(index), err)
 		}
 	}

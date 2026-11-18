@@ -369,7 +369,11 @@ func TestAPublishThatOutlivesItsBoundIsAbandoned(t *testing.T) {
 		t.Fatalf("an abandoned publish published %+v", got)
 	}
 
+	// The later pass's publish answers at once, but under the 200 ms bound a pass slowed past it
+	// would find the publish's context ended as well, and the publisher's select takes either. Its
+	// bound outlasts any run of the test binary, so the pass is judged on the answer alone.
 	publisher.hang(false)
+	announcer.publishTimeout = 24 * time.Hour
 	announcer.pass(ctx)
 	requireEnvelopes(t, database, publisher, c1)
 }

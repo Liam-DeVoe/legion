@@ -47,7 +47,6 @@ func TestSignLauncherRefusedInsideASessionAndSignsOutside(t *testing.T) {
 // authenticates), an operator route under the other method or with its id missing, split or a
 // dot segment, and a request missing its method or URL.
 func TestSignLauncherSignsOnlyTheOperatorRoutesOfThisHelpersBroker(t *testing.T) {
-	t.Parallel()
 	r := startRig(t, "")
 	cred := r.srv.Broker.cred.Load()
 	tp, err := proof.Thumbprint(&cred.key.PublicKey)

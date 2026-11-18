@@ -169,10 +169,10 @@ func machineLoginThen(t *testing.T, rig *brokertest.Rig, binary, sock, action st
 
 	select {
 	case <-waited:
-	case <-time.After(30 * time.Second):
+	case <-time.After(promptJobWait):
 		_ = cmd.Process.Kill()
 		<-waited
-		t.Fatalf("machine login never read the %s decision; stderr %q", action, errOut.String())
+		t.Fatalf("machine login never read the %s decision within promptJobWait (%s); stderr %q", action, promptJobWait, errOut.String())
 	}
 	var exitErr *exec.ExitError
 	if waitErr != nil && !errors.As(waitErr, &exitErr) {

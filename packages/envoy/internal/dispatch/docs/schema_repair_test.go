@@ -15,12 +15,14 @@ import (
 )
 
 func newSchemaRepairService(database *store.Store) *Service {
-	return New(Deps{
+	service := New(Deps{
 		Store:     database,
 		Events:    events.NewBroker(),
 		ServerURL: "https://dispatch.example",
 		Settle:    20 * time.Millisecond,
 	})
+	service.srv.RoomIdleTimeout = testRoomIdleTimeout
+	return service
 }
 
 func writeSchemaInvalidElement(t *testing.T, service *Service, artifactID string) {
@@ -32,8 +34,10 @@ func writeSchemaInvalidElement(t *testing.T, service *Service, artifactID string
 
 // A crafted client can persist a tree outside the Proof schema. After a restart, replacing that
 // document from markdown repairs it instead of leaving every replacement permanently refused.
+//
+// Serial: each restart's Shutdown must return nil, and returns the drain's error when the room's
+// durable appends outlast production's ShutdownDrainBudget (9 s, service.go:1135).
 func TestStoredTreeOutsideSchemaIsRepairedByReplacementAfterRestart(t *testing.T) {
-	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First\n")
 	first := newSchemaRepairService(database)
@@ -47,11 +51,7 @@ func TestStoredTreeOutsideSchemaIsRepairedByReplacementAfterRestart(t *testing.T
 	}
 
 	second := newSchemaRepairService(database)
-	cleanupAndRelease(t, func() {
-		if err := second.Shutdown(context.Background()); err != nil {
-			t.Errorf("shutdown second service: %v", err)
-		}
-	})
+	cleanupAndRelease(t, func() { shutdownTestService(t, second) })
 	if _, err := second.Text(context.Background(), artifactID); !errors.Is(err, ErrDocOutsideSchema) {
 		t.Fatalf("read crafted tree after restart: %v, want ErrDocOutsideSchema", err)
 	}
@@ -66,11 +66,7 @@ func TestStoredTreeOutsideSchemaIsRepairedByReplacementAfterRestart(t *testing.T
 	}
 
 	third := newSchemaRepairService(database)
-	cleanupAndRelease(t, func() {
-		if err := third.Shutdown(context.Background()); err != nil {
-			t.Errorf("shutdown third service: %v", err)
-		}
-	})
+	cleanupAndRelease(t, func() { shutdownTestService(t, third) })
 	if text, err := third.Text(context.Background(), artifactID); err != nil || text != "repaired\n" {
 		t.Fatalf("read repaired document after second restart: %q (%v), want repaired markdown", text, err)
 	}
@@ -78,8 +74,10 @@ func TestStoredTreeOutsideSchemaIsRepairedByReplacementAfterRestart(t *testing.T
 
 // A repair has no readable previous tree to compare, so it preserves every open ask by its stored
 // block ID and refuses a replacement that drops one.
+//
+// Serial: the first service's Shutdown must return nil, and returns the drain's error when the
+// room's durable appends outlast production's ShutdownDrainBudget (9 s, service.go:1135).
 func TestSchemaRepairKeepsOpenAskBlocks(t *testing.T) {
-	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "")
 	first := newSchemaRepairService(database)
@@ -98,11 +96,7 @@ func TestSchemaRepairKeepsOpenAskBlocks(t *testing.T) {
 	}
 
 	second := newSchemaRepairService(database)
-	cleanupAndRelease(t, func() {
-		if err := second.Shutdown(context.Background()); err != nil {
-			t.Errorf("shutdown second service: %v", err)
-		}
-	})
+	cleanupAndRelease(t, func() { shutdownTestService(t, second) })
 	_, err := joinedReplaceText(second, artifactID, "replacement without the ask\n", model.Actor{Kind: "user", ID: "alice"})
 	var invalid *ErrInvalidAskBlock
 	if !errors.As(err, &invalid) || !strings.Contains(err.Error(), "keep") {
@@ -138,11 +132,7 @@ func TestSchemaRepairRefusesAnAskBlockTheContentRuleRefuses(t *testing.T) {
 			database := storetest.Open(t)
 			artifactID := createDocument(t, database, "")
 			service := newSchemaRepairService(database)
-			cleanupAndRelease(t, func() {
-				if err := service.Shutdown(context.Background()); err != nil {
-					t.Errorf("shutdown document service: %v", err)
-				}
-			})
+			cleanupAndRelease(t, func() { shutdownTestService(t, service) })
 			seedServiceText(t, service, artifactID, "before\n")
 			if test.unreadable {
 				writeSchemaInvalidElement(t, service, artifactID)
@@ -175,11 +165,7 @@ func TestStoredRenderOnlySchemaViolationLoadsForRepair(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := newSchemaRepairService(database)
-	cleanupAndRelease(t, func() {
-		if err := service.Shutdown(context.Background()); err != nil {
-			t.Errorf("shutdown render-only service: %v", err)
-		}
-	})
+	cleanupAndRelease(t, func() { shutdownTestService(t, service) })
 	for _, read := range []struct {
 		name string
 		read func() error

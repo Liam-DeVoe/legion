@@ -371,11 +371,7 @@ func TestBackfillStoresNothingForAStampTheDocumentNoLongerNeeds(t *testing.T) {
 	artifactID := createDocument(t, database, "before")
 	seedUnidentifiedProofDocument(t, database, artifactID, "before")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	cleanupAndRelease(t, func() {
-		if err := service.Shutdown(context.Background()); err != nil {
-			t.Errorf("shutdown document service: %v", err)
-		}
-	})
+	cleanupAndRelease(t, func() { shutdownTestService(t, service) })
 	alignLatestVersionWithUpdates(t, service, artifactID)
 
 	var stampedFirst atomic.Bool

@@ -521,7 +521,10 @@ func TestABatchCutOffInFlightKeepsItsOrder(t *testing.T) {
 // destination's MsgId.
 //
 // The hold is production's: the dead holder's row lapses its TTL after it was written and the
-// next holder waits that out, which is what the floor below reads.
+// next holder waits that out, which the order below reads: every event the next holder marks
+// published is stamped, on the database's clock, no earlier than the dead row's expiry. Both
+// outboxes take the hold under publisherHoldOptions too (runOutboxUnderProductionsHold), not the
+// rig's day.
 //
 // Real time, at publisherHoldOptions.TTL: the lapse is a Postgres row's expiry and the republish
 // crosses a live NATS server, neither of which a synctest bubble can hold.
@@ -555,7 +558,7 @@ func TestAnOutboxThatDiesBetweenAckAndMarkPublishesAgainWithoutDuplicates(t *tes
 		t.Fatalf("make the mark fail: %v", err)
 	}
 
-	stop := runOutbox(t, database, client, broker)
+	stop := runOutboxUnderProductionsHold(t, database, client, broker)
 	reader, err := natsgo.Connect(url)
 	if err != nil {
 		t.Fatalf("connect the reader: %v", err)
@@ -570,31 +573,39 @@ func TestAnOutboxThatDiesBetweenAckAndMarkPublishesAgainWithoutDuplicates(t *tes
 		t.Fatalf("%d events were marked published though every mark failed", count-left)
 	}
 	// What a process killed mid-batch leaves: the hold's row still naming it, lapsing a TTL after
-	// its last renewal. The death is dated before the insert whose now() that lapse counts from,
-	// so the floor below is a lower bound alone: the row lapses a TTL after a moment no earlier
-	// than this one, and however long the insert takes to commit and return only lengthens took.
-	died := time.Now()
+	// its last renewal, at the expires_at the database's clock gives it here.
 	dead := uuid.New()
-	if _, err := database.Pool.Exec(context.Background(), `
+	var lapses time.Time
+	if err := database.Pool.QueryRow(context.Background(), `
 		insert into duty_holds (name, holder, expires_at) values ($1, $2, now() + make_interval(secs => $3))
-	`, publisherHold, dead, publisherHoldOptions.TTL.Seconds()); err != nil {
+		returning expires_at
+	`, publisherHold, dead, publisherHoldOptions.TTL.Seconds()).Scan(&lapses); err != nil {
 		t.Fatalf("leave the dead holder's row: %v", err)
 	}
 
 	if _, err := database.Pool.Exec(context.Background(), `drop trigger refuse_mark on events`); err != nil {
 		t.Fatalf("let the mark succeed: %v", err)
 	}
-	stop = runOutbox(t, database, client, broker)
+	stop = runOutboxUnderProductionsHold(t, database, client, broker)
 	defer stop()
 	// The lapse, and then the backlog's republish: that second part is the stream's work and has
 	// nothing to do with the TTL, so it keeps an allowance of its own, raised past main's ten
 	// seconds because the republish alone ran past it beside eleven other tests on this pod's two
-	// cores (dispatch://INFRA-1075). The floor below is what proves the lapse was waited out.
+	// cores (dispatch://INFRA-1075). The order below is what proves the lapse was waited out.
 	waitFor(t, publisherHoldOptions.TTL+30*time.Second, "the backlog marked published by the next holder", func() bool {
 		return unpublishedCount(t, database) == 0
 	})
-	if took := time.Since(died); took < publisherHoldOptions.TTL-time.Second {
-		t.Fatalf("the next holder published %s after the death, before the dead holder's hold lapsed", took.Round(time.Millisecond))
+	// The next holder marks an event published (published_at, the record's now()) only under a
+	// hold it took, and it can take this one only once the dead holder's row has lapsed, so every
+	// mark is stamped at or after that row's expires_at: two stamps of the database's one clock,
+	// whose order no load on this machine moves.
+	var firstMark time.Time
+	if err := database.Pool.QueryRow(context.Background(), `select min(published_at) from events`).Scan(&firstMark); err != nil {
+		t.Fatalf("read the backlog's first mark: %v", err)
+	}
+	if firstMark.Before(lapses) {
+		t.Fatalf("the next holder marked an event published at %s, %s before the dead holder's hold lapsed at %s",
+			firstMark, lapses.Sub(firstMark).Round(time.Millisecond), lapses)
 	}
 	assertStreamInOrderPerDestination(t, url, wantOnDestinations)
 	assertKeptLaneInOrder(t, url, "reviewer", seeded, wantKept)

@@ -104,7 +104,6 @@ func seedDelivery(t *testing.T, database *store.Store, commentID, target, sessio
 // TestCommentPayloadSuppressesResolvedRouteAndAuthorSessions: the route and an author a new
 // comment's mentions resolved to are left to the mention only once it reached them.
 func TestCommentPayloadSuppressesResolvedRouteAndAuthorSessions(t *testing.T) {
-	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	seedIssue(t, database, "T-1", nil)
@@ -438,7 +437,6 @@ func waitsFromScan(due *time.Time, before, after time.Time) bool {
 // for the mention's send to settle - without counting a failed attempt - and then follows it: a
 // failed send leaves the copy to the outbox, a sent one delivered it already.
 func TestAScanDefersAClaimantCopyWhileItsMentionIsBeingSent(t *testing.T) {
-	t.Parallel()
 	const (
 		issueTopic    = "notifications.dispatch.issue.T-1.comment.created"
 		claimantTopic = "notifications.agent.session-claimant"
@@ -455,7 +453,6 @@ func TestAScanDefersAClaimantCopyWhileItsMentionIsBeingSent(t *testing.T) {
 		{settled: "queued", want: []string{issueTopic}},
 	} {
 		t.Run(tc.settled, func(t *testing.T) {
-			t.Parallel()
 			ctx := store.WithTransactionTracking(context.Background())
 			database := storetest.Open(t)
 			broker := events.NewBroker()
@@ -657,7 +654,6 @@ func TestACreditedSessionWhoseMentionFailsAfterTheBatchReadsItTakesTheCopy(t *te
 // destinations it reached recorded - rather than retried every mentionPendingDelay uncounted. When
 // the connection fails, the event is released for the next scan as any event that met it is.
 func TestAHeldBackClaimantCopyDefersNoAttemptThatFailedElsewhere(t *testing.T) {
-	t.Parallel()
 	const (
 		issueTopic  = "notifications.dispatch.issue.T-1.comment.created"
 		authorTopic = "notifications.agent.writer"
@@ -682,7 +678,6 @@ func TestAHeldBackClaimantCopyDefersNoAttemptThatFailedElsewhere(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			ctx := store.WithTransactionTracking(context.Background())
 			database := storetest.Open(t)
 			broker := events.NewBroker()

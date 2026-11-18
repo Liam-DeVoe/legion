@@ -180,11 +180,7 @@ func boundedResumptionService(t *testing.T) (*store.Store, *Service) {
 		Settle:    time.Hour,
 		TestHooks: true,
 	})
-	t.Cleanup(func() {
-		if err := service.Shutdown(context.Background()); err != nil {
-			t.Errorf("shutdown document service: %v", err)
-		}
-	})
+	t.Cleanup(func() { shutdownTestService(t, service) })
 	return database, service
 }
 

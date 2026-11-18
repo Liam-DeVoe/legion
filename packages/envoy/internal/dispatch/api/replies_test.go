@@ -389,7 +389,6 @@ func TestMarkThreadReadClearsTheRowUntilTheNextReply(t *testing.T) {
 }
 
 func TestMarkThreadReadRefusesWhatItCannotStore(t *testing.T) {
-	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Refusals", "A spec")
 	root := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Root"}, "alice")

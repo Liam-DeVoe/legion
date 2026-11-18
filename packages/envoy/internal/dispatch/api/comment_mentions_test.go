@@ -85,15 +85,15 @@ func settledCommentDeliveries(t *testing.T, database *store.Store, commentID str
 // making. A creation that lost its lookup to that bound is not what a case using this helper is
 // about - each is about what a committed resolution does next - so that comment's deliveries are
 // settled, again puts the listener back as the case found it, and the comment is posted once
-// more. Five tries: the bound is missed about once in sixty on a loaded two-core runner, so five
-// in a row is not a wait a person will ever see, and a case that spent them says so rather than
-// asserting against a resolution that was never recorded.
+// more, until concurrentWait has passed: the bound is missed about once in sixty on a loaded
+// two-core runner, so tries that run out that wait are not a wait a person will ever see, and a
+// case that spent it says so rather than asserting against a resolution that was never recorded.
 func aResolvedMentionCreation(
 	t *testing.T, handler http.Handler, database *store.Store, issueKey string,
 	input map[string]any, again func(),
 ) mentionedCommentRead {
 	t.Helper()
-	for try := 1; try <= 5; try++ {
+	for try, deadline := 1, time.Now().Add(concurrentWait); ; try++ {
 		created := decodeMentionedComment(t, postMentionedComment(t, handler, issueKey, input))
 		if len(created.Deliveries) != 1 {
 			t.Fatalf("creation %d = %#v, want the one mention's attempt", try, created)
@@ -101,11 +101,12 @@ func aResolvedMentionCreation(
 		if created.Deliveries[0].SessionID != nil || created.Deliveries[0].ResolveError != nil {
 			return created
 		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d creations in a row over %s gave their mention's lookup up at %v", try, concurrentWait, mentionLookupTimeout)
+		}
 		settledCommentDeliveries(t, database, created.ID)
 		again()
 	}
-	t.Fatalf("five creations in a row gave their mention's lookup up at %v", mentionLookupTimeout)
-	return mentionedCommentRead{}
 }
 
 // waitForCommentDeliveries reads the comment's attempts, by target and attempt, until done accepts

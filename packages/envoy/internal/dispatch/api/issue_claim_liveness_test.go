@@ -370,7 +370,6 @@ func readIssueClaimLiveness(t *testing.T, handler http.Handler, key string) issu
 // issue nor release it until the silence outlasts the grace, and the refusal names the state
 // and the heartbeat it was last seen at, so the refused caller knows to wait.
 func TestAnotherAgentCannotTakeOrReleaseAnUnresponsiveHoldersIssue(t *testing.T) {
-	t.Parallel()
 	handler, stalled := serveStalledSession(t, time.Now())
 	key := claimIssueKey(t, handler, "todo")
 	if response := bearerRequest(t, handler, http.MethodPost, "/api/v1/issues/"+key+"/claim", map[string]any{

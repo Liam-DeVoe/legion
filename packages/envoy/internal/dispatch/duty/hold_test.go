@@ -58,14 +58,15 @@ func waitLost(t *testing.T, hold *duty.Hold, within time.Duration) {
 // Two processes, each with a pool of its own: the second cannot take a hold the first holds live,
 // and the first takes its own hold again.
 //
-// The TTL is a minute because this row needs the first hold live while the second tries, and
-// nothing here waits for it to run out: a runner that descheduled the test for longer than a
-// short TTL, with the renewals behind it, would read a lapse as a take-over.
+// The TTL outlasts any run of the test binary, as TestHoldReleaseFreesAtOnceAndNotifiesTheName's
+// does: this row needs the first hold live while the second tries, and nothing here waits for it
+// to run out; under a short TTL, a runner that descheduled the test past it, with the renewals
+// behind it, would read a lapse as a take-over. The cleanup releases both takes.
 func TestHoldRefusesASecondHolderWhileTheFirstHoldsItLive(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
-	opts := duty.HoldOptions{TTL: time.Minute, Renew: 500 * time.Millisecond, Margin: time.Second}
+	opts := duty.HoldOptions{TTL: 24 * time.Hour, Renew: 500 * time.Millisecond, Margin: time.Second}
 	first := uuid.New()
 	mustTakeHold(t, database.Pool, first, opts)
 

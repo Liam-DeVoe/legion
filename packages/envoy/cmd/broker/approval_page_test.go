@@ -258,7 +258,6 @@ func (f *front) route(t *testing.T, p *brokerProcess) {
 // configuration, and finishes a sign-in begun on one process on another, whose session decides on
 // a third start of the binary.
 func TestTheBinaryApprovesASecretOnItsOwnPage(t *testing.T) {
-	t.Parallel()
 	f := newApprovalFixture(t)
 	databaseURL := storetest.URL(t)
 	public := newFront(t)

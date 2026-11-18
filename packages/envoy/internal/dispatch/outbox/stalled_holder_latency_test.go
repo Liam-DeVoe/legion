@@ -35,12 +35,14 @@ func TestAForwardTheStreamDoesNotAcknowledgeDoesNotDelayAnotherIssuesEvents(t *t
 		stalledRole, stalledHolder = "stalled-reviewer", "ses_never_acknowledged"
 		liveRole, liveHolder       = "live-reviewer", "ses_acknowledged"
 		// What the outbox waits for the stalled forward's acknowledgement (Deps.forwardAckWait).
-		// It outlasts the whole test, so the wait the live holder's send must not queue behind is
-		// still running when the verdict below is read, however slow the machine is.
-		stalledForwardWait = 10 * time.Minute
+		// It outlasts the whole test - a day, past any run of the test binary - so the wait the
+		// live holder's send must not queue behind is still running when the verdict below is
+		// read, however slow the machine is. Nothing here waits for it to run out: the stop
+		// cancels the batch's wait (sendChains) and the rig's cleanup closes the client it waits on.
+		stalledForwardWait = 24 * time.Hour
 		// A hang guard on each wait for a forward, not a bound this row measures anything
 		// against: a healthy run reaches both of them in milliseconds, and a send queued behind
-		// the stalled forward's wait arrives only after stalledForwardWait, ten times this.
+		// the stalled forward's wait arrives only after stalledForwardWait.
 		hangGuard = 60 * time.Second
 	)
 	rig := newRoleRig(t)

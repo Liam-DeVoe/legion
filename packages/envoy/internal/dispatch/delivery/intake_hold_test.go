@@ -499,7 +499,10 @@ const withheldHandBack = "dispatch delivery: the hold no longer covers this deli
 // acknowledgements are there to be read beside them, so a recorder that saw nothing at all
 // cannot pass the row by silence.
 func TestAStopPastTheHoldsLapsePublishesNoHandBackAndTheStandbyHandlesEachMessageOnce(t *testing.T) {
-	t.Parallel()
+	// Serial: a product timer is under its steps. The GitHub client gives an unanswered call up
+	// at githubapp.RequestTimeout (20 s, shorter than eventWait) and asks again, so the publishes,
+	// the cut and the lapse below must all come inside 20 s of the holder's held fetch, and a
+	// parallel test's load is what would stretch them past it.
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := deliveryTestNATS(t)

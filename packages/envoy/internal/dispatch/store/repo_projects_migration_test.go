@@ -176,7 +176,6 @@ func awaitMigrationLockWait(t *testing.T, store *Store) {
 // migration takes its tables' locks before it counts, so a row committed while it waits is in the
 // count, and an issue 33 links down refuses the migration as it would have before it began.
 func TestMigrationCountsAnOverDeepIssueCommittedWhileItWaits(t *testing.T) {
-	t.Parallel()
 	ctx := context.Background()
 	store := openEmptyTestStore(t)
 	if err := store.migrate(ctx, migrationsThrough(t, repoProjectsDefaultVersion-1)); err != nil {

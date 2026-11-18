@@ -318,7 +318,9 @@ func TestListenerIsServedWhileTheSharedPoolIsFullyAcquired(t *testing.T) {
 	}
 
 	for round := range 2 {
-		waitCtx, cancel := context.WithTimeout(ctx, eventWait)
+		// Five waits share this context - Listener's connection being served, the listen, the
+		// notify, the notification and the close - so it gives each of them eventWait.
+		waitCtx, cancel := context.WithTimeout(ctx, 5*eventWait)
 		listener, err := database.Pool.Listener(waitCtx)
 		if err != nil {
 			cancel()
@@ -502,7 +504,9 @@ func TestHorizonIsServedWhileTheSharedPoolIsFullyAcquired(t *testing.T) {
 		t.Fatalf("open the horizon pool: %v", err)
 	}
 	for round := range 2 {
-		waitCtx, cancel := context.WithTimeout(ctx, eventWait)
+		// Two waits share this context - the observation batch and the diagnosis read - so it
+		// gives each of them eventWait.
+		waitCtx, cancel := context.WithTimeout(ctx, 2*eventWait)
 		batch := &pgx.Batch{}
 		batch.Queue(`begin`)
 		batch.Queue(`select pg_snapshot_xmin(pg_current_snapshot())::text, pg_current_xact_id()::text`)

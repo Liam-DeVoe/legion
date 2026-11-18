@@ -282,7 +282,6 @@ var answersAlice = model.Actor{Kind: "user", ID: "alice"}
 var answersAliceProven = model.Actor{Kind: "user", ID: "alice", Proven: true}
 
 func TestSessionAnswersListsAPersonsAnswerToTheSessionsAsk(t *testing.T) {
-	t.Parallel()
 	f := newAnswersFixture(t)
 	askID := f.ask(t, answersSession, "Which database backs the queue?")
 	answered := f.answer(t, askID, []string{"Postgres"}, "Postgres, for the pool.", nil)
@@ -794,7 +793,6 @@ func TestSessionAnswersMaxCharsCountsTheWordsADeclineServes(t *testing.T) {
 }
 
 func TestSessionAnswersRefusesASinceOlderThanSevenDays(t *testing.T) {
-	t.Parallel()
 	f := newAnswersFixture(t)
 	first := f.write(t, http.MethodPost, "/api/v1/agents/"+answersSession+"/messages", map[string]any{"body": "First.", "delivery": "btw"}, "alice")
 	between := time.Now().UTC()

@@ -194,7 +194,6 @@ func TestDeployedEventWaitsForAShippingRun(t *testing.T) {
 // (here two hours ahead of the database's); a second pass writes none and leaves the marker; a
 // pull request outside the deploy repository, attributed and merged before that run, writes none.
 func TestDeployedEventIsWrittenOncePerPullRequest(t *testing.T) {
-	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	pool = laggingDatabaseClock(t, ctx, pool, 2*time.Hour)
 	settings := seedDeliverySettings(t, ctx, pool)

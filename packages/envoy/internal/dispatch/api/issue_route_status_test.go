@@ -631,7 +631,6 @@ func secondRouteStatusServer(t *testing.T, served *server) (http.Handler, *serve
 // on the second because the second asked the listener a moment later, and the second makes no
 // call of its own. Both TTLs are a minute, so a slow machine's reads stay inside them.
 func TestTwoServersJudgeARouteAgainstTheOneStoredListenerAnswer(t *testing.T) {
-	t.Parallel()
 	roster := &fakeRoster{}
 	roster.set("ses-sre", "sre")
 	handler, _, served := cachedRouteStatusServer(t, roster)
@@ -659,7 +658,6 @@ func TestTwoServersJudgeARouteAgainstTheOneStoredListenerAnswer(t *testing.T) {
 // unknown too, without a call of its own, even though the listener answers again by then. The
 // silence is a minute, so a slow machine's reads stay inside it.
 func TestAListenerFailureOneServerMetReadsUnknownOnTheOther(t *testing.T) {
-	t.Parallel()
 	roster := &fakeRoster{}
 	roster.down.Store(true)
 	handler, _, served := cachedRouteStatusServer(t, roster)
@@ -693,7 +691,6 @@ func TestAListenerFailureOneServerMetReadsUnknownOnTheOther(t *testing.T) {
 // Agents read the ENVOY_REFILLING answer with the listener's own Retry-After. Both TTLs are a
 // minute, so a slow machine's reads stay inside them.
 func TestARefillOneServerMetIsARefillOnTheOther(t *testing.T) {
-	t.Parallel()
 	roster := &fakeRoster{}
 	roster.set("ses-sre", "sre")
 	roster.refilling.Store(true)
@@ -732,14 +729,24 @@ func TestAnOlderListenerAnswerNeverReplacesANewerOne(t *testing.T) {
 	// Release before the close, which waits for every request in flight to finish.
 	t.Cleanup(listener.Close)
 	t.Cleanup(release)
-	_, _, _, first := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL, envoyTimeout: time.Minute})
-	first.rosters.ttl, first.rosters.timeout = time.Minute, time.Minute
+	// The client's window, the fetch's bound and the TTL outlast any run of the test binary (its
+	// -timeout ends a run first), so only release() ends the held fetch and no stored answer
+	// expires before the reads below, however long the steps between take; each wait for an
+	// answer still gives up at concurrentWait.
+	_, _, _, first := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL, envoyTimeout: 24 * time.Hour})
+	first.rosters.ttl, first.rosters.timeout = 24*time.Hour, 24*time.Hour
 	_, second := secondRouteStatusServer(t, first)
+	// A read the test waits on itself gives up at concurrentWait, as the held read's wait does.
+	boundedRead := func(served *server) routeRoster {
+		ctx, cancel := context.WithTimeout(context.Background(), concurrentWait)
+		defer cancel()
+		return readRoster(t, served, ctx)
+	}
 
 	older := make(chan routeRoster, 1)
 	go func() { older <- readRoster(t, first, context.Background()) }()
 	awaitCalls(t, &calls, 1)
-	if got := sreReach(readRoster(t, second, context.Background())); got != "live ses-sre" {
+	if got := sreReach(boundedRead(second)); got != "live ses-sre" {
 		t.Fatalf("the second server's own fetch reads %s, want live ses-sre", got)
 	}
 	release()
@@ -751,7 +758,7 @@ func TestAnOlderListenerAnswerNeverReplacesANewerOne(t *testing.T) {
 	case <-time.After(concurrentWait):
 		t.Fatal("the read waiting on the older fetch never returned")
 	}
-	if got := sreReach(readRoster(t, first, context.Background())); got != "live ses-sre" {
+	if got := sreReach(boundedRead(first)); got != "live ses-sre" {
 		t.Fatalf("the first server's next read reads %s, want the newer stored live ses-sre", got)
 	}
 	if got := calls.Load(); got != 2 {

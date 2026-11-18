@@ -41,8 +41,8 @@ func TestAnImportPassWhoseLeaseIsHeldElsewhereReadsNothing(t *testing.T) {
 	}()
 	select {
 	case <-taken:
-	case <-time.After(20 * time.Second):
-		t.Fatal("the other caller never took the architecture-import lease")
+	case <-time.After(30 * time.Second):
+		t.Fatal("the other caller never took the architecture-import lease within 30s, the bound waitHeld gives a held read")
 	}
 
 	syncAllLeased(ctx, importer, leases, time.Now())

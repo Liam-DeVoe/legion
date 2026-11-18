@@ -134,7 +134,6 @@ func (r staleHolderRig) settled(t *testing.T, role string) (exceptionReason stri
 // message: the state of its record is what separates the two, and nothing else about the two
 // deliveries differs.
 func TestCoreRoleDeliverySkipsAHolderThatStoppedHeartbeating(t *testing.T) {
-	t.Parallel()
 	const (
 		role   = "reviewer"
 		holder = "ses_role_heartbeat"

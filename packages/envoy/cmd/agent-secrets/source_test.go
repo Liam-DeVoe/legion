@@ -99,7 +99,6 @@ func TestASourceWithNoSettingsNamesTheBrokerItself(t *testing.T) {
 // the command's own log sees the source above its first line. The line is quoted wherever that
 // output is, so for every store kind it names no host, account, region or project.
 func TestExecFormNamesItsSourceBeforeItExecs(t *testing.T) {
-	t.Parallel()
 	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
 	const prefix = "agent-secrets: GRANT_ME from the broker AGENT_SECRETS_URL names"
@@ -232,7 +231,6 @@ func TestNoFormPrintsACredentialTheBrokerURLCarries(t *testing.T) {
 // request id url.PathEscape would change is refused before any call, naming the id and not the
 // broker's address, while an ordinary id still verifies and is answered.
 func TestAnIDThatWouldNotNameOnePathSegmentIsRefusedByName(t *testing.T) {
-	t.Parallel()
 	binary := buildAgentSecrets(t)
 	key, err := proof.NewKey()
 	if err != nil {
@@ -389,7 +387,6 @@ func TestARedirectsTargetIsNotPrinted(t *testing.T) {
 // configuration does not. Everything the invariant forbids is still forbidden, the host anywhere
 // else in the output included: the exception removes that one URL and then checks the list.
 func TestNoSessionLineNamesAHostOrAStoreID(t *testing.T) {
-	t.Parallel()
 	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
 	run := func(name string) []string {
@@ -475,7 +472,6 @@ func approveURLOf(args []string, brokerURL string) string {
 // TestWhatAScriptReadsIsUnchanged pins the bytes a script parses: --json stdout is the broker's
 // body verbatim, and each outcome keeps its exit code, whatever the human-read lines say.
 func TestWhatAScriptReadsIsUnchanged(t *testing.T) {
-	t.Parallel()
 	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
 	broker, _ := fakeBroker(t)
@@ -517,7 +513,6 @@ func TestWhatAScriptReadsIsUnchanged(t *testing.T) {
 // releases no value, each say which broker and store answered, so a refusal is never read as
 // another secrets CLI's answer for the same name.
 func TestExecFormRefusalsNameWhereItLooked(t *testing.T) {
-	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -546,7 +541,6 @@ func TestExecFormRefusalsNameWhereItLooked(t *testing.T) {
 // TestStatusFormsNameTheirSource: self and status report the broker and store this session's
 // secrets come from, beside what they already report.
 func TestStatusFormsNameTheirSource(t *testing.T) {
-	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -567,7 +561,6 @@ func TestStatusFormsNameTheirSource(t *testing.T) {
 // GET /v1/settings leaves every line naming the broker alone - the command still runs, and
 // nothing guesses a store.
 func TestAnAnswerFromABrokerWithNoSettingsRouteStillNamesTheBroker(t *testing.T) {
-	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, counters := fakeBroker(t)
 	defer broker.Close()

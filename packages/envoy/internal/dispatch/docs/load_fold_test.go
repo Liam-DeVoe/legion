@@ -318,6 +318,7 @@ func roomLoadService(t *testing.T) (*Service, *PgVersioned, *roomDecodes) {
 	database := storetest.Open(t)
 	versioned := NewPgVersioned(database)
 	service := New(Deps{Store: database, Persistence: versioned, Events: events.NewBroker(), Settle: time.Hour})
+	service.srv.RoomIdleTimeout = testRoomIdleTimeout
 	decodes := &roomDecodes{states: make(map[string][][]byte)}
 	service.bootstrapping = decodes.decoded
 	cleanupAndRelease(t, func() {

@@ -19,7 +19,6 @@ import (
 // byte for byte and under the transaction that wrote it. Each way of writing notes the document
 // itself, so a document written only one way is compacted too.
 func TestTheCompactionQueueFoldsTheOldRowsOfADocumentItsWritesNoted(t *testing.T) {
-	t.Parallel()
 	agent := model.Actor{Kind: "session", ID: "agent"}
 	for _, writers := range []struct {
 		name  string
@@ -92,8 +91,12 @@ func TestTheCompactionQueueFoldsTheOldRowsOfADocumentItsWritesNoted(t *testing.T
 // it exactly when it is due: at least compactMinRows rows older than the tail after its first row,
 // or any row after its first older than compactMaxTailAge. A document that is not due keeps its
 // rows as stored, and is checked again when it will be.
+//
+// Serial: its assertion is a time - a document it stages not due must still be short of its due
+// time when the queue checks it after the load, or that check compacts it and no later check
+// comes: rows five minutes old short of compactMaxTailAge (15 min), and twenty rows a minute old
+// short of compactTail (2 min) by count.
 func TestTheCompactionQueueCompactsALoadedDocumentOnlyWhenItIsDue(t *testing.T) {
-	t.Parallel()
 	database := storetest.Open(t)
 	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
 	cleanupAndRelease(t, func() { _ = service.Shutdown(context.Background()) })
@@ -145,7 +148,7 @@ func TestTheCompactionQueueCompactsALoadedDocumentOnlyWhenItIsDue(t *testing.T) 
 				step := steps.await(t, artifactID, from, "the queue's check of the document", func(step compactionStepRecord) bool {
 					return step.next.kind == compactionLater
 				})
-				if wait := step.next.after; wait > test.dueIn || wait < test.dueIn-30*time.Second {
+				if wait := step.next.after; wait > test.dueIn || wait < compactionDueIn(t, database, artifactID) {
 					t.Fatalf("the queue checks the document again in %s, want about %s, when it is due", wait, test.dueIn)
 				}
 				requireRowsAsStored(t, database, artifactID, before)
@@ -157,8 +160,11 @@ func TestTheCompactionQueueCompactsALoadedDocumentOnlyWhenItIsDue(t *testing.T) 
 // A document whose rows are all younger than the tail is checked again when they come of age: the
 // queue schedules it for when its oldest row after the first passes compactMaxTailAge, and that
 // check compacts it.
+//
+// Serial: its assertion is a time - the rows it writes must still be younger than
+// compactMaxTailAge (15 min) at the queue's first check of them, or that check compacts them and
+// no later check comes.
 func TestTheCompactionQueueComesBackToADocumentWhenItsRowsComeOfAge(t *testing.T) {
-	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	steps := quickCompactionQueue(service, 50*time.Millisecond)
@@ -278,8 +284,11 @@ func TestTheCompactionQueueRetriesABusyDocumentUntilItsLockIsFree(t *testing.T) 
 // A retry finds the document has no row older than the tail after its first, and the queue stops
 // retrying it but does not drop it: the young rows stay as stored, and the queue checks the
 // document again for when they come due, which compacts it.
+//
+// Serial: its assertion is a time - the rows the queue's worker makes young must still be younger
+// than compactTail (2 min) at the retry's check of them, and than compactMaxTailAge (15 min) when
+// the row reads them as stored, or the queue folds them.
 func TestTheCompactionQueueComesBackToARetriedDocumentWhenItsYoungRowsComeDue(t *testing.T) {
-	t.Parallel()
 	database := storetest.Open(t)
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
 	cleanupAndRelease(t, func() { _ = service.Shutdown(context.Background()) })
@@ -346,8 +355,11 @@ func TestTheCompactionQueueComesBackToARetriedDocumentWhenItsYoungRowsComeDue(t 
 // A note that comes while its document's step runs is kept even when that step drops the document:
 // an append that commits as the check after a compaction finds no row after the first has the
 // queue check the document again, and once the appended row is due that check compacts it.
+//
+// Serial: its assertion is a time - the row appended while the step is in flight must still be
+// younger than compactMaxTailAge (15 min) at the check its note queues and when the row reads the
+// document's rows, or the queue compacts it first.
 func TestTheCompactionQueueKeepsANoteThatComesWhileItsDocumentsStepRuns(t *testing.T) {
-	t.Parallel()
 	database := storetest.Open(t)
 	persist := NewPgVersioned(database)
 	service := New(Deps{Store: database, Persistence: persist, Events: events.NewBroker(), Settle: time.Hour})
@@ -414,8 +426,12 @@ func TestTheCompactionQueueKeepsANoteThatComesWhileItsDocumentsStepRuns(t *testi
 // every append of the burst notes it, so once compactMinRows of the burst's rows are older than the
 // tail the next note's check folds them, rather than leaving them all for the 15-minute check. The
 // document then holds its fold point, the rows younger than the tail and no older row.
+//
+// Serial: its assertion is a time - the quiet rows, five minutes old, must be checked before they
+// pass compactMaxTailAge (15 min), or that check compacts them and no quiet check comes; and the
+// young row must still be younger than compactTail (2 min) when the burst's check folds, or the
+// fold takes it too.
 func TestABurstAfterAQuietCheckBringsTheDocumentsCheckForward(t *testing.T) {
-	t.Parallel()
 	database := storetest.Open(t)
 	persist := NewPgVersioned(database)
 	service := New(Deps{Store: database, Persistence: persist, Events: events.NewBroker(), Settle: time.Hour})
@@ -460,8 +476,11 @@ func TestABurstAfterAQuietCheckBringsTheDocumentsCheckForward(t *testing.T) {
 // The queue's compaction never runs on a request: a joined write and a browser's edit of the
 // document each return while the queue's compaction of it is held inside its fold, and the
 // compaction then folds the rows it read beneath theirs.
+//
+// Serial: its assertion is a time - the rows it writes first must still be younger than
+// compactMaxTailAge (15 min) at the queue's first check of them, or that check compacts them and
+// no later check comes.
 func TestWritesReturnWhileTheCompactionQueueIsInsideTheirDocumentsFold(t *testing.T) {
-	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	steps := quickCompactionQueue(service, 50*time.Millisecond)
@@ -572,8 +591,11 @@ func TestShutdownFinishesTheCompactionQueuesCompactionAndStopsItsWorker(t *testi
 
 // Quiesce waits for the queue's compaction in flight, takes no note while it runs and drops what the
 // queue held, and the queue takes notes again once it returns.
+//
+// Serial: its assertion is a time - the young document's rows must still be younger than
+// compactMaxTailAge (15 min) at the queue's check of that document, or the check compacts it and
+// no later check comes.
 func TestQuiesceWaitsForTheCompactionQueueAndReopensIt(t *testing.T) {
-	t.Parallel()
 	database := storetest.Open(t)
 	persist := NewPgVersioned(database)
 	service := New(Deps{Store: database, Persistence: persist, Events: events.NewBroker(), Settle: time.Hour})
@@ -642,8 +664,10 @@ func TestQuiesceWaitsForTheCompactionQueueAndReopensIt(t *testing.T) {
 
 // The rooms Shutdown closes compact as they close, and leave every row younger than the tail as
 // written, byte for byte and under the transaction that wrote it.
+//
+// Serial: its assertion is a time - the two young rows must still be younger than compactTail
+// (2 min) when Shutdown's compaction runs, or the fold takes them.
 func TestShutdownsCompactionLeavesTheYoungRowsAsWritten(t *testing.T) {
-	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
@@ -726,6 +750,33 @@ func maxTailAgeDueIn(t *testing.T, database *store.Store, room string) time.Dura
 			and version > (select min(version) from doc_updates where artifact_id = $1)
 	`, room, compactMaxTailAge.Seconds()).Scan(&seconds); err != nil {
 		t.Fatalf("read when the oldest row after %s's first passes %s: %v", room, compactMaxTailAge, err)
+	}
+	return time.Duration(seconds * float64(time.Second))
+}
+
+// compactionDueIn is how long until room is due a compaction, read from the rows as stored against
+// the database's clock at this read: the earlier of its oldest row after the first passing
+// compactMaxTailAge and its compactMinRows-th oldest passing compactTail, as checkCompaction reads
+// them. It is the least wait a check of those rows made before it can have scheduled, since that
+// check read the same created_at against an earlier now(); a fixed span below the due time is one
+// a slow check outlasts.
+func compactionDueIn(t *testing.T, database *store.Store, room string) time.Duration {
+	t.Helper()
+	var seconds float64
+	if err := database.Pool.QueryRow(context.Background(), `
+		with later as (
+			select created_at, row_number() over (order by created_at, version) as age_rank
+			from doc_updates
+			where artifact_id = $1 and version <= `+headVersion+`
+				and version > (select min(version) from doc_updates where artifact_id = $1)
+		)
+		select extract(epoch from least(
+			min(created_at) + make_interval(secs => $3),
+			min(created_at) filter (where age_rank = $4) + make_interval(secs => $2)
+		) - now())::float8
+		from later
+	`, room, compactTail.Seconds(), compactMaxTailAge.Seconds(), int64(compactMinRows)).Scan(&seconds); err != nil {
+		t.Fatalf("read when %s is due a compaction: %v", room, err)
 	}
 	return time.Duration(seconds * float64(time.Second))
 }

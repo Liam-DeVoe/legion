@@ -123,7 +123,6 @@ func TestTheDeploymentsRosterCacheKeepsAnAnswerAndASilenceFiveSeconds(t *testing
 // even though the listener's own answer has changed since: a route_status as old as the TTL is
 // the contract.
 func TestTwoIssueReadsWithinTheTTLMakeOneListenerCall(t *testing.T) {
-	t.Parallel()
 	roster := &fakeRoster{}
 	roster.set("ses-sre", "sre")
 	handler, _, served := cachedRouteStatusServer(t, roster)
@@ -173,7 +172,6 @@ func TestAnIssueReadAfterTheTTLAsksTheListenerAgain(t *testing.T) {
 // as an unreachable listener always has: unknown on the detail, 503 for a judged filter. The
 // answered-roster TTL is zero here, so a cache that held a failure for that TTL would ask again.
 func TestAFailingListenerIsAskedOnceWithinTheSilenceWindow(t *testing.T) {
-	t.Parallel()
 	roster := &fakeRoster{}
 	roster.down.Store(true)
 	handler, _, served := cachedRouteStatusServer(t, roster)
@@ -354,7 +352,6 @@ func TestAShutdownEndsAFetchInFlight(t *testing.T) {
 // Reads that miss a cold cache together share one listener call: each waits for the one fetch
 // rather than starting its own.
 func TestConcurrentReadsOnAColdCacheMakeOneListenerCall(t *testing.T) {
-	t.Parallel()
 	served, calls, release := heldRosterServer(t)
 	const readers = 16
 	results := make([]routeRoster, readers)

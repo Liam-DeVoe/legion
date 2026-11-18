@@ -333,9 +333,9 @@ func TestASendWithNoListenerConfiguredSettlesAtOnce(t *testing.T) {
 // reaches its session once, under attempt 1, with one receipt. The listener refuses until two
 // tries have found the attempt held and a sweep pass has run, so the fourth try - 1.75 s of
 // backoff after the first - is the one it answers, and the claim is read at four points across
-// three renewals. The server's window is thirty seconds, a give-up bound rather than a
-// measurement: what ends the wait here is the listener answering the fourth try, and a window
-// tight around that try is a window a loaded machine runs out before the try arrives.
+// three renewals. The server's window outlasts any run of the test binary, a give-up bound rather
+// than a measurement: what ends the wait here is the listener answering the fourth try, and a
+// window tight around that try is a window a loaded machine runs out before the try arrives.
 func TestASenderWaitingOutAListenerTakeOverRenewsItsClaimBeforeEachTry(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -364,8 +364,11 @@ func TestASenderWaitingOutAListenerTakeOverRenewsItsClaimBeforeEachTry(t *testin
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			listener := startTakeOverListener(t)
+			// The take-over window outlasts any run of the test binary (its -timeout ends a run
+			// first): what ends the sender's wait is the listener answering after refuse(false),
+			// and the test's own waits for the tries and the answer give up at concurrentWait.
 			handler, database, deps := newTestServer(t, testServerOptions{
-				envoyURL: listener.server.URL, takeoverWindow: 30 * time.Second,
+				envoyURL: listener.server.URL, takeoverWindow: 24 * time.Hour,
 			})
 			path := tc.path
 			if path == "" {

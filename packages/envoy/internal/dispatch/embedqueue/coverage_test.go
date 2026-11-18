@@ -384,7 +384,6 @@ func TestCoverChangesNothingTheTriggersAlreadyEnqueued(t *testing.T) {
 // A row whose text changed with the triggers off is repaired to the item's text with fresh
 // attempts, and then embedded at it.
 func TestCoverRepairsAStaleRow(t *testing.T) {
-	t.Parallel()
 	database := storetest.Open(t)
 	seedIssue(t, database, "STLE", "STLE-1", "Old title")
 	embedder := newPlaceEmbedder(configuredIdentity)
@@ -623,7 +622,7 @@ func TestCoverKeepsATriggerWriteThatLandsBetweenItsReadAndItsUpdate(t *testing.T
 	go func() {
 		passDone <- Cover(ctx, Deps{Store: storetest.SecondProcess(t, database), Embedder: newPlaceEmbedder(configuredIdentity)})
 	}()
-	if waiting := storetest.WaitForLockWaiters(t, writer, 1, 10*time.Second); waiting < 1 {
+	if waiting := storetest.WaitForLockWaiters(t, writer, 1, eventWait); waiting < 1 {
 		t.Fatal("the pass never waited on the live write's row; the interleaving did not happen")
 	}
 	if err := writer.Commit(ctx); err != nil {
@@ -652,7 +651,6 @@ func TestCoverKeepsATriggerWriteThatLandsBetweenItsReadAndItsUpdate(t *testing.T
 // pending now and is embedded again under the configured identity, a row already pending keeps its
 // claim, backoff and pending_since, and a second pass changes nothing.
 func TestCoverDropsAnotherIdentitysVectors(t *testing.T) {
-	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	seedIssue(t, database, "FRGN", "FRGN-1", "Embedded elsewhere")
@@ -1114,7 +1112,6 @@ func TestTheIdentityStepsRunOnceTheQueueFirstEmbeds(t *testing.T) {
 // hash, another identity's vector, no vector, dead, current; then with no embedder; then an empty
 // backlog.
 func TestCoverageCountsEveryStateAnItemCanBeIn(t *testing.T) {
-	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	withTriggersOff(t, database, func(q querier) {
@@ -1499,7 +1496,7 @@ func TestRunsCoveragePassIsNotRefusedWhileTheScanLoopHoldsACursor(t *testing.T) 
 	time.Sleep(500 * time.Millisecond)
 	releaseProxy()
 
-	deadline = time.Now().Add(20 * time.Second)
+	deadline = time.Now().Add(eventWait)
 	for {
 		items, current, lacking, failed, _ := coverage(t, database, configuredIdentity)
 		if items == 3 && current == 3 {

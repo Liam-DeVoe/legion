@@ -638,7 +638,6 @@ func TestALauncherRefusalWhoseSettlementSaveFailsIsRetried(t *testing.T) {
 // the credential and the machine file stay as they were, and the next attempt waits at least the
 // Retry-After the broker named (1 s here), however short the loop's own retry.
 func TestARateLimitedRefreshKeepsTheLoginAndWaitsItsRetryAfter(t *testing.T) {
-	t.Parallel()
 	f := newFakeBroker(t)
 	b := loggedInBroker(t, f, "ada@example.com")
 	held := b.cred.Load()
@@ -745,7 +744,6 @@ func TestAShortLivedCredentialIsRefreshedBeforeItLapses(t *testing.T) {
 }
 
 func TestNextRefreshIsHalfTheTimeLeftAtMostEvery(t *testing.T) {
-	t.Parallel()
 	b := &Broker{}
 	if got := b.nextRefresh(24 * time.Hour); got != 24*time.Hour {
 		t.Fatalf("holding nothing: %s; want every", got)

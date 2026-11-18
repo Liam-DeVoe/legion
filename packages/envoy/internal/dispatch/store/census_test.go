@@ -1350,9 +1350,12 @@ func TestCensusReadsTheAgeOfAHolderOfItsOwnRoleWhoseTransactionBeganDuringTheCen
 	// long-transaction bound outlasts the run too, for the same reason: the holder's transaction
 	// begins in this test, and the census refuses a holder older than LongTransaction (a minute,
 	// CensusLongTransaction), which a test slowed past it would read as an old holder. A holder
-	// the census cannot read is refused as hidden from its role whatever that bound is.
+	// the census cannot read is refused as hidden from its role whatever that bound is. Its
+	// statement timeout outlasts the run as well: the count queued on blocker waits for that same
+	// rollback under it, and a zero StatementTimeout leaves it at CensusStatementTimeout, a minute,
+	// which a test slowed past it would read as a census that timed out.
 	go func() {
-		report, err := census(ctx, url, set, pgmigrate.CensusOptions{Locking: pgmigrate.Locking{Timeout: 24 * time.Hour}, LongTransaction: 24 * time.Hour})
+		report, err := census(ctx, url, set, pgmigrate.CensusOptions{Locking: pgmigrate.Locking{Timeout: 24 * time.Hour}, LongTransaction: 24 * time.Hour, StatementTimeout: 24 * time.Hour})
 		done <- result{report, err}
 	}()
 	// Wait until the census is queued on blocker, which it reaches only after reading others' holders.
@@ -1413,7 +1416,6 @@ func TestCensusReadsTheAgeOfAHolderOfItsOwnRoleWhoseTransactionBeganDuringTheCen
 // EXCLUSIVE holder under a statement timeout shorter than the lock timeout, so Postgres cancels it
 // as a statement timeout (57014), as it cancels a slow count of a large table.
 func TestCensusRefusesATouchedTableWhoseReadOutlastsTheStatementTimeout(t *testing.T) {
-	t.Parallel()
 	ctx := context.Background()
 	store, url := migratedToOne(t)
 	pid := "pid " + strconv.FormatUint(uint64(holdLock(t, store, "things", "access exclusive")), 10)
@@ -1785,9 +1787,13 @@ func TestCensusFollowsAForeignKeyAnEarlierPendingMigrationAdds(t *testing.T) {
 // savepoint, so it left the transaction usable. The census runs on no options, as production's
 // Census does, so the bound is the census's own default: the five seconds a migration would wait
 // for the same lock, spelled out rather than read from pgmigrate.LockTimeout so that a default
-// changed or lost fails here. The test is parallel, so those five seconds pass beside the others.
+// changed or lost fails here.
+//
+// Serial: the report must name no transaction open longer than the census's default
+// LongTransaction, a minute (pgmigrate.CensusLongTransaction), while the holder's transaction
+// from holdLock ages through the whole census, its five-second lock wait included, under no bound
+// of the test's.
 func TestCensusRefusesATouchedTableItCannotReadWithinTheLockTimeout(t *testing.T) {
-	t.Parallel()
 	ctx := context.Background()
 	store, url := migratedToOne(t)
 	pid := holdLock(t, store, "things", "access exclusive")
@@ -1864,7 +1870,11 @@ func TestCensusChecksTheTablesAForeignKeyReachesFromARowTheMigrationWrites(t *te
 	}
 
 	exclusive := "pid " + strconv.FormatUint(uint64(holdLock(t, store, "ask_followers", "access exclusive")), 10)
-	report, err = census(ctx, url, set, pgmigrate.CensusOptions{Locking: pgmigrate.Locking{Timeout: censusTestLockTimeout}})
+	// The census refuses a holder older than LongTransaction too (a minute by default,
+	// CensusLongTransaction), and this holder's transaction began just above, so a test slowed past
+	// that minute would read a second refusal. The bound outlasts any run of the test binary, and
+	// the one refusal left is the lock wait this census is about, as the first census's is its age.
+	report, err = census(ctx, url, set, pgmigrate.CensusOptions{Locking: pgmigrate.Locking{Timeout: censusTestLockTimeout}, LongTransaction: 24 * time.Hour})
 	if err != nil {
 		t.Fatalf("census: %v", err)
 	}

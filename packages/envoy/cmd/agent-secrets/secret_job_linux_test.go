@@ -256,7 +256,6 @@ func TestPromptJobInheritedIgnoredStopStaysIgnored(t *testing.T) {
 }
 
 func TestPromptControlByteInsideBracketedPasteDrainsThroughEnd(t *testing.T) {
-	t.Parallel()
 	for _, control := range []string{"\x00", "\t", "\x01", "\x7f"} {
 		controller, terminal, got := typeAtPromptInWrites(t, 300*time.Millisecond,
 			"\x1b[200~prefix"+control, "private-tail\n\x1b[201~")
@@ -842,16 +841,13 @@ func TestPromptHangupRestoresAndAbortCannotDumpTheValue(t *testing.T) {
 					}
 				}
 			}()
-			exitWithin := 10 * time.Second
-			if sig == syscall.SIGABRT {
-				// Go's GOTRACEBACK=crash relays SIGQUIT between threads. A
-				// SIGQUIT subscriber can make that relay wait for its 10s
-				// watchdog before the runtime raises the fatal SIGABRT.
-				exitWithin = 30 * time.Second
-			}
+			// promptJobWait bounds the wait for the process's end, as it bounds every wait of
+			// these tests for a fact they expect. It covers SIGABRT too: Go's GOTRACEBACK=crash
+			// relays SIGQUIT between threads, and a SIGQUIT subscriber can make that relay wait
+			// for its 10s watchdog before the runtime raises the fatal SIGABRT.
 			select {
 			case <-done:
-			case <-time.After(exitWithin):
+			case <-time.After(promptJobWait):
 				_ = controller.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
 				state, _ := os.ReadFile(fmt.Sprintf("/proc/%d/status", cmd.Process.Pid))
 				t.Fatalf("signal did not end the prompt; process: %s; terminal: %q", state, <-output)

@@ -56,7 +56,7 @@ func TestDrainLetsTheDeliveriesOfABindEndingAfterTheStopFinish(t *testing.T) {
 				if tc.late {
 					return
 				}
-				forward, err := client.StartRequestStoredTo(holderSubject, contracts.Envelope{EventID: "drain-late-bind"}, ForwardMsgID("drain-late-bind", holderSubject), 2*time.Second)
+				forward, err := client.StartRequestStoredTo(holderSubject, contracts.Envelope{EventID: "drain-late-bind"}, ForwardMsgID("drain-late-bind", holderSubject), busWait)
 				if err == nil {
 					err = forward.Wait()
 				}
@@ -115,8 +115,11 @@ func TestDrainLetsTheDeliveriesOfABindEndingAfterTheStopFinish(t *testing.T) {
 			client.subscriptionsMu.Unlock()
 			client.stop()
 			_ = client.endBind(slot, sub, nil, true)
+			// Drain's deliveries are given what is left of twice busWait once its hook reserve is
+			// kept back, which outlasts each forward's own busWait: a forward that gets no answer
+			// fails the row by its own error, and Drain returns once both deliveries have finished.
 			drained := make(chan error, 1)
-			go func() { drained <- client.Drain(5 * time.Second) }()
+			go func() { drained <- client.Drain(2 * busWait) }()
 			// Well within this, a drain that takes no subscription has begun draining the connection.
 			time.Sleep(200 * time.Millisecond)
 			releaseHandlers()
@@ -125,7 +128,7 @@ func TestDrainLetsTheDeliveriesOfABindEndingAfterTheStopFinish(t *testing.T) {
 				if err != nil {
 					t.Fatalf("drain: %v", err)
 				}
-			case <-time.After(busWait):
+			case <-time.After(2 * busWait):
 				t.Fatal("Drain never returned")
 			}
 			if finished := finished.Load(); finished != 2 {
@@ -196,7 +199,7 @@ func TestStoppedClientRefusesNewSubscriptions(t *testing.T) {
 			name:    "Drain",
 			stopped: true,
 			stop: func(client *Client) error {
-				return client.Drain(5 * time.Second)
+				return client.Drain(busWait)
 			},
 		},
 	} {

@@ -185,9 +185,6 @@ func TestTheSuggestionSweepMakesNoStatementWithNoEvents(t *testing.T) {
 // (suggestionOutcomeFloor.read), which waits on no transaction and stays below an event only while
 // an event write of this database is still open under it.
 func TestAnEventByTheActorOnTheSuggestedIssueWakesTheSweepAndMarksActedOn(t *testing.T) {
-	// No t.Parallel: startIdleSweep measures a quiet window of the sweep it runs
-	// (storetest.AwaitQuiet) before the test's own write, which a parallel test's CPU would
-	// stretch.
 	sweep := startIdleSweep(t, "OWAKE", idleSweepGap)
 	seedWriteSuggestion(t, sweep.server, "issue", sweep.source, "", "alice", "issue", sweep.target, sweep.target)
 

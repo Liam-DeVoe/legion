@@ -404,7 +404,6 @@ func durableHistory(t *testing.T, service *Service, artifactID string) (rows, by
 // rather than losing and regaining each, a re-formatting per anchor that the room and its stored
 // history would keep for the document's life.
 func TestAnUploadChangingOneTokenWritesASmallUpdateOverOpenAnchors(t *testing.T) {
-	t.Parallel()
 	const anchors, uploads, perUploadBound = 20, 3, 2048
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour

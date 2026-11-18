@@ -40,10 +40,14 @@ func TestNextStoredMessageReadsByFilterAfterASequence(t *testing.T) {
 	// read below, not held to a span since the publish that the steps between must beat.
 	published := time.Now()
 	third := publish("notifications.dispatch.issue.KEY-1.ask.answered", `{"n":3}`)
-	ctx, cancel := context.WithTimeout(context.Background(), busWait)
-	defer cancel()
+	// Each read is bounded on its own at busWait, so a slow one leaves the next no less.
+	read := func(subject string, seq uint64) (StoredMessage, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), busWait)
+		defer cancel()
+		return client.NextStoredMessage(ctx, subject, seq)
+	}
 
-	stored, err := client.NextStoredMessage(ctx, "notifications.dispatch.issue.KEY-1.>", 2)
+	stored, err := read("notifications.dispatch.issue.KEY-1.>", 2)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -54,14 +58,14 @@ func TestNextStoredMessageReadsByFilterAfterASequence(t *testing.T) {
 		t.Fatalf("stored time %s is not when it was stored, at or after %s", stored.Time, published)
 	}
 
-	if _, err := client.NextStoredMessage(ctx, "notifications.dispatch.issue.KEY-1.>", third+1); !errors.Is(err, nats.ErrMsgNotFound) {
+	if _, err := read("notifications.dispatch.issue.KEY-1.>", third+1); !errors.Is(err, nats.ErrMsgNotFound) {
 		t.Fatalf("read past the last message = %v, want nats.ErrMsgNotFound", err)
 	}
 
 	if err := js.DeleteStream(Stream); err != nil {
 		t.Fatalf("delete the stream: %v", err)
 	}
-	if _, err := client.NextStoredMessage(ctx, "notifications.agent.ses_a", 1); !errors.Is(err, nats.ErrStreamNotFound) {
+	if _, err := read("notifications.agent.ses_a", 1); !errors.Is(err, nats.ErrStreamNotFound) {
 		t.Fatalf("read without the stream = %v, want nats.ErrStreamNotFound", err)
 	}
 }

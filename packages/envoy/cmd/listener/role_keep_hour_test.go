@@ -328,7 +328,7 @@ func readStored(ctx context.Context, client *bus.Client, subject string) ([]bus.
 // stored is readStored for the test's own goroutine.
 func (r *hourRig) stored(subject string) []bus.StoredMessage {
 	r.t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
 	defer cancel()
 	found, err := readStored(ctx, r.client(), subject)
 	if err != nil {

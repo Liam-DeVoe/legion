@@ -20,6 +20,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
@@ -720,7 +721,6 @@ func TestARefusedDeliveryOutsideTheWindowIsAskedAgain(t *testing.T) {
 // included, until that time has passed by the database's clock: its own backoff holds at least a
 // minute, and the App's limit holds GitHub's wait as given.
 func TestARateLimitStopsTheSweepUntilGitHubsRetryTime(t *testing.T) {
-	t.Parallel()
 	retryAfter := func(*harness) http.Header { return http.Header{"Retry-After": {"60"}} }
 	for _, tc := range []struct {
 		name   string
@@ -802,7 +802,6 @@ func (p pausedListing) Deliveries(context.Context, time.Time, func() error) ([]g
 // and finished clear of it deletes that row and no other: a limit another sweeper recorded while
 // it ran stands, and a third sweeper sends GitHub nothing before it.
 func TestASweepClearsOnlyTheRateLimitItRead(t *testing.T) {
-	t.Parallel()
 	h := newHarness(t)
 	h.fail("guid-limited", http.StatusServiceUnavailable, time.Minute)
 	h.webhook.Limit(http.MethodPost, http.StatusTooManyRequests, http.Header{"Retry-After": {"60"}})
@@ -860,7 +859,6 @@ func (p *pausedClaim) Create(key string, value []byte) (uint64, error) {
 // claimed a delivery before another sweeper recorded a limit sends nothing once it is in force,
 // and undoes its claim.
 func TestASweepPausedBeforeItsRequestSendsNothingUnderANewLimit(t *testing.T) {
-	t.Parallel()
 	h := newHarness(t)
 	h.fail("guid-older", http.StatusServiceUnavailable, 2*time.Minute)
 	h.fail("guid-newer", http.StatusServiceUnavailable, time.Minute)
@@ -905,7 +903,6 @@ func TestASweepPausedBeforeItsRequestSendsNothingUnderANewLimit(t *testing.T) {
 // (one, two, then four minutes), and only the sweep's: the App's limit holds GitHub's minute, so
 // once that minute has passed the App's own calls reach GitHub while the sweep still waits.
 func TestARedeliveryBackoffHoldsTheSweepAndNotTheApp(t *testing.T) {
-	t.Parallel()
 	h := newHarness(t)
 	h.fail("guid-limited", http.StatusServiceUnavailable, time.Minute)
 	h.webhook.Limit(http.MethodPost, http.StatusForbidden, nil) // a secondary limit: GitHub asks for a minute
@@ -2235,7 +2232,6 @@ func TestAMarkerOlderThanTheLookbackIsBackfilledAgain(t *testing.T) {
 // after all 65 were redelivered and delivered.
 func TestTheSweepSummaryCountsEveryOutcome(t *testing.T) {
 	t.Parallel()
-	leases := redeliverTestLeases(t)
 	h := newHarness(t)
 	h.fail("guid-settled", http.StatusServiceUnavailable, time.Minute)
 	if got := outcome(h.sweep(redeliver.Options{}), "guid-settled"); got != redeliver.Redelivered {
@@ -2247,11 +2243,19 @@ func TestTheSweepSummaryCountsEveryOutcome(t *testing.T) {
 	}
 	h.clock.advance(redeliver.Interval)
 
+	// The loop runs its sweeps under a lease that only runs them. Under duty.Exclusive each of the
+	// lease's own statements gives up at duty's five-second leaseCallTimeout, and a take that
+	// outlasted it would skip the one sweep this test reads, the next being an hour away; that
+	// the running sweep takes the real lease is sweep_lease_test.go's.
+	runPass := func(ctx context.Context, _ duty.Leases, _ string, _ time.Time, _ time.Duration, pass func(context.Context)) bool {
+		pass(ctx)
+		return true
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		h.sweeper().Run(ctx, time.Hour, leases)
+		h.sweeper().RunUnderLease(ctx, time.Hour, runPass)
 	}()
 	for deadline := time.Now().Add(30 * time.Second); h.logs.count("webhook redelivery sweep") == 0; {
 		if time.Now().After(deadline) {

@@ -154,7 +154,6 @@ func backoffOf(t *testing.T, database *store.Store, document string) (version, a
 // precision. The earliest due time is the reconciliation's next retry. A deferral at a version
 // the document has since replaced holds nothing back, and the next failure counts from one.
 func TestADeferredDocumentWaitsOutAGrowingBackoffKeyedByItsVersion(t *testing.T) {
-	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	document := owedDocument(t, database, "design")

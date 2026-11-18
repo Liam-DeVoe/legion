@@ -370,7 +370,6 @@ func countRecords(p *listenerProcess, name string, match func(map[string]any) bo
 // It must start healthy over them and serve the ordinary keys beside them: one stored role must not
 // keep every listener from starting.
 func TestTheListenerStartsOverKeysAnEarlierListenerStored(t *testing.T) {
-	t.Parallel()
 	client, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("connect bus: %v", err)

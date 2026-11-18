@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -20,6 +21,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -492,7 +494,75 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 	})
 	f.srv = httptest.NewServer(mux)
 	t.Cleanup(f.srv.Close)
+	guardAnswers(t, f.srv)
 	return f
+}
+
+// fakeBrokerAnswerWait bounds each call this package's fake brokers answer, from the moment the
+// client sends it to the moment the answer's headers arrive (guardAnswers). Those fakes hold a
+// proof's or a request object's time to their own clock, a minute either way (newFakeBroker's
+// renew verifier and device authorization, enrolBroker.verify), and the helper signs each one
+// just before it sends it, so a call that ends within half that minute never meets the window
+// closed, however loaded the machine. It is no shorter than eventWait, the package's guard for an
+// event.
+const fakeBrokerAnswerWait = 30 * time.Second
+
+// errFakeBrokerAnswerWait is what a call that outlived fakeBrokerAnswerWait fails with.
+var errFakeBrokerAnswerWait = fmt.Errorf("the fake broker gave no answer within fakeBrokerAnswerWait (%s)", fakeBrokerAnswerWait)
+
+// guardAnswers ends every call made through srv's own client, or through a client built on that
+// client's transport, at fakeBrokerAnswerWait, and fails t naming that bound when one ran into
+// it. Every test hands the helper srv.Client() or its transport, so this one place bounds every
+// step between the helper's signature and the fake's check of it.
+func guardAnswers(t *testing.T, srv *httptest.Server) {
+	t.Helper()
+	guard := &answerGuard{base: srv.Client().Transport}
+	srv.Client().Transport = guard
+	t.Cleanup(func() {
+		if guard.fired.Load() {
+			t.Errorf("a call to the fake broker outlived fakeBrokerAnswerWait (%s)", fakeBrokerAnswerWait)
+		}
+	})
+}
+
+// answerGuard is the transport guardAnswers puts on a fake broker's client.
+type answerGuard struct {
+	base  http.RoundTripper
+	fired atomic.Bool
+}
+
+func (g *answerGuard) RoundTrip(req *http.Request) (*http.Response, error) {
+	ctx, cancel := context.WithTimeoutCause(req.Context(), fakeBrokerAnswerWait, errFakeBrokerAnswerWait)
+	resp, err := g.base.RoundTrip(req.WithContext(ctx))
+	if err != nil {
+		if errors.Is(context.Cause(ctx), errFakeBrokerAnswerWait) {
+			g.fired.Store(true)
+			err = fmt.Errorf("%s %s: %w", req.Method, req.URL.Path, errFakeBrokerAnswerWait)
+		}
+		cancel()
+		return nil, err
+	}
+	resp.Body = cancelOnClose{ReadCloser: resp.Body, cancel: cancel}
+	return resp, nil
+}
+
+// CloseIdleConnections passes httptest.Server.Close's call on to the transport answerGuard wraps.
+func (g *answerGuard) CloseIdleConnections() {
+	if c, ok := g.base.(interface{ CloseIdleConnections() }); ok {
+		c.CloseIdleConnections()
+	}
+}
+
+// cancelOnClose ends a guarded call's context once its answer's body is closed.
+type cancelOnClose struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (c cancelOnClose) Close() error {
+	err := c.ReadCloser.Close()
+	c.cancel()
+	return err
 }
 
 // writeTokens answers a token grant for credentialID with a fresh access and refresh token and
@@ -692,7 +762,6 @@ func waitFor(t *testing.T, cond func() bool) {
 }
 
 func TestLoginHoldsTheKeyAndEnrollSignsLauncherProofs(t *testing.T) {
-	t.Parallel()
 	f := newFakeBroker(t) // records the login request object; issues on the first poll
 	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
 	t.Cleanup(b.Close)
@@ -884,7 +953,6 @@ func TestALoginPendingWhenTheCredentialIsRefusedReportsItsOwnOutcome(t *testing.
 // outcomes and confirms a later Login, once the prior one is no longer pending, starts completely
 // fresh rather than reusing the denied/expired attempt's key.
 func TestDeniedAndExpiredLoginsSurfaceTheirState(t *testing.T) {
-	t.Parallel()
 	f := newFakeBroker(t)
 	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
 	t.Cleanup(b.Close)
@@ -925,7 +993,6 @@ func TestDeniedAndExpiredLoginsSurfaceTheirState(t *testing.T) {
 }
 
 func TestEnrollSendsKindSessionAndAcceptsBothStatuses(t *testing.T) {
-	t.Parallel()
 	f := newFakeBroker(t)
 	b := loggedInBroker(t, f, "ada@example.com")
 	sess, _ := newSession(1234, 77, "example-host-devbox:1234:77", "", nil, nil)

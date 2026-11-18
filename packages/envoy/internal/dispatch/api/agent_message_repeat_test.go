@@ -182,7 +182,10 @@ func TestARepeatedKeyAnswersTheMessageItMadeAndDeliversOnce(t *testing.T) {
 // signal therefore finishes inside the drain: its attempt settles sent, and the page's retry under
 // its key is answered with that message and hands the session nothing more.
 func TestASendInFlightAtShutdownStillSettles(t *testing.T) {
-	t.Parallel()
+	// Serial: a product timer is under its steps. The listener client gives a send up at its
+	// window (envoy defaultTimeout, 5 s, shorter than concurrentWait), so the listener's hold of
+	// the send, from its arrival to the release below, must end inside those 5 s, and a parallel
+	// test's load is what would stretch it past them.
 	held := make(chan struct{})
 	release := make(chan struct{})
 	cut := make(chan struct{})
@@ -407,7 +410,6 @@ func TestAClientAbortMidSendStillDeliversOnce(t *testing.T) {
 // message's own mode, rather than making the message again, and a later repeat finds it on its way
 // and sends nothing more.
 func TestARetryOfAMessageCommittedWithoutAnAnswerDeliversIt(t *testing.T) {
-	t.Parallel()
 	listener, sends := newBroadcastListener(t, agentSessions)
 	handler, database := newTargetedMessageHandler(t, listener.URL)
 	id := commitKeyedMessage(t, database, "undelivered", "Still there?", "aside", 0, nil)
@@ -455,7 +457,6 @@ func TestARetryOfAMessageCommittedWithoutAnAnswerDeliversIt(t *testing.T) {
 // number, and so its own delivery key, as a same-mode retry from the agent card does - an attempt
 // stranded before anything was resolved included, which takes the message's session.
 func TestARetryOfAStrandedSendResumesItsAttempt(t *testing.T) {
-	t.Parallel()
 	created := http.StatusCreated
 	for name, pinned := range map[string]string{
 		"an attempt naming its session":        "s1",

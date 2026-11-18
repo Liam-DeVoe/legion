@@ -89,8 +89,7 @@ func subscriptionGoroutines() int {
 // stopped (TestADiscardedWatcherIsStoppedAtOnceAndReadUntilItEnds).
 //
 // Serial: it reads the whole process's goroutine dump (subscriptionGoroutines), which counts a
-// parallel test's subscription goroutines as its own, and its assertion is a time (the watch
-// returns within 2 s).
+// parallel test's subscription goroutines as its own.
 func TestAnAbandonedWatchersDiscardEnds(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

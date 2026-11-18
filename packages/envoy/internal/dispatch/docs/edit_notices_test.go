@@ -514,7 +514,6 @@ func TestEditNoticeSweepOwnsAProjectDocumentsNoticeByTheDocument(t *testing.T) {
 
 // A notice whose quiet time has not passed stays, and sends nothing.
 func TestEditNoticeSweepLeavesANoticeThatIsNotDue(t *testing.T) {
-	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")

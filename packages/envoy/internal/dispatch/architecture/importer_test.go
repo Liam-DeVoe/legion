@@ -674,7 +674,6 @@ func TestSyncRemovedFileRetiresItsComponent(t *testing.T) {
 // GitHub call, and an uncached one — so it joins the flight before any head
 // is read.
 func TestTwoConcurrentImportsOfOneSourceShareOneGitHubSync(t *testing.T) {
-	t.Parallel()
 	ctx := context.Background()
 	files := validFiles()
 	fake := &fakeSource{t: t, files: files, holdInstallations: true}
@@ -1934,7 +1933,6 @@ func TestAnIDAnotherSourceImportsRevivesItsAttachment(t *testing.T) {
 // takes the unchanged-head shortcut like any healthy source: the freshness stamp moves, no tree or
 // blob is read, its components stay as they were, and no event is emitted.
 func TestTheLegacySourceResyncsThroughTheUnchangedHeadShortcut(t *testing.T) {
-	t.Parallel()
 	ctx := context.Background()
 	fake := &fakeSource{t: t, files: validFiles(), commit: commitOne, installationID: 11}
 	client := newGitHubClient(t, fake.handler())
@@ -2307,7 +2305,6 @@ func TestAFailureMetBeforeAnotherProcessesImportNeverMarksTheSourceFailed(t *tes
 // answer. One importer with two callers is the case that matters, since two processes never
 // share a flight.
 func TestACallerAfterTheHeadWasReadIsNotToldTheOlderHead(t *testing.T) {
-	t.Parallel()
 	branch := newMovingBranch(t, commitOne, map[string]map[string]string{commitOne: validFiles(), commitTwo: infraFiles()})
 	branch.holdBlobs(commitOne)
 	process, _, database := twoProcesses(t, branch)

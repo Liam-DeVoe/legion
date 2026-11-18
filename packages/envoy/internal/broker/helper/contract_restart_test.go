@@ -61,7 +61,6 @@ func (l *losingTokenTransport) RoundTrip(r *http.Request) (*http.Response, error
 // interval, redeems the refresh token it still holds inside the broker's rotation grace, so the
 // login is kept, rotated, in memory and on disk.
 func TestContractALostRefreshAnswerIsRetriedInsideTheGrace(t *testing.T) {
-	t.Parallel()
 	first := newContractRig(t)
 	credentialID := first.login(t)
 	kept, err := LoadMachineFile(first.machineFile)
@@ -283,7 +282,6 @@ func TestContractAReLoginReplacesTheKeptLogin(t *testing.T) {
 // proof: no old copy of the machine file can refresh it, and the session it enrolled keeps its
 // enrollment and renews it; the new login keeps working.
 func TestContractAReLoginRetiresTheCredentialItReplaces(t *testing.T) {
-	t.Parallel()
 	cr := newContractRig(t, brokertest.WithLease(3*time.Second))
 	first := cr.login(t)
 	reg := cr.call(t, Request{Op: "register", WaitSeconds: 10})
@@ -345,7 +343,6 @@ func TestContractAReLoginRetiresTheCredentialItReplaces(t *testing.T) {
 // redeems the token the helper holds and keeps the login; a retry once the grace has ended is a
 // reuse, which the broker refuses, and the helper drops the login and its file.
 func TestContractALostRefreshAnswerIsRedeemableUntilTheGraceEnds(t *testing.T) {
-	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		shift string

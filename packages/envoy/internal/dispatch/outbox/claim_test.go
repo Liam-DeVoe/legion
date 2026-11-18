@@ -147,7 +147,6 @@ func TestAnEventThatIsNotDueIsReadOnlyAsABlockerOfItsOwner(t *testing.T) {
 // event behind them, which the batch never reads: that event waits on the earliest of their
 // back-offs, rather than leave the owner chosen, and read again, at every wake.
 func TestADueEventPastItsOwnersWindowWaitsOnTheWindow(t *testing.T) {
-	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	broker := events.NewBroker()

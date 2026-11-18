@@ -85,7 +85,6 @@ func unreachableIssuer(t *testing.T) string {
 // serves the broker's client, one that refuses its secret, and one that cannot be reached at
 // all. Each pass writes its own word and the time it was taken, and nothing else of the status.
 func TestClientCheckWritesWhatTheProviderAnsweredAboutTheClient(t *testing.T) {
-	t.Parallel()
 	st := storetest.Open(t)
 	ctx := context.Background()
 	issuer := oidctest.New(t)

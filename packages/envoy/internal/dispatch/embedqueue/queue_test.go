@@ -617,7 +617,6 @@ func TestProcessBatchNeverMarksARowPermanentWhenItsContextEndsMidBisection(t *te
 // runs - needed since bisecting a batch every one of whose rows fails can itself take minutes,
 // longer than claimWindow.
 func TestClaimRenewalExtendsNextAttemptAtPastClaimWindow(t *testing.T) {
-	t.Parallel()
 	database := storetest.Open(t)
 	seedIssue(t, database, "RNWL", "RNWL-1", "A title")
 	ctx := context.Background()
@@ -678,7 +677,6 @@ func TestReserveTokensSharesItsBudgetAcrossConnections(t *testing.T) {
 // one minute so the test itself takes a little over a second, not several minutes, while
 // exercising the identical loop.
 func TestWaitOutDebtRenewsTheClaimMidWaitSoNoSecondWorkerClaimsIt(t *testing.T) {
-	t.Parallel()
 	database := storetest.Open(t)
 	seedIssue(t, database, "LONG", "LONG-1", "A title")
 	ctx := context.Background()
@@ -709,7 +707,6 @@ func TestWaitOutDebtRenewsTheClaimMidWaitSoNoSecondWorkerClaimsIt(t *testing.T) 
 // claimRenewal still protects: a resolved row's next_attempt_at is untouched by a later renewal,
 // while an unresolved sibling's is still pushed out.
 func TestClaimRenewalResolveStopsRenewingACommittedRow(t *testing.T) {
-	t.Parallel()
 	database := storetest.Open(t)
 	seedIssue(t, database, "RSLV", "RSLV-1", "A good title")
 	seedIssue(t, database, "RSLV", "RSLV-2", "A pending title")

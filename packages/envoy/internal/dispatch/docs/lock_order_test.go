@@ -61,7 +61,10 @@ func lockWaits(t *testing.T, ctx context.Context, database *store.Store, like st
 
 func TestConditionalEditDoesNotInvertTheRoomLockOrder(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	// Each wait below has roomWait of its own (the lock wait and the two selects), so ctx only
+	// ends with the test: one 120 s context over all three left the later waits what the earlier
+	// ones had not spent.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	database, service, id := lockOrderService(t)
 	seedServiceText(t, service, id, "first\n\nsecond")
@@ -187,7 +190,9 @@ func awaitUnblocked(t *testing.T, subject string, op func() error) {
 // block a foreign key.
 func TestDurableAppendIsNotBlockedByTheOwnerLock(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	// Each wait has roomWait of its own - the writer unblocked (awaitUnblocked) and the room lock
+	// taken behind it - so ctx only ends with the test.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	database, service, id := lockOrderDocument(t)
 	settling := ownerLockedTransaction(t, ctx, database, id)
@@ -209,14 +214,18 @@ func TestDurableAppendIsNotBlockedByTheOwnerLock(t *testing.T) {
 		t.Fatalf("commit the append: %v", err)
 	}
 	// And the owner-locked transaction can still take the room lock behind it.
-	if err := lockDocumentRoom(ctx, settling, id); err != nil {
+	locking, cancelLocking := context.WithTimeout(ctx, roomWait(t))
+	defer cancelLocking()
+	if err := lockDocumentRoom(locking, settling, id); err != nil {
 		t.Fatalf("take the room lock behind the append: %v", err)
 	}
 }
 
 func TestSnapshotIsNotBlockedByTheOwnerLock(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	// Each wait has roomWait of its own - the snapshot unblocked (awaitUnblocked) and the room lock
+	// taken behind it - so ctx only ends with the test.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	database, service, id := lockOrderDocument(t)
 	settling := ownerLockedTransaction(t, ctx, database, id)
@@ -228,7 +237,9 @@ func TestSnapshotIsNotBlockedByTheOwnerLock(t *testing.T) {
 		_, err := service.persistence.(*PgVersioned).CaptureSnapshot(ctx, id, "live", []byte{0})
 		return err
 	})
-	if err := lockDocumentRoom(ctx, settling, id); err != nil {
+	locking, cancelLocking := context.WithTimeout(ctx, roomWait(t))
+	defer cancelLocking()
+	if err := lockDocumentRoom(locking, settling, id); err != nil {
 		t.Fatalf("take the room lock behind the snapshot: %v", err)
 	}
 }
@@ -242,7 +253,9 @@ func TestSnapshotIsNotBlockedByTheOwnerLock(t *testing.T) {
 // an error to anyone.
 func TestLiveUpdateIsNotBlockedByTheOwnerLock(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	// Each wait has roomWait of its own - the update unblocked (awaitUnblocked) and the room lock
+	// taken behind it - so ctx only ends with the test.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	database, service, id := lockOrderDocument(t)
 	settling := ownerLockedTransaction(t, ctx, database, id)
@@ -255,7 +268,9 @@ func TestLiveUpdateIsNotBlockedByTheOwnerLock(t *testing.T) {
 		)
 		return err
 	})
-	if err := lockDocumentRoom(ctx, settling, id); err != nil {
+	locking, cancelLocking := context.WithTimeout(ctx, roomWait(t))
+	defer cancelLocking()
+	if err := lockDocumentRoom(locking, settling, id); err != nil {
 		t.Fatalf("take the room lock behind the live update: %v", err)
 	}
 }

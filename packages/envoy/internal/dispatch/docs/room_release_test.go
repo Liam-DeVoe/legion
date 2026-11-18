@@ -228,11 +228,7 @@ func newRoomReleaseService(t *testing.T) (*Service, *store.Store) {
 	// ygo's idle sweeper reads it when the first room starts it, so it is set before any room.
 	service.srv.RoomIdleTimeout = time.Second
 	// Production's cap: what these tests touch is more documents than it admits live.
-	cleanupAndRelease(t, func() {
-		if err := service.Shutdown(context.Background()); err != nil {
-			t.Errorf("shutdown document service: %v", err)
-		}
-	})
+	cleanupAndRelease(t, func() { shutdownTestService(t, service) })
 	return service, database
 }
 

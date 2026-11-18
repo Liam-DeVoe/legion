@@ -255,7 +255,7 @@ func TestCallRoundTrip(t *testing.T) {
 		_, _ = bufio.NewReader(conn).ReadBytes('\n')
 		_, _ = conn.Write([]byte(`{"ok":true,"proof":"p","enrollment_id":"e"}` + "\n"))
 	}()
-	resp, err := Call(sock, Request{Op: "sign", Method: "GET", URL: "https://x/v1/enrollments/self"}, 2*time.Second)
+	resp, err := Call(sock, Request{Op: "sign", Method: "GET", URL: "https://x/v1/enrollments/self"}, eventWait)
 	if err != nil || !resp.OK || resp.Proof != "p" || resp.EnrollmentID != "e" {
 		t.Fatalf("round trip: %+v %v", resp, err)
 	}

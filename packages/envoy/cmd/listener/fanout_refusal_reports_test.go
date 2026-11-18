@@ -26,7 +26,9 @@ import (
 // is taken and the resolution that then fails records nothing, and a mode that cannot be read is
 // refused before the entry is read at all but recorded only where the resolution succeeded.
 func TestTheFanoutReportsItsOwnRefusalsForTheSessionsItDeliversTo(t *testing.T) {
-	t.Parallel()
+	// Serial: a row reads back the attempt record its refusal left (attemptCache.Seen below), and
+	// the harness's attempt cache forgets a record five minutes after it was made, so the steps
+	// from the delivery to that read must finish inside those five minutes.
 	for _, tc := range []struct {
 		name string
 		// entry is the recipient's session entry, nil for a recipient that has none.
@@ -310,7 +312,7 @@ func TestTheRelaySendsAFollowedTopicTheDurablePathAlsoReads(t *testing.T) {
 	}
 
 	rig.relays.setOwned(true)
-	requireFrames(t, standIn.collect(t, 1, 15*time.Second), item)
+	requireFrames(t, standIn.collect(t, 1, listenerWait), item)
 	standIn.none(t, time.Second)
 }
 
@@ -376,6 +378,6 @@ func TestTheFanoutSkipsAMessageOnAFollowedTopicAsAnEchoOfTheSessionThatPublished
 	// The message the fan-out handed to nobody is still the other session's to receive: the
 	// relay of its own consumer is what sends it.
 	rig.relays.setOwned(true)
-	requireFrames(t, standIn.collect(t, 1, 15*time.Second), item)
+	requireFrames(t, standIn.collect(t, 1, listenerWait), item)
 	standIn.none(t, time.Second)
 }

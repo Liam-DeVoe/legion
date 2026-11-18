@@ -341,7 +341,6 @@ func sessionsListener(t *testing.T, answer string) (url string, calls *atomic.In
 // agents list, an issue read and a second agents list inside the TTL make one listener call, and
 // the second list is the first answer even though the listener's own answer has changed since.
 func TestAgentsListsAndIssueReadsWithinTheTTLShareOneListenerCall(t *testing.T) {
-	t.Parallel()
 	roster := &fakeRoster{}
 	roster.set("ses-sre", "sre")
 	handler, _, served := cachedRouteStatusServer(t, roster)
@@ -372,7 +371,6 @@ func TestAgentsListsAndIssueReadsWithinTheTTLShareOneListenerCall(t *testing.T) 
 // rule (issue_route_status_cache_test.go). The window is a minute, so a loaded machine's second
 // list still lands inside it.
 func TestAgentsAnswer503ThroughTheSilenceWindow(t *testing.T) {
-	t.Parallel()
 	roster := &fakeRoster{}
 	roster.down.Store(true)
 	handler, _, served := cachedRouteStatusServer(t, roster)
@@ -398,7 +396,6 @@ func TestAgentsAnswer503ThroughTheSilenceWindow(t *testing.T) {
 // machine_id standing in for a missing host. The listener sends the sessions oldest first, so the
 // sorted order is the reverse of the cached one.
 func TestConcurrentAgentsListsAndIssueReadsLeaveTheSharedListAsTheListenerSentIt(t *testing.T) {
-	t.Parallel()
 	listenerURL, calls := sessionsListener(t, `[
 		{"session_id":"a","title":"oldest","machine_id":"box-a","roles":["sre"],"last_seen":100},
 		{"session_id":"b","title":"middle","machine_id":"box-b","host":"host-b","last_seen":200},
@@ -470,8 +467,6 @@ func TestConcurrentAgentsListsAndIssueReadsLeaveTheSharedListAsTheListenerSentIt
 // An agents list whose request ends while it waits on the shared fetch answers 503
 // ENVOY_UNAVAILABLE at once, saying why; the fetch runs on, and the next list is its answer.
 func TestAnAgentsListWhoseRequestEndsWhileItWaitsOnTheFetchAnswers503(t *testing.T) {
-	// Serial: this test measures the process. It bounds the 503 at 5 s after its request
-	// ends, which another test's work on the same machine would stretch.
 	database := storetest.Open(t)
 	mux := http.NewServeMux()
 	_, calls, release := heldRosterMux(t, mux, Deps{Store: database, Identity: headerIdentity(database)})

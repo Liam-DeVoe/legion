@@ -379,8 +379,11 @@ func TestTheListenerKeepsAHealthyIdleConnection(t *testing.T) {
 
 // Real time, at the idle period and ping timeout this sets: the half-open connection is a real
 // one behind a blinding TCP proxy, which no synctest bubble can hold.
+//
+// Serial: the 1 s PingTimeout this sets is the bound the row is about, and every ping and LISTEN
+// on a healthy connection - the first one before the proxy blinds it, and the replacement - must
+// answer inside it, or the listener replaces a connection that was never half-open.
 func TestTheListenerReplacesAHalfOpenConnection(t *testing.T) {
-	t.Parallel()
 	database := storetest.Open(t)
 	proxy := newBlindingProxy(t, databaseAddress(database))
 	probe := newListenerProbe()

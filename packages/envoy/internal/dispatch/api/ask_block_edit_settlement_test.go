@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"sort"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -749,46 +749,33 @@ func TestDocumentEditOfAnAskBlockStillUpdatesTheRow(t *testing.T) {
 
 // Editing takes the document's locks after the ask row while settlement takes them the other way
 // round. They are ordered by the owner row both hold first; if that ever stops being true this
-// deadlocks rather than fails, so it runs under its own deadline.
+// deadlocks rather than fails, so each round runs under its own deadline (race, concurrentWait).
 func TestConcurrentBlockAskEditsAndSettlementsDoNotDeadlock(t *testing.T) {
 	t.Parallel()
 	handler, _ := blockAskHandler(t)
 	issue, askID := seedBlockAsk(t, handler, "Block ask concurrency", "decision", transportAsk, "Which transport?")
 
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		var wg sync.WaitGroup
-		for round := range 6 {
-			wg.Add(2)
-			go func(round int) {
-				defer wg.Done()
-				edited := sessionRequest(t, handler, http.MethodPatch, "/api/v1/asks/"+askID, map[string]any{
+	for round := range 6 {
+		edited, settling := race(t, round,
+			func() *httptest.ResponseRecorder {
+				return sessionRequest(t, handler, http.MethodPatch, "/api/v1/asks/"+askID, map[string]any{
 					"question": fmt.Sprintf("Which transport, round %d?", round), "actor": sessionActor(),
 				})
-				if edited.Code != http.StatusOK {
-					t.Errorf("round %d edit: status=%d body=%s", round, edited.Code, edited.Body.String())
-				}
-			}(round)
-			go func(round int) {
-				defer wg.Done()
-				settling := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
+			},
+			func() *httptest.ResponseRecorder {
+				return dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
 					"ops": []map[string]string{{
 						"op": "insert", "after": "end",
 						"markdown": fmt.Sprintf("Paragraph %d.\n", round),
 					}},
 				}, "alice")
-				if settling.Code != http.StatusOK {
-					t.Errorf("round %d document edit: status=%d body=%s", round, settling.Code, settling.Body.String())
-				}
-			}(round)
-			wg.Wait()
+			})
+		if edited.Code != http.StatusOK {
+			t.Errorf("round %d edit: status=%d body=%s", round, edited.Code, edited.Body.String())
 		}
-	}()
-	select {
-	case <-done:
-	case <-time.After(60 * time.Second):
-		t.Fatal("concurrent block-ask edits and document settlements did not finish in 60s")
+		if settling.Code != http.StatusOK {
+			t.Errorf("round %d document edit: status=%d body=%s", round, settling.Code, settling.Body.String())
+		}
 	}
 
 	settleDocument(t, handler, issue.PrimaryArtifactID, issue.Key, "after-concurrency")

@@ -488,7 +488,6 @@ func TestSearchMergedPullRequestsPaginatesAcrossPages(t *testing.T) {
 // maxCommitPages of them, each ask for a token, so a page answered after the previous page's
 // token expired is asked for with a new one.
 func TestFetchCommitMessagesAsksForATokenPerPage(t *testing.T) {
-	t.Parallel()
 	fake := newFakeGitHub(t)
 	refuse, expired := expiringTokens(t, fake)
 	fake.handle("GET /repos/acme/widgets/pulls/7/commits", func(w http.ResponseWriter, r *http.Request) {
@@ -521,7 +520,6 @@ func TestFetchCommitMessagesAsksForATokenPerPage(t *testing.T) {
 // client.Token) reconciles each window's pull requests between pages, so it asks for a token per
 // page, and a page answered after the previous page's token expired is asked for with a new one.
 func TestSearchMergedPullRequestsAcrossInstallationAsksForATokenPerPage(t *testing.T) {
-	t.Parallel()
 	fake := newFakeGitHub(t)
 	refuse, expired := expiringTokens(t, fake)
 	fake.handle("POST /graphql", func(w http.ResponseWriter, r *http.Request) {

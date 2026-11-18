@@ -14,7 +14,6 @@ import (
 // session's log line is every message stored for it after its last registration, in either form,
 // since its consumer filters on both; a message for another session in either form is not counted.
 func TestAReapedSessionsStoredCountTakesEitherFormOfItsSubject(t *testing.T) {
-	t.Parallel()
 	client := setupNATS(t)
 	now := &clock{}
 	r := reapingRegistry(t, client, now)

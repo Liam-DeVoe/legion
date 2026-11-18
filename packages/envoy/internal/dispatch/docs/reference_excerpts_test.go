@@ -267,7 +267,6 @@ const loopStopBound = 10 * time.Second
 // reports no error, so the document that sorts first never holds the rest back. The next batch
 // leaves it alone until its retry is due rather than reading it again.
 func TestAnUnreadableDocumentIsDeferredAndDoesNotHoldBackItsExcerptBatch(t *testing.T) {
-	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	documents := owedDocuments(t, database, referenceExcerptBatch)

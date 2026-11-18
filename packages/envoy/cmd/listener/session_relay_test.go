@@ -284,11 +284,16 @@ func TestSessionConsumerAwaySessionReceivesEachMessageOnceOnReturn(t *testing.T)
 // holds the message for an ack, and after done it holds nothing. The frame carries the contract's
 // headers.
 func TestSessionConsumerAcksAFrameOnlyOnDone(t *testing.T) {
-	t.Parallel()
+	// Serial: the stand-in answers the frame by hand, after the reads below, and the relay pauses
+	// once a frame waits unanswered past its receipt wait (relayReceiptWait, 3 s) and later sends
+	// it again, so the steps from the frame's arrival to that answer must finish inside those 3 s.
 	rig := newRelayRig(t)
 	const sessionID = "ses_ack_on_done"
 	standIn := startSessionStandIn(t, rig.url, sessionID, nil)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
+	// The stored time is bracketed by the clock read before this store and the one after the
+	// frame's arrival, not held to a span since the store that the steps between must beat.
+	published := time.Now()
 	stored, seq := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
 
 	frame := standIn.collect(t, 1, listenerWait)[0]
@@ -304,8 +309,9 @@ func TestSessionConsumerAcksAFrameOnlyOnDone(t *testing.T) {
 		t.Errorf("%s = %q, want 1", relayHeaderDelivered, got)
 	}
 	storedAt, err := time.Parse(time.RFC3339Nano, header.Get(relayHeaderStoredAt))
-	if err != nil || !strings.HasSuffix(header.Get(relayHeaderStoredAt), "Z") || time.Since(storedAt) > time.Minute {
-		t.Errorf("%s = %q, want the stored time in RFC 3339 with nanoseconds, UTC: %v", relayHeaderStoredAt, header.Get(relayHeaderStoredAt), err)
+	if err != nil || !strings.HasSuffix(header.Get(relayHeaderStoredAt), "Z") || storedAt.Before(published) || storedAt.After(time.Now()) {
+		t.Errorf("%s = %q, want the stored time, at or after %s and before the frame's arrival, in RFC 3339 with nanoseconds, UTC: %v",
+			relayHeaderStoredAt, header.Get(relayHeaderStoredAt), published.UTC().Format(time.RFC3339Nano), err)
 	}
 	if got := header.Get(relayHeaderGap); got != "" {
 		t.Errorf("%s = %q on a restart that lost nothing", relayHeaderGap, got)
@@ -726,7 +732,11 @@ func TestSessionConsumerFramesStoredWhileTheOwnerWasDownArriveAfterItsRestart(t 
 // bus.SessionConsumerAckWait (60 s, internal/bus/session_consumers.go) for the server to deliver
 // the message again.
 func TestSessionConsumerRelayLosingItsSessionReturnsTheMessageItHolds(t *testing.T) {
-	t.Parallel()
+	// Serial: a server timer is under its steps. The frame stays unacked from its delivery
+	// (collect below) until the run gives it back at setOwned(false), and the server delivers it
+	// again once bus.SessionConsumerAckWait (60 s) passes, which makes the next owner's copy (Next
+	// below) a third delivery; every step between must land inside those 60 s.
+
 	// The receipt wait outlasts any run of the test binary (its -timeout ends a run first), so the
 	// relay cannot pause, and so forget the frame it holds, before the row takes the session away,
 	// however long the row's steps take.
@@ -747,6 +757,20 @@ func TestSessionConsumerRelayLosingItsSessionReturnsTheMessageItHolds(t *testing
 	// this pull, which stands in for the listener the session moved to -- is delivered that
 	// message again at once.
 	rig.relays.setOwned(false)
+	// The run's hand-over line counts the frame it gave back, so the delivery the next owner is
+	// handed below comes from that nak, not from the server's ack wait.
+	const whole = "session relay stopped; it gave the server back the messages it held, so they are delivered again at once rather than after the consumer's ack wait"
+	awaitLogLine(t, rig, whole, listenerWait)
+	var handOvers []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(rig.harness.logs.String()), "\n") {
+		var record map[string]any
+		if json.Unmarshal([]byte(line), &record) == nil && record["msg"] == whole && record["session_id"] == sessionID {
+			handOvers = append(handOvers, record)
+		}
+	}
+	if len(handOvers) != 1 || handOvers[0]["returned"] != float64(1) {
+		t.Fatalf("the hand-over lines of session %s are %v, want one counting returned 1, the frame the run held:\n%s", sessionID, handOvers, rig.harness.logs.String())
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
 	defer cancel()
 	pull, err := rig.consumers.Pull(ctx, sessionID)
@@ -769,9 +793,10 @@ func TestSessionConsumerRelayLosingItsSessionReturnsTheMessageItHolds(t *testing
 // written, because the level and the error are what a reader and an alert key on.
 func TestSessionConsumerRelayHandOverThatReachesNoServerSaysSo(t *testing.T) {
 	t.Parallel()
-	// The receipt wait is longer than the row, so the relay cannot pause, and so forget the frame
-	// it holds, before the row takes the session away.
-	rig := newRelayRigReceipt(t, relayPauseFirst, relayPauseMax, 30*time.Second)
+	// The receipt wait outlasts any run of the test binary (its -timeout ends a run first), so the
+	// relay cannot pause, and so forget the frame it holds, before the row takes the session away,
+	// however long the row's steps take.
+	rig := newRelayRigReceipt(t, relayPauseFirst, relayPauseMax, 24*time.Hour)
 	sessionID := "ses_relay_handover_lost_" + id.New()
 	// A nil answer leaves the stand-in silent, so the frame stays outstanding and its message
 	// stays delivered and unacked.
@@ -836,7 +861,6 @@ func TestSessionConsumerRelayHandOverThatReachesNoServerSaysSo(t *testing.T) {
 // of this row fail that way. The row above, which holds one message, cannot show it:
 // the message the server happens to deliver first is the only one there is.
 func TestSessionConsumerRelayLosingItsSessionReturnsEveryMessageItHoldsInStreamOrder(t *testing.T) {
-	t.Parallel()
 	// The receipt wait is longer than the row, so the relay cannot pause, and so forget the
 	// frames it holds, before the row takes the session away.
 	rig := newRelayRigReceipt(t, relayPauseFirst, relayPauseMax, 60*time.Second)

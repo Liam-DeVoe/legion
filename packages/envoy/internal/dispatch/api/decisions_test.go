@@ -591,12 +591,13 @@ func TestIssueDecisionsListTheSpecsOpenQuestions(t *testing.T) {
 }
 
 // waitForOpenQuestions reads the view until it holds want open questions: settlement indexes a
-// spec's ask blocks, and until it has the issue holds none.
+// spec's ask blocks, and until it has the issue holds none. It waits a minute, as
+// awaitIndexedAskBlock waits for the same indexing.
 func waitForOpenQuestions(t *testing.T, handler http.Handler, key string, want int) (issueDecisions, []string) {
 	t.Helper()
 	var view issueDecisions
 	questions := []string{}
-	for range 200 {
+	for deadline := time.Now().Add(time.Minute); time.Now().Before(deadline); time.Sleep(25 * time.Millisecond) {
 		view = readIssueDecisions(t, handler, key)
 		questions = questions[:0]
 		for _, question := range view.OpenQuestions {
@@ -605,9 +606,8 @@ func waitForOpenQuestions(t *testing.T, handler http.Handler, key string, want i
 		if len(questions) == want {
 			return view, questions
 		}
-		time.Sleep(25 * time.Millisecond)
 	}
-	t.Fatalf("open_questions = %v, want %d of them", questions, want)
+	t.Fatalf("open_questions = %v, want %d of them within a minute", questions, want)
 	return view, questions
 }
 func mustJSON(t *testing.T, value any) string {

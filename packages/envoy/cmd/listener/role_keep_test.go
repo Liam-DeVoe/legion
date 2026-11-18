@@ -165,7 +165,6 @@ func TestAPublishToAnUnheldRoleIsKeptAndAnsweredWithItsReason(t *testing.T) {
 // the role live, and the claim still stands: nothing but the role reaper releases one
 // (dispatch://INFRA-392).
 func TestAPublishToALapsedClaimIsKeptAndTheClaimStands(t *testing.T) {
-	t.Parallel()
 	const role = "kept-lapsed"
 	for _, tc := range []struct {
 		name   string

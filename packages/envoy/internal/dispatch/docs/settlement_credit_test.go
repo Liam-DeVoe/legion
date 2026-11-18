@@ -51,8 +51,11 @@ func TestAnAskWrittenJustBeforeItsIssueClosedKeepsItsAuthorAfterAReopen(t *testi
 // shows it resolved, and doc_ask_block_authors keeps its author (reconcileAskBlocks). The reopen
 // marks the document owed (MarkReopenOwedAskDocuments), and the resumption after it opens the
 // block's ask, credited to that recorded author.
+//
+// Serial: the first service's Shutdown between the close and the restart must return nil, and
+// returns the drain's error when the room's durable appends outlast production's
+// ShutdownDrainBudget (9 s, service.go:1135).
 func TestAnAskWrittenJustBeforeItsIssueClosedKeepsItsAuthorAfterRestartAndReopen(t *testing.T) {
-	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour // the issue closes before the edit's own settlement runs
 	ctx := context.Background()
@@ -65,11 +68,7 @@ func TestAnAskWrittenJustBeforeItsIssueClosedKeepsItsAuthorAfterRestartAndReopen
 		t.Fatalf("stop the service between close and reopen: %v", err)
 	}
 	restarted := New(Deps{Store: service.store, Events: events.NewBroker(), Settle: 20 * time.Millisecond})
-	cleanupAndRelease(t, func() {
-		if err := restarted.Shutdown(context.Background()); err != nil {
-			t.Errorf("shutdown restarted document service: %v", err)
-		}
-	})
+	cleanupAndRelease(t, func() { shutdownTestService(t, restarted) })
 	if err := restarted.resumeOwedSettlements(ctx, 0); err != nil {
 		t.Fatalf("resume the closed issue's owed settlement: %v", err)
 	}
@@ -207,11 +206,7 @@ func TestTwoCreditedWritersBothSurviveACrashRestart(t *testing.T) {
 	writeThroughLedger(t, service, artifactID, second, "Second writer's paragraph.\n", withoutVersion)
 
 	restarted := New(Deps{Store: service.store, Events: events.NewBroker(), Settle: 20 * time.Millisecond})
-	cleanupAndRelease(t, func() {
-		if err := restarted.Shutdown(context.Background()); err != nil {
-			t.Errorf("shutdown restarted document service: %v", err)
-		}
-	})
+	cleanupAndRelease(t, func() { shutdownTestService(t, restarted) })
 	if err := restarted.resumeOwedSettlements(ctx, 0); err != nil {
 		t.Fatalf("resume the document's settlement: %v", err)
 	}
@@ -370,11 +365,7 @@ func TestAVersionedAuthorIsNotCreditedAgainAfterACrashRestart(t *testing.T) {
 	writeAskBeforeClose(t, service, artifactID, asking)
 
 	restarted := New(Deps{Store: service.store, Events: events.NewBroker(), Settle: 20 * time.Millisecond})
-	cleanupAndRelease(t, func() {
-		if err := restarted.Shutdown(context.Background()); err != nil {
-			t.Errorf("shutdown restarted document service: %v", err)
-		}
-	})
+	cleanupAndRelease(t, func() { shutdownTestService(t, restarted) })
 	if err := restarted.resumeOwedSettlements(ctx, 0); err != nil {
 		t.Fatalf("resume the document's settlement: %v", err)
 	}
@@ -821,6 +812,7 @@ func newTestServiceInstance(t *testing.T, database *store.Store) (*Service, *htt
 		ServerURL: "https://dispatch.example",
 		Settle:    time.Hour,
 	})
+	service.srv.RoomIdleTimeout = testRoomIdleTimeout
 	cleanupAndRelease(t, func() { shutdownTestService(t, service) })
 	return service, newTestServer(t, service)
 }

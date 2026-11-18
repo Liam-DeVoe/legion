@@ -79,6 +79,7 @@ func (unreadableRoleClaims) ReleaseExpiredRoleClaim(context.Context, string, str
 
 // roleRig is a real NATS server whose stream captures agent subjects, the outbox's client on it,
 // the role and session registries a session plugin registers through, and a migrated database.
+// windows is what deps judges a holder's record by (rigRegistrationAge until claimRegisteredAt).
 type roleRig struct {
 	url      string
 	client   *bus.Client
@@ -87,7 +88,18 @@ type roleRig struct {
 	sessions *session.SessionRegistry
 	database *store.Store
 	broker   *events.Broker
+	windows  roles.Windows
 }
+
+// rigRegistrationAge is how long a holder the rig registers (claim) stays registered and reads
+// live: the session bucket's maximum age (session.WithSessionTTL) and the live window deps judges
+// by (roles.Windows.Live), both above any run of the test binary. A registration is stamped once,
+// at the claim, and the rows that run on it take as long as the machine lets them; under the
+// compiled windows a run slowed past session.LiveWindow (5 min) between the claim and the scan
+// would read the holder unresponsive, and past session.BucketMaxAge read it gone, and fail as a
+// product that held a live holder's forward. A row about a holder that stopped registering stages
+// that record itself (claimRegisteredAt), which judges by the compiled windows again.
+const rigRegistrationAge = 24 * time.Hour
 
 // newRoleRig is a roleRig on the package's shared NATS server, in a JetStream account of this
 // test's own (testnats.URL): the stream, the role bucket and the session bucket this rig owns are
@@ -130,22 +142,24 @@ func newRoleRigOn(t *testing.T, url string, client *bus.Client, conn *natsgo.Con
 		t.Fatalf("open the role registry: %v", err)
 	}
 	t.Cleanup(registry.StopWatch)
-	sessions, err := session.OpenSessionRegistry(conn, options...)
+	sessions, err := session.OpenSessionRegistry(conn, append([]session.SessionRegistryOption{session.WithSessionTTL(rigRegistrationAge)}, options...)...)
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
 	t.Cleanup(sessions.StopWatch)
 	return &roleRig{url: url, client: client, conn: conn, registry: registry, sessions: sessions,
-		database: storetest.Open(t), broker: events.NewBroker()}
+		database: storetest.Open(t), broker: events.NewBroker(), windows: roles.Windows{Live: rigRegistrationAge}}
 }
 
 // deps is the outbox's dependencies as cmd/dispatch wires them: role routes resolved through
-// roles.Buckets on the outbox's own client, judged by the package's own windows, which is what
-// a deployment that sets neither ENVOY_SESSION_LIVE_WINDOW nor ENVOY_SESSION_GONE_HORIZON
-// gives it, and that client the reader of a role's kept lane and its drain cursor, which a
-// keep's handover makes its pass over (Deps.KeptLanes).
+// roles.Buckets on the outbox's own client, judged by the rig's windows - a live window of
+// rigRegistrationAge, as a deployment may set ENVOY_SESSION_LIVE_WINDOW, until claimRegisteredAt
+// stages a record whose age is the row's subject, and then the package's own, which is what a
+// deployment that sets neither ENVOY_SESSION_LIVE_WINDOW nor ENVOY_SESSION_GONE_HORIZON gives it -
+// and that client the reader of a role's kept lane and its drain cursor, which a keep's handover
+// makes its pass over (Deps.KeptLanes).
 func (r *roleRig) deps() Deps {
-	return r.depsJudgedBy(roles.Windows{})
+	return r.depsJudgedBy(r.windows)
 }
 
 // depsJudgedBy is deps whose role-route holders are judged by windows, as cmd/dispatch judges
@@ -169,9 +183,11 @@ func (r *roleRig) claim(t *testing.T, role, holder string, entry session.Session
 // age old: unresponsive past session.LiveWindow and gone past session.GoneHorizon, which is what
 // the resolution judges it by. The record goes to the session bucket directly, since the
 // registry stamps every entry it writes with now, and it is written now, so the bucket holds it
-// whatever its registration says.
+// whatever its registration says. The record's age is the row's subject, so from here on the rig
+// judges by the package's own windows (deps), not rigRegistrationAge.
 func (r *roleRig) claimRegisteredAt(t *testing.T, role, holder string, age time.Duration) {
 	t.Helper()
+	r.windows = roles.Windows{}
 	if _, err := r.registry.SetRole(holder, "test-machine", role, false); err != nil {
 		t.Fatalf("claim %s for %s: %v", role, holder, err)
 	}

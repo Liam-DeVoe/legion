@@ -167,11 +167,8 @@ func TestABrowserOpeningADocumentMidColdWriteKeepsBothEdits(t *testing.T) {
 				ServerURL:   "https://dispatch.example",
 				Settle:      time.Hour,
 			})
-			cleanupAndRelease(t, func() {
-				if err := service.Shutdown(context.Background()); err != nil {
-					t.Errorf("shutdown document service: %v", err)
-				}
-			})
+			service.srv.RoomIdleTimeout = testRoomIdleTimeout
+			cleanupAndRelease(t, func() { shutdownTestService(t, service) })
 			seedServiceText(t, service, artifactID, "Alpha paragraph.\n\nBravo paragraph.\n")
 			closeDocumentRoom(t, service, artifactID)
 

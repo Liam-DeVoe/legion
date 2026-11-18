@@ -101,9 +101,10 @@ func isolateChain(t *testing.T) {
 // enroll that failed), buildSigner's error appends whatever the launcher recorded in
 // enrollment.error, so a caller sees why enrollment failed rather than a bare "no such file";
 // with no enrollment.error file, the message is the bare missing-file error.
-// Serial: it sets process-wide variables, XDG_RUNTIME_DIR, AGENT_SECRETS_KEY_DIR and
-// AGENT_SECRETS_HELPER_SOCK, which buildSigner reads for itself; t.Setenv panics under
-// t.Parallel.
+// Serial: it sets process-wide variables with t.Setenv, which panics under t.Parallel:
+// AGENT_SECRETS_KEY_DIR, which buildSigner reads its key dir from, beside XDG_RUNTIME_DIR and
+// AGENT_SECRETS_HELPER_SOCK, which it does not reach here: the key dir's missing enrollment stops
+// the chain at its first source (keyDirSource).
 func TestBuildSignerNamesTheEnrollmentErrorDiagnostic(t *testing.T) {
 	dir := newKeyDir(t)
 	if err := os.Remove(filepath.Join(dir, "enrollment")); err != nil {
@@ -193,7 +194,6 @@ func copyFile(t *testing.T, src, dst string) {
 // TestFileSignerMatchesWhatProofVerifyExpects round-trips a fileSigner's compact JWS through a
 // real proof.Verifier: the same htm/htu/eid comparison the broker itself performs.
 func TestFileSignerMatchesWhatProofVerifyExpects(t *testing.T) {
-	t.Parallel()
 	key, err := proof.NewKey()
 	if err != nil {
 		t.Fatal(err)
@@ -429,8 +429,10 @@ func TestWhoamiAlwaysPrintsJSON(t *testing.T) {
 
 // TestSignWithoutEnrollmentUsesTheBoxsOwnIdentity proves sign's default path signs a real,
 // verifiable proof for the box's own enrollment id, without making a broker call.
-// Serial: it sets process-wide variables, AGENT_SECRETS_KEY_DIR and AGENT_SECRETS_HELPER_SOCK,
-// which buildSigner reads for itself; t.Setenv panics under t.Parallel.
+// Serial: it sets process-wide variables with t.Setenv, which panics under t.Parallel:
+// AGENT_SECRETS_KEY_DIR, which buildSigner (through cmdSign) reads its key dir from, beside
+// AGENT_SECRETS_HELPER_SOCK, which it does not reach here: the key dir's key.pem and enrollment
+// answer first (keyDirSource).
 func TestSignWithoutEnrollmentUsesTheBoxsOwnIdentity(t *testing.T) {
 	keyDir := newKeyDir(t)
 	t.Setenv("AGENT_SECRETS_KEY_DIR", keyDir)
@@ -543,10 +545,10 @@ func TestSignEnrollmentRefusedInHelperMode(t *testing.T) {
 // whose stdout is the caller's.
 // Every case runs twice: once with the paths named by AGENT_SECRETS_KEY_DIR and
 // AGENT_SECRETS_HELPER_SOCK, once with both unset and the files at the $XDG_RUNTIME_DIR defaults.
-// Serial: it sets process-wide variables - AGENT_SECRETS_HELPER_SOCK, AGENT_SECRETS_KEY_DIR,
-// XDG_RUNTIME_DIR, XDG_CONFIG_HOME, XDG_STATE_HOME and HOME (identityPaths) - which the identity
-// form reads for itself, and its slow case's assertion is also a time: a silent helper is given up
-// on after about two seconds (dispatch://INFRA-985).
+// Serial: it sets process-wide variables (identityPaths) - AGENT_SECRETS_HELPER_SOCK,
+// AGENT_SECRETS_KEY_DIR, XDG_RUNTIME_DIR, XDG_CONFIG_HOME and HOME, which the identity form reads
+// for itself, and XDG_STATE_HOME, which it does not - and its slow case's assertion is also a
+// time: a silent helper is given up on after about two seconds (dispatch://INFRA-985).
 func TestIdentity(t *testing.T) {
 	for _, mode := range []string{"named", "defaults"} {
 		for _, tc := range identityCases() {

@@ -895,7 +895,6 @@ func TestRelatedCheckBoundsBlankTextIsNotMade(t *testing.T) {
 // bound here is the case's (nearCopyVerdictBound), so the title matches are the gate's verdict
 // and not the machine's having answered inside production's 500 ms.
 func TestCreateIssueForceNamesTitleMatchesWhenTheSearchFails(t *testing.T) {
-	t.Parallel()
 	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{duplicateBound: nearCopyVerdictBound(t)})
 	createSuggestionProject(t, handler, "FORCE")
 	const title = "Archive search drops rows past offset fifty"

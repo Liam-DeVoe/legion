@@ -1172,7 +1172,10 @@ func TestACopySettlingWhileItsSourceIsAnsweredWaitsForTheAnswerAndNeitherFails(t
 	t.Parallel()
 	service, _ := newTestService(t)
 	service.settle = time.Hour
-	ctx, cancel := context.WithTimeout(context.Background(), roomWait(t))
+	// The answer's context spans two waits - the settlement queueing on the pending row (between)
+	// and the answer finishing after it - so it gets roomWait for each, and the settlement's own
+	// finish below has roomWait of its own; ctx ends with the test.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	shared := ":::ask{#shared urgency=\"med\" multiple=\"false\"}\nWhich region?\n:::\n"
 	original := createProjectDocument(t, service.store, "# Original")
@@ -1192,18 +1195,20 @@ func TestACopySettlingWhileItsSourceIsAnsweredWaitsForTheAnswerAndNeitherFails(t
 	generation := roomGeneration(t, service, copied)
 
 	settled := make(chan error, 1)
-	if err := answerSource(ctx, service, original, source, func() {
+	answering, cancelAnswer := context.WithTimeout(ctx, 2*roomWait(t))
+	defer cancelAnswer()
+	if err := answerSource(answering, service, original, source, func() {
 		go func() {
 			service.settleRoom(copied, generation)
 			settled <- nil
 		}()
-		waitForLockWait(t, ctx, service.store, "%delete from doc_settlements_pending%", settled)
+		waitForLockWait(t, answering, service.store, "%delete from doc_settlements_pending%", settled)
 	}); err != nil {
 		t.Fatal(err)
 	}
 	select {
 	case <-settled:
-	case <-ctx.Done():
+	case <-time.After(roomWait(t)):
 		t.Fatal("the copy's settlement never finished")
 	}
 	state := service.room(copied)
@@ -1308,7 +1313,10 @@ func TestACopyAndItsSourcesAnswerTakingTheCopyLockInEitherOrderBothFinish(t *tes
 		t.Run(order, func(t *testing.T) {
 			service, _ := newTestService(t)
 			service.settle = time.Hour
-			ctx, cancel := context.WithTimeout(context.Background(), roomWait(t))
+			// Each wait has roomWait of its own: the answer's context spans two - the other side
+			// queueing on the copy lock and the answer finishing - so it gets twice that, and every
+			// other wait (the reconcile, each finish) is bounded by itself; ctx ends with the test.
+			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			shared := ":::ask{#shared urgency=\"med\" multiple=\"false\"}\nWhich region?\n:::\n"
 			original := createProjectDocument(t, service.store, "# Original")
@@ -1333,13 +1341,15 @@ func TestACopyAndItsSourcesAnswerTakingTheCopyLockInEitherOrderBothFinish(t *tes
 			case "answer first":
 				// The answer holds the copy lock and the copy's pending row while the copy's settlement
 				// waits on the lock, then appends its event and commits.
-				if err := answerSource(ctx, service, original, source, func() {
+				answering, cancelAnswer := context.WithTimeout(ctx, 2*roomWait(t))
+				defer cancelAnswer()
+				if err := answerSource(answering, service, original, source, func() {
 					go settle()
-					waitForLockWait(t, ctx, service.store, copyLockWait, settled)
+					waitForLockWait(t, answering, service.store, copyLockWait, settled)
 				}); err != nil {
 					t.Fatal(err)
 				}
-				awaitDone(t, ctx, "the copy's settlement", settled)
+				awaitDone(t, "the copy's settlement", settled)
 			case "settlement first":
 				// The copy's settlement holds the copy lock, reconciled, while the answer waits on it.
 				reconciled, proceed := make(chan struct{}), make(chan struct{})
@@ -1352,16 +1362,18 @@ func TestACopyAndItsSourcesAnswerTakingTheCopyLockInEitherOrderBothFinish(t *tes
 				go settle()
 				select {
 				case <-reconciled:
-				case <-ctx.Done():
+				case <-time.After(roomWait(t)):
 					t.Fatal("the copy's settlement never reconciled")
 				}
 				answered := make(chan error, 1)
-				go func() { answered <- answerSource(ctx, service, original, source, nil) }()
-				waitForLockWait(t, ctx, service.store, copyLockWait, answered)
+				answering, cancelAnswer := context.WithTimeout(ctx, 2*roomWait(t))
+				defer cancelAnswer()
+				go func() { answered <- answerSource(answering, service, original, source, nil) }()
+				waitForLockWait(t, answering, service.store, copyLockWait, answered)
 				close(proceed)
-				awaitDone(t, ctx, "the copy's settlement", settled)
+				awaitDone(t, "the copy's settlement", settled)
 				service.afterSettleReconcile = nil
-				awaitDone(t, ctx, "the answer", answered)
+				awaitDone(t, "the answer", answered)
 				// The settlement read the source before the answer, so the copy shows it open and owes
 				// the settlement the answer marked.
 				requireCopiedStates(t, service, copied, `state="open" `+copiedFrom(t, service, source.ID, original))
@@ -1394,15 +1406,15 @@ func TestACopyAndItsSourcesAnswerTakingTheCopyLockInEitherOrderBothFinish(t *tes
 }
 
 // awaitDone waits for what, which sends its result on done, failing the test on an error or when
-// ctx ends first.
-func awaitDone(t *testing.T, ctx context.Context, what string, done <-chan error) {
+// roomWait passes first: each wait for a finish is bounded by itself.
+func awaitDone(t *testing.T, what string, done <-chan error) {
 	t.Helper()
 	select {
 	case err := <-done:
 		if err != nil {
 			t.Fatalf("%s: %v", what, err)
 		}
-	case <-ctx.Done():
+	case <-time.After(roomWait(t)):
 		t.Fatalf("%s never finished", what)
 	}
 }

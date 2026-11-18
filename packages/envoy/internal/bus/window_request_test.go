@@ -277,7 +277,10 @@ func TestARequestAFullStreamRefusesIsAnsweredByThatRefusalAtOnce(t *testing.T) {
 // Many Requests in flight on one window, sent from several goroutines while others publish on it,
 // are each answered by the stream's acknowledgement of their own copy.
 func TestManyRequestsInFlightOnOneWindowEachTakeTheirOwnAnswer(t *testing.T) {
-	t.Parallel()
+	// Serial: a product timer is under its steps. Each publish on the window waits for the
+	// stream's acknowledgement under publishAcknowledgementTimeout (5 s, internal/bus/async.go),
+	// shorter than busWait, and twenty of them run beside twenty Requests here, so a parallel
+	// test's load is what would stretch an acknowledgement past that bound.
 	const senders = 20
 	_, _, client := requestClient(t)
 	subject := contracts.LegacyAgentSubject("ses_request_many")

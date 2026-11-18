@@ -472,7 +472,9 @@ func (r sessionOrderRig) views(t *testing.T, session string) (bySubject map[stri
 // outbox stopped while the first is set not due for an hour, so no retry of it writes a sooner
 // back-off and the batch that reads the second finds the first not due. Then, with the outbox
 // stopped again, both are made due and the stream captures every subject, and an outbox started
-// afresh publishes both in its first scan.
+// afresh publishes both in its first scan. Each outbox after the first takes the hold the one
+// before it released, and would wait out that one's row were the release to fail, so every one
+// takes the hold under production's options (runOutboxUnderProductionsHold), not the rig's day.
 func takesTheOwnersEventsInOrderThroughATopicFailure(t *testing.T, oneBatch bool) {
 	rig := newSessionOrderRig(t)
 	rig.refuse(t, dispatchTopicPrefix)
@@ -482,7 +484,7 @@ func takesTheOwnersEventsInOrderThroughATopicFailure(t *testing.T, oneBatch bool
 	if oneBatch {
 		second = rig.write(t, person, "second, by a person")
 	}
-	stop := runOutbox(t, rig.database, rig.client, rig.broker)
+	stop := runOutboxUnderProductionsHold(t, rig.database, rig.client, rig.broker)
 	defer func() { stop() }()
 	if !oneBatch {
 		waitFor(t, 60*time.Second, "the first event backed off for the topic family", func() bool {
@@ -495,7 +497,7 @@ func takesTheOwnersEventsInOrderThroughATopicFailure(t *testing.T, oneBatch bool
 			t.Fatalf("hold the first event not due: %v", err)
 		}
 		second = rig.write(t, person, "second, by a person")
-		stop = runOutbox(t, rig.database, rig.client, rig.broker)
+		stop = runOutboxUnderProductionsHold(t, rig.database, rig.client, rig.broker)
 	}
 	waitFor(t, 60*time.Second, "a batch settled the second event while the topic family was refused", func() bool {
 		return rig.settled(t, second.ID)
@@ -506,7 +508,7 @@ func takesTheOwnersEventsInOrderThroughATopicFailure(t *testing.T, oneBatch bool
 		t.Fatalf("make both events due: %v", err)
 	}
 	rig.captureAgain(t)
-	stop = runOutbox(t, rig.database, rig.client, rig.broker)
+	stop = runOutboxUnderProductionsHold(t, rig.database, rig.client, rig.broker)
 	waitFor(t, 120*time.Second, "both events published", func() bool {
 		return publishedAt(t, rig.database, first.ID) != nil && publishedAt(t, rig.database, second.ID) != nil
 	})
@@ -1198,7 +1200,7 @@ func TestAPublishedEventIsWrittenOnce(t *testing.T) {
 					t.Fatalf("event %d reached %v, want %d destinations", event.ID, destinations, tc.destinations)
 				}
 			}
-			waitFor(t, 15*time.Second, "the scan's updates reported", func() bool { return updates()-before >= published })
+			waitFor(t, eventWait, "the scan's updates reported", func() bool { return updates()-before >= published })
 			if written := settled() - before; written != published {
 				t.Fatalf("publishing %d events of %d destinations each updated events %d times, want %d: one write per event",
 					published, tc.destinations, written, published)

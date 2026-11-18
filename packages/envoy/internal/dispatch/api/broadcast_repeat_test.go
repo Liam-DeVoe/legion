@@ -251,8 +251,10 @@ func TestBroadcastRepeatResumesEveryOwedRecipientAndDeliversEachOnce(t *testing.
 	}
 	// The tester's sender claimed its attempt and died inside the send: the claim has lapsed.
 	claimed("tester", "5 minutes")
-	// The archivist's sender is alive and inside its claim's lease, so that attempt is its own.
-	claimed("archivist", "0 seconds")
+	// The archivist's sender is alive and inside its claim's lease, so that attempt is its own. The
+	// claim is stamped a day ahead, past any run of the test binary, so the repeat and the resumes
+	// behind it read it inside its lease however long the steps between take.
+	claimed("archivist", "-1 day")
 	// The reviewer's attempt was never claimed at all: the write opened it and nothing took it.
 
 	repeat := postBroadcastKeyed(t, handler, input, "alice", "press-1")

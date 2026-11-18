@@ -386,7 +386,10 @@ func awaitUnplaceableState(t *testing.T, states <-chan unplaceableState, what st
 // subtest: there the same message is given up on its first delivery, with no NAK and no deferral,
 // so a pass here cannot come from a rig that defers nothing.
 func TestUnplaceableAgentDeliveryRetriesThenGivesUp(t *testing.T) {
-	t.Parallel()
+	// Serial: two rows read the run's state at a delivery (startUnplaceableDeliveryReadAt), before
+	// the handler settles that delivery, and the run's durable (startEnvelopeDeliveryThrough)
+	// delivers again a message not settled within its 10 s AckWait, which adds a delivery to the
+	// counts the rows assert; so that read and the handler must finish inside those 10 s.
 	t.Run("a window retries, then gives up once", func(t *testing.T) {
 		run, atRedelivery := startUnplaceableDeliveryReadAt(t, "ses_unplaceable_retried", oneDeferralWindow, 0, 2)
 		harness := run.harness
@@ -660,7 +663,10 @@ func preloadDeferrals(t *testing.T, set *unplaceableDeferrals, n int) {
 // cap, the same message on the same rig is deferred, so the give-up above is the cap's doing and
 // not the rig's.
 func TestUnplaceableDeferralsStopAtTheirCap(t *testing.T) {
-	t.Parallel()
+	// Serial: the second row reads the run's state at a delivery (readAtDelivery), before the
+	// handler settles that delivery, and the run's durable (startEnvelopeDeliveryThrough) delivers
+	// again a message not settled within its 10 s AckWait, which adds a delivery to the counts the
+	// row asserts; so that read and the handler must finish inside those 10 s.
 	t.Run("a message that finds the cap reached is given up at once", func(t *testing.T) {
 		harness := unplaceableHarness(t)
 		cfg := harness.config
@@ -746,7 +752,6 @@ const twoDeferralWindow = 2*testUnplaceableRetryDelay + testUnplaceableRetryDela
 // still holds it after the give-up - and a release that is not keyed on the message would show up
 // here as a count below the cap while the message is still held.
 func TestARedeliveryGivesItsDeferralSlotBack(t *testing.T) {
-	t.Parallel()
 	harness := unplaceableHarness(t)
 	cfg := harness.config
 	cfg.unplaceableRetryWindow = twoDeferralWindow
@@ -802,7 +807,11 @@ func TestARedeliveryGivesItsDeferralSlotBack(t *testing.T) {
 // under the cap, the same redelivery on the same rig is deferred at attempt 2, so the give-up
 // above is the cap holding and not a rig whose redeliveries can never be deferred.
 func TestARedeliveryThisListenerNeverDeferredGivesNoSlotBack(t *testing.T) {
-	t.Parallel()
+	// Serial: each row reads the run's state at a delivery (readAtDelivery), before the handler
+	// settles that delivery, and the run's durable (startEnvelopeDeliveryThrough) delivers again a
+	// message not settled within its 10 s AckWait, which adds a delivery to the counts the rows
+	// assert; so that read and the handler must finish inside those 10 s.
+
 	// start hands back, besides the rig, the state as delivery 3 arrives (readAtDelivery): the
 	// delivery the handler's deferral of delivery 2 asks for, if it defers it.
 	start := func(t *testing.T, target string, preload int) (listenerDeliveryHarness, *unplaceableDeferrals, <-chan unplaceableState) {
@@ -888,7 +897,10 @@ func TestARedeliveryThisListenerNeverDeferredGivesNoSlotBack(t *testing.T) {
 // same window on the same rig, one delivery earlier, is deferred, so the give-up is the cap and not
 // a rig whose late deliveries can never be deferred.
 func TestAWindowPastTheDurablesMaxDeliverStillGivesUpBeforeIt(t *testing.T) {
-	t.Parallel()
+	// Serial: each row reads the run's state at a delivery (readAtDelivery), before the handler
+	// settles that delivery, and the run's durable (startEnvelopeDeliveryThrough) delivers again a
+	// message not settled within its 10 s AckWait, which adds a delivery to the counts the rows
+	// assert; so that read and the handler must finish inside those 10 s.
 	const window = 10 * time.Minute
 	if deferrals := int(window / testUnplaceableRetryDelay); deferrals < consumerMaxDeliver {
 		t.Fatalf("a %s window buys %d deferrals, fewer than the durable's MaxDeliver of %d: it no longer reaches the cap this test exists for", window, deferrals, consumerMaxDeliver)
@@ -993,7 +1005,9 @@ func recordsFor(records []deliveryRecord, sessionID string) []deliveryRecord {
 // would bring: the give-up keeps the attempt entry, so that delivery is an attempt-dedupe skip,
 // where an entry cleared at the give-up would run the handler again.
 func TestAGiveUpWhoseNoticeCanNeverBePublishedIsStillTerminal(t *testing.T) {
-	t.Parallel()
+	// Serial: the further delivery below must be judged against the attempt entry the give-up
+	// kept, and the harness's attempt cache forgets an entry five minutes after it was recorded,
+	// so the steps from the give-up to that delivery must finish inside those five minutes.
 	const target = "ses_notice_too_large"
 	harness := newListenerDeliveryHarness(t)
 	item := listenerTestEnvelope(contracts.LegacyAgentSubject(target), "unplaceable-"+target)

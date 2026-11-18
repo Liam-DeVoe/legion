@@ -102,6 +102,7 @@ func newEnrolBroker(t *testing.T) *enrolBroker {
 	})
 	b.srv = httptest.NewServer(mux)
 	t.Cleanup(b.srv.Close)
+	guardAnswers(t, b.srv)
 	return b
 }
 

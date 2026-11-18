@@ -493,12 +493,16 @@ func typeIntoDocument(t *testing.T, service *Service, serverURL, artifactID stri
 			return
 		}
 		typists.Delete(artifactID)
-		ctx, cancel := context.WithTimeout(context.Background(), roomWait(t))
-		defer cancel()
-		if err := service.waitForPendingUpdates(ctx, artifactID); err != nil {
+		// Two waits in turn, each given roomWait of its own, so the second does not get only what
+		// the first left.
+		pending, cancelPending := context.WithTimeout(context.Background(), roomWait(t))
+		defer cancelPending()
+		if err := service.waitForPendingUpdates(pending, artifactID); err != nil {
 			t.Errorf("wait for the peer's updates to reach persistence: %v", err)
 		}
-		if err := service.waitForDurableAppends(ctx, artifactID); err != nil {
+		durable, cancelDurable := context.WithTimeout(context.Background(), roomWait(t))
+		defer cancelDurable()
+		if err := service.waitForDurableAppends(durable, artifactID); err != nil {
 			t.Errorf("wait for the peer's updates to become durable: %v", err)
 		}
 	})

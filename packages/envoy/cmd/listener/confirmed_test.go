@@ -411,7 +411,6 @@ func TestPublishRouteSendsNothingToASenderHoldingTheRole(t *testing.T) {
 // A re-send under the key of a message its holder already confirmed is answered 200 and not
 // forwarded again: the holder took it once.
 func TestPublishRouteDoesNotForwardARepeatKeyItsHolderConfirmed(t *testing.T) {
-	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const role = "repeat-key"
 	claimRoleFor(t, harness.registry, harness.sessions, "ses_holder", role, nil)

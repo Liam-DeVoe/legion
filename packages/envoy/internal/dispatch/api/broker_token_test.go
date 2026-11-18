@@ -944,7 +944,6 @@ func TestABrokerTokensReresolutionIsNotProofCheckedAgain(t *testing.T) {
 // so a client reads the wait without parsing a sentence. The bucket here holds one request, so
 // the second presentation of a token the broker has not been asked about meets it.
 func TestTheRateRefusalCarriesTheWaitInItsHeader(t *testing.T) {
-	t.Parallel()
 	rig := newBrokerTokenRig(t, func(o *brokertoken.Options) {
 		o.AddressLimit = ratelimit.Limit{Every: time.Minute, Burst: 1}
 	})

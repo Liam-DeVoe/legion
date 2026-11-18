@@ -539,7 +539,11 @@ func (c *concurrentJobClock) fireAll() *sync.WaitGroup {
 // opened one listing per run at once, which past GitHub's 100 concurrent requests rate-limits the
 // App.
 func TestTheJobIntakeReadsAtMostABoundedNumberOfRunsAtOnce(t *testing.T) {
-	t.Parallel()
+	// Serial: a product timer is under its steps. The GitHub client gives an unanswered call up
+	// at githubapp.RequestTimeout (20 s, shorter than eventWait) and asks again, while the fake
+	// still counts the abandoned read in flight, so the wait for the bounded reads and the count
+	// below must finish inside 20 s of the first read, and a parallel test's load is what would
+	// stretch them past it.
 	pool, ctx := deliveryTestPool(t)
 	const runs = 3 * reconcilePartialConcurrency
 	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)

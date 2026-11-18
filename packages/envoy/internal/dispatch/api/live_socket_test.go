@@ -1027,9 +1027,8 @@ func TestShutdownClosesEverySocketWithServiceRestart(t *testing.T) {
 }
 
 func TestASocketPastItsAgeClosesWithMaxAge(t *testing.T) {
-	// No t.Parallel: this test measures the process. The socket must close within 3 s of its
-	// 200 ms age, and another test's work on the same machine would read as an age timer that
-	// fired late.
+	// No t.Parallel: its assertion is a time: the socket lives at least its 200 ms age before it
+	// closes with max age (the elapsed reading below).
 	const age = 200 * time.Millisecond
 	rig := newLiveSocketRig(t, testServerOptions{liveSocketAge: func() time.Duration { return age }}, nil)
 	opened := time.Now()
@@ -1269,9 +1268,6 @@ func TestAPageThatAnswersNoPingLosesItsSocketWithNoCloseFrame(t *testing.T) {
 }
 
 func TestAnIdleDeliverySocketIsSentAHeartbeat(t *testing.T) {
-	// No t.Parallel: this test measures the process. An idle socket's first frame, the heartbeat,
-	// must come within a second of its 300 ms heartbeat, and another test's work on the same
-	// machine would read as a heartbeat sent late.
 	const heartbeat = 300 * time.Millisecond
 	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: heartbeat}, nil)
 	client := rig.dial(t, asUser("alice"))

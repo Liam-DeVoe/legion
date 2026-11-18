@@ -154,7 +154,9 @@ func describeApproval(read approvalRead) string {
 // open issue leaves it. alice's approval from the request then reviews the latest version, and
 // the spec reads approved.
 func TestAReopenedApprovalRequestNamesTheVersionAClosedSettlementWrote(t *testing.T) {
-	t.Parallel()
+	// Serial: closeIssueThroughPatch moves the close a minute ahead, and the store takes a
+	// browser's update after the close only while that minute and its close margin (2 s) have not
+	// passed, so the steps from the close to the edit settleClosedEdit makes must finish inside them.
 	handler, database, documentService := newClosedSettlementHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Approval and a margin edit", "Context\n")
 	f := closedEditFixture{handler: handler, database: database, documents: documentService, spec: issue.PrimaryArtifactID}
@@ -209,7 +211,6 @@ func TestAReopenedApprovalRequestNamesTheVersionAClosedSettlementWrote(t *testin
 // the reopen through PATCH the spec reads approved at version N+2, carried from her approval of
 // version N.
 func TestAReopenCarriesAnApprovalToTheApprovedTextAClosedSettlementWroteBack(t *testing.T) {
-	t.Parallel()
 	handler, database, documentService := newClosedSettlementHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "An approved text written back while closed", "Context\n")
 	f := closedEditFixture{handler: handler, database: database, documents: documentService, spec: issue.PrimaryArtifactID}
@@ -317,7 +318,6 @@ func eventKinds(logged []loggedEvent) []string {
 // closed issue's settlement of her undo credited (doc_closed_edit_sources), as that settlement's
 // version on an open issue would have moved it.
 func TestAReopenKeepsTheRequestWithThePersonWhenAClosedSettlementWroteBackItsText(t *testing.T) {
-	t.Parallel()
 	handler, database, documentService := newClosedSettlementHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "A requested text written back while closed", "Context\n")
 	f := closedEditFixture{handler: handler, database: database, documents: documentService, spec: issue.PrimaryArtifactID}
@@ -687,7 +687,6 @@ func (c reopenCarryCase) requireRetracted(t *testing.T, blockID, when string) {
 // The settle delay is an hour, so the test runs each settlement itself (SettleIssueDocuments), and
 // nothing settles between the reopen and alice's review.
 func TestAReopenCarriesAnApprovalOnlyOverTheAsksTheCloseWithdrew(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
 		name    string
 		spec    string

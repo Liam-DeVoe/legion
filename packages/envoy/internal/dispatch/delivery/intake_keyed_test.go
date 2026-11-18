@@ -184,7 +184,10 @@ func runIntake(t *testing.T, intake *Intake) (stop func()) {
 // acknowledged, and a second message of pull request 1 waits behind the first: it starts only
 // once the first has ended.
 func TestAPullRequestHeldOnGitHubHoldsBackOnlyItsOwnMessages(t *testing.T) {
-	t.Parallel()
+	// Serial: a product timer is under its steps. The GitHub client gives an unanswered call up
+	// at githubapp.RequestTimeout (20 s, shorter than eventWait) and asks again, recording a
+	// second start of pull request 1, so the wait for pull request 2 below must finish inside 20 s
+	// of pull request 1's held fetch, and a parallel test's load is what would stretch it past it.
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	fake := newFakeGitHub(t)
@@ -261,11 +264,6 @@ func TestSubjectsTheIntakeDoesNotWantAreAcknowledgedWithoutADecode(t *testing.T)
 // A message waiting behind its key when the intake stops is negatively acknowledged, so the next
 // process to bind the durable is handed it at once rather than after the ack wait; the message in
 // its handler then finishes and is acknowledged by the stopping intake.
-//
-// Serial: its assertion is a time. Only the bound on the next process's redelivery (eventWait, in
-// awaitAcknowledged) tells the stop's negative acknowledgement from a message the stop left to the
-// durable's ack wait (intakeAckWait, five minutes), which comes back too, later; a parallel test's
-// load is what would stretch the redelivery past that bound.
 func TestAMessageQueuedBehindItsKeyAtStopIsRedeliveredAtOnce(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
@@ -341,11 +339,6 @@ func holdPullRequestOneUntilAbandoned(fake *fakeGitHub) *heldPullRequests {
 // of one key's messages holds across the hand-over, as it does inside one intake. The message the
 // stopping intake gives back reaches the standby only once its handler of that key has ended or
 // given up its GitHub call.
-//
-// Serial: its assertion is a time. Only the bound on the standby's redelivery (eventWait, in
-// awaitAcknowledged) tells the stopping intake's give-back from a message it left to the durable's
-// ack wait (intakeAckWait, five minutes), which comes back too, later; a parallel test's load is
-// what would stretch the redelivery past that bound.
 func TestAHandOverKeepsAPullRequestsMessagesInOrder(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
@@ -525,11 +518,6 @@ func TestABindThatReturnsAfterTheSignalStopsByTheBudgetFromTheSignal(t *testing.
 // A message NATS has delivered into the client's buffer, but the subscription's callback has not
 // yet routed when the intake stops, is negatively acknowledged rather than handled, and the next
 // process to bind the durable handles it.
-//
-// Serial: its assertion is a time. Only the bound on the next process's redelivery (eventWait, in
-// awaitAcknowledged) tells the stop's negative acknowledgement from a message the stop left to the
-// durable's ack wait (intakeAckWait, five minutes), which comes back too, later; a parallel test's
-// load is what would stretch the redelivery past that bound.
 func TestAMessageInTheClientBufferAtStopIsGivenBack(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)

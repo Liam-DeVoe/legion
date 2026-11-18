@@ -510,7 +510,6 @@ func redactSecrets(s string) string {
 }
 
 func TestExecFormGrantRunsChildWithValueInEnvironment(t *testing.T) {
-	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -540,7 +539,6 @@ func TestExecFormGrantRunsChildWithValueInEnvironment(t *testing.T) {
 // ending in a line feed ends that way because the stored value holds a line ending inside it, and the agent
 // running the command could not store it differently in any case.
 func TestTheExecFormGivesTheChildTheReleasedBytesAndSaysNothingMore(t *testing.T) {
-	t.Parallel()
 	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
 	broker, counters := fakeBroker(t)
@@ -630,7 +628,6 @@ func TestAPendingRequestWithoutABrokerPageNamesItsApproverAlone(t *testing.T) {
 // The fake broker holds the first status poll until the test has read those two lines from the
 // command's stderr, so lines printed only once the wait ends never arrive in time.
 func TestExecFormPendingExitsSeventyFiveWithNoChild(t *testing.T) {
-	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, counters := fakeBroker(t)
 	defer broker.Close()
@@ -706,7 +703,6 @@ func TestExecFormPendingExitsSeventyFiveWithNoChild(t *testing.T) {
 // the approver the broker names and the page on the broker where they decide it, which a broker
 // that names none leaves out; request exits 75 and status 0, as before.
 func TestRequestAndStatusNameWhomAPendingRequestWaitsOn(t *testing.T) {
-	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -737,7 +733,6 @@ func TestRequestAndStatusNameWhomAPendingRequestWaitsOn(t *testing.T) {
 // AGENT_SECRETS_APPROVE_URL. status --json prints the broker's answer byte for byte, approver
 // included.
 func TestADecidedRequestSaysNothingOfWaiting(t *testing.T) {
-	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -762,7 +757,6 @@ func TestADecidedRequestSaysNothingOfWaiting(t *testing.T) {
 }
 
 func TestExecFormDeniedExitsSeventySevenWithNoChild(t *testing.T) {
-	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -897,7 +891,6 @@ func TestEveryFormAnswersHelp(t *testing.T) {
 // finding 3: a granted request whose values come back without one of its names must never exec,
 // since silently execing without it would be a silent partial grant.
 func TestExecFormRefusesToRunWhenAGrantedNameHasNoValue(t *testing.T) {
-	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -924,7 +917,6 @@ func TestExecFormRefusesToRunWhenAGrantedNameHasNoValue(t *testing.T) {
 // must not survive into the child's environment alongside (and potentially before) the
 // broker-released value.
 func TestExecFormDoesNotLetInheritedEnvShadowAGrantedValue(t *testing.T) {
-	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -951,7 +943,6 @@ func TestExecFormDoesNotLetInheritedEnvShadowAGrantedValue(t *testing.T) {
 // poll GET /v1/requests/{id} (proof that neither invocation ever entered the pending-wait loop,
 // whether the broker minted the grant fresh or handed back a reused one).
 func TestExecFormSecondInvocationReusesGrantTransparently(t *testing.T) {
-	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, counters := fakeBroker(t)
 	defer broker.Close()
@@ -977,7 +968,6 @@ func TestExecFormSecondInvocationReusesGrantTransparently(t *testing.T) {
 // helper under `agent-secrets K -- omp`) reaches the broker as that session instead of failing
 // with "AGENT_SECRETS_URL is required".
 func TestExecFormNestedCallKeepsTheSessionIdentity(t *testing.T) {
-	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -1154,7 +1144,6 @@ func writePendingMarker(t *testing.T, dir string, age time.Duration) string {
 // enrolling it. While the launcher's enrollment.pending marker is there, a call waits for key.pem
 // and enrollment to appear instead of failing at once.
 func TestEnrollWaitRidesOutTheLaunchersSetup(t *testing.T) {
-	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -1273,7 +1262,6 @@ func TestEnrollWaitRefusesAnInvalidBound(t *testing.T) {
 }
 
 func TestRequestJSONPrintsExactlyOneContractObject(t *testing.T) {
-	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -1297,7 +1285,6 @@ func TestRequestJSONPrintsExactlyOneContractObject(t *testing.T) {
 // finding 2: --json must print the broker's exact bytes, never appending a newline (or anything
 // else) the response didn't already end with.
 func TestRequestJSONIsByteIdenticalToTheBrokerResponse(t *testing.T) {
-	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -1342,7 +1329,6 @@ func TestSelfJSONPrintsExactlyOneContractObjectNamingTheIssuedEnrollment(t *test
 // exactly the argv secret names with the reason carried inside the signed object rather than as
 // a top-level field.
 func TestRequestSignsARequestObject(t *testing.T) {
-	t.Parallel()
 	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
 
@@ -1539,7 +1525,6 @@ func TestMachineLoginExitsOneOnDenied(t *testing.T) {
 // credential the broker rejected becomes) says on stderr to run the login again, and a login in
 // flight outranks a refused credential.
 func TestMachineLoginStatusExitsZeroOnlyWhileACredentialIsHeld(t *testing.T) {
-	t.Parallel()
 	binary := buildAgentSecrets(t)
 	const held = "the helper still holds the launcher credential an earlier login issued"
 	const prefix = "agent-secrets machine login-status: "
@@ -1675,7 +1660,6 @@ func TestEnrollHelperFlagValidation(t *testing.T) {
 // level by TestRequestSessionIDFallbackOrder, below; this test is the proof that both real call
 // sites actually call it rather than os.Getenv("OMP_SESSION_ID") directly.
 func TestRequestAndExecFormSendSessionIDWithFallbackOrder(t *testing.T) {
-	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, counters := fakeBroker(t)
 	defer broker.Close()

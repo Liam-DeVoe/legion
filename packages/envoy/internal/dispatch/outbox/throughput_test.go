@@ -516,9 +516,6 @@ func (r *throughputRig) roleArrivals() []int64 {
 // over the whole run and a third of the events amortises the same start-up over a third of the
 // window. What a load test measures is a property of how much it loads, so the sizes are back as
 // main has them and dispatch://INFRA-985 owns every number here (dispatch://INFRA-1075).
-//
-// Serial: its assertion is a time - every event of each load must be published within waitTime
-// (3 min) of the outbox's start (docs/testing.md).
 func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 	const (
 		backlogIssues = 20
@@ -721,22 +718,31 @@ func runOutboxThrough(t *testing.T, database *store.Store, client *bus.Client, p
 // outbox that gave the publisher hold up is one that stopped publishing (Publishing).
 func runningOutbox(t *testing.T, database *store.Store, client *bus.Client, publisher Publisher, broker *events.Broker) (*Outbox, func()) {
 	t.Helper()
+	outbox := wiredOutbox(t, database, client, publisher, broker)
+	return outbox, started(t, outbox)
+}
+
+// runOutboxUnderProductionsHold is runOutbox with the publisher hold taken under production's
+// options (publisherHoldOptions) rather than the rig's day (rigHoldOptions, started): for a row
+// whose subject is the hold's loss, lapse or release, and for one that starts another outbox on
+// database once it has stopped one, which a release that failed would leave waiting out the rig's
+// day on the row the stopped outbox still names.
+func runOutboxUnderProductionsHold(t *testing.T, database *store.Store, client *bus.Client, broker *events.Broker) func() {
+	t.Helper()
+	outbox := wiredOutbox(t, database, client, client, broker)
+	outbox.deps.holdOptions = publisherHoldOptions
+	return started(t, outbox)
+}
+
+// wiredOutbox is the outbox runOutboxThrough starts, not yet started: database's outbox pool,
+// publisher, and the role and session buckets on client's connection.
+func wiredOutbox(t *testing.T, database *store.Store, client *bus.Client, publisher Publisher, broker *events.Broker) *Outbox {
+	t.Helper()
 	pool, err := database.Pool.Outbox()
 	if err != nil {
 		t.Fatalf("open the outbox's pool: %v", err)
 	}
 	holders := roles.NewBuckets(client, roles.Windows{})
-	outbox := New(Deps{Store: &store.Store{Pool: pool}, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener,
+	return New(Deps{Store: &store.Store{Pool: pool}, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener,
 		RoleClaims: holders, Sessions: holders})
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { outbox.Run(ctx); close(done) }()
-	return outbox, func() {
-		cancel()
-		select {
-		case <-done:
-		case <-time.After(eventWait):
-			t.Fatal("outbox did not stop")
-		}
-	}
 }

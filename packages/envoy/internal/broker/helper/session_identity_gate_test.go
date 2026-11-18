@@ -265,7 +265,6 @@ func TestAProcessComingBackWhileItsSessionRetiresFindsTheIdentity(t *testing.T) 
 // otherwise, so the reply reads NO_CREDENTIAL rather than claiming a grant the session may
 // not have.
 func TestAReclaimedIdentityKeepsItsEnrollmentID(t *testing.T) {
-	t.Parallel()
 	r, key, state, release := reclaimedIdentityRig(t)
 	if _, ok := r.srv.Registry.Dormant(testSessionID); !ok {
 		t.Fatal("the record must be parked first")
@@ -915,7 +914,6 @@ func TestAStaleEnrollArrivingAfterARenameIsNotKeptOverTheBlocker(t *testing.T) {
 // must start again to revoke THAT before enrolling — not fall through to an enroll the live
 // blocker refuses 409 until its lease ends.
 func TestARenameDuringTheOldRevokeRevokesTheNewBlockerFirst(t *testing.T) {
-	t.Parallel()
 	r := startRig(t, filepath.Join(t.TempDir(), "sessions.json"))
 	seedEnrollment(r.fake, "enr-old", "tp-old", "testhost:4242:1")
 	seedEnrollment(r.fake, "enr-blocking", "tp-blocking", SessionRuntimeID(testSessionID))

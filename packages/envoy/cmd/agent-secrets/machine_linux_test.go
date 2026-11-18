@@ -345,7 +345,7 @@ func (s *grantSession) run(args ...string) grantSessionResult {
 		s.t.Fatalf("sending %v to the session: %v", args, err)
 	}
 	s.seen++
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(promptJobWait)
 	for {
 		data, _ := os.ReadFile(s.resultsPath)
 		if len(data) > 0 {
@@ -359,7 +359,7 @@ func (s *grantSession) run(args ...string) grantSessionResult {
 			}
 		}
 		if time.Now().After(deadline) {
-			s.t.Fatalf("the session never reported a result for %v", args)
+			s.t.Fatalf("the session never reported a result for %v within promptJobWait (%s)", args, promptJobWait)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

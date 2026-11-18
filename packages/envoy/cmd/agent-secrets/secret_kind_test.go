@@ -290,9 +290,10 @@ func TestSecretCreateRefusesBadAdminAndScopes(t *testing.T) {
 // TestANoneBesideALoginIsRefusedOnCreateAndRetag: none removes github-owners only alone on retag,
 // so a list that names it beside a login, in any case, is refused before anything is read or
 // written, on create and on retag, rather than written as a login named none.
-// Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
-// reads the broker's address from (startSecretBroker's t.Setenv), and the package-level seams
-// the secret forms are reached through (awsClients, secretStdin).
+// Serial: it shares process-wide state: AGENT_SECRETS_URL, which startSecretBroker sets with
+// t.Setenv, and the package-level seams awsClients and secretStdin, which useAWS and useStdin
+// assign. None of them is read here: checkGitHubOwners refuses every create and retag before
+// openSession, where brokerBaseURL (identity.go) would read the broker's address.
 func TestANoneBesideALoginIsRefusedOnCreateAndRetag(t *testing.T) {
 	local := secrets.NewLocal(typeTaggedSecret(t, "APP_KEY"))
 	startSecretBroker(t, servedBy(local))
@@ -541,10 +542,12 @@ func TestAGitHubOwnersListIsWrittenSpaceSeparatedAndACommaIsRefused(t *testing.T
 // any case) names no GitHub account. It is not the removal it is on retag, and the github-app
 // secret it would write has no github-owners tag. Such a create is refused with a usage error
 // before anything is written, on both stores, as a create without --github-owners is.
-// Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
-// reads the broker's address from (startSecretBroker's and startSecretBrokerWith's t.Setenv),
-// CLOUDSDK_AUTH_ACCESS_TOKEN in its gcp half (useGCPIdentity's t.Setenv), and the package-level
-// seams the secret forms are reached through (awsClients and the gcp* ones, secretStdin).
+// Serial: it shares process-wide state: AGENT_SECRETS_URL, which startSecretBroker and
+// startSecretBrokerWith set with t.Setenv, CLOUDSDK_AUTH_ACCESS_TOKEN in its gcp half
+// (useGCPIdentity's t.Setenv), and the package-level seams awsClients, the gcp* ones and
+// secretStdin, which it assigns. None of them is read here: every create passes --github-owners
+// none, which checkGitHubOwners refuses before openSession, where brokerBaseURL (identity.go)
+// would read the broker's address.
 func TestACreateThatNamesNoneAsItsGitHubOwnersWritesNothing(t *testing.T) {
 	owners := []string{"none", "None", "NONE"}
 	t.Run("aws", func(t *testing.T) {

@@ -417,17 +417,14 @@ func heldAppendService(t *testing.T) (service *Service, artifactID string, enter
 		ServerURL:   "https://dispatch.example",
 		Settle:      time.Hour,
 	})
+	service.srv.RoomIdleTimeout = testRoomIdleTimeout
 	release = func() {
 		if held.released.CompareAndSwap(false, true) {
 			close(releaseCh)
 		}
 	}
 	cleanupAndRelease(t, release)
-	cleanupAndRelease(t, func() {
-		if err := service.Shutdown(context.Background()); err != nil {
-			t.Errorf("shutdown document service: %v", err)
-		}
-	})
+	cleanupAndRelease(t, func() { shutdownTestService(t, service) })
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	return service, artifactID, enteredCh, release
@@ -848,11 +845,7 @@ func TestStoredOrderSoak(t *testing.T) {
 		Settle:      30 * time.Millisecond,
 	})
 	watched.service.Store(service)
-	cleanupAndRelease(t, func() {
-		if err := service.Shutdown(context.Background()); err != nil {
-			t.Errorf("shutdown document service: %v", err)
-		}
-	})
+	cleanupAndRelease(t, func() { shutdownTestService(t, service) })
 	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	cleanupAndRelease(t, server.Close)
 

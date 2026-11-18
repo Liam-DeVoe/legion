@@ -38,6 +38,7 @@ func blockIndexService(t *testing.T) (*store.Store, *Service) {
 		t.Fatalf("seed project CORE: %v", err)
 	}
 	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
+	service.srv.RoomIdleTimeout = testRoomIdleTimeout
 	cleanupAndRelease(t, func() {
 		stop, cancel := context.WithTimeout(context.Background(), roomWait(t))
 		defer cancel()
@@ -743,7 +744,10 @@ func TestOlderItemTextCitingABlockIsReindexed(t *testing.T) {
 func TestADrainedItemKeepsAConcurrentEdit(t *testing.T) {
 	t.Parallel()
 	database, service := blockIndexService(t)
-	ctx, cancel := context.WithTimeout(context.Background(), roomWait(t))
+	// Each wait below has roomWait of its own - the tick queueing on the edit's row lock, the tick
+	// finishing once the edit commits, the second tick - so none gets only what an earlier one
+	// left; ctx ends with the test and stops a tick still running then.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var comment string
 	if err := database.Pool.QueryRow(ctx, `
@@ -780,13 +784,15 @@ func TestADrainedItemKeepsAConcurrentEdit(t *testing.T) {
 		if err != nil {
 			t.Fatalf("tick beside the edit: %v", err)
 		}
-	case <-ctx.Done():
+	case <-time.After(roomWait(t)):
 		t.Fatal("the tick never finished after the edit committed")
 	}
 	if tick.Items != 0 || tick.OwedItems != 1 {
 		t.Fatalf("tick beside the edit = %#v, want nothing written and the comment still owed", tick)
 	}
-	next, err := service.ReconcileBlockIndex(ctx, BlockIndexCursors{}, liveAheadDocuments{})
+	nextCtx, cancelNext := context.WithTimeout(ctx, roomWait(t))
+	defer cancelNext()
+	next, err := service.ReconcileBlockIndex(nextCtx, BlockIndexCursors{}, liveAheadDocuments{})
 	if err != nil {
 		t.Fatalf("second tick: %v", err)
 	}

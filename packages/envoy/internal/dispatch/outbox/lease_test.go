@@ -660,12 +660,6 @@ func releaseLine(recorder *logtest.Recorder, instance uuid.UUID) (map[string]str
 //
 // Real time, at probeTimeout and holdRetry: the silence is a frozen TCP proxy in front of a live
 // NATS server, which no synctest bubble can hold.
-//
-// Serial: its assertion is a time - the working process must take the hold and publish within
-// 10 s of the silence, after the silent holder's probe times out and the working process's own
-// retry of the hold, each step of which a parallel batch's load stretches; and a holder whose
-// renewals that load starves for the 4 s from a confirmed renewal to its loss deadline
-// (publisherHoldOptions, TTL less Margin) gives the hold up again (docs/testing.md).
 func TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther(t *testing.T) {
 	url := testnats.URL(t)
 	proxy := testnats.StartProxy(t, url)
@@ -846,9 +840,11 @@ func TestAHolderConnectedAgainWhenTheGraceEndsKeepsTheHold(t *testing.T) {
 	// (TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal): under publisherHoldOptions, a
 	// renewal a parallel batch starved for the 4 s from a confirmed renewal to the loss deadline
 	// would end the turn as lost while serve waits out the grace, and the row would read that load
-	// rather than the product. These leave the deadline minutes ahead for the whole row.
+	// rather than the product. These leave the deadline a day ahead, past any run of the test
+	// binary, for the whole row: nothing here waits for the hold to lapse, and the cleanup
+	// releases it.
 	hold, err := duty.TryHold(ctx, database.Pool, publisherHold, outbox.instance,
-		duty.HoldOptions{TTL: 6 * time.Minute, Renew: 5 * time.Second, Margin: time.Minute, Token: outbox.token})
+		duty.HoldOptions{TTL: 24 * time.Hour, Renew: 5 * time.Second, Margin: time.Minute, Token: outbox.token})
 	if err != nil || hold == nil {
 		t.Fatalf("the outbox did not take the publisher hold: %v", err)
 	}
@@ -1361,5 +1357,18 @@ func TestAFallbackPassWhoseClaimFailedHasTheHolderPassAgain(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("serve did not return once its context ended")
+	}
+}
+
+// A Deps that sets no publisher hold options, as cmd/dispatch's does, takes the hold under
+// production's, publisherHoldOptions, and one that sets them takes it under those as set: tryHold
+// reads the hold's options from Deps alone (Deps.publisherHoldOptions).
+func TestAZeroDepsTakesThePublisherHoldUnderProductionsOptions(t *testing.T) {
+	t.Parallel()
+	if got := (Deps{}).publisherHoldOptions(); got != publisherHoldOptions {
+		t.Fatalf("a zero Deps takes the publisher hold under %+v, want publisherHoldOptions %+v", got, publisherHoldOptions)
+	}
+	if got := (Deps{holdOptions: rigHoldOptions}).publisherHoldOptions(); got != rigHoldOptions {
+		t.Fatalf("a Deps holding %+v takes the publisher hold under %+v, want those as set", rigHoldOptions, got)
 	}
 }

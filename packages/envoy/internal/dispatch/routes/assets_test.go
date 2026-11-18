@@ -273,7 +273,6 @@ func (c slowClient) Write(p []byte) (int, error) {
 // receive a retained asset the store answered at once still receives all of it, as it would the
 // same file served from the local build.
 func TestStaticHandlerDeliversAWholeRetainedAssetToASlowClient(t *testing.T) {
-	t.Parallel()
 	body := bytes.Repeat([]byte("/"), 1<<20)
 	handler, context := newTestRouter(t)
 	context.WebDistDir = t.TempDir()
@@ -453,7 +452,6 @@ func TestStaticHandlerCapsRetainedBytesHeldAtOnce(t *testing.T) {
 
 // A client that goes away mid-response gives its bytes back, so the next request is served.
 func TestStaticHandlerReleasesRetainedBytesWhenAClientGoesAway(t *testing.T) {
-	t.Parallel()
 	handler, context := newTestRouter(t)
 	context.WebDistDir = t.TempDir()
 	store := &countingStore{object: bytes.Repeat([]byte("/"), int(MaxRetainedAssetSize))}
@@ -478,7 +476,6 @@ func TestStaticHandlerReleasesRetainedBytesWhenAClientGoesAway(t *testing.T) {
 
 // A failed read gives back what it reserved: more failures than the cap holds objects, then a hit.
 func TestStaticHandlerReleasesRetainedBytesWhenTheStoreFails(t *testing.T) {
-	t.Parallel()
 	handler, context := newTestRouter(t)
 	context.WebDistDir = t.TempDir()
 	failing := &fakeAssetStore{err: errors.New("object store unavailable")}
@@ -519,7 +516,6 @@ func (s latentStore) GetAsset(ctx context.Context, _ string) ([]byte, error) {
 // issue page imports eight), and another tab can be doing the same. Small chunks hold almost
 // nothing of the memory cap, so a burst of them is served rather than refused.
 func TestStaticHandlerServesABurstOfSmallRetainedAssets(t *testing.T) {
-	t.Parallel()
 	handler, context := newTestRouter(t)
 	context.WebDistDir = t.TempDir()
 	context.AssetStore = latentStore{delay: 50 * time.Millisecond, object: []byte("console.log('previous build')")}
@@ -553,7 +549,6 @@ func TestStaticHandlerServesABurstOfSmallRetainedAssets(t *testing.T) {
 // share the cap rather than each holding the most one object can be: 32 stalled readers of the
 // dashboard's largest chunk, 1,747,955 bytes, fit under the cap, and every one is served.
 func TestStaticHandlerHoldsOnlyEachRetainedObjectsSize(t *testing.T) {
-	t.Parallel()
 	handler, context := newTestRouter(t)
 	context.WebDistDir = t.TempDir()
 	const size, readers = 1747955, 32
@@ -738,7 +733,6 @@ func (s *blockingStore) GetAsset(_ context.Context, key string) ([]byte, error) 
 // the memory cap has room for. Once those reads end, every reservation comes back: the cap's whole
 // room is served again.
 func TestStaticHandlerHoldsTheReservationOfAnAbandonedRequestUntilItsReadEnds(t *testing.T) {
-	t.Parallel()
 	handler, appContext := newTestRouter(t)
 	appContext.WebDistDir = t.TempDir()
 	const requests = 20
@@ -797,7 +791,6 @@ func TestStaticHandlerHoldsTheReservationOfAnAbandonedRequestUntilItsReadEnds(t 
 // without asking the store, and without a reservation, so it is served even while stalled readers
 // hold every byte of the cap and a miss would be refused.
 func TestStaticHandlerServesACachedAssetWithoutTheStore(t *testing.T) {
-	t.Parallel()
 	handler, context := newTestRouter(t)
 	context.WebDistDir = t.TempDir()
 	store := &countingStore{object: bytes.Repeat([]byte("/"), int(MaxRetainedAssetSize))}
@@ -849,7 +842,6 @@ func (s *gatheringStore) GetAsset(ctx context.Context, _ string) ([]byte, error)
 // A route of a stale tab, or many tabs of one build at once, ask for one chunk together before the
 // store has answered any of them: the store is read once and every request is answered with it.
 func TestStaticHandlerReadsTheStoreOnceForConcurrentMisses(t *testing.T) {
-	t.Parallel()
 	handler, context := newTestRouter(t)
 	context.WebDistDir = t.TempDir()
 	const object = "console.log('another build')"

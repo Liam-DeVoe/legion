@@ -787,7 +787,10 @@ func TestPublishHandler_RoleFreshDeafHolderIsAnsweredStored(t *testing.T) {
 // A re-send under the key of a message the stream already stored for its holder is not forwarded
 // again: the route answers each send and publishes no exception.
 func TestPublishHandler_ExplicitDedupeKeyIsNotForwardedAgainOnceStored(t *testing.T) {
-	t.Parallel()
+	// Serial: the re-publish below must be judged against the confirmation the first publish
+	// recorded, and the route's confirmation record (newConfirmedRecord) forgets an entry ten
+	// minutes after it was recorded, so the steps between the two publishes must finish inside
+	// those ten minutes.
 	harness := newListenerDeliveryHarness(t)
 	const role = "slow-holder"
 	roleTopic := contracts.RoleTopicPrefix + role
@@ -1302,7 +1305,9 @@ func TestIsValidRole(t *testing.T) {
 func TestSessionHealthFields_PopulatedAfterReady(t *testing.T) {
 	t.Parallel()
 	client := setupPublishTestClient(t)
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1), session.WithSessionTTL(time.Minute))
+	// The bucket keeps the row past any run of the test binary (its -timeout ends a run first), so
+	// the row Put below is still cached when the fields count it, however long the steps take.
+	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1), session.WithSessionTTL(24*time.Hour))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
@@ -3310,7 +3315,6 @@ func TestListenerDeliveryHandler_RoleForwardRefusesUnadvertisedDeliveryMode(t *t
 // probing the holder's locator and potentially resuming the worker -- a resume nobody needed,
 // triggered by a duplicate of a message that was, in fact, already delivered.
 func TestListenerDeliveryHandler_RoleForwardDedupeSkipsCapabilityRecheckOnRedelivery(t *testing.T) {
-	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const role = "dedupe-before-guard"
 	if err := harness.sessions.Put("ses_holder", session.SessionEntry{
@@ -3620,7 +3624,6 @@ func TestListenerDeliveryHandler_FanoutRefusalOfATeamTopicIsStoredOnItsException
 // proves a terminal refusal is recorded before its exception is published, so
 // a redelivery with the same key cannot emit another refusal.
 func TestListenerDeliveryHandler_FanoutRefusalDedupesAfterExceptionDelivery(t *testing.T) {
-	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	// Both copies refill from their buckets on a goroutine the harness's registries start
 	// (kvwatch.Watcher.Start), and a write that lands while that first read runs carries no mark
@@ -5137,7 +5140,7 @@ func TestSelfHealthRebuildsAnInterestWatcherThatEndedWhileConnected(t *testing.T
 		t.Fatalf("recreate the interest bucket: %v", err)
 	}
 
-	monitorUntilRecovered(t, "the interest watcher", 10*time.Second, 10*time.Millisecond,
+	monitorUntilRecovered(t, "the interest watcher", listenerWait, 10*time.Millisecond,
 		func() error { return checkSelfHealth([]listenerCache{{name: "interest", cache: registry}}, nil) },
 		func(err error) bool {
 			return isUnrecoverableSelfHealthFailure(err, client, []listenerCache{{name: "interest", cache: registry}})

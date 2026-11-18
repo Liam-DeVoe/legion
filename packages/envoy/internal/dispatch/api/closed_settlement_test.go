@@ -140,7 +140,6 @@ func awaitSettledVersionHolding(t *testing.T, handler http.Handler, database *st
 // after the close, the third block has no ask, and the newest version shows the withdrawn decision
 // and the third block resolved, and the answered decision answered.
 func TestASettlementAfterACloseChangesNoAsk(t *testing.T) {
-	t.Parallel()
 	handler, database, documentService := newClosedSettlementHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "A settlement after the close", closedSettlementSpec)
 	spec := issue.PrimaryArtifactID
@@ -212,7 +211,9 @@ func TestASettlementAfterACloseChangesNoAsk(t *testing.T) {
 // (docs.MarkReopenOwedAskDocuments). The resumption after the reopen opens the block's ask,
 // credited to the recorded author.
 func TestAnAskBlockWithNoRowIsResolvedWhileClosedAndOpensAtTheReopen(t *testing.T) {
-	t.Parallel()
+	// Serial: closeIssueThroughPatch moves the close a minute ahead, and the store takes a
+	// browser's update after the close only while that minute and its close margin (2 s) have not
+	// passed, so the steps from the close to the browser's block below must finish inside them.
 	handler, database, documentService := newClosedSettlementHandler(t)
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "TEST", "An ask block across a close", "Context\n")

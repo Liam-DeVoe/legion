@@ -128,7 +128,6 @@ const runLeasedDeadline = 30 * time.Second
 // indexed. And no tick may come sooner than its wait after the pass before it ended, which is what
 // keeps two of a lone loop's ticks out of one period.
 func TestRunLeasedAfterEachPassTicksAtStartAndThenAtTheWaitEachPassAsksFor(t *testing.T) {
-	t.Parallel()
 	leases := leasesOf(t, storetest.Open(t))
 	const interval, step = time.Hour, 100 * time.Millisecond
 	const passes = 4
@@ -178,7 +177,6 @@ func TestRunLeasedAfterEachPassTicksAtStartAndThenAtTheWaitEachPassAsksFor(t *te
 // first) - must not pass at start: the issue-ask repair's boot pass would run twice on each
 // deploy.
 func TestRunLeasedWaitsAnIntervalBeforeTheFirstTickWhenAsked(t *testing.T) {
-	t.Parallel()
 	leases := leasesOf(t, storetest.Open(t))
 	const interval = 300 * time.Millisecond
 

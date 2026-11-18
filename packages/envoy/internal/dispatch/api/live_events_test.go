@@ -782,13 +782,13 @@ func TestARelayDropPastTheBoundsEndsTheSubscriptionAsBehind(t *testing.T) {
 // page can resubscribe. The retry is the relay's own when a test gives it one, and production's
 // eventRelayRetry when nothing does, reached through the path production takes (failedReadWait).
 func TestAnEventsSubscriptionWhoseReadFailsEndsAsBehind(t *testing.T) {
-	t.Parallel()
+	// Serial: its assertion is a time - the end comes no sooner than the relay's retry - so its
+	// rows run one after the other and beside no other test.
 	for name, retry := range map[string]time.Duration{
 		"a retry the relay was given": 100 * time.Millisecond,
 		"production's retry":          0,
 	} {
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
 			_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 			served.eventRelay.retry = retry
 			want := cmp.Or(retry, eventRelayRetry)

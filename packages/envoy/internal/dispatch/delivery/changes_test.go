@@ -318,7 +318,6 @@ func TestFreshnessOnlySettingsWritesLogNoChangeButNotify(t *testing.T) {
 // moment the database's clock reached just now. It never moves backward: a later stamp already
 // in the row stays.
 func TestRecordEventAtStampsTheDatabasesClock(t *testing.T) {
-	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	pool = laggingDatabaseClock(t, ctx, pool, 2*time.Hour)
 	seedDeliverySettings(t, ctx, pool)

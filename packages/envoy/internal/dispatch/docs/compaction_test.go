@@ -26,7 +26,6 @@ import (
 // folded row says it changed content when a row it folded past the settlement cursor did, and the
 // document reads as it did.
 func TestATailCompactionFoldsOnlyTheRowsOlderThanTheTail(t *testing.T) {
-	t.Parallel()
 	database := storetest.Open(t)
 	versioned := NewPgVersioned(database)
 	for _, test := range []struct {
@@ -85,7 +84,6 @@ func TestATailCompactionFoldsOnlyTheRowsOlderThanTheTail(t *testing.T) {
 // the newest of them, the young row the last edit wrote stays as written, and the document reads
 // as it did.
 func TestARoomCloseCompactionFoldsOnlyTheRowsOlderThanTheTail(t *testing.T) {
-	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	foldPoint := writeRoomRows(t, service, artifactID)
@@ -108,7 +106,6 @@ func TestARoomCloseCompactionFoldsOnlyTheRowsOlderThanTheTail(t *testing.T) {
 // A room's close does not wait for a document lock another holder has: it leaves the rows as stored
 // for a later compaction, which folds them once the lock is free.
 func TestARoomCloseCompactionLeavesABusyDocumentForALaterCompaction(t *testing.T) {
-	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	foldPoint := writeRoomRows(t, service, artifactID)
@@ -131,8 +128,10 @@ func TestARoomCloseCompactionLeavesABusyDocumentForALaterCompaction(t *testing.T
 // A failed room's eviction waits for the document's lock and compacts under the tail rule before
 // the room recovers: the rows older than the tail fold, the young row stays as written, and the
 // recovered room reads the document as it was.
+//
+// Serial: its assertion is a time - the top row writeRoomRows wrote must still be younger than
+// compactTail (2 min) when the eviction compacts once the lock is free, or the fold takes it too.
 func TestAFailedRoomsEvictionCompactionWaitsForTheLockAndFoldsOnlyOldRows(t *testing.T) {
-	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	foldPoint := writeRoomRows(t, service, artifactID)
@@ -165,7 +164,6 @@ func TestAFailedRoomsEvictionCompactionWaitsForTheLockAndFoldsOnlyOldRows(t *tes
 // A prune that deletes rows at or below the fold point between a compaction's read and its write
 // drops the fold: the rows stay as the prune left them, and the next compaction folds those.
 func TestACompactionDropsItsFoldWhenAPruneRunsInsideIt(t *testing.T) {
-	t.Parallel()
 	database, versioned, artifactID := newHeldCompactionDocument(t)
 	var left []updateRow
 	var reading string
@@ -193,7 +191,6 @@ func TestACompactionDropsItsFoldWhenAPruneRunsInsideIt(t *testing.T) {
 // finished and the fold dropped: the rows past the ceiling go, and the next compaction folds the
 // rows the prune left.
 func TestACompactionFinishesAStrandedPruneAndFoldsOnTheNextAttempt(t *testing.T) {
-	t.Parallel()
 	database, versioned, artifactID := newHeldCompactionDocument(t)
 	var stored []updateRow
 	var reading string

@@ -105,11 +105,7 @@ func newClosedSettlementFixture(t *testing.T) closedSettlementFixture {
 		Settle:      time.Hour,
 		TestHooks:   true,
 	})
-	t.Cleanup(func() {
-		if err := service.Shutdown(context.Background()); err != nil {
-			t.Errorf("shutdown document service: %v", err)
-		}
-	})
+	t.Cleanup(func() { shutdownTestService(t, service) })
 	// Cleanups run in reverse, and Shutdown waits for the room's persistence worker this hold parks.
 	t.Cleanup(held.let)
 	server := newTestServer(t, service)

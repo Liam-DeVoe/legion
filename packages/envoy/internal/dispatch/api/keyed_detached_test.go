@@ -180,7 +180,6 @@ func TestARunningHandlerRenewsItsKeyPastTheLease(t *testing.T) {
 // The handler's context is the server's, not the client's: the client's cancellation mid-run does
 // not reach it, and the server's own bound, keyedHandlerLimit, does.
 func TestAKeyedHandlerRunsUnderTheServersOwnBound(t *testing.T) {
-	t.Parallel()
 	running, proceed := make(chan struct{}), make(chan struct{})
 	type seen struct {
 		err  error
@@ -287,7 +286,6 @@ func TestTheBackgroundWaitWaitsForWorkStartedWhileItWaits(t *testing.T) {
 // handler's own context, and is mounted only under test hooks. A run whose context ends during the
 // delay never reaches its handler.
 func TestTheSlowWriteHookDelaysEveryKeyedRunOfItsPath(t *testing.T) {
-	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{testHooks: true})
 	issue := createTestIssue(t, handler, "SLOW", "Slow writes")
 	path := "/api/v1/issues/" + issue + "/comments"

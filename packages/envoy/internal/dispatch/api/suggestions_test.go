@@ -313,7 +313,6 @@ func suggestionsBehindLock(
 // own items), so with `asks` locked the keyword stage waits behind the lock, and the allowance,
 // not the lock's hold time, ends it and reports the check not made for time (sjawhar/legion#2158).
 func TestRelatedCheckRespectsDeadlineUnderLock(t *testing.T) {
-	t.Parallel()
 	handler, _, deps := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "DEADLINE")
 	issue := createSuggestionIssue(t, handler, map[string]any{
@@ -334,7 +333,6 @@ func TestRelatedCheckRespectsDeadlineUnderLock(t *testing.T) {
 // `issues` first under the allowance, so with `issues` locked the allowance ends the lookup while
 // it waits and reports the check not made for time.
 func TestRelatedCheckRespectsDeadlineWhenProjectLookupIsLocked(t *testing.T) {
-	t.Parallel()
 	handler, _, deps := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "LOCKEDPROJ")
 	issue := createSuggestionIssue(t, handler, map[string]any{
@@ -355,7 +353,6 @@ func TestRelatedCheckRespectsDeadlineWhenProjectLookupIsLocked(t *testing.T) {
 // failing and differ only in the allowance the check runs under (server.relatedAllowance), so
 // each case's outcome is its own choice rather than its machine's speed.
 func TestCreateAskOnIssueKeepsSuggestionsWhenWriteAdviceFails(t *testing.T) {
-	t.Parallel()
 	// fileAsk seeds the corpus — an ask with an answer on the same question, plus a separate
 	// target issue — and files the ask on the target through the real route with the
 	// write-advice query failing. Each call builds its own handler, and so its own database

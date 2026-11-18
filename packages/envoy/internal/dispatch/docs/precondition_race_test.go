@@ -44,6 +44,7 @@ func TestConditionalDocumentEditDoesNotOverwriteWriterDuringTableAnchorCheck(t *
 			cleanupAndRelease(t, pool.Close)
 			artifactID := createDocument(t, database, "")
 			service := New(Deps{Store: database, Settle: time.Hour})
+			service.srv.RoomIdleTimeout = testRoomIdleTimeout
 			cleanupAndRelease(t, func() {
 				// Teardown, not a bound this test checks: the drain takes as long as the
 				// loaded machine takes, so it gets roomWait like this file's other waits.

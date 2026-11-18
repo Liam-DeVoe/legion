@@ -1458,9 +1458,13 @@ func TestRoleClaimRestoresWhileHolderIsLiveAndDropsAfterTTL(t *testing.T) {
 	t.Parallel()
 	client := setupPublishTestClient(t)
 	const (
-		sessionID  = "ses_role_restart"
-		role       = "restart-survivor"
-		sessionTTL = time.Minute
+		sessionID = "ses_role_restart"
+		role      = "restart-survivor"
+		// The bucket keeps the holder's record past any run of the test binary (its -timeout ends
+		// a run first), so the record written below still stands when the restored listener reads
+		// it, however long the steps between take. The claim's grace is the registry's live
+		// window on its own clock (below), not this age.
+		sessionTTL = 24 * time.Hour
 	)
 	firstRegistry, err := store.Open(client.Conn, store.WithReplicas(1))
 	if err != nil {
@@ -2191,7 +2195,6 @@ func TestSubscribeHandlerWarnsWhenAGitHubTopicSpellsARepositoryWithADot(t *testi
 }
 
 func TestSubscribeHandlerDoesNotBlockOnUnwiredRepositoryCheck(t *testing.T) {
-	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	lookup := stalledStreamInfo{deadlines: make(chan time.Duration, 1), release: make(chan struct{})}

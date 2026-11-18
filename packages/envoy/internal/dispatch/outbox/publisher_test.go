@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -1102,7 +1103,7 @@ func TestRunRetriesSubscriptionRemovedWhenTheAuthorRoutePublishFails(t *testing.
 	}
 
 	publisher.setFailTopic("")
-	waitFor(t, 7*time.Second, "retried publication once the author route succeeds", func() bool {
+	waitFor(t, eventWait, "retried publication once the author route succeeds", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
 	items := publisher.all()
@@ -1117,9 +1118,6 @@ func TestRunRetriesSubscriptionRemovedWhenTheAuthorRoutePublishFails(t *testing.
 	}
 }
 
-// Serial: its assertion is a time - the walk over a cyclic reply_to chain must end within 2 s,
-// since a walk that spins the cycle for longer stalls every outbox scan that long, and a parallel
-// batch's load would stretch an honest walk toward that bound (docs/testing.md).
 func TestLoadRootCommentAuthorsTerminatesOnACycle(t *testing.T) {
 	database := storetest.Open(t)
 	seedIssue(t, database, "T-1", nil)
@@ -1592,7 +1590,7 @@ func TestRunRetriesEventWhenRequiredRoleRouteFails(t *testing.T) {
 		return len(publisher.all()) == 1 && publishedAt(t, database, event.ID) == nil
 	})
 	publisher.setFailTopic("")
-	waitFor(t, 7*time.Second, "retried publication once the role route succeeds", func() bool {
+	waitFor(t, eventWait, "retried publication once the role route succeeds", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
 	items := publisher.all()
@@ -1629,7 +1627,7 @@ func TestRunRetriesEventWhenRequiredAuthorRouteFails(t *testing.T) {
 		return len(publisher.all()) == 1 && publishedAt(t, database, event.ID) == nil
 	})
 	publisher.setFailTopic("")
-	waitFor(t, 7*time.Second, "retried publication once the author route succeeds", func() bool {
+	waitFor(t, eventWait, "retried publication once the author route succeeds", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
 	items := publisher.all()
@@ -1665,7 +1663,7 @@ func TestRunRetriesFailedIssuePublication(t *testing.T) {
 	if publishedAt(t, database, event.ID) != nil {
 		t.Fatal("event was marked published after failed issue publication")
 	}
-	waitFor(t, 7*time.Second, "the back-off's retry publication", func() bool {
+	waitFor(t, eventWait, "the back-off's retry publication", func() bool {
 		return len(publisher.all()) == 1 && publishedAt(t, database, event.ID) != nil
 	})
 	if publishedAt(t, database, event.ID) == nil {
@@ -1932,9 +1930,24 @@ func runDeps(t *testing.T, deps Deps) func() {
 	return started(t, New(deps))
 }
 
+// rigHoldOptions are the publisher hold's options for an outbox the rig starts (started) whose
+// Deps set none (holdOptions): a TTL of a day, past the -timeout of every go test call that runs
+// this package, with the Renew and Margin of the hold lease_test.go takes for the same reason
+// (TestAHolderConnectedAgainWhenTheGraceEndsKeepsTheHold). Under production's,
+// publisherHoldOptions, a turn ends lost 4 s after its last confirmed renewal, and a parallel
+// batch that starves the renewals that long has the next turn send again what the lost one had
+// sent and not yet recorded, so a row counting sends would be counting the machine's load. No
+// row the rig runs waits for this hold to lapse: the stop releases it (Outbox.publish,
+// duty.Hold.Release), a release that fails mid-run leaves a row naming the outbox, which that
+// outbox takes back at once (duty.TryHold), and the test's database is dropped when it ends. A
+// row whose subject is the hold's loss, lapse or release, and one that starts a second outbox on
+// its database, runs production's instead (runOutboxUnderProductionsHold).
+var rigHoldOptions = duty.HoldOptions{TTL: 24 * time.Hour, Renew: 5 * time.Second, Margin: time.Minute}
+
 // started runs outbox until the returned func stops it, which fails t unless Run returns. A test
 // that must arm the outbox's hooks, which are read as Run starts, builds the outbox itself, arms
-// them - restingOutbox does - and calls this.
+// them - restingOutbox does - and calls this. An outbox whose Deps set no publisher hold options
+// takes the hold under rigHoldOptions.
 //
 // The stop takes eventWait, which is where this package gives up on an event and not a span any
 // row here measures: the stop is work the outbox does. On ctx's end Run settles the sends in
@@ -1950,6 +1963,9 @@ func runDeps(t *testing.T, deps Deps) func() {
 // fails the row.
 func started(t *testing.T, outbox *Outbox) func() {
 	t.Helper()
+	if outbox.deps.holdOptions == (duty.HoldOptions{}) {
+		outbox.deps.holdOptions = rigHoldOptions
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { outbox.Run(ctx); close(done) }()

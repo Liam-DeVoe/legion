@@ -542,7 +542,6 @@ func TestRestartAtFloorWithAMessageAwaitingAnAckCreatesTheConsumerAgain(t *testi
 // so the floor stays at 1 below a last delivery of 3, and the restart creates the consumer at 2
 // and delivers the unanswered message first and the acked one after it.
 func TestAMessageWhoseAckWaitPassedStillAwaitsAnAck(t *testing.T) {
-	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	consumers.ackWait = time.Second
 	ctx := context.Background()
@@ -1361,7 +1360,6 @@ func TestDeleteAfterAFaultedRestartLeavesNoPendingStart(t *testing.T) {
 // restarts the clock, and a consumer on a replicated stream outlives its threshold many times
 // over. The server here is one in-process member that elects a leader once.
 func TestTheServerRemovesAConsumerIdlePastTheInactiveThreshold(t *testing.T) {
-	t.Parallel()
 	_, consumers := sessionConsumersOnStream(t)
 	consumers.inactiveThreshold = 2 * time.Second
 	ctx := context.Background()

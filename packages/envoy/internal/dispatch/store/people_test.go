@@ -20,7 +20,6 @@ import (
 // confirmation's age by the database's clock: a row aged ninety minutes in SQL reads ninety minutes
 // old, and the confirmation that follows reads new again.
 func TestPgPeopleStoreKeepsEachPersonsMembership(t *testing.T) {
-	t.Parallel()
 	ctx := context.Background()
 	database := openTestStore(t)
 	if err := database.Migrate(ctx); err != nil {
@@ -144,7 +143,6 @@ func retireLines(logs *bytes.Buffer) int {
 // The row a backup copies never holds the refresh token: a sign-in and a confirmation each store it
 // sealed under the signing key, in the versioned format, and only a store under that key opens it.
 func TestPgPeopleStoreSealsTheRefreshTokenAtRest(t *testing.T) {
-	t.Parallel()
 	ctx := context.Background()
 	database := openTestStore(t)
 	if err := database.Migrate(ctx); err != nil {
@@ -682,11 +680,20 @@ func TestPgPeopleStoreConfirmKeepsTheRowOfAnotherGoogleAccount(t *testing.T) {
 	if got := membership(); got.RefreshToken != "refresh-2" || got.Subject != "subject-2" || got.ConfirmedAge < 90*time.Minute {
 		t.Fatalf("after subject-1's stale confirmation: %#v, want subject-2's refresh-2 confirmed ninety minutes ago", got)
 	}
+	// The database dates the confirmation by its now() as it writes it, so the write is read as
+	// the stamp it left: no earlier than the database's clock read before it.
+	var before, confirmedAt time.Time
+	if err := database.Pool.QueryRow(ctx, `select now()`).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
 	if err := people.ConfirmSubject(ctx, email, "subject-2", "refresh-3"); err != nil {
 		t.Fatal(err)
 	}
-	if got := membership(); got.RefreshToken != "refresh-3" || !confirmedJustNow(got) {
-		t.Fatalf("after subject-2's confirmation: %#v, want refresh-3 confirmed just now", got)
+	if err := database.Pool.QueryRow(ctx, `select confirmed_at from people where email = $1`, email).Scan(&confirmedAt); err != nil {
+		t.Fatal(err)
+	}
+	if got := membership(); got.RefreshToken != "refresh-3" || !got.Confirmed || confirmedAt.Before(before) {
+		t.Fatalf("after subject-2's confirmation: %#v confirmed at %s, want refresh-3 confirmed at or after %s", got, confirmedAt, before)
 	}
 	if err := people.Confirm(ctx, email, "refresh-4"); err != nil {
 		t.Fatal(err)

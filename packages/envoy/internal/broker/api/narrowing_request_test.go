@@ -112,7 +112,6 @@ func (s *narrowingRequestServer) pendingRows(t *testing.T) (requestRows, records
 // account the secret does not serve, the name the airlock holds, GitHub's refusal — and none of
 // them opens the approval request a person would have had to decide.
 func TestNarrowingBeforeApprovalAnswersItsOwnStatusAndCode(t *testing.T) {
-	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// answer is what the stand-in answers each token request with.
@@ -228,7 +227,6 @@ func TestNarrowingBeforeApprovalAnswersItsOwnStatusAndCode(t *testing.T) {
 // answers by sending the same signed request again without the narrowing; a refusal of the
 // narrowing's own fields must therefore never answer it, and a body the broker cannot read must.
 func TestNarrowingBeforeApprovalLeavesAnUnknownBodyFieldInvalidRequest(t *testing.T) {
-	t.Parallel()
 	s := newNarrowingRequestServer(t, airlocktest.GitHubAnswer{}, false)
 
 	status, body := s.session(t, s.key, s.enrollmentID, http.MethodPost, "/v1/requests", map[string]any{
@@ -249,7 +247,6 @@ func TestNarrowingBeforeApprovalLeavesAnUnknownBodyFieldInvalidRequest(t *testin
 // request with no narrowing is — the pending request, its record and the page its approver
 // decides it on.
 func TestNarrowingBeforeApprovalOpensTheApprovalRequestForAServableNarrowing(t *testing.T) {
-	t.Parallel()
 	s := newNarrowingRequestServer(t, airlocktest.GitHubAnswer{}, false)
 
 	status, body := s.request(t, map[string]any{"owner": narrowingOwner, "repositories": []string{"proofs"}, "read_only": true}, "NARROW_APP_KEY")

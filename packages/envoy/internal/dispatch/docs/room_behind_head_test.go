@@ -237,7 +237,10 @@ func TestASettlementWhoseRoomClosedBeforeItsCatchUpIsArmedAgain(t *testing.T) {
 	// reads it. The delay is written once, before the settlement it arms.
 	pair.taskA.settle = 20 * time.Millisecond
 	pair.taskA.scheduleSettle(pair.artifactID)
-	waitFor(t, wait, "the document whose room closed under its settlement's catch-up to settle", func() bool {
+	// The wait spans two waits for the room's own work: the hook's for the close (wait, above),
+	// which the settlement runs inside, and the stopped settlement's rollback, the retry's load
+	// and its settlement after it, so it gets roomWait for each.
+	waitFor(t, 2*wait, "the document whose room closed under its settlement's catch-up to settle", func() bool {
 		owed, err := settlementPending(context.Background(), pair.database.Pool, pair.artifactID)
 		return err == nil && !owed
 	})

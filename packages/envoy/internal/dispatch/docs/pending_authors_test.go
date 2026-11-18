@@ -1166,11 +1166,7 @@ func TestTwoVersionsBeforeAnAppendAsksForTheLockListItsAuthorOnce(t *testing.T) 
 			close(release)
 		}
 	})
-	cleanupAndRelease(t, func() {
-		if err := service.Shutdown(context.Background()); err != nil {
-			t.Errorf("shutdown document service: %v", err)
-		}
-	})
+	cleanupAndRelease(t, func() { shutdownTestService(t, service) })
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	bob := model.Actor{Kind: "user", ID: "bob"}
 	first := model.Actor{Kind: "session", ID: "first-versioner"}

@@ -50,7 +50,7 @@ func sendPartOfBody(t *testing.T, address, target string, header http.Header, si
 		t.Fatalf("dial %s: %v", address, err)
 	}
 	t.Cleanup(func() { connection.Close() })
-	if err := connection.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
+	if err := connection.SetDeadline(time.Now().Add(throughputWait(t))); err != nil {
 		t.Fatal(err)
 	}
 	var head bytes.Buffer
@@ -445,7 +445,11 @@ func TestARepeatFoundInFlightIsJudgedOnceItsBodyHasArrived(t *testing.T) {
 			t.Cleanup(release)
 			firstAnswer := make(chan keyedAnswered, 1)
 			go func() {
-				status, body, _, err := keyedPost(server, path, `{"n":1}`, judged.key, 30*time.Second)
+				// The first request stays open across the waits below: its run starting, the repeat
+				// found in flight and its own answer once released, each bounded at concurrentWait,
+				// and the repeat's answer, bounded by its connection's throughputWait
+				// (sendPartOfBody). Its own bound is theirs together.
+				status, body, _, err := keyedPost(server, path, `{"n":1}`, judged.key, 3*concurrentWait+throughputWait(t))
 				firstAnswer <- keyedAnswered{status: status, body: body, err: err}
 			}()
 			select {
@@ -504,7 +508,7 @@ func TestARepeatFoundInFlightIsJudgedOnceItsBodyHasArrived(t *testing.T) {
 				if firstGot.status != http.StatusServiceUnavailable {
 					t.Fatalf("the first request answered %d %s, want its 503", firstGot.status, firstGot.body)
 				}
-				status, again, header, err := keyedPost(server, path, judged.repeat, judged.key, 10*time.Second)
+				status, again, header, err := keyedPost(server, path, judged.repeat, judged.key, concurrentWait)
 				if err != nil || status != http.StatusCreated || header.Get(contracts.IdempotencyReplayedHeader) != "" {
 					t.Fatalf("the ask after the 409: %d %s replayed=%q (%v), want the request run",
 						status, again, header.Get(contracts.IdempotencyReplayedHeader), err)
@@ -665,7 +669,7 @@ func TestAnEarlyAnswerToAClientWaitingToContinueAsksForNoBody(t *testing.T) {
 			if response.StatusCode != http.StatusConflict || refusalCode(answer) != early.code {
 				t.Fatalf("status=%d body=%s, want 409 %s", response.StatusCode, answer, early.code)
 			}
-			if !response.Close || !body.closedByServer(5*time.Second) {
+			if !response.Close || !body.closedByServer(concurrentWait) {
 				t.Fatalf("the refusal left open a connection whose body was never sent (Connection: %q)", response.Header.Get("Connection"))
 			}
 		})

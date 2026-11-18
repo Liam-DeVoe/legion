@@ -40,8 +40,8 @@ func waitSignal(t *testing.T, signal <-chan struct{}, within time.Duration, what
 // once and every dial is refused while it stays cut. Restore lets the client reconnect, and a new
 // client connect, through the same URL.
 func TestAProxyRelaysUntilCutAndAgainOnceRestored(t *testing.T) {
-	// Serial: its assertions are times: the client is disconnected within 2 s of the cut, and a
-	// quiet window, in which it does not reconnect through the cut proxy for 300 ms.
+	// Serial: its assertion is a quiet window: the client does not reconnect through the cut proxy
+	// for 300 ms.
 	proxy := StartProxy(t, URL(t))
 	conn, disconnected, reconnected := proxiedClient(t, proxy)
 	if err := conn.FlushTimeout(time.Second); err != nil {

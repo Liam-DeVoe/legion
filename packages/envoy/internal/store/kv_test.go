@@ -3355,7 +3355,6 @@ func TestARewatchWhoseInterestWatcherCannotMoveMovesNothing(t *testing.T) {
 // it ends up with must be the bucket's: every claim at the revision stored for it, no entry for a
 // deleted key, and the grace those revisions exist for.
 func TestOpeningTheRegistryReadsEveryRoleRevisionWithoutAGetPerKey(t *testing.T) {
-	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	js, err := conn.JetStream()

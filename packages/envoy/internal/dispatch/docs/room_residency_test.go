@@ -774,6 +774,7 @@ func newRetiringRoomService(t *testing.T) (*Service, *store.Store) {
 		ServerURL: "https://dispatch.example",
 		Settle:    time.Hour,
 	})
+	service.srv.RoomIdleTimeout = testRoomIdleTimeout
 	cleanupAndRelease(t, func() {
 		ctx, cancel := context.WithTimeout(context.Background(), roomWait(t))
 		defer cancel()
@@ -795,6 +796,9 @@ func newRetiringRoomService(t *testing.T) (*Service, *store.Store) {
 // lets the commit go on.
 func TestAPublishSurvivesACloseOfItsRoomAskedForWhileItRuns(t *testing.T) {
 	t.Parallel()
+	// The Shutdown row's close waits as long as a room's own work may take (roomWait), after the
+	// drain budget Shutdown spends of its deadline first.
+	shutdownWait := ShutdownDrainBudget + roomWait(t)
 	for _, test := range []struct {
 		name string
 		peer bool
@@ -820,7 +824,7 @@ func TestAPublishSurvivesACloseOfItsRoomAskedForWhileItRuns(t *testing.T) {
 		// Shutdown waits on the paused write's durable append, which this test holds, until its
 		// budget ends, then closes the room with a connected editor once the publish has left.
 		{"Shutdown with a connected editor", true, true, func(service *Service, _ string) error {
-			ctx, cancel := context.WithTimeout(context.Background(), ShutdownDrainBudget+11*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), shutdownWait)
 			defer cancel()
 			_ = service.Shutdown(ctx)
 			return nil

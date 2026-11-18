@@ -231,7 +231,6 @@ func TestConcurrentMentionRetryResolvesNewAttemptUnderLock(t *testing.T) {
 // takes an attempt of its own; once it is plainly abandoned a retry resumes the original
 // attempt, under its original number, so the listener deduplicates a send that did land.
 func TestAbandonedMentionAttemptIsResumedUnderItsOriginalIdempotencyKey(t *testing.T) {
-	t.Parallel()
 	keys := []string{}
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

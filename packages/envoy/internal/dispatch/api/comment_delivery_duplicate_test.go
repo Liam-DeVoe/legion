@@ -23,7 +23,11 @@ import (
 // so the attempt is recorded failed only when every try of that window missed; this listener
 // answers none of them until the comment's own request has answered.
 func TestCommentMentionThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(t *testing.T) {
-	t.Parallel()
+	// Serial: a product timer is under its steps. The listener client's window (envoyTimeout,
+	// 1.5 s below) is what ends each try this listener answers nothing to, and every call it does
+	// answer - each resolution and the retry's send - must finish inside that same window, and
+	// the second try must start inside the 2 s take-over window, so a parallel test's load that
+	// stretches an answered call or the backoff past them fails the row.
 	var listenerState struct {
 		sync.Mutex
 		keys      []string

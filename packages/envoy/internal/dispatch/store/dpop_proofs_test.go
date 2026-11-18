@@ -18,7 +18,6 @@ func proofFixture(t *testing.T) *DPoPProofs {
 // 'jti' against another target URI is neither: RFC 9449 Section 4.2 requires a 'jti' to be unique
 // only in the context of the target URI, so keying on it alone would refuse a conforming client.
 func TestADPoPProofIsUsedOncePerTargetURI(t *testing.T) {
-	t.Parallel()
 	ctx := context.Background()
 	proofs := proofFixture(t)
 	exp := time.Now().Add(time.Minute)
@@ -40,7 +39,6 @@ func TestADPoPProofIsUsedOncePerTargetURI(t *testing.T) {
 // Two requests presenting one proof at the same moment cannot both see it unused: the check and
 // the store are one statement, so exactly one of them is told it is a replay.
 func TestTwoPresentationsOfOneProofAtOnceLeaveExactlyOneUnused(t *testing.T) {
-	t.Parallel()
 	ctx := context.Background()
 	proofs := proofFixture(t)
 	exp := time.Now().Add(time.Minute)
@@ -97,7 +95,6 @@ func TestAnExpiredRecordIsTakenOver(t *testing.T) {
 // The sweep deletes what can no longer be presented and keeps what can, so the table holds the
 // last few minutes of proofs rather than every proof ever presented.
 func TestSweepDeletesOnlyTheRecordsThatCanNoLongerBePresented(t *testing.T) {
-	t.Parallel()
 	ctx := context.Background()
 	proofs := proofFixture(t)
 

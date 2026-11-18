@@ -35,7 +35,6 @@ func expiringTokens(t *testing.T, fake *fakeGitHub) (refuse func(http.ResponseWr
 // busy repository runs past a token's hour, and GitHub answers the next page 401 Bad credentials.
 // The first page here is answered after its token has expired.
 func TestListWorkflowRunsAsksForATokenPerPage(t *testing.T) {
-	t.Parallel()
 	fake := newFakeGitHub(t)
 	refuse, expired := expiringTokens(t, fake)
 	fake.handle("GET /repos/acme/widgets/actions/workflows/deploy.yml/runs", func(w http.ResponseWriter, r *http.Request) {
@@ -63,7 +62,6 @@ func TestListWorkflowRunsAsksForATokenPerPage(t *testing.T) {
 // TestListWorkflowRunJobsAsksForATokenPerPage: a run's jobs pages, too, each ask for a token, so a
 // page answered after the previous page's token expired is asked for with a new one.
 func TestListWorkflowRunJobsAsksForATokenPerPage(t *testing.T) {
-	t.Parallel()
 	fake := newFakeGitHub(t)
 	refuse, expired := expiringTokens(t, fake)
 	fake.handle("GET /repos/acme/widgets/actions/runs/7/jobs", func(w http.ResponseWriter, r *http.Request) {
@@ -229,7 +227,6 @@ func repeatRunItems(n int, startID int64) []map[string]any {
 }
 
 func TestListWorkflowRunsHalvesOnOverflowWithoutGapOrOverlap(t *testing.T) {
-	t.Parallel()
 	fake := newFakeGitHub(t)
 	type window struct{ since, until string }
 	var windows []window
