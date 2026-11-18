@@ -341,13 +341,22 @@ test("a reader with no pointer tabs into each held box and goes on into the chro
       // That Tab is the reader reaching for the chrome, and they get it then.
       await expect(header).toBeVisible({ timeout: 30_000 });
       await expect(page.getByRole("combobox", { name: "Status" })).toBeVisible();
-      // And it was their own Tab that brought it rather than the hold letting go: a deadline
-      // that fired would release every box at once, and the tab strip was still held when the
-      // Tab landed.
+      // And their reach handed over the header alone. The reach's own entry cannot say so: it
+      // is read in the reach's `focusin`, before React commits the hand-over, so it says only
+      // that the deadline had not fired. The entry after it can: the box taking the focus in the
+      // commit the reach turned on, inside the same task, where no deadline can fire. That entry
+      // stands in the header's box, and the tab strip is still held in it; a reach that let go
+      // of every box would read the strip handed over there.
+      const { at: reached, trail } = toTheHeader;
+      const tookTheFocus = reached === undefined ? undefined : trail[trail.indexOf(reached) + 1];
       expect(
-        toTheHeader.at?.strip.held,
-        "the tab strip was handed over with the header, so the hold let go rather than the " +
-          "reader's Tab bringing the header"
+        tookTheFocus?.header.where,
+        `the header's box did not take the focus in the task of its reach. The trail:\n${theTrail(trail)}`
+      ).toBe("in");
+      expect(
+        tookTheFocus?.strip.held,
+        "the tab strip was handed over in the commit of the header's reach, so the reach let go " +
+          `of every box rather than the header alone. The trail:\n${theTrail(trail)}`
       ).toBe(true);
 
       // The commit that brought it took the control they were standing on off the page, and

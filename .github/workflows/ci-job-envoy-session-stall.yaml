@@ -106,6 +106,13 @@ jobs:
       - name: Moved-approval advice of the real CLI against a real Dispatch
         run: bun test src/__tests__/moved-approval-advice.live.test.ts
         working-directory: packages/envoy-client
+      # The typed-block insert over the same real CLI and real Dispatch (dispatch://INFRA-3142):
+      # it proves the anchor `dispatch doc-edit` sends for a paragraph inside a requirement lands
+      # the markdown inside that requirement, where the coverage reading finds its check serving
+      # it, which the server's own Go rows of that route cannot show for the CLI.
+      - name: Typed-block insert of the real CLI against a real Dispatch
+        run: bun test src/__tests__/typed-block-insert.live.test.ts
+        working-directory: packages/envoy-client
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

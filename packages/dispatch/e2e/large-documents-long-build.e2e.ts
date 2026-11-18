@@ -32,6 +32,8 @@ import {
   theMomentThePageReached,
   throttleTheCpu,
   watchTheDocument,
+  watchThePageMove,
+  whileThePageMoves,
 } from "./large-documents-page";
 import {
   blocksBuilt,
@@ -105,14 +107,15 @@ import { asUser } from "./users";
 // 6.7 + 20.9 + 45 = 72.6 s of the third's 85.1.
 //
 // Every wait of the second and third rows on the page goes on for as long as the page keeps
-// moving, rather than for a time a quiet machine earned (`whileThePageMoves`). Beside a loaded
+// moving, rather than for a time a quiet machine earned (`whileThePageMoves`, with the steps
+// `watchThePageMove` hears, both `large-documents-page.ts`'s). Beside a loaded
 // machine the clock is the wrong shape: at 897ae8da, in a `chromium` row on two CPUs beside the
 // full lane's shard 3 of 4 with three workers and no retry, the third row's build over one
 // screenful was still not open 60 s after its first block, and beside the same load at adcb2968
 // its first block once had not come 30 s after the navigation (dispatch://INFRA-341, R16). What
 // tells a page that stopped from a slow one is whether it is still taking steps of what is
 // waited for - the steps of its opening before the first block, the build's batches before the
-// editor opens, its own draw before the whole document is drawn (`watchThePageMove`) - so a row
+// editor opens, its own draw before the whole document is drawn - so a row
 // fails by the stall's name once `thePageStallsAfterMs` passes with none (`theDrawStallsAfterMs`
 // for the draw), and waits for a page that keeps taking them. Measured on that same shape at
 // adcb2968, 50 runs of the third row and 25 of the second, the longest this side went without
@@ -190,203 +193,29 @@ const theirWordStaysWithinMs = 30_000;
  *  steps of 100 ms exhaust it - so a window that closed there closed inside this wait. */
 const heldAfterTheDrawMs = 20_000;
 
+/** The leg that runs this file's three rows alone, one worker on a machine of its own: the one
+ *  leg the first row runs in, the one whose step the second and third rows' waits were derived
+ *  for (`theRoomTheLegLeaves`), and the one the last row holds its ratio in (the comment above
+ *  that row says why). Every other leg these rows run in is a `chromium` shard. */
+const thePhonesLeg = "iphone-long-build-alone";
+
 /**
  * The most a wait of the second or third row may take while the page keeps moving: in the
  * phone's leg the bound the caller names, which that leg's step was derived from, and in a
  * shard leg whatever is left of the row's one deadline, `theShardsRowWithinMs` from the moment
  * this is called. Call it at the row's start.
+ *
+ * Never less than a millisecond. The third row hands what this answers to an `expect.poll` as
+ * its `timeout`, and Playwright reads a `timeout` of 0 there as no limit, which would leave a
+ * wait begun after the deadline to run on to the test's own 1,800,000 ms. Every other wait it
+ * bounds is `theMomentThePageReached`'s timer, for which 0 and 1 both mean at once.
  */
 function theRoomTheLegLeaves(testInfo: TestInfo): (phonesLegMs: number) => number {
-  if (testInfo.project.name === "iphone-long-build-alone") {
+  if (testInfo.project.name === thePhonesLeg) {
     return (phonesLegMs) => phonesLegMs;
   }
   const endsBy = Date.now() + theShardsRowWithinMs;
-  return () => Math.max(0, endsBy - Date.now());
-}
-
-declare global {
-  interface Window {
-    /** What the page says each time it takes a step of opening its document, drawing it or
-     *  building its editor, with how many top-level blocks the editor holds after a batch
-     *  (`watchThePageMove`). */
-    __thePageMoved?: (step: string, blocks: number) => void;
-  }
-}
-
-/** One step the page said it took, as this side heard it: `Date.now()` here, and what it was. */
-interface HeardStep {
-  readonly at: number;
-  readonly step: string;
-}
-
-/** What this side has heard of a page opening its document and building its editor: every step
- *  it said, oldest first, and how many top-level blocks the editor held after its last batch. */
-interface ThePageMoving {
-  readonly steps: HeardStep[];
-  blocks: number;
-}
-
-/**
- * Has the page say each step it takes on its way to an open editor, and answers what it says.
- *
- * The steps are what a document's opening is made of, each said in the task it happened in: a
- * file of the page's own arriving - a script, a stylesheet, an image - and the document's text
- * read answering, as the browser files each `resource` entry when its response ends; anything
- * going into the page's own draw of the document, its blocks and the diagrams drawn in them;
- * the document's socket made, opened, and the first frame the server sends on it; the editor's
- * root constructed; and each batch of the editor's build, with the count it leaves. A batch
- * puts the next run of the document's top-level blocks into the editor in a task of its own
- * (`@legion/proof-editor`'s `progressive-build.ts`), so the editor's element gains children
- * once per batch and in no other way while it builds; a mutation that leaves the count where it
- * was - the adoption's redraw of the same blocks - is no batch. A read the page makes for
- * anything else - its panels, a count that refreshes - is no step, and nor is a later frame on
- * the socket, so a page whose document has stopped opening falls quiet however busy the rest of
- * it is. Each step is said through a binding, which goes out of the page in the task that says
- * it rather than waiting for the page to answer a question: from a build's first batch to its
- * last the page answers nothing the run asks it (the comment above this file's first row).
- *
- * Install before the navigation, and after `documentTransport` where the row holds the socket:
- * from that call Playwright's own WebSocket stands where the page's stood (`routeWebSocket`),
- * and a recorder put in front of the page's before it records none of the socket's steps.
- */
-async function watchThePageMove(page: Page): Promise<ThePageMoving> {
-  const moving: ThePageMoving = { blocks: 0, steps: [] };
-  await page.exposeFunction("__thePageMoved", (step: string, blocks: number) => {
-    moving.steps.push({ at: Date.now(), step });
-    if (step === "batch") {
-      moving.blocks = blocks;
-    }
-  });
-  await page.addInitScript(() => {
-    const say = (step: string, blocks = 0): void => {
-      window.__thePageMoved?.(step, blocks);
-    };
-    const theTextRead = /^\/api\/v1\/(issues\/[^/]+\/artifacts\/[^/]+|artifacts\/[^/]+)\/text$/u;
-    const reads = ["beacon", "fetch", "xmlhttprequest"];
-    new PerformanceObserver((entries) => {
-      for (const entry of entries.getEntries() as PerformanceResourceTiming[]) {
-        const path = new URL(entry.name).pathname;
-        if (!reads.includes(entry.initiatorType)) {
-          say(`${entry.initiatorType} ${path.slice(path.lastIndexOf("/") + 1)}`);
-        } else if (theTextRead.test(path)) {
-          say("text read");
-        }
-      }
-    }).observe({ buffered: true, type: "resource" });
-    window.WebSocket = new Proxy(window.WebSocket, {
-      construct(made, args: [string | URL, (string | string[])?], asked) {
-        const socket = Reflect.construct(made, args, asked) as WebSocket;
-        if (String(args[0]).includes("/ws/doc/")) {
-          say("socket made");
-          socket.addEventListener("open", () => say("socket open"));
-          // The first frame alone: it is the server's answer with the document, and what comes
-          // after it on an open socket - the readers' awareness, renewed every few seconds -
-          // would keep a page that has stopped opening looking busy.
-          socket.addEventListener("message", () => say("first frame"), { once: true });
-        }
-        return socket;
-      },
-    });
-    let built = 0;
-    let rooted = false;
-    new MutationObserver((records) => {
-      let drew = false;
-      for (const { addedNodes, target } of records) {
-        if (addedNodes.length === 0 || !(target instanceof HTMLElement)) {
-          continue;
-        }
-        if (target.classList.contains("ProseMirror") && target.closest(".proof-editor") !== null) {
-          if (target.childElementCount !== built) {
-            built = target.childElementCount;
-            say("batch", built);
-          }
-        } else if (target.closest('[aria-label="Document text"]') !== null) {
-          drew = true;
-        } else if (
-          !rooted &&
-          [...addedNodes].some(
-            (node) =>
-              node instanceof HTMLElement &&
-              (node.classList.contains("proof-editor") || node.querySelector(".proof-editor"))
-          )
-        ) {
-          rooted = true;
-          say("editor root");
-        }
-      }
-      if (drew) {
-        say("draw");
-      }
-    }).observe(document, { childList: true, subtree: true });
-  });
-  return moving;
-}
-
-/**
- * Waits for `reaching` for as long as the page keeps taking steps `counts` accepts, and answers
- * what it reached, with the longest this side went without such a step and the step that gap
- * came after.
- *
- * The bound is on the page's progress, not on the clock alone: the row fails by the stall's own
- * name once `stalledAfterMs` has passed since the last such step - or since the wait began,
- * before any. `reaching` carries the most the leg the row runs in leaves the wait however
- * steadily the page moves (`theRoomTheLegLeaves`), with its own message for running out, which
- * this adds the page's last step to. `givingUp` is the row's own reason to stop waiting, which
- * ends the wait with whatever it rejects with, as it is.
- */
-async function whileThePageMoves<T>(
-  reaching: Promise<T>,
-  moving: ThePageMoving,
-  counts: (step: string) => boolean,
-  { stalledAfterMs, stopped, what }: { stalledAfterMs: number; stopped: string; what: string },
-  givingUp?: Promise<never>
-): Promise<{ longestQuiet: string; reached: T }> {
-  const began = Date.now();
-  const heard = (): HeardStep[] =>
-    moving.steps.filter(({ at, step }) => at >= began && counts(step));
-  const theLast = (): string => {
-    const last = heard().at(-1);
-    return last === undefined
-      ? `no ${what} since the wait began`
-      : `the last ${last.step}, ${Date.now() - last.at} ms before`;
-  };
-  const stalled = Promise.withResolvers<never>();
-  const look = (): void => {
-    const quietMs = Date.now() - (heard().at(-1)?.at ?? began);
-    if (quietMs < stalledAfterMs) {
-      timer = setTimeout(look, stalledAfterMs - quietMs);
-      return;
-    }
-    stalled.reject(
-      new Error(
-        `${stopped}: no ${what} for ${quietMs} ms (the page is stalled at ${stalledAfterMs} ` +
-          `ms), ${Date.now() - began} ms into the wait, ${theLast()}, with ${moving.blocks} ` +
-          "top-level blocks in the editor"
-      )
-    );
-  };
-  let timer = setTimeout(look, stalledAfterMs);
-  try {
-    const reached = await Promise.race([
-      reaching.catch((error: unknown) => {
-        throw new Error(
-          `${error instanceof Error ? error.message : String(error)}, while the page was still ` +
-            `moving: ${theLast()}, with ${moving.blocks} top-level blocks in the editor`
-        );
-      }),
-      stalled.promise,
-      ...(givingUp === undefined ? [] : [givingUp]),
-    ]);
-    const steps = [{ at: began, step: "the wait's start" }, ...heard()];
-    const gaps = steps.map((step, index) => ({
-      after: step.step,
-      ms: (steps[index + 1]?.at ?? Date.now()) - step.at,
-    }));
-    const longest = gaps.reduce((most, gap) => (gap.ms > most.ms ? gap : most));
-    return { longestQuiet: `${longest.ms} ms after ${longest.after}`, reached };
-  } finally {
-    clearTimeout(timer);
-  }
+  return () => Math.max(1, endsBy - Date.now());
 }
 
 /** What each of the three waits on the page counts, how long it lets the page go without one,
@@ -428,9 +257,9 @@ test(`the measurement's window stays open until ${documentNames.large}'s editor 
   browser,
 }, testInfo) => {
   test.skip(
-    testInfo.project.name !== "iphone-long-build-alone",
+    testInfo.project.name !== thePhonesLeg,
     "the measurement set-up is the phone's viewport, touch and Chromium, which is " +
-      "iphone-long-build-alone's"
+      `${thePhonesLeg}'s`
   );
   test.setTimeout(900_000);
   const { path } = await seedDocument("specs-large.md", largeDocument);
@@ -673,7 +502,7 @@ test(`another person's edit reaches ${documentNames.large} while its editor is b
 // drawn document, against the build's own time over a screenful, measured one after the other
 // in one run.
 //
-// The row holds that ratio in `iphone-long-build-alone` alone (`theRatioIsHeldIn`), and in a
+// The row holds that ratio in `iphone-long-build-alone` alone (`thePhonesLeg`), and in a
 // `chromium` shard leg it takes the same two builds through the same waits and prints the
 // ratio without holding it. The claim is about the page, and only a reading the load is no part
 // of says anything about the page: this tree moved R11's measuring rows to
@@ -692,10 +521,6 @@ test(`another person's edit reaches ${documentNames.large} while its editor is b
  *  no build can give back; what this rules out is the quadratic above, which was seven times
  *  on this pod. Measured at 1.6 to 2.2 times over the runs this row was written against. */
 const theSameRangeTimes = 3;
-
-/** The one project the row holds the ratio in: the leg that runs alone on a machine of its own
- *  (the comment above this file's last row says why). */
-const theRatioIsHeldIn = "iphone-long-build-alone";
 
 /** What a whole build the row stopped waiting for ends its wait with, through
  *  `whileThePageMoves`: it had run past the bar the row holds it to, as long as `atLeastMs`. */
@@ -766,9 +591,12 @@ async function theBuildsTime(
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    const reached = await watchTheDocument(page);
+    // The socket is held before the page is watched: `watchTheDocument`'s wrap of the page's
+    // WebSocket says the socket's steps `watchThePageMove` hears, and it has to stand in front of
+    // the WebSocket `documentTransport` puts where the page's stood, not behind it.
     const transport =
       overTheWholeDraw === undefined ? undefined : await documentTransport(page, { holding: true });
+    const reached = await watchTheDocument(page);
     const moving = await watchThePageMove(page);
     // The rate is the build's, and both builds are read under it. The page that holds its
     // socket is throttled once its draw is whole and before that socket is let through, so the
@@ -886,7 +714,7 @@ test(`${documentNames.large}'s editor builds over the whole drawn document in th
   // ratio is held, the whole build is given up once it has run past the bar, since it fails the
   // ratio whatever it would have gone on to take: a build that scales with the page ends on the
   // ratio rather than on its wait. Elsewhere it is waited for whole, and only printed.
-  const holdsTheRatio = testInfo.project.name === theRatioIsHeldIn;
+  const holdsTheRatio = testInfo.project.name === thePhonesLeg;
   const screenful = await theBuildsTime(browser, path, { within });
   const drawn = await theBuildsTime(browser, path, {
     givesUpPastMs: holdsTheRatio ? screenful.buildMs * theSameRangeTimes : undefined,
@@ -897,7 +725,7 @@ test(`${documentNames.large}'s editor builds over the whole drawn document in th
     `R11 build time · over one screenful ${theReading(screenful)}; over the whole drawn ` +
       `document (${whole} blocks) ${theReading(drawn)}; ` +
       `${(drawn.buildMs / screenful.buildMs).toFixed(2)} times, against ${theSameRangeTimes}, ` +
-      `${holdsTheRatio ? "held here" : `held in ${theRatioIsHeldIn} alone, not here`}.`
+      `${holdsTheRatio ? "held here" : `held in ${thePhonesLeg} alone, not here`}.`
   );
 
   expect(screenful.buildMs).toBeGreaterThan(0);

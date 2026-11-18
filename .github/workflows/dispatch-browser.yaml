@@ -429,7 +429,7 @@ jobs:
     # the 3 is large-documents-long-build.e2e.ts on `iphone-long-build-alone`
     # (dispatch://INFRA-341).
     #
-    # Those 1,547 cut five ways, each leg listed at this head with the ten projects named below
+    # Those 1,547 cut five ways, each leg listed at 6fefee10 with the ten projects named below
     # and this job's own denominator (`--shard=<i>/5 --list`): 310, 310, 309, 309 and 309 rows,
     # which sum to the 1,547. Equal row counts are all Playwright's cut promises, and the
     # seconds above are where what a leg costs is read instead.
@@ -645,9 +645,10 @@ jobs:
         # main's run 43421089840 also holds, which took 51.2 there; the 24th is new on this
         # branch. And the three phone builds of
         # large-documents-long-build.e2e.ts, 1.8 min, 51.8 s and 39.3 s, are
-        # `iphone-long-build-alone`'s leg now. Re-listed at this head, `shard (5)` holds 309
-        # rows, and the next full-lane run measured that leg: at head 41eed1ec (run
-        # 43506575017, job 132166911588) this step took 402 s of its 540.
+        # `iphone-long-build-alone`'s leg now. With those two gone, the next full-lane run
+        # measured that leg: at head 41eed1ec (run 43506575017, job 132166911588) this step took
+        # 402 s of its 540. Re-listed at 6fefee10 with this leg's own command, `--shard=5/5
+        # --list` over the ten projects named below, `shard (5)` holds 309 rows in 69 files.
         timeout-minutes: 9
         run: |
           # $RUNNER_TEMP holds everything this step writes, the run directory the stack pool
@@ -1637,8 +1638,15 @@ jobs:
   # runs measured. A download this job does not control may not decide a required check.
   #
   # The step "Pull the stack's Postgres image" was added later, for the reason its comment gives,
-  # and its pull is counted at the 120 s the browser step spent before the stack's first output
-  # on the run that found it: 240 + 314 + 120 = 674 s, 11 min 14 s, rounded up to 12 minutes.
+  # and it carries a budget of its own, derived from the pulls of that image this job's logs show.
+  # In job 134507372389, the first attempt of run 44211278336 at head d7548e82, whose browser
+  # step still pulled the image inside itself, on a saturated runner fleet, that step spent 205 s
+  # before the stack's first line; with the image already on the runner the same start takes 1.4
+  # to 1.7 s (the pull step's comment names the jobs), so 205 s is the slowest pull read,
+  # taken whole. The run's second attempt, job 134542482005, spent 25.8 s there, the pull among
+  # them. Pulled in its own step, it took 5 to 13 s in each of the 16 passing visual jobs of the
+  # merge-group runs from 334ea4c6 (job 134724850776) to 5589e6df (job 134948731616). So 205 x
+  # 1.15 = 236 s -> 4 min, 35 s over the slowest pull.
   #
   # The table's setup-go and go cache restore rows are gone from this job, and its connections
   # step with them: the job runs no go command now (its first download step says why), so the
@@ -1647,17 +1655,21 @@ jobs:
   # the second only after a first that did not complete, the step that places the attempt that
   # completed, and the chmod. The shard job's comments on those steps say why each, and its note
   # "THE TWO NETWORK READS, AT A BUSY HOUR" why a read of this artifact carries a bound of its
-  # own: one leg's read of it took 428 s where its siblings' took seconds. So the job's budget is
-  # the browser step's 240 s, the two download attempts' 120 s each, the Postgres pull's 120 s
-  # and the steps without a budget in the six columns less setup-go's 9 s and the cache
-  # restore's 17 s, 333 - 9 - 17 = 307 s: 907 s, 15 min 7 s, rounded up to the 16 minutes below,
-  # whose 53 s left over hold the place step and the chmod, a second at most in the shard job's
-  # reading.
+  # own: one leg's read of it took 428 s where its siblings' took seconds.
+  #
+  # So the job's budget is the browser step's 240 s, the two download attempts' 120 s each, the
+  # Postgres pull's 240 s, and the measured maximum of every step without a budget, read over
+  # the six columns above, those 16 jobs and both attempts of run 44211278336: checkout 15 s
+  # (job 134948731616), setup-bun 218 s (the outage column above), bun install 13 s
+  # (134901111320), the contracts build 1 s (134757244369), the dashboard build 39 s
+  # (134933935311), the Playwright pull 72 s (134739696645), the upload 3 s (134542482005), and
+  # the place step and the chmod, which read 0 s each in the shard job (job 134950289250), at a
+  # second each: 363 s. That is 1,083 s, 18 min 3 s, rounded up to the 19 minutes below.
   visual:
     needs: binaries
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
-    timeout-minutes: 16
+    timeout-minutes: 19
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1728,15 +1740,23 @@ jobs:
       # THE STACK'S POSTGRES IMAGE, PULLED HERE FOR THE SAME REASON. e2e/harness-pool.ts's
       # startStack starts the stack's PostgreSQL with a `docker run` of DISPATCH_E2E_PG_IMAGE, the
       # digest the browser step below exports, and a pull the runner had not made yet counts
-      # inside that step's 4 minutes. On #4129 (run 44215262087, job 134503540243) the step spent
-      # 120 s before the stack's first output, where five green visual jobs (134499880849,
-      # 134479592234, 134451447710, 134451520100, 134547177192) spent 7 to 15 s, and the step ran
-      # past its budget at 250 s. Its log does not time the pull apart from the rest of that
-      # start, so the 120 s is the bound this pull is given, not a measure of the pull alone. The
+      # inside that step's 4 minutes, which are for its rows. On #4129 (run 44215262087, job
+      # 134503540243) the step spent 120 s before the stack's first output, and in job
+      # 134507372389 (run 44211278336, head d7548e82, on a saturated runner fleet) 205 s, its
+      # 4 minutes running out with the 13 rows it had reached all passing, where five green visual
+      # jobs (134499880849, 134479592234, 134451447710, 134451520100, 134547177192) spent 7 to
+      # 15 s. The image is pulled here rather than the stack started here because the pull is the
+      # whole of what a cold runner adds: with the image already on the runner, the stack printed
+      # its first line 1.4 to 1.7 s into the browser step (jobs 134739696645, 134948731616 and
+      # 134757244369). The 4 minutes below are this job's head's derivation from that 205 s. The
       # digest is the browser step's, written twice, and the two must stay the same: a pull of
       # another digest here leaves that step to pull its own inside its budget again.
       - name: Pull the stack's Postgres image
+        timeout-minutes: 4
         run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+      # The 4 minutes of the step below are its 22 rows': the binaries are built and both images
+      # are on the runner by now, so what it spends before Playwright's first row is the stack's
+      # start from them and the seed, which pull and compile nothing.
       - name: Browser-test dispatch dashboard against its baselines
         timeout-minutes: 4
         run: |

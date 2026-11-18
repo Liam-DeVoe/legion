@@ -40,7 +40,10 @@
 // as and the median it holds to the targets are `large-documents-median.ts`; the recorders of
 // the page's reads and its deferred chrome, which the rows of
 // `large-documents-first-screen.e2e.ts` and its two siblings read the page's order by, are
-// `large-documents-after-the-batch.ts`.
+// `large-documents-after-the-batch.ts`. The steps a page takes on its way to an open editor,
+// which the rows of `large-documents-long-build.e2e.ts` wait on rather than on the clock
+// (`watchThePageMove`, `whileThePageMoves`), are recorded here, through the one wrap of the
+// page's WebSocket the opening's recorder already is.
 import type { Page } from "@playwright/test";
 
 declare global {
@@ -105,6 +108,10 @@ declare global {
     /** What the page says the moment its first batch lands, so a row that acts inside the
      *  build is told rather than asking (`watchTheBuildsWindow`). */
     __theFirstBatchLanded?: (at: number) => void;
+    /** What the page says each time it takes a step of opening its document, drawing it or
+     *  building its editor, with how many top-level blocks the editor holds after a batch
+     *  (`watchThePageMove`); `undefined` for a page no row is listening to. */
+    __thePageMoved?: (step: string, blocks: number) => void;
   }
 }
 
@@ -260,13 +267,18 @@ const firstBlockSelector = `${liveEditorSelector} [data-block-id]`;
  *  lands, which is the binding's. */
 const editorRootSelector = ".proof-editor";
 
+/** The page's own draw of the document's text (`web/src/features/doc/DocumentPreview.tsx`), by
+ *  the name it carries, which the server also writes around the opening blocks the preview
+ *  adopts (`internal/dispatch/pmdoc/first_screen.go`). */
+const documentTextSelector = '[aria-label="Document text"]';
+
 /** Where a block a reader has before the editor exists stands: the element the server put the
  *  document's opening blocks in (`web/src/features/doc/first-screen.ts`), and the page's own
  *  draw of the document's text, which adopts them and then draws the rest
  *  (`web/src/features/doc/DocumentPreview.tsx`). Neither takes an edit. The measurement reads
  *  this off the block it timed, so a run says which surface drew that block rather than leaving
  *  it to be read off the selector. */
-const previewSelector = '#first-screen, [aria-label="Document text"]';
+const previewSelector = `#first-screen, ${documentTextSelector}`;
 
 /** The page's own draw of the document: a block inside the `Document editor` section, which is
  *  the whole document surface the page renders - the preview it draws the text in, the editor's
@@ -476,12 +488,29 @@ export async function watchTheDocument(page: Page): Promise<Announcements> {
       // recorder's `send` sits on the instance in front of both and calls through to them.
       // Only the first document socket is recorded; a reconnect's is another socket and no
       // part of the opening this times.
+      //
+      // This is the one wrap of the page's WebSocket, so it also says each document socket's
+      // steps to `__thePageMoved` where a row listens for them (`watchThePageMove`), and adds
+      // nothing to a socket where none does: every document socket's, since a reconnect is the
+      // page still moving.
       const opening: NonNullable<Window["__documentOpening"]> = {};
       window.__documentOpening = opening;
       window.WebSocket = new Proxy(window.WebSocket, {
         construct(made, args: [string | URL, (string | string[])?], asked) {
           const socket = Reflect.construct(made, args, asked) as WebSocket;
-          if (!String(args[0]).includes("/ws/doc/") || opening.socketCreatedMs !== undefined) {
+          if (!String(args[0]).includes("/ws/doc/")) {
+            return socket;
+          }
+          const moved = window.__thePageMoved;
+          if (moved !== undefined) {
+            moved("socket made", 0);
+            socket.addEventListener("open", () => moved("socket open", 0));
+            // The first frame alone: it is the server's answer with the document, and what comes
+            // after it on an open socket - the readers' awareness, renewed every few seconds -
+            // would keep a page that has stopped opening looking busy.
+            socket.addEventListener("message", () => moved("first frame", 0), { once: true });
+          }
+          if (opening.socketCreatedMs !== undefined) {
             return socket;
           }
           opening.socketCreatedMs = performance.now();
@@ -601,6 +630,173 @@ export async function watchTheDocument(page: Page): Promise<Announcements> {
     firstBlock: (timeoutMs) =>
       theMomentThePageReached(announced.firstBlock, timeoutMs, neverInTheViewport),
   };
+}
+
+/** One step the page said it took, as this side heard it: `Date.now()` here, and what it was. */
+interface HeardStep {
+  readonly at: number;
+  readonly step: string;
+}
+
+/** What this side has heard of a page opening its document and building its editor: every step
+ *  it said, oldest first, and how many top-level blocks the editor held after its last batch. */
+export interface ThePageMoving {
+  readonly steps: HeardStep[];
+  blocks: number;
+}
+
+/**
+ * Has the page say each step it takes on its way to an open editor, and answers what it says.
+ *
+ * The steps are what a document's opening is made of, each said in the task it happened in: a
+ * file of the page's own arriving - a script, a stylesheet, an image - and the document's text
+ * read answering, as the browser files each `resource` entry when its response ends; anything
+ * going into the page's own draw of the document, its blocks and the diagrams drawn in them;
+ * the document's socket made, opened, and the first frame the server sends on it; the editor's
+ * root constructed; and each batch of the editor's build, with the count it leaves. A batch
+ * puts the next run of the document's top-level blocks into the editor in a task of its own
+ * (`@legion/proof-editor`'s `progressive-build.ts`), so the editor's element gains children
+ * once per batch and in no other way while it builds; a mutation that leaves the count where it
+ * was - the adoption's redraw of the same blocks - is no batch. A read the page makes for
+ * anything else - its panels, a count that refreshes - is no step, and nor is a later frame on
+ * the socket, so a page whose document has stopped opening falls quiet however busy the rest of
+ * it is. Each step is said through a binding, which goes out of the page in the task that says
+ * it rather than waiting for the page to answer a question: from a build's first batch to its
+ * last the page answers nothing the run asks it (`Reached` says why the page announces).
+ *
+ * The socket's three steps are said by `watchTheDocument`'s wrap of the page's WebSocket, the
+ * one wrap this module puts there, so a row calls this beside `watchTheDocument`. Both go before
+ * the navigation, and after `documentTransport` where the row holds the socket: from that call
+ * Playwright's own WebSocket stands where the page's stood (`routeWebSocket`), and a wrap put in
+ * front of the page's before it hears none of the socket's steps.
+ */
+export async function watchThePageMove(page: Page): Promise<ThePageMoving> {
+  const moving: ThePageMoving = { blocks: 0, steps: [] };
+  await page.exposeFunction("__thePageMoved", (step: string, blocks: number) => {
+    moving.steps.push({ at: Date.now(), step });
+    if (step === "batch") {
+      moving.blocks = blocks;
+    }
+  });
+  await page.addInitScript(
+    ({ drawn, root }: { drawn: string; root: string }) => {
+      const say = (step: string, blocks = 0): void => {
+        window.__thePageMoved?.(step, blocks);
+      };
+      const theTextRead = /^\/api\/v1\/(issues\/[^/]+\/artifacts\/[^/]+|artifacts\/[^/]+)\/text$/u;
+      const reads = ["beacon", "fetch", "xmlhttprequest"];
+      new PerformanceObserver((entries) => {
+        for (const entry of entries.getEntries() as PerformanceResourceTiming[]) {
+          const path = new URL(entry.name).pathname;
+          if (!reads.includes(entry.initiatorType)) {
+            say(`${entry.initiatorType} ${path.slice(path.lastIndexOf("/") + 1)}`);
+          } else if (theTextRead.test(path)) {
+            say("text read");
+          }
+        }
+      }).observe({ buffered: true, type: "resource" });
+      let built = 0;
+      let rooted = false;
+      new MutationObserver((records) => {
+        let drew = false;
+        for (const { addedNodes, target } of records) {
+          if (addedNodes.length === 0 || !(target instanceof HTMLElement)) {
+            continue;
+          }
+          if (target.classList.contains("ProseMirror") && target.closest(root) !== null) {
+            if (target.childElementCount !== built) {
+              built = target.childElementCount;
+              say("batch", built);
+            }
+          } else if (target.closest(drawn) !== null) {
+            drew = true;
+          } else if (
+            !rooted &&
+            [...addedNodes].some(
+              (node) =>
+                node instanceof HTMLElement &&
+                (node.matches(root) || node.querySelector(root) !== null)
+            )
+          ) {
+            rooted = true;
+            say("editor root");
+          }
+        }
+        if (drew) {
+          say("draw");
+        }
+      }).observe(document, { childList: true, subtree: true });
+    },
+    { drawn: documentTextSelector, root: editorRootSelector }
+  );
+  return moving;
+}
+
+/**
+ * Waits for `reaching` for as long as the page keeps taking steps `counts` accepts, and answers
+ * what it reached, with the longest this side went without such a step and the step that gap
+ * came after.
+ *
+ * The bound is on the page's progress, not on the clock alone: the row fails by the stall's own
+ * name once `stalledAfterMs` has passed since the last such step - or since the wait began,
+ * before any. `reaching` carries the most the row's leg leaves the wait however steadily the
+ * page moves, with its own message for running out, which this adds the page's last step to.
+ * `givingUp` is the row's own reason to stop waiting, which ends the wait with whatever it
+ * rejects with, as it is.
+ */
+export async function whileThePageMoves<T>(
+  reaching: Promise<T>,
+  moving: ThePageMoving,
+  counts: (step: string) => boolean,
+  { stalledAfterMs, stopped, what }: { stalledAfterMs: number; stopped: string; what: string },
+  givingUp?: Promise<never>
+): Promise<{ longestQuiet: string; reached: T }> {
+  const began = Date.now();
+  const heard = (): HeardStep[] =>
+    moving.steps.filter(({ at, step }) => at >= began && counts(step));
+  const theLast = (): string => {
+    const last = heard().at(-1);
+    return last === undefined
+      ? `no ${what} since the wait began`
+      : `the last ${last.step}, ${Date.now() - last.at} ms before`;
+  };
+  const stalled = Promise.withResolvers<never>();
+  const look = (): void => {
+    const quietMs = Date.now() - (heard().at(-1)?.at ?? began);
+    if (quietMs < stalledAfterMs) {
+      timer = setTimeout(look, stalledAfterMs - quietMs);
+      return;
+    }
+    stalled.reject(
+      new Error(
+        `${stopped}: no ${what} for ${quietMs} ms (the page is stalled at ${stalledAfterMs} ` +
+          `ms), ${Date.now() - began} ms into the wait, ${theLast()}, with ${moving.blocks} ` +
+          "top-level blocks in the editor"
+      )
+    );
+  };
+  let timer = setTimeout(look, stalledAfterMs);
+  try {
+    const reached = await Promise.race([
+      reaching.catch((error: unknown) => {
+        throw new Error(
+          `${error instanceof Error ? error.message : String(error)}, while the page was still ` +
+            `moving: ${theLast()}, with ${moving.blocks} top-level blocks in the editor`
+        );
+      }),
+      stalled.promise,
+      ...(givingUp === undefined ? [] : [givingUp]),
+    ]);
+    const steps = [{ at: began, step: "the wait's start" }, ...heard()];
+    const gaps = steps.map((step, index) => ({
+      after: step.step,
+      ms: (steps[index + 1]?.at ?? Date.now()) - step.at,
+    }));
+    const longest = gaps.reduce((most, gap) => (gap.ms > most.ms ? gap : most));
+    return { longestQuiet: `${longest.ms} ms after ${longest.after}`, reached };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** The two ends of a build, on the page's own clock: when its first batch landed and when the

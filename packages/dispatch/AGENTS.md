@@ -2208,7 +2208,10 @@ and a run of more than one stack that names neither is refused naming both.
 `DISPATCH_E2E_PG_IMAGE` is a `docker run` of the image digest the caller names:
 a developer's path on a machine with Docker and no Postgres binaries, and the
 visual job's of `.github/workflows/dispatch-browser.yaml`, which runs on the
-runner with only its Playwright command in a container.
+runner with only its Playwright command in a container. A `docker run` pulls a
+digest the machine does not hold inside the run that starts it, so that job
+pulls this one in a step of its own, with a budget of its own, before the
+browser step whose 4 minutes are for its rows.
 `DISPATCH_E2E_PG_BIN` is a directory holding `initdb` and `pg_ctl`, which is
 the shard and alone jobs' path and an issue pod's: those two jobs of
 `.github/workflows/dispatch-browser.yaml` run in a container that carries
