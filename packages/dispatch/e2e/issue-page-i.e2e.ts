@@ -1922,6 +1922,118 @@ test("a table a row's editor holds scrolls sideways inside itself, and the box a
   });
 });
 
+// The editor's own part of the same ruling: a collaborator's caret label hung from the caret
+// toward the line's end, so with the caret near a line's end it passed the end of the box and the
+// box scrolled sideways while the caret stood there. Measured at 390 by 664 with a caret drawn
+// as the editor draws one, 1 px inside the box's end, the label ran 195 px past it and the box's
+// scroll width went from 350 to 545 px. The editor now hangs such a label back from the caret
+// (`collab-cursor-plugin.ts`). The row runs at 1280 px with a real second reader, because below
+// 1280 px `ProofDocument.tsx` gives the editor no awareness and a phone draws no collaborator's
+// caret at all. The statement is one run with no space in it, which the box breaks at its width,
+// so its first line runs to within a character of the box's width, and bob's caret stands one
+// character before that line's end.
+// SLOW(>=2s): a seeded issue and a spec, two readers' pages each loaded and waited on until its
+// caret is in the statement, then alice's waited on until it draws bob's caret.
+test("a collaborator's caret label near a line's end hangs back inside the row's editor box", async ({
+  browser,
+}) => {
+  await phase(browser, seedNoChildren, async (page) => {
+    await page.setViewportSize({ height: 900, width: 1280 });
+    const spec = await createIssue({
+      force: true,
+      project: PROJECT,
+      spec: [
+        "# A statement two readers edit at once",
+        "",
+        "## Requirements",
+        "",
+        ":::requirement{#r-plain}",
+        "Tworeaderseditthisstatementwhoselinerunstotheendofthebox".repeat(6),
+        ":::",
+        "",
+      ].join("\n"),
+      title: "An issue whose statement two readers edit",
+    });
+    const statement = blockNodeId(await primarySlug(spec.key), "r-plain");
+    const enterStatement = async (reader: Page, who: string) => {
+      await gotoIssue(reader, `/issues/${spec.key}`);
+      await expectIssuePageDrawn(reader);
+      await expect
+        .poll(async () => (await focusedRow(reader)) !== null, {
+          message: `${who}'s page opens with the focus on no row`,
+        })
+        .toBe(true);
+      await reader.keyboard.press("End");
+      await expect
+        .poll(() => focusedRow(reader), {
+          message: `End did not reach the statement on ${who}'s page`,
+        })
+        .toBe(statement);
+      await reader.keyboard.press("Enter");
+      await expect
+        .poll(() => caretInNode(reader), {
+          message: `Enter did not put ${who}'s caret in the statement`,
+        })
+        .toBe(true);
+    };
+    await enterStatement(page, "alice");
+    const bob = await asUser(browser, "bob");
+    try {
+      await withIssuePage(bob, "bob");
+      const bobPage = await bob.newPage();
+      await bobPage.setViewportSize({ height: 900, width: 1280 });
+      await enterStatement(bobPage, "bob");
+      // End takes bob's caret to the end of the statement's first line, where the line breaks,
+      // and the step back keeps it on that line.
+      await bobPage.keyboard.press("End");
+      await bobPage.keyboard.press("ArrowLeft");
+      const label = nodeRow(page, statement)
+        .first()
+        .locator("[data-editor-box]")
+        .locator(cursorLabel(page, "bob"));
+      await expect(label, "alice's row draws no caret of bob's").toBeVisible();
+      await nextFrames(page);
+      const drawn = await label.evaluate((element) => {
+        const box = element.closest("[data-editor-box]");
+        if (box === null) throw new Error("bob's caret label stands in no editor box");
+        const edges = ({ bottom, left, right, top }: DOMRect) => ({ bottom, left, right, top });
+        return {
+          box: {
+            ...edges(box.getBoundingClientRect()),
+            clientWidth: box.clientWidth,
+            scrollWidth: box.scrollWidth,
+          },
+          label: {
+            ...edges(element.getBoundingClientRect()),
+            clientWidth: element.clientWidth,
+            scrollWidth: element.scrollWidth,
+            text: element.textContent,
+          },
+        };
+      });
+      expect(
+        drawn.box.scrollWidth,
+        "alice's editor box scrolls sideways while bob's caret stands near a line's end"
+      ).toBeLessThanOrEqual(drawn.box.clientWidth);
+      expect(
+        {
+          bottom: drawn.label.bottom <= drawn.box.bottom,
+          left: drawn.label.left >= drawn.box.left,
+          right: drawn.label.right <= drawn.box.right,
+          top: drawn.label.top >= drawn.box.top,
+        },
+        `bob's label (${JSON.stringify(drawn.label)}) passes an edge of alice's editor box (${JSON.stringify(drawn.box)})`
+      ).toEqual({ bottom: true, left: true, right: true, top: true });
+      expect(drawn.label.text, "bob's label does not read his name").toBe("bob");
+      expect(drawn.label.scrollWidth, "bob's label cuts his name short").toBeLessThanOrEqual(
+        drawn.label.clientWidth
+      );
+    } finally {
+      await bob.close();
+    }
+  });
+});
+
 // The tester's finding at #4205's 861adff1, on "after each move the focused row is on screen":
 // `.` zooms into a row of the outline's top level, which draws that row alone at the top of the
 // page, and `,` draws the whole outline again with the focus still on that row, and nothing
