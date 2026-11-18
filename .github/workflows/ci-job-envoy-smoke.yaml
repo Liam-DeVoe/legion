@@ -60,10 +60,12 @@ jobs:
       # Without it each run fetched 161 modules, 242 MB, from the proxy: 6-8 s of the live-test step
       # in a passing run, but 14 m 45 s in run 43880882183, where the step started no other module
       # for 7.5 and then 6 minutes after the pulumi-aws and pulumi-gcp SDKs, and the job reached its
-      # 20-minute limit before a live test ran. The key carries the Go this
-      # setup-go installs from packages/envoy/go.mod, the family's fill the Go of
-      # packages/envoy/infra/go.mod: both name go 1.27.3, and should they part, the exact key misses
-      # and the prefix restores the family's newest entry, whose modules still serve. Both go test
+      # 20-minute limit before a live test ran. The key is the fill's key: the Go this setup-go
+      # installs from packages/envoy/go.mod, the family's fill the Go of
+      # packages/envoy/infra/go.mod, and the hash of the files that choose the infra workspace's
+      # module versions. Both name go 1.27.3, and should the Go lines part or a module file move,
+      # the exact key misses and the prefix restores the family's newest entry, whose modules still
+      # serve. Both go test
       # steps below pass -count=1, as every go test of a job that restores a Go family does: a
       # cached pass in the restored build cache must not stand in for a run.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -71,7 +73,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-infra-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-envoy-infra-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum') }}
           restore-keys: ${{ format('go-envoy-infra-{0}-', runner.os) }}
       # Every image the build or the test starts (testnats.HubImage and the smoke image's base
       # images) is pulled first, for the reason .github/actions/pull-test-images gives. Every
