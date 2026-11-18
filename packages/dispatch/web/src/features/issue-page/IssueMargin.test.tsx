@@ -2287,6 +2287,72 @@ test("Add lists Repository on an empty repository row and presses None, which op
   }
 });
 
+// An issue with no repository of its own that inherits one has no value for Repository, so Add
+// lists it; its row draws the inherited repository as text, a button whose press draws the box in
+// its place. Add has to press that text: it finds neither "None" nor the box, which the row draws
+// only once the text is pressed, and with neither it listed no Repository for the issue at all.
+test("Add lists Repository on a row that inherits its repository and presses its text, which opens the box", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
+  // Open, Details reads what waits on the issue.
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
+    edges: [],
+    node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+  });
+  // The focus in the box reads the mappings; the read never answers here.
+  const mappings = Promise.withResolvers<RepoProject[]>();
+  const listRepoProjects = spyOn(api, "listRepoProjects").mockImplementation(
+    () => mappings.promise
+  );
+  // A value for every property Add lists but the repository, which the issue inherits: the API
+  // answers no repository of its own and the one it resolves to.
+  getIssue.mockResolvedValue({
+    ...advancesOnly,
+    advances: [{ id: "PRI-7", inherited: false }],
+    repo: null,
+    resolved_repo: "acme/web",
+  });
+  const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
+  const { unmount } = renderDetails(undefined, drawer);
+
+  try {
+    await screen.findByRole("link", { name: "CORE-3" });
+    await waitFor(() => expect(priorities).toHaveBeenCalled());
+    const text = await within(detailsRow(PROPERTY_LABELS.repository)).findByRole("button", {
+      name: `acme/web, ${repoControlName("CORE-1")}`,
+    });
+    expect(text, "the Repository row does not draw the repository it inherits").toHaveTextContent(
+      "acme/web"
+    );
+    expect(
+      screen.queryByRole("combobox", { name: repoControlName("CORE-1") }),
+      "the Repository row draws its box before its text is pressed"
+    ).not.toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.add }));
+    expect(
+      screen.getAllByRole("menuitem").map((entry) => entry.textContent),
+      "Add lists other than Repository for an issue that inherits its repository"
+    ).toEqual([PROPERTY_LABELS.repository]);
+    await user.click(screen.getByRole("menuitem", { name: PROPERTY_LABELS.repository }));
+    const box = await screen.findByRole("combobox", { name: repoControlName("CORE-1") });
+    await waitFor(() =>
+      expect(box, "the menu's Repository put no focus in the repository's box").toHaveFocus()
+    );
+    expect(
+      text,
+      "the menu's Repository left the inherited repository drawn beside the box"
+    ).not.toBeInTheDocument();
+  } finally {
+    unmount();
+    listRepoProjects.mockRestore();
+    getReferences.mockRestore();
+    priorities.mockRestore();
+    restore();
+  }
+});
+
 /** A second caller of the issue's writes on the page, as the header slot is: slots share no
  *  state, so each makes its own set (`slots/details.tsx`). */
 function OtherWrites({ issue: details }: { issue: IssueDetails }): ReactNode {

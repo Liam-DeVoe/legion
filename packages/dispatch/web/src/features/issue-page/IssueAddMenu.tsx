@@ -55,7 +55,8 @@ import { USABLE_CONTROL_ATTRIBUTES, usableControl } from "./usable-control";
  * priority to CORE-1", and stayed gone once Cancel drew that control again in a commit of
  * `IssuePriorityLine` alone; the repository's select and the components' picker, each drawn
  * then once its own read answered, were never seen either (the review of 5906c38b). The
- * repository's row still swaps its "None" and its box in commits of its own control alone.
+ * repository's row still swaps its text - "None" or the repository - and its box in commits of
+ * its own control alone.
  */
 export function IssueAddMenu({
   drawerBox,
@@ -328,15 +329,15 @@ export function IssueAddMenu({
       });
     }
     if (details.repo === null) {
-      // Inside `NoTooltips` the row of an issue that resolves to no repository draws "None",
-      // whose press draws the repository's box with the focus in it; any other row draws the
-      // box itself. "None" is tried first, so the entry presses it rather than finding no box.
+      // Inside `NoTooltips` the row of an issue with no repository of its own draws text, whose
+      // press draws the repository's box with the focus in it: "None" while the issue resolves to
+      // no repository, else the repository it inherits. Outside it, and inside it while the box
+      // is open or holds a draft or a write that is out, the row draws the box itself. The text
+      // is tried first, so the entry presses it rather than finding no box.
+      const text = details.resolved_repo ?? CONTROL_LABELS.none;
       fields.push({
         label: PROPERTY_LABELS.repository,
-        ...atControl(
-          `${CONTROL_LABELS.none}, ${repoControlName(details.key)}`,
-          repoControlName(details.key)
-        ),
+        ...atControl(`${text}, ${repoControlName(details.key)}`, repoControlName(details.key)),
       });
     }
     if ((details.components.ids ?? []).length === 0) {

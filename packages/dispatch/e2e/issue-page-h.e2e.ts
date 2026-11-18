@@ -417,11 +417,11 @@ test("every property with a value is visible in Details at every width @phone", 
       const pullRequest = detailsRow(page, PROPERTY_LABELS.pull_request).getByRole("link", {
         name: new RegExp(`#${PULL_NUMBER}\\b`),
       });
-      // The repository is the value of the row's box: the one text of the row that holds it is
-      // the box's description, which only a screen reader is given.
-      const repository = detailsRow(page, PROPERTY_LABELS.repository).getByRole("combobox", {
+      // The row draws the repository as text, which wraps where a box would cut a long name: a
+      // button whose press opens the box, named by the repository it shows and what it sets.
+      const repository = detailsRow(page, PROPERTY_LABELS.repository).getByRole("button", {
         exact: true,
-        name: repoControlName(one),
+        name: `${REPOSITORY}, ${repoControlName(one)}`,
       });
       const values: readonly (readonly [string, Locator])[] = [
         ["the repository", repository],
@@ -484,8 +484,34 @@ test("every property with a value is visible in Details at every width @phone", 
       }
       await expect(
         repository,
+        `the Repository row does not draw ${REPOSITORY} at ${width} px`
+      ).toHaveText(REPOSITORY);
+      // Enter on the text opens the box in its place, with the focus and the repository in it;
+      // Escape draws the text again with the focus on it, so the next width starts from the
+      // same row.
+      await repository.focus();
+      await page.keyboard.press("Enter");
+      const repositoryBox = detailsRow(page, PROPERTY_LABELS.repository).getByRole("combobox", {
+        exact: true,
+        name: repoControlName(one),
+      });
+      await expect(
+        repositoryBox,
+        `Enter on the repository's text opened no box at ${width} px`
+      ).toBeVisible();
+      await expect(
+        repositoryBox,
+        `the repository's box did not take the focus at ${width} px`
+      ).toBeFocused();
+      await expect(
+        repositoryBox,
         `the repository's box does not hold ${REPOSITORY} at ${width} px`
       ).toHaveValue(REPOSITORY);
+      await page.keyboard.press("Escape");
+      await expect(
+        repository,
+        `Escape in the repository's box did not give the focus back to its text at ${width} px`
+      ).toBeFocused();
       await expect(detailsRow(page, PROPERTY_LABELS.blocked_by)).toContainText(three);
       await expect(detailsRow(page, PROPERTY_LABELS.blocked_by)).toContainText(seeded.titles.three);
       for (const label of [
