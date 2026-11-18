@@ -43,9 +43,9 @@ import {
   refusedCompletion,
   SKIPS,
 } from "./completion-answers";
-// How the run's label's daemon takes a completion, read out of the checkout the run's built-from
-// names, as the stand-in and health.ts read it (daemon-pane.ts's `judgedOnDaemon`).
-import { judgedOnDaemon } from "./daemon-pane";
+// How the run's label's daemon takes a completion, read out of the sources of the commit the run's
+// built-from records, as health.ts reads it (daemon-pane.ts's `judgedOnDaemon`).
+import { judgedOnDaemon, labelCheckout } from "./daemon-pane";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
 // How gh reads a call's verb, its endpoint, its body and the two review endpoints, in the module
 // the gh stand-in answers that same call by (gh-call.ts), and the world every program of the run
@@ -95,7 +95,7 @@ import { byCreatedAt, parseInstant } from "./production-dispatch";
 import { casesOf, labelInstall, RUN_ID, recordFile, runIdentity } from "./run-names";
 // The calls record's name and the line each record is opened with, read from the module the
 // stand-ins write that line by (run-records.ts).
-import { CALLS, Opened } from "./run-records";
+import { CALLS, Opened, Refused } from "./run-records";
 import {
   CREATED,
   type SessionEntry,
@@ -2080,8 +2080,6 @@ export const OUTLINE = [
 const REMOVED_SKILL = "dispatch-brainstorming";
 /** The fewest words a shared run holds. */
 const RUN_WORDS = 8;
-/** The checkout rig.sh runs from, which a run's agent can also reach. */
-const RIG_ROOT = path.resolve(import.meta.dir, "../../../..");
 
 const Actor = z.looseObject({ kind: z.string(), id: z.string().nullish() });
 /** spec-versions.json: every version of the primary spec. A version lists its `authors`; `actor`
@@ -2195,7 +2193,7 @@ export function workOfRuns(runsDir: string): string {
  * batch's runs are in the archive by the time it is scored. A name in both is a run cmd_run made
  * again after its archived one, and the one in runs/ stands. An archive read on its own is the
  * archive alone. A run's record beside its directory (run-names.ts's `recordFile`) is no run. */
-function runsOf(runsDir: string): Map<string, string> {
+export function runsOf(runsDir: string): Map<string, string> {
   const dirs =
     path.basename(path.dirname(path.resolve(runsDir))) === "archive"
       ? [runsDir]
@@ -2207,14 +2205,26 @@ function runsOf(runsDir: string): Map<string, string> {
   return runs;
 }
 
-/** Every checkout a run's agent can reach: each label's, as `rig.sh profile` recorded it under
- * <work>/profiles, and the one rig.sh runs from. */
-export function checkouts(work: string): string[] {
-  const profiles = path.join(work, "profiles");
-  const labels = (existsSync(profiles) ? readdirSync(profiles) : [])
-    .filter((label) => existsSync(path.join(profiles, label, "checkout")))
-    .map((label) => readFileSync(path.join(profiles, label, "checkout"), "utf8").trim());
-  return [...new Set([...labels, RIG_ROOT])];
+/** Every checkout a run's agent can reach, as the runs under `runDirs` recorded them: the checkout
+ * each one's built-from names (rig.sh's cmd_profile), and the checkout rig.sh ran from, the root
+ * of the rig's directory its services-from names for each program of the rig's own (scope
+ * `shared`, rig.sh's services_from). Never a label's checkout as the work directory's profiles
+ * hold it now, nor the checkout this scorer runs from (the architect's ruling of 2026-11-18). */
+export function checkouts(runDirs: readonly string[]): string[] {
+  const found = new Set<string>();
+  for (const dir of runDirs) {
+    try {
+      found.add(path.posix.normalize(labelCheckout(dir)));
+    } catch {
+      // A run whose built-from names no checkout recorded none to reach.
+    }
+    const file = path.join(dir, "services-from");
+    for (const line of existsSync(file) ? readFileSync(file, "utf8").split("\n") : []) {
+      const [, scope, from = ""] = line.split(" ");
+      if (scope === "shared" && from.endsWith(RIG_DIR)) found.add(from.slice(0, -RIG_DIR.length));
+    }
+  }
+  return [...found];
 }
 
 const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -4553,9 +4563,11 @@ function lastDaemonRequest(runDir: string): string | undefined {
  *   - a completion the daemon stand-in refused: a 4xx on `handoff/complete` in daemon.log whose
  *     answer the run's world does not allow the completing role (completion-answers.ts's
  *     `ANSWERS`, read through `refusedCompletion`, which health.ts reads too), by how the run's
- *     label's daemon takes a completion where the answer turns on it, read out of the checkout
- *     the run's built-from names (daemon-pane.ts's `judgedOnDaemon`), so a run whose daemon
- *     cannot be read there is a rig error too: the row names the role, the status and the code
+ *     label's daemon takes a completion where the answer turns on it, read out of the sources of
+ *     the commit the run's built-from records, rebuilt out of the repositories the caller names
+ *     (daemon-pane.ts's `judgedOnDaemon`), so a run whose rebuilt daemon cannot be read is a rig
+ *     error too (one whose daemon cannot be rebuilt is refused, which stops the score): the row
+ *     names the role, the status and the code
  *     the line carries; and a completion line, whatever its answer, that names no role or a role
  *     the scenario boots none of, whose completion it was being unknown (`keyOf`);
  * A run whose tool calls only name such a file or checkout (in a check's pasted spec, a plan, a
@@ -4570,10 +4582,11 @@ function unscored(
   caseName: string,
   dispatch: string | undefined,
   label: string,
-  labels: Map<string, string>,
+  labels: readonly (readonly [label: string, checkout: string])[],
   sharing: Map<string, string[]>,
   calls: RunCall[],
-  allowed: string[]
+  allowed: string[],
+  repos: readonly string[]
 ): string | undefined {
   if (dispatch === undefined) {
     if (!BATCH_DISPATCH[scenario]) return "it records no Dispatch of its own (no dispatch.json)";
@@ -4670,8 +4683,10 @@ function unscored(
   // reviewer-text-findings reviewer whose round has moved the issue on a daemon of the older
   // `refused` engine, and on one of this checkout's `recorded` engine after its own earlier
   // completion was answered 200; and a role's repeat of a completion the workflow was handed is
-  // refused as the daemon refuses one. Which daemon the label runs is read out of the
-  // checkout the run's built-from names, never off the label's name. Every other refusal says the
+  // refused as the daemon refuses one. Which daemon the label runs is read out of the sources of
+  // the commit the run's built-from records, rebuilt out of the caller's repositories, never off
+  // the label's name or its checkout as the pod holds it; a run whose sources cannot be rebuilt
+  // is refused (`recordedCheckout`'s Refused, which stops the score). Every other refusal says the
   // stand-in and the agent's own plugin disagree about the completion — a body the stand-in's
   // request contract does not take (400 with no code), a completion with no record the tool always
   // attaches (400 HANDOFF_RECORD_REQUIRED), a record on a phase that ends with none (409
@@ -4696,7 +4711,8 @@ function unscored(
       return undefined;
     },
     (why) =>
-      `an answer the daemon stand-in logged turns on how the ${label} label's daemon takes a completion, which cannot be read: ${why}`
+      `an answer the daemon stand-in logged turns on how the ${label} label's daemon takes a completion, which cannot be read: ${why}`,
+    repos
   );
   if (refusal !== undefined) return refusal;
   for (const call of calls) {
@@ -4895,7 +4911,7 @@ function skillReaches(
   calls: RunCall[],
   allowed: string[],
   label: string,
-  labels: Map<string, string>
+  labels: readonly (readonly [label: string, checkout: string])[]
 ): Reach[] {
   return calls.flatMap((call) =>
     call.texts.flatMap(([kind, text]) => [
@@ -4949,16 +4965,12 @@ function ranAt(dir: string, entries: SessionEntry[], recorded: string | undefine
     ? path.dirname(cwd)
     : dir;
 }
-function scoreRuns(runsDir: string, only: string | undefined) {
+function scoreRuns(runsDir: string, only: string | undefined, repos: readonly string[]) {
   const rows: Row[] = [];
   const errors: { run: string; key: string; reason: string }[] = [];
-  // Each label's checkout, as `rig.sh profile` recorded it.
-  const profiles = path.join(workOfRuns(runsDir), "profiles");
-  const labels = new Map(
-    (existsSync(profiles) ? readdirSync(profiles) : [])
-      .filter((label) => existsSync(path.join(profiles, label, "checkout")))
-      .map((label) => [label, readFileSync(path.join(profiles, label, "checkout"), "utf8").trim()])
-  );
+  // The runs no score is given on, each with why: an input the run did not record, or one the
+  // caller's repositories cannot rebuild (run-records.ts's Refused). Any one stops the score.
+  const refused: string[] = [];
   // Every run of the work directory, by its name: each in `runsDir`, and, for a work directory's
   // own runs/, each archive_run moved to its archive/runs/ once it ended (`runsOf`).
   const runs = runsOf(runsDir);
@@ -4984,8 +4996,9 @@ function scoreRuns(runsDir: string, only: string | undefined) {
     }
     if (dispatch !== undefined) sharing.set(dispatch, [...(sharing.get(dispatch) ?? []), run]);
   }
-  // Every checkout a spec run's agent can reach, so that a check naming one is no spec-only check.
-  const reach = checkouts(workOfRuns(runsDir));
+  // Every checkout a spec run's agent can reach, as the runs recorded them, so that a check
+  // naming one is no spec-only check.
+  const reach = checkouts([...runs.values()]);
   // Each scenario's scorer, keyed by the scenario its runs' records name (for a run recorded
   // before the names left the world, the name its directory starts with). A cased scenario's
   // scorer takes the case the record names, or both that directory and its case.txt name (CASED,
@@ -5002,26 +5015,60 @@ function scoreRuns(runsDir: string, only: string | undefined) {
     "spec-rewrite": (dir, run, label) => specRow(dir, run, "spec-rewrite", label, reach),
   };
   const name = new RegExp(`^(${Object.keys(scorers).join("|")})-(.+)-(\\d+)$`);
-  for (const [run, dir] of [...runs].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
-    // The run's record, beside its directory; none for a run recorded before the names left the
-    // world, whose directory's name is its record.
-    const identity = existsSync(recordFile(dir)) || RUN_ID.test(run) ? runIdentity(dir) : undefined;
-    if (typeof identity === "string") {
-      if (!only) errors.push({ run, key: "?\t?", reason: identity });
-      continue;
-    }
-    const match = identity === undefined ? name.exec(run) : null;
-    const scenario = identity?.scenario ?? match?.[1] ?? "";
-    const score = scorers[scenario];
-    if ((identity === undefined && !match) || !score) continue;
+  const named = [...runs]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .flatMap(([run, dir]) => {
+      // The run's record, beside its directory; none for a run recorded before the names left
+      // the world, whose directory's name is its record.
+      const identity =
+        existsSync(recordFile(dir)) || RUN_ID.test(run) ? runIdentity(dir) : undefined;
+      if (typeof identity === "string") {
+        if (!only) errors.push({ run, key: "?\t?", reason: identity });
+        return [];
+      }
+      const match = identity === undefined ? name.exec(run) : null;
+      const scenario = identity?.scenario ?? match?.[1] ?? "";
+      const score = scorers[scenario];
+      if ((identity === undefined && !match) || !score) return [];
+      // undefined for a scenario that takes no case, null for a cased scenario's directory that
+      // names none.
+      const cased = CASED[scenario];
+      const casedRun =
+        identity !== undefined || cased === undefined ? undefined : cased.run.exec(run);
+      const [, dirCase = identity?.case ?? "", label = identity?.label ?? match?.[2] ?? ""] =
+        casedRun ?? [];
+      // The checkout the run's built-from names (rig.sh's cmd_profile writes it, cmd_run copies
+      // it into the run), none for a run that records none.
+      let checkout: string | undefined;
+      try {
+        checkout = labelCheckout(dir);
+      } catch {
+        checkout = undefined;
+      }
+      return [{ run, dir, identity, scenario, score, cased, casedRun, dirCase, label, checkout }];
+    });
+  // Each label's checkouts, as the built-from of each of its runs names them: never the work
+  // directory's profiles as they stand now, which a copy read elsewhere does not have.
+  const labels = [
+    ...new Map(
+      named.flatMap(({ label, checkout }) =>
+        checkout === undefined ? [] : [[`${label}\0${checkout}`, [label, checkout] as const]]
+      )
+    ).values(),
+  ];
+  for (const {
+    run,
+    dir,
+    identity,
+    scenario,
+    score,
+    cased,
+    casedRun,
+    dirCase,
+    label,
+    checkout,
+  } of named) {
     if (only && scenario !== only) continue;
-    // undefined for a scenario that takes no case, null for a cased scenario's directory that
-    // names none.
-    const cased = CASED[scenario];
-    const casedRun =
-      identity !== undefined || cased === undefined ? undefined : cased.run.exec(run);
-    const [, dirCase = identity?.case ?? "", label = identity?.label ?? match?.[2] ?? ""] =
-      casedRun ?? [];
     const key = `${cased !== undefined && casedRun !== null ? `${scenario}:${dirCase}` : scenario}\t${label}`;
     let reason: string | undefined;
     try {
@@ -5032,16 +5079,27 @@ function scoreRuns(runsDir: string, only: string | undefined) {
       // scored elsewhere (ranAt).
       const ran = ranAt(dir, session(dir), identity?.ran);
       const work = workOfRuns(path.dirname(ran));
-      // Where the label's profile was installed (run-names.ts's `labelInstall`), as the run had
-      // it, read from the work directory scored.
-      const profile = labelInstall(workOfRuns(runsDir), label, work);
+      // Where the label's profile was installed, as the run recorded it (run-names.ts's
+      // `labelInstall`, its namespace.txt).
+      const profile = labelInstall(dir, label, work);
       // The run's own skills: its HOME (in its directory), its label's profile and checkout.
-      const own = [ran, profile, labels.get(label) ?? profile].map((place) => `${place}/`);
+      const own = [ran, profile, checkout ?? profile].map((place) => `${place}/`);
       // The case the run was built for, which is what decides the halves it boots: its record's,
       // or the one its directory names. A run recorded before the names left the world also kept
       // its case in case.txt, which is read below, where it is held to the name (runCase), and a
       // run whose two records disagree is a rig error of its own.
-      reason = unscored(dir, scenario, dirCase, dispatch, label, labels, sharing, calls, own);
+      reason = unscored(
+        dir,
+        scenario,
+        dirCase,
+        dispatch,
+        label,
+        labels,
+        sharing,
+        calls,
+        own,
+        repos
+      );
       if (reason === undefined) {
         // A scenario that takes no case reads no case.txt and is handed "".
         const scored = score(
@@ -5050,7 +5108,7 @@ function scoreRuns(runsDir: string, only: string | undefined) {
           label,
           identity !== undefined || cased === undefined ? dirCase : runCase(dir, cased, dirCase)
         );
-        const outside = outsideReaches(calls, [work, labels.get(label) ?? work]);
+        const outside = outsideReaches(calls, [work, checkout ?? work]);
         const skills = skillReaches(calls, own, label, labels);
         const flags = [
           ...(outside.length === 0
@@ -5096,9 +5154,22 @@ function scoreRuns(runsDir: string, only: string | undefined) {
         );
       }
     } catch (error) {
+      if (error instanceof Refused) {
+        refused.push(error.message);
+        continue;
+      }
       reason = error instanceof Error ? error.message : String(error);
     }
     if (reason !== undefined) errors.push({ run, key, reason });
+  }
+  // A run refused is neither scored nor a rig error: either would move its arm's counts, or have a
+  // batch runner replace it, on a reading that never happened (the architect's condition of
+  // 2026-11-18T18:56Z). So the score stops, naming each and the input it lacks, prints no row and
+  // no count, and exits 2.
+  if (refused.length > 0) {
+    for (const why of refused) console.error(`score: no score on ${why}`);
+    console.error(`score: ${refused.length} runs refused, so nothing is scored`);
+    process.exit(2);
   }
   for (const row of rows) console.log(`${row.run}\tpass=${row.pass}\tref=${row.ref}\t${row.notes}`);
   for (const error of errors) console.log(`${error.run}\trig error: ${error.reason}`);
@@ -5171,7 +5242,16 @@ if (import.meta.main) {
   if (command === "live-read" && rest.length === 3) {
     liveRead(rest[0] ?? "", rest[1] ?? "", rest[2] ?? "");
   } else if (command === "runs" && rest.length >= 1) {
-    scoreRuns(rest[0] ?? "", rest[1]);
+    // The git directories each run's label sources are rebuilt from by the commit its built-from
+    // records (daemon-pane.ts's `recordedCheckout`): every `--repo <git dir>` after the runs
+    // directory, then the scenario, if one is named.
+    const [runsDir = "", ...after] = rest;
+    const repos: string[] = [];
+    while (after[0] === "--repo" && after[1] !== undefined) {
+      repos.push(path.resolve(after[1]));
+      after.splice(0, 2);
+    }
+    scoreRuns(runsDir, after[0], repos);
   } else if (command === "published" && rest.length === 2) {
     // The harness's own reader of a publish, so the rig and the score read one: rig.sh's
     // reviewer_wake asks for every message a role's topic was sent, in Envoy's own order, and
@@ -5199,7 +5279,7 @@ if (import.meta.main) {
     }
   } else {
     console.error(
-      "usage: score.ts live-read <run dir> <skills dir> <omp logs dir> | runs <runs dir> [<scenario>] | published <run dir> <role>"
+      "usage: score.ts live-read <run dir> <skills dir> <omp logs dir> | runs <runs dir> [--repo <git dir>]... [<scenario>] | published <run dir> <role>"
     );
     process.exit(2);
   }

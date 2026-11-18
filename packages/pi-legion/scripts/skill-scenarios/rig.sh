@@ -12,9 +12,17 @@
 #                                                  label (SKILL_SCENARIOS_PARALLEL at once), each
 #                                                  label's numbered from one above its highest
 #                                                  run, live or archived, and stops the services
-#   rig.sh score     [<scenario>]                  one row per run, then counts per label: the runs
-#                                                  of <work>/runs and <work>/archive/runs
-#   rig.sh health    [--tmp-snapshot <file>] <run dir>...
+#   rig.sh score     [--repo <git dir>]... [<scenario>]
+#                                                  one row per run, then counts per label: the runs
+#                                                  of <work>/runs and <work>/archive/runs, each
+#                                                  read from its own record alone; a run whose
+#                                                  label's daemon sources the --repo git
+#                                                  directories cannot rebuild stops the score,
+#                                                  named, exit 2
+#   rig.sh health    [--tmp-snapshot <file>] [--repo <git dir>]... <run dir>...
+#                                                  (each --repo a git directory the daemon sources
+#                                                  of a run's label are rebuilt from, by the commit
+#                                                  its built-from records)
 #                                                  whether each run's world could take what its
 #                                                  agents did and the run stayed in its own world,
 #                                                  scoring nothing (health.ts): the run's boot
@@ -45,19 +53,25 @@
 #                                                  another of the runs given wrote, or /tmp scratch
 #                                                  from before the run (<file>: the /tmp entries
 #                                                  before the batch, for runs with no record of
-#                                                  their own); no tool call named a path its
-#                                                  world hides and does not show (`rig.sh world`),
-#                                                  another process's /proc environ or cmdline, or a
-#                                                  credential under /var/run/legion or
+#                                                  their own); no tool call named a path the world
+#                                                  its namespace.txt records hides and does not
+#                                                  show, another process's /proc environ or
+#                                                  cmdline, or a credential under /var/run/legion or
 #                                                  /var/run/secrets; and no call reached a host off
 #                                                  its world, each command read by its own grammar
 #                                                  once its wrappers are read off. It prints how
 #                                                  many relaunches each label's runs took. Give a
 #                                                  batch's runs in one call; exits 0 when every
-#                                                  run is healthy, 1 otherwise, 2 on a usage error
+#                                                  run is healthy, 1 when one is unhealthy, and 2
+#                                                  on a usage error or when a run gets no verdict:
+#                                                  one a rule cannot judge for an input it did not
+#                                                  record (a namespace.txt, a built-from commit
+#                                                  the --repo directories hold) and no other rule
+#                                                  fails, named on stderr
 #   rig.sh world     <label> <run dir>             the run's world, one `<kind> <path>` a line
-#                                                  (world_paths): what its namespace hides and
-#                                                  what it shows again
+#                                                  (world_paths), worked out of the pod as it
+#                                                  stands: what its namespace hides and what it
+#                                                  shows again; no reader judges a run by it
 #   rig.sh judge     <run dir>...                  the judge's prompts on each spec-writing or
 #                                                  spec-rewrite run (judge.ts run), each in a fresh
 #                                                  Oh My Pi session with no Dispatch
@@ -1151,9 +1165,11 @@ system_gitconfig() {
 
 # world_paths R WORK I PANE [PIN_DIR [CO]] prints the world of the run R, one `<kind> <path>` a
 # line: what the run's namespace hides (private_world mounts it) and what health.ts judges a run's
-# tool calls by (`rig.sh world`, cmd_world). It is the one declaration of that world: launch
-# writes it to $R/namespace.txt for the namespace, and health.ts reads it for each run it judges,
-# so the namespace and the detector cannot hold two lists. WORK is the run's work directory, I
+# tool calls by. It is the one declaration of that world: launch writes it to $R/namespace.txt for
+# the namespace, and health.ts reads that file for each run it judges, and nothing else, so the
+# namespace and the detector cannot hold two lists; a run with no namespace.txt recorded no world,
+# and health does not work one out again (`rig.sh world` prints one for a person to read, from
+# the pod as it stands). WORK is the run's work directory, I
 # its label's install (load_label), PANE its pane file and PIN_DIR the pinned Oh My Pi's install.
 # The kinds:
 #   cover        hidden behind an empty tmpfs: a path a run names under one, outside its own
@@ -1171,7 +1187,7 @@ system_gitconfig() {
 # checkout is shown, and not this script's own directory either, whose path names the rig. CO,
 # the label's checkout, is given by cmd_world alone, for a run recorded before the names left the
 # world, whose world showed that checkout, this script's directory and the zod its gh stand-in
-# imported there: such a run is read against the world it had.
+# imported there.
 world_paths() {
   local R=$1 work=$2 I=$3 pane=$4 pin_dir=${5:-} co=${6:-} workspaces=/legion/workspaces dir file entry kind real
   # Hidden. The scratch root the caller's TMPDIR names: on a Legion pod every role of the issue
@@ -4432,14 +4448,15 @@ cmd_batch() {
 }
 
 # cmd_world LABEL RUN prints the world of the run directory RUN of label LABEL as world_paths
-# declares it, from what the run recorded: its own directory as its record names it
-# (run-names.ts's `ran`; a run recorded before the names left the world names it in its pane
-# file's SKILL_SCENARIO_RUN; RUN itself for a run with neither), the work directory that holds it,
-# the label's install there, its pane file, and the pin's install where the mise its pane's PATH
-# names still has it: the one its agent's `mise x` ran, the rig's own (rig_mise) for every run since
-# the rig brought one. A run with no record is read against the world such a run had, which showed
-# its label's checkout (the checkout its built-from names) and this script's own directory
-# (world_paths' CO). health.ts judges every run's tool calls by it.
+# declares it, from what the run recorded and what the pod holds now: its own directory as its
+# record names it (run-names.ts's `ran`; a run recorded before the names left the world names it
+# in its pane file's SKILL_SCENARIO_RUN; RUN itself for a run with neither), the work directory
+# that holds it, the label's install there, its pane file, and the pin's install where the mise
+# its pane's PATH names still has it, under the caller's TMPDIR and LEGION_WORKSPACE. A run with no
+# record is read against the world such a run had, which showed its label's checkout (the
+# checkout its built-from names) and this script's own directory (world_paths' CO). No reader
+# judges a run by it: health.ts reads the world a run recorded, its namespace.txt, and refuses a
+# rule that needs one where there is none (the architect's ruling of 2026-11-18).
 cmd_world() {
   [ $# = 2 ] || fail "usage: rig.sh world <label> <run dir>"
   [[ $1 =~ ^[a-z0-9][a-z0-9-]*$ ]] || fail "label '$1' is not lower-case letters, digits and hyphens"

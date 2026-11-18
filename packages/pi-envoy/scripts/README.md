@@ -601,7 +601,7 @@ the call's own argument, and where the rig decides not to boot a role of its sce
 scenario and case (today, threads-closed code-defect's reviewer: "the implementer sent the
 reviewer nothing"), read from that table.
 
-`rig.sh health [--tmp-snapshot <file>] <run dir>...` says whether each run's world could take what
+`rig.sh health [--tmp-snapshot <file>] [--repo <git dir>]... <run dir>...` says whether each run's world could take what
 its agents did, and whether the run stayed inside its own world. It reads twenty-one things: the
 run finished: its boot record, `<run>/booted`, decides each role its scenario boots
 (`completion-answers.ts`'s `ANSWERS` `boots`) once, in that order, the first a `boot` of the first
@@ -619,11 +619,11 @@ both attempts is unhealthy, naming both, and so is one refused after a turn); ev
 line names a role the scenario boots, and every completion the daemon stand-in refused was
 answered as `completion-answers.ts`'s `ANSWERS` table allows for the run's scenario and that
 role: an answer a daemon of either shape gives it, or one the daemon of the run's own label gives
-it, read out of the checkout the run's `built-from` names (below; a run with such an answer
-whose daemon cannot be read is unhealthy); a
+it, read out of the sources of the commit the run's `built-from` records (below; a run with such
+an answer whose daemon cannot be read is unhealthy); a
 reviewer-text-findings world took the reviewer's completion at least once; no request the daemon
 stand-in answered 404 is of a route the run's label's daemon registers, read out of the source of
-the checkout the run's `built-from` names (the stand-in answers by the same routes, and a run with
+that same commit (the stand-in answers by the same routes, and a run with
 a 404 whose routes cannot be read is unhealthy); no turn outcome the stand-in answered failed the
 claim, as the daemon fails one whose provider refused turns up to its launch failure limit; no
 tool result of any
@@ -658,11 +658,9 @@ before the rig gave each run a namespace (one with no `<run>/namespace.txt`), a 
 was there before the run (its `scratch-before.txt`, or the `--tmp-snapshot` file of `/tmp` entries
 taken before the
 batch); no tool call names a path its world hides (by the world the run recorded for its
-namespace, `<run>/namespace.txt`, or, for a run from before the namespace, by `rig.sh world`:
-under the scratch root, the issue workspaces, the work directory or any label's checkout, the
-other runs' given included) outside its own directory, what its world shows again and, for a run
-in a namespace, `/tmp`, which is its own `<run>/tmp` (a run from before the namespace named the
-machine's `/tmp`, where the work directory can lie); no tool call reads another
+namespace, `<run>/namespace.txt`: under the scratch root, the issue workspaces, the work
+directory or any label's checkout, the other runs' given included) outside its own directory,
+what its world shows again and `/tmp`, which is its own `<run>/tmp`; no tool call reads another
 process's `/proc/<n>/environ` or `cmdline`; no tool call names a path under `/var/run/legion` or
 `/var/run/secrets`, by either name; no `bash` call prints the run's GitHub token: `gh auth status`
 with `-t` or `--show-token`, alone or among joined short flags (`-at`), or `gh auth token`, read
@@ -746,9 +744,48 @@ the evidence, then how many runs each rule flags, then how often the rig relaunc
 its boot, by label (`health: boot relaunches, <label>: <n> in <r> of <m> runs`: <n> relaunches,
 each a first attempt kept under `<run>/boot-1/<role>/`, in <r> of the label's <m> runs), then the
 runs that wrote outside their own directory, then a count. It exits 0 when every run is
-healthy, 1 when one is not, and 2, printing no run, for no argument or for a path that is not a
-run of a scenario the table names. Start a batch only once a run of each label in each
-scenario case is healthy.
+healthy, 1 when one is not, and 2 when it gives a run no verdict (below, *What a reader reads*),
+and 2, printing no run, for no argument or for a path that is not a run of a scenario the table
+names. Start a batch only once a run of each label in each scenario case is healthy.
+
+#### What a reader reads
+
+`rig.sh health`, `rig.sh score` and `rig.sh judge` judge a run from its archive and what the run
+recorded, and nothing else (the architect's ruling of 2026-11-18). The pod a reader runs on can
+differ from the one the run ran on. So a reader never reads the work directory's profiles or
+installs, a label's checkout as it stands now, its own checkout, or `rig.sh world`. The judge's
+`TMPDIR`, `HOME`, `PATH` and working directory decide no verdict: a row of `rig.test.ts` judges
+one archived run under two of each and gets the same line and the same score row.
+
+A reader reads these, all in the run's directory:
+
+- its record (`<id>.json`, or the directory's name for an older run);
+- its transcripts, its stand-ins' logs and its other records;
+- its `built-from`: the label's checkout as a path, and its commit;
+- its `services-from`: the rig's own directory, for the checkouts a spec run can reach;
+- its `namespace.txt`: the world its agents ran in, and the label's install the world showed.
+
+What a run did not record, a reader rebuilds from what it did record, by digest, or it refuses.
+The label's daemon sources are rebuilt from the `commit` line of `built-from`, with `git
+archive`, out of a git directory the caller names with `--repo <git dir>` (give it more than
+once to name more). The commit id is git's digest of those files. A reader refuses the run when
+`built-from` records no commit, when the commit is `dirty`, when no `--repo` is named, or when
+no named repository holds the commit. A commit that holds no daemon sources is no refusal: that
+label had no daemon there, and the rules say so.
+
+A run from before the namespace has no `namespace.txt`, so it recorded no world. Rules 10
+(outside its world) and 12 (credentials) need that world, and do not judge it. The other rules
+do. If one of them fails the run, it is unhealthy. If none fails, health gives it no verdict,
+since it cannot call a run healthy without its world.
+
+A refusal is not a verdict. `rig.sh health` prints no line for the run, names it and the
+missing input on stderr (`health: no verdict on <run>: …`), counts it in no rule, and exits 2.
+`rig.sh score` prints no row and no count: it names each refused run on stderr (`score: no score
+on <run>: …`) and exits 2. A batch runner must stop on exit 2, and neither count the run nor
+replace it. `rig.sh batch` reads no health and replaces nothing.
+
+The facts cache (`<work>/daemon-facts`, or `$TMPDIR/legion-daemon-cache`) is keyed by the bytes
+of the program and of each source it reads, so it decides no verdict.
 
 A rule that matches text a label's own world prints reads only what both labels print alike, or
 reads the run's own label: tester-proof's PR body check line is read up to `at <commit>, recorded
@@ -860,10 +897,11 @@ The base label was main `ff2a10ef`, and is main at the commit the head's newest
 forward merge brought in, which moves with every later forward merge, so a table keyed by the
 label's name modelled a daemon the base checkout no longer had. The stand-in answers each
 completion by the shapes it read at boot; `rig.sh health` and `rig.sh score` read the run's own
-label's through the same facts cache (each is given the work directory), out of the checkout the
-run's `built-from` names, and only for an answer the two shapes do not give alike
+label's through the same facts cache (each is given the work directory), out of the sources of
+the commit the run's `built-from` records (*What a reader reads*, above), and only for an answer
+the two shapes do not give alike
 (`completion-answers.ts`'s `ANSWERS`' `byShape`). A process reads each source once: the cache
-keeps every reading that succeeded, and the process keeps each refusal, so a run whose checkout
+keeps every reading that succeeded, and the process keeps each refusal, so a run whose daemon
 cannot be read costs no more than the first run that asked.
 
 What the label's daemon posts, refuses and publishes is read out of its source as text

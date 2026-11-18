@@ -19,11 +19,9 @@ import { sharedRuns } from "./score";
 // judge-omp in production), and copies the judge's validated answer into the run directory. The
 // fake runner below records what each judge saw and writes a fixed answer. Every text is invented.
 
+// Every run here is built from /checkouts/head, as its built-from records (rig.sh's cmd_profile),
+// which is where judge.ts reads the checkouts a run's agent can reach (score.ts's `checkouts`).
 const work = temporaryDirectory("skill-scenarios-judge");
-beforeAll(() => {
-  mkdirSync(path.join(work, "profiles", "head"), { recursive: true });
-  writeFileSync(path.join(work, "profiles", "head", "checkout"), "/checkouts/head\n");
-});
 
 const sessionId = "01a16640-8259-71ed-bb68-1e4927b77a01";
 const spec = (problem: string) =>
@@ -194,6 +192,7 @@ function runDir(name: string, extra: Record<string, string> = {}, entries = tran
   for (const sub of ["sessions", "source", "documents", "spec-versions"])
     mkdirSync(path.join(dir, sub), { recursive: true });
   const files: Record<string, string> = {
+    "built-from": "checkout /checkouts/head\n",
     "out.txt": "exit=0\n",
     "source.txt": "acme-1\n",
     "fixture.json": JSON.stringify({ issue: "LWEVAL-7", spec_artifact: "art-spec" }),
@@ -421,8 +420,8 @@ test("the runner is told the one file the judge may write", async () => {
 });
 
 // Catches: an archived run judged as if its archive were the work directory. rig.sh moves every
-// run that has ended to <work>/archive/runs (its archive_run), and the judges' directories and
-// the labels' checkouts are the work directory's own (score.ts's `workOfRuns`).
+// run that has ended to <work>/archive/runs (its archive_run), and the judges' directories are
+// the work directory's own (score.ts's `workOfRuns`).
 test("a run in the archive is judged in the work directory's own judging directory", async () => {
   const ran = runDir("spec-writing-head-30");
   const archived = path.join(work, "archive", "runs", "spec-writing-head-30");

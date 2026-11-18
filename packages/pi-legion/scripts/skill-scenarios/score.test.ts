@@ -1,6 +1,8 @@
 import { beforeAll, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
+  appendFileSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -17,17 +19,24 @@ import { CLAIM_BOOT_FAILED_OPENING } from "@legion/pi-shared/legion-claim-core";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { claimBootOpening } from "./boot-refusal";
-import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
-import { bundled, spawnChecked } from "./test-programs";
+import { checkouts, runsOf, specWork, statesDesign, TestHandoff } from "./score";
+import { bundled, sourcesCommit, spawnChecked } from "./test-programs";
 
 // A run whose agent never got a model turn (Oh My Pi exits before its first request, as when the
 // profile's gateway key command runs past its budget) says nothing about the skill under test: the
 // score reports it as a rig error and leaves it out of the pass counts. An agent that got a turn and
 // then did nothing the scenario asks is a failure.
 
-// score.ts reads each label's checkout from <work>/profiles/<label>/checkout, beside <work>/runs.
+// score.ts reads each label's checkout from the built-from of each run of it, never from the
+// work directory's profiles: each run here records one (`run`).
 const work = temporaryDirectory("skill-scenarios-score");
 const runs = path.join(work, "runs");
+/** The repository each run's built-from commit is in, which the score is given (`--repo`): the
+ * scorer rebuilds a run's label's daemon sources from that commit alone (daemon-pane.ts's
+ * `recordedCheckout`), never off the checkout its built-from names. */
+const LABEL_REPO = path.join(work, "labels.git");
+/** The labels a run of this file is built for, each from `/checkouts/<label>`. */
+const LABELS = ["head", "base", "cross", "on", "off"];
 // The repository the pushed-code run below is cloned from. Reserved here, above the hook that
 // drains the stagings: Bun runs a scope's `beforeAll` hooks in the order they were registered,
 // so a reservation made further down would be made after that drain had already run.
@@ -63,10 +72,6 @@ const SCORE = bundled(path.join(import.meta.dir, "score.ts"));
 const stagings: (() => void)[] = [];
 
 beforeAll(() => {
-  for (const label of ["head", "base", "cross", "on", "off"]) {
-    mkdirSync(path.join(work, "profiles", label), { recursive: true });
-    writeFileSync(path.join(work, "profiles", label, "checkout"), `/checkouts/${label}\n`);
-  }
   // A staging may queue another (the pushed-code run below queues its scenario once the
   // repository is built), so the queue is drained until it is empty rather than in one pass.
   for (let stage = stagings.shift(); stage !== undefined; stage = stagings.shift()) stage();
@@ -104,7 +109,10 @@ const dispatchRecord = (database: string, postgres = "pg-1") =>
   JSON.stringify({ postgres, database, port: 20000, url: "http://127.0.0.1:20000" });
 
 /** Stages a run directory holding `files` (by default a dispatch.json naming the run's own
- * database, or none when `files` gives it null) and `transcript`, when the hook above runs. */
+ * database, or none when `files` gives it null, and, for a run of one of LABELS, a built-from
+ * naming `/checkouts/<label>`) and `transcript`, when the hook above runs. A built-from that
+ * records a checkout and no commit is given the commit of the daemon sources that checkout holds
+ * (`sourcesCommit`, in LABEL_REPO), as rig.sh's cmd_profile records the label's commit. */
 function run(name: string, files: Record<string, string | null>, transcript: object[]) {
   stagings.push(() => {
     const dir = path.join(runs, name);
@@ -114,8 +122,17 @@ function run(name: string, files: Record<string, string | null>, transcript: obj
     // would have left it.
     mkdirSync(path.join(dir, "cwd"), { recursive: true });
     const own = dispatchRecord(`run_${name.replaceAll("-", "_")}`);
-    for (const [file, text] of Object.entries({ "dispatch.json": own, ...files }))
+    const label = /-([a-z]+)-\d+$/.exec(name)?.[1] ?? "";
+    const built = LABELS.includes(label) ? { "built-from": `checkout /checkouts/${label}\n` } : {};
+    for (const [file, given] of Object.entries({ "dispatch.json": own, ...built, ...files })) {
+      const checkout =
+        file === "built-from" ? /^checkout (.+)$/m.exec(given ?? "")?.[1] : undefined;
+      const text =
+        checkout === undefined || /^commit /m.test(given ?? "")
+          ? given
+          : `${given}commit ${sourcesCommit(LABEL_REPO, checkout)} parents=\n`;
       if (text !== null) writeFileSync(path.join(dir, file), text);
+    }
     writeFileSync(
       path.join(dir, "sessions", "2026-09-30T14-51-17-651Z_01a0f2cc.jsonl"),
       transcript.map((entry) => `${JSON.stringify(entry)}\n`).join("")
@@ -1506,6 +1523,9 @@ function timed(transcript: object[]): { entries: object[]; ledger: object[] } {
   });
   return { entries, ledger };
 }
+/** Every checkout a spec run's agent can reach, as the runs staged so far recorded them, which is
+ * what the scorer reads (score.ts's `checkouts`). */
+const reached = () => checkouts([...runsOf(runs).values()]);
 /** A spec-writing or spec-rewrite run directory, as rig.sh, seed.ts and judge.ts write one. */
 function specRun(name: string, fixture: SpecFixture = {}) {
   const spec = fixture.spec ?? outlined();
@@ -1573,7 +1593,7 @@ function specRun(name: string, fixture: SpecFixture = {}) {
     // transcript holds is clean, so the file covers each check as coverage requires.
     if (fixture.judges?.["findings.json"] === undefined) {
       const fixtureJson = { issue: "LWEVAL-7", spec_artifact: "art-spec" };
-      const checks = specWork(dir, checkouts(work), fixtureJson).checks.length;
+      const checks = specWork(dir, reached(), fixtureJson).checks.length;
       writeFileSync(
         path.join(dir, "findings.json"),
         JSON.stringify({
@@ -4176,9 +4196,9 @@ reviewRun("reviewer-text-findings-text-only-base-1", {
 // reviewer naming its record and refuses one so only as a repeat after its own taken completion,
 // which a lone refusal is not, so head-126, built from this checkout, is a rig error
 // (completion-answers.ts's ANSWERS, which `unscored` and health.ts both read). Which daemon each
-// ran is read out of the checkout its built-from names, never out of its label's name: base-3 is
-// the base label as it is built now, from main at the head's newest forward merge, whose daemon is
-// this checkout's, and is a rig error with head-126.
+// ran is read out of the sources of the commit its built-from records, never out of its label's
+// name: base-3 is the base label as it is built now, from main at the head's newest forward
+// merge, whose daemon is this checkout's, and is a rig error with head-126.
 stagings.push(() => {
   const internal = path.join(OLDER_DAEMON_CHECKOUT, "packages", "daemon", "internal");
   mkdirSync(path.join(internal, "workflow"), { recursive: true });
@@ -4205,13 +4225,6 @@ for (const [name, checkout] of [
       { ...(reviewDaemon[0] ?? {}), status: 409, code: "HANDOFF_NOT_CURRENT_PHASE" },
     ]),
   });
-reviewRun("reviewer-text-findings-text-only-head-127", {
-  "case.txt": "text-only\n",
-  "calls.jsonl": calls([submission(approval())]),
-  "daemon.log": calls([
-    { ...(reviewDaemon[0] ?? {}), status: 409, code: "HANDOFF_NOT_CURRENT_PHASE" },
-  ]),
-});
 // defect: the behavioural finding stands, so the round sends the change back, here with
 // `gh pr review --request-changes`. A round that sends the change back opens no fix loop, so its
 // transcript carries no message to the implementer.
@@ -7575,7 +7588,7 @@ let scoredExitCode: number | null = null;
 // beforeEach/afterEach hook timed out" and says nothing about the scorer. 120s is this file's
 // own staging bound.
 beforeAll(() => {
-  const scored = spawnChecked(["bun", SCORE, "runs", runs]);
+  const scored = spawnChecked(["bun", SCORE, "runs", runs, "--repo", LABEL_REPO]);
   out = scored.stdout.toString();
   scoredExitCode = scored.exitCode;
 }, 120_000);
@@ -9164,16 +9177,109 @@ test.skipIf(withoutGo)(
   }
 );
 
-// Catches: an answer that turns on the run's daemon judged by some daemon when the run's own
-// cannot be read. head-127 is head-126 with no built-from, so which checkout its daemon is is
-// unknown: a rig error naming why, never a score read off the label's name.
-test("a refusal that turns on a daemon the run's built-from does not name is a rig error", () => {
-  expect(out).toContain(
-    "reviewer-text-findings-text-only-head-127\trig error: an answer the daemon stand-in logged turns on how the head label's daemon takes a completion, which cannot be read: "
+// The architect's ruling of 2026-11-18T14:59Z and its condition of 18:56Z: a run whose answer
+// turns on its label's daemon is scored by the sources of the commit its built-from records,
+// rebuilt out of the repositories the caller names, and a run whose sources cannot be rebuilt is
+// neither scored nor a rig error, either of which moves its arm's counts or has a batch runner
+// replace it: the score stops, naming it and the input it lacks, and prints nothing. head-127 is
+// head-126 with a built-from that records no commit, beside a run that would score; head-126
+// itself is scored with no repository named. Catches: the daemon read off the checkout the
+// built-from names, as the pod holds it now (this one's would score head-127 a rig error); and a
+// refusal printed as one rig error among the rows, or the rows printed beside it.
+test("a run whose label's daemon cannot be rebuilt from its recorded commit stops the score, naming it", () => {
+  const batch = (name: string, ...given: [from: string, to: string][]) => {
+    const dir = path.join(work, name, "runs");
+    for (const [from, to] of given)
+      cpSync(path.join(runs, from), path.join(dir, to), { recursive: true });
+    return dir;
+  };
+  const refused = batch(
+    "no-commit",
+    ["reviewer-text-findings-text-only-head-126", "reviewer-text-findings-text-only-head-127"],
+    ["reviewer-text-findings-defect-head-2", "reviewer-text-findings-defect-head-2"]
   );
-  expect(out).toContain("built-from names no checkout");
-  expect(out).not.toContain("reviewer-text-findings-text-only-head-127\tpass=");
+  writeFileSync(
+    path.join(refused, "reviewer-text-findings-text-only-head-127", "built-from"),
+    `checkout ${CHECKOUT}\n`
+  );
+  const stopped = spawnChecked(["bun", SCORE, "runs", refused, "--repo", LABEL_REPO]);
+  expect({ code: stopped.exitCode, stdout: stopped.stdout.toString() }).toEqual({
+    code: 2,
+    stdout: "",
+  });
+  expect(stopped.stderr.toString()).toBe(
+    "score: no score on reviewer-text-findings-text-only-head-127: its built-from records no commit (`commit <sha>`), so the daemon sources its label ran cannot be rebuilt\nscore: 1 runs refused, so nothing is scored\n"
+  );
+  const unnamed = batch("no-repo", [
+    "reviewer-text-findings-text-only-head-126",
+    "reviewer-text-findings-text-only-head-126",
+  ]);
+  const none = spawnChecked(["bun", SCORE, "runs", unnamed]);
+  expect({ code: none.exitCode, stdout: none.stdout.toString() }).toEqual({ code: 2, stdout: "" });
+  expect(none.stderr.toString()).toContain(
+    `score: no score on reviewer-text-findings-text-only-head-126: its label's daemon sources are rebuilt from commit ${sourcesCommit(LABEL_REPO, CHECKOUT)}, which its built-from records, out of a repository the caller names (--repo <git dir>), and none was named\n`
+  );
 });
+
+// The architect's ruling of 2026-11-18: an environment the scorer reads decides no score. The
+// same archived runs — one that reads the base label's checkout, which only a base run's
+// built-from names (cross-1); one that reads a skill of its label's install, which only its
+// namespace.txt records (tester-proof-base-1); and one whose answer turns on its label's daemon
+// (reviewer-text-findings-text-only-base-2, an older one's) — are scored by `rig.sh score` under
+// two TMPDIRs, from two working directories, in a work directory holding the runs alone and in
+// one whose profiles name other checkouts and an install. Catches: a label's checkout, install or
+// daemon read off the work directory's profiles, which name /elsewhere and an install only the
+// second holds, so each run read otherwise in one of them; and a reach or a skill path read off
+// the judge's TMPDIR or working directory.
+test.skipIf(withoutGo)(
+  "the same archived runs score the same under another TMPDIR, working directory and work directory",
+  () => {
+    const names = [
+      "tester-proof-cross-1",
+      "tester-proof-base-1",
+      "reviewer-text-findings-text-only-base-2",
+    ];
+    const scoreIn = (at: string, populated: boolean) => {
+      const where = path.join(work, at);
+      for (const name of names)
+        cpSync(path.join(runs, name), path.join(where, "runs", name), { recursive: true });
+      // base-1 ran with its label's install at <work>/installs/<id>, which its namespace.txt
+      // records (rig.sh's world_paths), and its agent read a skill there: its own.
+      const base = path.join(where, "runs", "tester-proof-base-1");
+      const install = path.join(where, "installs", "0123456789ab");
+      writeFileSync(path.join(base, "namespace.txt"), `rw ${base}\nro ${install}\n`);
+      appendFileSync(
+        path.join(base, "sessions", "2026-09-30T14-51-17-651Z_01a0f2cc.jsonl"),
+        `${JSON.stringify(bash(`cat ${install}/home/.omp/profiles/legion/agent/skills/legion-worker/SKILL.md`))}\n`
+      );
+      if (populated)
+        for (const label of LABELS) {
+          mkdirSync(path.join(where, "profiles", label), { recursive: true });
+          writeFileSync(path.join(where, "profiles", label, "checkout"), `/elsewhere/${label}\n`);
+          writeFileSync(path.join(where, "profiles", label, "install"), "0123456789ab\n");
+        }
+      const tmp = path.join(work, `${at}-tmp`);
+      const cwd = path.join(work, `${at}-cwd`);
+      for (const dir of [tmp, cwd]) mkdirSync(dir, { recursive: true });
+      const scored = spawnChecked(
+        ["bash", path.join(import.meta.dir, "rig.sh"), "score", "--repo", LABEL_REPO],
+        { cwd, env: { ...process.env, SKILL_SCENARIOS_WORK: where, TMPDIR: tmp } }
+      );
+      return { code: scored.exitCode, stdout: scored.stdout.toString() };
+    };
+    const empty = scoreIn("environment-empty", false);
+    expect(scoreIn("environment-populated", true)).toEqual(empty);
+    expect(empty.code).toBe(0);
+    expect(empty.stdout).toContain(
+      "tester-proof-cross-1\trig error: a bash call reads base's checkout: /checkouts/base/skills/legion-worker/SKILL.md"
+    );
+    expect(empty.stdout).toContain("reviewer-text-findings-text-only-base-2\tpass=");
+    expect(empty.stdout).toContain("tester-proof-base-1\tpass=");
+  },
+  // Two `rig.sh score` runs, each transpiling score.ts and reading base-2's daemon: 5 s, Bun's
+  // default bound, killed the first on a 2-CPU pod.
+  60_000
+);
 
 // Catches: "one thread per call" read off the ids a call's text names, which reads a call naming
 // none as a bulk call. head-64's resolution passed its thread's id in a file, the stand-in kept
@@ -10242,7 +10348,7 @@ test("checked: a check started from an eval cell counts from its own transcript,
   );
   expect(rowOf("spec-writing-head-127").split("\n")[0]).toContain(" unjudged=1");
   expect(rowOf("spec-writing-head-1").split("\n")[0]).not.toContain("unjudged=");
-  const own = specWork(path.join(runs, "spec-writing-head-127"), checkouts(work), {
+  const own = specWork(path.join(runs, "spec-writing-head-127"), reached(), {
     issue: "LWEVAL-7",
     spec_artifact: "art-spec",
   });
@@ -10250,7 +10356,7 @@ test("checked: a check started from an eval cell counts from its own transcript,
   expect(own.checks[0]?.assignment).not.toContain("watchdog");
   // A task of the call given no spec is no part of the check, though the call's other task carries
   // the outline.
-  const factCheck = specWork(path.join(runs, "spec-writing-head-129"), checkouts(work), {
+  const factCheck = specWork(path.join(runs, "spec-writing-head-129"), reached(), {
     issue: "LWEVAL-7",
     spec_artifact: "art-spec",
   });
@@ -10262,7 +10368,7 @@ test("checked: a check started from an eval cell counts from its own transcript,
   const fixtureJson = { issue: "LWEVAL-7", spec_artifact: "art-spec" };
   const reports = specWork(
     path.join(runs, "spec-writing-head-121"),
-    checkouts(work),
+    reached(),
     fixtureJson
   ).checks.map((check) => check.report);
   expect(reports[0]).toBe("1. R1 names no owner.");

@@ -904,12 +904,12 @@ test.skipIf(skip)(
 );
 
 // The facts cache keeps no failed read, and health asks for a run's daemon once a rule a run: the
-// tester's fixture (rig.test.ts's "the tester's fixture reads as the tester read it"), whose
-// built-from names checkouts that are not there, paid 15 `go run`s of daemon-completion.go and
-// timed out at 60 s. Each `go` this process starts is a wrapper that records the call and runs the
-// real go. Catches: an absent source handed to the program, which says nothing a missing file
-// needs a compile to say; a refused source run again in the same process; and a refusal kept past
-// a rewrite of its source.
+// tester's fixture of 2026-11-14 (a rig.test.ts row until the architect retired it on
+// 2026-11-18), whose built-from named checkouts that were not there, paid 15 `go run`s of
+// daemon-completion.go and timed out at 60 s. Each `go` this process starts is a wrapper that
+// records the call and runs the real go. Catches: an absent source handed to the program, which
+// says nothing a missing file needs a compile to say; a refused source run again in the same
+// process; and a refusal kept past a rewrite of its source.
 test.skipIf(skip)(
   "the completion reading runs no program for an absent source, and one for a refused source",
   () => {

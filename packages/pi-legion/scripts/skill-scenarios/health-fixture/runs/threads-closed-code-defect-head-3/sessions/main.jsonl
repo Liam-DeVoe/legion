@@ -1,1 +1,0 @@
-{"timestamp": "2026-11-14T03:00:00Z", "message": {"role": "assistant", "content": [{"type": "toolCall", "name": "bash", "arguments": {"command": "cat /tmp/pre-batch.json"}}]}}

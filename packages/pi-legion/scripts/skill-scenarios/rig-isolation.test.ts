@@ -90,8 +90,8 @@ function put(file: string, text: string, mode = 0o644) {
 // (services_from) is read off rig.sh and its programs' imports too (run-programs.ts), but the
 // copy takes the directory whole, so no reading of what a run runs can leave a run of the rows
 // short. Left out: the directory's tests (`*.test.ts`), which no run runs, and its
-// subdirectories (health-fixture/, the tester's recorded runs, which only a test reads). seed.ts is
-// copied and then replaced by the stand-in below.
+// subdirectories (github-head-fixture/, the tester's fixture, which only a test reads). seed.ts
+// is copied and then replaced by the stand-in below.
 const co = path.join(scratch, "checkout");
 const rig = path.join(co, "packages/pi-legion/scripts/skill-scenarios/rig.sh");
 const stub = path.join(scratch, "stub");

@@ -1,2 +1,0 @@
-# Each run's daemon.log is the record health.ts reads; the repository ignores *.log elsewhere.
-!*.log

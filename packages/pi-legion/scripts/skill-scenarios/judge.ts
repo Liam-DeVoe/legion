@@ -51,6 +51,7 @@ import {
   checkouts,
   coverage,
   judgeInputs,
+  runsOf,
   SpecFixture,
   State,
   seededIds,
@@ -240,7 +241,10 @@ export async function judgeRun(runDir: string, options: JudgeOptions = {}) {
   const own = sessionId(entries);
   if (own === undefined) throw new Error(`${runDir}: the transcript has no session header`);
   const fixture = read(path.join(runDir, "fixture.json"), SpecFixture);
-  const specWorkDone = specWork(runDir, checkouts(work), fixture);
+  // Every checkout a spec run's agent can reach, as the runs beside it recorded them (score.ts's
+  // `checkouts`), never the work directory's profiles as they stand now.
+  const reach = checkouts([...runsOf(path.dirname(path.resolve(runDir))).values()]);
+  const specWorkDone = specWork(runDir, reach, fixture);
   const given = judgeInputs(runDir, specWorkDone);
   const documentFiles = Object.fromEntries(given.documents.map((name) => [name, file(name)]));
   const { checks, writes } = specWorkDone;

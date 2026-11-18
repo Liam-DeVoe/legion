@@ -382,17 +382,23 @@ export function workLabels(work: string): string[] {
     : [];
 }
 
-/** Where `rig.sh profile` installed `label`'s profile, its HOME and its plugins, which every run of
- * the label reads its skills from: <at>/installs/<id>, the id held in <work>/profiles/<label>/install
- * (rig.sh's cmd_profile), so no path a run's agents read names the label; <at>/profiles/<label>
- * itself for a label built before the names left the world, which installed there. `at` is the
- * work directory the run had when it ran, `work` the one read, which differ for a run read from a
- * copy. */
-export function labelInstall(work: string, label: string, at = work): string {
-  const id = path.join(work, "profiles", label, "install");
-  return existsSync(id)
-    ? path.join(at, "installs", readFileSync(id, "utf8").trim())
-    : path.join(at, "profiles", label);
+/** Where `rig.sh profile` installed the profile of the label the run under `runDir` ran, its HOME
+ * and its plugins, which every run of the label reads its skills from, as the run recorded it:
+ * the `ro <at>/installs/<id>` line of its namespace.txt, the install its world showed (rig.sh's
+ * world_paths), so no path a run's agents read names the label; <at>/profiles/<label> itself for
+ * a run from before the installs, which installed there and records none. `at` is the work
+ * directory the run had when it ran. Never <work>/profiles/<label>/install as the work directory
+ * holds it now (the architect's ruling of 2026-11-18: a reader reads a run from its archive and
+ * the provenance it recorded), which a copy read elsewhere does not have. */
+export function labelInstall(runDir: string, label: string, at: string): string {
+  const file = path.join(runDir, "namespace.txt");
+  const installs = `ro ${path.join(at, "installs")}/`;
+  const line = existsSync(file)
+    ? readFileSync(file, "utf8")
+        .split("\n")
+        .find((one) => one.startsWith(installs) && !one.slice(installs.length).includes("/"))
+    : undefined;
+  return line?.slice("ro ".length) ?? path.join(at, "profiles", label);
 }
 
 /** The variables of a pane file, KEY=value a line, as `env -i` takes them, the last of two. */

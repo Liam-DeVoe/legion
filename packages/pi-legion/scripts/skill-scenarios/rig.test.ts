@@ -32,7 +32,13 @@ import {
   WORLD_PROJECT,
   WORLD_REMOTE_VCS,
 } from "./run-names";
-import { bundled, scriptDefinition, spawnChecked, writeGhSelectors } from "./test-programs";
+import {
+  bundled,
+  scriptDefinition,
+  sourcesCommit,
+  spawnChecked,
+  writeGhSelectors,
+} from "./test-programs";
 import { WORLD_REPO, WORLD_SPEC } from "./world-issue";
 
 // Every test here runs rig.sh and its stand-ins as real processes. On a loaded machine one test
@@ -3060,6 +3066,14 @@ describe("health", () => {
   /** One transcript of an agent, holding its session's header alone: what each role a run
    * booted leaves in its own session directory before a row writes its turns over it. */
   const TRANSCRIPT = "2026-11-14T00-00-00-000Z_s1.jsonl";
+  let repoMade: string | undefined;
+  /** The repository every run's built-from commit is in, which each health call names (`--repo`):
+   * health rebuilds a run's label's daemon sources from that commit alone (daemon-pane.ts's
+   * `recordedCheckout`), never off the checkout its built-from names. */
+  const labelRepo = () => {
+    repoMade ??= path.join(freshDir("health"), "labels.git");
+    return repoMade;
+  };
   /** A run directory named `name`, under a directory of its own, as a run whose every role
    * finished leaves it: a boot record booting each role its scenario boots (ANSWERS' `boots`),
    * in order, and each role's own output, ending with its `exit=` line, and transcript, the
@@ -3067,7 +3081,12 @@ describe("health", () => {
    * Its daemon.log holds one opening line per boot, each followed by that boot's lines, boot k
    * (from 0) opened at 17:5k, a minute apart and before any line a row's stand-in answers;
    * `finished` false leaves the last role's out.txt with no `exit=` line, as a run that never
-   * ended leaves it; `checkout` is the checkout its built-from names, and `provenance` its
+   * ended leaves it; `checkout` is the checkout its built-from names, with the commit of the
+   * daemon sources that checkout holds (`sourcesCommit` in labelRepo; none for RUN_CHECKOUT,
+   * which is no directory here), or no commit line for `commit` false; `namespace` true gives it
+   * the world a run's namespace records (namespace.txt, world_paths' kinds): its credentials
+   * covered and its own directory shown, which is all a run that names no path needs, and false
+   * none, as a run from before the namespace holds; `provenance` its
    * services-from, every service of its label's own from that checkout by default and none at
    * all for false; `dispatch` is the lines of its Dispatch server's log after the server's
    * listening line, and false for a run with no log. */
@@ -3077,11 +3096,15 @@ describe("health", () => {
     {
       finished = true,
       checkout = RUN_CHECKOUT,
+      commit = true,
+      namespace = true,
       provenance = servicesFrom(checkout),
       dispatch = [],
     }: {
       finished?: boolean;
       checkout?: string;
+      commit?: boolean;
+      namespace?: boolean;
       provenance?: string | false;
       dispatch?: string[] | false;
     } = {}
@@ -3100,7 +3123,15 @@ describe("health", () => {
       mkdirSync(sessions, { recursive: true });
       writeFileSync(path.join(sessions, TRANSCRIPT), `${JSON.stringify({ type: "session" })}\n`);
     }
-    writeFileSync(path.join(dir, "built-from"), `checkout ${checkout}\n`);
+    writeFileSync(
+      path.join(dir, "built-from"),
+      `checkout ${checkout}\n${commit ? `commit ${sourcesCommit(labelRepo(), checkout)} parents=\n` : ""}`
+    );
+    if (namespace)
+      writeFileSync(
+        path.join(dir, "namespace.txt"),
+        `credentials /var/run/legion\ncredentials /var/run/secrets\nrw ${dir}\n`
+      );
     if (provenance !== false) writeFileSync(path.join(dir, "services-from"), provenance);
     writeFileSync(
       path.join(dir, "daemon.log"),
@@ -3143,13 +3174,14 @@ describe("health", () => {
     callerGo = Object.fromEntries(Object.entries(resolved).filter(([, value]) => value !== ""));
     return callerGo;
   }
-  /** `rig.sh health` of `dirs`, under childEnv with the caller's go caches and `vars` over it (a
-   * TMPDIR, whose root a run's world hides, say). */
-  function healthIn(vars: Record<string, string>, ...dirs: string[]) {
+  /** `rig.sh health` given exactly `args`, under childEnv with the caller's go caches and `vars`
+   * over it (a TMPDIR, say, which decides no verdict), from the working directory `cwd`. */
+  function healthArgs(vars: Record<string, string>, args: string[], cwd?: string) {
     // The go caches of the caller's, which the routes rule's `go run` compiles with: a HOME of
     // its own would have go build from an empty cache (goSettings).
     const go = goSettings();
-    const result = spawnChecked(["bash", path.join(import.meta.dir, "rig.sh"), "health", ...dirs], {
+    const result = spawnChecked(["bash", path.join(import.meta.dir, "rig.sh"), "health", ...args], {
+      cwd,
       env: { ...childEnv, ...go, SKILL_SCENARIOS_WORK: freshDir("health-work"), ...vars },
     });
     return {
@@ -3158,14 +3190,26 @@ describe("health", () => {
       stderr: result.stderr.toString(),
     };
   }
+  /** `rig.sh health` of `dirs`, naming labelRepo (`--repo`), which holds each run's commit. */
+  const healthIn = (vars: Record<string, string>, ...dirs: string[]) =>
+    healthArgs(vars, ["--repo", labelRepo(), ...dirs]);
   const health = (...dirs: string[]) => healthIn({}, ...dirs);
   /** The verdict line health printed for the run directory `dir`. */
   const verdict = (stdout: string, dir: string) =>
     stdout.split("\n").find((line) => line.startsWith(`${path.basename(dir)}  `));
+  /** The line health printed on stderr for a run it refused to judge. */
+  const refusal = (stderr: string, dir: string) =>
+    stderr
+      .split("\n")
+      .find((line) => line.startsWith(`health: no verdict on ${path.basename(dir)}: `));
+  /** That line for a run from before the namespace (no namespace.txt) that no rule that can judge
+   * it fails: rules 10 and 12 read the world it ran in, which it never recorded. */
+  const unrecorded = (dir: string) =>
+    `health: no verdict on ${path.basename(dir)}: it records no namespace.txt, the world its agents ran in, which rules 10 and 12 read; nothing else it recorded gives that world, and no reading of the pod stands in for it`;
   let olderMade: string | undefined;
   /** A checkout holding an older daemon's engine and completion route alone, as main ff2a10ef
    * writes them (completion-answers.ts's `refused` and `issue`): the daemon health reads a run's
-   * completions by where an answer turns on it, out of the checkout its built-from names
+   * completions by where an answer turns on it, out of the commit of it its built-from records
    * (daemon-pane.ts's `labelDaemon`), never out of the label's name. Made once for the rows. */
   function olderDaemon(): string {
     if (olderMade !== undefined) return olderMade;
@@ -3211,13 +3255,14 @@ describe("health", () => {
   );
 
   // Catches: a run's daemon read where no answer turns on it, or an answer that turns on it
-  // judged by some daemon when the run's own cannot be read. The run's built-from names a checkout
-  // holding no daemon (RUN_CHECKOUT): a reviewer refused 409 HANDOFF_NOT_CURRENT_PHASE with no
-  // earlier 200 is an answer one shape gives and the other does not, so whose world the run met is
-  // unknown, while the implementer's refusal and the reviewer's 200 are every daemon's answers.
-  // A checkout that is not there is refused with no Go run: the `go` on health's PATH here records
-  // a call and refuses it, so a health that compiled the reader to say a file is missing, which
-  // cost the tester's fixture below a minute, fails this row on any host.
+  // judged by some daemon when the run's own cannot be read. The commit the run's built-from
+  // records holds no daemon (RUN_CHECKOUT's): a reviewer refused 409 HANDOFF_NOT_CURRENT_PHASE
+  // with no earlier 200 is an answer one shape gives and the other does not, so whose world the
+  // run met is unknown, while the implementer's refusal and the reviewer's 200 are every daemon's
+  // answers. The verdict names the commit, never the directory health rebuilt it in. A source
+  // that is not there is refused with no Go run: the `go` on health's PATH here records a call
+  // and refuses it, so a health that compiled the reader to say a file is missing, which cost the
+  // tester's fixture of 2026-11-14 a minute, fails this row on any host.
   test("a run whose answer turns on a daemon that cannot be read is unhealthy, naming why", () => {
     const bin = freshDir("no-go");
     const ran = path.join(bin, "ran");
@@ -3229,12 +3274,79 @@ describe("health", () => {
     ]);
     const { code, stdout } = healthIn({ PATH: `${bin}:${childEnv.PATH}` }, dir);
     expect(code).toBe(1);
+    const commit = `<commit ${sourcesCommit(labelRepo(), RUN_CHECKOUT)}>`;
     expect(verdict(stdout, dir)).toBe(
-      `reviewer-text-findings-text-only-head-2  unhealthy: completion shapes unknown: an answer the stand-in logged turns on how the head label's daemon takes a completion, which cannot be read: ${RUN_CHECKOUT}/packages/daemon/internal/workflow/engine.go is not there, so how the daemon of ${RUN_CHECKOUT} takes a completion is unknown (daemon-completion.go reads it)`
+      `reviewer-text-findings-text-only-head-2  unhealthy: completion shapes unknown: an answer the stand-in logged turns on how the head label's daemon takes a completion, which cannot be read: ${commit}/packages/daemon/internal/workflow/engine.go is not there, so how the daemon of ${commit} takes a completion is unknown (daemon-completion.go reads it)`
     );
     expect(stdout).toContain("health: completions: 1 of 1 runs\n");
     expect(stdout).toContain("health: taken: 1 of 1 runs\n");
     expect(existsSync(ran)).toBe(false);
+  });
+
+  // The architect's ruling of 2026-11-18: a reader judges a run from its archive and the
+  // provenance it recorded, rebuilds what else it needs from those by digest, or refuses, and a
+  // refusal is no verdict. A run whose answer turns on its label's daemon is judged by the
+  // sources of the commit its built-from records, rebuilt out of the repositories the caller
+  // names; where that cannot be done health prints no verdict on the run, names it and the input
+  // on stderr, counts it in no rule, and exits 2, whatever the other runs read. A run that fails
+  // a rule that can judge it is unhealthy all the same. Catches: the daemon read off the checkout
+  // the built-from names, as the pod holds it now (each refused run here would read the
+  // checkout's sources); a refusal read as a verdict, healthy or unhealthy, which a batch runner
+  // would count or replace; and a run with a judged failure refused rather than unhealthy.
+  test("a run whose label's daemon cannot be rebuilt from its recorded commit gets no verdict, and health exits 2 naming it", () => {
+    const refused = [[complete(409, NOT_CURRENT, "reviewer")]];
+    const noCommit = run("reviewer-text-findings-text-only-head-9", refused, {
+      checkout: CHECKOUT,
+      commit: false,
+    });
+    const dirty = run("reviewer-text-findings-text-only-head-10", refused, { checkout: CHECKOUT });
+    writeFileSync(
+      path.join(dirty, "built-from"),
+      `checkout ${CHECKOUT}\ncommit ${sourcesCommit(labelRepo(), CHECKOUT)} parents= dirty\n`
+    );
+    const elsewhere = run("reviewer-text-findings-text-only-head-11", refused, {
+      checkout: CHECKOUT,
+    });
+    const unfinished = run("reviewer-text-findings-text-only-head-12", refused, {
+      checkout: CHECKOUT,
+      commit: false,
+      finished: false,
+    });
+    const judged = run("reviewer-text-findings-text-only-head-13", [
+      [complete(200, undefined, "reviewer")],
+    ]);
+    const { code, stdout, stderr } = health(noCommit, dirty, unfinished, judged);
+    expect(code).toBe(2);
+    expect([noCommit, dirty, unfinished, judged].map((dir) => verdict(stdout, dir))).toEqual([
+      undefined,
+      undefined,
+      "reviewer-text-findings-text-only-head-12  unhealthy: unfinished: the reviewer's output, <run>/out.txt, has no exit= line",
+      "reviewer-text-findings-text-only-head-13  healthy",
+    ]);
+    const commit = sourcesCommit(labelRepo(), CHECKOUT);
+    expect([refusal(stderr, noCommit), refusal(stderr, dirty)]).toEqual([
+      "health: no verdict on reviewer-text-findings-text-only-head-9: its built-from records no commit (`commit <sha>`), so the daemon sources its label ran cannot be rebuilt",
+      `health: no verdict on reviewer-text-findings-text-only-head-10: its built-from's commit ${commit} is of a checkout with changes no commit holds (\`dirty\`), so the daemon sources its label ran cannot be rebuilt`,
+    ]);
+    expect(stderr).toContain("health: 2 of 4 runs refused\n");
+    expect(stdout).toContain("health: completions: 0 of 2 runs\n");
+    expect(stdout).toEndWith("health: 1 of 2 runs unhealthy\n");
+    // No repository named, and one that does not hold the commit.
+    const none = healthArgs({}, [elsewhere]);
+    expect({ code: none.code, stdout: verdict(none.stdout, elsewhere) }).toEqual({
+      code: 2,
+      stdout: undefined,
+    });
+    expect(refusal(none.stderr, elsewhere)).toBe(
+      `health: no verdict on reviewer-text-findings-text-only-head-11: its label's daemon sources are rebuilt from commit ${commit}, which its built-from records, out of a repository the caller names (--repo <git dir>), and none was named`
+    );
+    const other = path.join(freshDir("health"), "other.git");
+    expect(spawnChecked(["git", "init", "-q", "--bare", other]).exitCode).toBe(0);
+    const lacking = healthArgs({}, ["--repo", other, elsewhere]);
+    expect(lacking.code).toBe(2);
+    expect(refusal(lacking.stderr, elsewhere)).toBe(
+      `health: no verdict on reviewer-text-findings-text-only-head-11: no repository named (${other}) holds commit ${commit}, which its built-from records`
+    );
   });
 
   // Catches: a daemon of a shape pair ANSWERS gives no answers judged by some other pair's. This
@@ -3571,10 +3683,10 @@ describe("health", () => {
       const { code, stdout } = health(head, update, base, nowhere, unknown);
       expect(code).toBe(1);
       expect(verdict(stdout, head)).toBe(
-        `threads-closed-code-defect-head-7  unhealthy: unserved route: the stand-in answered a request of ${turnOutcome} 404, a route the head label's daemon registers (${CHECKOUT})`
+        `threads-closed-code-defect-head-7  unhealthy: unserved route: the stand-in answered a request of ${turnOutcome} 404, a route the head label's daemon registers (${CHECKOUT} at ${sourcesCommit(labelRepo(), CHECKOUT)})`
       );
       expect(verdict(stdout, update)).toBe(
-        `threads-closed-code-defect-head-8  unhealthy: unserved route: the stand-in answered POST /legion/v1/claims/ready-for-update 404, a route the head label's daemon registers (${CHECKOUT})`
+        `threads-closed-code-defect-head-8  unhealthy: unserved route: the stand-in answered POST /legion/v1/claims/ready-for-update 404, a route the head label's daemon registers (${CHECKOUT} at ${sourcesCommit(labelRepo(), CHECKOUT)})`
       );
       expect(verdict(stdout, base)).toBe("threads-closed-code-defect-base-7  healthy");
       expect(verdict(stdout, nowhere)).toBe("threads-closed-code-defect-head-9  healthy");
@@ -3704,8 +3816,9 @@ describe("health", () => {
     expect(verdict(stdout, quiet)).toBe("threads-closed-code-defect-head-1  healthy");
   });
 
-  // Catches: a usage error read as a verdict. No argument, a path that is no directory, and a
-  // directory that is no run of a scenario and label health reads each exit 2 and print no run.
+  // Catches: a usage error read as a verdict. No argument, a path that is no directory, a
+  // directory that is no run of a scenario and label health reads, and an option naming nothing
+  // each exit 2 and print no run.
   test("a usage error exits 2 and prints no verdict", () => {
     const healthy = run("threads-closed-text-fixes-head-4", [[]]);
     for (const args of [
@@ -3714,10 +3827,13 @@ describe("health", () => {
       [healthy, freshDir("tester-proof-head")],
       [run("threads-closed-text-fixes-ablate-1", [[]])],
       ["--tmp-snapshot", path.join(freshDir("health"), "missing"), healthy],
+      ["--repo", path.join(freshDir("health"), "missing"), healthy],
     ]) {
       const { code, stdout, stderr } = health(...args);
       expect([args, code, stdout]).toEqual([args, 2, ""]);
-      expect(stderr).toContain("usage: rig.sh health [--tmp-snapshot <file>] <run dir>...");
+      expect(stderr).toContain(
+        "usage: rig.sh health [--tmp-snapshot <file>] [--repo <git dir>]... <run dir>..."
+      );
     }
   });
 
@@ -3782,7 +3898,7 @@ describe("health", () => {
       world?: string[];
     }
   ) {
-    const dir = run(name, [[complete(200, undefined, "reviewer")]], { checkout });
+    const dir = run(name, [[complete(200, undefined, "reviewer")]], { checkout, namespace });
     const ran = `${work}/runs/${name}`;
     writeFileSync(
       path.join(dir, "pane.env"),
@@ -3989,20 +4105,22 @@ describe("health", () => {
   // fallback 404 for a call no route of the world answers, which is the world missing an answer
   // GitHub gives (the 2026-11-14 batch's `gh api repos/<repo>`), and a production refusal met by
   // a role the scenario does not declare it for (the base's protection 403 is the reviewer's
-  // merge-gate read, and no implementer's).
+  // merge-gate read, and no implementer's). Each call is one its agent typed, as rule 7 reads
+  // only those (health.ts's `typedBy`).
   test("a gh refusal the scenario does not declare for the role is unhealthy", () => {
+    const typed = (argv: string[]): Step => ({
+      tool: "bash",
+      args: { command: `gh ${argv.join(" ")}` },
+    });
+    const read = ["api", "repos/example/widgets", "--jq", ".default_branch"];
     const unrouted = worldRun("reviewer-text-findings-defect-base-3", {
-      calls: [gh("reviewer", ["api", "repos/example/widgets", "--jq", ".default_branch"], 1, null)],
+      steps: [typed(read)],
+      calls: [gh("reviewer", read, 1, null)],
     }).dir;
+    const protection = ["api", "repos/example/widgets/branches/main/protection"];
     const role = worldRun("threads-closed-code-defect-base-2", {
-      calls: [
-        gh(
-          "implementer",
-          ["api", "repos/example/widgets/branches/main/protection"],
-          1,
-          ROUTES[0]?.match ?? ""
-        ),
-      ],
+      steps: [typed(protection)],
+      calls: [gh("implementer", protection, 1, ROUTES[0]?.match ?? "")],
     }).dir;
     const { code, stdout } = health(unrouted, role);
     expect(code).toBe(1);
@@ -4079,6 +4197,8 @@ describe("health", () => {
       exit: 1,
     };
     const refusing = worldRun("threads-closed-text-fixes-head-3", {
+      agent: "reviewer",
+      steps: [{ tool: "bash", args: { command: "gh api repos/example/widgets/pulls/1001/files" } }],
       calls: [gh("reviewer", ["api", "repos/example/widgets/pulls/1001/files"], 1, files.match)],
     }).dir;
     withRoutes(refusing, [files]);
@@ -4303,7 +4423,8 @@ describe("health", () => {
   });
 
   // Four runs from before the rig gave each run a namespace (no namespace.txt, as the 2026-11-14
-  // batch left them), whose /tmp was the machine's.
+  // batch left them), whose /tmp was the machine's: rule 9 judges them, and a run no rule that
+  // can judge it fails gets no verdict, since rules 10 and 12 read a world it never recorded.
   // Catches: a run's own write outside its directory read as a verdict on it, which voids the run
   // that wrote a file rather than the one a file reached; a later run's read of an earlier run's
   // write let through, here placed only in a subagent's transcript, one level under a later
@@ -4373,25 +4494,19 @@ describe("health", () => {
         },
       ],
     }).dir;
-    // These runs predate the namespace, so their world's scratch root is the judge's TMPDIR, as
-    // `rig.sh world` reads it, and a Legion pod's is not /tmp.
-    const { code, stdout } = healthIn(
-      { TMPDIR: "/recorded/scratch" },
-      reader,
-      writer,
-      earlier,
-      stale
-    );
-    expect(code).toBe(1);
-    expect(verdict(stdout, writer)).toBe("threads-closed-text-fixes-head-5  healthy");
-    expect(verdict(stdout, earlier)).toBe("threads-closed-code-defect-head-4  healthy");
+    const { code, stdout, stderr } = health(reader, writer, earlier, stale);
+    expect(code).toBe(2);
+    expect([writer, earlier].map((dir) => [verdict(stdout, dir), refusal(stderr, dir)])).toEqual([
+      [undefined, unrecorded(writer)],
+      [undefined, unrecorded(earlier)],
+    ]);
     expect(verdict(stdout, reader)).toBe(
       "threads-closed-code-defect-head-5  unhealthy: another run's write: a bash call in sessions/reviewer/2026-11-14T02-00-00-000Z_s2/2026-11-14T00-00-00-000Z_s1.jsonl at 2026-11-14T02:00:00.000Z reads /tmp/LWEVAL-1-review.json, which threads-closed-text-fixes-head-5 wrote at 2026-11-14T01:00:00.000Z (write in sessions/2026-11-14T00-00-00-000Z_s1.jsonl)"
     );
     expect(verdict(stdout, stale)).toBe(
       "threads-closed-code-defect-head-3  unhealthy: shared scratch from before the run: a read call in sessions/2026-11-14T00-00-00-000Z_s1.jsonl at 2026-11-14T03:00:00.000Z reads /tmp/pre-batch.json, which no run given wrote before it and /tmp/pre-batch.json was in /tmp when the run started (scratch-before.txt)"
     );
-    expect(stdout).toContain("health: another run's write: 2 of 4 runs\n");
+    expect(stdout).toContain("health: another run's write: 2 of 2 runs\n");
     expect(stdout).toContain(
       "health: wrote outside its own directory, HOME and TMPDIR (no verdict): 1 of 4 runs: threads-closed-text-fixes-head-5 (/tmp/LWEVAL-1-review.json, /tmp/placeholder). Appeared in the shared scratch while the run ran, by an unknown writer (no verdict): 0 of 4 runs\n"
     );
@@ -4471,17 +4586,18 @@ describe("health", () => {
         { tool: "bash", args: { command: "mkdir -p /tmp/lweval1/ws" } },
       ],
     }).dir;
-    // head-24 predates the namespace, so its world's scratch root is the judge's TMPDIR, as
-    // `rig.sh world` reads it, and a Legion pod's is not /tmp.
-    const { code, stdout } = healthIn({ TMPDIR: "/recorded/scratch" }, appeared, wrote);
+    // head-24 predates the namespace, so no rule that can judge it fails it and it gets no
+    // verdict; the line names what it wrote all the same, as it names every run given.
+    const { code, stdout, stderr } = health(appeared, wrote);
     expect([appeared, wrote].map((dir) => verdict(stdout, dir))).toEqual([
       "reviewer-text-findings-text-only-head-5  healthy",
-      "threads-closed-text-fixes-head-24  healthy",
+      undefined,
     ]);
+    expect(refusal(stderr, wrote)).toBe(unrecorded(wrote));
     expect(stdout).toContain(
       "health: wrote outside its own directory, HOME and TMPDIR (no verdict): 1 of 2 runs: threads-closed-text-fixes-head-24 (/tmp/LWEVAL-1-review.json, /tmp/lweval1/ws, /tmp/lweval1). Appeared in the shared scratch while the run ran, by an unknown writer (no verdict): 2 of 2 runs: reviewer-text-findings-text-only-head-5 (/tmp/go-build218583819); threads-closed-text-fixes-head-24 (/tmp/go-build1)\n"
     );
-    expect(code).toBe(0);
+    expect(code).toBe(2);
   });
 
   // A host with no TMPDIR, whose work directory is under /tmp: the namespace binds the run's own
@@ -4578,12 +4694,12 @@ describe("health", () => {
   });
 
   // Rule 10 reads the run's namespace (the architect's ruling of 2026-11-18T08:40Z). In a run's
-  // namespace /tmp is its own <run>/tmp, but a run from before the namespace named the machine's
-  // /tmp, which holds the work directory where that lies under /tmp (rig.sh's default,
-  // `${TMPDIR:-/tmp}/work`). Catches: /tmp allowed for every run, so a run from before the
-  // namespace that reads the other label's profile in the work directory through /tmp passes;
-  // and the other way, a run in a namespace held to the machine's /tmp.
-  test("a name under /tmp is a run's own in its namespace, and what its world hides there in a run with none", () => {
+  // namespace /tmp is its own <run>/tmp, and a run from before the namespace recorded no world, so
+  // rule 10 does not judge it (the architect's ruling of 2026-11-18T14:59Z: no world is worked out
+  // again from the pod) and a run no other rule fails gets no verdict. Catches: a run in a
+  // namespace held to the machine's /tmp; and a run with none held to a world worked out at
+  // judging time, which read this one unhealthy under the judge's TMPDIR.
+  test("a name under /tmp is a run's own in its namespace, and a run with none is not judged by a world", () => {
     const work = "/tmp/recorded-work";
     const steps: Step[] = [{ tool: "read", args: { path: `${work}/profiles/base/built-from` } }];
     const own = worldRun("threads-closed-text-fixes-head-18", { work, before: [], steps }).dir;
@@ -4593,13 +4709,14 @@ describe("health", () => {
       before: [],
       steps,
     }).dir;
-    const { code, stdout } = healthIn({ TMPDIR: "/recorded/scratch" }, own, machine);
+    const { code, stdout, stderr } = health(own, machine);
     expect([own, machine].map((dir) => verdict(stdout, dir))).toEqual([
       "threads-closed-text-fixes-head-18  healthy",
-      `threads-closed-text-fixes-head-19  unhealthy: outside its world: a read call in sessions/2026-11-14T00-00-00-000Z_s1.jsonl names ${work}/profiles/base/built-from, under ${work}, which the run's world hides and does not show again (rig.sh's world_paths)`,
+      undefined,
     ]);
-    expect(stdout).toContain("health: outside its world: 1 of 2 runs\n");
-    expect(code).toBe(1);
+    expect(refusal(stderr, machine)).toBe(unrecorded(machine));
+    expect(stdout).toContain("health: outside its world: 0 of 1 runs\n");
+    expect(code).toBe(2);
   });
 
   // A run in a namespace is judged by the world it recorded (namespace.txt), never by one worked
@@ -4607,9 +4724,11 @@ describe("health", () => {
   // judged from a copy whose work directory was gone, read "outside its world" for a skill of its
   // label's install under the scratch root, which its namespace showed. Catches: the world read
   // through `rig.sh world` for every run, which reads a shown install as covered (head-20) and
-  // takes the scratch root from the judge's TMPDIR rather than from the run's (head-21); and a
-  // run from before the namespace no longer read by the world `rig.sh world` declares (head-22).
-  test("a run in a namespace is held to the world it recorded, and one with none to the world declared for it", () => {
+  // takes the scratch root from the judge's TMPDIR rather than from the run's (head-21, judged
+  // under another); and a run from before the namespace held to the world `rig.sh world` works
+  // out of the pod (head-22, which read unhealthy under the judge's TMPDIR until the architect's
+  // ruling of 2026-11-18T14:59Z).
+  test("a run in a namespace is held to the world it recorded, whatever the judge's TMPDIR, and one with none to no world", () => {
     const read = (target: string): Step => ({ tool: "read", args: { path: target } });
     const session = "sessions/2026-11-14T00-00-00-000Z_s1.jsonl";
     const hidden = "which the run's world hides and does not show again (rig.sh's world_paths)";
@@ -4617,7 +4736,7 @@ describe("health", () => {
       world: ["ro /recorded/scratch/installs/abc"],
       steps: [read("/recorded/scratch/installs/abc/skills/legion-worker/SKILL.md")],
     }).dir;
-    const atRecording = healthIn({ TMPDIR: "/recorded/scratch" }, shown);
+    const atRecording = health(shown);
     expect(verdict(atRecording.stdout, shown)).toBe("threads-closed-text-fixes-head-20  healthy");
     const covered = worldRun("threads-closed-text-fixes-head-21", {
       steps: [read("/recorded/scratch/another-role/notes.md")],
@@ -4629,8 +4748,9 @@ describe("health", () => {
     const elsewhere = healthIn({ TMPDIR: "/judging/scratch" }, covered, old);
     expect([covered, old].map((dir) => verdict(elsewhere.stdout, dir))).toEqual([
       `threads-closed-text-fixes-head-21  unhealthy: outside its world: a read call in ${session} names /recorded/scratch/another-role/notes.md, under /recorded/scratch, ${hidden}`,
-      `threads-closed-text-fixes-head-22  unhealthy: outside its world: a read call in ${session} names /judging/scratch/another-role/notes.md, under /judging/scratch, ${hidden}`,
+      undefined,
     ]);
+    expect(refusal(elsewhere.stderr, old)).toBe(unrecorded(old));
   });
 
   // Each launch mounts a tmpfs of its own on /dev/shm (rig.sh's private_world), so two runs in
@@ -4661,19 +4781,21 @@ describe("health", () => {
       steps: [at("02:30:00", read)],
     });
     const runs = [writer, reader, oldWriter, oldReader].map((one) => one.dir);
-    const { code, stdout } = healthIn({ TMPDIR: "/recorded/scratch" }, ...runs);
+    const { code, stdout, stderr } = health(...runs);
     const session = "sessions/2026-11-14T00-00-00-000Z_s1.jsonl";
+    // head-24 (text-fixes) predates the namespace and no rule that can judge it fails it.
     expect(runs.map((dir) => verdict(stdout, dir))).toEqual([
       "threads-closed-text-fixes-head-23  healthy",
       "threads-closed-code-defect-head-23  healthy",
-      "threads-closed-text-fixes-head-24  healthy",
+      undefined,
       `threads-closed-code-defect-head-24  unhealthy: another run's write: a bash call in ${session} at 2026-11-14T02:30:00.000Z reads ${shm}, which threads-closed-text-fixes-head-24 wrote at 2026-11-14T01:30:00.000Z (write in ${session})`,
     ]);
-    expect(stdout).toContain("health: another run's write: 1 of 4 runs\n");
+    expect(refusal(stderr, oldWriter.dir)).toBe(unrecorded(oldWriter.dir));
+    expect(stdout).toContain("health: another run's write: 1 of 3 runs\n");
     expect(stdout).toContain(
       `health: wrote outside its own directory, HOME and TMPDIR (no verdict): 1 of 4 runs: threads-closed-text-fixes-head-24 (${shm}). Appeared in the shared scratch while the run ran, by an unknown writer (no verdict): 0 of 4 runs\n`
     );
-    expect(code).toBe(1);
+    expect(code).toBe(2);
   });
 
   // Each agent a run boots starts in a launch of its own (rig.sh's worker_boot), with a /dev/shm
@@ -4713,7 +4835,7 @@ describe("health", () => {
       others: { reviewer: [ran(shm)] },
     }).dir;
     const runs = [later, writer, scratch, old];
-    const { stdout } = healthIn({ TMPDIR: "/recorded/scratch" }, ...runs);
+    const { stdout } = health(...runs);
     const implementer = "sessions/2026-11-14T00-00-00-000Z_s1.jsonl";
     const reviewer = "sessions/reviewer/2026-11-14T00-00-00-000Z_s1.jsonl";
     const reach = (by: string, script: string) =>
@@ -4732,8 +4854,8 @@ describe("health", () => {
   // caller's Dispatch variables; a path under /var/run/legion/private; a curl of GitHub's API; a
   // read that fetches a GitHub page; and a web search, each read as healthy. And the run that
   // reaches only the loopback and the model gateway its profile's models.yml names, and reads
-  // only its own checkout and its label's profile, read as unhealthy. The scratch root is the
-  // caller's TMPDIR, here /recorded/scratch.
+  // only its own checkout and its label's profile, read as unhealthy. The scratch root is the one
+  // each run's namespace.txt covers, /recorded/scratch, whatever the judge's TMPDIR.
   test("a run that reaches out of its world, by path, process, credential or network, is unhealthy", () => {
     const read = (target: string): Step => ({ tool: "read", args: { path: target } });
     const bash = (command: string): Step => ({ tool: "bash", args: { command } });
@@ -4785,7 +4907,7 @@ describe("health", () => {
       JSON.stringify({ providers: { anthropic: { baseUrl: gateway } } })
     );
     const runs = [scratch, otherLabel, proc, secret, curl, fetched, searched, own];
-    const { code, stdout } = healthIn({ TMPDIR: "/recorded/scratch" }, ...runs);
+    const { code, stdout } = health(...runs);
     expect(code).toBe(1);
     const session = "sessions/2026-11-14T00-00-00-000Z_s1.jsonl";
     const hidden = "which the run's world hides and does not show again (rig.sh's world_paths)";
@@ -4813,7 +4935,8 @@ describe("health", () => {
 
   // The runs here shared the pod's processes (no namespace.txt), as every run did before the rig
   // gave each a PID namespace of its own, where every process /proc shows is the run's own (the
-  // row below this one).
+  // row below this one). Rule 11 judges them; one it passes, which no other rule that can judge
+  // it fails, gets no verdict, since rules 10 and 12 read a world it never recorded.
   // Catches: a read of the caller's own shell's environment, `/proc/$$/environ`, read as another
   // process's. `$$`, `${$}` and `$BASHPID` name the shell that runs the command, as `/proc/self`
   // names the caller, and the worker prompt both labels load teaches that read
@@ -4844,13 +4967,14 @@ describe("health", () => {
       steps: [bash("cat /proc/*/environ | tr '\\0' '\\n' | grep DISPATCH")],
     }).dir;
     const runs = [own, variable, glob];
-    const { stdout } = health(...runs);
+    const { stdout, stderr } = health(...runs);
     const session = "sessions/2026-11-14T00-00-00-000Z_s1.jsonl";
     expect(runs.map((dir) => verdict(stdout, dir))).toEqual([
-      "threads-closed-text-fixes-head-21  healthy",
+      undefined,
       `threads-closed-text-fixes-head-22  unhealthy: another process: a bash call in ${session} reads /proc/$pid/environ, a process the run does not own`,
       `threads-closed-text-fixes-head-23  unhealthy: another process: a bash call in ${session} reads /proc/*/environ, a process the run does not own`,
     ]);
+    expect(refusal(stderr, own)).toBe(unrecorded(own));
   });
 
   // A run's agents start in a PID namespace of the run's own (rig.sh's launch.sh: `unshare -Urm
@@ -4889,6 +5013,96 @@ describe("health", () => {
     ]);
   });
 
+  // The architect's ruling of 2026-11-18T14:59Z: a run from before the namespace recorded no
+  // world, and its world is never worked out again from the pod (`rig.sh world` took the scratch
+  // root from the judge's TMPDIR and the label's install from the work directory as it stands).
+  // Rules 10 and 12 read that world, so they do not judge such a run; the other rules do, and one
+  // that fails it makes it unhealthy, since a run is healthy only when every rule holds. A run they
+  // all pass gets no verdict: stderr names it and namespace.txt, and health exits 2 (the
+  // architect's condition of 18:56Z: a refusal is not a verdict). Judged under a TMPDIR that names
+  // the scratch root its reads are under, so a world worked out at judging time would cover them.
+  // Catches: the world worked out of the pod for such a run, which read head-45 unhealthy outside
+  // its world here and healthy under another TMPDIR; any world assumed for it (an empty one read
+  // it healthy); and a run a world-free rule fails refused rather than unhealthy (head-46).
+  test("a run from before the namespace is judged by the rules that need no world, and gets no verdict where they all pass it", () => {
+    const read = (target: string): Step => ({ tool: "read", args: { path: target } });
+    const reaches = worldRun("threads-closed-code-defect-head-45", {
+      namespace: false,
+      steps: [read("/recorded/scratch/another-role/notes.md"), read("/var/run/legion/token")],
+    }).dir;
+    const proc = worldRun("threads-closed-code-defect-head-46", {
+      namespace: false,
+      steps: [{ tool: "bash", args: { command: "tr '\\0' '\\n' </proc/1/environ" } }],
+    }).dir;
+    const recorded = worldRun("threads-closed-code-defect-head-47", {}).dir;
+    const { code, stdout, stderr } = healthIn(
+      { TMPDIR: "/recorded/scratch" },
+      reaches,
+      proc,
+      recorded
+    );
+    expect(code).toBe(2);
+    expect([reaches, proc, recorded].map((dir) => verdict(stdout, dir))).toEqual([
+      undefined,
+      "threads-closed-code-defect-head-46  unhealthy: another process: a bash call in sessions/2026-11-14T00-00-00-000Z_s1.jsonl reads /proc/1/environ, a process the run does not own",
+      "threads-closed-code-defect-head-47  healthy",
+    ]);
+    expect(stderr.split("\n").filter((line) => line.startsWith("health: "))).toEqual([
+      unrecorded(reaches),
+      "health: 1 of 3 runs refused",
+    ]);
+    expect(stdout).toContain("health: outside its world: 0 of 2 runs\n");
+    expect(stdout).toContain("health: credentials: 0 of 2 runs\n");
+    expect(stdout).toEndWith("health: 1 of 2 runs unhealthy\n");
+  });
+
+  // The architect's ruling of 2026-11-18: an environment health reads decides no verdict. The
+  // same two archived runs, one whose answer turns on its label's daemon (a reviewer refused
+  // not-current-phase with no earlier 200, which this checkout's daemon never answers) and one that
+  // reads under the scratch root its namespace.txt covers, are judged under two TMPDIRs, from two
+  // working directories, with an empty work directory and one whose profiles and installs name
+  // another label's daemon (an older one, which answers that refusal) and another install.
+  // Catches: health reading the daemon off the work directory's profile or the checkout as it
+  // stands, the world off the judge's TMPDIR, or any path off its working directory.
+  test.skipIf(withoutGo)(
+    "one archived run reads the same under another TMPDIR, working directory and work directory",
+    () => {
+      const daemon = run(
+        "reviewer-text-findings-text-only-head-14",
+        [[complete(409, NOT_CURRENT, "reviewer")]],
+        { checkout: CHECKOUT }
+      );
+      const world = worldRun("threads-closed-text-fixes-head-38", {
+        steps: [{ tool: "read", args: { path: "/recorded/scratch/another-role/notes.md" } }],
+      }).dir;
+      const populated = freshDir("populated-work");
+      for (const label of ["head", "base"]) {
+        mkdirSync(path.join(populated, "profiles", label), { recursive: true });
+        writeFileSync(path.join(populated, "profiles", label, "checkout"), `${olderDaemon()}\n`);
+        writeFileSync(path.join(populated, "profiles", label, "install"), "0123456789ab\n");
+      }
+      mkdirSync(path.join(populated, "installs", "0123456789ab"), { recursive: true });
+      const judged = [
+        healthArgs(
+          { TMPDIR: freshDir("judge-tmp"), SKILL_SCENARIOS_WORK: freshDir("empty-work") },
+          ["--repo", labelRepo(), daemon, world],
+          freshDir("judge-cwd")
+        ),
+        healthArgs(
+          { TMPDIR: freshDir("judge-tmp"), SKILL_SCENARIOS_WORK: populated },
+          ["--repo", labelRepo(), daemon, world],
+          populated
+        ),
+      ];
+      expect(judged[1]).toEqual(judged[0] ?? {});
+      expect(judged[0]?.code).toBe(1);
+      expect([daemon, world].map((dir) => verdict(judged[0]?.stdout ?? "", dir))).toEqual([
+        "reviewer-text-findings-text-only-head-14  unhealthy: refused completion: POST /legion/v1/handoff/complete of the reviewer answered 409 HANDOFF_NOT_CURRENT_PHASE, which the head label's daemon does not answer it with in this world",
+        "threads-closed-text-fixes-head-38  unhealthy: outside its world: a read call in sessions/2026-11-14T00-00-00-000Z_s1.jsonl names /recorded/scratch/another-role/notes.md, under /recorded/scratch, which the run's world hides and does not show again (rig.sh's world_paths)",
+      ]);
+    }
+  );
+
   // Rule 21 over whole runs (health.ts's `credentialPrinted`, the architect's ruling of
   // 2026-11-18T11:34Z and 11:38Z): a run whose agent printed its GitHub token is unhealthy as an
   // agent printing its credential, named ahead of the refusal the world answered the call with —
@@ -4922,6 +5136,51 @@ describe("health", () => {
       "threads-closed-text-fixes-head-33  healthy",
     ]);
     expect(stdout).toContain("health: credential printed: 2 of 3 runs\n");
+  });
+
+  // The architect's ruling of 2026-11-18 on `gh send-telemetry`: gh itself starts it after a
+  // command, a POST to GitHub's telemetry service the world refuses as a write it does not model,
+  // so rules 7 and 20 read only a call whose first word stands after a `gh` an agent ran
+  // (health.ts's `typedBy`), and any `gh api` an agent typed covers each of its api calls, whose
+  // endpoint a shell can build. The tester's three rows. Catches: a rule that counts every record
+  // of calls.jsonl, which read the first run unhealthy for a call no command of its agent made;
+  // and one that credits a call by its whole argv, which read the third healthy since its agent's
+  // text holds `"$ep"` and not the endpoint.
+  test("rules 7 and 20 read only the gh calls an agent ran, a gh api covering its every api call", () => {
+    const bash = (command: string): Step => ({ tool: "bash", args: { command } });
+    const view = gh("reviewer", ["pr", "view", "1001"], 0, "^gh pr view( |$)");
+    const telemetry = { ...gh("reviewer", ["send-telemetry"], 1, null), handler: "unrouted" };
+    const put = ["api", "--method", "PUT", "repos/example/widgets/pulls/1001/reviews/5002"];
+    const typedOnlyView = worldRun("threads-closed-text-fixes-head-34", {
+      steps: [bash("gh pr view 1001")],
+      calls: [{ ...view, handler: "pull-request" }, telemetry],
+    }).dir;
+    const typedTelemetry = worldRun("threads-closed-text-fixes-head-35", {
+      steps: [bash("echo '{}' | gh send-telemetry")],
+      calls: [telemetry],
+    }).dir;
+    const builtEndpoint = worldRun("threads-closed-text-fixes-head-36", {
+      steps: [bash('ep=repos/example/widgets/pulls/1001/reviews/5002; gh api --method PUT "$ep"')],
+      calls: [{ ...gh("reviewer", put, 1, null), handler: "unrouted" }],
+    }).dir;
+    // A script the agent wrote and ran is its own, as rule 13 reads one.
+    const ranScript = worldRun("threads-closed-text-fixes-head-37", {
+      steps: [
+        { tool: "write", args: { path: "post.sh", content: "#!/bin/sh\ngh send-telemetry\n" } },
+        bash("sh post.sh"),
+      ],
+      calls: [telemetry],
+    }).dir;
+    const runs = [typedOnlyView, typedTelemetry, builtEndpoint, ranScript];
+    const { stdout } = health(...runs);
+    const refused = (line: number, call: string) =>
+      `unhealthy: unmodelled write: calls.jsonl:${line}, \`gh ${call}\` of the reviewer, exited 1: no route or answer of the world models it, so it was refused 404 where GitHub takes it`;
+    expect(runs.map((dir) => verdict(stdout, dir))).toEqual([
+      "threads-closed-text-fixes-head-34  healthy",
+      `threads-closed-text-fixes-head-35  ${refused(2, "send-telemetry")}`,
+      `threads-closed-text-fixes-head-36  ${refused(2, put.join(" "))}`,
+      `threads-closed-text-fixes-head-37  ${refused(2, "send-telemetry")}`,
+    ]);
   });
 
   // Catches: an eval cell that reaches a host off the run's world read as no reach at all. The
@@ -4993,9 +5252,10 @@ describe("health", () => {
     const runs = Object.entries(steps).map(
       ([name, command]) => worldRun(name, { namespace: false, steps: [bash(command)] }).dir
     );
-    const { stdout } = health(...runs);
+    const { stdout, stderr } = health(...runs);
     const read = (name: string, target: string) =>
       `${name}  unhealthy: another process: a bash call in sessions/2026-11-14T00-00-00-000Z_s1.jsonl reads ${target}, a process the run does not own`;
+    // head-27, which rule 11 passes, predates the namespace: no rule that can judge it fails it.
     expect(runs.map((dir) => verdict(stdout, dir))).toEqual([
       read("threads-closed-code-defect-head-21", "/proc/$PPID/environ"),
       read("threads-closed-code-defect-head-22", braced),
@@ -5003,9 +5263,10 @@ describe("health", () => {
       read("threads-closed-code-defect-head-24", "/proc/$(pgrep bun)/environ"),
       read("threads-closed-code-defect-head-25", "/proc/`pgrep -n bun`/cmdline"),
       read("threads-closed-code-defect-head-26", "/proc/$$0/environ"),
-      "threads-closed-code-defect-head-27  healthy",
+      undefined,
     ]);
-    expect(stdout).toContain("health: another process: 6 of 7 runs\n");
+    expect(refusal(stderr, runs[6] ?? "")).toBe(unrecorded(runs[6] ?? ""));
+    expect(stdout).toContain("health: another process: 6 of 6 runs\n");
   });
 
   // Catches: a host a bash command reaches with no URL's scheme read as no host at all: a git
@@ -5244,105 +5505,72 @@ describe("health", () => {
     );
   });
 
-  // The tester's fixture of 2026-11-14 (health-fixture/): twenty-one runs covering the fifteen
-  // completion worlds (fields in either order, a log line that is no JSON, a role-less 409, a
-  // head reviewer's late refusal after its own 200 and one before it), a
-  // later run reading an earlier run's /tmp write, a read of an entry from before the batch, a run
-  // reading its own file, another run's path named only in a subagent's transcript, and a push
-  // the guard could not check; its `expected` is the tester's own verdict, run for run, and its
-  // `tmp-snapshot` the /tmp entries before the batch. The runs were recorded before a run carried
-  // its service provenance and its boot record, and without their Dispatch server's log, their
-  // GitHub stand-in's or their head watcher's, so each is read from a copy given the built-from and
-  // services-from cmd_run now copies into a run, every service of its label's own from that
-  // label's checkout, a Dispatch log that holds the server's listening line alone, the GitHub
-  // record a worker world's seeds make (GITHUB_RECORD), a head record that holds its opened line
-  // alone, and the boot record of what the run booted: its scenario's
-  // first role, whose output and session directory every run of it holds, and each later role whose
-  // session directory it holds (rig.sh's worker_boot makes it before it starts that role's
-  // stand-in), or the skip its scenario and case declare of a role it holds none of.
-  // The checkouts the copies' built-from names are not there, so health reads neither label's
-  // daemon: each answer that turns on how the daemon takes a completion reads `completion shapes
-  // unknown` (health.ts's `withDaemon`), refused with no Go run. Health is run with a `go` that
-  // records a call and refuses it, so the row reads no host's compile speed: it read one `go run`
-  // of daemon-completion.go for each such answer, 15 of them across 11 runs, and timed out at 60 s.
-  // Catches: a health that disagrees with that independent reading on any run of it.
-  test("the tester's fixture reads as the tester read it, run for run", () => {
-    const fixture = path.join(import.meta.dir, "health-fixture");
-    const names = readdirSync(path.join(fixture, "runs")).sort();
-    const copies = path.join(freshDir("health-fixture"), "runs");
-    for (const name of names) {
-      const copy = path.join(copies, name);
-      cpSync(path.join(fixture, "runs", name), copy, { recursive: true });
-      const checkout = `/recorded/${name.includes("-base-") ? "base" : "head"}-checkout`;
-      writeFileSync(path.join(copy, "built-from"), `checkout ${checkout}\n`);
-      writeFileSync(path.join(copy, "services-from"), servicesFrom(checkout));
-      mkdirSync(path.join(copy, "logs"));
-      writeFileSync(path.join(copy, "logs", "dispatch.log"), `${LISTENING}\n`);
-      writeFileSync(path.join(copy, "logs", "github.log"), GITHUB_RECORD);
-      writeFileSync(path.join(copy, "logs", "heads.log"), HEADS_OPENED);
-      const scenario = scenarioOf(name) ?? "";
-      const runCase = name.slice(scenario.length + 1).replace(/-(?:head|base)-\d+$/, "");
-      const [first, ...later] = ANSWERS[scenario]?.boots ?? [];
-      const lines = [`boot ${first}`];
-      for (const role of later) {
-        const skip = SKIPS[scenario]?.[runCase]?.[role];
-        if (existsSync(path.join(copy, "sessions", role))) lines.push(`boot ${role}`);
-        else if (skip !== undefined) lines.push(`skip ${role} ${skip}`);
-      }
-      writeFileSync(path.join(copy, BOOTED), lines.map((line) => `${line}\n`).join(""));
+  // Kept from the tester's fixture of 2026-11-14 (health-fixture/, retired by the architect's
+  // ruling of 2026-11-18): its completion lines as the stand-in wrote them then, a field order of
+  // their own (threads-closed-text-fixes-base-1's implementer refusal, -head-2's reviewer
+  // refusal), and a daemon.log line that is no JSON (threads-closed-code-defect-base-1's). Its
+  // role-less 409 and its head reviewer's late refusal after its own 200 and before it are the
+  // rows "a completion line naming no role…" and "a head reviewer refused not-current-phase…"
+  // above. The reviewer's refusal turns on the label's daemon, so its run is built from this
+  // checkout, whose daemon refuses it. Catches: a completion line read by the order of its
+  // fields, and a daemon.log that does not parse read as a run with no completion.
+  test.skipIf(withoutGo)(
+    "a completion line is read by its fields in any order, and a daemon.log line that is no JSON is an unreadable record",
+    () => {
+      const implementer = run("threads-closed-text-fixes-base-1", [
+        [
+          {
+            code: NOT_CURRENT,
+            at: "2026-11-14T00:00:00Z",
+            path: "/legion/v1/handoff/complete",
+            role: "implementer",
+            status: 409,
+          },
+        ],
+        [],
+      ]);
+      const reviewer = run(
+        "threads-closed-text-fixes-head-2",
+        [
+          [],
+          [
+            {
+              phase: "reviewing",
+              code: "HANDOFF_RECORD_MISMATCH",
+              at: "2026-11-14T00:00:00Z",
+              role: "reviewer",
+              path: "/legion/v1/handoff/complete",
+              status: 409,
+            },
+          ],
+        ],
+        { checkout: CHECKOUT }
+      );
+      const unparsed = run("threads-closed-code-defect-base-1", [[], []]);
+      appendFileSync(path.join(unparsed, "daemon.log"), "not json at all\n");
+      const { code, stdout } = health(implementer, reviewer, unparsed);
+      expect(code).toBe(1);
+      expect([implementer, reviewer, unparsed].map((dir) => verdict(stdout, dir))).toEqual([
+        "threads-closed-text-fixes-base-1  healthy",
+        "threads-closed-text-fixes-head-2  unhealthy: refused completion: POST /legion/v1/handoff/complete of the reviewer answered 409 HANDOFF_RECORD_MISMATCH, which the head label's daemon does not answer it with in this world",
+        'threads-closed-code-defect-base-1  unhealthy: unreadable record: JSON Parse error: Unexpected identifier "not"',
+      ]);
     }
-    const bin = freshDir("no-go");
-    const ran = path.join(bin, "ran");
-    writeFileSync(path.join(bin, "go"), `#!/bin/sh\necho "$*" >>'${ran}'\nexit 1\n`, {
-      mode: 0o755,
+  );
+
+  // Kept from the tester's fixture of 2026-11-14 (threads-closed-code-defect-head-5): another
+  // run's path named only in a subagent's transcript, two levels under the run's sessions, a
+  // later half's subagent's. Catches: rule 8 reading the agents' own transcripts alone.
+  test("another run's path named only in a subagent's transcript is another run", () => {
+    const named = "/recorded/work/runs/threads-closed-code-defect-head-1/state/home/x";
+    const { dir } = worldRun("threads-closed-code-defect-head-5", {
+      others: { "reviewer/sub": [{ tool: "bash", args: { command: `cat ${named}` } }] },
     });
-    const { stdout } = healthIn(
-      // The runs predate the namespace, so their world's scratch root is the judge's TMPDIR, as
-      // `rig.sh world` reads it, and the pod the tester judged them on had one that is not /tmp.
-      { PATH: `${bin}:${childEnv.PATH}`, TMPDIR: "/recorded/scratch" },
-      "--tmp-snapshot",
-      path.join(fixture, "tmp-snapshot"),
-      ...names.map((name) => path.join(copies, name))
+    const { code, stdout } = health(dir);
+    expect(code).toBe(1);
+    expect(verdict(stdout, dir)).toBe(
+      `threads-closed-code-defect-head-5  unhealthy: another run: a bash call in sessions/reviewer/sub/${TRANSCRIPT} names ${named}, under /recorded/work/runs/threads-closed-code-defect-head-1`
     );
-    expect(existsSync(ran) ? readFileSync(ran, "utf8") : "").toBe("");
-    const expected = Object.fromEntries(
-      readFileSync(path.join(fixture, "expected"), "utf8")
-        .split("\n")
-        .filter((line) => line !== "")
-        .map((line) => line.split(" ") as [string, string])
-    );
-    // The verdicts the finished rule changes, each run's reason beside it. Three hold one agent's
-    // record (out.txt and one transcript, no out-implementer.txt, no sessions/reviewer) in
-    // text-fixes, a two-role case that declares no skip, which is the shape the boot record exists
-    // to catch. Two are reviewer runs whose one transcript is an empty file, where an agent omp
-    // launched writes at least its session's header: the reviewer's own record holds no entry.
-    const unbooted =
-      "unhealthy: boot record: <run>/booted neither boots nor skips the reviewer; threads-closed boots the implementer, then the reviewer (completion-answers.ts's ANSWERS)";
-    const empty =
-      "unhealthy: unfinished: the reviewer left no transcript: <run>/sessions holds no .jsonl of its own with an entry";
-    const changed: Record<string, string> = {
-      "reviewer-text-findings-defect-base-1": empty,
-      "reviewer-text-findings-text-only-head-2": empty,
-      "threads-closed-text-fixes-base-1": unbooted,
-      "threads-closed-text-fixes-head-5": unbooted,
-      "threads-closed-text-fixes-head-7": unbooted,
-    };
-    expect(names.map((name) => [name, verdict(stdout, path.join(copies, name))])).toEqual(
-      names.map((name) => [
-        name,
-        changed[name] !== undefined
-          ? `${name}  ${changed[name]}`
-          : expect.stringMatching(
-              expected[name] === "healthy"
-                ? new RegExp(`^${name}  healthy$`)
-                : new RegExp(`^${name}  unhealthy: `)
-            ),
-      ])
-    );
-    expect(Object.keys(changed).map((name) => expected[name])).toEqual(
-      Object.keys(changed).map(() => "healthy")
-    );
-    expect(stdout).toEndWith("health: 19 of 21 runs unhealthy\n");
   });
 });
 

@@ -19,12 +19,13 @@
 // after the await, so nothing it reads of the killed child reaches the output, and no check of
 // that child would either.
 import { beforeAll } from "bun:test";
-import { writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import type { BunPlugin, SpawnOptions, SyncSubprocess } from "bun";
-import { DAEMON_MODULE, labelGhSelectors } from "./daemon-pane";
+import { DAEMON_MODULE, DAEMON_SOURCES, labelGhSelectors } from "./daemon-pane";
 import { RUN_SELECTORS } from "./gh-selectors";
 
 /** `cmds` short enough for an error: a `bash -c` script is the rig's own functions, hundreds of
@@ -114,6 +115,50 @@ let ownSelectors: string | undefined;
 export function writeGhSelectors(runDir: string): void {
   ownSelectors ??= `${JSON.stringify(labelGhSelectors(path.resolve(DAEMON_MODULE, "..", "..")))}\n`;
   writeFileSync(path.join(runDir, RUN_SELECTORS), ownSelectors);
+}
+
+/** Each commit `sourcesCommit` made, by its repository and checkout. */
+const commits = new Map<string, string>();
+/** A commit of the daemon sources `checkout` holds (daemon-pane.ts's DAEMON_SOURCES; none for a
+ * checkout that is not there, an empty tree), made in the bare repository `repo` (made here when
+ * it is not there), as rig.sh's checkout_commit records the commit a label was built from in its
+ * built-from: what health and the scorer rebuild a run's label's daemon from, given `--repo`
+ * (`recordedCheckout`), and never the checkout itself. Made once per repository and checkout;
+ * nothing is written under `checkout`. */
+export function sourcesCommit(repo: string, checkout: string): string {
+  const key = `${repo}\0${checkout}`;
+  const known = commits.get(key);
+  if (known !== undefined) return known;
+  const index = mkdtempSync(path.join(os.tmpdir(), "sources-index-"));
+  const env = {
+    ...process.env,
+    GIT_INDEX_FILE: path.join(index, "index"),
+    GIT_AUTHOR_NAME: "rig",
+    GIT_AUTHOR_EMAIL: "rig@example.invalid",
+    GIT_AUTHOR_DATE: "2026-11-18T00:00:00Z",
+    GIT_COMMITTER_NAME: "rig",
+    GIT_COMMITTER_EMAIL: "rig@example.invalid",
+    GIT_COMMITTER_DATE: "2026-11-18T00:00:00Z",
+  };
+  const git = (...args: string[]) => {
+    const done = spawnChecked(["git", `--git-dir=${repo}`, ...args], { env });
+    if (done.exitCode !== 0)
+      throw new Error(`git ${args.join(" ")}: ${done.stderr.toString().trim()}`);
+    return done.stdout.toString().trim();
+  };
+  try {
+    if (!existsSync(repo)) {
+      const made = spawnChecked(["git", "init", "-q", "--bare", repo], { env });
+      if (made.exitCode !== 0) throw new Error(`git init ${repo}: ${made.stderr.toString()}`);
+    }
+    const held = DAEMON_SOURCES.filter((source) => existsSync(path.join(checkout, source)));
+    if (held.length > 0) git(`--work-tree=${checkout}`, "-C", checkout, "add", "--", ...held);
+    const commit = git("commit-tree", git("write-tree"), "-m", `the daemon sources of ${checkout}`);
+    commits.set(key, commit);
+    return commit;
+  } finally {
+    rmSync(index, { recursive: true, force: true });
+  }
 }
 
 /** The shell `script`'s definition of `name`, from `name() {` to the `}` that closes it, with the

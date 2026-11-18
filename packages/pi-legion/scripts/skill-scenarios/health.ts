@@ -18,21 +18,24 @@
  *   2. completions: every completion line names a role the scenario boots, and no `handoff/complete`
  *      was refused 4xx with an answer its world does not allow that role, by the answers a daemon
  *      of either shape gives it there or else by those of how the run's label's daemon takes a
- *      completion (completion-answers.ts's `ANSWERS`), read out of the checkout the run's
- *      built-from names (daemon-pane.ts's `labelDaemon`) only for an answer that turns on it. A
- *      run with such an answer whose daemon cannot be read is unhealthy (`withDaemon`). The
+ *      completion (completion-answers.ts's `ANSWERS`), read out of the daemon sources of the
+ *      commit the run's built-from records, rebuilt out of the repositories the caller names
+ *      (`--repo`, daemon-pane.ts's `recordedCheckout` and `labelDaemon`) only for an answer that
+ *      turns on it. A run with such an answer whose rebuilt daemon cannot be read is unhealthy
+ *      (`withDaemon`); one whose daemon cannot be rebuilt is not judged by this rule. The
  *      scorer's refused-completion rule reads this through the same function
  *      (`refusedCompletion`, which score.ts's `unscored` calls);
  *   3. taken: a scenario whose world must take a role's completion (`ANSWERS`' `takes`) took it at
  *      least once, with an answer its world allows, read as rule 2 reads it.
  *      reviewer-text-findings requires one of the reviewer's; threads-closed requires none;
  *   4. routes: no request the daemon stand-in answered 404 is of a route the run's label's daemon
- *      registers (`unservedRoute`): the routes read out of the source of the checkout the run's
- *      built-from names (daemon-pane.ts's `labelRoutes`), which the stand-in itself answers by
- *      (daemon-standin.ts's `ROUTES`). A 404 of a route that daemon does not register is that
- *      daemon's own answer, as an older daemon's (main ff2a10ef's) to this checkout's
- *      `claims/turn-outcome` is. A run with a 404 whose daemon's routes cannot be read is
- *      unhealthy, since which it was is unknown;
+ *      registers (`unservedRoute`): the routes read out of the API source of the commit the run's
+ *      built-from records, rebuilt as rule 2 rebuilds it (daemon-pane.ts's `labelRoutes`), which
+ *      the stand-in itself answers by (daemon-standin.ts's `ROUTES`). A 404 of a route that daemon
+ *      does not register is that daemon's own answer, as an older daemon's (main ff2a10ef's) to
+ *      this checkout's `claims/turn-outcome` is. A run with a 404 whose daemon's routes cannot be
+ *      read is unhealthy, since which it was is unknown; one whose daemon cannot be rebuilt is not
+ *      judged by this rule;
  *   5. failed claim: no turn outcome the daemon stand-in answered failed the claim (its line's
  *      `failed`, `failedClaim`): the daemon fails a claim whose provider refused turns up to its
  *      launch failure limit, stops its process and takes its secret, so what the run did after
@@ -48,7 +51,9 @@
  *      the wrapper of the run's label, which the world refused it by (<run>/gh-selectors.json,
  *      gh-selectors.ts's `runSelectors`). A worker run with a refused call whose selectors cannot
  *      be read is unhealthy, since which refusal it was is unknown. A write the stand-in refused
- *      as one nothing of the world models is rule 20's;
+ *      as one nothing of the world models is rule 20's. Rules 7 and 20 read only a call an agent
+ *      of the run made itself (`typedBy`: its first word stands after a `gh` the agent ran), so
+ *      a `gh send-telemetry` gh itself starts after a command is no call of the run's;
  *   8. another run: no tool call of the run names a path under another run's directory
  *      (`otherRun`): a sibling under the same runs directory, an archived run, or a run of another
  *      batch, wherever it sits;
@@ -63,17 +68,18 @@
  *      machine's paths, and is read so;
  *  10. outside its world: no tool call names a path its world hides — the scratch root, the issue
  *      workspaces, the work directory, every label's checkout — outside its own directory, its
- *      /tmp (a namespace's <run>/tmp, for a run that ran in one) and every path its world shows
- *      again (`outsideWorld`). The world is rig.sh's one declaration of it (world_paths), as the
- *      run recorded it for its namespace (<run>/namespace.txt), or, for a run from before the
- *      namespace, as `rig.sh world` declares it (`namespaceOf`);
+ *      /tmp (a namespace's <run>/tmp) and every path its world shows again (`outsideWorld`). The
+ *      world is rig.sh's one declaration of it (world_paths), as the run recorded it for its
+ *      namespace (<run>/namespace.txt, `namespaceOf`). A run from before the namespace recorded
+ *      none, and this rule does not judge it;
  *  11. another process: no tool call reads a /proc/<n>/environ or cmdline but the caller's own:
  *      /proc/self's, /proc/thread-self's, or its shell's (`$$`, `${$}`, `$BASHPID`, `${BASHPID}`)
  *      (`otherProcess`). It reads only a run from before the rig gave each run a namespace (one
  *      with no <run>/namespace.txt), which shared the pod's processes: in a run's own PID namespace
  *      every process its /proc shows is the run's own;
- *  12. credentials: no tool call names a path under /var/run/legion or /var/run/secrets, by
- *      either name (`credentialReach`);
+ *  12. credentials: no tool call names a path under a credentials path of the world the run
+ *      recorded, /var/run/legion or /var/run/secrets by either name (`credentialReach`); a run
+ *      from before the namespace recorded none, and this rule does not judge it;
  *  13. off-world network: no call reaches a host other than the loopback, the hosts its pane's URLs
  *      name and the model gateway its profile's models.yml names (`offWorld`): no `web_search`
  *      call but one about the world's own workflow (`searchRefusal`: its query names a repository
@@ -171,9 +177,9 @@
  *      read right after rule 18;
  *  20. unmodelled write: no `gh` write of calls.jsonl (a command of gh's own that writes, as gh's
  *      source at the tag the worker image pins reads, gh-writes.json; a GraphQL call whose
- *      document runs a mutation; any other `gh api` call sent with a verb other than GET; each
- *      read from production's side by gh-writes.ts, never by the world's router) went
- *      unanswered by every route and answer the world models (`unmodelledWrite`): one the gh
+ *      document runs a mutation; any other `gh api` call sent with a verb other than GET or
+ *      HEAD; each read from production's side by gh-writes.ts, never by the world's router)
+ *      went unanswered by every route and answer the world models (`unmodelledWrite`): one the gh
  *      stand-in recorded as answered by nothing (`handler` `unrouted`, the 404 the world refuses
  *      an unmodelled write with) or, in a record from before it kept `handler`, one the catch-all
  *      write route answered a success that changed nothing, which no answer of that world took.
@@ -194,20 +200,26 @@
  * scenario, case and label are its record's (run-names.ts's `runIdentity`), and a run recorded
  * before the names left the world has them in its directory's name. Rule 9 reads the runs it is
  * given together, so a batch's runs are judged in one call: given one run, it sees no other run's
- * writes and flags nothing, and rule 10 sees no other label's checkout but the work directory's
- * profiles name, while the other rules read each run alone.
+ * writes and flags nothing, and rule 10 sees no other label's checkout but those the run's
+ * namespace.txt covers and the built-from of each run given names, while the other rules read
+ * each run alone. No rule reads the pod as it stands now: the work directory, the judge's TMPDIR,
+ * HOME, PATH and working directory decide no verdict.
  *
- * Prints one line per run, `<run>  healthy` or `<run>  unhealthy: <reason>`, naming the first rule
- * the run fails with the evidence it failed on; then, for each rule, `health: <rule>: <n> of <m>
- * runs`, the runs that rule alone flags; then, for each label of the runs given, how often rig.sh
- * relaunched an agent at its boot (`relaunches`: `health: boot relaunches, <label>: <n> in <r> of
- * <m> runs`, each relaunch an agent's first attempt kept under <run>/boot-1/<role>/); then how
- * many runs wrote outside their own directory, each by name with the paths it wrote, and how many
- * had a path appear in the shared scratch while they ran that none of their calls wrote, each by
- * name with those paths (`wroteOutside`), which is no verdict; then `health: <n> of <m> runs
- * unhealthy`. Exits 0 when every run is healthy, 1 otherwise, and 2, printing no run, for no
- * argument or for a path that is not a run directory of a scenario `ANSWERS` names whose label is
- * read (`labelOf`).
+ * Prints one line per run judged, `<run>  healthy` or `<run>  unhealthy: <reason>`, naming the
+ * first rule the run fails with the evidence it failed on; then, for each rule, `health: <rule>:
+ * <n> of <m> runs`, the runs judged that rule alone flags; then, for each label of the runs given,
+ * how often rig.sh relaunched an agent at its boot (`relaunches`: `health: boot relaunches,
+ * <label>: <n> in <r> of <m> runs`, each relaunch an agent's first attempt kept under
+ * <run>/boot-1/<role>/); then how many runs wrote outside their own directory, each by name with
+ * the paths it wrote, and how many had a path appear in the shared scratch while they ran that
+ * none of their calls wrote, each by name with those paths (`wroteOutside`), which is no verdict;
+ * then `health: <n> of <m> runs unhealthy`. A run is judged unless a rule cannot judge it for an
+ * input it did not record or the caller's repositories cannot rebuild (run-records.ts's `Refused`)
+ * and every other rule passes it: such a run gets no verdict, and stderr names it with the input
+ * (`health: no verdict on <run>: …`). Exits 0 when every run is healthy, 1 when one is unhealthy
+ * and none is refused, and 2 when one is refused, the runs judged still printed; and 2, printing
+ * no run, for no argument or for a path that is not a run directory of a scenario `ANSWERS` names
+ * whose label is read (`labelOf`).
  *
  * `health.ts --boot-refusal <run dir> <role> <since> <sessions dir>` is the question rig.sh's
  * boot_agent asked after an agent's launch in every batch before the names left the world (it
@@ -238,7 +250,13 @@ import {
   scenarioOf,
   takenCompletions,
 } from "./completion-answers";
-import { judgedOnDaemon, labelCheckout, labelRoutes, serves } from "./daemon-pane";
+import {
+  judgedOnDaemon,
+  labelCheckout,
+  labelRoutes,
+  recordedCheckout,
+  serves,
+} from "./daemon-pane";
 import { isPost, methodOf, readWorld, reviewsRoute, runNamed, submitsReview } from "./gh-call";
 import { isObject } from "./gh-routes";
 import { type GhSelectors, ghTargetOf, namesOwnerOutside, runSelectors } from "./gh-selectors";
@@ -257,7 +275,7 @@ import {
   vocabulary,
   workerWorld,
 } from "./run-names";
-import { CALLS, Opened } from "./run-records";
+import { CALLS, Opened, Refused } from "./run-records";
 import {
   ABSOLUTE_PATH,
   expandedWord,
@@ -274,7 +292,7 @@ import {
 } from "./score";
 import { type SessionEntry, transcriptEntries } from "./transcript";
 
-const USAGE = "usage: rig.sh health [--tmp-snapshot <file>] <run dir>...";
+const USAGE = "usage: rig.sh health [--tmp-snapshot <file>] [--repo <git dir>]... <run dir>...";
 const BOOT_USAGE = "usage: health.ts --boot-refusal <run dir> <role> <since> <sessions dir>";
 
 /** A tool call's arguments, as a transcript records them: an object of named values. */
@@ -343,6 +361,10 @@ interface Run {
    * path under /dev/shm or a path its world covers is a tmpfs of the agent's launch alone
    * (`mounted`), and every process /proc shows is the run's own (`otherProcess`). */
   readonly namespaced: boolean;
+  /** The git directories the caller named (`--repo`), which the daemon sources of each run's
+   * label are rebuilt from by the commit its built-from records (daemon-pane.ts's
+   * `recordedCheckout`), never read off the pod's checkout. */
+  readonly repos: readonly string[];
   /** Every tool call of every transcript of the run, with the transcript it is in and when. */
   readonly calls: readonly { file: string; tool: string; args: ToolArgs; at: number }[];
   /** Every tool result's text of every transcript of the run, with the transcript it is in. */
@@ -398,7 +420,12 @@ function paneOf(dir: string): Map<string, string> {
  * and its agents wrote and read the machine's own paths. */
 const NAMESPACE = "namespace.txt";
 
-export function loadRun(dir: string, scenario: string, label: string): Run {
+export function loadRun(
+  dir: string,
+  scenario: string,
+  label: string,
+  repos: readonly string[] = []
+): Run {
   const pane = paneOf(dir);
   // Where the run ran: its record's `ran`, or, for a run recorded before the names left the
   // world, the run its pane file names.
@@ -457,6 +484,7 @@ export function loadRun(dir: string, scenario: string, label: string): Run {
     scenario,
     label,
     own,
+    repos,
     namespaced: ran.namespaced,
     calls,
     results,
@@ -697,13 +725,65 @@ function ghRefusal(
   return UNROUTED;
 }
 
+/** Whether a recorded `gh` call is one an agent of the run made itself. */
+export type Typed = (call: { readonly by?: string; readonly argv: readonly string[] }) => boolean;
+
+/** The word right after each `gh` a text runs — one by a path among them (`/usr/bin/gh`), and
+ * one a subprocess call's argument list holds (`["gh", "pr", …]`), across its quotes and commas. */
+const GH_WORD = /(?<![\w.-])gh["']?[\s,]+["']?([^\s"',;|&<>()]+)/g;
+
+/** Which `gh` calls of calls.jsonl an agent of the run made itself (the architect's ruling of
+ * 2026-11-18): those whose first word stands right after a `gh` (GH_WORD) in a text an agent of
+ * the call's role ran — a bash command, an eval cell, or a file the run wrote and a call of that
+ * role runs, as rule 13 credits a script (`fileRuns`). A `gh api` any of them names covers every
+ * `gh api` call of the role, since a shell builds an endpoint out of what the text does not hold
+ * (`gh api --method PUT "$ep"`). Every other record is a call some other program started, which
+ * is no act of the agent's: gh itself starts `gh send-telemetry` after a command, a POST to
+ * GitHub's telemetry service the world refuses as a write it does not model, and rules 7 and 20
+ * read such a record as no call of the run's. A record whose role booted no agent of the run
+ * (no `by`, a role the scenario boots no launch for) is held to every agent's texts; one that
+ * names no word is counted. */
+export function typedBy(run: Pick<Run, "scenario" | "calls">): Typed {
+  const byRole = new Map<string, Set<string>>();
+  const every = new Set<string>();
+  const written: Written[] = [];
+  const ordered = run.calls
+    .map((call, index) => ({ call, index }))
+    .sort((a, b) => a.call.at - b.call.at || a.index - b.index);
+  for (const { call } of ordered) {
+    const texts = [
+      call.tool === "bash" ? (stringArg(call.args, "command") ?? "") : "",
+      call.tool === "eval" ? (stringArg(call.args, "code") ?? "") : "",
+      ...fileRuns(call, written).map(({ file }) => file.text),
+    ];
+    const role = launchOf(run, call.file);
+    const words = byRole.get(role) ?? new Set<string>();
+    for (const text of texts)
+      for (const hit of text.matchAll(GH_WORD)) {
+        words.add(hit[1] ?? "");
+        every.add(hit[1] ?? "");
+      }
+    byRole.set(role, words);
+    written.push(...record(writtenText(call), written, call.tool, call.file));
+  }
+  return ({ by, argv }) => {
+    const [word] = argv;
+    if (word === undefined) return true;
+    return ((by === undefined ? undefined : byRole.get(by)) ?? every).has(word);
+  };
+}
+
 /** Rule 7: the first `gh` call of calls.jsonl the stand-in refused with a refusal neither
  * GH_DECLARED_EVERY_ROLE nor GH_DECLARED declares for the scenario and the calling role. In a
  * worker world each such call is read first for an owner outside the project, by the selectors
  * the world refused an owner by (gh-selectors.ts's `runSelectors`, which worker_boot writes from
  * the run's label's checkout), read at the first call that needs them. A run holding none was
- * answered by a world that refused no owner by them, and its calls are judged by their routes. */
-export function ghUndeclared(run: Pick<Run, "dir" | "scenario">): string | undefined {
+ * answered by a world that refused no owner by them, and its calls are judged by their routes.
+ * Only a call `typed` says an agent made is read (`typedBy`; every call, given none). */
+export function ghUndeclared(
+  run: Pick<Run, "dir" | "scenario">,
+  typed: Typed = () => true
+): string | undefined {
   const file = path.join(run.dir, CALLS);
   if (!existsSync(file)) return undefined;
   const fixtures = path.join(run.dir, "fixtures.json");
@@ -718,6 +798,7 @@ export function ghUndeclared(run: Pick<Run, "dir" | "scenario">): string | undef
     const raw: unknown = JSON.parse(line);
     const call = RecordedCall.parse(raw);
     if (call.as !== "gh" || call.exit === undefined || call.exit === 0) continue;
+    if (!typed({ ...call, argv: call.argv ?? [] })) continue;
     // A write the world answered with no route and no answer of its own is rule 20's, which
     // names it as the write it is (`unmodelledWrite`).
     if (call.handler === "unrouted" && callWrites({ ...(raw as object), argv: call.argv ?? [] }))
@@ -767,8 +848,13 @@ const CATCH_ALL_WRITE = "^gh api ";
  * runs/1e2a0aeced4b, calls.jsonl:23, the reviewer's update of its approval's body
  * (`PUT …/reviews/5002`), answered `{id:6001}` and exit 0 with the body unchanged, while every
  * rule read the run healthy since a route had matched. A record that names no route at all, as
- * the score's own rows write one, is no reading of the world's and is not judged. */
-export function unmodelledWrite(run: Pick<Run, "dir">): string | undefined {
+ * the score's own rows write one, is no reading of the world's and is not judged. Only a call
+ * `typed` says an agent made is read (`typedBy`; every call, given none), and every call moves
+ * the threads all the same, since the world answered each. */
+export function unmodelledWrite(
+  run: Pick<Run, "dir">,
+  typed: Typed = () => true
+): string | undefined {
   const file = path.join(run.dir, CALLS);
   if (!existsSync(file)) return undefined;
   const fixtures = path.join(run.dir, "fixtures.json");
@@ -787,7 +873,7 @@ export function unmodelledWrite(run: Pick<Run, "dir">): string | undefined {
     // The threads as the world held them before this call, moved by every call before it in the
     // order the run made them, as the stand-in answered each.
     const filed = threadCall(at, threads, recorded);
-    if ((call.as ?? "gh") !== "gh" || !callWrites(recorded)) continue;
+    if ((call.as ?? "gh") !== "gh" || !typed(recorded) || !callWrites(recorded)) continue;
     const named = `${CALLS}:${index + 1}, \`gh ${call.argv.join(" ").slice(0, 160)}\` of the ${call.by ?? "unnamed role"}, exited ${call.exit}`;
     if (call.handler === "unrouted")
       return `unmodelled write: ${named}: no route or answer of the world models it, so it was refused 404 where GitHub takes it`;
@@ -1347,32 +1433,25 @@ interface RunNamespace {
 
 const namespaces = new Map<string, RunNamespace>();
 
-/** The run's namespace, read once per run. A run that ran in one is read by what it recorded:
- * <run>/namespace.txt (NAMESPACE), the lines world_paths printed for it when launch started its
- * agents there, which private_world mounted. Working its world out again at judging time reads
- * another one: `rig.sh world` takes its scratch-root cover from the judge's TMPDIR, its
- * workspaces from the judge's LEGION_WORKSPACE and its label's install from the work directory as
- * it stands, so INFRA-764 round 25's reviewer-text-findings-defect-head-1 (b37dc3dc7f25), judged
- * from a copy whose work directory was gone, read "outside its world" for a skill file of its
- * label's install, which its namespace.txt shows (`ro …/installs/4c0768d2ae4b`). A run from
- * before the rig made a namespace holds none and keeps the world `rig.sh world <label> <run dir>`
- * declares for such a run, one that showed its checkout, the rig's directory and the services. */
-function namespaceOf(run: Pick<Run, "dir" | "label" | "namespaced">): RunNamespace {
+/** The run's namespace, read once per run, from what it recorded alone: <run>/namespace.txt
+ * (NAMESPACE), the lines world_paths printed for it when launch started its agents there, which
+ * private_world mounted. Working its world out again at judging time reads another one: `rig.sh
+ * world` takes its scratch-root cover from the judge's TMPDIR, its workspaces from the judge's
+ * LEGION_WORKSPACE and its label's install from the work directory as it stands, so INFRA-764
+ * round 25's reviewer-text-findings-defect-head-1 (b37dc3dc7f25), judged from a copy whose work
+ * directory was gone, read "outside its world" for a skill file of its label's install, which its
+ * namespace.txt shows (`ro …/installs/4c0768d2ae4b`). A run from before the rig made a namespace
+ * recorded no world, and nothing it recorded rebuilds one, so this throws a Refused naming the run
+ * and namespace.txt: the rules that read the world (10 and 12) do not judge it, and the run is
+ * judged by the others or refused (the architect's ruling of 2026-11-18). */
+function namespaceOf(run: Pick<Run, "dir" | "namespaced">): RunNamespace {
   const known = namespaces.get(run.dir);
   if (known !== undefined) return known;
-  let declared = "";
-  if (run.namespaced) declared = readFileSync(path.join(run.dir, NAMESPACE), "utf8");
-  else {
-    const made = Bun.spawnSync(
-      ["bash", path.join(import.meta.dir, "rig.sh"), "world", run.label, run.dir],
-      { stdout: "pipe", stderr: "pipe" }
+  if (!run.namespaced)
+    throw new Refused(
+      `${path.basename(run.dir)}: it records no ${NAMESPACE}, the world its agents ran in, which rules 10 and 12 read; nothing else it recorded gives that world, and no reading of the pod stands in for it`
     );
-    if (made.exitCode !== 0)
-      throw new Error(
-        `rig.sh world ${run.label} ${run.dir} exited ${made.exitCode}: ${made.stderr.toString().trim()}`
-      );
-    declared = made.stdout.toString();
-  }
+  const declared = readFileSync(path.join(run.dir, NAMESPACE), "utf8");
   const world = {
     own: "",
     covers: [] as string[],
@@ -1440,12 +1519,9 @@ function reachedIn(
  * of the runs given too, by their built-from) — outside the run's own directory, its /tmp and
  * every path its world shows again. The world is the one its namespace mounted (`namespaceOf`),
  * so the allowlist is that declaration, and a path under the other label's checkout is outside
- * it. Its /tmp is the namespace's <run>/tmp, so a run that ran in one names nothing hidden
- * there; a run from before the namespace is held to the same world, but its /tmp was the
- * machine's, which holds what that world hides wherever it lies under /tmp (the default work
- * directory, `${TMPDIR:-/tmp}/work`, and the scratch root itself where TMPDIR is unset), so a
- * name there is judged as every other name is. What it cannot see is what rule 8 cannot: a reach
- * that names no path. */
+ * it. Its /tmp is the namespace's <run>/tmp, so a run names nothing hidden there. A run from
+ * before the namespace recorded no world, and this refuses it (`namespaceOf`). What it cannot see
+ * is what rule 8 cannot: a reach that names no path. */
 function outsideWorld(run: Run, runs: readonly Run[]): string | undefined {
   const world = namespaceOf(run);
   const hidden = [
@@ -1458,7 +1534,7 @@ function outsideWorld(run: Run, runs: readonly Run[]): string | undefined {
       }
     }),
   ];
-  const allowed = [...run.own, ...(run.namespaced ? ["/tmp"] : []), ...world.shown];
+  const allowed = [...run.own, "/tmp", ...world.shown];
   for (const call of run.calls)
     for (const target of namedPaths(call.tool, call.args)) {
       if (allowed.some((dir) => inside(target, dir))) continue;
@@ -3803,29 +3879,34 @@ function withDaemon(
     run.dir,
     judge,
     (why) =>
-      `completion shapes unknown: an answer the stand-in logged turns on how the ${run.label} label's daemon takes a completion, which cannot be read: ${why}`
+      `completion shapes unknown: an answer the stand-in logged turns on how the ${run.label} label's daemon takes a completion, which cannot be read: ${why}`,
+    run.repos
   );
 }
 
 /** Rule 4: the first request the daemon stand-in answered 404 whose route the run's label's
  * daemon registers, as a reason; or why the routes of that daemon cannot be read, for a run that
- * has a 404 at all. A line naming no method, which the stand-in wrote before it logged one, is
- * held to every route of its path. */
+ * has a 404 at all. The routes are read out of the sources its built-from's commit holds, rebuilt
+ * out of the caller's repositories (`recordedCheckout`, which refuses the run where it cannot).
+ * A line naming no method, which the stand-in wrote before it logged one, is held to every route
+ * of its path. */
 function unservedRoute(run: Run): string | undefined {
   const missing = daemonLines(run.dir).filter((line) => line.status === 404);
   if (missing.length === 0) return undefined;
-  let checkout: string;
+  const { dir, commit } = recordedCheckout(run.dir, run.repos);
   let routes: readonly string[];
   try {
-    checkout = labelCheckout(run.dir);
-    routes = labelRoutes(checkout);
+    routes = labelRoutes(dir);
   } catch (error) {
-    const why = error instanceof Error ? error.message : String(error);
+    const why = (error instanceof Error ? error.message : String(error)).replaceAll(
+      dir,
+      `<commit ${commit}>`
+    );
     return `routes unknown: the stand-in answered ${missing[0]?.path} 404, and which routes the ${run.label} label's daemon registers cannot be read: ${why}`;
   }
   const line = missing.find((one) => serves(routes, one.method, one.path));
   if (line === undefined) return undefined;
-  return `unserved route: the stand-in answered ${line.method ?? "a request of"} ${line.path} 404, a route the ${run.label} label's daemon registers (${checkout})`;
+  return `unserved route: the stand-in answered ${line.method ?? "a request of"} ${line.path} 404, a route the ${run.label} label's daemon registers (${labelCheckout(run.dir)} at ${commit})`;
 }
 
 /** Rule 5: the first turn outcome the daemon stand-in answered with `failed` (its line's
@@ -4207,8 +4288,8 @@ const RULES: readonly {
   { name: "credential printed", judge: credentialPrinted },
   // Rule 20, read right before its sibling: a write the world does not model, which rule 7
   // leaves to it.
-  { name: "unmodelled write", judge: unmodelledWrite },
-  { name: "gh", judge: ghUndeclared },
+  { name: "unmodelled write", judge: (run) => unmodelledWrite(run, typedBy(run)) },
+  { name: "gh", judge: (run) => ghUndeclared(run, typedBy(run)) },
   // Rule 16, read right after its sibling: an agent's Dispatch call refused, as rule 7 reads a
   // refused `gh` call.
   { name: "dispatch", judge: dispatchUndeclared },
@@ -4238,18 +4319,35 @@ if (import.meta.main) {
   // The shared scratch's entries before the batch's first run, one path a line: what a run with
   // no record of its own (scratch-before.txt) is held to, and added to the record of one that has.
   let snapshot: string[] | undefined;
-  if (argv[0] === "--tmp-snapshot") {
-    const file = argv[1];
-    if (file === undefined || !existsSync(file)) {
-      console.error(`health: --tmp-snapshot names no file${file === undefined ? "" : `: ${file}`}`);
+  // The git directories the run's label sources are rebuilt from (`recordedCheckout`), each
+  // `--repo <git dir>` the caller gives, in its order.
+  const repos: string[] = [];
+  // The options stand before the runs, in any order.
+  while (argv[0] === "--tmp-snapshot" || argv[0] === "--repo") {
+    const [option, value] = argv;
+    argv.splice(0, 2);
+    if (option === "--repo") {
+      if (value === undefined || !existsSync(value)) {
+        console.error(
+          `health: --repo names no git directory${value === undefined ? "" : `: ${value}`}`
+        );
+        console.error(USAGE);
+        process.exit(2);
+      }
+      repos.push(path.resolve(value));
+      continue;
+    }
+    if (value === undefined || !existsSync(value)) {
+      console.error(
+        `health: --tmp-snapshot names no file${value === undefined ? "" : `: ${value}`}`
+      );
       console.error(USAGE);
       process.exit(2);
     }
-    snapshot = readFileSync(file, "utf8")
+    snapshot = readFileSync(value, "utf8")
       .split("\n")
       .map((line) => line.trim())
       .filter((line) => line !== "");
-    argv.splice(0, 2);
   }
   if (argv.length === 0) {
     console.error(USAGE);
@@ -4264,7 +4362,7 @@ if (import.meta.main) {
   }
   const runs = named.flatMap(({ dir, run }) => {
     if (typeof run === "string") return [];
-    const loaded = loadRun(dir, run.scenario, run.label);
+    const loaded = loadRun(dir, run.scenario, run.label, repos);
     return [
       snapshot === undefined
         ? loaded
@@ -4273,32 +4371,46 @@ if (import.meta.main) {
   });
   let failed = 0;
   const flagged = new Map(RULES.map((rule) => [rule.name, 0]));
+  // The runs no verdict is given on, each with why: a rule that reads an input the run did not
+  // record, or one the caller's repositories cannot rebuild (Refused), which no reading of the pod
+  // stands in for. A run is healthy only when every rule holds, so a rule that cannot judge it
+  // leaves it unjudged, unless a rule that can judge it fails it: that run is unhealthy whatever
+  // the other rule would read.
+  const refused: string[] = [];
   for (const run of runs) {
-    const reasons = RULES.flatMap((rule) => {
+    let refusal: string | undefined;
+    const found = RULES.flatMap((rule) => {
       // A record of the run that does not parse (a daemon.log line that is no JSON, say) is a run
       // whose world cannot be read, which is no healthy one.
       let reason: string | undefined;
       try {
         reason = rule.judge(run, runs);
       } catch (error) {
+        if (error instanceof Refused) {
+          refusal ??= error.message;
+          return [];
+        }
         reason = `unreadable record: ${error instanceof Error ? error.message : String(error)}`;
       }
-      if (reason === undefined) return [];
-      flagged.set(rule.name, (flagged.get(rule.name) ?? 0) + 1);
-      return [reason];
+      return reason === undefined ? [] : [{ rule: rule.name, reason }];
     });
-    if (reasons.length > 0) failed += 1;
+    if (found.length === 0 && refusal !== undefined) {
+      refused.push(refusal);
+      continue;
+    }
+    for (const { rule } of found) flagged.set(rule, (flagged.get(rule) ?? 0) + 1);
+    if (found.length > 0) failed += 1;
     // Keyed by the run's directory, its id, as every reader of these lines keys them; a run with a
     // record also names it last, `(<scenario>[-<case>]-<label>-<n>)`, which no verdict reads, so a
     // person can tell the run without opening the record. Health runs outside every run's world.
     const identity = runIdentity(run.dir);
     const name = typeof identity !== "string" && identity.recorded ? `  (${identity.name})` : "";
     console.log(
-      `${path.basename(run.dir)}  ${reasons[0] === undefined ? "healthy" : `unhealthy: ${reasons[0]}`}${name}`
+      `${path.basename(run.dir)}  ${found[0] === undefined ? "healthy" : `unhealthy: ${found[0].reason}`}${name}`
     );
   }
-  for (const [name, count] of flagged)
-    console.log(`health: ${name}: ${count} of ${runs.length} runs`);
+  const judged = runs.length - refused.length;
+  for (const [name, count] of flagged) console.log(`health: ${name}: ${count} of ${judged} runs`);
   // How often each label's agents met a boot refusal the rig relaunched them for, which no rule
   // flags (rule 14 declares a first attempt's): a batch reads its relaunches here, by label.
   for (const line of relaunches(runs)) console.log(line);
@@ -4309,6 +4421,13 @@ if (import.meta.main) {
   // A word of the measurement the run's agents made themselves is no verdict on the run: named
   // here, run by run, beside rule 17's verdict on a word an input gave them.
   console.log(ownNames(runs));
-  console.log(`health: ${failed} of ${runs.length} runs unhealthy`);
+  console.log(`health: ${failed} of ${judged} runs unhealthy`);
+  // A run refused is judged neither healthy nor unhealthy: each is named with the input it lacks,
+  // and the command exits 2, as for a usage error, never 0 or 1.
+  if (refused.length > 0) {
+    for (const why of refused) console.error(`health: no verdict on ${why}`);
+    console.error(`health: ${refused.length} of ${runs.length} runs refused`);
+    process.exit(2);
+  }
   process.exit(failed === 0 ? 0 : 1);
 }

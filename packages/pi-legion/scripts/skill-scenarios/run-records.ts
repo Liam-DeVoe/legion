@@ -22,3 +22,10 @@ export function openingLine(record: string): string {
 /** That same line as its reader reads it (`openingLine`), which is how score.ts tells it from a
  * call, a push or a move. */
 export const Opened = z.looseObject({ at: z.string(), opened: z.string() });
+
+/** A reader's refusal to judge a run: an input the run did not record, or one it recorded that
+ * cannot be rebuilt from what the caller named (the architect's ruling of 2026-11-18: a reader
+ * judges a run from its archive and the provenance it recorded alone, never from what the pod
+ * holds now). No verdict: `rig.sh health` names the run and the input and exits 2, and `rig.sh
+ * score` makes it the run's rig error. */
+export class Refused extends Error {}

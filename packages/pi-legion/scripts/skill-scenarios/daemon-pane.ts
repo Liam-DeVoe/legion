@@ -44,6 +44,7 @@ import {
   RECORD_ROUTES,
 } from "./completion-answers";
 import { type GhSelectors, type GhTable, selectorsOf, tableOf } from "./gh-selectors";
+import { Refused } from "./run-records";
 
 /** This checkout's daemon module, the one the rig reads unless a run names another checkout's. */
 export const DAEMON_MODULE = path.resolve(import.meta.dir, "../../../daemon");
@@ -277,6 +278,84 @@ export function labelCheckout(runDir: string): string {
   return checkout;
 }
 
+/** The daemon sources a reader reads of a run's label (`labelRoutes`, `labelDaemon`), under the
+ * checkout's root. */
+export const DAEMON_SOURCES = [
+  "packages/daemon/internal/api",
+  "packages/daemon/internal/workflow/engine.go",
+];
+/** The directory each built-from commit's daemon sources were rebuilt into in this process. */
+const rebuilt = new Map<string, string>();
+
+/** The daemon sources of the label the run under `runDir` ran, rebuilt from what the run recorded
+ * and never read off the checkout its built-from names, which the pod may since have moved or
+ * lost: the `commit <sha>` line of its built-from (rig.sh's checkout_commit), read with `git
+ * archive` out of the first of `repos` (git directories the caller names, `--repo`) that holds
+ * that commit, into a directory of this process's own, removed when it exits. The commit id is
+ * the digest git reads every file of it by, so the sources are the ones the run ran. Of
+ * DAEMON_SOURCES only those the commit holds are rebuilt: a commit holding none is a label with
+ * no daemon there, which `labelRoutes` and `labelDaemon` then say, as they say it of any checkout.
+ * Returns that directory, a checkout holding those sources alone, and the commit. Throws a Refused
+ * naming the run and the input for a built-from with no commit, a commit of a checkout with
+ * changes no commit holds (`dirty`), no repository named, and none that holds the commit. */
+export function recordedCheckout(
+  runDir: string,
+  repos: readonly string[]
+): { dir: string; commit: string } {
+  const file = path.join(runDir, "built-from");
+  const line = existsSync(file)
+    ? readFileSync(file, "utf8")
+        .split("\n")
+        .find((one) => one.startsWith("commit "))
+    : undefined;
+  const [, commit = "", ...rest] = (line ?? "").trim().split(" ");
+  const run = path.basename(runDir);
+  if (!/^[0-9a-f]{40}$/.test(commit))
+    throw new Refused(
+      `${run}: its built-from records no commit (\`commit <sha>\`), so the daemon sources its label ran cannot be rebuilt`
+    );
+  if (rest.includes("dirty"))
+    throw new Refused(
+      `${run}: its built-from's commit ${commit} is of a checkout with changes no commit holds (\`dirty\`), so the daemon sources its label ran cannot be rebuilt`
+    );
+  const known = rebuilt.get(commit);
+  if (known !== undefined) return { dir: known, commit };
+  if (repos.length === 0)
+    throw new Refused(
+      `${run}: its label's daemon sources are rebuilt from commit ${commit}, which its built-from records, out of a repository the caller names (--repo <git dir>), and none was named`
+    );
+  const repo = repos.find(
+    (one) =>
+      Bun.spawnSync(["git", `--git-dir=${one}`, "cat-file", "-e", `${commit}^{commit}`])
+        .exitCode === 0
+  );
+  if (repo === undefined)
+    throw new Refused(
+      `${run}: no repository named (${repos.join(", ")}) holds commit ${commit}, which its built-from records`
+    );
+  const git = (...args: string[]) => {
+    const done = Bun.spawnSync(["git", `--git-dir=${repo}`, ...args]);
+    if (done.exitCode !== 0)
+      throw new Error(`git ${args.join(" ")} of ${repo} failed: ${done.stderr.toString().trim()}`);
+    return done.stdout;
+  };
+  const held = git("ls-tree", "-r", "-z", "--name-only", commit, "--", ...DAEMON_SOURCES)
+    .toString()
+    .split("\0")
+    .filter((name) => name !== "");
+  const dir = mkdtempSync(path.join(os.tmpdir(), "label-sources-"));
+  process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
+  if (held.length > 0) {
+    const unpacked = Bun.spawnSync(["tar", "-x", "-C", dir], {
+      stdin: git("archive", "--format=tar", commit, "--", ...held),
+    });
+    if (unpacked.exitCode !== 0)
+      throw new Error(`tar could not unpack commit ${commit}'s daemon sources: ${unpacked.stderr}`);
+  }
+  rebuilt.set(commit, dir);
+  return { dir, commit };
+}
+
 /** Every route the daemon of `checkout` registers, `<METHOD> <path>` each, read out of that
  * checkout's API source by daemon-routes.go (`runStandalone`), which parses the checkout's files
  * and compiles nothing of them or of any daemon module, so a substitute checkout holding the
@@ -399,23 +478,30 @@ export function labelDaemon(checkout: string): LabelDaemon {
 }
 
 /** `judge`'s verdict on the run under `runDir`, `judge` given how that run's label's daemon
- * takes a completion (`labelDaemon` of the run's `labelCheckout`) to read where an answer turns
- * on it (completion-answers.ts's `refusedCompletion` and `takenCompletions`), or `unread`'s, with
- * why, where `judge` asked for it and it could not be read. health.ts's completion rules and
- * score.ts's `unscored` read a run's daemon so, never by the label's name; any other error
- * `judge` throws is thrown on. */
+ * takes a completion (`labelDaemon` of the sources its built-from's commit holds, rebuilt out of
+ * `repos` by `recordedCheckout`) to read where an answer turns on it (completion-answers.ts's
+ * `refusedCompletion` and `takenCompletions`), or `unread`'s, with why, where `judge` asked for
+ * it and those sources hold no completion the reading knows, the rebuilt directory named by its
+ * commit so no path of this process's is in a verdict. health.ts's completion rules and score.ts's
+ * `unscored` read a run's daemon so, never by the label's name nor off the pod's checkout; a
+ * Refused (`recordedCheckout`) and any other error `judge` throws is thrown on. */
 export function judgedOnDaemon<T>(
   runDir: string,
   judge: (daemon: () => LabelDaemon) => T,
-  unread: (why: string) => T
+  unread: (why: string) => T,
+  repos: readonly string[]
 ): T {
   let why: string | undefined;
   try {
     return judge(() => {
+      const { dir, commit } = recordedCheckout(runDir, repos);
       try {
-        return labelDaemon(labelCheckout(runDir));
+        return labelDaemon(dir);
       } catch (error) {
-        why = error instanceof Error ? error.message : String(error);
+        why = (error instanceof Error ? error.message : String(error)).replaceAll(
+          dir,
+          `<commit ${commit}>`
+        );
         throw error;
       }
     });
