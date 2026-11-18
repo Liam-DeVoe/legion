@@ -167,12 +167,6 @@ export function hearPresses<T>(
     // whether or not it moved the focus.
     if (press !== null && (!press.primary || page.activeElement !== press.from)) endPress();
   };
-  const noteWindowBlur = (event: FocusEvent) => {
-    // The window's own blur is the one whose target is the window the listener is on. That is
-    // read from `currentTarget` rather than from `view`: the test DOM, registered on the global
-    // object, sends its window's own events with a target of its own.
-    if (event.target === event.currentTarget) endPress();
-  };
   const view = page.defaultView;
   page.addEventListener("pointerdown", notePress, true);
   page.addEventListener("pointerup", notePointerUp, true);
@@ -180,7 +174,7 @@ export function hearPresses<T>(
   page.addEventListener("dragend", endPress, true);
   page.addEventListener("contextmenu", endPress, true);
   page.addEventListener("click", endPress, true);
-  view?.addEventListener("blur", noteWindowBlur);
+  view?.addEventListener("blur", endPress);
   return () => {
     page.removeEventListener("pointerdown", notePress, true);
     page.removeEventListener("pointerup", notePointerUp, true);
@@ -188,7 +182,7 @@ export function hearPresses<T>(
     page.removeEventListener("dragend", endPress, true);
     page.removeEventListener("contextmenu", endPress, true);
     page.removeEventListener("click", endPress, true);
-    view?.removeEventListener("blur", noteWindowBlur);
+    view?.removeEventListener("blur", endPress);
   };
 }
 
@@ -268,12 +262,12 @@ function watchLayer(
     if (
       target instanceof Element &&
       app?.contains(target) === true &&
-      !layer.contains(target) &&
       outermostLayer(target) === null
     ) {
       // The reader went on to the page, so the layer holds no focus of theirs to drop as it
       // closes, and a later fall of this focus to the body is none of the layer's doing. A focus
-      // in another layer is not on the page: that layer gives it back as it closes.
+      // in a layer, this one or another, is not on the page, so the watch goes on: the layer
+      // gives the focus back as it closes.
       stop();
       return;
     }

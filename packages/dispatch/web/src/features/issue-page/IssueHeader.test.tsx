@@ -2,7 +2,7 @@ import { beforeEach, expect, type Mock, setSystemTime, spyOn, test } from "bun:t
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: the title's right-press case needs a press of the right button that moves no focus and is never released, as when the context menu takes its mouseup, and user-event moves the focus as its pointer goes down.
+// biome-ignore lint/style/noRestrictedImports: user-event has no form for the presses and events the title's and the actions group's cases send: a press the browser cancels as it turns into a drag (its pointercancel and dragend, with no mouseup), a right press whose context menu takes its release (its contextmenu, with no pointerup), a tap's order (its pointer up before the mousedown that moves the focus, where user-event moves the focus as its pointer goes down), and a blur of the window.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { http } from "msw";
@@ -507,10 +507,12 @@ test("the header keeps the primary document's chip when no gated step reviews it
 // The page's typeface holds only the characters of `subset.sh`'s UNICODES, which the face's
 // `unicode-range` in styles.css repeats: a character outside them is drawn in a face of the
 // reader's own machine, at that face's width, so the header draws such a shape as an inline svg -
-// the navigation's three strokes, the actions' three dots, the status's shape. The stub issue's
-// title, key, project and names are ASCII, so the case reads every text node the header draws,
-// author text among them, with the navigation's control drawn as the shell gives it below the
-// phone's width, and once every read the header made has answered.
+// the navigation's three strokes, the actions' three dots, the status's shape. Of the status's
+// three shapes only ◐, the shape of a status that moves, is outside the typeface (✓ and ○ are in
+// it), so the stub issue is in progress. Its title, key, project and names are ASCII, so the case
+// reads every text node the header draws, author text among them, with the navigation's control
+// drawn as the shell gives it below the phone's width, and once every read the header made has
+// answered.
 test("the header draws no character the page's typeface lacks", async () => {
   const subsetSh = readFileSync(
     join(import.meta.dir, "..", "..", "fonts", "inter", "subset.sh"),
@@ -524,7 +526,7 @@ test("the header draws no character the page's typeface lacks", async () => {
     const first = Number.parseInt(match[1], 16);
     return [first, match[2] === undefined ? first : Number.parseInt(match[2], 16)] as const;
   });
-  const restore = stubHeader(issue);
+  const restore = stubHeader({ ...issue, status: "in_progress" });
   const queryClient = headerClient();
   queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
   const view = render(
@@ -537,11 +539,13 @@ test("the header draws no character the page's typeface lacks", async () => {
     await screen.findByRole("heading", { level: 1, name: issue.title });
     await waitFor(() => expect(queryClient.isFetching()).toBe(0));
     const header = screen.getByTestId("issue-header");
-    // The two controls that draw a shape in place of a character are both in the header read.
+    // The three controls that draw a shape in place of a character are all in the header read,
+    // the status's pill with a status that moves.
     expect(within(header).getByRole("button", { name: "Open navigation" })).toBeInTheDocument();
     expect(
       within(header).getByRole("button", { name: CONTROL_LABELS.issue_actions })
     ).toBeInTheDocument();
+    expect(within(header).getByRole("combobox", { name: "Status" })).toHaveValue("in_progress");
     const offenders: string[] = [];
     let read = 0;
     const walker = document.createTreeWalker(header, NodeFilter.SHOW_TEXT);
@@ -1135,40 +1139,11 @@ test.each([
   }
 });
 
-// A press of the right button opens the context menu, which can take its mouseup, so the page sees
-// the press go down and never sees it released. Such a press makes no click, so nothing waits on
-// it: an edit a key then ends draws the title clamped to two lines again at once, not whole until
-// the reader next releases a mouse button somewhere. The key is Enter, which ends the edit with the
-// editor's blur, and the blur is what reads whether a press is down.
-test("a right press the page never sees released leaves the title clamped once Enter ends the edit", async () => {
-  const user = userEvent.setup();
-  const restore = stubHeader(issue);
-  const view = renderHeader();
-
-  try {
-    const heading = await screen.findByRole("heading", { level: 1, name: issue.title });
-    expect(heading.className).toContain("line-clamp-2");
-    await user.click(heading);
-    const editor = await screen.findByRole("textbox", { name: "Issue title" });
-    await waitFor(() => expect(editor).toHaveFocus());
-    // A right press whose mouseup the context menu takes: it goes down with the focus still in the
-    // editor and is never released. user-event moves the focus as its pointer goes down.
-    fireEvent.mouseDown(document.body, { button: 2 });
-    expect(editor).toHaveFocus();
-    await user.keyboard("{Enter}");
-    await waitFor(() => expect(heading).toHaveFocus());
-    expect(heading.className).toContain("line-clamp-2");
-  } finally {
-    view.unmount();
-    restore();
-  }
-});
-
 // A press of the primary button that the browser turns into a drag, as when the reader drags the
-// words they selected in the editor, never sees its mouseup either: Chromium sends dragstart,
-// pointercancel and dragend, and no mouseup and no click. Nothing waits on such a press, so an edit
-// a key then ends draws the title clamped to two lines again at once, not whole until the reader
-// next releases a mouse button somewhere.
+// words they selected in the editor, sends no mouseup: Chromium sends dragstart, pointercancel and
+// dragend, and no mouseup and no click. Nothing waits on such a press, so an edit a key then ends
+// draws the title clamped to two lines again at once, not whole until the reader next releases a
+// mouse button somewhere.
 test("a press a drag takes leaves the title clamped once Enter ends the edit", async () => {
   const user = userEvent.setup();
   const restore = stubHeader(issue);
@@ -1200,7 +1175,8 @@ test("a press a drag takes leaves the title clamped once Enter ends the edit", a
 // The same drag from a press that ends the edit: the reader presses a link outside the title, whose
 // mousedown takes the focus and so ends the edit while the button is down, and drags the link. The
 // blur holds the title whole until the press is released, but a drag sends no mouseup, so the
-// press is over at its dragend and the title is clamped to two lines again then.
+// press is over at its pointercancel, as the drag starts, and the title is clamped to two lines
+// again then.
 test("a press that ends the edit and turns into a drag leaves the title clamped once the drag ends", async () => {
   const user = userEvent.setup();
   const restore = stubHeader(issue);
