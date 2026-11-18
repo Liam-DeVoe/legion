@@ -2749,13 +2749,16 @@ round_world() {
 # the run resolves the last thread: the approval then waits in `reviewing`, as main's engine
 # leaves it (review.go's `reviewRound`, which reports the round `stuckMergeState`), so a reviewer
 # that reads the record after its approval reads `reviewing`, and the wake of the implementer it
-# owns at the approval is the one step that starts the fix (review 5887659447, finding 3).
+# owns at the approval is the one step that starts the fix (review 5887659447, finding 3). The
+# thread's comment names its bot as GitHub's GraphQL names one, a `Bot` by its App's slug with no
+# `[bot]`, and its review names it as the REST API does, with its `[bot]` (gh-threads.ts's
+# `actorOf`, measured on 2026-11-18).
 review_world() {
   local index=$1 start=$2 guard=$3 src when worker_pr worker_pr_url C1 body threads reviews
   round_world "$index" "$start" "$guard" "$text_finding_doc_line" "$text_finding_trigger"
   fixture_body "**Threads:** 0 resolved, 1 unresolved." "$(fixture_checks implementer tester)"
   threads=$(jq -n '[{id:"PRRT_kwDOrig0001", isResolved:false, path:"greet.test.ts", line:4, review:4001,
-    comments:[{author:{login:"style-bot[bot]"},
+    comments:[{author:{__typename:"Bot", login:"style-bot"},
       body:"greet.test.ts:4: `greets by name` names the same thing the next test does; name each test for the case it covers."}]}]')
   reviews=$(jq -n --arg head "$C1" '[{id:4001, state:"COMMENTED", commit_id:$head,
     author:{login:"style-bot[bot]"}, user:{login:"style-bot[bot]"}, body:""}]')
@@ -2896,7 +2899,7 @@ $entries"
      stdout:{id:5002, html_url:($url+"#pullrequestreview-5002"), user:{login:$login}}}
   ]')
   fixture_write "$extra" "$reviews" '{}' "$(jq '[.[] | {id, isResolved:false, path, line,
-    review:5001, comments:[{author:{login:"legion-review[bot]"}, body}]}]' <<<"$threads")"
+    review:5001, comments:[{author:{__typename:"Bot", login:"legion-review"}, body}]}]' <<<"$threads")"
 }
 
 # The steps the three worlds are built from. Each reads and sets the world function's own

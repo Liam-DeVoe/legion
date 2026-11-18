@@ -1074,9 +1074,9 @@ function headAt(runDir: string, world: World): (at: string) => string {
  * The create it folds in is the last one before it that named no event, which is the one pending
  * review a run can have: GitHub refuses the create of a second while one stands, and the stand-in
  * with it (gh-standin.ts's `reviewCreate`), so the refused call exits 1, and every caller of this
- * reads the calls that exited 0 alone. Each world answers every create of its own with one id —
- * `approved_world` 5002, from the reviews route of its own, and every other world 6001, from the
- * reviews route fixture_write shares (rig.sh) — so an id names no particular review here. A
+ * reads the calls that exited 0 alone. The pair is read by that order and not by the id the submit
+ * names: a world gives each create an id of its own (gh-threads.ts's `createdReviewId`), but the
+ * calls this reads carry the id the agent wrote, never the one the create was answered with. A
  * create no submit call follows stays as it is — a pending review is no verdict, and it scores as
  * the empty event it carries. */
 function reviewsIn(

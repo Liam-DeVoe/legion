@@ -91,13 +91,10 @@ const GITHUB_RECORD = [
  * every worker world), its logs/heads.log, and its only line while nothing was pushed. */
 const HEADS_OPENED = '{"at":"2026-11-13T17:39:59.000Z","opened":"heads.log"}\n';
 /** The body GitHub answers a request for an endpoint it does not serve with, 404, as gh prints it
- * on stdout (indented) before `gh: Not Found (HTTP 404)` on stderr (gh-standin.ts's
- * `notFoundBody`, measured on 2026-11-17). */
-const GITHUB_404 = JSON.stringify(
-  { message: "Not Found", documentation_url: "https://docs.github.com/rest", status: "404" },
-  null,
-  2
-);
+ * on stdout before `gh: Not Found (HTTP 404)` on stderr: indented with `\r\n` line ends, and no
+ * line end after it (gh-standin.ts's `notFoundBody`, measured on 2026-11-18). */
+const GITHUB_404 =
+  '{\r\n  "message": "Not Found",\r\n  "documentation_url": "https://docs.github.com/rest",\r\n  "status": "404"\r\n}';
 
 // rig.sh's install_model_route, run with the checkout's real installers: the route a label's
 // profile reaches Anthropic by, picked by LEGION_E2E_MODEL_ROUTE.
@@ -3984,8 +3981,10 @@ describe("health", () => {
         fn("fixture_write"),
         fn("concluded_checks"),
         fn("base_ruleset_routes"),
+        fn("role_identity"),
         "R=$1 worker_key=LWEVAL-1 worker_repo=example/widgets worker_base=main",
         assignment("world_login"),
+        ...WORLD_APPS.map(assignment),
         "C1=0123456789abcdef0123 body=a-body worker_pr=1001",
         "worker_pr_url=https://example.invalid/pull/1001",
         "fixture_write '[]' '[]'",
@@ -5127,8 +5126,10 @@ describe("fixture_write", () => {
         fn("fixture_write"),
         fn("concluded_checks"),
         fn("base_ruleset_routes"),
+        fn("role_identity"),
         `R=$1 worker_key=LWEVAL-1 worker_repo=example/widgets worker_base=${base}`,
         assignment("world_login"),
+        ...WORLD_APPS.map(assignment),
         "C1=0123456789abcdef0123 body=a-body worker_pr=1001",
         "worker_pr_url=https://example.invalid/pull/1001",
         "fixture_write '[]' '[]'",
@@ -5354,14 +5355,16 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
     // The submission's route takes the verdict's `--method POST` on either side of the path, and
     // the read of the reviews already there takes neither: one route for the POST, one for the
     // GET, and the POST's first. Each create carries its verdict, so neither is a pending review,
-    // which GitHub would refuse a second of while the first stands.
-    for (const argv of [
-      ["api", "--method", "POST", "repos/example/widgets/pulls/1001/reviews"],
-      ["api", "repos/example/widgets/pulls/1001/reviews", "--method", "POST"],
-    ])
+    // which GitHub would refuse a second of while the first stands; and each is a review of its
+    // own, the route's id the first's and the next the second's (gh-threads.ts's
+    // `createdReviewId`).
+    for (const [argv, id] of [
+      [["api", "--method", "POST", "repos/example/widgets/pulls/1001/reviews"], "5002"],
+      [["api", "repos/example/widgets/pulls/1001/reviews", "--method", "POST"], "5003"],
+    ] as const)
       expect(answer(dir, ...argv, "-f", "event=APPROVE", "--jq", ".id")).toEqual({
         code: 0,
-        out: "5002",
+        out: id,
       });
     expect(
       answer(dir, "api", "repos/example/widgets/pulls/1001/reviews", "--jq", ".[0].state")
@@ -5971,15 +5974,31 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
     return dir;
   }
   const worlds = new Map<WorldName, string>();
+  /** The pane's own gh configuration (its GH_CONFIG_DIR), the hosts.yml the daemon renders for a
+   * role's claim (packages/daemon's `ghconfig.Hosts`), which `gh auth status` names and never
+   * reads: its token is one of another length than the rig's, which no answer names. */
+  let paneGh = "";
+  const PANE_TOKEN = `ghs_${"Ab1".repeat(20)}`;
   beforeAll(() => {
     for (const name of WORLDS) worlds.set(name, build(name));
+    paneGh = freshDir("pane-gh");
+    writeFileSync(
+      path.join(paneGh, "hosts.yml"),
+      [
+        ...["github.com:", `    oauth_token: ${PANE_TOKEN}`, "    user: x-access-token"],
+        ...["    git_protocol: https", "    users:", "        x-access-token:"],
+        `            oauth_token: ${PANE_TOKEN}`,
+        "",
+      ].join("\n")
+    );
   });
   const dirOf = (name: WorldName) => worlds.get(name) ?? "";
-  /** What the gh stand-in answers `gh <args…>` in the world under `dir`, with an answer that is
-   * one JSON value read as that value written compactly, whatever indentation jq gave it. */
+  /** What the gh stand-in answers `gh <args…>` in the world under `dir`, from a pane whose gh
+   * configuration is `paneGh`, with an answer that is one JSON value read as that value written
+   * compactly, whatever indentation jq gave it. */
   function gh(dir: string, ...args: string[]) {
     const made = spawnChecked(["bun", GH_STANDIN, "gh", ...args], {
-      env: { ...childEnv, GH_DATA_DIR: dir },
+      env: { ...childEnv, GH_DATA_DIR: dir, GH_CONFIG_DIR: paneGh },
     });
     return {
       code: made.exitCode,
@@ -6222,7 +6241,19 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
     },
     "GH auth status": {
       argv: () => ["auth", "status"],
-      answers: (got) => expect(got).toMatchObject({ code: 0 }),
+      answers: (got) =>
+        expect(got).toEqual({
+          code: 0,
+          out: [
+            "github.com",
+            `  ✓ Logged in to github.com account x-access-token (${paneGh}/hosts.yml)`,
+            "  - Active account: true",
+            "  - Git operations protocol: https",
+            // The rig's token as gh masks it (daemon-pane.ts's RIG_GH_TOKEN: `ghs_` and 36).
+            `  - Token: ghs_${"*".repeat(36)}`,
+          ].join("\n"),
+          err: "",
+        }),
     },
     "GH pr view": {
       argv: () => [
@@ -6269,7 +6300,9 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
         expect(got).toMatchObject({
           code: 1,
           out: "",
-          err: "run or job ID required when not running interactively\n",
+          err: expect.stringMatching(
+            /^run or job ID required when not running interactively\n\nUsage: {2}gh run view \[<run-id>\] \[flags\]\n/
+          ),
         }),
     },
     "GH run watch": {
@@ -6278,7 +6311,9 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
         expect(got).toMatchObject({
           code: 1,
           out: "",
-          err: "run ID required when not running interactively\n",
+          err: expect.stringMatching(
+            /^run ID required when not running interactively\n\nUsage: {2}gh run watch <run-id> \[flags\]\n/
+          ),
         }),
     },
     "GRAPHQL query repository.pullRequest.reviewThreads": {
@@ -6456,7 +6491,7 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
     expect(gh(dirOf("tester_proof_world"), ...(SAMPLES["GH run view"]?.also?.[0] ?? []))).toEqual({
       code: 1,
       out: "",
-      err: "failed to get run: HTTP 404: Not Found\n",
+      err: "failed to get run: HTTP 404: Not Found (https://api.github.com/repos/example/widgets/actions/runs/1?exclude_pull_requests=true)\n",
     });
   });
 

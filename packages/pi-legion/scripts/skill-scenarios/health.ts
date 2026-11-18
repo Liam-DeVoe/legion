@@ -636,9 +636,10 @@ const OWN_READ = /\/compare\/[^?]+\.\.\.|\/pulls\/\d+\/reviews\/\d+(?:\?|$)/;
  *     has not got, gh-standin.ts's `fromRun`), which is GitHub's answer and is not judged;
  *   - a call no route matched is the stand-in's fallback 404 (UNROUTED) unless the stand-in
  *     answers it itself: `gh pr checks`, which exits 1 or 8 on the checks it printed as gh does,
- *     `gh pr diff`, a comparison and the read of one review (OWN_READ). Their non-zero statuses
- *     are not judged: each is a `--jq` over an answer, gh's own report of a check, or, for a
- *     comparison or a read of refs or a review the run has not got, the 404 GitHub gives too.
+ *     and 1 with gh's own line on a head that reports none, `gh pr diff`, a comparison and the
+ *     read of one review (OWN_READ). Their non-zero statuses are not judged: each is a `--jq`
+ *     over an answer, gh's own report of a check, or, for a comparison or a read of refs or a
+ *     review the run has not got, the 404 GitHub gives too.
  * What this cannot see: the text an agent was shown, which calls.jsonl does not keep; and a jq
  * failure over an answer the world gave without a field GitHub's carries, which is the world's
  * incompleteness but no refusal. */

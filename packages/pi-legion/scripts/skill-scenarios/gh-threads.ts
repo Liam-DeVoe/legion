@@ -171,6 +171,27 @@ export function loginOf(at: ThreadWorld, role: string | undefined): string {
   const app = roleApp(role);
   return (app === "" ? undefined : at.world?.logins?.[app]) ?? worldLogin(at.routes);
 }
+/** The account of REST login `login` as GitHub's GraphQL names it under an `author` (an `Actor`):
+ * a bot by its App's slug, with no `[bot]`, as a `Bot`, and a user by its login, as a `User`.
+ * GitHub's `viewer` and a thread's `resolvedBy` are `User`s, which name a bot with its `[bot]`
+ * (`loginOf`). Measured on 2026-11-18 against cybermonklabs/legion's merged pull requests: each
+ * resolved thread's first comment's `author` was `{__typename: "Bot", login: "legion-reviewer"}`
+ * and its `resolvedBy` `{__typename: "User", login: "legion-implementer[bot]"}`; the REST
+ * comment's `user.login` is `legion-reviewer[bot]` (the production reads). The world named a
+ * thread comment's author with its `[bot]`, which told a role that compared it to the viewer the
+ * two were one account, as production does not. */
+export function actorOf(login: string): Json {
+  return login.endsWith("[bot]")
+    ? { __typename: "Bot", login: login.slice(0, -"[bot]".length) }
+    : { __typename: "User", login };
+}
+/** The REST login of `actor`, an account as GitHub's GraphQL names it (`actorOf`): a `Bot`'s with
+ * its `[bot]`, any other's as it is. */
+export function restLogin(actor: unknown): string {
+  if (!isObject(actor)) return "";
+  const login = String(actor.login ?? "");
+  return actor.__typename === "Bot" ? `${login}[bot]` : login;
+}
 /** The pull request as the world's `gh pr view` route holds it, or an empty object. */
 export function heldPullRequest(routes: readonly ThreadRoute[]): Json {
   const held = routeFor(routes, ["pr", "view"])?.stdout;
@@ -311,10 +332,10 @@ export function createdReviewId(
   return base === undefined ? undefined : base + earlier;
 }
 /** A review comment the run makes, as GitHub's GraphQL answers one: its two ids, its author (the
- * bot of the App the call's role acts as, `loginOf`), where it stands, when it was made, the
- * review it belongs to — the one it was made in, or the review of its own GitHub files it in
- * (OWN_REVIEW) — the comment it replies to and the commit it is on. A comment of a pending review
- * is pending until that review is submitted. */
+ * bot of the App the call's role acts as, `loginOf`, as GraphQL names it, `actorOf`), where it
+ * stands, when it was made, the review it belongs to — the one it was made in, or the review of
+ * its own GitHub files it in (OWN_REVIEW) — the comment it replies to and the commit it is on. A
+ * comment of a pending review is pending until that review is submitted. */
 function newComment(
   at: ThreadWorld,
   state: Threads,
@@ -339,7 +360,7 @@ function newComment(
     databaseId,
     fullDatabaseId: String(databaseId),
     body: made.body,
-    author: { login: loginOf(at, made.by) },
+    author: actorOf(loginOf(at, made.by)),
     authorAssociation: "NONE",
     path: made.path,
     line: made.line,
@@ -393,7 +414,13 @@ function newThread(comment: Json, side: unknown, startLine: number | null): Json
  * is no refusal GitHub gives, and a world that refused one gave the agent a refusal production
  * does not. The `in_reply_to` of `POST …/pulls/<n>/comments` is read the same way, which is not
  * measured. */
-function replyIn(at: ThreadWorld, state: Threads, thread: Json, body: string, call: Recorded): Json {
+function replyIn(
+  at: ThreadWorld,
+  state: Threads,
+  thread: Json,
+  body: string,
+  call: Recorded
+): Json {
   const first = commentsOf(thread)[0];
   const comment = newComment(at, state, {
     body,
@@ -582,7 +609,8 @@ export function threadCall(
       Object.assign(thread, {
         isResolved: true,
         isCollapsed: true,
-        resolvedBy: { login: loginOf(at, call.by) },
+        // A `User`, which names a bot with its `[bot]`, unlike a comment's author (`actorOf`).
+        resolvedBy: { __typename: "User", login: loginOf(at, call.by) },
         viewerCanResolve: false,
         viewerCanUnresolve: true,
       });

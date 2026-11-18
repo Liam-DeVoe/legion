@@ -1078,7 +1078,7 @@ export const WORLD_ROUTES: readonly WorldRoute[] = [
   {
     route: "GH auth status",
     answer:
-      "the pane's gh configuration: gh's text, the account its hosts.yml names and the token masked",
+      "gh's text for the pane's gh configuration: the account its hosts.yml names and the rig's token as gh masks it, no token read",
     evidence: { world: "the identity read every gh session can make" },
   },
   {
@@ -1088,8 +1088,14 @@ export const WORLD_ROUTES: readonly WorldRoute[] = [
   { route: "GH pr list", answer: "world.json: the one pull request open on the issue branch" },
   { route: "GH pr diff", answer: "the remote: the issue branch against the base" },
   { route: "GH pr checks", answer: "the world's check runs of the branch's tip" },
-  { route: "GH run view", answer: "gh's refusal: the world holds no workflow run, or no run named" },
-  { route: "GH run watch", answer: "gh's refusal: the world holds no workflow run, or no run named" },
+  {
+    route: "GH run view",
+    answer: "gh's refusal: the world holds no workflow run, or no run named",
+  },
+  {
+    route: "GH run watch",
+    answer: "gh's refusal: the world holds no workflow run, or no run named",
+  },
   {
     route: "GRAPHQL query repository.pullRequest.reviewThreads",
     answer: "the world's review threads and every call calls.jsonl records on them, paged",

@@ -1844,4 +1844,52 @@ describe("health: rule 20, unmodelled write", () => {
       "unmodelled write: calls.jsonl:4, `gh pr merge 1001 --squash` of the reviewer, exited 1: no route or answer of the world models it, so it was refused 404 where GitHub takes it"
     );
   });
+
+  // A record written before the stand-in modelled the four write spellings INFRA-764's class
+  // search of writes found answered a success that kept nothing (2026-11-18): the create of
+  // `…/reviews?x=1` by the create route's frozen answer (`route`), a PATCH of `…/pulls/<n>?x=1`
+  // by the pull request with its old body (`pull-request`, no body kept), `gh pr edit --body ""`
+  // by the pull request's URL (`route`, no body kept), and a mutation sent to `gh api /graphql`
+  // that the graph holds no answer for (`graph`). Catches: a rule that names only what was
+  // refused, so each reads healthy; and one that names the modelled writes the same handlers
+  // answer — a body edit that kept its body, empty or not, and a mutation the graph holds.
+  test("a record with handler: a write answered a success that kept nothing of it", () => {
+    const edit = "^gh pr edit( |$)";
+    const pulls = "^gh api .*pulls/1001([ ?]|$)";
+    const graph = "^gh api .*graphql";
+    const patch = ["api", "-X", "PATCH", `${REPO}?x=1`, "-f", "body=fixed"];
+    const resolve =
+      'query=mutation{resolveReviewThread(input:{threadId:"PRRT_kwDOfix001"}){thread{id}}}';
+    const kept = [
+      call(["pr", "edit", "1001", "--body", "fixed"], {
+        route: edit,
+        handler: "route",
+        body: "fixed",
+      }),
+      call(["pr", "edit", "1001", "--body", ""], { route: edit, handler: "route", body: "" }),
+      call(patch, { route: pulls, handler: "pull-request", body: "fixed" }),
+      call(["api", "/graphql", "-f", resolve], { route: graph, handler: "graph" }),
+    ];
+    expect(unmodelledWrite({ dir: run("kept-something", kept) })).toBeUndefined();
+    const minimize =
+      'query=mutation{minimizeComment(input:{subjectId:"x",classifier:OUTDATED}){clientMutationId}}';
+    const unkept: [name: string, argv: string[], route: string, handler: string][] = [
+      [
+        "create-query",
+        ["api", "-X", "POST", `${REPO}/reviews?x=1`, "-f", "event=APPROVE"],
+        "^gh api .*pulls/1001/reviews([ ?]|$)",
+        "route",
+      ],
+      ["patch-query", patch, pulls, "pull-request"],
+      ["empty-edit", ["pr", "edit", "1001", "--body", ""], edit, "route"],
+      ["slash-graphql", ["api", "/graphql", "-f", minimize], graph, "graph"],
+    ];
+    for (const [name, argv, route, handler] of unkept)
+      expect([name, unmodelledWrite({ dir: run(name, [call(argv, { route, handler })]) })]).toEqual(
+        [
+          name,
+          `unmodelled write: calls.jsonl:2, \`gh ${argv.join(" ")}\` of the reviewer, exited 0: \`${handler}\` answered it a success that kept nothing of it, which no answer of the world models`,
+        ]
+      );
+  });
 });

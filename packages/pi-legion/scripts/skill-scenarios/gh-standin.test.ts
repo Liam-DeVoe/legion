@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
-import { DAEMON_MODULE, labelGhSelectors, labelGhTable } from "./daemon-pane";
+import { DAEMON_MODULE, labelGhSelectors, labelGhTable, RIG_GH_TOKEN } from "./daemon-pane";
 import { readWorld, sentBody } from "./gh-call";
 import {
   commandsIn,
@@ -87,6 +87,9 @@ function assignment(name: string): string {
 }
 /** The login every answer of a world names a user by (rig.sh's `world_login`). */
 const WORLD_LOGIN = assignment("world_login").replace(/^world_login='(.*)'$/, "$1");
+/** That login as GitHub's GraphQL names a bot under `author`: its App's slug, with no `[bot]`
+ * (gh-threads.ts's `actorOf`). */
+const WORLD_AUTHOR = WORLD_LOGIN.replace(/\[bot\]$/, "");
 
 afterEach(() => {
   for (const dir of made.splice(0)) rmSync(dir, { recursive: true, force: true });
@@ -162,8 +165,10 @@ beforeAll(() => {
         fn("fixture_write"),
         fn("concluded_checks"),
         fn("base_ruleset_routes"),
+        fn("role_identity"),
         "R=$1 worker_key=LWEVAL-1 worker_repo=example/widgets worker_base=main",
-        assignment("world_login"),
+        ...["world_login", "world_implement_app", "world_implement_app_id"].map(assignment),
+        ...["world_review_app", "world_review_app_id"].map(assignment),
         'C1=$2 body="a body" worker_pr=1001 worker_pr_url=https://example.invalid/pull/1001',
         "fixture_write '[]' '[]'",
       ].join("\n"),
@@ -218,16 +223,14 @@ const REVIEWS = "repos/example/widgets/pulls/1001/reviews";
 /** The REST reply under the first comment of the approval's first thread (rig.sh's
  * approved_world), which GitHub files in a `COMMENTED` review of its own. */
 const REVIEW_REPLIES = "repos/example/widgets/pulls/1001/comments/7001/replies";
-/** The body GitHub answers a 404 with, as gh prints it on stdout (indented) before `gh: Not Found
- * (HTTP 404)` on stderr (gh-standin.ts's `notFoundBody`), naming the page `documentation`: GitHub's
- * REST reference for an endpoint it does not serve, a served endpoint's own page for an object
- * that endpoint does not hold. */
-const notFoundOf = (documentation = "https://docs.github.com/rest") =>
-  JSON.stringify(
-    { message: "Not Found", documentation_url: documentation, status: "404" },
-    null,
-    2
-  );
+/** The body GitHub answers a 404 with, as gh prints it on stdout before `gh: Not Found (HTTP 404)`
+ * on stderr (gh-standin.ts's `notFoundBody`), with no line end after it: for an endpoint GitHub
+ * does not serve, naming its REST reference, indented with `\r\n` line ends; for an object a
+ * served endpoint does not hold, naming that endpoint's own page (`documentation`), on one line. */
+const notFoundOf = (documentation?: string) =>
+  documentation === undefined
+    ? '{\r\n  "message": "Not Found",\r\n  "documentation_url": "https://docs.github.com/rest",\r\n  "status": "404"\r\n}'
+    : JSON.stringify({ message: "Not Found", documentation_url: documentation, status: "404" });
 const GITHUB_404 = notFoundOf();
 /** The create of a pending review: a body naming no `event`, which is what leaves one. */
 function createPending(dir: string, review: object): void {
@@ -410,6 +413,94 @@ test("a create is answered with the review's state and the head it was created a
     state: "APPROVED",
     commit_id: first,
   });
+});
+
+// GitHub reads a POST's parameters from its JSON body and names no query parameter of the create
+// of a review, so a create whose path carries a query string is the create all the same
+// (gh-call.ts's `reviewsRoute`). Catches: the create of `…/reviews?x=1` answered with the create
+// route's frozen `{id:6001}` and exit 0, keeping no review: no state, no head, nothing in the
+// reviews list or the record (INFRA-764's class search of writes, 2026-11-18).
+test("a create whose path carries a query string creates the review", () => {
+  const { dir, first } = runDir({ fixture: true });
+  const created = ghCall(
+    dir,
+    ...["api", "-X", "POST", `${REVIEWS}?x=1`, "-f", `commit_id=${first}`],
+    ...["-f", "event=APPROVE", "-f", "body=approved"]
+  );
+  expect([created.code, JSON.parse(created.out)]).toEqual([
+    0,
+    expect.objectContaining({ id: 6001, state: "APPROVED", commit_id: first, body: "approved" }),
+  ]);
+  expect(ghCall(dir, "api", REVIEWS, "--jq", "[.[] | [.id, .state]] | @json").out).toBe(
+    '[[6001,"APPROVED"]]'
+  );
+  expect(recordedCalls(dir)[0]).toMatchObject({
+    handler: "review create",
+    review: { state: "APPROVED", head: first },
+  });
+});
+
+// GitHub reads a submit's event from the POST's JSON body and names no query parameter of
+// "Submit a review for a pull request", so a submit whose path carries a query string submits the
+// pending review all the same (gh-call.ts's `submitsReview`). Catches: the submit of
+// `…/reviews/<id>/events?x=1` refused 404 as a write no answer of the world models, its review
+// left pending (INFRA-764's class search of writes, 2026-11-18).
+test("a submit whose path carries a query string submits the pending review", () => {
+  const { dir, first } = runDir({ fixture: true });
+  createPending(dir, { commit_id: first, body: "two findings" });
+  const submitted = apiPost(dir, `${REVIEWS}/6001/events?x=1`, "-f", "event=REQUEST_CHANGES");
+  expect([submitted.exitCode, JSON.parse(submitted.stdout.toString())]).toEqual([
+    0,
+    expect.objectContaining({ id: 6001, state: "CHANGES_REQUESTED", commit_id: first }),
+  ]);
+  expect(ghCall(dir, "api", `${REVIEWS}/6001`, "--jq", ".state").out).toBe("CHANGES_REQUESTED");
+  expect(recordedCalls(dir)[1]).toMatchObject({
+    handler: "review submit",
+    review: { state: "CHANGES_REQUESTED", head: first },
+  });
+});
+
+// GitHub gives every review it creates an id of its own: the world's create route names the
+// first (6001, rig.sh's fixture_write), and each create after it the next (gh-threads.ts's
+// `createdReviewId`). Catches: every create answered with the route's one id, so the second
+// replaced the first in every read by id, in the REST list and in `gh pr view`, while the review
+// decision counted both (INFRA-764's class search of writes, 2026-11-18).
+test("each create is a review of its own, with its own id at every read", () => {
+  const { dir, first, second } = runDir({ fixture: true });
+  const create = (...fields: string[]) =>
+    JSON.parse(apiPost(dir, REVIEWS, ...fields).stdout.toString());
+  expect(create("-f", `commit_id=${first}`, "-f", "event=APPROVE")).toMatchObject({
+    id: 6001,
+    html_url: "https://example.invalid/pull/1001#pullrequestreview-6001",
+  });
+  expect(
+    create("-f", `commit_id=${second}`, "-f", "event=REQUEST_CHANGES", "-f", "body=two findings")
+  ).toMatchObject({
+    id: 6002,
+    node_id: "PRR_kwDOAAAAAc4AAE6002",
+    html_url: "https://example.invalid/pull/1001#pullrequestreview-6002",
+  });
+  const byId = (id: number) =>
+    ghCall(dir, "api", `${REVIEWS}/${id}`, "--jq", "[.id, .state, .commit_id] | @json").out;
+  expect([byId(6001), byId(6002)]).toEqual([
+    JSON.stringify([6001, "APPROVED", first]),
+    JSON.stringify([6002, "CHANGES_REQUESTED", second]),
+  ]);
+  expect(ghCall(dir, "api", REVIEWS, "--jq", "[.[] | [.id, .state]] | @json").out).toBe(
+    '[[6001,"APPROVED"],[6002,"CHANGES_REQUESTED"]]'
+  );
+  expect(
+    ghCall(
+      dir,
+      "pr",
+      "view",
+      "1001",
+      "--json",
+      "reviews",
+      "--jq",
+      "[.reviews[] | [.id, .state]] | @json"
+    ).out
+  ).toBe('[["PRR_kwDOAAAAAc4AAE6001","APPROVED"],["PRR_kwDOAAAAAc4AAE6002","CHANGES_REQUESTED"]]');
 });
 
 // Catches: a reader of the run's record that takes its opening line for a call. The record a
@@ -785,6 +876,94 @@ test("a body field on a POST of the pull request edits no body", () => {
   expect(posted).toEqual({ code: 1, out: GITHUB_404, err: "gh: Not Found (HTTP 404)\n" });
   expect(ghCall(dir, "pr", "view", "1001", "--json", "body", "--jq", ".body").out).toBe("a body");
   expect(recordedCalls(dir)[0]).not.toHaveProperty("body");
+});
+
+// GitHub reads a PATCH's parameters from its JSON body and names no query parameter of "Update a
+// pull request", so a body PATCH whose path carries a query string edits the body all the same.
+// Catches: a PATCH of `…/pulls/<n>?x=1` answered with the pull request's old body and exit 0,
+// keeping nothing (INFRA-764's class search of writes, 2026-11-18).
+test("a body PATCH whose path carries a query string edits the body", () => {
+  const { dir } = runDir({ fixture: true });
+  const pull = "repos/example/widgets/pulls/1001?x=1";
+  expect(
+    ghCall(dir, "api", "-X", "PATCH", pull, "-f", "body=the fixed body", "--jq", ".body")
+  ).toEqual({ code: 0, out: "the fixed body", err: "" });
+  expect(ghCall(dir, "pr", "view", "1001", "--json", "body", "--jq", ".body").out).toBe(
+    "the fixed body"
+  );
+  expect(recordedCalls(dir)[0]?.body).toBe("the fixed body");
+});
+
+// gh's `pr edit` sends the body of every `--body` the call names, empty or not (its `Editable`
+// marks a flag the call names edited, whatever its value), and GitHub sets the body it is sent.
+// Not measured, since an edit is a write. Catches: `gh pr edit --body ""` read as naming no body,
+// answered with the pull request's URL and exit 0 and the body left as it was (INFRA-764's class
+// search of writes, 2026-11-18).
+test('gh pr edit --body "" leaves the pull request an empty body', () => {
+  const { dir } = runDir({ fixture: true });
+  expect(ghCall(dir, "pr", "edit", "1001", "--body", "")).toEqual({
+    code: 0,
+    out: "https://example.invalid/pull/1001",
+    err: "",
+  });
+  expect(ghCall(dir, "pr", "view", "1001", "--json", "body")).toEqual({
+    code: 0,
+    out: '{"body":""}',
+    err: "",
+  });
+  expect(recordedCalls(dir)[0]?.body).toBe("");
+});
+
+// GitHub's REST API names a pull request's empty body `null`, where its GraphQL and gh read it as
+// `""`. Measured on 2026-11-18: cybermonklabs/legion #612, whose body is empty, read `null`
+// through `gh api repos/<o>/<r>/pulls/612 --jq '.body|type'`, `""` through GraphQL and `gh pr
+// view --json body`, and `gh pr view` closed with `--` and an empty line. Catches: the REST pull
+// request answering `""`, through the PATCH that emptied it and every read after it.
+test("an empty body is null through REST and empty through GraphQL and gh", () => {
+  const { dir } = runDir({ fixture: true });
+  const pull = "repos/example/widgets/pulls/1001";
+  expect(ghCall(dir, "api", "-X", "PATCH", pull, "-f", "body=", "--jq", ".body|type").out).toBe(
+    "null"
+  );
+  expect(ghCall(dir, "api", pull, "--jq", ".body|type").out).toBe("null");
+  const graph =
+    'query=query{repository(owner:"example",name:"widgets"){pullRequest(number:1001){body}}}';
+  expect(
+    ghCall(dir, "api", "graphql", "-f", graph, "--jq", ".data.repository.pullRequest.body|type").out
+  ).toBe("string");
+  expect(ghCall(dir, "pr", "view", "1001", "--json", "body").out).toBe('{"body":""}');
+  expect(String(asked(dir, "reviewer", ["pr", "view", "1001"])[1]).endsWith("\n--\n\n")).toBe(true);
+});
+
+// gh reads a flag's value as its flag parser does (spf13/pflag): a long flag written against `=`
+// carries what follows it, nothing for `--body=`; a short one carries what follows its `=` where
+// anything does (`-b=x` is `x`) and its whole rest otherwise, so `-b=` is `=`. A body file named by
+// the empty value is no file gh can read. Catches: `--body=` and `-b=` read as the flag standing
+// alone, whose value is the argument after it, so the edit named no body and was refused; and an
+// edit naming no readable file answered as a success that kept nothing.
+test("a flag written against = carries what follows it, as gh's flag parser reads it", () => {
+  const edited = (...flags: string[]) => {
+    const { dir } = runDir({ fixture: true });
+    const made = ghCall(dir, "pr", "edit", "1001", ...flags);
+    return [
+      flags,
+      made.code,
+      ghCall(dir, "pr", "view", "1001", "--json", "body", "--jq", ".body").out,
+    ];
+  };
+  expect([
+    edited("--body="),
+    edited("-b="),
+    edited("-b=fixed"),
+    edited("-bfixed"),
+    edited("--body-file="),
+  ]).toEqual([
+    [["--body="], 0, ""],
+    [["-b="], 0, "="],
+    [["-b=fixed"], 0, "fixed"],
+    [["-bfixed"], 0, "fixed"],
+    [["--body-file="], 1, "a body"],
+  ]);
 });
 
 // gh hands a comment's or a review's text over in a file with `--body-file` too, and the record
@@ -2046,7 +2225,8 @@ test("each call that leaves a review records the state and head it was answered 
   writeFileSync(body, JSON.stringify({ commit_id: first, event: "APPROVE", body: "approved" }));
   expect(apiPost(dir, REVIEWS, "--input", body).exitCode).toBe(0);
   createPending(dir, { commit_id: first, body: "two findings" });
-  expect(apiPost(dir, `${REVIEWS}/6001/events`, "-f", "event=REQUEST_CHANGES").exitCode).toBe(0);
+  // The run's second review, which GitHub gives the id after the first's.
+  expect(apiPost(dir, `${REVIEWS}/6002/events`, "-f", "event=REQUEST_CHANGES").exitCode).toBe(0);
   answer(dir, ["pr", "review", "1001", "--approve"]);
   answer(dir, ["pr", "review", "1001", "-R", "other/widgets", "--approve"]);
   answer(dir, ["pr", "view", "1001"]);
@@ -2133,9 +2313,11 @@ test("the head's checks are the world's check runs on the remote's tip, for gh p
       .exitCode
   ).toBe(0);
   const pending = checks();
+  // In gh's form (gh-standin.ts's `prChecks`): by name, `0` for a check with no time it ran, and
+  // the empty description a check run carries.
   expect([pending.exitCode, pending.stdout.toString()]).toEqual([
     8,
-    "test\tpending\t0s\thttps://example.invalid/test\nlint\tpass\t0s\thttps://example.invalid/lint\n",
+    "lint\tpass\t0\thttps://example.invalid/lint\t\ntest\tpending\t0\thttps://example.invalid/test\t\n",
   ]);
   expect(rollup()).toBe("IN_PROGRESS,COMPLETED");
   expect(merge()).toEqual(["BLOCKED", "blocked"]);
@@ -2144,6 +2326,315 @@ test("the head's checks are the world's check runs on the remote's tip, for gh p
   expect(rollup()).toBe("COMPLETED,COMPLETED,COMPLETED");
   expect(merge()).toEqual(["CLEAN", "clean"]);
 });
+
+// gh prints a pull request's checks to a pipe as five fields a tab apart — the name, the bucket,
+// the time it ran as Go writes a duration, the link, and the description, which a check run has
+// none of — failed checks first, then by name; and refuses a head that reports none. Measured on
+// 2026-11-18 (prod-reads-19.json, item 25): #4326 printed `changes\tpass\t8s\t<link>\t`,
+// `dispatch-two-builds / dispatch-two-builds\tpass\t10m52s\t<link>\t` and each skipped job
+// `<name>\tskipping\t0\t<link>\t`, exit 0; #2827, whose head reported none, `no checks reported
+// on the '<branch>' branch` on stderr and nothing on stdout, exit 1. Catches: the world's
+// `<seconds>s` for every time, a line with no description, a failure listed after a pass, and a
+// head with no check answered with nothing and exit 0.
+test("gh pr checks prints gh's lines for the head's checks, and gh's refusal for a head with none", () => {
+  const { dir, first, second } = runDir({ fixture: true });
+  const file = path.join(dir, "fixtures.json");
+  const fixtures = JSON.parse(readFileSync(file, "utf8"));
+  const run = (name: string, conclusion: string, completed: string) => ({
+    name,
+    status: "completed",
+    conclusion,
+    started_at: "2026-11-18T08:00:00Z",
+    completed_at: `2026-11-18T${completed}Z`,
+    html_url: `https://example.invalid/${name}`,
+  });
+  fixtures.routes.unshift(
+    {
+      match: `^gh api .*commits/${first}/check-runs`,
+      stdout: {
+        check_runs: [
+          run("lint", "success", "08:10:52"),
+          run("changes", "success", "08:00:08"),
+          run("docs", "skipped", "08:00:00"),
+          run("test", "failure", "09:00:05"),
+        ],
+      },
+    },
+    { match: "^gh api .*check-runs", stdout: { check_runs: [] } }
+  );
+  writeFileSync(file, JSON.stringify(fixtures));
+  const line = (name: string, bucket: string, time: string) =>
+    `${name}\t${bucket}\t${time}\thttps://example.invalid/${name}\t\n`;
+  expect(asked(dir, "reviewer", ["pr", "checks", "1001"])).toEqual([
+    1,
+    [
+      line("test", "fail", "1h0m5s"),
+      line("changes", "pass", "8s"),
+      line("docs", "skipping", "0"),
+      line("lint", "pass", "10m52s"),
+    ].join(""),
+    "",
+  ]);
+  git(path.join(dir, "remote.git"), "update-ref", "refs/heads/legion/LWEVAL-1", second);
+  expect(asked(dir, "reviewer", ["pr", "checks", "1001"])).toEqual([
+    1,
+    "",
+    "no checks reported on the 'legion/LWEVAL-1' branch\n",
+  ]);
+});
+
+// gh buckets a check by its conclusion once it completed and its status before (gh 2.98.0's
+// pkg/cmd/pr/checks/aggregate.go and output.go, read on 2026-11-18): a success passes; a skip and
+// a neutral conclusion skip; a failure, a time-out and an action required fail; a cancel is a
+// bucket of its own, printed `fail` to a pipe and counted as neither failed nor pending; every
+// other state (`stale`, `startup_failure`, a status not yet completed) is pending. It exits 1 once
+// one failed, else 8 while one is pending, else 0. Catches: a neutral conclusion read as a pass,
+// a stale or start-up failure read as a failure, and a cancel that exits 1.
+test("gh pr checks buckets every state of a check as gh does", () => {
+  const { dir } = runDir({ fixture: true });
+  const file = path.join(dir, "fixtures.json");
+  const held = JSON.parse(readFileSync(file, "utf8"));
+  const checksOf = (runs: object[]) => {
+    const routes = [
+      { match: "^gh api .*check-runs", stdout: { check_runs: runs } },
+      ...held.routes,
+    ];
+    writeFileSync(file, JSON.stringify({ ...held, routes }));
+    return asked(dir, "reviewer", ["pr", "checks", "1001"]);
+  };
+  const run = (name: string, status: string, conclusion: string | null = null) => ({
+    name,
+    status,
+    conclusion,
+    html_url: `https://example.invalid/${name}`,
+  });
+  const done = (name: string, conclusion: string) => run(name, "completed", conclusion);
+  const line = (name: string, bucket: string) =>
+    `${name}\t${bucket}\t0\thttps://example.invalid/${name}\t\n`;
+  expect(
+    checksOf([
+      done("a-success", "success"),
+      done("b-neutral", "neutral"),
+      done("c-skipped", "skipped"),
+      done("d-failure", "failure"),
+      done("e-timed-out", "timed_out"),
+      done("f-action", "action_required"),
+      done("g-cancelled", "cancelled"),
+      done("h-stale", "stale"),
+      done("i-startup", "startup_failure"),
+      run("j-queued", "queued"),
+      run("k-running", "in_progress"),
+    ])
+  ).toEqual([
+    1,
+    [
+      line("d-failure", "fail"),
+      line("e-timed-out", "fail"),
+      line("f-action", "fail"),
+      line("a-success", "pass"),
+      line("b-neutral", "skipping"),
+      line("c-skipped", "skipping"),
+      line("g-cancelled", "fail"),
+      line("h-stale", "pending"),
+      line("i-startup", "pending"),
+      line("j-queued", "pending"),
+      line("k-running", "pending"),
+    ].join(""),
+    "",
+  ]);
+  expect(checksOf([done("b-neutral", "neutral"), run("j-queued", "queued")])).toEqual([
+    8,
+    line("b-neutral", "skipping") + line("j-queued", "pending"),
+    "",
+  ]);
+  expect(checksOf([done("a-success", "success"), done("g-cancelled", "cancelled")])).toEqual([
+    0,
+    line("a-success", "pass") + line("g-cancelled", "fail"),
+    "",
+  ]);
+});
+
+// gh prints `gh auth status` to a pipe for the account its hosts.yml names: the host, the
+// account and the file, the account active, the protocol git uses, and the token masked as gh
+// 2.98.0 masks one (pkg/cmd/auth/status's `maskToken`: `ghs_`, then a `*` for each character
+// after it); an installation token holds no scopes, so no scope line. Measured on 2026-11-18
+// from two INFRA issue pods (prod-reads-19.json, item 21, production-shapes.json's `gh auth
+// status`): exit 0, nothing on stderr, and `github.com`, `  ✓ Logged in to github.com account
+// x-access-token (<GH_CONFIG_DIR>/hosts.yml)`, `  - Active account: true`, `  - Git operations
+// protocol: https`, `  - Token: ghs_` and its `*`s. The world writes the token line from the
+// shape of the token the rig gives every pane (daemon-pane.ts's RIG_GH_TOKEN) and reads no token,
+// so a hosts.yml holding another names none of it. Catches: the world's
+// `{"login":"widgets-reviewer[bot]"}`, which gh never prints, to every role; a stand-in that
+// reads the pane's token (CodeQL's alert at the wip head: the token's text flowed into the
+// answer), which prints its length or its text; and a flag the world does not model
+// (`--show-token`, `--json`) answered all the same.
+test("gh auth status prints gh's text for the pane's own gh configuration, and no token", () => {
+  const { dir } = runDir({ fixture: true });
+  const config = path.join(dir, "pane-gh");
+  mkdirSync(config);
+  const token = `ghs_${"Zq9".repeat(20)}`;
+  // The file as the daemon renders it for a role's claim (packages/daemon's `ghconfig.Hosts`),
+  // holding a token of another length than the rig's.
+  writeFileSync(
+    path.join(config, "hosts.yml"),
+    [
+      ...["github.com:", `    oauth_token: ${token}`, "    user: x-access-token"],
+      ...["    git_protocol: https", "    users:", "        x-access-token:"],
+      `            oauth_token: ${token}`,
+      "",
+    ].join("\n")
+  );
+  const status = [
+    "github.com",
+    `  ✓ Logged in to github.com account x-access-token (${config}/hosts.yml)`,
+    "  - Active account: true",
+    "  - Git operations protocol: https",
+    `  - Token: ghs_${"*".repeat(RIG_GH_TOKEN.length - "ghs_".length)}`,
+    "",
+  ].join("\n");
+  const read = pinnedRead("gh auth status");
+  const pane = { GH_CONFIG_DIR: config };
+  for (const by of ["implementer", "reviewer"]) {
+    const got = asked(dir, by, ["auth", "status"], pane);
+    expect([by, ...got, shapeDiff(got[1], read)]).toEqual([
+      by,
+      read.exit,
+      status,
+      read.stderr,
+      SAME_SHAPE,
+    ]);
+  }
+  for (const flag of [["--show-token"], ["-t"], ["--json", "hosts"]])
+    expect([flag, ...asked(dir, "reviewer", ["auth", "status", ...flag], pane)]).toEqual([
+      flag,
+      1,
+      "",
+      "gh: Not Found (HTTP 404)\n",
+    ]);
+  expect(readFileSync(path.join(dir, "calls.jsonl"), "utf8")).not.toContain(token.slice(4));
+});
+
+/** gh's refusals of `gh run view` and `gh run watch` naming no run where no terminal can pick one,
+ * each its line and the command's usage, as measured on 2026-11-18 (the implementer's readings,
+ * m/run-view-noid.err and m/run-watch-noid.err), byte for byte. */
+const RUN_VIEW_USAGE = `run or job ID required when not running interactively
+
+Usage:  gh run view [<run-id>] [flags]
+
+Flags:
+  -a, --attempt uint      The attempt number of the workflow run
+      --exit-status       Exit with non-zero status if run failed
+  -j, --job string        View a specific job ID from a run
+  -q, --jq expression     Filter JSON output using a jq expression
+      --json fields       Output JSON with the specified fields
+      --log               View full log for either a run or specific job
+      --log-failed        View the log for any failed steps in a run or specific job
+  -t, --template string   Format JSON output using a Go template; see "gh help formatting"
+  -v, --verbose           Show job steps
+  -w, --web               Open run in the browser
+  
+`;
+const RUN_WATCH_USAGE = `run ID required when not running interactively
+
+Usage:  gh run watch <run-id> [flags]
+
+Flags:
+      --compact        Show only relevant/failed steps
+      --exit-status    Exit with non-zero status if run fails
+  -i, --interval int   Refresh interval in seconds (default 3)
+  
+`;
+
+// The world holds no workflow run, so gh refuses a `gh run view` or `gh run watch` of one as
+// production does: GitHub's 404 for the run, at the URL gh read it at, on the repository the
+// call names; and, naming none, gh's refusal and the command's usage, each exit 1 with nothing on
+// stdout. Measured on 2026-11-18: `gh run view 1 --repo <o>/<r>` and `gh run watch 1 --repo
+// <o>/<r>` printed `failed to get run: HTTP 404: Not Found
+// (https://api.github.com/repos/<o>/<r>/actions/runs/1?exclude_pull_requests=true)`
+// (prod-reads-19.json, items 26 and 27), and the two with no id RUN_VIEW_USAGE and
+// RUN_WATCH_USAGE (implementer-reads.json). Catches: the first line of each alone, which is what
+// the world printed, and a run named among flags read as none.
+test("gh run view and gh run watch are gh's refusals of a run the world has not got, and of none named", () => {
+  const { dir } = runDir({ fixture: true });
+  const notFound = (id: string) =>
+    `failed to get run: HTTP 404: Not Found (https://api.github.com/repos/example/widgets/actions/runs/${id}?exclude_pull_requests=true)\n`;
+  expect([
+    asked(dir, "reviewer", ["run", "view", "1"]),
+    asked(dir, "implementer", ["run", "watch", "1", "--exit-status"]),
+    asked(dir, "reviewer", ["run", "view", "-R", "example/widgets", "--log-failed", "7"]),
+    asked(dir, "reviewer", ["run", "view"]),
+    asked(dir, "implementer", ["run", "watch", "--repo", "example/widgets", "-i", "5"]),
+  ]).toEqual([
+    [1, "", notFound("1")],
+    [1, "", notFound("1")],
+    [1, "", notFound("7")],
+    [1, "", RUN_VIEW_USAGE],
+    [1, "", RUN_WATCH_USAGE],
+  ]);
+});
+
+// gh prints the answer of a `gh api` call no `--jq` reads as GitHub sent it, with no line end of
+// its own, a paginated answer's pages one after another (a list's made one list), and an error's
+// body the same; what `--jq` prints, and the JSON of gh's own commands, end with one. Measured on
+// 2026-11-18 from INFRA issue pods with gh 2.98.0 against cybermonklabs/legion: the viewer by `gh
+// api graphql` and `gh api /graphql` (implementer-reads.json, its raw files), a REST pull
+// request, `--paginate` of a list and of a GraphQL connection, `--slurp`, a 403's and a 401's
+// body, and the 404 of an endpoint GitHub does not serve (indented, `\r\n` line ends) and of an
+// object a served one has not got (one line) each ended in its last `}` or `]`; `--jq .number`,
+// `gh pr view --json number` and `gh pr list --json number` ended in a line end, and so did the
+// diff media type of a comparison, which is the diff's own. Catches: the world's line end after
+// every answer and between pages, and its 404 bodies indented with `\n` line ends.
+test("gh api prints GitHub's answer as it came, and --jq and gh's own JSON end with a line end", () => {
+  const dir = worldDir("approved_world");
+  const out = (...args: string[]) => String(asked(dir, "reviewer", args)[1]);
+  const viewer = `{"data":{"viewer":{"login":"${rigValue("world_review_app")}[bot]"}}}`;
+  expect(out("api", "graphql", "-f", "query=query{viewer{login}}")).toBe(viewer);
+  expect(out("api", "/graphql", "-f", "query=query{viewer{login}}")).toBe(viewer);
+  const pull = out("api", "repos/example/widgets/pulls/1001");
+  expect([pull.at(0), pull.at(-1)]).toEqual(["{", "}"]);
+  expect(out("api", "repos/example/widgets/pulls/1001", "--jq", ".number")).toBe("1001\n");
+  expect(out("pr", "view", "1001", "--json", "number")).toBe('{"number":1001}\n');
+  expect(out("pr", "list", "--repo", "example/widgets", "--json", "number")).toBe(
+    '[{"number":1001}]\n'
+  );
+  const paged = out(
+    ...["api", "graphql", "--paginate", "-f"],
+    'query=query($endCursor:String){repository(owner:"example",name:"widgets"){pullRequest(number:1001){reviewThreads(first:1,after:$endCursor){nodes{id}pageInfo{hasNextPage endCursor}}}}}'
+  );
+  expect([paged.split("}{").length, paged.includes("\n"), paged.at(-1)]).toEqual([2, false, "}"]);
+  for (const body of ["a first note", "a second note"])
+    expect(asked(dir, "reviewer", ["pr", "comment", "1001", "--body", body])[0]).toBe(0);
+  const comments = "repos/example/widgets/issues/1001/comments?per_page=1";
+  const listed = out("api", "--paginate", comments);
+  expect([JSON.parse(listed).length, listed.at(-1)]).toEqual([2, "]"]);
+  const slurped = out("api", "--paginate", "--slurp", comments);
+  expect([JSON.parse(slurped).map((page: unknown[]) => page.length), slurped.at(-1)]).toEqual([
+    [1, 1],
+    "]",
+  ]);
+  expect(asked(dir, "reviewer", ["api", "user"])).toEqual([
+    1,
+    JSON.stringify({
+      message: "Resource not accessible by integration",
+      documentation_url: "https://docs.github.com/rest/users/users#get-the-authenticated-user",
+      status: "403",
+    }),
+    "gh: Resource not accessible by integration (HTTP 403)\n",
+  ]);
+  expect(out("api", "repos/example/widgets/no-such-endpoint")).toBe(GITHUB_404);
+  expect(out("api", `${REVIEWS}/1`)).toBe(
+    notFoundOf("https://docs.github.com/rest/pulls/reviews#get-a-review-for-a-pull-request")
+  );
+  const diff = out(
+    ...["api", "repos/example/widgets/compare/main...legion/LWEVAL-1"],
+    ...["-H", "Accept: application/vnd.github.diff"]
+  );
+  expect([diff.startsWith("diff --git "), diff.endsWith("\n"), diff.endsWith("\n\n")]).toEqual([
+    true,
+    true,
+    false,
+  ]);
+}, 60_000);
 
 // Catches: a record nothing opens, where a run whose agents called no gh and no bun leaves no
 // calls.jsonl and scores as the rig error of a record nothing wrote rather than as the run that
@@ -2683,15 +3174,15 @@ test("GitHub keeps the threads: one a review opens is listed, a resolve reads ba
                   "PRRT_kwDOrig0001",
                   "greet.test.ts",
                   4,
-                  "style-bot[bot]",
+                  "style-bot",
                   expect.stringContaining("greets by name")
                 ),
-                node("PRRT_kwDOAAAAAc4AAD9001", "docs/cli.md", 5, WORLD_LOGIN, doc),
+                node("PRRT_kwDOAAAAAc4AAD9001", "docs/cli.md", 5, WORLD_AUTHOR, doc),
                 node(
                   "PRRT_kwDOAAAAAc4AAD9002",
                   ".github/workflows/greet.yml",
                   1,
-                  WORLD_LOGIN,
+                  WORLD_AUTHOR,
                   trigger
                 ),
               ],
@@ -2751,7 +3242,7 @@ test("GitHub keeps the threads: one a review opens is listed, a resolve reads ba
       ".data.repository.pullRequest.reviewThreads.nodes[2] | [.id, .comments.nodes[0].author.login, .comments.nodes[0].body] | @tsv"
     )
   );
-  expect(last.out).toBe(`PRRT_kwDOAAAAAc4AAD9002\t${WORLD_LOGIN}\t${fixed}`);
+  expect(last.out).toBe(`PRRT_kwDOAAAAAc4AAD9002\t${WORLD_AUTHOR}\t${fixed}`);
   // A thread the world has not got is GitHub's NOT_FOUND, and resolves nothing.
   expect(resolve("PRRT_kwDOfix001")).toEqual({
     code: 1,
@@ -3064,6 +3555,72 @@ test("every write the world does not model is refused 404, changes nothing, and 
   ).toEqual(unmodelled.map(() => [null, "unrouted"]));
 }, 60_000);
 
+// GitHub's GraphQL endpoint runs the `query` of the body it is posted, whichever path gh posts it
+// by: gh reads `gh api graphql` as a GraphQL call of its own, and posts `gh api /graphql` and `gh
+// api 'graphql?…'` as it posts any path, each field a key of the body, which the endpoint reads
+// no variable from (gh-threads.ts's `graphqlOf`), printing GitHub's answer, errors and all, with
+// exit 0. Measured on 2026-11-18 from an INFRA issue pod (implementer-reads.json): both spellings
+// answered the viewer as `gh api graphql` does, and `gh api /graphql -f query='query($n:Int!){…}'
+// -F n=2827` was answered GitHub's refusal of the variable it was not sent, exit 0. Catches: a
+// mutation sent the second way answered empty and exit 0 whatever it named, the graph never read
+// (INFRA-764's class search of writes, 2026-11-18); a field of that call read as a variable; its
+// errors read as gh's failure; and a mutation the world does not model taken that way.
+test("a mutation sent to /graphql or graphql?… is answered as GitHub's GraphQL endpoint answers it", () => {
+  const dir = worldDir("review_world");
+  const thread = "PRRT_kwDOrig0001";
+  const asVariable =
+    "mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}";
+  expect(ghCall(dir, "api", "/graphql", "-f", `query=${asVariable}`, "-f", `id=${thread}`)).toEqual(
+    {
+      code: 0,
+      out: JSON.stringify({
+        errors: [
+          {
+            extensions: {
+              value: null,
+              problems: [{ path: [], explanation: "Expected value to not be null" }],
+            },
+            locations: [{ line: 1, column: 10 }],
+            message: "Variable $id of type ID! was provided invalid value",
+          },
+        ],
+      }),
+      err: "",
+    }
+  );
+  const resolve = `mutation{resolveReviewThread(input:{threadId:"${thread}"}){thread{id isResolved}}}`;
+  expect(ghCall(dir, "api", "/graphql", "-f", `query=${resolve}`)).toEqual({
+    code: 0,
+    out: JSON.stringify({
+      data: { resolveReviewThread: { thread: { id: thread, isResolved: true } } },
+    }),
+    err: "",
+  });
+  const reply = `mutation{addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:"${thread}",body:"fixed"}){comment{body}}}`;
+  expect(ghCall(dir, "api", "graphql?x=1", "-f", `query=${reply}`)).toEqual({
+    code: 0,
+    out: JSON.stringify({
+      data: { addPullRequestReviewThreadReply: { comment: { body: "fixed" } } },
+    }),
+    err: "",
+  });
+  const minimize =
+    'mutation{minimizeComment(input:{subjectId:"PRRC_kwDOAAAAAc4AAC7001",classifier:OUTDATED}){minimizedComment{isMinimized}}}';
+  expect(ghCall(dir, "api", "/graphql", "-f", `query=${minimize}`)).toEqual({
+    code: 1,
+    out: GITHUB_404,
+    err: "gh: Not Found (HTTP 404)\n",
+  });
+  const threads =
+    'query=query{repository(owner:"example",name:"widgets"){pullRequest(number:1001){reviewThreads(first:10){nodes{id isResolved comments(last:1){nodes{body}}}}}}}';
+  const listed = ghCall(
+    dir,
+    ...["api", "graphql", "-f", threads, "--jq"],
+    "[.data.repository.pullRequest.reviewThreads.nodes[] | [.id, .isResolved, .comments.nodes[0].body]] | @json"
+  );
+  expect(listed.out).toBe(JSON.stringify([[thread, true, "fixed"]]));
+}, 60_000);
+
 // GitHub answers a comment on the pull request's conversation with the comment it made, and `gh
 // pr comment` prints that comment's URL; the world keeps each (gh-standin.ts's `conversation`)
 // and numbers them from 8001 in the order the run made them, as every read of the conversation
@@ -3261,7 +3818,7 @@ test("a pending review is the App's that wrote it alone, until it is submitted",
     '["APPROVED"]\n',
     [
       1,
-      `${notFoundOf("https://docs.github.com/rest/pulls/reviews#get-a-review-for-a-pull-request")}\n`,
+      notFoundOf("https://docs.github.com/rest/pulls/reviews#get-a-review-for-a-pull-request"),
       "gh: Not Found (HTTP 404)\n",
     ],
     "2\n",
@@ -3282,6 +3839,134 @@ test("a pending review is the App's that wrote it alone, until it is submitted",
     [0, "APPROVED\n", ""],
     "3\n",
   ]);
+}, 60_000);
+
+// GitHub answers each installation token as its own App's bot: the GraphQL viewer, and the
+// author of every comment a call of that token makes, is the implement App's bot for the
+// implementer and the merger and the review App's for every other role (rest-objects.ts's
+// `roleApp`, world.json's `logins`). Measured on 2026-11-18 from two INFRA issue pods: `gh api
+// graphql -f query='{viewer{login}}'` read the review App's bot with the tester's token
+// (prod-reads-19.json) and the implement App's with the implementer's (implementer-reads.json).
+// Catches: every role read as the review App's bot, the one the world's graph names, so an
+// implementer that told its own comments by the viewer read them as the reviewer's.
+test("the viewer and the author of what a call writes are the bot of the calling role's App", () => {
+  const { dir } = runDir({ fixture: true });
+  const implement = `${rigValue("world_implement_app")}[bot]`;
+  const review = `${rigValue("world_review_app")}[bot]`;
+  const viewer = [
+    "api",
+    "graphql",
+    "-f",
+    "query=query{viewer{login}}",
+    "--jq",
+    ".data.viewer.login",
+  ];
+  expect(
+    ["implementer", "merger", "reviewer", "tester", "architect"].map((role) => [
+      role,
+      answer(dir, viewer, role),
+    ])
+  ).toEqual([
+    ["implementer", implement],
+    ["merger", implement],
+    ["reviewer", review],
+    ["tester", review],
+    ["architect", review],
+  ]);
+  answer(dir, ["pr", "comment", "1001", "--body", "from the implementer"], "implementer");
+  const posted = ["api", "-X", "POST", "repos/example/widgets/issues/1001/comments"];
+  expect(
+    answer(dir, [...posted, "-f", "body=from the reviewer", "--jq", ".user.login"], "reviewer")
+  ).toBe(review);
+  expect(
+    answer(dir, [
+      "api",
+      "repos/example/widgets/issues/1001/comments",
+      "--jq",
+      "[.[].user.login] | @json",
+    ])
+  ).toBe(JSON.stringify([implement, review]));
+  const authored = ["pr", "view", "1001", "--json", "comments", "--jq"];
+  expect(
+    answer(
+      dir,
+      [...authored, "[.comments[] | [.author.login, .viewerDidAuthor]] | @json"],
+      "implementer"
+    )
+  ).toBe(
+    JSON.stringify([
+      [rigValue("world_implement_app"), true],
+      [rigValue("world_review_app"), false],
+    ])
+  );
+});
+
+// GitHub's GraphQL names a bot under `author` as a `Bot` by its App's slug, with no `[bot]`, and
+// under `viewer` and a thread's `resolvedBy` as a `User` with it; its REST API names it with it
+// too. Measured on 2026-11-18 against cybermonklabs/legion's merged pull requests: a resolved
+// thread's first comment's author `{__typename: "Bot", login: "legion-reviewer"}`, its
+// `resolvedBy` `{__typename: "User", login: "legion-implementer[bot]"}`; the REST comments'
+// `user.login` `legion-reviewer[bot]` and `gh pr view --json comments` `legion-implementer` (the
+// production reads). Catches: a thread comment's author named with its `[bot]`, the world's own
+// and a reply the run made alike, so a role that compared it to the viewer read them as one
+// account; and a REST comment that lost its `[bot]` with it.
+test("a thread comment's author is GraphQL's Bot by its slug, the viewer, resolvedBy and REST name it with its [bot]", () => {
+  const dir = worldDir("review_world");
+  const thread = "PRRT_kwDOrig0001";
+  const review = rigValue("world_review_app");
+  expect(
+    asked(dir, "reviewer", [
+      ...["api", "-X", "POST", "repos/example/widgets/pulls/1001/comments/7001/replies"],
+      ...["-f", "body=named each test for its case", "--jq", ".user.login"],
+    ])
+  ).toEqual([0, `${review}[bot]\n`, ""]);
+  const resolve = `query=mutation{resolveReviewThread(input:{threadId:"${thread}"}){thread{resolvedBy{__typename login}}}}`;
+  expect(answer(dir, ["api", "graphql", "-f", resolve], "reviewer")).toBe(
+    JSON.stringify({
+      data: {
+        resolveReviewThread: {
+          thread: { resolvedBy: { __typename: "User", login: `${review}[bot]` } },
+        },
+      },
+    })
+  );
+  const threads =
+    'query=query{viewer{login} repository(owner:"example",name:"widgets"){pullRequest(number:1001){reviewThreads(first:10){nodes{resolvedBy{login} comments(first:10){nodes{author{__typename login}}}}}}}}';
+  expect(JSON.parse(answer(dir, ["api", "graphql", "-f", threads], "reviewer"))).toEqual({
+    data: {
+      viewer: { login: `${review}[bot]` },
+      repository: {
+        pullRequest: {
+          reviewThreads: {
+            nodes: [
+              {
+                resolvedBy: { login: `${review}[bot]` },
+                comments: {
+                  nodes: [
+                    { author: { __typename: "Bot", login: "style-bot" } },
+                    { author: { __typename: "Bot", login: review } },
+                  ],
+                },
+              },
+            ],
+          },
+        },
+      },
+    },
+  });
+  expect(
+    answer(dir, [
+      "api",
+      "repos/example/widgets/pulls/1001/comments",
+      "--jq",
+      "[.[].user | [.login, .type]] | @json",
+    ])
+  ).toBe(
+    JSON.stringify([
+      ["style-bot[bot]", "Bot"],
+      [`${review}[bot]`, "Bot"],
+    ])
+  );
 }, 60_000);
 
 // With no `--json`, gh prints its own text of the pull request when stdout is no terminal, never
@@ -3507,10 +4192,13 @@ test("pr list lists the world's pull request where its filters match it, and not
 // reply's review and a comment on the conversation, so no list a read names is empty. Catches,
 // for each read: a field gh answers missing or in another kind, a field gh never prints, gh's text
 // answered as JSON, and an exit or a line gh does not give. The one difference is of state: gh
-// reads a review's `url` only past its first 100 reviews, which production's 137 reach.
+// reads a review's `url` only past its first 100 reviews, which production's 137 reach. The pin's
+// later reads of these commands (read on 2026-11-18, production-shapes.ts's `laterReads`) are not
+// held here: some read states this world's one pull request is not in (#2827 was conflicting,
+// and its head reported no check run), and one names an App's slug (`<app>`).
 const PINNED_GH = pinnedReads()
-  .map(({ name }) => name)
-  .filter((name) => /^gh pr (view|list|diff) /.test(name));
+  .filter(({ name, read_at }) => /^gh pr (view|list|diff) /.test(name) && read_at < "2026-11-18")
+  .map(({ name }) => name);
 /** Where the pinned reads' world is kept once it is built, with the run's writes in it, for each
  * row to copy: one build for the 55 reads, where a build each would be most of the suite. */
 const pinnedCache = temporaryDirectory("gh-standin-pinned");
@@ -3720,8 +4408,8 @@ test("the contents read answers the file at the commit from the run's own remote
   });
   expect(read(raw(fix, "nothing.ts"))).toEqual({
     code: 1,
-    // This row reads stdout as gh wrote it, so the newline gh ends an indented body with stays.
-    out: `${notFoundOf("https://docs.github.com/rest/repos/contents#get-repository-content")}\n`,
+    // This row reads stdout as gh wrote it, which ends in the body's `}` with no line end.
+    out: notFoundOf("https://docs.github.com/rest/repos/contents#get-repository-content"),
     err: "gh: Not Found (HTTP 404)\n",
   });
   const key = routeOf(raw(head))?.key ?? "";
@@ -4861,6 +5549,7 @@ test("the merge state is BLOCKED by an open thread where the base's rules requir
   const thread = (isResolved: boolean, state = "SUBMITTED") => ({
     list: [{ id: "PRRT_kwDOrig0001", isResolved, comments: [{ databaseId: 7001, state }] }],
     next: 7002,
+    reviews: 0,
   });
   const head = world.head;
   expect([
@@ -4945,7 +5634,7 @@ test("the review decision and the merge state follow the base's approvals, its r
   });
   const reviewed = (...states: string[]): Recorded[] =>
     states.map((state) => ({ argv: ["api"], review: { state, head } }));
-  const none = { list: [], next: 7001 };
+  const none = { list: [], next: 7001, reviews: 0 };
   const status = (at: ThreadWorld, calls: Recorded[], tip = head) => [
     reviewDecisionOf(at, calls),
     mergeStateOf(at, none, {}, tip, calls),

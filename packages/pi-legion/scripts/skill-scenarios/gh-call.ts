@@ -95,21 +95,31 @@ export function reviewsRoute(arg: string, repo: string): boolean {
  * `event=none`: the row of a round that submitted nothing, which is the one thing that round
  * did not do. None of the 40 runs recorded on 2026-11-10 took it; the reviewer's prompt
  * prescribes the one-step POST. The repository is read as the create's is, and for the same
- * reason: a submit of another repository's review submits nothing of this round's. */
+ * reason: a submit of another repository's review submits nothing of this round's. A query string
+ * on the path is the submit all the same, as it is on the create (`reviewsRoute`): GitHub reads
+ * the event from the POST's JSON body and names no query parameter of "Submit a review for a pull
+ * request". Read with the path alone, a submit of `…/reviews/<id>/events?x=1` was refused 404 as a
+ * write no answer of the world models (INFRA-764's class search of writes, 2026-11-18). */
 export function submitsReview(arg: string, repo: string): string | undefined {
-  const named = /^\/?repos\/(.+)\/pulls\/\d+\/reviews\/(\d+)\/events$/.exec(arg);
+  const named = /^\/?repos\/(.+)\/pulls\/\d+\/reviews\/(\d+)\/events(?:\?.*)?$/.exec(arg);
   return named?.[1] === repo ? named[2] : undefined;
 }
 
-/** The text `flag` carries in `arg`, or undefined when `arg` is not that flag: "" where the flag
- * stands alone and its value is the argument after it, and the value where it is written against
- * the flag — `--flag=value`, and `-Xvalue` for a short flag, both of which gh takes. */
-function written(arg: string, flag: string): string | undefined {
-  if (arg === flag) return "";
-  if (arg.startsWith(`${flag}=`)) return arg.slice(flag.length + 1);
-  return !flag.startsWith("--") && arg.startsWith(flag) && arg.length > flag.length
-    ? arg.slice(flag.length)
-    : undefined;
+/** The value `flag` carries in `arg` as gh's flag parser (spf13/pflag's `parseLongArg` and
+ * `parseSingleShortArg`) reads it: `null` where the flag stands alone and takes the argument after
+ * it, the text after `=` for a long flag (`--body=` is the empty value), and for a short flag the
+ * text after `=` where any follows it (`-b=x` is `x`) and its whole rest otherwise (`-bx` is `x`,
+ * and `-b=` is `=`); undefined where `arg` is not that flag. `--body=` and `-b=` were read as the
+ * flag standing alone, its value the argument after it, so `gh pr edit 1001 --body=` named no body
+ * and was refused 404 as a write the world does not model (found on 2026-11-18 in review of
+ * INFRA-764's empty body edit). */
+function written(arg: string, flag: string): string | null | undefined {
+  if (arg === flag) return null;
+  if (flag.startsWith("--"))
+    return arg.startsWith(`${flag}=`) ? arg.slice(flag.length + 1) : undefined;
+  if (!arg.startsWith(flag)) return undefined;
+  const rest = arg.slice(flag.length);
+  return rest.length > 1 && rest.startsWith("=") ? rest.slice(1) : rest;
 }
 
 /** Whether `argv` carries any of `flags`, in any of the spellings gh takes it in (`written`). */
@@ -129,7 +139,7 @@ export function valueAt(
 ): string | undefined {
   for (const flag of flags) {
     const value = written(argv[index] ?? "", flag);
-    if (value !== undefined) return value === "" ? argv[index + 1] : value;
+    if (value !== undefined) return value === null ? argv[index + 1] : value;
   }
   return undefined;
 }

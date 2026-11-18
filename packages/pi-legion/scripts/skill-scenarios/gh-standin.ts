@@ -123,6 +123,7 @@ import {
   OWN_REVIEW,
   REVIEW_NODE,
   recordedCalls,
+  restLogin,
   reviewDecisionOf,
   routeAnswer,
   type ThreadWorld,
@@ -387,6 +388,9 @@ function prWriteModelled(): boolean {
     const arg = args[index] ?? "";
     const body = valueAt(args, index, [...PR_BODY_FLAGS, ...PR_BODY_FILE_FLAGS]);
     const repo = valueAt(args, index, REPO_FLAGS);
+    // A body file named by the empty value (`--body-file=`) is no file gh can read, so the edit
+    // is no edit the world takes (gh's `pr edit` fails to read it).
+    if (valueAt(args, index, PR_BODY_FILE_FLAGS) === "") return false;
     if (body !== undefined || repo !== undefined) {
       if (repo !== undefined && repo !== world.repo) return false;
       bodied ||= body !== undefined;
@@ -579,9 +583,12 @@ function comparison(): string | Record<string, unknown> | undefined {
   if (!REF.test(base) || !REF.test(head)) return undefined;
   const range = [`${base}...${head}`];
   // The diff media type asks for the comparison as the diff itself, which is what the run's own
-  // remote prints for the range; a remote that cannot resolve the two refs prints nothing and
-  // the call falls through to the routes.
-  if (DIFF_MEDIA_TYPE.test(joined)) return fromRemote("diff", "--no-renames", ...range);
+  // remote prints for the range, to its last line end, as GitHub's body ends (measured on
+  // 2026-11-18: the diff media type of a compare and of a pull request of cybermonklabs/legion each
+  // ended in `\n`, which gh printed as it came); a remote that cannot resolve the two refs prints
+  // nothing and the call falls through to the routes.
+  if (DIFF_MEDIA_TYPE.test(joined))
+    return remoteBytes("diff", "--no-renames", ...range)?.toString();
   const ahead = fromRemote("rev-list", "--count", `${base}..${head}`);
   const behind = fromRemote("rev-list", "--count", `${head}..${base}`);
   const counts = fromRemote("diff", "--numstat", "--no-renames", ...range);
@@ -681,27 +688,39 @@ function refuse(text: string, documentation?: string): never {
   process.stderr.write(text);
   exit(1);
 }
-/** The body GitHub answers a 404 with, as gh prints it on stdout (indented, as gh prints an error
- * body) before `gh: Not Found (HTTP 404)` on stderr. Measured on 2026-11-17 at 17:28Z: `gh api
- * --method POST repos/cybermonklabs/legion/compare/main...main -f x=1` printed exactly this with
- * GitHub's REST reference as its `documentation_url`, the page GitHub names for an endpoint it
- * does not serve, and exit 1. A served endpoint's 404 for an object it does not hold names that
- * endpoint's own page (`documentation`: a missing review comment's reply names "Create a reply
- * for a review comment"). */
-function notFoundBody(documentation = "https://docs.github.com/rest"): string {
-  return `${JSON.stringify({ message: "Not Found", documentation_url: documentation, status: "404" }, null, 2)}\n`;
+/** The body GitHub answers a 404 with, as gh prints it on stdout before `gh: Not Found (HTTP 404)`
+ * on stderr: GitHub's bytes, with no line end after them, which gh copies as they came. For an
+ * endpoint GitHub does not serve, the body is indented with `\r\n` line ends and names GitHub's
+ * REST reference (`documentation` omitted); for an object a served endpoint does not hold, it is
+ * one line naming that endpoint's own page (`documentation`: a missing review comment's reply
+ * names "Create a reply for a review comment"). Measured on 2026-11-18 from an INFRA issue pod
+ * with gh 2.98.0: `gh api repos/cybermonklabs/legion/no-such-endpoint` printed the first form and
+ * `gh api repos/cybermonklabs/legion/pulls/2827/reviews/1` the second (naming "Get a review for a
+ * pull request"), each exit 1 and ending in its `}`; the world printed both indented with `\n`
+ * line ends and one more after the last. */
+function notFoundBody(documentation?: string): string {
+  if (documentation !== undefined)
+    return JSON.stringify({
+      message: "Not Found",
+      documentation_url: documentation,
+      status: "404",
+    });
+  return '{\r\n  "message": "Not Found",\r\n  "documentation_url": "https://docs.github.com/rest",\r\n  "status": "404"\r\n}';
 }
 /** Refuses this call as gh prints an HTTP error GitHub answered `gh api` with: `body`, GitHub's
- * error body, on stdout as GitHub sent it, `text`, gh's line for it, on stderr, and `status`.
- * gh runs no `--jq` over an error's body: measured on 2026-11-17 from a Legion issue pod with the
- * role App token its gh gives, `gh api repos/cybermonklabs/legion/branches/main/protection --jq
- * '.required_status_checks.contexts[]'` printed GitHub's 403 body on one line, `gh: Resource not
- * accessible by integration (HTTP 403)` on stderr, and exited 1, and `gh api
- * repos/cybermonklabs/legion/rulesets/1` (no ruleset of that repository) printed `{"message":"Not
+ * error body, on stdout as GitHub sent it, on one line with no line end after it, `text`, gh's
+ * line for it, on stderr, and `status`. gh runs no `--jq` over an error's body: measured on
+ * 2026-11-17 from a Legion issue pod with the role App token its gh gives, `gh api
+ * repos/cybermonklabs/legion/branches/main/protection --jq '.required_status_checks.contexts[]'`
+ * printed GitHub's 403 body on one line, `gh: Resource not accessible by integration (HTTP 403)`
+ * on stderr, and exited 1, and `gh api repos/cybermonklabs/legion/rulesets/1` (no ruleset of that
+ * repository) printed `{"message":"Not
  * Found","documentation_url":"https://docs.github.com/rest/repos/rules#get-a-repository-ruleset",
- * "status":"404"}` on one line and `gh: Not Found (HTTP 404)`. A body of none prints nothing. */
+ * "status":"404"}` on one line and `gh: Not Found (HTTP 404)`; on 2026-11-18 that read and `gh api
+ * repos/cybermonklabs/legion/installation` (a 401) each ended in the body's `}`, no line end after
+ * it (the implementer's readings, m/installation.out). A body of none prints nothing. */
 function refuseWith(body: unknown, text: string, status: number): never {
-  if (body !== undefined) process.stdout.write(`${JSON.stringify(body)}\n`);
+  if (body !== undefined) process.stdout.write(JSON.stringify(body));
   process.stderr.write(text);
   exit(status);
 }
@@ -919,7 +938,7 @@ function commentReviews(): Json[] {
     return [
       {
         id,
-        user: { login: isObject(comment.author) ? comment.author.login : "" },
+        user: { login: restLogin(comment.author) },
         body: "",
         state: "COMMENTED",
         commit_id: isObject(comment.commit) ? comment.commit.oid : "",
@@ -1195,8 +1214,9 @@ function headRuns(): ReportedRun[] | undefined {
     ? undefined
     : reportedRuns(checkRunsOn(routes, repo, tip), tip);
 }
-/** How gh writes the time a check ran (Go's `time.Duration` string, to the second: `8s`, `10m52s`,
- * `1h0m5s`), and `0` for one with no start or end or that ran no time. */
+/** How gh writes the time a check ran (its `addRow`: the Go `time.Duration` from start to end,
+ * which for GitHub's times, whole seconds, is `8s`, `10m52s`, `1h0m5s`), and `0` for one with no
+ * start or end or that ran no time. */
 function elapsed(started: string | undefined, completed: string | undefined): string {
   const seconds =
     started === undefined || completed === undefined
@@ -1207,30 +1227,49 @@ function elapsed(started: string | undefined, completed: string | undefined): st
   if (hours > 0) return `${hours}h${minutes}m${seconds % 60}s`;
   return minutes > 0 ? `${minutes}m${seconds % 60}s` : `${seconds}s`;
 }
-/** `gh pr checks`, as gh 2.98.0 prints it to a pipe: one line per check, five fields a tab apart —
- * its name, `pass`, `fail`, `skipping` or `pending`, the time it ran (`elapsed`), its link and
- * its description, which gh reads of a status and never of a check run, so the line ends in a tab
- * — failed checks first and then by name, as gh sorts them (a pass and a skip it sorts with a
- * comparison that orders neither, whose order this does not copy); and gh's own exit, 8 while a
- * check is pending and 1 once one failed. Measured on 2026-11-18 (prod-reads-19.json): #4326's
+/** gh's bucket for a check's state, its conclusion once it completed and its status before, in
+ * GitHub's GraphQL spelling (gh 2.98.0's pkg/cmd/pr/checks/aggregate.go, `aggregateChecks`): a
+ * success passes; a skip and a neutral conclusion skip; an error, a failure, a time-out and an
+ * action required fail; a cancel is a bucket of its own; and every other state — `STALE`,
+ * `STARTUP_FAILURE`, and each status of a check not yet completed — is pending. The world read a
+ * neutral conclusion as a pass and every conclusion it did not name as a failure. */
+const CHECK_BUCKETS: Readonly<Record<string, string>> = {
+  SUCCESS: "pass",
+  SKIPPED: "skipping",
+  NEUTRAL: "skipping",
+  ERROR: "fail",
+  FAILURE: "fail",
+  TIMED_OUT: "fail",
+  ACTION_REQUIRED: "fail",
+  CANCELLED: "cancel",
+};
+/** `gh pr checks`, as gh 2.98.0 prints it to a pipe (pkg/cmd/pr/checks's checks.go and
+ * output.go): one line per check, five fields a tab apart — its name, its bucket
+ * (`CHECK_BUCKETS`, a cancel printed `fail`), the time it ran (`elapsed`), its link and its
+ * description, which gh reads of a status and never of a check run, so the line ends in a tab —
+ * failed checks first and then by name, as gh sorts them (every other two buckets it sorts with a
+ * comparison that orders neither, whose order this does not copy); and gh's own exit, 1 once a
+ * check failed, else 8 while one is pending, else 0, a cancel counting as neither. A head that
+ * reports no check is gh's refusal, `no checks reported on the '<branch>' branch` on stderr,
+ * nothing on stdout and exit 1. Measured on 2026-11-18 (prod-reads-19.json, item 25): #4326's
  * checks printed `changes\tpass\t8s\t<link>\t`, `dispatch-two-builds / …\tpass\t10m52s\t<link>\t`
- * and each skipped job `skipping\t0`, exit 0; the world printed `<seconds>s` and no description.
- * Undefined for any other call, and for a run with no world. */
+ * and each skipped job `skipping\t0`, exit 0, and #2827, whose head reported none, the refusal
+ * naming its branch; the world printed `<seconds>s` and no description, and for a head with none
+ * nothing and exit 0. Undefined for any other call, and for a run with no world. */
 function prChecks(): { text: string; status: number } | undefined {
   if (as !== "gh" || args[0] !== "pr" || args[1] !== "checks") return undefined;
   const runs = headRuns();
   if (runs === undefined) return undefined;
+  if (runs.length === 0) {
+    handler = "pr checks";
+    refuseWith(undefined, `no checks reported on the '${world?.branch ?? ""}' branch\n`, 1);
+  }
   const lines = runs.map((run) => {
-    let bucket = "pending";
-    if (run.status === "completed")
-      bucket =
-        run.conclusion === "skipped"
-          ? "skipping"
-          : ["success", "neutral"].includes(run.conclusion ?? "")
-            ? "pass"
-            : "fail";
+    const state = (run.status === "completed" ? (run.conclusion ?? "") : run.status).toUpperCase();
+    const bucket = CHECK_BUCKETS[state] ?? "pending";
     const time = elapsed(run.started_at, run.completed_at);
-    return { bucket, run, line: `${run.name}\t${bucket}\t${time}\t${run.details_url}\t` };
+    const shown = bucket === "cancel" ? "fail" : bucket;
+    return { bucket, run, line: `${run.name}\t${shown}\t${time}\t${run.details_url}\t` };
   });
   const order = (one: string, other: string) => (one < other ? -1 : one > other ? 1 : 0);
   lines.sort(
@@ -2124,45 +2163,46 @@ function fromRun(kind: string, held: unknown): unknown {
   }
   return held;
 }
+/** The account every pane's gh configuration names: the user packages/daemon/internal/ghconfig's
+ * `Hosts` writes into the hosts.yml of a role's claim (its `GitUser`). */
+const PANE_GH_ACCOUNT = "x-access-token";
+/** The token line of the pane's gh as gh prints it: the installation token the rig renders into
+ * every pane's hosts.yml (daemon-pane.ts's `RIG_GH_TOKEN`: `ghs_` and 36 characters) masked as gh
+ * 2.98.0 masks a token (pkg/cmd/auth/status's `maskToken`: a known prefix, `ghs_` among them, then
+ * a `*` for each character after it). It is written from that shape alone: no stand-in reads a
+ * token, so none can carry one into an answer. */
+const PANE_GH_TOKEN_SHOWN = `ghs_${"*".repeat(36)}`;
 /** `gh auth status` as gh 2.98.0 prints it to a pipe for the pane's own gh configuration
- * (`$GH_CONFIG_DIR/hosts.yml`, which the daemon renders for a role's claim: packages/daemon's
- * `ghconfig.Hosts`, daemon-pane.ts's `RIG_GH_TOKEN`): the host, the account the file names and
- * the file, the account active, the protocol git uses, and the token masked after its last `_`,
- * or whole with `-t`/`--show-token`; `-a`/`--active` prints the one account the same. An
- * installation token holds no scopes, so gh prints no `Token scopes` line for it. Measured on
- * 2026-11-18 from two INFRA issue pods (prod-reads-19.json): exit 0, nothing on stderr, and
- * `github.com`, `  ✓ Logged in to github.com account x-access-token (<GH_CONFIG_DIR>/hosts.yml)`,
- * `  - Active account: true`, `  - Git operations protocol: https`, `  - Token: ghs_***…` on
- * stdout. The world printed `{"login":"widgets-reviewer[bot]"}` to every role. Any other flag
- * (`--json`, `--hostname` of another host) is refused as a call the world does not model, and a
- * pane with no hosts.yml is the rig's own fault, which ends the call with 2, naming the file. */
+ * (`$GH_CONFIG_DIR/hosts.yml`, which the daemon renders for a role's claim): the host, the account
+ * (PANE_GH_ACCOUNT) and the file, the account active, the protocol git uses, and the token masked
+ * (PANE_GH_TOKEN_SHOWN); `-a`/`--active` prints the one account the same. An installation token
+ * holds no scopes, so gh prints no `Token scopes` line for it. Measured on 2026-11-18 from two
+ * INFRA issue pods (prod-reads-19.json): exit 0, nothing on stderr, and `github.com`, `  ✓ Logged
+ * in to github.com account x-access-token (<GH_CONFIG_DIR>/hosts.yml)`, `  - Active account:
+ * true`, `  - Git operations protocol: https`, `  - Token: ghs_***…` on stdout. The world printed
+ * `{"login":"widgets-reviewer[bot]"}` to every role. The file is looked for and never read. Any
+ * other flag is refused as a call the world does not model: `-t`/`--show-token`, which prints the
+ * token itself, `--json`, `--hostname` of another host. A pane with no hosts.yml is the rig's own
+ * fault, which ends the call with 2, naming the file. */
 function authStatus(): string {
-  if (args.slice(2).some((arg) => !["-a", "--active", "-t", "--show-token"].includes(arg))) {
+  if (args.slice(2).some((arg) => !["-a", "--active"].includes(arg))) {
     handler = "unrouted";
     refuse(NOT_FOUND);
   }
   const dir = process.env.GH_CONFIG_DIR ?? "";
   const file = `${dir.replace(/\/+$/, "")}/hosts.yml`;
-  const read: unknown = existsSync(file) ? Bun.YAML.parse(readFileSync(file, "utf8")) : {};
-  const host = isObject(read) && isObject(read["github.com"]) ? read["github.com"] : {};
-  const token = typeof host.oauth_token === "string" ? host.oauth_token : "";
-  if (dir === "" || token === "") {
+  if (dir === "" || !existsSync(file)) {
     process.stderr.write(
-      `gh: ${file} names no github.com token, so gh auth status has no account to show (daemon-pane.ts's workerPane renders it)\n`
+      `gh: ${file} is not there, so gh auth status has no account to show (daemon-pane.ts's workerPane renders it)\n`
     );
     exit(2);
   }
-  const prefix = token.slice(0, token.lastIndexOf("_") + 1);
-  const shown =
-    args.includes("-t") || args.includes("--show-token")
-      ? token
-      : `${prefix}${"*".repeat(token.length - prefix.length)}`;
   return [
     "github.com",
-    `  ✓ Logged in to github.com account ${String(host.user ?? "")} (${file})`,
+    `  ✓ Logged in to github.com account ${PANE_GH_ACCOUNT} (${file})`,
     "  - Active account: true",
-    `  - Git operations protocol: ${String(host.git_protocol ?? "https")}`,
-    `  - Token: ${shown}`,
+    "  - Git operations protocol: https",
+    `  - Token: ${PANE_GH_TOKEN_SHOWN}`,
     "",
   ].join("\n");
 }
@@ -2360,7 +2400,7 @@ function reviewCommentJson(thread: Json, comment: Json, form: "pull" | "review")
   const id = Number(comment.databaseId);
   const self = `${api}/comments/${id}`;
   const pull = `${api}/${world?.pr}`;
-  const login = isObject(comment.author) ? String(comment.author.login ?? "") : "";
+  const login = restLogin(comment.author);
   const commit = isObject(comment.commit) ? String(comment.commit.oid ?? "") : "";
   const original = isObject(comment.originalCommit)
     ? String(comment.originalCommit.oid ?? "")
@@ -2670,7 +2710,7 @@ const jqIndex = args.findIndex((arg) => arg === "--jq" || arg === "-q");
 const filter = jqIndex >= 0 ? args[jqIndex + 1] : undefined;
 const texts = docs.map((doc) => (typeof doc === "string" ? doc : JSON.stringify(doc)));
 // gh runs `--jq` over each page on its own, and without it prints the pages of a list as the one
-// list they make.
+// list they make and every other answer's pages back to back, as they came.
 let text: string;
 if (filter !== undefined) {
   text = "";
@@ -2683,24 +2723,30 @@ if (filter !== undefined) {
     }
   }
 } else if (docs.length > 1 && docs.every(Array.isArray)) text = JSON.stringify(docs.flat());
-else text = texts.join("\n");
+else text = texts.join("");
 // GitHub answers a GraphQL query it refuses, or finds part of it naming nothing, with `errors`
-// beside whatever data it found, and gh prints its body as GitHub sent it, with no line end of its
-// own, then `gh: ` and each error's message on a line of its own, and exits 1: measured on
-// 2026-11-17, a query naming two pull requests GitHub has not got printed its body, then `gh:
-// Could not resolve to a PullRequest with the number of 999999.` and on the next line the second
-// message alone (and so did the two fields of a query its schema has not got). gh reads the
-// errors so only where it reads the call as GraphQL (`graphMode`); posted by another spelling of
-// the endpoint, the body is the whole answer and the call exits 0.
+// beside whatever data it found, and gh prints its body as GitHub sent it, then `gh: ` and each
+// error's message on a line of its own, and exits 1: measured on 2026-11-17, a query naming two
+// pull requests GitHub has not got printed its body, then `gh: Could not resolve to a PullRequest
+// with the number of 999999.` and on the next line the second message alone (and so did the two
+// fields of a query its schema has not got). gh reads the errors so only where it reads the call
+// as GraphQL (`graphMode`); posted by another spelling of the endpoint, the body is the whole
+// answer and the call exits 0.
 const graphErrors = graphMode ? (graphPages ?? []).flatMap((page) => page.errors ?? []) : [];
-if (text !== "")
-  process.stdout.write(
-    (verbatim || graphErrors.length > 0) && filter === undefined
-      ? text
-      : text.endsWith("\n")
-        ? text
-        : `${text}\n`
-  );
+// gh prints the answer of a `gh api` call no `--jq` reads as GitHub sent it, with no line end of
+// its own: GitHub's body ends with none, and a paginated answer's pages follow one another with
+// nothing between them. So does a text of gh's own (`verbatim`). Every other answer ends with a
+// line end: what `--jq` prints, and a JSON answer of gh's own commands (`gh pr view --json`, `gh
+// pr list --json`), which gh encodes with one. Measured on 2026-11-18 from INFRA issue pods with
+// gh 2.98.0 against cybermonklabs/legion: `gh api graphql`, `gh api /graphql` and `gh api
+// 'graphql?x=1'` of the viewer (the implementer's readings, m/), a REST pull request,
+// `--paginate` of a list (its pages made one list), `--paginate --slurp` (`[[…],[…]]`) and
+// `--paginate` of a GraphQL connection (its six pages `{…}{…}…` on one line) each ended in its
+// last `}` or `]`, while `--jq .number` ended in a line end, and so did `gh pr view --json number`
+// and `gh pr list --json number`. The world ended every answer with a line end and put one
+// between pages.
+const asSent = filter === undefined && (verbatim || (as === "gh" && args[0] === "api"));
+if (text !== "") process.stdout.write(asSent || text.endsWith("\n") ? text : `${text}\n`);
 if (route?.stderr && own === undefined) process.stderr.write(route.stderr);
 if (graphErrors.length > 0)
   process.stderr.write(`gh: ${graphErrors.map((error) => error.message).join("\n")}\n`);

@@ -510,7 +510,11 @@ export interface PullFacts {
  * `mergeStateStatus` in GitHub's lower case, and the state gh's `OPEN`. It was opened when the
  * first commit of its branch was made, by that commit's author — the account its address is, or
  * the name it carries, which is a role App's bot (rig.sh's role_identity) — as the implementer
- * opens the pull request of the branch it pushed. */
+ * opens the pull request of the branch it pushed. GitHub's REST API names an empty body `null`,
+ * where its GraphQL and gh read it as `""`: measured on 2026-11-18, cybermonklabs/legion #612
+ * (the one pull request of its first 4000 with an empty body) read `body` `null` through `gh api
+ * repos/<o>/<r>/pulls/612`, `""` through GraphQL and `gh pr view --json body`, and `--\n\n`
+ * closing `gh pr view`; the world answered the REST `body` `""`. */
 export function pullRequestJson(view: Json, facts: PullFacts, form: "simple" | "full"): Json {
   const { runDir, repo, pr, accounts } = facts;
   const api = `${API}/repos/${repo}`;
@@ -554,7 +558,7 @@ export function pullRequestJson(view: Json, facts: PullFacts, form: "simple" | "
     locked: false,
     title: view.title ?? "",
     user: userJson(author, accounts),
-    body: view.body ?? "",
+    body: view.body === "" || view.body === undefined ? null : view.body,
     labels: [],
     milestone: null,
     active_lock_reason: null,

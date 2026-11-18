@@ -305,9 +305,13 @@ function laterReads(file: string): {
   const bases = new Set(
     [...commands.matchAll(/compare\/([0-9a-f]{40})\.\.\./g)].map((found) => found[1] ?? "")
   );
-  const heads = new Set([...commands.matchAll(SHA)].map(([sha]) => sha).filter((sha) => !bases.has(sha)));
+  const heads = new Set(
+    [...commands.matchAll(SHA)].map(([sha]) => sha).filter((sha) => !bases.has(sha))
+  );
   if (bases.size > 1 || heads.size > 1)
-    throw new Error(`${file} names more than one base or head commit, which one placeholder cannot tell apart`);
+    throw new Error(
+      `${file} names more than one base or head commit, which one placeholder cannot tell apart`
+    );
   const branches = new Set(
     set.reads.flatMap(({ answer }) =>
       isObject(answer) && typeof answer.headRefName === "string" ? [answer.headRefName] : []
