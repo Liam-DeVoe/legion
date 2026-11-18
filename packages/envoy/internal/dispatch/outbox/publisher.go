@@ -94,6 +94,15 @@ type Deps struct {
 	// roles.Buckets for both, reading on Publisher's connection.
 	RoleClaims roles.ClaimStore
 	Sessions   roles.SessionLookup
+	// Registry is Envoy's session registry, which a person's reply in a thread reads the state
+	// of each of the thread's sessions from (hearThreads): where one is live or unresponsive, the
+	// reply reaches the thread and no session that only a document credits. It is the read an
+	// issue claim makes of its holder (api's fetchHolderLiveness), so the registry's own windows
+	// judge the sessions rather than Dispatch's (Sessions above). cmd/dispatch passes an
+	// envoy.Client on the address and token the API server's client uses. A nil reader is the
+	// registry not answering: the reply reaches the credits as well, as it does when a read
+	// fails.
+	Registry RegistryReader
 	// KeptLanes is where the handover behind a keep reads the role's kept lane and its drain
 	// cursor, to tell whether the copy just kept is the one that lane's drain would hand over
 	// next (handOverKept). cmd/dispatch passes the same bus.Client it publishes through, whose
@@ -870,6 +879,11 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 // refuse, or be refused by, whatever another batch runs beside it (store.ErrNestedAcquire). The
 // first pass, which answers nothing, writes nothing.
 //
+// Between the two passes, with the gate given back and no pooled connection held, the batch reads
+// from Envoy's registry the state of the sessions of each thread a person's reply is in
+// (hearThreads), which decides whether that reply reaches the credits of its documents
+// (routing.threadHeard, creditFilter).
+//
 // It answers the roles it resolved for those attempts, which the batch's own role routes read
 // rather than resolving again (resolveRoleHolders): a comment routed to the role it mentions
 // names one role on both roads.
@@ -907,6 +921,7 @@ func resolveDestinations(ctx context.Context, deps Deps, events []*batchEvent) (
 	// What the attempts that name no session yet hold back, which the destinations below read
 	// of every session they would send a copy to (unpinnedRoleMentions, mentionHolds).
 	resolved := resolveUnpinnedRoleMentions(ctx, deps, found.readings()...)
+	hearThreads(ctx, deps, resolvable, found)
 	for _, event := range resolvable {
 		event.destinationsOf, event.mentionPending, event.resolveErr = eventDestinations(ctx, deps, event, found)
 		event.resolveLost = lostToContextEnd(ctx, event.resolveErr)
@@ -1230,12 +1245,13 @@ func addFollowerRoutes(event model.Event, look lookup, d *destinations) error {
 // addPrimaryDocumentAuthors delivers a person's comment, or its edit, on an issue with no route and
 // no session claimant (takesPrimaryAuthors) to every session the issue's primary document credits,
 // each on its own topic: a session that writes an issue's spec without a claim still hears the
-// comments on it. The comment's own thread does not matter: a comment in an ask's thread, or a
-// reply, reaches those sessions too. The batch reads them
-// for all such events in one query (loadLookups, loadPrimaryDocumentAuthors); when that query
-// failed, its error ends the event's destinations here. The actor is skipped (recipientFilter),
-// and a session whose own mention of the comment delivers it is left to that mention
-// (destinations.addSession, the mention rule).
+// comments on it. A comment in an ask's thread, or a reply, reaches those sessions too, apart from
+// where a session of its thread counts: then the reply answers the thread, and the thread rule
+// leaves out every session the document credits, apart from one whose copy a mention of the
+// comment decides (creditFilter). The batch reads them for all such events in one query
+// (loadLookups, loadPrimaryDocumentAuthors); when that query failed, its error ends the event's
+// destinations here. The actor is skipped (recipientFilter), and a session whose own mention of
+// the comment delivers it is left to that mention (destinations.addSession, the mention rule).
 func addPrimaryDocumentAuthors(event model.Event, routing routing, look lookup, d *destinations) error {
 	if !takesPrimaryAuthors(event, routing) {
 		return nil
@@ -1244,10 +1260,14 @@ func addPrimaryDocumentAuthors(event model.Event, routing routing, look lookup, 
 	if err != nil {
 		return err
 	}
+	credits, err := newCreditFilter(event, routing, look, d)
+	if err != nil {
+		return err
+	}
 	filter := newRecipientFilter(event)
 	var targets []string
 	for _, sessionID := range authors {
-		if filter.keep(sessionID) {
+		if credits.keeps(sessionID) && filter.keep(sessionID) {
 			targets = append(targets, sessionID)
 		}
 	}
@@ -1287,26 +1307,28 @@ func addPrimaryDocumentAuthors(event model.Event, routing routing, look lookup, 
 // - so no comment loses every destination. Those credits are the rows of the thread read the
 // thread itself does not name (threadRecipient.fromThread) and the whole of a document's credits
 // under a comment at the head of a thread anchored on it. The read is made all the same, so a
-// credit read that failed still ends the event's destinations and backs it off.
+// credit read that failed still ends the event's destinations and backs it off. A person's reply
+// on an issue nobody routes or claims leaves the same credits out where a session of its thread
+// is live or unresponsive (takesThreadRule, routing.threadHeard): the reply answers the thread,
+// whose sessions keep it. Both rules are one filter (creditFilter).
 //
 // Kept whatever the claim: a comment on a project document, which names no issue; a comment on an
 // issue a person claims, which leaves routing.claimant empty; a comment on an unclaimed issue,
-// routed or not; a session that wrote in the thread, which keeps the person's later replies; a
-// session the comment names whose copy of it a mention decides - one whose mention failed before
-// the batch read it, which takes this copy under that mention's key, for a new comment
-// (mentionDeliveries.fallbackKeys) and for its edit (lookup.mentionFallbackKeys) alike, and one a
-// mention of a new comment still decides (mentionDeliveries.decidesCopyFor), whose copy the
-// mention rule holds back or keeps as a fallback row rather than this filter dropping it before
-// that rule is asked (destinations.addSession, destinations.leftTo); and artifact.human_edited, a
-// person's edit of the document itself.
+// routed or not, apart from the thread rule's reply; a session that wrote in the thread, which
+// keeps the person's later replies; a session the comment names whose copy of it a mention
+// decides - one whose mention failed before the batch read it, which takes this copy under that
+// mention's key, for a new comment (mentionDeliveries.fallbackKeys) and for its edit
+// (lookup.mentionFallbackKeys) alike, and one a mention of a new comment still decides
+// (mentionDeliveries.decidesCopyFor), whose copy the mention rule holds back or keeps as a
+// fallback row rather than this filter dropping it before that rule is asked
+// (destinations.addSession, destinations.leftTo); and artifact.human_edited, a person's edit of
+// the document itself.
 func addAuthorRoutes(event model.Event, routing routing, look lookup, d *destinations) error {
 	filter := newRecipientFilter(event)
-	// claimed is whether the claimant of this event's issue was added above (addClaimantRoute),
-	// which is where the credits of a document are left out, and failedMentions the sessions this
-	// comment names and no mention of it reached. Both are askTheClaim's to decide, and only the
-	// two arms that read credits ask it: no other event type leaves a session out.
-	var claimed bool
-	var failedMentions map[string]string
+	// credits is whether this event leaves the credits of a document out, and which of them it
+	// keeps all the same (creditFilter). It is askTheCredits' to read, and only the two arms
+	// that read credits ask it: no other event type leaves a session out.
+	var credits creditFilter
 	var targets []string
 	consider := func(sessionID string) {
 		if filter.keep(sessionID) {
@@ -1322,50 +1344,21 @@ func addAuthorRoutes(event model.Event, routing routing, look lookup, d *destina
 		}
 		return nil
 	}
-	// askTheClaim decides, once for the arm that asks it, whether this event leaves the credits
-	// of a document out, and reads the one thing that exempts a session from that and is not in
-	// the destination build already: the sessions this comment names and no mention of it
-	// reached. A new comment's are the reading the build holds (eventDestinations), and an edit's
-	// are read of its comment alone (lookup.mentionFallbackKeys), which adds no reading of that
-	// comment anywhere else. An edit whose payload names no mention can exempt nobody that way,
-	// so it asks nothing. A read that failed ends the event's destinations, as every other lookup
-	// here does.
-	//
-	// It is asked once per arm and never per credit row: the pass that only records the ids an
-	// event asks for answers no row at all (wanted), so an ask made per row would register no id
-	// and the resolved pass would find nothing read for it.
-	askTheClaim := func() error {
-		claimed = takesClaimantRoute(event, routing.claimant)
-		if !claimed {
-			return nil
-		}
-		switch {
-		case event.Type == "comment.created":
-			failedMentions = d.mentions.fallbackKeys
-		case event.Type == "comment.edited" && payloadHasMentions(event.Payload):
-			keys, err := look.mentionFallbackKeys(payloadString(event.Payload, "id"))
-			if err != nil {
-				return err
-			}
-			failedMentions = keys
-		}
-		return nil
+	// askTheCredits reads the credit filter once for the arm that asks it (newCreditFilter),
+	// never per credit row: the pass that only records the ids an event asks for answers no row
+	// at all (wanted), so an ask made per row would register no id and the resolved pass would
+	// find nothing read for it.
+	askTheCredits := func() error {
+		var err error
+		credits, err = newCreditFilter(event, routing, look, d)
+		return err
 	}
-	// considerCredit adds a session a document credits, unless the claim leaves it out. Two it
-	// does not leave out, both of them sessions the comment names whose copy of it a mention
-	// decides: one whose mention failed before the batch read it, which takes the copy under that
-	// mention's key (failedMentions), and one a mention of the comment still decides
-	// (mentionDeliveries.decidesCopyFor), which stays in the list so that the mention rule runs
-	// for it - holding the event while that send is live, and keeping the fallback row the pass
-	// publishes when it fails (destinations.addSession, destinations.leftTo).
+	// considerCredit adds a session a document credits, unless the claim or the thread rule
+	// leaves it out (creditFilter.keeps).
 	considerCredit := func(sessionID string) {
-		if claimed {
-			_, failed := failedMentions[sessionID]
-			if !failed && !d.mentions.decidesCopyFor(sessionID) {
-				return
-			}
+		if credits.keeps(sessionID) {
+			consider(sessionID)
 		}
-		consider(sessionID)
 	}
 	// addEach hands every session of a read's answer to add: a document's credits under a comment
 	// go to considerCredit, which the claim can leave out, and the same read's answer for a
@@ -1386,12 +1379,12 @@ func addAuthorRoutes(event model.Event, routing routing, look lookup, d *destina
 			if err != nil {
 				return err
 			}
-			if err := askTheClaim(); err != nil {
+			if err := askTheCredits(); err != nil {
 				return err
 			}
-			// A member of the comment's thread keeps the copy whatever the issue's claim is;
-			// a session the thread's document credits alone is considerCredit's
-			// (loadCommentRecipients, threadRecipient).
+			// A member of the comment's thread keeps the copy whatever the issue's claim is and
+			// whatever the thread rule says; a session the thread's document credits alone is
+			// considerCredit's (loadCommentRecipients, threadRecipient).
 			for _, recipient := range recipients {
 				if recipient.fromThread {
 					consider(recipient.sessionID)
@@ -1405,7 +1398,7 @@ func addAuthorRoutes(event model.Event, routing routing, look lookup, d *destina
 				if err != nil {
 					return err
 				}
-				if err := askTheClaim(); err != nil {
+				if err := askTheCredits(); err != nil {
 					return err
 				}
 				addEach(credited, considerCredit)
@@ -1480,6 +1473,12 @@ func publishedDestinationSet(subjects []string) map[string]struct{} {
 // comment sent to a session whose mention failed, which carries that mention's dedupe key
 // instead, whether that session is a destination of its own or the holder a role route reaches
 // (destinations.addSession, roleFallbackKey, destination.dedupeKey).
+//
+// Every destination copies this envelope - a role route's forward and kept copy, a fallback row's
+// copy (decideFallbackCopy) and the stand-in of an event too large to send (standInEnvelope)
+// among them - so its urgency is every copy's (daemonEventGoesLow). No event copies an urgency of
+// its own onto the envelope: an ask's urgency is for the person it asks, so an ask.* event goes at
+// the default whatever the ask's urgency is.
 func envelope(event model.Event, slug string) (contracts.Envelope, error) {
 	payload, err := json.Marshal(struct {
 		model.Event
@@ -1535,8 +1534,8 @@ func envelope(event model.Event, slug string) (contracts.Envelope, error) {
 			item.InReplyTo = inReplyTo
 		}
 	}
-	if strings.HasPrefix(event.Type, "ask.") {
-		item.Urgency = payloadString(event.Payload, "urgency")
+	if daemonEventGoesLow(event) {
+		item.Urgency = "low"
 	}
 	// An answered ask and an approved artifact are receipts: the event tells its reader what a
 	// person decided, and there is nothing to send back. The envelope leaves the field out all
@@ -1547,6 +1546,23 @@ func envelope(event model.Event, slug string) (contracts.Envelope, error) {
 	// workaround: every listener of a deployment at or after #2903, after which these two types
 	// carry contracts.ExpectsReplyNone again and say "nothing wanted back" out loud.
 	return item, nil
+}
+
+// daemonEventGoesLow reports whether event goes at urgency low: its actor is the Legion daemon's
+// session (model.LegionDaemonSessionPrefix), which tells each role that must act on the change
+// through a text of its own, so a reader acts on the event at its next turn. Three kinds go at the
+// default all the same: an ask.* event, since an ask's own urgency is for the person it asks and
+// its answer is never held; issue.released, which the session that lost the claim must hear at
+// once (addPreviousClaimant); and issue.closed, which a session outside the tree that follows the
+// issue may wait on. Every other actor's event goes at the default.
+func daemonEventGoesLow(event model.Event) bool {
+	if event.Actor.Kind != "session" || !strings.HasPrefix(event.Actor.ID, model.LegionDaemonSessionPrefix) {
+		return false
+	}
+	if strings.HasPrefix(event.Type, "ask.") {
+		return false
+	}
+	return event.Type != "issue.released" && event.Type != "issue.closed"
 }
 
 func payloadSummary(event model.Event, slug string) string {

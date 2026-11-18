@@ -3663,12 +3663,14 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   While a lane holds a copy the listener kept with at least 20 minutes of its hour left, and no live session holds the role, each sweep raises the role's wake report again on `notifications.legion.wake` (`raiseKeptRoleWake`, `publishSweptRoleWake`).
   The report's message id names the role and the five-minute interval, so the stream holds at most one such report for a role in each interval across every listener.
   A copy of Dispatch's outbox raises no report.
+  A copy at urgency `low` whose publish named no `source_session` raises no report either (`wakesItsRole`), as the publish route raised none for it.
 
 - A released Legion role gets the copies kept for it when it comes back.
   The release ends the role's process and leaves its claim standing.
   The session's record is gone at most about five minutes after its last heartbeat, or at the stop once the daemon's clean stop runs.
   A message to the role is then kept as `holder_lapsed`, and as `unclaimed` once the role claim reaper releases the claim at its next pass (`internal/store/reaper.go`).
-  Either way it is kept and raises the role's wake report.
+  Either way it is kept and raises the role's wake report, unless it is at urgency `low` and names no `source_session` (`wakesItsRole`).
+  That is how the Legion daemon sends a text that its reader can act on at its next turn, and such a text brings no released pod back.
   When the role comes back, its session registers again or claims the role, and either one hands it each copy kept for the role whose hour has not ended, as an Envoy card that carries `kept_at` (`subscribeHandler`, `roleSetHandler`).
   The card can arrive before the task the daemon gives the woken role (`WakeTask`, `packages/daemon/internal/workflow/wake.go`).
   `envoy_inbox` lists it, but the inbox is the memory of the running process, so in a new pod it starts empty and holds only what that process received.
@@ -5092,7 +5094,11 @@ a cleanup that failed is logged at WARN (`registry role claim old holder cleanup
 
 `send` and `publish` accept optional `in_reply_to`, `supersedes`, `urgency`, `expects_reply`, and `expires_at`, and `publish` additionally `dedupe_key`; empty optional fields are omitted.
 `urgency` is `low`, `med`, `high`, or `blocking`; `expects_reply` is `false`, `optional`, or `required`, and the ingress also reads the old string `none` as `false`, which the comment at the parser in `internal/contracts/expects_reply.go` says what removes.
-`urgency` is informational: the renderers show it to the reader, and no part of Envoy orders, holds or delivers a message by it.
+The listener reads `urgency` in one place: a publish at `low` that names no `source_session`, to a role that no live session holds, raises no wake report (`roleSend.noHolder`, `wakesItsRole`).
+That holds for the 202 kept answer and for the 404 alike, and the sweep raises no report for such a kept copy.
+The Legion daemon sends a text that its reader can act on at its next turn this way.
+An agent session always names its own session, so a `low` message from a session still wakes the role.
+Apart from that, the listener orders, holds and delivers no message by `urgency`, and the renderers show it to the reader.
 A session id or role that becomes a KV key NATS would refuse (`bus.EnsureKeyValue`) is a 413 naming its size when too long and a 400 naming the key when it holds an empty token or whitespace, or a character outside nats.go's key alphabet (`ses:bad`, `bus.ErrInvalidKey`), on every route that reads or writes one.
 Every `/v1` 4xx/5xx response, including the startup gate's 503, is JSON: `{"error":"<message>","expected":["field"]}`.
 `expected` appears when the caller must provide a field.
@@ -5894,6 +5900,11 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   That is the half of `Notify` that does not depend on who acted, and it is what a reader skips on (`renderInbound`, `packages/envoy-client/README.md`).
   A reader that skipped on `notify` instead saw nothing an agent did on an issue it had subscribed to, since `notify` is false for every event an agent wrote.
 
+- An event whose actor is the Legion daemon's session (`legion-daemon:<PROJECT>`, `model.LegionDaemonSessionPrefix`) goes at urgency `low` to every destination it reaches (`daemonEventGoesLow`, set in `outbox.envelope`), since the daemon tells each role that must act through a text of its own.
+  Three kinds go at the default all the same: an `ask.*` event, an `issue.released` event, which the session that lost the claim must hear at once, and an `issue.closed` event, which a session outside the tree that follows the issue may wait on.
+  Every other actor's event goes at the default too.
+  No event copies an urgency of its own onto its envelope: an ask's urgency is for the person it asks, so its `ask.answered` reaches the asker at the default whatever the ask's urgency is.
+
 - Dispatch issue events use `notifications.dispatch.issue.<KEY>.<type>`, carry every event, and are retained in JetStream;
   `notify` only controls agent wake and routing the same envelope to the issue's route (which also applies to a comment or ask anchored on the issue's own artifact):
   `notifications.agent.<session_id>` for a session route, and for a `role:<role>` route a forward to the role's holder, which the outbox resolves itself and sends to `notifications.agent.<holder>` with the topic `notifications.role.<role>`, counted reached on the stream's acknowledgement of the stored copy, so nothing of Dispatch's is published on `notifications.role.*`;
@@ -5904,7 +5915,7 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   the first move after an opening or a hand-back is not quiet, unless it keeps the request waiting on the human.
 
 - A notifying comment-thread or message-reply event without an `ask_id` keeps the author routes:
-  a person's comment reply (`reply_to` set), and its edit, reaches every session that wrote a comment in its thread - the root and every reply, walked to `maxCommentThreadDepth` for legacy nested rows - and, where no session claims the issue, every session the thread's document credits;
+  a person's comment reply (`reply_to` set), and its edit, reaches every session that wrote a comment in its thread - the root and every reply, walked to `maxCommentThreadDepth` for legacy nested rows - and, where no session claims the issue and the thread rule below does not leave them out, every session the thread's document credits;
   a message reply's direct parent author; for a resolve or reopen, the resolved comment's root author only, so the reopen a reply makes in the same transaction tells no new session twice;
   and for a new comment on a document (no `reply_to`, no `ask_id`) and its edit, where no session claims the issue, every session the document credits - the one that created it (`artifacts.created_by`) and every one a version lists (`artifact_versions.authors`), read in one query (`loadDocumentSessionAuthors`) - so a person's comment on a passage, on a whole document or as a suggestion reaches the agent that wrote the document.
   That document is the anchor's (`anchor.artifact_id`) for a comment on a passage of an issue's document, and the event's own for a project document;
@@ -5912,7 +5923,7 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   A comment on an issue's conversation names no document.
   A batch reads the thread sessions and the thread's document authors of all its replies in one statement (`outbox/recipients.go`, `loadCommentRecipients`, a lookup kind of `loadLookups`), keyed by the comment each reply is under, and each row says which of the two it came from (`from_thread`, the first element of the `min(rank)` the statement already orders by), so a session that is both a member and a credit counts as a member.
   A person's `comment.created` or `comment.edited` on an issue with no route and no session claimant (`routing`:
-  unclaimed, or a person holds the claim) also reaches every session the issue's primary document (`artifacts.is_primary`) credits, as `documentCreditsSQL` reads credits (`addPrimaryDocumentAuthors`), so a session that wrote the spec without a claim still hears comments on any of the issue's threads, an ask's thread included.
+  unclaimed, or a person holds the claim) also reaches every session the issue's primary document (`artifacts.is_primary`) credits, as `documentCreditsSQL` reads credits (`addPrimaryDocumentAuthors`), so a session that wrote the spec without a claim still hears a person's comments on the issue, apart from a reply in a thread whose session counts (the thread rule below).
   A batch reads those sessions for all such events in one statement (`loadPrimaryDocumentAuthors`, another lookup kind of `loadLookups`), keyed by issue.
   A routed issue, or one a session claimed, takes no primary-document route: the route's holder and the claimant (the claimant route below) hear the comment.
   The order of an event's destinations is fixed (`eventDestinations`):
@@ -5929,6 +5940,19 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   a session the comment names whose own mention of it failed, which has no other route on a claimed issue and whose copy carries the key of that failed mention (`mentionDeliveries.fallbackKeys`, read for the comment's edit as well as for the comment itself);
   a member of the thread, so a session that wrote there still gets the person's later replies;
   and a person's edit of a document (`artifact.human_edited`), which still reaches every session that document credits.
+
+- On an issue that no route and no session claims, a person's reply in a thread, and its edit, answer that thread, and the credits of a document are not a second reason to deliver them (`takesThreadRule`).
+  The rule takes the events `takesPrimaryAuthors` takes that are a reply under a comment (`reply_to`) or a comment in an ask's thread (`ask_id`).
+  The thread's sessions are the sessions that the thread rules reach: those that wrote a comment in the thread (`from_thread`), and for an ask's thread the ask's followers, with the actor left out (`threadSessions`).
+  So an asker that stopped following its ask is not one of them.
+  After its lookups, with no statement open and no pooled connection held, a batch reads each of those sessions once from Envoy's registry, all of them at once (`hearThreads`).
+  The read is the one an issue claim makes of its holder (`GET /v1/registry/<id>?include=unresponsive`, `Deps.Registry`), and the client's own timeout bounds it.
+  Where one of the thread's sessions reads `live` or `unresponsive` (`routing.threadHeard`), the reply reaches the thread and no session that only a document credits: not the primary document's (`addPrimaryDocumentAuthors`) and not the thread's document's (`addAuthorRoutes`).
+  A session that reads `gone`, a stopped one, one the registry holds no record of, and one whose read failed do not count.
+  Where none counts, or where the outbox has no registry client (`Deps.Registry` nil), the reply reaches the credits as before.
+  The two exemptions of the claimed rule above hold in both routes (`creditFilter`): a session the reply names whose mention failed keeps its copy under that mention's key, and a session whose copy a mention still decides stays for the mention rule.
+  A retry reads the registry again, since nothing of the first read is stored.
+  `cmd/dispatch` gives the outbox an `envoy.Client` on `ENVOY_URL` and `ENVOY_TOKEN`, as the API server's client has.
 
 - When a batch's recipient statement fails - its comment recipients, its primary document authors or its document credits (`loadDocumentSessionAuthors`) - unlike the other lookup kinds, whose failure fails the whole batch, only the events that asked an id the statement cannot answer fail.
   A statement Postgres refuses over the rows it read (`refusedStatement`:

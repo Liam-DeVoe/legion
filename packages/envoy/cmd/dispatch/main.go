@@ -39,6 +39,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/embedqueue"
+	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
@@ -717,12 +718,15 @@ func main() {
 		// by the windows this deployment gave its listeners (roleHolderWindows).
 		holders := roles.NewBuckets(natsClient, boot.RoleHolderWindows)
 		outboxPublisher = outbox.New(outbox.Deps{
-			Store:            &store.Store{Pool: outboxPool},
-			Publisher:        natsClient,
-			Broker:           broker,
-			Listen:           database.Pool.Listener,
-			RoleClaims:       holders,
-			Sessions:         holders,
+			Store:      &store.Store{Pool: outboxPool},
+			Publisher:  natsClient,
+			Broker:     broker,
+			Listen:     database.Pool.Listener,
+			RoleClaims: holders,
+			Sessions:   holders,
+			// The registry a person's reply reads its thread's sessions from, on the Envoy
+			// listener and the token the API server's client uses (api.NewDeps).
+			Registry:         envoy.New(boot.EnvoyURL, envoy.WithToken(boot.EnvoyToken)),
 			KeptLanes:        natsClient,
 			PublishFailures:  outboxPublishFailures,
 			RoleForwardsHeld: outboxRoleForwardsHeld,

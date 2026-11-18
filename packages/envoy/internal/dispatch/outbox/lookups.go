@@ -35,7 +35,7 @@ type lookup interface {
 	// mentionFallbackKeys answers the failed mentions of one comment alone
 	// (mentionDeliveries.fallbackKeys, keyed by session), which is all a comment's edit asks of
 	// its mentions: whether the session a document credits was named by the comment and never
-	// reached by that mention (addAuthorRoutes). It adds no reading of that comment anywhere
+	// reached by that mention (creditFilter). It adds no reading of that comment anywhere
 	// else: a comment only an edit asked for is left out of the batch's readings
 	// (lookups.editOnly, lookups.readings).
 	mentionFallbackKeys(commentID string) (map[string]string, error)

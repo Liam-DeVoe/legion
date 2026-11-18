@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
@@ -26,7 +27,8 @@ const (
 	// with keep: false keeps nothing and reaches that session on its sender's next attempt. The
 	// sweep raises it again while a copy the listener kept on the role's lane has at least twenty
 	// minutes of its hour left and no live session holds the role, at most once for each role in
-	// each roleWakeInterval across every listener (publishSweptRoleWake).
+	// each roleWakeInterval across every listener (publishSweptRoleWake). A message at urgency
+	// low with no source_session raises it on neither path (wakesItsRole).
 	wakeKindRole = "role_message"
 	// wakeKindAgent is a message sent to the agent subject of a session nothing can place: an
 	// Envoy direct message, or a person's answer, comment or message a Dispatch claim routes to
@@ -245,9 +247,9 @@ func newWakeReporter(lifetime context.Context, client *bus.Client) *wakeReporter
 }
 
 // report publishes one report off the caller's path. The caller is writing a 404 the report
-// owes nothing, and every role send with no holder raises one — including the common case where
-// no daemon holds a released claim of that role at all — so publishing it inline would put the
-// report's retries in front of each of those 404s.
+// owes nothing, and almost every role send with no holder raises one (wakesItsRole) — including
+// the common case where no daemon holds a released claim of that role at all — so publishing it
+// inline would put the report's retries in front of each of those 404s.
 func (r *wakeReporter) report(logger *logging.Logger, report wakeReport) {
 	if r == nil || r.client == nil {
 		return
@@ -274,6 +276,18 @@ func reportRoleWake(d *listenerDeps, logger *logging.Logger, role string) {
 		return
 	}
 	d.wakes.report(logger, wakeReport{Kind: wakeKindRole, Role: role})
+}
+
+// wakesItsRole reports whether item, a message to a role that no live session holds, raises the
+// role's wake report. Every message does, apart from one at urgency low that carries no
+// source_session. That is how the Legion daemon sends a text its reader can act on at its next
+// turn, and such a text brings no released pod back. A caller other than the daemon that sends
+// low with no session gets no wake either. An agent session always publishes with its session id,
+// so a low message from a session still wakes the role. The publish route (roleSend.noHolder)
+// and the sweep (keptLaneWakesItsRole) both ask it, so a kept copy of such a text wakes nothing
+// later either. The session is read trimmed, as the route's own check of it is (sessionNotBound).
+func wakesItsRole(item contracts.Envelope) bool {
+	return item.Urgency != "low" || strings.TrimSpace(item.SourceSession) != ""
 }
 
 // reportAgentWake reports that a message was sent to the agent subject of sessionID and nothing

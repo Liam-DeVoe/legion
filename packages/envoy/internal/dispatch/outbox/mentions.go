@@ -243,14 +243,15 @@ func (d mentionDeliveries) liveFor(sessionID string) bool {
 // mention decides the copy in (mentionHolds.named, mentionDecidesTheCopy). A key with no attempt
 // of its own and no attempt resolved to it reads mentionFailed, and no mention decides its copy.
 //
-// The credits filter asks it (addAuthorRoutes). On an issue a session claims, a session a
-// document credits alone is dropped before any copy of it is built - which is where the mention
-// rule would be asked of that session (destinations.addSession) - so a session whose copy a
-// mention of this comment decides has to be kept, and left to that rule: it is what holds the
-// event back while the send is live and what keeps the fallback row the pass publishes should
-// the mention fail (destinations.leftTo, publishFallbackCopies). The filter's other exemption,
-// fallbackKeys, names the one state settled before the batch read it, a mention that already
-// failed; this answers for every state of a mention still to decide the copy.
+// The credits filter asks it (creditFilter, for addAuthorRoutes and addPrimaryDocumentAuthors). On
+// an issue a session claims, and on a reply whose thread has a live or unresponsive session
+// (takesThreadRule), a session a document credits alone is dropped before any copy of it is built -
+// which is where the mention rule would be asked of that session (destinations.addSession) - so a
+// session whose copy a mention of this comment decides has to be kept, and left to that rule: it is
+// what holds the event back while the send is live and what keeps the fallback row the pass
+// publishes should the mention fail (destinations.leftTo, publishFallbackCopies). The filter's
+// other exemption, fallbackKeys, names the one state settled before the batch read it, a mention
+// that already failed; this answers for every state of a mention still to decide the copy.
 //
 // It reads named and not mentionHolds.state. state is named folded with
 // unpinnedRoleMentions.resendingUnnamed, and that fold is a property of the comment rather than

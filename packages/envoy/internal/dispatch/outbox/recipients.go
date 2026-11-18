@@ -2,10 +2,15 @@ package outbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
+	"slices"
+	"sync"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -50,8 +55,10 @@ const sessionCreditSQL = `author->>'kind' = 'session' and coalesce(author->>'id'
 // member of the thread ranks array[0, ...] and a credit of the document array[1, ...], and the
 // group's min(rank) decides, so a session that is both comes out a member. A Postgres array is
 // 1-indexed, so that first element is (min(rank))[1], which the row carries as from_thread. The
-// caller keeps a member of the thread whatever the issue's claim is and leaves a credit out on an
-// issue a session claims (addAuthorRoutes), by the rule takesClaimantRoute states.
+// caller keeps a member of the thread whatever the issue's claim is. It leaves a credit out on an
+// issue a session claims (addAuthorRoutes), by the rule takesClaimantRoute states, and on an issue
+// nobody routes or claims where a member of the thread is live or unresponsive (takesThreadRule,
+// creditFilter). The members are also the sessions whose state that rule reads (threadSessions).
 const commentRecipientsQuery = `
 	with recursive
 	up as (
@@ -117,9 +124,12 @@ type threadRecipient struct {
 // (documentCreditsSQL; none when the thread is on no document), each once and marked fromThread
 // only where the thread names it too. A session the thread's document credits alone is left out
 // by the caller where the comment is a person's on an issue a session claims (addAuthorRoutes),
-// by the rule takesClaimantRoute states. People are left out, since a person has no Envoy topic.
-// A comment that has no row has no entry. The actor and the sessions the reply's mentions reach
-// are skipped by the caller too.
+// by the rule takesClaimantRoute states, and where the comment is a person's reply on an issue
+// nobody routes or claims whose thread has a live or unresponsive member (takesThreadRule,
+// creditFilter); the members marked fromThread are the sessions that rule reads the state of
+// (threadSessions). People are left out, since a person has no Envoy topic. A comment that has no
+// row has no entry. The actor and the sessions the reply's mentions reach are skipped by the
+// caller too.
 func loadCommentRecipients(ctx context.Context, db queryer, commentIDs []string) (map[string][]threadRecipient, error) {
 	if len(commentIDs) == 0 {
 		return map[string][]threadRecipient{}, nil
@@ -197,8 +207,9 @@ func loadThreadRecipients(ctx context.Context, db queryer, what, query string, a
 // takesPrimaryAuthors reports whether a person's comment event reaches the sessions of its issue's
 // primary document (addPrimaryDocumentAuthors): it is a comment.created or comment.edited, it
 // notifies (only a person's comment does, events.Broker.Notify), it names an issue, and that issue
-// has no route and no session claimant (routing), either of which hears it in their place. The
-// comment's thread does not matter.
+// has no route and no session claimant (routing), either of which hears it in their place. A reply
+// in a thread whose session counts reaches none of them all the same: the thread rule leaves out
+// every session that only a document credits (takesThreadRule, creditFilter).
 func takesPrimaryAuthors(event model.Event, routing routing) bool {
 	if !event.Notify || (event.Type != "comment.created" && event.Type != "comment.edited") {
 		return false
@@ -207,6 +218,206 @@ func takesPrimaryAuthors(event model.Event, routing routing) bool {
 		return false
 	}
 	return routing.route == nil || *routing.route == ""
+}
+
+// takesThreadRule reports whether the thread rule may leave the credits of a document out of
+// event: takesPrimaryAuthors holds for it, and it is a person's reply in a thread or the edit of
+// one - a reply under a comment (reply_to) or a comment in an ask's thread (ask_id). Whether the
+// rule does is whether a session of that thread counts (routing.threadHeard, hearThreads). A
+// person's reply answers the thread, so the sessions of the thread hear it, and a session that
+// only wrote or edited a document the reply is about does not. The rule takes copies away and
+// adds none.
+func takesThreadRule(event model.Event, routing routing) bool {
+	if !takesPrimaryAuthors(event, routing) {
+		return false
+	}
+	return payloadString(event.Payload, "ask_id") != "" || payloadString(event.Payload, "reply_to") != ""
+}
+
+// threadSessions is the sessions of the thread event is in, where the thread rule may apply
+// (takesThreadRule): for a comment in an ask's thread the ask's followers, which are the sessions
+// addFollowerRoutes reaches, and otherwise the sessions that wrote a comment in the thread it
+// replies under (threadRecipient.fromThread), which addAuthorRoutes reaches. The actor is left
+// out. These are the sessions today's thread rules reach and no other, so an asker that stopped
+// following its ask is not one. A read that failed names none: the event's destinations end at
+// that read all the same.
+func threadSessions(event model.Event, routing routing, look lookup) []string {
+	if !takesThreadRule(event, routing) {
+		return nil
+	}
+	var members []string
+	if askID := payloadString(event.Payload, "ask_id"); askID != "" {
+		followers, err := look.followers(askID)
+		if err != nil {
+			return nil
+		}
+		members = followers
+	} else {
+		recipients, err := look.commentRecipients(payloadString(event.Payload, "reply_to"))
+		if err != nil {
+			return nil
+		}
+		for _, recipient := range recipients {
+			if recipient.fromThread {
+				members = append(members, recipient.sessionID)
+			}
+		}
+	}
+	sessions := make([]string, 0, len(members))
+	for _, sessionID := range members {
+		if !event.Actor.SameAs(model.Actor{Kind: "session", ID: sessionID}) {
+			sessions = append(sessions, sessionID)
+		}
+	}
+	return sessions
+}
+
+// RegistryReader reads one session's record from Envoy's registry, unresponsive sessions
+// included, as envoy.Client.Session does: a record's State is live, unresponsive or gone,
+// envoy.ErrNotFound is a session the registry holds no record of or one that stopped, and any
+// other error is the registry not answering.
+type RegistryReader interface {
+	Session(ctx context.Context, sessionID string) (envoy.Session, error)
+}
+
+// hearThreads decides the thread rule for each of events (takesThreadRule). It reads the state of
+// every session of their threads (threadSessions) from Envoy's registry, and marks each event whose
+// thread has a session the registry reads live or unresponsive (routing.threadHeard). That event's
+// destinations then leave out every session that only a document credits (creditFilter). A session
+// that is gone, stopped or unknown to the registry does not count, and neither does one whose read
+// failed. So a thread none of whose sessions counts reaches the credits as before, and so does
+// every thread where the registry does not answer or deps holds no reader.
+//
+// It reads each session once for the whole batch, every session at once, so the batch waits for
+// one read at most, which the reader's own timeout bounds (envoy.Client's window). It runs after
+// the batch's lookups, with no statement open and no pooled connection held, since the read is a
+// call to another service. Nothing it read is stored: a retried event reads its thread again, so
+// a retry reaches the credits where every session of the thread has gone since, or where the
+// registry does not answer it.
+func hearThreads(ctx context.Context, deps Deps, events []*batchEvent, look lookup) {
+	if deps.Registry == nil {
+		return
+	}
+	type thread struct {
+		event    *batchEvent
+		sessions []string
+	}
+	var threads []thread
+	var sessionIDs []string
+	asked := map[string]struct{}{}
+	for _, event := range events {
+		sessions := threadSessions(event.event, event.routing, look)
+		if len(sessions) == 0 {
+			continue
+		}
+		threads = append(threads, thread{event: event, sessions: sessions})
+		for _, sessionID := range sessions {
+			if _, ok := asked[sessionID]; !ok {
+				asked[sessionID] = struct{}{}
+				sessionIDs = append(sessionIDs, sessionID)
+			}
+		}
+	}
+	if len(sessionIDs) == 0 {
+		return
+	}
+	counted := countedSessions(ctx, deps.Registry, sessionIDs)
+	for _, thread := range threads {
+		thread.event.routing.threadHeard = slices.ContainsFunc(thread.sessions, func(sessionID string) bool {
+			_, ok := counted[sessionID]
+			return ok
+		})
+	}
+}
+
+// countedSessions reads each of sessionIDs from registry, every one at once, and answers the ones
+// it reads live or unresponsive. A read that failed counts nothing, and is logged unless ctx
+// ended; a session the registry holds no record of is no failure.
+func countedSessions(ctx context.Context, registry RegistryReader, sessionIDs []string) map[string]struct{} {
+	counted := map[string]struct{}{}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, sessionID := range sessionIDs {
+		wg.Go(func() {
+			session, err := registry.Session(ctx, sessionID)
+			if err != nil {
+				if !errors.Is(err, envoy.ErrNotFound) && ctx.Err() == nil {
+					slog.Warn("dispatch outbox: a thread session's state could not be read from Envoy's registry, so it does not count",
+						"session_id", sessionID, "error", err)
+				}
+				return
+			}
+			if session.State != envoy.StateLive && session.State != envoy.StateUnresponsive {
+				return
+			}
+			mu.Lock()
+			counted[sessionID] = struct{}{}
+			mu.Unlock()
+		})
+	}
+	wg.Wait()
+	return counted
+}
+
+// creditFilter is the rule a session that only a document credits is asked by, on a person's
+// comment or its edit. Such a session is left out where the issue's session claimant hears the
+// comment on its own topic (takesClaimantRoute), and where a session of the comment's thread counts
+// (routing.threadHeard, takesThreadRule); it is kept everywhere else. Two are kept all the same,
+// both sessions the comment names whose copy of it a mention decides (dispatch://INFRA-1368's R2):
+// one whose mention failed before the batch read it, which takes the copy under that mention's key
+// (failedMentions, destinations.addSession), and one a mention of the comment still decides
+// (mentionDeliveries.decidesCopyFor), which stays in the list so that the mention rule runs for it
+// - holding the event while that send is live, and keeping the fallback row the pass publishes when
+// it fails (destinations.leftTo). addPrimaryDocumentAuthors and addAuthorRoutes both ask it.
+type creditFilter struct {
+	leavesOut      bool
+	failedMentions map[string]string
+	mentions       mentionDeliveries
+}
+
+// newCreditFilter reads the rule for event, once for a route that asks it, and reads the one thing
+// that exempts a session and is not in the destination build already: the sessions the comment
+// names and no mention of it reached. A new comment's are the reading the build holds
+// (eventDestinations), and an edit's are read of its comment alone (lookup.mentionFallbackKeys),
+// which adds no reading of that comment anywhere else. An edit whose payload names no mention can
+// exempt nobody that way, so it asks nothing. The failed mentions are asked wherever the thread
+// rule may apply, whether or not it does: the batch's first pass runs before the registry is read
+// (hearThreads), and it must register every id the second pass reads (wanted). A read that failed
+// ends the event's destinations, as every other lookup does.
+//
+// It is asked once per route and never per credit row: the first pass answers no row at all
+// (wanted), so an ask made per row would register no id and the second pass would find nothing
+// read for it.
+func newCreditFilter(event model.Event, routing routing, look lookup, d *destinations) (creditFilter, error) {
+	filter := creditFilter{
+		leavesOut: takesClaimantRoute(event, routing.claimant) || routing.threadHeard,
+		mentions:  d.mentions,
+	}
+	if !filter.leavesOut && !takesThreadRule(event, routing) {
+		return filter, nil
+	}
+	switch {
+	case event.Type == "comment.created":
+		filter.failedMentions = d.mentions.fallbackKeys
+	case event.Type == "comment.edited" && payloadHasMentions(event.Payload):
+		keys, err := look.mentionFallbackKeys(payloadString(event.Payload, "id"))
+		if err != nil {
+			return creditFilter{}, err
+		}
+		filter.failedMentions = keys
+	}
+	return filter, nil
+}
+
+// keeps reports whether the copy of a session that only a document credits goes.
+func (f creditFilter) keeps(sessionID string) bool {
+	if !f.leavesOut {
+		return true
+	}
+	if _, failed := f.failedMentions[sessionID]; failed {
+		return true
+	}
+	return f.mentions.decidesCopyFor(sessionID)
 }
 
 // takesClaimantRoute reports whether an event reaches the session that holds its issue's claim on

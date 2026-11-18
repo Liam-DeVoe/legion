@@ -1175,6 +1175,11 @@ const publishDedupePrefix = "publish."
 // this route's give-up alone (roleSend.noHolder) and rides no envelope, which travels on to the
 // holder and back in the answer. A role token no claim can name keeps nothing either, which the
 // keep itself refuses, for this route and the role lane alike (keepForNextHolder).
+//
+// For a role with no live holder, a message at urgency low with no source_session raises no wake
+// report for the role, on the 202 and on the 404 alike, and every other message raises one
+// (roleSend.noHolder, wakesItsRole). Such a message is a text of the Legion daemon's that its
+// reader acts on at its next turn.
 func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		arrived := time.Now()

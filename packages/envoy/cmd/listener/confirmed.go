@@ -224,9 +224,14 @@ func (s *roleSend) delivered(outcome sendOutcome) {
 // keeps nothing and is still answered 404, so only the wake brings the released pod back to claim
 // the role, drain what was kept for it (drainKeptRole) and take the sender's next attempt. The
 // report names the role and nothing else; which daemon owns it, and whether any claim of that
-// role is released, is for the daemons to decide.
+// role is released, is for the daemons to decide. A message at urgency low with no
+// source_session raises no report (wakesItsRole): it is a text of the Legion daemon's that its
+// reader acts on at its next turn, so it brings no released pod back. The keep and the 404 are
+// the same for it as for every other message.
 func (s *roleSend) noHolder(result roles.Resolution) {
-	reportRoleWake(s.d, s.d.delivery.logger, s.role)
+	if wakesItsRole(s.item) {
+		reportRoleWake(s.d, s.d.delivery.logger, s.role)
+	}
 	if s.keep && roleKeepable(result) {
 		if kept, ok := keepForNextHolder(*s.d.delivery, s.role, s.item); ok {
 			s.kept(result, kept)
