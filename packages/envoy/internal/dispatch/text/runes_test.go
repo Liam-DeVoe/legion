@@ -1,52 +1,178 @@
 package text
 
 import (
+	"maps"
+	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
+// headRunesReference is HeadRunes as its comment defines it, with none of its shortcuts: a value
+// of at most limit runes is returned unchanged, and a longer one is written out rune by rune up
+// to the limit. The decoder reads a byte that is not UTF-8 as a rune of its own, U+FFFD, so it
+// is written as U+FFFD, and every other rune is written as its own bytes.
+func headRunesReference(value string, limit int) string {
+	if utf8.RuneCountInString(value) <= limit {
+		return value
+	}
+	var head strings.Builder
+	for ; limit > 0; limit-- {
+		r, size := utf8.DecodeRuneInString(value)
+		head.WriteRune(r)
+		value = value[size:]
+	}
+	return head.String()
+}
+
+// shapeOf names a value as headRunesReference reads it: whether the limit cuts it, and where it
+// holds a real U+FFFD or a byte that is not UTF-8: in the part kept, as the first rune left out,
+// or further on.
+func shapeOf(value string, limit int) string {
+	if value == "" {
+		return "an empty value"
+	}
+	shape := "a value at or under the limit"
+	if utf8.RuneCountInString(value) > limit {
+		shape = "a cut"
+	}
+	places := [...]string{"kept", "right after the cut", "further on"}
+	kinds := [...]string{"a real U+FFFD", "a byte that is not UTF-8"}
+	var held [len(places)][len(kinds)]bool
+	for n := 0; value != ""; n++ {
+		r, size := utf8.DecodeRuneInString(value)
+		value = value[size:]
+		if r != utf8.RuneError {
+			continue
+		}
+		place, kind := 0, 0
+		if n == limit {
+			place = 1
+		} else if n > limit {
+			place = 2
+		}
+		if size == 1 {
+			kind = 1
+		}
+		held[place][kind] = true
+	}
+	var holds []string
+	for place := range places {
+		for kind := range kinds {
+			if held[place][kind] {
+				holds = append(holds, kinds[kind]+" "+places[place])
+			}
+		}
+	}
+	if len(holds) == 0 {
+		return shape + " with no U+FFFD and no byte that is not UTF-8"
+	}
+	return shape + " with " + strings.Join(holds, ", ")
+}
+
+// headRunesAlphabet holds each byte that decides a cut: a letter; EF BF BD, the three bytes of
+// U+FFFD, which alone or as a pair are bytes that are not UTF-8; FF, which is never UTF-8;
+// E7 95 8C, the three bytes of 界; and F0 9F, which with 95 8C are the four bytes of U+1F54C,
+// a character outside the BMP.
+const headRunesAlphabet = "a\xef\xbf\xbd\xff\xe7\x95\x8c\xf0\x9f"
+
+// sink keeps each answer of an allocation row, so an answer that the cut copied lives on the heap
+// and is counted.
+var sink string
+
 // HeadRunes counts a rune of any script as one, and a document edit's read-back cuts its last
-// block with it. A cut whose answer is the value's own first bytes is a slice of the value, so it
-// copies nothing; only a kept byte that is not UTF-8, which the cut writes as U+FFFD as a
-// conversion to []rune does, makes a copy. Each row is one shape of input, and each row checks
-// the answer and, where the answer is a slice, that the cut made no allocation.
+// block with it. The first row compares it with headRunesReference on every value of 0 to 5 bytes
+// of the alphabet, to each limit from 0 to 6: every pair, no sample. Five bytes is the shortest
+// value on which a guard that reads the start of the value, not the place of the rune, takes a
+// real U+FFFD for a byte that is not UTF-8: a letter, U+FFFD and a letter.
+//
+// An answer that is, by the reference, the value's own first bytes is a slice of the value, and
+// HeadRunes copies nothing for it. One row for each shape of such a pair (shapeOf) cuts every
+// pair of that shape and wants no allocation, so a copy of any one pair fails its row. The last
+// rows hold values longer than five bytes, each cut to a slice with no copy.
 func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
+	const longest, limits = 5, 6
+	var values []string
+	for length := 0; length <= longest; length++ {
+		count := 1
+		for range length {
+			count *= len(headRunesAlphabet)
+		}
+		for code := range count {
+			value := make([]byte, length)
+			for i, digits := 0, code; i < length; i, digits = i+1, digits/len(headRunesAlphabet) {
+				value[i] = headRunesAlphabet[digits%len(headRunesAlphabet)]
+			}
+			values = append(values, string(value))
+		}
+	}
+
+	t.Run("every pair agrees with the reference", func(t *testing.T) {
+		differ := 0
+		for _, value := range values {
+			for limit := 0; limit <= limits; limit++ {
+				got, want := HeadRunes(value, limit), headRunesReference(value, limit)
+				if got == want {
+					continue
+				}
+				if differ < 10 {
+					t.Errorf("HeadRunes(%q, %d) = %q, want %q", value, limit, got, want)
+				}
+				differ++
+			}
+		}
+		if differ > 0 {
+			t.Errorf("%d of %d pairs differ from the reference", differ, len(values)*(limits+1))
+		}
+	})
+
+	type pair struct {
+		value string
+		limit int
+	}
+	shapes := map[string][]pair{}
+	for _, value := range values {
+		for limit := 0; limit <= limits; limit++ {
+			if strings.HasPrefix(value, headRunesReference(value, limit)) {
+				shape := shapeOf(value, limit)
+				shapes[shape] = append(shapes[shape], pair{value, limit})
+			}
+		}
+	}
+	for _, shape := range slices.Sorted(maps.Keys(shapes)) {
+		pairs := shapes[shape]
+		t.Run(shape+" copies nothing", func(t *testing.T) {
+			if testing.AllocsPerRun(10, func() {
+				for _, p := range pairs {
+					sink = HeadRunes(p.value, p.limit)
+				}
+			}) == 0 {
+				return
+			}
+			for _, p := range pairs {
+				if allocations := testing.AllocsPerRun(10, func() { sink = HeadRunes(p.value, p.limit) }); allocations != 0 {
+					t.Fatalf("HeadRunes(%q, %d) made %v allocations, want a slice of the value and none", p.value, p.limit, allocations)
+				}
+			}
+			t.Fatalf("the %d pairs made allocations together and none alone", len(pairs))
+		})
+	}
+
 	for _, row := range []struct {
 		name, value string
 		limit       int
 		want        string
 	}{
-		{name: "an empty value is unchanged", value: "", limit: 2, want: ""},
-		{name: "a limit of nothing keeps nothing", value: "界a", limit: 0, want: ""},
-		{name: "a limit of one keeps the first character", value: "界a", limit: 1, want: "界"},
-		{name: "a value at the limit is unchanged", value: "界界界", limit: 3, want: "界界界"},
-		{name: "a value under the limit is unchanged", value: "abc", limit: 4, want: "abc"},
-		{name: "Latin letters are cut at the limit", value: strings.Repeat("a", 10), limit: 4, want: "aaaa"},
-		{name: "Chinese characters are cut at the limit", value: strings.Repeat("界", 10), limit: 4, want: "界界界界"},
-		{name: "characters outside the BMP are cut at the limit", value: strings.Repeat("𠀀", 10), limit: 4, want: "𠀀𠀀𠀀𠀀"},
 		{name: "2,001 Chinese characters are cut at 1,967", value: strings.Repeat("界", 2001), limit: 1967, want: strings.Repeat("界", 1967)},
-		// A U+FFFD the value holds is three bytes of UTF-8, not a byte that is not UTF-8, so it
-		// is kept as it is. "At the cut" is the last character kept.
-		{name: "a U+FFFD before the cut is kept", value: "\uFFFDab", limit: 2, want: "\uFFFDa"},
-		{name: "a U+FFFD at the cut is kept", value: "a\uFFFDbc", limit: 2, want: "a\uFFFD"},
-		{name: "a U+FFFD after the cut is left out", value: "ab\uFFFDc", limit: 2, want: "ab"},
 		{name: "100 pairs of a letter and U+FFFD are cut at 50", value: strings.Repeat("a\uFFFD", 100), limit: 50, want: strings.Repeat("a\uFFFD", 25)},
-		// A byte that is not UTF-8 is one rune too. Kept, it is written as U+FFFD, also when it
-		// is the first of U+FFFD's three bytes alone; past the cut it is not read.
-		{name: "a byte that is not UTF-8 before the cut is written as U+FFFD", value: "\xffab", limit: 2, want: "\uFFFDa"},
-		{name: "a byte that is not UTF-8 at the cut is written as U+FFFD", value: "a\xffbc", limit: 2, want: "a\uFFFD"},
-		{name: "a lone first byte of U+FFFD at the cut is written as U+FFFD", value: "a\xefbc", limit: 2, want: "a\uFFFD"},
-		{name: "a byte that is not UTF-8 right after the cut is left out", value: "ab\xffc", limit: 2, want: "ab"},
 		{name: "a byte that is not UTF-8 past the cut is left out", value: strings.Repeat("界", 10) + "\xff", limit: 5, want: strings.Repeat("界", 5)},
-		{name: "a value at the limit keeps a byte that is not UTF-8", value: "a\xff", limit: 2, want: "a\xff"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			var got string
-			allocations := testing.AllocsPerRun(100, func() { got = HeadRunes(row.value, row.limit) })
-			if got != row.want {
-				t.Fatalf("HeadRunes to %d kept %d bytes, %.40q, want %d bytes, %.40q", row.limit, len(got), got, len(row.want), row.want)
+			allocations := testing.AllocsPerRun(100, func() { sink = HeadRunes(row.value, row.limit) })
+			if sink != row.want {
+				t.Fatalf("HeadRunes to %d kept %d bytes, %.40q, want %d bytes, %.40q", row.limit, len(sink), sink, len(row.want), row.want)
 			}
-			if strings.HasPrefix(row.value, row.want) && allocations != 0 {
+			if allocations != 0 {
 				t.Fatalf("HeadRunes to %d made %v allocations, want a slice of the value and none", row.limit, allocations)
 			}
 		})
