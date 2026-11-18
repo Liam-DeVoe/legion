@@ -304,11 +304,9 @@ func TestAnEmptyPlanReasonIsAReasonNamed(t *testing.T) {
 
 // A planReason that holds a NUL character (a JSON body carries it as \u0000) is a reason nothing
 // can store: PostgreSQL's jsonb, where the daemon's outbox row holds the rating, and its text,
-// where Dispatch's record holds it, both refuse it, and the whole daemon answered the retro's
-// completion 500 FACT_APPLY_FAILED naming no field when the engine's transaction failed on the
-// rating row. The decoder of the body refuses it before the route reads it, as it refuses a NUL in
-// any string of any body (decodeJSON): 400 naming planReason and where in it the NUL stands, with
-// nothing recorded, so the agent sends it again corrected.
+// where Dispatch's record holds it, both refuse it. The decoder of the body refuses it before the
+// route reads it, as it refuses a NUL in any string of any body (decodeJSON): 400 naming planReason
+// and where in it the NUL stands, with nothing recorded, so the agent sends it again corrected.
 func TestARatingReasonWithANULIsRefusedAsInput(t *testing.T) {
 	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
 	seedIssueAt(t, h, "LEGION-208", phase.Retro)
