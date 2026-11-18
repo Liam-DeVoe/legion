@@ -49,7 +49,9 @@ beforeAll(() => {
  * neither its installs nor its global config, so it fails. make_omp_home keeps the operator's two
  * directories for the processes it starts for the same reason, and base_env passes MISE_DATA_DIR
  * to every agent. A caller that names neither variable gets neither: the developer's own home
- * decides nothing here. */
+ * decides nothing here. PUBLIC_LEAK_CHECK and LEGION_LEAK_CHECK_TAG go through when the caller
+ * has them: a row that builds a world through worker_fixture pushes into its bare remote, and on a
+ * Legion pod that push goes through the pod's git wrapper, whose pre-push leak guard reads both. */
 const miseData =
   process.env.MISE_DATA_DIR ??
   (process.env.XDG_DATA_HOME === undefined
@@ -62,6 +64,12 @@ const childEnv = {
   ...(process.env.XDG_CONFIG_HOME === undefined
     ? {}
     : { XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }),
+  ...(process.env.PUBLIC_LEAK_CHECK === undefined
+    ? {}
+    : { PUBLIC_LEAK_CHECK: process.env.PUBLIC_LEAK_CHECK }),
+  ...(process.env.LEGION_LEAK_CHECK_TAG === undefined
+    ? {}
+    : { LEGION_LEAK_CHECK_TAG: process.env.LEGION_LEAK_CHECK_TAG }),
 };
 
 let profiles = 0;
@@ -2098,12 +2106,16 @@ describe("red_fixture", () => {
   // d-head-1, d-head-5, e-head-4) read the field as missing, `pr view --json files` (d-head-2)
   // exited 1 in the one world where the files decide attribution, and `run view --json
   // runAttempt` (a-head-1, a-head-4, b-head-3, b-head-4, c-head-1, c-head-2), a field gh refuses,
-  // exited 0. Each such read must give the field a value, or be refused.
+  // exited 0. Each such read must give the field a value, or be refused. The commits read names a
+  // field the world does not hold, so it is the one that reaches the picker's missing-field case
+  // on a rig that holds the rest: with only the other three, a picker set back to drop a missing
+  // field passed this row (the tester's mutation at 76cc2379).
   test("a --json read answers every field it names, or is refused", async () => {
     const run = redFixture("a");
     const reads = [
       ["pr", "view", String(RED_PR), "--repo", RED_REPO, "--json", "mergeStateStatus"],
       ["pr", "view", String(RED_PR), "--repo", RED_REPO, "--json", "files"],
+      ["pr", "view", String(RED_PR), "--repo", RED_REPO, "--json", "commits"],
       ["run", "view", String(RED_RUN_ID), "--repo", RED_REPO, "--json", "status,runAttempt"],
     ];
     for (const args of reads) {
