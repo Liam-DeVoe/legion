@@ -27,13 +27,15 @@ name: CI job daemon-go
 #     keptPropertyEnv;
 #   * tmux, jj, Oh My Pi and uv, each refused-without by a test of this module (the comment on
 #     each step says which), and the NATS images those tests start;
+#   * the CodeGraph CLI internal/workspace's real-CLI warm-up test runs, installed with Bun from
+#     packages/daemon/docker/codegraph's own lockfile, the worker image's pin of it;
 #   * the user-namespace sysctl internal/launcher's role-namespace tests need, which the race
 #     step runs;
 #   * setup-go and the go-daemon cache restore, this module's build cache. The `test` job keeps a
 #     setup-go of its own — its held-port, CI-filter and build-tag-lister steps still run go —
 #     but no restore: the entry holds what compiling packages/daemon leaves behind, and those
 #     steps compile a scratch module and the envoy listener instead.
-# No Bun and no install: the tests of this module that needed the workspace built, or the
+# Bun, but no workspace install: the tests of this module that needed the workspace built, or the
 # repository's skills, are internal/daemon's three that load a plugin on the real Oh My Pi — the
 # `bun pm pack` of the two plugins and the two prompt probes, one of which stages each plugin's
 # partition of skills/ with scripts/pi-plugin-prepack.sh — which are
@@ -41,8 +43,10 @@ name: CI job daemon-go
 # runs the `dispatch` CLI under bun, which are .github/workflows/ci-job-daemon-live.yaml's, and
 # the five live proofs that drive real Oh My Pi panes, each of which packs both plugins, which are
 # .github/workflows/ci-job-agent-harness.yaml's; the race step below skips the three groups by
-# name. So this job's filter names no lockfile, no workspace manifest and no skill, and a change
-# to bun.lock or to one skill runs the plugin-pack and agent-harness tests and no test of this job
+# name. The one Bun install here is the CodeGraph CLI's, in its own directory, which is no
+# workspace of the root manifest and reads neither bun.lock nor any workspace's package.json. So
+# this job's filter names no root lockfile, no workspace manifest and no skill, and a change to
+# bun.lock or to one skill runs the plugin-pack and agent-harness tests and no test of this job
 # (dispatch://INFRA-1413, A4).
 #
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
@@ -73,11 +77,11 @@ jobs:
     # Each go test step's -timeout must fire before the runner cancels the job, so a hung test
     # prints the goroutine dump that names it. A step's worst case is therefore its largest
     # measured green duration plus its own -timeout: the setup before the plain step is now this
-    # job's alone (no Bun install, no changie, no Bun suite), then that step's 839 s and its 15
-    # minutes, then the race step's 694 s and its 30, then Stage 1 and the report. That is under
-    # 4,000 s; 70 minutes leaves the same headroom the `test` job's 80 left when it carried these
-    # steps (dispatch://INFRA-1052 measured them over the 30 newest counted test jobs of main
-    # push runs).
+    # job's alone (no workspace install, no changie, no Bun suite), then that step's 839 s and
+    # its 15 minutes, then the race step's 694 s and its 30, then Stage 1 and the report. That is
+    # under 4,000 s; 70 minutes leaves the same headroom the `test` job's 80 left when it carried
+    # these steps (dispatch://INFRA-1052 measured them over the 30 newest counted test jobs of
+    # main push runs).
     timeout-minutes: 70
     services:
       postgres:
@@ -156,6 +160,25 @@ jobs:
       # the image's own ARG UV_VERSION; main's #3280 moved the address and the checksum there.
       - uses: ./.github/actions/install-uv
 
+      # internal/workspace's TestWarmCodegraphIndexInitializesAnUntrackedCodegraphDirectoryAgainstTheRealCli
+      # runs the real CodeGraph CLI it finds on PATH, and refuses on GitHub Actions without one.
+      # The CLI is the one the worker image ships: @colbymchenry/codegraph from
+      # packages/daemon/docker/codegraph's own package.json and bun.lock, installed as
+      # worker.Dockerfile's plugin stage installs it, with no workspace install. The platform
+      # package's bin/codegraph is a shell wrapper that resolves its own symbolic link and runs the
+      # Node runtime bundled beside it, so a link in /usr/local/bin, which is on the runner's PATH,
+      # puts it on PATH without a write to $GITHUB_PATH, which would reach every later go command of
+      # this job unseen by check-ci-filters.sh. The daemon gives every codegraph call it makes
+      # DO_NOT_TRACK=1 itself (internal/workspace/codegraph.go, codegraphEnvironment), as the
+      # image's environment does, so the test's calls never phone home.
+      - uses: ./.github/actions/setup-bun
+      - name: Install the CodeGraph CLI
+        run: |
+          bun install --frozen-lockfile --ignore-scripts
+          sudo ln -s "$PWD/node_modules/@colbymchenry/codegraph-linux-x64/bin/codegraph" /usr/local/bin/codegraph
+          command -v codegraph
+        working-directory: packages/daemon/docker/codegraph
+
       # The daemon's NATS tests start testnats.Image (the hub's 2.15.1) and SkippingImage (nats:2.10,
       # for the one test of its refusal), and, for its grant test, Envoy's HubImage
       # (packages/envoy/testnatsimages), pulled first for the reason the action gives.
@@ -195,7 +218,16 @@ jobs:
       # .github/scripts/ci_job_reads.py (SUPERVISE_TABLE_TESTS), which builds this step's text
       # and the other job's from the one list and holds each step to it, so the skip and the run
       # cannot come to name different tests.
+      #
+      # LEGION_TEST_DRAIN_MEASURE=1 turns on the bound of internal/intake's
+      # TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent: a backlog of 5,000 events
+      # that are not Legion's, 50 of Legion's among them, drains in under a minute (drainBound)
+      # with Postgres 3 ms away. The test runs either way; without the variable it logs the time
+      # and holds no bound. It is this step's, where internal/intake runs, and not the race step's,
+      # whose detector would change the time.
       - name: Test the Go daemon
+        env:
+          LEGION_TEST_DRAIN_MEASURE: "1"
         run: |
           set -o pipefail
           go list ./... | grep -Ev '/(internal/daemon|internal/sessionproxy|internal/launcher|internal/textcheck)$' | xargs go test -v -count=1 -timeout 15m -skip '^(TestNoTwoEventTypesShareAKind|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$'

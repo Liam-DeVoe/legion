@@ -1,0 +1,29 @@
+# The repository's own guides that the corpus tests read, one path per line from the repository
+# root. envoy-go and envoy-go-docs-finalizers write each one into one flat directory, under its path
+# with each / as __, and point the corpus variables at it: PMDOC_ANCHOR_CORPUS,
+# DISPATCH_RENDER_CORPUS and PMDOC_WALK_CORPUS (internal/dispatch/pmdoc), DISPATCH_TOKEN_CORPUS and
+# DISPATCH_TEST_SPEC_CORPUS (internal/dispatch/docs). envoy-go's pmdoc differential reads them too.
+#
+# A guide is here only when every one of those tests can take it as a document: at most 1 MiB,
+# the largest markdown document Dispatch stores (TestWriteCorpusReadsOnce seeds each one); at least
+# three top-level paragraphs that hold a phrase found once (the writes of TestWriteCorpusReadsOnce);
+# and at least 98 candidate sentences (the anchors of TestAMarginWriteMatchesTheWholeDocumentWrite).
+# Those three rules leave out every other AGENTS.md and README.md of the repository.
+# Both jobs' filters in .github/workflows/ci.yaml name this file and every path in it, and
+# .github/scripts/ci_job_reads.py declares them as the two jobs' reads, so a change to one of these
+# guides starts the jobs that read it. A path added here is a path those filters must name too.
+AGENTS.md
+packages/claude-envoy/README.md
+packages/dispatch/AGENTS.md
+packages/dispatch/README.md
+packages/envoy-client/README.md
+packages/envoy/cmd/dispatch/AGENTS.md
+packages/envoy/cmd/dispatch/README.md
+packages/envoy/infra/README.md
+packages/envoy/loadtest/README.md
+packages/envoy/scripts/README.md
+packages/pi-envoy/AGENTS.md
+packages/pi-envoy/README.md
+packages/pi-legion/AGENTS.md
+scripts/dispatch/README.md
+scripts/e2e/README.md

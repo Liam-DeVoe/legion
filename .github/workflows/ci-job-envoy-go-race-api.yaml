@@ -64,8 +64,11 @@ jobs:
           cache: false
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+      # The -skip is the dismissed-scale test, which envoy-go-race runs without the detector
+      # (ci_job_reads.py's SCALE_TESTS builds both texts, so the skip and the run cannot come to
+      # name different tests, and its comment says why that job and not this one).
       - name: Race-test the Dispatch API
-        run: go test -v -count=1 -race -timeout 30m ./internal/dispatch/api/
+        run: go test -v -count=1 -race -timeout 30m -skip '^(TestDismissedScaleHoldsTheInboxsReads)$' ./internal/dispatch/api/
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

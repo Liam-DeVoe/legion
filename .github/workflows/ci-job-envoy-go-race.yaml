@@ -32,9 +32,13 @@ env:
 jobs:
   envoy-go-race:
     runs-on: ubuntu-24.04-arm
-    # The step's -timeout 30m must fire before the runner cancels the job, so a hung test prints
-    # the dump that names it: about 1 minute of setup, up to 5 minutes to compile the race
-    # binaries, then the step's own 30 minutes, which is 36.
+    # The race step's -timeout 30m must fire before the runner cancels the job, so a hung test
+    # prints the dump that names it: about 1 minute of setup, up to 5 minutes to compile the race
+    # binaries, then the step's own 30 minutes, which is 36. The dismissed-scale step after it
+    # compiles internal/dispatch/api without the detector and runs one test under its own
+    # -timeout of 10 minutes: after the race step's measured 16 minutes (15 m 16 s in run
+    # 44328388948), that is about 28. The test took 135 s on a two-vCPU pod on 2026-11-18, 149 s
+    # with its compile.
     timeout-minutes: 45
     services:
       postgres:
@@ -62,6 +66,18 @@ jobs:
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       - name: Race-test delivery, the store, the bus, the listener, the registry store, the session cache and kvwatch
         run: go test -v -count=1 -race -timeout 30m ./internal/dispatch/delivery/... ./internal/dispatch/store/... ./internal/bus/ ./cmd/listener/ ./internal/store/ ./internal/session/ ./internal/kvwatch/...
+        working-directory: packages/envoy
+      # internal/dispatch/api's TestDismissedScaleHoldsTheInboxsReads seeds 110,000 dismissed rows
+      # three times over and holds the Inbox's reads to fixed p95 bounds and a p50 ratio. It runs
+      # only with LEGION_SCALE_TEST=1, and the race detector would change the times it bounds, so
+      # it runs without -race, and envoy-go-race-api's race step skips it. It is this job's and not
+      # that one's because a plain build of the API compiles its `//go:build !race` source guards,
+      # which read every .go file of packages/envoy, and this job's filter names them all
+      # (ci_job_reads.py's SCALE_JOB says why).
+      - name: Test the Inbox's reads at the dismissed scale, without the race detector
+        env:
+          LEGION_SCALE_TEST: "1"
+        run: go test -v -count=1 -timeout 10m -run '^(TestDismissedScaleHoldsTheInboxsReads)$' ./internal/dispatch/api/
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

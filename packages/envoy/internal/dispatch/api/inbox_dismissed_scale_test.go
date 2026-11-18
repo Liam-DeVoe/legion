@@ -105,7 +105,8 @@ const (
 	// The session every seeded Agent thread is answered by, and the login every row belongs to.
 	dismissedScaleSession = "01a1058e-f14f-7684-87eb-3dc885955552"
 	dismissedScaleLogin   = "alice"
-	// dismissedScaleEnv is what a14's own command sets to run this measurement.
+	// dismissedScaleEnv is what a14's own command sets to run this measurement, and what
+	// envoy-go-race's step of its own for it sets, without the race detector.
 	dismissedScaleEnv = "LEGION_SCALE_TEST"
 )
 
@@ -149,9 +150,10 @@ type dismissedScaleShape struct {
 // one's counts before it times anything, measures the six operations 20 runs each, explains every
 // read at the pile's own size, and holds each operation to the two bounds above.
 //
-// It runs when LEGION_SCALE_TEST is 1, which is what a14's own command sets, and skips otherwise:
-// seeding 110,000 rows three times over and taking 120 timed readings costs minutes, which no
-// ordinary run of this package should pay.
+// It runs when LEGION_SCALE_TEST is 1, which is what a14's own command and envoy-go-race's
+// step of its own set, and skips otherwise: seeding 110,000 rows three times over and taking 120
+// timed readings costs minutes, which no ordinary run of this package should pay, and the race
+// detector would change the times it bounds.
 func TestDismissedScaleHoldsTheInboxsReads(t *testing.T) {
 	if os.Getenv(dismissedScaleEnv) != "1" {
 		t.Skipf("set %s=1 to run the dismissed-scale measurement", dismissedScaleEnv)

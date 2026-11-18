@@ -363,29 +363,6 @@ the packages run several at a time, so one that starts late ends later. `ci.yaml
 `envoy-go` job runs it as "Count the database broker suites' skips", with a step limit of
 its own (`timeout-minutes: 25`) that its time budget counts.
 
-## aws-moto-check.sh
-
-Runs the built `agent-secrets` against moto's AWS, with no AWS account:
-`cmd/agent-secrets/secret_moto_test.go`'s `TestTheBuiltCLIAgainstMoto` (build tag
-`moto`), which creates IAM users `writer` and `nobody` in moto, writes them as profiles,
-turns moto's IAM checks on, and runs the secret forms under each source of the AWS SDK's
-own order: access keys in the environment, which outrank `AWS_PROFILE`; `AWS_PROFILE`;
-`AWS_DEFAULT_PROFILE`; and the rest of the default chain (a container credentials
-endpoint the test serves), reading each form's `using` line. A profile variable that names
-a profile the AWS config does not hold stops the command before that endpoint signs in.
-
-```bash
-packages/envoy/scripts/aws-moto-check.sh [BINARY]
-```
-
-It starts `moto[server]==5.2.5` through `uvx` on a free loopback port under the account
-the tests' key ARN names, runs the test with `AGENT_SECRETS_BINARY` set to BINARY (empty:
-the test builds the CLI from this tree), stops moto, and exits with go test's status; the
-test fails, and never skips, without `AGENT_SECRETS_MOTO_URL`. A release binary as BINARY
-is the negative control. moto ignores a policy's conditions and refuses with an XML
-`AccessDenied` rather than `AccessDeniedException`, so this proves no IAM policy, and
-the refusal's text is proved in process only. It needs uv, curl, python3 and go.
-
 ## airlock-lean-axioms.sh
 
 Holds the airlock model's theorems to the axioms Lean's own kernel admits, and is the
@@ -726,17 +703,16 @@ cd packages/envoy && DISPATCH_TEST_DATABASE_URL=<test database> DISPATCH_RECALL_
 
 ## Measuring Dispatch's statements and its write routes on the seeded database
 
-These are INFRA-325's own measurements: every changed statement's plan and time (A8), and the
-median wall time of the six write routes the new triggers slow (A9). Both run against the seeded
-measurement database `cmd/dispatch-seed` fills, never against a test database and never against
-production. `DISPATCH_BENCH_DATABASE_URL` is the one gate: CI leaves it unset, so CI runs no
-measurement.
+These are INFRA-325's own measurements: every changed statement's plan and time (A8), and the median wall time of the six write routes the new triggers slow (A9).
+Both run against the seeded measurement database `cmd/dispatch-seed` fills, never against a test database and never against production.
+`DISPATCH_BENCH_DATABASE_URL` is the one gate, and CI sets it in one step: `ci.yaml`'s `envoy-go` job, in "Time the statements on the seeded measurement database", creates a database on the job's Postgres, seeds it with `cmd/dispatch-seed` at the scale `.github/scripts/ci_job_reads.py`'s `STATEMENT_TIMING_SCALE` names, and runs the `TestStatementTimings` of `internal/dispatch/docs` and `internal/dispatch/refs` by name.
+`internal/dispatch/api`'s two measurements, below, are tools, run by the author of a change to those statements on a seed of 0.03 or more: at the largest scale that job's time allows, their bounds do not hold.
+No CI step runs the write routes' measurement.
 
 ### The statement timings
 
-`internal/dispatch/benchtime` is the runner, and each package that owns statement texts carries
-its own `statement_timing_test.go`, all named `TestStatementTimings`: `internal/dispatch/api`,
-`internal/dispatch/refs` and `internal/dispatch/docs`.
+`internal/dispatch/benchtime` is the runner, and each package that owns statement texts carries its own `statement_timing_test.go`.
+`internal/dispatch/refs` and `internal/dispatch/docs` hold theirs as tests, `TestStatementTimings`, and `internal/dispatch/api` holds its own as a benchmark, `BenchmarkStatementTimings`, a tool its file's tool line names.
 `Pair` takes a named pair of statement texts with their arguments, runs `EXPLAIN (ANALYZE, BUFFERS)` of each alternately on one connection, reports planning plus execution as the median of runs 2 to 12, prints both plans and fails when the after text's median is not below the before text's.
 `Report` is that same two-sided reading with no bound, for a statement whose gain is real but smaller than the run-to-run spread of the parts it shares a statement with: the gate then sits on the piece whose text differs, as a pair of its own.
 The runner records the server settings it found and the subjects it bound (the largest project, its most heavily linked issue, the most anchored document, five sessions, an embedding and three words), each read from the database at run time, so a re-seed moves them with it.
@@ -744,23 +720,24 @@ The runner records the server settings it found and the subjects it bound (the l
 ```bash
 cd packages/envoy && DISPATCH_BENCH_DATABASE_URL=<seeded database> \
   go test -run TestStatementTimings -v -count=1 -timeout 90m \
-  ./internal/dispatch/api ./internal/dispatch/refs ./internal/dispatch/docs
+  ./internal/dispatch/refs ./internal/dispatch/docs
+cd packages/envoy && DISPATCH_BENCH_DATABASE_URL=<seeded database at 0.03 or more> \
+  go test -count=1 -run '^$' -bench '^BenchmarkStatementTimings$' -benchtime 1x -timeout 90m \
+  ./internal/dispatch/api
 ```
 
 A statement whose gain needs an index or a table a migration of this release adds has no such pair, because one schema cannot hold both sides of it.
 `Before` and `After` measure one side of such a statement alone, with its plan and no bound, each line naming the side it read: the after side on a database at this release's schema, the before side on one migrated from the release before it.
-Running this same test against each of the two databases is what puts the two sides together.
-Each test file says which statement is under which protocol and why.
+Running this same measurement against each of the two databases is what puts the two sides together.
+Each file says which statement is under which protocol and why.
 
-`TestRelatedTermsRefreshTiming`, in `internal/dispatch/api`, measures the related-terms refresh,
-which has no statement pair: it times one whole pass of the release before this one, one whole
-pass of this build with no change, and eleven rounds each preceded by a hundred item writes
-outside the timed part, and reports the median of the eleven. It writes 1,100 items to the
-database it measures and leaves them there, so run it after the statement timings.
+`BenchmarkRelatedTermsRefreshTiming`, in `internal/dispatch/api`, measures the related-terms refresh, which has no statement pair: it times one whole pass of the release before this one, one whole pass of this build with no change, and eleven rounds each preceded by a hundred item writes outside the timed part, and reports the median of the eleven.
+Its eleven rounds need a seed of 0.03 or more.
+It writes 1,100 items to the database it measures and leaves them there, so run it after the statement timings.
 
 ```bash
-cd packages/envoy && DISPATCH_BENCH_DATABASE_URL=<seeded database> \
-  go test -run TestRelatedTermsRefreshTiming -v -count=1 -timeout 90m ./internal/dispatch/api
+cd packages/envoy && DISPATCH_BENCH_DATABASE_URL=<seeded database at 0.03 or more> \
+  go test -count=1 -run '^$' -bench '^BenchmarkRelatedTermsRefreshTiming$' -benchtime 1x -timeout 90m ./internal/dispatch/api
 ```
 
 ### The write routes
