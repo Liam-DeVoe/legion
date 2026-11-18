@@ -687,13 +687,15 @@ func (m *Machine) reparkWake(ctx context.Context, dropped *wake) {
 }
 
 // dropsWaitingWake is whether ev is a request the wake pacing never makes wait over a claim it
-// parked with no process: every request exemptWake lets through, an operator's forget-session —
-// which launches nothing, but which a claim parked launching would refuse "the claim has a live
-// process or launch", and it has neither — and an operator's own delivery (operatorDelivery),
-// which a suspended claim parked by the rule's own resume would queue behind that paced turn
-// where the state the gate found launches for it at once (deliverResuming, revive). An
-// operator's delivery over a launch parked above a process the claim still records is none of
-// this: that launch runs where the task arrives instead (runParkedLaunchNow).
+// parked with no process: every request exemptWake lets through, every forget-session whoever
+// asks it (the operator's own, and the one a fresh session of the operator, the controller or an
+// architect sends: RequestForgetSession.By) — which launches nothing, but which a claim parked
+// launching would refuse "the claim has a live process or launch", and it has neither — and an
+// operator's own delivery (operatorDelivery), which a suspended claim parked by the rule's own
+// resume would queue behind that paced turn where the state the gate found launches for it at
+// once (deliverResuming, revive). An operator's delivery over a launch parked above a process the
+// claim still records is none of this: that launch runs where the task arrives instead
+// (runParkedLaunchNow).
 //
 // The daemon's resume by rule is none of them: it meets a parked claim with "the claim runs:
 // nothing to resume" (nothingToDo), which is the truth — the wake the claim waits for is the

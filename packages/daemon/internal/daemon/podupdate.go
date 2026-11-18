@@ -527,8 +527,8 @@ type podReplacement struct {
 // then. A suspension that holds and two pods at once are not stepped over by the bound, so each
 // is told to the operator's side once the bound has come (tellLateRound), as the walk tells
 // them. No process in the round's pod is told by the walk alone, which asks the runtime first
-// whether the pod is there at all (roundWithNoProcessInItsPod), and that includes a round a
-// suspension that holds holds with no live process in its pod: the hold is weighed only once
+// whether the pod is there at all (roundWithNoProcessInItsPod). That includes a round with no
+// live process in its pod whose claim a holding suspension holds: the hold is weighed only once
 // that read finds the pod there, and a pod it finds gone ends the round whatever the hold.
 //
 // That read is no replacement for the daemon's last word inside the runtime (replacementDue),
@@ -582,7 +582,7 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 	case waitsForResume:
 		s.log.Info("supervise: a suspension that only a resume lifts holds this update round now the sweep has reached its replacement; nothing was replaced and the round stays open",
 			"issue", issue, "round", round, "pod", pod, "held", holdsOf(reading.held))
-		s.tellLateRound(ctx, issue, live, round, pod, reasons, now, holdReason(reading.held))
+		s.tellHeldRound(ctx, issue, live, round, pod, reasons, now, reading.held)
 		return
 	case waitsForAnswer:
 		s.log.Info("supervise: a worker of this update round has not answered now the sweep has reached its replacement, and the round's bound has not come; nothing was replaced and the round stays open",
@@ -688,7 +688,12 @@ var holdWords = []struct {
 func holdSentences(held []supervise.Claim) string {
 	var sentences []string
 	for _, holder := range holdWords {
-		of := slices.DeleteFunc(slices.Clone(held), func(c supervise.Claim) bool { return c.Holder() != holder.by })
+		var of []supervise.Claim
+		for _, c := range held {
+			if c.Holder() == holder.by {
+				of = append(of, c)
+			}
+		}
 		if len(of) == 0 {
 			continue
 		}
@@ -779,7 +784,18 @@ func (s *supervision) roundWithNoProcessInItsPod(ctx context.Context, issue stri
 func (s *supervision) waitForResume(ctx context.Context, issue string, live []supervise.Claim, round, pod, reasons string, now time.Time, held []supervise.Claim) {
 	s.log.Info("supervise: a suspension that only a resume lifts holds this update round; the replacement waits for that resume, whatever the round's bound",
 		"issue", issue, "round", round, "pod", pod, "held", holdsOf(held))
-	s.tellLateRound(ctx, issue, live, round, pod, reasons, now, holdReason(held))
+	s.tellHeldRound(ctx, issue, live, round, pod, reasons, now, held)
+}
+
+// tellHeldRound is tellLateRound for a round a hold keeps past its bound, with the reason that
+// names each held claim and its holder (holdReason). The reason is built only once the notice can
+// go (lateRoundUntold), as tellPodlessRound builds its own: a hold keeps its round open through
+// every sweep, and each sweep before the bound, or after the round was told, would otherwise
+// write a sentence tellLateRound then drops.
+func (s *supervision) tellHeldRound(ctx context.Context, issue string, group []supervise.Claim, round, pod, reasons string, now time.Time, held []supervise.Claim) {
+	if s.lateRoundUntold(group, round, now) {
+		s.tellLateRound(ctx, issue, group, round, pod, reasons, now, holdReason(held))
+	}
 }
 
 // errReplacementNotDue is every answer replacementDue gives that is not "go on": the round the
@@ -926,7 +942,7 @@ func (s *supervision) roundGroup(group []supervise.Claim, mask bool) []supervise
 // (record.UpdateStalled). A round that asks no claim at all is told nothing: there is no role to
 // name. A round that group already records as told is told nothing again and read no further.
 func (s *supervision) tellLateRound(ctx context.Context, issue string, group []supervise.Claim, round, pod, reasons string, now time.Time, why string) {
-	if !pastBound(roundBound(group, round, s.cfg.PodUpdateGrace), now) || roundTold(group, round) {
+	if !s.lateRoundUntold(group, round, now) {
 		return
 	}
 	told := s.noticeGroup(group)
@@ -939,6 +955,14 @@ func (s *supervision) tellLateRound(ctx context.Context, issue string, group []s
 		waiting: waiting,
 		reason:  why,
 	})
+}
+
+// lateRoundUntold is whether the late-round notice of round may be sent now: its bound has come
+// (roundBound) and group does not record it as told (roundTold). It reads the sweep's snapshot
+// alone, so a writer that asks it before building its reason builds none for a round before its
+// bound or one told already (tellLateRound, tellPodlessRound, tellHeldRound).
+func (s *supervision) lateRoundUntold(group []supervise.Claim, round string, now time.Time) bool {
+	return pastBound(roundBound(group, round, s.cfg.PodUpdateGrace), now) && !roundTold(group, round)
 }
 
 // podlessRound decides a round open over an issue whose claims record no pod at all. No locator
@@ -996,7 +1020,7 @@ func (s *supervision) podlessRound(ctx context.Context, issue string, group []su
 // so a round before its bound costs no read of the machines. The rest is tellLateRound's, with no
 // pod to name.
 func (s *supervision) tellPodlessRound(ctx context.Context, issue string, group []supervise.Claim, round string, now time.Time) {
-	if !pastBound(roundBound(group, round, s.cfg.PodUpdateGrace), now) || roundTold(group, round) {
+	if !s.lateRoundUntold(group, round, now) {
 		return
 	}
 	told := s.noticeGroup(group)

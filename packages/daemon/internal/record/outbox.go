@@ -901,6 +901,15 @@ type SuperviseRequest struct {
 	Linger uint64 `json:"linger,omitempty"`
 	// Reason is why a suspend stops the claim, for the line the suspended claim logs.
 	Reason string `json:"reason,omitempty"`
+	// KeepsHold marks a suspend that never takes over a suspension that holds — the operator's,
+	// the controller's or an architect's (supervise.SuspendSource.Holds) — and leaves the claim
+	// suspended by its holder: a production check's suspend of its checking role between looks
+	// (workflow's endLookPending). That suspend only stops the process and keeps the session for
+	// the next look's start, so a hold it took over would buy it nothing and be lost. It still
+	// takes a released claim over. Every other suspend — a park, a linger, a close, a carry —
+	// takes over what it outranks on purpose (supervise's suspendedAgain), and a row written
+	// before the field reads false and acts as it did. Only a suspend carries it.
+	KeepsHold bool `json:"keepsHold,omitempty"`
 	// CheckLook is the look of the issue's production check a start starts, 0 for a phase start.
 	// A check start runs after the close, where the issue has no phase and its tree may linger, so
 	// the outbox fences it on the open check and its look (the row acts only while the check is
@@ -1716,6 +1725,9 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		}
 		if value.CheckLook != 0 && (value.CheckLook < 0 || value.Op != "start" || !worksCheck(value.Role) || value.Phase != "") {
 			return fmt.Errorf("a supervise check look names a start of the implementer or the tester with no phase, and only a start carries one")
+		}
+		if value.KeepsHold && value.Op != "suspend" {
+			return fmt.Errorf("only a supervise suspend keeps a hold it would otherwise take over")
 		}
 		if value.Kept != nil {
 			if value.Op != "start" || value.Task == "" {

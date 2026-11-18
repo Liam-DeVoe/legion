@@ -204,8 +204,11 @@ func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 // architect's resume lifts it no more, an operator's suspend of a claim the controller suspended,
 // so the controller's resume lifts it no more, and a daemon's, an architect's, the controller's or
 // an operator's suspend of a claim whose idle pod was released, so the linger, park, close,
-// hand-over or hold that asked for it owns the claim and no later wake acts on it. Anything else
-// changes nothing, and some suspends are refused before they get here (suspendRequest): no source
+// hand-over or hold that asked for it owns the claim and no later wake acts on it. A suspension
+// that keeps a hold (RequestSuspend.KeepsHold, a production check's suspend between looks) takes
+// over no source that holds — the operator's, the controller's or an architect's — whatever its
+// rank, and still takes a released claim over. Anything else changes nothing, and some suspends
+// are refused before they get here (suspendRequest): no source
 // takes over a suspension that outranks it — an architect's suspend of a claim the daemon, the
 // controller or the operator holds, and the controller's of one the operator holds
 // (Claim.StopOrSuspendRefusal).
@@ -213,6 +216,9 @@ func suspendedAgain(m *Machine, ctx context.Context, ev Event) error {
 	request, err := suspendRequest(m, ev)
 	if err != nil {
 		return err
+	}
+	if request.KeepsHold && m.claim.SuspendedBy.Holds() {
+		return nil
 	}
 	if suspensionRank(request.By) <= suspensionRank(m.claim.SuspendedBy) {
 		return nil
@@ -229,7 +235,9 @@ func suspendedAgain(m *Machine, ctx context.Context, ev Event) error {
 // the daemon's is stronger again, though it holds against no rule, since it is a park, a linger,
 // a close or a carry — the issue left the workflow, or left the tree it ran in, or that tree
 // lingers — and a worker an architect suspended before it is no longer the architect's to start:
-// its resume, or its stop and a retry, would start the worker on the issue the daemon stopped.
+// its resume, or its stop and a retry, would start the worker on the issue the daemon stopped. A
+// production check's suspend between looks is the one daemon suspension that takes over no
+// architect's, since it keeps the hold (RequestSuspend.KeepsHold, suspendedAgain).
 // The controller's is stronger than both, since it is project-wide work a tree's architect must
 // not undo and no rule lifts; the operator's is strongest and nothing takes it over. An exit's,
 // and one recorded before sources existed, are the daemon's own and rank with its suspension, so
@@ -308,8 +316,9 @@ func suspendRequest(m *Machine, ev Event) (RequestSuspend, error) {
 	// request it outranks, until it completes. A later daemon linger or leave must use the source
 	// of an operator's or the controller's hold rather than change a deliberate hold into a
 	// rule-resumable daemon suspension; the daemon's own suspension outranks an architect's, and
-	// takes it over instead (holdSuspension).
-	if m.held != nil && m.held.By.Holds() && suspensionRank(request.By) < suspensionRank(m.held.By) {
+	// takes it over instead (holdSuspension), bar a suspension that keeps the hold
+	// (RequestSuspend.KeepsHold), which takes over no held suspension that holds.
+	if m.held != nil && m.held.By.Holds() && (request.KeepsHold || suspensionRank(request.By) < suspensionRank(m.held.By)) {
 		return *m.held, nil
 	}
 	return request, nil

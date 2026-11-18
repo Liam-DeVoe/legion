@@ -210,11 +210,12 @@ func boundText(bound time.Duration) string {
 // to wake it.
 //
 // How the current look ended does not matter: a report of it counts while the check is open,
-// however that look ended — its bound came due, an operator's hold met its start, or the
-// checking role's claim failed in it (dispatch://INFRA-714/spec R12). The checking agent drove
-// the change in production and its answer is the fact; refusing it threw that away and left the
-// check to close as not run. A report refused here leaves its event unmarked, so the agent's next
-// send of it applies (intake's ApplyFact).
+// however that look ended — its bound came due, a hold of the operator's, the controller's or an
+// architect's met its start, or the checking role's claim failed in it
+// (dispatch://INFRA-714/spec R12). The checking agent drove the change in production and its
+// answer is the fact; refusing it threw that away and left the check to close as not run. A
+// report refused here leaves its event unmarked, so the agent's next send of it applies
+// (intake's ApplyFact).
 func (e *Engine) checkReported(ctx context.Context, tx pgx.Tx, fact intake.CheckReport) (intake.Result, error) {
 	check, err := e.store.ProductionCheck(ctx, tx, fact.Issue)
 	if err != nil {
@@ -258,10 +259,10 @@ func (e *Engine) checkReported(ctx context.Context, tx pgx.Tx, fact intake.Check
 	return intake.Result{}, e.closeCheck(ctx, tx, check, outcome)
 }
 
-// endLook ends the open look of a check nobody reported — its bound came due, the outbox met an
-// operator's hold on its start, or the checking role's claim failed in it — as a report of pending
-// would (endLookPending), and names the next look a look bound out, the retry with cause as its
-// reason. cause is why, for the log.
+// endLook ends the open look of a check nobody reported — its bound came due, the outbox met a
+// suspension of the operator's, the controller's or an architect's held over its start, or the
+// checking role's claim failed in it — as a report of pending would (endLookPending), and names
+// the next look a look bound out, the retry with cause as its reason. cause is why, for the log.
 func (e *Engine) endLook(ctx context.Context, tx pgx.Tx, check *record.ProductionCheck, cause string) error {
 	check.LookOpen = false
 	check.WakeAt = e.clampWake(*check, e.lookRetry())
@@ -285,7 +286,9 @@ func (e *Engine) endLook(ctx context.Context, tx pgx.Tx, check *record.Productio
 // The claim of the check's role is then suspended, its session kept, and the issue's Sandbox is
 // deleted with the pod it ran in (record.IssueSuspend): both rows follow the look's start row, so
 // the suspension's fences find no later start and wait for the suspend (store.IssueSuspension),
-// and the pod goes until the next wake, whose launch makes the Sandbox again.
+// and the pod goes until the next wake, whose launch makes the Sandbox again. The suspend keeps a
+// hold it meets (suspendKeepingHold): a role the operator, the controller or an architect
+// suspended stays theirs, since this suspend only stops the process between looks.
 func (e *Engine) endLookPending(ctx context.Context, tx pgx.Tx, check *record.ProductionCheck, reason string) error {
 	if check.Last {
 		return e.closeCheck(ctx, tx, check, record.CheckNotRun)
@@ -302,7 +305,7 @@ func (e *Engine) endLookPending(ctx context.Context, tx pgx.Tx, check *record.Pr
 			"look", check.Looks, "phase", issue.Phase)
 		return nil
 	}
-	if err := e.suspend(ctx, tx, issue, check.Role, fmt.Sprintf("%s's production check waits for its next look", issue.Key)); err != nil {
+	if err := e.suspendKeepingHold(ctx, tx, issue, check.Role, fmt.Sprintf("%s's production check waits for its next look", issue.Key)); err != nil {
 		return err
 	}
 	if err := e.enqueue(ctx, tx, issue.Key, record.IssueSuspend{Tree: issue.Tree, Generation: issue.Generation, TreeGeneration: root.Generation}); err != nil {
@@ -422,12 +425,12 @@ func (e *Engine) checkIssue(ctx context.Context, tx pgx.Tx, check record.Product
 	return *issue, *root, nil
 }
 
-// checkLookEnded is a look ending with no report (intake.CheckLookEnded: the look's bound, an
-// operator's hold met by its start, the checking role's failed claim): the look it names, still
-// open, ends as a pending report would (endLook); a look already ended, or a check closed, changes
-// nothing, and so does a look of a check a later merge has replaced, one the fact does not name
-// (record.ProductionCheck.NamedBy), whose look 1 the current check's would otherwise be taken
-// for, logged.
+// checkLookEnded is a look ending with no report (intake.CheckLookEnded: the look's bound, a
+// hold of the operator's, the controller's or an architect's met by its start, the checking
+// role's failed claim): the look it names, still open, ends as a pending report would (endLook);
+// a look already ended, or a check closed, changes nothing, and so does a look of a check a later
+// merge has replaced, one the fact does not name (record.ProductionCheck.NamedBy), whose look 1
+// the current check's would otherwise be taken for, logged.
 func (e *Engine) checkLookEnded(ctx context.Context, tx pgx.Tx, fact intake.CheckLookEnded) (intake.Result, error) {
 	check, err := e.store.ProductionCheck(ctx, tx, fact.Issue)
 	if err != nil || check == nil || !check.Open() || !check.LookOpen || check.Looks != fact.Look {

@@ -22,14 +22,16 @@ func mergeHoldsSubject(project string) string {
 }
 
 // mergeHoldsChangeTypes are the types of the Dispatch events that change the merge holds document
-// itself: its creation and each new version (packages/envoy/internal/dispatch/api/artifacts.go),
-// its rename (artifact_rename.go) and its removal (artifact_removal.go). Each fact is a notice to
-// every architect in accepting and a wake for every merger in merging, so no other artifact.*
-// type is one. A person's edit writes its artifact.version at once and artifact.human_edited for
-// the same change after the quiet window (docs/edit_notices.go), so a fact of both would tell
-// each role twice of one change; artifact.approved and artifact.changes_requested change no line
-// of the document, so no hold either.
-var mergeHoldsChangeTypes = []string{"artifact.created", "artifact.version", "artifact.renamed", "artifact.removed"}
+// itself: its creation and each new version (packages/envoy/internal/dispatch/api/artifacts.go).
+// Each fact is a notice to every architect in accepting and a wake for every merger in merging, so
+// no other artifact.* type is one. A rename changes the document's title alone, and the slug a
+// merger reads it by and every line of it stay (artifact_rename.go), so it changes no hold; and
+// Dispatch removes no project document (artifact_removal.go, ARTIFACT_PROJECT_DOCUMENT), so no
+// removal of it arrives. A person's edit writes its artifact.version at once and
+// artifact.human_edited for the same change after the quiet window (docs/edit_notices.go), so a
+// fact of both would tell each role twice of one change; artifact.approved and
+// artifact.changes_requested change no line of the document, so no hold either.
+var mergeHoldsChangeTypes = []string{"artifact.created", "artifact.version"}
 
 // decodeDispatchDocumentFact decodes one Dispatch event of a project document. An event of
 // project's merge holds document that changes the document (mergeHoldsChangeTypes) is a

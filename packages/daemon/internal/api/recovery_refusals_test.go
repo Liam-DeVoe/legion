@@ -1358,10 +1358,10 @@ func TestARecoveryRefusedAsWorkingWhoseLaterViewIsNotWorkingAnswersThatTheClaimM
 		refuse  func(s *server, w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, view supervise.ClaimView)
 	}{
 		{"the fresh session", wantFreshSessionReaches, func(s *server, w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, view supervise.ClaimView) {
-			s.refuseSuspensionRefusedAsWorking(w, r, m, token, view)
+			s.refuseSuspensionRefusedAsWorking(w, r, m, token, view, supervise.SuspendedByOperator)
 		}},
 		{"the compaction", wantCompactionReaches, func(s *server, w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, view supervise.ClaimView) {
-			s.refuseState(w, r, m, token, supervise.StateWorking, view)
+			s.refuseState(w, r, m, token, supervise.StateWorking, view, supervise.SuspendedByOperator)
 		}},
 	} {
 		t.Run(door.name, func(t *testing.T) {
@@ -1603,19 +1603,22 @@ func heldSuspensionRefusal(token claim.Token, startsAgain, operation, liveStates
 // of every row (api's refuseHeldSuspension). The code each row takes is the claim's own, so
 // the answer a state was refused with before either door read the hold is the answer it is
 // refused with now. The one exception is the hold's own: the controller's fresh session of a
-// claim the operator's suspension is held over is refused that hold first (wantHeldRefusal),
-// while the controller's compaction is let past it (compactOp.controllerPassesHold).
+// claim the operator's suspension is held over is refused that hold first, while the
+// controller's compaction is let past it (compactOp.controllerPassesHold) and named the
+// operator's resume as what starts the claim rather than the fresh session the door refuses it
+// (wantHeldRefusal).
 func TestARecoveryRefusedUnderAHeldSuspensionSaysTheClaimStopsWorking(t *testing.T) {
 	for _, held := range heldSuspensionCases() {
 		for _, door := range compactDoors() {
 			t.Run(held.name+": "+door.name, func(t *testing.T) {
 				h := compactHarness(t, nil)
 				token := held.start(t, h)
+				m, _ := h.supervisor.Machine(token)
+				heldBy := m.View().SuspensionHeldBy
 
 				recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
 
-				wantFreshSessionRefusal(t, recorder, http.StatusConflict, held.code,
-					heldSuspensionRefusal(token, freshSessionName, "a compaction", wantCompactionLive))
+				door.wantHeldRefusal(t, recorder, token, heldBy, held.code)
 			})
 		}
 		for _, door := range freshSessionDoors() {

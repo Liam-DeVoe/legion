@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -230,20 +231,12 @@ func TestTheControllersRetryAndResumeRefuseAClaimInATurn(t *testing.T) {
 	}
 }
 
-// controllerHoldOperations is the five operations of the controller's door that the operator's
-// own suspension refuses, by route and by the words their refusals name them by: every one but
-// the compaction (compactOp.controllerPassesHold).
-var controllerHoldOperations = []struct {
-	name  string
-	route string
-	as    claimOp
-}{
-	{"resume", "/legion/v1/claims/resume", resumeOp},
-	{"suspend", "/legion/v1/claims/suspend", suspendOp},
-	{"stop", "/legion/v1/claims/stop", stopOp},
-	{"retry", "/legion/v1/claims/retry", retryOp},
-	{"fresh_session", "/legion/v1/claims/fresh-session", freshSessionOp},
-}
+// controllerHoldOperations is the operations of the controller's door that the operator's own
+// suspension refuses: every one of the claim door's but the one it lets past, the compaction
+// (compactOp.controllerPassesHold).
+var controllerHoldOperations = slices.DeleteFunc(slices.Clone(claimDoorOperations), func(op claimDoorOperation) bool {
+	return op.as.controllerPassesHold
+})
 
 // operatorHoldRefusal is the sentence of SUSPENDED_BY_OPERATOR for operation by caller that the
 // operator's suspension refused before it changed anything (api's refuseHold, nothingChanged).
@@ -251,6 +244,22 @@ func operatorHoldRefusal(token claim.Token, operation, caller string) string {
 	return string(token) + " is held by the operator's own suspension, which only the operator lifts, so " + operation +
 		" by " + caller + " is refused and nothing of the claim changed. Ask the operator: `legion claims resume --claim " +
 		string(token) + "` is theirs to run"
+}
+
+// operatorLifts is how a compaction's refusal of a claim the operator's suspension holds, asked
+// by a caller that suspension outranks, ends: it names the holder and the operator's resume, in
+// the words of the hold's own refusal (api's holdSentences), where the claim's own refusal would
+// name the fresh session the claim door refuses that caller.
+func operatorLifts(token claim.Token) string {
+	return "it is held by the operator's own suspension, which only the operator lifts. Ask the operator: `legion claims resume --claim " +
+		string(token) + "` is theirs to run"
+}
+
+// operatorHeldCompactionRefusal is the compaction's refusal of a claim the operator's suspension
+// is held over, asked by the controller (api's refuseHeldSuspension).
+func operatorHeldCompactionRefusal(token claim.Token) string {
+	return string(token) + " has a suspension held over it, and a compaction reaches no claim a suspension waits over, whatever state it is in; " +
+		operatorLifts(token)
 }
 
 // The operator's own suspension is the operator's decision, and only the operator undoes it: the
@@ -321,15 +330,25 @@ func TestTheControllerCannotGetPastTheOperatorsHeldSuspension(t *testing.T) {
 // The controller's compaction is the one operation of its door the operator's suspension does not
 // refuse (compactOp.controllerPassesHold): a compaction stops, takes over and lifts nothing, so a
 // claim that suspension holds is answered in the compaction's own words and left as it was — a
-// landed one runs no session to compact, and a held one is the held suspension's refusal.
+// landed one runs no session to compact, and a held one is the held suspension's refusal. What
+// either names as starting the claim is the operator's resume, since the controller's
+// fresh_session of that claim is refused SUSPENDED_BY_OPERATOR at the door: the answer sends the
+// controller to the operator rather than to a door that refuses it (api's holdSentences).
+//
+// The negative control is refuseState with no hold read (a nil hold for refuseNotRunning and
+// refuseHeldSuspension): both rows then name fresh_session as what starts the claim again.
 func TestTheControllersCompactionIsNotRefusedTheOperatorsSuspension(t *testing.T) {
 	t.Run("landed", func(t *testing.T) {
 		h := freshSessionHarness(t, &phaseRestarter{})
 		token := operatorSuspendedImplementer(t, h)
 
-		wantFreshSessionRefusal(t, askClaimOperation(t, h, "/legion/v1/claims/compact", "LEGION-209", claim.RoleImplementer),
-			http.StatusConflict, claimNotRunning,
-			string(token)+" is suspended, so it runs no Oh My Pi session to compact; "+freshSessionName+" starts it again instead")
+		recorder := askClaimOperation(t, h, "/legion/v1/claims/compact", "LEGION-209", claim.RoleImplementer)
+
+		wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimNotRunning,
+			string(token)+" is suspended, so it runs no Oh My Pi session to compact; "+operatorLifts(token))
+		if strings.Contains(recorder.Body.String(), "fresh_session") {
+			t.Errorf("the refusal is %s, want it to name no fresh session: the door refuses the controller's", recorder.Body)
+		}
 		if got := h.stored(token); got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByOperator {
 			t.Fatalf("the claim is %s suspended by %q, want it suspended by the operator as it was", got.State, got.SuspendedBy)
 		}
@@ -342,8 +361,12 @@ func TestTheControllersCompactionIsNotRefusedTheOperatorsSuspension(t *testing.T
 			t.Fatalf("the operator's suspend of a claim in a turn = %d, want 202; body %s", recorder.Code, recorder.Body)
 		}
 
-		wantFreshSessionRefusal(t, askClaimOperation(t, h, "/legion/v1/claims/compact", "LEGION-209", claim.RoleImplementer),
-			http.StatusConflict, claimInATurn, heldSuspensionRefusal(token, freshSessionName, "a compaction", wantCompactionLive))
+		recorder := askClaimOperation(t, h, "/legion/v1/claims/compact", "LEGION-209", claim.RoleImplementer)
+
+		wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimInATurn, operatorHeldCompactionRefusal(token))
+		if strings.Contains(recorder.Body.String(), "fresh_session") {
+			t.Errorf("the refusal is %s, want it to name no fresh session: the door refuses the controller's", recorder.Body)
+		}
 		m, _ := h.supervisor.Machine(token)
 		if view := m.View(); view.State != supervise.StateWorking || !view.SuspensionHeld || view.SuspensionHeldBy != supervise.SuspendedByOperator {
 			t.Fatalf("the claim is %s holding a suspension %t by %q, want it working under the operator's", view.State, view.SuspensionHeld, view.SuspensionHeldBy)
@@ -395,14 +418,18 @@ func TestTheControllersFreshSessionLiftsItsOwnSuspension(t *testing.T) {
 	}
 }
 
-// claimDoorOperations is the six operations of the claim door, each by its route and the words
-// its refusals name it by: the four the operator's `legion claims` gives the controller, and the
-// two recoveries. An architect takes all six for the claims of its own tree.
-var claimDoorOperations = []struct {
+// claimDoorOperation is one of the claim door's operations, by its route and the words its
+// refusals name it by.
+type claimDoorOperation struct {
 	name  string
 	route string
 	as    claimOp
-}{
+}
+
+// claimDoorOperations is the six operations of the claim door: the four the operator's `legion
+// claims` gives the controller, and the two recoveries. An architect takes all six for the claims
+// of the issues it owns.
+var claimDoorOperations = []claimDoorOperation{
 	{"stop", "/legion/v1/claims/stop", stopOp},
 	{"retry", "/legion/v1/claims/retry", retryOp},
 	{"suspend", "/legion/v1/claims/suspend", suspendOp},
@@ -440,7 +467,7 @@ func architectSuspendedImplementer(t *testing.T, h *harness, architect liveClaim
 	return token
 }
 
-// An architect's grant opens each of the six on a claim of its own tree, and each runs the
+// An architect's grant opens each of the six on a claim of an issue it owns, and each runs the
 // effect the controller's runs: the stop retires the worker, the retry starts the stopped worker
 // through its issue's phase, the suspension is recorded as the architect's and holds against the
 // daemon's rules, the architect's resume lifts its own suspension, the compaction compacts the
@@ -536,8 +563,8 @@ func TestAnArchitectsClaimOperationsServeAClaimOfItsOwnTree(t *testing.T) {
 	})
 }
 
-// An architect reaches the claims of its own tree alone. A claim of another tree is refused 403
-// ISSUE_OUTSIDE_TREE before it is looked up, with nothing of it changed, as every architect
+// An architect reaches the claims of the issues it owns alone. A claim of another tree is refused
+// 403 ISSUE_OUTSIDE_TREE before it is looked up, with nothing of it changed, as every architect
 // operation refuses an issue of another tree (issueOfTree).
 func TestAnArchitectsClaimOperationsRefuseAnotherTreesClaim(t *testing.T) {
 	for _, op := range claimDoorOperations {
@@ -660,10 +687,7 @@ func TestAnArchitectCannotGetPastTheOperatorsSuspension(t *testing.T) {
 			before := h.stored(token)
 
 			wantFreshSessionRefusal(t, askAsArchitect(t, h, architect, op.route, "LEGION-209", claim.RoleImplementer),
-				http.StatusConflict, suspendedByOperator,
-				string(token)+" is held by the operator's own suspension, which only the operator lifts, so "+op.as.name+
-					" by the architect is refused and nothing of the claim changed. Ask the operator: `legion claims resume --claim "+
-					string(token)+"` is theirs to run")
+				http.StatusConflict, suspendedByOperator, operatorHoldRefusal(token, op.as.name, "the architect"))
 			after := h.stored(token)
 			if after.State != supervise.StateSuspended || after.SuspendedBy != supervise.SuspendedByOperator || after.Session != before.Session {
 				t.Fatalf("the refused claim is %s suspended by %q on session %q, want it suspended by the operator on %q",

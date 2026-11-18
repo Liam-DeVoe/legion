@@ -2089,7 +2089,11 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				"row", row.ID, "issue", issue.Key, "role", payload.Role, "phase", issue.Phase, "start-row", last)
 			return nil
 		}
-		if err := machine.Handle(ctx, supervise.RequestSuspend{Claim: token, Reason: payload.Reason, By: supervise.SuspendedByDaemon}); err != nil {
+		// A production check's suspend between looks keeps a hold it meets (KeepsHold): a role the
+		// operator, the controller or an architect suspended stays theirs, and a released claim is
+		// still taken over below (supervise's suspendedAgain).
+		if err := machine.Handle(ctx, supervise.RequestSuspend{Claim: token, Reason: payload.Reason, By: supervise.SuspendedByDaemon,
+			KeepsHold: payload.KeepsHold}); err != nil {
 			return fmt.Errorf("suspend claim %s: %w", token, err)
 		}
 		// A linger, a park, a hand-over and a close all stop a claim through this one row, and

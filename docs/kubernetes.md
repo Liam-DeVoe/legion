@@ -4882,6 +4882,8 @@ The log fails when the issue never pushed `legion/<KEY>`; read `git log --stat -
 `git fetch` refuses the bundle when your clone lacks a commit it builds on, such as one since force-pushed away on GitHub: the bundle holds only what origin lacks, so that commit is on no branch GitHub has and only the pod's clone holds it.
 Keep the pod then, and tell the issue's architect, as the controller's route does.
 `fetch.fsckObjects` has git check each object of the bundle before it stores any, and a malformed object refuses the fetch (`fatal: fsck error in packed object`); keep the pod then too.
+Git makes that check of a bundle's objects from 2.46.0 on (`VERIFY_BUNDLE_FSCK`, `bundle.h`), so step 3 needs git 2.46 or later on your machine for it: an earlier git takes the option and fetches the bundle unchecked.
+The controller's route runs the worker image's git, 2.47.3 when this was written, so its fetch is checked.
 `git push` refuses anything but a fast-forward of GitHub's branch; when it does, push to a branch of another name and merge from there.
 The pod's agents run while you copy, so finish steps 1 and 2 while it is still there, and repeat step 1 when step 2 refuses an archive or exits on a git error;
 step 2 starts in a fresh scratch directory each run.
@@ -5834,12 +5836,12 @@ the daemon takes an answer only for the round the claim is in now and refuses an
 The round ends at its bound, `pod_update_grace_minutes` after it opened (a `legion.yaml` key, a decimal number of minutes, 30 by default), whatever its roles answered (`roundBound`).
 An answer only brings that end forward: once every claim the round asks has answered and no claim of the issue is in a turn, the next sweep ends the round before its bound.
 No answer and no turn holds a round past its bound, and a turn that still runs then ends with the pod.
-An operator's own suspension of a claim the round asks is the one wait that outlasts the bound: the daemon does not replace the pod until the operator resumes that claim (`heldByOperator`).
+A suspension that holds over a claim the round asks — the operator's, the controller's or an architect's — is the one wait that outlasts the bound: the daemon does not replace the pod until a resume lifts that suspension (`heldClaims`).
 When the round ends, the daemon ends the pod (`ReplacePod`), each role in it is reported displaced and resumed uncharged on its own session, and the first of those resumes provisions a fresh pod from the current configuration.
 A replacement the bound made, with a claim unanswered or a turn running, is logged on a line of its own, `supervise pod update replaced at the bound`, which names the claims that answered and those that did not.
 The replacement asks once more, under the pod's own lock and immediately before it suspends anything, whether it is still due:
 the daemon reads the issue's claims from the store again — which is how a claim created since the sweep read its list, such as the next phase's role launched into the kept pod, is counted — and takes the same readings at the clock as it stands then.
-An operator's suspension aborts it at any moment, and before the bound so does a claim that has not answered or a turn that started while the replacement waited for the pod's launch turn:
+A suspension that holds, the operator's, the controller's or an architect's, aborts it at any moment, and before the bound so does a claim that has not answered or a turn that started while the replacement waited for the pod's launch turn:
 nothing is suspended, the round stays open, and the next sweep decides again.
 
 The daemon then replaces the pod with nothing read from its disk: a role's own push is what keeps its work, and work not pushed when the pod goes, a failed claim's included, is lost with the disk, so the agent does it again in the new pod, by the decision recorded at dispatch://INFRA-2848/ask/dc797d9e-49a6-49f6-b279-d27702c9ebd9.
@@ -6676,6 +6678,7 @@ each issue's pod (every role of it alike) and the image probe's.
 - **`runtime.kubernetes.pod.controller_service_account`** is the fifth key of `runtime.kubernetes.pod`.
   `controller_service_account` is the ServiceAccount the daemon-launched controller's pod runs as in place of `service_account` ([Daemon-launched controller](#daemon-launched-controller), "The pod"); unset, that pod runs as `service_account` like every other pod, and every other pod — each issue pod, the image probe's and each repository cache's — runs as `service_account` whether or not it is set.
   It may neither be blank nor still hold a `${…}` placeholder, as `service_account` may not (`runtime.kubernetes.pod.controller_service_account "${…}" is an unfilled placeholder: put the ServiceAccount the controller's pod runs as in its place`), and it is refused unless `controller: daemon`, the one setting under which the daemon launches the controller's pod (`runtime.kubernetes.pod.controller_service_account names the ServiceAccount of the pod of the controller the daemon launches, and controller: operator launches none: set controller: daemon or drop the key`).
+  It must be a ServiceAccount's name, a DNS-1123 subdomain, and any other value is refused with the rule that name follows (`runtime.kubernetes.pod.controller_service_account "<name>" is no ServiceAccount's name: a ServiceAccount is named with lowercase letters, digits, '-' and '.', starting and ending with a letter or digit, in at most 253 characters`).
   The controller's pod is held to it as the other pods are to `service_account`: a controller pod running as any other account, `service_account` included, is warned of at boot and replaced at the next launch of the controller (`accountDrift`), so setting, changing or dropping it moves the controller's pod, and only that pod, at its next launch.
   `legion start --check-config` names both accounts on a line of its own when it is set (`controller service account: the controller's pod runs as <account> (runtime.kubernetes.pod.controller_service_account); every other pod runs as <account> (runtime.kubernetes.pod.service_account)`).
 

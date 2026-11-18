@@ -262,9 +262,11 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "The daemon refuses resume for a claim stored working (CLAIM_IN_A_TURN). " +
   "The daemon refuses resume, suspend, stop, retry and fresh_session for a claim the operator suspended, or whose " +
   "suspension by the operator waits for a turn to end (SUSPENDED_BY_OPERATOR), before any refusal of the " +
-  "claim's state, and nothing of the claim changes but where fresh_session's own suspension ran first: only the " +
-  "operator lifts the operator's suspension, so ask the operator. The controller's compact is not refused " +
-  "the operator's suspension, and answers such a claim in its own codes. The four " +
+  "claim's state, and nothing of the claim changes but where fresh_session's own suspension ran first, or " +
+  "where fresh_session left behind the session the claim recorded, so the claim starts in a new session once " +
+  "it is started: only the operator lifts the operator's suspension, so ask the operator. " +
+  "The controller's compact is not refused the operator's suspension, and answers such a claim " +
+  "in its own codes. The four " +
   "refuse role controller as fresh_session and compact do. " +
   "An architect has the same six operations, fresh_session, compact, stop, retry, suspend and " +
   "resume (issue, role), for the claims of the issues it owns alone: a root architect owns every issue of " +
@@ -276,7 +278,8 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "each of the six for a claim the operator's suspension holds (SUSPENDED_BY_OPERATOR) and for a " +
   "claim the controller's suspension holds (SUSPENDED_BY_CONTROLLER), also while that suspension " +
   "waits for a turn to end, before any refusal of the claim's state. Nothing of the claim changes but where " +
-  "fresh_session's own suspension ran first: ask the holder to lift its suspension. " +
+  "fresh_session's own suspension ran first, or where fresh_session left behind the session the claim " +
+  "recorded, so the claim starts in a new session once it is started: ask the holder to lift its suspension. " +
   "An architect's suspension is recorded as architect. An architect's resume lifts it, and the " +
   "controller's and the operator's resume lift it too. An architect's resume, suspend, stop and " +
   "fresh_session are refused for a claim the daemon suspended (SUSPENDED_BY_DAEMON). Its retry " +

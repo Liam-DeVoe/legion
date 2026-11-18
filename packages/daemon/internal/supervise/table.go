@@ -397,12 +397,20 @@ type RequestReady struct {
 // turn's end, behind an answer that told the caller its request did nothing (api's freshSession).
 // Every other suspension leaves it false and is held as above: the outbox retries its rows until
 // the claim answers nil, and `legion claims suspend` waits the hold out.
+//
+// KeepsHold is a suspension that never takes over a suspension that holds (SuspendSource.Holds),
+// landed (suspendedAgain) or held for a turn (suspendRequest), and leaves the claim to that
+// holder: the daemon's suspend of a production check's role between looks
+// (record.SuperviseRequest.KeepsHold), which stops the process and keeps the session for the
+// next look's start, so a hold it took over would buy it nothing and be lost. It takes a released
+// claim over as any daemon suspension does. Every other suspension leaves it false.
 type RequestSuspend struct {
 	Claim     claim.Token
 	Reason    string
 	By        SuspendSource
 	Deadline  time.Time
 	NeverHold bool
+	KeepsHold bool
 }
 
 // RequestResume relaunches a suspended claim's session. By is who asks, and every resume names
@@ -2601,10 +2609,11 @@ func issueClose(m *Machine, ctx context.Context, _ Event) error {
 // `legion claims forget-session`, and the half of a fresh session that is the claim's rather than
 // the workflow's (api's retryClaim, claimFreshSession). It launches nothing — whatever starts
 // the claim next, for a phase worker the workflow's own start of its phase, spawns a fresh agent
-// rather than resuming the turns the operator asked to leave behind. The comparison runs under
+// rather than resuming the turns the asker meant to leave behind. The comparison runs under
 // the machine lock, so a decision that changed the claim since an operator saw it cannot clear a
 // later session, and so does the read of a hold the asker may not lift, which refuses the forget
-// with the session kept (RequestForgetSession.By, askedBy, Claim.ResumeRefusal).
+// with the session kept (RequestForgetSession.By, askedBy, Claim.ResumeRefusal). The log line
+// and the reason the claim records name who asked (forgottenBy).
 func forgetSession(m *Machine, ctx context.Context, ev Event) error {
 	request := ev.(RequestForgetSession)
 	if err := askedBy(m, "forget-session", request.By); err != nil {
@@ -2618,10 +2627,28 @@ func forgetSession(m *Machine, ctx context.Context, ev Event) error {
 			"%s records session %s; pass --session %s to start fresh", m.claim.Token, m.claim.Session, m.claim.Session,
 		)}
 	}
-	m.log.Info("supervise: forgetting the recorded session at the operator's ask", "session", m.claim.Session,
-		"sessionFile", m.claim.SessionFile, "state", string(m.claim.State))
-	m.forgetSession("an operator cleared it with `legion claims forget-session`, so this claim starts fresh")
+	m.log.Info("supervise: forgetting the recorded session at the asker's request", "by", string(request.By),
+		"session", m.claim.Session, "sessionFile", m.claim.SessionFile, "state", string(m.claim.State))
+	m.forgetSession(forgottenBy(request.By))
 	return m.persist(ctx)
+}
+
+// forgottenBy is why a forget left the claim's session behind, as the claim records it
+// (Claim.Abandoned), naming who asked and the route the forget came through. The operator's
+// forget comes from two commands, its `legion claims forget-session` and its `legion claims retry
+// --fresh-session`, and names the operator alone, so the sentence names both; the controller's
+// and an architect's come from their fresh session alone. The sentence reaches the first prompt
+// of the agent that replaces the session (abandonedTask), where a worker whose controller asked
+// for its fresh session must not read that an operator cleared it. askedBy has refused every
+// other source before this is read.
+func forgottenBy(by SuspendSource) string {
+	switch by {
+	case SuspendedByController:
+		return "the project's controller asked for a fresh session of this claim, so this claim starts fresh"
+	case SuspendedByArchitect:
+		return "an architect asked for a fresh session of this claim, so this claim starts fresh"
+	}
+	return "an operator cleared it with `legion claims forget-session` or `legion claims retry --fresh-session`, so this claim starts fresh"
 }
 
 // askedBy refuses a resume, a stop, a forget of the session or an operator's retry

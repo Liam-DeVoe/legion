@@ -645,7 +645,7 @@ func leftMergingAt(issue record.Issue, lingers bool, pr *record.PullRequest, num
 // (lingers, record.TreeLingers). The role of an issue that left the phase is told nothing that
 // only the phase needs: the workflow no longer works that phase, and the role of a lingering tree
 // is suspended by its close and would never hold its role to hear it. The merge-queue rule
-// (leftMergingAt) and the merge holds' rule (leftHeldPhase) judge by it.
+// (leftMergingAt) and the merge holds' rule (heldPhaseLeft) judge by it.
 func leftPhase(issue record.Issue, at phase.Phase, lingers bool) string {
 	switch {
 	case issue.Phase != at:

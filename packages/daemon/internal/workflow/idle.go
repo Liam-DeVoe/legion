@@ -352,12 +352,13 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 //     read through issueStopFences), so a release marked for such an issue could never finish:
 //     the mark would stand while the teardown waited for a process nothing is going to stop;
 //
-//   - no claim is an operator's suspension (pods.IdleClaim.SuspensionHolds). It is the one
-//     suspension the daemon never ends by itself (supervise.Claim.RuleMayResume), and the
-//     operator who suspended the role may want the workspace as its roles left it. Such a pod
-//     stands for as long as the operator leaves it standing: they end it by resuming the claim,
-//     which starts the role in the pod that is still there, or by stopping it, which retires the
-//     claim and leaves the issue to this rule (IdleHoldUnownedOperatorSuspended);
+//   - no claim is under a suspension that holds (pods.IdleClaim.SuspensionHolds): the operator's,
+//     the controller's or an architect's (supervise's SuspendSource.Holds). Those are the
+//     suspensions the daemon never ends by itself (supervise.Claim.RuleMayResume), and the one
+//     who suspended the role may want the workspace as its roles left it. Such a pod stands for
+//     as long as its holder leaves it standing: the holder ends it by resuming the claim, which
+//     starts the role in the pod that is still there, or by stopping it, which retires the claim
+//     and leaves the issue to this rule (IdleHoldUnownedOperatorSuspended);
 //
 //   - nothing waits for delivery to a role of the issue. A start queued for a stopped claim is
 //     the one delivery such an issue carries, and it is what brings a role back into this pod; a

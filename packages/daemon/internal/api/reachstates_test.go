@@ -251,7 +251,7 @@ func TestTheHeldSuspensionRefusalNamesEachDoorsOwnLiveStates(t *testing.T) {
 			for _, state := range all {
 				t.Run(door.op.name+" over a "+string(role)+" that is "+string(state), func(t *testing.T) {
 					recorder := httptest.NewRecorder()
-					if refuseHeldSuspension(recorder, token, state, role, door.op) {
+					if refuseHeldSuspension(recorder, token, state, role, door.op, nil) {
 						t.Fatal("the refusal reported true, want the false every caller returns as its own answer")
 					}
 					var failure Failure
@@ -345,7 +345,7 @@ func TestTheHeldSuspensionRefusalReadsWholeAtEachDoor(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
-			refuseHeldSuspension(recorder, row.token, row.state, row.role, row.op)
+			refuseHeldSuspension(recorder, row.token, row.state, row.role, row.op, nil)
 			var failure Failure
 			decodeInto(t, recorder, &failure)
 			if failure.Error != row.want {

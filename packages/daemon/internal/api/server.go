@@ -373,9 +373,10 @@ type server struct {
 	drained   context.Context
 	decisions *RouteDecisions
 	log       *slog.Logger
-	// beforeForgetSessionHandle pauses a forget before its decision of the machine, in the
-	// concurrency regression tests of the operator's forget-session route (after its preflight) and
-	// of the fresh session's forget (forgetRecordedSession, after the suspension it ran).
+	// beforeForgetSessionHandle is a seam a test runs code in just before a forget's decision of
+	// the machine — the concurrency regression tests post a suspension there — on the operator's
+	// forget-session route (after its preflight) and in the fresh session's forget
+	// (forgetRecordedSession, after the suspension it ran). Nil outside those tests.
 	beforeForgetSessionHandle func()
 	// beforeFreshSessionResume pauses a fresh session after its forget dropped the recorded
 	// session and before its resume, in the regression test of a suspension above the caller

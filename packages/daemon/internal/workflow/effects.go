@@ -28,10 +28,18 @@ func PhaseFinished(ctx context.Context, store record.Store, tx pgx.Tx, issue rec
 		return false, nil
 	}
 	pr, err := store.PullRequest(ctx, tx, issue.Key)
-	if err != nil || pr == nil {
+	if err != nil {
 		return false, err
 	}
-	return pr.State == record.PullRequestMerged, nil
+	return finishedBy(issue, pr), nil
+}
+
+// finishedBy is PhaseFinished's rule over the issue's pull request as its caller read it, nil for
+// none, so a caller that read the pull requests of many issues in one query
+// (record.Store.PullRequestsOf, the merge holds' mergeHoldsChanged) judges each by the same rule
+// with no read of its own.
+func finishedBy(issue record.Issue, pr *record.PullRequest) bool {
+	return issue.Phase == phase.Merging && pr != nil && pr.State == record.PullRequestMerged
 }
 
 // RoleFor is phase.RoleFor, which is where the role that works a phase is decided
@@ -336,6 +344,15 @@ func (h phaseHandoff) onto(row record.PhaseRow) record.PhaseRow {
 // suspend stops role's worker on issue, for reason, which the suspended claim logs.
 func (e *Engine) suspend(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, reason string) error {
 	return e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "suspend", Tree: issue.Tree, Role: role, Generation: issue.Generation, Reason: reason})
+}
+
+// suspendKeepingHold is suspend for a production check's role between looks (endLookPending): the
+// row keeps a hold it meets (record.SuperviseRequest.KeepsHold), so it takes over no suspension of
+// the operator's, the controller's or an architect's and leaves the claim to that holder. A park,
+// a linger, a close and a carry take over what they outrank on purpose, and go through suspend.
+func (e *Engine) suspendKeepingHold(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, reason string) error {
+	return e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "suspend", Tree: issue.Tree, Role: role,
+		Generation: issue.Generation, Reason: reason, KeepsHold: true})
 }
 
 // testerVerdictLabel labels the tester's verdict a started worker's task carries. The reviewer's

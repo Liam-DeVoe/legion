@@ -355,6 +355,55 @@ func TestTheDaemonsSuspensionTakesOverAnArchitectsPlacedBeforeIt(t *testing.T) {
 	}
 }
 
+// A suspension that keeps a hold (RequestSuspend.KeepsHold, a production check's suspend between
+// looks) takes over no source that holds: a claim the architect, the controller or the operator
+// suspended stays that holder's, and its resume still lifts it; an architect's suspension held
+// for the agent's turn stays the architect's and lands as its own. A released claim is still taken
+// over, as every daemon suspension takes it over.
+//
+// The negative control is suspendedAgain and suspendRequest without their KeepsHold reads: the
+// daemon's suspend then takes the architect's suspension over, landed and held.
+func TestASuspensionThatKeepsHoldsTakesOverNoSourceThatHolds(t *testing.T) {
+	keep := RequestSuspend{Claim: testToken, Reason: "LEGION-209's production check waits for its next look", By: SuspendedByDaemon, KeepsHold: true}
+	for _, by := range []SuspendSource{SuspendedByArchitect, SuspendedByController, SuspendedByOperator} {
+		t.Run("landed: "+string(by), func(t *testing.T) {
+			h := newHarness(t)
+			suspendedBy(h, by)
+			h.must(keep)
+			if got := h.store.load(testToken); got.State != StateSuspended || got.SuspendedBy != by {
+				t.Fatalf("after the suspend that keeps holds the store records %s by %q, want suspended by %q", got.State, got.SuspendedBy, by)
+			}
+			h.must(RequestResume{Claim: testToken, By: by})
+			h.wantState(StateLaunching)
+		})
+	}
+	t.Run("held for the agent's turn: an architect", func(t *testing.T) {
+		h := newHarness(t)
+		h.reach(StateWorking)
+		if err := h.handle(RequestSuspend{Claim: testToken, Reason: "an architect suspended it", By: SuspendedByArchitect}); !errors.Is(err, ErrSuspendHeld) {
+			t.Fatalf("the architect's suspend of a claim in a turn returned %v, want it held", err)
+		}
+		if err := h.handle(keep); !errors.Is(err, ErrSuspendHeld) {
+			t.Fatalf("the suspend that keeps holds of a claim in a turn returned %v, want it held", err)
+		}
+		if c := h.claim(); !c.SuspensionHeld || c.SuspensionHeldBy != SuspendedByArchitect {
+			t.Fatalf("the claim holds a suspension %t by %q, want the architect's", c.SuspensionHeld, c.SuspensionHeldBy)
+		}
+		h.must(StreamTurnEnd{Claim: testToken})
+		if got := h.store.load(testToken); got.State != StateSuspended || got.SuspendedBy != SuspendedByArchitect {
+			t.Fatalf("after the turn the store records %s by %q, want suspended by the architect", got.State, got.SuspendedBy)
+		}
+	})
+	t.Run("released", func(t *testing.T) {
+		h := newHarness(t)
+		suspendedBy(h, SuspendedByReleased)
+		h.must(keep)
+		if got := h.store.load(testToken).SuspendedBy; got != SuspendedByDaemon {
+			t.Fatalf("after the suspend that keeps holds the store records the released claim suspended by %q, want the daemon", got)
+		}
+	})
+}
+
 // An architect's stop of a claim a suspension outranking it holds, landed or held for the agent's
 // turn, is refused with that hold's own error: a stop retires the claim and a retry then
 // relaunches it, past the hold. Its stop of a claim an architect suspended, or one the daemon
