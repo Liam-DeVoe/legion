@@ -116,7 +116,7 @@ var restoreWorkRead = `
 //     Address is the spec's old address of that block. An ask is answered as its node holds it
 //     (answeredAsk).
 //   - RestoreMoves: an ask block a decisions document holds (decisionsDocuments), open, answered,
-//     declined, resolved or withdrawn alike (D1: "an ask block present in decisions.md moves"): a
+//     declined, resolved or withdrawn alike (ruling D1: every ask block of that document moves): a
 //     document_blocks row of type ask of that document, whose asks row names the document and
 //     that block id. Address is the block's address there.
 //

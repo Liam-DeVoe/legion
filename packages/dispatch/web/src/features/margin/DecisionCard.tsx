@@ -13,21 +13,16 @@ import {
   textMutedOnSelectedCard,
   textPrimaryOnSurface,
 } from "../../theme/classes";
+import { decisionName } from "../issue/decision-text";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { buildReferencePath, parseDispatchReference } from "../refs/routes";
 import { regionOrigin } from "./ThreadList";
 import type { DecisionMarginItem, MarkPlacement } from "./useMarginItems";
 
-/** The name a card gives an entry: an ask's question, else the first line of a decision's own
- *  words, past the line that opens its block. */
+/** The name a card gives an entry: an ask's question, else the decision's name as the server and
+ *  the Decisions tab read it (`decisionName`), a heading by its words and not by its `#`. */
 export function entryHeading(decision: DecisionEntry): string {
-  if (decision.question !== null) return decision.question;
-  return (
-    decision.text
-      .split("\n")
-      .map((line) => line.trim())
-      .find((line) => line !== "" && !line.startsWith(":::")) ?? ""
-  );
+  return decision.question ?? decisionName(decision.text_tree, decision.text);
 }
 
 /** One decision beside a spec block it shaped: whose decision it is, whether its maker was

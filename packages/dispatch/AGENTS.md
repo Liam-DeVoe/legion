@@ -14,7 +14,7 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
 
 ## Layout
 
-- `web/src/app.tsx` owns authentication, the React Router shell, and the responsive sidebar, main-content, and margin shell. The sidebar provides Inbox, Pinned issues, Projects, Agents, Delivery, Pipeline, and Settings without loading the full issue list, and its Inbox entry carries one count (`useInboxCount()`, below). `/replies` is gone: the router answers it with a `Navigate` to `/?type=reply`, the Inbox under its Type filter, so a link anyone wrote still lands on those rows. The `/agents` route groups live sessions by Dispatch activity and freshness, with targeted exchanges and the shared Send/Aside/BTW composer. Issue pages have Spec, Conversation, Children, Artifacts, Activity, Decisions, and Collaborators tabs. The Decisions tab (`/issues/<key>/decisions`, chord `t d`, `features/issue/DecisionsPanel.tsx`) reads the `entries` of `GET /issues/{key}/decisions` under `["decisions", <key>]` - the issue's decision nodes, each a `decision` block of one of its documents or a person's answered ask - and lists, in order, Open questions (each linking its ask block in the spec), Waiting for your review (each agent decision nobody has kept at its current version, with Keep, which calls the keep route, and Change, which opens a comment on the decision's document quoting the decision's first paragraph), Your decisions (each linking its ask) and Replaced; each decision shows its `Unsure:` paragraph in `decisionUnsureAccent` and links every spec block it shaped at `#b-<id>`. Its page names the issue, so every reader of a dashboard URL (this SPA, `packages/envoy-client`, the server's `text`) reads `/issues/<key>/decisions` as `dispatch://<key>/decisions`, a reference to the issue. The Collaborators tab (`/issues/<key>/collaborators`, chord `t o`, `features/issue/CollaboratorsTab.tsx`) reads `GET /issues/{key}/collaborators` under `["issue", <key>, "collaborators"]` and lists, in order, Legion agents by role in workflow order (`LEGION_ROLES`), each role's newest session first and a superseded session naming the session that replaced it (`legion.replaced_by`); then Other agents, every session holding no Legion role, by its last activity; then People, each with why they are a collaborator and when they last worked the issue. Every agent row is an `AgentName` link to its conversation and carries its running state, so a stopped or replaced session is one click from what it said; a `legion_registry` of `unavailable` says Legion's record of this issue's agents could not be read in place of a list it cannot fill, and an issue nobody has worked shows the `No one has worked this issue yet.` empty state. Issue margins show Comments (anchored threads beside the document, Proof's model) and Pinned; standalone project-document margins show Comments only. At `xl` the sidebar and margin are independently collapsible rails; compact widths use their respective sheets. A margin is a property of a document surface, so on a desktop route that has none - the Inbox, a project, Settings, Agents - `features/margin/Margin.tsx` renders nothing at all rather than a 384 px column holding a placeholder sentence; it keys on the route (an issue path, or a project-document path) rather than on `useMarginOwner`, whose document owner only resolves once the artifact query lands, and the reader's own collapse preference is untouched, so the margin returns as they left it on the next issue or document. The desktop sidebar is a `sticky top-0` viewport-tall flex column inside its full-height `<aside>`: the navigation stays reachable on a long issue, and the signed-in name and `Sign out` sit in an `mt-auto` footer beneath the links rather than above them, because identity is read once and the navigation on every visit. Per-user sidebar visibility, margin visibility, and margin width persist in browser storage.
+- `web/src/app.tsx` owns authentication, the React Router shell, and the responsive sidebar, main-content, and margin shell. The sidebar provides Inbox, Pinned issues, Projects, Agents, Delivery, Pipeline, and Settings without loading the full issue list, and its Inbox entry carries one count (`useInboxCount()`, below). `/replies` is gone: the router answers it with a `Navigate` to `/?type=reply`, the Inbox under its Type filter, so a link anyone wrote still lands on those rows. The `/agents` route groups live sessions by Dispatch activity and freshness, with targeted exchanges and the shared Send/Aside/BTW composer. Issue pages have Spec, Conversation, Children, Artifacts, Activity, Decisions, and Collaborators tabs. The Decisions tab (`/issues/<key>/decisions`, chord `t d`, `features/issue/DecisionsPanel.tsx`) reads the `entries` of `GET /issues/{key}/decisions` under `["decisions", <key>]` - the issue's decision nodes, each a `decision` block of one of its documents or a person's answered ask - and lists, in order, Open questions (each linking its ask block in the spec), Waiting for your review (each agent decision nobody has kept at its current version, with Keep, which calls the keep route, and Change, which opens a comment on the decision's document quoting the decision's first paragraph), Your decisions (each linking its ask, and a person's drawn by their answer from the reading the entry carries of it, `answer_tree`, or by the labels they chose as plain words where they wrote none, since no stored text holds those joined) and Replaced; each decision shows its `Unsure:` paragraph in `decisionUnsureAccent` and links every spec block it shaped at `#b-<id>`. The tab draws every text from the server's reading and parses no markdown, which `e2e/parse-count.e2e.ts`'s `the decisions panel` counts. Its page names the issue, so every reader of a dashboard URL (this SPA, `packages/envoy-client`, the server's `text`) reads `/issues/<key>/decisions` as `dispatch://<key>/decisions`, a reference to the issue. The Collaborators tab (`/issues/<key>/collaborators`, chord `t o`, `features/issue/CollaboratorsTab.tsx`) reads `GET /issues/{key}/collaborators` under `["issue", <key>, "collaborators"]` and lists, in order, Legion agents by role in workflow order (`LEGION_ROLES`), each role's newest session first and a superseded session naming the session that replaced it (`legion.replaced_by`); then Other agents, every session holding no Legion role, by its last activity; then People, each with why they are a collaborator and when they last worked the issue. Every agent row is an `AgentName` link to its conversation and carries its running state, so a stopped or replaced session is one click from what it said; a `legion_registry` of `unavailable` says Legion's record of this issue's agents could not be read in place of a list it cannot fill, and an issue nobody has worked shows the `No one has worked this issue yet.` empty state. Issue margins show Comments (anchored threads beside the document, Proof's model) and Pinned; standalone project-document margins show Comments only. At `xl` the sidebar and margin are independently collapsible rails; compact widths use their respective sheets. A margin is a property of a document surface, so on a desktop route that has none - the Inbox, a project, Settings, Agents - `features/margin/Margin.tsx` renders nothing at all rather than a 384 px column holding a placeholder sentence; it keys on the route (an issue path, or a project-document path) rather than on `useMarginOwner`, whose document owner only resolves once the artifact query lands, and the reader's own collapse preference is untouched, so the margin returns as they left it on the next issue or document. The desktop sidebar is a `sticky top-0` viewport-tall flex column inside its full-height `<aside>`: the navigation stays reachable on a long issue, and the signed-in name and `Sign out` sit in an `mt-auto` footer beneath the links rather than above them, because identity is read once and the navigation on every visit. Per-user sidebar visibility, margin visibility, and margin width persist in browser storage.
 - `web/src/api/types.ts` re-exports the Dispatch JSON entities from `@legion/contracts`, which generates them from the Go route table (`packages/contracts/schemas/dispatch-openapi.json` → `src/dispatch-api.generated.ts`). It declares a shape of its own only for something no route of that table answers, and `web/src/api/hand-written-shapes.md` names each one with the reason it is not generated.
 - `web/src/lib/timestamps.ts`'s `compareTimestamps` is how the SPA orders two server timestamps.
   The server writes RFC 3339 with trailing fractional zeros dropped (`…00.12Z`, `…00.123456Z`), so
@@ -903,10 +903,15 @@ An issue's Spec tab also shows its decisions (`GET /api/v1/issues/{key}/decision
 `["decisions", <key>]`): `useMarginItems` makes one `decision` item of each decision that is not
 replaced at each spec block it links, placed at that block (`DecisionList` in
 `features/margin/DecisionCard.tsx`), an unsure one in the unsure colour; selecting it lights up
-and focuses the block. The same page marks blocks through `ProofEditorHandle.setBlockMarks`,
-never a class in editor DOM, for the reason above (`features/doc/spec-marks.ts`'s `useSpecMarks`):
-each block a `stale` link of the view names gets `staleBlockMark` and the title `A decision that
-shaped this block changed after it.`, and, when the person has read a version of the spec
+and focuses the block. A card is named by an ask's question, else by the words of the first
+block of the decision's own content that holds any (`decisionName`,
+`features/issue/decision-text.ts`, read off the entry's `text_tree`), as the server's decision
+read names it, so a decision that opens with `### Store notices` is `Decision: Store notices`
+and never carries the `#` that marks its heading. The same page marks blocks through
+`ProofEditorHandle.setBlockMarks`, never a class in editor DOM, for the reason above
+(`features/doc/spec-marks.ts`'s `useSpecMarks`): each block a `stale` link of the view names gets
+`staleBlockMark` and the title `A decision that shaped this block changed after it.`, and, when
+the person has read a version of the spec
 (`GET /api/v1/me/documents/{id}/read`), each block whose `changed_version` in the spec's
 `part_of` read (`GET /api/v1/references?to=dispatch://KEY/spec&kind=part_of`) is above it gets
 `changedSinceReadMark`, with one `role="status"` line above the document naming the heading of
@@ -1699,9 +1704,10 @@ reads included.
 `XMLHttpRequest/web` interceptors, which are the ones that reach this runtime), and both
 transports are intercepted apart, because happy-dom's `XMLHttpRequest` — which an upload goes
 through — has a `Fetch` of its own rather than `globalThis.fetch`.
-A request no handler answers is errored and recorded with its method and path, and the preload's
-`afterEach` and `afterAll` fail the test with what was recorded, so a read the page swallowed in
-a `catch`, and a write still retrying after a file's last test, are reported all the same.
+A request no handler answers is errored and recorded with its method and path; the preload's
+`afterEach(reportReachedNetwork)` fails the test with what was recorded, and its one `afterAll`, at
+the end of `setup.ts` beside the act check, fails the file, so a read the page swallowed in a
+`catch`, and a write still retrying after a file's last test, are reported all the same.
 The module answers six routes with the API's empty shape: the five the application shell reads on
 every page (`/auth/whoami` as a 401 with no identity, `/api/v1/agents`, `/api/v1/me/replies`,
 `/api/v1/credential-requests`, `/api/v1/me/agents/state`), and `/api/v1/projects`.
@@ -1727,6 +1733,55 @@ none but its own), and drops what the page kept (`resetWriteStorage`): a store o
 that made it, and a write it left out would go on retrying, once that test's spies are restored,
 into the tests and files after it, which one process running every file reports as failures of
 whichever test is running then.
+
+The preload's act rule fails a row in which React printed one of its five act messages: an update
+outside `act`, an `act(async () => ...)` left unawaited, overlapping `act` calls, a component
+suspended inside an `act` left unawaited, or an update inside `act` while the act environment is
+off.
+An update outside `act` lands at a moment the row did not choose, so what the row asserts may be
+a state the person in front of the page never sees, and a warning that only prints is read by
+nobody and survives every run.
+`installActMessageRecorder` in `web/src/__tests__/act-warnings.ts` prints every `console.error`
+call it receives as it was made and records each act message among them.
+A recorded message fails a row, reported as printed "in or before this row", or, once the last
+row's check has run, the file, reported as printed "in or after this file's last row", which Bun
+lists as `(fail) (unnamed)` under the file; the hook order this rests on, and when a message is
+charged to the next row or to the file rather than to the row that printed it, are in the comment
+above the last block of `web/src/__tests__/setup.ts`.
+`__tests__/act-warnings.test.ts` proves the rule through the `test:web` command: it runs each of
+the five `__tests__/act-rule*.fixture.tsx` files in a child of its own and reads each failure by
+its row; four draw React's act messages, and `act-rule-quiet-restore.fixture.tsx` proves that the
+preload puts back a spy of `quietConsoleError()` that a row leaves in place.
+The failure names each message's kind, its component when React names one, and up to three
+frames when the stack holds them, the test's own first (a `*.test.*` file or one under
+`web/src/__tests__/`) and then the product code under `web/src/`, as
+`<kind> in <component> at <path>:<line> (<function>)`; its test frames lead to the call to wrap,
+and an update a timer makes carries none.
+A call whose update React sees at once goes inside `act(() => { ... })`, whose callback returns
+nothing, as `indicatorWrite` in `features/writes/PendingWritesIndicator.test.tsx` does; a call
+whose update lands a few microtasks later, in a promise it returns or one it starts, goes inside
+`await act(async () => { ... })`, as `refetchAgents` in `features/agents/AgentsPage.test.tsx` and
+`sync()` in `__tests__/proof-document.tsx` do; and never an unawaited `act(() => promiseCall())`,
+which React takes for an async `act` that nobody awaits.
+Under a held clock (`jest.useFakeTimers()`) the answer to a request a press sends is held on a
+`Promise.withResolvers()` and given inside `await act(async () => { ... })` once the press is out,
+as `mintLostWith` in `features/settings/AgentTokensSection.test.tsx` does: user-event runs each
+press in Testing Library's `asyncWrapper` (`@testing-library/react` 16.3.3, `dist/pure.js`), which
+ends by waiting for a zero-delay timer and, on a held clock, fires that timer at once with
+`jest.advanceTimersByTime(0)`, so an answer already given when the press lands updates the page
+after that wait, outside `act`.
+Silencing is not a fix: a row whose code logs on purpose keeps `console.error` quiet only through
+`quietConsoleError()` in `__tests__/act-warnings.ts`, which drops the row's output until the preload
+puts `console.error` back after the row, and still records each act message, so the rule still
+fails the row; after a row in which an `afterEach` before the preload's restore throws (the row's
+own, or the preload's `reportReachedNetwork`), `console.error` comes back only when the next row
+starts, and when that row is a file's last, it stays quiet through that file's `afterAll`, yet the
+act messages are still recorded, so the file still fails; any other replacement of
+`console.error`, or a spy on it with a `mockImplementation`, is not allowed, because it drops the
+message before the rule reads it.
+Setting `IS_REACT_ACT_ENVIRONMENT` or calling `setReactActEnvironment` is not a fix either, and
+neither is a `user-event` call inside `act`: React then prints "The current testing environment
+is not configured to support act(...)" and the row fails on that.
 
 An interaction is performed with `@testing-library/user-event`, never dispatched with
 `fireEvent`: a `user.click` focuses what it clicks, leaves the pointer over it and refuses a

@@ -431,6 +431,16 @@ for issue in "${!owed[@]}"; do
     fail restore "the restore returns $count asks to the spec of $issue" "$(grep "issue=$issue " "$work/restore.out" || echo 'no line')"
 done
 pass restore "envoy-dispatch restore-answered-asks --project $project restored every ask the census listed"
+# The version of each spec the restore itself wrote, as its line names it: the block the restore
+# built is read there, before any later write of the spec (a settlement's repair of a decided
+# wording among them) can stand in for it.
+declare -A restore_version=()
+for issue in "${!owed[@]}"; do
+  restore_version["$issue"]="$(grep "^restore-answered-asks: issue=$issue " "$work/restore.out" |
+    sed -nE 's/.* spec_version=([0-9]+)( .*)?$/\1/p')"
+  [[ "${restore_version[$issue]}" =~ ^[1-9][0-9]*$ ]] ||
+    fail restore "the restore names the version of the spec of $issue it wrote" "$(grep "issue=$issue " "$work/restore.out")"
+done
 wait_settled restore
 
 census census census-after
@@ -502,6 +512,18 @@ for key in "${restored[@]}"; do
     fail main "the block of $key holds the question and options of its row character for character" \
       "want $(<"$work/body.want"), got $(<"$work/body.got")"
   pass main "the block of $key holds its row's question and options and no answer: $opening"
+  restored_at="${restore_version[${issue_of[$key]}]}"
+  send agent GET "/api/v1/artifacts/$spec/versions/$restored_at"
+  want_status 200 main "read version $restored_at of $spec, the restore's own"
+  jq -j '.markdown' "$work/body" >"$work/restored.$spec.md"
+  ask_block "${new_id[$key]}" "$work/restored.$spec.md" >"$work/restored-block.md"
+  [[ -s "$work/restored-block.md" ]] ||
+    fail main "version $restored_at of $spec, the restore's own, holds the block of $key" "no ask block ${new_id[$key]} in it"
+  block_body "$work/restored-block.md" >"$work/restored-body.got"
+  cmp -s "$work/restored-body.got" "$work/body.want" ||
+    fail main "the block the restore wrote for $key, at version $restored_at, holds the question and options of its row character for character" \
+      "want $(<"$work/body.want"), got $(<"$work/restored-body.got")"
+  pass main "the block the restore wrote for $key, at version $restored_at of $spec, holds its row's question and options"
 
   spec_ref="${issue_of[$key]}/spec"
   if [[ "${shape_of[$key]}" == main ]]; then
