@@ -557,9 +557,11 @@ module, and the guard step compiles that package's whole test closure, which
 reaches testdata and goldens across the module.
 Of packages/daemon the job reads the .go files its own file_copy_test.go walks,
 the .go files the supervise pins type-check from source - internal/supervise and
-every package of this module it imports - the prompt below and the committed
-copies its text checks hold to the texts they copy, so the module's other files -
-its .sql, .json and .md - are no input of this job and no pattern here matches them.
+every package of this module it imports - and the committed copies its text checks
+hold to the texts they copy; and its credential-argument check reads every text file
+of the repository, so `**` below selects the job for every change but one under
+docs/plans or docs/superpowers. The patterns after it name what the other checks
+read, which `**` covers too, so that each read keeps its reason here.
 
 ## text_checks: The seven copies of shipped texts that readExtract (waiting_line_texts_test.go:380)
 

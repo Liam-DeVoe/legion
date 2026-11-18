@@ -1756,6 +1756,11 @@ text_checks:
   - *go_workspace
   - 'packages/envoy/**'
   - 'packages/daemon/**/*.go'
+  # credential_argument_test.go:143,174 lists every file git tracks or would track and
+  # reads each of them, but docs/plans and docs/superpowers, which are dated history.
+  - '**'
+  - '!docs/plans/**'
+  - '!docs/superpowers/**'
   - 'packages/daemon/internal/prompts/roles/architect-root.md'
   - 'packages/daemon/internal/workflow/design_approved_wake_extract.txt'
   - 'packages/daemon/internal/runtime/sandbox/reclaim_doc_extract.txt'
