@@ -1275,6 +1275,121 @@ test("the entry Load older hands the focus to keeps its place in Details' view a
   }
 });
 
+// Load older pressed with the focus on it: the focus stays on Load older, outside the entries,
+// while the page is read, so no act of the reader's names a place in the history. Here the commit
+// the page lands in also cuts the long turn just above the list's last entry, as a turn drawn
+// whole is cut to six lines once it shows, which takes every entry under that turn, the page's
+// new ones with them, up by the cut. The anchor held the entry nearest the middle of Details'
+// view, the long turn itself, whose top the cut leaves where it was: the page's entries went up
+// out of the view, and the hand-on gave the focus to one above it (seen at -639 px in the
+// browser). The history now keeps the place of the entry next to Load older from the press
+// until the page's read has settled.
+test("Load older keeps the place of the entry above it from the press, as its page lands with a cut of the turn above that entry", async () => {
+  const firstPage = Array.from({ length: 200 }, (_, index) => claimAgo(400 - index, index + 1));
+  const olderPage = [claimAgo(10, 300), claimAgo(9, 301)];
+  const reads = [
+    spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
+      options?.before === undefined ? [...firstPage] : [...olderPage]
+    ),
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  // Details' own box, which the history scrolls in, at the top of the window.
+  const box = document.body.appendChild(document.createElement("div"));
+  box.style.overflowY = "auto";
+  const rows = () => [...box.querySelectorAll<HTMLElement>("[data-event-seq]")];
+  // The first page's entry above its last is a long turn, a thousand pixels drawn whole, which
+  // the commit that draws the older page's first entry cuts to 120 px.
+  const heightOf = (row: Element) => {
+    if (row.getAttribute("data-history-entry") !== "event:202") return ROW_HEIGHT;
+    return box.querySelector('[data-history-entry="event:10"]') === null ? 1000 : 120;
+  };
+  const rectOf = (top: number, height: number) =>
+    ({
+      bottom: top + height,
+      height,
+      left: 0,
+      right: 100,
+      toJSON: () => ({}),
+      top,
+      width: 100,
+      x: 0,
+      y: top,
+    }) as DOMRect;
+  // Every entry stacks from `LIST_TOP` in DOM order, moved up by the box's scroll; a control
+  // measures as the entry it is in, and anything else as the whole list.
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    if (this === box) return rectOf(0, VIEW_HEIGHT);
+    const row = this.closest("[data-event-seq]");
+    const start = LIST_TOP - box.scrollTop;
+    let top = start;
+    for (const one of rows()) {
+      if (one === row) return rectOf(top, heightOf(one));
+      top += heightOf(one);
+    }
+    return rectOf(start, top - start);
+  });
+  const point = spyOn(document, "elementFromPoint").mockImplementation((_x, y) => {
+    let top = LIST_TOP - box.scrollTop;
+    for (const one of rows()) {
+      if (y >= top && y < top + heightOf(one)) return one;
+      top += heightOf(one);
+    }
+    return null;
+  });
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = drawHistory(undefined, box).unmount;
+    const older = await screen.findByRole("button", { name: CONTROL_LABELS.load_older });
+    await waitFor(() => expect(rows()).toHaveLength(200));
+    const last = box.querySelector<HTMLElement>('[data-history-entry="event:201"]');
+    if (last === null) throw new Error("the first page's last entry is not drawn");
+    // Details scrolled down to Load older: the first page's last entry stands 400 px down the
+    // view, under the long turn, which holds the middle of the view.
+    box.scrollTop = LIST_TOP + 198 * ROW_HEIGHT + 1000 - 400;
+    const stood = last.getBoundingClientRect().top;
+    expect(stood).toBe(400);
+    older.focus();
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: CONTROL_LABELS.load_older })).toBeNull()
+    );
+
+    expect(
+      last.getBoundingClientRect().top,
+      "the page landed with a cut of the turn above the entry next to Load older, and that entry moved in Details' view"
+    ).toBe(stood);
+    const focused = document.activeElement;
+    const entry = focused?.closest<HTMLElement>("[data-history-entry]");
+    if (focused === null || entry === null || entry === undefined) {
+      throw new Error("Load older handed the focus to no entry of the history");
+    }
+    expect(
+      entry.getAttribute("data-history-entry"),
+      "Load older handed the focus to an entry other than the first the page it read added"
+    ).toBe("event:10");
+    const at = focused.getBoundingClientRect();
+    expect(
+      at.top >= 0 && at.bottom <= VIEW_HEIGHT,
+      `Load older handed the focus to a control out of Details' view (${at.top} px, the view 0 to ${VIEW_HEIGHT})`
+    ).toBe(true);
+    expect(
+      at.top >= last.getBoundingClientRect().bottom,
+      "Load older handed the focus to a control above the entry next to it"
+    ).toBe(true);
+  } finally {
+    unmount?.();
+    rect.mockRestore();
+    point.mockRestore();
+    box.remove();
+    for (const read of reads) read.mockRestore();
+  }
+});
+
 /** Version 1 of a handoff of `KEY`, whose body's summary is `summary`. */
 function handoffRecord(summary: string): Handoff {
   return {

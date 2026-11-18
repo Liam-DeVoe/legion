@@ -329,10 +329,13 @@ export function IssueHistory({
   // control once its read has landed - Load older where pages are left hands it on as if it had
   // gone - while a read that failed leaves it there, beside the line that says so. A reader who
   // has put the focus elsewhere by then keeps it there. No such move scrolls Details, whose
-  // reader keeps their place, so a control the page pushed out of view - under files it added
-  // to a run above - takes the focus only when none is in view; and the entry the focus moved to
-  // is then the place Details holds as the entries above it change height (`ViewportAnchor`
-  // records the place at every focus moved into its rows).
+  // reader keeps their place: from the press until its reads settle, Details keeps the place of
+  // the entry next to the pressed control (`keepEntryBeside`), so the page that lands, and a cut
+  // of the turns above it in the same commit, leave that entry where the reader saw it, and a
+  // control the page pushed out of view - under files it added to a run above - takes the focus
+  // only when none is in view. The entry the focus moved to is then the place Details holds as
+  // the entries above it change height (`ViewportAnchor` records the place at every focus moved
+  // into its rows).
   const pressed = useRef<
     | {
         readonly before: ReadonlySet<HTMLElement>;
@@ -346,6 +349,22 @@ export function IssueHistory({
   const controlsOfList = () => [
     ...(anchorRoot.current?.querySelectorAll<HTMLElement>("a[href], button:not(:disabled)") ?? []),
   ];
+  // The place Details keeps from a press of Load older or of either Retry that sends a read,
+  // made with the focus on its control or not, until the reads it sent settle: that of the
+  // entry next to the control, the list's last under Load older and the next page's Retry, its
+  // first above the log's Retry. The control is outside the entries, so while the focus is on
+  // it no act of the reader's names a place, and a page that lands in the same commit as a cut
+  // of the turns above it would take the entries under that cut, the new ones with them, up out
+  // of Details' view.
+  const anchor = useRef<ViewportAnchor>(null);
+  const keeping = useRef(false);
+  const keepEntryBeside = (control: "above" | "under") => {
+    const entries = anchorRoot.current?.querySelectorAll<HTMLElement>("[data-history-entry]");
+    keeping.current = true;
+    anchor.current?.keepRow(
+      entries === undefined ? null : entries.item(control === "under" ? entries.length - 1 : 0)
+    );
+  };
   useLayoutEffect(() => {
     const press = pressed.current;
     if (press === undefined || log.isFetching) return;
@@ -357,7 +376,9 @@ export function IssueHistory({
     // The page it read lands under every control drawn before it, where Load older stood. Its
     // entries can push one another out of Details' view: files the page added to a run above
     // move the entries under that run down, so a new control is in view or not by where it is
-    // drawn once the reader's place is held (`ViewportAnchor` holds it before this runs).
+    // drawn once the entry next to the pressed control is back where it stood: the place kept
+    // from the press (`keepEntryBeside`), which `ViewportAnchor` restored in this commit before
+    // this runs.
     const before = press.kind === "older" ? press.before : new Set<HTMLElement>();
     const lastBefore = [...before].filter((control) => control.isConnected).at(-1);
     const added = controlsOfList().filter((control) => !before.has(control));
@@ -382,6 +403,15 @@ export function IssueHistory({
           lastBefore)
         : failure.current?.querySelector("button");
     (target ?? heading.current)?.focus({ preventScroll: true });
+  });
+  // The place kept from the press goes once the reads it sent have settled, after the hand-on,
+  // whatever that did: the focus it moved into the entries is the reader's place from then on,
+  // which the anchor recorded as the focus moved and leaves alone here, and a focus it left
+  // where the reader put it names no place in the history.
+  useLayoutEffect(() => {
+    if (!keeping.current || log.isFetching) return;
+    keeping.current = false;
+    anchor.current?.keepRow(null);
   });
   // The history draws the log it holds whatever the last read's outcome: a read
   // that fails once it holds the log - a refetch after an event, a later open of Details, the
@@ -413,6 +443,7 @@ export function IssueHistory({
               : { control: active, kind: "retry" };
           }
           if (log.isFetching) return;
+          keepEntryBeside(log.isFetchNextPageError ? "under" : "above");
           void (log.isFetchNextPageError ? log.fetchNextPage() : log.refetch());
         }}
         retrying={log.isFetching}
@@ -444,6 +475,7 @@ export function IssueHistory({
         <ViewportAnchor
           enabled={holdsPlace}
           item="data-history-entry"
+          ref={anchor}
           rootRef={anchorRoot}
           scroller={scroller}
         >
@@ -523,6 +555,7 @@ export function IssueHistory({
                 kind: "older",
               };
             }
+            keepEntryBeside("under");
             void log.fetchNextPage();
           }}
           ref={loadOlder}

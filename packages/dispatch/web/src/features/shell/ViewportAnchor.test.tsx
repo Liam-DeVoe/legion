@@ -1217,3 +1217,209 @@ test("a scroll event that finds the box where the anchor last found it leaves th
     box.unmount();
   }
 });
+
+/** The row `id` of the list drawn, which the case hands to `keepRow`. */
+function rowOf(id: string): HTMLElement {
+  const row = document.querySelector<HTMLElement>(`[data-row="${id}"]`);
+  if (row === null) throw new Error(`${id} missing`);
+  return row;
+}
+
+// A host keeps a row's place itself while a control of its own outside the list holds the focus,
+// as Details' history keeps the entry next to Load older while the older page is read: no act of
+// the reader's names a place then. The commit the page lands in draws rows under the kept row and
+// cuts a long row above it. The row nearest the middle of the view, which the anchor would
+// otherwise hold, is that long row, whose top the cut leaves where it was.
+test("a row a host keeps holds its place across a commit that adds rows below it and shrinks a row above it", () => {
+  // r3 is drawn 1,000 px tall, and the commit that draws r7 cuts it to 300 px.
+  heights = {
+    get r3() {
+      return document.querySelector('[data-row="r7"]') === null ? 1000 : 300;
+    },
+  };
+  const view = render(<List rows={ids(6)} scroller={scrollerRef} />);
+  try {
+    const scroller = scrollerRef.current;
+    if (scroller === null) throw new Error("scroller missing");
+    scroller.scrollTop = 800;
+    expect(chosen()).toEqual({ id: "r3", via: "center" });
+    anchor.current?.keepRow(rowOf("r5"));
+    expect(chosen()).toEqual({ id: "r5", via: "kept" });
+    const kept = viewportTop("r5");
+    expect(kept).toBe(450);
+
+    view.rerender(<List rows={ids(8)} scroller={scrollerRef} />);
+    expect(viewportTop("r5")).toBe(kept);
+    expect(scroller.scrollTop).toBe(100);
+  } finally {
+    view.unmount();
+  }
+});
+
+// The reader's focus within a row is the reader's own place and comes before any row a host
+// would keep: the host keeps none then. Once the host keeps a row, the focus moving into the list
+// is an act of the reader's, which records their place instead.
+test("a host keeps no row while the reader's focus is in one, and the focus moving into the list lets a kept row go", () => {
+  const view = render(<List rows={ids(12)} scroller={scrollerRef} />);
+  try {
+    const scroller = scrollerRef.current;
+    if (scroller === null) throw new Error("scroller missing");
+    scroller.scrollTop = 100;
+    const focused = rowOf("r4").querySelector("button");
+    const other = rowOf("r6").querySelector("button");
+    if (focused === null || other === null) throw new Error("a row's button missing");
+    focused.focus();
+    anchor.current?.keepRow(rowOf("r8"));
+    expect(chosen()).toEqual({ id: "r4", via: "focus" });
+    focused.blur();
+    expect(chosen()).toEqual({ id: "r7", via: "center" });
+
+    // With the focus outside the list the host keeps r8, and the focus moving into the list again
+    // is the reader's place from then on: the host's goes.
+    anchor.current?.keepRow(rowOf("r8"));
+    expect(chosen()).toEqual({ id: "r8", via: "kept" });
+    other.focus();
+    expect(chosen()).toEqual({ id: "r6", via: "focus" });
+    other.blur();
+    expect(chosen()).toEqual({ id: "r7", via: "center" });
+  } finally {
+    view.unmount();
+  }
+});
+
+// The focus is on a control at the foot of a long row whose head is above the view, and the
+// anchor keeps that control's own place. A host asking to keep another row then keeps nothing:
+// the reader's place stays, so the row's own words above the control being cut leave the control
+// where it was. A keep that took the reader's place held the other row, which the cut does not
+// move, and the control went up by the cut.
+test("a host's keep leaves the place of the reader's focused control, which a cut above the control then keeps", () => {
+  heights = { r3: 1000 };
+  const box = drawInBox(ids(40));
+  try {
+    const focused = rowOf("r3").querySelector("button");
+    if (focused === null) throw new Error("r3 button missing");
+    focused.focus();
+    // The reader scrolls to the control: r3 runs from 200 to 1,200 px down the content, and its
+    // control stands at its foot.
+    box.scroller.scrollTop = 1000;
+    box.settle();
+    const held = controlTop("r3");
+    expect(held).toBe(180);
+
+    anchor.current?.keepRow(rowOf("r2"));
+    expect(chosen()).toEqual({ id: "r3", via: "focus" });
+
+    // r3 is cut to 200 px, which raises its control by 800 px.
+    heights = { r3: 200 };
+    box.settle();
+    expect(controlTop("r3")).toBe(held);
+
+    // A commit that adds a row above keeps the control there too.
+    box.rerender(["new", ...ids(40)]);
+    expect(controlTop("r3")).toBe(held);
+  } finally {
+    box.unmount();
+  }
+});
+
+// The host letting its place go: the next commit holds the row nearest the middle of the view,
+// or, at the top, nothing, and the box gets its own scroll anchoring back. A place the reader's
+// own act recorded is not the host's to let go.
+test("keepRow(null) lets the row a host kept go, and leaves the reader's own place kept", () => {
+  const view = render(<List rows={ids(12)} scroller={scrollerRef} />);
+  try {
+    const scroller = scrollerRef.current;
+    if (scroller === null) throw new Error("scroller missing");
+    scroller.style.setProperty("overflow-anchor", "auto");
+    anchor.current?.keepRow(rowOf("r3"));
+    expect(chosen()).toEqual({ id: "r3", via: "kept" });
+    expect(scroller.style.getPropertyValue("overflow-anchor")).toBe("none");
+
+    anchor.current?.keepRow(null);
+    expect(chosen()).toBeNull();
+    expect(scroller.style.getPropertyValue("overflow-anchor")).toBe("auto");
+    // At the top of the box, rows arriving above land in view.
+    view.rerender(<List rows={["a", "b", ...ids(12)]} scroller={scrollerRef} />);
+    expect(scroller.scrollTop).toBe(0);
+
+    // The pointer resting on a row is the reader's own place.
+    fireEvent.pointerOver(rowOf("r4"), { clientX: 20, clientY: 370 });
+    expect(chosen()).toEqual({ id: "r4", via: "pointer" });
+    anchor.current?.keepRow(null);
+    expect(chosen()).toEqual({ id: "r4", via: "pointer" });
+    expect(scroller.style.getPropertyValue("overflow-anchor")).toBe("none");
+  } finally {
+    view.unmount();
+  }
+});
+
+// A scroll the reader made says where they are now: the row a host kept goes, and the row
+// nearest the middle of the view is the place from then on. A scroll event that finds the box
+// where the anchor last found it reports no move of the view, and leaves the kept row kept.
+test("a scroll the reader made lets the row a host kept go, and one that moved nothing leaves it", () => {
+  const view = render(<List rows={ids(12)} scroller={scrollerRef} />);
+  try {
+    const scroller = scrollerRef.current;
+    if (scroller === null) throw new Error("scroller missing");
+    scroller.scrollTop = 100;
+    anchor.current?.keepRow(rowOf("r5"));
+    fireEvent.scroll(scroller);
+    expect(chosen()).toEqual({ id: "r5", via: "kept" });
+
+    scroller.scrollTop = 250;
+    fireEvent.scroll(scroller);
+    expect(chosen()).toEqual({ id: "r8", via: "center" });
+  } finally {
+    view.unmount();
+  }
+});
+
+// The browser pulling the box back to its end after content above shrank by more than the room
+// below the view is no scroll of the reader's: the row a host keeps stays kept, recorded where
+// the pull-back left the box, so content above that grows again leaves the row where it was.
+test("a box the browser pulls back to its end keeps the row a host keeps, at the offset the pull-back left", () => {
+  heights = { r3: 1000 };
+  const box = drawInBox(ids(20));
+  try {
+    // The reader scrolls to the box's end (2,050 - 600 = 1,450 px).
+    box.scroller.scrollTop = 1450;
+    box.settle();
+    anchor.current?.keepRow(rowOf("r18"));
+    expect(chosen()).toEqual({ id: "r18", via: "kept" });
+    expect(viewportTop("r18")).toBe(450);
+
+    // r3 is cut by 800 px, and the browser pulls the box back by as much, to its new end.
+    heights = { r3: 200 };
+    box.settle();
+    expect(box.scroller.scrollTop).toBe(650);
+    expect(chosen()).toEqual({ id: "r18", via: "kept" });
+    expect(viewportTop("r18")).toBe(450);
+
+    // r3 grows back by those 800 px, in no commit of the anchor's.
+    heights = { r3: 1000 };
+    box.settle();
+    expect(viewportTop("r18")).toBe(450);
+  } finally {
+    box.unmount();
+  }
+});
+
+// The row a host keeps leaving the list takes the place with it: the next commit holds the row
+// nearest the middle of the view, and the box gets its own scroll anchoring back.
+test("the row a host keeps leaving the list lets its place go", () => {
+  const view = render(<List rows={ids(12)} scroller={scrollerRef} />);
+  try {
+    const scroller = scrollerRef.current;
+    if (scroller === null) throw new Error("scroller missing");
+    scroller.style.setProperty("overflow-anchor", "auto");
+    scroller.scrollTop = 100;
+    anchor.current?.keepRow(rowOf("r5"));
+    expect(chosen()).toEqual({ id: "r5", via: "kept" });
+
+    view.rerender(<List rows={ids(12).filter((id) => id !== "r5")} scroller={scrollerRef} />);
+    expect(chosen()).toEqual({ id: "r7", via: "center" });
+    expect(scroller.style.getPropertyValue("overflow-anchor")).toBe("auto");
+  } finally {
+    view.unmount();
+  }
+});
