@@ -18,9 +18,10 @@ const (
 	InputsTrimmed = "trimmed"
 )
 
-// contextParts are the parts of a case's context one call reads.
+// contextParts are the parts of a case's context one call reads. Text is the text the person
+// sees, read beside a subject that is not the text (textIsContext).
 type contextParts struct {
-	Question, Record, Session, WriterAnswer bool
+	Question, Text, Record, Session, WriterAnswer bool
 }
 
 var fullContext = contextParts{Question: true, Record: true, Session: true, WriterAnswer: true}
@@ -46,6 +47,16 @@ var trimmedContext = map[Judgement]contextParts{
 // questionIsSubject are the judgements that judge something against the person's question,
 // so they read it in either mode.
 var questionIsSubject = []Judgement{JAnswered, JFirstParagraph, JAnswerStart, JDefine}
+
+// textIsContext are the judgements that read the text the person sees beside their subject, in
+// either mode: answered, whose subject is the fresh reader's answer to the person's question from
+// that text. Without the text the grader cannot tell a reader that missed what the text says
+// from a text that does not say it, nor see which of the answer's words the text explains; and
+// as the record ends before the text was written, it took a reply's new facts for errors against
+// the older record (INFRA-3231, the calibration of answered against what the owner did after an
+// explanation). first_paragraph's fresh reader read only the first paragraph, so its grader does
+// not read the whole text.
+var textIsContext = []Judgement{JAnswered}
 
 // GraderInputs is the input mode of each judgement.
 type GraderInputs map[Judgement]string
@@ -101,6 +112,9 @@ func (gi GraderInputs) context(j Judgement) contextParts {
 	}
 	if slices.Contains(questionIsSubject, j) {
 		c.Question = true
+	}
+	if slices.Contains(textIsContext, j) {
+		c.Text = true
 	}
 	return c
 }

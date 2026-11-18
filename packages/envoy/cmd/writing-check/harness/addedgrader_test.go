@@ -46,10 +46,12 @@ type parentRequest struct {
 
 // parentRequests are the requests of every judgement on gradeFixture as the harness sent them
 // before --added-grader: its code at commit afdb071c, run on the fixture against a stand-in that
-// answers each judgement (allJudgementRules), under the full and the final input modes.
+// answers each judgement (allJudgementRules), under the full and the final input modes. The rows
+// of answered and first_paragraph are those of the calibration of answered against what the owner
+// did (INFRA-3231), which changed their shared checks and reply schema, and answered's inputs.
 var parentRequests = []parentRequest{
-	{"full", JAnswered, "0eeecf0de6c0d83e95ca8488a4b1714f10c0da5a79a202d92a8732944cb4456e", []goldenWire{{"cf36249b1970b10d14e64cf08820a29d602e5929a1f76361bc54680a2c782ef4", "5885d96945177e26eadeb4284b204e4b9248bea8b471576740c371725e07027a"}}},
-	{"full", JFirstParagraph, "f7e709d01c49f759f3cb9a61fc5886df878d1cce9c3616ef632daf12c1db0350", []goldenWire{{"1a66660d68641316a2f603b0d96d4b390acc6e4ffc271eb9f32796347c73faaa", "5885d96945177e26eadeb4284b204e4b9248bea8b471576740c371725e07027a"}}},
+	{"full", JAnswered, "29cf7cff1add475625fda94b560c494a12662f1f8aa3db70309e343c240b5d1b", []goldenWire{{"2b4e19b9beb3d1df279fea9ad9e219ed43a96d7a98864e1aeb9f24996e56bb7e", "6efea0719b1914bac8ddfcf8fea98d89b52949d51c3b77ed3625122b95c9d425"}}},
+	{"full", JFirstParagraph, "ab0ef191a8f6c12c249f8e7beb060da9e2cc6e12809a2f52a35f063ed6127ea4", []goldenWire{{"8d57357cb06bea44e5c013acd7a6aba24df8588ca648b5976d8a780877b2b6e7", "5885d96945177e26eadeb4284b204e4b9248bea8b471576740c371725e07027a"}}},
 	{"full", JLost, "709f23bd3823d2d77305cf0b3fa6baf176a7012d351d2df082cd3c428a24545d", []goldenWire{{"61e39e1ce2168056537289d021ff60875a4a14dde0cf05f3aca417d8f3e07c18", "1fd7e9c78e460334072aa9d67b897805a2e6555e1360aec61d0d98bbda3a68ff"}}},
 	{"full", JAdded, "5286a22cd592b652bf8e203749a1a7b3a701b3af50de652ccb79c5c0db555972", []goldenWire{{"d41bd06c8aea8dbb67606f84fc0c1a9499a49d1a8011ab2c5ca6fc71bf7a99cd", "1fd7e9c78e460334072aa9d67b897805a2e6555e1360aec61d0d98bbda3a68ff"}}},
 	{"full", JPhrases, "26d25ae556c25de1566f14301bf81e4f6e8f39c29a6e14c9a9a56a581d055a7a", []goldenWire{{"532192416bb6a75de0a6853b2b040493fc030b0a6914d6d2f33583e0770f0454", "8bdbc9c2a8ce0a7986b82ca1426e59936b09c4aa3b29fda0669f9ea72ba45689"}}},
@@ -57,8 +59,8 @@ var parentRequests = []parentRequest{
 	{"full", JAnswerStart, "bfa21846ec58be120cd822776c545eaaf9623f5415c851f83ea3ff43efecddb0", []goldenWire{{"99b1154953d07b613794b7442fa3ef3a7c4e2a40a10dadbc862169997a1dc61d", "3e87e38776fec9c543dec4c935712360d1d15bfa8fdf7dfbbc981dc0d421f0dd"}}},
 	{"full", JHarder, "101f799128e0c0a3ae01b021db60521ed7059866ae3dcc812a3f62e7c811d22a", []goldenWire{{"bf394ff3b4d42cf9a72d08f8e83272bc08ebb371f931a3022d063ad7f3cc8098", "1fd7e9c78e460334072aa9d67b897805a2e6555e1360aec61d0d98bbda3a68ff"}}},
 	{"full", JDefine, "f24235eb1c74b8cc63744a11bd38f8bd53358e24d3167f71d59b4856d93b06d6", []goldenWire{{"932ba2cd31271bdf8b336fe677e8a5fb9bac846b13d9d8e090c8f2cf30cd4c48", "eefd5fb2a9884a6a025ddb4d5f896c31e03f9fa3fcc4ede3b36a8e6f1b5fe1e3"}}},
-	{"final", JAnswered, "1ce5e09daae80855a49e56e39faef36e8664ca3f36d8391343e3ad76b7448a0a", []goldenWire{{"91703a03414b4aae981b6f7f44a139aef57a8d64a5ceaffa03b47735db04335a", "7b86256d53eb8ed15ce3ce704ecdbe8f5237535baa2fbb61b437bed7e5fbb1da"}}},
-	{"final", JFirstParagraph, "5c215b8f53e401c6b08f39a4c1bb49e9e22a57ef1ece21bb2b6f9ce359efdd14", []goldenWire{{"d273a5cabd549ace7bfc42222b83c3c20a62275648eb9cb292cf5a1bb97de4ac", "7b86256d53eb8ed15ce3ce704ecdbe8f5237535baa2fbb61b437bed7e5fbb1da"}}},
+	{"final", JAnswered, "6220ac10233401daf915dcc30799f4037d4b3d1d6f45aecf0247135dfafeae48", []goldenWire{{"77c69c7f9e4bf3f0b49185509c575caf219363888734ca505c632fab6eafee7c", "3e7aee6db769be5139b827d38ff93c37fe9970a9f4ccbbe8f82c44ef3142d364"}}},
+	{"final", JFirstParagraph, "71eaabd036636066a8ecf37c1206a2e270c258e85532f23664d948ad0c7e922f", []goldenWire{{"03d25f7806a14a6254afd7218f0463808dfb659353823de3e6c7ee2a1a3f0387", "7b86256d53eb8ed15ce3ce704ecdbe8f5237535baa2fbb61b437bed7e5fbb1da"}}},
 	{"final", JLost, "709f23bd3823d2d77305cf0b3fa6baf176a7012d351d2df082cd3c428a24545d", []goldenWire{{"61e39e1ce2168056537289d021ff60875a4a14dde0cf05f3aca417d8f3e07c18", "1fd7e9c78e460334072aa9d67b897805a2e6555e1360aec61d0d98bbda3a68ff"}}},
 	{"final", JAdded, "5286a22cd592b652bf8e203749a1a7b3a701b3af50de652ccb79c5c0db555972", []goldenWire{{"d41bd06c8aea8dbb67606f84fc0c1a9499a49d1a8011ab2c5ca6fc71bf7a99cd", "1fd7e9c78e460334072aa9d67b897805a2e6555e1360aec61d0d98bbda3a68ff"}}},
 	{"final", JPhrases, "26d25ae556c25de1566f14301bf81e4f6e8f39c29a6e14c9a9a56a581d055a7a", []goldenWire{{"532192416bb6a75de0a6853b2b040493fc030b0a6914d6d2f33583e0770f0454", "8bdbc9c2a8ce0a7986b82ca1426e59936b09c4aa3b29fda0669f9ea72ba45689"}}},

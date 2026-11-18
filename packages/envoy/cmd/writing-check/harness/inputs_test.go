@@ -47,6 +47,14 @@ func TestParseGraderInputs(t *testing.T) {
 	if c := (GraderInputs{JAnswerStart: InputsTrimmed}).context(JAnswerStart); !c.Question || c.Record || c.Session {
 		t.Errorf("answer_start trimmed reads %+v", c)
 	}
+	// answered reads the text beside the reader's answer in either mode; first_paragraph, whose
+	// reader read only the first paragraph, does not.
+	for _, mode := range []string{InputsTrimmed, InputsFull} {
+		gi := GraderInputs{JAnswered: mode, JFirstParagraph: mode}
+		if !gi.context(JAnswered).Text || gi.context(JFirstParagraph).Text {
+			t.Errorf("%s: answered reads %+v, first_paragraph %+v", mode, gi.context(JAnswered), gi.context(JFirstParagraph))
+		}
+	}
 }
 
 // requestsOf are the texts of the requests whose prompt holds marker.

@@ -156,7 +156,7 @@ func TestProbeRows(t *testing.T) {
 func TestAReplysOwnChecksDecide(t *testing.T) {
 	var g Grade
 	reply := `{"1_asked":"what it means","2_given":"the words again","3_restates_question":true,"4_points_elsewhere":false,` +
-		`"5_other_question":false,"6_contradicts_record":false,"7_reason":"r","8_answers":true}`
+		`"5_other_question":false,"6_contradicts_record":false,"7_not_plain":false,"8_reason":"r","9_answers":true}`
 	if err := judgementSpecs[JAnswered].read([]byte(reply), &g, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -184,12 +184,12 @@ func TestAReplysOwnChecksDecide(t *testing.T) {
 		t.Errorf("the candidates: %+v", cands)
 	}
 	// A reply missing a check is no reply of the schema.
-	if err := judgementSpecs[JAnswered].read([]byte(`{"7_reason":"r","8_answers":true}`), &Grade{}, ""); err == nil {
+	if err := judgementSpecs[JAnswered].read([]byte(`{"8_reason":"r","9_answers":true}`), &Grade{}, ""); err == nil {
 		t.Error("a reply with no checks was read")
 	}
 	// The schema asks for the fields in the prompt's order, the verdict last.
 	schema := string(judgementSpecs[JAnswered].schema())
-	if i, j := strings.Index(schema, `"1_asked"`), strings.Index(schema, `"8_answers"`); i < 0 || j < i {
+	if i, j := strings.Index(schema, `"1_asked"`), strings.Index(schema, `"9_answers"`); i < 0 || j < i {
 		t.Errorf("the answered schema: %s", schema)
 	}
 }

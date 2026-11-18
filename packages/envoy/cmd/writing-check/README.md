@@ -33,7 +33,7 @@ go run ./cmd/writing-check dataset followups --from <bundle> --cases <build dir>
 go run ./cmd/writing-check dataset named (--doc <issue>/<document>@<version>[,<version>...] | --ask <issue>/<ask id>)... --out <dir>
 cmd/writing-check/export-sessions.sh --sessions <sessions.tsv> --exclude <exclude.txt> --out <dir>
 go run ./cmd/writing-check harness probe [--calls 20] [--out <file>] <model flags>
-go run ./cmd/writing-check harness score --cases <build dir> --sessions <dir> --out <dir> [--change <change> [--model <id> | --models <id>,<id>...] | --texts-from <run dir>] [--part development|held_out] [--sample N --sample-seed S] [--grader <model>] [--grader-inputs final|full|trimmed[,j=mode]...] [--added-grader old|inputs-first|verify|inputs-first-verify] [--readers-from <dir>] [--grades-from <dir>[,<dir>...]] [--vocabulary <owner-texts.jsonl.gz>] [--judgements j,...] [--repeatability <file>] <model flags>
+go run ./cmd/writing-check harness score --cases <build dir> --sessions <dir> --out <dir> [--change <change> [--model <id> | --models <id>,<id>...] | --texts-from <run dir>] [--part development|held_out] [--sample N --sample-seed S] [--grader <model> [--grader-no-session] [--grader-timeout <d>]] [--grader-inputs final|full|trimmed[,j=mode]...] [--added-grader old|inputs-first|verify|inputs-first-verify] [--readers-from <dir>] [--grades-from <dir>[,<dir>...]] [--vocabulary <owner-texts.jsonl.gz>] [--judgements j,...] [--repeatability <file>] <model flags>
 go run ./cmd/writing-check harness grader-test --planted <file> --cases <build dir> --sessions <dir> --out <dir> [--grader <model>] [--grader-inputs ...] [--added-grader old|inputs-first|verify|inputs-first-verify] <model flags>
 go run ./cmd/writing-check harness compare --a <run dir> --b <run dir> --out <repeatability.json>
 go run ./cmd/writing-check harness phrases-labels --labels <labeller round dir> --out <dir> <model flags>
@@ -1321,25 +1321,28 @@ does not sample at temperature 0, and its repeatability is measured, not assumed
 
 The harness sets no cache mark on its own calls: `llm.Runner` asks agentloop for none
 (`NoCache`). Each call of the grader, the writer and the fresh reader sends one system prompt and
-one user message of one text block, the bytes the harness sent before it marked prefixes for the
-cache (its code at the parent of commit 00f3c570).
+one user message of one text block, the layout the harness sent before it marked prefixes for the
+cache (its code at the parent of commit 00f3c570). The bytes are that code's too, except the
+fresh reader's and the `answered` and `first_paragraph` grader's prompts, and `answered`'s user
+message, which changed with the calibration of `answered` (see "Calibrating answered").
 
 - A grading call sends its judgement's own prompt (its `grade-*.md`) as its system prompt, and its
   judgement's own reply schema. Its user message holds the parts that the judgement's input mode
   gives, in this order: the question, the subject (the reader's answer, the two texts, the text
-  with the owner's own words, or the definition), the record, the writer's answer, and, after a
-  blank line, the session part. `--added-grader inputs-first` sends `lost` and `added` the same
-  parts in another order (see "The added grader").
+  with the owner's own words, or the definition), the text the person sees (`answered`), the
+  record, the writer's answer, and, after a blank line, the session part. `--added-grader
+  inputs-first` sends `lost` and `added` the same parts in another order (see "The added grader").
 - `phrases` sends its prompt as its system prompt, and its candidate sentences in their tag.
 - The writer sends Dispatch's record, its text, Dispatch's message and, after a blank line, its
   session part. `score --writer-order session-first` sends the session part after the record,
   before the text and the message, and `run.json` records the order as `writer_order`.
 
-`TestTheAnsweredCallSendsWhatItSentBeforeTheCacheMarks` and
-`TestTheWriterSendsWhatItSentBeforeTheCacheMarks` hold the two calls to the SHA-256 of the system
-prompt and the user message that the code at that parent sent for a fixture written for the test.
-The answered grade's `input_sha256` is that code's too. So `--grades-from` takes the grades of a
-run made before the cache marks, and not those of a run made with them.
+`TestTheWriterSendsWhatItSentBeforeTheCacheMarks` holds the writer's call to the SHA-256 of the
+system prompt and the user message that the code at that parent sent for a fixture written for
+the test, so `--grades-from` takes the grades of a run made before the cache marks, and not those
+of a run made with them. `TestTheAnsweredCallSendsItsPinnedRequestWithNoCacheMark` holds the
+answered call, on the same fixture, to the bytes and the `input_sha256` of the calibrated prompts:
+a run takes no answered grade of a run made before that calibration.
 
 Two layouts that marked prefixes for the cache moved the grader beyond its noise. Each was
 measured on the same 229 fresh reader answers, graded again, against the layout with no mark:
@@ -1502,11 +1505,17 @@ writer's answer, as far as the case has them. Trimmed gives each the context it 
 answer); `added` the record, the session and the writer's answer; `undefined` the record; `lost`
 and `harder` the two texts alone; `answer_start` the question. `final`, the default, is trimmed for
 `answered`, `first_paragraph`, `answer_start` and `harder` and full for the rest (see "Grader
-inputs").
+inputs"). In either mode `answered` also reads the text the person sees, after the reader's
+answer: without it the grader could not tell a reader that missed what the text says from a text
+that does not say it, nor see which of the answer's words the text explains, and it took a
+reply's new facts for errors against the record, which ends before the reply. `first_paragraph`
+does not read it, as its reader read only the first paragraph.
 
 The grader's reply gives what it found before its verdict: what the question asks, what the
-answer gives, four checks (the answer only says the question again, says only where the answer
-is, answers another question, or is wrong by the record), its reason, and its verdict. A check
+answer gives, five checks (the answer only says the question again, says only where the answer
+is, answers another question, is wrong by the record, or, to a person who says he does not
+follow, still uses words of the work that the text does not explain: `not_plain`, see
+"Calibrating answered"), its reason, and its verdict. A check
 that is true makes the verdict false. An undefined word that the grader marks defined in the
 text or the record, of common meaning, or a name given only as a reference, is no finding; so is
 an item whose quote the text does not hold, and a second item of one quote. A lost fact has two
@@ -1514,7 +1523,7 @@ checks: its words state no fact (`states_no_fact`), and the new text states the 
 (`in_new_text`). A lost fact with either check true is no finding. The prompt lists the words
 that state no fact: a heading, a label, a word of agreement, a line that says again what another
 sentence says, and the reader's own words quoted back. The provider writes a reply's fields in the
-order of their names, so each name starts with its place (`1_asked`, ..., `8_answers`). Each grade
+order of their names, so each name starts with its place (`1_asked`, ..., `9_answers`). Each grade
 keeps the grader's reply as it came.
 
 `phrases` follows the measured definition of a vacuous verb phrase (the rule of `label`'s
@@ -1729,6 +1738,47 @@ seed 3231), each run on the same reader answers:
 `lost`, `added` and `define` make no call under change 1, so no agreement was measured, and they
 take full inputs. `phrases` reads its candidate sentences alone, in either mode.
 
+### Calibrating answered
+
+The fresh reader's prompt (`prompts/reader.md`) and the `answered` grader's
+(`prompts/grade-answered.md`, and the checks it shares with `first_paragraph` in
+`prompts/parts.md`) were tuned against what the owner did after an agent's explanation of its
+words (INFRA-3231). The cases were the explanations that `dataset followups` writes as answer
+cases. They were labelled understood or not understood from his next texts, then split by issue
+tree into a fitting half and a measuring half. The tuning read only the fitting half: 111
+labelled explanations, 21 of them not understood.
+
+- The reader answers his question when the text says what his words meant, or names the thing
+  in other words, and does not answer only that his words are not in the text. When he says that
+  he does not follow, it says what the text says the matter is and what it asks of him. Then it
+  names, in one sentence, each word of the work that it used and the text does not explain. It
+  first reports a text that drops, withdraws or corrects his words. It keeps the text's words,
+  and gives no meaning or comparison of its own.
+- The grader reads the text (see "Grader inputs"). The meaning of words that he says he does not
+  know is the main thing, also where his message disputes a point or gives an order. An answer
+  that gives the main thing and says that a side detail is missing does not point elsewhere. A
+  fact that the record, older than the text, does not hold is no contradiction. A text that gives
+  only a comparison gives no meaning. An answer that reports that his words, or the question they
+  were part of, were withdrawn answers.
+- `not_plain`: when he says that he does not follow the text, or that it is vague or meaningless,
+  an answer whose list of unexplained words names a word that is not everyday and that he did
+  not write in the record does not answer. His message says that the text's words lost him.
+
+The same prompts score a question case, where the text is the one he asked about. There the
+checks ask whether that text, or a change's rewrite of it, answers him. A text that explains his
+words under another name answers. A text that still leans on words of the work he said lost him
+does not.
+
+On the fitting half, today's prompts agreed with what he did on 66.7% (74 of 111) and caught 9
+of the 21 explanations he did not follow. These prompts agree on 69.4% (77), 95% cluster
+bootstrap [60.2%, 79.8%], and catch 16 of 21 (76.2%). Most of the catch comes from `not_plain`,
+and that check also fails 20 of the 35 explanations he understood after a general complaint.
+Giving the grader his own words (`--vocabulary`) passed 3 of the 16 explanations he did not
+follow, and the run agreed less (67.6%, catch 52.4%), so `answered` does not read them. The
+bar of INFRA-3231, agreement of at least 80% with its interval's lower end at least 70%, and a
+catch of at least 70%, is not met on the fitting half. The measuring half is measured once, on
+these prompts.
+
 ### The owner's own words
 
 Without `--vocabulary`, the `undefined` judgement is as it was. It takes a word as known to the
@@ -1800,8 +1850,9 @@ default, `old`, is the request as it was: every judgement sends, byte for byte, 
 the harness sent before the flag. `TestEveryJudgementTheVariantDoesNotChangeSendsItsRequestOfBefore`
 holds each judgement's system prompt, user message and `input_sha256` to those of the code before
 the flag (commit afdb071c), on a fixture written for the test, in the full and the final input
-modes. Under each other variant, the test holds to them each judgement that the variant does not
-change.
+modes; `answered` and `first_paragraph` to those of their calibrated prompts (see "Calibrating
+answered"). Under each other variant, the test holds to them each judgement that the variant does
+not change.
 
 - `inputs-first` changes the requests of `lost` and `added` alone. Their reply schema and the
   system prompt of `added` do not change. The system prompt of `lost` has one more line in its

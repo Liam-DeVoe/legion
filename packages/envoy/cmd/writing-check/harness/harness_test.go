@@ -157,7 +157,7 @@ func graderRules(t *testing.T) []modeltest.Rule {
 		{Contains: markReader, Reply: modeltest.Reply{Text: "The text says what the reader asked."}},
 		{Contains: markAnswered, Reply: modeltest.Reply{Text: asJSON(t, map[string]any{
 			"1_asked": "The meaning of the words.", "2_given": "The meaning.", "3_restates_question": false, "4_points_elsewhere": false,
-			"5_other_question": false, "6_contradicts_record": false, "7_reason": "It answers.", "8_answers": true})}},
+			"5_other_question": false, "6_contradicts_record": false, "7_not_plain": false, "8_reason": "It answers.", "9_answers": true})}},
 		{Match: func(r modeltest.Request) bool {
 			return strings.Contains(r.Text, markPhrases) && strings.Contains(r.Text, "This names the problem.")
 		}, Reply: modeltest.Reply{Text: asJSON(t, map[string]any{"candidates": []map[string]string{{"1_id": "s1", "2_reason": "It names no problem.", "3_rewrite": "This is a problem [the problem is not in the text].", "4_verdict": "vacuous"}}})}},

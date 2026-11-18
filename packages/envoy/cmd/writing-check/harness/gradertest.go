@@ -42,7 +42,8 @@ type Planted struct {
 	Output string `json:"output"`
 	// Question replaces the case's question (define: his question with the words he selected).
 	Question string `json:"question,omitempty"`
-	// Original replaces the case's text as the original text (lost, added, harder).
+	// Original replaces the case's text as the original text (lost, added, harder), and as the
+	// text the fresh reader read (answered).
 	Original string `json:"original,omitempty"`
 	// Marker is what the planted fault of a wrong list output is: a correct grader lists an
 	// item whose quote or note holds it, case aside.
@@ -130,7 +131,9 @@ func (p Planted) input(ds *Dataset, c *Case, session claude.SessionText) GradeIn
 		original = p.Original
 	}
 	switch p.Judgement {
-	case JAnswered, JFirstParagraph:
+	case JAnswered:
+		in.Answer, in.Original, in.Text = p.Output, original, original
+	case JFirstParagraph:
 		in.Answer = p.Output
 	case JDefine:
 		in.Definition = p.Output

@@ -9,3 +9,11 @@ body: |-
   `writing-check harness` scores the reviewer, Rewrite and Define and the other changes on that
   dataset against a local Dispatch, with a fresh reader and a Claude grader, and reports each
   score's interval, wait and cost. The harness refuses to write its output inside a repository.
+  `writing-check dataset followups` reads what the person did after each text (their next texts
+  and their acts) and writes the agents' explanations of their words as answer cases, so the
+  harness's score can be held against what the person did. `harness score --grader` takes a model
+  of another family only with `--grader-no-session` and `--readers-from`: it grades that run's
+  answers again and reads no session text.
+  The `answered` grader reads the text the fresh reader read, and fails an answer when the person
+  said they could not follow the text and the text still leans on words of the work it does not
+  explain (the check `7_not_plain`; the reply's fields now end at `9_answers`).

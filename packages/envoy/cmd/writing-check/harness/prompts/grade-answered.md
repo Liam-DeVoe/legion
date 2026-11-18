@@ -6,6 +6,9 @@ Decide whether the answer of the fresh reader answers the question of the reader
 
 - "question": the question of the reader.
 - "reader_answer": the answer of the fresh reader.
+{{- if .HasText}}
+- "text": the text that the fresh reader read. Use it to see what the text says and what it explains, and to check what the answer says that the text says.
+{{- end}}
 {{- template "context-tags" .}}
 
 {{template "data" .}}
@@ -14,7 +17,7 @@ Decide whether the answer of the fresh reader answers the question of the reader
 
 {{template "answer-checks" .}}
 
-Use the record{{if .HasSession}} and the session{{end}} to know what is true. Do not decide whether the text is good. Decide only about the answer.
+Use {{if .HasText}}the text, {{end}}the record{{if .HasSession}} and the session{{end}} to know what is true. Do not decide whether the text is good. Decide only about the answer.
 
 ## Your answer
 

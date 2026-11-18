@@ -36,10 +36,11 @@ type promptData struct {
 	// Reply says the text is the agent's reply to the person's question (an answer case), not
 	// a text the person asked a question about.
 	Reply bool
-	// HasQuestion, HasRecord and HasSession say the user message holds the person's question
-	// (as context, where the judgement is not of an answer to it), Dispatch's record, and, at its
-	// end, the writer's session part.
-	HasQuestion, HasRecord, HasSession bool
+	// HasQuestion, HasText, HasRecord and HasSession say the user message holds the person's
+	// question (as context, where the judgement is not of an answer to it), the text the person
+	// sees (as context, beside the reader's answer), Dispatch's record, and, at its end, the
+	// writer's session part.
+	HasQuestion, HasText, HasRecord, HasSession bool
 	// WriterAnswer says the user message holds the writer's answer to a side question, and
 	// HasOwnWords the words of the text that the reader wrote himself before it.
 	WriterAnswer, HasOwnWords bool
@@ -147,8 +148,10 @@ type judgementSpec struct {
 	checks  []string
 }
 
-// The checks of an answer: any of them true, and the answer does not answer.
-var answerChecks = []string{"restates_question", "points_elsewhere", "other_question", "contradicts_record"}
+// The checks of an answer: any of them true, and the answer does not answer. not_plain is an
+// answer to a person who says he does not follow the text that still leans on words of the work
+// that nothing explains.
+var answerChecks = []string{"restates_question", "points_elsewhere", "other_question", "contradicts_record", "not_plain"}
 
 var judgementSpecs = map[Judgement]judgementSpec{
 	JAnswered:       {prompt: "grade-answered", verdict: "answers", notes: []string{"asked", "given"}, checks: answerChecks},
@@ -259,7 +262,7 @@ func schemaJSON(schema any) json.RawMessage {
 // gives them in: with a verdict named "answers" before "reason", the grader gave its verdict
 // first and its reason after, and the two did not agree (`harness grader-test`, 2026-11-15). So
 // each field's name starts with its place in the order the prompt asks for: "1_asked", ...,
-// "8_answers".
+// "9_answers".
 
 // numbered is name as the field at place i (from 0) of an object.
 func numbered(i int, name string) string { return strconv.Itoa(i+1) + "_" + name }
@@ -324,7 +327,8 @@ type GradeInput struct {
 	// Answer is the fresh reader's answer: answered and first_paragraph.
 	Answer string
 	// Original is the text the agent wrote, and Text the text the person sees after the
-	// change: lost, added and harder read both; phrases, undefined and answer_start read Text.
+	// change: lost, added and harder read both; phrases, undefined and answer_start read Text,
+	// and answered reads it beside the reader's answer (textIsContext).
 	Original, Text string
 	// Definition is the definition the person sees: define.
 	Definition string
@@ -352,6 +356,7 @@ func tag(name, text string) string {
 func (in GradeInput) parts(c contextParts) contextParts {
 	return contextParts{
 		Question:     c.Question && in.Question != "",
+		Text:         c.Text && in.Text != "",
 		Record:       c.Record && in.Record != "",
 		Session:      c.Session && !in.Session.Empty(),
 		WriterAnswer: c.WriterAnswer && in.WriterAnswer != "" && !in.asBaseline(),
@@ -377,6 +382,9 @@ func (in GradeInput) user(p contextParts) string {
 	switch in.Judgement {
 	case JAnswered, JFirstParagraph:
 		b.WriteString(tag("reader_answer", in.Answer))
+		if p.Text {
+			b.WriteString(tag("text", in.Text))
+		}
 	case JLost, JAdded, JHarder:
 		b.WriteString(tag("original_text", in.Original))
 		b.WriteString(tag("new_text", in.Text))
@@ -648,7 +656,7 @@ func (g *Grader) request(spec judgementSpec, in GradeInput) (gradeRequest, error
 	r.parts = in.parts(g.context(in.Judgement))
 	inputsFirst := inputsFirstLayout(g.addedGrader(in.Judgement))
 	r.data = promptData{
-		HasQuestion: r.parts.Question, HasRecord: r.parts.Record, HasSession: r.parts.Session, WriterAnswer: r.parts.WriterAnswer,
+		HasQuestion: r.parts.Question, HasText: r.parts.Text, HasRecord: r.parts.Record, HasSession: r.parts.Session, WriterAnswer: r.parts.WriterAnswer,
 		HasOwnWords: in.ownWords(), Reply: in.Reply, Phrases: g.phrases, LostKinds: inputsFirst && in.Judgement == JLost,
 	}
 	if r.parts.Session {

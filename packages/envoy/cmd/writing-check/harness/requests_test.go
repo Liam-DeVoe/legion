@@ -112,16 +112,19 @@ const (
 	goldenMessage  = "Write your text again: name the queue."
 )
 
-// The SHA-256 of what the harness sent on the golden fixture before it marked prefixes for the
-// cache: its code at the parent of commit 00f3c570, run on this fixture against a stand-in. The
-// answered call is claude-opus-5's, reading the full inputs; its system prompt is 3,377 bytes,
-// its user message 334, and answeredInputSHA256 is its grade's input_sha256. The writer's call is
-// claude-opus-5-5's, its prompt writer-rewrite; its system prompt is 1,263 bytes and its user
-// message 374.
+// The SHA-256 of what the harness sends on the golden fixture, with no cache mark. The writer's
+// call is what the harness sent before it marked prefixes for the cache (its code at the parent of
+// commit 00f3c570): claude-opus-5-5's, its prompt writer-rewrite; its system prompt is 1,263
+// bytes and its user message 374. The answered call has that call's layout, one system prompt
+// and one user message, with the prompts and inputs of the calibration of answered against what
+// the owner did (INFRA-3231): the reader's and the grader's prompts changed, and the user message
+// holds the text after the reader's answer. It is claude-opus-5's, reading the full inputs; its
+// system prompt is 5,524 bytes, its user message 394, and answeredInputSHA256 is its grade's
+// input_sha256. So --grades-from takes no answered grade of a run made before that calibration.
 const (
-	answeredSystemSHA256 = "0d318c35e6fac0aaa1a5add28c7675c33221d8342f602311ac787e4e8bef539e"
-	answeredUserSHA256   = "5568185c5e7217386dcc8af76d0ba67e76614d0e20c311593e72cf7dbd2ac6e9"
-	answeredInputSHA256  = "4ad6ea550133eca080d8a70055e0a5e1ee72a87ea3142b57cc4092c14ae44207"
+	answeredSystemSHA256 = "1c8e47d78499dccd79caa4e176a275306bd9c3bb06fdd37769fb1ebc9ba2ed8e"
+	answeredUserSHA256   = "da44d0d1e8647a08a04aa06c86b22e326712a44adfdb17953f0b2fecf6c5c19d"
+	answeredInputSHA256  = "9fdf3ed308e147e71af633589a6d5f223d6b093b239268563786a434a0fcc72e"
 	writerSystemSHA256   = "5a36d1120665c48b6f6e0fc2b6b3da8e4966adeed076ef9c82804f71c740ce4c"
 	writerUserSHA256     = "24295a805920cb376923ff6fb6cceb83dd5bf8e45057fab70de2fb7a3d15f06b"
 )
@@ -133,7 +136,7 @@ func goldenCall(t *testing.T, id string, call func(model *claude.Client, session
 	stand := modeltest.New(t,
 		modeltest.Rule{Contains: "<reader_answer>", Reply: modeltest.Reply{Text: asJSON(t, map[string]any{
 			"1_asked": "a", "2_given": "b", "3_restates_question": false, "4_points_elsewhere": false,
-			"5_other_question": false, "6_contradicts_record": false, "7_reason": "c", "8_answers": true})}},
+			"5_other_question": false, "6_contradicts_record": false, "7_not_plain": false, "8_reason": "c", "9_answers": true})}},
 		modeltest.Rule{Contains: "<your_text>", Reply: modeltest.Reply{Text: asJSON(t, map[string]string{"text": "The zork train, the queue of pull requests, is ready."})}},
 	)
 	model, err := claude.New(stand.URL, keyFile(t), id, "", agentloop.Price{}, &llm.Runner{})
@@ -151,11 +154,11 @@ func goldenCall(t *testing.T, id string, call func(model *claude.Client, session
 	return w
 }
 
-// The answered judgement's call sends, byte for byte, the system prompt and the user message it
-// sent before the harness marked prefixes for the cache, with its own reply schema and no cache
-// mark, and its grade's input_sha256 is the one that call's grade had: a run of --grades-from
-// takes the grades of a run made before then.
-func TestTheAnsweredCallSendsWhatItSentBeforeTheCacheMarks(t *testing.T) {
+// The answered judgement's call sends, byte for byte, the pinned system prompt and user message,
+// in the layout of before the cache marks, with its own reply schema and no cache mark, and its
+// grade's input_sha256 is the pinned one: a run of --grades-from takes the answered grades of a
+// run made with the same prompts and inputs, and of no other.
+func TestTheAnsweredCallSendsItsPinnedRequestWithNoCacheMark(t *testing.T) {
 	var grade Grade
 	w := goldenCall(t, "claude-opus-5", func(model *claude.Client, session claude.SessionText) {
 		inputs, err := ParseGraderInputs("full")
@@ -169,10 +172,10 @@ func TestTheAnsweredCallSendsWhatItSentBeforeTheCacheMarks(t *testing.T) {
 		t.Errorf("the grade is %+v, want no error and the input_sha256 %s", grade, answeredInputSHA256)
 	}
 	if system := w.system(t); sha256Text(system) != answeredSystemSHA256 {
-		t.Errorf("the system prompt is not grade-answered.md as the harness sent it before the cache marks:\n%s", system)
+		t.Errorf("the system prompt is not the pinned grade-answered.md:\n%s", system)
 	}
 	if user := w.user(t); sha256Text(user) != answeredUserSHA256 {
-		t.Errorf("the user message is not the one the harness sent before the cache marks:\n%s", user)
+		t.Errorf("the user message is not the pinned one:\n%s", user)
 	}
 	if !sameJSON(t, w.OutputConfig.Format.Schema, judgementSpecs[JAnswered].schema()) {
 		t.Errorf("the reply schema is %s, want answered's own", w.OutputConfig.Format.Schema)
