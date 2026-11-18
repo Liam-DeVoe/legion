@@ -20,12 +20,12 @@ import (
 // the same issue and slug writes its row and leaves the node gone, since it writes no node. A
 // row whose node is gone is a row a read limited to its project would answer as removed, so the
 // project census names it (gone), as the store census names a row naming a gone node for a
-// comment and a block, and the backfill gives it a live node again: a live node is the backfill's
-// marker for these kinds, so the row is one the marker does not mark, and the backfill writes its
-// node from the row's own content, dated at its created_at and made by its author.
+// comment and a block, and the backfill gives it a live node again: a node not gone is the
+// backfill's marker for these kinds, so the row is one the marker does not mark, and the backfill
+// writes its node from the row's own content, dated at its created_at and made by its author.
 //
 // Its controls, each on its own: the gone class taken out of the census, and the backfill's
-// marker read as any node rather than a live one. With the first the census reads the row as
+// marker read as any node rather than one not gone. With the first the census reads the row as
 // complete; with the second the backfill leaves the node gone.
 func TestARowWhoseNodeIsGoneIsNamedAndTheBackfillMakesItLive(t *testing.T) {
 	database := storetest.Open(t)
@@ -182,6 +182,87 @@ func TestTheObjectBackfillWritesNoNodeForARowReplacedWhileItRead(t *testing.T) {
 	}
 	if node.MadeBy.ID != "carol" || !node.MadeAt.Equal(second) {
 		t.Errorf("the node of REPL-1/notes-md is made by %s at %s, want carol at her row's created_at %s", node.MadeBy.ID, node.MadeAt, second)
+	}
+}
+
+// laterObjectState is a state a later release marks a node with, such as dispatch://INFRA-1950's
+// proposed, which this build never writes.
+const laterObjectState = "proposed"
+
+// A later release can mark the node of an issue, a document, an ask or a message with a state this
+// build never writes, and this build serves beside that release during a roll and alone after a
+// rollback (R8 of dispatch://INFRA-1149). Every state but gone is a node there, as the store
+// census reads a comment's and a block's (census.go's presentNodes): a row whose node is at such a
+// state is no gone row, and the node of one no row stands behind is orphaned all the same. The
+// backfill writes such a node again only for the project or parties it lacks, and keeps the state
+// the later release gave it (graphstore.Node's Restates).
+//
+// Its controls, each on its own: the census's gone class read as every state but live, which
+// names both rows gone; the backfill's marker read as a live node, which never marks the issue, so
+// the backfill reports it remaining after every run; and the object batch's nodes written without
+// restating, which moves the ask back to live.
+func TestANodeAtALaterReleasesStateIsPresentAndTheBackfillKeepsIt(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	at := time.Date(2026, 11, 16, 9, 0, 0, 0, time.UTC)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	const ask = "1a7e0000-0000-4000-8000-000000000001"
+	if _, err := database.Pool.Exec(ctx, `
+		insert into projects (key, name, default_assignee) values ('LATE', 'Late', 'alice');
+		insert into issues (key, project_key, number, title, created_by, rank)
+		values ('LATE-1', 'LATE', 1, 'One', '{"kind":"user","id":"alice"}', 'U');
+	`); err != nil {
+		t.Fatalf("seed the project and the issue: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into asks (id, issue_key, author, question, created_at)
+		values ($1, 'LATE-1', '{"kind":"user","id":"alice"}', 'Does it ship?', $2)
+	`, ask, at); err != nil {
+		t.Fatalf("seed the ask: %v", err)
+	}
+	// The issue's node names its project; the ask's names none, as a build before this one's
+	// writer left it. A later release then marks both, as its build writes a state it owns.
+	issueNode := graphstore.IssueNode("LATE-1", "LATE", alice, at)
+	askNode := graphstore.AskNode(ask, "", nil, alice, at)
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		if err := graphstore.Write(ctx, tx, []graphstore.Node{issueNode, askNode}, nil); err != nil {
+			return err
+		}
+		issueNode.State, askNode.State = laterObjectState, laterObjectState
+		issueNode.MadeAt, askNode.MadeAt = at.Add(time.Minute), at.Add(time.Minute)
+		return graphstore.Write(ctx, tx, []graphstore.Node{issueNode, askNode}, nil)
+	}); err != nil {
+		t.Fatalf("write the two nodes and mark them %s: %v", laterObjectState, err)
+	}
+
+	census, err := ProjectCensus(ctx, database.Pool)
+	if err != nil {
+		t.Fatalf("take the project census: %v", err)
+	}
+	for _, kind := range census {
+		want := int64(0)
+		if kind.Kind == graphstore.KindAsk {
+			want = 1
+		}
+		if kind.Gone != 0 || kind.Orphaned != 0 || kind.Unscoped != want || kind.Findings() != want {
+			t.Errorf("the census reads %+v for %s, want no gone or orphaned node, unscoped=%d and that many findings", kind, kind.Kind, want)
+		}
+	}
+
+	report, err := Backfill(ctx, database, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("run the backfill: %v", err)
+	}
+	if done := reportedKind(t, report, graphstore.KindIssue); done.Nodes != 0 || done.Remaining != 0 || !done.Complete {
+		t.Errorf("the backfill reports %+v for issues, want no node and none remaining: the issue's node is there, in its project", done)
+	}
+	requireComplete(t, ctx, database, "after the backfill")
+	for _, node := range []struct{ kind, id string }{{graphstore.KindIssue, "LATE-1"}, {graphstore.KindAsk, ask}} {
+		held, found, err := graphstore.ReadNode(ctx, database.Pool, node.kind, node.id)
+		if err != nil || !found || held.State != laterObjectState || held.Project != "LATE" {
+			t.Errorf("after the backfill the node of %s %s is %+v (held %t, %v), want it %s in project LATE",
+				node.kind, node.id, held, found, err, laterObjectState)
+		}
 	}
 }
 

@@ -45,30 +45,32 @@ type objectKind struct {
 	owners string
 }
 
-// unmarked is the backfill's marker for these kinds, unset: the store holds no live node of kind
-// at the address id that names a project or parties. The node is the marker, since no row of these
-// kinds names its node in a column of its own; a live one, since a row whose node is gone is one a
-// build before this one created at an address this build's removal stated gone, and is owed a
-// live node as much as a row with none (classGone); and one naming a project or parties, since a
-// node naming neither is the census's unscoped class, which this pass cures by stating them.
+// unmarked is the backfill's marker for these kinds, unset: the store holds no node of kind at the
+// address id, at a state but gone, that names a project or parties. The node is the marker, since
+// no row of these kinds names its node in a column of its own; one not gone, since a row whose node
+// is gone is one a build before this one created at an address this build's removal stated gone,
+// and is owed a live node as much as a row with none (classGone), while a state a later release
+// adds, such as dispatch://INFRA-1950's proposed, is a node there as live is (R8 of
+// dispatch://INFRA-1149); and one naming a project or parties, since a node naming neither is the
+// census's unscoped class, which this pass cures by stating them.
 func unmarked(kind, id string) string {
 	return `not exists (select 1 from graph_nodes n where n.kind = '` + kind + `' and n.id = ` + id +
-		` and n.state = '` + graphstore.StateLive + `' and ` + scopedNode + `)`
+		` and n.state <> '` + graphstore.StateGone + `' and ` + scopedNode + `)`
 }
 
 // scopedNode is, for the node n, whether it names a project or parties.
 const scopedNode = `(n.project_key is not null or n.parties is not null)`
 
 // unmarkedDocument is unmarked for a document, whose address a later row takes again where a
-// removal can take the row away: the store holds no live node naming a project or parties at the
-// row a's address that is that row's own - any such node, for a row no removal takes, and for one
-// a removal can take, one whose live statement was made for it (ownLiveStatement). A live node
+// removal can take the row away: the store holds no node not gone naming a project or parties at
+// the row a's address that is that row's own - any such node, for a row no removal takes, and for
+// one a removal can take, one whose live statement was made for it (ownLiveStatement). A node
 // whose live statement is not the row's is a document a build before this one removed and then
 // made again at the address before the node was erased, and that row is owed its own live
 // statement as much as a row with none (classGone).
 func unmarkedDocument(a string) string {
 	return `not exists (select 1 from graph_nodes n where n.kind = '` + graphstore.KindArtifact + `' and n.id = ` + a + `.ref_key` +
-		` and n.state = '` + graphstore.StateLive + `' and ` + scopedNode + ` and (not ` + removableDocument(a) + ` or ` +
+		` and n.state <> '` + graphstore.StateGone + `' and ` + scopedNode + ` and (not ` + removableDocument(a) + ` or ` +
 		ownLiveStatement("n", a+".id::text", a+".issue_key") + `))`
 }
 
@@ -182,7 +184,7 @@ const zeroUUID = "00000000-0000-0000-0000-000000000000"
 // backfillObjectNodes writes a live node for every issue, document, ask and message written before
 // its kind's writer wrote one, and for every one a build before this one created at an address
 // whose node is gone or holds another row's live statement, under the backfill's contract: it
-// walks only the rows its marker does not mark - the marker is a live node naming a project or
+// walks only the rows its marker does not mark - the marker is a node not gone naming a project or
 // parties (unmarked), and for a document a removal can take such a node whose live statement is
 // the row's own (unmarkedDocument)
 // - and writes the marker in the transaction that writes the node, so a second run reads no row the
@@ -321,9 +323,12 @@ func derefText(value *string) string {
 }
 
 // writeObjectBatch writes one batch's nodes in one transaction, which takes their rows in ascending
-// (kind, id) and states each one's base attributes, and answers what it wrote. A node a live
-// writer wrote meanwhile is written again with nothing moved, and states nothing; a gone node is
-// moved live, which states its state alone; one in another project fails the batch
+// (kind, id) and states each one's base attributes, and answers what it wrote. Every node it writes
+// restates its node (graphstore.Node's Restates), as the backfill's other passes do: the run owns
+// the row's project or parties, not the state or the visibility another write gave the node, so a
+// node at a state a later release adds keeps it (R8 of dispatch://INFRA-1149). A node a live writer
+// wrote meanwhile is written again with nothing moved, and states nothing; a gone node is moved
+// live, which states its state alone; one in another project fails the batch
 // (graphstore.ErrProjectMoved), which is a difference for the census to report rather than for
 // this run to paper over. Each node and what it states carry its row's own create event where the
 // read found one (readObjectNodes), and the sentinel otherwise: the batch writes its nodes in
@@ -343,12 +348,12 @@ func derefText(value *string) string {
 // nodes after them, the order every writer of these nodes takes (a document's create, its removal,
 // the erase). A kind no writer deletes a row of takes no lock and is read again the same way.
 //
-// Under those locks it reads the nodes the store holds of the batch (heldNodes). One that is live,
-// its row's own (ownLiveStatement, for a document a removal can take; any live one for the rest,
-// whose address no later row takes) and naming a project or parties was written meanwhile, by
+// Under those locks it reads the nodes the store holds of the batch (heldNodes). One that is not
+// gone, its row's own (ownLiveStatement, for a document a removal can take; any such one for the
+// rest, whose address no later row takes) and naming a project or parties was written meanwhile, by
 // another run of the backfill that took the owner rows first, and is left as it is; one that is
-// live and its row's own but names neither is written again, which states its project or parties
-// alone. A document whose node is live but not its
+// not gone and its row's own but names neither is written again, which states its project or
+// parties alone. A document whose node is not gone but not its
 // row's own is one a build before this one removed and made again at the address: its node is
 // first stated gone, by the backfill, and then live, under the row's own event, as this build's
 // create states it (api's storeArtifact). A node the store holds is dated one microsecond past
@@ -380,11 +385,12 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 			return err
 		}
 		var write []graphstore.Node
-		// taken holds, by id, the gone statement of each node a live writer left live for an
+		// taken holds, by id, the gone statement of each node a writer left standing for an
 		// earlier row, which goes in before that node's live one, under the same cause.
 		taken := map[string]graphstore.Node{}
 		for _, row := range nodes {
 			node := row.Node
+			node.Restates = true
 			if identity, stands := standing[node.ID]; !stands || identity != row.identity {
 				continue
 			}
@@ -393,13 +399,13 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 				continue
 			}
 			stored, found := held[node.ID]
-			if found && stored.live && stored.own && stored.scoped {
+			if found && stored.present && stored.own && stored.scoped {
 				continue
 			}
 			if found && !stored.newest.Before(node.MadeAt) {
 				node.MadeAt = stored.newest.Add(time.Microsecond)
 			}
-			if found && stored.live && !stored.own {
+			if found && stored.present && !stored.own {
 				gone := node
 				gone.State, gone.MadeBy = graphstore.StateGone, backfillActor
 				taken[node.ID] = gone
@@ -443,12 +449,12 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 	return written, nil
 }
 
-// storedNode is what the store holds of one node of a batch: whether it is live, whether its live
-// statement is its row's own, whether it names a project or parties, and when its newest statement
-// is dated.
+// storedNode is what the store holds of one node of a batch: whether it is present, at any state
+// but gone, whether its live statement is its row's own, whether it names a project or parties,
+// and when its newest statement is dated.
 type storedNode struct {
-	live, own, scoped bool
-	newest            time.Time
+	present, own, scoped bool
+	newest               time.Time
 }
 
 // heldNodes answers, of the batch's ids, each node the store holds (storedNode). A node is its
@@ -457,7 +463,7 @@ type storedNode struct {
 // row's own, since no later row takes its address.
 func heldNodes(ctx context.Context, tx pgx.Tx, kind string, ids []string) (map[string]storedNode, error) {
 	rows, err := tx.Query(ctx, `
-		select n.id, n.state = '`+graphstore.StateLive+`',
+		select n.id, n.state <> '`+graphstore.StateGone+`',
 		       coalesce((select not `+removableDocument("a")+` or `+ownLiveStatement("n", "a.id::text", "a.issue_key")+`
 		                 from artifacts a where n.kind = '`+graphstore.KindArtifact+`' and a.ref_key = n.id), true),
 		       `+scopedNode+`,
@@ -471,7 +477,7 @@ func heldNodes(ctx context.Context, tx pgx.Tx, kind string, ids []string) (map[s
 	var id string
 	var stored storedNode
 	var newest *time.Time
-	if _, err := pgx.ForEachRow(rows, []any{&id, &stored.live, &stored.own, &stored.scoped, &newest}, func() error {
+	if _, err := pgx.ForEachRow(rows, []any{&id, &stored.present, &stored.own, &stored.scoped, &newest}, func() error {
 		stored.newest = time.Time{}
 		if newest != nil {
 			stored.newest = *newest

@@ -541,10 +541,11 @@ func (s *server) storeArtifact(
 		}
 		if graphstore.AddressFits(refKey) {
 			// No row stands at the address: the slug is free under the owner row this
-			// transaction holds. So a live node there stands behind no row - a document a build
-			// before this one removed, stating nothing - and it is stated gone before it is
-			// stated live, both under this upload's event, so the new document's node carries no
-			// statement of the removed one's as its own.
+			// transaction holds. So a node there that is not gone stands behind no row - a
+			// document a build before this one removed, stating nothing, live or at a state a
+			// later release marked it with (R8 of dispatch://INFRA-1149) - and it is stated gone
+			// before it is stated live, both under this upload's event, so the new document's
+			// node carries no statement of the removed one's as its own.
 			node := graphstore.ArtifactNode(refKey, deref(project), deref(session), actor, createdAt)
 			held, found, err := graphstore.ReadNode(r.Context(), tx, graphstore.KindArtifact, refKey)
 			if err != nil {
@@ -552,7 +553,7 @@ func (s *server) storeArtifact(
 				return
 			}
 			var removed graphstore.Uncaused
-			if found && held.State == graphstore.StateLive {
+			if found && held.State != graphstore.StateGone {
 				gone := node
 				gone.State = graphstore.StateGone
 				if removed, err = graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{gone}, nil); err != nil {

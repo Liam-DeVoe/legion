@@ -18,48 +18,85 @@ import (
 )
 
 // A build before this one writes no node, so a document it removes leaves the node this build
-// wrote for it live behind no row (graphcensus's orphaned class). A document this build then
+// wrote for it standing behind no row (graphcensus's orphaned class). A document this build then
 // makes of the same issue and name takes that address. Its create holds the issue's row and has
-// found no row at the address, so the live node there is the removed document's: the create
-// states it gone and then live, both under its own artifact.created event and dated at the new
-// row's created_at, and the new document's node carries no statement of the removed one's as its
-// own. The project census reads the new row as complete.
+// found no row at the address, so the node there is the removed document's: the create states it
+// gone and then live, both under its own artifact.created event and dated at the new row's
+// created_at, and the new document's node carries no statement of the removed one's as its own.
+// The project census reads the new row as complete. The node can be live, or at a state a later
+// release marked it with while the document stood (laterNodeState, R8 of dispatch://INFRA-1149),
+// which is no less the removed document's.
 //
-// Its control is the create's gone step taken out: the node then states nothing for the new
-// document, and keeps the removed one's event and its one live statement.
+// Its controls are the create's gone step taken out: the node then states nothing for the new
+// document, and keeps the removed one's event and its one live statement; and the gone step taken
+// for a live node alone, which moves the marked node live with no gone statement between.
 func TestADocumentMadeWhereAnOrphanedNodeStandsStatesItGoneThenLive(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
-	ctx := context.Background()
-	issue := createInteractionIssue(t, handler, "ORP", "A document an earlier build removed", "The spec.\n")
-	first := emptyDocument(t, handler, issue.Key, "Scratch.md")
-	created := artifactEvent(t, database, "artifact.created", first.ID)
-	removeAsAnEarlierBuild(t, database, first.ID)
+	for _, orphan := range []struct{ name, state string }{
+		{"a live node", graphstore.StateLive},
+		{"a node a later release marked", laterNodeState},
+	} {
+		t.Run(orphan.name, func(t *testing.T) {
+			handler, database := newTestHandlerWithStore(t)
+			ctx := context.Background()
+			issue := createInteractionIssue(t, handler, "ORP", "A document an earlier build removed", "The spec.\n")
+			first := emptyDocument(t, handler, issue.Key, "Scratch.md")
+			created := artifactEvent(t, database, "artifact.created", first.ID)
+			want := []string{graphstore.StateLive}
+			if orphan.state != graphstore.StateLive {
+				markNodeState(t, database, graphstore.KindArtifact, first.RefKey, orphan.state)
+				want = append(want, orphan.state)
+			}
+			removeAsAnEarlierBuild(t, database, first.ID)
 
-	second := emptyDocument(t, handler, issue.Key, "Scratch.md")
-	if second.RefKey != first.RefKey {
-		t.Fatalf("the second document took the address %q, want the removed one's %q, so this test proves nothing", second.RefKey, first.RefKey)
+			second := emptyDocument(t, handler, issue.Key, "Scratch.md")
+			if second.RefKey != first.RefKey {
+				t.Fatalf("the second document took the address %q, want the removed one's %q, so this test proves nothing", second.RefKey, first.RefKey)
+			}
+			remade := artifactEvent(t, database, "artifact.created", second.ID)
+			requireDocumentNode(t, database, second.RefKey, graphstore.StateLive, remade)
+			history, err := graphstore.History(ctx, database.Pool, graphstore.KindArtifact, second.RefKey, graphstore.AttributeState)
+			if err != nil {
+				t.Fatalf("read the state history of %s: %v", second.RefKey, err)
+			}
+			var stated []string
+			for _, tuple := range history {
+				stated = append(stated, tuple.ToID)
+			}
+			if want = append(want, graphstore.StateGone, graphstore.StateLive); !equalStrings(stated, want) {
+				t.Fatalf("the node of %s states %v over its life, want %v", second.RefKey, stated, want)
+			}
+			gone, live := history[len(history)-2], history[len(history)-1]
+			if history[0].SourceEvent != created || gone.SourceEvent != remade || live.SourceEvent != remade {
+				t.Errorf("the state statements of %s name events %d first and %d, %d last, want %d, then %d twice", second.RefKey,
+					history[0].SourceEvent, gone.SourceEvent, live.SourceEvent, created, remade)
+			}
+			if !live.At.Equal(second.CreatedAt) {
+				t.Errorf("the newest state statement of %s is dated %s, want the new row's created_at %s", second.RefKey, live.At, second.CreatedAt)
+			}
+			requireProjectsComplete(t, database)
+		})
 	}
-	remade := artifactEvent(t, database, "artifact.created", second.ID)
-	requireDocumentNode(t, database, second.RefKey, graphstore.StateLive, remade)
-	history, err := graphstore.History(ctx, database.Pool, graphstore.KindArtifact, second.RefKey, graphstore.AttributeState)
-	if err != nil {
-		t.Fatalf("read the state history of %s: %v", second.RefKey, err)
+}
+
+// laterNodeState is a state a later release marks a node with, such as dispatch://INFRA-1950's
+// proposed, which this build never writes.
+const laterNodeState = "proposed"
+
+// markNodeState writes the node kind/id at state, as a later release's build marks a node: the
+// store's own writer moving the state, which states it in one tuple.
+func markNodeState(t *testing.T, database *store.Store, kind, id, state string) {
+	t.Helper()
+	ctx := context.Background()
+	node, held, err := graphstore.ReadNode(ctx, database.Pool, kind, id)
+	if err != nil || !held {
+		t.Fatalf("read the node %s %s to mark it %s: held %t, %v", kind, id, state, held, err)
 	}
-	var stated []string
-	for _, tuple := range history {
-		stated = append(stated, tuple.ToID)
+	node.State, node.MadeAt = state, time.Now().UTC()
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		return graphstore.Write(ctx, tx, []graphstore.Node{node}, nil)
+	}); err != nil {
+		t.Fatalf("mark the node %s %s %s: %v", kind, id, state, err)
 	}
-	if want := []string{graphstore.StateLive, graphstore.StateGone, graphstore.StateLive}; !equalStrings(stated, want) {
-		t.Fatalf("the node of %s states %v over its life, want %v", second.RefKey, stated, want)
-	}
-	if history[0].SourceEvent != created || history[1].SourceEvent != remade || history[2].SourceEvent != remade {
-		t.Errorf("the state statements of %s name events %d, %d and %d, want %d, then %d twice", second.RefKey,
-			history[0].SourceEvent, history[1].SourceEvent, history[2].SourceEvent, created, remade)
-	}
-	if newest := history[2]; !newest.At.Equal(second.CreatedAt) {
-		t.Errorf("the newest state statement of %s is dated %s, want the new row's created_at %s", second.RefKey, newest.At, second.CreatedAt)
-	}
-	requireProjectsComplete(t, database)
 }
 
 // A create's transaction can start while the removal of the document at its address is still

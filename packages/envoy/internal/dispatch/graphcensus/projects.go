@@ -160,22 +160,22 @@ var scopedRowsSQL = strings.NewReplacer(
 // before it, and only its node is read by its row's own create event (ownLiveStatement). Every
 // other document - an issue's spec, a plan or a verification document, an image, a file, a
 // project's document, a conversation's file - keeps its address for as long as the store holds it,
-// so a live node at that address can stand for no other row, and a live one is enough. Not all of
+// so a node at that address that is not gone can stand for no other row, and that is enough. Not all of
 // them record an artifact.created of their own either (issue.created records the spec, and a
 // conversation's upload appends no event), so reading them by that event would name them gone
 // for ever. A document a removal is made to take must be added here, in the same change: api's
 // TestEveryDocumentARemovalCanTakeIsReadByItsCreateEvent writes every shape of row the store
-// holds and fails on a shape the removal takes that this reads by live alone, or the reverse.
+// holds and fails on a shape the removal takes that this reads by the node's state alone, or the reverse.
 func removableDocument(a string) string {
 	return `(` + a + `.issue_key is not null and not ` + a + `.is_primary and ` + a + `.role is null and ` + a + `.kind = 'doc')`
 }
 
 // The classes the census and ProjectComplete name a row or a node by. missing is a row whose node
 // the store does not hold; gone a row of a kind whose rows only its own creates write
-// (objectKinds) whose node is not live, or, for a document a removal can take away, whose node's
+// (objectKinds) whose node is gone, or, for a document a removal can take away, whose node's
 // live statement is another row's (ownLiveStatement); unscoped a node holding neither a project
 // nor parties; differs a node holding another project, or other parties, than its row's; orphaned
-// a live node of one of those kinds that no row stands behind.
+// a node of one of those kinds, at any state but gone, that no row stands behind.
 const (
 	classMissing  = "missing"
 	classGone     = "gone"
@@ -187,7 +187,7 @@ const (
 // orphanKindList is the kinds the census reads the state and the node side of too, as a SQL list:
 // the kinds the backfill writes a node for from their rows (objectKinds) - an issue, a document,
 // an ask and a message - whose rows only their own creates write and only a document's removal
-// deletes. A node of one of them stands live while its row does, and the removal of this build
+// deletes. A node of one of them stands while its row does, and the removal of this build
 // states it gone as it deletes the row; a build before this one writes no node, so during a roll
 // or after a rollback it can create a row at an address whose node this build stated gone (gone),
 // or remove a row whose node this build wrote (orphaned). The store census reads both directions
@@ -243,20 +243,22 @@ func ownLiveStatement(node, rowID, ownerKey string) string {
 
 // rowClass is the class of one row of scopedRows against its node n, null for a complete one and
 // for a row whose address is past the store's bound, which no writer projects and the census
-// counts as a class of its own (ProjectKindReport.PastBound).
+// counts as a class of its own (ProjectKindReport.PastBound). A node at any state but gone is one
+// the row projects: a state a later release adds, such as dispatch://INFRA-1950's proposed, reads
+// here as live does (R8 of dispatch://INFRA-1149), as the store census reads it (presentNodes).
 var rowClass = `case
 		when scoped.past_bound then null
 		when n.id is null then '` + classMissing + `'
-		when scoped.kind in (` + orphanKindList + `) and n.state <> '` + graphstore.StateLive + `' then '` + classGone + `'
+		when scoped.kind in (` + orphanKindList + `) and n.state = '` + graphstore.StateGone + `' then '` + classGone + `'
 		when scoped.removable and not ` + ownLiveStatement("n", "scoped.row_id", "scoped.owner_key") + ` then '` + classGone + `'
 		when n.project_key is null and n.parties is null then '` + classUnscoped + `'
 		when n.project_key is distinct from scoped.project or n.parties is distinct from scoped.parties then '` + classDiffers + `'
 	end`
 
 // classedRows follows scopedRowsSQL: every row of scoped with its class against its node, null for
-// a complete one, and every live node of an object kind that no row of scoped stands behind, as
-// orphaned, each with whether it is a row the store projects, whether its address is past the
-// store's bound, and whether the row names a party the store refuses (refusedPartySQL).
+// a complete one, and every node of an object kind at a state but gone that no row of scoped stands
+// behind, as orphaned, each with whether it is a row the store projects, whether its address is
+// past the store's bound, and whether the row names a party the store refuses (refusedPartySQL).
 var classedRows = `,
 	classed (kind, id, class, is_row, past_bound, refused) as (
 		select scoped.kind, scoped.id, ` + rowClass + `, not scoped.past_bound, scoped.past_bound, ` + refusedPartySQL("scoped.parties") + `
@@ -265,7 +267,7 @@ var classedRows = `,
 		union all
 		select n.kind, n.id, '` + classOrphaned + `', false, false, false
 		from graph_nodes n
-		where n.kind in (` + orphanKindList + `) and n.state = '` + graphstore.StateLive + `'
+		where n.kind in (` + orphanKindList + `) and n.state <> '` + graphstore.StateGone + `'
 		  and not exists (select 1 from scoped where scoped.kind = n.kind and scoped.id = n.id)
 	)`
 
@@ -280,7 +282,7 @@ func refusedPartySQL(parties string) string {
 
 // ProjectKindReport is what the project census read of one kind: how many rows it holds, and how
 // many of them are in each class, and, for a kind whose rows only its own creates write, how many
-// of its rows name a node that is not live and how many of its live nodes no row stands behind.
+// of its rows name a node that is gone and how many of its nodes not gone no row stands behind.
 // PastBound is how many of its rows have an address past the store's bound (graphstore.
 // MaxAddressBytes): no writer projects them, so they are a class of their own, in no other count
 // and no finding, as the store census counts its own (KindReport.PastBound).
@@ -297,8 +299,8 @@ func (r ProjectKindReport) Findings() int64 {
 }
 
 // ProjectCensus reads, for every project-owned kind, how many rows it holds and how many of them
-// have no node, a node that is not live, a node with no project or parties, or a node in another
-// project or between other parties than the row's, how many live nodes of an orphan kind no row
+// have no node, a node that is gone, a node with no project or parties, or a node in another
+// project or between other parties than the row's, how many nodes of an orphan kind not gone no row
 // stands behind, and how many rows have an address past the store's bound, in one statement over
 // q, which the store census runs in its snapshot.
 func ProjectCensus(ctx context.Context, q graphstore.Queryer) ([]ProjectKindReport, error) {
@@ -349,8 +351,8 @@ func writeProjectCensus(w io.Writer, kinds []ProjectKindReport) {
 	}
 }
 
-// ProjectComplete answers every project-owned row whose node is not complete, and every live node
-// of an orphan kind no row stands behind, as `<kind> <id>: <class>` (missing, gone, unscoped,
+// ProjectComplete answers every project-owned row whose node is not complete, and every node of an
+// orphan kind, at any state but gone, that no row stands behind, as `<kind> <id>: <class>` (missing, gone, unscoped,
 // differs or orphaned) and the class's cure, in one read: the rows and the nodes a read limited by
 // a node's project would answer wrongly. An empty answer is every row and every node of every kind
 // complete. The cure is the backfill for a row with no node, a node that is not the row's, or a
