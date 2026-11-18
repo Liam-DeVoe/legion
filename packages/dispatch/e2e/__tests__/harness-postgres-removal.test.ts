@@ -870,7 +870,8 @@ test.skipIf(!onLinux)(
 // and finds the data directory of the first claimed by a claimer that still runs, so it waits for
 // that claim. Meanwhile the second, X, removes the stack of the second run directory, which is in
 // its own TMPDIR. Once the claimer is killed, Z goes on to that second run directory, whose mark
-// and postmaster X removed, so that postmaster is no Postgres Z left.
+// and postmaster X removed, so that postmaster is no Postgres Z left. Each postmaster serves only
+// once the claim is made, as in the row above, so no other start can take the held stack first.
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a start names as left only a postmaster that still runs once it has read its run directory: one it listed that another start removed meanwhile it does not name",
   async () => {
@@ -883,14 +884,20 @@ test.skipIf(!onLinux)(
     const plant = (tmp: string) => {
       const run = mkdtempSync(join(tmp, runDirectoryPrefix));
       const data = join(realpathSync(run), "worker-0", "pgdata");
-      const postmaster = standInPostmaster(join(tmp, "bin"), data, "every start");
-      return { data, postmaster, file: writeMark(run, owners().gone, data, join(tmp, "bin")) };
+      leaveData(data);
+      const bin = join(tmp, "bin");
+      return { data, bin, file: writeMark(run, owners().gone, data, bin) };
     };
     const held = plant(heldTmp);
     const other = plant(otherTmp);
     let claimer: Subprocess | undefined;
+    let heldPostmaster: StandIn | undefined;
+    let otherPostmaster: StandIn | undefined;
     try {
-      ({ claimer } = await claimInChild(held.data));
+      const claim = await claimInChild(held.data);
+      claimer = claim.claimer;
+      heldPostmaster = standInPostmaster(held.bin, claim.claimed, "every start");
+      otherPostmaster = standInPostmaster(other.bin, other.data, "every start");
       const first = startSweep(startTmp);
       await until(
         () => first.stderr().includes(`waits for another start's claim of ${held.data}`),
@@ -898,19 +905,26 @@ test.skipIf(!onLinux)(
         claimEventMs
       );
       const second = startSweep(otherTmp);
-      await until(() => !other.postmaster.alive(), "the second start's stop", claimEventMs);
+      const otherServes = otherPostmaster;
+      await until(() => !otherServes.alive(), "the second start's stop", claimEventMs);
       await endChild(claimer);
       const [firstLines, secondLines] = await Promise.all([first.lines, second.lines]);
 
-      expect(holding(firstLines, other.data).filter((line) => line.includes(" left "))).toEqual([]);
+      // The line a start names an unmarked postmaster on, which the first start must not write.
+      const unmarked = "serves it from a run directory this start does not list";
+      expect(holding(holding(firstLines, other.data), unmarked)).toEqual([]);
       for (const lines of [firstLines, secondLines]) {
-        await removedByAStart(lines, held);
-        await removedByAStart(lines, other);
+        await removedByAStart(lines, {
+          ...held,
+          claimed: claim.claimed,
+          postmaster: heldPostmaster,
+        });
+        await removedByAStart(lines, { ...other, postmaster: otherPostmaster });
       }
     } finally {
       if (claimer !== undefined) await endChild(claimer);
-      held.postmaster.stop();
-      other.postmaster.stop();
+      heldPostmaster?.stop();
+      otherPostmaster?.stop();
       rmSync(parent, { recursive: true, force: true });
     }
   },
