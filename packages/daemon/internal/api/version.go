@@ -2161,7 +2161,7 @@ package api
 // brought main in at 85, and then 86, which five other open heads declared as well, and then 88,
 // which the forward merge that brought main in at 86 left standing, and then 102 at the forward
 // merge of 2026-11-13 that brought main in at 94 — main stood at 104 after the merge of 17:3xZ
-// that day, which was then the entry right above this one, where 144 is now — since 88 is
+// that day, which was then the entry right above this one, where 151 is now — since 88 is
 // below that base, which the gate refuses (.github/scripts/check-daemon-api-contract.sh), and
 // since the two keys contract 94 added are served to a caller at the declared number alone
 // (api's phaseEntriesContract). It took 106 at the merge after that, because

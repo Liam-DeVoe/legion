@@ -39,8 +39,11 @@ report issue, with `controller` as the role, and take it as below.
 You file an issue only when nobody owns that code.
 
 1. Check that it is clear: the fix needs no choice a person must make, and it belongs in a
-   repository your addressing line lists. Otherwise reply `Not filed: <reason>` under the
-   evidence and open an ask for it, as `findings.md` says.
+   repository both role GitHub Apps are installed on, the only repositories Legion records an
+   issue on (your addressing line names the owners your own App is installed on, and
+   `read_state`'s `repositories.refused` names a repository either App is missing from).
+   Otherwise reply `Not filed: <reason>` under the evidence and open an ask for it, as
+   `findings.md` says.
 2. Search first (`skill://dispatch-first`). When an open issue tracks it, comment the evidence
    there, reply `Filed dispatch://<that KEY>` under the evidence, and file nothing.
 3. Check that no running tree owns that code: no root in `admission.trees`, the live trees, whose
@@ -52,7 +55,7 @@ You file an issue only when nobody owns that code.
    evidence, with the token `issues.<ROOT>.architect.locator.claim` names, so the role writes to
    that tree itself. A second issue would split the work.
 4. No running tree owns that code: file it on the repository where the fix belongs, in the
-   project that repository maps to:
+   project that repository maps to, or in your own project when Dispatch maps it to none:
 
    ```text
    dispatch issue --project <KEY> --repo <owner/name> --title '<the defect, as a title>' --label legion --spec-file -

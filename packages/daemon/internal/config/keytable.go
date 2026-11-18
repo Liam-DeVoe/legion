@@ -236,7 +236,7 @@ var topLevelKeys = func() []keyDescriptor {
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.NatsDaemonNkeySeedFile = v }),
 		},
 		{
-			Name: "projects", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `github_apps` is set, and when runtime is kubernetes: every pod's workspace is a repository Dispatch maps to the daemon's project",
+			Name: "projects", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `github_apps` is set, and when runtime is kubernetes: every pod runs an issue of one of the projects it names",
 			Description: "Each Dispatch project the daemon runs, by project key, one of them the daemon's own `project`; a project's default repository and the repositories the daemon prepares before an issue names one are Dispatch's own mapping, while an issue may name any repository both role Apps are installed on, and its block carries what only that project does — its Slack channels, its production check, its memory group, its experiments and the repositories whose commits carry their issue key.",
 			Read: func(value *yaml.Node, key string, file *fileConfig) error {
 				// The projects' own warnings join whatever a warned key above them raised, in file

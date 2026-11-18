@@ -178,8 +178,8 @@ takes. That issue,
 dispatch comment --issue '<ASK KEY>' --body-file - <<'EOF'
 <the evidence: commands, output with its time, file:line, links>
 EOF
-# Keep `File it for Legion` only when your Legion addressing line lists the repository where the
-# fix belongs.
+# Keep `File it for Legion` only when both role GitHub Apps are installed on the repository where
+# the fix belongs; your Legion addressing line names the owners your own App is installed on.
 dispatch ask --issue '<ASK KEY>' --ref 'dispatch://<ASK KEY>/comment/<id>' --question-file - \
   --option 'File an issue: <what it would track, and who would own it>' \
   --option 'File it for Legion: Legion works it once it is filed' \
@@ -189,7 +189,8 @@ Finding from <your role token>
 EOF
 ```
 
-Legion refuses to record an issue on a repository the project does not map, hence that condition.
+Legion records an issue only on a repository both of its role GitHub Apps are installed on, and
+says why on any other issue it is handed, hence that condition.
 
 ## Tell the controller about the ask
 
