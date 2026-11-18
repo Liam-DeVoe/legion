@@ -3901,3 +3901,90 @@ test("with the live feed down, a focus while a write is out reads a refused tree
     client.clear();
   }
 });
+
+// A tree that holds an answer, whose next read Dispatch refused, is a refused read as much as a
+// first read refused: the outline draws the answer it holds, and the read stays refused until
+// the reader's Retry, an event of the issue or the live feed coming back. A surface that starts
+// reading the tree afterwards - a filter pressed, which draws its slot - is none of those, so it
+// reads nothing of its own.
+test("a surface that starts reading a tree whose refresh was refused sends no read while the live feed is up", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  let refused = false;
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async () => {
+    if (refused) throw new Error("the tree read was refused");
+    return treeAnswer([comment]);
+  });
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const feed = liveFeedOn(client);
+  try {
+    const view = renderHook(() => useIssueTree(issue), { wrapper: stageWrapper(client) });
+    await waitFor(() => expect(client.getQueryState(issueTreeKey(KEY))?.status).toBe("success"));
+    refused = true;
+    await act(async () => {
+      await client.refetchQueries({ exact: true, queryKey: issueTreeKey(KEY) });
+    });
+    await waitFor(() => expect(client.getQueryState(issueTreeKey(KEY))?.status).toBe("error"));
+    expect(holdsComment(view.result.current.root), "the outline draws the answer it holds").toBe(
+      true
+    );
+    const before = treeReadsOf();
+
+    const later = renderHook(() => useIssueTree(issue), {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    });
+    await act(async () => {
+      await Bun.sleep(1_500);
+    });
+    expect(
+      treeReadsOf() - before,
+      "a surface that starts reading the tree reads nothing of its own"
+    ).toBe(0);
+    later.unmount();
+    view.unmount();
+  } finally {
+    feed.end();
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// The same for a filter's view: the Spec view holds an answer, and Dispatch refused its next
+// read. The reader pressing the Spec filter off and on again is no Retry, no event and no feed
+// coming back, so it sends no view read.
+test("a filter pressed off and on after its view's refresh was refused sends no read", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const specView: TreeAnswer = { ...treeAnswer([]), nodes: [{ ...task, mark: "query" }] };
+  let refused = false;
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async (_key, query) => {
+    if (query?.view !== "spec") return treeAnswer([]);
+    if (refused) throw new Error("the spec view read was refused");
+    return specView;
+  });
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const on: FilterOn = { preset: "spec" };
+  try {
+    const view = renderHook(() => useIssueTree(issue).root, { wrapper: turnedStage(client, on) });
+    await waitFor(() => expect(client.getQueryState(viewKey(KEY, "spec"))?.status).toBe("success"));
+    refused = true;
+    await act(async () => {
+      await client.refetchQueries({ exact: true, queryKey: viewKey(KEY, "spec") });
+    });
+    await waitFor(() => expect(client.getQueryState(viewKey(KEY, "spec"))?.status).toBe("error"));
+    expect(client.getQueryState(viewKey(KEY, "spec"))?.data, "the view keeps its answer").toBe(
+      specView
+    );
+    const before = treeReadsOf("spec");
+
+    await pressSpecOffAndOn(view, on);
+    await act(async () => {
+      await Bun.sleep(1_200);
+    });
+    expect(treeReadsOf("spec") - before, "no view read for the press").toBe(0);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
