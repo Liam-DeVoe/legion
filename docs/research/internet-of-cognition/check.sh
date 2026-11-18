@@ -338,8 +338,9 @@
 #                  from the named row's. Each is a string, and an entry holds no other
 #                  key. claim-marks-agree holds each mark to the named row's: the two are
 #                  one mark or the entry names its part, no part of a claim marked
-#                  verified is marked otherwise, and a record claim's own row carries no
-#                  checks.
+#                  verified is marked otherwise, an entry marked false, with or without
+#                  refines, names a row marked false, since a claim with a part marked
+#                  false is false, and a record claim's own row carries no checks.
 #                  kind is one of project-code, our-code, behaviour, published, absence
 #                  and quotation, which are the five forms of the specification with the
 #                  quotation form marked as a claim of the project rather than of its
@@ -522,7 +523,7 @@ assertion_table() {
     cat <<'TABLE'
 claim-form|replay|every line of claims.jsonl is a claim the one parse reads, and every claim carries one of the five forms of evidence the specification allows|a claim whose kind is none of them
 claim-mark|replay|every claim carries one of the marks its requirement fixes|a claim with no mark
-claim-marks-agree|replay|every row that checks a claim of a record under check names that claim's row and gives it the mark that row carries, or names the part of it the row holds, no part of a claim marked verified is marked otherwise, and at least one row checks one|a row whose check of a record claim gives it another mark than its own row carries
+claim-marks-agree|replay|every row that checks a claim of a record under check names that claim's row and gives it the mark that row carries, or names the part of it the row holds, no part of a claim marked verified is marked otherwise, no part of a claim not marked false is marked false, and at least one row checks one|a row whose check of a record claim gives it another mark than its own row carries
 predicate-form|replay|every row that carries a command carries exactly one predicate over its output, and every predicate is a bound, a set membership or an exit status, never a sentence|a predicate written as a sentence
 install-pinned|replay|every package a recorded command installs or runs names its version and is read from a committed hashed lock, or is a local path built under a build constraint, and so does every build backend, and every environment a row installed into holds only packages its lock holds at their version and packages its pinned clone builds|a recorded command that runs a package with no version
 replay-command|replay|every recorded command runs again, no read inside it failed unless its predicate is an exit status, and its output meets the predicate the row carries|a recorded output changed by one character
@@ -1179,11 +1180,14 @@ env_rows_judge() {
 # entry fails, naming the row and the row it names, when the row that carries it is itself
 # a citation row of a record under check, which names no other claim; when the row it
 # names is not in the file, or is no citation row of a record under check; when its mark
-# is none of the four r1 fixes; when its mark differs from the named row's and it names no
-# part it holds (refines), the two rows disagreeing on one claim; when its refines is no
-# sentence, five words or more ending with a full stop; and when the named row is verified
-# and it gives a part of that claim another mark, since a part of a claim marked verified
-# is verified too. A file in which no row carries checks compares no pair, and fails too.
+# is none of the four r1 fixes; when its refines is no sentence, five words or more ending
+# with a full stop; and when its mark disagrees with the named row's, named once, by the
+# first of three rules it breaks: its mark differs from the named row's and it names no
+# part it holds (refines), the two rows disagreeing on one claim; the named row is
+# verified and it gives a part of that claim another mark, since a part of a claim marked
+# verified is verified too; or its mark is false and the named row's is not, with or
+# without refines, since a claim with a part marked false is false. A file in which no row
+# carries checks compares no pair, and fails too.
 claim_marks_judge() {
     local verdict message status
     if ! claims_parsed; then
@@ -1253,13 +1257,16 @@ for row in rows:
             elif refines is not None and theirs == "verified" and mark != "verified":
                 whys.append("%s gives a part of %s's claim the mark %s, and %s carries verified, so the two rows disagree on one claim: a part of a claim marked verified is verified too"
                             % (me, named, mark, named))
+            elif mark == "false" and theirs != "false":
+                whys.append("%s gives a part of %s's claim the mark false, and %s carries %s, so the two rows disagree on one claim: a claim with a part marked false is false"
+                            % (me, named, named, theirs))
         for why in whys:
             failed = True
             say("fail", why)
 if carrying == 0:
     say("fail", "no row of claims.jsonl carries checks, so no row is compared with the record claim it judges")
 elif not failed:
-    say("pass", "each of the %d entries of checks on %d rows names the row of a claim of a record under check and gives it the mark that row carries, or names the part of it the row holds, and no part of a claim marked verified is marked otherwise"
+    say("pass", "each of the %d entries of checks on %d rows names the row of a claim of a record under check and gives it the mark that row carries, or names the part of it the row holds, no part of a claim marked verified is marked otherwise, and no part of a claim not marked false is marked false"
         % (entries, carrying))
 PY
     status=$?
