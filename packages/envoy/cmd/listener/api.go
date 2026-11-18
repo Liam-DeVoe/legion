@@ -407,15 +407,15 @@ const publishDeniedPrefix = "envoy: the message bus denied the publish under thi
 const streamFullPrefix = "envoy: the message bus refused the message because its stream is full"
 
 // storedCopyUnreadablePrefix opens the body of the 503 a send, a topic publish or a role send is
-// answered when the stream answered the message as a duplicate and the copy that verdict named
-// could not be read back, or when the stream refused it while an earlier publish under the same
-// message id was still in process (errStoredCopyUnread), so one string matches in a test and in a
-// deployed log filter. It says only what was seen: the copy may be gone, deleted or aged out while
-// the stream still remembers its id. It is deliberately not busUnansweredPrefix: the bus answered
-// the publish, and the read may have been answered too, with a denial or a message that is not the
-// copy. The route answers no envelope and asks for the same request again, which gets the copy
-// once it can be read.
-const storedCopyUnreadablePrefix = "envoy: the stream answered this message as a duplicate, and its stored copy could not be read"
+// answered when the stream already knows the message's id and the listener read no stored copy to
+// answer (errStoredCopyUnread): the copy a duplicate verdict named could not be read back, or a
+// send or a topic publish was refused while an earlier publish under the same id was still in
+// process. One string, so it matches in a test and in a deployed log filter. It says only what was
+// seen: the copy may be stored yet, or gone, deleted or aged out while the stream still remembers
+// its id. It is deliberately not busUnansweredPrefix: the bus answered the publish, and the read
+// may have been answered too, with a denial or a message that is not the copy. The route answers
+// no envelope and asks for the same request again, which gets the copy once it can be read.
+const storedCopyUnreadablePrefix = "envoy: the stream already knows this message's id, and no stored copy of it was read"
 
 // grantGuardPrefix opens the error of the answer POST /v1/roles/set gives a soft claim the grant
 // guard refused (roleGrantGuarded): a role held under the claimant's own session id whose renewal

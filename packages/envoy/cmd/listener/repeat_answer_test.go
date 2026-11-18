@@ -27,9 +27,10 @@ import (
 // TestASendRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy is check c-send-repeat-stored-copy
 // and the send's half of c-first-send-unchanged. A session sends one message to a session under
 // one idempotency_key, the transport's UUID, which earns the publish a Nats-Msg-Id, and then sends
-// it again under that key, as a sender whose answer was lost does. The stream holds one copy. The
-// repeat's answer is that copy, with duplicate; the first send's answer is that copy too, with no
-// duplicate, and under the sender limit it costs one.
+// it again under that key with another body, as a sender whose answer was lost and whose text
+// changed does. The stream holds one copy. The repeat's answer is that copy, the first body
+// included, with duplicate; the first send's answer is that copy too, with no duplicate, and under
+// the sender limit it costs one.
 func TestASendRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy(t *testing.T) {
 	rig := newSenderLimitRig(t)
 	rig.limit(4, 2)
@@ -47,7 +48,7 @@ func TestASendRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy(t *testing.T) {
 		rig.live(t, target, nil)
 		key := map[string]any{"idempotency_key": uuid.NewString()}
 		rig.sendFrom(t, sender, target, key).requireStatus(t, "the first send", http.StatusOK)
-		repeat := held(t, rig.sendFrom(t, sender, target, key))
+		repeat := held(t, rig.sendFrom(t, sender, target, map[string]any{"idempotency_key": key["idempotency_key"], "message": "the repeat's own body"}))
 		repeat.requireHeld(t, "the repeated send", heldCopy(t, rig.harness.client, contracts.LegacyAgentSubject(target)), true)
 		repeat.requireUnnamed(t, "the repeated send")
 		rig.requireCount(t, sender, true)
@@ -57,10 +58,11 @@ func TestASendRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy(t *testing.T) {
 // TestAPublishRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy is check
 // c-publish-repeat-stored-copy and the publish's half of c-first-send-unchanged. A session
 // publishes one message to a team topic under one idempotency_key, which the route makes the
-// minted dedupe key publish.<key>, and then publishes it again under that key: once with no sender
-// limit, and once under a limit that counts the session. The stream holds one copy each time, and
-// the repeat's answer is that copy, with duplicate, and costs nothing. The first publish's answer
-// is its stored copy, with no duplicate, and under the limit it costs one.
+// minted dedupe key publish.<key>, and then publishes it again under that key with another body:
+// once with no sender limit, and once under a limit that counts the session. The stream holds one
+// copy each time, and the repeat's answer is that copy, the first body included, with duplicate,
+// and costs nothing. The first publish's answer is its stored copy, with no duplicate, and under
+// the limit it costs one.
 func TestAPublishRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy(t *testing.T) {
 	rig := newSenderLimitRig(t)
 	topic := func() string { return "notifications.team.repeat-answer-" + id.New() }
@@ -88,7 +90,7 @@ func TestAPublishRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy(t *testing.T
 		subject := topic()
 		key := map[string]any{"idempotency_key": uuid.NewString()}
 		rig.publishFrom(t, sender, subject, key).requireStatus(t, "the first publish", http.StatusOK)
-		repeat := held(t, rig.publishFrom(t, sender, subject, key))
+		repeat := held(t, rig.publishFrom(t, sender, subject, map[string]any{"idempotency_key": key["idempotency_key"], "message": "the repeat's own body"}))
 		repeat.requireHeld(t, "the repeated publish", heldCopy(t, rig.harness.client, subject), true)
 	})
 
@@ -98,7 +100,7 @@ func TestAPublishRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy(t *testing.T
 		subject := topic()
 		key := map[string]any{"idempotency_key": uuid.NewString()}
 		rig.publishFrom(t, sender, subject, key).requireStatus(t, "the first publish", http.StatusOK)
-		repeat := held(t, rig.publishFrom(t, sender, subject, key))
+		repeat := held(t, rig.publishFrom(t, sender, subject, map[string]any{"idempotency_key": key["idempotency_key"], "message": "the repeat's own body"}))
 		repeat.requireHeld(t, "the repeated publish", heldCopy(t, rig.harness.client, subject), true)
 		repeat.requireUnnamed(t, "the repeated publish")
 		rig.requireCount(t, sender, true)
@@ -174,7 +176,7 @@ func TestARepeatWhoseStoredCopyCannotBeReadAnswers503(t *testing.T) {
 			}
 			// The body names the stored copy it could not read, not a bus that did not answer or
 			// the publish's denial, and the record says the same (storedCopyUnreadablePrefix).
-			if !strings.HasPrefix(repeat.Error, "envoy: the stream answered this message as a duplicate, and its stored copy could not be read: ") {
+			if !strings.HasPrefix(repeat.Error, "envoy: the stream already knows this message's id, and no stored copy of it was read: ") {
 				t.Fatalf("the %s repeated while the read is denied answered the error %q, want the unread stored copy's", route.name, repeat.Error)
 			}
 			repeat.requireOutcome(t, "the "+route.name+" repeated while the read is denied", "stored_copy_unreadable")

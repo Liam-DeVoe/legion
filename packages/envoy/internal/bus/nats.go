@@ -2276,12 +2276,14 @@ type PendingForward struct {
 // Wait reads the forward's replies until the stream has acknowledged storing it or its window
 // ends, releases its reply subscription, and returns the stream's acknowledgement: the sequence
 // of the copy it holds under the forward's Nats-Msg-Id, and Duplicate where an earlier forward
-// stored that copy. No acknowledgement by the deadline, the stream's error answer, the server's
-// no-responders answer (nothing captured the subject) and a duplicate that names no sequence are
-// each ErrForwardNotStored, wrapping the reason and, when publishConfirmed could not confirm the
-// publish, the reason for that. The last also wraps ErrDuplicateWithoutSequence, which says the
-// stream answered and no later reply comes, so a caller that answers for the forward can say so
-// at once rather than wait out its window.
+// stored that copy. No acknowledgement by the deadline is ErrForwardNotStored, wrapping, when
+// publishConfirmed could not confirm the publish, the reason for that. The stream's error answer
+// (nats-server's in-process refusal among them, which a later send of the forward gets past),
+// the server's no-responders answer (nothing captured the subject), and the stream's duplicate
+// acknowledgement that names no sequence are each ErrForwardNotStored wrapping that answer. The
+// last wraps ErrDuplicateWithoutSequence, which says the stream answered and no later reply
+// comes, so a caller that answers for the forward can say so at once rather than wait out its
+// window. Any other reply is not the stream's acknowledgement and is passed over.
 func (f *PendingForward) Wait() (StoredAck, error) {
 	defer f.replies.Unsubscribe()
 	for {
@@ -2302,9 +2304,9 @@ func (f *PendingForward) Wait() (StoredAck, error) {
 		}
 		ack, ok := readPublishAcknowledgement(response.Data)
 		if !ok {
-			// A duplicate with sequence 0 names no copy (nats-server v2.10.29 staged an id at 0):
-			// nothing says the forward is stored, and no later reply comes.
-			if ack.Duplicate && ack.Error == nil {
+			// A stream's duplicate with sequence 0 names no copy (nats-server v2.10.29 staged an id
+			// at 0): nothing says the forward is stored, and no later reply comes.
+			if ack.Stream != "" && ack.Seq == 0 && ack.Duplicate && ack.Error == nil {
 				return StoredAck{}, fmt.Errorf("%w: %w", ErrForwardNotStored, ErrDuplicateWithoutSequence)
 			}
 			continue

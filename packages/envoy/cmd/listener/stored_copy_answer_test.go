@@ -21,20 +21,61 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/metrics"
+	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testnats"
 )
+
+// resendUnderClose serves one request through serve while the server behind closing stops
+// answering: the request's publish goes out on the frozen connection, the connection is closed
+// under it, and the server answers again, so the bus sends the publish again on the connection it
+// dials in its place (bus.StoredAck.Resent). It answers what the route answered.
+func resendUnderClose(t *testing.T, server *testnats.Server, closing *natsgo.Conn, serve func(*httptest.ResponseRecorder)) *httptest.ResponseRecorder {
+	t.Helper()
+	thaw := server.Freeze(t)
+	t.Cleanup(thaw)
+	before := closing.Stats().OutMsgs
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		recorder := httptest.NewRecorder()
+		serve(recorder)
+		answered <- recorder
+	}()
+	waitFor(t, 3*time.Second, "the publish to go out on the frozen connection", func() bool {
+		return closing.Stats().OutMsgs > before
+	})
+	closing.Close()
+	thaw()
+	select {
+	case recorder := <-answered:
+		return recorder
+	case <-time.After(15 * time.Second):
+		t.Fatal("the publish whose connection closed under it did not answer")
+		return nil
+	}
+}
+
+// ownCopyAnswer is what a resent request answered, as these rows read it.
+type ownCopyAnswer struct {
+	contracts.Envelope
+	Duplicate bool `json:"duplicate"`
+}
 
 // A duplicate verdict on the request's own copy answers that copy with no duplicate, and one on
 // another request's copy answers it with duplicate: publishHeld tells the two apart by the copy's
 // event_id. The first two rows stand in for the stream's answer to a resend (bus.StoredAck.Resent)
 // after the copy the verdict names was really stored, one carrying this request's envelope and one
-// another request's, so each reaches the rule whichever order the server would have taken.
+// another request's, so each reaches the rule whichever order the server would have taken. The
+// resend's own copy costs its sender one, as any copy the request stored does (senderCharge).
 //
-// The last row is the real resend: the listener's own server stops answering, the publish goes out
-// on the frozen connection, the connection is closed under it, and the bus sends it again on the
-// connection it dials in its place. The stream holds one copy, which carries this request's own
-// event_id, and the 200 names it with no duplicate. Whether the first send or the resend stored
-// that copy is the server's order, so this row shows the route end to end and the first row is
-// the one that fails for a rule that marks every duplicate verdict.
+// The last two rows are the real resend, on the topic publish and on a send to an unresponsive
+// session: the listener's own server stops answering, the publish goes out on the frozen
+// connection, the connection is closed under it, and the bus sends it again on the connection it
+// dials in its place. The stream holds one copy, which carries this request's own event_id, and
+// the 200 names it with no duplicate; the publish costs one and the send is counted as stored for
+// an unresponsive session. Whether the first send or the resend stored that copy is the server's
+// order, so these rows show the routes end to end, and the first row is the one that fails, every
+// run, for a rule that marks every duplicate verdict or forgives a resend's.
 func TestADuplicateVerdictOnTheRequestsOwnCopyAnswersNoDuplicate(t *testing.T) {
 	client := setupPublishTestClient(t)
 	topic := "notifications.team.own-copy-" + id.New()
@@ -56,13 +97,17 @@ func TestADuplicateVerdictOnTheRequestsOwnCopyAnswersNoDuplicate(t *testing.T) {
 		return contracts.MessageEnvelope(contracts.Message{SourceSession: "ses_own_copy", Text: "sent twice"}, topic, key)
 	}
 
-	t.Run("case: the verdict names this request's own copy, answered with no duplicate", func(t *testing.T) {
+	t.Run("case: the verdict names this request's own copy, answered with no duplicate, and costs one", func(t *testing.T) {
 		item := envelope()
 		own := item
-		duplicate, err := publishHeld(ctx, client, storedThen(own), nil, &item)
+		charge := &senderCharge{sender: "ses_own_copy", giveBack: func() {}}
+		duplicate, err := publishHeld(ctx, client, storedThen(own), charge, &item)
 		if err != nil || duplicate || item.EventID != own.EventID {
 			t.Fatalf("a resend's verdict on the request's own copy answered duplicate %t, event %s (%v); want no duplicate and its own event %s",
 				duplicate, item.EventID, err, own.EventID)
+		}
+		if got := charge.counted(); got != "ses_own_copy" {
+			t.Fatalf("a resend's own copy cost the sender %q, want ses_own_copy: the request stored it", got)
 		}
 	})
 
@@ -78,37 +123,17 @@ func TestADuplicateVerdictOnTheRequestsOwnCopyAnswersNoDuplicate(t *testing.T) {
 		}
 	})
 
-	t.Run("case: a publish sent again after its connection closed under it answers its own copy with no duplicate", func(t *testing.T) {
+	t.Run("case: a publish sent again after its connection closed under it answers its own copy with no duplicate, and costs one", func(t *testing.T) {
 		rig, server := newSenderLimitRigOnServer(t)
+		rig.limit(60, 5)
+		const sender = "ses_resent_publish_sender"
 		subject := "notifications.team.resent-" + id.New()
-		body := fmt.Sprintf(`{"topic":%q,"source":"agent","message":"sent once, maybe twice","idempotency_key":%q}`, subject, uuid.NewString())
-		closing := rig.harness.client.Connection()
-		thaw := server.Freeze(t)
-		t.Cleanup(thaw)
-		before := closing.Stats().OutMsgs
-		answered := make(chan *httptest.ResponseRecorder, 1)
-		go func() {
-			recorder := httptest.NewRecorder()
+		body := fmt.Sprintf(`{"topic":%q,"source":"agent","source_session":%q,"message":"sent once, maybe twice","idempotency_key":%q}`, subject, sender, uuid.NewString())
+		logged := len(rig.harness.logs.String())
+		recorder := resendUnderClose(t, server, rig.harness.client.Connection(), func(recorder *httptest.ResponseRecorder) {
 			rig.mux.ServeHTTP(recorder, postJSON("/v1/messages/publish", body))
-			answered <- recorder
-		}()
-		// The publish is out on the frozen connection when the connection closes, so the bus
-		// sends it again on the one it dials in its place once the server answers.
-		waitFor(t, 3*time.Second, "the publish to go out on the frozen connection", func() bool {
-			return closing.Stats().OutMsgs > before
 		})
-		closing.Close()
-		thaw()
-		var recorder *httptest.ResponseRecorder
-		select {
-		case recorder = <-answered:
-		case <-time.After(15 * time.Second):
-			t.Fatal("the publish whose connection closed under it did not answer")
-		}
-		var answer struct {
-			contracts.Envelope
-			Duplicate bool `json:"duplicate"`
-		}
+		var answer ownCopyAnswer
 		if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil || recorder.Code != http.StatusOK {
 			t.Fatalf("the resent publish answered %d %s (%v), want 200", recorder.Code, recorder.Body.String(), err)
 		}
@@ -116,6 +141,39 @@ func TestADuplicateVerdictOnTheRequestsOwnCopyAnswersNoDuplicate(t *testing.T) {
 		if answer.Duplicate || answer.EventID != stored.EventID {
 			t.Fatalf("the resent publish answered duplicate %t and event %s; want no duplicate and the one stored copy's event %s",
 				answer.Duplicate, answer.EventID, stored.EventID)
+		}
+		// The copy is this request's own, which the stream stored for it: it costs one.
+		lines := linesIn(rig.harness.logs.String()[logged:], "listener publish", nil)
+		if len(lines) != 1 || lines[0]["sender"] != sender {
+			t.Fatalf("the resent publish wrote record lines %v, want one naming the sender %s it cost one", lines, sender)
+		}
+	})
+
+	t.Run("case: a send to an unresponsive session sent again after its connection closed under it is counted as stored", func(t *testing.T) {
+		server, uri := testnats.Start(t)
+		d, now := stalledSessionsRigOn(t, uri)
+		const target = "ses_resent_unresponsive"
+		register(t, d, target, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true})
+		now.advance(90 * time.Second)
+		met := metrics.New()
+		d.sendsToUnresponsive = met.NewCounter("envoy_sends_unresponsive_total", "Sends accepted and stored for a recipient past the live window")
+		body := fmt.Sprintf(`{"target_session":%q,"source":"dispatch","message":"sent once, maybe twice","idempotency_key":%q}`, target, uuid.NewString())
+		recorder := resendUnderClose(t, server, d.client.Connection(), func(recorder *httptest.ResponseRecorder) {
+			sendHandler(d, logging.New("test")).ServeHTTP(recorder, postJSON("/v1/messages/send", body))
+		})
+		var answer ownCopyAnswer
+		if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil || recorder.Code != http.StatusOK {
+			t.Fatalf("the resent send answered %d %s (%v), want 200", recorder.Code, recorder.Body.String(), err)
+		}
+		stored := heldCopy(t, d.client, contracts.LegacyAgentSubject(target))
+		if answer.Duplicate || answer.EventID != stored.EventID {
+			t.Fatalf("the resent send answered duplicate %t and event %s; want no duplicate and the one stored copy's event %s",
+				answer.Duplicate, answer.EventID, stored.EventID)
+		}
+		scrape := httptest.NewRecorder()
+		met.Handler().ServeHTTP(scrape, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+		if !strings.Contains(scrape.Body.String(), "\nenvoy_sends_unresponsive_total 1\n") {
+			t.Fatalf("envoy_sends_unresponsive_total after the resent send stored for an unresponsive session is not 1:\n%s", scrape.Body.String())
 		}
 	})
 }
@@ -160,6 +218,7 @@ func TestADuplicateVerdictThatNamesNoCopyAnswers503AtOnce(t *testing.T) {
 	})
 
 	rig := newSenderLimitRig(t)
+	rig.limit(60, 5)
 	roleSend := func(t *testing.T, waitErr error) (limitedAnswer, time.Duration) {
 		t.Helper()
 		role := "no-copy-" + id.New()
@@ -174,12 +233,13 @@ func TestADuplicateVerdictThatNamesNoCopyAnswers503AtOnce(t *testing.T) {
 		return answer, time.Since(started)
 	}
 
-	t.Run("case: a role forward acknowledged as a duplicate with no sequence", func(t *testing.T) {
+	t.Run("case: a role forward acknowledged as a duplicate with no sequence, which costs one", func(t *testing.T) {
 		answer, took := roleSend(t, fmt.Errorf("%w: %w", bus.ErrForwardNotStored, bus.ErrDuplicateWithoutSequence))
 		requireUnread(t, "a role forward acknowledged with no sequence", answer.status, answer.retryAfter, answer.raw, answer.line["outcome"])
 		if took >= publishRetryPause {
 			t.Fatalf("the role send answered after %s, want at once, before any retry of the forward", took)
 		}
+		answer.requireNamed(t, "a role forward acknowledged with no sequence", "ses_no_copy_sender")
 	})
 
 	t.Run("control: a role forward the stream never acknowledges is answered 504 when the window ends", func(t *testing.T) {

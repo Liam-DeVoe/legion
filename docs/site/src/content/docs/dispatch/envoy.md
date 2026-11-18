@@ -658,8 +658,8 @@ A send, a topic publish or a role send that the stream answers as a duplicate of
 request's copy, a repeat under the same idempotency key, is answered `200` with `duplicate: true`
 and that stored copy, its `event_id` included, never the envelope the listener built for the
 repeat. When the listener cannot read that copy back, the answer is `503` with `Retry-After: 1`
-and the body `envoy: the stream answered this message as a duplicate, and its stored copy could
-not be read: …`, and the same request again gets the copy once it can be read.
+and the body `envoy: the stream already knows this message's id, and no stored copy of it was
+read: …`, and the same request again gets the copy once it can be read.
 
 ### The sender limit
 

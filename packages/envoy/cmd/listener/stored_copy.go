@@ -10,14 +10,16 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
-// errStoredCopyUnread is wrapped by the error of a send, a topic publish or a role forward that
-// the stream answered as a duplicate when the listener could not read the copy that verdict named
-// (storedCopy), or that the stream refused while an earlier publish under the same message id was
-// still in process (bus.ErrDuplicateInProcess), which names no copy at all. The cause is named in
-// the text and not wrapped, so no comparison of a read's error (a denial, a refused subject) can
-// turn the answer into another one: writeBusUnavailable answers it 503 with Retry-After: 1 under
-// storedCopyUnreadablePrefix, whatever the read met.
-var errStoredCopyUnread = errors.New("the copy the stream holds could not be read")
+// errStoredCopyUnread is wrapped by the error of a send, a topic publish or a role forward whose
+// message id the stream already knows when the listener read no stored copy to answer: the copy a
+// duplicate verdict named could not be read (storedCopy), or a send or a topic publish was refused
+// while an earlier publish under the same message id was still in process
+// (bus.ErrDuplicateInProcess), so that no copy is stored yet. A role forward refused that way is
+// tried again as any forward that failed is, and its next answer names the copy (sendToRole). The
+// cause is named in the text and not wrapped, so no comparison of a read's error (a denial, a
+// refused subject) can turn the answer into another one: writeBusUnavailable answers it 503 with
+// Retry-After: 1 under storedCopyUnreadablePrefix, whatever the read met.
+var errStoredCopyUnread = errors.New("no stored copy read")
 
 // storedPublish is the publish of an envelope on its own topic that returns the stream's
 // acknowledgement: bus.Client.PublishAckWithin for both routes in the listener, and a function of

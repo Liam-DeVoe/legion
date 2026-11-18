@@ -189,8 +189,10 @@ type roleSend struct {
 	// unresponsive or gone (kept).
 	holderState session.State
 	attempts    int
-	// duplicate is whether the stream already held the forward this send answers, which is then
-	// the stored forward's envelope (deliveredHeld).
+	// duplicate is whether the forward this send answers is another request's copy the stream
+	// already held, which is then the stored forward's envelope (deliveredHeld). A forward this
+	// very send stored on an earlier attempt, whose acknowledgement was lost, is its own copy and
+	// carries no duplicate.
 	duplicate bool
 }
 
@@ -376,10 +378,11 @@ func (s *roleSend) timedOut() {
 
 // settledBeforeForward judges the message to a holder the send has not checked yet, whose session
 // entry is entry, by beforeForward, the rules the role lane applies before it forwards, and reports
-// whether it answered: an echo (the source session holds the role) or a holder this route already
-// stored this dedupe key for, both answered 200 with nothing forwarded; a holder that cannot take
-// the payload's delivery mode, answered 403 with the refusal sendHandler gives,
-// recorded capability_refused as sendHandler records it.
+// whether it answered: an echo (the source session holds the role), answered 200 with nothing
+// forwarded; a holder this route already stored this dedupe key for, answered as that stored
+// forward with nothing forwarded (deliveredHeld: 200 with it, or the stored-copy 503 when it
+// cannot be read back); a holder that cannot take the payload's delivery mode, answered 403 with
+// the refusal sendHandler gives, recorded capability_refused as sendHandler records it.
 //
 // None of those answers marks the charge: each stores nothing, and an earlier forward of the same
 // send that failed with no refusal, which may have stored the message for the holder it went to,
@@ -398,8 +401,13 @@ func (s *roleSend) settledBeforeForward(ctx context.Context, entry session.Sessi
 		s.delivered(sendSkipped)
 	case forwardRepeat:
 		// The route stored this key's forward for this holder, and its record keeps the
-		// sequence the stream holds that forward at, which is the copy this repeat answers.
-		seq, _ := s.d.confirmed.Stored(s.item.DedupeKey, s.holder)
+		// sequence the stream holds that forward at, which is the copy this repeat answers. A
+		// record that lapsed since the verdict read it is forwarded again, which the stream
+		// answers as a duplicate naming the same copy.
+		seq, recorded := s.d.confirmed.Stored(s.item.DedupeKey, s.holder)
+		if !recorded {
+			return false
+		}
 		s.deliveredHeld(ctx, contracts.LegacyAgentSubject(s.holder), s.forwarded(), seq, sendDedupe)
 	default:
 		s.record.holder = s.holder

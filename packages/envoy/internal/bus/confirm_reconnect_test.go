@@ -169,10 +169,11 @@ func TestSameErrorTreatsAValueThatCannotBeComparedAsChanged(t *testing.T) {
 
 // answeringServer serves one NATS client and stays up: it answers every flush that follows a
 // publish with the permissions violation for deny, when deny is not empty, and then the PONG,
-// and, when ack is not empty, then sends ack to the publish's reply subject as the notification
-// stream's acknowledgement, as a captured agent subject answers a forward (storedAck is a stored
-// copy's). A publish with headers (HPUB, as a forward with its Nats-Msg-Id is) is read whole by
-// its length, since its header block spans lines.
+// and, when ack is not empty, then sends each line of ack, in order, to the publish's reply
+// subject as a reply of its own, as the notification stream's acknowledgement of a captured agent
+// subject answers a forward (storedAck is a stored copy's). A publish with headers (HPUB, as a
+// forward with its Nats-Msg-Id is) is read whole by its length, since its header block spans
+// lines.
 func answeringServer(t *testing.T, deny string, ack string) *nats.Conn {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -225,7 +226,9 @@ func answeringServer(t *testing.T, deny string, ack string) *nats.Conn {
 				}
 				fmt.Fprint(conn, "PONG\r\n")
 				if sid, ok := sids[reply]; ok && ack != "" {
-					fmt.Fprintf(conn, "MSG %s %s %d\r\n%s\r\n", reply, sid, len(ack), ack)
+					for _, frame := range strings.Split(ack, "\n") {
+						fmt.Fprintf(conn, "MSG %s %s %d\r\n%s\r\n", reply, sid, len(frame), frame)
+					}
 				}
 				published = false
 			case len(fields) == 1 && fields[0] == "PING":
@@ -299,9 +302,11 @@ func TestAnUnconfirmedForwardWithoutTheStreamsAcknowledgementIsNotStored(t *test
 const storedAck = `{"stream":"ENVOY_NOTIFICATIONS","seq":1}`
 
 // A forward's Wait returns the stream's acknowledgement: a duplicate's sequence and verdict, which
-// a role send answers the stored forward by. A duplicate that names no sequence is no stored
-// forward: Wait says so at once, as ErrForwardNotStored wrapping ErrDuplicateWithoutSequence,
-// rather than wait out the forward's window for an answer that does not come.
+// a role send answers the stored forward by. A stream's duplicate that names no sequence is no
+// stored forward: Wait says so at once, as ErrForwardNotStored wrapping
+// ErrDuplicateWithoutSequence, rather than wait out the forward's window for an answer that does
+// not come. A reply that names no stream is no acknowledgement, whatever else it says, and Wait
+// passes it over for the stream's acknowledgement after it.
 func TestAForwardsWaitReturnsTheStreamsVerdict(t *testing.T) {
 	forward := func(t *testing.T, ack string) (StoredAck, time.Duration, error) {
 		t.Helper()
@@ -323,5 +328,9 @@ func TestAForwardsWaitReturnsTheStreamsVerdict(t *testing.T) {
 	}
 	if took >= time.Second {
 		t.Fatalf("the wait for a duplicate with no sequence took %s, want it to end on that answer", took)
+	}
+	got, _, err = forward(t, `{"stream":"","seq":7,"duplicate":true}`+"\n"+`{"seq":0,"duplicate":true}`+"\n"+`{"stream":"ENVOY_NOTIFICATIONS","seq":7,"duplicate":true}`)
+	if err != nil || got != (StoredAck{Sequence: 7, Duplicate: true}) {
+		t.Fatalf("a duplicate forward's wait behind a reply that names no stream = %+v (%v), want the stream's sequence 7 and Duplicate", got, err)
 	}
 }
