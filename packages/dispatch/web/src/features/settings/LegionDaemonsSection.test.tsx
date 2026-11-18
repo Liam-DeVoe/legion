@@ -1,11 +1,10 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
-import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { panelOf } from "../../__tests__/list-picks";
+import { pickFromLabelled } from "../../__tests__/list-picks";
 import { ApiError, api } from "../../api/client";
 import type { AuthenticatedUser, LegionSetting } from "../../api/types";
 import { LegionDaemonsSection } from "./LegionDaemonsSection";
@@ -92,14 +91,6 @@ async function renderSection(server: LegionServer, human = true) {
   return within(await screen.findByRole("region", { name: "Legion" }));
 }
 
-/** Picks `name` from the Legion project list: its trigger is found by its label, and the option
- *  in the panel the trigger names, since the list is portalled out of the section. */
-async function pickLegionProject(user: UserEvent, name: string): Promise<void> {
-  const trigger = await screen.findByLabelText("Legion project");
-  await user.click(trigger);
-  await user.click(within(panelOf(trigger)).getByRole("option", { name }));
-}
-
 test("every project that names a daemon is a row of its own", async () => {
   const section = await renderSection(
     legionServer([setting, { ...setting, project: "CORE", state_url: "https://daemon.example" }])
@@ -140,7 +131,7 @@ test("naming a project's daemon sends the PUT and lists what the server stored",
   spies.push(putLegionDaemon);
   const section = await renderSection(server);
 
-  await pickLegionProject(user, "ACME · ACME");
+  await pickFromLabelled(user, "Legion project", "ACME · ACME");
   await user.click(section.getByLabelText("Legion daemon state URL"));
   await user.paste("http://127.0.0.1:9731");
   await user.click(section.getByRole("button", { name: "Save Legion daemon" }));
@@ -180,7 +171,7 @@ test("a refusal the server made is shown as the server wrote it, and the row goe
   spies.push(putLegionDaemon);
   const section = await renderSection(server);
 
-  await pickLegionProject(user, "ACME · ACME");
+  await pickFromLabelled(user, "Legion project", "ACME · ACME");
   await user.click(section.getByLabelText("Legion daemon state URL"));
   await user.paste("http://127.0.0.1:9731");
   await user.click(section.getByRole("button", { name: "Save Legion daemon" }));
@@ -203,7 +194,7 @@ test("a URL with a path is refused by the field, in the words the route uses", a
   spies.push(putLegionDaemon);
   const section = await renderSection(server);
 
-  await pickLegionProject(user, "ACME · ACME");
+  await pickFromLabelled(user, "Legion project", "ACME · ACME");
   await user.click(section.getByLabelText("Legion daemon state URL"));
   await user.paste("http://127.0.0.1:9731/legion/v1/state");
   await user.click(section.getByRole("button", { name: "Save Legion daemon" }));
@@ -234,7 +225,7 @@ test("with no project picked, Save Legion daemon files nothing and says to choos
   expect(putLegionDaemon, "a daemon was saved for no project").not.toHaveBeenCalled();
   expect(section.getByRole("alert")).toHaveTextContent("Choose a project.");
 
-  await pickLegionProject(user, "ACME · ACME");
+  await pickFromLabelled(user, "Legion project", "ACME · ACME");
   expect(section.queryByRole("alert")).toBeNull();
   await user.click(section.getByRole("button", { name: "Save Legion daemon" }));
   await waitFor(() =>
