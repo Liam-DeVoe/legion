@@ -594,15 +594,11 @@ func TestProjectPlansTakesThePlanMadeLastThenTheGreatestID(t *testing.T) {
 	}
 	got := make([]string, len(read))
 	for index, issue := range read {
-		plan := "none"
-		if issue.Plan != nil {
-			plan = planText(*issue.Plan)
-		}
-		got[index] = issue.Issue + " " + plan
+		got[index] = issuePlanText(issue)
 	}
 	want := []string{
-		"LEG-2 " + planText(defaultPlanRead(greatestID, "LEG-2", 3)),
-		"LEG-1 " + planText(defaultPlanRead(madeLast, "LEG-1", 2)),
+		issuePlanText(IssuePlan{Issue: "LEG-2", Title: "Title of LEG-2", ClosedAt: t0.Add(6 * time.Hour), Plan: new(defaultPlanRead(greatestID, "LEG-2", 3))}),
+		issuePlanText(IssuePlan{Issue: "LEG-1", Title: "Title of LEG-1", ClosedAt: t0.Add(5 * time.Hour), Plan: new(defaultPlanRead(madeLast, "LEG-1", 2))}),
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("the read lists\n%s\nwant LEG-2's plan of the greatest id and LEG-1's plan made last\n%s",
