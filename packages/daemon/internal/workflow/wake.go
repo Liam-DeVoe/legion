@@ -155,7 +155,7 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 	if err != nil || issue == nil {
 		return "", err
 	}
-	role := OpenPhaseRole(issue.Phase)
+	role := OpenRoleOf(*issue)
 	if role == "" {
 		return "", nil
 	}
@@ -263,13 +263,27 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 
 // OpenPhaseRole is the phase worker of an open phase, and "" where there is none: a phase no role
 // works, and the architect, whose phases (admitted and accepting) are the architect's own turn
-// rather than a worker's. It is the one statement of "the worker of the open phase" the release
-// reads: which role a release arms a backstop for — an architect gets none, because nothing of
-// its own is due and a sub-architect woken for nothing would hold a pod open for the backstop
-// period — which role a CI settlement wakes, and which live claim of a pod has a phase reminder
-// armed in it.
+// rather than a worker's. It reads the phase alone, so it answers none for step, whose role the
+// issue's plan names: it is OpenRoleOf of an issue that names no running role, and a reader that
+// holds the issue reads OpenRoleOf. It answers which role a release arms a backstop for — an
+// architect gets none, because nothing of its own is due and a sub-architect woken for nothing
+// would hold a pod open for the backstop period — and which live claim of a pod has a phase
+// reminder armed in it.
 func OpenPhaseRole(p phase.Phase) claim.Role {
-	if role := phase.RoleFor(p); role != claim.RoleArchitect {
+	return OpenRoleOf(record.Issue{Phase: p})
+}
+
+// OpenRoleOf is the worker of issue's open phase, and "" where there is none: the role that works
+// the issue at its phase (record.Issue.RoleAt), which for step is the role of its running step,
+// read with the issue, and none for the architect's phases, as OpenPhaseRole. It is the one
+// statement of "the worker of the open phase" each path that brings a worker back to its work
+// reads: which ready claim is sent its phase's task (readyWorkerTask), which suspended claim the
+// boot resumes (suspendedPhaseOwners), which claim the silence repair prompts
+// (phaseWorkerRecord) and which role a CI settlement wakes (wakeOnSettlement). A held issue
+// stands in held, which no role works, so none of those paths gives its worker anything until a
+// release of the hold gives the phase back.
+func OpenRoleOf(issue record.Issue) claim.Role {
+	if role := issue.RoleAt(issue.Phase); role != claim.RoleArchitect {
 		return role
 	}
 	return ""

@@ -154,12 +154,13 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // (dispatch://INFRA-714 R7).
 //
 // The conditions are the ones a resume by rule already uses (resume.go's booted), read for this
-// one claim: the issue is this project's and in the workflow, its phase's role (RoleFor) is this
-// claim's, its tree does not linger, and its phase's own terminating fact has not arrived
-// (PhaseFinished) — a merged root stands in merging for as long as the rest of its tree runs, and
-// its merger must not be handed merging again at every launch. A claim that holds a task is left
-// alone: it has work, and a second task would be a second prompt for work under way. So is a role
-// a queued row already covers (queuedRowCovers).
+// one claim: the issue is this project's and in the workflow, the worker of its open phase
+// (OpenRoleOf, the role of its running step at step) is this claim's, its tree does not linger,
+// and its phase's own terminating fact has not arrived (PhaseFinished) — a merged root stands in
+// merging for as long as the rest of its tree runs, and its merger must not be handed merging
+// again at every launch. A claim that holds a task is left alone: it has work, and a second task
+// would be a second prompt for work under way. So is a role a queued row already covers
+// (queuedRowCovers).
 //
 // The daemon's own delivery of a relaunch's record is no task (supervise.HoldsTask), so a claim
 // that holds that alone is read as holding nothing. The phase's task that this queues takes that
@@ -200,8 +201,8 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 	if err != nil || issue == nil || issue.Project != e.cfg.Project || record.OutOfWorkflow(issue.Status) {
 		return err
 	}
-	role := RoleFor(issue.Phase)
-	if role == "" || role == claim.RoleArchitect || role != fact.Role {
+	role := OpenRoleOf(*issue)
+	if role == "" || role != fact.Role {
 		return nil
 	}
 	root, err := e.store.Issue(ctx, tx, issue.Tree)

@@ -7,7 +7,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -132,8 +131,9 @@ type phaseOwners struct {
 // the boot reads its phase workers by a read of its own (admit's phaseWorkers) and sends only the
 // work of an entry a claim stands behind (owedEntryRoles). It writes nothing.
 //
-// The phase's owner is the role that works the issue's phase (phase.RoleFor) on an issue in the
-// workflow whose tree is running — this generation of it, by the one rule every reader of that
+// The phase's owner is the worker of the issue's open phase (OpenRoleOf: the role that works its
+// phase, at step the role of its running step) on an issue in the workflow whose tree is
+// running — this generation of it, by the one rule every reader of that
 // question asks (record.RunningRoots, record.TreeRuns): its lifecycle stands open under the
 // workflow, its root does not linger, and its root is not itself waiting in the line for the
 // tree to be opened. A lingering tree's claims stay suspended until re-admission runs the tree
@@ -170,8 +170,8 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 	}
 	owners := phaseOwners{issues: issues, running: record.RunningRoots(own, facts)}
 	for _, issue := range own {
-		role := phase.RoleFor(issue.Phase)
-		if role == "" || role == claim.RoleArchitect || record.OutOfWorkflow(issue.Status) {
+		role := OpenRoleOf(issue)
+		if role == "" || record.OutOfWorkflow(issue.Status) {
 			continue
 		}
 		root, ok := byKey[issue.Tree]
