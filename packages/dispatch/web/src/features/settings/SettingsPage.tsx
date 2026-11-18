@@ -41,6 +41,7 @@ import {
   settingsSubmitButton,
 } from "./classes";
 import { KeyboardShortcutsSection } from "./KeyboardShortcutsSection";
+import { LegionDaemonsSection } from "./LegionDaemonsSection";
 import { NoProjectPicked, ProjectSelect } from "./ProjectSelect";
 import { ProjectsSection } from "./ProjectsSection";
 
@@ -357,6 +358,7 @@ export function SettingsPage(): ReactNode {
         </section>
         <IssuePagePreference />
         <KeyboardShortcutsSection />
+        <LegionDaemonsSection />
       </div>
     </section>
   );

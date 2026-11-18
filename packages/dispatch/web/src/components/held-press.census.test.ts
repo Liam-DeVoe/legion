@@ -27,6 +27,7 @@ const PENDING_WORDS = [
   "stopping",
   "submitting",
   "working",
+  "writing",
   "in_flight",
   "fetching",
 ] as const;

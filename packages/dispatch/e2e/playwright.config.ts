@@ -624,7 +624,22 @@ const aloneProjects = [
  * screenshot comparison that fails and then passes is a tolerance that is too tight or a page
  * that is not settled, and either one is the thing this layer exists to find, so it is reported
  * as a failure rather than as a flake.
+ *
+ * `--disable-partial-raster` (`VISUAL_CAPTURE`), on both projects: Chromium then draws every
+ * tile it redraws whole, rather than only the part of it a later paint invalidated. A tile drawn
+ * once and then partly redrawn differs at the edges of what was redrawn from the same tile drawn
+ * whole, so with partial raster on, one page at one layout came out in more than one rendering,
+ * depending on the order its paints came in. The Inbox, shot 20 times in the visual image with
+ * its own fonts, came out in two renderings in light, 7 and 13 times, and with the DevTools
+ * LayerTree domain on in the one the committed baseline refused, 20 times of 20. Every
+ * difference was at x 832 or right of it, which is the main column's left edge plus one 512 px
+ * tile, and main's build of that page varied the same way on the other side of that edge. With
+ * the flag the same 20 shots gave one rendering in light and one in dark, and the same two with
+ * LayerTree on (dispatch://INFRA-3135). The flag changes what is captured, not what is
+ * compared: the spec's comparison and its tolerance are as before.
  */
+const VISUAL_CAPTURE = { args: ["--disable-partial-raster"] };
+
 const visualProjects = [
   {
     name: "visual",
@@ -638,7 +653,11 @@ const visualProjects = [
     // would say the same thing on every file and in the name of each the route and the scheme
     // are what a reader is looking for.
     snapshotPathTemplate: "{testDir}/__screenshots__/{projectName}/{arg}{ext}",
-    use: { ...devices["Desktop Chrome"], viewport: { height: 800, width: 1280 } },
+    use: {
+      ...devices["Desktop Chrome"],
+      launchOptions: VISUAL_CAPTURE,
+      viewport: { height: 800, width: 1280 },
+    },
     workers: 1,
     retries: 0,
   },
@@ -647,7 +666,11 @@ const visualProjects = [
     testMatch: visualSpecs,
     grep: phoneRowTagged,
     snapshotPathTemplate: "{testDir}/__screenshots__/{projectName}/{arg}{ext}",
-    use: { ...devices["iPhone 13"], browserName: "chromium" as const },
+    use: {
+      ...devices["iPhone 13"],
+      browserName: "chromium" as const,
+      launchOptions: VISUAL_CAPTURE,
+    },
     workers: 1,
     retries: 0,
   },
