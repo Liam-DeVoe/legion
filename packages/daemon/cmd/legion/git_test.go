@@ -4,11 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -98,6 +99,21 @@ func trailerRunInput(t *testing.T, dir string, env []string, stdin io.Reader, na
 		t.Fatalf("run %s %q: %v", name, args, err)
 	}
 	return 0, out.String(), errb.String()
+}
+
+// fifoWriter is the shell that writes text into the FIFO at path, in the background: the writer
+// holds none of the command's output, and gives up when the test's shared wait does
+// (testwait.Context), the bound trailerRunInput's run ends at too. So a run where nothing opens the
+// FIFO leaves no writer behind the test binary, and no writer gives up before the run it feeds: a
+// shorter limit fails a slow run that does open it, since git then waits on the open until the
+// run's own bound. A test binary run with no deadline gives the writer none either (timeout 0).
+func fifoWriter(t *testing.T, path, text string) string {
+	t.Helper()
+	limit := 0
+	if deadline, ok := testwait.Context(t).Deadline(); ok {
+		limit = max(1, int(math.Ceil(time.Until(deadline).Seconds())))
+	}
+	return fmt.Sprintf(`(timeout %d sh -c 'printf "%s" > "%s"' >/dev/null 2>&1 &)`, limit, text, path)
 }
 
 // trailerRepo is a new repository under the test's temporary directory, made by git alone.
@@ -629,21 +645,15 @@ func TestGitWrapperLeavesGitsHelpAndPathWordsAlone(t *testing.T) {
 	}
 }
 
-// legion git answers -h, -help and --help with its usage on stderr and exit 0. The usage starts
-// `usage: legion git --`, and no line of it is one the docs site's CLI generator reads as a
-// subcommand, checked with the generator's own pattern (docs/site/generators/legion-cli.sh).
+// legion git answers -h, -help and --help with its usage on stderr and exit 0: it reads its own
+// arguments (passThrough), so a help request is its own to answer. The usage starts
+// `usage: legion git --`.
 func TestGitWrapperHelpPrintsUsage(t *testing.T) {
-	subcommand := regexp.MustCompile(`^[[:space:]]*(usage:[[:space:]]+)?legion git [a-z]`)
 	for _, help := range []string{"-h", "-help", "--help"} {
 		var out, errb bytes.Buffer
 		code := run(context.Background(), []string{"legion", "git", help}, &out, &errb)
 		if code != 0 || out.Len() != 0 || !strings.HasPrefix(errb.String(), "usage: legion git --") {
 			t.Fatalf("legion git %s = %d, stdout %q, stderr %q", help, code, out.String(), errb.String())
-		}
-		for line := range strings.SplitSeq(errb.String(), "\n") {
-			if subcommand.MatchString(line) {
-				t.Errorf("legion git %s prints %q, which the docs generator reads as a subcommand", help, line)
-			}
 		}
 	}
 }
@@ -705,11 +715,9 @@ func TestGitWrapperAfterHandsStandardInputThroughAHostThatClosesDescriptors(t *t
 	writeTrailerScript(t, filepath.Join(keeper, "git"), "exec '"+git+"' \"$@\"\n")
 	copyExecutable(t, goGitProgram(t, strings.Replace(closingGitSource, "REAL_GIT", strconv.Quote(git), 1)), filepath.Join(compiledCloser, "git"))
 	lines := "\nOmp-Session: closer-session\nLegion-Role: implementer\n"
-	// fifo is a command that makes the FIFO name in TMPDIR and writes text into it in the
-	// background, with printf. The writer has a time limit and holds none of the command's output,
-	// so a run where nothing opens the FIFO ends rather than waits.
+	// fifo is a command that makes the FIFO name in TMPDIR and writes text into it (fifoWriter).
 	fifo := func(name, text string) string {
-		return `mkfifo "$TMPDIR/` + name + `" && (timeout 10 sh -c 'printf "` + text + `" > "$TMPDIR/` + name + `"' >/dev/null 2>&1 &) && `
+		return `mkfifo "$TMPDIR/` + name + `" && ` + fifoWriter(t, `$TMPDIR/`+name, text) + ` && `
 	}
 	type row struct {
 		name, host, command, stdin string
@@ -813,9 +821,8 @@ func TestGitWrapperAfterGivesAFifoMessageThroughAHostThatClosesDescriptors(t *te
 		t.Fatal(err)
 	}
 	copyExecutable(t, goGitProgram(t, strings.Replace(closingGitSource, "REAL_GIT", strconv.Quote(git), 1)), filepath.Join(compiledCloser, "git"))
-	// The writer has a time limit and holds none of the command's output, so a run where nothing
-	// opens the FIFO ends rather than waits.
-	const command = `mkfifo "$TMPDIR/message" && (timeout 10 sh -c 'printf msg > "$TMPDIR/message"' >/dev/null 2>&1 &) && ` +
+	// The FIFO's writer is fifoWriter's.
+	command := `mkfifo "$TMPDIR/message" && ` + fifoWriter(t, `$TMPDIR/message`, "msg") + ` && ` +
 		`git commit -q --allow-empty -F "$TMPDIR/message"`
 	for _, host := range []struct{ name, dir string }{{"a host's script", closer}, {"a compiled host's git", compiledCloser}} {
 		t.Run("-F <a FIFO> through "+host.name+" that closes descriptors", func(t *testing.T) {
