@@ -440,8 +440,9 @@ test("accepting a suggestion changes the text in both browsers and names a versi
     const [response] = await Promise.all([
       alicePage.waitForResponse(
         (response) =>
-          response.url().endsWith(`/comments/${rejected.id}/reject`) &&
-          response.request().method() === "POST"
+          new URL(response.url()).pathname === `/api/v2/comments/${rejected.id}/state` &&
+          response.request().method() === "PUT" &&
+          response.request().postDataJSON()?.state === "rejected"
       ),
       rejectButton.click(),
     ]);
@@ -668,11 +669,9 @@ test("margin ask composer sends option choices that the inbox records as a selec
     await expect
       .poll(() => getAsk(askId))
       .toMatchObject({
-        ask: {
-          multiple: true,
-          options: [{ description: "Proceed this week", label: "Ship" }, { label: "Hold" }],
-          urgency: "high",
-        },
+        multiple: true,
+        options: [{ description: "Proceed this week", label: "Ship" }, { label: "Hold" }],
+        urgency: "high",
       });
 
     // The Inbox as the reader reaches it, by the navigation rather than a reload: this row is
@@ -683,9 +682,7 @@ test("margin ask composer sends option choices that the inbox records as a selec
     await inboxCard.getByRole("button", { exact: true, name: "Answer" }).click();
     await expect
       .poll(() => getAsk(askId))
-      .toMatchObject({
-        ask: { answer: { selected: ["Ship"], user: "alice" }, state: "answered" },
-      });
+      .toMatchObject({ answer: { selected: ["Ship"], user: "alice" }, state: "answered" });
   } finally {
     await alice.close();
   }
@@ -833,9 +830,7 @@ test("long option labels and descriptions wrap inside the margin ask card @phone
     await card.getByRole("button", { exact: true, name: "Answer" }).click();
     await expect
       .poll(() => getAsk(ask.id))
-      .toMatchObject({
-        ask: { answer: { selected: [perResult], user: "alice" }, state: "answered" },
-      });
+      .toMatchObject({ answer: { selected: [perResult], user: "alice" }, state: "answered" });
   } finally {
     await alice.close();
   }

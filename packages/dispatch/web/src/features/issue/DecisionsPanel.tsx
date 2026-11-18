@@ -391,8 +391,10 @@ function WaitingDecision({
     label: () => `Keep ${decision.heading}`,
     // The sum of the text this card showed: a decision the agent changed since is refused
     // (`409 DECISION_CHANGED`), so a Keep never stands over words the reader did not see.
-    write: (id: string, bounds) =>
-      api.keepDecision(id, decision.block_id, decision.text_sha256, bounds),
+    // The keep is the issue's (`PUT /api/v2/issues/{key}/decisions/{block_id}/state`): the route
+    // names the issue, never the decisions.md that holds the decision.
+    write: (key: string, bounds) =>
+      api.keepDecision(key, decision.block_id, decision.text_sha256, bounds),
     onSuccess: (kept) => {
       if (kept === null) {
         void queryClient.invalidateQueries({ exact: true, queryKey: ["decisions", issueKey] });
@@ -426,7 +428,7 @@ function WaitingDecision({
               <button
                 className={secondaryButtonCompact}
                 disabled={keep.isPending}
-                onClick={() => keep.mutate(documentId)}
+                onClick={() => keep.mutate(issueKey)}
                 type="button"
               >
                 Keep

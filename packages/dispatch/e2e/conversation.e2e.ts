@@ -521,7 +521,7 @@ test("Conversation answers an ask in place, draws no event row, and keeps its ca
     await expect
       .poll(() => getAsk(ask.id))
       .toMatchObject({
-        replies: [expect.objectContaining({ body: "Thanks" })],
+        thread: { replies: [expect.objectContaining({ body: "Thanks" })] },
       });
 
     // The issue rename and the child's status move are the issue's events: the Conversation

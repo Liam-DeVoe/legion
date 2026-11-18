@@ -268,18 +268,22 @@ test("an architecture source saves after the GitHub App access check, fails inli
     ).toBeVisible();
     await expect(page.getByRole("cell", { exact: true, name: "main" })).toBeVisible();
     await expect(page.getByRole("cell", { exact: true, name: "no-such-branch" })).toHaveCount(0);
-    await page.getByLabel("Branch", { exact: true }).fill("main");
 
-    // The App gets uninstalled; re-saving fails its access check inline and the
-    // stored source survives.
+    // The App gets uninstalled; a save that moves the source to another branch fails its access
+    // check inline and the stored source survives on its own branch. A save of the branch the
+    // source already has changes nothing, which /api/v2 answers with the source as it stands and
+    // no access check (the no-op rule of PUT), so this save names another branch.
     await seedFakeGithub({});
     await page.getByLabel("Source project").selectOption("CORE");
     await page.getByLabel("Source repository").fill("legion/arch");
+    await page.getByLabel("Branch", { exact: true }).fill("release");
     await page.getByRole("button", { name: "Add source" }).click();
     await expect(
       page.getByRole("alert").filter({ hasText: "the GitHub App is not installed on legion/arch" })
     ).toBeVisible();
     await expect(page.getByRole("cell", { exact: true, name: "legion/arch" })).toBeVisible();
+    await expect(page.getByRole("cell", { exact: true, name: "main" })).toBeVisible();
+    await expect(page.getByRole("cell", { exact: true, name: "release" })).toHaveCount(0);
     await page.screenshot({
       path: testInfo.outputPath("architecture-source-settings.png"),
       fullPage: true,

@@ -127,9 +127,7 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
       await askCard.getByRole("button", { exact: true, name: "Answer" }).click();
       await expect
         .poll(() => getAsk(openAsk.id))
-        .toMatchObject({
-          ask: { answer: { text: "Yes.", user: "alice" }, state: "answered" },
-        });
+        .toMatchObject({ answer: { text: "Yes.", user: "alice" }, state: "answered" });
       expect(
         await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
       ).toBe(true);
