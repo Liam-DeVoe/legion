@@ -6760,3 +6760,57 @@ test("inside NoTooltips an unsent reply draws in the page's colours, and its wor
     undraw(view);
   }
 });
+
+// An answer the reader typed under a question that closed before they sent it is drawn inside
+// `NoTooltips` in the page's colours rather than `main`'s, as the unsent reply is, and its words
+// are the reader's, a value that breaks anywhere: a long run with no space wraps inside the box.
+test("inside NoTooltips an unsent answer draws in the page's colours, and its words break anywhere", async () => {
+  const user = userEvent.setup();
+  const typed = "y".repeat(200);
+  const open = openAsk({ id: "ask-unsent-inside" });
+  const openCard = draw(
+    <AskCard ask={open} getAskThread={async () => threadOf(open)} initialThread={threadOf(open)} />,
+    "inside"
+  );
+  try {
+    await settleReads();
+    await user.click(within(openCard.container).getByRole("textbox", { name: "Your answer" }));
+    await user.paste(typed);
+  } finally {
+    undraw(openCard);
+  }
+  const closed = openAsk({
+    id: "ask-unsent-inside",
+    resolution: {
+      actor: { id: "alice", kind: "user" },
+      at: "2026-10-08T03:00:00Z",
+      kind: "retracted",
+      reason: "A newer question supersedes this one.",
+    },
+    state: "resolved",
+  });
+  const closedCard = draw(
+    <AskCard
+      ask={closed}
+      getAskThread={async () => threadOf(closed)}
+      initialThread={threadOf(closed)}
+    />,
+    "inside"
+  );
+  try {
+    await settleReads();
+    const box = within(closedCard.container).getByTestId("ask-unsent-answer");
+    expect(classOf(box)).toEqual(expect.arrayContaining(tokens(pageLineBorder)));
+    expect(classOf(box).filter((token) => tokens(borderDefault).includes(token))).toEqual([]);
+    const note = classOf(within(box).getByText(/^This question closed before you sent/));
+    expect(note).toEqual(expect.arrayContaining(tokens(pageQuietText)));
+    expect(note.filter((token) => tokens(textMutedOnSurface).includes(token))).toEqual([]);
+    const words = classOf(within(box).getByText(typed));
+    expect(words).toEqual(
+      expect.arrayContaining([...tokens(pageInkText), "max-w-full", "[overflow-wrap:anywhere]"])
+    );
+    expect(words.filter((token) => tokens(textPrimaryOnSurface).includes(token))).toEqual([]);
+  } finally {
+    undraw(closedCard);
+  }
+});
