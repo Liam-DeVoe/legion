@@ -279,27 +279,40 @@ func documentAdding(doc, block *Node) *Node {
 // writes. The line feeds either side ends in do not count, so a fragment cut from a document
 // compares with its own slice. Other text reads as another rendering, and a stored text this build
 // reads as no document reads as nothing, not even as its own bytes: nothing was rendered of it.
+//
+// A fragment read alone (FragmentReadsAs) reads as ReadsAs reads it, a loose list in another
+// spelling among them, except where either side holds `[^`: literal text shaped like a footnote
+// reference, escaped because its document defines the label, and a reference to that label read
+// alone as one, though the two documents that hold them read as two trees.
 func TestReadsAsReadsAnotherSpellingOfTheSameTree(t *testing.T) {
 	const unclosed = ":::callout{#b7 kind=\"note\" title=\"T\"}\nBody.\n"
 	const unknown = ":::future_block{#b1}\nBody.\n:::\n"
 	for _, test := range []struct {
-		name              string
-		stored, rendering string
-		reads             bool
+		name                 string
+		stored, rendering    string
+		reads, fragmentReads bool
 	}{
-		{"renderer version 1's loose list", "- a\n\n\n- b\n", "- a\n\n- b\n", true},
-		{"a loose list whose first items stand together", "- a\n- b\n\n- c\n", "- a\n\n- b\n\n- c\n", true},
-		{"this build's own rendering", "- a\n\n- b\n", "- a\n\n- b\n", true},
-		{"other text", "- a\n\n\n- c\n", "- a\n\n- b\n", false},
-		{"a stored text with no final line feed", "- a\n\n\n- b", "- a\n\n- b\n", true},
-		{"a rendering with more final line feeds", "- a\n\n\n- b\n", "- a\n\n- b\n\n\n", true},
-		{"a rendering with none", "- a\n\n\n- b\n\n", "- a\n\n- b", true},
-		{"an unclosed typed block", unclosed, unclosed, false},
-		{"a typed block the schema does not name", unknown, unknown, false},
+		{"renderer version 1's loose list", "- a\n\n\n- b\n", "- a\n\n- b\n", true, true},
+		{"a loose list whose first items stand together", "- a\n- b\n\n- c\n", "- a\n\n- b\n\n- c\n", true, true},
+		{"this build's own rendering", "- a\n\n- b\n", "- a\n\n- b\n", true, true},
+		{"other text", "- a\n\n\n- c\n", "- a\n\n- b\n", false, false},
+		{"a stored text with no final line feed", "- a\n\n\n- b", "- a\n\n- b\n", true, true},
+		{"a rendering with more final line feeds", "- a\n\n\n- b\n", "- a\n\n- b\n\n\n", true, true},
+		{"a rendering with none", "- a\n\n\n- b\n\n", "- a\n\n- b", true, true},
+		{"an unclosed typed block", unclosed, unclosed, false, false},
+		{"a typed block the schema does not name", unknown, unknown, false, false},
+		{"a loose-list fragment in another spelling", "- a\n- b\n\n- c", "- a\n\n- b\n\n- c", true, true},
+		{"footnote-shaped text and a reference, cut from documents that define the label", `see \[^1] here`, "see [^1] here", true, false},
+		{"footnote-shaped text and a reference in documents that define the label",
+			"see \\[^1] here\n\n[^1]: A note.\n", "see [^1] here\n\n[^1]: A note.\n", false, false},
+		{"text that holds `[^` on one side only", `see \[\^1] here`, "see [^1] here", true, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if got := ReadsAs(test.stored, test.rendering); got != test.reads {
 				t.Fatalf("ReadsAs(%q, %q) = %t, want %t", test.stored, test.rendering, got, test.reads)
+			}
+			if got := FragmentReadsAs(test.stored, test.rendering); got != test.fragmentReads {
+				t.Fatalf("FragmentReadsAs(%q, %q) = %t, want %t", test.stored, test.rendering, got, test.fragmentReads)
 			}
 		})
 	}

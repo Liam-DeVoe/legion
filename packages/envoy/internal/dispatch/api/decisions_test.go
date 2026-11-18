@@ -587,6 +587,68 @@ func TestADecisionKeptBeforeARendererChangeWaitsOnceItsKeepsVersionHoldsNoSuchHe
 	}
 }
 
+// footnotedDecision is the decision of the footnote test: an agent decision whose paragraph links
+// the spec block hold-it and cites the footnote 1, which the section after it defines.
+const footnotedDecision = "Count the notices by footnote"
+
+// Whether `[^1]` in a decision's text reads as a footnote reference or as text depends on the
+// footnotes the whole document defines, and the text of a decision cut from a stored version is
+// read alone, away from the section that defines 1. alice keeps a decision at a version that a
+// build of another renderer version stored with the decision's `[^1]` as literal text, escaped
+// `\[^1]` because another section defines 1, and the decision's text now holds the reference
+// `[^1]`. Read alone, the two read as one, though the decision holds another tree, so the
+// decision is compared by its text's sum (pmdoc.FragmentReadsAs): it waits for review, and the
+// spec block it links is out of date.
+func TestADecisionKeptAsFootnoteShapedTextWaitsOnceItCitesTheFootnote(t *testing.T) {
+	fixture := newDecisionsFixture(t)
+	handler, database, key, id := fixture.handler, fixture.database, fixture.issue.Key, fixture.decisions.ID
+	const reference, literal = "See [^1] here.", `See \[^1] here.`
+	version := editIssueDocument(t, handler, key, fixture.decisions.Slug, []map[string]any{{
+		"op":       "insert",
+		"markdown": "## " + footnotedDecision + "\n\nShapes dispatch://" + key + "/spec#b-hold-it. " + reference + "\n\n## Notes\n\n[^1]: The count.",
+		"before":   "## Replaced",
+	}})
+	written := decisionNamed(t, readIssueDecisions(t, handler, key), footnotedDecision)
+	if written.ChangedVersion != version.Number || !strings.HasSuffix(written.Text, reference) || fmt.Sprint(linkTargets(written)) != "[hold-it]" {
+		t.Fatalf("the decision = %#v, want it changed at version %d, ending %q and linking hold-it", written, version.Number, reference)
+	}
+	keepBlock(t, handler, id, written.BlockID, written.TextSHA256)
+
+	ctx := context.Background()
+	var stored string
+	if err := database.Pool.QueryRow(ctx, `
+		select markdown from artifact_versions where artifact_id = $1 and number = $2
+	`, id, version.Number).Scan(&stored); err != nil {
+		t.Fatalf("read version %d: %v", version.Number, err)
+	}
+	kept := strings.TrimSuffix(written.Text, reference) + literal
+	if !strings.Contains(stored, written.Text+"\n") || !pmdoc.ReadsAs(kept, written.Text) {
+		t.Fatalf("version %d = %q; the test needs it to hold the decision as %q, which %q reads alone as", version.Number, stored, written.Text, kept)
+	}
+	another := pmdoc.RendererVersion - 1
+	if _, err := database.Pool.Exec(ctx, `
+		update artifact_versions set markdown = $3, renderer_version = $4 where artifact_id = $1 and number = $2
+	`, id, version.Number, strings.Replace(stored, written.Text+"\n", kept+"\n", 1), another); err != nil {
+		t.Fatalf("store version %d as another renderer version stored footnote-shaped text: %v", version.Number, err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		update decision_keeps set text_sha256 = $3 where artifact_id = $1 and block_id = $2
+	`, id, written.BlockID, decisionTextSum(kept)); err != nil {
+		t.Fatalf("keep the decision as footnote-shaped text: %v", err)
+	}
+
+	decision := decisionNamed(t, readIssueDecisions(t, handler, key), footnotedDecision)
+	if decision.Text != written.Text {
+		t.Fatalf("the decision's text = %q, want %q", decision.Text, written.Text)
+	}
+	if decision.Kept == nil || decision.Kept.ChangedVersion != version.Number || !decision.WaitingReview {
+		t.Errorf("the decision kept as footnote-shaped text = %#v, want it kept at version %d and waiting for review", decision, version.Number)
+	}
+	if got := fmt.Sprint(staleTargets(decision)); got != "[hold-it]" {
+		t.Errorf("the decision kept as footnote-shaped text marks %v out of date, want hold-it", staleTargets(decision))
+	}
+}
+
 // Each person's last read version of a document: null before they read it, the version they
 // recorded after, and a bearer may read neither route.
 func TestDocumentReadRecordsEachPersonsLastReadVersion(t *testing.T) {

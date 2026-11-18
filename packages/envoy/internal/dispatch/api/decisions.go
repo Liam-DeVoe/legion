@@ -13,7 +13,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
@@ -318,57 +317,6 @@ func (s *server) readDecisions(
 	return decisions, nil
 }
 
-// markKeptAcrossRenderers decides waiting_review for each agent decision whose keep holds another
-// sum than its text's. A keep holds the sum of the text it agreed with and the version the
-// decision then stood at (decision_keeps), not the text, and that version's stored markdown holds
-// the text. A renderer change (pmdoc.RendererVersion) leaves every version stored before it in its
-// renderer's spelling of the document, so a decision kept before the change sums otherwise in this
-// build's spelling though nobody changed it. Such a decision is kept when another renderer
-// version stored the version its keep names, or none stamped it (pmdoc.OtherRenderer), that
-// version's text of the decision (decisionCuts, named by its sectionKey) has the keep's sum,
-// which makes it the text the keep agreed with, and this build reads that text as the decision's
-// text now (pmdoc.ReadsAs). The decision waits for review otherwise: a version that holds no such
-// text - the decision's heading changed since, or a block left the decision after that version -
-// and kept text that reads otherwise alone, as text citing a footnote another section defines
-// does, leave it waiting, as a version this renderer version stored does.
-//
-// The versions the keeps name that another renderer version stored, or none stamped, are read in
-// one query (otherRendererDecisionsAt), and a version this renderer version stored is not read,
-// so a decisions view pays nothing for a keep whose version this renderer version wrote; only
-// such a keep whose version holds the keep's sum pays a parse and a render.
-func (s *server) markKeptAcrossRenderers(
-	ctx context.Context, artifactID string, decisions []model.Decision, keys []sectionKey,
-) error {
-	numbers := map[int]bool{}
-	for _, decision := range decisions {
-		if decision.WaitingReview && decision.Kept != nil {
-			numbers[decision.Kept.ChangedVersion] = true
-		}
-	}
-	if len(numbers) == 0 {
-		return nil
-	}
-	versions, err := s.otherRendererDecisionsAt(ctx, artifactID, sortedNumbers(numbers))
-	if err != nil {
-		return err
-	}
-	for i := range decisions {
-		decision := &decisions[i]
-		if !decision.WaitingReview || decision.Kept == nil {
-			continue
-		}
-		version, read := versions[decision.Kept.ChangedVersion]
-		if !read {
-			continue
-		}
-		kept, held := version.decisions[keys[i]]
-		if held && kept.sum == decision.Kept.TextSHA256 && pmdoc.ReadsAs(kept.text, decision.Text) {
-			decision.WaitingReview = false
-		}
-	}
-	return nil
-}
-
 // markStaleLinks decides each link's `stale`: the decision's own text changed after it first
 // linked the spec block, and that spec block has not changed since the decision did.
 //
@@ -385,8 +333,9 @@ func (s *server) markKeptAcrossRenderers(
 // its occurrence among the decisions of that heading (sectionKey), the same pair the view's own
 // walk gives it, so a document that carries one heading twice still names each of them. A
 // version another renderer version stored, or none stamped, holds the decision's text where this
-// build reads its text of the decision as the text now (storedDecisions.holds), so a renderer
-// change, which leaves every version stored before it in its renderer's spelling, marks no link.
+// build reads its text of the decision, alone, as the text now (storedDecisions.holds), so a
+// renderer change, which leaves every version stored before it in its renderer's spelling, marks
+// no link. A text that holds `[^` is compared by its sum alone (pmdoc.FragmentReadsAs).
 func (s *server) markStaleLinks(
 	ctx context.Context, artifactID, markdown string, decisions []model.Decision, keys []sectionKey,
 ) error {
@@ -512,86 +461,6 @@ func (s *server) versionsAtTimes(
 		}
 	}
 	return at, rows.Err()
-}
-
-// storedDecisions is one stored version's decisions, cut from its markdown (decisionCuts), and
-// whether another renderer version stored that markdown or none stamped it (pmdoc.OtherRenderer):
-// such a version may spell a decision otherwise than this build does though its tree is the same.
-type storedDecisions struct {
-	otherRenderer bool
-	decisions     map[sectionKey]decisionCut
-}
-
-// holds reports whether this version holds now, the text of the decision key as the document
-// stands: its text of that decision has now's sum, or, for a version of another renderer version,
-// this build reads its text of that decision as now's text (pmdoc.ReadsAs). Only a version of
-// another renderer version whose sum differs pays the parse and the render. A version that gives
-// the decision no text holds none of it.
-func (v storedDecisions) holds(key sectionKey, now decisionCut) bool {
-	stored, ok := v.decisions[key]
-	return ok && (stored.sum == now.sum || v.otherRenderer && pmdoc.ReadsAs(stored.text, now.text))
-}
-
-// storedDecisionsAt is each named version's decisions, each one's text and its sum: the version's
-// own stored markdown, cut by the same rule as the document as it stands, read beside the
-// renderer version that stored it.
-func (s *server) storedDecisionsAt(
-	ctx context.Context, artifactID string, numbers []int,
-) (map[int]storedDecisions, error) {
-	if len(numbers) == 0 {
-		return map[int]storedDecisions{}, nil
-	}
-	rows, err := s.deps.Store.Pool.Query(ctx, `
-		select number, renderer_version, coalesce(markdown, '') from artifact_versions
-		where artifact_id = $1::uuid and number = any($2::int[])
-	`, artifactID, numbers)
-	if err != nil {
-		return nil, err
-	}
-	return scanStoredDecisions(rows)
-}
-
-// otherRendererDecisionsAt is storedDecisionsAt for those of the named versions another renderer
-// version stored or none stamped (pmdoc.OtherRenderer), the only versions that may spell a
-// decision otherwise than this build does: a version this renderer version stored is not read.
-func (s *server) otherRendererDecisionsAt(
-	ctx context.Context, artifactID string, numbers []int,
-) (map[int]storedDecisions, error) {
-	rows, err := s.deps.Store.Pool.Query(ctx, `
-		select number, renderer_version, coalesce(markdown, '') from artifact_versions
-		where artifact_id = $1::uuid and number = any($2::int[]) and renderer_version is distinct from $3
-	`, artifactID, numbers, pmdoc.RendererVersion)
-	if err != nil {
-		return nil, err
-	}
-	return scanStoredDecisions(rows)
-}
-
-// scanStoredDecisions reads rows of versions' number, renderer_version and markdown into each
-// version's decisions, its markdown cut by decisionCuts, and closes them.
-func scanStoredDecisions(rows pgx.Rows) (map[int]storedDecisions, error) {
-	defer rows.Close()
-	versions := map[int]storedDecisions{}
-	for rows.Next() {
-		var number int
-		var stamp *int
-		var markdown string
-		if err := rows.Scan(&number, &stamp, &markdown); err != nil {
-			return nil, err
-		}
-		versions[number] = storedDecisions{
-			otherRenderer: pmdoc.OtherRenderer(stamp),
-			decisions:     decisionCuts(markdown),
-		}
-	}
-	return versions, rows.Err()
-}
-
-// decisionCut is one decision as a document's markdown holds it: its text, with the blank lines
-// at its end removed, and that text's sum (decisionTextSum).
-type decisionCut struct {
-	text string
-	sum  string
 }
 
 // decisionCuts is a document's markdown cut into its decisions, each one's text and the sum of

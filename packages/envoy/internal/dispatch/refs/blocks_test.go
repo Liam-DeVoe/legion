@@ -472,6 +472,86 @@ func TestABlockKeepsItsChangedVersionAcrossAnotherRenderersSpelling(t *testing.T
 	}
 }
 
+// footnotedDocument is version 1 of a document that defines the footnote 1, as another renderer
+// version stored it: its opening paragraph holds text shaped like a reference to that footnote,
+// which a renderer escapes because the document defines the label. footnotedDocumentBlocks is
+// each of its blocks in document order, with its type and its slice of the document.
+const footnotedDocument = "Opening paragraph, see \\[^1] here.\n\n[^1]: A note.\n"
+
+var footnotedDocumentBlocks = []struct{ nodeType, text string }{
+	{"paragraph", "Opening paragraph, see \\[^1] here."},
+	{"footnote_definition", "[^1]: A note."},
+	{"paragraph", "A note."},
+}
+
+// A block's text read alone holds none of its document's footnote definitions. The opening
+// paragraph's text recorded at version 1, which another renderer version stored, is the literal
+// text `\[^1]`, escaped because the document defines 1; version 2 makes that text a reference
+// to the footnote, `[^1]`. Read alone, the two read as one, though the paragraph holds another
+// tree, so the paragraph is compared by its text's sum (pmdoc.FragmentReadsAs): it takes version
+// 2, and its text is recorded at version 2.
+func TestABlockWhoseFootnoteShapedTextBecomesAReferenceTakesTheNewVersion(t *testing.T) {
+	ctx := context.Background()
+	tx := windowFixture(t)
+	artifact, _ := createReferenceArtifact(t, tx, "WIND-1", "WIND", "footnoted-md")
+	tree, err := pmdoc.ParseRendering(footnotedDocument)
+	if err != nil {
+		t.Fatalf("read %q: %v", footnotedDocument, err)
+	}
+	stored := respelledVersionBlocks(t, tree, footnotedDocument, footnotedDocumentBlocks)
+	paragraph, recorded := stored[0].ID, footnotedDocument[stored[0].From:stored[0].To]
+	versionOneAt := time.Date(2026, time.November, 1, 9, 0, 0, 0, time.UTC)
+	insertRenderedVersion(t, tx, artifact, 1, footnotedDocument, pmdoc.RendererVersion-1, versionOneAt)
+	if _, err := IndexBlocks(ctx, tx, artifact, 1, versionOneAt, footnotedDocument, stored, nil, nil); err != nil {
+		t.Fatalf("index version 1: %v", err)
+	}
+
+	tree.Children[0].Children = []*pmdoc.Node{
+		{Type: "text", Text: "Opening paragraph, see "},
+		{Type: "footnote_reference", Attrs: pmdoc.Attrs{"label": "1"}},
+		{Type: "text", Text: " here."},
+	}
+	markdown, offsets, err := pmdoc.RenderWithBlockOffsets(tree)
+	if err != nil {
+		t.Fatalf("render version 2: %v", err)
+	}
+	blocks := make([]model.ArtifactBlock, len(offsets))
+	for index, offset := range offsets {
+		blocks[index] = model.ArtifactBlock{ID: offset.ID, Type: offset.Type, From: offset.From, To: offset.To}
+	}
+	body := markdown[blocks[0].From:blocks[0].To]
+	if blocks[0].ID != paragraph || body != "Opening paragraph, see [^1] here." || !pmdoc.ReadsAs(recorded, body) {
+		t.Fatalf("version 2's first block is %s written %q; the test needs paragraph %s written as a reference that reads alone as %q", blocks[0].ID, body, paragraph, recorded)
+	}
+	versionTwoAt := versionOneAt.Add(time.Hour)
+	insertRenderedVersion(t, tx, artifact, 2, markdown, pmdoc.RendererVersion, versionTwoAt)
+	if _, err := IndexBlocks(ctx, tx, artifact, 2, versionTwoAt, markdown, blocks, nil, nil); err != nil {
+		t.Fatalf("index version 2: %v", err)
+	}
+
+	var changedVersion int
+	var changedAt time.Time
+	var sum string
+	if err := tx.QueryRow(ctx, `
+		select changed_version, changed_at, text_sha256 from document_blocks where artifact_id = $1 and block_id = $2
+	`, artifact, paragraph).Scan(&changedVersion, &changedAt, &sum); err != nil {
+		t.Fatalf("read paragraph %s at version 2: %v", paragraph, err)
+	}
+	if changedVersion != 2 || !changedAt.Equal(versionTwoAt) || sum != BlockTextSum(body) {
+		t.Errorf("paragraph %s, recorded at version 1 as %q and written %q, changed at version %d (%s) with the sum %s, want version 2 (%s) with the sum of its text",
+			paragraph, recorded, body, changedVersion, changedAt.UTC(), sum, versionTwoAt)
+	}
+	var textsAtTwo []string
+	if err := tx.QueryRow(ctx, `
+		select coalesce(array_agg(text), '{}') from document_block_texts where artifact_id = $1 and block_id = $2 and version = 2
+	`, artifact, paragraph).Scan(&textsAtTwo); err != nil {
+		t.Fatalf("read the texts version 2 records for paragraph %s: %v", paragraph, err)
+	}
+	if !slices.Equal(textsAtTwo, []string{body}) {
+		t.Errorf("version 2 records paragraph %s as %q, want one text, %q", paragraph, textsAtTwo, body)
+	}
+}
+
 // A mention starts at the tightest block whose [From, To) holds its start: a child inside its
 // parent, the parent between its children, and no block at all between top-level blocks or past
 // the last one. A block ending where a mention starts does not hold it.

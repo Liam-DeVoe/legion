@@ -1,6 +1,7 @@
 package pmdoc
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -63,19 +64,47 @@ func RenderingOf(stored string) (rendering string, read bool, err error) {
 }
 
 // SameRendering reports whether a and b are one rendering: equal once each is taken without the
-// line feeds it ends in, so a fragment cut from a document - a decision, a block - compares with
-// its own slice of the document's rendering.
+// line feeds it ends in (withoutFinalLineFeeds), so a fragment cut from a document - a decision,
+// a block - compares with its own slice of the document's rendering.
 func SameRendering(a, b string) bool {
-	return strings.TrimRight(a, "\n") == strings.TrimRight(b, "\n")
+	return withoutFinalLineFeeds(a) == withoutFinalLineFeeds(b)
+}
+
+// RenderingSum is the sha256 of what SameRendering compares of rendering (withoutFinalLineFeeds),
+// so two renderings have one sum where they are one rendering. A caller that holds a rendering to
+// compare later keeps its sum rather than its text.
+func RenderingSum(rendering string) [sha256.Size]byte {
+	return sha256.Sum256([]byte(withoutFinalLineFeeds(rendering)))
+}
+
+// withoutFinalLineFeeds is what SameRendering compares of a rendering and RenderingSum sums: the
+// rendering without the line feeds it ends in.
+func withoutFinalLineFeeds(rendering string) string {
+	return strings.TrimRight(rendering, "\n")
 }
 
 // ReadsAs reports whether stored, markdown that any build of the store may have written, reads as
 // rendering: this build reads stored and renders it again (RenderingOf), and the two are one
 // rendering (SameRendering). Stored text that reads as no document, or whose tree does not
-// render, reads as nothing.
+// render, reads as nothing. stored and rendering are whole documents; a fragment cut from one is
+// compared by FragmentReadsAs.
 func ReadsAs(stored, rendering string) bool {
 	again, _, err := RenderingOf(stored)
 	return err == nil && SameRendering(again, rendering)
+}
+
+// FragmentReadsAs is ReadsAs for stored and rendering cut from documents - a block, a decision -
+// and read alone, away from the rest of their documents: false where either holds `[^`, and
+// ReadsAs otherwise. Whether `[^label]` reads as a footnote reference depends on the labels its
+// whole document defines, and so does whether the renderer escapes text shaped like one as
+// `\[^label]` (definedFootnoteLabels, footnoteReferenceText). A fragment holds none of its
+// document's definitions, so literal text `see \[^1] here` and a reference `see [^1] here`, two
+// trees in a document that defines 1, read alone as one. A reference is written `[^`, its label
+// and `]`, and text shaped like one is escaped as `\[^`, so every spelling whose reading depends
+// on the labels holds `[^`: where neither side holds it, no reading of either depends on a
+// definition it was cut away from.
+func FragmentReadsAs(stored, rendering string) bool {
+	return !strings.Contains(stored, "[^") && !strings.Contains(rendering, "[^") && ReadsAs(stored, rendering)
 }
 
 // OtherRenderer reports whether stamp, the renderer version a stored rendering was written at (a
@@ -83,7 +112,8 @@ func ReadsAs(stored, rendering string) bool {
 // (RendererVersion): another renderer version's, or none, for a rendering stored before
 // renderings were stamped or with no stamp. Such a rendering may spell the tree it holds otherwise
 // than this build does, so where its bytes are not this build's rendering it is compared with that
-// rendering by ReadsAs; a rendering this renderer version stored is compared byte for byte.
+// rendering by ReadsAs, or a fragment cut from it by FragmentReadsAs; a rendering this renderer
+// version stored is compared byte for byte.
 func OtherRenderer(stamp *int) bool {
 	return stamp == nil || *stamp != RendererVersion
 }

@@ -1470,14 +1470,31 @@ func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor 
 
 // readsAs reports whether stored, a version's markdown that any build may have rendered, reads as
 // the document whose rendering is markdown, by pmdoc.ReadsAs's rule: this build reads stored and
-// renders it again (pmdoc.RenderingOf), and the two are one rendering (pmdoc.SameRendering). The
-// render it makes is recorded as every render of a whole document is (countDocumentRender).
+// renders it again (renderAgain), and the two are one rendering (pmdoc.SameRendering).
 func readsAs(stored, markdown string) bool {
+	again, rendered := renderAgain(stored)
+	return rendered && pmdoc.SameRendering(again, markdown)
+}
+
+// renderAgain is what this build renders stored, a version's markdown that any build may have
+// rendered, as (pmdoc.RenderingOf), and false where stored reads as no document or its tree does
+// not render. The render it makes is recorded as every render of a whole document is
+// (countDocumentRender).
+func renderAgain(stored string) (string, bool) {
 	again, read, err := pmdoc.RenderingOf(stored)
 	if read {
 		countDocumentRender(again)
 	}
-	return err == nil && pmdoc.SameRendering(again, markdown)
+	return again, err == nil
+}
+
+// holdsRendering reports whether stored, a version's markdown stamped stamp (renderer_version),
+// holds rendering, the document as this build renders it: byte for byte, or, for a version another
+// renderer version wrote or none stamped (pmdoc.OtherRenderer), as markdown this build reads as
+// that rendering (readsAs). The read is made only for such a version and only once the bytes
+// differ, so a version this renderer version wrote pays nothing for it.
+func holdsRendering(stored string, stamp *int, rendering string) bool {
+	return stored == rendering || pmdoc.OtherRenderer(stamp) && readsAs(stored, rendering)
 }
 
 // prevalidateLiveOperations performs database-backed table-anchor checks
@@ -2259,14 +2276,14 @@ type latestVersionRow struct {
 	rendererVersion  *int
 }
 
-// holds reports whether the version holds rendering, the document as this build renders it:
-// byte for byte, or, for a version another renderer version wrote or none stamped, as markdown
-// this build reads as that rendering (readsAs). A version a renderer change alone left in another
-// spelling of the same tree is unchanged by that rule, so no version is written for the change.
-// The read is made only for such a version and only once the bytes differ, so a document whose
-// latest version this renderer version wrote pays nothing for it.
+// holds reports whether the version holds rendering, the document as this build renders it, by
+// holdsRendering's rule: byte for byte, or, for a version another renderer version wrote or none
+// stamped, as markdown this build reads as that rendering (readsAs). A version a renderer change
+// alone left in another spelling of the same tree is unchanged by that rule, so no version is
+// written for the change, and a document whose latest version this renderer version wrote pays
+// nothing for the read.
 func (v latestVersionRow) holds(rendering string) bool {
-	return v.markdown == rendering || pmdoc.OtherRenderer(v.rendererVersion) && readsAs(v.markdown, rendering)
+	return holdsRendering(v.markdown, v.rendererVersion, rendering)
 }
 
 func latestVersion(ctx context.Context, tx pgx.Tx, artifactID string) (latestVersionRow, error) {

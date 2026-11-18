@@ -55,14 +55,15 @@ type Pointer struct {
 //
 // A block whose text moved keeps its changed version and time as well when another renderer
 // version stored that version, or none stamped it (pmdoc.OtherRenderer), and the text recorded
-// for the block there reads, alone, as its text here (pmdoc.ReadsAs): the same tree in that
-// renderer's spelling (respelledBlocks). Its row takes this text's sha256 and excerpt, and no
-// text is recorded for it at this version: a pin to an earlier version still reads unchanged,
+// for the block there reads, alone, as its text here (pmdoc.FragmentReadsAs): the same tree in
+// that renderer's spelling (respelledBlocks). Its row takes this text's sha256 and excerpt, and
+// no text is recorded for it at this version: a pin to an earlier version still reads unchanged,
 // and the block's recorded text keeps the earlier spelling until its text next changes. Such a
 // block counts as unchanged in what this returns. A block whose recorded text does not read
 // alone as the tree it held takes this version: one inside a quote, whose later lines carry the
-// quote's prefix, or a list whose slice renders otherwise alone (its marker chosen against a
-// list before it).
+// quote's prefix, a list whose slice renders otherwise alone (its marker chosen against a list
+// before it), and one whose recorded text or text here holds `[^`, which reads as a footnote
+// reference or as text by the labels the rest of its document defines.
 //
 // A pair (block, kind, target) that survives keeps its created version, time and source event,
 // and takes the to_types this version gives it. A new pair takes this version and versionAt, and
@@ -98,8 +99,11 @@ func IndexBlocks(
 	}
 
 	// Each block whose text's sum this version moved, in document order: new, changed or
-	// restored, or held in another renderer version's spelling (respelledBlocks).
+	// restored, or held in another renderer version's spelling. A block the index holds whose
+	// changed version another renderer version stored, or none stamped, may be the second
+	// (respelledBlocks), which records each such block it keeps.
 	var sumMoved []movedBlock
+	var candidates []respellCandidate
 	for _, block := range nodes {
 		body := markdown[block.From:block.To]
 		hexSum := BlockTextSum(body)
@@ -108,32 +112,27 @@ func IndexBlocks(
 		if held && previous.sum == hexSum {
 			continue
 		}
-		entry := movedBlock{block: block, body: body, sum: hexSum}
-		if held && previous.otherRenderer {
-			entry.storedAt = previous.changedVersion
-		}
+		entry := movedBlock{block: block, body: body, sum: hexSum, excerpt: text.HeadRunes(body, BlockExcerptRunes)}
 		sumMoved = append(sumMoved, entry)
+		if held && previous.otherRenderer {
+			candidates = append(candidates, respellCandidate{movedBlock: entry, storedAt: previous.changedVersion})
+		}
 	}
-	respelled, err := respelledBlocks(ctx, tx, artifactID, sumMoved)
+	respelled, err := respelledBlocks(ctx, tx, artifactID, version, candidates)
 	if err != nil {
 		return nil, err
 	}
-	// The blocks whose text this version changed (new, changed or restored), those it holds
-	// respelled, and those it deleted.
+	// The blocks whose text this version changed (new, changed or restored), and those it deleted.
 	var ids, types, sums, excerpts []string
-	var respelledIDs, respelledSums, respelledExcerpts []string
 	var textIDs []string
 	var texts []*string
 	for index := range sumMoved {
 		entry := &sumMoved[index]
-		excerpt := text.HeadRunes(entry.body, BlockExcerptRunes)
 		if respelled[entry.block.ID] {
-			respelledIDs, respelledSums = append(respelledIDs, entry.block.ID), append(respelledSums, entry.sum)
-			respelledExcerpts = append(respelledExcerpts, excerpt)
 			continue
 		}
 		ids, types, sums = append(ids, entry.block.ID), append(types, entry.block.Type), append(sums, entry.sum)
-		excerpts = append(excerpts, excerpt)
+		excerpts = append(excerpts, entry.excerpt)
 		textIDs, texts = append(textIDs, entry.block.ID), append(texts, &entry.body)
 	}
 	deleted := make([]string, 0, len(stored))
@@ -163,15 +162,6 @@ func IndexBlocks(
 				changed_at = excluded.changed_at
 		`, artifactID, version, versionAt, ids, types, sums, excerpts); err != nil {
 			return nil, fmt.Errorf("record the blocks version %d of %s changed: %w", version, artifactID, err)
-		}
-	}
-	if len(respelledIDs) > 0 {
-		if _, err := tx.Exec(ctx, `
-			update document_blocks d set text_sha256 = r.sum, excerpt = r.excerpt
-			from unnest($2::text[], $3::text[], $4::text[]) as r (id, sum, excerpt)
-			where d.artifact_id = $1 and d.block_id = r.id
-		`, artifactID, respelledIDs, respelledSums, respelledExcerpts); err != nil {
-			return nil, fmt.Errorf("record the blocks version %d of %s holds respelled: %w", version, artifactID, err)
 		}
 	}
 	if len(textIDs) > 0 {
@@ -581,58 +571,11 @@ func storedBlocks(ctx context.Context, tx pgx.Tx, artifactID string) (map[string
 	return stored, rows.Err()
 }
 
-// movedBlock is a block whose text's sum a version moved: the block, its text (markdown[From:To])
-// and that text's sha256, and storedAt, its stored changed version when another renderer version
-// stored that version or none stamped it, else 0.
+// movedBlock is a block whose text's sum a version moved: the block, its text (markdown[From:To]),
+// that text's sha256 and its excerpt (BlockExcerptRunes).
 type movedBlock struct {
-	block     model.ArtifactBlock
-	body, sum string
-	storedAt  int
-}
-
-// respelledBlocks is the ids of the blocks of moved that hold the same tree as their recorded
-// text, spelled by another renderer version: each with a storedAt whose text recorded at that
-// version (document_block_texts) reads, alone, as its text now (pmdoc.ReadsAs). One query reads
-// the recorded text of every such block, and none runs when no block has a storedAt.
-func respelledBlocks(ctx context.Context, tx pgx.Tx, artifactID string, moved []movedBlock) (map[string]bool, error) {
-	var ids []string
-	var versions []int
-	for _, entry := range moved {
-		if entry.storedAt != 0 {
-			ids, versions = append(ids, entry.block.ID), append(versions, entry.storedAt)
-		}
-	}
-	if len(ids) == 0 {
-		return nil, nil
-	}
-	rows, err := tx.Query(ctx, `
-		select t.block_id, t.text
-		from unnest($2::text[], $3::integer[]) as c (id, version)
-		join document_block_texts t on t.artifact_id = $1 and t.block_id = c.id and t.version = c.version
-		where t.text is not null
-	`, artifactID, ids, versions)
-	if err != nil {
-		return nil, fmt.Errorf("read the recorded texts of the blocks of %s: %w", artifactID, err)
-	}
-	defer rows.Close()
-	recorded := make(map[string]string, len(ids))
-	for rows.Next() {
-		var id, body string
-		if err := rows.Scan(&id, &body); err != nil {
-			return nil, fmt.Errorf("scan a recorded block text of %s: %w", artifactID, err)
-		}
-		recorded[id] = body
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the recorded texts of the blocks of %s: %w", artifactID, err)
-	}
-	respelled := make(map[string]bool, len(recorded))
-	for _, entry := range moved {
-		if body, held := recorded[entry.block.ID]; held && pmdoc.ReadsAs(body, entry.body) {
-			respelled[entry.block.ID] = true
-		}
-	}
-	return respelled, nil
+	block              model.ArtifactBlock
+	body, sum, excerpt string
 }
 
 // blockPair is one link a block holds: the block's id, the edge's kind and its target, and the

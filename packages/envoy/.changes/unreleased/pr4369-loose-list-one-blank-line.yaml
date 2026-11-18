@@ -10,5 +10,7 @@ body: |-
   version stored and that reads as the same tree counts as unchanged: no version is written for
   the renderer change alone, the stored-order check reports no mismatch, an approval carries to a
   version that holds the approved text, a kept decision stays kept, and a block keeps its changed
-  version and time where its stored text reads alone. A check result's words read as moved only
-  when the check's sum and its changed version both moved.
+  version and time where its stored text reads alone. A block or a decision whose text holds `[^`
+  is not read alone, because whether that text is a footnote reference depends on the labels its
+  document defines. A check result's words read as moved only when the check's sum and its
+  changed version both moved.

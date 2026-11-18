@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"crypto/md5"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -306,7 +307,9 @@ func renderStoredFold(doc *crdt.Doc) storedRender {
 // independently of unrelated parked content. Resolved rows are judged individually
 // (judgeParkedRows); unresolved rows are counted as awaiting their predecessor. A version another
 // renderer version wrote that differs from the fold's render is judged once the fold is read
-// (judgeRespelledVersions), since the fold's read of the updates holds the transaction until then.
+// (judgeRespelledVersions), since the fold's read of the updates holds the transaction until then;
+// until then the fold keeps that version's number and the sum of the render it was compared with
+// (pmdoc.RenderingSum), not the render, which is as large as the document.
 func foldStoredOrder(ctx context.Context, tx pgx.Tx, artifactID string, since time.Time, at map[int64][]storedVersion, report *StoredOrderReport) error {
 	rows, err := tx.Query(ctx, `
 		select version, update, content_changed, created_at from doc_updates where artifact_id = $1 order by version
@@ -404,7 +407,7 @@ func foldStoredOrder(ctx context.Context, tx pgx.Tx, artifactID string, since ti
 				continue
 			}
 			if current.renders && pmdoc.OtherRenderer(written.rendererVersion) {
-				respelled = append(respelled, respelledVersion{at: len(report.Mismatches), number: written.number, fold: current.markdown})
+				respelled = append(respelled, respelledVersion{number: written.number, fold: pmdoc.RenderingSum(current.markdown)})
 			}
 			report.Mismatches = append(report.Mismatches, mismatch)
 		}
@@ -616,26 +619,30 @@ func compareStoredVersion(version storedVersion, fold storedRender) (StoredOrder
 }
 
 // respelledVersion is a version whose stored markdown is not, by md5 and length, the fold's render
-// at the update it records, and which another renderer version wrote or none stamped: at is its
-// mismatch's index in the report, and fold is the render it was compared with.
+// at the update it records, and which another renderer version wrote or none stamped: its number,
+// and fold, the sum of the render it was compared with (pmdoc.RenderingSum), which the check keeps
+// in place of that render until the fold is read.
 type respelledVersion struct {
-	at     int
 	number int
-	fold   string
+	fold   [sha256.Size]byte
 }
 
 // judgeRespelledVersions reads the markdown of each version in respelled, and of no other, and
-// takes out of the report the mismatch of each whose markdown reads as the fold's render it was
-// compared with (readsAs, pmdoc.ReadsAs's rule): its renderer's spelling of the fold's tree. Every
-// other mismatch keeps its place.
+// takes out of the report the version mismatch of each whose markdown reads as the fold's render
+// it was compared with, by pmdoc.ReadsAs's rule: this build renders that markdown again
+// (renderAgain, as readsAs does), and the sum of what it renders is the fold's (pmdoc.RenderingSum,
+// the sum of what pmdoc.SameRendering compares), so the markdown is its renderer's spelling of the
+// fold's tree. The fold compares each version once, at the one update it records, so a version
+// gives at most one mismatch, which its kind and its version's number name. Every other mismatch
+// keeps its place.
 func judgeRespelledVersions(ctx context.Context, tx pgx.Tx, artifactID string, respelled []respelledVersion, report *StoredOrderReport) error {
 	if len(respelled) == 0 {
 		return nil
 	}
-	byNumber := make(map[int]respelledVersion, len(respelled))
+	folds := make(map[int][sha256.Size]byte, len(respelled))
 	numbers := make([]int, 0, len(respelled))
 	for _, version := range respelled {
-		byNumber[version.number] = version
+		folds[version.number] = version.fold
 		numbers = append(numbers, version.number)
 	}
 	rows, err := tx.Query(ctx, `
@@ -652,16 +659,16 @@ func judgeRespelledVersions(ctx context.Context, tx pgx.Tx, artifactID string, r
 		if err := rows.Scan(&number, &markdown); err != nil {
 			return fmt.Errorf("scan a document version's markdown: %w", err)
 		}
-		if version := byNumber[number]; readsAs(markdown, version.fold) {
-			readsAsFold[version.at] = true
+		if again, rendered := renderAgain(markdown); rendered && pmdoc.RenderingSum(again) == folds[number] {
+			readsAsFold[number] = true
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("read the markdown of the document's versions another renderer wrote: %w", err)
 	}
 	kept := report.Mismatches[:0]
-	for index, mismatch := range report.Mismatches {
-		if !readsAsFold[index] {
+	for _, mismatch := range report.Mismatches {
+		if mismatch.Kind != StoredOrderVersion || !readsAsFold[mismatch.Version] {
 			kept = append(kept, mismatch)
 		}
 	}
