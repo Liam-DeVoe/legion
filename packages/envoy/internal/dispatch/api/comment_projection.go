@@ -145,9 +145,9 @@ func (s *server) commentEventPayload(ctx context.Context, tx pgx.Tx, comment *mo
 }
 
 // commentCorrectionPayload is the payload of comment.edited and comment.deleted: the event
-// carries the thread_root_id and the thread_logins its comment's comment.created carried, so a
-// reader routes a correction as it routed the post - an Inbox refreshes only for the logins
-// with a Replies row on the thread. The ask's question, state and turn belong to the moment
+// carries the thread_root_id its comment's comment.created carried, and the thread_logins on
+// that thread as the correction is written, so a reader routes a correction as it routes a post -
+// an Inbox refreshes only for the logins with a Replies row on the thread. The ask's question, state and turn belong to the moment
 // the comment was posted and stay with that event.
 func (s *server) commentCorrectionPayload(ctx context.Context, tx pgx.Tx, comment *model.Comment, artifactName string, changes model.ReferenceChanges) (model.CommentEventPayload, error) {
 	var thread commentEventThread

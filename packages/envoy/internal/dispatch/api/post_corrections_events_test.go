@@ -175,12 +175,13 @@ func storedThreadRootID(t *testing.T, database *store.Store, eventType, id strin
 }
 
 // An edit and a delete of a comment are routed as its creation was (commentCorrectionPayload): a
-// reply's comment.edited and comment.deleted carry its reply_to as thread_root_id and the
-// thread_logins its comment.created carried, so an Inbox reads its Replies rows again for the
+// reply's comment.edited and comment.deleted carry its reply_to as thread_root_id, as its
+// comment.created did, and the thread_logins on its thread as the correction is written (here the
+// same as its creation's, since nobody joined between), so an Inbox reads its Replies rows again for the
 // logins with a row on the thread and no other. A root comment heads its own thread, so its
 // corrections carry no thread_root_id, and they name the logins with a row on that thread when
 // the correction is written, bob's reply among them: his row draws the root.
-func TestACommentsCorrectionsCarryTheThreadItsCreationCarried(t *testing.T) {
+func TestACommentsCorrectionsCarryItsThreadRootAndTheLoginsOnItsThread(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "A corrected thread", "A spec")
 	root := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Who reviews this?"}, "alice")
