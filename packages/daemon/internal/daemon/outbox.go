@@ -1579,43 +1579,36 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 		role := r.supervisedClaim(token).Role
 		return role != claim.RoleArchitect && phase.RoleFor(issue.Phase) != role
 	}
-	if ended, err := r.holdEnded(ctx, row, token, "role message", moved); err != nil || ended {
-		return err
-	}
-	if r.storedForItsSession(row, token, "role message") {
-		return nil
-	}
-	err := r.notices.Publish(ctx, notify.RoleTopicPrefix+payload.Role, payload.Body, payload.Body, record.OutboxKey(row.ID))
-	if errors.Is(err, notify.ErrHolderUnresponsive) {
-		// A wait, not a failure: settle logs a wait.ErrWaiting at INFO then DEBUG rather than
-		// ERROR on every attempt, as the notice executor's own unresponsive branch does
-		// (notice_exceptions.go).
-		return wait.Errorf("%s's role message for %s waits for its holder, whose session the listener reports %s: %w",
-			row.Issue, payload.Role, notify.StateUnresponsive, err)
-	}
-	var refused notify.ErrRefusedByHolder
-	var denied notify.ErrPublishDenied
-	switch {
-	case errors.Is(err, notify.ErrNoHolder):
-		if err := r.heldForItsSession(ctx, row, token, "role message", moved); err != nil {
-			return err
+	return r.heldDelivery(ctx, row, token, "role message", moved, func() error {
+		err := r.notices.Publish(ctx, notify.RoleTopicPrefix+payload.Role, payload.Body, payload.Body, record.OutboxKey(row.ID))
+		if errors.Is(err, notify.ErrHolderUnresponsive) {
+			// A wait, not a failure: settle logs a wait.ErrWaiting at INFO then DEBUG rather than
+			// ERROR on every attempt, as the notice executor's own unresponsive branch does
+			// (notice_exceptions.go).
+			return wait.Errorf("%s's role message for %s waits for its holder, whose session the listener reports %s: %w",
+				row.Issue, payload.Role, notify.StateUnresponsive, err)
 		}
+		var refused notify.ErrRefusedByHolder
+		var denied notify.ErrPublishDenied
+		switch {
+		case errors.Is(err, notify.ErrNoHolder):
+			return err
+		case errors.As(err, &refused):
+			r.log.Info("outbox role message finished undelivered: its role's holder does not advertise the delivery mode",
+				"row", row.ID, "issue", row.Issue, "role", payload.Role, "holder", refused.Holder)
+			return nil
+		case errors.As(err, &denied):
+			r.log.Error("outbox role message finished undelivered: the listener's own NATS grant denied the forward",
+				"row", row.ID, "issue", row.Issue, "role", payload.Role, "denial", denied.Message)
+			return nil
+		case err != nil:
+			return fmt.Errorf("publish %s's message to role %s: %w", row.Issue, payload.Role, err)
+		}
+		return nil
+	}, func() {
 		r.log.Info("outbox role message finished undelivered: its role has no live holder",
 			"row", row.ID, "issue", row.Issue, "role", payload.Role)
-		return nil
-	case errors.As(err, &refused):
-		r.log.Info("outbox role message finished undelivered: its role's holder does not advertise the delivery mode",
-			"row", row.ID, "issue", row.Issue, "role", payload.Role, "holder", refused.Holder)
-		return nil
-	case errors.As(err, &denied):
-		r.log.Error("outbox role message finished undelivered: the listener's own NATS grant denied the forward",
-			"row", row.ID, "issue", row.Issue, "role", payload.Role, "denial", denied.Message)
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("publish %s's message to role %s: %w", row.Issue, payload.Role, r.storedAnswer(token, err))
-	}
-	return nil
+	})
 }
 
 // phaseEnded publishes the message of a phase-ended row (record.PhaseEnded) to the Envoy topic of
@@ -1701,32 +1694,52 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 		return err
 	}
 	moved := func(issue record.Issue) bool { return issue.Phase != payload.To }
-	if ended, err := r.holdEnded(ctx, row, token, "hook prompt", moved); err != nil || ended {
-		return err
-	}
-	if r.storedForItsSession(row, token, "hook prompt") {
-		return nil
-	}
-	// A role whose pod was released is not "no live session holds the role": its session is
-	// intact and its pod is one wake away, so the row wakes it and waits on its backoff rather
-	// than finishing undelivered. This runs before the publish, which would otherwise answer
-	// ErrNoHolder and drop the prompt the woken role is owed.
-	if woken, err := r.wakeForDelivery(ctx, token, "the "+payload.Hook+" hook's prompt for "+row.Issue); err != nil {
-		return err
-	} else if woken {
-		return wait.Errorf("the %s hook's prompt for %s waits for its %s's released pod to come back", payload.Hook, row.Issue, payload.Role)
-	}
-	err = r.notices.Publish(ctx, notify.RoleTopicPrefix+string(token), payload.Message(row.Issue), payload.Message(row.Issue), record.OutboxKey(row.ID))
-	if errors.Is(err, notify.ErrNoHolder) {
-		if held := r.heldForItsSession(ctx, row, token, "hook prompt", moved); held != nil {
-			return held
+	return r.heldDelivery(ctx, row, token, "hook prompt", moved, func() error {
+		// A role whose pod was released is not "no live session holds the role": its session is
+		// intact and its pod is one wake away, so the row wakes it and waits on its backoff
+		// rather than finishing undelivered. This runs before the publish, which would otherwise
+		// answer ErrNoHolder and drop the prompt the woken role is owed.
+		if woken, err := r.wakeForDelivery(ctx, token, "the "+payload.Hook+" hook's prompt for "+row.Issue); err != nil {
+			return err
+		} else if woken {
+			return wait.Errorf("the %s hook's prompt for %s waits for its %s's released pod to come back", payload.Hook, row.Issue, payload.Role)
 		}
+		err := r.notices.Publish(ctx, notify.RoleTopicPrefix+string(token), payload.Message(row.Issue), payload.Message(row.Issue), record.OutboxKey(row.ID))
+		if err != nil && !errors.Is(err, notify.ErrNoHolder) {
+			return fmt.Errorf("publish the %s hook's prompt for %s to its %s: %w", payload.Hook, row.Issue, payload.Role, err)
+		}
+		return err
+	}, func() {
 		r.log.Info("outbox hook prompt finished undelivered: no live session holds the role",
 			"row", row.ID, "issue", row.Issue, "hook", payload.Hook, "role", payload.Role, "count", payload.Count)
+	})
+}
+
+// heldDelivery runs the delivery of a role message or a hook prompt (what) under the hold rule
+// both share (R5). A row a try held whose hold has ended since — its claim ended, or moved says
+// its phase moved on — finishes undelivered (holdEnded). A row the listener stored for the session
+// that now holds its role again finishes with no new publish (storedForItsSession). Otherwise
+// publish runs. Where it answers that no session holds the role (notify.ErrNoHolder), the row is
+// held for a claim that keeps its session (heldForItsSession), or finishes undelivered with
+// undelivered's line. Every other failure publish answers keeps the row's retry, a publish the
+// listener stored for a holder as that stored copy (storedAnswer), so the retry records it.
+func (r *outbox) heldDelivery(ctx context.Context, row record.OutboxRow, token claim.Token, what string, moved func(record.Issue) bool, publish func() error, undelivered func()) error {
+	if ended, err := r.holdEnded(ctx, row, token, what, moved); err != nil || ended {
+		return err
+	}
+	if r.storedForItsSession(row, token, what) {
+		return nil
+	}
+	err := publish()
+	if errors.Is(err, notify.ErrNoHolder) {
+		if held := r.heldForItsSession(ctx, row, token, what, moved); held != nil {
+			return held
+		}
+		undelivered()
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("publish the %s hook's prompt for %s to its %s: %w", payload.Hook, row.Issue, payload.Role, r.storedAnswer(token, err))
+		return r.storedAnswer(token, err)
 	}
 	return nil
 }
@@ -1749,17 +1762,28 @@ func (r *outbox) heldForItsSession(ctx context.Context, row record.OutboxRow, to
 	if !keepsItsSession(held) {
 		return nil
 	}
-	issue, err := r.issue(ctx, row.Issue)
-	if err != nil {
-		return fmt.Errorf("read %s to judge whether its %s for %s is held: %w", row.Issue, what, token, err)
-	}
-	if moved(issue) {
-		r.log.Info("outbox "+what+" held for a claim Envoy cannot reach is finished undelivered: its phase moved on",
-			"row", row.ID, "issue", row.Issue, "claim", token, "phase", issue.Phase)
-		return nil
+	if movedOn, err := r.phaseMovedOn(ctx, row, token, what, moved); err != nil || movedOn {
+		return err
 	}
 	return wait.Errorf("%s's %s for %s waits for a session to hold its role: the claim keeps its session %s while Envoy has no holder for it: %w",
 		row.Issue, what, token, held.Session, errHeld)
+}
+
+// phaseMovedOn is whether the phase of row's issue has moved on from the one a hold over its what
+// for token waits in (moved, asked of the issue as its record stands now), which ends the hold and
+// finishes the row undelivered, with the line that says so. An issue the record cannot read is an
+// error, and the row keeps its retry.
+func (r *outbox) phaseMovedOn(ctx context.Context, row record.OutboxRow, token claim.Token, what string, moved func(record.Issue) bool) (bool, error) {
+	issue, err := r.issue(ctx, row.Issue)
+	if err != nil {
+		return false, fmt.Errorf("read %s to judge whether its %s for %s is still held: %w", row.Issue, what, token, err)
+	}
+	if !moved(issue) {
+		return false, nil
+	}
+	r.log.Info("outbox "+what+" held for a claim Envoy cannot reach is finished undelivered: its phase moved on",
+		"row", row.ID, "issue", row.Issue, "claim", token, "phase", issue.Phase)
+	return true, nil
 }
 
 // errHeld is what the wait of a row held for a claim that keeps its session wraps
@@ -1833,16 +1857,7 @@ func (r *outbox) holdEnded(ctx context.Context, row record.OutboxRow, token clai
 			"row", row.ID, "issue", row.Issue, "claim", token)
 		return true, nil
 	}
-	issue, err := r.issue(ctx, row.Issue)
-	if err != nil {
-		return false, fmt.Errorf("read %s to judge whether the hold over its %s for %s ended: %w", row.Issue, what, token, err)
-	}
-	if moved(issue) {
-		r.log.Info("outbox "+what+" held for a claim Envoy cannot reach is finished undelivered: its phase moved on",
-			"row", row.ID, "issue", row.Issue, "claim", token, "phase", issue.Phase)
-		return true, nil
-	}
-	return false, nil
+	return r.phaseMovedOn(ctx, row, token, what, moved)
 }
 
 // keepsItsSession is whether held, a claim's published view, still keeps the session it
@@ -1954,8 +1969,9 @@ func roleToken(project string, row record.OutboxRow, role claim.Role) (claim.Tok
 
 // publishToRole publishes message to topic, the Envoy topic of one role's claim
 // (notify.RoleTopicPrefix and the claim's token), under the row's own key, so a retried row is
-// one delivery. It is the publish that phaseEnded, hookPrompt and updateAsk share. Each of them
-// decides what comes before the publish, and each wraps the error it returns.
+// one delivery. It is the publish that phaseEnded and updateAsk share. Each of them decides what
+// comes before the publish, and each wraps the error it returns. A role message and a hook prompt
+// publish through heldDelivery instead, which holds a row for a claim that keeps its session.
 //
 // Three other executors publish to a role's topic, each through its own call of the publisher and
 // with its own rules for what the publisher answers: deliverNotice, an architect's notice, holds
