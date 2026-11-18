@@ -27,7 +27,7 @@ const set = readFileSync(scriptPath, "utf8").match(/^set -.*$/m)?.[0];
 if (set === undefined) throw new Error(`${scriptPath} has no top-level set line`);
 
 // Read once, at module scope: a call inside the test body would print the warning per row.
-const skip = skipWithout("tmux");
+const skip = skipWithout(["tmux"], "test");
 
 const dir = temporaryDirectory("parked-decision-teardown-test");
 const started: number[] = [];

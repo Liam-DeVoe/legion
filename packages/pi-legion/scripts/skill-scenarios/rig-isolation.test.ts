@@ -28,7 +28,7 @@ setDefaultTimeout(120_000);
 
 // Every row here runs the rig through python3, which puts it in a process group of its own
 // (`runRig` below says why it must). Read once, so one warning names python3 for the whole file.
-const withoutPython = skipWithout("python3");
+const withoutPython = skipWithout(["python3"], "pi-legion");
 
 const root = path.resolve(import.meta.dir, "../../../..");
 const scratch = temporaryDirectory("skill-scenarios-isolation", { real: true });

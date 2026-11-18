@@ -336,7 +336,7 @@ test("a title keeps no bidirectional override, and keeps a private-use glyph", a
 
 // These two drive a real tmux server, and a host without one runs neither and says so. Read once,
 // at module scope: a call per row would print the warning per row.
-const withoutTmux = skipWithout("tmux")
+const withoutTmux = skipWithout(["tmux"], "claude-envoy")
 
 test.skipIf(withoutTmux)(
   "a real tmux server answers a pane it does not have with no answer, and names its own pid",

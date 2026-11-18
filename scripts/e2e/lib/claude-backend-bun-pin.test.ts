@@ -8,6 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { requireOrSkip } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // claude-backend-tmux.sh builds claude-envoy with packages/claude-envoy/scripts/build.ts, which
@@ -123,20 +124,17 @@ const missing = tools.filter((name) => found.get(name) === null);
 // absent from the run's PATH, and the run would stop at the first line that calls it rather than at
 // the pin; and with no HOME of this process the walk has no second environment to tell a real
 // binary from a version manager's shim.
-const reasons: string[] = [];
+const missingForRun: string[] = [];
 if (missing.length > 0) {
-  reasons.push(`this host has no real binary on PATH for: ${missing.join(", ")}`);
+  missingForRun.push(`a real binary on this host's PATH for: ${missing.join(", ")}`);
 }
 if ((process.env.HOME ?? "") === "") {
-  reasons.push(
-    "this process has no HOME, which the walk over PATH needs to tell a real binary from a " +
+  missingForRun.push(
+    "a HOME of this process, which the walk over PATH needs to tell a real binary from a " +
       "version manager's shim"
   );
 }
-const skip = reasons.length > 0;
-if (skip) {
-  console.warn(`Skipped the test in ${import.meta.path} that runs the rig: ${reasons.join("; ")}.`);
-}
+const skip = requireOrSkip(missingForRun.join("; "), missingForRun.length === 0, "test");
 const keyFile = join(dir, "model-key");
 
 // The run's own bin, home and scratch, built before the row runs: `dir` is reserved at module

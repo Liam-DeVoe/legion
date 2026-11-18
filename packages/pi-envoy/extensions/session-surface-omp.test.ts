@@ -8,6 +8,7 @@ import {
   type Cleanup,
   isSummarization,
   messageStream,
+  ompNatsGuard,
   ompRoot,
   type Request,
   sendRelayFrame,
@@ -29,21 +30,11 @@ import { SHELL_OUTPUT_MAX } from "../src/typed-shell";
 // stand-in gateway, each held until the test answers it.
 // LEGION_TEST_OMP names the binary, as in card-delivery-omp.test.ts, and LEGION_TEST_NATS_URL the
 // NATS server. A run without both skips, except on GitHub Actions, where the pi-envoy job
-// supplies both.
+// supplies both (`ompNatsGuard`).
 // This file runs in a Bun process of its own (the package's `test` script): envoy.test.ts's
 // `mock.module("nats", …)` replaces `nats` for the whole process, and a file loaded after it gets
 // the mock's `connect`, which the check below turns into one clear failure.
-const omp = process.env.LEGION_TEST_OMP;
-const natsUrl = process.env.LEGION_TEST_NATS_URL;
-const onActions = process.env.GITHUB_ACTIONS === "true";
-const skip = (omp === undefined || natsUrl === undefined) && !onActions;
-
-/** The binary and NATS server a case runs against; throws on GitHub Actions without them. */
-function setup(): { readonly binary: string; readonly nats: string } {
-  if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
-  if (natsUrl === undefined) throw new Error("LEGION_TEST_NATS_URL is unset on GitHub Actions");
-  return { binary: omp, nats: natsUrl };
-}
+const { skip, setup } = ompNatsGuard("pi-envoy");
 
 // The real `connect`'s connection reports the server it reached (`getServer`); the mock's has no
 // such method. Checked once, before any case spends a binary's startup on a connection that

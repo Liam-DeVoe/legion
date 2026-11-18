@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
+import { requireOrSkip } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
   type ActiveDispatchConfig,
@@ -461,7 +462,12 @@ describe("readEnvoyConfig", () => {
   // device than the temporary directory's.
   const shm = "/dev/shm";
   const shmDirectory = temporaryDirectories("envoy-config", { root: shm });
-  test.skipIf(!existsSync(shm) || statSync(shm).dev === statSync(tmpdir()).dev)(
+  const withoutShm = requireOrSkip(
+    `${shm}, on another filesystem than the temporary directory ${tmpdir()}`,
+    existsSync(shm) && statSync(shm).dev !== statSync(tmpdir()).dev,
+    "envoy-client"
+  );
+  test.skipIf(withoutShm)(
     "a move across real filesystems names the file to create, and no mv command",
     () => {
       const home = tempDir();

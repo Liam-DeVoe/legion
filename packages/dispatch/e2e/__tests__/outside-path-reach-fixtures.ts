@@ -36,7 +36,7 @@ import type { udp } from "bun";
 export const script = fileURLToPath(
   new URL("../acceptance/outside-path-reach.sh", import.meta.url)
 );
-export const withoutTools = skipWithout("bash", "curl", "sleep");
+export const withoutTools = skipWithout(["bash", "curl", "sleep"], "dispatch-ui");
 export const bash = hostTool("bash") ?? "bash";
 export const curl = hostTool("curl") ?? "curl";
 const hostSleep = hostTool("sleep") ?? "sleep";

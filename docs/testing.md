@@ -131,16 +131,22 @@ itself, whose tests import its sources by relative path.
   the ports resolve rather than by whichever listener loses the race (`harnessPort` and
   `harnessPorts` in `packages/dispatch/e2e/harness-ports.ts`).
 
-- A suite that needs a program this host may not have skips with that program's name. Call
-  `skipWithout("docker")` once, at the file's module scope, and hand the answer to every
-  `describe.skipIf` and `test.skipIf` of the file: it prints one line naming the missing programs
-  and the file whose tests did not run (`@legion/test-fixtures/host-tools`), and a call per test
-  would print that line per test. A suite that needs a service does the same with the variable that
-  names it, and makes a database of its own rather than reading the one it finds
+- A suite that needs a program this host may not have skips with that program's name, and fails
+  under `GITHUB_ACTIONS=true` instead, as `packages/envoy/testprereq` does for Go: the `ci.yaml`
+  job that runs it must give it what it needs. Call `skipWithout(["docker"], "<job>")` once, at
+  the file's module scope, and hand the answer to every `describe.skipIf` and `test.skipIf` of the
+  file: off GitHub Actions it prints one line naming the missing programs and the file whose tests
+  did not run (`@legion/test-fixtures/host-tools`), and a call per test would print that line per
+  test; on GitHub Actions it throws, naming them, the job and the file. A suite that needs
+  anything else — a variable that names a binary or a service, a free port, a capability of the
+  machine — does the same with `requireOrSkip(what, present, "<job>")`, and one that needs a
+  database server makes a database of its own on it rather than reading the one it finds
   (`LEGION_TEST_PG_DSN`, `packages/dispatch/e2e/__tests__/psql-session.test.ts`). One that needs
-  both builds the two halves into a single list and prints one line, rather than calling
-  `skipWithout` beside a warning of its own, so a host that has neither reads one line naming both
-  (`hostTool` with the variable, in that file and in `harness-stacks.test.ts`).
+  several builds what it lacks into a single list and hands it to one `requireOrSkip`, rather than
+  calling `skipWithout` beside it, so a host that has none reads one line naming each (`hostTool`
+  with the variable, in that file and in `harness-stacks.test.ts`). A skip that chooses a
+  platform, a browser, a project or a run (`LEGION_E2E_ENVOY_STACK=1`) names no prerequisite and
+  keeps its plain `skipIf`.
 
 - Start a container with `docker run --rm` and register its removal the moment `docker run` returns,
   not once the whole start has succeeded: a start that throws half-way has already made the

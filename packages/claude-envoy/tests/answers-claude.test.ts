@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import type { SessionAnswer } from "@legion/contracts"
 import { renderSessionAnswers } from "@legion/envoy-client/session-answers"
+import { requireOrSkip } from "@legion/test-fixtures/host-tools"
 
 // What people wrote to a session, on the real Claude Code (hooks/session-hook.ts
 // `answers`): Claude Code keeps a hook's additionalContext where only the requests it
@@ -17,10 +18,13 @@ import { renderSessionAnswers } from "@legion/envoy-client/session-answers"
 // skip would hide the only run of the check (GITHUB_ACTIONS, not CI: agent harnesses on the devbox
 // export CI=true).
 const claude = process.env["LEGION_TEST_CLAUDE"]
-const onActions = process.env["GITHUB_ACTIONS"] === "true"
-const skipped = claude === undefined && !onActions
+const skipped = requireOrSkip(
+  "LEGION_TEST_CLAUDE, naming the Claude Code binary",
+  claude !== undefined,
+  "claude-envoy",
+)
 const binary = (): string => {
-  if (claude === undefined) throw new Error("LEGION_TEST_CLAUDE is unset on GitHub Actions")
+  if (claude === undefined) throw new Error("LEGION_TEST_CLAUDE is unset")
   return claude
 }
 

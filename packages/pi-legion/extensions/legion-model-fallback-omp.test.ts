@@ -28,7 +28,7 @@ import {
 // without one, and its claim boot then ends the session (INFRA-771). A run without both skips,
 // except on GitHub Actions, where a skip would hide the only run of the check on the host that
 // ships it (`ompNatsGuard`).
-const { skip, setup } = ompNatsGuard();
+const { skip, setup } = ompNatsGuard("pi-legion");
 
 /** The pane's own models: the one every model role names, the one its chain steps to, and the
  * one in between, for the case whose chain has two steps. */

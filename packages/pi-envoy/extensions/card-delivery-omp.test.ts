@@ -34,7 +34,7 @@ import { readCardLines } from "../test/card-entries";
 // NATS server (the name the daemon's tests read, packages/daemon/internal/testnats/nats.go). A run
 // without both skips, except on GitHub Actions, where the pi-envoy job supplies both
 // (`ompNatsGuard`).
-const { skip, setup } = ompNatsGuard();
+const { skip, setup } = ompNatsGuard("pi-envoy");
 
 /** What the wake (src/card-wake.ts, `CardWake`) says, in its one- and many-card forms. */
 const WAKE_TEXT = /Envoy messages? above arrived with no turn to read (it|them)/;

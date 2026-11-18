@@ -20,6 +20,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { requireOrSkip } from "@legion/test-fixtures/host-tools";
 
 // What people wrote to a session, on every request of the real Oh My Pi's main loop
 // (src/session-answers-context.ts), and on none of the other requests its
@@ -30,7 +31,6 @@ import {
 // each case controls. LEGION_TEST_OMP names the binary, as in dispatch-first-omp.test.ts. A run
 // without one skips, except on GitHub Actions.
 const omp = process.env.LEGION_TEST_OMP;
-const onActions = process.env.GITHUB_ACTIONS === "true";
 
 /** What the stand-in's answers route does: list `items` (after `delayMs`, at once when unset),
  *  accept and never answer, or answer as a Dispatch build older than the route does. */
@@ -505,9 +505,13 @@ function delegating(prompt: string, onTask: (setRoute: (route: Route) => void) =
   return { reply, subagent: subagent.promise };
 }
 
-const skipped = omp === undefined && !onActions;
+const skipped = requireOrSkip(
+  "LEGION_TEST_OMP, naming the Oh My Pi binary of .omp-pin",
+  omp !== undefined,
+  "pi-envoy"
+);
 const binary = (): string => {
-  if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
+  if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset");
   return omp;
 };
 

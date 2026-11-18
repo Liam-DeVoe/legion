@@ -28,9 +28,9 @@ const dir = temporaryDirectory("claude-backend-guards-test");
 // The gate is given both names: it walks each one and names the missing ones in its warning.
 // `found` is the run's own walk, whose real binaries the stand-ins below are copies of.
 const found = new Map(["bash", "sleep"].map((name) => [name, hostTool(name)] as const));
-const skip = skipWithout("bash", "sleep");
+const skip = skipWithout(["bash", "sleep"], "test");
 // Only the unreadable-environment case needs an interpreter.
-const withoutPython = skipWithout("python3");
+const withoutPython = skipWithout(["python3"], "test");
 function tool(name: string): string {
   const path = found.get(name) ?? null;
   if (path === null) throw new Error(`${name} is not on PATH`);

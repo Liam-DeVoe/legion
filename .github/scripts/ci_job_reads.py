@@ -430,7 +430,7 @@ CLAUDE_ENVOY_BUILD = reads(
 CLAUDE_ENVOY_JOB = CLAUDE_ENVOY_BUILD + reads(
         (".github/actions/install-claude-code/**", at("claude-envoy", "./.github/actions/install-claude-code")),
         (".claude-code-pin", ".github/actions/install-claude-code/action.yml:16 pin=$(<.claude-code-pin), the release "
-                             "packages/claude-envoy/tests/answers-claude.test.ts:312,338 runs"),
+                             "packages/claude-envoy/tests/answers-claude.test.ts:316,342 runs"),
         ("packages/envoy-client/test/**", "packages/claude-envoy/tests/envoy-channel-stall.test.ts:5-12 imports three of its modules, and tsc puts four files of that directory in the claude-envoy program"),
         (f"{FIX}/daemon-api/**", "packages/claude-envoy/tests/daemon-api-version.test.ts:15, legion-claim.test.ts:43-44, legion-pane-mcp.test.ts:19-20, legion-tool.test.ts:13"),
         (".claude-plugin/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:9"),
@@ -2686,12 +2686,12 @@ GATES = [
         ("packages/envoy-client/bin/dispatch.ts", "packages/pi-envoy/package.json:26 build and scripts/pi-plugin-prepack.sh:96 run build-dispatch-cli.sh, entry bin/dispatch.ts"),
         ("packages/envoy-client/scripts/build-dispatch-cli.sh", "packages/pi-envoy/package.json:26; scripts/pi-plugin-prepack.sh:96"),
         (CONTRACTS_SRC, f"{at('pi-envoy', 'Build contracts for pi-envoy')}; tsconfig paths @legion/contracts"),
-        (f"{FIX}/dispatch-targeted-delivery.json", "packages/pi-envoy/extensions/envoy.test.ts:300"),
-        ("skills/**", "packages/pi-envoy/src/skills-guard.test.ts:43 stages them (the roots at :29-32); scripts/pi-plugin-prepack.sh:103 stages skills; extensions/envoy.ts's resolveSkillsDirectory"),
+        (f"{FIX}/dispatch-targeted-delivery.json", "packages/pi-envoy/extensions/envoy.test.ts:301"),
+        ("skills/**", "packages/pi-envoy/src/skills-guard.test.ts:48 stages them (the roots at :30-34); scripts/pi-plugin-prepack.sh:103 stages skills; extensions/envoy.ts's resolveSkillsDirectory"),
         ("scripts/pi-plugin-prepack.sh", f"packages/pi-envoy/package.json:27 prepack ({at('pi-envoy', 'Pack pi-envoy')}); packages/pi-envoy/scripts/prepack.test.ts:85"),
         ("scripts/third-party-notices.ts", "scripts/pi-plugin-prepack.sh:97,100 write dist/THIRD_PARTY_NOTICES with it"),
         ("scripts/e2e/lib/pack-plugin.sh", "packages/pi-envoy/scripts/prepack.test.ts:120-123"),
-        (f"{DAEMON}/internal/prompts/**/*.md", "packages/pi-envoy/src/skills-guard.test.ts:208-212 reads every .md of skillAndPromptRoots (:30-33)"),
+        (f"{DAEMON}/internal/prompts/**/*.md", "packages/pi-envoy/src/skills-guard.test.ts:213-217 reads every .md of skillAndPromptRoots (:31-34)"),
     ) + envoy_client_dep("packages/pi-envoy/tsconfig.json paths @legion/envoy-client/*; extensions/envoy.ts:19-131 imports")
       + install_jj("pi-envoy") + install_omp("pi-envoy") + bun_job("pi-envoy")),
 
@@ -2702,7 +2702,7 @@ GATES = [
                    overlay={f"{DAEMON}/cmd/daemon-pane/main.go": "packages/pi-legion/scripts/skill-scenarios/daemon-pane.go"}),
     ], reads=reads(
         ("packages/pi-legion/**", f"{at('pi-legion', 'Typecheck pi-legion')}, test and pack in packages/pi-legion"),
-        ("packages/pi-envoy/**", "packages/pi-legion/extensions/legion.test.ts:70,311 and legion-role-claim.test.ts:13,99 import ../../pi-envoy/extensions/envoy; packages/pi-shared/test/omp-harness.ts:1035"),
+        ("packages/pi-envoy/**", "packages/pi-legion/extensions/legion.test.ts:70,311 and legion-role-claim.test.ts:13,99 import ../../pi-envoy/extensions/envoy; packages/pi-shared/test/omp-harness.ts:1037"),
         ("packages/claude-envoy/**", "packages/pi-legion/src/skills-guard.test.ts:313 spawns packages/claude-envoy/scripts/build.ts (PLUGIN_BUILDER :24) and asserts an exact file list over the tree it writes, so that script and everything it reads - its BUNDLE_ENTRYPOINTS at scripts/build.ts:39-44 among them - are read by this job through a spawn, which carries no import and which no derivation sees"),
         ("packages/envoy-client/bin/dispatch.ts", "the fourth entry of that builder's BUNDLE_ENTRYPOINTS (packages/claude-envoy/scripts/build.ts:43), outside the package it builds"),
         ("packages/pi-shared/src/**", "packages/pi-legion/tsconfig.json paths @legion/pi-shared/* and include ../pi-shared/src/omp-host.d.ts"),
@@ -2720,7 +2720,7 @@ GATES = [
         ("packages/dispatch/e2e/**", "packages/pi-legion/scripts/skill-scenarios/seed.ts:111 imports packages/dispatch/e2e/api.ts (typecheck includes scripts/skill-scenarios/*.ts), and that program holds six of that directory's modules: api.ts, harness-ports.ts, harness-broker.ts, harness-processes.ts, harness-real-broker.ts and harness-signin.ts"),
         ("packages/dispatch/web/src/api/types.ts", "packages/dispatch/e2e/api.ts:20"),
         ("packages/dispatch/web/src/api/paths.ts", "packages/dispatch/e2e/api.ts:8-19 imports PathsOf, Op, PathParams, QueryParams, RequestBody, Query, Body and Answer from it, since that client is keyed on the generated document's path patterns"),
-        ("skills/**", "packages/pi-legion/src/skills-guard.test.ts:39 stages them and :199-203 reads the roots at :189-197; scripts/skill-scenarios/rig.test.ts:954,1170; prepack stages skills"),
+        ("skills/**", "packages/pi-legion/src/skills-guard.test.ts:39 stages them and :199-203 reads the roots at :189-197; scripts/skill-scenarios/rig.test.ts:959,1173-1175; prepack stages skills"),
         ("scripts/pi-plugin-prepack.sh", f"packages/pi-legion/package.json prepack ({at('pi-legion', 'Pack pi-legion')}); packages/pi-shared/test/skills-guard.ts:17,34"),
         ("scripts/third-party-notices.ts", "scripts/pi-plugin-prepack.sh:97,100"),
         (f"{DAEMON}/internal/**", "packages/pi-legion/src/skills-guard.test.ts:199-203 sweeps every .md/.go/.ts/.yaml/.yml/.example/.sh under packages/daemon/internal, a root of the list at :192"),
@@ -2729,8 +2729,8 @@ GATES = [
         ("deploy/kubernetes/daemon/controller.yaml.example", "packages/pi-legion/src/skills-guard.test.ts:199-203, a root of the list at :194"),
         ("AGENTS.md", "packages/pi-legion/src/skills-guard.test.ts:199-203, a root of the list at :195"),
         ("README.md", "packages/pi-legion/src/skills-guard.test.ts:199-203, a root of the list at :196"),
-        ("scripts/e2e/lib/**", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:6 imports scripts/e2e/lib/script-functions; rig.sh:275 sources scripts/e2e/lib/rig.sh"),
-        (".omp-pin", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:1168-1170 copies .omp-pin"),
+        ("scripts/e2e/lib/**", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:14 imports scripts/e2e/lib/script-functions; rig.sh:275 sources scripts/e2e/lib/rig.sh"),
+        (".omp-pin", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:1173-1175 copies .omp-pin"),
         ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts", "writes the overlay and runs go run (:29-30)"),
     ) + envoy_client_dep("packages/pi-legion/tsconfig.json paths @legion/envoy-client/*; scripts/skill-scenarios/*.ts "
                          "import @legion/envoy-client/*")
