@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -309,6 +310,38 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		rig.readsWere(t, issue, reads, 1)
 		rig.wokenOnce(t, issue)
 	})
+}
+
+// A removal message the message bus stream refuses (409 under the listener's streamRefusedPrefix:
+// a sealed stream, a message past its maxima) is refused however often it is sent, until an
+// operator changes the stream. The row is held for a merger nobody holds, but held here it would
+// retry the refusal for ever and tell the merger nothing either way, so it ends undelivered with
+// one ERROR line naming it, its issue, its pull request, the merger's topic and the stream's
+// refusal. A holder that did not confirm the message in time is another failure, and keeps the
+// row's retry.
+func TestAMergeQueueRemovalTheStreamRefusesEndsTheRow(t *testing.T) {
+	publisher := &outboxPublisher{err: fmt.Errorf("publish notice to the merger's topic: listener returned 409 Conflict: %w",
+		notify.ErrStreamRefused{Message: streamRefusal})}
+	runner, _, _ := conflictRunner(t, phase.Merging, "in_progress", false, publisher)
+	logs := &syncBuffer{}
+	runner.log = jsonLogger(logs)
+	row := mustOutboxRow(t, "LEGION-208", record.MergeQueueRemoval{Number: 86, Head: "sha-1"}, time.Now())
+	row.ID = 65
+	topic := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", claim.RoleMerger))
+
+	if err := runner.execute(context.Background(), row); err != nil {
+		t.Fatalf("the merge-queue removal the stream refused = %v, want the row ended", err)
+	}
+	if published := publisher.publishes(); len(published) != 1 || published[0].topic != topic {
+		t.Fatalf("publishes = %#v, want the one to %s the stream refused", published, topic)
+	}
+	streamRefusedLine(t, logs.String(), map[string]any{"row": float64(row.ID), "issue": row.Issue, "pullRequest": float64(86),
+		"head": "sha-1", "topic": topic})
+	cause := notify.ErrNotDelivered{Reason: notify.ReasonReceiptTimeout, Holder: "ses_m"}
+	publisher.err = fmt.Errorf("publish notice to the merger's topic: %w", cause)
+	if err := runner.execute(context.Background(), row); !errors.Is(err, cause) {
+		t.Fatalf("the merge-queue removal its merger did not confirm = %v, want the answer as a failure, retried", err)
+	}
 }
 
 // dequeueRig is the daemon this test drives and the stand-ins it reads back from: GitHub, Envoy's

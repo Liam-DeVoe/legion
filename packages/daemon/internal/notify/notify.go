@@ -133,6 +133,32 @@ func (e ErrPublishDenied) Error() string {
 	return fmt.Sprintf("the listener's NATS grant denied the forward (%s)", e.Message)
 }
 
+// ErrStreamRefused is a publish the listener answered 409 because the message bus stream refused
+// the message itself, its publish to the topic or its forward to the role's holder: a message or
+// headers past the stream's maxima, a message too large for the store, or a sealed stream
+// (bus.StreamRefusesMessage). Its body's error opens with streamRefusedPrefix
+// (writeBusUnavailable, packages/envoy/cmd/listener/api.go), and the answer carries no
+// Retry-After. Message is that error, which names the stream's own reason; it is bounded by
+// refusalBodyLimit as the refusal is. The stream refuses the same message however often it is
+// sent, so sending it again changes nothing until an operator changes the stream (replaces a
+// sealed one, or raises the maximum it refused the message under) or the message itself changes.
+// Any other 409 (one whose error does not open with the prefix, or whose body is not JSON) stays a
+// plain refusal, retried.
+type ErrStreamRefused struct {
+	Message string
+}
+
+// streamRefusedPrefix mirrors the listener's streamRefusedPrefix
+// (packages/envoy/cmd/listener/api.go), the opening of every answer it gives a send or publish the
+// stream refuses for the message itself. Every listener since cybermonklabs/legion#4342, which
+// added the 409, writes it; a listener before it answered the same refusal 503 with Retry-After
+// or 504, which this daemon reads as a plain refusal and retries.
+const streamRefusedPrefix = "envoy: the message bus stream refused the message, and refuses it however often it is sent"
+
+func (e ErrStreamRefused) Error() string {
+	return fmt.Sprintf("the message bus stream refused the message (%s)", e.Message)
+}
+
 // RoleTopicPrefix is the Envoy subject a role token is reached on (ROLE_TOPIC_PREFIX,
 // packages/contracts/src/subject.ts): a notice goes to its architect's, and a review-stuck notice
 // names its reviewer's, so the architect need not build it.
@@ -260,6 +286,8 @@ func (p *HTTPPublisher) Publish(ctx context.Context, topic, message string, payl
 			return fmt.Errorf("%w: %w", refusal, ErrRefusedByHolder{Holder: answer.Holder})
 		case response.StatusCode == http.StatusForbidden && strings.HasPrefix(answer.Error, publishDeniedPrefix):
 			return fmt.Errorf("%w: %w", refusal, ErrPublishDenied{Message: answer.Error})
+		case response.StatusCode == http.StatusConflict && strings.HasPrefix(answer.Error, streamRefusedPrefix):
+			return fmt.Errorf("%w: %w", refusal, ErrStreamRefused{Message: answer.Error})
 		}
 		return refusal
 	}

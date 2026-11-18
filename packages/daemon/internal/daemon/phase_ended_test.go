@@ -160,7 +160,8 @@ func TestAPhaseEndedMessageNobodyHoldsEndsAndTheStartGoesOn(t *testing.T) {
 // a holder that did not confirm the message in time can take it on the next attempt, a holder that
 // does not advertise the delivery mode can be replaced by another session on the role, and a
 // forward the listener's own NATS grant denies goes through once an operator changes that grant.
-// Only a role with no live holder ends the row.
+// Only a role with no live holder ends the row, and a message the stream refuses
+// (TestAPhaseEndedMessageTheStreamRefusesEndsTheRow).
 func TestAPhaseEndedMessageRetriesEveryFailureButNoHolder(t *testing.T) {
 	ctx := context.Background()
 	row := mustOutboxRow(t, "LEGION-208", record.PhaseEnded{Role: claim.RoleTester, From: phase.Testing,
@@ -190,6 +191,29 @@ func TestAPhaseEndedMessageRetriesEveryFailureButNoHolder(t *testing.T) {
 	if err := runner.execute(ctx, row); err != nil {
 		t.Fatalf("the phase-ended message no session holds = %v, want the row finished", err)
 	}
+}
+
+// A message the message bus stream refuses (409 under the listener's streamRefusedPrefix: a
+// sealed stream, a message past its maxima) is refused however often it is sent, until an operator
+// changes the stream. So the row ends with one ERROR line naming it, its issue, its role and the
+// stream's refusal, rather than being retried for as long as the stream stands.
+func TestAPhaseEndedMessageTheStreamRefusesEndsTheRow(t *testing.T) {
+	row := mustOutboxRow(t, "LEGION-208", record.PhaseEnded{Role: claim.RoleTester, From: phase.Testing,
+		To: phase.Implementing, Reason: "the head conflicts with main"}, time.Now())
+	row.ID = 62
+	publisher := &outboxPublisher{err: fmt.Errorf("publish notice to the tester's topic: listener returned 409 Conflict: %w",
+		notify.ErrStreamRefused{Message: streamRefusal})}
+	logs := &syncBuffer{}
+	runner := &outbox{project: "legion", notices: publisher, log: jsonLogger(logs)}
+
+	if err := runner.execute(context.Background(), row); err != nil {
+		t.Fatalf("the phase-ended message the stream refused = %v, want the row ended", err)
+	}
+	if published := publisher.publishes(); len(published) != 1 {
+		t.Fatalf("publishes = %#v, want the one the stream refused", published)
+	}
+	streamRefusedLine(t, logs.String(), map[string]any{"row": float64(row.ID), "issue": row.Issue, "role": string(claim.RoleTester),
+		"from": string(phase.Testing), "to": string(phase.Implementing)})
 }
 
 // conflictRunner is an outbox runner over an isolated database holding LEGION-208 in from, with the

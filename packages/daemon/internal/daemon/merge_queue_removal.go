@@ -125,7 +125,10 @@ func (r *outbox) mergeQueueRead(ctx context.Context, row record.OutboxRow, paylo
 // answers of the confirmed publish route keep the ordinary retry, as they do for a phase-ended
 // message: a holder that did not confirm in time (notify.ErrNotDelivered), one that does not
 // advertise the delivery mode (notify.ErrRefusedByHolder), and a forward the listener's own NATS
-// grant denies (notify.ErrPublishDenied).
+// grant denies (notify.ErrPublishDenied). A message the message bus stream refuses
+// (notify.ErrStreamRefused) ends the row undelivered with one ERROR line, as it does a
+// phase-ended message: the stream refuses it however often it is sent, until an operator changes
+// the stream, so holding the row would retry it for ever and tell the merger nothing either way.
 func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, payload record.MergeQueueRemoval) error {
 	if r.notices == nil {
 		return errors.New("merge-queue removal executor has no Envoy publisher")
@@ -168,7 +171,9 @@ func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, pa
 		return wait.Errorf("the merge-queue removal of %s waits for its merger's released pod to come back", row.Issue)
 	}
 	message := payload.Message(row.Issue, pr.Repo)
-	published := r.notices.Publish(ctx, notify.RoleTopicPrefix+string(token), message, message, record.OutboxKey(row.ID))
+	topic := notify.RoleTopicPrefix + string(token)
+	published := r.notices.Publish(ctx, topic, message, message, record.OutboxKey(row.ID))
+	var streamRefused notify.ErrStreamRefused
 	switch {
 	case published == nil:
 		r.log.Info("outbox merge-queue removal delivered to the merger", attributes...)
@@ -178,6 +183,10 @@ func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, pa
 	case errors.Is(published, notify.ErrHolderUnresponsive):
 		return wait.Errorf("the merge-queue removal of %s waits for its merger, whose session the listener reports %s: %w",
 			row.Issue, notify.StateUnresponsive, published)
+	case errors.As(published, &streamRefused):
+		r.log.Error("outbox merge-queue removal finished undelivered: the message bus stream refused the message",
+			append(attributes, "topic", topic, "refusal", streamRefused.Message)...)
+		return nil
 	}
 	return fmt.Errorf("publish the merge-queue removal of %s to its merger: %w", row.Issue, published)
 }

@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+    The daemon now stops sending a message that the Envoy message bus stream refuses. The
+    listener answers such a send 409: the stream is sealed, or the message is past its size
+    limits, and the stream refuses it however often it is sent. Before, the daemon read that
+    answer as an ordinary failure and sent the message again without end. Now every outbox row
+    that publishes (architect notices, role messages, phase-ended messages, hook prompts, update
+    asks, merge-queue removals and controller notices) ends undelivered at that answer, with one
+    ERROR line that names the row, its issue, the topic or role, and the stream's reason.
+time: 2026-11-18T05:02:50Z
+custom:
+    Issue: pr4342
