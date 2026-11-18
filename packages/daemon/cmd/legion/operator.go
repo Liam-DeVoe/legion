@@ -34,9 +34,10 @@ type operatorCall struct {
 	port           *int
 	stdout, stderr io.Writer
 	// wait is the bound the command's whole call runs under, when the command takes one
-	// (withWait), and until the moment that bound expires, fixed when check reads the call. Every
-	// request the command makes is bounded by that one moment, so a command that reads the claims
-	// in a loop is bounded by its --wait and not by --wait per request.
+	// (withWait), and until the moment that bound expires: fixed when check reads the call, or set
+	// and moved by a command that bounds its call otherwise (`legion project release`,
+	// waitUntil). Every request the command makes is bounded by that one moment, so a command that
+	// reads the claims in a loop is bounded by its --wait and not by --wait per request.
 	wait  *time.Duration
 	until time.Time
 }
@@ -51,8 +52,9 @@ func (c *operatorCall) withWait(usage string) {
 	c.wait = c.flags.Duration("wait", time.Minute, usage)
 }
 
-// bound is ctx under the command's remaining --wait, and ctx itself for a command that takes no
-// --wait. The deadline is the one check fixed, so every request shares it.
+// bound is ctx under the command's deadline (until), and ctx itself while none is set. check sets
+// it from --wait, or a command that bounds its call otherwise sets it itself (waitUntil), so every
+// request shares it.
 func (c *operatorCall) bound(ctx context.Context) (context.Context, context.CancelFunc) {
 	if c.until.IsZero() {
 		return ctx, func() {}
