@@ -69,11 +69,14 @@ export function IssueTitleRow({
   // Set by a key that ends the edit, and read once the heading is drawn again: the focus goes
   // back to it.
   const returning = useRef(false);
-  // The draft this edit sent while the reader was away, trimmed as it went, or null. A draft goes
-  // once: neither a later switch nor the end of the edit sends it again. `requestTitleSubmit`
-  // would send it a second time after its write was refused or stopped, or in the moment between
-  // its landing and the page drawing the issue it answered, while the issue's title read here is
-  // still the old one.
+  // The draft this edit sent since the reader last changed it, trimmed as it went, or null: a
+  // switch or a hide sends it, and a change the reader makes clears it (the editor's `onChange`).
+  // A draft goes once: neither a later switch nor the end of the edit sends it again.
+  // `requestTitleSubmit` would send it a second time after its write was refused or stopped, or
+  // in the moment between its landing and the page drawing the issue it answered, while the
+  // issue's title read here is still the old one. A text the reader writes after that is theirs
+  // to send, though it may be the same text: another reader's write can have changed the title
+  // since, and the draft, not changed, took that title.
   const sent = useRef<string | null>(null);
   // The editor's text as the reader last wrote it in this edit. The draft takes that text trimmed
   // as a write of it lands with the edit open (`onIssueSuccess`), or as a switch finds it the
@@ -235,6 +238,7 @@ export function IssueTitleRow({
           // A title is one line of words: a line break typed or pasted is a space.
           onChange={(event) => {
             const next = event.target.value.replace(/\s*\n\s*/gu, " ");
+            sent.current = null;
             setWritten(next);
             drafts.writeTitle(next);
           }}
@@ -244,7 +248,14 @@ export function IssueTitleRow({
             // compositionend, with `isComposing` false and keyCode 229 (WebKit bug 165004).
             if (event.nativeEvent.isComposing || event.keyCode === 229) return;
             if (event.key === "Escape") {
-              drafts.discardTitle();
+              // Escape drops only what the reader changed since this edit sent the draft. That
+              // send's write may still be out: a draft put back to the issue's title then would
+              // be marked changed as the write lands (`onIssueSuccess`), so the heading would read
+              // the old title and the next edit would send it over the new one. A draft that is
+              // not changed is the issue's title: the send landed, and another title may have
+              // come since.
+              if (sent.current === null || !drafts.titleDirty) drafts.discardTitle();
+              else drafts.writeTitle(sent.current);
               returning.current = true;
               setEditing(false);
               return;
