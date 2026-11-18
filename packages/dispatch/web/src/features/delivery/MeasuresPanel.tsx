@@ -128,10 +128,12 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
     data === undefined ? PENDING : format(data);
   const toneOf = (met: (response: DeliveryMeasuresResponse) => boolean | null): string =>
     data === undefined ? textMutedOnSurface : tone(met(data));
-  // A lead-time card shows two figures of its eval, and its verdict is of the statistics its
-  // target judges: a figure takes the verdict's tone where it is one the card names
-  // (`shownJudges`) and reads plain where it is not, so a card judged by its p90, or by a longest
-  // change that implies its median, does not colour its median by that verdict.
+  // A card that shows more than one figure of its eval (a lead-time card's two, the failure rate's
+  // upper bound beside its rate) has a verdict of the statistics its target judges: a figure takes
+  // the verdict's tone where it is one the card names (`shownJudges`) and reads plain where it is
+  // not, so a card judged by its p90, or by a longest change that implies its median, does not
+  // colour its median by that verdict, and one judged by its per-deploy rate alone does not colour
+  // its upper bound, whatever verdict of that figure the answer carries.
   const judgedTone = (
     judge: string,
     target: (response: DeliveryMeasuresResponse) => Target,
@@ -238,7 +240,11 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
               <div className={`text-xs ${textMutedOnSurface}`}>
                 up to{" "}
                 <span
-                  className={`font-semibold ${tone(data.status.change_failure_rate_upper_bound)}`}
+                  className={`font-semibold ${judgedTone(
+                    "upper_bound.rate",
+                    (d) => d.targets.change_failure_rate,
+                    (d) => d.status.change_failure_rate_upper_bound
+                  )}`}
                 >
                   {pct(data.measures.change_failure_rate.per_deploy.upper_bound_rate, 2)}
                 </span>{" "}
@@ -263,7 +269,13 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
         >
           <div className="flex flex-wrap items-baseline gap-x-3">
             <span className="flex items-baseline gap-1">
-              <BigNumber className={toneOf((d) => d.status.merge_to_production_median)}>
+              <BigNumber
+                className={judgedTone(
+                  "minutes.median",
+                  (d) => d.targets.merge_to_production_minutes,
+                  (d) => d.status.merge_to_production_median
+                )}
+              >
                 {show((d) =>
                   formatMinutes(d.measures.lead_time.merge_to_production.median_minutes)
                 )}

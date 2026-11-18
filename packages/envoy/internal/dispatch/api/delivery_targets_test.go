@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -187,6 +188,65 @@ func TestTheDeliveryVerdictsAreTheirEvalsVerdicts(t *testing.T) {
 		t.Error("with the deploy repository mapped to no project deploys_per_day has no verdict, want the catalogue's target to judge it")
 	}
 	t.Logf("%d verdicts and targets compared with the eval route's; unmapped, the targets are the catalogue's", compared)
+}
+
+// TestAFigureItsJudgesDoNotNameHasNoVerdict (R5): the measures answer's verdict of the median merge
+// to production and of the failure rate's upper bound is that one statistic's verdict against its
+// eval's target, answered only where the eval's judges name it and null otherwise, since a target
+// no judge holds the figure to says nothing of it. Over figures where the median merge to
+// production meets the catalogue's 45 minutes and the longest change misses it, and the per-deploy
+// failure rate meets the catalogue's 5% and its upper bound misses it: merge to production judged
+// by its longest change alone answers no median verdict; the change failure rate judged by its
+// per-deploy rate and its upper bound answers the upper bound's own verdict, missed; and the
+// catalogue's judges (merge to production's longest change and median, the per-deploy rate) answer
+// the median's verdict, met, and no upper-bound verdict.
+func TestAFigureItsJudgesDoNotNameHasNoVerdict(t *testing.T) {
+	_, database := newTestHandlerWithStore(t)
+	catalogue, err := evals.New(database, nil, nil).DeployRepoEvals(t.Context(), "acme/widgets", evals.DeliveryTargetSlugs)
+	if err != nil {
+		t.Fatalf("read the catalogue's delivery evals: %v", err)
+	}
+	figures := evals.ResultStatistics(measures.Result{
+		LeadTime: measures.LeadTime{MergeToProduction: measures.Spread{N: 3, MedianMinutes: new(30.0), P90Minutes: new(80.0), MaxMinutes: new(90.0)}},
+		ChangeFailureRate: measures.ChangeFailureRate{
+			PerPR: measures.FlagCounts{Pending: 2, Total: 10, Rate: new(0.0)},
+			PerDeploy: measures.DeployFlagCounts{
+				FlagCounts: measures.FlagCounts{Pending: 2, Total: 10, Rate: new(0.0)}, ConfirmedOrPending: 2, UpperBoundRate: new(0.2),
+			},
+		},
+	}, 0)
+	judged := func(slug string, judges ...string) map[string]evals.Entry {
+		entries := maps.Clone(catalogue)
+		entry := entries[slug]
+		entry.Definition.TargetJudges = judges
+		entries[slug] = entry
+		return entries
+	}
+	missed, met := new(false), new(true)
+	for _, check := range []struct {
+		what    string
+		entries map[string]evals.Entry
+		field   func(measures.Status) *bool
+		name    string
+		want    *bool
+	}{
+		{"the catalogue's judges", catalogue, func(status measures.Status) *bool { return status.MergeToProduction }, "merge_to_production", missed},
+		{"the catalogue's judges", catalogue, func(status measures.Status) *bool { return status.MergeToProductionMedian }, "merge_to_production_median", met},
+		{"the catalogue's judges", catalogue, func(status measures.Status) *bool { return status.ChangeFailureRate }, "change_failure_rate", met},
+		{"the catalogue's judges", catalogue, func(status measures.Status) *bool { return status.ChangeFailureRateUpperBound }, "change_failure_rate_upper_bound", nil},
+		{"merge to production judged by minutes.max", judged(evals.SlugMergeToProduction, measures.SeriesMinutes+".max"),
+			func(status measures.Status) *bool { return status.MergeToProduction }, "merge_to_production", missed},
+		{"merge to production judged by minutes.max", judged(evals.SlugMergeToProduction, measures.SeriesMinutes+".max"),
+			func(status measures.Status) *bool { return status.MergeToProductionMedian }, "merge_to_production_median", nil},
+		{"the change failure rate judged by per_deploy.rate and upper_bound.rate", judged(evals.SlugChangeFailRate, measures.SeriesPerDeploy+".rate", measures.SeriesUpperBound+".rate"),
+			func(status measures.Status) *bool { return status.ChangeFailureRate }, "change_failure_rate", missed},
+		{"the change failure rate judged by per_deploy.rate and upper_bound.rate", judged(evals.SlugChangeFailRate, measures.SeriesPerDeploy+".rate", measures.SeriesUpperBound+".rate"),
+			func(status measures.Status) *bool { return status.ChangeFailureRateUpperBound }, "change_failure_rate_upper_bound", missed},
+	} {
+		if got := check.field(measuresStatus(check.entries, figures)); !sameVerdict(got, check.want) {
+			t.Errorf("with %s, status.%s is %s, want %s", check.what, check.name, showVerdict(got), showVerdict(check.want))
+		}
+	}
 }
 
 // TestATargetWriteMovesTheLiveDeliveryVerdicts: a register write of merge-to-production's target
