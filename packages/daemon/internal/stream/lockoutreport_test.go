@@ -93,11 +93,13 @@ func TestANewerProcessStillRefusedIsReportedOnce(t *testing.T) {
 	if out, ok := h.listener.LockedOut(testClaim); ok {
 		t.Fatalf("LockedOut = %#v after the older connection closed, want no lock-out", out)
 	}
-	if alerts.IsOpen(fleetalert.NewerProcessRefused, string(testClaim)) {
-		t.Fatal("the fleet alert is still open after the lock-out ended")
-	}
 	if got := alertLog.Lines(); !slices.Equal(got, lines) {
 		t.Fatalf("the fleet alert lines = %q, want the one line the lock-out opened", got)
+	}
+	// The case ended with the lock-out, so the writer holds its line open no more: the next open
+	// of it writes the line again.
+	if !alerts.Open(fleetalert.NewerProcessRefused, string(testClaim)) {
+		t.Fatalf("the fleet alert lines = %q: the line is still open after the lock-out ended", alertLog.Lines())
 	}
 }
 
