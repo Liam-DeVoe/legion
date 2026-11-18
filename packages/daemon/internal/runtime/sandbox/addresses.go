@@ -218,10 +218,13 @@ func earlierLayout(names []string) bool {
 // legionContainers are the names among names Legion gives a container: a launcher role's (the
 // earlier layout's) or the one container of either pod this runtime builds. The rest were added to
 // the running pod by another controller (a mesh's injected sidecar, say), which never writes the
-// Sandbox's template, so only a pod's own containers are read through it.
+// Sandbox's template, so only a pod's own containers are read through it. The launcher roles here
+// are the earlier layout's fixed set, Legion's six and the controller (earlierLayout), never a
+// role of the deployment: no role of the deployment ever had a container of that layout.
 func legionContainers(names []string) []string {
 	return slices.DeleteFunc(slices.Clone(names), func(name string) bool {
-		return name != runtime.IssuePodContainer && !slices.Contains(launcherRoles, claim.Role(name))
+		role := claim.Role(name)
+		return name != runtime.IssuePodContainer && role != claim.RoleController && !slices.Contains(claim.Roles, role)
 	})
 }
 

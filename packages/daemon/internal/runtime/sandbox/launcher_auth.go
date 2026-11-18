@@ -248,10 +248,10 @@ func (r *Runtime) cacheLauncherCredential(s *sandbox, secret *corev1.Secret) {
 }
 
 // forgetLauncherCredentials drops what is held of every launcher role's Secret of the Sandbox named
-// name, once that Sandbox is deleted: whichever roles its pod ran, no other Sandbox's Secret has a
-// name of its.
+// name (launcherRoles: a role the deployment defines among them), once that Sandbox is deleted:
+// whichever roles its pod ran, no other Sandbox's Secret has a name of its.
 func (r *Runtime) forgetLauncherCredentials(name string) {
-	for _, role := range launcherRoles {
+	for _, role := range r.launcherRoles() {
 		r.launcherAuth.forget(roleSecretName(name, role))
 	}
 }
