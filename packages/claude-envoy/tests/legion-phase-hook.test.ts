@@ -675,11 +675,12 @@ test("the architect is told at the threshold, asked again when the listener kept
     env: { LEGION_STALL_ARCHITECT_AFTER: "2" },
     publish: async (_input, attempt) => {
       if (attempt > 1) return {}
-      // The listener's "nothing was kept for that role". The notice is the shared one, which
-      // sends `keep: false` (`createPhaseReminder`, packages/pi-shared/src/phase-reminder.ts),
-      // so the listener keeps nothing for an architect role no session holds: this 404 is the
-      // ordinary answer to it. The architect was not told, and the next delivered reminder
-      // publishes again under the same key.
+      // The listener's "nothing was kept for that role". The notice is the shared one
+      // (`createPhaseReminder`, packages/pi-shared/src/phase-reminder.ts), which sends no `keep`
+      // field, so a listener keeps it for an architect role no live session holds and answers
+      // 202. It answers this 404 when its keep failed, and a listener of an earlier release
+      // answers it for a holder that is not live. Either way the architect was not told, and the
+      // next delivered reminder publishes again under the same key.
       throw new EnvoyApiError({
         method: "POST",
         url: "http://listener.test/v1/messages/publish",
@@ -725,6 +726,41 @@ test("the architect is told at the threshold, asked again when the listener kept
     expect(published.length).toBe(2)
   } finally {
     await close()
+  }
+})
+
+// The notice goes to the architect the daemon names as the claim's owner in its owed answer: a
+// child's own architect while that claim holds its role, the tree's once the daemon names it in
+// its stead, and the tree's, named from the claim, when the answer names none.
+test("the architect notice of a child goes to the architect the daemon names as its owner, else to the tree's", async () => {
+  const child: ClaimCapability = {
+    ...implementer,
+    issue: "LEGION-209",
+    claimToken: "legion-legion-legion-209-implementer",
+  }
+  const work = "the implementing phase of LEGION-209"
+  for (const [named, topic] of [
+    ["legion-legion-legion-209-architect", "notifications.role.legion-legion-legion-209-architect"],
+    ["legion-legion-legion-208-architect", "notifications.role.legion-legion-legion-208-architect"],
+    [undefined, "notifications.role.legion-legion-legion-208-architect"],
+  ] as const) {
+    const { endpoint, published, close } = await harness({
+      record: recorded("active", 1),
+      claim: child,
+      env: { LEGION_STALL_ARCHITECT_AFTER: "2" },
+      owed: () =>
+        Response.json({ owes: true, work, ...(named === undefined ? {} : { architect: named }) }),
+    })
+    try {
+      expect(await endpoint.handle({ event: "Stop", lastAssistantMessage: "Still here." })).toEqual(
+        {},
+      )
+      await waitFor(async () => published.length === 1, "the architect to be told")
+      expect(published[0]?.topic, String(named)).toBe(topic)
+      expect(published[0]?.message).toContain("The implementer of LEGION-209")
+    } finally {
+      await close()
+    }
   }
 })
 

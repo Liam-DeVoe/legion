@@ -1,11 +1,15 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -22,9 +26,19 @@ type OwedRequest struct {
 // and what that work is called, as a person reads it in a reminder — "the testing phase of
 // LEGION-208", "the production check of LEGION-208". Work is empty exactly when Owes is false, so
 // a reminder renders the phrase it is given and never one of its own.
+//
+// Architect is the architect claim that owns the claim now (owningArchitect): the issue's own
+// architect while its claim holds its role, else the nearest one above it whose claim does, else
+// the tree root's. It is named for a phase worker whose issue the workflow records, whether or not
+// the claim owes, and left out for an architect, the controller, a failed claim and an issue the
+// workflow does not record. The reminder's architect notice goes to it (`tellArchitect` in
+// packages/pi-shared/src/phase-reminder.ts), and so does the stall watch's notice of a stuck call
+// (packages/pi-legion/src/stall-evidence.ts), so both reach the architect the daemon's own notices
+// of the issue reach, without a read of the daemon's whole state.
 type OwedResponse struct {
-	Owes bool   `json:"owes"`
-	Work string `json:"work"`
+	Owes      bool        `json:"owes"`
+	Work      string      `json:"work"`
+	Architect claim.Token `json:"architect,omitempty"`
 }
 
 // claimOwed is a live role's session asking, at the end of its turn, what its claim owes now. It
@@ -85,7 +99,7 @@ func (s *server) claimOwed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The architect and the controller work no phase of their own, so they owe no phase's work
-	// and no look of a check: nothing is read for them.
+	// and no look of a check, and no architect above them is named: nothing is read for them.
 	if !isPhaseWorker(c.Role) {
 		writeJSON(w, http.StatusOK, OwedResponse{})
 		return
@@ -100,15 +114,46 @@ func (s *server) claimOwed(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, errorBody("read the issue record: "+err.Error()))
 		return
 	}
-	writeJSON(w, http.StatusOK, owedBy(c, position, s.roleFor))
+	var owner claim.Token
+	if position.issue != nil {
+		if owner, err = s.owningArchitect(r.Context(), *position.issue); err != nil {
+			s.logRequestFailure(r, err, "api: the architect that owns a claim could not be read for what it owes", "claim", req.ClaimToken)
+			writeJSON(w, http.StatusInternalServerError, errorBody("read the architect that owns the claim: "+err.Error()))
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, owedBy(c, position, owner, s.roleFor))
+}
+
+// owningArchitect is the architect claim that owns a phase worker on issue now (OwedResponse's
+// Architect): the end of the owner walk from issue itself (record.OwnerWalk.Architect), over the
+// architect claims of issue's tree as the store records them. That is the walk the daemon's own
+// notices about a phase worker take (workflowRuntime.owningArchitect in
+// internal/daemon/specs.go): the issue's own architect while its claim holds its role, else the
+// nearest one above it that does, else the tree root's. It reads the tree's issues and their
+// architect claims, so it grows with the tree and not with the deployment, in a read-only
+// transaction of its own, which the completion route, sharing handoffPosition, does not pay for.
+func (s *server) owningArchitect(ctx context.Context, issue record.Issue) (claim.Token, error) {
+	var owner claim.Token
+	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		walk, err := record.ReadOwnerWalk(ctx, s.records, tx, s.project, issue.Tree)
+		if err != nil {
+			return err
+		}
+		owner, err = walk.Architect(issue, false)
+		return err
+	})
+	return owner, err
 }
 
 // owedBy is what claim c owes with its issue's record standing at position, roleFor naming the
-// role that works each phase (phase.RoleFor). Three sources can each seem to say: the claim's
-// pending delivery and what it was left serving (supervise.Claim.Pending, ServingCheck), the
-// issue's phase with the role's own row of it (record.PhaseRow.Entry and Completed) against the
-// entry the claim was given (supervise.Claim.GivenEntry), and the issue's production check. They
-// disagree, and the rule is this.
+// role that works each phase (phase.RoleFor), and owner the architect that owns c
+// (owningArchitect), which every answer about a recorded issue names, owed or not. Three sources
+// can each seem to say: the claim's pending delivery and what it was left serving
+// (supervise.Claim.Pending, ServingCheck), the issue's phase with the role's own row of it
+// (record.PhaseRow.Entry and Completed) against the entry the claim was given
+// (supervise.Claim.GivenEntry), and the issue's production check. They disagree, and the rule is
+// this.
 //
 // The record decides whether anything is owed. The pending delivery is a copy of the workflow's
 // decision taken when the task was queued, and the process's memory of its turn is a copy taken
@@ -151,24 +196,25 @@ func (s *server) claimOwed(w http.ResponseWriter, r *http.Request) {
 // (supervise.HoldsTask) carries no run, no entry and no look, only the sentence of what the last
 // let-go ended, so a claim holding it, confirmed or not, is answered as one holding nothing is:
 // by the record, and by what it was left serving.
-func owedBy(c supervise.Claim, position completionPosition, roleFor func(phase.Phase) claim.Role) OwedResponse {
+func owedBy(c supervise.Claim, position completionPosition, owner claim.Token, roleFor func(phase.Phase) claim.Role) OwedResponse {
 	issue := position.issue
 	if issue == nil {
 		return OwedResponse{}
 	}
+	nothing := OwedResponse{Architect: owner}
 	if look := c.ServingCheck(); look.Look > 0 {
 		check := position.check
 		if check == nil || !check.Open() || !check.LookOpen || check.Looks != look.Look ||
 			!check.NamedBy(look.OpenedAt) || check.Role != c.Role {
-			return OwedResponse{}
+			return nothing
 		}
-		return OwedResponse{Owes: true, Work: "the production check of " + issue.Key}
+		return OwedResponse{Owes: true, Work: "the production check of " + issue.Key, Architect: owner}
 	}
 	if position.lingers || roleFor(issue.Phase) != c.Role || position.merged() {
-		return OwedResponse{}
+		return nothing
 	}
 	if behind := c.GivenEntry < position.entry; !behind && position.completed {
-		return OwedResponse{}
+		return nothing
 	}
-	return OwedResponse{Owes: true, Work: fmt.Sprintf("the %s phase of %s", issue.Phase, issue.Key)}
+	return OwedResponse{Owes: true, Work: fmt.Sprintf("the %s phase of %s", issue.Phase, issue.Key), Architect: owner}
 }

@@ -373,7 +373,7 @@ func TestRepositoryCorrectionFollowsARepositoryServedAgainOnceItsInstallationRea
 	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
 	r := newMappingEventRig(t, installs,
 		dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true}, dispatch.RepoProject{Repo: "zeta/tools", Project: "LEGION"})
-	if _, _, _, unread := r.w.repositories.lookup("zeta/tools"); !unread {
+	if !r.w.repositories.lookup("zeta/tools").unread {
 		t.Fatal("zeta/tools is not left out for its failed installation read at boot")
 	}
 	const key = "LEGION-660"

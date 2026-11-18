@@ -43,16 +43,18 @@ var correctionMoment = time.Date(2026, 11, 12, 9, 30, 0, 0, time.UTC)
 
 // correctionRepositories is a project's repositories as the daemon holds them in memory
 // (workflow.Repositories): each served repository's default branch and GitHub's own spelling of
-// it, by the name Dispatch resolves an issue to. A name the map does not hold is a repository
-// Legion serves no installation of, and a test adds one where what it reads is the pass that
-// finds the repository served at last.
+// it, by the name Dispatch resolves an issue to, and each repository the mapping leaves out with
+// why (a Resolution carrying LeftOut). A name the map does not hold is one no preparation has read
+// GitHub for, which the daemon answers as unread (repositories.lookup), as testRepositories does:
+// since INFRA-2543 no mapping entry refuses a repository, GitHub's answer for it does. A test adds
+// a served entry where what it reads is the pass that finds the repository served at last.
 type correctionRepositories map[string]workflow.Resolution
 
 func (r correctionRepositories) ResolveRepository(resolved string) (workflow.Resolution, error) {
 	if resolution, ok := r[resolved]; ok {
 		return resolution, nil
 	}
-	return workflow.Resolution{Refusal: resolved + " is not mapped to project " + correctionProject + " in Dispatch"}, nil
+	return workflow.Resolution{Refusal: "GitHub has not been read for " + resolved + " yet", Unread: true, Unmapped: true}, nil
 }
 
 // correctionRig is one test's daemon: the records, the repositories it serves, and the two
@@ -325,11 +327,19 @@ func TestRepositoryCorrectionFollowsAReadmission(t *testing.T) {
 	}
 }
 
+// gadgetsLeftOut is acme/gadgets as the daemon holds it while the mapping leaves it out for its
+// review App, which is not installed on it.
+var gadgetsLeftOut = workflow.Resolution{Refusal: "the review App is not installed on acme/gadgets", LeftOut: true}
+
 // A repository Legion serves no installation of is not written onto the record: the record keeps
 // the repository it has, the issue is told once however many passes read the same resolution, and
-// the change waits on the record with the reason it waits.
+// the change waits on the record with the reason it waits. The refusal here is the mapping's own
+// (a mapped repository its review App is not installed on); one no mapping names is refused for
+// the same reason by the preparation's reads instead, which repository_correction_unmapped_test.go
+// reads.
 func TestRepositoryCorrectionTellsAnIssueWhoseNewRepositoryLegionDoesNotServe(t *testing.T) {
 	r := newCorrectionRig(t)
+	r.repos["acme/gadgets"] = gadgetsLeftOut
 	r.event(2, "acme/gadgets")
 	r.event(3, "acme/gadgets")
 	r.listing(4, "acme/gadgets")
@@ -338,12 +348,33 @@ func TestRepositoryCorrectionTellsAnIssueWhoseNewRepositoryLegionDoesNotServe(t 
 		t.Fatalf("the record is on %s at %s, corrected %+v; want it still on acme/widgets at main, corrected in nothing",
 			issue.Repo, issue.DefaultBranch, issue.RepoCorrection)
 	}
-	if c := issue.RepoChange; c == nil || *c != (record.RepositoryChange{Pending: "acme/gadgets", Reason: "acme/gadgets is not mapped to project LEGION in Dispatch"}) {
+	if c := issue.RepoChange; c == nil || *c != (record.RepositoryChange{Pending: "acme/gadgets", Reason: "the review App is not installed on acme/gadgets"}) {
 		t.Fatalf("the waiting change = %+v, want acme/gadgets and why it waits", c)
 	}
-	want := "Legion did not move this issue off acme/widgets: acme/gadgets is not mapped to project LEGION in Dispatch. Map acme/gadgets to the project in Dispatch, or set another repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name). Legion moves the issue itself once it serves the repository that Dispatch resolves the issue to."
+	want := "Legion did not move this issue off acme/widgets: the review App is not installed on acme/gadgets. Install it on acme/gadgets, or set another repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name). Legion moves the issue itself once it serves the repository that Dispatch resolves the issue to."
 	if messages := r.messages(); len(messages) != 1 || messages[0] != want {
 		t.Fatalf("the issue was told %q, want it told once, saying %q", messages, want)
+	}
+}
+
+// A resolution GitHub has not answered for — here a repository no preparation has read GitHub
+// for, which is what the daemon answers for one no mapping names until a preparation reads it —
+// writes nothing and says nothing: no correction, no waiting change and no note. The daemon reads
+// GitHub for it at the issue's next preparation (prepareRecorded).
+func TestRepositoryCorrectionWritesNothingForARepositoryGitHubHasNotAnsweredFor(t *testing.T) {
+	r := newCorrectionRig(t)
+	r.event(2, "stranger/tools")
+	r.listing(3, "stranger/tools")
+	issue := r.issue()
+	if issue.Repo != "acme/widgets" || issue.RepoCorrection != nil || issue.RepoChange != nil {
+		t.Fatalf("the record is on %s, corrected %+v, waiting on %+v; want it on acme/widgets with nothing written",
+			issue.Repo, issue.RepoCorrection, issue.RepoChange)
+	}
+	if messages := r.messages(); len(messages) != 0 {
+		t.Fatalf("the issue was told %q, want nothing", messages)
+	}
+	if notes := r.repoNotes(); notes != 0 {
+		t.Fatalf("the issue holds %d repository notes, want none", notes)
 	}
 }
 
@@ -353,6 +384,7 @@ func TestRepositoryCorrectionTellsAnIssueWhoseNewRepositoryLegionDoesNotServe(t 
 // what moved.
 func TestRepositoryCorrectionAppliesTheWaitingChangeOnceTheRepositoryIsServed(t *testing.T) {
 	r := newCorrectionRig(t)
+	r.repos["acme/gadgets"] = gadgetsLeftOut
 	r.event(2, "acme/gadgets")
 	if change := r.issue().RepoChange; change == nil || change.Pending != "acme/gadgets" {
 		t.Fatalf("the waiting change = %+v, want acme/gadgets before the repository is served", change)

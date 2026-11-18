@@ -71,10 +71,10 @@ shapes that client parses, and the pane's environment — the identity variables
 workspace, the pane's cwd; read by `claim-session.ts`, which resolves it and scopes the overlay's
 `Dispatch:` line to it), `LEGION_GENERATION` (set by the daemon, read by
 nothing here), `LEGION_BOOT_TOKEN_FILE`, `LEGION_DAEMON_URL`, the GitHub
-variables (`LEGION_GH_OWNERS_DIR`, the role's gh bundle of one directory per GitHub owner, one per
-owner a configured rename moved a repository away from while the project serves the name it moved
-to, and one per other repository served by its issue's recorded owner and by the owner whose
-installation serves its issue's repository;
+variables (`LEGION_GH_OWNERS_DIR`, the role's gh bundle of one directory per GitHub owner its App
+is installed on, one per owner a configured rename moved a repository away from while the project
+serves the name it moved to, and one for its issue's recorded owner, each token reaching every
+repository its own installation holds;
 `GH_CONFIG_DIR`, its issue's owner's directory;
 `LEGION_GH_PATH`, the real gh the pane's `gh` wrapper runs; with `GH_TOKEN`, `GITHUB_TOKEN` and
 `GH_HOST` set empty: read by the pane's `gh` and `git`, by nothing here), the Envoy
@@ -89,31 +89,56 @@ plugin, reads. A change to any of these surfaces bumps the field and the
 daemon's `DaemonAPIVersion` (`internal/api/version.go`, whose doc comment is the contract's
 history) in the same commit: `packages/contracts/fixtures/daemon-api/version.json`, written by the
 daemon's golden test, is what `src/daemon-api-version.test.ts` pins the field to, so neither
-side bumps alone, and the number is re-read against `main` at every rebase. Contract 12 renamed the
+side bumps alone; the number is in every file the root `AGENTS.md` names, and it is re-read
+against `main` at every rebase. Contract 12 renamed the
 field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-daemon client
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 142's copied facts
+number is the one `DaemonAPIVersion` declares, last bumped by contract 162's copied facts
 (dispatch://INFRA-3136: `POST /legion/v1/claims/owed`, which the end-of-turn reminder asks for
 what the claim owes, and the issue's `repoBefore`, `repoCorrectedAt`, `repoChangePending` and
-`repoChangeReason`, optional keys a caller whose claims record a contract under 142 is served
-without), after contract 133's merge wait
-(dispatch://INFRA-3027: an issue of `GET /legion/v1/state` whose review round waits on GitHub's
-answer about merging the pull request's head carries `mergeWait`, the head the round waits on, the
-merge state the record holds for that head, when that state was last read, when GitHub last moved
-the pull request, how many of the fence's check runs are that head's own, and the head and state the
-architect and the reviewer were told of; an issue whose round waits on nothing there carries no such
-key, and a caller from a pod below 133 is served every issue without `mergeWait`), after contract
-132's `waiting_on_issue` (dispatch://INFRA-3036: the waiting line's `kind` gains `waiting_on_issue`,
-a started issue that gave its admission slot back to wait on another issue, and a caller from a pod
-whose claims record a contract under 132 is served such a member without its `kind`, `api.stateFor`,
-`withoutWaitingOnIssue`), after contract 123's phase completion head (dispatch://INFRA-3146: a phase
-completion names the head its evidence is about, which `handoff_complete` reads from the handoff
-record's `head` for the planner, the tester and the reviewer as well as the implementer, and no
-shape the plugin parses moves), after contract 111's tree quiet time (dispatch://INFRA-2560: every
-issue of a live tree carries `treeMovedAt`, when that tree last moved, and `quietHours`, how long it
-has been still, which a caller below 111 is served without), after contract 104's claim recoveries
+`repoChangeReason`, optional keys a caller whose claims record a contract under 162 is
+served without), after contract 146 (dispatch://INFRA-2614:
+a root at `admitted` carries its architect's `phaseEntry` and `givenEntry`, every issue carries
+`entryQueuedAt` and `entryConfirmedAt`, the two times of a claim's own record of its handshake of
+its last entry, which outlast that entry's task and which a tree's own root carries from its
+architect's claim in every phase, and each tree root carries `architectStalls`, every arm of the
+daemon's architect-stalled reading that holds for its architect at that read, whether or not the
+controller was told of it, and a caller below 146 is served the issues without those three keys),
+after contract 144's memory guard
+(dispatch://INFRA-3557: the daemon's answer to an issue pod launcher's hello, `launcher_hello_ack`,
+carries the guard's settings in `memoryGuard`, and the launcher reports each process its guard
+ended in a new `launcher_memory_kill` frame, which names the process by its executable and no
+argument; a launcher that reads an acknowledgement with no settings runs no guard, and no shape the
+plugin parses moves), after contract 141's experiment assignments
+(dispatch://INFRA-2566: each issue of `GET /legion/v1/state` carries `assignments`, one
+`{experiment, variant, mode, drawnAt}` per experiment answer that applies to it, absent from an
+issue no experiment holds an answer for; the reader this plugin parses the state through takes
+the key as optional, because a caller from a pod whose claims record a contract under 141 is
+served every issue without it (`api.stateFor`, `withoutAssignments`)), after contract 137's session
+proxy account (dispatch://INFRA-3621: a pod's `legion launcher` may be told
+`--session-impersonate-service-account <email>`, which the daemon renders only when
+`runtime.kubernetes.session_database.impersonate_service_account` is set; a launcher built before
+137 exits 2 on the unknown flag, so the image probe refuses such an image at boot; no shape the
+plugin parses moves, so a caller from a pod below 137 is served the state as before), after
+contract 133's merge
+wait (dispatch://INFRA-3027: an issue of `GET /legion/v1/state` whose review round waits on
+GitHub's answer about merging the pull request's head carries `mergeWait`, the head the round
+waits on, the merge state the record holds for that head, when that state was last read, when
+GitHub last moved the pull request, how many of the fence's check runs are that head's own, and
+the head and state the architect and the reviewer were told of; an issue whose round waits on
+nothing there carries no such key, and a caller from a pod below 133 is served every issue without
+`mergeWait`), after contract 132's `waiting_on_issue` (dispatch://INFRA-3036: the waiting line's
+`kind` gains `waiting_on_issue`, a started issue that gave its admission slot back to wait on
+another issue, and a caller from a pod whose claims record a contract under 132 is served such a
+member without its `kind`, `api.stateFor`, `withoutWaitingOnIssue`), after contract 123's phase
+completion head (dispatch://INFRA-3146: a phase completion names the head its evidence is about,
+which `handoff_complete` reads from the handoff record's `head` for the planner, the tester and
+the reviewer as well as the implementer, and no shape the plugin parses moves), after contract
+111's tree quiet time (dispatch://INFRA-2560: every issue of a live tree carries `treeMovedAt`,
+when that tree last moved, and `quietHours`, how long it has been still, which a caller below 111
+is served without), after contract 104's claim recoveries
 (dispatch://INFRA-3161: `fresh_session` reaches a claim stored working that no process stands
 behind, the compaction refuses that claim `CLAIM_NOT_RUNNING` naming `fresh_session`, and no shape
 the plugin parses moves), after contract 98's held list
@@ -328,10 +353,9 @@ Contract 5 added `LEGION_GRANT_FILE` to the pane's environment (LEGION-262), the
 hook minted a grant into before a bash command that invoked `legion`; contract 19 removes it with
 that hook. Nothing in a pane runs `legion` from bash: the `legion` tool mints each operation's grant
 in-process and posts it with the request, and `gh` and `git` read the role's GitHub App tokens from
-the gh bundle under the pane's `LEGION_GH_OWNERS_DIR` (one directory per owner, one per owner a
-configured rename moved a repository away from while the project serves the name it moved to, and
-one per other repository served by the issue's recorded owner and by the owner whose installation
-serves the issue's repository, each a
+the gh bundle under the pane's `LEGION_GH_OWNERS_DIR` (one directory per owner the role's App is
+installed on, one per owner a configured rename moved a repository away from while the project
+serves the name it moved to, and one for the issue's recorded owner, each a
 `hosts.yml` and `config.yml` rendered and refreshed by
 the daemon: `/var/run/legion/gh` in a pod,
 `<state_dir>/secrets/<claim>-gh` on tmux; `GH_CONFIG_DIR` names the issue owner's), with
@@ -628,8 +652,8 @@ every harness shares (`executePhaseOp` in `@legion/pi-shared/legion-phase-ops`).
 no record of the phase: whether the claim still owes it is the daemon's answer, which the endless
 phase reminder below asks for. A file-backed phase (planning, implementing,
 testing, reviewing) ends with a handoff record on the Dispatch issue, which the worker writes with
-`dispatch handoff-write --issue <issue> --phase <word> --body-file <file>`, the body file under
-`$TMPDIR` rather than the workspace, whose every file jj snapshots; no handoff is a commit or a
+`dispatch handoff-write --issue <issue> --phase <word> --body-file -`, the body on standard input
+or in a file outside the workspace, whose every file jj snapshots; no handoff is a commit or a
 push. The operation finds
 what it reports in the pane first (`@legion/pi-shared/handoff-record`): the issue's phase from
 the daemon's state, the role from the session; for a file-backed phase the role works or, once
@@ -752,15 +776,27 @@ timers reminding twice; a timer that is due asks the daemon again before it remi
 A count of reminders the worker has done nothing about climbs by one per delivered reminder and
 drops to zero as soon as anything happens — a real tool call in the settling message (a `toolCall`
 block, Oh My Pi's name for it; `assistantRanTool` also takes Claude Code's `tool_use`), the
-daemon's task, an Envoy delivery. At `LEGION_STALL_ARCHITECT_AFTER` the session tells the tree's
-architect over Envoy, on the role topic named from the claim's tree and `LEGION_PROJECT` with
-nothing read, once per run of reminders: the notice carries the issue, the role, the work the
-daemon answered was owed (absent when the answer could not be read), the count and the head of the
-worker's last message under one idempotency key, minted at the first attempt and kept until the
-count resets, so a listener that holds no architect session yet is tried again by the next
-reminder. A reminder is dropped when the daemon answers that the claim owes nothing: its phase
-finished, through the tool, from the shell or by a move of the issue it did not make, or the
-daemon failed the claim. A worker the daemon relaunched is reminded from a timer
+daemon's task, an Envoy delivery. At `LEGION_STALL_ARCHITECT_AFTER` the session tells the
+architect the daemon names as the claim's owner in its owed answer (`architect`: the issue's own
+architect while its claim holds its role, else the nearest one above it, else the tree root's),
+or the tree's architect while no answer has named one, over Envoy, once per run of reminders: the
+notice carries the issue, the role, the work the daemon answered was owed (absent when the answer
+could not be read), the count and the head of the worker's last message under one idempotency
+key, minted at the first attempt and kept until the count resets. The notice sends no `keep`
+field, so when no live session holds the architect role, the listener keeps the notice on the
+role's kept lane for one hour and answers 202 kept. A kept answer does not mean that the architect
+was told, so the next reminder publishes the notice again. When the answer names `kept_until`,
+that publish uses the same key: the listener answers it with the copy it still holds, or keeps a
+new copy once that copy has been forwarded or its hour has ended. A listener of an earlier release
+names no `kept_until` and answers a repeated key as the first copy for 72 hours, so such an answer
+clears the key, and the next attempt mints a new one. The stall watch's notice of a stuck tool
+call (`src/stall-evidence.ts`), to the architect the owed answer it asks for then names, else the
+tree's, or, for a root architect's own call, to the controller, also sends no `keep` field, and a
+kept answer reports that no owner was told. A kept notice that no session takes in its hour comes
+back to this worker's session as a dead letter, an Envoy card that names it, unless Envoy drops it
+more than an hour late. A reminder is dropped when the daemon answers that the claim owes nothing:
+its phase finished, through the tool, from the shell or by a move of the issue it did not make, or
+the daemon failed the claim. A worker the daemon relaunched is reminded from a timer
 `LEGION_STALL_RESUME_MS` after its claim boots, if the daemon then answers that its claim owes
 work, since nothing else would wake it.
 

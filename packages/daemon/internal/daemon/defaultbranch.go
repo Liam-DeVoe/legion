@@ -142,6 +142,24 @@ func (d *defaultBranches) Kept(repo string) (ghbranch.Repository, bool) {
 	return kept.repository, ok
 }
 
+// Fresh is repo as GitHub names it at this call, with its default branch: GitHub's own answer
+// (fetch), never a read kept within ttl, one held through GitHub's rate limit, or one another
+// caller has in flight, each of which Named may answer from. It is the read a recorded issue's
+// correction onto a repository no mapping names makes at its preparation (prepareRecorded), which
+// writes the record from what GitHub answers then and from nothing the daemon kept. A read GitHub
+// refuses, its rate limit included, is returned and keeps nothing; one it answers replaces what
+// is kept under repo, so the reads after it start from it.
+func (d *defaultBranches) Fresh(ctx context.Context, repo ghrepo.Repository) (ghbranch.Repository, error) {
+	repository, err := d.fetch(ctx, repo)
+	if err != nil {
+		return ghbranch.Repository{}, err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.read[strings.ToLower(repo.String())] = defaultBranchRead{repository: repository, at: d.now()}
+	return repository, nil
+}
+
 // hold keeps answer as the read of repo until until, when the wait GitHub asked for, in refusing
 // the read of repo for its rate limit, ends: answer is the default branch a record of the project
 // holds (holdLimited), served in place of the read GitHub refused. Until then Named answers it and
@@ -162,7 +180,7 @@ func (d *defaultBranches) hold(repo ghrepo.Repository, answer ghbranch.Repositor
 // the old one by redirect.
 func (d *defaultBranches) fetch(ctx context.Context, repo ghrepo.Repository) (ghbranch.Repository, error) {
 	served := d.repos.serving(repo)
-	lease, err := d.tokens.Token(ctx, appauth.Implement, served)
+	lease, err := d.tokens.Token(ctx, appauth.Implement, served.Owner())
 	if err != nil {
 		return ghbranch.Repository{}, fmt.Errorf("mint the implement App token to read the default branch of %s: %w", served, err)
 	}

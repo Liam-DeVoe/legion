@@ -177,9 +177,11 @@ test("owed posts the claim's question and reads the daemon's answer through its 
     secret: "U3VwZXJ2aXNlZEJ5TGVnaW9u",
   };
 
+  // The answer names the architect that owns the claim, which the architect notice goes to.
   await expect(client.owed(question)).resolves.toEqual({
     owes: true,
     work: "the testing phase of LEGION-208",
+    architect: "legion-legion-legion-208-architect",
   });
   expect(requests).toEqual([
     { method: "POST", url: "http://daemon.test/legion/v1/claims/owed", body: question },
@@ -343,6 +345,26 @@ test("a state from a daemon a release ahead parses without its unknown top-level
       { op: "read_record", issue: "LEGION-208" }
     )
   ).resolves.toEqual({ record });
+});
+
+test("a state read hands fetch its caller's signal, and an abort ends a read the daemon never answers", async () => {
+  const handed: (AbortSignal | null | undefined)[] = [];
+  const hung = (async (_input, init) => {
+    handed.push(init?.signal);
+    const { promise, reject } = Promise.withResolvers<Response>();
+    init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+    return promise;
+  }) as typeof fetch;
+  const controller = new AbortController();
+  const late = new Error("the reader stopped waiting");
+
+  const read = createLegionDaemonClient("http://daemon.test", hung).state({
+    signal: controller.signal,
+  });
+  controller.abort(late);
+
+  await expect(read).rejects.toBe(late);
+  expect(handed).toEqual([controller.signal]);
 });
 
 test("posts every Stage 3 workflow request through its matching route", async () => {

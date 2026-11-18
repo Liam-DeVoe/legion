@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  The worker image runs Oh My Pi v18.18.6-sami.20261118-035823 (`.omp-pin`), whose refusal of a
+  prompt sent while the agent is in a turn of its own carries `code: "session_busy"` on the
+  refusal and on the prompt's result. The daemon reads a busy answer from that code alone, so
+  such a prompt now charges the claim nothing and its task is sent again when the turn ends,
+  where the earlier pin's refusal, which carried no code, was charged and could retire the claim.

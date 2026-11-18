@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -105,7 +106,7 @@ func controllerSweepKindRuntime(ctx context.Context, cfg config.Config, listener
 	// The proof maps no repository and configures no rename, so the mapping's rules
 	// (repositories.serving, repositories.left) answer every repository as it is recorded.
 	mapping := newRepositories(cfg.Project, ghrepo.Renames{})
-	return sandboxRuntime(rc, opts, repos, mapping.serving, mapping.left, ghrepo.Renames{}, "")(ctx, listener, listener.Addr(), outboxTokens{}, nil, st, noRepositories, noWriteOnIssue)
+	return sandboxRuntime(rc, opts, repos, mapping.serving, mapping.left, ghrepo.Renames{}, appauth.NewInstalled(), appauth.NewLeftOut(), "", &memoryGuardKills{})(ctx, listener, listener.Addr(), outboxTokens{}, nil, st, noRepositories, noWriteOnIssue)
 }
 
 // noWriteOnIssue is the proof's writer for the one message a runtime may leave on a Dispatch

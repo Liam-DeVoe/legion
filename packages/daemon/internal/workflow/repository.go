@@ -28,6 +28,12 @@ type Repositories interface {
 // default-branch read past GitHub's rate limit; Refusal names which. An Unread issue is not refused
 // but left: RefuseRecording says nothing on it, and the daemon takes it from Dispatch's listing
 // once GitHub answers for the repository (its recovery).
+//
+// Unmapped is a repository no repository mapping names: one the daemon answers from a read a
+// preparation kept (Repo set) or from none (Unread), or one a preparation's reads refused
+// (intake.DispatchIssue.RepositoryRefusal). Admission records an issue on such an answer as it
+// records one on a mapped repository; a correction of a recorded issue never writes it, and
+// writes the read its own preparation made instead (ApplyRepositoryChange).
 type Resolution struct {
 	Repo          string
 	DefaultBranch string
@@ -35,6 +41,7 @@ type Resolution struct {
 	Refusal       string
 	LeftOut       bool
 	Unread        bool
+	Unmapped      bool
 }
 
 // resolvesToNone is the refusal of an issue whose repository Dispatch resolves to none: neither it
@@ -51,6 +58,45 @@ func (e *Engine) ResolveRepository(resolved string) (Resolution, error) {
 		return Resolution{}, errors.New("the workflow holds no repository mapping to record an issue's repository from")
 	}
 	return e.cfg.Repositories.ResolveRepository(resolved)
+}
+
+// ResolveIssueRepository is the repository fact's issue is recorded on, or why it is not: the
+// refusal fact's own preparation read from GitHub when it carries one
+// (intake.DispatchIssue.RepositoryRefusal), and otherwise what the daemon holds in memory
+// (ResolveRepository). A preparation carries its refusal on the fact because nothing of it is
+// kept: an issue on a repository no mapping names is read from GitHub at each preparation, so a
+// role App installed since is taken at the next one, with no wait, no restart and no mapping
+// change. It is the one resolution that puts an issue on a repository: admission's roots and
+// orphans (putNewRoot), the engine's children (recordChild), and a recorded issue's record
+// following Dispatch onto another repository (ApplyRepositoryChange).
+func (e *Engine) ResolveIssueRepository(fact intake.DispatchIssue) (Resolution, error) {
+	if fact.RepositoryRefusal != "" {
+		return Resolution{Refusal: fact.RepositoryRefusal, LeftOut: true, Unmapped: true}, nil
+	}
+	return e.ResolveRepository(fact.ResolvedRepo)
+}
+
+// correctionResolution is the repository ApplyRepositoryChange moves a recorded issue onto, or why
+// it does not: ResolveIssueRepository's answer, except for a repository no mapping names, which is
+// answered from the read fact's own preparation made of GitHub (intake.DispatchIssue.RepositoryRead)
+// and never from one the daemon kept (Resolution.Unmapped). A correction writes a repository
+// Dispatch moved an issue onto, often long after the read the daemon kept of it was made, so a
+// kept read would move the record onto a repository an App was uninstalled from since, or at a
+// default branch renamed since. A fact whose preparation made no such read — a boot listing's,
+// which reads no GitHub for such a repository, a hand-over's, which is not prepared, or one whose
+// reads GitHub did not answer — is Unread: nothing is written and nothing is said, and the issue's
+// next event, or the follow after the next boot, reads GitHub again.
+func (e *Engine) correctionResolution(fact intake.DispatchIssue) (Resolution, error) {
+	resolution, err := e.ResolveIssueRepository(fact)
+	if err != nil || !resolution.Unmapped || fact.RepositoryRefusal != "" {
+		return resolution, err
+	}
+	read := fact.RepositoryRead
+	if read == nil {
+		return Resolution{Refusal: "GitHub was not read for " + fact.ResolvedRepo + " at this preparation", Unread: true, Unmapped: true}, nil
+	}
+	name := read.Name.String()
+	return Resolution{Repo: name, DefaultBranch: read.DefaultBranch, GitHubRepo: name, Unmapped: true}, nil
 }
 
 // SettleRetainedRepository is fact with a retained event's missing repository
@@ -79,14 +125,21 @@ func SettleRetainedRepository(fact intake.DispatchIssue, recorded *record.Issue)
 const setRepositoryHint = "the issue header's Repository picker, or dispatch issue-update --repo owner/name"
 
 // RefuseRecording says on the Dispatch issue key why Legion did not record it: its repository,
-// resolved, resolves to none or to one Legion does not serve (refused). It says it once per
-// resolution (record.RepoNote), so a repeated event of the issue says nothing again, and reports
-// whether it said it now. A child's refusal is also told to its tree's architect (refuseChild). An
-// Unread resolution says nothing, to the issue or to an architect: the daemon recovers the issue
-// from Dispatch's listing once GitHub answers for its repository, with nothing for anyone to move,
-// and it is noted for that recovery (Config.NoteUnread), so an issue whose resolution moves off
-// the repository meanwhile (its parent's repository, or the project's default, changed) is still
-// recovered.
+// resolved, resolves to none, or GitHub does not answer for it as one a role App reaches
+// (refused). It says it once per resolution (record.RepoNote), so a repeated event of the issue
+// says nothing again, and reports whether it said it now. A child's refusal is also told to the
+// architect that owns its parent (refuseChild). An Unread resolution says nothing, to the issue
+// or to an architect: the daemon recovers the issue from Dispatch's listing once GitHub answers for its
+// repository, with nothing for anyone to move, and it is noted for that recovery
+// (Config.NoteUnread), so an issue whose resolution moves off the repository meanwhile (its
+// parent's repository, or the project's default, changed) is still recovered.
+//
+// The two notes are the two refusals that stay. An issue whose repository resolves to none is
+// asked for one. An issue whose repository a role App does not reach is told which App and that
+// GitHub answers for the repository neither as installed nor as present, since one answer covers
+// a repository that does not exist and one the App is not installed on, and nothing of that
+// refusal is kept: installing the App, or correcting the name, admits the issue at its next
+// preparation, which is why the note asks for either and for a move back to todo.
 func (e *Engine) RefuseRecording(ctx context.Context, tx pgx.Tx, key, resolved string, refused Resolution) (bool, error) {
 	if refused.Unread {
 		if note := e.cfg.NoteUnread; note != nil {
@@ -96,33 +149,52 @@ func (e *Engine) RefuseRecording(ctx context.Context, tx pgx.Tx, key, resolved s
 	}
 	note := "Legion did not admit this issue: " + refused.Refusal + ". Set its repository (" + setRepositoryHint + ") and move it to todo again."
 	if refused.LeftOut {
-		note = "Legion did not admit this issue: " + refused.Refusal + ". Install it on " + resolved + ", or set another repository (" + setRepositoryHint + "), and move the issue to todo again."
+		note = "Legion did not admit this issue: " + refused.Refusal + ". GitHub answers for " + resolved +
+			" neither as installed nor as present: install the App on it, or correct the repository (" + setRepositoryHint + "), and move the issue to todo again."
 	}
 	return e.noteOnce(ctx, tx, key, resolved, note)
 }
 
-// ApplyRepositoryChange makes a recorded issue's repository follow Dispatch's: resolved is what
-// Dispatch resolves the issue to now, and the repository is Dispatch's own fact, so the daemon
-// moves the record onto it rather than keeping what it has. Every pass that reads a recorded
-// issue's resolution calls it, once per issue, inside the transaction that pass applies in: a live
-// Dispatch event (Engine.dispatchIssue), the listing admission reconciles at boot (its
-// applySummary; the recovery listing takes no recorded issue), admission's outbox hand-over (its
-// consumeHandover), and the listing the daemon reads after a change of the repository mapping,
-// which names no issue (the daemon's followMapping). The correction is one statement in that
-// transaction: no park, no rerun and no new generation, so an issue keeps its phase, its
+// ApplyRepositoryChange makes a recorded issue's repository follow Dispatch's: fact is the issue
+// as the pass read it, whose ResolvedRepo is what Dispatch resolves the issue to now, and the
+// repository is Dispatch's own fact, so the daemon moves the record onto it rather than keeping
+// what it has. Every pass that reads a recorded issue's resolution calls it, once per issue,
+// inside the transaction that pass applies in: a live Dispatch event (Engine.dispatchIssue), the
+// listing admission reconciles at boot (its applySummary; the recovery listing takes no recorded
+// issue), admission's outbox hand-over (its consumeHandover), and the listing the daemon reads
+// after a change of the repository mapping, which names no issue (the daemon's followMapping).
+// The correction is one statement in that transaction (record.Store.CorrectIssueRepository, whose
+// one caller this is): no park, no rerun and no new generation, so an issue keeps its phase, its
 // generation and whatever is running for it while its repository moves.
+//
+// The repository is resolved as an admission resolves an issue it records (ResolveIssueRepository),
+// so the refusal the fact's preparation read from GitHub for a repository no mapping names — a
+// role App not installed on it, a repository GitHub does not have, a name that is no
+// <owner>/<name> — is the refusal the change waits for, with one difference (correctionResolution):
+// a repository no mapping names is moved onto at the name and default branch GitHub answered the
+// fact's own preparation (intake.DispatchIssue.RepositoryRead), never at a read the daemon kept
+// from an earlier one, and a fact whose preparation made no such read writes nothing. A record a
+// correction moves onto a repository has GitHub intake hear it and the runtime keep a repository
+// cache of it from the correction's commit (Config.HearRepository), as a record that first names
+// it at its recording does: no mapping read publishes a repository no mapping names, so without
+// it the issue's own GitHub events on the repository it works now would reach no one until some
+// later read of the mapping read the records again.
 //
 // The record follows Dispatch as far as Legion can take it. A repository Legion does not serve
 // is not written onto the record: the record keeps the repository it has, the issue is told once
 // why and what a person can do (noteRepositoryChangeWaits), and the change waits on the record
 // (record.Store.NoteIssueRepositoryChange) for the pass that finds the repository served, which
-// applies it. A resolution that names no repository at all is told the same way, and leaves no
-// change waiting: there is no repository to change to, so the record's waiting pair is cleared.
-// A resolution GitHub has not answered the installation read of (Resolution.Unread) is nothing
-// Dispatch has said that the daemon can act on, so this writes and says nothing at
-// all: the daemon takes the issue from Dispatch's listing once GitHub answers for the repository
-// (its recovery), and reads the resolution again there.
-func (e *Engine) ApplyRepositoryChange(ctx context.Context, tx pgx.Tx, issue record.Issue, resolved string) error {
+// applies it: for a mapped repository, the daemon's follow after the read of the mapping that
+// first serves it; for a repository no mapping names, the issue's next event or the next boot,
+// since the served-set follow never fires for such a repository. A resolution that names no
+// repository at all is told the same way, and leaves no change waiting: there is no repository
+// to change to, so the record's waiting pair is cleared. A resolution GitHub has not answered the
+// reads of (Resolution.Unread) is nothing Dispatch has said that the daemon can act on, so this
+// writes and says nothing at all: a mapped repository is read again by the daemon's mapping,
+// whose read that serves it asks for the follow, and one no mapping names is read again at the
+// issue's next event or at the next boot.
+func (e *Engine) ApplyRepositoryChange(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) error {
+	resolved := fact.ResolvedRepo
 	// The common pass: Dispatch names the repository the record already holds — the same name, or
 	// the other name of a configured rename (sameRepository), so re-pointing every open issue at
 	// the repository a transfer moved to corrects none of them. It writes only when a change the
@@ -133,7 +205,7 @@ func (e *Engine) ApplyRepositoryChange(ctx context.Context, tx pgx.Tx, issue rec
 		}
 		return e.store.NoteIssueRepositoryChange(ctx, tx, issue.Key, nil)
 	}
-	resolution, err := e.ResolveRepository(resolved)
+	resolution, err := e.correctionResolution(fact)
 	if err != nil {
 		return err
 	}
@@ -164,6 +236,7 @@ func (e *Engine) ApplyRepositoryChange(ctx context.Context, tx pgx.Tx, issue rec
 	if err != nil || !corrected {
 		return err
 	}
+	e.HearRepository(ctx, resolution.GitHubRepo)
 	e.logOnCommit(ctx, "workflow: an issue's repository follows the one Dispatch resolves it to", "issue", issue.Key,
 		"from", issue.Repo, "to", resolution.Repo, "at", at)
 	return nil
@@ -172,23 +245,27 @@ func (e *Engine) ApplyRepositoryChange(ctx context.Context, tx pgx.Tx, issue rec
 // noteRepositoryChangeWaits says on a recorded issue that the repository Dispatch now resolves it
 // to, resolved, is not written onto the record: the record keeps the repository it has, for the
 // reason refused gives. It says what a person can do, as RefuseRecording does for an issue it does
-// not record: set another repository, map the repository to the project, or install the App
-// refused names on it (refused.LeftOut). Legion moves the issue itself once it serves the
-// repository Dispatch resolves the issue to. ApplyRepositoryChange reaches it for a refused or
-// left-out resolution alone, and it says it once per resolution (noteOnce), so a repeated event
-// or listing of the issue says nothing again.
+// not record: set a repository where the resolution names none, and otherwise install the App
+// refused names on it or set another repository. Since INFRA-2543 a named repository is refused
+// for what GitHub answers of it alone — a role App not installed on it, or no such repository —
+// whether the mapping names it (the mapping's own installation reads) or not (the preparation's,
+// intake.DispatchIssue.RepositoryRefusal): mapping it admits nothing, so the note never asks for
+// that. It ends with when Legion moves the issue itself: a mapped repository once Legion serves
+// it, which the daemon's follow after the read of the mapping that serves it applies; a
+// repository no mapping names (refused.Unmapped) at the issue's next event or at the next boot,
+// since the served-set follow never fires for such a repository. ApplyRepositoryChange reaches it
+// for a refused or left-out resolution alone, and it says it once per resolution (noteOnce), so a
+// repeated event or listing of the issue says nothing again.
 func (e *Engine) noteRepositoryChangeWaits(ctx context.Context, tx pgx.Tx, issue record.Issue, resolved string, refused Resolution) error {
-	var action string
-	switch {
-	case resolved == "":
-		action = "Set its repository (" + setRepositoryHint + ")."
-	case refused.LeftOut:
+	action := "Set its repository (" + setRepositoryHint + ")."
+	if resolved != "" {
 		action = "Install it on " + resolved + ", or set another repository (" + setRepositoryHint + ")."
-	default:
-		action = "Map " + resolved + " to the project in Dispatch, or set another repository (" + setRepositoryHint + ")."
 	}
-	note := "Legion did not move this issue off " + issue.Repo + ": " + refused.Refusal + ". " + action +
-		" Legion moves the issue itself once it serves the repository that Dispatch resolves the issue to."
+	moves := " Legion moves the issue itself once it serves the repository that Dispatch resolves the issue to."
+	if refused.Unmapped {
+		moves = " Legion moves the issue at its next event or at Legion's next boot, once both Legion Apps are installed on " + resolved + "."
+	}
+	note := "Legion did not move this issue off " + issue.Repo + ": " + refused.Refusal + ". " + action + moves
 	_, err := e.noteOnce(ctx, tx, issue.Key, resolved, note)
 	return err
 }
@@ -209,14 +286,31 @@ func (e *Engine) noteOnce(ctx context.Context, tx pgx.Tx, key, resolved, note st
 	return true, e.store.PutRepoNote(ctx, tx, record.RepoNote{Issue: key, ResolvedRepo: resolved, Note: note, PostedAt: e.now()})
 }
 
-// refuseChild says on a child, and to its tree's architect, why the child was not recorded under
-// the tree: its repository resolves to none or to one Legion does not serve.
-func (e *Engine) refuseChild(ctx context.Context, tx pgx.Tx, root record.Issue, key, resolved string, refused Resolution) error {
+// refuseChild says on a child, and to the architect that owns its Dispatch parent, why the child
+// was not recorded under root's tree: its repository resolves to none, or GitHub does not answer
+// for it as one a role App reaches. The architect is told what the issue is told, since the
+// repository is no longer the project's mapping to choose from: any repository both role Apps are
+// installed on records an issue, so what is wrong is the name or the installation. The notice is
+// queued on that parent when the record holds it in root's tree, so the owner walk takes it to the
+// parent's own architect while that claim holds its role, the one that releases the parent's
+// children, and on up the tree once it does not; a parent the record does not hold in the tree has
+// no architect of it, and the notice goes on root, the tree's architect.
+func (e *Engine) refuseChild(ctx context.Context, tx pgx.Tx, root record.Issue, key, parent, resolved string, refused Resolution) error {
 	noted, err := e.RefuseRecording(ctx, tx, key, resolved, refused)
 	if err != nil || !noted {
 		return err
 	}
-	e.logOnCommit(ctx, "workflow: child not recorded; its repository is not one Legion serves", "issue", key, "tree", root.Key, "resolved", resolved, "reason", refused.Refusal)
-	return e.notice(ctx, tx, root.Key, record.Notice{Kind: "child-not-recorded", Role: claim.RoleArchitect,
-		Reason: fmt.Sprintf("%s was not recorded under your tree: %s; the daemon said so on the issue. Set its repository to one of the project's (dispatch issue-update --repo owner/name), then release it again.", key, refused.Refusal)})
+	on := root.Key
+	if parent != "" {
+		recorded, err := e.store.Issue(ctx, tx, parent)
+		if err != nil {
+			return err
+		}
+		if recorded != nil && recorded.Tree == root.Key {
+			on = recorded.Key
+		}
+	}
+	e.logOnCommit(ctx, "workflow: child not recorded; GitHub does not answer for its repository as one Legion's Apps reach", "issue", key, "tree", root.Key, "resolved", resolved, "reason", refused.Refusal)
+	return e.notice(ctx, tx, on, record.Notice{Kind: "child-not-recorded", Role: claim.RoleArchitect,
+		Reason: fmt.Sprintf("%s was not recorded under your tree: %s; the daemon said so on the issue. Set a repository both Legion Apps are installed on, spelled as GitHub spells it (dispatch issue-update --repo owner/name), then release it again.", key, refused.Refusal)})
 }

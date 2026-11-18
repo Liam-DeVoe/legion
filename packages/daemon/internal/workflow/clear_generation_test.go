@@ -143,3 +143,44 @@ func TestClearGenerationClearsTheEntryTaskAndLeavesTheEntry(t *testing.T) {
 			row.Entry, row.EntryRaisedAt, raised)
 	}
 }
+
+// A root architect's row marked to send its entry's task as written (record.PhaseRow.EntryVerbatim,
+// which only the resume of an answered root sets) loses the mark with the task when a
+// re-admission clears the generation, since the promotion that follows raises a new entry with
+// work of its own. Both clears a re-admission makes are read: of one issue (ClearGeneration) and
+// of a whole tree (ClearTreeGeneration). The entry and the moment it was raised stay, as they do
+// for every role.
+func TestClearGenerationClearsTheArchitectsMarkToSendAsWritten(t *testing.T) {
+	raised := time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
+	const resumed = "A person answered your ask ask-1; read it. Continue."
+	for _, tc := range []struct {
+		name  string
+		key   string
+		clear func(tx pgx.Tx, issue record.Issue) error
+	}{
+		{name: "a re-admission of the issue", key: "LEGION-291", clear: func(tx pgx.Tx, issue record.Issue) error {
+			return testEngine(config.DesignGateRootIssues, nil).ClearGeneration(t.Context(), tx, issue, time.Now().UTC())
+		}},
+		{name: "a re-admission of the tree", key: "LEGION-292", clear: func(tx pgx.Tx, issue record.Issue) error {
+			return testEngine(config.DesignGateRootIssues, nil).ClearTreeGeneration(t.Context(), tx, issue.Tree, time.Now().UTC())
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			issue := clearedIssue(tc.key)
+			seedIssue(t, pool, issue)
+			seedPhase(t, pool, record.PhaseRow{Issue: issue.Key, Role: claim.RoleArchitect, Claim: "architect", Entry: 3,
+				EntryTask: resumed, EntryVerbatim: true, EntryRaisedAt: raised})
+			seedRecord(t, pool, func(tx pgx.Tx) error { return tc.clear(tx, issue) })
+			got := record.PhaseRowOf(issuePhases(t, pool, issue.Key), claim.RoleArchitect)
+			if got.EntryTask != "" || got.EntryVerbatim {
+				t.Fatalf("the architect's row after %s = task %q, sent as written %t; want no task and no mark: both were the generation's that ended",
+					tc.name, got.EntryTask, got.EntryVerbatim)
+			}
+			if got.Entry != 3 || !got.EntryRaisedAt.Equal(raised) {
+				t.Fatalf("the architect's row after %s = entry %d raised at %s, want the entry 3 raised at %s it stood on",
+					tc.name, got.Entry, got.EntryRaisedAt, raised)
+			}
+		})
+	}
+}

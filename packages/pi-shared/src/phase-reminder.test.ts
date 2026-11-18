@@ -8,7 +8,7 @@ import {
 } from "@legion/envoy-client/transport";
 import { createLegionDaemonClient, type OwedInput } from "./daemon-client";
 import { type ClaimCapability, PHASE_OPS } from "./legion-phase-ops";
-import { createPhaseReminder, type PhaseReminder } from "./phase-reminder";
+import { createPhaseReminder, type EnvoyPublish, type PhaseReminder } from "./phase-reminder";
 import {
   owedReminder,
   type PhaseStallEntry,
@@ -103,10 +103,10 @@ interface Rig {
 
 /** The runner made afresh, as a process the daemon has just started makes it, with the architect
  * told at the second delivered reminder. The daemon answers `owed` — by default, that the claim
- * owes `WORK` — and holds no record for the issue, so a notice goes to the tree's architect. */
+ * owes `WORK`, naming no architect as its owner, so a notice goes to the tree's architect. */
 function rig(options: {
   readonly sendReminder?: (reminder: string) => void | Promise<void>;
-  readonly publish?: (input: PublishInput) => Promise<Pick<PublishResult, "kept">>;
+  readonly publish?: EnvoyPublish;
   readonly owed?: (input: OwedInput, signal: AbortSignal) => Promise<LegionOwed>;
   readonly restore?: PhaseStallEntry;
   /** The bound on the owed check, when a case's daemon hangs past it. */
@@ -317,26 +317,88 @@ test("a read that times out produces a nudge that names no phase and produces no
   }
 });
 
-// The notice's topic is the architect the daemon's `Legion addressing` names to the pane: the
-// tree's, from the claim's tree and LEGION_PROJECT. A worker on a child issue tells its tree's
-// architect, and nothing of the daemon is read for it but the owed answer.
-test("the architect notice goes to the claim's tree architect, read from nothing but the claim", async () => {
-  const child = {
-    ...implementer,
-    claimToken: "legion-legion-legion-209-implementer",
-    issue: "LEGION-209",
-  };
-  const { reminder, timers, published, asked } = rig({ claim: child });
+/** The implementer of LEGION-209, a child of the tree LEGION-208. */
+const child = {
+  ...implementer,
+  claimToken: "legion-legion-legion-209-implementer",
+  issue: "LEGION-209",
+};
+
+/** The child's own architect claim, and the tree's, as the daemon names them. */
+const CHILD_ARCHITECT = "legion-legion-legion-209-architect";
+const TREE_ARCHITECT = "legion-legion-legion-208-architect";
+
+/** What the daemon answers the child's implementer owes, naming its owner when one is given. */
+const childOwes = (architect?: string): LegionOwed => ({
+  owes: true,
+  work: "the implementing phase of LEGION-209",
+  ...(architect === undefined ? {} : { architect }),
+});
+
+// The notice goes to the architect the daemon names as the claim's owner in its owed answer: a
+// child whose own architect claim is live owns its workers, so the daemon names that architect,
+// and the worker tells it. Nothing else of the daemon is read for it.
+test("a child whose own architect claim is live has its worker's notice go to that architect", async () => {
+  const { reminder, timers, published, asked } = rig({
+    claim: child,
+    owed: async () => childOwes(CHILD_ARCHITECT),
+  });
   expect(await reminder.settle(said("Pushed."))).toBeString();
   expect(await reminder.settle(said("Still pushing the change."))).toBeUndefined();
   await fireLast(timers);
 
-  expect(published.map((input) => input.topic)).toEqual([
-    "notifications.role.legion-legion-legion-208-architect",
-  ]);
+  expect(published.map((input) => input.topic)).toEqual([`notifications.role.${CHILD_ARCHITECT}`]);
   expect(String(published[0]?.message)).toContain("The implementer of LEGION-209");
   // One owed read per reminder, and no other daemon read.
   expect(asked()).toBe(2);
+});
+
+// A child whose own architect is retired or failed is owned by the architect above it, which the
+// daemon names in its stead: the notice goes to the architect named. An answer that names no
+// architect, and a read that fails at every reminder, name nobody, and the notice goes to the
+// tree's architect, named from the claim's tree and LEGION_PROJECT. An answer that named the owner
+// is kept, so a notice whose own reminder could not read the daemon still reaches it.
+test("a child whose own architect is not live has its worker's notice go to the architect the daemon names, else the tree's", async () => {
+  const unreachable = async (): Promise<LegionOwed> => {
+    throw new Error("connect ECONNREFUSED");
+  };
+  let reads = 0;
+  const cases: readonly {
+    readonly label: string;
+    readonly owed: () => Promise<LegionOwed>;
+    readonly topic: string;
+  }[] = [
+    {
+      label: "the daemon names the tree's architect, the child's own retired",
+      owed: async () => childOwes(TREE_ARCHITECT),
+      topic: TREE_ARCHITECT,
+    },
+    {
+      label: "an answer that names no architect",
+      owed: async () => childOwes(),
+      topic: TREE_ARCHITECT,
+    },
+    { label: "a read that fails at every reminder", owed: unreachable, topic: TREE_ARCHITECT },
+    {
+      label: "the continuation's answer named the child's architect, the notice's read failed",
+      owed: () => {
+        reads += 1;
+        return reads === 1 ? Promise.resolve(childOwes(CHILD_ARCHITECT)) : unreachable();
+      },
+      topic: CHILD_ARCHITECT,
+    },
+  ];
+  for (const { label, owed, topic } of cases) {
+    const { reminder, timers, published } = rig({ claim: child, owed });
+    expect(await reminder.settle(said("Pushed.")), label).toBeString();
+    expect(await reminder.settle(said("Still pushing the change.")), label).toBeUndefined();
+    await fireLast(timers);
+
+    expect(
+      published.map((input) => input.topic),
+      label
+    ).toEqual([`notifications.role.${topic}`]);
+  }
 });
 
 // The architect notice renders the daemon's answer: the work the daemon named when it answered,
@@ -536,13 +598,22 @@ test("a notice the listener failed is published again by the run's next reminder
   expect(published).toHaveLength(2);
 });
 
-// The notice asks the listener to keep nothing, because this sender keeps its own retry: the
-// reminding never stops while the work is owed. A listener that keeps it all the same answers
-// 202 with a kept body, and that is not the architect being told — the kept copy is dropped once
-// its window passes, and nothing would publish the notice again. So the run's next delivered
-// reminder publishes it again, under the same key.
-test("a kept answer is not the architect being told, so the run's next reminder publishes again", async () => {
-  const requests: unknown[] = [];
+// The notice sends no `keep` field, so a listener keeps it for an architect role that no live
+// session holds, and answers 202 kept. That is not the architect being told: the copy waits for
+// the next session that holds the role, and is dropped if none takes it in its hour. So the run's
+// next delivered reminder publishes the notice again. A listener that names `kept_until` answers
+// a repeat of the key with the copy it still holds, so the key stays. A listener of an earlier
+// release names no time and answers a repeat as the first copy for 72 hours, even after it
+// dropped that copy, so the next attempt mints a new key (dispatch://INFRA-2846, R6).
+test("the owner notice is kept", async () => {
+  const requests: Record<string, unknown>[] = [];
+  // The listener's answers in turn: kept with its time, kept with no time (an earlier release),
+  // and kept with its time again.
+  const answers: Record<string, unknown>[] = [
+    { kept_until: 1_793_003_600_000 },
+    {},
+    { kept_until: 1_793_003_900_000 },
+  ];
   const client = createEnvoyClient({
     baseUrl: "http://listener.test",
     fetch: async (_input, init) => {
@@ -561,6 +632,7 @@ test("a kept answer is not the architect being told, so the run's next reminder 
           trace_id: "trace-kept",
           kept: true,
           kept_reason: "unclaimed",
+          ...answers.shift(),
         }),
         { status: 202, headers: { "Content-Type": "application/json" } }
       );
@@ -575,25 +647,44 @@ test("a kept answer is not the architect being told, so the run's next reminder 
   await fireLast(timers);
 
   expect(published).toHaveLength(1);
-  // The notice asks for `keep: false`, and the flag reaches the listener.
-  expect(published[0]?.keep).toBe(false);
-  expect(requests[0]).toMatchObject({ keep: false });
+  // The notice asks for no `keep`, and none reaches the listener.
+  expect(published[0]).not.toHaveProperty("keep");
+  expect(requests[0]).not.toHaveProperty("keep");
   // Nobody was told, and that is not this worker's doing: no warning, and the notice stands.
   expect(warned).toEqual([]);
   const kept = entries.at(-1);
   expect(kept).toMatchObject({ count: 2, reported: false });
+  expect(kept?.reportKey).toBe(published[0]?.idempotencyKey);
 
+  // The next reminder publishes again, under the same key. This answer names no time.
   expect(await reminder.settle(said("Still here."))).toBeUndefined();
   await fireLast(timers);
   expect(published).toHaveLength(2);
   expect(published[1]?.idempotencyKey).toBe(kept?.reportKey);
-  expect(entries.at(-1)).toMatchObject({ count: 3, reported: false });
+  expect(requests[1]).not.toHaveProperty("keep");
+  const timeless = entries.at(-1);
+  expect(timeless).toMatchObject({ count: 3, reported: false });
+  expect(timeless).not.toHaveProperty("reportKey");
+
+  // So the reminder after it publishes under a new key.
+  expect(await reminder.settle(said("Still here."))).toBeUndefined();
+  await fireLast(timers);
+  expect(published).toHaveLength(3);
+  expect(published[2]?.idempotencyKey).toMatch(/^[0-9a-f-]{36}$/);
+  expect(published[2]?.idempotencyKey).not.toBe(kept?.reportKey);
+  expect(entries.at(-1)).toMatchObject({
+    count: 4,
+    reported: false,
+    reportKey: published[2]?.idempotencyKey,
+  });
+  expect(warned).toEqual([]);
 });
 
-// With `keep: false` the listener keeps nothing for a role no live session holds: it answers the
-// 404 it always did, and that is the answer this sender's retry exists for. Nobody was told, so
-// the next delivered reminder publishes again under the same key, and the worker's transcript
-// gets no warning for something that is not its doing.
+// A listener answers 404 with nothing kept when its keep failed, and a listener of an earlier
+// release answers it for an architect role whose holder is not live. That is the answer this
+// sender's retry exists for. Nobody was told, so the next delivered reminder publishes again
+// under the same key, and the worker's transcript gets no warning for something that is not its
+// doing.
 test("a notice no session held the architect role for is published again by the run's next reminder, under the same key", async () => {
   let attempt = 0;
   const { reminder, timers, entries, published, warned } = rig({
@@ -616,7 +707,6 @@ test("a notice no session held the architect role for is published again by the 
   expect(await reminder.settle(said("Still here."))).toBeUndefined();
   await fireLast(timers);
   expect(published).toHaveLength(1);
-  expect(published[0]?.keep).toBe(false);
   expect(warned).toEqual([]);
   const refused = entries.at(-1);
   expect(refused).toMatchObject({ count: 2, reported: false });

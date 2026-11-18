@@ -46,10 +46,11 @@ func (c liveClaim) owes(t *testing.T, want string) {
 	}
 }
 
-// owesNothing asserts c owes nothing, and that the answer names no work.
+// owesNothing asserts c owes nothing, and that the answer names no work. The architect that owns
+// c is no part of what it owes, so it is not read here.
 func (c liveClaim) owesNothing(t *testing.T) {
 	t.Helper()
-	if got := c.owed(t); got != (OwedResponse{}) {
+	if got := c.owed(t); got.Owes || got.Work != "" {
 		t.Fatalf("%s owes %+v, want nothing and no work named", c.token, got)
 	}
 }
@@ -214,7 +215,11 @@ func TestClaimOwedIsNothingOnceTheDaemonHasFailedTheClaim(t *testing.T) {
 			t.Fatalf("turn outcome %d = %d, want 200; body %s", sequence, recorder.Code, recorder.Body)
 		}
 	}
-	tester.owesNothing(t)
+	// The answer is the whole of nothing: no work, and no architect named for a session the daemon
+	// has finished.
+	if got := tester.owed(t); got != (OwedResponse{}) {
+		t.Fatalf("the failed %s is told %+v, want nothing at all", tester.token, got)
+	}
 }
 
 // A tester holding an open look of its closed issue's production check owes that look, and the
@@ -262,12 +267,12 @@ func TestClaimOwedReadsTheRelaunchDeliveryAsNoWork(t *testing.T) {
 		serving := supervise.Claim{Role: claim.RoleTester, Pending: relaunch, ServingCheckLook: supervise.CheckLook{Look: 2, OpenedAt: opened}}
 		done := completionPosition{issue: &record.Issue{Key: "LEGION-208", Phase: phase.Done},
 			check: &record.ProductionCheck{Issue: "LEGION-208", OpenedAt: opened, Role: claim.RoleTester, Looks: 2, LookOpen: true}}
-		if got, want := owedBy(serving, done, workflow.RoleFor), (OwedResponse{Owes: true, Work: "the production check of LEGION-208"}); got != want {
+		if got, want := owedBy(serving, done, "", workflow.RoleFor), (OwedResponse{Owes: true, Work: "the production check of LEGION-208"}); got != want {
 			t.Errorf("a tester serving a look and holding %s (confirmed %v) owes %+v, want %+v", relaunch.ID, !confirmed.IsZero(), got, want)
 		}
 		working := supervise.Claim{Role: claim.RoleTester, Pending: relaunch}
 		inPhase := completionPosition{issue: &record.Issue{Key: "LEGION-208", Phase: phase.Testing, Generation: 1}}
-		if got, want := owedBy(working, inPhase, workflow.RoleFor), (OwedResponse{Owes: true, Work: "the testing phase of LEGION-208"}); got != want {
+		if got, want := owedBy(working, inPhase, "", workflow.RoleFor), (OwedResponse{Owes: true, Work: "the testing phase of LEGION-208"}); got != want {
 			t.Errorf("a tester in its open phase holding %s (confirmed %v) owes %+v, want %+v", relaunch.ID, !confirmed.IsZero(), got, want)
 		}
 	}
@@ -341,8 +346,60 @@ func TestClaimOwedIsAFailureWhereTheDaemonCannotReadTheIssueRecord(t *testing.T)
 }
 
 // The answer as the route writes it, built through owedBy from a tester's claim on an issue in
-// testing, so the fixture the contracts mirror is held to is the handler's own body.
+// testing that its tree root's architect owns, so the fixture the contracts mirror is held to is
+// the handler's own body.
 func TestClaimOwedResponseGolden(t *testing.T) {
 	position := completionPosition{issue: &record.Issue{Key: "LEGION-208", Phase: phase.Testing, Generation: 1}}
-	golden(t, "owed.json", owedBy(supervise.Claim{Role: claim.RoleTester}, position, workflow.RoleFor))
+	golden(t, "owed.json", owedBy(supervise.Claim{Role: claim.RoleTester}, position, "legion-legion-legion-208-architect", workflow.RoleFor))
+}
+
+// The answer names the architect that owns the claim now, the end of the owner walk the daemon's
+// own notices about the claim's issue take (record.OwnerWalk.Architect from the issue itself): a
+// child's worker is owned by the child's own architect while that claim holds its role, and once
+// the child's architect is retired, by the nearest architect above it whose claim does, here the
+// tree root's. It is named whether or not the claim owes. An architect's own ask names none, and
+// neither does a worker on an issue the workflow does not record, which has no tree to walk.
+func TestClaimOwedNamesTheArchitectThatOwnsTheClaim(t *testing.T) {
+	h, _, _ := newEntryHarness(t)
+	seedTree(t, h, "LEGION-208", "LEGION-209")
+	rootArchitect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	childArchitect := newLiveClaimIn(t, h, "LEGION-208", "LEGION-209", claim.RoleArchitect)
+	planner := newLiveClaimIn(t, h, "LEGION-208", "LEGION-209", claim.RolePlanner)
+	tester := newLiveClaimIn(t, h, "LEGION-208", "LEGION-209", claim.RoleTester)
+
+	planning := "the planning phase of LEGION-209"
+	if got, want := planner.owed(t), (OwedResponse{Owes: true, Work: planning, Architect: childArchitect.token}); got != want {
+		t.Fatalf("the child's planner is told %+v, want %+v", got, want)
+	}
+	// The tester owes nothing while the child plans, and the architect that owns it is named all
+	// the same.
+	if got, want := tester.owed(t), (OwedResponse{Architect: childArchitect.token}); got != want {
+		t.Fatalf("the child's tester is told %+v, want %+v", got, want)
+	}
+	// The child's own architect owns no architect this answer names.
+	if got := childArchitect.owed(t); got != (OwedResponse{}) {
+		t.Fatalf("the child's architect is told %+v, want nothing at all", got)
+	}
+
+	machine, ok := h.supervisor.Machine(childArchitect.token)
+	if !ok {
+		t.Fatalf("no machine for %s", childArchitect.token)
+	}
+	if err := machine.Handle(h.ctx, supervise.RequestStop{Claim: childArchitect.token}); err != nil {
+		t.Fatalf("stop %s: %v", childArchitect.token, err)
+	}
+	if state := h.stored(childArchitect.token).State; state != supervise.StateRetired {
+		t.Fatalf("the stopped child architect is %s, want retired: the case's own premise", state)
+	}
+	if got, want := planner.owed(t), (OwedResponse{Owes: true, Work: planning, Architect: rootArchitect.token}); got != want {
+		t.Fatalf("the child's planner, its architect retired, is told %+v, want %+v", got, want)
+	}
+	if got := rootArchitect.owed(t); got != (OwedResponse{}) {
+		t.Fatalf("the root's architect is told %+v, want nothing at all", got)
+	}
+
+	stray := newLiveClaim(t, h, "LEGION-999", claim.RoleImplementer)
+	if got := stray.owed(t); got != (OwedResponse{}) {
+		t.Fatalf("a worker on an unrecorded issue is told %+v, want nothing at all", got)
+	}
 }

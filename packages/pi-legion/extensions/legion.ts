@@ -440,6 +440,7 @@ export default function legionExtension(pi: PiApi): void {
         session: () => session,
         claim: paneClaim,
         project: process.env.LEGION_PROJECT,
+        readOwed: (input, signal) => roleDaemon().owed(input, { signal }),
         publisher,
         appendEntry: (customType, data) => pi.appendEntry(customType, data),
         log: logger,

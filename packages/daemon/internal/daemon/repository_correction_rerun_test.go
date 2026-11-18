@@ -9,7 +9,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
-	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -116,9 +115,7 @@ func TestRepositoryCorrectionFollowsRerunChildIntoTheFirstLaunch(t *testing.T) {
 	launches := specs{
 		stateDir: t.TempDir(), project: project, prompts: composer,
 		repository: w.issueLaunchRepository,
-		repositories: func() api.RepositoriesView {
-			return api.RepositoriesView{Mapped: []api.MappedRepositoryView{{Repo: "acme/tools"}, {Repo: "acme/widgets"}}}
-		},
+		appOwners:  func(claim.Role) []string { return []string{"acme"} },
 	}
 	token, err := claim.NewToken(project, rerunChildKey, claim.RolePlanner)
 	if err != nil {

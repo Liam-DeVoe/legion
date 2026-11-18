@@ -80,13 +80,15 @@ func TestRepositoryCorrectionHoldsTheIdlePodUntilTheRoundReplacesIt(t *testing.T
 	}
 	rig.corrects(t, correctedRepo, correctedBranch)
 
-	rig.w.releaseIdlePod(ctx, rig.issue.Key)
+	// What the pass queued, not every row of the issue: the seeded idle implementer's own write
+	// queued its role-holder publication before any pass (queuedBy says why).
+	queued := rig.queuedBy(t, func() { rig.w.releaseIdlePod(ctx, rig.issue.Key) })
 
 	if rig.marked(t) {
 		t.Fatal("the pass marked a release of a pod of the repository the issue has left: its work is work no pod of this issue can restore")
 	}
-	if got := rig.rows(t); len(got) != 0 {
-		t.Fatalf("queued rows = %v, want none: the pod is held, not released", got)
+	if len(queued) != 0 {
+		t.Fatalf("queued rows = %v, want none: the pod is held, not released", queued)
 	}
 	records := rig.records(t)
 	if len(records.Holds) != 1 || records.Holds[0].Reason != workflow.IdleHoldRepository.String() {

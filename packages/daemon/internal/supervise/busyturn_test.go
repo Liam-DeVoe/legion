@@ -57,11 +57,34 @@ func TestABusyAnswerHoldsTheTaskUntilTheTurnEnds(t *testing.T) {
 			h.busyRecorded()
 			return h.conn
 		}},
+		{name: "the send refused busy and its result answering busy, as Oh My Pi answers one busy prompt", answer: func(t *testing.T, h *harness) *fake.Conn {
+			// The pinned Oh My Pi answers a prompt that meets its own turn with three frames of
+			// one id: the refusal with the busy code, an acknowledgement (which the stream drops,
+			// since the refusal already answered the send), and the prompt's result with the busy
+			// code (measured on v18.18.6-sami.20261118-035823). The refusal and the result are two
+			// busy answers of one send: the second adds no charge, no wait and no send.
+			h.busyRecorded()
+			sent := h.conn.Prompts()[0].DeliveryID
+			h.must(StreamPromptResult{Claim: testToken, DeliveryID: sent, Error: busyWords, Outcome: runtime.OutcomeAgentBusy})
+			return h.conn
+		}},
 		{name: "the acknowledged prompt refused busy", answer: func(t *testing.T, h *harness) *fake.Conn {
 			h.conn.SetStreaming(true)
 			h.must(RequestDeliver{Claim: testToken, Task: "the task", Generation: 7})
 			sent := h.wantPrompts(1)[0].DeliveryID
 			h.must(StreamLateRefusal{Claim: testToken, DeliveryID: sent, Error: busyWords, Outcome: runtime.OutcomeAgentBusy})
+			return h.conn
+		}},
+		{name: "the acknowledged prompt refused busy and its result answering busy, as Oh My Pi's idle wait ends", answer: func(t *testing.T, h *harness) *fake.Conn {
+			// A prompt Oh My Pi acknowledged and then waited 30 seconds for an idle agent ends,
+			// when another run still holds the agent, in a late refusal and a result, both with
+			// the busy code (session/turn-recovery.ts at v18.18.6-sami.20261118-035823): two busy
+			// answers of one send, the second adding no charge, no wait and no send.
+			h.conn.SetStreaming(true)
+			h.must(RequestDeliver{Claim: testToken, Task: "the task", Generation: 7})
+			sent := h.wantPrompts(1)[0].DeliveryID
+			h.must(StreamLateRefusal{Claim: testToken, DeliveryID: sent, Error: busyWords, Outcome: runtime.OutcomeAgentBusy})
+			h.must(StreamPromptResult{Claim: testToken, DeliveryID: sent, Error: busyWords, Outcome: runtime.OutcomeAgentBusy})
 			return h.conn
 		}},
 		{name: "the acknowledged prompt's result answering busy", answer: func(t *testing.T, h *harness) *fake.Conn {

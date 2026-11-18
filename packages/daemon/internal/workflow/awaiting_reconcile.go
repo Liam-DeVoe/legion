@@ -460,10 +460,8 @@ func waitSubject(asks []record.RootAsk, steps []record.DesignStep, gates map[rec
 // behind that sentence for as long as the agent's own turns kept it unread
 // (dispatch://INFRA-3276 R3).
 func owed(run record.RoleRun) (string, bool) {
-	for _, queued := range run.Queued {
-		if queued.Request.Op == "start" {
-			return "has a start still queued", true
-		}
+	if queuedStart(run) {
+		return "has a start still queued", true
 	}
 	held := run.Claim
 	switch {
@@ -571,11 +569,20 @@ func (e *Engine) tellInPlace(ctx context.Context, tx pgx.Tx, root record.Issue, 
 // asks as the record holds them then, because a person can review the document again between
 // this write and that send, and every send of a held task is that moment again.
 //
-// It carries no phase entry either (record.SuperviseRequest.Entry): an entry and the task it
-// carries are a phase worker's phases row, the architect has none, and a task written into an
-// entry would be the queue-time text this start exists not to hold. So no entry fence reads
-// it, the entry sweep never resends it, and its send-time render is the one statement of its
-// text.
+// The resume hands the architect work it was not on, so it raises the architect's phase entry and
+// writes the task as the work of that entry (EnterArchitect), rendered now by the same rule
+// (ResumeTask), and the start carries the number (record.SuperviseRequest.Entry) as a phase
+// worker's start does. That is what makes a resume survivable: the entry and its task live on the
+// record, so a start row that reaches no claim leaves the architect's claim below that entry, and
+// the entry sweep sends it that entry's work. The raise marks the task as one to send as written
+// (record.PhaseRow.EntryVerbatim), so that work is this text (SendArchitectStart): it names the
+// answer and no kept decision, so nothing it says can have been told by another start. The text
+// the entry holds is the record as it stands at this raise: the wait the send-time render reads
+// is the start row's and its delivery's alone, since the root's own record holds it no longer
+// once the root resumes (the promotion clears it, and tellInPlace never writes one), so the
+// sweep's send of the entry again cannot render it anew. Both callers get it — the promotion of
+// an answered root (admit's record.LineAnswered branch) and tellInPlace, which gives a live
+// architect this task where it stands.
 //
 // The resume starts the root's architect, which is a movement of the issue
 // (record.Store.MarkIssueMoved, the rule in dispatchIssue). It is marked here rather than at
@@ -596,8 +603,16 @@ func (e *Engine) ResumeAwaitedRoot(ctx context.Context, tx pgx.Tx, root record.I
 	if err := e.store.StartHandout(ctx, tx, root.Key); err != nil {
 		return err
 	}
+	task, err := ResumeTask(ctx, tx, e.store, root.Key, waiting, e.cfg.Steps)
+	if err != nil {
+		return err
+	}
+	entry, err := e.EnterArchitect(ctx, tx, root, task, true)
+	if err != nil {
+		return err
+	}
 	if err := e.enqueue(ctx, tx, root.Key, record.SuperviseRequest{
-		Op: "start", Tree: root.Tree, Role: claim.RoleArchitect, Generation: root.Generation, Awaiting: &waiting,
+		Op: "start", Tree: root.Tree, Role: claim.RoleArchitect, Generation: root.Generation, Awaiting: &waiting, Entry: entry,
 	}); err != nil {
 		return err
 	}
@@ -608,7 +623,8 @@ func (e *Engine) ResumeAwaitedRoot(ctx context.Context, tx pgx.Tx, root record.I
 // reads the record now: the root's gates, from which the step in question and its row are taken
 // (gateInQuestion) under steps, the design-gate steps the deployment gates (none is the gate
 // off), and the root's ask mirror rows. The daemon's rootTask renders it at each send of the task
-// ResumeAwaitedRoot queued; the reads are here so that every caller reads the rows the same way.
+// ResumeAwaitedRoot queued, and ResumeAwaitedRoot renders it once for the entry it raises; the
+// reads are here so that every caller reads the rows the same way.
 func ResumeTask(ctx context.Context, tx pgx.Tx, store record.Store, key string, waiting record.Awaiting, steps []record.DesignStep) (string, error) {
 	gates, err := store.GatesOf(ctx, tx, key)
 	if err != nil {

@@ -377,8 +377,9 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
     if (url.pathname === "/legion/v1/claims/activity") return new Response(null, { status: 204 });
     // The phase reminder asks the daemon what the claim owes, and the stand-in answers nothing,
     // so the reminder puts nothing in front of this role and every turn a case sees is one it
-    // asked for. The stall watch's notice reads nothing of the daemon: its topic is the tree's
-    // architect, named from the claim (`stallNoticeTopic`, `pi-legion/src/stall-evidence.ts`).
+    // asked for. The stall watch's notice asks the same route for the architect that owns the
+    // claim, and the answer names none, so it goes to the tree's architect (`stallNoticeTopic`,
+    // `pi-legion/src/stall-evidence.ts`).
     if (url.pathname === "/legion/v1/claims/owed") return Response.json({ owes: false, work: "" });
     if (url.pathname === "/legion/v1/grants") {
       grants += 1;

@@ -11,7 +11,7 @@ package daemon
 // That is a state a role reads rather than a loss nobody sees. These tests read the two halves of
 // it: the launch read of the record (workflowRuntime.issueLaunchRepository, over a real
 // PostgreSQL) and the sentences the next task of every claim of the issue carries
-// (AddressingFragment, through the daemon's own specs). The record's own half, what `read_record`
+// (addressingFragment, through the daemon's own specs). The record's own half, what `read_record`
 // shows, is covered where the correction's other keys are (api's
 // TestTheStateShowsARepositoryCorrectionAndAChangeStillToBeApplied).
 
@@ -23,7 +23,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
@@ -86,9 +85,7 @@ func newLeftPullRequestRig(t *testing.T) *leftPullRequestRig {
 	r.specs = specs{
 		stateDir: r.t.TempDir(), project: leftPullRequestProject, prompts: composer,
 		repository: w.issueLaunchRepository,
-		repositories: func() api.RepositoriesView {
-			return api.RepositoriesView{Mapped: []api.MappedRepositoryView{{Repo: leftRepo}, {Repo: workedRepo}}}
-		},
+		appOwners:  func(claim.Role) []string { return []string{"acme", "zeta"} },
 	}
 	putOutboxIssue(t, r.pool, r.records, record.Issue{Key: leftPullRequestKey, Tree: leftPullRequestKey, Project: "LEGION", Title: "the issue that moved",
 		Phase: phase.Implementing, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress", Rank: "A", HandedOver: true,
@@ -202,7 +199,7 @@ func TestRepositoryCorrectionNamesNoPullRequestForAnIssueNoCorrectionHasReached(
 	if strings.Contains(task, "The pull request") || strings.Contains(task, "changed your issue's repository") {
 		t.Fatalf("the task of an issue no correction has reached = %q, want neither the correction's sentences nor the pull request's", task)
 	}
-	if !strings.HasSuffix(task, "the project's repositories are acme/widgets, zeta/tools.") {
-		t.Fatalf("the task = %q, want it to end with the repositories clause", task)
+	if !strings.HasSuffix(task, "your role's GitHub App is installed on the owners acme, zeta, and its token reaches every repository of those owners.") {
+		t.Fatalf("the task = %q, want it to end with the reach clause", task)
 	}
 }
