@@ -43,7 +43,9 @@ import {
 } from "./health";
 import {
   argvOf,
+  CUT,
   derive,
+  lineShapes,
   type PinnedRead,
   pinnedRead,
   pinnedReads,
@@ -526,17 +528,24 @@ test("a submit that is the run's first gh call is refused, not thrown", () => {
   expect(recorded).toHaveLength(2);
 });
 
-/** `gh <args…>` in the run under `dir`, with its status, its stdout and its stderr: the rows
- * below read a refusal's own text as well as the answer. */
-const ghCall = (dir: string, ...args: string[]) => {
+/** `gh <args…>` in the run under `dir`, with its status, its stdout as gh wrote it and its
+ * stderr: what a pinned read's text answer is held to line for line, the tab a row of `gh pr
+ * checks` ends with among them. */
+const ghRaw = (dir: string, ...args: string[]) => {
   const made = spawnChecked(["bun", STANDIN, "gh", ...args], {
     env: callEnv(dir),
   });
   return {
     code: made.exitCode,
-    out: made.stdout.toString().trim(),
+    out: made.stdout.toString(),
     err: made.stderr.toString(),
   };
+};
+/** `gh <args…>` as `ghRaw` runs it, its stdout trimmed: the rows below read a refusal's own text
+ * as well as the answer. */
+const ghCall = (dir: string, ...args: string[]) => {
+  const made = ghRaw(dir, ...args);
+  return { ...made, out: made.out.trim() };
 };
 
 // The rows below are the stand-in's own behaviour, varied in a run directory this file writes.
@@ -3040,7 +3049,7 @@ function worldDir(
     "round_world",
     "role_identity",
     "role_env",
-    ...(workspace ? ["fixture_workspace", "world_remote"] : []),
+    ...(workspace ? ["fixture_workspace", "workspace_form", "world_remote"] : []),
     world,
   ];
   const built = spawnChecked(
@@ -4205,7 +4214,12 @@ test("pr list lists the world's pull request where its filters match it, and not
 // `<app>` is the implement App's slug, the App whose pull requests production's `--author` read
 // listed, and `<branch>` the world's issue branch. Catches, for each read: a field gh answers
 // missing or in another kind, a field gh never prints, gh's text answered as JSON, and an exit or
-// a line gh does not give. A difference of state is named with the reading's own reason
+// a line gh does not give. A text answer is held to production's line shapes too
+// (production-shapes.ts's `lineShapes`), read as gh wrote it, untrimmed (`ghRaw`): an empty or a
+// wrong-format text, a `gh pr checks` row of four fields, a view with no `--`. Round 25's text
+// answers were kept cut at 600 characters, so for those readings the line the cut fell in, and
+// every line after it, is not compared (production-shapes.ts's CUT): a line shape of the world's
+// they do not hold is no extra. A difference of state is named with the reading's own reason
 // (PINNED_GH_STATE), and a reading of #2827 in a state no world's pull request is in is held to
 // production's reading of the same command on #4326, which is in the world's (`against`). One more
 // is of state for every read of `reviews`: gh reads a review's `url` only past its first 100
@@ -4213,12 +4227,22 @@ test("pr list lists the world's pull request where its filters match it, and not
 const PINNED_GH = pinnedReads()
   .filter(({ name }) => /^gh (pr|run) /.test(name))
   .map(({ name }) => name);
+/** Why a diff of the world's pull request differs in its line shapes from production's: #2827's
+ * and #4326's change files that were there and remove lines of them (round 25's reading of #2827
+ * on 2026-11-17, the tester's of #4326 on 2026-11-18), and the world's adds its files (`new file
+ * mode`) and removes no line of a file it changes. */
+const WORLD_DIFF_STATE =
+  "#2827's and #4326's diffs change files that were there and remove lines of them; the world's pull request adds its files and removes no line";
 /** The reads of PINNED_GH whose answer differs from the world's by the state of the pull request
  * production read, each with the reason its reading gives: `against`, production's reading of the
  * same command on a pull request in the state every world's is in, which the world's answer is
- * held to instead; or `kinds`, the kinds the two answers differ in. */
+ * held to instead; `kinds`, the kinds the two answers differ in; or `missing` and `extra`, the
+ * line shapes of a text answer one holds and the other does not. */
 const PINNED_GH_STATE: Readonly<
-  Record<string, { against?: string; kinds?: string[]; state: string }>
+  Record<
+    string,
+    { against?: string; kinds?: string[]; missing?: string[]; extra?: string[]; state: string }
+  >
 > = {
   "gh pr view --json potentialMergeCommit": {
     kinds: [".potentialMergeCommit: null in production, object in the world"],
@@ -4234,6 +4258,17 @@ const PINNED_GH_STATE: Readonly<
     against: "gh pr checks (merged, all concluded)",
     state:
       "#2827's head had reported no check run when read, so gh refused it, and every world's head reports its concluded checks (rig.sh's concluded_checks), as #4326's had",
+  },
+  ...Object.fromEntries(
+    ["gh pr diff -", "gh pr diff ---color"].map((name) => [
+      name,
+      { missing: ["line -<text>"], state: WORLD_DIFF_STATE },
+    ])
+  ),
+  "gh pr diff": {
+    missing: ["line -<text>"],
+    extra: ["line new file mode <mode>"],
+    state: WORLD_DIFF_STATE,
   },
 };
 /** Where the pinned reads' world is kept once it is built, with the run's writes in it, for each
@@ -4272,12 +4307,16 @@ for (const name of PINNED_GH)
       app: rigValue("world_implement_app"),
       branch: "legion/LWEVAL-1",
     };
-    const got = ghCall(pinnedWorldCopy(), ...argvOf(read, values));
+    const got = ghRaw(pinnedWorldCopy(), ...argvOf(read, values));
     const missing = ".reviews[]" in held.shape ? [".reviews[].url"] : [];
     expect([got.code, got.err, shapeDiff(answerOf(got.out), held)]).toEqual([
       held.exit,
       stderrOf(held, values),
-      { ...SAME_SHAPE, missing, kinds: state?.kinds ?? [] },
+      {
+        missing: [...missing, ...(state?.missing ?? [])],
+        extra: state?.extra ?? [],
+        kinds: state?.kinds ?? [],
+      },
     ]);
   }, 60_000);
 
@@ -4930,13 +4969,162 @@ test("the record is pinned by its shape with its roles and moves as lists, and r
   writeFileSync(file, JSON.stringify({ note: "One read_record.", record }));
   expect(() => derive(rulesets, reads, file)).toThrow("names no time it was read");
 });
+
+// A text answer is shaped line by line (production-shapes.ts's `lineShapes`), each layout by its
+// command, so that an empty or a wrong-format text no longer passes a pin that held it to the
+// kind `string` alone. Catches: a body line read as a `<key>:\t` line or a `--` inside a body
+// read as the view's own; a comment entry after a body not read as one; rows counted by number
+// rather than read as one shape; a value kept in a shape (a key's value, a host, a login, a
+// path, a line of a diff); a line no rule reads given a shape that says nothing of it; and a
+// comparison that passes an empty text, a wrong-format one, or a reading cut short by the lines
+// it never read.
+test("a text answer is shaped line by line, values as placeholders, and compared as a set of shapes", () => {
+  const view = ["gh", "pr", "view", "<number>"];
+  expect(
+    lineShapes("title:\tA title\nlabels:\t\n--\nThe body.\nnot:\ta key\n--\nstill the body\n", view)
+  ).toEqual(["title:\t<value>", "labels:\t<value>", "--", "<body>"]);
+  expect(
+    lineShapes(
+      "author:\ta\nedited:\tfalse\n--\nOne.\n--\nauthor:\tb\nedited:\ttrue\n--\nTwo.\n--\n",
+      [...view, "--comments"]
+    )
+  ).toEqual(["author:\t<value>", "edited:\t<value>", "--", "<body>"]);
+  expect(
+    lineShapes("1\tA\tb\tOPEN\tt\n2\tB\tc\tOPEN\tt\n", ["gh", "pr", "list", "--limit", "3"])
+  ).toEqual(["<5 tab-separated fields>"]);
+  expect(
+    lineShapes("c\tpass\t8s\thttps://x\t\nlone\n", ["gh", "pr", "checks", "<number>"])
+  ).toEqual(["<5 tab-separated fields>", "<unread line>"]);
+  expect(lineShapes("a.ts\nb/c.ts\n", ["gh", "pr", "diff", "<number>", "--name-only"])).toEqual([
+    "<path>",
+  ]);
+  expect(
+    lineShapes(
+      "github.com\n  ✓ Logged in to github.com account someone (/a/hosts.yml)\n  - Token: ghs_****\n",
+      ["gh", "auth", "status"]
+    )
+  ).toEqual(["<host>", "  ✓ Logged in to <host> account <login> (<source>)", "  - Token: <value>"]);
+  expect(
+    lineShapes(
+      [
+        "diff --git a/x.ts b/x.ts",
+        "new file mode 100644",
+        "index 0000000..1234567",
+        "--- /dev/null",
+        "+++ b/x.ts",
+        "@@ -0,0 +1,2 @@ context",
+        "+one",
+        "+two",
+        "\\ No newline at end of file",
+        "",
+      ].join("\n"),
+      ["gh", "pr", "diff", "<number>"]
+    )
+  ).toEqual([
+    "diff --git a/<path> b/<path>",
+    "new file mode <mode>",
+    "index <blob>..<blob>",
+    "--- <path>",
+    "+++ <path>",
+    "@@ -<line> +<line> @@",
+    "+<text>",
+    "\\ No newline at end of file",
+  ]);
+  const read = {
+    shape: { ".": "string" },
+    command: view,
+    lines: ["title:\t<value>", "--", "<body>"],
+  };
+  expect(shapeDiff("title:\tx\n--\nbody\n", read)).toEqual(SAME_SHAPE);
+  expect(shapeDiff("", read)).toEqual({
+    missing: ["line title:\t<value>", "line --", "line <body>"],
+    extra: [],
+    kinds: [],
+  });
+  expect(shapeDiff("title:\tx\nstate:\tOPEN\n--\nbody\n", read)).toEqual({
+    missing: [],
+    extra: ["line state:\t<value>"],
+    kinds: [],
+  });
+  // A reading cut short holds no line past the cut: what the world's text holds beyond
+  // production's whole lines is not compared, and the cut line itself is never missing.
+  const cut = { ...read, lines: [...read.lines, CUT] };
+  expect(shapeDiff("title:\tx\nstate:\tOPEN\n--\nbody\n", cut)).toEqual(SAME_SHAPE);
+  expect(shapeDiff("state:\tOPEN\n", cut)).toEqual({
+    missing: ["line title:\t<value>", "line --", "line <body>"],
+    extra: [],
+    kinds: [],
+  });
+});
+
+// Catches: a pin that keeps a text answer's kind alone, with no line shapes; a reading cut short
+// pinned with its cut line, or with no mark that it was cut; a line no rule reads pinned as a
+// shape that says nothing of it; and a line shape that keeps a value of production's (a key that
+// is the repository's owner), which the derivation's leak check refuses as it refuses any other.
+test("the pin keeps a text answer's line shapes, marks a reading cut short, and refuses an unread line or a value in one", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "production-shapes-"));
+  made.push(dir);
+  const rulesets = path.join(dir, "rulesets");
+  const prs = path.join(dir, "prs");
+  mkdirSync(rulesets);
+  mkdirSync(prs);
+  writeFileSync(path.join(rulesets, "README.txt"), "Reads, read at 2026-01-02T03:04:05Z.\n");
+  writeFileSync(path.join(rulesets, "rulesets.json"), "[]");
+  writeFileSync(path.join(rulesets, "rulesets.err"), "");
+  writeFileSync(path.join(rulesets, "rulesets.exit"), "0\n");
+  writeFileSync(
+    path.join(prs, "README.txt"),
+    "Reads (read 2026-01-02 about 03:00Z; text answers cut at 40 characters).\n"
+  );
+  const reads = path.join(prs, "reads.json");
+  const substitutions = {
+    repo: "octo-org/octo-repo",
+    pr: "31337",
+    head: "a".repeat(40),
+    base: "b".repeat(40),
+    review: "777777777",
+    comment: "888888888",
+  };
+  const write = (answers: Record<string, string>) =>
+    writeFileSync(
+      reads,
+      JSON.stringify({
+        substitutions,
+        reads: Object.entries(answers).map(([key, answer]) => ({
+          kind: "gh pr view",
+          key,
+          command: ["gh", "pr", "view", "31337"],
+          exit: 0,
+          stderr: "",
+          answer,
+        })),
+      })
+    );
+  // At least forty characters, so cut, in its fourth line, whose `lab` no rule reads: it is left
+  // out, and `<cut line>` ends the shapes.
+  write({
+    whole: "title:\tAn issue\n--\nOne.\n",
+    cut: "title:\tAn issue\nstate:\tOPEN\nauthor:\tsomeone\nlab",
+  });
+  expect(derive(rulesets, reads).reads.map(({ name, lines }) => [name, lines])).toEqual([
+    ["rulesets", undefined],
+    ["gh pr view whole", ["title:\t<value>", "--", "<body>"]],
+    ["gh pr view cut", ["title:\t<value>", "state:\t<value>", "author:\t<value>", CUT]],
+  ]);
+  write({ unread: "Title Of It\n" });
+  expect(() => derive(rulesets, reads)).toThrow(
+    "a line of gh pr view unread's answer is in no shape its layout reads (<unread line>)"
+  );
+  write({ valued: "octo-org:\tx\n" });
+  expect(() => derive(rulesets, reads)).toThrow("the pin would hold production's values: octo-org");
+});
 /** A shape no different from production's. */
 const SAME_SHAPE = { missing: [], extra: [], kinds: [] };
 /** What the world under `dir` answers `read`'s own command with, the world's repository and
  * `values` in its placeholders: its exit, stdout and stderr, and the stdout read as the pin keeps
  * production's (`answerOf`). */
 function pinnedCall(dir: string, read: PinnedRead, values: Record<string, string> = {}) {
-  const got = ghCall(dir, ...argvOf(read, { owner: "example", repo: "widgets", ...values }));
+  const got = ghRaw(dir, ...argvOf(read, { owner: "example", repo: "widgets", ...values }));
   return { ...got, answer: answerOf(got.out) };
 }
 /** A gh call's stdout as the pin keeps production's answer: the JSON it holds, or its text where
@@ -5483,6 +5671,8 @@ const PINNED_REST: readonly {
   path?: string;
   before?: string[][];
   kinds?: string[];
+  missing?: string[];
+  extra?: string[];
   state?: string;
 }[] = [
   { name: "gh api GET repos/fernbrook/widgets" },
@@ -5533,7 +5723,12 @@ const PINNED_REST: readonly {
   { name: "gh api GET repos/fernbrook/widgets/branches/main" },
   { name: "gh api GET actions/runs" },
   { name: "gh api GET actions/runs/{id}/jobs (missing run)" },
-  { name: "gh api GET compare diff media" },
+  {
+    name: "gh api GET compare diff media",
+    missing: ["line -<text>"],
+    extra: ["line new file mode <mode>"],
+    state: WORLD_DIFF_STATE,
+  },
   { name: "gh api GET git/ref/{ref}" },
   { name: "gh api GET contents directory", path: ".github" },
   { name: "gh api GET contents directory raw", path: ".github" },
@@ -5573,7 +5768,7 @@ for (const pin of PINNED_REST)
         world,
         read.exit,
         read.stderr,
-        { ...SAME_SHAPE, kinds: pin.kinds ?? [] },
+        { missing: pin.missing ?? [], extra: pin.extra ?? [], kinds: pin.kinds ?? [] },
       ]);
     }
   }, 60_000);

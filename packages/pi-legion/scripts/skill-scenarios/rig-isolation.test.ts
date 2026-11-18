@@ -49,7 +49,7 @@ const probe = spawnChecked(
   [
     "bash",
     "-c",
-    `${/^namespace_path=.*$/m.exec(readFileSync(path.join(import.meta.dir, "rig.sh"), "utf8"))?.[0]}\n${fn("namespace_probe")}\nnamespace_probe`,
+    `${/^namespace_path=.*$/m.exec(readFileSync(path.join(import.meta.dir, "rig.sh"), "utf8"))?.[0]}\n${fn("system_gitconfig")}\n${fn("namespace_probe")}\nnamespace_probe`,
   ],
   { env: { PATH: process.env.PATH ?? "" } }
 );

@@ -75,11 +75,12 @@
  *     every late completion 409 HANDOFF_NOT_CURRENT_PHASE (`if RoleFor(issue.Phase) !=
  *     fact.Role`).
  * A completion the engine takes that names the record its role's row last named is refused 409
- * HANDOFF_NOT_NEW (`LAST_HANDOFF`). Each of HANDOFF_SESSION_MISMATCH, HANDOFF_ALREADY_RECORDED
- * and HANDOFF_NOT_NEW is answered only where the label's own daemon source holds the code
- * (`daemonAnswers`). The route's rules on a completion's own fields are not modelled: a tester's
- * verdict (TESTER_VERDICT_REQUIRED), a verdict from any other role (VERDICT_ROLE_FORBIDDEN), an
- * implementer's or a merger's commit (MISSING_FIELD) and a `wakeAt` (CHECK_WAKE_UNEXPECTED).
+ * HANDOFF_NOT_NEW (`LAST_HANDOFF`). HANDOFF_SESSION_MISMATCH, HANDOFF_ALREADY_RECORDED and
+ * HANDOFF_NOT_NEW are every daemon's the rig runs, and a label whose source names one nowhere is
+ * refused before it boots (daemon-pane.ts's `labelShapes`). The route's rules on a completion's
+ * own fields are not modelled: a tester's verdict (TESTER_VERDICT_REQUIRED), a verdict from any
+ * other role (VERDICT_ROLE_FORBIDDEN), an implementer's or a merger's commit (MISSING_FIELD) and
+ * a `wakeAt` (CHECK_WAKE_UNEXPECTED).
  * The phase a completion is of (`phase.Of`) is the served phase when the role works it and
  * otherwise the role's own, its first (below): the implementer's would be retro once the issue
  * stands in merging, where no run of this rig stands. The route's entry fence (`entryFence`:
@@ -136,11 +137,15 @@
  * registration, at its ready that carries no capability report, and at a turn outcome that fails
  * its claim, each the whole live set read when the write runs, so the run's Dispatch holds the
  * tree's architect, each role the world's history ran and each agent the run booted, as
- * production's does; it published nothing. A label whose daemon publishes none, or whose Dispatch
- * serves no such route, is published nothing (`PUBLISHES_HOLDERS`); both labels' checkouts, at
- * main `0b2769e5` or after, serve and publish it. Each move's sentence (a backward move's, a
+ * production's does; it published nothing. A label whose daemon predates the publication, main
+ * `ff2a10ef`'s, is published nothing (`PUBLISHES_HOLDERS`); both labels' checkouts, at main
+ * `0b2769e5` or after, serve and publish it. Each move's sentence (a backward move's, a
  * conflict's) is posted only where the label's workflow posts one (`POSTS_BACKWARD`,
- * `POSTS_CONFLICT`), in the words its source holds.
+ * `POSTS_CONFLICT`), in the words its source holds. Each of these is read as one of two shapes of
+ * the label's source, main's since the change that brought it or main `ff2a10ef`'s, which
+ * predates it, and a source of neither refuses the batch, naming the marker and its file
+ * (daemon-pane.ts's `labelShapes`), so none is answered as an older daemon for a marker gone
+ * stale.
  *
  * Every request appends one JSON line to the log file: `{at, method, path, status, role, code?,
  * grantId?, sessionId?, mintedGrantId?, handoffId?, handoffVersion?, to?, reason?, phase?,
@@ -330,22 +335,10 @@ const {
   handoffWord: HANDOFF_WORD,
   phase: PHASE,
   notCurrentPhase: NOT_CURRENT_PHASE,
+  shapes: SHAPES,
 } = bootRead(() => standinFacts(CHECKOUT, role, phaseArg));
-/** Whether the label's daemon gives the refusal `code` to a completion at all: its own source
- * of the completion route and of the workflow names it. HANDOFF_SESSION_MISMATCH,
- * HANDOFF_ALREADY_RECORDED and HANDOFF_NOT_NEW are this checkout's daemon's, each answered here
- * in its own sentence, and a label built from a daemon that holds none of one is never answered
- * it. */
-const COMPLETION_SOURCE = bootRead(() =>
-  ["api/handoff.go", "workflow/engine.go"]
-    .map((file) => readFileSync(`${CHECKOUT}/packages/daemon/internal/${file}`, "utf8"))
-    .join("\n")
-);
-function daemonAnswers(code: string): boolean {
-  return COMPLETION_SOURCE.includes(`"${code}"`);
-}
 /** The label's workflow package, every source of it but its tests, which the sentences its moves
- * post on the issue and its refusals of a backward move's reason are read out of (`labelHolds`). */
+ * post on the issue and its refusals of a backward move's reason are read out of (`labelWords`). */
 const WORKFLOW_SOURCE = bootRead(() => {
   const dir = `${CHECKOUT}/packages/daemon/internal/workflow`;
   return readdirSync(dir)
@@ -354,16 +347,17 @@ const WORKFLOW_SOURCE = bootRead(() => {
     .map((name) => readFileSync(`${dir}/${name}`, "utf8"))
     .join("\n");
 });
-/** Whether the label's workflow writes what `marker` names in its source, in the words `literals`
- * restate here, each a Go string literal of its source: false for a workflow whose source holds no
- * `marker`, which writes none of it, and a failed boot, naming `what`, for one that holds the
- * marker and words some literal otherwise, which this would answer in another daemon's words. */
-function labelHolds(marker: string, literals: readonly string[], what: string): boolean {
-  if (!WORKFLOW_SOURCE.includes(marker)) return false;
+/** Whether the label's workflow writes what its source shape says (`posts`, daemon-pane.ts's
+ * `labelShapes`) in the words `literals` restate here, each a Go string literal of its source:
+ * false for a workflow of the shape that writes none of it, and a failed boot, naming `what`, for
+ * one that writes it and words some literal otherwise, which this would answer in another daemon's
+ * words. */
+function labelWords(posts: boolean, literals: readonly string[], what: string): boolean {
+  if (!posts) return false;
   const unheld = literals.find((literal) => !WORKFLOW_SOURCE.includes(JSON.stringify(literal)));
   if (unheld !== undefined)
     throw new Error(
-      `the workflow of ${CHECKOUT} ${what} (${marker}) and holds no ${JSON.stringify(unheld)}, so the words it writes are not the ones this stand-in answers in`
+      `the workflow of ${CHECKOUT} ${what} and holds no ${JSON.stringify(unheld)}, so the words it writes are not the ones this stand-in answers in`
     );
   return true;
 }
@@ -380,8 +374,8 @@ const BACKWARD_UNGIVEN = ", which gave no reason.";
 /** Whether the label's daemon posts a worker's backward move on the issue at all (main's since
  * #4309, 26f27a997a). */
 const POSTS_BACKWARD = bootRead(() =>
-  labelHolds(
-    "func backwardMoveReason(",
+  labelWords(
+    SHAPES.postsBackward,
     [BACKWARD_ASKED, BACKWARD_UNGIVEN],
     "posts a backward move's reason"
   )
@@ -398,8 +392,8 @@ const CONFLICT_HEAD = " at head ";
 /** Whether the label's daemon posts a conflict's move on the issue at all (main's since #4291,
  * 34f0d8c801). */
 const POSTS_CONFLICT = bootRead(() =>
-  labelHolds(
-    "func moveReason(",
+  labelWords(
+    SHAPES.postsConflict,
     [...CONFLICT_SAID, CONFLICT_PULL, CONFLICT_HEAD],
     "posts a conflict's move"
   )
@@ -418,20 +412,15 @@ const REASON_TOO_LONG = {
     "the reason makes a message Dispatch refuses: %s; the move was not applied, so ask again with a shorter reason",
 } as const;
 /** Whether the label's workflow refuses a backward move's reason (main's since #4309). It reads
- * the sentence the move posts, so a workflow that refuses a reason and posts no sentence is no
- * daemon this stand-in has the words of. */
-const REASON_REFUSALS = bootRead(() => {
-  const refuses = labelHolds(
-    `"${REASON_TOO_LONG.code}"`,
+ * the sentence the move posts, so a workflow of that shape posts the sentence too: a source that
+ * refuses and posts none is of no shape `labelShapes` reads. */
+const REASON_REFUSALS = bootRead(() =>
+  labelWords(
+    SHAPES.refusesReason,
     [REASON_DECISION.code, REASON_DECISION.format, REASON_TOO_LONG.format],
     "refuses a backward move's reason"
-  );
-  if (refuses && !POSTS_BACKWARD)
-    throw new Error(
-      `the workflow of ${CHECKOUT} refuses a backward move's reason and posts no sentence of the move (func backwardMoveReason), which this stand-in reads the reason through`
-    );
-  return refuses;
-});
+  )
+);
 /** The answer of a claim refusal read at boot, in the daemon's shape (claim.Refusal marshals as
  * `{error}`). */
 function refuse(refusal: { status: number; message: string }): Response {
@@ -1245,22 +1234,12 @@ function queueRow(row: Unqueued<OutboxRow>): void {
  * lease of a row in flight so that it runs again with the newer set (store's
  * `EnqueueRoleHolders`). */
 let holdersAsked = 0;
-/** Whether the label's daemon publishes the issue's role holders at all, and the label's
- * Dispatch, the one the run's Dispatch is built from (rig.sh's services_up), serves the route it
- * publishes to: main's daemon and Dispatch since #4228 (5a2d1f0637), its client's
- * `PutRoleHolders` and the route's row in Dispatch's table. A daemon that publishes none
- * publishes nothing here, and one whose Dispatch serves no such route would wait on its router's
- * 404 for ever (`publishRoleHolders`' wait), which this does not model: it publishes only where
- * both hold. */
-const PUBLISHES_HOLDERS = bootRead(() =>
-  [
-    ["daemon/internal/dispatch/client.go", '"/role-holders"'],
-    ["envoy/internal/dispatch/api/routes_table.go", '"/api/v1/issues/{key}/role-holders"'],
-  ].every(([file, marker]) => {
-    const source = `${CHECKOUT}/packages/${file}`;
-    return existsSync(source) && readFileSync(source, "utf8").includes(marker ?? "");
-  })
-);
+/** Whether the label's daemon publishes the issue's role holders at all, to a Dispatch that
+ * serves the route it publishes to, the label's, the one the run's Dispatch is built from
+ * (rig.sh's services_up): main's daemon and Dispatch since #4228 (5a2d1f0637), its client's
+ * `PutRoleHolders` and the route's row in Dispatch's table (daemon-pane.ts's `labelShapes`). A
+ * daemon of main `ff2a10ef`'s shape publishes nothing here. */
+const PUBLISHES_HOLDERS = SHAPES.publishesHolders;
 /** Queues the publication of the issue's role holders, where the daemon queues one: at its boot
  * (`queueRoleHoldersPublish`), at a claim write that changes the session holding a role — an
  * agent's registration, a claim the daemon fails (store's `putClaim`) — and at a ready that
@@ -1678,7 +1657,6 @@ async function handoffRecord(
   // naming it is refused as production refuses a claim naming a record an earlier session of
   // its role wrote, and told to write its own.
   const author = held.author;
-  if (!daemonAnswers("HANDOFF_SESSION_MISMATCH")) return undefined;
   if (author?.kind === "session" && author.id === session) return undefined;
   const named = `handoff record ${id} (${HANDOFF_WORD} version ${held.version})`;
   if (author?.kind === "session" && author.id === DAEMON_SESSION)
@@ -1911,7 +1889,7 @@ async function handle(
         recordBacked ? (handoffId ?? "") : (commit ?? ""),
         parsed.data.verdict
       );
-      if (FACTS.has(fact) && daemonAnswers("HANDOFF_ALREADY_RECORDED")) {
+      if (FACTS.has(fact)) {
         const received = recordBacked
           ? `naming handoff record ${handoffId} (${HANDOFF_WORD} version ${handoffVersion})`
           : `at commit ${commit ?? ""}`;
@@ -1964,12 +1942,7 @@ async function handle(
       // this completion wrote none (the engine's HANDOFF_NOT_NEW). A repeat of a whole
       // completion never reaches here (HANDOFF_ALREADY_RECORDED above): this is the same record
       // under another verdict, or in a phase the issue has since entered.
-      if (
-        HANDOFF_WORD !== "" &&
-        handoffId !== undefined &&
-        handoffId === LAST_HANDOFF.get(role) &&
-        daemonAnswers("HANDOFF_NOT_NEW")
-      ) {
+      if (HANDOFF_WORD !== "" && handoffId !== undefined && handoffId === LAST_HANDOFF.get(role)) {
         return {
           phase,
           response: failure(

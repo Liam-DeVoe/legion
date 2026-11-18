@@ -433,6 +433,15 @@ nor leave a file in `/tmp` for another run. A run recorded before this world is 
 world it had (its own `namespace.txt`, or, with none, a world that showed its checkout, the rig's
 directory and the services).
 
+A pod's git reads no system configuration: the worker image has no `/etc/gitconfig`. A host's
+can hold one, and a GitHub runner's does (`safe.directory=*` and four `filter.lfs` keys). So where
+the system file of the pane's git holds anything (`git config --system --edit` names it), the
+world declares it `empty` and the namespace binds an empty read-only file over it. The agent's
+`git config -l --show-scope` then prints no `system` line, as a pod's prints none. No variable
+does it: a pod's pane has no `GIT_CONFIG_NOSYSTEM`. A host that has such a file and refuses a
+mount onto a file (a gVisor pod: `mount point is not a directory`) refuses every run, and the
+probe below names that refusal.
+
 Nothing the rig composes for an agent names its run's scenario, case or label, or a name the rig
 once gave its world: before an agent starts, `launch` runs `run-names.ts guard`, which reads every
 variable of the pane (its name and its value: the profile, the Legion project, issue and role its
@@ -509,9 +518,16 @@ A worker world's issue workspace, `<run>/ws`, is made as production's provisioni
 pod's (`rig.sh`'s `fixture_workspace`): a shared clone, `<run>/repos/github.com/<owner>/<repo>`,
 cloned with no working tree from the run's own bare remote as a pod's is from its feed, and the
 workspace added to it with `jj workspace add`, which jj colocates as a locked git worktree, so
-`<run>/ws/.git` is the file a pod's is (`gitdir: <clone>/.git/worktrees/ws`). Its origin is
-`https://github.com/<owner>/<repo>`, as a pod's is, and `git remote -v` and `jj git remote list`
-print that URL. Every fetch and push of origin by its name, git's and jj's, still reaches
+`<run>/ws/.git` is the file a pod's is (`gitdir: <clone>/.git/worktrees/ws`). Both of the
+worktree's links are absolute and the clone's format is 0 with no extension, as a pod's git
+2.47.3 writes them, whatever the host's git. jj asks git for relative links (`git -c
+worktree.useRelativePaths=true worktree add`); git 2.48 and later honour that, and write
+`gitdir: ../repos/…`, `core.repositoryformatversion=1` and `extensions.relativeworktrees=true`
+(CI's git 2.56.1 at `427b02d4`; git 2.55.0 measured here). So the build runs `git worktree
+repair` with `worktree.useRelativePaths=false`, unsets the extension and sets the format back
+to 0, and refuses a workspace in any other form, naming each difference (`workspace_form`).
+Its origin is `https://github.com/<owner>/<repo>`, as a pod's is, and `git remote -v` and `jj git
+remote list` print that URL. Every fetch and push of origin by its name, git's and jj's, still reaches
 `<run>/remote.git`: origin names a remote helper (`remote.origin.vcs=ghapp`), and git runs
 `<run>/bin/git-remote-ghapp` from the pane's PATH, which hands the call to `git remote-ext` and so
 to the bare remote's own upload-pack or receive-pack, with none of the caller's repository
@@ -524,9 +540,11 @@ a pod's order (the credential lines, `core.warnAmbiguousRefs`, `branch.main.*`; 
 `core.ignorecase` and `core.precomposeunicode` that `jj git clone` wrote) and the pane carries the
 five `GIT_CONFIG_COUNT` pairs a pod's runtime gives every role process (`rig.sh`'s `git_pairs`), so
 `git config -l --show-scope` prints a pod's list and `remote.origin.vcs`, which `rig.test.ts`'s
-"the issue workspace's remote" holds line for line. The clone and the workspace get the rest a pod's
-provisioning writes too: `.jj/legion-created`, the `.codegraph/` line of the clone's
-`.git/info/exclude`, and the repository's jj configuration (`trunk()` and
+"the issue workspace's remote" holds line for line. That row reads the `system` scope in the
+agent's namespace, where it is a pod's (none); on a host that makes no namespace (a GitHub runner),
+where no agent starts, it reads the host's own file and says so in its name. The clone and the
+workspace get the rest a pod's provisioning writes too: `.jj/legion-created`, the `.codegraph/`
+line of the clone's `.git/info/exclude`, and the repository's jj configuration (`trunk()` and
 `git.abandon-unreachable-commits = false`). jj 0.45 keeps that configuration under the
 configuration home of whoever runs jj (`$XDG_CONFIG_HOME/jj/repos/<config-id>/`), and the rig's
 jj wrote it into the operator's, so every agent's first jj command printed `Per-repo config not
@@ -848,15 +866,30 @@ run's `built-from` names, and only for an answer the two shapes do not give alik
 keeps every reading that succeeded, and the process keeps each refusal, so a run whose checkout
 cannot be read costs no more than the first run that asked.
 
+What the label's daemon posts, refuses and publishes is read out of its source as text
+(`daemon-pane.ts`'s `labelShapes`), each as one of two shapes. A backward move's sentence, a
+conflict's move and the refusal of a backward move's reason are main's since #4291 and #4309,
+read by `func backwardMoveReason(`, `func moveReason(` and `"BACKWARD_REASON_TOO_LONG"` in
+`effects.go`; main `ff2a10ef` predates them, read by the status write it has in their place,
+which takes no message. The role holders' publication is main's since #4228, read by
+`"/role-holders"` in the daemon's Dispatch client and the route's row in Dispatch's table;
+`ff2a10ef` is read by its outbox kinds, which end at `gated_steps_publish`. The three completion
+refusals (`HANDOFF_SESSION_MISMATCH`, `HANDOFF_ALREADY_RECORDED`, `HANDOFF_NOT_NEW`) have one
+shape: every daemon the rig runs names them. A source of neither shape, or of both, refuses the
+batch at `label_facts` and every stand-in's boot, naming each marker and its file. A marker that
+is not found is never read as an older daemon that lacks the behaviour.
+
 The rig's tests hold both shapes of each file to sources they write themselves, so they need no
-older checkout on the host. Two rows also read an older daemon's own source where one is given:
+older checkout on the host. Some rows also read an older daemon's own source where one is given:
 `SKILL_SCENARIOS_OLDER_CHECKOUT` names a whole checkout of main `ff2a10ef` (2026-11-07), for
 instance `git worktree add <dir> ff2a10ef` or an extract of `git archive ff2a10ef`, and
 `daemon-standin.test.ts`'s "an older daemon's late completion is refused in that daemon's own
 sentence" reads its `engine.go` and `handoff.go` as the older shapes and boots the daemon
 stand-in on it, and its "an older daemon refuses no backward move's reason, posts no sentence and
 publishes no role holder" reads a post with `daemon-pane.go`'s `post-check` built in that
-checkout's module and boots the stand-in on it. Those reads need go and run `go run -overlay` of
+checkout's module and boots the stand-in on it. `daemon-pane.test.ts`'s "the shapes of a label's
+daemon source" reads it as the older shape of each reader, and refuses it with each older marker
+renamed. The two stand-in rows need go and run `go run -overlay` of
 `daemon-pane.go` in the checkout's `packages/daemon`, with its `packages/envoy` beside it (its
 `go.mod` replaces that module), so the older module's dependencies must be in the Go module
 cache or fetchable. With the variable unset the rows skip and say so. It is a test input only:
@@ -871,10 +904,25 @@ and error texts, never production's values:
 
 | Pin | What it holds | Read from | Made by |
 | --- | --- | --- | --- |
-| `production-shapes.json` | the exit, stderr and answer shape of 173 reads: the 5 reads of a branch a ruleset alone protects, the 90 distinct reads INFRA-764's round 25 made, the `read_record` record, the tester's 68 reads of each read the world served with no pin, and the implementer's 9 reads that set does not hold | cybermonklabs/legion `main` at 2026-11-17T15:59:18Z, its pull request #2827 at about 15:40Z, and a Legion issue pod's own record at 16:49Z that day; the open #2827, the merged #4326 and the repository at about 08:45Z (the tester) and 08:55Z (the implementer) on 2026-11-18 | `production-shapes.ts` |
+| `production-shapes.json` | the exit, stderr and answer shape of 173 reads, and the line shapes of the 20 whose answer is text: the 5 reads of a branch a ruleset alone protects, the 90 distinct reads INFRA-764's round 25 made, the `read_record` record, the tester's 68 reads of each read the world served with no pin, and the implementer's 9 reads that set does not hold | cybermonklabs/legion `main` at 2026-11-17T15:59:18Z, its pull request #2827 at about 15:40Z, and a Legion issue pod's own record at 16:49Z that day; the open #2827, the merged #4326 and the repository at about 08:45Z (the tester) and 08:55Z (the implementer) on 2026-11-18 | `production-shapes.ts` |
 | `rest-required.json` | the required field tree of the success answer of each REST operation the world serves | github/rest-api-description at `DESCRIPTION_COMMIT` (`c9c95fe34ced`) | `rest-required.ts` |
 | `graphql-schema.json` | the field and return type of each GraphQL type the world serves, which the world's query check reads | GitHub's introspection at 2026-11-17T21:20:23Z | `graphql-schema.ts` |
 | each label's own `LegionStateResponse` | every state body the daemon stand-in can serve, parsed before the label starts | the label's own checkout | `services_up`'s `label_contract` |
+
+A read whose answer is text is pinned by its lines too, not by the kind `string` alone, which
+an empty or wrong-format answer passed (`production-shapes.ts`'s `lineShapes`). The text views
+(`gh pr view`, `--comments`, a `gh run` refusal's empty stdout), a diff, `--name-only`, the rows
+of `gh pr list` and `gh pr checks`, `gh auth status` and the `sha` media each have a layout,
+chosen by the read's command. Each line keeps gh's and git's own words: a `<key>:\t` prefix,
+`--`, `diff --git`, `@@`, the fixed sentences of `gh auth status`. Every value is a placeholder.
+A row is its field count (`<5 tab-separated fields>`), and the body after a view's `--` is one
+`<body>`. The shapes are a set, so how many lines of one shape a text holds is no shape. A
+production line no rule reads fails the derivation, and so does a value of production's in a
+line. Round 25's text answers were kept cut at 600 characters: their cut line is left out and
+their shapes end in `<cut line>`. A world's line shape those readings do not hold is not
+compared, since production's lines after the cut were never read. The rows read the world's
+text as gh wrote it, untrimmed, and name each difference of state with its reason: the world's
+diff adds files and removes no line, where #2827's and #4326's remove lines.
 
 The issue workspace's git configuration is held line for line to a Legion issue pod's clone, as
 read on 2026-11-17 (the paragraph on a worker world's issue workspace, above), and the base's
@@ -1468,6 +1516,10 @@ Stated limits, each known and kept so:
   document of two operations — is refused as a call the world does not model, where GitHub runs
   it. A field the vendored schema holds no type of is not judged, and GitHub's other validator
   refusals (a selection on a scalar, a variable declared and not used) are not modelled.
+- On a host whose git has a system configuration file, the run's namespace shows that file empty,
+  where a pod has none: `git config --system -l` exits 0 and prints nothing there, and a pod's git
+  answers `fatal: unable to read config file '/etc/gitconfig': No such file or directory` (exit
+  128). `git config -l --show-scope` prints the same lines as a pod's.
 - The issue workspace's clone holds one key no production clone does, `remote.origin.vcs=ghapp`,
   and the pane's PATH a helper no pod's does, `<run>/bin/git-remote-ghapp`: the transport that takes
   origin's fetches and pushes to the run's remote. It takes a call of origin by its name alone; a

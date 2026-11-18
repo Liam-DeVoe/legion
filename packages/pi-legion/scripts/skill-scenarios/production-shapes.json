@@ -1139,7 +1139,17 @@
       "stderr": "",
       "shape": {
         ".": "string"
-      }
+      },
+      "lines": [
+        "diff --git a/<path> b/<path>",
+        "index <blob>..<blob>",
+        "--- <path>",
+        "+++ <path>",
+        "@@ -<line> +<line> @@",
+        " <text>",
+        "-<text>",
+        "<cut line>"
+      ]
     },
     {
       "name": "gh pr view baseRefName",
@@ -1350,7 +1360,25 @@
       "stderr": "",
       "shape": {
         ".": "string"
-      }
+      },
+      "lines": [
+        "title:\t<value>",
+        "state:\t<value>",
+        "author:\t<value>",
+        "labels:\t<value>",
+        "assignees:\t<value>",
+        "reviewers:\t<value>",
+        "projects:\t<value>",
+        "milestone:\t<value>",
+        "number:\t<value>",
+        "url:\t<value>",
+        "additions:\t<value>",
+        "deletions:\t<value>",
+        "auto-merge:\t<value>",
+        "--",
+        "<body>",
+        "<cut line>"
+      ]
     },
     {
       "name": "gh pr view comments",
@@ -2329,7 +2357,17 @@
       "stderr": "",
       "shape": {
         ".": "string"
-      }
+      },
+      "lines": [
+        "diff --git a/<path> b/<path>",
+        "index <blob>..<blob>",
+        "--- <path>",
+        "+++ <path>",
+        "@@ -<line> +<line> @@",
+        " <text>",
+        "-<text>",
+        "<cut line>"
+      ]
     },
     {
       "name": "gh pr view body,title,url",
@@ -2352,7 +2390,16 @@
       "stderr": "",
       "shape": {
         ".": "string"
-      }
+      },
+      "lines": [
+        "author:\t<value>",
+        "association:\t<value>",
+        "edited:\t<value>",
+        "status:\t<value>",
+        "--",
+        "<body>",
+        "<cut line>"
+      ]
     },
     {
       "name": "gh pr view baseRefName,headRefOid,mergeStateStatus,number,reviewDecision,state,title,url",
@@ -2777,7 +2824,8 @@
       "stderr": "",
       "shape": {
         ".": "string"
-      }
+      },
+      "lines": ["<path>", "<cut line>"]
     },
     {
       "name": "gh pr view headRefName,headRefOid,number,state",
@@ -4212,7 +4260,17 @@
       "stderr": "",
       "shape": {
         ".": "string"
-      }
+      },
+      "lines": [
+        "diff --git a/<path> b/<path>",
+        "index <blob>..<blob>",
+        "--- <path>",
+        "+++ <path>",
+        "@@ -<line> +<line> @@",
+        " <text>",
+        "+<text>",
+        "-<text>"
+      ]
     },
     {
       "name": "gh api GET git/ref/{ref}",
@@ -4306,7 +4364,14 @@
       "stderr": "",
       "shape": {
         ".": "string"
-      }
+      },
+      "lines": [
+        "<host>",
+        "  ✓ Logged in to <host> account <login> (<source>)",
+        "  - Active account: <value>",
+        "  - Git operations protocol: <value>",
+        "  - Token: <value>"
+      ]
     },
     {
       "name": "gh pr list (text)",
@@ -4316,7 +4381,8 @@
       "stderr": "",
       "shape": {
         ".": "string"
-      }
+      },
+      "lines": ["<5 tab-separated fields>"]
     },
     {
       "name": "gh pr list --base main (text)",
@@ -4326,7 +4392,8 @@
       "stderr": "",
       "shape": {
         ".": "string"
-      }
+      },
+      "lines": ["<5 tab-separated fields>"]
     },
     {
       "name": "gh pr list --author app/<app> (text)",
@@ -4346,7 +4413,8 @@
       "stderr": "",
       "shape": {
         ".": "string"
-      }
+      },
+      "lines": ["<5 tab-separated fields>"]
     },
     {
       "name": "gh pr list --state all (text)",
@@ -4356,7 +4424,8 @@
       "stderr": "",
       "shape": {
         ".": "string"
-      }
+      },
+      "lines": ["<5 tab-separated fields>"]
     },
     {
       "name": "gh pr diff",
@@ -4366,7 +4435,17 @@
       "stderr": "",
       "shape": {
         ".": "string"
-      }
+      },
+      "lines": [
+        "diff --git a/<path> b/<path>",
+        "index <blob>..<blob>",
+        "--- <path>",
+        "+++ <path>",
+        "@@ -<line> +<line> @@",
+        " <text>",
+        "+<text>",
+        "-<text>"
+      ]
     },
     {
       "name": "gh pr diff --name-only",
@@ -4376,7 +4455,8 @@
       "stderr": "",
       "shape": {
         ".": "string"
-      }
+      },
+      "lines": ["<path>"]
     },
     {
       "name": "gh pr checks (merged, all concluded)",
@@ -4386,7 +4466,8 @@
       "stderr": "",
       "shape": {
         ".": "string"
-      }
+      },
+      "lines": ["<5 tab-separated fields>"]
     },
     {
       "name": "gh pr checks (open)",
@@ -4396,7 +4477,8 @@
       "stderr": "no checks reported on the '<branch>' branch\n",
       "shape": {
         ".": "string"
-      }
+      },
+      "lines": []
     },
     {
       "name": "gh run view (missing id)",
@@ -4406,7 +4488,8 @@
       "stderr": "failed to get run: HTTP 404: Not Found (https://api.github.com/repos/<owner>/<repo>/actions/runs/1?exclude_pull_requests=true)\n",
       "shape": {
         ".": "string"
-      }
+      },
+      "lines": []
     },
     {
       "name": "gh run watch (missing id)",
@@ -4416,7 +4499,8 @@
       "stderr": "failed to get run: HTTP 404: Not Found (https://api.github.com/repos/<owner>/<repo>/actions/runs/1?exclude_pull_requests=true)\n",
       "shape": {
         ".": "string"
-      }
+      },
+      "lines": []
     },
     {
       "name": "gh api graphql viewer.login",
@@ -5357,7 +5441,8 @@
       "stderr": "",
       "shape": {
         ".": "string"
-      }
+      },
+      "lines": ["<sha>"]
     },
     {
       "name": "gh api GET commits/{sha}/pulls",
@@ -5717,7 +5802,8 @@
       "stderr": "run or job ID required when not running interactively\n\nUsage:  gh run view [<run-id>] [flags]\n\nFlags:\n  -a, --attempt uint      The attempt number of the workflow run\n      --exit-status       Exit with non-zero status if run failed\n  -j, --job string        View a specific job ID from a run\n  -q, --jq expression     Filter JSON output using a jq expression\n      --json fields       Output JSON with the specified fields\n      --log               View full log for either a run or specific job\n      --log-failed        View the log for any failed steps in a run or specific job\n  -t, --template string   Format JSON output using a Go template; see \"gh help formatting\"\n  -v, --verbose           Show job steps\n  -w, --web               Open run in the browser\n  \n",
       "shape": {
         ".": "string"
-      }
+      },
+      "lines": []
     },
     {
       "name": "gh run watch (no id)",
@@ -5727,7 +5813,8 @@
       "stderr": "run ID required when not running interactively\n\nUsage:  gh run watch <run-id> [flags]\n\nFlags:\n      --compact        Show only relevant/failed steps\n      --exit-status    Exit with non-zero status if run fails\n  -i, --interval int   Refresh interval in seconds (default 3)\n  \n",
       "shape": {
         ".": "string"
-      }
+      },
+      "lines": []
     },
     {
       "name": "gh api graphql viewer.login (implement App token)",

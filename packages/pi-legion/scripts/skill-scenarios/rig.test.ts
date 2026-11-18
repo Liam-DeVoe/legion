@@ -121,7 +121,11 @@ function quotedAssignment(name: string): string {
  * makes (require_namespace), in the same form launch.sh starts the agent in. */
 function namespaceProbe(env: Record<string, string>) {
   const result = spawnChecked(
-    ["bash", "-c", `${assignment("namespace_path")}\n${fn("namespace_probe")}\nnamespace_probe`],
+    [
+      "bash",
+      "-c",
+      `${assignment("namespace_path")}\n${fn("system_gitconfig")}\n${fn("namespace_probe")}\nnamespace_probe`,
+    ],
     { env }
   );
   return { code: result.exitCode, stdout: result.stdout.toString().trim() };
@@ -865,9 +869,16 @@ describe("the rig's own mise", () => {
     const result = bash(
       [
         "set -euo pipefail",
-        ...["fail", "note", "rig_mise", "push_guard", "base_env", "pane_var", "world_paths"].map(
-          fn
-        ),
+        ...[
+          "fail",
+          "note",
+          "rig_mise",
+          "push_guard",
+          "base_env",
+          "pane_var",
+          "system_gitconfig",
+          "world_paths",
+        ].map(fn),
         "root=$1 work=$2 R=$3 I=$4 profile=legion",
         assignment("mise_dir"),
         "rig_mise >/dev/null",
@@ -1946,7 +1957,9 @@ describe("push_guard", () => {
     mkdirSync(path.join(R, "lib", "git-core"), { recursive: true });
     const result = bash(
       [
-        ...["fail", "push_guard", "base_env", "pane_var", "world_paths"].map(fn),
+        ...["fail", "push_guard", "base_env", "pane_var", "system_gitconfig", "world_paths"].map(
+          fn
+        ),
         "R=$1 I=$2 profile=legion",
         "base_env",
         'world_paths "$R" "$R/work" "$I" "$R/pane.env"',
@@ -2090,6 +2103,7 @@ describe("childEnv", () => {
             "fixture_head_commit",
             "fixture_implement",
             "fixture_workspace",
+            "workspace_form",
             "world_remote",
             "role_identity",
             "role_env",
@@ -7245,6 +7259,7 @@ describe("what the rig writes into a run's world", () => {
           "fixture_implement",
           "fixture_test_handoff",
           "fixture_workspace",
+          "workspace_form",
           "world_remote",
           "role_identity",
           "role_env",
@@ -7430,6 +7445,7 @@ describe("the issue workspace's remote", () => {
           "fixture_head_commit",
           "fixture_implement",
           "fixture_workspace",
+          "workspace_form",
           "world_remote",
           "role_identity",
           "role_env",
@@ -7472,13 +7488,15 @@ describe("the issue workspace's remote", () => {
         .filter((line) => line.includes("="))
         .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)])
     );
-  /** COMMAND run by bash in R's issue workspace under the pane an implementer's agent gets there,
-   * with `over` over it: its exit, its stdout and its stderr. */
-  function inWorkspace(R: string, command: string, over: Record<string, string> = {}) {
+  /** The variables of the pane an implementer's agent gets in R's issue workspace, with `over`
+   * over them. */
+  function paneOf(R: string, over: Record<string, string> = {}) {
     const role = bash(
       `${fn("role_identity")}\n${fn("role_env")}\n${WORLD_APPS.map(assignment).join("\n")}\nrole_env implementer`
     );
-    const env = {
+    mkdirSync(path.join(R, "home"), { recursive: true });
+    writeFileSync(path.join(R, "jj.toml"), '[ui]\npaginate = "never"\n');
+    return {
       ...childEnv,
       HOME: path.join(R, "home"),
       PATH: `${path.join(R, "bin")}:${childEnv.PATH}`,
@@ -7494,10 +7512,65 @@ describe("the issue workspace's remote", () => {
       JJ_CONFIG: path.join(R, "jj.toml"),
       ...over,
     };
-    mkdirSync(path.join(R, "home"), { recursive: true });
-    writeFileSync(path.join(R, "jj.toml"), '[ui]\npaginate = "never"\n');
-    const ran = spawnChecked(["bash", "-c", command], { cwd: path.join(R, "ws"), env });
+  }
+  /** COMMAND run by bash in R's issue workspace under the pane an implementer's agent gets there,
+   * with `over` over it: its exit, its stdout and its stderr. */
+  function inWorkspace(R: string, command: string, over: Record<string, string> = {}) {
+    const ran = spawnChecked(["bash", "-c", command], {
+      cwd: path.join(R, "ws"),
+      env: paneOf(R, over),
+    });
     return { code: ran.exitCode, out: ran.stdout.toString(), err: ran.stderr.toString() };
+  }
+  /** COMMAND run as inWorkspace runs it, inside the namespace launch.sh starts the agent in. */
+  function inNamespace(R: string, command: string) {
+    const ran = namespaced(R, paneOf(R), path.join(R, "ws"), ["bash", "-c", command]);
+    return { code: ran.code, out: ran.stdout, err: ran.stderr };
+  }
+  /** ARGV run at CWD under `env -i` with ENV alone, inside the namespace launch.sh starts an agent
+   * of the run R in: R's world as world_paths declares it for a pane of ENV's PATH, written to
+   * R/namespace.txt as launch writes it, and mounted by private_world. */
+  function namespaced(
+    R: string,
+    env: Record<string, string | undefined>,
+    cwd: string,
+    argv: string[]
+  ) {
+    writeFileSync(path.join(R, "pane.env"), `PATH=${env.PATH}\n`);
+    mkdirSync(path.join(R, "tmp"), { recursive: true });
+    const vars = Object.entries(env).flatMap(([name, value]) =>
+      value === undefined ? [] : [`${name}=${value}`]
+    );
+    return bash(
+      [
+        fn("pane_var"),
+        fn("system_gitconfig"),
+        fn("world_paths"),
+        assignment("namespace_path"),
+        quotedAssignment("private_world"),
+        "R=$1 cwd=$2",
+        'world_paths "$R" "$3" "$4" "$R/pane.env" >"$R/namespace.txt"',
+        "shift 4",
+        'exec env -i PATH="$namespace_path" unshare -Urm -p --fork --mount-proc sh -c "$private_world" - "$(id -u)" "$(id -g)" "$R" "$cwd" env -i "$@"',
+      ].join("\n"),
+      [R, cwd, freshDir("namespace-work"), freshDir("namespace-install"), ...vars, ...argv]
+    );
+  }
+  /** Which system scope the rows read the agent's git by: the namespace's, which shows the host
+   * git's system file empty as a pod's git reads none (world_paths' `empty`), where the host makes
+   * the namespace; the host's own file where it does not (a GitHub runner), which the agent's git
+   * there would read, since no agent starts without the namespace. */
+  const SYSTEM_SCOPE = withoutNamespace
+    ? "the host's system file, since this host makes no namespace"
+    : "the agent's namespace, which shows no system file";
+  /** The system scope's lines the agent's git reads under R's pane, as SYSTEM_SCOPE says: none in
+   * the namespace, as a pod's; the host's file's, each `system\t<key>=<value>`, outside it. */
+  function systemScope(R: string): string[] {
+    if (!withoutNamespace) return [];
+    const read = spawnChecked(["git", "config", "--show-scope", "--system", "--list"], {
+      env: { PATH: paneOf(R).PATH },
+    });
+    return read.exitCode === 0 ? read.stdout.toString().split("\n").filter(Boolean) : [];
   }
   /** The pushes the world's remote logged (its post-receive's pushes.log), one `<ref> <old> <new>`
    * a push, of the refs `kept` names. */
@@ -7566,18 +7639,27 @@ describe("the issue workspace's remote", () => {
   // pairs (GIT_CONFIG_COUNT=0, as it was), a key out of production's order or twice, and a key
   // the world's transport needs in a scope the agent reads (protocol.ext.allow,
   // url.*.insteadOf). The tester compares by scope, key and count with one residual; this holds
-  // the values and the order too.
-  test("git config -l --show-scope is a production clone's, key for key, but remote.origin.vcs", () => {
+  // the values and the order too. And a system scope the agent's git reads that a pod's does not:
+  // a GitHub runner's /etc/gitconfig (safe.directory=*, filter.lfs.*, CI at 427b02d4), which the
+  // namespace shows empty (world_paths' `empty`); and the two lines git 2.48 and later write for
+  // jj's relative worktree, core.repositoryformatversion=1 and extensions.relativeworktrees=true
+  // (fixture_workspace's repair). The local and command scopes are held to production's lines
+  // everywhere; the system scope to production's, none, in the namespace, and to the host's file
+  // on a host that makes none, which the row's name says.
+  test(`git config -l --show-scope is a production clone's, key for key, but remote.origin.vcs, its system scope read in ${SYSTEM_SCOPE}`, () => {
     const R = world("remote-config");
     const fetch = PRODUCTION_CONFIG.indexOf(
       "local\tremote.origin.fetch=+refs/heads/*:refs/remotes/origin/*"
     );
     const expected = [
+      ...systemScope(R),
       ...PRODUCTION_CONFIG.slice(0, fetch + 1),
       RESIDUAL,
       ...PRODUCTION_CONFIG.slice(fetch + 1),
     ];
-    expect(inWorkspace(R, "git config -l --show-scope")).toEqual({
+    const read = withoutNamespace ? inWorkspace : inNamespace;
+    expect({ system: SYSTEM_SCOPE, ...read(R, "git config -l --show-scope") }).toEqual({
+      system: SYSTEM_SCOPE,
       code: 0,
       out: `${expected.join("\n")}\n`,
       err: "",
@@ -7591,9 +7673,11 @@ describe("the issue workspace's remote", () => {
 
   // Catches: a workspace whose .git is a repository of its own (a clone, as `jj git clone` made
   // it) where a pod's is the gitdir file `jj workspace add` writes into a shared clone's
-  // worktrees, which `cat .git` and `cat .git/config` read otherwise; and a worktree left
-  // unlocked, which provisioning locks so that a `git worktree prune` that cannot see it skips it
-  // (packages/daemon/internal/workspace's lockGitWorktree).
+  // worktrees, which `cat .git` and `cat .git/config` read otherwise; a worktree left unlocked,
+  // which provisioning locks so that a `git worktree prune` that cannot see it skips it
+  // (packages/daemon/internal/workspace's lockGitWorktree); and either link relative, as git 2.48
+  // and later write them for jj (`gitdir: ../repos/…` at CI's 427b02d4), where a pod's git 2.47.3
+  // writes both absolute.
   test(".git is the gitdir file of a locked worktree of the shared clone", () => {
     const R = world("remote-gitdir");
     const clone = path.join(R, "repos", "github.com", WORLD_REPO);
@@ -7603,11 +7687,167 @@ describe("the issue workspace's remote", () => {
       out: `gitdir: ${clone}/.git/worktrees/ws\n`,
       err: "",
     });
+    expect(readFileSync(path.join(clone, ".git", "worktrees", "ws", "gitdir"), "utf8")).toBe(
+      `${path.join(R, "ws")}/.git\n`
+    );
     expect(inWorkspace(R, "cat .git/config").code).not.toBe(0);
     expect(inWorkspace(R, "git worktree list --porcelain").out).toContain(
       `worktree ${path.join(R, "ws")}\nHEAD ${remote(R, "rev-parse", `legion/${WORLD_PROJECT}-1`)}\ndetached\nlocked legion workspace: its directory may be invisible to other processes sharing this clone\n`
     );
   });
+
+  // Catches: a build that goes on with a workspace in any form but a pod's, which a git of 2.48
+  // or later leaves where its repair is missing (fixture_workspace): both links relative,
+  // core.repositoryformatversion=1 and extensions.relativeworktrees=true, as CI's git 2.56.1
+  // wrote them at 427b02d4 and git 2.55.0 did here. A host's git 2.47.3 writes none of it, so the
+  // row writes that form over a world by hand, each file as git 2.55.0 wrote it.
+  test("workspace_form names each way a workspace is not in a pod's form, and nothing for a pod's", () => {
+    const R = world("remote-form");
+    const clone = path.join(R, "repos", "github.com", WORLD_REPO);
+    const entry = path.join(clone, ".git", "worktrees", "ws");
+    const form = () =>
+      bash(`${fn("workspace_form")}\nworkspace_form "$1" "$2"`, [clone, path.join(R, "ws")]);
+    expect(form()).toEqual({ code: 0, stdout: "", stderr: "" });
+    writeFileSync(
+      path.join(R, "ws", ".git"),
+      `gitdir: ../repos/github.com/${WORLD_REPO}/.git/worktrees/ws\n`
+    );
+    writeFileSync(path.join(entry, "gitdir"), "../../../../../../../ws/.git\n");
+    const config = path.join(clone, ".git", "config");
+    for (const [key, value] of [
+      ["core.repositoryformatversion", "1"],
+      ["extensions.relativeWorktrees", "true"],
+    ])
+      expect(spawnChecked(["/usr/bin/git", "config", "--file", config, key, value]).exitCode).toBe(
+        0
+      );
+    expect(form()).toEqual({
+      code: 0,
+      stdout: [
+        `${R}/ws/.git reads 'gitdir: ../repos/github.com/${WORLD_REPO}/.git/worktrees/ws', not 'gitdir: ${entry}'`,
+        `${entry}/gitdir reads '../../../../../../../ws/.git', not '${R}/ws/.git'`,
+        `${config} holds core.repositoryformatversion=1, not 0`,
+        `${config} holds an extension, extensions.relativeworktrees true`,
+        "",
+      ].join("\n"),
+      stderr: "",
+    });
+  });
+
+  /** A directory holding a `git` that names FILE as its system configuration, as `git config
+   * --system --edit` names /etc/gitconfig to its editor, and runs the real git for every other
+   * call. */
+  function systemGit(file: string): string {
+    const bin = freshDir("system-git");
+    writeFileSync(
+      path.join(bin, "git"),
+      `#!/bin/sh\n[ "$*" != "config --system --edit" ] || exec $GIT_EDITOR '${file}'\nexec /usr/bin/git "$@"\n`,
+      { mode: 0o755 }
+    );
+    return bin;
+  }
+
+  // Catches: a run's world that shows the agent's git a system configuration no pod's git reads:
+  // the host's /etc/gitconfig, which a GitHub runner's holds (safe.directory=* and filter.lfs.*,
+  // CI at 427b02d4) and a pod's worker image has none of; and a world that declares a file that
+  // holds nothing, which a host refusing a mount onto a file (a gVisor pod) would refuse for no
+  // line its git reads.
+  test("world_paths declares the pane git's system configuration empty where it holds anything, and nothing otherwise", () => {
+    const R = freshDir("system-gitconfig-world");
+    const file = path.join(R, "gitconfig");
+    writeFileSync(path.join(R, "pane.env"), `PATH=${systemGit(file)}:${childEnv.PATH}\n`);
+    const declared = (text: string) => {
+      writeFileSync(file, text);
+      const shown = bash(
+        [
+          fn("pane_var"),
+          fn("system_gitconfig"),
+          fn("world_paths"),
+          'world_paths "$1" "$2" "$3" "$1/pane.env"',
+        ].join("\n"),
+        [R, freshDir("system-gitconfig-work"), freshDir("system-gitconfig-install")]
+      );
+      expect({ code: shown.code, stderr: shown.stderr }).toEqual({ code: 0, stderr: "" });
+      return shown.stdout.split("\n").filter((line) => line.startsWith("empty "));
+    };
+    expect(declared("[safe]\n\tdirectory = *\n")).toEqual([`empty ${file}`]);
+    expect(declared("")).toEqual([]);
+  });
+
+  /** The host's refusal of a mount onto a file, private_world's own bind of an empty file of a
+   * tmpfs, made in a namespace of the same unshare, its first line with the path given as FILE;
+   * undefined where the host takes it. */
+  function fileMountRefusal(file: string): string | undefined {
+    const probe = path.join(freshDir("file-mount"), "file");
+    writeFileSync(probe, "");
+    const bare = spawnChecked(
+      [
+        "unshare",
+        "-Urm",
+        "sh",
+        "-c",
+        'mount -t tmpfs tmpfs /dev/shm && : >/dev/shm/empty && mount --bind /dev/shm/empty "$1"',
+        "-",
+        probe,
+      ],
+      { env: { PATH: childEnv.PATH } }
+    );
+    if (bare.exitCode === 0) return undefined;
+    return (bare.stderr.toString().split("\n")[0] ?? "").replaceAll(probe, file);
+  }
+
+  // Catches: a namespace that shows the agent's git the file world_paths declares empty as the
+  // host holds it, or writable; and one that starts the agent on a host that refuses a mount onto
+  // a file (a gVisor pod: `mount point is not a directory`), where the agent's git would read the
+  // host's lines: such a host refuses the run with mount's own refusal. Which of the two the host
+  // does is read of a bare mount onto a file first (fileMountRefusal).
+  test.skipIf(withoutNamespace)(
+    "the namespace shows that file empty and read-only, or refuses the run where the host takes no mount onto a file",
+    () => {
+      const R = freshDir("system-gitconfig-run");
+      const file = path.join(R, "gitconfig");
+      const text = "[safe]\n\tdirectory = *\n";
+      writeFileSync(file, text);
+      const refusal = fileMountRefusal(file);
+      const ran = namespaced(R, { PATH: `${systemGit(file)}:${childEnv.PATH}` }, R, [
+        "sh",
+        "-c",
+        'cat "$1"; if echo x >>"$1"; then echo written; fi',
+        "-",
+        file,
+      ]);
+      if (refusal === undefined)
+        expect({ code: ran.code, stdout: ran.stdout }).toEqual({ code: 0, stdout: "" });
+      else
+        expect({ refused: ran.code !== 0, stderr: ran.stderr }).toEqual({
+          refused: true,
+          stderr: expect.stringContaining(refusal),
+        });
+      expect(readFileSync(file, "utf8")).toBe(text);
+    }
+  );
+
+  // Catches: a probe that passes a host every run's namespace then fails on: one that refuses a
+  // mount onto a file (a gVisor pod) where its caller's git reads a system configuration, which
+  // private_world binds an empty file over (world_paths' `empty`); and a probe that binds over
+  // one that holds nothing, which such a host would refuse for no line its git reads.
+  test.skipIf(withoutNamespace)(
+    "namespace_probe makes the bind over its caller git's system configuration where that holds anything, and prints the host's refusal of it",
+    () => {
+      const dir = freshDir("system-gitconfig-probe");
+      const file = path.join(dir, "gitconfig");
+      const PATH = `${systemGit(file)}:${childEnv.PATH}`;
+      writeFileSync(file, "");
+      expect(namespaceProbe({ PATH })).toEqual({ code: 0, stdout: "" });
+      writeFileSync(file, "[safe]\n\tdirectory = *\n");
+      const refusal = fileMountRefusal(file);
+      expect(namespaceProbe({ PATH })).toEqual(
+        refusal === undefined
+          ? { code: 0, stdout: "" }
+          : { code: 1, stdout: expect.stringContaining(refusal) }
+      );
+    }
+  );
 
   // Catches: a workspace missing what a pod's provisioning writes beside the clone and the
   // worktree (packages/daemon/internal/workspace): the record of when it made the workspace
@@ -8606,6 +8846,7 @@ sleep() { command sleep 0.05; }`;
         fn("fail"),
         fn("pinned_omp"),
         fn("pane_var"),
+        fn("system_gitconfig"),
         fn("world_paths"),
         fn("launch"),
         assignment("namespace_path"),

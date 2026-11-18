@@ -577,6 +577,149 @@ export interface StandinFacts {
    * role can be late, one started in a phase that is not the role's or in `reviewing`, the one
    * phase the review round moves; undefined for any other. */
   readonly notCurrentPhase: Refusal | undefined;
+  /** What the daemon's source says it posts, refuses and publishes (`labelShapes`). */
+  readonly shapes: LabelShapes;
+}
+
+/** A text a label's daemon source holds, and the file, under the checkout's `packages/`, it is
+ * read in. */
+interface Marker {
+  readonly file: string;
+  readonly text: string;
+}
+
+/** One shape of a label's daemon source a reader pins: its name, the markers a daemon of that
+ * shape holds, each in its file, and what the stand-in answers such a daemon by. */
+interface SourceShape<T> {
+  readonly name: string;
+  readonly markers: readonly Marker[];
+  readonly value: T;
+}
+
+/** The value of the one shape of `shapes` whose every marker the daemon source of `checkout`
+ * holds, for `reader`. A source that holds every marker of no shape, or of two, is refused, naming
+ * each marker of each shape it does not hold and the file it was looked for in: a marker this
+ * cannot find is a daemon of no shape the stand-in has the answers of, or a marker gone stale, and
+ * neither is read as an older daemon that lacks the behaviour (the architect's ruling of
+ * 2026-11-18). daemon-pane.go's `addressingOf` reads a checkout the same way: the shapes pinned,
+ * any other refused. */
+function sourceShape<T>(checkout: string, reader: string, shapes: readonly SourceShape<T>[]): T {
+  const texts = new Map<string, string>();
+  const holds = ({ file, text }: Marker) => {
+    const at = path.join(checkout, "packages", file);
+    if (!texts.has(at)) texts.set(at, existsSync(at) ? readFileSync(at, "utf8") : "");
+    return texts.get(at)?.includes(text) === true;
+  };
+  const held = shapes.filter(({ markers }) => markers.every(holds));
+  const [one] = held;
+  if (held.length === 1 && one !== undefined) return one.value;
+  const why =
+    held.length === 0
+      ? shapes
+          .map(
+            ({ name, markers }) =>
+              `${name} holds ${markers
+                .filter((marker) => !holds(marker))
+                .map(({ file, text }) => `${JSON.stringify(text)} in packages/${file}`)
+                .join(" and ")}, and this source does not`
+          )
+          .join("; ")
+      : `it holds the markers of two shapes at once, ${held.map(({ name }) => name).join(", and ")}`;
+  throw new Error(
+    `the daemon source of ${checkout} is no shape of ${reader} this rig reads: ${why}`
+  );
+}
+
+/** What a label's daemon posts on the issue, refuses and publishes, as its source reads
+ * (`labelShapes`). */
+export interface LabelShapes {
+  /** A worker's backward move posts its sentence on the issue (effects.go's `backwardMoveReason`,
+   * main's since #4309, 26f27a997a). */
+  readonly postsBackward: boolean;
+  /** The move of a head that conflicts with its base posts its sentence on the issue (effects.go's
+   * `moveReason`, main's since #4291, 34f0d8c801). */
+  readonly postsConflict: boolean;
+  /** A backward move whose sentence Dispatch would refuse is refused (effects.go's
+   * `backwardReasonRefusal`, main's since #4309). */
+  readonly refusesReason: boolean;
+  /** The daemon publishes the issue's role holders to a Dispatch that serves their route (its
+   * client's `PutRoleHolders` and the route's row in Dispatch's table, main's since #4228,
+   * 5a2d1f0637). */
+  readonly publishesHolders: boolean;
+}
+
+const EFFECTS = "daemon/internal/workflow/effects.go";
+/** The completion refusals every daemon the rig runs gives, each by its code in the file that
+ * writes it: this checkout's and main `ff2a10ef`'s (2026-11-07) alike, so a source that names one
+ * nowhere is a marker gone stale, which no older shape answers. */
+const COMPLETION_REFUSALS = [
+  ["HANDOFF_SESSION_MISMATCH", "daemon/internal/api/handoff.go"],
+  ["HANDOFF_ALREADY_RECORDED", "daemon/internal/api/handoff.go"],
+  ["HANDOFF_NOT_NEW", "daemon/internal/workflow/engine.go"],
+] as const;
+/** The workflow's status write as main `ff2a10ef`'s daemon has it, with no message to post: what
+ * that older daemon has in the place of each sentence a move posts on the issue, and so of the
+ * refusal of a backward move's reason that sentence would carry. */
+const STATUS_WITHOUT_MESSAGE: Marker = {
+  file: EFFECTS,
+  text: "func (e *Engine) status(ctx context.Context, tx pgx.Tx, issue record.Issue, status string) error {",
+};
+/** The outbox's kinds as main `ff2a10ef`'s daemon has them, ending at the gated steps'
+ * publication with no kind of the role holders': what that older daemon has in the place of
+ * their publication. */
+const OUTBOX_WITHOUT_HOLDERS: Marker = {
+  file: "daemon/internal/record/outbox.go",
+  text: '\tOutboxKindGatedStepsPublish OutboxKind = "gated_steps_publish"\n)',
+};
+
+/** What the daemon source of `checkout` posts, refuses and publishes, each read as one of two
+ * shapes: main's since the change that brought it, by its own marker, or main `ff2a10ef`'s, which
+ * predates all three changes, by the code it has in their place (`STATUS_WITHOUT_MESSAGE`,
+ * `OUTBOX_WITHOUT_HOLDERS`). The completion refusals have one shape, every daemon the rig runs
+ * holding them. Throws, naming each marker and its file, for a source of no shape or of both
+ * (`sourceShape`), which refuses the batch at rig.sh's label_facts and a stand-in's boot. */
+export function labelShapes(checkout: string): LabelShapes {
+  for (const [code, file] of COMPLETION_REFUSALS)
+    sourceShape(checkout, `the completion refusal ${code}`, [
+      { name: "every daemon the rig runs", markers: [{ file, text: `"${code}"` }], value: true },
+    ]);
+  const older = {
+    name: "main ff2a10ef's daemon, whose status write posts no message",
+    markers: [STATUS_WITHOUT_MESSAGE],
+    value: false,
+  };
+  const posted = (reader: string, since: string, text: string) =>
+    sourceShape(checkout, reader, [
+      { name: `main's daemon since ${since}`, markers: [{ file: EFFECTS, text }], value: true },
+      older,
+    ]);
+  return {
+    postsBackward: posted("a backward move's sentence", "#4309", "func backwardMoveReason("),
+    postsConflict: posted("a conflict's move", "#4291", "func moveReason("),
+    refusesReason: posted(
+      "the refusal of a backward move's reason",
+      "#4309",
+      '"BACKWARD_REASON_TOO_LONG"'
+    ),
+    publishesHolders: sourceShape(checkout, "the role holders' publication", [
+      {
+        name: "main's daemon and Dispatch since #4228",
+        markers: [
+          { file: "daemon/internal/dispatch/client.go", text: '"/role-holders"' },
+          {
+            file: "envoy/internal/dispatch/api/routes_table.go",
+            text: '"/api/v1/issues/{key}/role-holders"',
+          },
+        ],
+        value: true,
+      },
+      {
+        name: "main ff2a10ef's daemon, whose outbox kinds end at gated_steps_publish",
+        markers: [OUTBOX_WITHOUT_HOLDERS],
+        value: false,
+      },
+    ]),
+  };
 }
 
 /** `read()`, or an error naming `fact` of the daemon of `checkout` and why it could not be read. */
@@ -626,6 +769,7 @@ export function standinFacts(checkout: string, role: string, phase: string): Sta
     throw new Error(
       `the daemon fact \`${command}\` of ${checkout} is no ${NOT_CURRENT_PHASE} code and message for the refusal of ${role}'s late completion`
     );
+  const shapes = readFact(checkout, "shapes", () => labelShapes(checkout));
   return {
     routes,
     daemon,
@@ -637,6 +781,7 @@ export function standinFacts(checkout: string, role: string, phase: string): Sta
     handoffWord,
     phase: served,
     notCurrentPhase: lateRefusal,
+    shapes,
   };
 }
 

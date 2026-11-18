@@ -18,6 +18,7 @@ import {
   DAEMON_MODULE,
   labelDaemon,
   labelRoutes,
+  labelShapes,
   postRefusal,
   RIG_GH_TOKEN,
   runDaemonPane,
@@ -1422,8 +1423,9 @@ describe("the label's build and its facts", () => {
   // The gh selectors facts reads once every boot's facts are read (daemon-pane.ts's
   // labelGhSelectors), by which the gh stand-in of every run of the label refuses an owner. The
   // checkout holds what facts reads, copied from this one as gh-standin.test.ts's per-label rows
-  // copy the wrapper: the daemon's API package and engine.go, and the wrapper's package,
-  // internal/ghconfig and saved gh help, with an option kind the world's gh does not model added
+  // copy the wrapper: the daemon's API package and engine.go, the four other files the source
+  // shapes are read from (labelShapes), and the wrapper's package, internal/ghconfig and saved gh
+  // help, with an option kind the world's gh does not model added
   // to the wrapper's table. Catches: a facts read that passes over the label's gh selectors,
   // which leaves that form to worker_boot to refuse run by run, after the batch started.
   test.skipIf(skip)(
@@ -1437,10 +1439,26 @@ describe("the label's build and its facts", () => {
           if (name.endsWith(".go") && !name.endsWith("_test.go"))
             cpSync(path.join(DAEMON_MODULE, dir, name), path.join(daemon, dir, name));
       }
-      for (const file of ["internal/workflow/engine.go", "cmd/legion/testdata/gh-help"]) {
+      for (const file of [
+        "internal/workflow/engine.go",
+        "internal/workflow/effects.go",
+        "internal/dispatch/client.go",
+        "internal/record/outbox.go",
+        "cmd/legion/testdata/gh-help",
+      ]) {
         mkdirSync(path.dirname(path.join(daemon, file)), { recursive: true });
         cpSync(path.join(DAEMON_MODULE, file), path.join(daemon, file), { recursive: true });
       }
+      const routes = path.join(
+        "packages",
+        "envoy",
+        "internal",
+        "dispatch",
+        "api",
+        "routes_table.go"
+      );
+      mkdirSync(path.dirname(path.join(checkout, routes)), { recursive: true });
+      cpSync(path.join(DAEMON_MODULE, "..", "..", routes), path.join(checkout, routes));
       const help = path.join(daemon, "cmd", "legion", "gh_help.go");
       const table = "var ghOptionKinds = map[string]string{\n";
       const source = readFileSync(help, "utf8");
@@ -1540,4 +1558,130 @@ describe("the label's build and its facts", () => {
     },
     600_000
   );
+});
+
+// The stand-in answers a label's daemon by what its source says it posts, refuses and publishes,
+// each read as one of two shapes (labelShapes): main's since the change that brought it, by its own
+// marker, or main `ff2a10ef`'s, which predates it, by the code it has in its place. A marker it
+// cannot find refuses the batch, naming the marker and its file, and is never read as an older
+// daemon (the architect's ruling of 2026-11-18). Each source here is a copy of the six files the
+// readers read, so a row reads them and nothing else.
+describe("the shapes of a label's daemon source", () => {
+  const CHECKOUT = path.resolve(import.meta.dir, "../../../..");
+  /** The files labelShapes reads, under a checkout's `packages/`. */
+  const SOURCES = [
+    "daemon/internal/api/handoff.go",
+    "daemon/internal/workflow/engine.go",
+    "daemon/internal/workflow/effects.go",
+    "daemon/internal/dispatch/client.go",
+    "daemon/internal/record/outbox.go",
+    "envoy/internal/dispatch/api/routes_table.go",
+  ];
+  const EFFECTS = "daemon/internal/workflow/effects.go";
+  let copies = 0;
+  /** A checkout holding SOURCES of `from` alone, with `marker` written as `renamed` in `file`,
+   * which must hold it. */
+  function copyOf(from: string, file = "", marker = "", renamed = ""): string {
+    const dir = path.join(rig, `source-shapes-${++copies}`);
+    for (const one of SOURCES) {
+      let text = readFileSync(path.join(from, "packages", one), "utf8");
+      if (one === file) {
+        expect(text).toContain(marker);
+        text = text.replaceAll(marker, renamed);
+      }
+      mkdirSync(path.dirname(path.join(dir, "packages", one)), { recursive: true });
+      writeFileSync(path.join(dir, "packages", one), text);
+    }
+    return dir;
+  }
+  const MAIN = {
+    postsBackward: true,
+    postsConflict: true,
+    refusesReason: true,
+    publishesHolders: true,
+  };
+  const OLDER = {
+    postsBackward: false,
+    postsConflict: false,
+    refusesReason: false,
+    publishesHolders: false,
+  };
+  const olderHost = process.env.SKILL_SCENARIOS_OLDER_CHECKOUT;
+
+  // Catches: a reader whose marker is not this checkout's source (gone stale), read as an older
+  // daemon that lacks the behaviour, which the head label's runs met as no sentence, no refusal
+  // and no publication; and a reader that needs a file the six are not.
+  test("this checkout's daemon source posts each move's sentence, refuses a reason and publishes the role holders", () => {
+    expect(labelShapes(CHECKOUT)).toEqual(MAIN);
+    expect(labelShapes(copyOf(CHECKOUT))).toEqual(MAIN);
+  });
+
+  // Catches: an older daemon answered with this checkout's sentences, refusal or publication,
+  // which main `ff2a10ef`'s never gave; and an older shape's marker that is not that daemon's code.
+  test.skipIf(olderHost === undefined)(
+    "main ff2a10ef's daemon source reads as that older daemon's: no sentence, no refusal of a reason, no publication",
+    () => {
+      expect(labelShapes(olderHost ?? "")).toEqual(OLDER);
+      expect(labelShapes(copyOf(olderHost ?? ""))).toEqual(OLDER);
+    }
+  );
+
+  // Catches: a marker renamed in the label's source, read as a daemon that lacks what it names,
+  // which answers the label as an older daemon and names no shape; and a refusal that names
+  // neither the marker nor the file it was looked for in.
+  for (const [file, marker, renamed] of [
+    ["daemon/internal/api/handoff.go", '"HANDOFF_SESSION_MISMATCH"', '"HANDOFF_SESSION_REFUSED"'],
+    ["daemon/internal/api/handoff.go", '"HANDOFF_ALREADY_RECORDED"', '"HANDOFF_ALREADY_KEPT"'],
+    ["daemon/internal/workflow/engine.go", '"HANDOFF_NOT_NEW"', '"HANDOFF_NOT_FRESH"'],
+    [EFFECTS, "func backwardMoveReason(", "func backwardMoveSentence("],
+    [EFFECTS, "func moveReason(", "func moveSentence("],
+    [EFFECTS, '"BACKWARD_REASON_TOO_LONG"', '"BACKWARD_REASON_OVERLONG"'],
+    ["daemon/internal/dispatch/client.go", '"/role-holders"', '"/role-sessions"'],
+    [
+      "envoy/internal/dispatch/api/routes_table.go",
+      '"/api/v1/issues/{key}/role-holders"',
+      '"/api/v1/issues/{key}/role-sessions"',
+    ],
+  ] as const)
+    test(`this checkout's source with ${marker} renamed is refused, naming it and its file`, () => {
+      expect(() => labelShapes(copyOf(CHECKOUT, file, marker, renamed))).toThrow(
+        `${JSON.stringify(marker)} in packages/${file}, and this source does not`
+      );
+    });
+
+  // Catches: an older shape's marker renamed, read as that older daemon all the same, or as
+  // this checkout's: the code main `ff2a10ef` has in the place of each sentence and of the
+  // publication, whose loss leaves a source of neither shape.
+  const STATUS =
+    "func (e *Engine) status(ctx context.Context, tx pgx.Tx, issue record.Issue, status string) error {";
+  const OUTBOX_END = '\tOutboxKindGatedStepsPublish OutboxKind = "gated_steps_publish"\n)';
+  for (const [file, marker, renamed] of [
+    [EFFECTS, STATUS, STATUS.replace("status string", "state string")],
+    [
+      "daemon/internal/record/outbox.go",
+      OUTBOX_END,
+      OUTBOX_END.replace("\n)", '\n\tOutboxKindClaimRelease OutboxKind = "claim_release"\n)'),
+    ],
+  ] as const)
+    test.skipIf(olderHost === undefined)(
+      `main ff2a10ef's source with its older marker in ${file} renamed is refused, naming it and its file`,
+      () => {
+        expect(() => labelShapes(copyOf(olderHost ?? "", file, marker, renamed))).toThrow(
+          `${JSON.stringify(marker)} in packages/${file}, and this source does not`
+        );
+      }
+    );
+
+  // Catches: a source that holds the markers of both shapes, read as either one: a daemon of no
+  // shape the stand-in has the answers of.
+  test("a source holding the markers of both shapes is refused, naming both", () => {
+    const both = copyOf(CHECKOUT);
+    writeFileSync(
+      path.join(both, "packages", EFFECTS),
+      `${readFileSync(path.join(both, "packages", EFFECTS), "utf8")}\n// func (e *Engine) status(ctx context.Context, tx pgx.Tx, issue record.Issue, status string) error {\n`
+    );
+    expect(() => labelShapes(both)).toThrow(
+      "it holds the markers of two shapes at once, main's daemon since #4309, and main ff2a10ef's daemon, whose status write posts no message"
+    );
+  });
 });

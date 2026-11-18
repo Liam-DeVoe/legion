@@ -2764,10 +2764,10 @@ test.skipIf(skip)(
 );
 
 let codeless: string | undefined;
-/** A third checkout of this one's daemon module, standing in for a daemon from before its
- * completion route and workflow held three of their refusals: a copy, as `olderCheckout` is,
- * in whose `api/handoff.go` and `workflow/engine.go` none of HANDOFF_SESSION_MISMATCH,
- * HANDOFF_ALREADY_RECORDED and HANDOFF_NOT_NEW is named. Made once for the file. */
+/** A third checkout of this one's daemon module, standing in for a source whose markers of three
+ * completion refusals are gone stale: a copy, as `olderCheckout` is, in whose `api/handoff.go`
+ * and `workflow/engine.go` none of HANDOFF_SESSION_MISMATCH, HANDOFF_ALREADY_RECORDED and
+ * HANDOFF_NOT_NEW is named. Made once for the file. */
 function codelessCheckout(): string {
   if (codeless !== undefined) return codeless;
   const checkout = path.join(work, "codeless-checkout");
@@ -2794,32 +2794,52 @@ function codelessCheckout(): string {
   return checkout;
 }
 
-// Catches: a stand-in that answers every label with this checkout's refusals. A label's agents
-// meet the daemon of their own checkout, so a refusal that daemon's source does not hold is one
-// it could not have given: the seeded completion sent again, the record its row last named and
-// a record another session wrote are each taken here, where the row above refuses all three.
+// Catches: a stand-in that reads a refusal its label's source does not name as one that daemon
+// lacks, and so answers the label as an older daemon: the seeded completion sent again, the
+// record its row last named and a record another session wrote were each taken here, where the
+// row above refuses all three. Every daemon the rig runs names the three (this checkout's and main
+// `ff2a10ef`'s), so a source that names one nowhere holds a marker gone stale, and the boot is
+// refused, naming the code and its file (daemon-pane.ts's `labelShapes`), as rig.sh's
+// label_facts refuses the batch before any run (the architect's ruling of 2026-11-18). This row
+// held all three taken before that ruling.
 test.skipIf(skip)(
-  "a daemon whose source holds none of a completion's refusal is never answered with it",
-  async () => {
-    const reviewer = await standin("reviewer", "reviewing", undefined, {
-      checkout: codelessCheckout(),
-      seeds: ["plan", "implement", "test", "review"],
-      records: {
-        ...ownRecord("seed-review", "review", 1),
-        ...ownRecord("other-review", "review", 2, SEEDED_SESSIONS.test),
-      },
+  "a daemon whose source names a completion's refusal nowhere is refused at the boot, naming the code and its file",
+  () => {
+    const checkout = codelessCheckout();
+    const dir = path.join(work, "reviewer-codeless");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, "boot-token"), "rig-boot-token\n");
+    writeFileSync(path.join(dir, "built-from"), `checkout ${checkout}\n`);
+    writeFileSync(
+      path.join(dir, "world.json"),
+      JSON.stringify({
+        key: "LWEVAL-1",
+        branch: "legion/LWEVAL-1",
+        pr: 1001,
+        head: "0".repeat(40),
+        repo: WORLD_REPO,
+        base: WORLD_BASE,
+      })
+    );
+    const boot = spawnChecked([
+      "bun",
+      DAEMON_STANDIN,
+      "0",
+      path.join(dir, "daemon.log"),
+      path.join(dir, "boot-token"),
+      "skills1",
+      "LWEVAL-1",
+      dir,
+      "reviewer",
+      "reviewing",
+    ]);
+    expect({ code: boot.exitCode, stdout: boot.stdout.toString() }).toEqual({
+      code: 2,
+      stdout: "",
     });
-    try {
-      const named = { handoffId: "seed-review", handoffVersion: 1 };
-      const taken = [
-        await reviewer.complete(true, { ...named, verdict: "" }),
-        await reviewer.complete(true, named),
-        await reviewer.complete(true, { handoffId: "other-review", handoffVersion: 2 }),
-      ];
-      expect(taken.map((answer) => answer.status)).toEqual([200, 200, 200]);
-    } finally {
-      reviewer.stop();
-    }
+    expect(boot.stderr.toString()).toBe(
+      `daemon-standin: the daemon fact \`shapes\` of ${checkout} could not be read: the daemon source of ${checkout} is no shape of the completion refusal HANDOFF_SESSION_MISMATCH this rig reads: every daemon the rig runs holds "\\"HANDOFF_SESSION_MISMATCH\\"" in packages/daemon/internal/api/handoff.go, and this source does not\n`
+    );
   },
   600_000
 );

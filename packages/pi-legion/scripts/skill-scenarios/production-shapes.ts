@@ -2,19 +2,24 @@
 // answer to: production-shapes.json, derived by this module's `derive` from the production reads
 // its operator hands it and never written by hand. Each pinned read keeps the command it was read
 // with, when it was read, its exit, its stderr and its answer's shape: every JSON path the answer
-// holds and the kind of the value there, never the value. The answers are a public pull request's
-// and repository's, so their bodies, logins and ids stay out of the tree; the commands are kept
-// with their values written as placeholders (`<owner>`, `<repo>`, `<number>`, `<head>`, `<base>`,
-// `<review>`, `<comment>`, `<path>`, `<id>`), and a derivation that leaves one of production's
-// values in the file fails. stderr is gh's own line, and an error body's `message`,
-// `documentation_url` and `status` are GitHub's own texts, which the tree keeps.
+// holds and the kind of the value there, never the value, and, for an answer that is text (gh's
+// text views, a diff, a list's or the checks' rows, `gh auth status`, a refusal's empty stdout),
+// the shape of each line too (`lineShapes`). The answers are a public pull request's and
+// repository's, so their bodies, logins and ids stay out of the tree; the commands are kept with
+// their values written as placeholders (`<owner>`, `<repo>`, `<number>`, `<head>`, `<base>`,
+// `<review>`, `<comment>`, `<path>`, `<id>`, `<branch>`, `<app>`), and a derivation that leaves
+// one of production's values in the file fails. stderr is gh's own line, and an error body's
+// `message`, `documentation_url` and `status` are GitHub's own texts, which the tree keeps.
 //
 // A row compares a world's answer with its pin (`shapeDiff`): the paths production has that the
 // world lacks, the paths the world has that production does not, and the paths whose kinds
 // differ. An array the world holds empty is not compared below itself, and nor is a variant of a
 // list (a ruleset's rule of one `type`) the world holds none of, since how many items a list holds
 // is the world's state and no shape; an array production held empty has no item shape pinned, so
-// an item the world holds there is a path production does not show.
+// an item the world holds there is a path production does not show. A text answer's lines are
+// compared as a set of line shapes (`lineShapes`): a line shape production's text has that the
+// world's lacks is missing, one the world's has that production's does not is extra, and how many
+// lines of one shape each holds is no shape.
 //
 // One read is no gh call: `legion read_record` (`RECORD_READ`), the issue record the `legion`
 // tool's `read_record` answered in a Legion issue pod, which the daemon stand-in's record is held
@@ -48,9 +53,11 @@ const PinnedRead = z.object({
   exit: z.number(),
   stderr: z.string(),
   shape: z.record(z.string(), z.string()),
+  lines: z.array(z.string()).optional(),
 });
 /** One read production answered: its name, the command it was read with (its values written as
- * placeholders), when it was read, its exit and stderr, and its answer's shape. */
+ * placeholders), when it was read, its exit and stderr, its answer's shape, and, for a text
+ * answer, its line shapes (`lineShapes`). */
 export type PinnedRead = z.infer<typeof PinnedRead>;
 const Pin = z.object({ made_by: z.string(), reads: z.array(PinnedRead) });
 
@@ -158,14 +165,124 @@ const under = (at: string, above: string) =>
   at !== above &&
   (above === ROOT || (at.startsWith(above) && /^[.[]/.test(at.slice(above.length))));
 
+/** How gh lays out the text a read answers, by the command it was read with: a text view of
+ * `<key>:\t<value>` lines, `--` and a body (`gh pr view`, its `--comments`, and a `gh run`
+ * refusal, whose stdout is empty); a diff; a file's path a line (`--name-only`); tab-separated
+ * rows (`gh pr list`, `gh pr checks`); `gh auth status`; and a commit's SHA (the `sha` media). */
+type Layout = "view" | "diff" | "paths" | "rows" | "auth" | "sha";
+function layoutOf(command: readonly string[]): Layout {
+  const words = command.join(" ");
+  if (command[1] === "auth") return "auth";
+  if (command.includes("--name-only")) return "paths";
+  if (command[2] === "diff" || words.endsWith(".diff")) return "diff";
+  if (words.endsWith(".sha")) return "sha";
+  if (command[2] === "list" || command[2] === "checks") return "rows";
+  return "view";
+}
+
+/** The shape of a line no rule of its layout reads. A production line in this shape fails the
+ * derivation: its shape would say nothing of the line. */
+const UNREAD = "<unread line>";
+/** The last entry of the line shapes of a reading cut short (round 25's text answers, cut at 600
+ * characters): the line the cut fell in is no line of production's, and the lines after it were
+ * not read, so a world's line shape production's do not hold is not compared (`shapeDiff`). */
+export const CUT = "<cut line>";
+/** Each layout's line rules, the first that matches a line giving its shape: gh's and git's own
+ * words kept and every value a placeholder. Rows are read by their field count instead. */
+const LINE_RULES: Readonly<Record<Exclude<Layout, "rows">, readonly [RegExp, string][]>> = {
+  view: [[/^([a-z][a-z-]*):\t.*$/, "$1:\t<value>"]],
+  paths: [[/^.+$/, "<path>"]],
+  sha: [[/^[0-9a-f]{40}$/, "<sha>"]],
+  auth: [
+    [/^[a-z0-9.-]+$/, "<host>"],
+    [
+      /^ {2}✓ Logged in to \S+ account \S+ \(.+\)$/,
+      "  ✓ Logged in to <host> account <login> (<source>)",
+    ],
+    [/^ {2}- ([A-Z][a-z]*(?: [a-z]+)*): .*$/, "  - $1: <value>"],
+  ],
+  diff: [
+    [/^diff --git .*$/, "diff --git a/<path> b/<path>"],
+    [/^index [0-9a-f]+\.\.[0-9a-f]+(?: \d+)?$/, "index <blob>..<blob>"],
+    [/^(new|deleted) file mode \d+$/, "$1 file mode <mode>"],
+    [/^(old|new) mode \d+$/, "$1 mode <mode>"],
+    [/^similarity index \d+%$/, "similarity index <percent>"],
+    [/^rename (from|to) .*$/, "rename $1 <path>"],
+    [/^(---|\+\+\+) .*$/, "$1 <path>"],
+    [/^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@.*$/, "@@ -<line> +<line> @@"],
+    [/^\\ No newline at end of file$/, "\\ No newline at end of file"],
+    [/^Binary files .* differ$/, "Binary files <path> and <path> differ"],
+    [/^([ +-]).*$/, "$1<text>"],
+  ],
+};
+/** A text view's `<key>:\t` line, which ends the body a `--` began when it follows the `--` after
+ * that body (`gh pr view --comments`, an entry after each comment's closing `--`). */
+const VIEW_KEY = /^[a-z][a-z-]*:\t/;
+
+/** The line shapes of `text`, which `command` answered: each distinct shape once, in the order
+ * the text first holds it, so many lines of one shape are one. A line of a text view after its
+ * `--` is the body, one `<body>` entry, up to a `--` that the end or a `<key>:\t` line follows; a
+ * row is `<n tab-separated fields>`; any other line is shaped by its layout's rules
+ * (`LINE_RULES`), and one none of them reads is `<unread line>`. */
+export function lineShapes(text: string, command: readonly string[]): string[] {
+  const layout = layoutOf(command);
+  const lines = text.split("\n");
+  if (lines.at(-1) === "") lines.pop();
+  const shapes = new Set<string>();
+  let body = false;
+  for (const [at, line] of lines.entries()) {
+    if (layout === "view" && line === "--") {
+      const next = lines[at + 1];
+      if (body && next !== undefined && !VIEW_KEY.test(next)) continue;
+      shapes.add("--");
+      if (!body) shapes.add("<body>");
+      body = !body;
+      continue;
+    }
+    if (body) continue;
+    if (layout === "rows") {
+      shapes.add(
+        line.includes("\t") ? `<${line.split("\t").length} tab-separated fields>` : UNREAD
+      );
+      continue;
+    }
+    const rule = LINE_RULES[layout].find(([pattern]) => pattern.test(line));
+    shapes.add(rule === undefined ? UNREAD : line.replace(rule[0], rule[1]));
+  }
+  return [...shapes];
+}
+
+/** The line shapes the pin keeps of `answer`, read `name`, when it is text that `command`
+ * answered (`lineShapes`), and none for JSON. A text at least `cut` characters long was cut there:
+ * its last line, whole or not, is left out, and `CUT` ends its shapes. Throws, naming the read, for
+ * a line no rule of its layout reads, whose shape would say nothing of production's. */
+function linesOf(
+  name: string,
+  answer: unknown,
+  command: readonly string[],
+  cut = Number.POSITIVE_INFINITY
+): { lines?: string[] } {
+  if (typeof answer !== "string") return {};
+  const isCut = answer.length >= cut;
+  const lines = lineShapes(isCut ? answer.slice(0, answer.lastIndexOf("\n") + 1) : answer, command);
+  if (lines.includes(UNREAD))
+    throw new Error(`a line of ${name}'s answer is in no shape its layout reads (${UNREAD})`);
+  return { lines: isCut ? [...lines, CUT] : lines };
+}
+
 /** How a world's answer differs in shape from `read`'s: the paths production has that the world
  * lacks (`missing`), the paths the world has that production does not (`extra`), each the
  * highest of its kind, and each path whose kinds differ (`kinds`), which is compared no further
  * down. The world's lists are read per variant where production's are. An array the world holds
- * empty, and a variant of a list the world holds none of, is not compared below itself. */
+ * empty, and a variant of a list the world holds none of, is not compared below itself. A text
+ * answer of a read pinned with its lines is compared line shape by line shape too
+ * (`lineShapes`): each production has that the world's lacks is missing, and each the world's has
+ * that production's does not is extra, as `line <shape>`, but for a reading cut short (`CUT`),
+ * whose lines after the cut were never read: there only what production's whole lines hold is
+ * compared. */
 export function shapeDiff(
   answer: unknown,
-  read: Pick<PinnedRead, "shape">
+  read: Pick<PinnedRead, "shape"> & Partial<Pick<PinnedRead, "lines" | "command">>
 ): { missing: string[]; extra: string[]; kinds: string[] } {
   const given = read.shape;
   const fields = new Map<string, string>();
@@ -196,17 +313,32 @@ export function shapeDiff(
   const highest = (found: string[]) =>
     found.filter((at) => !found.some((above) => under(at, above)));
   const compared = (at: string) => !differing.some((above) => under(at, above));
+  const pinned = read.lines ?? [];
+  const worldLines =
+    read.lines !== undefined && typeof answer === "string"
+      ? lineShapes(answer, read.command ?? [])
+      : pinned;
   return {
-    missing: highest(
-      Object.keys(given).filter(
-        (at) =>
-          world[at] === undefined &&
-          compared(at) &&
-          !empty.some((above) => under(at, above)) &&
-          !variantAbsent(at)
-      )
-    ),
-    extra: highest(paths.filter((at) => given[at] === undefined && compared(at))),
+    missing: [
+      ...highest(
+        Object.keys(given).filter(
+          (at) =>
+            world[at] === undefined &&
+            compared(at) &&
+            !empty.some((above) => under(at, above)) &&
+            !variantAbsent(at)
+        )
+      ),
+      ...pinned
+        .filter((line) => line !== CUT && !worldLines.includes(line))
+        .map((line) => `line ${line}`),
+    ],
+    extra: [
+      ...highest(paths.filter((at) => given[at] === undefined && compared(at))),
+      ...(pinned.includes(CUT) ? [] : worldLines)
+        .filter((line) => !pinned.includes(line))
+        .map((line) => `line ${line}`),
+    ],
     kinds,
   };
 }
@@ -335,14 +467,19 @@ function laterReads(file: string): {
     return written;
   };
   return {
-    reads: set.reads.map((read) => ({
-      name: placeholders(read.name),
-      command: read.command.map(placeholders),
-      read_at: read.read_at,
-      exit: read.exit,
-      stderr: placeholders(read.stderr),
-      shape: shapeOf(read.answer),
-    })),
+    reads: set.reads.map((read) => {
+      const name = placeholders(read.name);
+      const command = read.command.map(placeholders);
+      return {
+        name,
+        command,
+        read_at: read.read_at,
+        exit: read.exit,
+        stderr: placeholders(read.stderr),
+        shape: shapeOf(read.answer),
+        ...linesOf(name, read.answer, command),
+      };
+    }),
     values: [owner, ...bases, ...heads, ...branches, ...apps],
     answers: set.reads.map(({ answer }) => answer),
   };
@@ -369,6 +506,10 @@ export function derive(
   )?.[1];
   if (rulesetAt === undefined || readsAt === undefined)
     throw new Error("a README names no time its reads were made");
+  // Round 25's text answers were kept cut short, as its README says.
+  const cut = Number(
+    /text answers cut at (\d+) characters/.exec(readme(path.dirname(readsFile)))?.[1] ?? Infinity
+  );
   const answers: unknown[] = [];
   const file = (name: string, ext: string) =>
     readFileSync(path.join(rulesetDir, `${name}.${ext}`), "utf8");
@@ -395,6 +536,7 @@ export function derive(
       exit: Number(file(name, "exit").trim()),
       stderr: file(name, "err"),
       shape: shapeOf(answer),
+      ...linesOf(named, answer, ["gh", "api", endpoint]),
     };
   });
   const Reads = z.object({
@@ -438,13 +580,16 @@ export function derive(
       .replace(/\/contents\/[^?]+/, "/contents/<path>");
   const prReads = source.reads.map((read) => {
     answers.push(read.answer);
+    const name = `${read.kind} ${read.key}`;
+    const command = read.command.map(placeholders);
     return {
-      name: `${read.kind} ${read.key}`,
-      command: read.command.map(placeholders),
+      name,
+      command,
       read_at: readsAt,
       exit: read.exit,
       stderr: read.stderr,
       shape: shapeOf(read.answer),
+      ...linesOf(name, read.answer, command, cut),
     };
   });
   const later = laterFiles.map(laterReads);
