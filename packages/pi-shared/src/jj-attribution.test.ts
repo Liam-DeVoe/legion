@@ -608,11 +608,9 @@ describe("userConfigChain", () => {
   /** The pidfiles a row's fake jj writes its pid to, each recorded when the row makes it, before
    *  anything the row awaits can hang: the afterEach below kills every pid it finds in them, so a
    *  child the code under test fails to kill is collected whether the row returns or the runner
-   *  abandons it at its limit — a `userConfigChain` that never returns included. Each sleeping
-   *  process writes its own pid before it sleeps, with `&&`, so one that cannot write it does not
-   *  sleep: a fake jj that starts only after the afterEach has removed its pidfile's directory
-   *  cannot record itself, and so does not sleep either. A pidfile leaves this list once `reaped`
-   *  has seen its pid gone, so a green row leaves the afterEach no pid to kill. */
+   *  abandons it at its limit — a `userConfigChain` that never returns included. A pidfile leaves
+   *  this list once `reaped` has seen its pid gone, so a green row leaves the afterEach no pid to
+   *  kill. */
   const pidFiles: string[] = [];
   /** A pidfile for one fake jj, in a directory of its own, recorded for the afterEach. */
   async function childPidFile(): Promise<string> {
@@ -733,10 +731,10 @@ describe("userConfigChain", () => {
     );
     // The bound has to outlast the host's own process start: a group killed before the child has
     // started writes no pid, and the row then waits for something that cannot arrive. Measured
-    // on one pod at 240 busy loops on 2 CPUs, the wrapper took up to 3.1 s (p50 995 ms) to write
-    // its child's pid, against 14 ms unloaded, and on a later pod at that load up to 33478 ms,
-    // which is past this 10 s; at the row's own rung of 96, below, the whole row costs at most
-    // 12515.71 ms.
+    // with the earlier script, in which the wrapper wrote `$!`, on one pod at 240 busy loops on 2
+    // CPUs, the wrapper took up to 3.1 s (p50 995 ms) to write its child's pid, against 14 ms
+    // unloaded, and on a later pod at that load up to 33478 ms, which is past this 10 s; at the
+    // row's own rung of 96, below, the whole row costs at most 12515.71 ms.
     // 10 s is the production default, and `sleep 300` means jj still times out, so the row's
     // subject — the bound fires, the group is killed, the forked child dies — is unchanged. The row
     // above keeps 200 ms because it needs no fork: its subject is only that the resolve gives up
@@ -748,14 +746,10 @@ describe("userConfigChain", () => {
     // row, so a kill that never reached it ends the row at the limit below, and the afterEach above
     // collects the child.
     await reaped(pidFile, pid);
-    // A hang guard, not a measurement: an unbounded wait on the wrapper, a pidfile that is never
-    // written, or a forked child the kill misses each hangs the row rather than passing it. Its
-    // own cost, read from bun's junit reporter on this two-CPU pod: 10285.47 / 10724.39 /
-    // 12515.71 ms (min/median/max over 20 runs under 96 busy loops, 48 per CPU, this row's
-    // acceptance rung), so this 60_000 is 4.8 times that worst. The rung is 96 and not the 240
-    // the file's lighter rows take: there the same 20 runs cost 10317.06 to 43011.52 ms under a
-    // 300_000 provisional, 20 of 20 green, so the row is correct at that load and merely slow,
-    // and this 60_000 is 1.4 times that worst, which is no margin at all.
+    // A hang guard: what can hang is an unbounded wait on the wrapper, a pidfile that is never
+    // written, or a forked child the kill misses. 60_000. Worst measured cost, with the earlier
+    // script in which the wrapper wrote `$!`: 12515.71 ms at 96 busy loops (48 per CPU), this row's
+    // acceptance rung, on a two-CPU pod.
   }, 60_000);
 
   it("kills a wrapper's detached child after jj returns a config path", async () => {

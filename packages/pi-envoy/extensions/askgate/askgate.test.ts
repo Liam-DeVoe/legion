@@ -59,10 +59,10 @@ import { renderTemplate } from "./text";
 // (.github/workflows/ci.yaml) room to redden with the row named. A guard whose six times passes
 // the ceiling takes the ceiling and says how many times its worst that is; a row whose loaded
 // worst the ceiling cannot cover moves to a lower rung instead, and its comment says so. A row
-// that runs on the gate's own 90 s default deadline (`GATE_TIMEOUT_MS`) keeps its guard below
-// that deadline, at 60_000, whatever six times its worst is: the runner's limit then ends a call
-// that never returns before the gate's deadline can fire and decide the row by the host's speed,
-// and the row's comment says how many times its worst 60_000 is.
+// whose model call only the call's stop or the gate's own 90 s default deadline (`GATE_TIMEOUT_MS`)
+// ends keeps its guard below that deadline, so the runner's limit ends a call that never returns
+// before that deadline can decide the row. The rows that carry 120_000 run on that deadline too,
+// but `bind`'s default answers their model calls at once, so none of their calls waits on it.
 
 /** Runs a `dispatch` command's --dry-run as the entry's binding does. */
 type DryRunner = (script: string, opts: DryRunOptions) => Promise<DryRunResult>;
@@ -2026,18 +2026,10 @@ console.log(JSON.stringify(args, null, 2));
       { decision: "allow", outcome: "abandoned", ruleOutcome: "abandoned" },
     ]);
     expect(g.entries).toHaveLength(1);
-    // A hang guard, not a bound on the work: what can hang is the dry run, a real `dispatch`
-    // subprocess the gate spawns through bash, or a model call the harness never settles unless the
-    // stop aborts it. The row runs on the gate's own 90 s deadline, so by the rule above
-    // `DryRunner` it takes 60_000 below that deadline: the runner's limit, naming the row, ends a
-    // call that never returns. At 240 busy loops on the pod of 2026-11-16 a correct run cost past
-    // that 60_000 (1 in 20, `this test timed out after 60000ms`), and no guard may pass the 90 s,
-    // so this row's acceptance rung is 160 busy loops, 80 per CPU: its own cost there, read from
-    // bun's junit reporter, 1523.43 / 5092.05 / 12535.92 ms (min/median/max over 20 runs), so
-    // 60_000 is 4.8 times that worst, and at 160 the base fails the row 10 of 10 at bun's 5 s
-    // default, where at 96 it fails 1 of 10. Control: with the tool's end leaving the call's stop
-    // out (`inflight.get(event.toolCallId)?.("abandoned")` removed from the gate's
-    // `tool_execution_end` handler) the row fails 3 of 3 at the `aborted` assertion above.
+    // A hang guard: what can hang is the dry run, a real `dispatch` subprocess the gate spawns
+    // through bash, or a model call that only the call's stop ends. 60_000, below the gate's 90 s
+    // deadline by the rule above `DryRunner`. Worst measured cost: 12 535.92 ms at 160 busy loops
+    // (80 per CPU), this row's acceptance rung, on a two-CPU pod.
   }, 60_000);
   test("dispatch search is not reviewed", async () => {
     const g = bind({ env: STUB, cwd: work });
@@ -3435,9 +3427,7 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     // call cannot return inside any limit this row sets. 300 s is far above the row's limit, so a
     // run that kills nothing cannot return either. The `sleep` records its own pid before it
     // starts, in the subshell that `exec` turns into it, to a pidfile `childPidFiles` holds: a
-    // kill that reaches bash at any moment leaves no `sleep` unrecorded, and a subshell that
-    // cannot write the pidfile does not sleep. So a group the runner fails to kill does not leave
-    // it running after the row.
+    // kill that reaches bash at any moment leaves no `sleep` unrecorded.
     const pidFile = path.join(fs.mkdtempSync(path.join(tmpdir(), "dry-run-kill-")), "pid");
     childPidFiles.push(pidFile);
     const result = await core.spawnDryRun(
