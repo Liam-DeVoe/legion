@@ -373,6 +373,14 @@ func (r *Registry) releaseReadExpiredRoleClaim(ctx context.Context, role string,
 	}
 	epoch := r.roleViewEpoch()
 	roles := r.roles()
+	// This delete is not held to the lease term, as a session consumer's delete is
+	// (cmd/listener's sessionRelays.termContext). In the reaper's pass ctx is its loop's, which the
+	// receive loop ends only once it hears the term ended (cmd/listener's holderLoops), so a
+	// release the pass decided before the lease stepped down can reach the bucket after another
+	// pod may hold the lease. The revision alone refuses it there: the claim the role's next holder
+	// wrote since the scan moved the role past claim.Revision, and the bucket answers
+	// nats.ErrKeyExists (cmd/listener's
+	// TestARoleClaimReleaseReachedAfterTheLeaseSteppedDownKeepsTheNextHoldersClaim).
 	_, _, err := bus.BoundedOn(ctx, roles, func() (struct{}, error) {
 		return struct{}{}, roles.Delete(role, nats.LastRevision(claim.Revision))
 	})
