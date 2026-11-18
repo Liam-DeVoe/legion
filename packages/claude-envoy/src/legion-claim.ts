@@ -203,15 +203,22 @@ export interface LegionClaim {
  * pane through `stop`; a failure before a registration is logged and leaves the pane to the
  * daemon's registration deadline.
  *
- * The claim hands the bridge every task value it is handed (`task`, the inbox's task line): the
- * registration's, a `claims/task` read at a regain of the role or at a new epoch of the relay
- * (`readTask`), and each one a task frame relays (`relayed`). The bridge, which knows whether
- * Claude Code is in a turn, reports each seen and takes the task
- * (`packages/daemon/internal/claudebridge/take.go`). A value naming a task the daemon says the
- * claim finished is owed nothing and is not handed over. The values are held, the newest kept,
- * until the ready has answered, since the daemon refuses a take before it, and the newest is
- * handed over right then, before the role is claimed: every card the role's kept lane hands over
- * then waits behind the take, so the task's turn starts ahead of it.
+ * The claim keeps none of its task values: it hands the bridge every one it is handed
+ * (`task`, the inbox's task line) — the registration's, the `claims/task` read the shared core
+ * makes once the ready has answered, one at each regain of the role and at each new epoch of the
+ * relay (`readTask`), and each one a task frame relays (`relayed`) — each with the number the
+ * daemon's reading it came with says the claim finished, 0 for a relayed one; a reading that holds
+ * no value hands the bridge that number alone (`finished`, the inbox's finished line); and it
+ * writes the ready line (`ready`) once the ready has answered. The bridge, which knows whether
+ * Claude Code is in a turn, holds the finished number, the ready gate and the newest value,
+ * reports each value seen and takes the task (`packages/daemon/internal/claudebridge/take.go`), as
+ * Oh My Pi's take does (`@legion/pi-shared/task-take`). The value read once the ready has answered
+ * and the ready line are written before the role is claimed, and the inbox carries every line in
+ * the order it is written, so every card the role's kept lane hands over at the claim waits behind
+ * the take of each value the ready decision wrote. A value the daemon writes later — the resume
+ * its outbox queues after the ready, a task queued later still — reaches the bridge as the
+ * listener relays it, and a card that arrives before it may start a turn first, which the take
+ * then waits behind.
  *
  * A claim the listener refuses naming this very session is waited out rather than stopped on:
  * the pane the daemon relaunched with `--resume` meets the standing claim of the process it
@@ -234,6 +241,11 @@ export function startLegionClaim(deps: {
   readonly session: Pick<ChannelSession, "rememberRole" | "onRoleRegained">
   /** Hands the bridge the claim's task value (`LegionInbox.task`). */
   readonly task: (value: InboxTaskValue) => void
+  /** Tells the bridge the claim's ready has answered (`LegionInbox.ready`). */
+  readonly ready: () => void
+  /** Hands the bridge the finished number of a reading that holds no value
+   * (`LegionInbox.finished`). */
+  readonly finished: (finished: number) => void
   readonly signal: AbortSignal
   /** Writes one line to the pane's log, the server's stderr. */
   readonly log: (line: string) => void
@@ -253,28 +265,13 @@ export function startLegionClaim(deps: {
   const roleWaitMs = deps.roleWaitMs ?? ROLE_CLAIM_WAIT_MS
   const roleRetryMs = deps.roleRetryMs ?? ROLE_CLAIM_RETRY_MS
   let claimBoot: LegionClaimBoot | undefined
-  // The number of the last task the daemon said the claim finished; whether the claim's ready
-  // has answered; and the newest value handed to the claim before it did.
-  let finished = 0
-  let ready = false
-  let early: InboxTaskValue | undefined
 
-  /** Hands `value` to the bridge once the ready has answered, and keeps the newest until then. */
-  const offer = (value: InboxTaskValue): void => {
-    if (ready) {
-      deps.task(value)
-      return
-    }
-    if (early === undefined || early.epoch !== value.epoch || value.revision > early.revision) {
-      early = value
-    }
-  }
-
-  /** A reading of the claim's value (the registration's answer, a `claims/task` read): its value,
-   * where it names a task the claim did not finish. */
+  /** A reading of the claim's value (the registration's answer, a `claims/task` read), handed to
+   * the bridge: its value with the number the reading says the claim finished, or that number
+   * alone where it holds no value. */
   const read = (reading: LegionTask): void => {
-    finished = Math.max(finished, reading.finished)
-    if (reading.task !== null && reading.task.number > finished) offer(reading.task)
+    if (reading.task === null) deps.finished(reading.finished)
+    else deps.task({ ...reading.task, finished: reading.finished })
   }
 
   const boot = async (): Promise<void> => {
@@ -302,14 +299,10 @@ export function startLegionClaim(deps: {
         capability = registered
       },
       claimRole: async (role) => {
-        // The ready has answered, so the bridge may take the task now. The newest value goes to
-        // it before the role is claimed: the role's kept lane is handed over at the claim, and
-        // every card of it then waits behind the take.
-        ready = true
-        if (early !== undefined) {
-          deps.task(early)
-          early = undefined
-        }
+        // The ready has answered, and the value read after it is in the inbox already: the
+        // ready line goes behind it and ahead of the role claim, at which the listener hands the
+        // role's kept lane over, so every card of that lane waits behind the take.
+        deps.ready()
         // Soft, so a role another live session holds is left with it, and naming this process,
         // so the listener records the claim as this process's: a second `claude` that resumed
         // this session id can then neither be taken for the holder nor release what it holds.
@@ -377,9 +370,9 @@ export function startLegionClaim(deps: {
     booted,
     relayed: (value) => {
       if (value.claim !== capability?.claimToken) return
-      const at = { epoch: value.epoch, revision: value.revision }
-      if (value.op === "delete") offer({ number: 0, ...at })
-      else if (value.task > finished) offer({ number: value.task, ...at })
+      // A relay frame carries no reading, so it says nothing of what the claim finished.
+      const at = { epoch: value.epoch, revision: value.revision, finished: 0 }
+      deps.task({ number: value.op === "delete" ? 0 : value.task, ...at })
     },
     readTask: async () => {
       await claimBoot?.readTask()

@@ -84,10 +84,12 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
     },
   })
   const broker = new FakeNatsServer()
-  // The inbox's deliveries, and the claim's task lines (`kind: "task"`), which the bridge takes
-  // and writes nothing of into the conversation: each is answered, and the two are kept apart.
+  // The inbox's deliveries, and the claim's task lines (`kind: "task"`) and ready line (`kind:
+  // "ready"`), which the bridge takes and writes nothing of into the conversation: each is
+  // answered, and they are kept apart.
   const inboxLines: { id: string; content: string }[] = []
   const taskLines: unknown[] = []
+  const readyLines: unknown[] = []
   const inboxPath = join(root, "inbox.sock")
   const inbox = createServer((socket: Socket) => {
     let buffered = ""
@@ -102,6 +104,7 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
         }
         buffered = buffered.slice(end + 1)
         if (line.kind === "task") taskLines.push(line)
+        else if (line.kind === "ready") readyLines.push(line)
         else inboxLines.push(line)
         socket.write(`${JSON.stringify({ id: line.id, ok: true })}\n`)
       }
@@ -199,15 +202,23 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
     expect(roles).toEqual([
       { session_id: SESSION, role: claimToken, soft: true, client_instance_id: instance },
     ])
-    // The registration's task value is the bridge's to take: one task line, naming the value as
-    // the registration answered it.
+    // The registration's task value is the bridge's to take: one task line, naming the value and
+    // the finished number as the registration answered them. The read after the ready fails here
+    // (this daemon serves no `claims/task`), and the ready line is written all the same, before
+    // the role is claimed.
     await waitFor(
-      async () => taskLines.length > 0,
-      "the registration's task value to reach the inbox",
+      async () => taskLines.length > 0 && readyLines.length > 0,
+      "the registration's task value and the ready line to reach the inbox",
     )
     expect(taskLines).toEqual([
-      { id: expect.any(String), kind: "task", ...(registered["task"] as object) },
+      {
+        id: expect.any(String),
+        kind: "task",
+        ...(registered["task"] as object),
+        finished: registered["finished"],
+      },
     ])
+    expect(readyLines).toEqual([{ id: expect.any(String), kind: "ready" }])
     // Dispatch refuses a mode the session does not advertise, and sends a Send by default: every
     // registration of the session carries both modes the bridge serves.
     expect(advertised.length).toBeGreaterThan(0)

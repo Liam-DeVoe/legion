@@ -40,9 +40,10 @@ import (
 // test files, which no other package can import, so this one builds its own api.Options.
 //
 // The test plays the two parts that are neither the daemon nor the bridge. As claude-envoy it
-// registers the claim and says it is ready, as the pane's claim boot does, and hands the bridge each
-// value the bucket holds as a task line of its inbox, as the relayed frame does. As the shim and the
-// worker stream it forwards the bridge's agent_start and agent_end to the claim's machine.
+// registers the claim and says it is ready, as the pane's claim boot does, writes the ready line
+// once the ready has answered, and hands the bridge each value the bucket holds as a task line of
+// its inbox, as the relayed frame does. As the shim and the worker stream it forwards the bridge's
+// agent_start and agent_end to the claim's machine.
 
 const (
 	crossProject = "legion"
@@ -66,6 +67,7 @@ func TestTakeAcrossTheDaemonAndTheBridgeAfterAProviderErrorIsMadeOnce(t *testing
 	registered := d.register(boot)
 	d.ready(token, registered)
 	b := startCrossBridge(t, d.server.URL, boot, registered.Generation)
+	b.handReady()
 	m := d.machine(token)
 
 	if err := m.Handle(d.ctx, supervise.RequestDeliver{Claim: token, Task: crossTask}); err != nil {
@@ -487,15 +489,31 @@ func (b *crossBridge) until(t *testing.T, typ string) {
 	}
 }
 
-// handTask hands the bridge the claim's value as claude-envoy writes it to the inbox: one task
-// line, which the bridge answers once its loop has taken it.
+// handTask hands the bridge the claim's value as claude-envoy writes a relayed one to the inbox:
+// one task line, finished 0 since a relay frame carries no reading, which the bridge answers once
+// its loop has taken it.
 func (b *crossBridge) handTask(value supervise.TaskValue) {
+	b.t.Helper()
+	var finished uint64
+	b.handLine(claudebridge.InboxDelivery{ID: "task-" + strconv.FormatUint(value.Revision, 10), Kind: claudebridge.InboxTask,
+		Number: value.Number, Epoch: value.Epoch, Revision: value.Revision, Finished: &finished})
+}
+
+// handReady writes the ready line, as claude-envoy does once the claim's ready has answered.
+func (b *crossBridge) handReady() {
+	b.t.Helper()
+	b.handLine(claudebridge.InboxDelivery{ID: "ready", Kind: claudebridge.InboxReady})
+}
+
+// handLine writes line to the bridge's inbox down a connection of its own, and returns once the
+// bridge has answered it ok.
+func (b *crossBridge) handLine(line claudebridge.InboxDelivery) {
 	b.t.Helper()
 	var inboxPath string
 	if !testwait.Holds(10*time.Second, 5*time.Millisecond, func() bool {
 		raw, _ := os.ReadFile(b.record)
-		for _, line := range strings.Split(string(raw), "\n") {
-			if path, ok := strings.CutPrefix(line, "inbox "); ok && path != "" {
+		for _, recorded := range strings.Split(string(raw), "\n") {
+			if path, ok := strings.CutPrefix(recorded, "inbox "); ok && path != "" {
 				inboxPath = path
 				return true
 			}
@@ -509,19 +527,17 @@ func (b *crossBridge) handTask(value supervise.TaskValue) {
 		b.t.Fatal(err)
 	}
 	defer func() { _ = conn.Close() }()
-	id := "task-" + strconv.FormatUint(value.Revision, 10)
-	if err := json.NewEncoder(conn).Encode(claudebridge.InboxDelivery{ID: id, Kind: claudebridge.InboxTask,
-		Number: value.Number, Epoch: value.Epoch, Revision: value.Revision}); err != nil {
+	if err := json.NewEncoder(conn).Encode(line); err != nil {
 		b.t.Fatal(err)
 	}
 	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	line, err := bufio.NewReader(conn).ReadBytes('\n')
+	answered, err := bufio.NewReader(conn).ReadBytes('\n')
 	if err != nil {
-		b.t.Fatalf("the inbox answered the task line %q, %v", line, err)
+		b.t.Fatalf("the inbox answered the %s line %q, %v", line.ID, answered, err)
 	}
 	var answer claudebridge.InboxAnswer
-	if err := json.Unmarshal(line, &answer); err != nil || answer != (claudebridge.InboxAnswer{ID: id, OK: true}) {
-		b.t.Fatalf("the inbox answered the task line %s", line)
+	if err := json.Unmarshal(answered, &answer); err != nil || answer != (claudebridge.InboxAnswer{ID: line.ID, OK: true}) {
+		b.t.Fatalf("the inbox answered the %s line %s", line.ID, answered)
 	}
 }
 

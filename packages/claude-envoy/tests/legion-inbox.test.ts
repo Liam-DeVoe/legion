@@ -84,18 +84,43 @@ test("rejects when no bridge listens at the socket", async () => {
 
 const EPOCH = "2026-11-13T16:21:44.123456789Z"
 
-test("writes the claim's task value as one task line with an id of its own, a deleted value as task 0, and resolves on the bridge's ok", async () => {
+test("writes the claim's task value as one task line with an id of its own and the finished number it came with, a deleted value as task 0, and resolves on the bridge's ok", async () => {
   const { socketPath, lines } = await inbox(({ id }) => ({ id, ok: true }))
   const notifier = createInboxNotifier(socketPath)
   await notifier.notification(notification("envoy:\n  id: evt-1", "evt-1"))
-  await notifier.task({ number: 4, epoch: EPOCH, revision: 12 })
-  await notifier.task({ number: 0, epoch: EPOCH, revision: 13 })
+  await notifier.task({ number: 4, epoch: EPOCH, revision: 12, finished: 3 })
+  await notifier.task({ number: 0, epoch: EPOCH, revision: 13, finished: 0 })
   expect(lines).toEqual([
     { id: "evt-1", content: "envoy:\n  id: evt-1" },
-    { id: expect.any(String), kind: "task", number: 4, epoch: EPOCH, revision: 12 },
-    { id: expect.any(String), kind: "task", number: 0, epoch: EPOCH, revision: 13 },
+    { id: expect.any(String), kind: "task", number: 4, epoch: EPOCH, revision: 12, finished: 3 },
+    { id: expect.any(String), kind: "task", number: 0, epoch: EPOCH, revision: 13, finished: 0 },
   ])
   expect(new Set(lines.map(({ id }) => id)).size).toBe(3)
+})
+
+test("writes the ready line with an id of its own, behind the lines written before it, and resolves on the bridge's ok", async () => {
+  const { socketPath, lines } = await inbox(({ id }) => ({ id, ok: true }))
+  const notifier = createInboxNotifier(socketPath)
+  const task = notifier.task({ number: 4, epoch: EPOCH, revision: 12, finished: 3 })
+  const ready = notifier.ready()
+  await Promise.all([task, ready])
+  expect(lines).toEqual([
+    { id: expect.any(String), kind: "task", number: 4, epoch: EPOCH, revision: 12, finished: 3 },
+    { id: expect.any(String), kind: "ready" },
+  ])
+  expect(new Set(lines.map(({ id }) => id)).size).toBe(2)
+})
+
+test("writes a reading's finished number, where the reading holds no value, as one finished line with an id of its own, and resolves on the bridge's ok", async () => {
+  const { socketPath, lines } = await inbox(({ id }) => ({ id, ok: true }))
+  const notifier = createInboxNotifier(socketPath)
+  await notifier.finished(8)
+  await notifier.finished(0)
+  expect(lines).toEqual([
+    { id: expect.any(String), kind: "finished", finished: 8 },
+    { id: expect.any(String), kind: "finished", finished: 0 },
+  ])
+  expect(new Set(lines.map(({ id }) => id)).size).toBe(2)
 })
 
 test("a task line the bridge refuses rejects naming its error, and the delivery behind it keeps its own answer", async () => {
@@ -106,7 +131,7 @@ test("a task line the bridge refuses rejects naming its error, and the delivery 
       : { id: line.id, ok: true },
   )
   const notifier = createInboxNotifier(socketPath)
-  const task = notifier.task({ number: 4, epoch: EPOCH, revision: 12 })
+  const task = notifier.task({ number: 4, epoch: EPOCH, revision: 12, finished: 3 })
   const delivery = notifier.notification(notification("x", "evt-5"))
   await expect(task).rejects.toThrow(
     /^the Legion inbox refused task line [0-9a-f-]{36}: an inbox delivery is one JSON object with an id and content$/,

@@ -113,7 +113,12 @@ import {
   startLegionClaim,
   stopPane,
 } from "./legion-claim"
-import { createInboxNotifier, INBOX_CAPABILITIES, INBOX_VARIABLE } from "./legion-inbox"
+import {
+  createInboxNotifier,
+  INBOX_CAPABILITIES,
+  INBOX_VARIABLE,
+  type LegionInbox,
+} from "./legion-inbox"
 import {
   createPhaseHookEndpoint,
   PHASE_HOOK_TOOL_NAME,
@@ -2080,8 +2085,20 @@ export async function runEnvoyChannelServer(): Promise<void> {
   // The plugin's own bundle, which Claude Code runs from its plugin cache when installed.
   const bundlePath = process.argv[1] ?? ""
   // One connection to the bridge carries every line this server writes into the session: each
-  // Envoy delivery, and the reminders and notices the phase endpoint writes.
+  // Envoy delivery, the reminders and notices the phase endpoint writes, and the claim's task
+  // values, ready line and finished numbers (`./legion-claim`).
   const inbox = inboxSocket === undefined ? undefined : createInboxNotifier(inboxSocket)
+  /** Writes `what`, one line of the claim's, to the bridge: a pane that names no inbox, and a
+   *  line the bridge refused, are logged, and nothing waits for the answer. */
+  const toBridge = (what: string, write: (bridge: LegionInbox) => Promise<void>): void => {
+    if (inbox === undefined) {
+      logLegion(`${what} reaches no bridge: this pane names no ${INBOX_VARIABLE}`)
+      return
+    }
+    write(inbox).catch((error: unknown) => {
+      logLegion(`the bridge did not take ${what}: ${messageFor(error)}`)
+    })
+  }
 
   const server = new Server(MCP_SERVER_INFO, {
     capabilities: { tools: {} },
@@ -2410,19 +2427,15 @@ export async function runEnvoyChannelServer(): Promise<void> {
         daemon,
         client,
         clientInstanceID,
-        task: (value) => {
-          if (inbox === undefined) {
-            logLegion(
-              `task ${value.number}'s value reaches no bridge: this pane names no ${INBOX_VARIABLE}`,
-            )
-            return
-          }
-          inbox.task(value).catch((error: unknown) => {
-            logLegion(
-              `the bridge did not take task ${value.number}'s value at revision ${value.revision}: ${messageFor(error)}`,
-            )
-          })
-        },
+        task: (value) =>
+          toBridge(`task ${value.number}'s value at revision ${value.revision}`, (bridge) =>
+            bridge.task(value),
+          ),
+        ready: () => toBridge("the claim's ready line", (bridge) => bridge.ready()),
+        finished: (finished) =>
+          toBridge(`the claim's finished number ${finished}`, (bridge) =>
+            bridge.finished(finished),
+          ),
         session,
         signal: booting.signal,
         log: logLegion,

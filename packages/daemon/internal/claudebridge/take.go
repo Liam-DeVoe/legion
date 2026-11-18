@@ -10,24 +10,59 @@ import (
 )
 
 // A claim's task reaches its worker as a value the worker takes, not as a prompt the daemon pushes
-// (dispatch://INFRA-2811 R2). claude-envoy, which holds the claim and its Envoy consumer, hands the
-// bridge every value it is handed — a relayed task frame, the registration's value, a read of
-// claims/task at a new epoch of its relay or a regain of its role — as a task line of the inbox
-// (inbox.go). The bridge, which knows whether Claude Code is in a turn, does the rest, naming the
-// claim with the launch's boot token (daemonLink):
+// (dispatch://INFRA-2811 R2). claude-envoy, which holds the claim and its Envoy consumer, keeps
+// nothing of the values it is handed: it writes each one to the inbox as a task line (inbox.go) —
+// the registration's value, a read of claims/task once the claim's ready has answered, at a regain
+// of its role and at a new epoch of its relay, and each value a task frame relays — carrying the
+// number the daemon's reading it came with says the claim finished (0 for a relayed value); writes
+// that number alone as a finished line for a reading that holds no value; and writes the ready
+// line once `claims/ready` has answered (the plan's decision 16). The bridge, which knows whether
+// Claude Code is in a turn, does the rest, as Oh My Pi's take does
+// (packages/pi-shared/src/task-take.ts, createTaskTake), naming the claim with the launch's boot
+// token (daemonLink):
 //
-//   - it reports each value seen at once, whatever Claude Code is doing (claims/task-seen);
-//   - when Claude Code is in no turn and the seed is done, it asks the daemon to take the number the
-//     newest value names, once per (epoch, revision) (claims/take). The pairs it asked at are kept
-//     in this process's memory alone, so a relaunched bridge asks again at the value it is handed;
-//   - while that take waits for its answer, an Envoy delivery that would start a turn waits in the
-//     queue, since the turn the take goes into must not start with a card;
+//   - it holds the newest value, a later revision of the same epoch or any value of another one
+//     (replaces), and the highest finished number any task line or finished line carried. A value
+//     naming a number at or below that, or at or below the run-end mark (below), is owed nothing
+//     (owes);
+//   - it reports each value seen at once, owed or not, whatever Claude Code is doing
+//     (claims/task-seen);
+//   - from the ready line on, when Claude Code is in no turn and the seed is done, it asks the
+//     daemon to take the task an owed value names, once per (epoch, revision) (claims/take). The
+//     daemon refuses a take before the ready, so none is asked for before the ready line. The
+//     pairs it asked at are kept in this process's memory alone, so a relaunched bridge asks again
+//     at the value it is handed;
+//   - while it holds an owed value it has not asked about, while that take waits for its answer,
+//     and while an accepted take's text waits for its turn, an Envoy delivery that would start a
+//     turn waits in the queue, since the turn the take goes into must not start with a card
+//     (takePending). claude-envoy writes the value it reads once the ready answered, and the ready
+//     line, before it claims the role, whose kept lane the listener hands over at the claim, so
+//     every card of that lane waits behind the take. A value the daemon writes later — the resume
+//     its outbox queues after the ready, a task queued later still — reaches the inbox as the
+//     listener relays it, and a card that arrived before it may start a turn first, which the take
+//     then waits behind;
 //   - an accepted take's text starts a turn of its own ahead of every queued delivery, and that
 //     turn is the task's: its outcome report names the number (startTask, turnoutcome.go);
-//   - a take accepted while a turn runs — one Claude Code started by itself while the take was in
-//     flight — holds its text until that turn ends and starts it then, ahead of the queue, as Oh My
-//     Pi's taker holds an accepted text until the run's agent_end
-//     (packages/pi-shared/src/task-take.ts);
+//   - nothing is sent into a turn that is running. A take the daemon accepts while Claude Code is
+//     in a turn — one Claude Code started by itself after the daemon decided the take, or while a
+//     take sent again after a lost answer waited — has its text held until that turn ends. The
+//     daemon gave that turn to the take, as the first to start after its accept; its end is
+//     reported naming no task, which puts the take back to awaiting its turn on the daemon (the
+//     plan's decisions 8 and 9), and the held text then starts a turn of its own when Claude Code
+//     is idle, ahead of every queued delivery: the task's turn on both sides, whose report names
+//     the number;
+//   - a repeat `accepted` for the number of the run going on runs nothing more, nor one for the
+//     number whose text is held: the daemon answers a take of the number it accepted with the same
+//     text until that task finishes;
+//   - when a task's turn ends with no provider error, its number is held finished (the run-end
+//     mark, finishing) until the daemon answers that turn's report: for a worker on the current
+//     contract that report alone finishes the task, so a newer revision of the same number, which
+//     the daemon may write before the report lands (a daemon start writes every owed value again)
+//     and would answer with the same text, is reported seen and not taken. A 2xx finished the
+//     number in the record, which deletes its value, so the mark stays; a 4xx refusal applied
+//     nothing and the record still owes the number, so the mark is cleared (reportRefused) and a
+//     newer revision of it is taken and runs once. A report carrying a provider error marks
+//     nothing: the daemon takes the task back and writes its value again after its wait;
 //   - a refused take, a dropped one and a refusal of the route itself are answers: the value is
 //     asked about again only at its next revision.
 //
@@ -67,8 +102,8 @@ type pair struct {
 
 func (v taskValue) at() pair { return pair{epoch: v.epoch, revision: v.revision} }
 
-// replaces is whether v takes the place of held: any value when none is held or held is of another
-// epoch, and a later revision of the same one.
+// replaces is whether v takes the place of held, the one newest-value rule: any value when none is
+// held or held is of another epoch, and a later revision of the same one.
 func (v taskValue) replaces(held *taskValue) bool {
 	return held == nil || held.epoch != v.epoch || v.revision > held.revision
 }
@@ -88,25 +123,68 @@ type takeAnswer struct {
 	err    error
 }
 
-// valueHanded takes a task value the inbox handed the bridge. A value newer than the one held
-// replaces it, and with it every seen report and take still being sent for another pair (replace);
-// it is reported seen at once; and Claude Code in no turn takes it (idle). A value no newer than the
-// one held changes nothing: the same value relayed again is not a new ask.
-func (b *bridge) valueHanded(v taskValue) {
+// owes is whether the claim is owed the task number: one above the highest number a task line or
+// a finished line said the claim finished, and above the run-end mark.
+func (b *bridge) owes(number uint64) bool { return number > max(b.finished, b.finishing) }
+
+// unasked is whether the held value names a task the claim is owed that the bridge has not asked
+// to take at the value's pair.
+func (b *bridge) unasked() bool {
+	return b.task != nil && b.owes(b.task.number) && !b.asked[b.task.at()]
+}
+
+// valueHanded takes a task value the inbox handed the bridge, with the number the reading it came
+// with says the claim finished, the highest of which the bridge holds. A value newer than the one
+// held replaces it, and with it every seen report and take still being sent for another pair
+// (replace); it is reported seen at once, owed or not; and Claude Code in no turn takes it once the
+// ready line came (idle). A value no newer than the one held changes nothing but the finished
+// number: the same value relayed again is not a new ask.
+func (b *bridge) valueHanded(v taskValue, finished uint64) {
 	if b.daemon == nil {
 		b.log.Printf("ignoring task %d's value: this pane names no daemon to take it from", v.number)
 		return
 	}
-	if !v.replaces(b.task) {
+	b.finished = max(b.finished, finished)
+	if v.replaces(b.task) {
+		b.task = &v
+		b.replace(v.at())
+		switch {
+		case v.number == 0:
+			b.log.Printf("the claim holds no task from revision %d on", v.revision)
+		case b.owes(v.number):
+			b.log.Printf("task %d's value reached the inbox at revision %d", v.number, v.revision)
+		default:
+			b.log.Printf("task %d's value reached the inbox at revision %d; that task is finished, so it is reported seen and not taken", v.number, v.revision)
+		}
+		if v.number != 0 {
+			b.reportSeen(v)
+		}
+	}
+	b.idle()
+}
+
+// finishedHanded takes a finished line: a reading of the daemon's that held no value, and the
+// number it says the claim finished, the highest of which the bridge holds, as createTaskTake's
+// read raises its own from such a reading. The value held stays held: a reading with no value
+// says nothing of it. A held value that names a number at or below the new one is owed nothing
+// from here on, so the cards its take held back are let go (idle).
+func (b *bridge) finishedHanded(finished uint64) {
+	if b.daemon == nil {
 		return
 	}
-	b.task = &v
-	b.replace(v.at())
-	if v.number == 0 {
-		b.log.Printf("the claim holds no task from revision %d on", v.revision)
-	} else {
-		b.log.Printf("task %d's value reached the inbox at revision %d", v.number, v.revision)
-		b.reportSeen(v)
+	b.finished = max(b.finished, finished)
+	b.idle()
+}
+
+// readied takes the ready line: the claim's ready has answered, and the daemon answers a take from
+// then on, so the task an owed value names is asked for once Claude Code is idle (ask).
+func (b *bridge) readied() {
+	if b.armed {
+		return
+	}
+	b.armed = true
+	if b.daemon != nil {
+		b.log.Printf("the claim's ready has answered: its task is taken from now on")
 	}
 	b.idle()
 }
@@ -140,7 +218,7 @@ func (b *bridge) reportSeen(v taskValue) {
 		Number: v.number, Epoch: v.epoch, Revision: v.revision}
 	go func() {
 		defer stop()
-		status, answer, err := b.daemon.untilAnswered(ctx, fmt.Sprintf("claims/task-seen of task %d", v.number), taskSeenPath, request)
+		status, answer, err := b.daemon.untilAnswered(ctx, fmt.Sprintf("claims/task-seen of task %d", v.number), taskSeenPath, request, nil)
 		switch {
 		case ctx.Err() != nil:
 		case err != nil:
@@ -151,16 +229,16 @@ func (b *bridge) reportSeen(v taskValue) {
 	}()
 }
 
-// ask asks the daemon to take the task the held value names (claims/take) where it may — Claude
-// Code in no turn, the seed done, no take being sent, and a task the value names that the bridge
-// has not asked about at the value's pair — and says whether it did. The answer comes back on the
-// loop (takeAnswered). A pane that names no daemon holds no value at all (valueHanded), so this
-// never reads b.daemon without one.
+// ask asks the daemon to take the task the held value names (claims/take) where it may — the ready
+// line come, Claude Code in no turn, the seed done, no take being sent, and a task the claim is
+// owed that the bridge has not asked about at the value's pair — and says whether it did. The
+// answer comes back on the loop (takeAnswered). A pane that names no daemon holds no value at all
+// (valueHanded), so this never reads b.daemon without one.
 func (b *bridge) ask() bool {
-	v := b.task
-	if v == nil || v.number == 0 || b.inRun || b.seeding || b.asking != nil || b.asked[v.at()] {
+	if !b.armed || b.inRun || b.seeding || b.asking != nil || !b.unasked() {
 		return false
 	}
+	v := b.task
 	b.asked[v.at()] = true
 	ctx, stop := context.WithCancel(b.requests)
 	c := &call{value: *v, stop: stop}
@@ -170,7 +248,7 @@ func (b *bridge) ask() bool {
 		Number: v.number, Epoch: v.epoch, Revision: v.revision}
 	go func() {
 		defer stop()
-		status, body, err := b.daemon.untilAnswered(ctx, fmt.Sprintf("claims/take of task %d", c.value.number), takePath, request)
+		status, body, err := b.daemon.untilAnswered(ctx, fmt.Sprintf("claims/take of task %d", c.value.number), takePath, request, nil)
 		if ctx.Err() != nil {
 			return
 		}
@@ -192,8 +270,10 @@ func (b *bridge) ask() bool {
 
 // takeAnswered acts on the daemon's answer to the take being sent; the answer of a take a newer
 // value replaced is no longer anyone's. An accepted take starts the task's turn ahead of every
-// queued delivery, or, during a turn, once that turn ends. Anything else lets go of the cards the
-// take held back: the value is asked about again only at its next revision.
+// queued delivery, or, during a turn, holds its text until that turn ends: nothing is sent into a
+// turn that is running. A repeat accepted for the number of the run going on, for the number whose
+// text is held, or for a number the claim is owed no more runs nothing more. Anything else lets go
+// of the cards the take held back: the value is asked about again only at its next revision.
 func (b *bridge) takeAnswered(a takeAnswer) {
 	if b.asking != a.call {
 		return
@@ -204,14 +284,18 @@ func (b *bridge) takeAnswered(a takeAnswer) {
 	case a.err != nil:
 		b.log.Printf("the take of task %d failed (%v); it is asked again at the value's next revision", number, a.err)
 	case a.answer.Outcome == takeAccepted:
-		if b.inRun || b.seeding {
+		switch {
+		case !b.owes(number) || number == b.runTask || number == b.heldTask:
+			b.log.Printf("the daemon accepted the take of task %d again; its text runs no second time", number)
+		case b.inRun || b.seeding:
 			b.heldText, b.heldTask = a.answer.Text, number
-			b.log.Printf("the daemon accepted the take of task %d during a turn; the task starts a turn of its own once this one ends", number)
+			b.log.Printf("the daemon accepted the take of task %d during a turn; that turn is reported as no task's, and the task starts a turn of its own once it ends", number)
+			return
+		default:
+			b.log.Printf("the daemon accepted the take of task %d", number)
+			b.startTask(number, a.answer.Text)
 			return
 		}
-		b.log.Printf("the daemon accepted the take of task %d", number)
-		b.startTask(number, a.answer.Text)
-		return
 	case a.answer.Outcome == takeRefused:
 		b.log.Printf("the daemon refused the take of task %d (hold %s); it is asked again at the value's next revision", number, a.answer.Hold)
 	case a.answer.Outcome == takeDropped:
@@ -222,9 +306,10 @@ func (b *bridge) takeAnswered(a takeAnswer) {
 	b.idle()
 }
 
-// takePending is whether a take holds the queued deliveries back: one being sent, or one accepted
-// whose task has not started its turn yet.
-func (b *bridge) takePending() bool { return b.asking != nil || b.heldTask != 0 }
+// takePending is whether the claim's take holds the queued deliveries back: an owed value not yet
+// asked about — before the ready line, or while Claude Code is in a turn or seeding —, a take being
+// sent, or one accepted whose task has not started its turn yet.
+func (b *bridge) takePending() bool { return b.unasked() || b.asking != nil || b.heldTask != 0 }
 
 // startTask starts the turn of the task number, whose accepted take answered text: a turn of the
 // bridge's own whose first user message is text, sent ahead of every queued delivery, and whose
@@ -235,10 +320,34 @@ func (b *bridge) startTask(number uint64, text string) {
 	b.runTask = number
 }
 
+// runEnded takes the end of a turn, the task's turn when task is not 0: one the provider did not
+// fail holds the task's number finished from here on (the run-end mark), before its report has even
+// landed, since that report finishes the task on the daemon, and until the daemon refuses it
+// (reportRefused). A turn the provider failed marks nothing.
+func (b *bridge) runEnded(task uint64, providerFailed bool) {
+	if task != 0 && !providerFailed {
+		b.finishing = max(b.finishing, task)
+	}
+}
+
+// reportRefused takes the daemon's 4xx refusal of the clean report of task number's turn
+// (turnoutcome.go): that report applied nothing and the record still owes the number, so the
+// bridge holds it finished no longer, and takes a newer revision of it — one it holds already or
+// one the daemon writes later — which then runs once. A number a task line said finished stays
+// finished, and a mark that has moved on to a later number since stays.
+func (b *bridge) reportRefused(number uint64) {
+	if b.finishing != number {
+		return
+	}
+	b.finishing = 0
+	b.log.Printf("the daemon refused the report of task %d's turn, so the claim still owes it: a newer value of it is taken", number)
+	b.idle()
+}
+
 // idle runs what waits for Claude Code to be in no turn, whenever it may be: the seed's end, a
-// turn's end, a take's answer and a newer task value. The text of a take accepted during the turn
-// that ended starts first; then a take of the held value; and only with no take pending, the oldest
-// queued Envoy delivery.
+// turn's end, the ready line, a take's answer, a newer task value and a refused report. The text of
+// a take accepted during the turn that ended starts first; then a take of the held value; and only
+// with no take pending, the oldest queued Envoy delivery.
 func (b *bridge) idle() {
 	if b.inRun || b.seeding {
 		return

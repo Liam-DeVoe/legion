@@ -19,10 +19,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
-// The seen report's and the take's re-send (dispatch://INFRA-2811), with the numbers
-// Oh My Pi's taker uses (packages/pi-shared/src/task-take.ts: TASK_ANSWER_TIMEOUT_MS,
-// TASK_RESEND_FIRST_DELAY_MS, TASK_RESEND_MAX_DELAY_MS), so both harnesses wait out a daemon that
-// is not serving alike.
+// The re-send of the seen report, the take and the turn-outcome report (dispatch://INFRA-2811),
+// with the numbers Oh My Pi's daemon client uses (packages/pi-shared/src/daemon-client.ts:
+// DAEMON_ANSWER_TIMEOUT_MS, DAEMON_RESEND_FIRST_DELAY_MS, DAEMON_RESEND_MAX_DELAY_MS), so both
+// harnesses wait out a daemon that is not serving alike.
 const (
 	// taskAnswerTimeout bounds one attempt: an attempt with no answer by then is sent again.
 	taskAnswerTimeout = 5 * time.Minute
@@ -32,9 +32,10 @@ const (
 	taskResendMax   = 30 * time.Second
 )
 
-// maxTaskAnswerBytes bounds what the bridge reads of a seen report's or a take's answer. An
-// accepted take carries the task's whole text, which the daemon's prompt frame used to carry
-// within the worker stream's frame limit, so that limit bounds it here too.
+// maxTaskAnswerBytes bounds what the bridge reads of the daemon's answer to any request it sends.
+// An accepted take carries the task's whole text, which the daemon's prompt frame used to carry
+// within the worker stream's frame limit, so that limit bounds it here too; every other answer is
+// a sentence or a few numbers.
 const maxTaskAnswerBytes = shimwire.MaxFrameBytes
 
 // daemonLink is the claim's daemon as the bridge speaks to it: the API's address, and the launch's
@@ -43,14 +44,14 @@ const maxTaskAnswerBytes = shimwire.MaxFrameBytes
 // and the take of the claim's task (take.go). The bridge holds no registration secret: the claim's
 // registration is claude-envoy's, inside Claude Code, and the secret never leaves that process. So
 // the bridge names itself with the launch's boot token, the file its pane is told, which the
-// daemon resolves to this claim.
+// daemon resolves to this claim. All three are sent through one re-send policy (untilAnswered).
 type daemonLink struct {
 	// url is the API's address, with no trailing slash.
 	url        string
 	bootToken  string
 	generation uint64
 	log        *log.Logger
-	// calls is the timing of the seen reports and the takes (untilAnswered), and client what sends
+	// calls is the timing of every request the bridge sends (untilAnswered), and client what sends
 	// them: no timeout of its own, since each attempt is bounded by calls.answerTimeout, and a
 	// connection for each attempt (DisableKeepAlives), so a daemon that restarted between two
 	// attempts is met as a refused connection rather than as a pooled one it closed.
@@ -58,9 +59,9 @@ type daemonLink struct {
 	client *http.Client
 }
 
-// daemonCalls is the timing and the network of the seen reports and the takes. Its zero value is
-// production's: the waits below and the system's own dialer. A test shortens the
-// waits and stands in for the network (Config.calls).
+// daemonCalls is the timing and the network of the requests the bridge sends. Its zero value is
+// production's: the waits below and the system's own dialer. A test shortens the waits and stands
+// in for the network (Config.calls).
 type daemonCalls struct {
 	answerTimeout, resendFirst, resendMax time.Duration
 	dial                                  func(ctx context.Context, network, address string) (net.Conn, error)
@@ -122,13 +123,16 @@ func missingDaemonInputs(cfg Config) string {
 }
 
 // untilAnswered posts request to the route at path until the daemon answers it, and returns that
-// answer: its status and its body. An attempt the daemon gave no answer to (unanswered) is sent
-// again, the same request, after a wait that doubles from calls.resendFirst to calls.resendMax,
-// with no attempt limit; each attempt is bounded by calls.answerTimeout. The first attempt with no
-// answer is logged, once, naming what. ctx ending — the request replaced by a newer value, or the
-// bridge ending — ends the sending with ctx's error. An error that is no failure `unanswered` lists
-// is returned as the request's answer, and nothing sends it again.
-func (d *daemonLink) untilAnswered(ctx context.Context, what, path string, request any) (int, []byte, error) {
+// answer: its status and its body. An attempt the daemon gave no answer to (unanswered), or one
+// whose answer alsoAgain names, is sent again, the same request, after a wait that doubles from
+// calls.resendFirst to calls.resendMax, with no attempt limit; each attempt is bounded by
+// calls.answerTimeout. alsoAgain is nil for a route whose every answer is the daemon's word; for
+// the turn-outcome report it says how an answer that is sent again was answered — a 500, the
+// daemon's failure to record it (recordFailed) — and is "" for any other. The first attempt sent
+// again is logged, once, naming what and why. ctx ending — the request replaced by a newer value,
+// or the bridge ending — ends the sending with ctx's error. An error that is no failure
+// `unanswered` lists is returned as the request's answer, and nothing sends it again.
+func (d *daemonLink) untilAnswered(ctx context.Context, what, path string, request any, alsoAgain func(status int) string) (int, []byte, error) {
 	body, err := json.Marshal(request)
 	if err != nil {
 		return 0, nil, err
@@ -140,12 +144,18 @@ func (d *daemonLink) untilAnswered(ctx context.Context, what, path string, reque
 			return 0, nil, ctx.Err()
 		}
 		why := d.unanswered(status, answer, err)
+		switch {
+		case why != "":
+			why = "got no answer from the daemon (" + why + ")"
+		case err == nil && alsoAgain != nil:
+			why = alsoAgain(status)
+		}
 		if why == "" {
 			return status, answer, err
 		}
 		if !told {
 			told = true
-			d.log.Printf("%s got no answer from the daemon (%s); it is sent again until it is answered", what, why)
+			d.log.Printf("%s %s; it is sent again until it is answered", what, why)
 		}
 		if err := backoff.Sleep(ctx, delay); err != nil {
 			return 0, nil, err
@@ -155,7 +165,7 @@ func (d *daemonLink) untilAnswered(ctx context.Context, what, path string, reque
 }
 
 // attempt is one post of body to the route at path, bounded by calls.answerTimeout, with the
-// daemon's answer read whole.
+// daemon's answer read whole, up to maxTaskAnswerBytes.
 func (d *daemonLink) attempt(ctx context.Context, path string, body []byte) (int, []byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, d.calls.answerTimeout)
 	defer cancel()
@@ -169,8 +179,9 @@ func (d *daemonLink) attempt(ctx context.Context, path string, body []byte) (int
 		return 0, nil, err
 	}
 	defer func() { _ = response.Body.Close() }()
-	answer, err := readAnswer(response, maxTaskAnswerBytes)
-	return response.StatusCode, answer, err
+	var answer bytes.Buffer
+	_, err = answer.ReadFrom(http.MaxBytesReader(nil, response.Body, maxTaskAnswerBytes))
+	return response.StatusCode, answer.Bytes(), err
 }
 
 // unanswered names why an attempt got no answer from the daemon, and is "" for an attempt it

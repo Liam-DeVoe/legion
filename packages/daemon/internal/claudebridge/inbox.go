@@ -15,24 +15,33 @@ import (
 
 // InboxVariable names the inbox socket in Claude Code's environment, which its MCP servers inherit:
 // packages/claude-envoy's channel server writes each Envoy delivery there instead of a channel
-// notification, which Claude Code's print mode never delivers, and each of the claim's task values.
+// notification, which Claude Code's print mode never delivers, each of the claim's task values
+// and finished numbers, and the word that the claim's ready has answered.
 const InboxVariable = "LEGION_CLAUDE_INBOX"
 
-// InboxTask is the Kind of a task line (InboxDelivery).
-const InboxTask = "task"
+// InboxTask, InboxReady and InboxFinished are the Kinds of a task line, of the ready line and of
+// a finished line (InboxDelivery).
+const (
+	InboxTask     = "task"
+	InboxReady    = "ready"
+	InboxFinished = "finished"
+)
 
 // InboxDelivery is one line a client writes to the inbox: an Envoy delivery, already rendered, that
-// becomes a user turn, or a task line, the claim's task value. InboxAnswer is the line the bridge
-// writes back: for a delivery, once Claude Code has taken it, re-emitting it as the user message it
-// reads (--replay-user-messages), or with an error once it never will — the delivery is in the
-// transcript, which is what claude-envoy's `done` says; for a task line, once the bridge's loop has
-// taken the value (take.go).
+// becomes a user turn; a task line, the claim's task value; the ready line, claude-envoy's word
+// that the claim's `claims/ready` has answered; or a finished line, a reading of the daemon's that
+// held no value. InboxAnswer is the line the bridge writes back: for a delivery, once Claude Code
+// has taken it, re-emitting it as the user message it reads (--replay-user-messages), or with an
+// error once it never will — the delivery is in the transcript, which is what claude-envoy's
+// `done` says; for the claim's other lines, once the bridge's loop has taken it (take.go).
 type InboxDelivery struct {
 	ID string `json:"id"`
-	// Kind is "" for an Envoy delivery and InboxTask for a task line: a value of the claim's key
-	// in the task bucket, which claude-envoy hands the bridge as it is handed it — relayed, read at
-	// its registration, or read from claims/task (packages/claude-envoy, src/legion-inbox.ts). A
-	// task line carries Number, Epoch and Revision and no Content.
+	// Kind is "" for an Envoy delivery, InboxTask for a task line, InboxReady for the ready line
+	// and InboxFinished for a finished line. A task line is a value of the claim's key in the task
+	// bucket, which claude-envoy hands the bridge as it is handed it — relayed, read at its
+	// registration, or read from claims/task (packages/claude-envoy, src/legion-inbox.ts) — and
+	// carries Number, Epoch, Revision and Finished and no Content. The ready line carries its ID
+	// alone, and a finished line its ID and Finished.
 	Kind    string `json:"kind,omitempty"`
 	Content string `json:"content"`
 	// Blocks is the delivery as Claude Code's own content blocks, which a line carries where the
@@ -47,6 +56,13 @@ type InboxDelivery struct {
 	Number   uint64 `json:"number,omitempty"`
 	Epoch    string `json:"epoch,omitempty"`
 	Revision uint64 `json:"revision,omitempty"`
+	// Finished is the number of the last task the daemon's reading says the claim finished
+	// (claim.TaskResponse's Finished, the registration's): on a task line the reading the value
+	// came with, 0 for a value that came with no reading, a relayed one; on a finished line a
+	// reading that held no value. Every task line carries it, 0 included: a task line without it
+	// is one a claude-envoy older than this bridge wrote, which held the finished number itself,
+	// and is refused (olderTaskLine).
+	Finished *uint64 `json:"finished,omitempty"`
 }
 
 type InboxAnswer struct {
@@ -121,7 +137,13 @@ const (
 	// the loop gave before closing it, each one short line a reading client takes at once.
 	inboxFlushTimeout = 100 * time.Millisecond
 	malformedDelivery = "an inbox delivery is one JSON object with an id and content"
-	malformedTask     = "an inbox task line is one JSON object with an id, a number, an epoch and a revision"
+	malformedTask     = "an inbox task line is one JSON object with an id, a number, an epoch, a revision and the claim's finished number"
+	malformedFinished = "an inbox finished line is one JSON object with an id and the claim's finished number"
+	// olderTaskLine answers a task line of the shape claude-envoy wrote before the bridge held the
+	// claim's finished number, the ready gate and the one newest-value rule (take.go): such a
+	// claude-envoy is not the one this bridge ships with, so the bridge takes no task from it
+	// rather than weigh a value with half of what it needs.
+	olderTaskLine = malformedTask + ": this one names no finished number, as a claude-envoy older than this bridge writes it, so no task is taken from it"
 )
 
 // owed is one answer a client is owed, in the order it sent its deliveries.
@@ -203,10 +225,21 @@ func inboxEvent(d InboxDelivery, answer chan<- error) (event, error) {
 		}
 		return event{delivery: &delivery{id: d.ID, content: d.Content, blocks: d.Blocks, answer: answer}}, nil
 	case InboxTask:
-		if d.Epoch == "" || d.Revision == 0 {
+		switch {
+		case d.Epoch == "" || d.Revision == 0:
 			return event{}, errors.New(malformedTask)
+		case d.Finished == nil:
+			return event{}, errors.New(olderTaskLine)
 		}
-		return event{task: &taskLine{value: taskValue{number: d.Number, epoch: d.Epoch, revision: d.Revision}, answer: answer}}, nil
+		return event{task: &taskLine{value: taskValue{number: d.Number, epoch: d.Epoch, revision: d.Revision},
+			finished: *d.Finished, answer: answer}}, nil
+	case InboxReady:
+		return event{ready: answer}, nil
+	case InboxFinished:
+		if d.Finished == nil {
+			return event{}, errors.New(malformedFinished)
+		}
+		return event{finished: &finishedLine{number: *d.Finished, answer: answer}}, nil
 	default:
 		return event{}, fmt.Errorf("an inbox line of kind %q is none the bridge takes", d.Kind)
 	}

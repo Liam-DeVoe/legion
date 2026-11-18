@@ -50,18 +50,30 @@ var (
 	errNotTaken = errors.New("Claude Code ended the step without taking the delivery")
 )
 
-// event is a frame from the shim, or an Envoy delivery or a task value from the inbox, for the
-// bridge's loop.
+// event is a frame from the shim, or an Envoy delivery, a task value, the ready line or a finished
+// line from the inbox, for the bridge's loop.
 type event struct {
-	daemon   []byte    // a frame from the shim
-	delivery *delivery // an Envoy delivery from the inbox
-	task     *taskLine // the claim's task value from the inbox
+	daemon   []byte        // a frame from the shim
+	delivery *delivery     // an Envoy delivery from the inbox
+	task     *taskLine     // the claim's task value from the inbox
+	ready    chan<- error  // the ready line from the inbox, answered once the loop has taken it
+	finished *finishedLine // a finished line from the inbox
 }
 
-// taskLine is the claim's task value, handed to the loop from the inbox (take.go). answer,
-// buffered, is answered once the loop has taken it.
+// taskLine is the claim's task value, handed to the loop from the inbox (take.go), with the number
+// the reading it came with says the claim finished. answer, buffered, is answered once the loop
+// has taken it.
 type taskLine struct {
-	value  taskValue
+	value    taskValue
+	finished uint64
+	answer   chan<- error
+}
+
+// finishedLine is a reading of the daemon's that held no value, handed to the loop from the inbox
+// (take.go): the number it says the claim finished. answer, buffered, is answered once the loop
+// has taken it.
+type finishedLine struct {
+	number uint64
 	answer chan<- error
 }
 
@@ -109,18 +121,27 @@ type bridge struct {
 	// backend's producer of turn outcomes (turnoutcome.go), nil with it.
 	daemon  *daemonLink
 	reports *turnReports
-	// requests is the context of every seen report and take the bridge sends, ended once Run
-	// returns; stop is Run's own end, which a take's answer is not sent past; takeAnswers carries
-	// each take's answer back to the loop (take.go).
-	requests    context.Context
-	stop        <-chan struct{}
-	takeAnswers chan takeAnswer
-	// task is the newest task value the inbox handed over, nil before the first; seen and asked are
-	// the pairs the bridge reported seen and asked to take, in this process's memory alone; seeing
-	// and asking are the seen report and the take being sent, nil when none is (take.go).
-	task           *taskValue
-	seen, asked    map[pair]bool
-	seeing, asking *call
+	// requests is the context of every seen report and take the bridge sends, ended once Claude
+	// Code is done or Run returns; stop is Run's own end, which a take's answer and a report's
+	// refusal are not sent past; takeAnswers carries each take's answer back to the loop, and
+	// refusedReports the number of each task whose clean report the daemon refused with a 4xx
+	// (take.go).
+	requests       context.Context
+	stop           <-chan struct{}
+	takeAnswers    chan takeAnswer
+	refusedReports chan uint64
+	// task is the newest task value the inbox handed over, nil before the first; finished is the
+	// highest number a task line or a finished line said the claim finished, and finishing the
+	// run-end mark, the number of the last task whose turn ended here with no provider error, held
+	// finished until the daemon refuses its report; armed is the ready line having come. seen and
+	// asked are the pairs the bridge reported seen and asked to take, in this process's memory
+	// alone; seeing and asking are the seen report and the take being sent, nil when none is
+	// (take.go).
+	task                *taskValue
+	finished, finishing uint64
+	armed               bool
+	seen, asked         map[pair]bool
+	seeing, asking      *call
 	// heldTask is the number of a take the daemon accepted while a turn ran, and heldText its
 	// text: that task starts a turn of its own once the turn ends (idle), and heldTask, never 0
 	// for an accepted take, is what says one is waiting. runTask is the number of the
@@ -174,18 +195,21 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 		logOut = io.Discard
 	}
 	// requests ends every seen report and take still being sent once Run returns: nothing is left to
-	// run an answer.
+	// run an answer. reporting ends every turn-outcome report still being sent then, and not before:
+	// a report is owed for each turn that ended, whatever came after it (turnoutcome.go).
 	requests, endRequests := context.WithCancel(context.Background())
 	defer endRequests()
+	reporting, endReporting := context.WithCancel(context.Background())
+	defer endReporting()
 	// stop ends the outputs' writers and every reader's send, once Run returns. It does not
 	// interrupt a readLines blocked in ReadBytes, and Run does not wait for those readers.
 	stop := make(chan struct{})
 	defer close(stop)
 	b := &bridge{cfg: cfg, log: log.New(logOut, "[claude-bridge] ", 0), requests: requests, stop: stop,
-		takeAnswers: make(chan takeAnswer), seen: map[pair]bool{}, asked: map[pair]bool{}}
+		takeAnswers: make(chan takeAnswer), refusedReports: make(chan uint64), seen: map[pair]bool{}, asked: map[pair]bool{}}
 	b.frames = shimwire.NewWriter(&b.encoded)
 	b.daemon = dialDaemon(cfg, b.log)
-	b.reports = newTurnReports(b.daemon)
+	b.reports = newTurnReports(reporting, b.daemon, func(task uint64) { send(b.refusedReports, stop, task) })
 	b.toShim = newOutput("the shim", cfg.Stdout, stop, b.log)
 	events := make(chan event)
 	// inboxStop releases a delivery's send blocked on the loop and closes every inbox connection,
@@ -306,6 +330,10 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 			if !claudeDone {
 				b.takeAnswered(answered)
 			}
+		case task := <-b.refusedReports:
+			if !claudeDone {
+				b.reportRefused(task)
+			}
 		case ev := <-events:
 			switch {
 			case claudeDone:
@@ -317,6 +345,12 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 				if ev.task != nil {
 					ev.task.answer <- errClaudeExited
 				}
+				if ev.ready != nil {
+					ev.ready <- errClaudeExited
+				}
+				if ev.finished != nil {
+					ev.finished.answer <- errClaudeExited
+				}
 				if !ignoring {
 					ignoring = true
 					b.log.Printf("ignoring the shim's frames: Claude Code has exited")
@@ -327,7 +361,13 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 				b.deliver(*ev.delivery)
 			case ev.task != nil:
 				ev.task.answer <- nil
-				b.valueHanded(ev.task.value)
+				b.valueHanded(ev.task.value, ev.task.finished)
+			case ev.ready != nil:
+				ev.ready <- nil
+				b.readied()
+			case ev.finished != nil:
+				ev.finished.answer <- nil
+				b.finishedHanded(ev.finished.number)
 			}
 		case <-done:
 			done, stopping = nil, true
@@ -755,7 +795,8 @@ func answerAll(deliveries []delivery, err error) {
 // The turn's outcome is the outcome of its newest step (refusal), reported when the turn ends
 // with the bridge's own sequence (turnoutcome.go): a step the provider failed is the turn
 // refused, and a step that ran clears what an earlier failed one left, since the provider
-// answered after all. The report names the task whose turn it was (runTask).
+// answered after all. The report names the task whose turn it was (runTask), and a task's turn
+// the provider did not fail holds that task finished from its end (take.go's runEnded).
 //
 // Once Claude Code is in no turn, what waits for that runs (idle): a task whose take was accepted
 // during the turn, then a take of the claim's task value, then the next Envoy delivery.
@@ -819,6 +860,7 @@ func (b *bridge) result(res resultLine) {
 	}
 	refusal, task := b.refusal, b.runTask
 	b.inRun, b.refusal, b.runTask = false, nil, 0
+	b.runEnded(task, refusal != nil)
 	b.emit(shimwire.AgentEnd{})
 	b.reports.turnEnded(task, refusal)
 	b.idle()

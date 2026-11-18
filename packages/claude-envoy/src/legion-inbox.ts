@@ -8,7 +8,8 @@ import type { ChannelNotification, ChannelNotifier } from "./envoy-channel-serve
  * inbox socket (`packages/daemon/internal/claudebridge/inbox.go`): in a Legion pane each Envoy
  * delivery goes there and the bridge sends it to Claude Code as a user turn, which is what makes
  * a person's own message a turn of the pane's own conversation; and each of the claim's task
- * values goes there too, for the bridge to take (`LegionInbox.task`).
+ * values, and the word that the claim's ready has answered, go there too, for the bridge to take
+ * the task (`LegionInbox.task`, `LegionInbox.ready`).
  */
 export const INBOX_VARIABLE = "LEGION_CLAUDE_INBOX"
 
@@ -37,24 +38,42 @@ interface InboxAnswer {
  * A claim's task value as the bridge's inbox takes it (`InboxDelivery` in
  * `packages/daemon/internal/claudebridge/inbox.go`): the number of the task the claim is owed, or 0
  * where the value was deleted at this revision and the claim has no task from it on; the task
- * bucket's epoch; and the key's revision in it.
+ * bucket's epoch; the key's revision in it; and the number of the last task the daemon's reading
+ * the value came with says the claim finished, 0 for a value that came with no reading (a relayed
+ * one). The bridge holds the highest finished number any line carried, so a 0 lowers nothing.
  */
 export interface InboxTaskValue {
   readonly number: number
   readonly epoch: string
   readonly revision: number
+  readonly finished: number
 }
 
 /** The bridge's inbox: every line this server writes into a Legion pane. */
 export interface LegionInbox extends ChannelNotifier {
   /**
    * Hands the bridge the claim's task value as one line `{id, kind: "task", number, epoch,
-   * revision}`, and resolves once the bridge's loop has taken it. The bridge, which knows whether
-   * Claude Code is in a turn, reports the value seen and takes its task from the daemon
+   * revision, finished}`, and resolves once the bridge's loop has taken it. The bridge, which
+   * knows whether Claude Code is in a turn, holds the newest value and the finished number,
+   * reports the value seen and takes its task from the daemon
    * (`packages/daemon/internal/claudebridge/take.go`); nothing of it reaches Claude Code as a line
    * of its own.
    */
   task(value: InboxTaskValue): Promise<void>
+  /**
+   * Tells the bridge the claim's `claims/ready` has answered, as one line `{id, kind: "ready"}`,
+   * and resolves once the bridge's loop has taken it. The daemon refuses a take before the ready,
+   * so the bridge takes no task before this line.
+   */
+  ready(): Promise<void>
+  /**
+   * Hands the bridge a reading of the daemon's that holds no value (`task: null`), as one line
+   * `{id, kind: "finished", finished}`: the number of the last task it says the claim finished,
+   * which the bridge holds beside the numbers the task lines carried, and resolves once the
+   * bridge's loop has taken it. A value the bridge holds stays held, as Oh My Pi's take keeps its
+   * value at such a reading.
+   */
+  finished(finished: number): Promise<void>
 }
 
 /**
@@ -66,11 +85,12 @@ export interface LegionInbox extends ChannelNotifier {
  * message as it always did. The bridge answers `ok` only when Claude Code re-emits that user
  * message (`--replay-user-messages`), that is once it took the delivery into a step, and an error
  * when Claude Code never takes it: a relayed frame is answered `done` on the one and `nak` on the
- * other. A task line (`task`) is answered `ok` once the bridge has taken the value. An answer with
- * an error, a closed socket or an answer for another id rejects. The bridge answers one
- * connection's lines in order, so one connection, opened on first use and again after it closes,
- * carries every line, and a task line carries an id of its own so that its answer is paired with
- * it and not with a delivery's.
+ * other. A task line (`task`), the ready line (`ready`) and a finished line (`finished`) are
+ * answered `ok` once the bridge has taken them. An answer with an error, a closed socket or an
+ * answer for another id rejects. The bridge answers one connection's lines in order, so one
+ * connection, opened on first use and again after it closes, carries every line, in the order
+ * this server writes them, and each line of the claim's carries an id of its own so that each
+ * answer is paired with its line and not with a delivery's.
  */
 export function createInboxNotifier(socketPath: string): LegionInbox {
   let socket: Socket | undefined
@@ -157,7 +177,14 @@ export function createInboxNotifier(socketPath: string): LegionInbox {
         number: value.number,
         epoch: value.epoch,
         revision: value.revision,
+        finished: value.finished,
       })
+    },
+    ready(): Promise<void> {
+      return send("ready line", { id: randomUUID(), kind: "ready" })
+    },
+    finished(finished: number): Promise<void> {
+      return send("finished line", { id: randomUUID(), kind: "finished", finished })
     },
   }
 }
