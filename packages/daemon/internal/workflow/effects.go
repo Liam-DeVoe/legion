@@ -50,10 +50,10 @@ func PhaseFinished(ctx context.Context, store record.Store, tx pgx.Tx, issue rec
 // It goes once no checkout a comparison run can name predates dispatch://INFRA-2800: then
 // daemon-pane.go calls phase.RoleFor against every checkout it is built inside, and this module
 // holds one exported name for the rule again rather than two a new caller could pick between.
-// Until then this name has callers of its own inside this module, seven of them: readyWorkerTask
-// (catch_up.go), leftItsPhase and NoticeFor's two reads (engine.go), tellGateMoved (gate.go),
-// tellChecks (review.go) and one test (checks_red_test.go). Each reads the same table as a
-// caller of phase.RoleFor, since that is the one definition and this forwards to it.
+// Until then this name has callers of its own inside this module: readyWorkerTask (catch_up.go),
+// leftItsPhase and NoticeFor (engine.go), tellGateMoved (gate.go), tellChecks (review.go), admit's
+// TreeStalledNotice, and tests. Each reads the same table as a caller of phase.RoleFor, since that
+// is the one definition and this forwards to it.
 func RoleFor(p phase.Phase) claim.Role {
 	return phase.RoleFor(p)
 }
@@ -966,16 +966,18 @@ type PhaseMove struct {
 
 // StuckRound is a review round that nothing on its way ends, as the task of its restarted reviewer
 // names it: its cause (a texts.Cause word), the head it is stuck at, the head the reviewer approved
-// where its approval is of other code, whether an APPROVE of the head or a REQUEST_CHANGES ends
-// it, which they do for every cause but a merge state GitHub will not merge from, and, for a round
-// no review decided, why the daemon set aside a review that would otherwise have decided it
-// (record.ReviewDecision.Refused), the only thing that says why the round has no decision.
+// where its approval is of other code, and whether an APPROVE of the head or a REQUEST_CHANGES ends
+// it, which they do for every cause but a merge state GitHub will not merge from. For a round no
+// review decided, it names why the daemon set aside a review that would otherwise have decided it
+// (record.ReviewDecision.Refused), the only thing that says why the round has no decision; for a
+// round GitHub will not merge from, the merge state GitHub reported for the head.
 type StuckRound struct {
-	Cause     string
-	Head      string
-	Approved  string
-	EndsRound bool
-	SetAside  string
+	Cause      string
+	Head       string
+	Approved   string
+	EndsRound  bool
+	SetAside   string
+	MergeState string
 }
 
 // PhaseAssignment is what a started worker is told, as the record of its kind: the issue, its
@@ -1002,7 +1004,8 @@ type StuckRound struct {
 // reviewer, as the reviewer's own review always went. A head that conflicts with its base names
 // the base and the head. A retry names who retried, with the architect's words in the reason
 // block, and a retry of a stuck review round names the round's cause, its head and the review
-// that ends it.
+// that ends it; for a round GitHub will not merge from, the merge state and the head's checks, as
+// the review-stuck notice names them.
 func PhaseAssignment(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, move PhaseMove) texts.PhaseAssignmentRecord {
 	task := texts.PhaseAssignmentRecord{TaskHead: texts.TaskHead{Kind: texts.PhaseAssignment, Issue: issue.Key}, Title: issue.Title,
 		Phase: issue.Phase, HandoffCommit: handoff.HandoffCommit, TesterVerdict: handoff.Verdict}
@@ -1028,6 +1031,10 @@ func PhaseAssignment(issue record.Issue, handoff record.PhaseRow, pr *record.Pul
 			task.StuckRound, task.Head, task.ReviewedHead, task.SetAside = stuck.Cause, stuck.Head, stuck.Approved, stuck.SetAside
 			if stuck.EndsRound {
 				task.EndsRound = texts.EndsRound(stuck.Head)
+			}
+			if stuck.Cause == texts.CauseMergeState && pr != nil {
+				red, passed := notPassed(headRuns(*pr))
+				task.MergeState, task.NotPassed, task.Passed, task.ListPassed = stuck.MergeState, red, &passed, texts.ListPassed(pr.Repo, pr.Number)
 			}
 		}
 	}

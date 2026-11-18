@@ -33,7 +33,7 @@ type TodoRecord struct {
 // project key. It names its lists whole, since the controller's daily report reads them there:
 // every open row of the capability report, every issue blocked by another, every issue the
 // daemon's record holds that stands in neither the active set nor the waiting line, and every
-// phase worker nothing will prompt. The keys and their shapes are main's.
+// phase worker nothing will prompt. Each key keeps the shape the controller's readers take.
 type TickRecord struct {
 	NoticeHead
 	OpenCapabilities []string       `json:"openCapabilities,omitempty"`
@@ -43,14 +43,14 @@ type TickRecord struct {
 }
 
 // BlockedIssue is one issue Legion waits on another issue for, and the issues it waits on that
-// are not done (main's record.BlockedIssue).
+// are not done (record.BlockedIssue is this type).
 type BlockedIssue struct {
 	Issue     string   `json:"issue"`
 	BlockedBy []string `json:"blockedBy"`
 }
 
-// MarshalJSON keeps blockedBy an array on the wire, empty rather than null, as main's
-// record.BlockedIssue does: the plugin's reader refuses a null.
+// MarshalJSON keeps blockedBy an array on the wire, empty rather than null: the plugin's reader
+// refuses a null.
 func (b BlockedIssue) MarshalJSON() ([]byte, error) {
 	type wire BlockedIssue
 	out := wire(b)
@@ -61,17 +61,17 @@ func (b BlockedIssue) MarshalJSON() ([]byte, error) {
 }
 
 // HeldIssue is one issue the daemon's record holds that stands in neither the active set nor the
-// waiting line: its key, the one word for why (a record.HeldReason) and the issues that hold it
-// (main's record.HeldIssue).
+// waiting line: its key, the one word for why (a record.HeldReason) and the issues that hold it,
+// as record.HeldIssue names them.
 type HeldIssue struct {
 	Issue  string   `json:"issue"`
 	Reason string   `json:"reason"`
 	HeldBy []string `json:"heldBy,omitempty"`
 }
 
-// SilentIssue is one issue whose phase worker nothing will prompt (main's record.SilentIssue):
-// the issue, the role, when its agent last stepped, how long it has been quiet, and, for a worker
-// that waits on its own background work, the moment of that report.
+// SilentIssue is one issue whose phase worker nothing will prompt (record.SilentIssue is this
+// type): the issue, the role, when its agent last stepped, how long it has been quiet, and, for a
+// worker that waits on its own background work, the moment of that report.
 type SilentIssue struct {
 	Issue           string     `json:"issue"`
 	Role            claim.Role `json:"role"`
@@ -138,8 +138,8 @@ type UpdateStalledRecord struct {
 	Update  *UpdateRound `json:"update,omitempty"`
 }
 
-// UpdateRound is the update round an update-stalled notice names (main's record.UpdateStalled,
-// whose keys it keeps): the round, the pod it was opened over, each changed image by its short
+// UpdateRound is the update round an update-stalled notice names (record.UpdateStalled is this
+// type): the round, the pod it was opened over, each changed image by its short
 // digest and each changed setting by its key, and each claim the round asked. Reasons is the text
 // of the drift that a round an older daemon opened records, and empty for a round this daemon
 // opened.
@@ -152,8 +152,8 @@ type UpdateRound struct {
 	Waiting  []UpdateWaiting `json:"waiting"`
 }
 
-// MarshalJSON keeps waiting an array on the wire, empty rather than null, as main's
-// record.UpdateStalled does: the plugin's strict reader refuses a null.
+// MarshalJSON keeps waiting an array on the wire, empty rather than null: the plugin's strict
+// reader refuses a null.
 func (u UpdateRound) MarshalJSON() ([]byte, error) {
 	type wire UpdateRound
 	out := wire(u)
@@ -163,8 +163,8 @@ func (u UpdateRound) MarshalJSON() ([]byte, error) {
 	return json.Marshal(out)
 }
 
-// UpdateWaiting is one claim an update round asked (main's record.UpdateWaiting): its token, its
-// role, its state and whether it answered.
+// UpdateWaiting is one claim an update round asked (record.UpdateWaiting is this type): its token,
+// its role, its state and whether it answered.
 type UpdateWaiting struct {
 	Claim    string     `json:"claim"`
 	Role     claim.Role `json:"role,omitempty"`
@@ -209,7 +209,8 @@ type TreeMember struct {
 // whether a let-go took it back from a turn, and the moment the arm counts from. Claim
 // unreachable: the claim's state, whether its relaunch is failing, whether the daemon wrote the
 // start of its architect again, and whether the root waits on a person. Slow before the gate: the
-// moment the arm counts from. Each arm names its bound.
+// moment the arm counts from. Each arm names its bound, apart from a claim-unreachable arm whose
+// relaunch is failing, which waits on no bound.
 type ArchitectStalledRecord struct {
 	NoticeHead
 	Role            claim.Role  `json:"role,omitempty"`

@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -17,9 +16,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
-// noticeSummary is the one-line message a notice is published with, "<kind> on <issue>": the
-// summary the listener shows and echoes back in a role-lane exception, which parseNoticeSummary
-// reads.
+// noticeSummary is the one-line message a notice or a role message of kind is published with,
+// "<kind> on <issue>": the summary the listener shows and echoes back in a role-lane exception,
+// which parseNoticeSummary reads. record.NoticeKind is texts.Kind, so a role message's kind is one
+// too.
 func noticeSummary(kind record.NoticeKind, issue string) string {
 	return string(kind) + noticeSummarySeparator + issue
 }
@@ -180,19 +180,11 @@ func earlierNoticeFor(tree treeSnapshot, architect claim.Token, runs func(claim.
 
 // noticeUrgency is the urgency notice goes to reader with: the rule the list gives its kind
 // (texts.UrgencyOf), read with the variant the notice's own payload carries (texts.Variant, whose
-// json names are the payload's keys). A copy of a notice (reholdNotice) carries the payload of
-// the row it copies, so it goes with that row's urgency. A payload that does not encode, which no
-// record.Notice is, goes at med, the urgency of a text nothing makes low.
+// fields are the notice's keys of the same names). A copy of a notice (reholdNotice) carries the
+// payload of the row it copies, so it goes with that row's urgency.
 func noticeUrgency(notice record.Notice, reader claim.Role) texts.Urgency {
-	var v texts.Variant
-	encoded, err := json.Marshal(notice)
-	if err == nil {
-		err = json.Unmarshal(encoded, &v)
-	}
-	if err != nil {
-		return texts.Med
-	}
-	return texts.UrgencyOf(notice.Kind, reader, v)
+	return texts.UrgencyOf(notice.Kind, reader, texts.Variant{Role: notice.Role, Phase: notice.Phase, To: notice.To,
+		Change: notice.Change, Hold: notice.Hold})
 }
 
 // noticeArchitect is the architect claim notice, of issue in tree, goes to. A catch-up goes to the

@@ -190,11 +190,10 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 // something on its tree while nobody in that tree could hear it (ParkedDecisionTask), which is
 // rare: the common fresh admission launched an architect with nothing at all, and the first thing
 // the daemon ever gave it was the catch-up its ready writes. That catch-up states the tree and
-// ends "start or resume it as your role says", which leaves the first act to the agent to infer
-// from a context it has just been born into — and an architect that infers nothing holds its tree's
-// admission slot while it sits idle, with the root unclaimed and its design gate unregistered,
-// until a person messages the session. So the start says it instead, and the catch-up goes on
-// stating the tree.
+// names no first act, which leaves the first act to the agent to infer from a context it has just
+// been born into — and an architect that infers nothing holds its tree's admission slot while it
+// sits idle, with the root unclaimed and its design gate unregistered, until a person messages the
+// session. So the start says it instead, and the catch-up goes on stating the tree.
 //
 // The derivation serves two roots: one standing at phase.Admitted, which is where every tree the
 // workflow opens stands, and one a hand-over carried in, past phase.Admitted in the run that
@@ -212,8 +211,7 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 //     a person, or stands in accepting, and its work is told by that phase's own role, by the
 //     resume the daemon composes when a person answers, or by the notice that moved it. A
 //     first-act statement would be false of it, so this writes none: the answer is Decided alone,
-//     which is the empty string where a person has decided nothing, and which carries no closing
-//     sentence.
+//     which is the empty string where a person has decided nothing.
 //  3. The root holds design gate rows. The task reports its gate step by step. Where the gate is
 //     not open it stands part way, and the architect carries it on from there. Where it is open
 //     (record.TreeGate.Open), the root stands at admitted only while its first phase waits, for an
@@ -447,7 +445,7 @@ func gateSteps(root string, gate record.TreeGate) []texts.ArchitectGate {
 		at := texts.ArchitectGate{Step: string(step.OrSpec()), Document: stepRef(root, step), Version: row.LatestVersion}
 		switch {
 		case !registered:
-			at.State, at.Version = texts.GateUnregistered, 0
+			at.State = texts.GateUnregistered
 		case len(gate.Steps) == 0:
 			at.State = texts.GateRegistered
 		case record.GateOpen(row):

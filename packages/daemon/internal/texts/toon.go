@@ -40,8 +40,10 @@ type member struct {
 // numericLike is NUMERIC_LIKE_PATTERN of 4.1.1.
 var numericLike = regexp.MustCompile(`(?i)^[+-]?\d+(?:\.\d+)?(?:e[+-]?\d+)?$`)
 
-// unquotedKey is the pattern of isValidUnquotedKey of 4.1.1.
-var unquotedKey = regexp.MustCompile(`(?i)^[A-Z_][\w.]*$`)
+// unquotedKey is the pattern of isValidUnquotedKey of 4.1.1, /^[A-Z_][\w.]*$/i, which in
+// JavaScript holds ASCII letters alone. Go's case folding under (?i) would also take a letter
+// such as U+212A (the Kelvin sign, which folds to k), so the letters are spelled out.
+var unquotedKey = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.]*$`)
 
 // encodeObject writes obj as the lines of a document root, as encodeObjectLines does at depth 0.
 func encodeObject(obj object) ([]string, error) {

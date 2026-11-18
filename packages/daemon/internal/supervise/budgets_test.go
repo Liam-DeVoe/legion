@@ -340,6 +340,8 @@ func TestAWorkerThatEndsItselfForAStallIsRelaunchedToItsCapAndFailedAtTheDeathLi
 		if want := h.relaunchNote(h.claim().EndedWork, true) + "\n\n" + "implement the plan"; resent.Message != want {
 			t.Fatalf("stall exit %d: the task was re-sent as %q, want %q", exit, resent.Message, want)
 		}
+		// The note states, in the lines of its own record, that the task's own turn was cut off.
+		wantSays(t, resent.Message, "kind: relaunch-note\n", "\nin_turn: true\n", "\ntask_turn: true\n", "\ntask: true\n")
 		if p := h.pending(); p.ID != resent.DeliveryID || !p.ConfirmedAt.IsZero() {
 			t.Fatalf("stall exit %d: pending %+v, want the re-sent task still owed", exit, p)
 		}

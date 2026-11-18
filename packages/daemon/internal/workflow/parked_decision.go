@@ -28,7 +28,7 @@ func (e *Engine) relayParkedDecision(ctx context.Context, tx pgx.Tx, key, ask st
 	if err != nil || root == nil {
 		return err
 	}
-	outcome, err := record.RelayParkedDecision(ctx, tx, e.store, key, *root, root.Lingers(), decision, 0, "", e.cfg.Steps)
+	outcome, err := record.RelayParkedDecision(ctx, tx, e.store, key, *root, root.Lingers(), decision, 0, e.cfg.Steps)
 	if err != nil {
 		return err
 	}
@@ -88,9 +88,21 @@ func (e *Engine) treeRoot(ctx context.Context, tx pgx.Tx, key string) (*record.I
 // claim queued it as; one that reached no architect hands it over (HandOverKept). Both results are
 // zero when there was nothing.
 func ParkedDecisionTask(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, root record.Issue) (string, *record.KeptDecisions, error) {
-	decisions, approval, err := store.UnclaimedKept(ctx, tx, root.Key)
-	if err != nil {
+	kept, err := keptOwed(ctx, tx, store, steps, root.Key)
+	if err != nil || kept == nil {
 		return "", nil, err
+	}
+	return taskText(KeptDecisionsOf(root.Key, *kept)), kept, nil
+}
+
+// keptOwed is what tree is owed now and nothing claims (Store.UnclaimedKept), as a start's task
+// (ParkedDecisionTask) and a root's catch-up (QueueCatchUp) name it: each kept decision, and the
+// approval a re-admission kept where the design gate asks a person (steps). It is nil where
+// nothing is kept.
+func keptOwed(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, tree string) (*record.KeptDecisions, error) {
+	decisions, approval, err := store.UnclaimedKept(ctx, tx, tree)
+	if err != nil {
+		return nil, err
 	}
 	var kept record.KeptDecisions
 	for _, d := range decisions {
@@ -99,11 +111,10 @@ func ParkedDecisionTask(ctx context.Context, tx pgx.Tx, store record.Store, step
 	if approval.Approved > 0 && len(steps) > 0 {
 		kept.KeptApproval = approval
 	}
-	task := KeptDecisionsTask(root.Key, kept)
-	if task == "" {
-		return "", nil, nil
+	if len(kept.Decisions) == 0 && kept.Approved == 0 {
+		return nil, nil
 	}
-	return task, &kept, nil
+	return &kept, nil
 }
 
 // KeptDecisionsTask is the task that names kept to the architect of root's tree (KeptDecisionsOf):

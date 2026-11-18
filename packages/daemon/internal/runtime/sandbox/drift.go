@@ -411,7 +411,7 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]runtime.Drift,
 		drifted = append(drifted, movedSetting("account", "account "+account+", now "+serviceAccountOr(r.pod.ServiceAccount)))
 	}
 	for _, moved := range r.driftedInPod(pod, role) {
-		drifted = append(drifted, movedSetting(moved.where, moved.String()))
+		drifted = append(drifted, movedSetting(moved.key, moved.String()))
 	}
 	return drifted, nil
 }

@@ -9,16 +9,16 @@ import (
 
 // This file holds the records of the notices to the architect that owns an issue. A notice stays
 // one record.Notice on the wire, so the json name of each field is a key of record.Notice, and a
-// key has one Go type in every notice record. A key that main's record.Notice already has keeps
-// its shape. A nested shape (the failure, the catch-up) is declared here so that record can name
-// it as an alias.
+// key has one Go type in every notice record. A key keeps the shape its readers take. A nested
+// shape (the failure, the catch-up) is declared here, and record either names it as an alias
+// (record.NoticeFailure) or keeps a copy of the same shape (record.CatchUp).
 //
 // A field that holds another author's words is a string with the struct tag texts:"words". A
 // record with such a field declares the words key, the payload's words object, which names each
 // words field that is set by its path (WordsPaths) with its author and its time.
 
-// NoticeFailure is why a claim failed, as the notices of that failure name it (main's
-// record.NoticeFailure, whose JSON shape it keeps): the one word the site that failed the claim
+// NoticeFailure is why a claim failed, as the notices of that failure name it
+// (record.NoticeFailure is this type): the one word the site that failed the claim
 // chose, the sentence beside it, the four counts against their limits, and what the runtime and the
 // launcher last said of the claim's death and its start.
 type NoticeFailure struct {
@@ -32,8 +32,8 @@ type NoticeFailure struct {
 	StartFailure   string        `json:"startFailure,omitempty"`
 }
 
-// FailureBudget is one count of a failed claim beside the limit it is measured against (main's
-// record.FailureBudget).
+// FailureBudget is one count of a failed claim beside the limit it is measured against
+// (record.FailureBudget is this type).
 type FailureBudget struct {
 	Count int `json:"count"`
 	Limit int `json:"limit"`
@@ -59,7 +59,9 @@ type PhaseFinishedRecord struct {
 
 // WorkerDiedRecord is the notice that a role's claim failed (workflow's claimFailed): the role,
 // the issue's phase, the phase the issue works where the role does not work it (Working), the
-// look of a production check that lost its checking role, and why the claim failed.
+// look of a production check that lost its checking role, and why the claim failed. Detail is
+// the sentence the failing site wrote, for a failure that recorded no cause and so has no Failure
+// (a fact an older daemon recorded).
 type WorkerDiedRecord struct {
 	NoticeHead
 	Role    claim.Role     `json:"role,omitempty"`
@@ -67,6 +69,7 @@ type WorkerDiedRecord struct {
 	Working phase.Phase    `json:"working,omitempty"`
 	Look    int            `json:"look,omitempty"`
 	Failure *NoticeFailure `json:"failure,omitempty"`
+	Detail  string         `json:"detail,omitempty"`
 }
 
 // The words of what became of a stalled process (WorkerStalledRecord.Stop).
@@ -96,7 +99,7 @@ type WorkerStalledRecord struct {
 	End            string     `json:"end"`
 	WakeDue        time.Time  `json:"wake_due,omitzero"`
 	Stop           string     `json:"stop,omitempty"`
-	LaunchFailures int        `json:"launch_failures"`
+	LaunchFailures int        `json:"launch_failures,omitempty"`
 }
 
 // The words of the start a worker-silent notice says the daemon wrote (WorkerSilentRecord.Sent).
@@ -129,7 +132,7 @@ type WorkerBackgroundStalledRecord struct {
 	NoticeHead
 	Role       claim.Role  `json:"role,omitempty"`
 	Phase      phase.Phase `json:"phase,omitempty"`
-	Work       []string    `json:"work"`
+	Work       []string    `json:"work,omitempty"`
 	ReportedAt time.Time   `json:"reported_at"`
 	StoodFor   string      `json:"stood_for"`
 	Bound      string      `json:"bound,omitempty"`
@@ -156,7 +159,7 @@ type PRBlockedRecord struct {
 	NoticeHead
 	Cap            int `json:"cap"`
 	Counted        int `json:"counted"`
-	ConflictRounds int `json:"conflict_rounds"`
+	ConflictRounds int `json:"conflict_rounds,omitempty"`
 }
 
 // PRMergedRecord is the notice that an issue's pull request merged (workflow's merged and
@@ -259,11 +262,11 @@ const (
 )
 
 // ChildStatusRecord is the notice of a change of a child (workflow's leave, ChildReenteredNotice,
-// ChildStartedNotice, ChildUnderAcceptedParentNotice, joinedTheTree and tellReparented): the change
-// (a Change word, which the urgency rule reads), the tree it runs under, every issue it waited on,
-// the root of the closed tree it came from (absent for the admission queue), the status it left
-// with, the ancestor whose reviewed head the daemon accepted, and, for a reparented root, the
-// root, its new Dispatch parent and why it stays a tree of its own (a StaysOwn word).
+// ChildStartedNotice, ChildUnderAcceptedParentNotice, JoinedTheTreeNotice and ReparentedNotice):
+// the change (a Change word, which the urgency rule reads), the tree it runs under, every issue it
+// waited on, the root of the closed tree it came from (absent for the admission queue), the status
+// it left with, the ancestor whose reviewed head the daemon accepted, and, for a reparented root,
+// the root, its new Dispatch parent and why it stays a tree of its own (a StaysOwn word).
 type ChildStatusRecord struct {
 	NoticeHead
 	Change           string   `json:"change"`
@@ -348,12 +351,12 @@ type CatchUpRecord struct {
 	Words    map[string]WordsMeta `json:"words,omitempty"`
 }
 
-// CatchUpFacts is a catch-up's account of the issues an architect owns (main's record.CatchUp,
-// whose keys it keeps). It names each issue that is not done with its fields, each done issue by
-// its key alone, each child not yet released whole, and the keys of the issues that wait in
-// accepting for this architect's acceptance. Kept is what a person decided on the tree while
-// nobody could hear it, with the words of each decision. Decided is the text of those decisions
-// that a daemon before this one wrote, which this daemon writes no more.
+// CatchUpFacts is a catch-up's account of the issues an architect owns (the shape of
+// record.CatchUp, whose keys it keeps). It names each issue that is not done with its fields, each
+// done issue by its key alone, each child not yet released whole, and the keys of the issues that
+// wait in accepting for this architect's acceptance. Kept is what a person decided on the tree
+// while nobody could hear it, with the words of each decision. Decided is the text of those
+// decisions that an older daemon wrote, which this daemon writes no more.
 type CatchUpFacts struct {
 	Generation uint64            `json:"generation"`
 	Launch     uint64            `json:"launch"`
@@ -368,7 +371,7 @@ type CatchUpFacts struct {
 	Kept       *KeptFacts        `json:"kept,omitempty"`
 }
 
-// CatchUpGate is one design-gate step as a catch-up states it (main's record.CatchUpGate).
+// CatchUpGate is one design-gate step as a catch-up states it (the shape of record.CatchUpGate).
 type CatchUpGate struct {
 	Step         string `json:"step"`
 	Gated        bool   `json:"gated"`
@@ -379,8 +382,8 @@ type CatchUpGate struct {
 	Open         bool   `json:"open"`
 }
 
-// CatchUpIssue is one issue of the tree as a catch-up names it (main's record.CatchUpIssue): an
-// issue that is not done.
+// CatchUpIssue is one issue of the tree as a catch-up names it (record.CatchUpIssue is this
+// type): an issue that is not done.
 type CatchUpIssue struct {
 	Key    string      `json:"key"`
 	Parent string      `json:"parent,omitempty"`
@@ -397,15 +400,15 @@ type UnreleasedChild struct {
 	Status string `json:"status"`
 }
 
-// KeptFacts is what one architect start task or catch-up names of what its tree is owed (main's
-// record.KeptDecisions): each decision, and the approval a re-admission kept.
+// KeptFacts is what one architect start task or catch-up names of what its tree is owed (the
+// shape of record.KeptDecisions): each decision, and the approval a re-admission kept.
 type KeptFacts struct {
 	Decisions []DecisionMark `json:"decisions,omitempty"`
 	KeptApproval
 }
 
-// KeptApproval is the approval a root's re-admission kept for its next architect start (main's
-// record.KeptApproval): the step whose document a person approved, the version approved and the
+// KeptApproval is the approval a root's re-admission kept for its next architect start (the shape
+// of record.KeptApproval): the step whose document a person approved, the version approved and the
 // version the document has reached since.
 type KeptApproval struct {
 	Step     string `json:"step,omitempty"`
@@ -413,9 +416,9 @@ type KeptApproval struct {
 	Latest   int    `json:"latest,omitempty"`
 }
 
-// DecisionMark is one kept decision (main's record.DecisionMark): its reference, the time of the
-// decision, the issue it was made on, what the person did, who, the options the answer chose, the
-// words of the act (bounded at EachOfSeveral where a catch-up names several), when the person
+// DecisionMark is one kept decision (the shape of record.DecisionMark): its reference, the time of
+// the decision, the issue it was made on, what the person did, who, the options the answer chose,
+// the words of the act (bounded at EachOfSeveral where a catch-up names several), when the person
 // wrote them, and whether more follows than the act's event carried (Carry's more).
 type DecisionMark struct {
 	Ref      string    `json:"ref"`
@@ -484,8 +487,8 @@ type ReviewStuckRecord struct {
 }
 
 // StatusReassertedRecord is the notice that a session wrote a lifecycle status and the daemon set
-// its own back (workflow's reassertStatus): the session, the status it wrote and the status the
-// daemon set.
+// its own back (workflow's StatusReassertedNotice): the session, the status it wrote and the
+// status the daemon set.
 type StatusReassertedRecord struct {
 	NoticeHead
 	Session string `json:"session"`

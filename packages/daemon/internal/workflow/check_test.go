@@ -306,6 +306,22 @@ func TestTheTestersFailedClaimEndsItsLook(t *testing.T) {
 	}
 }
 
+// A failure that recorded no cause — a fact an older daemon recorded — has no failure for the
+// look's worker-died notice to carry, and the notice still says why the claim failed: the sentence
+// the failing site wrote, as its detail.
+func TestATesterFailureWithNoCauseStillTellsWhyItsLookEnded(t *testing.T) {
+	rig := childCheckRig(t)
+	const reason = "the agent never registered"
+	rig.apply("tester-failed", intake.ClaimFailed{Issue: "LEGION-209", Role: claim.RoleTester, Reason: reason})
+	if check := productionCheck(t, rig.pool, "LEGION-209"); check.LookOpen {
+		t.Fatalf("the check after the tester's claim failed = %+v, want its look ended", check)
+	}
+	died := noticesOfKind(t, rig.pool, "LEGION-209", "worker-died")
+	if len(died) != 1 || died[0].Look != 1 || died[0].Failure != nil || died[0].Detail != reason {
+		t.Fatalf("worker-died notices = %+v, want one of look 1 with no failure and the detail %q", died, reason)
+	}
+}
+
 // A check recorded with the implementer — the shape every check open before the upgrade has, when
 // the implementer worked each of them — stays the implementer's for as long as it is open, under
 // an engine whose own checks are the tester's: the look its bound starts is handed to the

@@ -136,8 +136,11 @@ func (r *Runtime) recordAddresses(ctx context.Context, s *sandbox, role claim.Ro
 // movedAddress is one thing a role process holds that one launched now is not handed: where it
 // carries it (connectFlag, one of the variables mainEnvironment sets, or the agentSecretsTokenVolume
 // volume), what it holds there and what a process launched now is handed, each named so it carries
-// no credential (namedURL, enrollmentName).
-type movedAddress struct{ where, held, handed string }
+// no credential (namedURL, enrollmentName). key is the key of the setting that moved, which a
+// drift item names it by alone (runtime.DriftItem): the variable or volume where that is the key,
+// and the key alone where where names more (a file of role_config_files.<role>) or names it in
+// words (the session store, the pod's containers).
+type movedAddress struct{ key, where, held, handed string }
 
 // String is the one way an observation's detail names a moved address: `<where> <held>, now
 // <handed>`.
@@ -178,9 +181,9 @@ func (r *Runtime) movedEnvironment(s *sandbox, pod *corev1.Pod, role claim.Role,
 		i := slices.IndexFunc(record.Addresses, func(held recordedAddress) bool { return held.Variable == a.name })
 		switch {
 		case i < 0:
-			moved = append(moved, movedAddress{a.name, "(unrecorded)", r.addressName(a)})
+			moved = append(moved, movedAddress{key: a.name, where: a.name, held: "(unrecorded)", handed: r.addressName(a)})
 		case record.Addresses[i].SHA256 != addressDigest(a.value):
-			moved = append(moved, movedAddress{a.name, record.Addresses[i].Name, r.addressName(a)})
+			moved = append(moved, movedAddress{key: a.name, where: a.name, held: record.Addresses[i].Name, handed: r.addressName(a)})
 		}
 	}
 	return moved, nil
@@ -201,7 +204,7 @@ func (r *Runtime) movedStream(pod *corev1.Pod, container string) (movedAddress, 
 		return movedAddress{}, false
 	}
 	if handed := kubeletEscape(r.streamURL); held != handed {
-		return movedAddress{connectFlag, namedURL(held), namedURL(handed)}, true
+		return movedAddress{key: connectFlag, where: connectFlag, held: namedURL(held), handed: namedURL(handed)}, true
 	}
 	return movedAddress{}, false
 }
@@ -240,7 +243,7 @@ func movedLayout(pod *corev1.Pod) (movedAddress, bool) {
 	if !earlierLayout(names) {
 		return movedAddress{}, false
 	}
-	return movedAddress{"the pod's containers", strings.Join(names, ", "), runtime.IssuePodContainer}, true
+	return movedAddress{key: "containers", where: "the pod's containers", held: strings.Join(names, ", "), handed: runtime.IssuePodContainer}, true
 }
 
 // flagValue is the value command gives flag, the argument that follows it; ok is whether command
@@ -292,7 +295,7 @@ func (r *Runtime) movedEnrollment(pod *corev1.Pod, role claim.Role) (movedAddres
 	if held != nil && !hasKeyDir {
 		heldName += " without " + keyDir
 	}
-	return movedAddress{agentSecretsTokenVolume, heldName, enrollmentName(want)}, true
+	return movedAddress{key: agentSecretsTokenVolume, where: agentSecretsTokenVolume, held: heldName, handed: enrollmentName(want)}, true
 }
 
 // enrollmentName names a broker token projection by the fields movedEnrollment compares, "(unset)"
@@ -334,7 +337,7 @@ func (r *Runtime) movedExchangeIdentity(pod *corev1.Pod) (movedAddress, bool) {
 	if sameTokenProjection(held, want) {
 		return movedAddress{}, false
 	}
-	return movedAddress{agentSecretsExchangeVolume, enrollmentName(held), enrollmentName(want)}, true
+	return movedAddress{key: agentSecretsExchangeVolume, where: agentSecretsExchangeVolume, held: enrollmentName(held), handed: enrollmentName(want)}, true
 }
 
 // heldExchangeToken is the token pod's exchange volume projects, the one matching want where it
@@ -512,7 +515,7 @@ func (r *Runtime) movedGhDirs(pod *corev1.Pod, role claim.Role) (movedAddress, b
 	if !lacking {
 		return movedAddress{}, false
 	}
-	return movedAddress{where: name, held: ghDirsName(held), handed: ghDirsName(served)}, true
+	return movedAddress{key: name, where: name, held: ghDirsName(held), handed: ghDirsName(served)}, true
 }
 
 // podAppRoles are the GitHub Apps a pod of kind holds a bundle of, each named once
@@ -584,7 +587,8 @@ func (r *Runtime) movedRoleOverlays(pod corev1.PodSpec, role claim.Role) (movedA
 		}
 		for _, file := range r.roleConfigFiles[named] {
 			if held, want, moved := r.movedOverlay(seen, pod.Volumes, file); moved {
-				return movedAddress{where: "role_config_files." + string(named) + " " + file, held: held, handed: want}, true
+				key := "role_config_files." + string(named)
+				return movedAddress{key: key, where: key + " " + file, held: held, handed: want}, true
 			}
 		}
 	}
@@ -605,7 +609,7 @@ func (r *Runtime) movedRoleOverlays(pod corev1.PodSpec, role claim.Role) (movedA
 					if variant.MemoryBlock {
 						field = memoryOverlayField
 					}
-					return movedAddress{where: field + " " + file, held: held, handed: want}, true
+					return movedAddress{key: field, where: field + " " + file, held: held, handed: want}, true
 				}
 			}
 		}
@@ -805,7 +809,7 @@ func (r *Runtime) movedSessionStore(pod *corev1.Pod) (movedAddress, bool) {
 	if held == handed {
 		return movedAddress{}, false
 	}
-	return movedAddress{where: "the session store", held: held, handed: handed}, true
+	return movedAddress{key: "session_store", where: "the session store", held: held, handed: handed}, true
 }
 
 // sessionStoreInPod names the session store a pod specification was created under, read back from

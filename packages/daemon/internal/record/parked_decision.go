@@ -98,14 +98,15 @@ func WaitsForSlot(ctx context.Context, tx pgx.Tx, store Store, root Issue, steps
 //     Dispatch, who made it, and a spec decision's version and a changes request's reason.
 //
 // The kept row carries the person's words of the decision (ParkedDecision.Words), since a start
-// task names them and its send-time rewrite reads them back from the row: the caller's, where the
-// decision's event carried them, and a changes request's reason otherwise, which is the person's
-// words of that review (a carried gate's reason is the daemon's own sentence, never a person's).
+// task names them and its send-time rewrite reads them back from the row. The caller gives them:
+// the words the decision's event carried, or a changes request's reason, by the person who
+// requested the changes (the daemon's noticeWords); a carried gate's reason is the daemon's own
+// sentence, never a person's, and is given as none.
 //
 // Every write is in the caller's transaction, which the caller keys so that a replay writes none of
 // them again.
 func RelayParkedDecision(ctx context.Context, tx pgx.Tx, store Store, issue string, root Issue, nobodyHears bool,
-	decision ParkedDecision, version int, reason string, steps []DesignStep) (RelayOutcome, error) {
+	decision ParkedDecision, version int, steps []DesignStep) (RelayOutcome, error) {
 	waiting, err := WaitsForSlot(ctx, tx, store, root, steps)
 	if err != nil {
 		return RelayNone, err
@@ -125,20 +126,17 @@ func RelayParkedDecision(ctx context.Context, tx pgx.Tx, store Store, issue stri
 		return RelayNoPerson, nil
 	}
 	decision.Issue = issue
-	if decision.Words == nil && decision.Decision == DecisionDesignChangesRequested && reason != "" {
-		decision.Words = &ActWords{Text: reason, By: decision.Actor, At: decision.At}
-	}
 	if err := store.AddParkedDecision(ctx, tx, decision); err != nil {
 		return RelayNone, err
 	}
 	if waiting {
 		return RelayKept, nil
 	}
-	notice, err := NoticeOf(ParkedDecisionNoticeOf(issue, root.Key, decision, version))
+	notice, err := ControllerNoticeOf(ParkedDecisionNoticeOf(issue, root.Key, decision, version))
 	if err != nil {
 		return RelayNone, err
 	}
-	row, err := NewOutboxRow(issue, ControllerNotice(notice), decision.At)
+	row, err := NewOutboxRow(issue, notice, decision.At)
 	if err != nil {
 		return RelayNone, err
 	}

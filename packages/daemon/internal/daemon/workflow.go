@@ -1934,12 +1934,11 @@ func (w *workflowRuntime) providerErrorRunReached(c supervise.Claim, told texts.
 	if c.Issue == "" || w.admission == nil {
 		return
 	}
-	converted, err := record.NoticeOf(told)
+	notice, err := record.ControllerNoticeOf(told)
 	if err != nil {
 		w.log.Warn("tell the controller of a run of provider errors", "claim", c.Token, "error", err)
 		return
 	}
-	notice := record.ControllerNotice(converted)
 	go func() {
 		// This goroutine runs beside the machine that started it and every other, so it takes a
 		// hold mark of its own (store.ForConcurrentWorker). The notice is its own transaction, so

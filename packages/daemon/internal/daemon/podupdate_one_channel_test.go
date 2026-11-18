@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -68,14 +69,17 @@ func (r *podUpdateRig) prompts() map[claim.Role]int {
 // The negative controls are the ones c-one-channel names. A task queued beside the publish is a
 // prompt on a role's connection. A publish at every sweep is ten rows a role, not one.
 func TestPodUpdateAsksEachRoleOnceOnItsOwnTopicOverTenSweeps(t *testing.T) {
+	// The round the failed and the departed claims already record, as this daemon opens one: its
+	// reasons and its items, which every claim that joins the round is given (roundTerms).
+	opened := []runtime.DriftItem{{Key: runtime.DriftImage, Image: podUpdateImage}}
 	rig := newPodUpdateRig(t,
 		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateWorking, session: true, inPod: true, contract: api.DaemonAPIVersion},
 		podUpdateRole{role: claim.RoleTester, state: supervise.StateIdle, session: true, inPod: true, contract: api.DaemonAPIVersion},
 		readyWorker(claim.RoleArchitect),
 		podUpdateRole{role: claim.RolePlanner, state: supervise.StateFailed, session: true, contract: api.DaemonAPIVersion,
-			round: podUpdateRound, reasons: podUpdateDrift, unasked: true},
+			round: podUpdateRound, reasons: podUpdateDrift, drift: opened, unasked: true},
 		podUpdateRole{role: claim.RoleReviewer, state: supervise.StateSuspended, session: true, contract: api.DaemonAPIVersion,
-			suspendedBy: supervise.SuspendedByDaemon, round: podUpdateRound, reasons: podUpdateDrift, left: podUpdateRound, unasked: true},
+			suspendedBy: supervise.SuspendedByDaemon, round: podUpdateRound, reasons: podUpdateDrift, drift: opened, left: podUpdateRound, unasked: true},
 	)
 	rig.drifts(podUpdateDrift)
 	asked := []claim.Role{claim.RoleArchitect, claim.RoleImplementer, claim.RoleTester}

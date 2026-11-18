@@ -210,13 +210,13 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 	}
 	// The drift this tick read opens a round and decides nothing of a round already open: a
 	// round's terms are fixed at its open (dispatch://INFRA-2981 R9), so what an open round's
-	// notices and its replacement name is its own recorded reasons (roundReasons). That holds
-	// where the drift has gone away too — an operator rolled the release back — and the round
-	// replaces the pod all the same. The round has already asked every role in that pod to push
-	// its work and to start no new work, and no path is left that lets a role carry on in the pod
-	// it was told would be replaced. Replacing it is one restart of each role in its own session,
-	// which the alternative — a release of the answered roles that the daemon alone knows about —
-	// is not.
+	// notices and its replacement name, and what its post records on a claim that joins it, is
+	// its own recorded reasons and drift items (roundTerms). That holds where the drift has gone
+	// away too — an operator rolled the release back — and the round replaces the pod all the
+	// same. The round has already asked every role in that pod to push its work and to start no
+	// new work, and no path is left that lets a role carry on in the pod it was told would be
+	// replaced. Replacing it is one restart of each role in its own session, which the
+	// alternative — a release of the answered roles that the daemon alone knows about — is not.
 	terms, items := driftTerms(drift)
 	// One live read, given to both decisions below, so the claims the replacement waits on and
 	// the claims the post records the round on, which the ask then reaches, are one set. Read
@@ -230,7 +230,7 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 		// A round open here is over the pod the claims record, the one round this issue can be
 		// in: a round over any other pod has ended above.
 		live = s.liveGroup(group)
-		terms = roundReasons(group, open)
+		terms, items = roundTerms(group, open)
 		if replace, decided := s.completePodUpdate(ctx, issue, group, live, open, pod, terms, now); decided {
 			return replace
 		}
@@ -940,7 +940,8 @@ func (s *supervision) tellPodlessRound(ctx context.Context, issue string, group 
 	if len(held) > 0 {
 		holds = texts.HoldsOperator
 	}
-	s.tellLateRound(ctx, issue, group, round, "", roundReasons(group, round), now, holds, "")
+	reasons, _ := roundTerms(group, round)
+	s.tellLateRound(ctx, issue, group, round, "", reasons, now, holds, "")
 }
 
 // podWentWithoutItsRound is the round's pod gone before the round could finish: the message the
@@ -964,7 +965,7 @@ func (s *supervision) tellPodlessRound(ctx context.Context, issue string, group 
 // nobody wrote.
 func (s *supervision) podWentWithoutItsRound(ctx context.Context, issue string, group []supervise.Claim, round, pod string) {
 	lost := lostClaims(group, round)
-	reasons := roundReasons(group, round)
+	reasons, _ := roundTerms(group, round)
 	s.log.Warn("supervise: the pod of an open update round is gone; the roles that had not answered lost what they had not pushed",
 		"issue", issue, "round", round, "pod", pod, "lost", namesOf(lost))
 	if err := s.writeOnIssue(ctx, issue, record.MessagePost{Body: podWentMessage(round, reasons, lost)}); err != nil {
@@ -1071,7 +1072,7 @@ func (s *supervision) openPodUpdate(ctx context.Context, issue string, group []s
 //
 // reasons is the one string the round records (supervise.Claim.UpdateReasons), never a list:
 // each reason carries ", " inside it already, so nothing here may cut one up. The notice names the
-// round's drift by its items instead (roundDrift, supervise.DriftFacts), and the text only for a
+// round's drift by its items instead (roundTerms, supervise.DriftFacts), and the text only for a
 // round an older daemon opened, which recorded no items (record.UpdateStalled).
 type updateStall struct {
 	issue   string
@@ -1098,9 +1099,9 @@ func (s *supervision) tellUpdateStalled(ctx context.Context, stall updateStall) 
 			"issue", stall.issue, "round", stall.round, "holds", stall.holds, "refusal", stall.refusal)
 		return
 	}
-	notice, err := record.NoticeOf(updateStalledNotice(stall))
+	notice, err := record.ControllerNoticeOf(updateStalledNotice(stall))
 	if err == nil {
-		err = s.enqueue(ctx, stall.issue, record.ControllerNotice(notice))
+		err = s.enqueue(ctx, stall.issue, notice)
 	}
 	if err != nil {
 		if ctx.Err() == nil {
@@ -1116,11 +1117,11 @@ func (s *supervision) tellUpdateStalled(ctx context.Context, stall updateStall) 
 
 // updateStalledNotice is the update-stalled notice of stall: what holds the round, the runtime's
 // refusal, and the round, with each changed image by its short digest and each changed setting by
-// its key where its claims record the items (roundDrift, supervise.DriftFacts), and the text of the
+// its key where its claims record the items (roundTerms, supervise.DriftFacts), and the text of the
 // drift for a round an older daemon opened.
 func updateStalledNotice(stall updateStall) texts.UpdateStalledRecord {
 	update := &record.UpdateStalled{Round: stall.round, Pod: stall.pod, Waiting: stall.waiting}
-	if drift := roundDrift(stall.group, stall.round); len(drift) > 0 {
+	if _, drift := roundTerms(stall.group, stall.round); len(drift) > 0 {
 		update.Images, update.Settings = supervise.DriftFacts(drift)
 	} else {
 		update.Reasons = stall.reasons
@@ -1157,8 +1158,8 @@ func (s *supervision) markUpdateTold(ctx context.Context, group []supervise.Clai
 // in the pod loses it when the round replaces the pod (dispatch://INFRA-2981 R1).
 //
 // The ask is the round's own terms, as its claims recorded them: the drift the round opened with
-// (roundDrift, or roundReasons for a round an older daemon opened), never the drift this tick
-// read, and the moment the round ends at the latest, its recorded opening plus
+// (roundTerms: its items, or its text alone for a round an older daemon opened), never the drift
+// this tick read, and the moment the round ends at the latest, its recorded opening plus
 // pod_update_grace_minutes (supervise.UpdateTask). So every role of one round reads one ask, and
 // the record an operator reads names the same drift (dispatch://INFRA-2981 R9).
 //
@@ -1220,7 +1221,8 @@ func (s *supervision) askRound(ctx context.Context, issue string, group []superv
 			"issue", issue, "round", round, "roles", namesOf(asking))
 		return
 	}
-	ask := supervise.UpdateTask(issue, round, pod, roundDrift(group, round), roundReasons(group, round), *bound)
+	reasons, drift := roundTerms(group, round)
+	ask := supervise.UpdateTask(issue, round, pod, drift, reasons, *bound)
 	rows := make([]record.OutboxPayload, len(asking))
 	for i, c := range asking {
 		rows[i] = record.UpdateAsk{Role: c.Role, Round: round, Pod: pod,
@@ -1350,7 +1352,7 @@ func (s *supervision) groupDrift(ctx context.Context, issue string, group []supe
 
 // driftTerms is the drift a round opens with, as the round records it on each claim
 // (supervise.PodUpdateOpen): its reasons as one text, joined by ", " and never cut up again, and
-// its items, which the round's ask and its notice name (roundDrift).
+// its items, which the round's ask and its notice name (roundTerms).
 func driftTerms(drift []runtime.Drift) (string, []runtime.DriftItem) {
 	reasons := make([]string, len(drift))
 	var items []runtime.DriftItem
@@ -1399,28 +1401,18 @@ func openPodRound(group []supervise.Claim) string {
 	return ""
 }
 
-// roundReasons is what the round was opened for, as its claims recorded it: the one string the
-// agent surfaces serve (supervise.Claim.UpdateReasons), never cut up, and the field the round's ask
-// and notice name for a round an older daemon opened (record.UpdateStalled).
-func roundReasons(group []supervise.Claim, round string) string {
+// roundTerms is what the round was opened for, as one claim recorded it at the opening: the one
+// string the agent surfaces serve (supervise.Claim.UpdateReasons), never cut up, and the same
+// drift as items (supervise.Claim.UpdateDrift), which the round's ask and notice name. The items
+// are nil for a round an older daemon opened, which recorded the text alone, and the ask and
+// notice name that text instead (record.UpdateStalled).
+func roundTerms(group []supervise.Claim, round string) (string, []runtime.DriftItem) {
 	for _, c := range group {
 		if c.UpdateRound == round && c.UpdateReasons != "" {
-			return c.UpdateReasons
+			return c.UpdateReasons, c.UpdateDrift
 		}
 	}
-	return ""
-}
-
-// roundDrift is the same drift as items, read off the claim roundReasons reads, so the text and
-// the items are one claim's record of one opening (supervise.Claim.UpdateDrift): nil for a round
-// an older daemon opened, which recorded the text alone.
-func roundDrift(group []supervise.Claim, round string) []runtime.DriftItem {
-	for _, c := range group {
-		if c.UpdateRound == round && c.UpdateReasons != "" {
-			return c.UpdateDrift
-		}
-	}
-	return nil
+	return "", nil
 }
 
 // roundOpenedAt is when the round opened, the earliest its claims record, and nil when no claim of

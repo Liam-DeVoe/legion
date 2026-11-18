@@ -528,16 +528,16 @@ func (e *Engine) enterAwaiting(ctx context.Context, tx pgx.Tx, root record.Issue
 		return err
 	}
 	var step record.DesignStep
-	for at, gate := range gates {
-		if waiting.Artifact != "" && gate.ArtifactID == waiting.Artifact {
-			step = at
+	if waiting.Artifact != "" {
+		if gate := gateOfDocument(gates, waiting.Artifact); gate != nil {
+			step = gate.Step
 		}
 	}
-	notice, err := record.NoticeOf(AwaitingPersonNotice(root.Key, waiting, step))
+	notice, err := record.ControllerNoticeOf(AwaitingPersonNotice(root.Key, waiting, step))
 	if err != nil {
 		return err
 	}
-	if err := e.enqueue(ctx, tx, root.Key, record.ControllerNotice(notice)); err != nil {
+	if err := e.enqueue(ctx, tx, root.Key, notice); err != nil {
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: root waits on a person and keeps its admission slot", "issue", root.Key, "tree", root.Tree,

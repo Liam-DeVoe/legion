@@ -983,6 +983,11 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 			}
 			died := WorkerDied(issue.Key, fact.Role, "", noticeFailure(fact))
 			died.Look = check.Looks
+			if died.Failure == nil {
+				// A failure that recorded no cause (a fact an older daemon recorded) still
+				// names why the claim failed, in the sentence its site wrote.
+				died.Detail = fact.Reason
+			}
 			return intake.Result{}, e.notice(ctx, tx, issue.Key, died)
 		}
 	}
@@ -1081,11 +1086,11 @@ func (e *Engine) sessionStoreFault(ctx context.Context, tx pgx.Tx, fact intake.S
 		return intake.Result{}, err
 	}
 	e.warnOnCommit(ctx, "workflow: the session store could not be asked for a start", "issue", issue.Key, "role", fact.Role, "detail", fact.Detail)
-	notice, err := record.NoticeOf(SessionStoreFaultNotice(issue.Key, fact.Role, issue.Phase, fact.Detail))
+	notice, err := record.ControllerNoticeOf(SessionStoreFaultNotice(issue.Key, fact.Role, issue.Phase, fact.Detail))
 	if err != nil {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.enqueue(ctx, tx, issue.Key, record.ControllerNotice(notice))
+	return intake.Result{}, e.enqueue(ctx, tx, issue.Key, notice)
 }
 
 // SessionStoreFaultNotice is the session-store-fault notice of issue: the role whose start the
@@ -1423,9 +1428,9 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 }
 
 // parkRule is the condition dispatch://INFRA-2971 sets on each move of an issue to backlog,
-// icebox or triage. Each refusal and notice of this package that names such a move (park_child,
-// or icebox for a children-first wait) carries it word for word, as the skills and the prompts do,
-// so that an architect reads one rule wherever it reads of a park.
+// icebox or triage. Each refusal of this package that names such a move (park_child) carries it
+// word for word, as the skills and the prompts do, so that an architect reads one rule wherever it
+// reads of a park.
 const parkRule = "only when a person asked for that move, or when the work is done, folded into another issue or no longer needed"
 
 // signOff is the architect's acceptance of a reviewed head: it moves the issue from accepting to
@@ -1737,7 +1742,7 @@ func (e *Engine) row(from phase.Phase, trigger TriggerKind, target phase.Phase, 
 //
 // waited is every issue the mirror row still names, in Dispatch's own order, all of them done by
 // now — or empty, when the issue named none or someone took its blocked-by links off while it
-// waited, which the notice's reason says instead. A tree's own root gets no notice: the
+// waited, and the notice then names no issue it waited on. A tree's own root gets no notice: the
 // architect this would tell is the root's own, which the phase-finished of the move out of
 // admitted already tells (NoticeFor).
 func (e *Engine) StartFirstPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, waited []string) error {

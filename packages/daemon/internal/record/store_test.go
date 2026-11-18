@@ -2625,12 +2625,12 @@ func TestAKeptDecisionKeepsThePersonsWords(t *testing.T) {
 			t.Fatalf("after newer decisions the words are %#v, want the newer answer's words and none for the resolution", words)
 		}
 	})
-	changes := "Name the vendor's date.\nThen ask again."
+	changes := &ActWords{Text: "Name the vendor's date.\nThen ask again.", By: "user:carol", At: t0.Add(2 * time.Hour)}
 	inTx(t, st, func(tx pgx.Tx) {
 		root, err := records.Issue(ctx, tx, "LEGION-212")
 		must(t, err)
 		outcome, err := RelayParkedDecision(ctx, tx, records, "LEGION-212", *root, true, ParkedDecision{Ref: spec,
-			Decision: DecisionDesignChangesRequested, Actor: "user:carol", At: t0.Add(2 * time.Hour)}, 3, changes, nil)
+			Decision: DecisionDesignChangesRequested, Actor: "user:carol", At: t0.Add(2 * time.Hour), Words: changes}, 3, nil)
 		must(t, err)
 		if outcome != RelaySent {
 			t.Fatalf("the changes request on a parked tree = %v, want it sent to the controller", outcome)
@@ -2639,9 +2639,8 @@ func TestAKeptDecisionKeepsThePersonsWords(t *testing.T) {
 	inTx(t, st, func(tx pgx.Tx) {
 		named, err := records.ParkedDecisions(ctx, tx, "LEGION-212")
 		must(t, err)
-		want := &ActWords{Text: changes, By: "user:carol", At: t0.Add(2 * time.Hour)}
-		if len(named) == 0 || named[0].Ref != spec || !reflect.DeepEqual(named[0].Words, want) {
-			t.Fatalf("the tree is owed %#v first, want the changes request with its reason as the person's words %#v", named, want)
+		if len(named) == 0 || named[0].Ref != spec || !reflect.DeepEqual(named[0].Words, changes) {
+			t.Fatalf("the tree is owed %#v first, want the changes request with its reason as the person's words %#v", named, changes)
 		}
 	})
 }

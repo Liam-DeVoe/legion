@@ -92,11 +92,6 @@ func IsRoleMessage(kind Kind) bool {
 	return formOf(kind) == RoleMessage
 }
 
-// IsTask says whether kind is on the list as a task.
-func IsTask(kind Kind) bool {
-	return formOf(kind) == Task
-}
-
 // formOf is the form of kind, or empty where kind is not on the list.
 func formOf(kind Kind) Form {
 	entry, _ := Lookup(kind)

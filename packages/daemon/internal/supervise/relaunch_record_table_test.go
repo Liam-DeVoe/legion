@@ -19,7 +19,7 @@ const olderCause = "an older let-go's cause"
 // the told record of an older let-go of a turn and its task: newHarnessOf seeds a claim's record
 // as relaunch_test.go's cases of a forgotten session do. Told, it stands in front of no prompt
 // (EndedWork.Tells), so a prompt that names its cause, or that says no cause was recorded, is a
-// task re-sent under a record that is not its own let-go's (Delivery.message, interruptedTask).
+// task re-sent under a record that is not its own let-go's (Delivery.message, CutTurnNote).
 func olderToldClaim() Claim {
 	c := queuedClaim()
 	c.EndedWork = EndedWork{At: epoch.Add(-time.Hour), Cause: olderCause, Turn: true, TaskTurn: true,

@@ -47,7 +47,8 @@
 // A notice stays one record.Notice on the wire. So the json name of each field of a notice's
 // record is a key of record.Notice, a key has one Go type in every notice record, and a key that
 // record.Notice had before these records keeps the JSON shape it had. A nested shape of a notice,
-// such as the failure or the catch-up, is declared here, so that record can name it as an alias.
+// such as the failure or the catch-up, is declared here, and record either names it as an alias
+// (record.NoticeFailure) or keeps a copy of the same shape (record.CatchUp).
 // A role message is published as an object of its record's fields, apart from the hook prompt,
 // which is published as its text (HookPromptRecord.Text).
 //
@@ -98,7 +99,7 @@
 // time, and the rest or the mark that more follows. A record with no words field declares no words
 // object. WordsPaths lists the paths of the words fields of a record that are set, in the order
 // of their declaration, such as summary or catch_up.kept.decisions[1].answer, for the words object
-// of a notice and for the blocks of a task alike.
+// of a payload. A task names no words object: Render draws its blocks itself.
 //
 // Block draws a block. The tag is the block's name. Where the words hold the closing tag of
 // that name, the tag is the first of name-1, name-2 and on whose closing tag the words do not

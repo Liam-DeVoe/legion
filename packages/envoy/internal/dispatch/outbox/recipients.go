@@ -208,8 +208,9 @@ func loadThreadRecipients(ctx context.Context, db queryer, what, query string, a
 // primary document (addPrimaryDocumentAuthors): it is a comment.created or comment.edited, it
 // notifies (only a person's comment does, events.Broker.Notify), it names an issue, and that issue
 // has no route and no session claimant (routing), either of which hears it in their place. A reply
-// in a thread whose session counts reaches none of them all the same: the thread rule leaves out
-// every session that only a document credits (takesThreadRule, creditFilter).
+// in a thread whose session counts reaches only those of them a mention of the reply decides: the
+// thread rule leaves out every other session that only a document credits (takesThreadRule,
+// creditFilter.keeps).
 func takesPrimaryAuthors(event model.Event, routing routing) bool {
 	if !event.Notify || (event.Type != "comment.created" && event.Type != "comment.edited") {
 		return false
@@ -238,9 +239,9 @@ func takesThreadRule(event model.Event, routing routing) bool {
 // (takesThreadRule): for a comment in an ask's thread the ask's followers, which are the sessions
 // addFollowerRoutes reaches, and otherwise the sessions that wrote a comment in the thread it
 // replies under (threadRecipient.fromThread), which addAuthorRoutes reaches. The actor is left
-// out. These are the sessions today's thread rules reach and no other, so an asker that stopped
-// following its ask is not one. A read that failed names none: the event's destinations end at
-// that read all the same.
+// out. These are the sessions the follower and author rules reach and no other, so an asker that
+// stopped following its ask is not one. A read that failed names none: the event's destinations
+// end at that read all the same.
 func threadSessions(event model.Event, routing routing, look lookup) []string {
 	if !takesThreadRule(event, routing) {
 		return nil
@@ -423,9 +424,9 @@ func (f creditFilter) keeps(sessionID string) bool {
 // takesClaimantRoute reports whether an event reaches the session that holds its issue's claim on
 // that session's own topic (addClaimantRoute): it names an issue, its actor is a person, the
 // batch read a session claimant, and its type is one of the answers, comments and messages a
-// claimant is told about. addAuthorRoutes reads the same predicate for its claimed test, so the
-// credits of a document are left out exactly where the claimant was added: the credits of a
-// document are
+// claimant is told about. addAuthorRoutes reads the same predicate for its claimed test, beside
+// the thread rule (creditFilter), so the credits of a document are left out where the claimant was
+// added: the credits of a document are
 // not a second reason to deliver what that claimant already hears on its own topic. This is
 // where that rule is decided, and its one statement among this package's reads; the places that
 // apply it point here.

@@ -173,7 +173,7 @@ func (a *Admission) wakeStalledArchitects(ctx context.Context, tx pgx.Tx, stalls
 		if !told[i] {
 			continue
 		}
-		notice, err := controllerNotice(stall.notice)
+		notice, err := record.ControllerNoticeOf(stall.notice)
 		if err != nil {
 			return err
 		}

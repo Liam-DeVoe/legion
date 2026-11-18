@@ -10,17 +10,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
-// RelaunchSentence is what a claim's next process is told of what the last let-go of its process
-// ended (EndedWork, dispatch://INFRA-3276 R3) where no task and no issue go with it: the facts of
-// the relaunch note (EndedWork.Facts), each on a line of its own in the form texts.Render writes.
-// A prompt carries the whole note, which names its kind and its issue as well (RelaunchNote):
-// in front of a task (Delivery.message), and as the text of the delivery of the daemon's own that
-// a claim holding no task is given at its ready (queueRelaunch).
-//
-// It reads ended as the let-go recorded it, so the caller asks whether there is anything to tell
-// (EndedWork.Tells) before it asks for the facts.
-func RelaunchSentence(ended EndedWork) string { return partText(ended.Facts(false)) }
-
 // RelaunchNote is the relaunch note of issue (texts.RelaunchNoteRecord): what the last let-go of
 // the claim's process ended, as the claim's record of it holds it (EndedWork.Facts), in front of a
 // task (task true: Delivery.message) or alone, as the text of the daemon's own delivery of it to a

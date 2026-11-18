@@ -201,17 +201,25 @@ func settledChecks(pr record.PullRequest) settledHead {
 	if pr.CheckedHead == "" {
 		return settledHead{}
 	}
-	conclusions := make(map[string]record.RunConclusion, len(pr.CheckRuns)+len(pr.Failing)+len(pr.Cancelled))
-	for _, run := range pr.CheckRuns {
+	return settledHead{head: pr.CheckedHead, conclusions: checkConclusions(pr.CheckRuns, pr.Cancelled, pr.Failing)}
+}
+
+// checkConclusions is each check a settlement reports, by name, with what it concluded: a run it
+// names neither cancelled nor failing passed, and a name in both failed. It is the one reading of
+// a settlement's lists, which the record's settlement (settledChecks) and the settlement that
+// wakes a released pod (SettlementWake) share.
+func checkConclusions(runs []record.AttemptRun, cancelled, failing []string) map[string]record.RunConclusion {
+	conclusions := make(map[string]record.RunConclusion, len(runs)+len(cancelled)+len(failing))
+	for _, run := range runs {
 		conclusions[run.Name] = record.RunSucceeded
 	}
-	for _, name := range pr.Cancelled {
+	for _, name := range cancelled {
 		conclusions[name] = record.RunCancelled
 	}
-	for _, name := range pr.Failing {
+	for _, name := range failing {
 		conclusions[name] = record.RunFailed
 	}
-	return settledHead{head: pr.CheckedHead, conclusions: conclusions}
+	return conclusions
 }
 
 // notPassed is each check of conclusions that did not pass, failed or cancelled, with its
@@ -258,7 +266,7 @@ func headRuns(pr record.PullRequest) map[string]record.RunConclusion {
 // the tree is suspended there, so the settlement is recorded and nobody is told.
 //
 // A role whose released pod this same settlement woke is told nothing: its wake task already
-// names the settlement (WakeTask with pods.WakeChecks), and a message about the same settlement
+// names the settlement (SettlementWake), and a message about the same settlement
 // would reach it as a second wake of one release, described to the worker as something somebody
 // published to its role topic. woken is that role, "" when the settlement woke nobody, and every
 // other role — a live one, and one the wake did not reach — is told as before.
@@ -693,9 +701,11 @@ type round struct {
 }
 
 // stuck is r as the task of its restarted reviewer names a stuck round (StuckRound): an APPROVE of
-// the head or a REQUEST_CHANGES ends every stuck round but the one GitHub will not merge from.
+// the head or a REQUEST_CHANGES ends every stuck round but the one GitHub will not merge from,
+// which names the merge state GitHub reported for the head instead.
 func (r round) stuck() *StuckRound {
-	return &StuckRound{Cause: r.cause.word(), Head: r.head, Approved: r.approved, EndsRound: r.cause != stuckMergeState, SetAside: r.setAside}
+	return &StuckRound{Cause: r.cause.word(), Head: r.head, Approved: r.approved, EndsRound: r.cause != stuckMergeState, SetAside: r.setAside,
+		MergeState: string(r.state)}
 }
 
 // stuckAs says whether r is stuck in the same way as other: the same cause at the same head. A
@@ -745,8 +755,8 @@ func (r round) stuckAs(other round) bool {
 // The round reads no CI verdict: what a check concluded moves nothing and
 // decides no round - only whether every check reported has concluded, which is what GitHub's own
 // state is waiting for - and the reviewer reads the head's checks on GitHub itself. A completed round
-// that nothing on its way would end is stuck, its reason naming the
-// head, since the decision it needs is of the head: no review decided it (stuckUndecided), or its
+// that nothing on its way would end is stuck, and its stuck notice and a restarted reviewer's task
+// name the head, since the decision it needs is of the head: no review decided it (stuckUndecided), or its
 // approval is of other code than the head's (stuckApprovedOtherCode). An approval of a head that
 // code is on its way from keeps the round open, and classify.CodeOnItsWay says when that is.
 func (e *Engine) reviewRound(issue record.Issue, row record.PhaseRow, pr *record.PullRequest) round {

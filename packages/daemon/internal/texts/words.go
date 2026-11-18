@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf16"
 )
 
 // The bounds of carried words, in UTF-16 units, as Dispatch counts a body.
@@ -129,10 +130,11 @@ func wordsPathsOf(paths []string, v reflect.Value, path string) []string {
 // Bound cuts text to its first limit UTF-16 units. It returns that head and the count of
 // UTF-16 units it cut off. A character outside the Basic Multilingual Plane counts two units,
 // and Bound never splits it: where its two units would cross the limit, the head leaves it out.
+// A byte that is not valid UTF-8 decodes as U+FFFD, one unit, as a JSON decoder reads it.
 func Bound(text string, limit int) (head string, rest int) {
 	units := 0
 	for i, r := range text {
-		n := utf16Units(r)
+		n := utf16.RuneLen(r)
 		if units+n > limit {
 			return text[:i], utf16Length(text[i:])
 		}
@@ -153,9 +155,10 @@ func Carry(text string, limit int, more bool) Words {
 	return Words{Text: head, Rest: rest}
 }
 
-// Block draws w in the block of R1. The tag is name, or, where the words hold </name, the
-// first of name-1, name-2 and on whose closing tag the words do not hold. The opening tag
-// carries the attributes by, at, field, rest and more, in that order, each only where it is
+// Block draws w in a block of its own, the block that carries another author's words after a
+// text's fields (dispatch://INFRA-3686/spec R1). The tag is name, or, where the words hold
+// </name, the first of name-1, name-2 and on whose closing tag the words do not hold. The opening
+// tag carries the attributes by, at, field, rest and more, in that order, each only where it is
 // set. Then come a new line, the words exactly as given, a new line and the closing tag.
 func Block(name string, w Words) string {
 	tag := blockTag(name, w.Text)
@@ -233,20 +236,12 @@ func writeAttribute(b *strings.Builder, key, value string) {
 	b.WriteString(`"`)
 }
 
-// utf16Units is the count of UTF-16 units of r. A byte that is not valid UTF-8 decodes as
-// U+FFFD, one unit, as a JSON decoder reads it.
-func utf16Units(r rune) int {
-	if r > 0xFFFF {
-		return 2
-	}
-	return 1
-}
-
-// utf16Length is the count of UTF-16 units of text.
+// utf16Length is the count of UTF-16 units of text, each byte that is not valid UTF-8 one unit
+// (U+FFFD).
 func utf16Length(text string) int {
 	n := 0
 	for _, r := range text {
-		n += utf16Units(r)
+		n += utf16.RuneLen(r)
 	}
 	return n
 }

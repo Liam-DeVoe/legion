@@ -69,7 +69,7 @@ const (
 )
 
 // MemoryKillRecord is the message to a role whose process was stopped for memory (workflow's
-// memoryGuardNote, kernelKillNote and kernelProtectedKillNote): what stopped it (a Kill word), the
+// MemoryKillMessage): what stopped it (a Kill word), the
 // process's executable and pid, how much it held, the pod's memory reading and its limit, each in
 // binary units.
 type MemoryKillRecord struct {
@@ -83,7 +83,7 @@ type MemoryKillRecord struct {
 }
 
 // PhaseEndedRecord is the message to the role whose phase the daemon ended because the head
-// conflicts with its base (main's record.PhaseEnded): the phase that ended, the phase the issue is
+// conflicts with its base (record.PhaseEnded.Record): the phase that ended, the phase the issue is
 // in now, whether the recipient's task for that phase follows, the base, the head and the pull
 // request.
 type PhaseEndedRecord struct {
@@ -96,9 +96,10 @@ type PhaseEndedRecord struct {
 	PullRequest   string      `json:"pull_request"`
 }
 
-// HookPromptRecord is a hook of the deployment that fired on a move back of the issue (main's
-// record.HookPrompt). It is published as text, in the order R8 keeps (Text): its first line names
-// the hook, the issue and the move, then come the hook's words as written, then its facts.
+// HookPromptRecord is a hook of the deployment that fired on a move back of the issue
+// (record.HookPrompt). It is published as text (Text), in an order that the hook's own words fix
+// and that dispatch://INFRA-3686/spec R8 keeps word for word: its first line names the hook, the
+// issue and the move, then come the hook's words as written, then its facts.
 type HookPromptRecord struct {
 	Hook   string      `json:"-"`
 	Issue  string      `json:"-"`
@@ -123,7 +124,7 @@ type MoveCount struct {
 	Count int    `json:"count"`
 }
 
-// Text is the hook prompt as it is published: its first line as main writes it, a blank line,
+// Text is the hook prompt as it is published: its first line, kept word for word, a blank line,
 // the hook's words exactly as written, a blank line, and the facts in the form Render writes.
 func (r HookPromptRecord) Text() (string, error) {
 	facts, err := Render(r.HookFacts)
@@ -193,7 +194,7 @@ func NewUpdateAsk(issue, round, pod string, images, settings []string, endsAt ti
 }
 
 // MergeQueueRemovalRecord is the message to the merger that its pull request left the merge
-// queue (main's record.MergeQueueRemoval): the pull request, the head that left the queue, and
+// queue (record.MergeQueueRemoval): the pull request, the head that left the queue, and
 // whether no read of GitHub succeeded, so the daemon does not know whether GitHub merged it.
 type MergeQueueRemovalRecord struct {
 	RoleHead

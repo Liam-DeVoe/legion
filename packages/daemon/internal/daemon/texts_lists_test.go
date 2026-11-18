@@ -105,9 +105,11 @@ func TestEveryListNamesWhatNeedsAction(t *testing.T) {
 			if !slices.Equal(done, tree.done) || len(done) != 35 {
 				t.Errorf("%s catch-up #%d names the done issues %v, want the 35 %v by key", variant, r.n, done, tree.done)
 			}
-			for _, key := range done {
-				if slices.Contains(issues, key) {
-					t.Errorf("%s catch-up #%d names the done issue %s with its fields", variant, r.n, key)
+			// A done issue is named by its key alone: no field of the catch-up is a field of an
+			// item of its done list.
+			for path := range values {
+				if strings.HasPrefix(path, "catch_up.done[") && strings.Contains(path, "].") {
+					t.Errorf("%s catch-up #%d names a done issue with a field, %s, want each by its key alone", variant, r.n, path)
 				}
 			}
 			if accepting := list(values, "catch_up.accepting"); !slices.Equal(accepting, tree.accepting) || len(accepting) != 3 {

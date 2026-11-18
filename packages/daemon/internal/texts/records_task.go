@@ -13,11 +13,13 @@ import (
 // DesignApprovedWake is the sentence that a resume of a waiting root carries when the root's
 // design gate is open. The daemon sends no design-approved notice to a root that waits on a
 // person, so this resume is that root's design-approved wake. The architect's skill and the root
-// architect's prompt name the sentence by its words, so R8 keeps it word for word.
+// architect's prompt name the sentence by its words, and a sentence a reader's guidance names by
+// its words stays word for word (dispatch://INFRA-3686/spec R8).
 const DesignApprovedWake = "this resume is your design-approved wake"
 
 // ControllerStartMessage is the controller's first prompt at every start (the daemon's
-// controllerKeeper). The controller's skill names it by its words, so R8 keeps it word for word.
+// controllerKeeper). The controller's skill names it by its words, so it stays word for word
+// (dispatch://INFRA-3686/spec R8).
 const ControllerStartMessage = "Legion controller start: follow skill://legion-controller's start procedure now (\"What happened before you started\"), then end the turn."
 
 // The words of the act that answered a root's wait (RootResumeRecord.Act), as record.Answer
@@ -48,26 +50,32 @@ const (
 // retry of a review round that nothing on its way ends names the round's cause (StuckRound, a
 // ReviewStuckRecord cause), its head, the head the reviewer approved where that is other code
 // (ReviewedHead), the review that ends it (EndsRound), and why the daemon set aside a review that
-// would otherwise have decided it (SetAside).
+// would otherwise have decided it (SetAside). A round GitHub will not merge from names, as its
+// review-stuck notice does, the merge state GitHub reports for the head, each check of that head
+// that did not pass, the count of those that passed and the command that lists them.
 type PhaseAssignmentRecord struct {
 	TaskHead
-	Title          string      `json:"title"`
-	Phase          phase.Phase `json:"phase"`
-	HandoffPhase   string      `json:"handoff_phase,omitempty"`
-	HandoffVersion int         `json:"handoff_version,omitempty"`
-	HandoffCommit  string      `json:"handoff_commit,omitempty"`
-	TesterVerdict  string      `json:"tester_verdict,omitempty"`
-	PullRequest    string      `json:"pull_request,omitempty"`
-	MovedBackFrom  phase.Phase `json:"moved_back_from,omitempty"`
-	ReviewedHead   string      `json:"reviewed_head,omitempty"`
-	ConflictsWith  string      `json:"conflicts_with,omitempty"`
-	Head           string      `json:"head,omitempty"`
-	Retried        string      `json:"retried,omitempty"`
-	StuckRound     string      `json:"stuck_round,omitempty"`
-	EndsRound      string      `json:"ends_round,omitempty"`
-	SetAside       string      `json:"set_aside,omitempty"`
-	Reason         *Words      `json:"reason"`
-	Body           *Words      `json:"body"`
+	Title          string            `json:"title"`
+	Phase          phase.Phase       `json:"phase"`
+	HandoffPhase   string            `json:"handoff_phase,omitempty"`
+	HandoffVersion int               `json:"handoff_version,omitempty"`
+	HandoffCommit  string            `json:"handoff_commit,omitempty"`
+	TesterVerdict  string            `json:"tester_verdict,omitempty"`
+	PullRequest    string            `json:"pull_request,omitempty"`
+	MovedBackFrom  phase.Phase       `json:"moved_back_from,omitempty"`
+	ReviewedHead   string            `json:"reviewed_head,omitempty"`
+	ConflictsWith  string            `json:"conflicts_with,omitempty"`
+	Head           string            `json:"head,omitempty"`
+	Retried        string            `json:"retried,omitempty"`
+	StuckRound     string            `json:"stuck_round,omitempty"`
+	EndsRound      string            `json:"ends_round,omitempty"`
+	SetAside       string            `json:"set_aside,omitempty"`
+	MergeState     string            `json:"merge_state,omitempty"`
+	NotPassed      []CheckConclusion `json:"not_passed,omitempty"`
+	Passed         *int              `json:"passed,omitempty"`
+	ListPassed     string            `json:"list_passed,omitempty"`
+	Reason         *Words            `json:"reason"`
+	Body           *Words            `json:"body"`
 }
 
 // PhaseResumeRecord is the task of a worker started for a phase already under way
@@ -142,7 +150,7 @@ const (
 )
 
 // CheckLookRecord is the task of a look of a closed issue's production check (workflow's
-// checkTask). Its first line is its lead, word for word as on main, since the legion tool's
+// checkTask). Its first line is its lead, kept word for word, since the legion tool's
 // description names it; the lead names the issue and its title, so they are no fields.
 //
 // The fields: the look, what woke it (one of the WokenBy words), the cause of a retried look
@@ -243,7 +251,8 @@ type KeptDecisionsRecord struct {
 // KeptDecision is one decision a kept-decisions task names: its reference (a dispatch:// link),
 // the issue it was made on, what the person did (a record.DecisionKind word), who and when, the
 // options the answer chose, joined by a comma and a space, and the words of the act in the answer
-// block, each bounded at EachOfSeveral. The block names its path, such as kept[1].answer.
+// block, bounded at OneAct where the task names one decision and at EachOfSeveral each where it
+// names several. The block names its path, such as kept[1].answer.
 type KeptDecision struct {
 	Ref      string    `json:"ref"`
 	Issue    string    `json:"issue"`

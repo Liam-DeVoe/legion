@@ -685,8 +685,9 @@ type PhaseEntry struct {
 //
 // Refused is the daemon's own mark too, and the one case where a decision row holds no decision:
 // why the daemon set aside a review that would otherwise have decided the round (workflow's
-// refusesRound), which is what the stuck notice of a round nothing decided names
-// (workflow's undecidedReason). It is written only on a row that holds no deciding decision -
+// refusesRound), which is what the stuck notice of a round nothing decided names, and the task
+// of a reviewer restarted on that round (workflow's ReviewStuckNotice and StuckRound,
+// set_aside). It is written only on a row that holds no deciding decision -
 // State empty - so a refusal that follows an approval cannot erase it, and the clear every entry
 // into a phase makes of the role's row (workflow's clearHandoff) takes it with the decision, so
 // no round inherits the refusal of the round before it. The decision column is jsonb, so a row

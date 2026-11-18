@@ -1361,8 +1361,8 @@ func addAuthorRoutes(event model.Event, routing routing, look lookup, d *destina
 		}
 	}
 	// addEach hands every session of a read's answer to add: a document's credits under a comment
-	// go to considerCredit, which the claim can leave out, and the same read's answer for a
-	// person's edit of the document itself goes to consider, which it cannot.
+	// go to considerCredit, which the claim or the thread rule can leave out, and the same read's
+	// answer for a person's edit of the document itself goes to consider, which neither can.
 	addEach := func(sessionIDs []string, add func(string)) {
 		for _, sessionID := range sessionIDs {
 			add(sessionID)
@@ -1621,7 +1621,7 @@ func payloadBool(payload any, key string) bool {
 }
 
 // askAnswerText renders an ask's answer as one line: the text alone, the selected options
-// alone, or "<options> - <text>" when a human did both (the same rendering the TS delivery uses).
+// alone, or "<options> - <text>" when a human did both.
 func askAnswerText(payload any) string {
 	values, ok := payload.(map[string]any)
 	if !ok {

@@ -176,7 +176,7 @@
       "form": "task",
       "urgency": "",
       "issue": "ALPHA-1006",
-      "text": "kind: phase-assignment\nissue: ALPHA-1006\ntitle: 😀 outside the plane\nphase: reviewing\npull_request: alpha-works/alpha-tower#81\nhead: b7d434e635a8709d8e883ee98691e207e4134dbc\nretried: architect\nstuck_round: merge-state"
+      "text": "kind: phase-assignment\nissue: ALPHA-1006\ntitle: 😀 outside the plane\nphase: reviewing\npull_request: alpha-works/alpha-tower#81\nhead: b7d434e635a8709d8e883ee98691e207e4134dbc\nretried: architect\nstuck_round: merge-state\nmerge_state: blocked\nnot_passed[25]{check,conclusion}:\n  \"-x 01\",failed\n  123456e78901 03,cancelled\n  1e5 02,failed\n  \"a, b 04\",cancelled\n  true 00,failed\n  whywq-12 ogbmwqte,failed\n  whywq-13 bhfjpria,failed\n  whywq-14 rtr ovfo,failed\n  whywq-15 iplsz fd,cancelled\n  \"whywq-16 nkfrwhf \",cancelled\n  \"whywq-24 kvzkwtl \",failed\n  whywq-25 cocakqul,failed\n  whywq-26 emaujane,failed\n  whywq-27 qhyxte t,cancelled\n  \"whywq-28 sqszela \",cancelled\n  \"whywq-36 ldonydc \",failed\n  \"whywq-37 ngvsgyf \",failed\n  whywq-38 qvaydj e,failed\n  whywq-39 nbzhbxfd,cancelled\n  whywq-40 vklyfj p,cancelled\n  whywq-48 ckb ajwq,failed\n  \"whywq-49 luryikl \",failed\n  whywq-50 egve xvk,failed\n  whywq-51 fhqndh m,cancelled\n  whywq-52 hjvqh kr,cancelled\npassed: 35\nlist_passed: gh pr checks 81 --repo alpha-works/alpha-tower"
     },
     {
       "kind": "phase-assignment",
@@ -186,7 +186,7 @@
       "form": "task",
       "urgency": "",
       "issue": "BRAVO-2006",
-      "text": "kind: phase-assignment\nissue: BRAVO-2006\ntitle: 0x1F\nphase: reviewing\npull_request: bravo-labs/bravo-yard#82\nhead: 9b54869f31044a783d47540d49113bd634f2f549\nretried: architect\nstuck_round: merge-state"
+      "text": "kind: phase-assignment\nissue: BRAVO-2006\ntitle: 0x1F\nphase: reviewing\npull_request: bravo-labs/bravo-yard#82\nhead: 9b54869f31044a783d47540d49113bd634f2f549\nretried: architect\nstuck_round: merge-state\nmerge_state: behind\nnot_passed[25]{check,conclusion}:\n  \"#x 01\",failed\n  0123 02,failed\n  \"fmckor-03 kamjjxj \",cancelled\n  fmckor-12 zyzrhhpv,failed\n  \"fmckor-13 dgmiano \",failed\n  fmckor-14 yiays as,failed\n  fmckor-15 ewi cnom,cancelled\n  fmckor-16 jkwxuo a,cancelled\n  \"fmckor-24 kepwdff \",failed\n  fmckor-25 qkpafo t,failed\n  fmckor-26 nczp rzk,failed\n  \"fmckor-27 tjhercy \",cancelled\n  fmckor-28 sjjnh lu,cancelled\n  fmckor-36 kideqega,failed\n  fmckor-37 oya ieon,failed\n  fmckor-38 dckgtegu,failed\n  fmckor-39 uhkkxd w,cancelled\n  fmckor-40 tdy kqjv,cancelled\n  fmckor-48 cbwn jtr,failed\n  \"fmckor-49 cxonemj \",failed\n  fmckor-50 lzxtyjxy,failed\n  \"fmckor-51 joqnjlb \",cancelled\n  fmckor-52 wteogb j,cancelled\n  null 00,failed\n  \"say \\\"so\\\" 04\",cancelled\npassed: 35\nlist_passed: gh pr checks 82 --repo bravo-labs/bravo-yard"
     },
     {
       "kind": "phase-assignment",

@@ -1399,6 +1399,40 @@ func TestEveryNoticeRecordOnTheListConvertsToANotice(t *testing.T) {
 	}
 }
 
+// A count of zero and an empty list are values a notice record can hold — no launch failure
+// charged, no conflict round, no kind of work reported — and Notice leaves each of them out of
+// the wire. The record leaves them out too, so the keys its JSON holds are the keys the notice
+// carries, and a reader of the record's declaration learns that the key may be absent.
+func TestARecordLeavesOutTheEmptyValuesItsNoticeLeavesOut(t *testing.T) {
+	head := func(kind texts.Kind) texts.NoticeHead { return texts.NoticeHead{Kind: kind, Issue: "LEGION-208"} }
+	for _, rec := range []any{
+		texts.WorkerStalledRecord{NoticeHead: head(texts.WorkerStalled), LastStep: recordSampleAt, SilentFor: "3h0m0s",
+			End: "stopped", LaunchFailures: 0},
+		texts.WorkerBackgroundStalledRecord{NoticeHead: head(texts.WorkerBackgroundStalled), ReportedAt: recordSampleAt,
+			StoodFor: "2h0m0s", Work: []string{}},
+		texts.PRBlockedRecord{NoticeHead: head(texts.PRBlocked), Cap: 3, Counted: 3, ConflictRounds: 0},
+	} {
+		notice, err := NoticeOf(rec)
+		if err != nil {
+			t.Fatalf("NoticeOf(%T): %v", rec, err)
+		}
+		recordJSON, err := json.Marshal(rec)
+		if err != nil {
+			t.Fatalf("marshal %T: %v", rec, err)
+		}
+		noticeJSON, err := json.Marshal(notice)
+		if err != nil {
+			t.Fatalf("marshal the notice of %T: %v", rec, err)
+		}
+		got, want := topKeys(t, noticeJSON), topKeys(t, recordJSON)
+		slices.Sort(got)
+		slices.Sort(want)
+		if !slices.Equal(got, want) {
+			t.Errorf("the notice of %T carries the keys %v, want the record's %v", rec, got, want)
+		}
+	}
+}
+
 // NoticeOf converts only the record of a notice kind, of the type its kind's entry names.
 func TestNoticeOfRefusesARecordThatIsNoNotice(t *testing.T) {
 	for _, tc := range []struct {
@@ -1456,8 +1490,14 @@ func TestTheShapesRecordKeepsAreTheShapesTheRecordsDeclare(t *testing.T) {
 					t.Fatalf("a %s marshals as\n%s\nand the %s it reads as\n%s", way[0], encoded, way[1], again)
 				}
 			}
-			ours, _ := json.Marshal(reflect.New(pair.ours).Interface())
-			theirs, _ := json.Marshal(reflect.New(pair.theirs).Interface())
+			ours, err := json.Marshal(reflect.New(pair.ours).Interface())
+			if err != nil {
+				t.Fatalf("marshal an empty %s: %v", pair.ours, err)
+			}
+			theirs, err := json.Marshal(reflect.New(pair.theirs).Interface())
+			if err != nil {
+				t.Fatalf("marshal an empty %s: %v", pair.theirs, err)
+			}
 			if string(ours) != string(theirs) {
 				t.Fatalf("an empty %s marshals as %s, and an empty %s as %s", pair.ours, ours, pair.theirs, theirs)
 			}
@@ -1507,8 +1547,14 @@ func TestARoleMessageOfAKindCarriesItsRecord(t *testing.T) {
 			if !reflect.DeepEqual(back, rec) {
 				t.Fatalf("the row's record is %#v, want %#v", back, rec)
 			}
-			published, _ := json.Marshal(back)
-			built, _ := json.Marshal(rec)
+			published, err := json.Marshal(back)
+			if err != nil {
+				t.Fatalf("marshal the row's record: %v", err)
+			}
+			built, err := json.Marshal(rec)
+			if err != nil {
+				t.Fatalf("marshal the record: %v", err)
+			}
 			if string(published) != string(built) {
 				t.Fatalf("the row's record marshals as %s, want the record's own %s", published, built)
 			}

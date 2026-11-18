@@ -364,7 +364,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		outcomes = encoded
 	}
 	// Null is a claim that has abandoned no session; one that has records the session, why and
-	// when, for the fresh agent's first task to name (supervise's abandonedTask).
+	// when, for the fresh agent's first task to name (supervise's AbandonedSessionNote).
 	var abandoned []byte
 	if c.Abandoned.Session != "" {
 		encoded, err := json.Marshal(c.Abandoned)

@@ -180,6 +180,25 @@ func lastCatchUp(t *testing.T, pool *pgxpool.Pool) record.CatchUp {
 	return *got
 }
 
+// A catch-up names a kept approval's step as the kept-decisions task does: an approval an older
+// daemon kept recorded no step, and it is the spec's, the step every deployment requires
+// (record.DesignStep.OrSpec). A catch-up that keeps no approval names no step.
+func TestACatchUpNamesTheStepOfAnApprovalKeptWithNone(t *testing.T) {
+	kept := record.KeptDecisions{KeptApproval: record.KeptApproval{Approved: 3, Latest: 5}}
+	facts, _ := keptFacts(kept)
+	if want := (texts.KeptApproval{Step: "spec", Approved: 3, Latest: 5}); facts.KeptApproval != want {
+		t.Errorf("the catch-up names the approval %+v, want %+v", facts.KeptApproval, want)
+	}
+	if task := KeptDecisionsOf("LEGION-208", kept); task.ApprovalStep != facts.Step {
+		t.Errorf("the catch-up names the step %q and the kept-decisions task %q, want one step", facts.Step, task.ApprovalStep)
+	}
+	none, _ := keptFacts(record.KeptDecisions{Decisions: []record.DecisionMark{{Ref: "dispatch://LEGION-208/ask/1",
+		Decision: record.DecisionAskAnswered}}})
+	if none.KeptApproval != (texts.KeptApproval{}) {
+		t.Errorf("a catch-up that keeps no approval names %+v, want no approval", none.KeptApproval)
+	}
+}
+
 // An issue in accepting waits for the architect that owns it alone: no worker runs there, and the
 // one phase-finished notice that moved it there reaches no architect whose claim has failed: it
 // passes a child's failed architect for the one above, and ends undelivered when a root's has

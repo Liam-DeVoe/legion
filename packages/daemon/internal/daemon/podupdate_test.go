@@ -87,6 +87,8 @@ var podUpdateStart = time.Date(2026, 10, 29, 9, 0, 0, 0, time.UTC)
 // contract its registration declared. round, reasons and signalled seed an update round the store
 // already holds on the claim, as an earlier tick or an earlier release left it, with the sweep's
 // ask of it already published (supervise.Claim.UpdateTaskedAt) unless unasked says it is not;
+// drift is the items that round recorded beside its reasons (supervise.Claim.UpdateDrift), none
+// for a round an older daemon opened;
 // left is the round the claim left when the daemon started it again in another pod than that
 // round's own, as the launch records it (supervise's leftPodRoundAt); pod names a pod of its own,
 // for a claim that records one the rest of the issue has left behind; suspendedBy is who
@@ -103,6 +105,7 @@ type podUpdateRole struct {
 	contract    int
 	round       string
 	reasons     string
+	drift       []runtime.DriftItem
 	signalled   bool
 	unasked     bool
 	left        string
@@ -171,6 +174,7 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 		if role.round != "" {
 			opened := podUpdateStart
 			c.UpdateRound, c.UpdateReasons, c.UpdateOpenedAt = role.round, role.reasons, &opened
+			c.UpdateDrift = role.drift
 			c.UpdateLeftRound = role.left
 			if !role.unasked {
 				c.UpdateTaskedAt = &opened
@@ -767,6 +771,36 @@ func TestPodUpdateEndsTheRoundOnceTheRoleStartedIntoTheKeptPodAnswers(t *testing
 		rig.awaitClaim(role, "its round to end with the replacement", func(c supervise.Claim) bool {
 			return c.UpdateRound == "" && c.UpdateSignalledAt == nil
 		})
+	}
+}
+
+// A worker that joins an open round is given the round's own terms: the drift the round was
+// opened for, as its text and as its items, never the drift a later tick read
+// (dispatch://INFRA-2981 R9). The ask and the update-stalled notice name the items of the first
+// claim of the round they read, so a joining claim that recorded this tick's items beside the
+// round's text could make them name a drift the round was not opened for.
+func TestPodUpdateGivesAWorkerThatJoinsAnOpenRoundTheRoundsOwnTerms(t *testing.T) {
+	rig := newPodUpdateRig(t,
+		readyWorker(claim.RoleImplementer),
+		podUpdateRole{role: claim.RoleArchitect, state: supervise.StateQueued},
+	)
+	rig.drifts(podUpdateDrift)
+	rig.tick()
+	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+
+	// The configuration moves again under the open round, and the architect starts into the pod
+	// the round keeps: the next tick reads another drift and posts the round to the architect.
+	rig.drifts(podUpdateKeptDrift)
+	rig.startInPod(claim.RoleArchitect, podUpdatePod)
+	rig.tick()
+
+	joined := rig.awaitRound(claim.RoleArchitect, podUpdateRound)
+	if joined.UpdateReasons != podUpdateDrift {
+		t.Errorf("the architect joined the round with the reasons %q, want the round's own %q", joined.UpdateReasons, podUpdateDrift)
+	}
+	want := []runtime.DriftItem{{Key: runtime.DriftImage, Image: podUpdateImage}}
+	if !slices.Equal(joined.UpdateDrift, want) {
+		t.Errorf("the architect joined the round with the drift items %+v, want the round's own %+v", joined.UpdateDrift, want)
 	}
 }
 

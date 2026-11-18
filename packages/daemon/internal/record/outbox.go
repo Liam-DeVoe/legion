@@ -265,8 +265,9 @@ type NoticeKind = texts.Kind
 // review-stuck notice's summary names the fact that wrote it, and its topic is the reviewer's role
 // topic, which the architect asks for the decision.
 //
-// A row an older daemon queued holds main's keys alone, with the facts of most kinds in Reason
-// as a sentence, and still decodes and validates (DecodeOutboxPayload).
+// A row an older daemon queued holds only the keys a notice had before the records of the list,
+// with the facts of most kinds in Reason as a sentence, and still decodes and validates
+// (DecodeOutboxPayload).
 type Notice struct {
 	Kind  NoticeKind  `json:"kind"`
 	Role  claim.Role  `json:"role,omitempty"`
@@ -410,8 +411,9 @@ type Notice struct {
 	// absent from every other kind. Only an UpdateStalledNotice carries one.
 	Update *UpdateStalled `json:"update,omitempty"`
 
-	// The keys below are the ones the records of the list declare beside main's keys, each with
-	// the Go type its record gives it (texts/records_notice.go, texts/records_controller.go).
+	// The keys below are the ones the records of the list declare beside the keys a notice had
+	// before them, each with the Go type its record gives it (texts/records_notice.go,
+	// texts/records_controller.go).
 	// The record of a kind says what each one means for that kind.
 
 	// The handoff a phase-finished notice reports: its phase word, its version and its commit.
@@ -615,7 +617,7 @@ type BlockedIssue = texts.BlockedIssue
 // time.Duration.String's own text rounded to the minute ("2h30m0s"): the controller reads this
 // list in the day's report, where a reader needs the length at a glance, and the `worker-silent`
 // notice the issue's architect was sent states the same silence the same way (workflow's
-// workerSilentRecord). The minute is the smallest unit any of this is measured in — the sweep
+// WorkerSilentNotice). The minute is the smallest unit any of this is measured in — the sweep
 // that finds a silence runs every minute, and the bound is `worker_silence_minutes` — so no
 // reader is owed the seconds.
 type SilentIssue = texts.SilentIssue
@@ -784,8 +786,8 @@ const (
 
 // ArchitectStallArm names which reading raised an architect-stalled notice. It is part of the
 // mark that keeps one wake to one root, one run and one arm (ArchitectStall,
-// Store.TellArchitectsStalled), and the first words of the notice's reason, so a controller that
-// reads two wakes of one root reads two different facts:
+// Store.TellArchitectsStalled), and the notice's arm field, so a controller that reads two wakes
+// of one root reads two different facts:
 //
 //   - ArchitectTookNothing: the task of the entry the architect's phases row names was first
 //     queued to its claim more than workflow.StrandedReleaseWake ago and no turn of that claim
@@ -816,10 +818,9 @@ const (
 	ArchitectSlowBeforeGate   ArchitectStallArm = "slow-before-gate"
 )
 
-// Words is the arm in the words an architect-stalled notice's reason begins with, before what
-// the record says (admit's architectStalls). The words and the mark's arm are written from
-// one value, so the wake a controller reads and the row that keeps it to one cannot name two
-// different readings. An arm nothing here names reads as its own value, which no caller writes.
+// Words is the arm in words, as an operator's summary of the state prints it (cmd/legion's
+// entrySummary) and as the reason of an architect-stalled notice an older daemon queued began.
+// An arm nothing here names reads as its own value, which no caller writes.
 func (a ArchitectStallArm) Words() string {
 	switch a {
 	case ArchitectTookNothing:
@@ -1401,8 +1402,8 @@ func (p HookPrompt) Message(issue string) (string, error) {
 // each changed image by its short digest (texts.ShortDigest) and Settings each changed setting
 // by its key, Reasons the drift as the text of a round an older daemon opened, which records no
 // items, and EndsAt the moment the round ends. Record builds the ask from them. Text is the whole
-// ask as an older daemon's sweep built it (supervise.UpdateTask), which a row that daemon queued
-// carries in place of the facts.
+// ask as the sweep of an older daemon built it, which a row that daemon queued carries in place of
+// the facts, and which the runner publishes unchanged.
 //
 // The ask is best effort: the round ends at its bound whether or not the role reads it. So a
 // row whose role no live session holds finishes undelivered, and a row whose round the claim no
@@ -1427,10 +1428,6 @@ func (p UpdateAsk) Record(issue string) texts.UpdateAskRecord {
 	ask.Reasons = p.Reasons
 	return ask
 }
-
-// Message is what the runner publishes for issue from a row an older daemon queued: the text
-// that daemon's sweep built, unchanged.
-func (p UpdateAsk) Message(string) string { return p.Text }
 
 // MergeQueueRead is the daemon's one read of a pull request that GitHub reported leaving the merge
 // queue (intake.PullRequestDequeued). The transaction that applies that event writes it, while the

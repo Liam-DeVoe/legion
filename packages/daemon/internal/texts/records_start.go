@@ -6,14 +6,14 @@ import "strings"
 // Delivery.message joins them in front of the task, each a task of its own kind).
 
 // RelaunchNoteRecord is what the last let-go of a claim's process ended, in front of a task or
-// alone (supervise's relaunchSentence and RelaunchSentence).
+// alone (supervise's RelaunchNote).
 type RelaunchNoteRecord struct {
 	TaskHead
 	RelaunchFacts
 }
 
 // CutTurnNoteRecord is the note in front of a task that a let-go took back from a turn its process
-// could not finish (supervise's interruptedTask). dispatch://INFRA-3353's R2 keeps the note word
+// could not finish (supervise's CutTurnNote). dispatch://INFRA-3353's R2 keeps the note word
 // for word, so the note is its Kept sentence and its cause is no field of its own: the sentence
 // names it.
 type CutTurnNoteRecord struct {
@@ -23,7 +23,7 @@ type CutTurnNoteRecord struct {
 	Cause string `json:"-"`
 }
 
-// Kept is the cut-turn note, word for word as main's interruptedTask writes it.
+// Kept is the cut-turn note, word for word as dispatch://INFRA-3353's R2 keeps it.
 func (r CutTurnNoteRecord) Kept() []string {
 	because := "Your process ended, and the daemon recorded no cause for it."
 	if r.Cause != "" {
@@ -44,7 +44,7 @@ func (r CutTurnNoteRecord) Kept() []string {
 }
 
 // AbandonedSessionNoteRecord is the note in front of the first prompt of the session that
-// replaced a session the claim abandoned (supervise's abandonedTask): the session left behind,
+// replaced a session the claim abandoned (supervise's AbandonedSessionNote): the session left behind,
 // why, in the words the claim recorded, and the issue's branch, which outlives the session (no
 // branch for the controller, which works no checkout).
 type AbandonedSessionNoteRecord struct {
@@ -59,7 +59,7 @@ type AbandonedSessionNoteRecord struct {
 const OutOfMemoryReason = "OOMKilled"
 
 // OutOfMemoryNoteRecord is the note in front of a task whose turn ended when its pod ran out of
-// memory (supervise's outOfMemoryTask): the reason Kubernetes ended the container that runs every
+// memory (NewOutOfMemoryNote): the reason Kubernetes ended the container that runs every
 // role of the issue.
 type OutOfMemoryNoteRecord struct {
 	TaskHead
@@ -72,7 +72,7 @@ func NewOutOfMemoryNote(issue string) OutOfMemoryNoteRecord {
 }
 
 // ProviderErrorNoteRecord is the note in front of a task that a provider error took back
-// (supervise's providerErrorTask): the HTTP status the provider answered, absent where it
+// (supervise's ProviderErrorNote): the HTTP status the provider answered, absent where it
 // answered none.
 type ProviderErrorNoteRecord struct {
 	TaskHead

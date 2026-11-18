@@ -144,7 +144,7 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 		// start or catch-up claims (a start still queued keeps its own), and claims what it names
 		// in this transaction; its publish forgets those rows (the outbox's notice), and a
 		// catch-up a newer one supersedes hands them to a fresh catch-up (HandOverKept).
-		if _, kept, err = ParkedDecisionTask(ctx, tx, store, steps, issue); err != nil {
+		if kept, err = keptOwed(ctx, tx, store, steps, issue.Key); err != nil {
 			return err
 		}
 		if kept != nil {
@@ -166,8 +166,13 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 // keptFacts is kept as a catch-up names it: each decision with the person's words cut to
 // texts.EachOfSeveral, and the words object that names each one by its path with the person, the
 // time they wrote it and the count of the rest, or that more follows than the act's event carried.
+// A kept approval names its step as the kept-decisions task does (KeptDecisionsOf): the spec where
+// an older daemon kept the approval with no step.
 func keptFacts(kept record.KeptDecisions) (*texts.KeptFacts, map[string]texts.WordsMeta) {
-	facts := &texts.KeptFacts{KeptApproval: texts.KeptApproval{Step: string(kept.Step), Approved: kept.Approved, Latest: kept.Latest}}
+	facts := &texts.KeptFacts{}
+	if kept.Approved > 0 {
+		facts.KeptApproval = texts.KeptApproval{Step: string(kept.Step.OrSpec()), Approved: kept.Approved, Latest: kept.Latest}
+	}
 	var words map[string]texts.WordsMeta
 	for i, mark := range kept.Decisions {
 		named := texts.DecisionMark{Ref: mark.Ref, At: mark.At, Issue: mark.Issue, Decision: string(mark.Decision), Actor: mark.Actor,

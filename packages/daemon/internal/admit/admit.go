@@ -219,7 +219,7 @@ func (a *Admission) applyFact(ctx context.Context, tx pgx.Tx, fact intake.Fact) 
 		// The tick wakes the controller whatever the slots: with every slot taken, it is the only
 		// wake a tree waiting on a refused root claim gets, since only the controller's recheck of
 		// that claim moves it, and it is the turn that posts the day's report.
-		tick, err := controllerNotice(TickNotice(a.project, held, blocked, silent))
+		tick, err := record.ControllerNoticeOf(TickNotice(a.project, held, blocked, silent))
 		if err != nil {
 			return nil, nil, err
 		}
@@ -317,7 +317,7 @@ func (a *Admission) applyFact(ctx context.Context, tx pgx.Tx, fact intake.Fact) 
 		if err != nil || !free {
 			return released, nil, err
 		}
-		todo, err := controllerNotice(TodoNotice(observation.Key))
+		todo, err := record.ControllerNoticeOf(TodoNotice(observation.Key))
 		if err != nil {
 			return released, nil, err
 		}
@@ -394,7 +394,7 @@ func (a *Admission) wakeForFreeSlot(ctx context.Context, tx pgx.Tx, released []s
 	if err != nil || !free {
 		return err
 	}
-	notice, err := controllerNotice(SlotFreeNotice(released[0]))
+	notice, err := record.ControllerNoticeOf(SlotFreeNotice(released[0]))
 	if err != nil {
 		return err
 	}
@@ -420,17 +420,10 @@ func SlotFreeNotice(key string) texts.SlotFreeRecord {
 	return texts.SlotFreeRecord{NoticeHead: texts.NoticeHead{Kind: texts.SlotFree, Issue: key}}
 }
 
-// controllerNotice is the controller notice that carries rec, the record of a notice kind on the
-// list (record.NoticeOf).
-func controllerNotice(rec any) (record.ControllerNotice, error) {
-	notice, err := record.NoticeOf(rec)
-	return record.ControllerNotice(notice), err
-}
-
 // tellControllerOf queues rec, the record of a notice kind on the list, as a controller notice on
 // issue at the admission's clock.
 func (a *Admission) tellControllerOf(ctx context.Context, tx pgx.Tx, issue string, rec any) error {
-	notice, err := controllerNotice(rec)
+	notice, err := record.ControllerNoticeOf(rec)
 	if err != nil {
 		return err
 	}
@@ -3231,8 +3224,8 @@ func (a *Admission) architectServed(ctx context.Context, tx pgx.Tx, root record.
 // while a controller is registered (architectStalls, wakeStalledArchitects), so a root the pass
 // could still do something for is wholly served before the controller is woken about it. The
 // arms read the holders as the pass read them before its sends, and the roots whose architect
-// start the pass wrote are handed to them, so the second arm reads that start and its reason
-// says what the pass did.
+// start the pass wrote are handed to them, so the second arm reads that start and its notice
+// says the pass wrote it (start_written).
 func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues []record.Issue, slots []record.Slot,
 	facts record.LineFacts,
 ) error {

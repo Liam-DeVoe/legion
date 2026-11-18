@@ -39,11 +39,12 @@
 -- What an older daemon binary reads on this schema. Its root_asks, parked_decisions and
 -- design_gates reads name the columns it knows, and its writes leave the new ones out, so it reads
 -- every row and ignores the words. Its writes also leave the words a row holds as they are: a
--- root_asks row whose sequence it moves to a newer act, and a parked_decisions row it replaces
--- with a newer decision,
--- keep the words of the older act, which this release reads after a roll forward. That older
--- binary cannot read what this release writes into the outbox either: the DecisionMark words of a
--- start task or a catch-up, and the new fields of every notice and role message. So a rollback
+-- root_asks row whose sequence it moves to a newer act, a parked_decisions row it replaces with a
+-- newer decision, and a design_gates row whose told changes request it replaces with a newer one
+-- keep the words or the author of the older act, which this release reads after a roll forward.
+-- That older binary cannot read what this release writes into the outbox either: the
+-- DecisionMark words of a start task or a catch-up, and the new fields of every notice and role
+-- message. So a rollback
 -- past this release is a roll forward; docs/kubernetes.md ("Rolling back the release that carries
 -- a person's words in the daemon's texts") says why.
 --

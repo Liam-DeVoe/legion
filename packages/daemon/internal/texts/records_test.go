@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -323,12 +322,36 @@ func TestTheWordsObjectNamesEachWordsFieldByItsPath(t *testing.T) {
 		}
 	}
 
+	// One record's words object written by hand, as a builder writes it: its one key is the path
+	// WordsPaths gives, and that path names the words in the marshaled payload.
+	kept := CatchUpRecord{NoticeHead: NoticeHead{Kind: CatchUp, Issue: "INFRA-1"}, CatchUp: &CatchUpFacts{Kept: &KeptFacts{
+		Decisions: []DecisionMark{{Ref: "dispatch://INFRA-1/ask/a", At: at}, {Ref: "dispatch://INFRA-2/ask/b", At: at, Answer: "No."}},
+	}}, Words: map[string]WordsMeta{"catch_up.kept.decisions[1].answer": {By: "user:alice", At: at}}}
+	if got := WordsPaths(kept); !slices.Equal(got, []string{"catch_up.kept.decisions[1].answer"}) {
+		t.Errorf("WordsPaths of the hand-built catch-up gives %q, want the one key its words object names", got)
+	}
+	encoded, err := json.Marshal(kept)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if words, _ := payload["words"].(map[string]any); len(words) != 1 || words["catch_up.kept.decisions[1].answer"] == nil {
+		t.Errorf("the hand-built catch-up's words object is %v, want its one key", payload["words"])
+	}
+	if value, _ := atPath(payload, "catch_up.kept.decisions[1].answer").(string); value != "No." {
+		t.Errorf("the payload holds %q at catch_up.kept.decisions[1].answer, want the person's words: %s", value, encoded)
+	}
+
+	// Every notice and role message of the list: each path WordsPaths gives names words in the
+	// marshaled payload.
 	for _, entry := range Entries() {
 		if entry.Form == Task || entry.Kind == HookPrompt {
 			continue
 		}
 		record := sample(t, entry, 0)
-		paths := WordsPaths(record)
 		encoded, err := json.Marshal(record)
 		if err != nil {
 			t.Fatalf("%s: %v", entry.Kind, err)
@@ -337,17 +360,7 @@ func TestTheWordsObjectNamesEachWordsFieldByItsPath(t *testing.T) {
 		if err := json.Unmarshal(encoded, &payload); err != nil {
 			t.Fatal(err)
 		}
-		words, _ := payload["words"].(map[string]any)
-		named := make([]string, 0, len(words))
-		for path := range words {
-			named = append(named, path)
-		}
-		sort.Strings(named)
-		sorted := slices.Sorted(slices.Values(paths))
-		if !slices.Equal(named, sorted) {
-			t.Errorf("%s: the words object names %q, and WordsPaths gives %q", entry.Kind, named, sorted)
-		}
-		for _, path := range paths {
+		for _, path := range WordsPaths(record) {
 			if value, ok := atPath(payload, path).(string); !ok || value == "" {
 				t.Errorf("%s: the payload holds no words at %s: %s", entry.Kind, path, encoded)
 			}
@@ -355,8 +368,9 @@ func TestTheWordsObjectNamesEachWordsFieldByItsPath(t *testing.T) {
 	}
 }
 
-// The sentences R8 keeps render word for word: the cut-turn note as main's interruptedTask writes
-// it, with a cause and with none; the controller's start message; the design-approved wake of a
+// The sentences that other issues' approved requirements fix by their words render word for word
+// (dispatch://INFRA-3686/spec R8): the cut-turn note as dispatch://INFRA-3353's R2 keeps it, with a
+// cause and with none; the controller's start message; the design-approved wake of a
 // resume whose gate is open, and of no other; the look task's first line; and the review that
 // ends a stuck round.
 func TestTheSentencesR8KeepsRenderWordForWord(t *testing.T) {
@@ -430,11 +444,13 @@ func TestTheHelpersWriteTheReferencesInOneForm(t *testing.T) {
 	const hex = "5c2b01d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1"
 	for image, want := range map[string]string{
 		"ghcr.io/cybermonklabs/legion-worker@sha256:" + hex: "5c2b01d9e8f7",
-		"sha256:" + hex:                 "5c2b01d9e8f7",
-		"sha256:abc":                    "abc",
-		"registry:5000/legion:v1":       "registry:5000/legion:v1",
-		"ghcr.io/cybermonklabs/legion":  "ghcr.io/cybermonklabs/legion",
-		"ghcr.io/x@sha256:NOT-HEX-HERE": "ghcr.io/x@sha256:NOT-HEX-HERE",
+		"sha256:" + hex:                    "5c2b01d9e8f7",
+		"sha256:abc":                       "abc",
+		"registry:5000/legion:v1":          "registry:5000/legion:v1",
+		"ghcr.io/cybermonklabs/legion":     "ghcr.io/cybermonklabs/legion",
+		"ghcr.io/x@sha256:NOT-HEX-HERE":    "ghcr.io/x@sha256:NOT-HEX-HERE",
+		"ghcr.io/x/legion-worker:ff33c8c":  "ghcr.io/x/legion-worker:ff33c8c",
+		"ghcr.io/x/legion-worker:20261118": "ghcr.io/x/legion-worker:20261118",
 	} {
 		if got := ShortDigest(image); got != want {
 			t.Errorf("ShortDigest(%q) = %q, want %q", image, got, want)

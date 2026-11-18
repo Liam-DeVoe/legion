@@ -185,20 +185,10 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 // repo), the head the settlement is for, the phase, each check the settlement names failed or
 // cancelled with that conclusion, the count of the checks it reports that passed, and the command
 // that lists every check. A check the settlement reports as a run and names neither way passed, as
-// settledChecks reads it; the settlement this one wake names is the fact's own, since the wake runs
-// before the fact is applied (wakeOnSettlement).
+// settledChecks reads it (checkConclusions); the settlement this one wake names is the fact's own,
+// since the wake runs before the fact is applied (wakeOnSettlement).
 func SettlementWake(issue string, p phase.Phase, repo string, fact intake.PullRequestChecks) texts.PodWakeRecord {
-	conclusions := make(map[string]record.RunConclusion, len(fact.CheckRuns)+len(fact.Failing)+len(fact.Cancelled))
-	for _, run := range fact.CheckRuns {
-		conclusions[run.Name] = record.RunSucceeded
-	}
-	for _, name := range fact.Cancelled {
-		conclusions[name] = record.RunCancelled
-	}
-	for _, name := range fact.Failing {
-		conclusions[name] = record.RunFailed
-	}
-	red, passed := notPassed(conclusions)
+	red, passed := notPassed(checkConclusions(fact.CheckRuns, fact.Cancelled, fact.Failing))
 	return texts.PodWakeRecord{TaskHead: texts.TaskHead{Kind: texts.PodWake, Issue: issue}, Wake: pods.WakeChecks,
 		PullRequest: texts.PullRequestRef(repo, fact.Number), Head: fact.HeadSHA, Phase: p, NotPassed: red, Passed: &passed,
 		ListPassed: texts.ListPassed(repo, fact.Number)}

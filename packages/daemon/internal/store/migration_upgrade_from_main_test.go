@@ -71,9 +71,10 @@ import (
 // The kind list with the role-holders publication (20261116165926) stands above all of these and
 // is applied last of the kind lists: it is now the last word of outbox_kind_check, and it names
 // every kind the merge-queue list names and its own. dispatch://INFRA-3686's words of a person's
-// acts (20261118092930) stand above it and are applied after it; they add three columns to
-// root_asks and parked_decisions and touch no outbox_kind_check. Its update round's drift items
-// (20261118101218) come last; they add one column to claims and touch no outbox_kind_check.
+// acts (20261118092930) stand above it and are applied after it; they add four columns, three to
+// root_asks and parked_decisions and one to design_gates, and touch no outbox_kind_check. Its
+// update round's drift items (20261118101218) come last; they add one column to claims and touch
+// no outbox_kind_check.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,

@@ -94,10 +94,10 @@ func TestAConflictTellsTheRoleWhosePhaseEndedOnItsOwnTopic(t *testing.T) {
 				t.Fatalf("publishes to %s = %#v, want the one phase-ended message", topic, told)
 			}
 			told0, isRecord := told[0].payload.(texts.PhaseEndedRecord)
-			if told[0].message != "phase-ended on LEGION-208" || !isRecord || told0 != ended[0].Record("LEGION-208") ||
-				told0.From != tc.from || told0.To != phase.Implementing || told0.TaskFollows != tc.follows {
-				t.Fatalf("the %s was told %q with %#v, want phase-ended on LEGION-208 with the row's record %+v, its task following %t",
-					tc.role, told[0].message, told[0].payload, ended[0].Record("LEGION-208"), tc.follows)
+			want := texts.PhaseEndedRecord{RoleHead: texts.RoleHead{Kind: "phase-ended", Issue: "LEGION-208"}, From: tc.from, To: phase.Implementing,
+				TaskFollows: tc.follows, ConflictsWith: "main", Head: "sha-1", PullRequest: "acme/widgets#86"}
+			if told[0].message != "phase-ended on LEGION-208" || !isRecord || told0 != want {
+				t.Fatalf("the %s was told %q with %#v, want phase-ended on LEGION-208 with %+v", tc.role, told[0].message, told[0].payload, want)
 			}
 			t.Logf("the %s was told %s: %+v", tc.role, told[0].message, told0)
 			if _, ok := record.ParseOutboxKey(told[0].key); !ok {

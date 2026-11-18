@@ -307,7 +307,7 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 	}
 	for _, root := range unsent {
 		measure := quiet[root.Key]
-		notice, err := controllerNotice(TreeStalledNotice(root.Key, measure, members[root.Key], requests))
+		notice, err := record.ControllerNoticeOf(TreeStalledNotice(root.Key, measure, members[root.Key], requests))
 		if err != nil {
 			return err
 		}

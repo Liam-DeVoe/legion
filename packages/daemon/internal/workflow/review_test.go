@@ -1164,6 +1164,38 @@ func TestARetryOfAStuckRoundTellsTheReviewerWhy(t *testing.T) {
 	}
 }
 
+// A round GitHub will not merge from, retried after its reviewer failed, names in the restarted
+// reviewer's task what the review-stuck notice named: GitHub's merge state for the head, the
+// checks GitHub reported on it (none failed here, one passed) and the command that lists them. A
+// fresh session never saw the approved-round-stuck message, so the task is where it reads them.
+func TestARetryOfARoundGitHubWillNotMergeNamesTheStateAndTheChecks(t *testing.T) {
+	pool := migratedPool(t)
+	seedMergeStateRound(t, pool, record.MergeStateBlocked)
+	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
+	for i, fact := range []intake.Fact{
+		intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne,
+			HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("ship it", headOne)},
+		intake.ClaimFailed{Issue: "LEGION-208", Role: claim.RoleReviewer},
+		intake.RetryOrEscalate{Issue: "LEGION-208", Decision: intake.RetryDecision},
+	} {
+		if result := apply(fmt.Sprintf("merge-state-%d", i), fact); result.Refusal != nil {
+			t.Fatalf("fact %d (%T) was refused: %+v", i, fact, result.Refusal)
+		}
+	}
+	if got := issuePhase(t, pool); got != phase.Reviewing {
+		t.Fatalf("the issue is in %s, want reviewing", got)
+	}
+	var task string
+	if err := pool.QueryRow(t.Context(), `select payload->>'task' from outbox where kind = 'supervise' and payload->>'op' = 'start'
+		and payload->>'role' = 'reviewer' order by id desc limit 1`).Scan(&task); err != nil {
+		t.Fatalf("read the reviewer's retry task: %v", err)
+	}
+	if !hasLines(task, "stuck_round: merge-state", "merge_state: blocked", "passed: 1",
+		"list_passed: gh pr checks 42 --repo sjawhar/legion") {
+		t.Fatalf("the reviewer's retry task = %q, want it to name the merge state, the checks that passed and the command that lists them", task)
+	}
+}
+
 // The retry restores the phase the hold came from and starts its worker. It re-decides no CI
 // result: a settlement that reached the issue while it was held moved nothing, as it would have
 // moved nothing had it arrived with the issue in its phase (dispatch://INFRA-714/spec R1), so the

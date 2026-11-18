@@ -36,6 +36,11 @@ const (
 // saysCause is the line of the note that names cause, as its record renders it.
 func saysCause(cause string) string { return partText(texts.RelaunchFacts{Cause: cause}) }
 
+// relaunchFacts is the facts of the relaunch note the let-go ended records (EndedWork.Facts), each
+// on a line of its own as texts.Render writes it, with no task after it: what the note of a claim
+// relaunched holding nothing says, beside its kind and issue.
+func relaunchFacts(ended EndedWork) string { return partText(ended.Facts(false)) }
+
 // reportActivity is the claim's process reporting what it is doing, through the store's own write
 // onto the launch it runs now (memStore.reportActivity, store's PutClaimActivity): background work
 // of the kinds named, or none running when it names none.
@@ -295,7 +300,7 @@ func TestARelaunchRecordsTheRegistrationDeadline(t *testing.T) {
 	h.wantEnded(EndedWork{At: at, Cause: cause, Generation: retired,
 		Background: true, Kinds: []string{"async-job"}, Reported: true})
 	h.wantEndedLine(cause)
-	told := RelaunchSentence(h.claim().EndedWork)
+	told := relaunchFacts(h.claim().EndedWork)
 	wantSays(t, told, saysCause(cause), "stopped[1]: async-job", saysReported)
 	wantSaysNot(t, told, saysTurnCut)
 }
@@ -599,7 +604,7 @@ func TestARelaunchRecordsTheWorkAnOlderReportSawOfAProcessThatDiesIdle(t *testin
 			h.wantEnded(EndedWork{At: at, Cause: endDied(deathCause(runtime.Observation{Kind: runtime.Gone})),
 				Generation: died, Background: len(row.kinds) > 0, Kinds: row.kinds, Reported: row.reported})
 			ended := h.claim().EndedWork
-			sentence := RelaunchSentence(ended)
+			sentence := relaunchFacts(ended)
 			wantSays(t, sentence, row.says...)
 			wantSaysNot(t, sentence, row.saysNot...)
 		})
@@ -761,7 +766,7 @@ func TestARelaunchRecordsAReportOlderThanATurnTheAgentSaysItIsInAsNoReport(t *te
 				h.wantState(StateLaunching)
 				h.wantEnded(EndedWork{At: at, Cause: endDied(deathCause(runtime.Observation{Kind: runtime.Gone})),
 					Generation: died, Turn: true, TaskTurn: !through.drops, Reported: !row.before})
-				sentence := RelaunchSentence(h.claim().EndedWork)
+				sentence := relaunchFacts(h.claim().EndedWork)
 				if !through.drops {
 					p := h.pending()
 					if !p.Interrupted {
@@ -964,7 +969,7 @@ func TestARelaunchRecordsNoTurnForASuspensionDuringACompaction(t *testing.T) {
 			h.wantEnded(EndedWork{At: h.clock.Now(), Cause: cause, Generation: stopped,
 				Background: true, Kinds: []string{"subagent"}, Reported: true})
 			h.wantEndedLine(cause)
-			if got := RelaunchSentence(h.claim().EndedWork); strings.Contains(got, saysTurnCut) {
+			if got := relaunchFacts(h.claim().EndedWork); strings.Contains(got, saysTurnCut) {
 				t.Errorf("the record is told as %q, want no turn cut off: no %q", got, saysTurnCut)
 			}
 		})
@@ -1181,7 +1186,7 @@ func TestARelaunchRecordsNoTaskTurnForAnIdleClaimsSuspensionThatTakesNothingBack
 	h.wantEnded(EndedWork{At: at, Cause: cause, Generation: stopped,
 		Background: true, Kinds: []string{"subagent"}, Reported: true})
 	h.wantEndedLine(cause)
-	sentence := RelaunchSentence(h.claim().EndedWork)
+	sentence := relaunchFacts(h.claim().EndedWork)
 	wantSays(t, sentence, saysSubagentStopped)
 	wantSaysNot(t, sentence, saysTaskTurn, saysTurnCut)
 }

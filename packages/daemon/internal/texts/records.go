@@ -78,11 +78,14 @@ func EndsRound(head string) string {
 
 // ShortDigest is the first 12 hexadecimal characters of the digest of image, which is an image
 // reference with a digest (name@sha256:<hex>) or a digest alone (sha256:<hex>). A reference
-// that carries no digest, such as name:tag, is returned as it is, since it has no digest to cut.
+// that carries no digest, such as name:tag, is returned as it is, even where its tag is
+// hexadecimal (name:ff33c8c), since it has no digest to cut.
 func ShortDigest(image string) string {
-	_, digest, found := strings.Cut(image, "@")
-	if !found {
-		digest = image
+	digest := image
+	if _, after, found := strings.Cut(image, "@"); found {
+		digest = after
+	} else if !strings.HasPrefix(image, "sha256:") {
+		return image
 	}
 	_, hex, found := strings.Cut(digest, ":")
 	if !found || hex == "" || strings.Trim(hex, "0123456789abcdef") != "" {

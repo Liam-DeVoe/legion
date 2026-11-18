@@ -62,6 +62,10 @@ func TestTheEncoderQuotesEachHostileValueAsToonDoes(t *testing.T) {
 		{"9x", `"9x": 1`},
 		{"a b", `"a b": 1`},
 		{`k"q`, `"k\"q": 1`},
+		// U+212A, the Kelvin sign, and U+017F, the long s, fold to k and s under Go's (?i), and
+		// TOON's pattern, an ASCII one in JavaScript, takes neither.
+		{"\u212a", "\"\u212a\": 1"},
+		{"a\u017f", "\"a\u017f\": 1"},
 	}
 	for _, k := range keys {
 		lines, err := encodeObject(object{{key: k.key, value: int64(1)}})

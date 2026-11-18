@@ -51,6 +51,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -60,7 +61,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
-	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/texts"
@@ -263,8 +263,8 @@ func (r *conflictNoTakeoverLive) testerIsToldItsPhaseEnded() {
 	if err := json.Unmarshal([]byte(told[0].Payload), &ended); err != nil {
 		t.Fatalf("the tester was told %q on %s, which is no phase-ended record: %v", told[0].Payload, topic, err)
 	}
-	want := record.PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, ConflictsWith: conflictBase,
-		Head: conflictFirstHead, PullRequest: texts.PullRequestRef(liveRepo, r.number)}.Record(r.key)
+	want := texts.PhaseEndedRecord{RoleHead: texts.RoleHead{Kind: "phase-ended", Issue: r.key}, From: phase.Testing, To: phase.Implementing,
+		ConflictsWith: conflictBase, Head: conflictFirstHead, PullRequest: liveRepo + "#" + strconv.Itoa(r.number)}
 	if told[0].Message != "phase-ended on "+r.key || ended != want {
 		t.Fatalf("the tester was told %q with %+v on %s, want phase-ended on %s with %+v", told[0].Message, ended, topic, r.key, want)
 	}

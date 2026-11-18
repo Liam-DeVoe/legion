@@ -16,7 +16,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // The issues of the rig, one pod each. Each subtest drives the pods it names and no other, so one
@@ -373,19 +372,21 @@ type idleRigWake struct {
 	task  string
 }
 
-// idleRigWakes is the five wakes with the task each gives, written once: the pass that drives
-// them waits for each of these tasks and the subtest that counts them reads the same words, so
-// neither can assert on a wording the other does not wait for. The role token and the session id
-// are the released process's, and a relaunched process registers the same of both (the session
-// is derived from the pod and the role, idleRigRoleProcess.register), so this reads the same
-// before a wake and after it.
+// idleRigWakes is the five wakes with a fact of the task each gives, written once: the pass that
+// drives them waits for each of these facts and the subtest that counts them reads the same
+// words, so neither can assert on a wording the other does not wait for. Each is a line the
+// woken role's task holds, written here by hand rather than by the builder of that task: the
+// wake's own topic for a role message and its session for an agent message. The role token and
+// the session id are the released process's, and a relaunched process registers the same of both
+// (the session is derived from the pod and the role, idleRigRoleProcess.register), so this reads
+// the same before a wake and after it.
 func idleRigWakes(rig *idleWakeRig) []idleRigWake {
 	checks, role, agent := rig.issue(idleRigChecks), rig.issue(idleRigRoleWake), rig.issue(idleRigAgentWake)
 	return []idleRigWake{
 		{rig.issue(idleRigDelivery), idleRigDeliveredTask},
 		{checks, "head: " + idleRigHead(checks.key)},
-		{role, workflow.WakeTask(role.key, pods.WakeRoleMessage, string(rig.token(role)))},
-		{agent, workflow.WakeTask(agent.key, pods.WakeAgentMessage, rig.session(agent))},
+		{role, "\nwake: " + pods.WakeRoleMessage + "\ntopic: " + notify.RoleTopicPrefix + string(rig.token(role)) + "\n"},
+		{agent, "\nwake: " + pods.WakeAgentMessage + "\nsession: " + rig.session(agent)},
 		{rig.issue(idleRigBackstop), "wake: " + pods.WakeBackstop},
 	}
 }

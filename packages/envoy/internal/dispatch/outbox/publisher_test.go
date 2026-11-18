@@ -447,8 +447,8 @@ func TestAnEventOfTheDaemonsSessionGoesAtLow(t *testing.T) {
 
 // An ask's own urgency is for the person it asks, so no ask.* event carries it: an ask asked at
 // urgency low and answered by a person reaches the issue's topic and the asker at the default,
-// while the ask keeps its urgency, in its row and in the event's payload. An ask.resolved by the
-// Legion daemon's session goes at the default too, since every ask.* event does
+// while each copy carries the ask with its own urgency in the event's payload. An ask.resolved by
+// the Legion daemon's session goes at the default too, since every ask.* event does
 // (daemonEventGoesLow).
 func TestAnAskEventGoesAtTheDefaultUrgency(t *testing.T) {
 	database := storetest.Open(t)
@@ -477,13 +477,6 @@ func TestAnAskEventGoesAtTheDefaultUrgency(t *testing.T) {
 		{event: answered, topics: []string{"notifications.dispatch.issue.T-1.ask.answered", askerTopic}},
 		{event: resolved, topics: []string{"notifications.dispatch.issue.T-1.ask.resolved", askerTopic}},
 	})
-	var urgency string
-	if err := database.Pool.QueryRow(context.Background(), `select urgency from asks where id = $1`, askID).Scan(&urgency); err != nil {
-		t.Fatalf("read ask %s: %v", askID, err)
-	}
-	if urgency != "low" {
-		t.Fatalf("the ask's urgency after its answer is %q, want low", urgency)
-	}
 	for _, item := range items {
 		var event struct {
 			Payload struct {

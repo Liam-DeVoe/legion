@@ -521,7 +521,7 @@ func (e *Engine) untellUnresumedChanges(ctx context.Context, tx pgx.Tx, root rec
 		}
 		e.logOnCommit(ctx, "workflow: a changes request whose resume never ran is no longer recorded as told", "issue", root.Key,
 			"step", gate.Step, "version", *gate.ToldChangesVersion)
-		gate.ToldChangesVersion, gate.ToldChangesReason, gate.ToldChangesBy, gate.ToldChangesMark = nil, "", "", record.EventMark{}
+		gate = classify.ClearChangesTold(gate)
 		if err := e.store.PutGate(ctx, tx, gate); err != nil {
 			return err
 		}

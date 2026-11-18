@@ -511,21 +511,24 @@ func TestAMicroVMStorageClassChangeDriftsMicroVMPodsAlone(t *testing.T) {
 // supervisor repoint it mid-turn. A deployment that enrolls with the broker only now moves no
 // address of the running generation either: that generation runs in a pod carrying no enrollment,
 // so it was handed no AGENT_SECRETS_URL and is handed none now (Runtime.enrollsIn,
-// movedEnvironment). Each role of such a pod is Alive until its round replaces the pod.
+// movedEnvironment). Each role of such a pod is Alive until its round replaces the pod. The drift's
+// item names the setting by its key alone (runtime.DriftItem), never by the overlay's file or in
+// words.
 func TestPodDriftReadsTheFacetsThatAreNoLongerStaleAddresses(t *testing.T) {
 	const overlay = "/etc/legion-operator-extra/fallback.yml"
 	for name, tc := range map[string]struct {
 		now  func(*Options)
 		says string
+		key  string
 	}{
 		"a role's overlays": {now: func(o *Options) {
 			withOperatorMount(o)
 			o.RoleConfigFiles = map[claim.Role][]string{claim.RoleTester: {overlay}}
-		}, says: "role_config_files.tester " + overlay},
+		}, says: "role_config_files.tester " + overlay, key: "role_config_files.tester"},
 		"the broker's enrollment": {now: func(o *Options) {
 			o.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
-		}, says: agentSecretsTokenVolume},
-		"the session store": {now: func(o *Options) { o.SessionStore = cloudSQLStore }, says: "the session store"},
+		}, says: agentSecretsTokenVolume, key: agentSecretsTokenVolume},
+		"the session store": {now: func(o *Options) { o.SessionStore = cloudSQLStore }, says: "the session store", key: "session_store"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			g := newRig(t, nil)
@@ -536,9 +539,13 @@ func TestPodDriftReadsTheFacetsThatAreNoLongerStaleAddresses(t *testing.T) {
 				state, connected := r2.launchers.state(workerToken, loc.Sandbox.PodUID)
 				return connected && state.Child != nil
 			})
-			drifted := strings.Join(driftOf(t, g.ctx, r2, loc), "; ")
+			items := podDriftOf(t, g.ctx, r2, loc)
+			drifted := strings.Join(reasonsOf(items), "; ")
 			if !strings.Contains(drifted, tc.says+" ") {
 				t.Errorf("PodDrift = %q, want a reason naming %s", drifted, tc.says)
+			}
+			if !slices.ContainsFunc(items, func(d runtime.Drift) bool { return d.Key == tc.key && strings.HasPrefix(d.Reason, tc.says+" ") }) {
+				t.Errorf("PodDrift = %+v, want the reason naming %s keyed %s", items, tc.says, tc.key)
 			}
 			obs := readopt(t, g.ctx, r2, loc)[0]
 			if strings.Contains(obs.Detail, tc.says) {

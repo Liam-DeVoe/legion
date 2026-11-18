@@ -396,6 +396,7 @@ func (b *goldenBuild) tasks(r goldenRendering) {
 	} {
 		issue := record.Issue{Key: r.key(6), Title: hostile[5+i], Phase: phase.Reviewing}
 		head := r.sha(stuck.variant + "/head")
+		request := pr(80+r.n, stuck.variant)
 		round := &workflow.StuckRound{Cause: stuck.cause, Head: head, EndsRound: stuck.ends}
 		want := goldenWant("issue", issue.Key, "title", issue.Title, "phase", issue.Phase, "retried", workflow.RetriedByArchitect,
 			"stuck_round", stuck.cause, "head", head, "pull_request", texts.PullRequestRef(r.repo, 80+r.n))
@@ -406,11 +407,17 @@ func (b *goldenBuild) tasks(r goldenRendering) {
 		case texts.CauseApprovedOtherCode:
 			round.Approved = r.sha(stuck.variant + "/approved")
 			want["reviewed_head"] = round.Approved
+		case texts.CauseMergeState:
+			checks := goldenChecks(r, stuck.variant)
+			request.CheckRuns = checks.runs
+			round.MergeState = string([]record.MergeState{record.MergeStateBlocked, record.MergeStateBehind}[r.n-1])
+			want["merge_state"], want["passed"], want["not_passed#"] = round.MergeState, strconv.Itoa(checks.passed), strconv.Itoa(len(checks.notPassed))
+			want["list_passed"] = texts.ListPassed(r.repo, request.Number)
 		}
 		if stuck.ends {
 			want["ends_round"] = "APPROVE of head " + head
 		}
-		b.task(r, stuck.variant, claim.RoleReviewer, issue.Key, workflow.PhaseAssignment(issue, record.PhaseRow{}, pr(80+r.n, stuck.variant),
+		b.task(r, stuck.variant, claim.RoleReviewer, issue.Key, workflow.PhaseAssignment(issue, record.PhaseRow{}, request,
 			workflow.PhaseMove{Retried: workflow.RetriedByArchitect, Stuck: round}), want)
 	}
 

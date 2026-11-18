@@ -651,10 +651,11 @@ func permanentRefusal(row record.OutboxRow, err error) bool {
 
 // routineWait is a wait nobody has to act on for Legion (routineWaiting): a Dispatch claim release
 // waiting on the claim's holder or on a contended answer (claimHeldWait, claimContendedWait),
-// which the hour claimReleaseWait caps rather than an operator, and a child's architect's first
+// which the hour claimReleaseWait caps rather than an operator; a child's architect's first
 // start waiting for its tree to run again (childArchitectFirstStart), which a person's move of the
 // tree or of the child ends rather than an operator, and then for the branch row a re-admission
-// queued for the child (startRoot), whose own failures that row logs.
+// queued for the child (startRoot), whose own failures that row logs; and a low notice waiting
+// for its released architect's next ready (deliverNotice), which the architect's own wake ends.
 func routineWait(err error) bool {
 	var routine interface{ Routine() bool }
 	return errors.As(err, &routine) && routine.Routine()
@@ -1741,7 +1742,7 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // A row that carries the round's facts is published as its kind's record (record.UpdateAsk.Record)
 // under the summary `update-ask on <KEY>`, the record's object as the payload. A row an older
 // daemon queued carries the text that daemon's sweep built in place of the facts, and goes as that
-// text (record.UpdateAsk.Message) under the same summary. Either goes at the urgency the list
+// text (record.UpdateAsk.Text) under the same summary. Either goes at the urgency the list
 // gives the kind for the role (texts.UrgencyOf).
 //
 // It wakes nothing, where phaseEnded, hookPrompt and mergeQueueRemoval call wakeForDelivery
@@ -1754,8 +1755,8 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // records the row's round: the round ended, another round replaced it, or this daemon no longer
 // supervises the claim. A role is never asked about a round that is not its own.
 //
-// A topic with no live holder (notify.ErrNoHolder) ends the row with one log line, as publishToRole
-// ends one. Every other failure of the publish keeps the ordinary retry, as phaseEnded's does: a
+// A topic with no live holder (notify.ErrNoHolder) ends the row with one log line (publishToRole).
+// Every other failure of the publish keeps the ordinary retry, as phaseEnded's does: a
 // holder that did not confirm in time, one that does not advertise the delivery mode, and a
 // forward the listener's own NATS grant denies can each go through on a later attempt.
 func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload record.UpdateAsk) error {
@@ -1778,18 +1779,17 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 	fields := []any{"row", row.ID, "issue", row.Issue, "round", payload.Round, "pod", payload.Pod, "claim", string(token), "role", payload.Role, "topic", topic}
 	var body any = payload.Record(row.Issue)
 	if payload.Text != "" {
-		body = payload.Message(row.Issue)
+		body = payload.Text
 	}
-	err = r.notices.Publish(ctx, topic, noticeSummary(texts.UpdateAsk, row.Issue), body,
-		texts.UrgencyOf(texts.UpdateAsk, payload.Role, texts.Variant{}), record.OutboxKey(row.ID))
-	if errors.Is(err, notify.ErrNoHolder) {
-		r.log.Info("outbox update ask finished undelivered: no live session holds the role", fields...)
-		return nil
-	}
+	published, err := r.publishToRole(ctx, row, topic, noticeSummary(texts.UpdateAsk, row.Issue), body,
+		texts.UrgencyOf(texts.UpdateAsk, payload.Role, texts.Variant{}),
+		"outbox update ask finished undelivered: no live session holds the role", fields...)
 	if err != nil {
 		return fmt.Errorf("publish the ask of round %s for %s to its %s: %w", payload.Round, row.Issue, payload.Role, err)
 	}
-	r.log.Info("outbox update ask published to the role topic", fields...)
+	if published {
+		r.log.Info("outbox update ask published to the role topic", fields...)
+	}
 	return nil
 }
 
@@ -1805,9 +1805,9 @@ func roleToken(project string, row record.OutboxRow, role claim.Role) (claim.Tok
 
 // publishToRole publishes payload to topic, the Envoy topic of one role's claim
 // (notify.RoleTopicPrefix and the claim's token), under summary, at urgency and under the row's
-// own key, so a retried row is one delivery. It is the publish that phaseEnded and hookPrompt
-// share; updateAsk publishes its record object under the same rule for a topic with no holder.
-// Each of them decides what comes before the publish, and each wraps the error it returns.
+// own key, so a retried row is one delivery. It is the publish that phaseEnded, hookPrompt and
+// updateAsk share. Each of them decides what comes before the publish, and each wraps the error
+// it returns.
 //
 // Three other executors publish to a role's topic, each through its own call of the publisher and
 // with its own rules for what the publisher answers: deliverNotice, an architect's notice, holds

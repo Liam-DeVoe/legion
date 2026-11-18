@@ -37,6 +37,13 @@ func NoticeOf(rec any) (Notice, error) {
 	return notice, nil
 }
 
+// ControllerNoticeOf is the controller notice that carries rec (NoticeOf), for an outbox row of
+// the controller's own: the one conversion every writer of a controller notice makes.
+func ControllerNoticeOf(rec any) (ControllerNotice, error) {
+	notice, err := NoticeOf(rec)
+	return ControllerNotice(notice), err
+}
+
 // NoticeKeys is the keys the record of kind declares, in declaration order, an embedded struct
 // with no json name giving its keys in its place (texts.NoticeHead), as encoding/json reads
 // them: the keys a notice of kind may carry on the wire. It is nil for a kind that is no notice or

@@ -151,11 +151,11 @@ type Delivery struct {
 	// middle of a ladder goes on climbing it rather than starting again at the first step. It is
 	// the task's own count, not the claim's: a new task starts at 0.
 	ProviderErrorRetries int
-	// ProviderErrorNote is the sentence such a task is sent behind, as an Interrupted task is
-	// sent behind the sentence of its interruption: what ended the previous turn, and that the
-	// daemon is sending the task again. It is built from structured fields alone — the HTTP
-	// status the provider answered, else nothing more than "a provider error" — because a
-	// refusal's own explanation is itself refused when it is sent back
+	// ProviderErrorNote is the provider-error note such a task is sent behind (ProviderErrorNote,
+	// rendered), as an Interrupted task is sent behind the cut-turn note: that a provider error
+	// ended the previous turn, which the kind says, and the daemon sends the task again. Its one
+	// field is structured — the HTTP status the provider answered, absent where it answered none —
+	// because a refusal's own explanation is itself refused when it is sent back
 	// (dispatch://INFRA-956/artifact/cause-evidence-md), so no provider text reaches a prompt.
 	// Empty for a task no provider error has taken back.
 	ProviderErrorNote string
@@ -1435,9 +1435,10 @@ func (m *Machine) promptFailed(ctx context.Context, why string, read bool) error
 // resumed transcript shows as missing — a worker relaunched six times in an hour and told none of
 // this read its own transcript as work in progress (dispatch://INFRA-714 R6). A record with no
 // cause says so plainly rather than inventing one. dispatch://INFRA-3353's R2 keeps the note's
-// words as they were, so the record carries them whole (texts.CutTurnNoteRecord.Kept).
+// words as they were, so the record carries them whole (texts.CutTurnNoteRecord.Kept). The cause
+// can carry the runtime's own bytes, so it is made valid UTF-8 (validText), as RelaunchNote's is.
 func CutTurnNote(issue, cause string) texts.CutTurnNoteRecord {
-	return texts.CutTurnNoteRecord{TaskHead: texts.TaskHead{Kind: texts.CutTurnNote, Issue: issue}, Cause: cause}
+	return texts.CutTurnNoteRecord{TaskHead: texts.TaskHead{Kind: texts.CutTurnNote, Issue: issue}, Cause: validText(cause)}
 }
 
 // AbandonedSessionNote is the abandoned-session note of issue (texts.AbandonedSessionNoteRecord),
