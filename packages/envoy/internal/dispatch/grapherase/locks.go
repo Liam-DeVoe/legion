@@ -84,7 +84,7 @@ func (e *Erasure) lockOwnersThenNode(ctx context.Context, tx pgx.Tx) (erasedRead
 		`select supertag from graph_nodes where kind = $1 and id = $2 for update`,
 		e.Kind, e.ID).Scan(&e.Supertag); err != nil {
 		if err == pgx.ErrNoRows {
-			return erasedRead{}, nil, fmt.Errorf("the store holds no node %s:%s: %w", e.Kind, e.ID, errNoNode)
+			return erasedRead{}, nil, fmt.Errorf("the store holds no node %s:%s", e.Kind, e.ID)
 		}
 		return erasedRead{}, nil, fmt.Errorf("read node %s:%s: %w", e.Kind, e.ID, err)
 	}

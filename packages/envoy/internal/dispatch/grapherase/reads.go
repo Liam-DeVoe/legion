@@ -91,7 +91,7 @@ func (e *Erasure) read(ctx context.Context, tx pgx.Tx) (erasedRead, error) {
 	if err := tx.QueryRow(ctx, `select supertag from graph_nodes where kind = $1 and id = $2`,
 		e.Kind, e.ID).Scan(&e.Supertag); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return erasedRead{}, fmt.Errorf("the store holds no node %s:%s: %w", e.Kind, e.ID, errNoNode)
+			return erasedRead{}, fmt.Errorf("the store holds no node %s:%s", e.Kind, e.ID)
 		}
 		return erasedRead{}, fmt.Errorf("read node %s:%s: %w", e.Kind, e.ID, err)
 	}
@@ -104,7 +104,9 @@ func (e *Erasure) read(ctx context.Context, tx pgx.Tx) (erasedRead, error) {
 	if stands, err := graphcensus.ObjectRowStands(ctx, tx, e.Kind, e.ID); err != nil {
 		return erasedRead{}, err
 	} else if stands {
-		return erasedRead{}, fmt.Errorf("the erase refuses %s:%s: %w", e.Kind, e.ID, ErrRowStands)
+		return erasedRead{}, fmt.Errorf("the erase refuses %s:%s: its row stands and holds the node's text, which the erase "+
+			"does not reach, so erasing the node would report an erasure that left that text in place; no command erases that "+
+			"text, and the node can be erased once no row stands behind it", e.Kind, e.ID)
 	}
 	var err error
 	if read.document, read.blockID, err = e.ownDocument(ctx, tx); err != nil {

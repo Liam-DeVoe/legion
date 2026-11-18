@@ -95,13 +95,6 @@ type Deps struct {
 	// every live server process to tell whether another build serves beside this one
 	// (markVersionsAnotherBuildWrote).
 	BuildCommit string
-	// EraseOrphanedNode erases the node kind/id of an issue, a document, an ask or a message that
-	// the project census reads as orphaned, through the erase's own path, and answers whether it
-	// did (cmd/dispatch passes grapherase.EraseOrphaned, which this package cannot import, since
-	// grapherase writes through it). The block-index tick runs it on each such node while this
-	// build owes the object pass (writeObjectNodesAnotherBuildWrote). Nil erases nothing: the
-	// census then names each one with the command that removes it.
-	EraseOrphanedNode func(ctx context.Context, kind, id string) (bool, error)
 }
 
 // VersionedStore is Dispatch's transactional extension of ygo's durable room
@@ -175,9 +168,6 @@ type Service struct {
 	// code last read, whatever the previous release wrote while none ran
 	// (markVersionsAnotherBuildWrote).
 	eventCursorJoined atomic.Bool
-	// eraseOrphanedNode is Deps' EraseOrphanedNode, the erase the block-index tick's object pass
-	// runs on each node whose row another build removed (writeObjectNodesAnotherBuildWrote).
-	eraseOrphanedNode func(ctx context.Context, kind, id string) (bool, error)
 	// maxPendingItems is the pending queue the service's rooms decode their stored state under
 	// (Server.MaxPendingItems, which New sets from it and ygo reads as each room loads) and the
 	// queue the check a room's load is compared with takes (validateUpdate). New sets it to
@@ -906,7 +896,6 @@ func New(deps Deps) *Service {
 		unrecordedMarkTTL: unrecordedMarkTTL,
 		editNoticeQuiet:   editNoticeQuiet,
 		buildCommit:       deps.BuildCommit,
-		eraseOrphanedNode: deps.EraseOrphanedNode,
 		reads:             newDocumentReads(readBudget),
 		roomCap:           roomCap,
 		connectionCap:     connectionCap,

@@ -199,13 +199,11 @@ const zeroUUID = "00000000-0000-0000-0000-000000000000"
 // and a document's with no such event, are at the sentinel. It appends no event.
 func backfillObjectNodes(ctx context.Context, database *store.Store) ([]KindBackfill, error) {
 	var done []KindBackfill
-	var moved []error
 	for _, kind := range objectKinds {
-		report, _, refused, err := writeObjectKind(ctx, database, kind, nil)
+		report, _, err := writeObjectKind(ctx, database, kind, nil)
 		if err != nil {
 			return done, err
 		}
-		moved = append(moved, refused...)
 		var remaining int64
 		if err := database.Pool.QueryRow(ctx, `select count(*) from (`+kind.read+`) as remaining`, kind.start, nil).Scan(&remaining); err != nil {
 			return done, fmt.Errorf("count the %s rows their marker does not mark: %w", kind.kind, err)
@@ -214,17 +212,14 @@ func backfillObjectNodes(ctx context.Context, database *store.Store) ([]KindBack
 		report.Complete = report.Remaining == 0
 		done = append(done, report)
 	}
-	return done, errors.Join(moved...)
+	return done, nil
 }
 
-// ObjectPass is what one run of WriteOwedObjectNodes did: how many rows it wrote a node for,
-// whether it stopped at its batch budget with rows of its kinds still to read (More), and the
-// rows it could not write because the store holds their node in another project (Moved, nil
-// where there is none): a difference the census reports (`differs`), which no second run cures.
+// ObjectPass is what one run of WriteOwedObjectNodes did: how many rows it wrote a node for, and
+// whether it stopped at its batch budget with rows of its kinds still to read (More).
 type ObjectPass struct {
-	Rows  int64
-	More  bool
-	Moved error
+	Rows int64
+	More bool
 }
 
 // WriteOwedObjectNodes is the backfill's object pass (backfillObjectNodes) without its count of
@@ -239,84 +234,61 @@ type ObjectPass struct {
 // holds the block-index lease for the whole backlog a first deploy leaves: it answers More where it
 // stopped with rows left, and the next run reads on, from the start of each kind's key, past the
 // rows the last one marked. A kind that fails holds back none of the others: the run goes on to
-// them and answers every failure joined.
+// them and answers every failure joined, and the next run reads the failed kind's rows again. A
+// batch that fails because a writer wrote one of its nodes in another project meanwhile
+// (graphstore.ErrProjectMoved) reads that row as marked the next time, since its node then names
+// a project, and the census reports it as `differs`.
 func WriteOwedObjectNodes(ctx context.Context, database *store.Store, batches int) (ObjectPass, error) {
 	var pass ObjectPass
-	var failed, moved []error
+	var failed []error
 	budget := &batches
 	if batches <= 0 {
 		budget = nil
 	}
 	for _, kind := range objectKinds {
-		if budget != nil && *budget == 0 {
-			pass.More = true
-			break
-		}
-		report, more, refused, err := writeObjectKind(ctx, database, kind, budget)
+		report, more, err := writeObjectKind(ctx, database, kind, budget)
 		pass.Rows += report.Rows
 		pass.More = pass.More || more
-		moved = append(moved, refused...)
 		if err != nil {
 			failed = append(failed, err)
 		}
 	}
-	pass.Moved = errors.Join(moved...)
 	return pass, errors.Join(failed...)
 }
 
 // writeObjectKind walks kind's rows its marker does not mark, one batch at a time from the
 // start of its key, and writes each batch's nodes (writeObjectBatch), answering what it wrote.
-// Each batch spends one of budget's batches, nil being no bound, and the walk stops with more
-// true once budget is spent before the kind's rows are. A batch the store refuses because one of
-// its nodes stands in another project (graphstore.ErrProjectMoved) is written again one row at a
-// time, so that row alone is left and answered in moved, and every other row of it is written.
-func writeObjectKind(ctx context.Context, database *store.Store, kind objectKind, budget *int) (report KindBackfill, more bool, moved []error, err error) {
+// Each batch spends one of budget's batches, nil being no bound; once budget is spent the walk
+// reads whether a row is left for the next run (more) and writes nothing more.
+func writeObjectKind(ctx context.Context, database *store.Store, kind objectKind, budget *int) (report KindBackfill, more bool, err error) {
 	report = KindBackfill{Kind: kind.kind}
 	after := kind.start
-	add := func(written KindBackfill) {
-		report.Rows += written.Rows
-		report.Nodes += written.Nodes
-		report.Tuples += written.Tuples
-		report.Skipped += written.Skipped
-	}
 	for {
 		if budget != nil && *budget == 0 {
-			return report, true, moved, nil
+			left, err := readObjectNodes(ctx, database, kind.kind, kind.read, after, 1)
+			return report, len(left) > 0, err
 		}
 		nodes, err := readObjectNodes(ctx, database, kind.kind, kind.read, after, backfillBatch)
 		if err != nil {
-			return report, false, moved, err
+			return report, false, err
 		}
 		if len(nodes) == 0 {
-			return report, false, moved, nil
+			return report, false, nil
 		}
 		if budget != nil {
 			*budget--
 		}
 		after = nodes[len(nodes)-1].ID
 		written, err := writeObjectBatch(ctx, database, kind, nodes)
-		switch {
-		case errors.Is(err, graphstore.ErrProjectMoved) && len(nodes) > 1:
-			for _, node := range nodes {
-				one, err := writeObjectBatch(ctx, database, kind, []objectRow{node})
-				switch {
-				case errors.Is(err, graphstore.ErrProjectMoved):
-					moved = append(moved, err)
-				case err != nil:
-					return report, false, moved, err
-				default:
-					add(one)
-				}
-			}
-		case errors.Is(err, graphstore.ErrProjectMoved):
-			moved = append(moved, err)
-		case err != nil:
-			return report, false, moved, err
-		default:
-			add(written)
+		if err != nil {
+			return report, false, err
 		}
+		report.Rows += written.Rows
+		report.Nodes += written.Nodes
+		report.Tuples += written.Tuples
+		report.Skipped += written.Skipped
 		if len(nodes) < backfillBatch {
-			return report, false, moved, nil
+			return report, false, nil
 		}
 	}
 }

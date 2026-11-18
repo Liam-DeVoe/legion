@@ -418,34 +418,6 @@ func projectIncomplete(ctx context.Context, q graphstore.Queryer, limit *int) ([
 	return incomplete, nil
 }
 
-// ObjectNode is one node of an issue, a document, an ask or a message, by its kind and its id.
-type ObjectNode struct{ Kind, ID string }
-
-// OrphanedObjectNodes answers at most limit of the nodes the project census reads as orphaned -
-// a node of one of those kinds, at any state but gone, that no row stands behind - in the census's
-// own order, through the census's own read (classedRows), so the block-index tick's sweep erases
-// exactly what the census names (docs' writeObjectNodesAnotherBuildWrote). No writer of this
-// build commits such a node: each writes a node in the transaction that writes its row, and the
-// backfill writes one only for a row that stands under the owner rows it takes. So a node with no
-// row behind it is the node of a row a build before this one removed without stating it gone.
-func OrphanedObjectNodes(ctx context.Context, q graphstore.Queryer, limit int) ([]ObjectNode, error) {
-	rows, err := q.Query(ctx, scopedRowsSQL+classedRows+`
-		select kind, id from classed where class = '`+classOrphaned+`' order by kind, id limit $1
-	`, limit)
-	if err != nil {
-		return nil, fmt.Errorf("read the orphaned nodes: %w", err)
-	}
-	var orphaned []ObjectNode
-	var node ObjectNode
-	if _, err := pgx.ForEachRow(rows, []any{&node.Kind, &node.ID}, func() error {
-		orphaned = append(orphaned, node)
-		return nil
-	}); err != nil {
-		return nil, fmt.Errorf("read the orphaned nodes: %w", err)
-	}
-	return orphaned, nil
-}
-
 // eraseCommand is the command line that erases the node kind:id (grapherase.Erase), written as a
 // POSIX shell reads it: the node bare where it holds only characters no shell treats specially,
 // and otherwise in single quotes, each quote in it closed, escaped and opened again. Run as

@@ -259,70 +259,66 @@ var rollNow time.Time
 // later. At the backfill's batch size it writes the nodes of up to 2,000 rows a tick.
 const objectPassBatches = 4
 
-// orphanedNodesSwept bounds the orphaned nodes one tick erases, each by the erase's own listing
-// and confirmed run (grapherase's EraseOrphaned); a tick that reads more leaves its debt and is
-// full.
+// orphanedNodesSwept bounds the orphaned document nodes one tick states gone, each in a
+// transaction of its own (graphcensus's StateOrphanedGone); a tick that reads more leaves its debt
+// and is full.
 const orphanedNodesSwept = 20
 
 // writeObjectNodesAnotherBuildWrote is the block-index tick's second step: while this build owes
 // the object pass (markVersionsAnotherBuildWrote's owed), it writes the node of every issue,
 // document, ask and message whose row names none, through the backfill's object pass
-// (graphcensus's WriteOwedObjectNodes), and erases the node of every one of those whose row a
-// build before this one removed (graphcensus's OrphanedObjectNodes, Deps' EraseOrphanedNode). It
-// counts both in tick, and answers whether it stopped with work left.
+// (graphcensus's WriteOwedObjectNodes), and states gone the node of every document a build before
+// this one removed (graphcensus's OrphanedDocumentNodes and StateOrphanedGone). It counts both in
+// tick, and answers whether it stopped with work left.
 //
 // The release before this one writes those four kinds' rows with no node, as it writes a
 // version's block rows with none, and nothing else would give them one until someone ran the
 // backfill again: an issue it creates, its spec, a document it uploads, a conversation's file,
 // whose upload appends no event, an ask and a message. And its removal of a document states
-// nothing, so the node this build wrote for it stands behind no row. So the pass reads rows, not
-// events, on the triggers the marking reads the log on: while a process of another build serves,
-// on the first tick that finds this build serving alone after one did, when that build's last
-// rows have committed (a process deregisters once its drain has ended), and on each process's
+// nothing, so the node this build wrote for it stands live behind no row. So the pass reads rows,
+// not events, on the triggers the marking reads the log on: while a process of another build
+// serves, on the first tick that finds this build serving alone after one did, when that build's
+// last rows have committed (a process deregisters once its drain has ended), and on each process's
 // first tick, after a deploy that stopped every process of one build before it started the
-// other's. A node with no row behind it can mean nothing else: every writer of this build writes
-// a node in the transaction that writes its row, and the pass writes one only for a row that
-// stands under the owner rows it takes, so the erase of such a node takes nothing a row needs; one
-// whose row a create of this build commits meanwhile is left, since the erase reads under its lock
-// of the node whether a row stands and refuses.
+// other's. A document node with no row behind it can mean nothing else: every writer of this build
+// writes a node in the transaction that writes its row, and the pass writes one only for a row
+// that stands under the owner rows it takes. The sweep states such a node gone as this build's own
+// removal of the document states it (api's removeArtifact), under the removal's own event, so the
+// store keeps every statement it held and the history of a removed document is one whichever build
+// served the removal; a node whose row a create of this build commits meanwhile is left, since the
+// sweep reads under its lock of the node whether a row stands.
 //
 // It runs after the marking has committed and outside its transaction, each batch in a
 // transaction of its own that takes its rows' owner rows first (graphcensus's writeObjectBatch),
-// and each erase in its own, owner rows first too, so it holds no lock of the marking's while it
-// takes them. It writes at most objectPassBatches batches and erases at most orphanedNodesSwept
-// nodes a tick. A pass that fails, or stops with work left, leaves the debt, which only a pass that
-// finishes clears, so a failure on the tick that finds the fleet alone, after which the marking
-// reads on no more, leaves no row without its node and no node without its row. A row the store
-// refuses because its node stands in another project is the census's `differs`, which no second
-// pass cures: it is logged, and holds back the clearing of no debt.
+// and each gone statement in its own, owner row first too, so it holds no lock of the marking's
+// while it takes them. It writes at most objectPassBatches batches and states at most
+// orphanedNodesSwept nodes gone a tick, and a kind that fails holds back neither the other kinds
+// nor the sweep. A pass that fails, or stops with work left, leaves the debt, which only a pass
+// that finishes clears, so a failure on the tick that finds the fleet alone, after which the
+// marking reads on no more, leaves no row without its node and no node without its row. A node the
+// sweep leaves is logged with the reason.
 func (s *Service) writeObjectNodesAnotherBuildWrote(ctx context.Context, tick *BlockIndexTick, owed *time.Time) (more bool, err error) {
 	if owed == nil {
 		return false, nil
 	}
-	pass, err := graphcensus.WriteOwedObjectNodes(ctx, s.store, objectPassBatches)
+	pass, passErr := graphcensus.WriteOwedObjectNodes(ctx, s.store, objectPassBatches)
 	tick.ObjectNodes = int(pass.Rows)
-	if pass.Moved != nil {
-		slog.Error("dispatch: block index left rows whose node stands in another project", "error", pass.Moved)
-	}
 	more = pass.More
-	if err == nil && s.eraseOrphanedNode != nil {
-		var orphaned []graphcensus.ObjectNode
-		if orphaned, err = graphcensus.OrphanedObjectNodes(ctx, s.store.Pool, orphanedNodesSwept+1); err == nil {
-			more = more || len(orphaned) > orphanedNodesSwept
-			var failed []error
-			for _, node := range orphaned[:min(len(orphaned), orphanedNodesSwept)] {
-				erased, eraseErr := s.eraseOrphanedNode(ctx, node.Kind, node.ID)
-				if erased {
-					tick.OrphansErased++
-				}
-				if eraseErr != nil {
-					failed = append(failed, fmt.Errorf("erase the orphaned node %s:%s: %w", node.Kind, node.ID, eraseErr))
-				}
-			}
-			err = errors.Join(failed...)
+	failed := []error{passErr}
+	orphaned, err := graphcensus.OrphanedDocumentNodes(ctx, s.store.Pool, orphanedNodesSwept+1)
+	failed = append(failed, err)
+	more = more || len(orphaned) > orphanedNodesSwept
+	for _, ref := range orphaned[:min(len(orphaned), orphanedNodesSwept)] {
+		switch err := graphcensus.StateOrphanedGone(ctx, s.store, ref); {
+		case errors.Is(err, graphcensus.ErrNotOrphaned):
+			slog.Info("dispatch: block index left a document node it read as orphaned", "node", ref, "reason", err)
+		case err != nil:
+			failed = append(failed, fmt.Errorf("state the orphaned node of %s gone: %w", ref, err))
+		default:
+			tick.OrphansGone++
 		}
 	}
-	switch {
+	switch err := errors.Join(failed...); {
 	case err != nil:
 		return more, fmt.Errorf("write the nodes of the rows another build wrote: %w", err)
 	case more || owed == &rollNow:

@@ -94,10 +94,11 @@ type BlockIndexTick struct {
 	Marked       int
 	AnotherBuild bool
 	// ObjectNodes is how many issues, documents, asks and messages whose row named no node the
-	// tick wrote the node of, and OrphansErased how many of their nodes whose row another build
-	// removed it erased, while this build owed the object pass (writeObjectNodesAnotherBuildWrote).
-	ObjectNodes   int
-	OrphansErased int
+	// tick wrote the node of, and OrphansGone how many document nodes whose row another build
+	// removed it stated gone, while this build owed the object pass
+	// (writeObjectNodesAnotherBuildWrote).
+	ObjectNodes int
+	OrphansGone int
 	// OwedDocuments, OwedTexts, OwedItems and OwedItemBlocks are what is still owed after the tick.
 	OwedDocuments  int
 	OwedTexts      int
@@ -199,7 +200,7 @@ func (s *Service) blockIndexTick(ctx context.Context, cursors BlockIndexCursors,
 		slog.Error("dispatch: block index reconciliation", "error", err)
 	}
 	if tick.Documents > 0 || tick.Items > 0 || tick.ItemBlocks > 0 || tick.Texts > 0 ||
-		tick.Windows > 0 || tick.Retired > 0 || tick.Events > 0 || tick.Marked > 0 || tick.ObjectNodes > 0 || tick.OrphansErased > 0 ||
+		tick.Windows > 0 || tick.Retired > 0 || tick.Events > 0 || tick.Marked > 0 || tick.ObjectNodes > 0 || tick.OrphansGone > 0 ||
 		tick.AnotherBuild != logged.AnotherBuild || tick.LiveAhead != logged.LiveAhead ||
 		tick.OwedDocuments != logged.OwedDocuments || tick.OwedItems != logged.OwedItems ||
 		tick.OwedItemBlocks != logged.OwedItemBlocks || tick.OwedTexts != logged.OwedTexts ||
@@ -212,7 +213,7 @@ func (s *Service) blockIndexTick(ctx context.Context, cursors BlockIndexCursors,
 		slog.Info("dispatch: block index", "documents", tick.Documents, "items", tick.Items,
 			"item_blocks", tick.ItemBlocks, "texts", tick.Texts, "windows", tick.Windows,
 			"retired", tick.Retired, "events", tick.Events, "marked", tick.Marked,
-			"object_nodes", tick.ObjectNodes, "orphans_erased", tick.OrphansErased, "another_build", tick.AnotherBuild, "owed_documents", tick.OwedDocuments,
+			"object_nodes", tick.ObjectNodes, "orphans_gone", tick.OrphansGone, "another_build", tick.AnotherBuild, "owed_documents", tick.OwedDocuments,
 			"owed_items", tick.OwedItems, "owed_item_blocks", tick.OwedItemBlocks,
 			"owed_texts", tick.OwedTexts, "live_ahead", tick.LiveAhead,
 			"oldest_owed_at", refs.OwedTimeText(tick.OldestOwedDocumentAt),

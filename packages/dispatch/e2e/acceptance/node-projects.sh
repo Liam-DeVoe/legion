@@ -315,20 +315,26 @@ pass "$section" "backfill-graph-store runs"
 census_complete "$section" "after the backfill"
 
 # The server's block-index tick owes its build the object pass on the first tick that joins the
-# build's cursor, and runs it then: it writes the node of every row that names none and erases
+# build's cursor, and runs it then: it writes the node of every row that names none and cures
 # every node no row stands behind (docs' writeObjectNodesAnotherBuildWrote). The sections below
 # take a row's node away or remove a row as an earlier build would, and read the census before
 # any backfill, so they wait until that pass has run and cleared its debt; with no other build
-# serving, no later tick runs it again.
+# serving, no later tick runs it again. A cursor row whose event_id has reached the newest event
+# this run wrote was moved by a tick of this server after those writes - a cursor an earlier
+# server left on a reused database stands behind them - and that server's joining tick, whose
+# pass sets the debt in the same transaction, came at or before it; with the debt clear there,
+# the pass has finished.
 section=pass
-for attempt in $(seq 1 120); do
+query "$section" "read the newest event this run wrote" "select coalesce(max(id), 0) from events"
+written="$answer"
+for attempt in $(seq 1 180); do
   query "$section" "read whether the server's object pass has run" \
-    "select coalesce(bool_and(object_nodes_owed_at is null), false) from block_index_event_cursors"
+    "select exists (select 1 from block_index_event_cursors where event_id >= $written and object_nodes_owed_at is null)"
   [[ "$answer" == t ]] && break
-  [[ "$attempt" == 120 ]] && fail "$section" "the server's object pass runs" "no cursor without a debt within 120 s"
+  [[ "$attempt" == 180 ]] && fail "$section" "the server's object pass runs" "no cursor past event $written without a debt within 180 s"
   sleep 1
 done
-pass "$section" "the server's object pass has run and owes nothing"
+pass "$section" "the server's object pass has run after event $written and owes nothing"
 
 section=control
 query "$section" "take the ask's node away" "
