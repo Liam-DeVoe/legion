@@ -729,10 +729,10 @@ func (p *settlementPass) appendEvents(ctx context.Context, events []model.Event)
 	return nil
 }
 
-// committed ends a pass whose transaction committed: the ask blocks it indexed forget their
-// recorded authors, its writes reach the room's persistence, and its events are published.
+// committed ends a pass whose transaction committed: its writes reach the room's persistence, and
+// its events are published. The ask blocks it indexed forgot their recorded authors under the
+// commit's own hold of the room's state (consumeAskAuthorsLocked).
 func (p *settlementPass) committed() {
-	p.credit.consumeAskAuthors(p.reconciliation.indexedAskBlocks)
 	p.finishSlots()
 	for _, event := range p.published {
 		p.service.events.Publish(event)
@@ -1013,7 +1013,14 @@ func (p *settlementPass) commitRepairs(ctx context.Context) (settleStep, settleO
 		return settleDone, p.abandon(err)
 	}
 	if advanced, err := s.commitSettlement(ctx, p.tx, p.ledger, room, authorCapture{state: state}, func(err error) {
-		if err == nil && state.roomGeneration == p.generation {
+		// The room forgets the author of each ask block the commit indexed under the commit's own
+		// hold, so no reader that finds the block's ask row committed then finds the room still
+		// owing its author.
+		if err != nil {
+			return
+		}
+		p.credit.consumeAskAuthorsLocked(p.reconciliation.indexedAskBlocks)
+		if state.roomGeneration == p.generation {
 			state.settleFailures = 0
 		}
 	}); err != nil {
@@ -1222,7 +1229,9 @@ func (p *settlementPass) commitVersion(ctx context.Context) (settleStep, settleO
 	}
 	// The commit marks the in-flight credits the version listed consumed before it releases the
 	// room's state, and the room updates this pass stored marked stored (commitSettlement); a
-	// settlement that writes no version takes out none.
+	// settlement that writes no version takes out none. The room forgets the author of each ask
+	// block the commit indexed under the same hold, so no reader that finds the block's ask row
+	// committed then finds the room still owing its author.
 	consumed := authorCapture{state: state}
 	if versioning {
 		consumed = p.credit.capture
@@ -1231,7 +1240,11 @@ func (p *settlementPass) commitVersion(ctx context.Context) (settleStep, settleO
 		// This runs before the publish below, the order Ledger.Commit keeps for every other
 		// version write, so a subscriber acting on this version's artifact.version event acts
 		// after it.
-		if err == nil && state.roomGeneration == p.generation {
+		if err != nil {
+			return
+		}
+		p.credit.consumeAskAuthorsLocked(p.reconciliation.indexedAskBlocks)
+		if state.roomGeneration == p.generation {
 			state.settleFailures = 0
 			state.unsettled = len(state.inflight) > 0
 			if !state.unsettled {
