@@ -83,12 +83,15 @@ is the `envoy_subscribe` tool's call and nothing else, throws `uncapturedTopicRe
 listener's own warning for that topic, and follows nothing of that call.
 
 `runEnvoyChannelServer` dials NATS with the shared options of
-`@legion/envoy-client/nats-connection` (`natsConnectionOptions`): a ping every 10 s and the
-connection dropped on the tick that finds two pings unanswered, so a path that freezes without
-closing (packets stop, neither side closes) is left within 30 s and redialed at once, 52 s when
-that redial also hangs on nats.js's 20 s dial timeout and the 2 s reconnect wait; it reconnects
-forever, 2 s apart, and each `reconnect` status renews the relay's epoch. nats.js's default 120 s
-ping interval left a frozen path for up to 6 minutes. Every registration names the plugin:
+`@legion/envoy-client/nats-connection` (`natsConnectionOptions`): a dial timeout of 10 s, a ping
+every 10 s and the connection dropped on the tick that finds two pings unanswered, so a path that
+freezes without closing (packets stop, neither side closes) is left within 30 s and redialed at
+once, 42 s when that redial also hangs for its 10 s timeout and the 2 s reconnect wait; it
+reconnects forever, 2 s apart, and each `reconnect` status renews the relay's epoch. nats.js's
+default 120 s ping interval left a frozen path for up to 6 minutes. Its first dial goes through
+`connectNats` and is dialed again for the server's life, until it stops, while a redial can cure
+the failure (`dialChannelNats`, `CHANNEL_DIAL_PLAN`, `redialCures`); an Envoy tool called meanwhile
+is told the dial's last failure. Every registration names the plugin:
 `plugin` `@sjawhar/claude-envoy` and `plugin_version` the version segment of the plugin-cache
 directory the bundle runs from (`…/plugins/cache/<marketplace>/<plugin>/<version>/`, the npm
 version Claude Code installed, since the marketplace entry is an `npm` source;

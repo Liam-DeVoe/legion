@@ -633,10 +633,13 @@ How soon a reconnect comes: `ensureConnection` dials with the shared options of
 `@legion/envoy-client/nats-connection` (`natsConnectionOptions`), which ping the server every 10 s
 (`NATS_PING_INTERVAL_MS`) and drop the connection on the tick that finds two pings unanswered
 (`NATS_MAX_PINGS_OUT`), so a path that freezes without closing (packets stop, neither side closes)
-is left within 30 s and redialed at once; a redial that also hangs costs nats.js's 20 s dial
-timeout and the 2 s reconnect wait, 52 s in all. It reconnects forever, 2 s apart, and the
-`reconnect` status renews the relay's epoch. nats.js's default 120 s ping interval left a frozen path for
-up to 6 minutes.
+is left within 30 s and redialed at once; a redial that also hangs costs the 10 s dial timeout
+(`NATS_DIAL_TIMEOUT_MS`) and the 2 s reconnect wait, 42 s in all. It reconnects forever, 2 s apart,
+and the `reconnect` status renews the relay's epoch. nats.js's default 120 s ping interval left a
+frozen path for up to 6 minutes. A pass's first dial goes through `connectNats` (`dialNats`): a
+dial the hub closes during its handshake, as it does when this session's start held the event loop
+past the hub's 2 s authentication timeout, fails at once and is dialed again inside the time the
+pass can give (`natsDialBudget`, `PASS_AFTER_DIAL_MS`).
 
 What the relay carries: the frames the stream keeps on the agent subject (direct messages,
 Dispatch deliveries, and the forwards of role messages to a role this session holds) and on the
