@@ -45,11 +45,11 @@ func webhookSweeper(natsClient *bus.Client, background *store.Store, app *auth.A
 	if err != nil || github == nil {
 		return nil, err
 	}
-	open := func() (bus.KeyValue, error) {
+	open := func(ctx context.Context) (bus.KeyValue, error) {
 		if !natsClient.Connected() {
 			return bus.KeyValue{}, errors.New("NATS is not connected, so the sweep's state cannot be opened yet")
 		}
-		return redeliver.OpenState(natsClient.Conn, natsClient.JS(), replicas)
+		return redeliver.OpenState(ctx, natsClient.Conn, natsClient.JS(), replicas)
 	}
 	return &redeliver.Sweeper{GitHub: github, Open: open, Limits: limits, Logger: slog.Default(), Pace: redeliveryPace}, nil
 }
