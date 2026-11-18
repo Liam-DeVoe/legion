@@ -7,6 +7,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/ecdsa"
 	"crypto/sha256"
 	"crypto/x509"
@@ -27,6 +28,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
@@ -393,7 +395,7 @@ var fakeSettings = Settings{
 // what each of these lines must carry is the source, not one spelling of it; source_test.go pins
 // what the renderer puts in a source.
 func fakeSourceText(broker *httptest.Server) string {
-	return brokerSource(broker.URL).withSettings(fakeSettings).String()
+	return brokerSource(brokeraddr.New(broker.URL)).withSettings(fakeSettings).String()
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
@@ -430,6 +432,39 @@ func writeKeyDir(t *testing.T, key *ecdsa.PrivateKey, enrollmentID string) strin
 		t.Fatalf("write enrollment: %v", err)
 	}
 	return dir
+}
+
+// proofKey is a session key that signs as testEnrollmentID, with the key dir that holds both, for
+// a fake broker that checks each proof as the broker does.
+type proofKey struct {
+	thumbprint string
+	keyDir     string
+}
+
+func newProofKey(t *testing.T) *proofKey {
+	t.Helper()
+	key, err := proof.NewKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	thumbprint, err := proof.Thumbprint(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &proofKey{thumbprint: thumbprint, keyDir: writeKeyDir(t, key, testEnrollmentID)}
+}
+
+// verify checks r's proof as the broker's proof.Verifier does, for this key's enrollment alone,
+// with the htu rebuilt from publicURL and r's path, never its query, as the broker rebuilds it
+// from BROKER_PUBLIC_URL. A client that signed anything else is refused.
+func (k *proofKey) verify(r *http.Request, publicURL string) error {
+	verifier := &proof.Verifier{Skew: time.Minute,
+		Lookup: func(_ context.Context, id string) (string, bool, error) {
+			return k.thumbprint, id == testEnrollmentID, nil
+		},
+		Replay: func(context.Context, string, time.Time) (bool, error) { return true, nil }}
+	_, err := verifier.Verify(r.Context(), r.Header.Get("Proof"), r.Method, publicURL+r.URL.Path, time.Now())
+	return err
 }
 
 // runAgentSecrets runs the built binary against broker and keyDir, returning its separate
@@ -526,8 +561,8 @@ func TestExecFormGrantRunsChildWithValueInEnvironment(t *testing.T) {
 // binary gets the bytes the broker released, byte for byte — compared as a digest, so no value
 // is in this test's output — and standard error carries the one source line and then nothing of
 // this command's at all, not even where the released value ends in a line ending. Which bytes a
-// value has is the broker's decision now (policy.TrimForShape): a value that reaches the child
-// ending in a line feed ends that way because its owner's shape tag says it does, and the agent
+// value has is the broker's decision now (policy.TrimLineEnding): a value that reaches the child
+// ending in a line feed ends that way because the stored value holds a line ending inside it, and the agent
 // running the command could not store it differently in any case.
 func TestTheExecFormGivesTheChildTheReleasedBytesAndSaysNothingMore(t *testing.T) {
 	binary := buildAgentSecrets(t)
@@ -1063,7 +1098,7 @@ func TestBuildChildEnvKeepsOnlyTheSessionIdentity(t *testing.T) {
 }
 
 // TestReleasedValuesReachTheChildAsTheBrokerSentThem: which bytes a released value has is the
-// broker's decision, taken from the secret's shape (policy.TrimForShape), so the exec form hands
+// broker's decision, taken from the stored value itself (policy.TrimLineEnding), so the exec form hands
 // the child what the broker sent, byte for byte, line endings and all.
 func TestReleasedValuesReachTheChildAsTheBrokerSentThem(t *testing.T) {
 	for name, value := range map[string]string{
