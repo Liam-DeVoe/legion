@@ -3594,7 +3594,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `POST .../comments` reaches it through `normalizeCommentThreadTarget`, which validates the request's `reply_to` first, and `POST /api/v1/comments/{id}/reply` calls it directly with the comment it already holds locked, so a session answering a mention inside an ask's thread lands in that thread instead of in a `reply_to` chain no ask read selects (`store/migrations/0043_comment_reply_ask_id.up.sql` moves the rows written before that, and gives each the turn 0028 gave every other ask reply).
   `comment.delivery` payloads carry the `ask_id` of the comment they report on, so a receipt names the thread it changed.
   Neither event is published to the ask's followers:
-  `addFollowerRoutes` routes `ask.answered`, `ask.edited`, `ask.handed_back`, `ask.resolved` and `comment.created`/`resolved`/`reopened`/`edited` with an `ask_id`, and no other type.
+  `addFollowerRoutes` routes `ask.answered`, `ask.edited`, `ask.handed_back`, `ask.resolved` and `comment.created`/`resolved`/`reopened`/`edited`/`deleted` with an `ask_id`, and no other type.
 
 - Keep Envoy API-level with the agent harnesses it serves.
   Do not add DB introspection or harness-specific hidden coupling unless there is no API path.

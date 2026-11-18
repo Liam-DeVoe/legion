@@ -1485,19 +1485,24 @@ function askThreadsOn(issue: string): RefreshTarget {
   };
 }
 
-/** The search palette keeps each answer under its words for its `staleTime`
- *  (`useTieredSearch.ts`, `["search", words, request]`) and prints each hit's snippet and marks, so
- *  an edit or a delete of a post reads every kept answer again: a hit of the post may be in any of
- *  them, and its words may be gone. A create needs none: a kept answer that misses a post written
- *  since shows no text of it, and the next words typed read afresh. */
-const SEARCH_CORRECTIONS: Partial<Record<EventType, true>> = {
+/** Two caches hold a post's words under a key that is not the post's own: the search palette keeps each
+ *  answer under its words for its `staleTime` (`useTieredSearch.ts`, `["search", words,
+ *  request]`), and a page's reference chips keep their targets' names under the set of
+ *  references they name (`referenceTargetsQuery`, `["reference-targets", refs]`), each printing a
+ *  post's text or a block of it with the post's marks. So an edit or a delete of a post reads every
+ *  answer of both again: the post may be in any of them, and its words may be gone. A create needs
+ *  none: a kept answer that misses a post written since shows no text of it. */
+const POST_CORRECTIONS: Partial<Record<EventType, true>> = {
   "comment.edited": true,
   "comment.deleted": true,
   "message.edited": true,
   "message.deleted": true,
 };
 
-const EVERY_SEARCH_ANSWER: RefreshTarget = { queryKey: ["search"] };
+const ANSWERS_KEYED_BY_WORDS_OR_REFS: readonly RefreshTarget[] = [
+  { queryKey: ["search"] },
+  { queryKey: ["reference-targets"] },
+];
 
 /**
  * The reads one event of the feed can change, each a query key (a prefix unless `exact`) and, where
@@ -1510,8 +1515,8 @@ export function eventRefreshTargets(event: DispatchEvent, signedInLogin?: string
   if (threadsIssue !== null) {
     targets.push(askThreadsOn(threadsIssue));
   }
-  if (SEARCH_CORRECTIONS[event.type] === true) {
-    targets.push(EVERY_SEARCH_ANSWER);
+  if (POST_CORRECTIONS[event.type] === true) {
+    targets.push(...ANSWERS_KEYED_BY_WORDS_OR_REFS);
   }
   return targets;
 }

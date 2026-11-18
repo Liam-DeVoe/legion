@@ -175,6 +175,10 @@ const READS = {
   projectList: { key: projectIssuesQuery("CORE", []).queryKey },
   projects: { key: projectsQuery().queryKey },
   referencePicker: { key: ["issues", "CORE"] },
+  // The names a page's reference chips keep under the set of references they name.
+  referenceTargets: {
+    key: ["reference-targets", ["dispatch://CORE-1/comment/comment-1", "dispatch://CORE-1/spec"]],
+  },
   referencesTab: { key: ["issue", "CORE-1", "references"] },
   replies: { key: myRepliesCountQuery().queryKey },
   rootComment: { key: commentQuery("root-1").queryKey },
@@ -1551,9 +1555,9 @@ const correctedReads: readonly (readonly [string, readonly Correction[], readonl
     ["conversationMessages", "message", "rootMessage"],
   ],
   [
-    "every answer the search palette keeps, which can hold a hit of the post",
+    "every answer the search palette keeps, and every set of reference-target names, which can hold the post",
     [...commentCorrections, ...messageCorrections],
-    ["searchAnswer"],
+    ["searchAnswer", "referenceTargets"],
   ],
 ];
 
