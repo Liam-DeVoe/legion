@@ -961,6 +961,35 @@ func TestAnAnsweredAskWhoseBlockLeftItsDocumentNamesNoDocument(t *testing.T) {
 	}
 }
 
+// INFRA-1150, test round 1: the same ask, whose block left, after a block of another type took
+// its block id in the same document. The ask's row still names that document and that id, but no
+// block there holds the ask: the entry names no document, as it does when the id stands nowhere,
+// and never the callout. Measured on a real server of this head: a person's edit of SEED-1's spec
+// that deleted the answered ask q-kept and put a callout with the id q-kept in its place left the
+// entry naming SEED-1/spec#q-kept, the callout, until the next tick restored the ask.
+func TestAnAnsweredAskWhoseBlockIdABlockOfAnotherTypeTookNamesNoDocument(t *testing.T) {
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
+	documents := deps.Docs.(*docs.Service)
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createSpecIssue(t, handler, "CORE", "A spec.\n")
+	uploadAs(t, handler, issue.Key, "asks.md", ":::ask{#a1 urgency=\"med\" multiple=\"false\"}\nWhich transport?\n\n- REST: Plain HTTP\n- gRPC: Streaming\n:::\n\nOther.\n", "alice")
+	settleIssue(t, documents, issue.Key)
+	askID := blockAskID(t, handler, issue.Key, "a1")
+	answerDecisionBlock(t, handler, askID, "bob", []string{"REST"}, "Plain HTTP until a client streams.", nil)
+	asks := readDecisionDocument(t, database, issue.Key, "asks-md")
+	uploadAs(t, handler, issue.Key, "asks.md", ":::callout{#a1 kind=\"note\" title=\"\"}\nThe transport is plain HTTP.\n:::\n\nOther.\n", "alice")
+	settleIssue(t, documents, issue.Key)
+	var rowDocument, rowBlock *string
+	if err := database.Pool.QueryRow(context.Background(), `select block_artifact_id::text, block_id from asks where id = $1::uuid`, askID).Scan(&rowDocument, &rowBlock); err != nil ||
+		rowDocument == nil || *rowDocument != asks.id || rowBlock == nil || *rowBlock != "a1" {
+		t.Fatalf("the ask's row names the document %v and the block %v (%v), want asks.md, %s, and a1, the id the callout took", rowDocument, rowBlock, err, asks.id)
+	}
+	left := requireEntry(t, readEntries(t, handler, issue.Key), "the answered ask", graphstore.KindAsk+":"+askID)
+	if left.Document != nil || left.AnswerState == nil || *left.AnswerState != "answered" {
+		t.Errorf("the answered ask whose block id a callout of asks.md took reads %s, want it answered and naming no document: %s holds the callout, not the ask", entryJSON(t, left), asks.address("a1"))
+	}
+}
+
 // Above the deferral bound no block index runs in the write, and the typed-node pass states each
 // decision and reading of the document that the version no longer holds gone in that write's own
 // transaction: a version that removes a decision and the reading under another leaves both out
