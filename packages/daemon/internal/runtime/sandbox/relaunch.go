@@ -1094,7 +1094,8 @@ func ownedBySandbox(refs []metav1.OwnerReference, uid types.UID) bool {
 
 // lockPod takes a pod's launch turn, keyed by its Sandbox's name, an issue pod's and the project
 // controller's alike: one relaunch, issue suspension, release or orphan deletion of a pod at a time
-// holds it. Role starts in a healthy pod share it only while they select a launcher command; the
+// holds it. A relaunch holds it for its whole start, the restore hop of the pod's saved workspace
+// copy included (launchers.restoreWorkspace), so the role starts of one pod run one at a time; the
 // pods of one tree's issues take turns of their own, never one another's.
 func (r *Runtime) lockPod(ctx context.Context, sandbox string) (func(), error) {
 	return r.takeTurn(ctx, r.podTurns, sandbox)

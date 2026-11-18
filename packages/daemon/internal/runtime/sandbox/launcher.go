@@ -42,11 +42,6 @@ type launchers struct {
 	// launcher answered Held (heldCopy), so a later role start of a launcher process that holds
 	// the copy neither takes nor sends it again (restoreWorkspace). Guarded by mu, as sessions is.
 	held map[string]heldCopy
-	// hops is, per issue, the turn of the one restore hop of that issue that may run at a time
-	// (restoreWorkspace): a channel of one slot, so a start waiting for its turn gives up within a
-	// bound rather than for ever. Guarded by mu; one per issue, so it grows only with the issues,
-	// as held does.
-	hops map[string]chan struct{}
 
 	// leakCheck reads the shared public leak check a launcher's hello names (Options.LeakCheck);
 	// nil is a daemon that runs with no GitHub App to read it with. leakCheckHop bounds one push
@@ -94,7 +89,7 @@ type launcherSession struct {
 
 func newLaunchers(leakCheck LeakCheckReader, saved runtime.SavedWorkspaceBundle, restored runtime.WorkspaceBundleRestored,
 	guardKilled runtime.MemoryGuardKilled, log *slog.Logger) *launchers {
-	return &launchers{sessions: map[claim.Token]*launcherSession{}, held: map[string]heldCopy{}, hops: map[string]chan struct{}{},
+	return &launchers{sessions: map[claim.Token]*launcherSession{}, held: map[string]heldCopy{},
 		leakCheck: leakCheck, leakCheckHop: leakCheckHopBound, saved: saved, restored: restored, guardKilled: guardKilled, log: log}
 }
 

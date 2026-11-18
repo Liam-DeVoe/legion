@@ -70,19 +70,6 @@ func (d *launchers) heldBy(issue, podUID string, restore int64) {
 	d.held[issue] = heldCopy{podUID: podUID, restore: restore, launchers: launchers}
 }
 
-// hopOf is issue's restore hop turn (launchers.hops), made the first time a start of the issue
-// asks for it.
-func (d *launchers) hopOf(issue string) chan struct{} {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	hop, ok := d.hops[issue]
-	if !ok {
-		hop = make(chan struct{}, 1)
-		d.hops[issue] = hop
-	}
-	return hop
-}
-
 // bundleRestoreBound is how long the hop of one pod's saved bundle may take. The 40 MiB a release
 // carries at most is 160 slices of shimwire.LauncherBundlePayloadBytes, each one round trip the
 // launcher answers out of memory, so this is room for a slow connection rather than for the
@@ -130,12 +117,6 @@ const reachedLine = "launcher bundle: the issue's saved workspace work reached t
 // nothing, and the process applies the copy it holds at its first start of any role. It names the
 // restore id of the copy that process holds.
 const alreadyHeldLine = "launcher bundle: this role's launcher process already holds the saved workspace copy its pod was sent, so this role start neither takes the issue's copies nor sends the copy again"
-
-// hopTurnLine is the warning a role start is logged with when another start's restore hop of the
-// same issue held the issue's one turn (hopOf) past the bound this start waits for it
-// (bundleRestoreBound): this start takes and sends nothing and goes on with its start, and the
-// launcher holds whatever the hop before it sent.
-const hopTurnLine = "launcher bundle: another role start's restore of this issue held its turn past the hop's bound, so this role start takes and sends nothing"
 
 // restoreFailedLine is the warning a launcher's report of a restore that failed is logged with.
 // The copy stays in the daemon's database, but a running copy only until the next copy of the
@@ -196,15 +177,13 @@ const restoreFailedLine = "launcher bundle: the pod's launcher could not restore
 // as above, a restarted container's and every start after a daemon restart among them, and a Held
 // answer records the sessions of the pod connected then (heldBy).
 //
-// The hops of one issue run one at a time (hopOf), the take, the send and the record of a Held
-// answer all inside one turn: a replacement pod starts its roles together, and without the turn
-// each start would take and send the copy before any of them was answered Held. A start that
-// waited reads the record of who holds the copy once the turn is its own, so it sees what the hop
-// before it recorded and skips where its launcher process holds the copy now. The wait for the
-// turn is bounded as the hop is (bundleRestoreBound), and a start that outwaits it takes and sends
-// nothing and goes on with its start. Nothing a hop waits on waits on another start: the take is
-// the store's, the slices are answered by the launcher's frame loop, and the report of a restore
-// is read there too (restoreReported), outside any turn.
+// The held check, the take, the send and the record of a Held answer all run inside the pod's
+// launch turn, which the caller holds: relaunch takes lockPod for the whole start, and the six
+// roles of an issue share one Sandbox name (SandboxName). So the starts of one issue's pod run one
+// at a time, and a start reads the record of who holds the copy that the start before it left,
+// skipping where its launcher process holds the copy now. Nothing a hop waits on waits on another
+// start: the take is the store's, the slices are answered by the launcher's frame loop, and the
+// report of a restore is read there too (restoreReported), outside any turn.
 func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, podUID string) {
 	if d.saved == nil || d.restored == nil {
 		return
@@ -216,16 +195,6 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 		return
 	}
 	issue := session.issue
-	waiting, stopWaiting := context.WithTimeout(ctx, bundleRestoreBound)
-	defer stopWaiting()
-	hop := d.hopOf(issue)
-	select {
-	case hop <- struct{}{}:
-	case <-waiting.Done():
-		d.log.Warn(hopTurnLine, "issue", issue, "launcher", token, "pod", podUID, "error", waiting.Err())
-		return
-	}
-	defer func() { <-hop }()
 	if held, ok := d.holdsCopy(issue, session); ok {
 		d.log.Info(alreadyHeldLine, "issue", issue, "launcher", token, "pod", podUID, "restore", held.restore)
 		return

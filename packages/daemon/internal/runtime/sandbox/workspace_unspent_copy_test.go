@@ -79,22 +79,16 @@ func TestAnUnspentCopyComesBackAfterAnUnregisteredPodEndsAndNotOnceARoleRegister
 
 // withCountedTakes is withSavedWorkspace with every take of the issue's copies counted into
 // takes, which is how a test tells a role start that took the copies, under the issue's copy lock,
-// from one that took nothing. Each take first pauses for pause, as a take behind the issue's copy
-// lock can, which is what lets starts that run at once meet inside their hops.
-func withCountedTakes(st *store.Store, takes *atomic.Int32, pause time.Duration) rigOption {
-	return withOptions(func(o *Options) { countedTakes(o, st, takes, pause) })
+// from one that took nothing.
+func withCountedTakes(st *store.Store, takes *atomic.Int32) rigOption {
+	return withOptions(func(o *Options) { countedTakes(o, st, takes) })
 }
 
 // countedTakes sets o's two halves of a restore over st, as withSavedWorkspace does, with every
-// take counted into takes and paused for pause.
-func countedTakes(o *Options, st *store.Store, takes *atomic.Int32, pause time.Duration) {
+// take counted into takes.
+func countedTakes(o *Options, st *store.Store, takes *atomic.Int32) {
 	o.SavedWorkspaceBundle = func(ctx context.Context, issue, podUID string) (runtime.WorkspaceRestore, error) {
 		takes.Add(1)
-		select {
-		case <-time.After(pause):
-		case <-ctx.Done():
-			return runtime.WorkspaceRestore{}, ctx.Err()
-		}
 		return st.TakeWorkspaceCopyForRestore(ctx, issue, podUID)
 	}
 	o.WorkspaceBundleRestored = st.KeepRestoredWorkspaceCopy
@@ -104,12 +98,12 @@ func countedTakes(o *Options, st *store.Store, takes *atomic.Int32, pause time.D
 // first ask: the copy, off a pod the rig never makes, was written after the first pod's only take
 // and before the second pod's first ask. It answers the rig, the count of takes from that second
 // pod on, and that pod's uid. The pod holds the tester's launcher alone, which a test replaces
-// with the launcher process it models. Each take pauses for pause (withCountedTakes).
-func unspentCopyPod(t *testing.T, pause time.Duration) (*rig, *atomic.Int32, *store.Store, string) {
+// with the launcher process it models.
+func unspentCopyPod(t *testing.T) (*rig, *atomic.Int32, *store.Store, string) {
 	t.Helper()
 	st := migratedStore(t)
 	takes := new(atomic.Int32)
-	g := newRig(t, nil, withCountedTakes(st, takes, pause))
+	g := newRig(t, nil, withCountedTakes(st, takes))
 	spec := workerSpec(t)
 	g.spawn(spec)
 	saveRunningCopy(t, st, runningWorkspaceCopy("pod-one"))
@@ -162,18 +156,15 @@ func startRole(t *testing.T, g *rig, token claim.Token, pod string) {
 // takes and sends it and the process answers Held, and the five after it, each on a session of
 // that process, take nothing and send nothing, even where all six hops come before the first
 // start applies the copy, as they do while a long restore runs. The process applies the copy
-// once. That holds as well where the six starts run at once, as a replacement pod's do: the
-// issue's hops take their turns one at a time, and a start that waited sees the record the hop
-// before it left. A session of that process that connects only after the Held answer is not one
-// the daemon saw hold it, so its start takes the copies again and is sent the copy again, and the
-// process answers that send from its own record, Held again with no second restore.
+// once. A session of that process that connects only after the Held answer is not one the daemon
+// saw hold it, so its start takes the copies again and is sent the copy again, and the process
+// answers that send from its own record, Held again with no second restore.
 //
-// The negative controls are the skip removed from restoreWorkspace, where each of the six starts
-// takes the copies again and streams every slice to the same process, and the issue's turn
-// removed, where the six starts that run at once each take and send it.
+// The negative control is the skip removed from restoreWorkspace, where each of the six starts
+// takes the copies again and streams every slice to the same process.
 func TestAnUnspentCopyIsTakenAndSentOncePerLauncherProcess(t *testing.T) {
 	t.Run("six role starts of one process", func(t *testing.T) {
-		g, takes, _, pod := unspentCopyPod(t, 0)
+		g, takes, _, pod := unspentCopyPod(t)
 		roles := issueRoleTokens(t)
 		process := g.newLauncherProcess()
 		for _, token := range roles {
@@ -195,36 +186,8 @@ func TestAnUnspentCopyIsTakenAndSentOncePerLauncherProcess(t *testing.T) {
 		}
 	})
 
-	t.Run("six role starts of one process at once", func(t *testing.T) {
-		g, takes, _, pod := unspentCopyPod(t, 50*time.Millisecond)
-		roles := issueRoleTokens(t)
-		process := g.newLauncherProcess()
-		for _, token := range roles {
-			g.connectToProcess(token, process)
-		}
-
-		release := make(chan struct{})
-		errs := make(chan error, len(roles))
-		for _, token := range roles {
-			go func() {
-				<-release
-				errs <- g.r.launchers.start(g.ctx, token, pod, shimwire.LauncherStart{ID: "start-" + string(token), Generation: 1})
-			}()
-		}
-		close(release)
-		for range roles {
-			if err := <-errs; err != nil {
-				t.Errorf("a start of one of the six roles failed: %v", err)
-			}
-		}
-		if n, sent, applied := takes.Load(), copiesSent(g, roles...), process.restores(); n != 1 || sent != 1 || applied != 1 {
-			t.Fatalf("six role starts of one launcher process run at once took the copies %d times, sent the copy %d times and applied it %d times, want once each",
-				n, sent, applied)
-		}
-	})
-
 	t.Run("a session that connects after the Held answer", func(t *testing.T) {
-		g, takes, _, pod := unspentCopyPod(t, 0)
+		g, takes, _, pod := unspentCopyPod(t)
 		process := g.newLauncherProcess()
 		g.connectToProcess(workerToken, process)
 		g.r.launchers.restoreWorkspace(g.ctx, workerToken, pod)
@@ -257,7 +220,7 @@ func TestAnUnspentCopyIsTakenAndSentOncePerLauncherProcess(t *testing.T) {
 // its own record, so its starts apply the copy once.
 func TestAnUnspentCopyIsSentAgainToALauncherProcessTheDaemonDidNotSeeHoldIt(t *testing.T) {
 	t.Run("a restarted roles container", func(t *testing.T) {
-		g, takes, _, pod := unspentCopyPod(t, 0)
+		g, takes, _, pod := unspentCopyPod(t)
 		roles := issueRoleTokens(t)
 		first := g.newLauncherProcess()
 		for _, token := range roles {
@@ -282,7 +245,7 @@ func TestAnUnspentCopyIsSentAgainToALauncherProcessTheDaemonDidNotSeeHoldIt(t *t
 	})
 
 	t.Run("a daemon restart", func(t *testing.T) {
-		g, takes, st, pod := unspentCopyPod(t, 0)
+		g, takes, st, pod := unspentCopyPod(t)
 		roles := issueRoleTokens(t)
 		process := g.newLauncherProcess()
 		for _, token := range roles {
@@ -291,7 +254,7 @@ func TestAnUnspentCopyIsSentAgainToALauncherProcessTheDaemonDidNotSeeHoldIt(t *t
 		g.r.launchers.restoreWorkspace(g.ctx, workerToken, pod)
 
 		restartedTakes := new(atomic.Int32)
-		secondRuntime(t, g, func(o *Options) { countedTakes(o, st, restartedTakes, 0) })()
+		secondRuntime(t, g, func(o *Options) { countedTakes(o, st, restartedTakes) })()
 		for _, token := range roles {
 			g.connectToProcess(token, process)
 		}
