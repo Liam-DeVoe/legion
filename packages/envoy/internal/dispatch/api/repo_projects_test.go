@@ -536,3 +536,34 @@ func TestRepoProjectMappingPathIsHeldToTheNameAsItIsStored(t *testing.T) {
 		}
 	}
 }
+
+// GitHub allows a repository name of up to 100 characters, and a mapping path may carry the
+// trailing `.git` a clone URL does, which canonicalRepo trims before the name is stored. So the
+// bound is the stored name's: a name of exactly 100 characters written with `.git` is that
+// repository, mapped under its 100 characters, and one character more is refused however it is
+// written.
+func TestRepoProjectMappingPathBoundsTheNameAsItIsStored(t *testing.T) {
+	handler := newTestHandler(t)
+	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+		"key": "CORE", "name": "Core",
+	}, "alice"); response.Code != http.StatusCreated {
+		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
+	}
+	longest := strings.Repeat("a", 100)
+	mapped := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/"+longest+".git",
+		map[string]any{"project": "CORE"}, "alice")
+	if mapped.Code != http.StatusOK {
+		t.Fatalf("a 100-character name written with .git: status=%d body=%s, want 200", mapped.Code, mapped.Body.String())
+	}
+	if got := decodeBody[repoProjectResponse](t, mapped).Repo; got != "acme/"+longest {
+		t.Fatalf("a 100-character name written with .git is mapped as %q, want acme/%s", got, longest)
+	}
+	for _, path := range []string{"acme/" + longest + "a", "acme/" + longest + "a.git"} {
+		refused := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/"+path,
+			map[string]any{"project": "CORE"}, "alice")
+		if refused.Code != http.StatusBadRequest {
+			t.Fatalf("a 101-character name (%d characters written): status=%d body=%s, want 400",
+				len(path)-len("acme/"), refused.Code, refused.Body.String())
+		}
+	}
+}
