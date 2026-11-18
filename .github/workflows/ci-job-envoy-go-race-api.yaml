@@ -34,13 +34,15 @@ jobs:
     runs-on: ubuntu-24.04
     # Both numbers take the largest reading this branch has of them (dispatch://INFRA-1075,
     # check 6224bb0e). The step's -timeout is the smallest whole minute at which its slowest
-    # package takes at most half of it: internal/dispatch/api, this job's one package, 955.794 s
-    # (run 43657875798, job 132640445932), 955.794 / 30 = 31.86, so 32m, which it fills to 49.8
-    # per cent (28m, the limit the reading itself ran under, it would fill to 56.9). The job's own
-    # bound follows its largest measured time of a green run, 1,146 s in run 43733795306 (job
-    # 132871904484), 19.1 minutes, plus that -timeout plus 6: 19.1 + 32 + 6 = 57.1, so 58; the
-    # reading before it, 1,136 s in job 132640445932, asked 57. The limit must fire before the
-    # runner cancels the job, so a hung test prints the dump that names it.
+    # package takes at most half of it: internal/dispatch/api, this job's one package, 959.308 s
+    # (run 44175873364, job 134367428185), 959.308 / 30 = 31.98, so 32m, which it fills to 49.96
+    # per cent (31m, the whole minute below it, it would fill to 51.6; the reading before it,
+    # 955.794 s in run 43657875798, job 132640445932, ran under 28m). The job's own bound
+    # follows its largest measured time of a green run, 1,158 s in that same run and job, 19.3
+    # minutes, plus that -timeout plus 6: 19.3 + 32 + 6 = 57.3, so 58; the readings before it,
+    # 1,146 s in run 43733795306 (job 132871904484) and 1,136 s in job 132640445932, asked 58
+    # and 57. The limit must fire before the runner cancels the job, so a hung test prints the
+    # dump that names it.
     timeout-minutes: 58
     services:
       postgres:

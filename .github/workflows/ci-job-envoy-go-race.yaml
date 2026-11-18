@@ -34,18 +34,20 @@ jobs:
     runs-on: ubuntu-24.04
     # Both numbers take the largest reading this branch has of them (dispatch://INFRA-1075,
     # check 6224bb0e). The step's -timeout is the smallest whole minute at which its slowest
-    # package takes at most half of it: internal/bus, 466.5 s (run 43882413752, job
-    # 133398892179), 466.5 / 30 = 15.55, so 16m, which it fills to 48.6 per cent (15m, the whole
-    # minute below it, it would fill to 51.8; the reading itself ran under 16m). The job's own
-    # bound follows its largest measured time of a green run, 719 s in that same run and job,
-    # 11.98 minutes, plus that largest -timeout plus 6: 11.98 + 16 + 6 = 33.98, so 34. The
-    # readings before it ask less: 705 s in run 43737129665 (job 132882140167), 694 s in run
+    # package takes at most half of it: cmd/listener, 585.3 s (run 44175873364, job
+    # 134367427656), 585.3 / 30 = 19.51, so 20m, which it fills to 48.8 per cent (19m, the whole
+    # minute below it, it would fill to 51.3; the reading itself ran under 16m, which
+    # internal/bus's 466.5 s in run 43882413752, job 133398892179, had asked). The job's own
+    # bound follows its largest measured time of a green run, 855 s in that same run and job,
+    # 14.25 minutes, plus that largest -timeout plus 6: 14.25 + 20 + 6 = 40.25, so 41. The
+    # other readings ask less: 770 s in run 44195030350 (job 134434361293), 719 s in run
+    # 43882413752 (job 133398892179), 705 s in run 43737129665 (job 132882140167), 694 s in run
     # 43733795306 (job 132871904364) and 634 s in run 43675841985 (job 132695730267). A job of this lane varies between two runs of one
     # commit, by a minute here and by much more in the race lane's longer jobs (at bdffd7d2
     # envoy-go-race-api read 865 s and 1,125 s, and envoy-go-race-docs 1,665 s and 1,241 s), so a
     # bound follows the largest reading rather than the newest. The limit must fire before the
     # runner cancels the job, so a hung test prints the dump that names it.
-    timeout-minutes: 34
+    timeout-minutes: 41
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -88,7 +90,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/go-test-json"
           s=0
-          go test -json -race -count=1 -timeout 16m ./internal/dispatch/delivery/... ./internal/dispatch/store/... ./internal/bus/ ./cmd/listener/ ./internal/store/ ./internal/session/ ./internal/kvwatch/... > "$RUNNER_TEMP/go-test-json/race.json" || s=$?
+          go test -json -race -count=1 -timeout 20m ./internal/dispatch/delivery/... ./internal/dispatch/store/... ./internal/bus/ ./cmd/listener/ ./internal/store/ ./internal/session/ ./internal/kvwatch/... > "$RUNNER_TEMP/go-test-json/race.json" || s=$?
           if [ "$s" -eq 0 ]; then
             jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/race.json"
           else

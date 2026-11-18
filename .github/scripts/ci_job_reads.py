@@ -1414,9 +1414,9 @@ class RaceJob(NamedTuple):
 # reading of the branch rather than of one pair is the same rule applied to every measurement
 # taken, and it is what makes the number settle, since a later pair moves it only by reading
 # higher than every pair before it. Each -timeout is the smallest whole minute at which that
-# call's slowest package takes at most half of it: internal/bus 466.5 s -> 16m (run
-# 43882413752, job 133398892179), internal/dispatch/api 955.794 s -> 32m (run 43657875798, job
-# 132640445932), and internal/dispatch/docs 1795.4 s -> 60m (run 43810293311,
+# call's slowest package takes at most half of it: cmd/listener 585.3 s -> 20m (run
+# 44175873364, job 134367427656), internal/dispatch/api 959.308 s -> 32m (run 44175873364, job
+# 134367428185), and internal/dispatch/docs 1795.4 s -> 60m (run 43810293311,
 # job 133110320511), where every earlier reading was less, 1746.1 s at most (run 43737129665,
 # job 132882140098). Each figure is read from that job's own `go test -json` artifact, the
 # largest of every workflow_dispatch run of ci.yaml on this branch (dispatch://INFRA-1075, check
@@ -1424,7 +1424,7 @@ class RaceJob(NamedTuple):
 ENVOY_RACE_LANE = (
     RaceJob("envoy-go-race",
             "Race-test delivery, the store, the bus, the listener, the registry store, the session cache and kvwatch",
-            "16m", (RacePackage("internal/dispatch/delivery", tree=True), RacePackage("internal/dispatch/store", tree=True),
+            "20m", (RacePackage("internal/dispatch/delivery", tree=True), RacePackage("internal/dispatch/store", tree=True),
                     RacePackage("internal/bus"), RacePackage("cmd/listener"), RacePackage("internal/store"),
                     RacePackage("internal/session"), RacePackage("internal/kvwatch", tree=True))),
     RaceJob("envoy-go-race-api", "Race-test the Dispatch API", "32m", (RacePackage("internal/dispatch/api"),)),
@@ -1910,20 +1910,20 @@ mkdir -p "$RUNNER_TEMP/go-test-json" "$RUNNER_TEMP/go-test-logs"
 # to the last. The short calls follow it: the longest of them, natslive, took 73.0 s
 # and 65.6 s in that pair.
 #
-# -timeout 23m. A call's limit is the smallest whole minute at which its slowest
+# -timeout 26m. A call's limit is the smallest whole minute at which its slowest
 # package takes at most half of it, measured on the largest reading this branch
 # has of that package (dispatch://INFRA-1075). This call's slowest package is
-# internal/dispatch/pmdoc at 686.5 s (run 43823941384, job 133154393766), the first
-# run of this list after main's forward merge brought main's own tests into it, which
-# is 49.7 per cent of 23m and would be 52.0 per cent of 22m, the whole minute below it;
-# the readings before that merge asked 19m (567.3 s, run 43797411630) and 18m
-# (cmd/dispatch 525.9 s, run 43691345741).
-# The limit leaves 693.5 s above the slowest package's own time, far over the 60 s of
+# internal/dispatch/pmdoc at 766.2 s (run 44195030350, job 134434361048), which is
+# 49.1 per cent of 26m and would be 51.1 per cent of 25m, the whole minute below it;
+# the readings before it asked 23m (686.5 s, run 43823941384, the first run of this
+# list after main's forward merge brought main's own tests into it), 19m (567.3 s,
+# run 43797411630) and 18m (cmd/dispatch 525.9 s, run 43691345741).
+# The limit leaves 793.8 s above the slowest package's own time, far over the 60 s of
 # pmdoc's perCallReportMargin, which is the floor a package that reads the test
 # binary's deadline sets for itself.
 lead="{UNIT_TEST_LEAD_TEXT}"
 rest=$(go list ./... | grep -Ev '{UNIT_TEST_PATTERN}' | grep -vxF "$lead")
-printf '%s\\n%s\\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '{UNIT_TEST_SKIP}' -timeout 23m > "$RUNNER_TEMP/go-test-json/unit.json" &
+printf '%s\\n%s\\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '{UNIT_TEST_SKIP}' -timeout 26m > "$RUNNER_TEMP/go-test-json/unit.json" &
 unit=$!
 # The tests the race detector makes impossible, which the race job of each of these
 # packages therefore cannot make, so envoy-go keeps a plain run of exactly them:
@@ -1976,20 +1976,21 @@ impossible=$!
 # DISPATCH_TEST_DATABASE_URL names 5435 on this call and nowhere else, as the three
 # calls below name 5433, 5436 and 5434. The package list above leaves the package out.
 #
-# -timeout 13m, from the call's own measured times rather than from its CPU. The
+# -timeout 14m, from the call's own measured times rather than from its CPU. The
 # first arithmetic took the half rule on 120 s - 63.8 s of CPU at about half a core -
 # and 4m was too small: the call measured 159.7 s and 183.2 s on two runs and then
 # ran past 240 s on a slower one, where go killed it mid-test ("panic: test timed out
 # after 4m0s, running tests: TestRedactionAgainstServerOutcomes (3m20s)", run
 # 42856652273). A call's limit is the smallest whole minute at which its slowest
 # package takes at most half of it, and this package's largest reading and the run it
-# came from are in the table on this job: 13m, from the 386.1 s this package read
-# in run 42779139068, where it ran inside the package list rather than in a call of
-# its own. No floor stands above that rule here: no test of internal/pgmigrate reads
+# came from are in the table on this job: 14m, from the 393.3 s this package read
+# in run 44195030350 (job 134434361048), in this call of its own; the 386.1 s it read
+# in run 42779139068, inside the package list rather than in a call of its own, asked
+# 13m. No floor stands above that rule here: no test of internal/pgmigrate reads
 # the test binary's deadline, so it declares no margin of its own the way the
 # documents package's roomWaitMargin (30 s) and pmdoc's perCallReportMargin (60 s)
 # are theirs.
-DISPATCH_TEST_DATABASE_URL={PGMIGRATE_DSN} go test -json -count=1 -timeout 13m ./{PGMIGRATE_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/pgmigrate.json" 2> "$RUNNER_TEMP/go-test-logs/pgmigrate.log" &
+DISPATCH_TEST_DATABASE_URL={PGMIGRATE_DSN} go test -json -count=1 -timeout 14m ./{PGMIGRATE_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/pgmigrate.json" 2> "$RUNNER_TEMP/go-test-logs/pgmigrate.log" &
 pgmigrate=$!
 # The routes package, on the second Postgres service: DISPATCH_TEST_DATABASE_URL names
 # 5433 on this call and nowhere else, so the only transactions its horizon waits on are
