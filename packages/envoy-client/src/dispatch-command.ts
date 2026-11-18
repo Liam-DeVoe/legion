@@ -563,10 +563,12 @@ export function parseCommand(
   // line. So it is refused here, naming the flag that gave it: an empty variable in a job's step
   // is how one is written. Each item of a list is read as a single value is (`dispatch priorities
   // --project`). Blank is Go's white space, since Dispatch trims a value by `strings.TrimSpace`
-  // (`go-space.ts`), and a value of only dots and slashes names nothing either: in a URL path it
-  // names no step (`dispatch read --issue ..` asked `GET /api/v1/`), and as a body member or a
-  // query value no key is made of them. The refusal says which the command sends it as.
-  for (const { field, noun, tools, path, sentAs } of IDENTIFIER_FIELDS) {
+  // (`go-space.ts`). A value of only dots and slashes names nothing either, of a flag whose value
+  // goes into a URL path in some command: there it names no step (`dispatch read --issue ..` asked
+  // `GET /api/v1/`), and no key or reference is made of dots and slashes where a command sends the
+  // value in its body or its query, or matches it against an issue's documents. So its refusal has
+  // one reason, true in each use, and names no place the value would go.
+  for (const { field, noun, tools, path } of IDENTIFIER_FIELDS) {
     const given = args[field];
     if (tools !== undefined && !tools.includes(tool)) continue;
     const flag = setBy.get(field);
@@ -578,7 +580,7 @@ export function parseCommand(
       } else if (goBlankPattern.test(value)) {
         problem = `${flag} is only white space, so the call names no ${noun}`;
       } else if (path === true && pathNamesNothingPattern.test(value)) {
-        problem = onlyDotsAndSlashes(flag, value.replace(goSpaceAtEnds, ""), noun, sentAs?.[tool]);
+        problem = `${flag} is "${value.replace(goSpaceAtEnds, "")}", only dots and slashes, so the call names no ${noun}`;
       }
       if (problem === undefined) continue;
       problems.push(problem);
@@ -593,27 +595,6 @@ export function parseCommand(
       : { kind: "refused", tool, problems };
   }
   return { kind: "call", tool, args, dryRun };
-}
-
-/**
- * The refusal of a value of only dots and slashes (`named`, Go's white space at its ends taken off)
- * that `flag` gives, by what the command sends it as: a step of the URL path where `use` is
- * undefined, where `.` and `..` are dropped and the others name no step, or a member of the
- * request's body or a value of its query, where no `noun` is named so.
- */
-function onlyDotsAndSlashes(
-  flag: string | undefined,
-  named: string,
-  noun: string,
-  use: "body" | "query" | undefined
-): string {
-  if (use !== undefined) {
-    const sent = use === "body" ? "a member of its body" : "a value of its query";
-    return `${flag} is "${named}", only dots and slashes, which name no ${noun}, and the call would send it as ${sent}`;
-  }
-  return named === "." || named === ".."
-    ? `${flag} is "${named}", a step of a URL path, which the URL drops, so the call names no ${noun}`
-    : `${flag} is "${named}", only dots and slashes, which name no step of a URL path, so the call names no ${noun}`;
 }
 
 function appendedItem(
@@ -645,34 +626,19 @@ const ISSUE_KEY = /^[A-Z][A-Z0-9]*-\d+$/;
  * reference, a commit or a filter that is never empty or only white space, with the noun its
  * refusal names: every command's field of the name, or the listed commands' alone where another
  * command gives the empty value a meaning (`dispatch issue-update --parent ""` clears the
- * parent). `path` marks a field whose value goes into a URL path in some command, where a value
- * of only dots and slashes names nothing either (`pathNamesNothingPattern`); `sentAs` names the
- * commands that send it as a member of the body or a value of the query instead, so the refusal
- * names that use. A value the call puts in a URL path is refused there too, for every caller
- * (`DispatchEmptyPathError`).
+ * parent). `path` marks a field whose value goes into a URL path in some command: a value of
+ * only dots and slashes (`pathNamesNothingPattern`) is refused in each command that takes the
+ * field, since it names nothing wherever the command sends it. A value the call puts in a URL path
+ * is refused there too, for every caller (`DispatchEmptyPathError`).
  */
 const IDENTIFIER_FIELDS: readonly {
   readonly field: string;
   readonly noun: string;
   readonly tools?: readonly string[];
   readonly path?: true;
-  readonly sentAs?: Readonly<Record<string, "body" | "query">>;
 }[] = [
   { field: "issue", noun: "issue", path: true },
-  {
-    field: "project",
-    noun: "project",
-    path: true,
-    // `createIssue` posts it in its body; `search`, `listAllIssues`, `openAsksForProject` and
-    // `priorities` put it in their query.
-    sentAs: {
-      dispatch_issue: "body",
-      dispatch_search: "query",
-      dispatch_issues: "query",
-      dispatch_open_asks: "query",
-      dispatch_priorities: "query",
-    },
-  },
+  { field: "project", noun: "project", path: true },
   { field: "artifact", noun: "document", path: true },
   { field: "check", noun: "check" },
   { field: "commit", noun: "commit" },
