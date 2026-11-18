@@ -60,7 +60,7 @@ func TestUsesCoreTransportForRoleLanesAndEveryNotificationTheStreamDoesNotCaptur
 // publish fails for want of the stream's acknowledgement rather than succeed over core NATS with
 // nothing kept. A role lane and its exception lane take core NATS even from a stream that still
 // captures them.
-func TestUsesCoreTransportDecidesByTheDeployedSubjectsOnceItHasReadThem(t *testing.T) {
+func TestUsesCoreTransportDecidesByTheDeployedAndCompiledSubjectsOnceItHasReadThem(t *testing.T) {
 	for _, tc := range []struct {
 		deployed []string
 		topic    string
@@ -80,7 +80,7 @@ func TestUsesCoreTransportDecidesByTheDeployedSubjectsOnceItHasReadThem(t *testi
 		{[]string{"notifications.>"}, "team.deploy-squad.all", false},
 	} {
 		client := &Client{}
-		client.deployedSubjects.Store(&tc.deployed)
+		client.deployed.Store(&deployedRead{subjects: tc.deployed})
 		if got := client.UsesCoreTransport(tc.topic); got != tc.core {
 			t.Errorf("deployed %v: UsesCoreTransport(%q) = %t, want %t", tc.deployed, tc.topic, got, tc.core)
 		}
@@ -96,7 +96,7 @@ func TestUsesCoreTransportDecidesByTheDeployedSubjectsOnceItHasReadThem(t *testi
 func TestReachesNoSessionDecidesByTheDeployedSubjectsAlone(t *testing.T) {
 	deployed := []string{"notifications.github.>", "notifications.x.*"}
 	client := &Client{}
-	client.deployedSubjects.Store(&deployed)
+	client.deployed.Store(&deployedRead{subjects: deployed})
 	for _, tc := range []struct {
 		topic string
 		none  bool

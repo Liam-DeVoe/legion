@@ -389,6 +389,17 @@ const publishDeniedPrefix = "envoy: the message bus denied the publish under thi
 // room.
 const streamFullPrefix = "envoy: the message bus refused the message because its stream is full"
 
+// streamLacksSubjectPrefix opens the body of every answer this listener gives a send or publish
+// the notifications stream did not take because, as the bus last read it, the stream carries no
+// subject capturing the message's (bus.ErrStreamLacksSubject: a newer build's stream that dropped a
+// subject this build stores), so one string matches in a test and in a deployed log filter. The
+// error after it names the subject and the stream's generation. It is deliberately not
+// busUnansweredPrefix: the bus answered, that no copy is kept for that subject, so "the message bus
+// did not answer" would have a monitor count it as an outage and send an operator looking for one
+// instead of at the stream's subjects. The same message is stored once a build that stores the
+// subject sets the stream, so the sender's retry is right.
+const streamLacksSubjectPrefix = "envoy: the message bus stored nothing"
+
 // grantGuardPrefix opens the error of the answer POST /v1/roles/set gives a soft claim the grant
 // guard refused (roleGrantGuarded): a role held under the claimant's own session id whose renewal
 // is older than the live window, while the role claim copy's last whole read is past its repair
@@ -429,7 +440,8 @@ const grantGuardPrefix = "envoy: the role grant guard refused the claim because 
 // A message the stream refused because it is full (bus.ErrStreamFull) is answered ahead of the
 // bus-unavailable 503 too, with a 503 and Retry-After of its own under streamFullPrefix: the bus
 // answered, so the body must not say it did not, but the same message is taken once the stream
-// has room, so the caller's retry is right.
+// has room, so the caller's retry is right. A message the stream does not capture the subject of
+// (bus.ErrStreamLacksSubject) is answered the same way under streamLacksSubjectPrefix.
 func writeBusUnavailable(w http.ResponseWriter, err error) int {
 	if errors.Is(err, bus.ErrPublishDenied) {
 		writeJSONError(w, http.StatusForbidden, fmt.Sprintf("%s: %s", publishDeniedPrefix, err))
@@ -438,6 +450,11 @@ func writeBusUnavailable(w http.ResponseWriter, err error) int {
 	if errors.Is(err, bus.ErrStreamFull) {
 		w.Header().Set("Retry-After", "1")
 		writeJSONError(w, http.StatusServiceUnavailable, fmt.Sprintf("%s: %s", streamFullPrefix, err))
+		return http.StatusServiceUnavailable
+	}
+	if errors.Is(err, bus.ErrStreamLacksSubject) {
+		w.Header().Set("Retry-After", "1")
+		writeJSONError(w, http.StatusServiceUnavailable, fmt.Sprintf("%s: %s", streamLacksSubjectPrefix, err))
 		return http.StatusServiceUnavailable
 	}
 	if !errors.Is(err, bus.ErrRefused) {
@@ -807,12 +824,14 @@ const senderStampReadTimeout = 1 * time.Second
 //   - A stopped target whose request set connected_only: 409 "the session is stopped", with
 //     nothing stored.
 //
-// Every 200 is written only once the stream has acknowledged the copy it holds: the target's agent
-// subject is one this build stores, which bus.Client.PublishAckWithin keeps on JetStream whatever
-// the deployed stream captures, so a stopped answer means the message waits in the stream for the
-// session. A publish the stream did not acknowledge, a newer build's stream that captures no
-// subject of the target's among them, is the bus's 503 with nothing stored, which asks the sender
-// to send the message again.
+// Every 200 is written only once the notifications stream, the one every session consumer reads,
+// has acknowledged the copy it holds: the target's agent subject is one this build stores, which
+// bus.Client.PublishAckWithin keeps on JetStream whatever the deployed stream captures, and no
+// other stream's acknowledgement counts, so a stopped answer means the message waits in the
+// stream for the session. A publish the stream did not acknowledge is the bus's 503, which asks
+// the sender to send the message again; where the deployed stream captures no subject of the
+// target's, such as a newer build's that dropped it, nothing is stored, and the 503 names the
+// subject the stream leaves out (streamLacksSubjectPrefix).
 //
 // The entry is read from the session store itself and not merely from this listener's cache of
 // it: only the store's word that the key is gone can make a record-based stopped answer or a 404,

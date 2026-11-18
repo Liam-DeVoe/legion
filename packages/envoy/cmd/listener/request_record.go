@@ -56,6 +56,11 @@ const (
 	// (bus.ErrStreamFull). It is not outcomeBusUnavailable: the bus answered, that the stream is
 	// full, so an operator reading the record looks at the stream's size, not for an outage.
 	outcomeStreamFull requestOutcome = "stream_full"
+	// outcomeStreamLacksSubject is a send or publish the notifications stream did not take because
+	// it carries no subject capturing the message's (bus.ErrStreamLacksSubject). It is not
+	// outcomeBusUnavailable: the bus answered, so an operator reading the record looks at the
+	// stream's subjects, not for an outage.
+	outcomeStreamLacksSubject requestOutcome = "stream_lacks_subject"
 	// outcomeSenderRateLimited is a send or publish of an agent session whose count under the
 	// operator's sender limit was empty (sender_limit.go), answered 429 before the route read a
 	// session, resolved a role, reported a wake or stored anything, so no other record holds the
@@ -134,14 +139,17 @@ func (rec *requestRecord) refuseWith(w http.ResponseWriter, status int, outcome 
 // status it wrote implies: 413 is the caller's own oversized message, 400 the subject or key NATS
 // will not take however often it is sent, 403 the publish this listener's own grant denies, and
 // anything else the bus not answering. The status is read back from the write rather than
-// classified a second time here, so the pair cannot drift, with one exception: a full stream
-// (bus.ErrStreamFull) shares its 503 with the bus not answering, so the error tells it apart.
+// classified a second time here, so the pair cannot drift, with two exceptions: a full stream
+// (bus.ErrStreamFull) and a stream that does not capture the subject (bus.ErrStreamLacksSubject)
+// share their 503 with the bus not answering, so the error tells them apart.
 func (rec *requestRecord) refuseBusUnavailable(w http.ResponseWriter, err error) {
 	status := writeBusUnavailable(w, err)
 	outcome := outcomeBusUnavailable
 	switch {
 	case errors.Is(err, bus.ErrStreamFull):
 		outcome = outcomeStreamFull
+	case errors.Is(err, bus.ErrStreamLacksSubject):
+		outcome = outcomeStreamLacksSubject
 	case status == http.StatusRequestEntityTooLarge:
 		outcome = outcomeTooLarge
 	case status == http.StatusBadRequest:

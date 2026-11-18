@@ -259,14 +259,14 @@ func (w *window) current() bool {
 }
 
 // sendJetStream publishes data, an envelope's encoding, to the stream on subject, under msgID as
-// its Nats-Msg-Id when that is not empty, and returns what waits for its acknowledgement. It
-// notes the time it put the message on the wire, which is what its acknowledgement reads a denial
-// of this send alone by (acknowledged). A failure is ErrUnavailable once the window's connection
-// is no longer current or nats.go reports the disconnect, and ErrNotAcknowledged when the
-// acknowledgement ran out of time or the server answered with no responders on a connection that
-// stayed current.
+// its Nats-Msg-Id when that is not empty, and returns what waits for its acknowledgement, which
+// only the notifications stream may give (expectNotificationsStream). It notes the time it put the
+// message on the wire, which is what its acknowledgement reads a denial of this send alone by
+// (acknowledged). A failure is ErrUnavailable once the window's connection is no longer current or
+// nats.go reports the disconnect, and ErrNotAcknowledged when the acknowledgement ran out of time
+// or the server answered with no responders on a connection that stayed current.
 func (w *window) sendJetStream(subject, msgID string, data []byte) (func() error, error) {
-	var options []nats.PubOpt
+	options := []nats.PubOpt{expectNotificationsStream}
 	if msgID != "" {
 		options = append(options, nats.MsgId(msgID))
 	}
@@ -285,11 +285,13 @@ func (w *window) sendJetStream(subject, msgID string, data []byte) (func() error
 const requestReplies = 4
 
 // Request publishes item's encoding to subject over core NATS on the window's connection, with a
-// reply inbox it subscribes first and a Nats-Msg-Id header of opts.MsgID, which every request
-// carries: an empty one is refused ErrNoForwardMsgID before anything is sent. It is pinned and
-// refused as a send of the window is: a subject NATS would not accept answers
-// ErrRefused, and a window whose connection was lost or reconnected answers ErrUnavailable, both in
-// the channel when Request returns, before anything is sent. Otherwise the channel receives:
+// reply inbox it subscribes first, a Nats-Msg-Id header of opts.MsgID, which every request
+// carries, and a Nats-Expected-Stream header naming the notifications stream, so only that stream
+// stores and acknowledges it (expectNotificationsStream): an empty MsgID is refused
+// ErrNoForwardMsgID before anything is sent. It is pinned and refused as a send of the window is: a
+// subject NATS would not accept answers ErrRefused, and a window whose connection was lost or
+// reconnected answers ErrUnavailable, both in the channel when Request returns, before anything is
+// sent. Otherwise the channel receives:
 //
 //   - nil on the stream's acknowledgement of a copy it holds, at a sequence and without an error,
 //     a duplicate's included (outcome): the request is stored on a subject the stream captures,
@@ -350,7 +352,7 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 		Subject: subject,
 		Reply:   inbox,
 		Data:    data,
-		Header:  nats.Header{nats.MsgIdHdr: []string{opts.MsgID}},
+		Header:  nats.Header{nats.MsgIdHdr: []string{opts.MsgID}, nats.ExpectedStreamHdr: []string{Stream}},
 	}
 	deadline := time.Now().Add(cmp.Or(opts.Timeout, publishAcknowledgementTimeout))
 	before := observe(w.conn)

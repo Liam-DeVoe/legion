@@ -430,14 +430,27 @@ func subjectsCapture(subjects []string, topic string) bool {
 	})
 }
 
-// readStreamSubjects reads the subjects the deployed stream carries, which may hold subjects this
-// build does not compile: a newer build adds its own, and reconciliation keeps them.
-func readStreamSubjects(js nats.JetStreamContext) ([]string, error) {
+// deployedRead is the notifications stream as a client last read it: the subjects it carries,
+// which may hold subjects this build does not compile (a newer build adds its own, and
+// reconciliation keeps them), and the generation of its settings (streamGenerationKey, 0 for a
+// stream no build stamped).
+type deployedRead struct {
+	subjects   []string
+	generation int
+}
+
+// deployedOf is the deployed stream cfg, a stream's configuration, describes.
+func deployedOf(cfg *nats.StreamConfig) deployedRead {
+	return deployedRead{subjects: cfg.Subjects, generation: MetadataGeneration(cfg.Metadata, streamGenerationKey)}
+}
+
+// readDeployedStream reads the subjects the deployed stream carries and its generation.
+func readDeployedStream(js nats.JetStreamContext) (deployedRead, error) {
 	info, err := js.StreamInfo(Stream)
 	if err != nil {
-		return nil, err
+		return deployedRead{}, err
 	}
-	return info.Config.Subjects, nil
+	return deployedOf(&info.Config), nil
 }
 
 // streamConfigGeneration is the generation of streamCfg's settings, stamped on the stream as its
@@ -782,7 +795,8 @@ func (r streamReconciliation) log() {
 }
 
 // ensureStreamWithConfig creates the stream with cfg, under a fresh StreamIDMetadataKey, or
-// reconciles the deployed one towards cfg, and returns the subjects the stream carries afterwards.
+// reconciles the deployed one towards cfg, and returns the stream it leaves deployed: the subjects
+// it carries afterwards and the generation of its settings.
 // cfg's Replicas is the deployment's replica count and its MaxBytes the deployment's byte limit, 0
 // when it sets none. defaultsAnUnsetCap is what the connected server is, read from the version it
 // answers (serverDefaultsAnUnsetCap): whether a deployed stream with no consumer cap is one the
@@ -846,7 +860,7 @@ func (r streamReconciliation) log() {
 // id write the same one, derived from what both read. A third race is settled here: a server that
 // leaves one of two starts' stream reads or creates unanswered, which each request below is sent
 // again for (sentAgain), since a start that returns such an error ends the program.
-func ensureStreamWithConfig(js nats.JetStreamContext, cfg *nats.StreamConfig, defaultsAnUnsetCap bool) ([]string, error) {
+func ensureStreamWithConfig(js nats.JetStreamContext, cfg *nats.StreamConfig, defaultsAnUnsetCap bool) (deployedRead, error) {
 	readStream := func() (*nats.StreamInfo, error) { return js.StreamInfo(Stream) }
 	info, err := sentAgain("STREAM.INFO", readStream)
 	if errors.Is(err, nats.ErrStreamNotFound) {
@@ -861,44 +875,44 @@ func ensureStreamWithConfig(js nats.JetStreamContext, cfg *nats.StreamConfig, de
 		// this branch reads as such and follows with the read below.
 		_, err = sentAgain("STREAM.CREATE", func() (*nats.StreamInfo, error) { return js.AddStream(&created) })
 		if err == nil {
-			return created.Subjects, nil
+			return deployedOf(&created), nil
 		}
 		if !errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
-			return nil, refusedSettings(err, nil, &created)
+			return deployedRead{}, refusedSettings(err, nil, &created)
 		}
 		info, err = sentAgain("STREAM.INFO", readStream)
 	}
 	if err != nil {
-		return nil, err
+		return deployedRead{}, err
 	}
 	deployedGeneration := MetadataGeneration(info.Config.Metadata, streamGenerationKey)
 	if deployedGeneration > streamConfigGeneration {
 		slog.Info("envoy nats stream settings belong to a newer build, so this build leaves them as they are",
 			slog.Int("deployed_generation", deployedGeneration), slog.Int("own_generation", streamConfigGeneration))
-		return info.Config.Subjects, nil
+		return deployedOf(&info.Config), nil
 	}
 	desired, reconciliation := reconciledStream(info, cfg, defaultsAnUnsetCap)
 	if reflect.DeepEqual(desired, info.Config) {
 		reconciliation.log()
-		return info.Config.Subjects, nil
+		return deployedOf(&info.Config), nil
 	}
 	migratingRoleLanes := streamCapturesRoleLanes(info.Config.Subjects) && !streamCapturesRoleLanes(desired.Subjects)
 	if err := migrateRoleLanesOffStream(js, &info.Config, &desired); err != nil {
-		return nil, err
+		return deployedRead{}, err
 	}
 	if err := updateStream(js, &desired, func(again *nats.StreamInfo) bool {
 		reconciled, _ := reconciledStream(again, cfg, defaultsAnUnsetCap)
 		return reflect.DeepEqual(reconciled, again.Config)
 	}); err != nil {
-		return nil, refusedSettings(err, &info.Config, &desired)
+		return deployedRead{}, refusedSettings(err, &info.Config, &desired)
 	}
 	reconciliation.log()
 	if migratingRoleLanes {
 		if err := purgeLegacyRoleMessages(js); err != nil {
-			return nil, err
+			return deployedRead{}, err
 		}
 	}
-	return desired.Subjects, nil
+	return deployedOf(&desired), nil
 }
 
 // MetadataGeneration is the generation metadata holds under key, as a stream or a durable consumer
