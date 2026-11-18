@@ -11574,6 +11574,52 @@ describe("executeDispatchTool", () => {
     expect(requests).toEqual(["/api/v1/issues/DSP-42/artifacts", "/api/v1/markdown/round-trip"]);
   });
 
+  // INFRA-1150, test round 1: `dispatch doc-read` prints an ask block with the eight server-owned
+  // attributes the store renders from the ask node (state, answered_by, answered_at, selected,
+  // answer), and the store's round trip takes them off (pmdoc.StripServerOwnedAttrs), as every
+  // upload does. Those attributes are the server's, so taking them off is no other spelling of the
+  // writer's text: an agent that reads a spec, adds a line and uploads it with --force must get its
+  // version, not a refusal of the ask line it never wrote. Measured on a real server of this head:
+  // the refusal named line 13, the ask block's opening line, and the same text without the
+  // attributes uploaded.
+  test("uploads text read back with an ask block's server-owned attributes, which the store takes off", async () => {
+    const posts: string[] = [];
+    const read =
+      '# Spec\n\n:::ask{#q-drive urgency="med" multiple="false" state="answered" answered_by="alice"' +
+      ' answered_at="2026-11-18T11:00:41.315261Z" selected="[&#x22;Port two&#x22;]"' +
+      ' answer="The high one."}\nWhich port does the drive use?\n\n- Port one: the low one.\n' +
+      "- Port two: the high one.\n:::\n\nOne more line the agent adds.\n";
+    const stored =
+      '# Spec\n\n:::ask{#q-drive urgency="med" multiple="false"}\nWhich port does the drive use?\n\n' +
+      "- Port one: the low one.\n- Port two: the high one.\n:::\n\nOne more line the agent adds.\n";
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      if (pathname === "/api/v1/markdown/round-trip") return response({ markdown: stored });
+      if (pathname === "/api/v1/issues/DSP-42/artifacts" && init?.method === "POST") {
+        posts.push(pathname);
+        return response({
+          artifact: { id: "artifact-spec", issue_key: "DSP-42", name: "spec.md", slug: "spec" },
+          version: { number: 5 },
+        });
+      }
+      throw new Error(`unexpected request: ${pathname}`);
+    };
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "spec.md", content: read, force: true },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect(result.text).toContain("Uploaded spec.md as version 5");
+    expect(posts).toEqual(["/api/v1/issues/DSP-42/artifacts"]);
+  });
+
   // A name --path would store as bytes has a second way out, and the refusal names it.
   test("names --path in the refusal of a name whose extension keeps the bytes", async () => {
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
