@@ -2714,8 +2714,7 @@ nothing. A repeat the listener recognises costs nothing too: the stream's `dupli
 repeat of a role message kept for the role's next holder, and a repeat of a role forward the same
 pod's route made in the last 10 minutes. So does an echo, a role message from the session that holds
 the role. A `duplicate` that answers the listener's own second send, made after its connection to
-NATS
-closed under the first, costs one, since the first may have stored the message. A role send's
+NATS closed under the first, costs one, since the first may have stored the message. A role send's
 echo, repeat or `403` costs nothing only while the send has made no forward, since an earlier
 forward may have stored the message. A repeat that finds the count at 0 is refused as a new
 message is. The listener's own two settings are on the documentation site's

@@ -4183,7 +4183,7 @@ jobs:
               - 'packages/envoy/internal/redirects/*'
               - 'packages/envoy/internal/routing/*'
               # The broker address helper and the URL redactor that main added to the listener's
-              # build closure, which the listener_server_change filter names too.
+              # test binary, which the listener_server_change filter names too.
               - 'packages/envoy/brokeraddr/*'
               - 'packages/envoy/internal/redact/*'
               # The two listener pod specs cmd/listener/pod_grace_period_test.go reads: it holds
