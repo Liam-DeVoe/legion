@@ -88,15 +88,39 @@ for (const code of REDIRECT_CODES) {
 
 // A client that read a redirect's body before its status would wait on a body that never ends,
 // and refuse nothing; the test's limit is that wait's bound. The body it does not read is
-// cancelled, so it holds no connection.
+// cancelled, so it holds no connection: the client is handed a fetch whose answers carry a body
+// that never ends and counts its cancel, and the count is read as soon as the call is refused,
+// before the call's own deadline could cancel the body in its place.
 test("a redirect whose body never ends is refused naming its status, before any of its body is read, and its body is cancelled", async () => {
   const servers = redirectServers();
-  servers.endlessBody = true;
+  let cancelled = 0;
+  const counting = async (input: string | URL | Request, init?: RequestInit) => {
+    const answer = await fetch(input, init);
+    await answer.body?.cancel();
+    const endless = new ReadableStream<Uint8Array>({
+      pull: (controller) => controller.enqueue(new TextEncoder().encode("never ends")),
+      cancel: () => {
+        cancelled += 1;
+      },
+    });
+    return new Response(endless, { status: answer.status, headers: answer.headers });
+  };
   try {
-    expect(((await send(servers)) as Error).message).toBe(
-      `POST ${servers.origin}/v1/messages/send answered 307, redirecting to ${servers.elsewhere}, and the Envoy client follows no redirect: ${FIX}`
+    const sent = await refusal(
+      createEnvoyClient({
+        baseUrl: servers.origin,
+        fetch: counting,
+        credential: madeUpBroker,
+      }).send({
+        sourceSessionID: "ses_sender",
+        targetSessionID: "ses_receiver",
+        message: "a made-up message",
+      })
     );
-    await servers.until(() => servers.cancelledBodies === 1);
+    expect({ message: (sent as Error).message, cancelled }).toEqual({
+      message: `POST ${servers.origin}/v1/messages/send answered 307, redirecting to ${servers.elsewhere}, and the Envoy client follows no redirect: ${FIX}`,
+      cancelled: 1,
+    });
   } finally {
     servers.stop();
   }
