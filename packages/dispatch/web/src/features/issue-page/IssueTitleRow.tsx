@@ -69,10 +69,35 @@ export function IssueTitleRow({
   // Set by a key that ends the edit, and read once the heading is drawn again: the focus goes
   // back to it.
   const returning = useRef(false);
+  // The draft this edit sent while the reader was away, trimmed as it went, or null. A draft goes
+  // once: neither a later switch nor the end of the edit sends it again. `requestTitleSubmit`
+  // would send it a second time after its write was refused or stopped, or in the moment between
+  // its landing and the page drawing the issue it answered, while the issue's title read here is
+  // still the old one.
+  const sent = useRef<string | null>(null);
+  // The editor's text as the reader last wrote it in this edit. The draft takes that text trimmed
+  // as a write of it lands with the edit open (`onIssueSuccess`), or as a switch finds it the
+  // issue's title but for spaces at its ends (`requestTitleSubmit`). While the draft is the
+  // reader's text trimmed, the editor and the heading under it hold the reader's text, so the
+  // editor's value does not change under them: a space typed before the next word stays, and the
+  // caret stays where it was.
+  const [written, setWritten] = useState("");
+  const shown = editing && written.trim() === drafts.title ? written : drafts.title;
+  const openEdit = () => {
+    sent.current = null;
+    setWritten(drafts.title);
+    setEditing(true);
+  };
   useEffect(() => {
     if (editing || !returning.current) return;
     heading.current?.focus({ preventScroll: true });
     returning.current = false;
+  }, [editing]);
+  // The editor takes the focus once, as the edit opens. Focused at every render, it took the
+  // focus back from a control the page's code had moved it to while the reader was away, and the
+  // edit then stayed open as they came back.
+  useLayoutEffect(() => {
+    if (editing) editor.current?.focus();
   }, [editing]);
   useEffect(() => {
     const page = heading.current?.ownerDocument;
@@ -93,10 +118,22 @@ export function IssueTitleRow({
       }
     );
   }, []);
-  // Ends the edit as the editor's blur does: the draft is sent, and a press under way holds the
-  // heading at the editor's height until it ends.
+  // Sends a changed draft while the reader is away, and leaves the edit open with their text and
+  // caret (decision 295): today's page sends the draft as the window loses the focus, and a tab
+  // the browser discards, a tab closed while away or a close of the issue elsewhere would lose it.
+  // A draft is changed when it is not empty once trimmed, is not the issue's title (`titleDirty`;
+  // `requestTitleSubmit` sends nothing for one that differs from it only by spaces at its ends)
+  // and is not the draft this edit already sent. An empty draft sends nothing and says nothing
+  // while the reader is away: its "Title is required." waits for the end of the edit.
+  const sendAway = () => {
+    const draft = drafts.title.trim();
+    if (isClosed || !drafts.titleDirty || draft === "" || draft === sent.current) return;
+    if (drafts.requestTitleSubmit()) sent.current = draft;
+  };
+  // Ends the edit as the editor's blur does: the draft is sent unless this edit already sent it,
+  // and a press under way holds the heading at the editor's height until it ends.
   const endEdit = () => {
-    drafts.requestTitleSubmit();
+    if (drafts.title.trim() !== sent.current) drafts.requestTitleSubmit();
     if (pressing.current) {
       // The press under way lets the heading go as it ends.
       heldForPress.current = true;
@@ -104,31 +141,41 @@ export function IssueTitleRow({
     }
     setEditing(false);
   };
-  // Read through a ref by the window's listener below, which is taken once for the edit, so the
-  // edit ends with the draft and the issue as they stand when the reader comes back.
-  const latestEndEdit = useRef(endEdit);
+  // Read through a ref by the page's listeners below, which are taken once for the edit, so the
+  // draft is sent, and the edit ends, with the draft and the issue as they stand at that moment.
+  const latest = useRef({ endEdit, sendAway });
   useLayoutEffect(() => {
-    latestEndEdit.current = endEdit;
+    latest.current = { endEdit, sendAway };
   });
   useEffect(() => {
     if (!editing) return;
     const view = heading.current?.ownerDocument.defaultView;
     if (view == null) return;
-    // A switch to another window leaves the edit open (the editor's blur below), and the focus
-    // can move while the reader is away, by the header's focus keeper or the page's own code,
-    // with no blur reaching the editor: Chromium sends none while the page has no focus. An
-    // editor that no longer holds the focus as the reader comes back ends the edit as its blur
-    // would have.
+    // A switch to another window leaves the edit open (the editor's blur below), and the page's
+    // own code can move the focus while the reader is away with no blur reaching the editor:
+    // Chromium sends none while the page has no focus. An editor that no longer holds the focus
+    // as the reader comes back ends the edit as its blur would have.
     const returned = () => {
-      if (view.document.activeElement !== editor.current) latestEndEdit.current();
+      if (view.document.activeElement !== editor.current) latest.current.endEdit();
+    };
+    // A page hidden with the edit open sends a changed draft as a switch's blur does: a phone
+    // that hides the page may send the editor no blur. A hide and a blur of the same draft send
+    // it once (`sent`).
+    const hidden = () => {
+      if (view.document.visibilityState === "hidden") latest.current.sendAway();
     };
     view.addEventListener("focus", returned);
-    return () => view.removeEventListener("focus", returned);
+    view.document.addEventListener("visibilitychange", hidden);
+    return () => {
+      view.removeEventListener("focus", returned);
+      view.document.removeEventListener("visibilitychange", hidden);
+    };
   }, [editing]);
   // An issue closed while its title is edited, as an event's refresh can close it while the
   // reader is away, takes no title (`useIssueDrafts` refuses one), and its disabled editor would
   // hold a draft nothing ends: the edit ends and drops the draft, and the heading reads the
-  // issue's title.
+  // issue's title. A draft a switch sent went with its write, so what is dropped is a change made
+  // after that send.
   useEffect(() => {
     if (!editing || !isClosed) return;
     drafts.discardTitle();
@@ -152,12 +199,12 @@ export function IssueTitleRow({
           editing ? "invisible" : isClosed ? "" : `cursor-text ${borderStrongHover}`
         }`}
         onClick={() => {
-          if (!isClosed) setEditing(true);
+          if (!isClosed) openEdit();
         }}
         onKeyDown={(event) => {
           if (!isClosed && (event.key === "Enter" || event.key === " ")) {
             event.preventDefault();
-            setEditing(true);
+            openEdit();
           }
         }}
         ref={heading}
@@ -165,7 +212,7 @@ export function IssueTitleRow({
         {...authorText}
       >
         {/* A trailing space or an empty draft still holds a line, as the editor does. */}
-        {drafts.title === "" || drafts.title.endsWith(" ") ? `${drafts.title}\u200b` : drafts.title}
+        {shown === "" || shown.endsWith(" ") ? `${shown}\u200b` : shown}
       </h1>
       {editing ? (
         <textarea
@@ -177,13 +224,20 @@ export function IssueTitleRow({
           onBlur={(event) => {
             // A switch to another window or tab blurs the editor but leaves it the page's focused
             // element, and the browser focuses it again as the reader comes back: they have not
-            // left the editor, so it stays open with their draft, sends nothing and leaves the
-            // press alone.
-            if (!event.currentTarget.ownerDocument.hasFocus()) return;
+            // left the editor, so the edit stays open with their text and caret, and leaves the
+            // press alone. A changed draft is sent all the same (`sendAway`).
+            if (!event.currentTarget.ownerDocument.hasFocus()) {
+              sendAway();
+              return;
+            }
             endEdit();
           }}
           // A title is one line of words: a line break typed or pasted is a space.
-          onChange={(event) => drafts.writeTitle(event.target.value.replace(/\s*\n\s*/gu, " "))}
+          onChange={(event) => {
+            const next = event.target.value.replace(/\s*\n\s*/gu, " ");
+            setWritten(next);
+            drafts.writeTitle(next);
+          }}
           onKeyDown={(event) => {
             // The Escape that cancels an IME composition and the Enter that confirms one are the
             // input method's keys, not the reader ending the edit. Safari sends them after its
@@ -201,12 +255,9 @@ export function IssueTitleRow({
               event.currentTarget.blur();
             }
           }}
-          ref={(node) => {
-            editor.current = node;
-            node?.focus();
-          }}
+          ref={editor}
           rows={1}
-          value={drafts.title}
+          value={shown}
         />
       ) : null}
     </div>

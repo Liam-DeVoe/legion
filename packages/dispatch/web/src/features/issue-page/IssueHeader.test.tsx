@@ -16,7 +16,7 @@ import {
   decisionsAndReadMarkHandlers,
 } from "../../__tests__/proof-document";
 import { answerIssuePatches } from "../../__tests__/send-answers";
-import { api } from "../../api/client";
+import { ApiError, api } from "../../api/client";
 import { issueQuery } from "../../api/queries";
 import type {
   ArtifactReview,
@@ -1164,9 +1164,7 @@ test("a press a drag takes leaves the title clamped once Enter ends the edit", a
   try {
     const heading = await screen.findByRole("heading", { level: 1, name: issue.title });
     expect(heading.className).toContain("line-clamp-2");
-    await user.click(heading);
-    const editor = await screen.findByRole("textbox", { name: "Issue title" });
-    await waitFor(() => expect(editor).toHaveFocus());
+    const { editor } = await openTitleEditor(user);
     // The press goes down on the editor's selected words and becomes a drag: the events Chromium
     // sends for it, in its order, with no mouseup.
     fireEvent.pointerDown(editor, { button: 0, isPrimary: true, pointerType: "mouse" });
@@ -1233,9 +1231,7 @@ test("a right press whose context menu takes its release leaves the title clampe
   try {
     const heading = await screen.findByRole("heading", { level: 1, name: issue.title });
     expect(heading.className).toContain("line-clamp-2");
-    await user.click(heading);
-    const editor = await screen.findByRole("textbox", { name: "Issue title" });
-    await waitFor(() => expect(editor).toHaveFocus());
+    const { editor } = await openTitleEditor(user);
     // The press goes down with the focus still in the editor. user-event sends no contextmenu
     // without a pointerup, and moves the focus as its pointer goes down.
     fireEvent.pointerDown(document.body, { button: 2, isPrimary: true, pointerType: "mouse" });
@@ -1289,37 +1285,55 @@ test("a tap that ends the edit holds the title whole until its click", async () 
 });
 
 /** Opens the title's editor (`openTitleEditor`) and writes `draft` in it in place of the title,
- *  with the editor keeping the focus. */
+ *  with the editor keeping the focus. An empty draft is the title cleared: user-event types no
+ *  empty text. */
 async function editTitle(user: UserEvent, draft: string) {
   const { editor, heading } = await openTitleEditor(user);
   await user.clear(editor);
-  await user.keyboard(draft);
+  if (draft !== "") await user.keyboard(draft);
   expect(editor).toHaveValue(draft);
   return { editor, heading };
 }
 
-/** Takes the page's focus away as a switch to another window does, and runs `whileAway` before
- *  the reader comes back: `focused` loses the focus with no element to go to and stays the
- *  document's active element, and the document has no focus until this returns. */
-function blurWindow(focused: HTMLElement, whileAway?: () => void): void {
+/** Takes the page's focus away as a switch to another window does: `focused` loses the focus
+ *  with no element to go to and stays the document's active element, and the document has no
+ *  focus until the reader comes back by the function this answers. A write the blur sends goes on
+ *  in the case's next wait (`waitFor` or user-event), which keeps its updates inside React's act
+ *  scope, so a case waits through nothing else before it. */
+function leaveWindow(focused: HTMLElement): () => void {
   const hasFocus = spyOn(document, "hasFocus").mockReturnValue(false);
+  // What a browser sends as its window loses the focus, with no relatedTarget and the focus left
+  // where it was: user-event has no form for a window's blur. testing-library's `fireEvent.blur`
+  // also sends the focusout that React's `onBlur` hears.
+  fireEvent.blur(focused, { relatedTarget: null });
+  fireEvent.blur(window);
+  return () => hasFocus.mockRestore();
+}
+
+/** Takes the page's focus away as a switch to another window does (`leaveWindow`), and runs
+ *  `whileAway` before the reader comes back. */
+function blurWindow(focused: HTMLElement, whileAway?: () => void): void {
+  const comeBack = leaveWindow(focused);
   try {
-    // What a browser sends as its window loses the focus, with no relatedTarget and the focus
-    // left where it was: user-event has no form for a window's blur. testing-library's
-    // `fireEvent.blur` sends the focusout before the blur, as a browser does.
-    fireEvent.blur(focused, { relatedTarget: null });
-    fireEvent.blur(window);
     whileAway?.();
   } finally {
-    hasFocus.mockRestore();
+    comeBack();
   }
+}
+
+/** Waits until the write of `title` has landed: the issue's read holds Dispatch's answer. */
+async function titleLanded(queryClient: QueryClient, title: string): Promise<void> {
+  await waitFor(() =>
+    expect(queryClient.getQueryData<IssueDetails>(["issue", "CORE-1"])?.title).toBe(title)
+  );
 }
 
 // A switch to another window or tab blurs the editor with no element for the focus to go to, and
 // the editor stays the page's focused element, which the browser focuses again as the reader comes
-// back. The reader has not left the editor, so it stays open with their draft and sends nothing.
-// Back in the window, a press elsewhere still ends the edit and sends the draft, once.
-test("a switch to another window keeps the title's editor open with its draft and sends no write", async () => {
+// back. The reader has not left the editor, so it stays open with their draft, and the draft is
+// sent all the same, as today's page sends it as the window loses the focus (decision 295). Back
+// in the window, a press elsewhere ends the edit and sends nothing more.
+test("a switch to another window keeps the title's editor open with its draft and sends the draft once", async () => {
   const user = userEvent.setup();
   const restore = stubHeader(issue);
   const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, title: "Review the plan" });
@@ -1331,14 +1345,14 @@ test("a switch to another window keeps the title's editor open with its draft an
     expect(editor).toBeInTheDocument();
     expect(editor).toHaveValue("Review the plan");
     expect(editor).toHaveFocus();
-    expect(patchIssue).not.toHaveBeenCalled();
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
 
     await user.click(document.body);
     await waitFor(() =>
       expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument()
     );
-    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
-    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
+    expect(patchIssue).toHaveBeenCalledTimes(1);
   } finally {
     view.unmount();
     patchIssue.mockRestore();
@@ -1346,11 +1360,130 @@ test("a switch to another window keeps the title's editor open with its draft an
   }
 });
 
-// While the reader is away in another window the focus can move by code, the header's keeper's or
-// the page's, with no blur reaching the editor: Chromium sends none while the page has no focus.
-// Back in the window the editor no longer holds the focus, so the edit ends as its blur would have
-// ended it, and the draft is sent, once.
-test("a focus moved while the window is away ends the title's edit as the reader comes back and sends the draft once", async () => {
+// The title a switch sends is the draft trimmed, as every title is, and its write lands with the
+// edit still open: the draft then takes the trimmed title, and the editor keeps the reader's place
+// - their text, with the space they typed before their next word, and their caret. The reader's
+// return sends nothing more, and neither does the press that later ends the edit: the draft went
+// once.
+test("a switch to another window sends the title's changed draft once and keeps the reader's text and caret as its write lands", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, title: "Review the plan" });
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    const { editor } = await editTitle(user, "Review the plan ");
+    const place = editor as HTMLTextAreaElement;
+    // The reader's caret, put back after "Review".
+    place.setSelectionRange(6, 6);
+    blurWindow(editor);
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
+    expect(editor).toBeInTheDocument();
+    expect(editor).toHaveFocus();
+    await titleLanded(queryClient, "Review the plan");
+
+    // The window's focus as the reader comes back, the document focused again: user-event has no
+    // form for it.
+    fireEvent.focus(window);
+    await waitFor(() => expect(editor).toHaveFocus());
+    expect(editor).toHaveValue("Review the plan ");
+    expect([place.selectionStart, place.selectionEnd]).toEqual([6, 6]);
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+
+    await user.click(document.body);
+    await waitFor(() =>
+      expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument()
+    );
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// The issue can be closed elsewhere before a switch's write reaches Dispatch, which then refuses
+// the title, and the page may not have drawn the close yet. Dispatch refuses that title every
+// time, and the draft went once, so neither another switch, nor the reader's return, nor the press
+// that later ends the edit sends it again, though it is still not the issue's title: only a change
+// of it sends again.
+test("a title a switch sent and Dispatch refused is not sent again by another switch, the reader's return or the end of the edit", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const refusal = "CORE-1 is closed; reopen it first";
+  const patchIssue = answerIssuePatches().mockRejectedValue(
+    new ApiError(409, { code: "ISSUE_CLOSED", error: refusal })
+  );
+  const view = renderHeader();
+
+  try {
+    const { editor } = await editTitle(user, "Review the plan");
+    blurWindow(editor);
+    await screen.findByText(refusal);
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
+
+    // The window's focus as the reader comes back, then another switch and return: user-event has
+    // no form for a window's focus.
+    fireEvent.focus(window);
+    blurWindow(editor);
+    fireEvent.focus(window);
+    await waitFor(() => expect(editor).toHaveFocus());
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+
+    await user.click(document.body);
+    await waitFor(() =>
+      expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument()
+    );
+    expect(screen.getByText(refusal)).toBeInTheDocument();
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// A switch with a draft that is not changed sends nothing and leaves the edit open as the reader
+// left it: the title as it stands; the title with a space typed after it, which is the title once
+// trimmed, and which the switch leaves as typed; and an empty draft, which says nothing while the
+// reader is away, its "Title is required." waiting for the end of the edit.
+test.each([
+  ["the title as it stands", issue.title],
+  ["the title with a space after it", `${issue.title} `],
+  ["an empty draft", ""],
+])("a switch to another window with %s sends no write and keeps the title's editor open", async (_draftName, draft) => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const patchIssue = answerIssuePatches().mockResolvedValue(issue);
+  const view = renderHeader();
+
+  try {
+    const { editor } = await editTitle(user, draft);
+    blurWindow(editor);
+    expect(editor).toBeInTheDocument();
+    expect(editor).toHaveValue(draft);
+    expect(editor).toHaveFocus();
+
+    // The window's focus as the reader comes back: user-event has no form for it.
+    fireEvent.focus(window);
+    await waitFor(() => expect(editor).toHaveFocus());
+    expect(editor).toHaveValue(draft);
+    expect(screen.queryByText("Title is required.")).not.toBeInTheDocument();
+    expect(patchIssue).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// A phone that hides the page may send the editor no blur, so a page hidden with the edit open
+// sends a changed draft as a switch does (decision 295), and keeps the edit open. The blur of the
+// window that can follow, for the same draft, sends nothing more: the draft went once.
+test("a page hidden with the title's editor open sends its changed draft once, and a window blur after it sends nothing more", async () => {
   const user = userEvent.setup();
   const restore = stubHeader(issue);
   const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, title: "Review the plan" });
@@ -1358,19 +1491,67 @@ test("a focus moved while the window is away ends the title's edit as the reader
 
   try {
     const { editor } = await editTitle(user, "Review the plan");
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+    try {
+      act(() => {
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
+      expect(editor).toBeInTheDocument();
+      expect(editor).toHaveValue("Review the plan");
+      expect(editor).toHaveFocus();
+
+      blurWindow(editor);
+      await waitFor(() => expect(editor).toHaveFocus());
+      expect(editor).toHaveValue("Review the plan");
+      expect(patchIssue).toHaveBeenCalledTimes(1);
+    } finally {
+      Reflect.deleteProperty(document, "visibilityState");
+    }
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// While the reader is away in another window the page's own code can move the focus, with no blur
+// reaching the editor: Chromium sends none while the page has no focus. The page can draw again
+// meanwhile, as an event's refresh draws it. Back in the window the editor no longer holds the
+// focus, so the edit ends as its blur would have ended it, and the draft, which the switch sent,
+// is not sent again.
+test("a focus moved while the window is away ends the title's edit as the reader comes back and sends the draft once", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, title: "Review the plan" });
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    const { editor } = await editTitle(user, "Review the plan");
     const control = screen.getByRole("button", { name: "Issue actions" });
-    blurWindow(editor, () => act(() => control.focus()));
+    blurWindow(editor, () => {
+      act(() => control.focus());
+      // An event's refresh of the issue, which draws the header again.
+      act(() => {
+        queryClient.setQueryData<IssueDetails>(
+          ["issue", "CORE-1"],
+          (current) => current && { ...current, updated_at: "2026-09-12T10:00:00Z" }
+        );
+      });
+    });
     expect(control).toHaveFocus();
     expect(editor).toBeInTheDocument();
-    expect(patchIssue).not.toHaveBeenCalled();
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
 
     // The window's focus as the reader comes back: user-event has no form for it.
     fireEvent.focus(window);
     await waitFor(() =>
       expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument()
     );
-    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
-    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
+    expect(patchIssue).toHaveBeenCalledTimes(1);
   } finally {
     view.unmount();
     patchIssue.mockRestore();
@@ -1380,31 +1561,52 @@ test("a focus moved while the window is away ends the title's edit as the reader
 
 // An event's refresh can close the issue while the reader is away in another window, which
 // disables the editor they left open. A closed issue takes no title, so the edit ends and drops
-// its draft, and the heading reads the issue's title again: no disabled editor is left holding a
-// draft that nothing can end.
-test("an issue closed while the window is away ends the title's edit and drops its draft", async () => {
+// its draft, and the heading reads the issue's title: no disabled editor is left holding a draft
+// that nothing can end. The switch sent the draft before the close, and its write went, so the
+// issue's title is the reader's: what the close drops is only a change made after that send, here
+// the words the reader typed once back in the window, before the close reached the page.
+test.each([
+  ["while the window is away", false],
+  ["after the reader came back and typed more", true],
+] as const)("an issue closed %s ends the title's edit and keeps only the draft the switch sent", async (_when, typedMore) => {
   const user = userEvent.setup();
   const restore = stubHeader(issue);
   const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, title: "Review the plan" });
   const queryClient = headerClient();
   const view = renderHeader("/issues/CORE-1", queryClient);
+  // The issue as Dispatch has it once the switch's write went and the issue was closed elsewhere.
+  const closeIssue = () =>
+    act(() => {
+      queryClient.setQueryData<IssueDetails>(["issue", "CORE-1"], {
+        ...issue,
+        closed_at: "2026-09-12T10:00:00Z",
+        status: "done",
+        title: "Review the plan",
+      });
+    });
 
   try {
     const { editor, heading } = await editTitle(user, "Review the plan");
-    blurWindow(editor, () =>
-      act(() => {
-        queryClient.setQueryData<IssueDetails>(["issue", "CORE-1"], {
-          ...issue,
-          closed_at: "2026-09-12T10:00:00Z",
-          status: "done",
-        });
-      })
-    );
+    const comeBack = leaveWindow(editor);
+    try {
+      await titleLanded(queryClient, "Review the plan");
+      if (!typedMore) closeIssue();
+    } finally {
+      comeBack();
+    }
+    if (typedMore) {
+      // The window's focus as the reader comes back: user-event has no form for it.
+      fireEvent.focus(window);
+      await user.keyboard(" today");
+      expect(editor).toHaveValue("Review the plan today");
+      closeIssue();
+    }
     await waitFor(() =>
       expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument()
     );
-    expect(heading).toHaveTextContent(issue.title);
-    expect(patchIssue).not.toHaveBeenCalled();
+    expect(heading).toHaveTextContent(/^Review the plan$/);
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
   } finally {
     view.unmount();
     patchIssue.mockRestore();
