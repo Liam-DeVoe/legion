@@ -657,8 +657,7 @@ func (g *Grader) request(spec judgementSpec, in GradeInput) (gradeRequest, error
 	inputsFirst := inputsFirstLayout(g.addedGrader(in.Judgement))
 	r.data = promptData{
 		HasQuestion: r.parts.Question, HasText: r.parts.Text, HasRecord: r.parts.Record, HasSession: r.parts.Session, WriterAnswer: r.parts.WriterAnswer,
-		HasOwnWords: in.ownWords(), Reply: in.Reply, FirstParagraph: in.Judgement == JFirstParagraph, Phrases: g.phrases,
-		LostKinds: inputsFirst && in.Judgement == JLost,
+		HasOwnWords: in.ownWords(), Reply: in.Reply, Phrases: g.phrases, LostKinds: inputsFirst && in.Judgement == JLost,
 	}
 	if r.parts.Session {
 		r.session = in.Session

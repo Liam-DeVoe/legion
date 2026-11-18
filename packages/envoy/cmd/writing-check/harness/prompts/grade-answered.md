@@ -17,7 +17,7 @@ Decide whether the answer of the fresh reader answers the question of the reader
 
 {{template "answer-checks" .}}
 
-Use {{if .HasText}}the text{{if .HasSession}}, {{else}} and {{end}}{{end}}the record{{if .HasSession}} and the session{{end}} to know what is true. Do not decide whether the text is good. Decide only about the answer.
+Use {{if .HasText}}the text, {{end}}the record{{if .HasSession}} and the session{{end}} to know what is true. Do not decide whether the text is good. Decide only about the answer.
 
 ## Your answer
 
