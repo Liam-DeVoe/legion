@@ -109,11 +109,13 @@ const (
 // carries (podKind.asksExtendedRunTime) — the controller's pod always, an issue pod only while its
 // reservation is Guaranteed. An issue pod whose cpu or memory request is below its limit carries
 // the second not at all, so Autopilot stops giving it a node of its own and it shares a node and
-// bursts; what a pod the cluster ends was doing is not lost, since the daemon keeps a copy of each
-// issue workspace outside the pod and continues every role of that pod in a session of its own,
-// with no death and no launch failure charged however often the cluster ends it, but for an
-// Evicted end with no DisruptionTarget condition, which is charged (docs/kubernetes.md, "An end
-// from outside the pod").
+// bursts. What a pod the cluster ends keeps is its issue's work up to the daemon's last copy of
+// the workspace, which starts at most a copy period before the end (internal/daemon's
+// runningCopyPeriod), and its roles: the daemon continues every role of that pod in its own
+// session with no death and no launch failure charged however often the cluster ends it. An
+// Evicted end with no DisruptionTarget condition, and a node-pressure eviction whose message
+// names a container of the pod over its memory request, are the pod's own and are counted as a
+// stop of each role's process (docs/kubernetes.md, "An end from outside the pod").
 const (
 	doNotDisruptAnnotation = "karpenter.sh/do-not-disrupt"
 	safeToEvictAnnotation  = "cluster-autoscaler.kubernetes.io/safe-to-evict"
