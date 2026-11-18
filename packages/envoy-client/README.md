@@ -639,7 +639,9 @@ definitive answer when its deadline ended it"); `last` is the cut or the timeout
 made whose answer is gone is a `DispatchWriteLandedError` (`code`, an `IdempotencyLandedCode`, and
 `status`): `409 KEY_COMMITTED`, a write that landed before its answer was lost, which Dispatch will
 not run again, or a replayed 2xx (`Idempotency-Replayed: ?1`) reading `ANSWER_NOT_KEPT`, a first
-answer larger than Dispatch keeps (`answerNotKept`, shared with the page). It is no refusal and no
+answer Dispatch gives no copy of: one larger than the 1 MiB a key keeps, or a success that holds a
+comment or a message deleted since, or a document version name a delete replaced (`answerNotKept`,
+shared with the page; `IDEMPOTENCY_ANSWER_NOT_KEPT` in `@legion/contracts`). It is no refusal and no
 `DispatchServiceError`, and it is never asked again. Its message is the one line the session
 reads: the method and URL were made, why the answer is gone, and to read what it made back with
 `dispatch read` or the matching list. The `dispatch` command exits 0 on one and records
@@ -648,7 +650,14 @@ command's own write that lands this way fails the command (exit 1) with that lin
 means: a picture upload (nothing else was written: run the call again, which uploads it as its
 next version), or the closing reason of `issue-update --status done` (the close was not sent: read
 the issue's messages for the reason, then close with one that points at it). The close's own
-`PATCH` landing this way is the command's write, and exits 0.
+`PATCH` landing this way is the command's write, and exits 0. A `POST` that writes nothing
+(`markdownRoundTrip`, `related`) made nothing either, so that replayed 2xx is no landing: the client
+asks the call once more under a new key, which runs it afresh, and a second such answer is a
+`DispatchAnswerNotKeptError` (`code` `ANSWER_NOT_KEPT`, `status`), no `DispatchServiceError`. Its
+message says the call wrote nothing, that Dispatch kept no copy of its answer, and to run the
+command again, which asks under a new key: `dispatch related` exits 1 on one, and `dispatch
+artifact` refuses the upload its stored-text check could not run, saying to send it again. A
+replayed refusal is the refusal Dispatch first gave, thrown as any other.
 
 Successful write responses may include `advice`. The executor preserves that object as
 `details.advice` and appends short pointers after the subscription/follow suffix: a primary spec

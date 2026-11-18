@@ -221,12 +221,12 @@ export class DispatchWriteUnsettledError extends Error {
  * A write Dispatch made whose answer is gone, so the caller cannot be shown what it made: a repeat
  * under its key answered `409 IDEMPOTENCY_KEY_COMMITTED` (the write landed before its answer was
  * lost, and Dispatch will not run it again) or a replayed 2xx reading
- * `IDEMPOTENCY_ANSWER_NOT_KEPT` (Dispatch gives no copy of its first answer: one larger than it
- * keeps, or one that names a deleted comment or message, or a document one was anchored on, which
- * would give back text the delete withdrew). The write took
+ * `IDEMPOTENCY_ANSWER_NOT_KEPT` (Dispatch gives no copy of its first answer: one larger than the
+ * 1 MiB a key keeps, or a success that holds a comment or a message deleted since, or a document
+ * version name a delete replaced, which would give back text the delete withdrew). The write took
  * effect, so this is no refusal and deliberately no `DispatchServiceError`; it is never asked
- * again. Its message is the one line a session reads: what was made, that its answer was lost,
- * and to read it back.
+ * again. Its message is the one line a session reads: what was made, why its answer is gone, and
+ * to read it back. A call that writes nothing never throws this (`DispatchAnswerNotKeptError`).
  */
 export class DispatchWriteLandedError extends Error {
   override readonly name = "DispatchWriteLandedError";
@@ -240,13 +240,41 @@ export class DispatchWriteLandedError extends Error {
   ) {
     const lost =
       code === IDEMPOTENCY_ANSWER_NOT_KEPT
-        ? "Dispatch gives no copy of its answer, which was too large to keep or names a deleted " +
-          "comment or message, or the document one was anchored on"
+        ? "Dispatch gives no copy of its answer, which was too large to keep or holds a comment " +
+          "or a message deleted since, or a document version name a delete replaced"
         : "its answer was lost on the way back";
     const request = `${method} ${withoutUserinfo(url)}`;
     super(
       `${request} was made, but ${lost} (${code}), so this command cannot print what it ` +
         "made: read it back with `dispatch read`, or with the matching list for something it created."
+    );
+  }
+}
+
+/**
+ * A call that writes nothing (`markdownRoundTrip`, `related`) whose repeat under its key Dispatch
+ * answered with a replayed 2xx reading `IDEMPOTENCY_ANSWER_NOT_KEPT`: Dispatch kept no copy of the
+ * answer, and the call made nothing, so there is nothing to read back and no landing. The client
+ * asks such a call once more under a new key before it throws this (`#writingNothing`); this is
+ * what reaches the caller when that ask is answered the same way. It is no refusal, so it is no
+ * `DispatchServiceError`, and no `DispatchWriteLandedError`, which says a write was made. Its
+ * message is the one line a session reads: the call wrote nothing, Dispatch kept no copy of its
+ * answer, and to run the command again, which asks under a new key.
+ */
+export class DispatchAnswerNotKeptError extends Error {
+  override readonly name = "DispatchAnswerNotKeptError";
+  readonly code = IDEMPOTENCY_ANSWER_NOT_KEPT;
+
+  constructor(
+    /** The first answer's own 2xx, which the replay carries. */
+    readonly status: number,
+    method: string,
+    url: string
+  ) {
+    super(
+      `${method} ${withoutUserinfo(url)} wrote nothing, and Dispatch kept no copy of its answer ` +
+        `(${IDEMPOTENCY_ANSWER_NOT_KEPT}), so this command has no answer to print: run it again, ` +
+        "which asks under a new key."
     );
   }
 }
@@ -967,10 +995,9 @@ export class DispatchClient {
   /** `POST /api/v1/markdown/round-trip`: the markdown Dispatch would store for this text. The
    *  route writes nothing: it parses the text and renders it again, as a document write does, so
    *  a caller compares the answer with the text it holds and refuses a text the store would
-   *  change. */
+   *  change. An answer Dispatch kept no copy of is asked for again (`#writingNothing`). */
   async markdownRoundTrip(markdown: string): Promise<string> {
-    const answer: MarkdownRoundTripResponse = await this.#json(
-      "POST",
+    const answer: MarkdownRoundTripResponse = await this.#writingNothing(
       ["api", "v1", "markdown", "round-trip"],
       { markdown }
     );
@@ -1041,9 +1068,10 @@ export class DispatchClient {
   }
 
   /** `POST /api/v1/projects/{key}/related`: the related-item check over a title and a text,
-   *  writing nothing. A blank title and text answer `outcome: "not_made"` with the reason. */
+   *  writing nothing. A blank title and text answer `outcome: "not_made"` with the reason. An
+   *  answer Dispatch kept no copy of is asked for again (`#writingNothing`). */
   async related(project: string, input: RelatedCheckInput): Promise<Suggestions> {
-    return this.#json("POST", ["api", "v1", "projects", project, "related"], input);
+    return this.#writingNothing(["api", "v1", "projects", project, "related"], input);
   }
 
   async getIssue(issue: string): Promise<IssueDetails> {
@@ -2010,6 +2038,30 @@ export class DispatchClient {
   }
 
   /**
+   * A `POST` of JSON to a route that writes nothing (`markdownRoundTrip`, `related`). It is sent as
+   * a write is, under a key of its own, so an attempt with no definitive answer is asked again
+   * under that key (`#sendPresenting`). Such a repeat can come back as a replayed 2xx reading
+   * `IDEMPOTENCY_ANSWER_NOT_KEPT`: an earlier attempt ran, and Dispatch kept no copy of its answer.
+   * The request wrote nothing, so that is no landing: it is asked once more under a new key, which
+   * `#send` mints, and which runs it afresh and can double nothing. That ask's answer is the
+   * call's, and a second such replay is thrown as the `DispatchAnswerNotKeptError` it is rather
+   * than asked again, so the call is asked under at most two keys.
+   */
+  async #writingNothing<T>(path: readonly string[], body: unknown): Promise<T> {
+    const url = this.#url(path);
+    const encoded = { content: JSON.stringify(body), type: "application/json" };
+    for (let keys = 1; ; keys++) {
+      try {
+        return await this.#noRoute(async () =>
+          this.#response<T>("POST", url, await this.#send("POST", url, encoded), false)
+        );
+      } catch (error) {
+        if (!(error instanceof DispatchAnswerNotKeptError) || keys === 2) throw error;
+      }
+    }
+  }
+
+  /**
    * The one request function: every call the client makes goes through here. It presents the
    * credential and sends the request (`#sendPresenting`), and sends it once more where Dispatch
    * answers that the token presented is not live (`tokenNotLive`, its
@@ -2376,11 +2428,13 @@ export class DispatchClient {
    * the URL's user and password are left out, and the token travels in a header, never the URL),
    * the status and reason phrase, a one-line plain-text excerpt of the body (or, when none of
    * what the excerpt reads is text, the body's size), and what asking again can do for that
-   * method and status. A write Dispatch made whose answer is gone —
-   * `409 IDEMPOTENCY_KEY_COMMITTED`, or a replayed 2xx reading `IDEMPOTENCY_ANSWER_NOT_KEPT`
-   * (`answerNotKept`) — is a `DispatchWriteLandedError`, neither a refusal nor a payload.
+   * method and status. A replayed refusal is the refusal Dispatch first gave, read as any other.
+   * A write Dispatch made whose answer is gone — `409 IDEMPOTENCY_KEY_COMMITTED`, or a replayed
+   * 2xx reading `IDEMPOTENCY_ANSWER_NOT_KEPT` (`answerNotKept`) — is a `DispatchWriteLandedError`,
+   * neither a refusal nor a payload. For a call that writes nothing (`writes` false,
+   * `#writingNothing`) that replayed 2xx made nothing, so it is a `DispatchAnswerNotKeptError`.
    */
-  async #response<T>(method: string, url: string, response: Response): Promise<T> {
+  async #response<T>(method: string, url: string, response: Response, writes = true): Promise<T> {
     const text = await response.text();
     let payload: unknown = text;
     if (text && isJson(response)) {
@@ -2433,7 +2487,9 @@ export class DispatchClient {
     }
     const replayed = response.headers.get(IDEMPOTENCY_REPLAYED_HEADER)?.trim() === "?1";
     if (answerNotKept(response.status, replayed, payload)) {
-      throw new DispatchWriteLandedError(IDEMPOTENCY_ANSWER_NOT_KEPT, response.status, method, url);
+      throw writes
+        ? new DispatchWriteLandedError(IDEMPOTENCY_ANSWER_NOT_KEPT, response.status, method, url)
+        : new DispatchAnswerNotKeptError(response.status, method, url);
     }
     return payload as T;
   }
