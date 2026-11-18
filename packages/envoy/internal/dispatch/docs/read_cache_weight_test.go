@@ -1,3 +1,12 @@
+//go:build !race
+
+// This file measures the heap a document read holds, which the race build must not compile: the
+// detector's shadow memory and instrumented allocations change what the Go heap holds, so the
+// measurement says nothing about the read (upload_memory_test.go's rule). The envoy-go job runs
+// it without the detector. Measured: the ask-block shape's read holds 3,780,400 B in the plain
+// build, and two race runs in CI of trees whose plain builds hold that same figure read
+// 3,900,384 B and 3,990,560 B, which turned a ratio of 1.00 into 0.97 and 0.95.
+
 package docs
 
 import (
