@@ -127,8 +127,10 @@
 # function, live_read, in the mode's own shell before any assertion over what it reads
 # judges: the judgement and the two records under check from Dispatch, whose copies every
 # row that reads a record reads too, Dispatch's answer to each dispatch:// reference, the
-# Dispatch API, the GitHub budget, the default branch and its fetch, and the fetch of each
-# pinned clone. A source that does not answer is a mode that cannot run, naming the
+# Dispatch API, the GitHub budget, the default branch and its fetch, the fetch of each
+# pinned clone, and the run of coordination/count.py, the walker of the count, which
+# reads the feed of the count's window, so that a read inside it that fails is that feed
+# not answering. A source that does not answer is a mode that cannot run, naming the
 # source, exit 2, or exit 1 after a FAIL, by the precedence above; it is never an
 # assertion's failure. A source that answers that it holds no such thing has answered, and
 # judges the deliverable: Dispatch's "not found", "No block", "no version N of" or
@@ -382,7 +384,11 @@
 #                  output this tree commits, is held to the same rule: it reads each live
 #                  source as it stood at a fixed instant, as coordination/count.py reads
 #                  the issue tree and the cited authors from the feed's rows written before
-#                  the window's end, so a later run measures what an earlier one measured.
+#                  the window's end, so a later run measures what an earlier one measured;
+#                  --replay runs count.py again and holds what it prints to the committed
+#                  evidence/count.json, every figure but feed.events_read, the rows of the
+#                  whole feed it read up to its run, which is no figure of the window
+#                  (count-reruns).
 #                  The predicate of a row with a command holds every part its claim names,
 #                  and the claim names no more than that.
 #   questions.md   the question list, which every candidate page answers from
@@ -534,9 +540,10 @@ mas-lab-directory|replay|each of the six named directories of mas-lab has an evi
 mas-lab-question|replay|each of the three questions of mas-lab is answered by a file naming its evidence|an answer with no evidence named
 interview-fixed-row|replay|the four rows the specification fixes for the authors' account are present by identifier|one fixed row deleted
 our-data-input|replay|each test against our own records names the Dispatch key or the commit its input came from|a test whose input is a fixture of the project
+count-reruns|replay|the count of our own failures runs again: coordination/count.py, run through the gate's live read, prints evidence/count.json again, every figure equal but feed.events_read, the rows of the whole feed it read up to the run, which grows with the feed and is no figure of the window|a figure of the window in evidence/count.json changed by one
 count-window|replay|the count of our own failures names its window as two instants, in the window.json the count was run over|the window deleted
-count-class|replay|the count classes are the three the specification names|a fourth class
-count-denominator|replay|every class of the count carries its denominator|a class with no denominator
+count-class|replay|the count classes are the three the specification names, in count.md and in the count coordination/count.py prints again|a fourth class
+count-denominator|replay|every class of the count carries its denominator, and the count coordination/count.py prints again reads a whole number of records above zero|a class with no denominator
 count-zero-premise|replay|a class of zero over a denominator above zero is stated on the front page as a premise that failed|a class of zero with no failed premise
 page-count|shape|the judgement carries at least three and at most seven candidate pages|an eighth candidate page
 page-parts|shape|every candidate page carries all eleven of its parts|a page short of its reversal cost
@@ -605,14 +612,14 @@ prerequisite_table() {
     cat <<'TABLE'
 replay|tool|git|reads our own history and runs the recorded git commands|apt-get install git
 replay|tool|jq|reads claims.jsonl and runs the recorded jq commands|apt-get install jq
-replay|tool|python3|runs the reader of every recorded command and the recorded python3 commands|apt-get install python3
+replay|tool|python3|runs the reader of every recorded command, the recorded python3 commands and coordination/count.py, which takes the count again|apt-get install python3
 replay|tool|curl|reads the GitHub budget and runs the recorded reads of the Dispatch API and of GitHub|apt-get install curl
 replay|tool|uv|builds env.sh's python environments and runs the recorded uv commands|curl -LsSf https://astral.sh/uv/0.13.5/install.sh | sh
 replay|tool|go|runs the two recorded commands that count rows of our own table|curl -fsSL https://go.dev/dl/go1.27.3.linux-amd64.tar.gz | tar -xzC /usr/local, then PATH=/usr/local/go/bin:$PATH
 replay|tool|gh|reads the review corpus env.sh fetches and runs the two recorded gh reads|apt-get install gh, then gh auth login
 replay|tool|dispatch|reads the two records under check, the judgement and the recorded Dispatch reads|the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH
-replay|variable|DISPATCH_URL|the address every recorded read of the Dispatch API reads|export DISPATCH_URL=<the Dispatch server>, which a Legion pod sets
-replay|variable|DISPATCH_TOKEN_FILE|the bearer every recorded read of the Dispatch API sends|export DISPATCH_TOKEN_FILE=<a file holding the Dispatch bearer>, which a Legion pod sets
+replay|variable|DISPATCH_URL|the address every recorded read of the Dispatch API reads, and so does coordination/count.py's read of the feed of the count's window|export DISPATCH_URL=<the Dispatch server>, which a Legion pod sets
+replay|variable|DISPATCH_TOKEN_FILE|the bearer every recorded read of the Dispatch API sends, and so does coordination/count.py's read of the feed of the count's window|export DISPATCH_TOKEN_FILE=<a file holding the Dispatch bearer>, which a Legion pod sets
 replay|clone|IOC_CLONES|env.sh clones mas-lab, scope and cognition-protocols under it|export IOC_CLONES=<a directory this user can write>, or leave it unset for $TMPDIR/ioc-clones
 shape|tool|git|reads the history of this pull request|apt-get install git
 shape|tool|jq|reads sources.json|apt-get install jq
@@ -1284,18 +1291,19 @@ PY
 # live_read <source> <file> <command...>; the one read of a live source the gate makes
 # itself, which every mode makes in its own shell before any assertion over what it reads
 # judges: the judgement and the records under check from Dispatch, a reference Dispatch is
-# asked to resolve, the Dispatch API, the GitHub budget and default branch, and a clone's
-# fetch; a recorded command's own reads are the row's (the header's live-read rule). It
-# runs the command, writes what it printed into <file>, and returns 0 when the source
-# answered. It returns 1 when the source answered that it holds no such thing, which is an
-# answer that judges the deliverable: Dispatch's "not found", "No block", "no version N
-# of", "document ... not found", or its refusal to read a reference it does not take
-# ("dispatch read was not called"), each measured against Dispatch on 2026-11-15, each
-# with or without the refusal's code before it ("NOT_FOUND: not found"), which the CLI of
-# the worker image printed from 2026-11-17. Anything else that fails, a Dispatch that is
-# unreachable, a curl or git transport error, is no answer at all: the mode cannot run,
-# and it ends here, naming the source, exit 2, or exit 1 after a FAIL, by the precedence
-# of the header.
+# asked to resolve, the Dispatch API, the GitHub budget and default branch, a clone's
+# fetch, and the run of coordination/count.py over the feed of the count's window
+# (count_load); a recorded command's own reads are the row's (the header's live-read
+# rule). It runs the command, writes what it printed into <file>, and returns 0 when the
+# source answered. It returns 1 when the source answered that it holds no such thing,
+# which is an answer that judges the deliverable: Dispatch's "not found", "No block", "no
+# version N of", "document ... not found", or its refusal to read a reference it does not
+# take ("dispatch read was not called"), each measured against Dispatch on 2026-11-15,
+# each with or without the refusal's code before it ("NOT_FOUND: not found"), which the
+# CLI of the worker image printed from 2026-11-17. Anything else that fails, a Dispatch
+# that is unreachable, a curl or git transport error, a count.py that raised on a read
+# and exited non-zero, is no answer at all: the mode cannot run, and it ends here, naming
+# the source, exit 2, or exit 1 after a FAIL, by the precedence of the header.
 LIVE_ANSWER_NO='^(NOT_FOUND: )?(not found$|No block |no version [0-9]+ of |document "[^"]*" not found|dispatch [a-z-]+ was not called)'
 live_read() {
     local source="$1" file="$2"
@@ -3849,13 +3857,16 @@ mode_replay() {
     github_budget
     # The live inputs of the assertions below, read before any of them judges and before
     # env.sh prepares anything: the two records under check, whose copies every row that
-    # reads a record reads too, so env.sh reads neither again (record_load), and the
-    # judgement, which count-zero-premise reads.
+    # reads a record reads too, so env.sh reads neither again (record_load), the
+    # judgement, which count-zero-premise reads, and the count of our own failures, taken
+    # again by coordination/count.py over the feed of its window, which count-reruns,
+    # count-class and count-denominator read (count_load).
     local label IOC_ENV_RECORDS_READ=1
     for label in $(jq -r '.records_under_check[].label' "$EVIDENCE/sources.json"); do
         record_load "$label"
     done
     judgement_load
+    count_load
     prepare_env
     # The header file every recorded curl of the Dispatch API reads. The prerequisites read
     # that DISPATCH_TOKEN_FILE names a readable file; a header that still cannot be written
@@ -4150,8 +4161,93 @@ replay_our_data() {
     [ "$bad" -eq 0 ] && pass our-data-input "each test against our own records names the Dispatch key or the commit its input came from"
 }
 
+# The count of our own failures, taken again. coordination/count.py is the walker that
+# took the count and printed evidence/count.json, the count this tree commits: it reads
+# window.json beside it and the feed of that window from Dispatch, at DISPATCH_URL with
+# the bearer DISPATCH_TOKEN_FILE names, and it reads every row, the issue tree and the
+# cited authors as they stood at the window's end (the header's pinned-read rule), so a
+# later run prints the count again, and --replay holds it to that.
+#
+# count_load; runs count.py once per run, before any assertion judges, through live_read,
+# into this run's scratch. count.py raises on a read that fails, an HTTP error status or
+# an address that does not answer, past the two retries it gives a document version, and
+# prints its count only after its last read, so such a read leaves a non-zero status and
+# nothing on stdout, which is the feed not answering: the mode cannot run, exit 2, or
+# exit 1 after a FAIL, by the precedence of the header, and no assertion over the count
+# is judged. Its reason is the last line of count.py's traceback, the error it raised,
+# which count_run hands live_read in place of the frames above it. A document version
+# the deployment no longer holds is no failed read: count.py counts it as unreadable,
+# and the count it prints then differs. A count.py that is not there is not run, and
+# count-reruns fails naming it. The run takes about twelve minutes against Dispatch:
+# 721 seconds, measured on 2026-11-18.
+count_load() {
+    [ -f "$EVIDENCE/coordination/count.py" ] || return 0
+    live_read "Dispatch, the feed of the count's window" "$RUN_SCRATCH/count-rerun.json" count_run || :
+}
+count_run() {
+    python3 "$EVIDENCE/coordination/count.py" 2>"$RUN_SCRATCH/count-rerun.trace" && return 0
+    tail -1 "$RUN_SCRATCH/count-rerun.trace" >&2
+    return 1
+}
+
+# replay_count; the assertions over the count, count-reruns first. What count.py printed
+# again is one JSON object, and each of its figures equals evidence/count.json's, key for
+# key, but one: feed.events_read is the number of rows of the whole feed count.py read,
+# from the first row to the newest at its run, since it walks the feed to its end to find
+# the window's rows, so it grows with the feed and is no figure of the window. It is not
+# compared, and the PASS line prints both of its values, so a reader sees it move; every
+# other figure of feed, the first and the last event of the window, is compared. A key
+# that differs is named, and for classes, denominator_records_read and instances so are
+# its two values. count-class and count-denominator read the same object beside
+# count.md; a count.py that is not there, or one that printed no JSON object, fails them
+# too, since their part over the count taken again then reads nothing.
 replay_count() {
     local window="$EVIDENCE/coordination/window.json" count="$EVIDENCE/coordination/count.md"
+    local committed="$EVIDENCE/evidence/count.json" rerun="$RUN_SCRATCH/count-rerun.json"
+    local reran="" differed=0 over differs key now then
+    if [ ! -f "$EVIDENCE/coordination/count.py" ]; then
+        differed=$((differed + 1))
+        fail count-reruns "coordination/count.py, the walker that took the count, is missing, so the count is not taken again"
+    elif jq -se 'length == 1 and (.[0] | type) == "object"' "$rerun" >/dev/null 2>&1; then
+        reran="$rerun"
+    else
+        differed=$((differed + 1))
+        fail count-reruns "coordination/count.py ran again and printed no one JSON object: $(head -c 160 "$rerun" 2>/dev/null | tr '\n' ' ')"
+    fi
+    if [ ! -f "$committed" ]; then
+        differed=$((differed + 1))
+        fail count-reruns "evidence/count.json, the count this tree commits, is missing, so nothing holds what coordination/count.py prints"
+    elif ! jq -se 'length == 1 and (.[0] | type) == "object"' "$committed" >/dev/null 2>&1; then
+        differed=$((differed + 1))
+        fail count-reruns "evidence/count.json, the count this tree commits, is not one JSON object"
+    elif [ -n "$reran" ]; then
+        over="$(jq -r 'if (.window.from | type) == "string" and (.window.to | type) == "string" then "the window \(.window.from) to \(.window.to)" else empty end' "$reran" 2>/dev/null)"
+        [ -n "$over" ] || over="a window it does not name"
+        differs="$(jq -rn --slurpfile now "$reran" --slurpfile then "$committed" '
+            def figures: if (.feed | type) == "object" then .feed |= del(.events_read) else . end;
+            ($now[0] | figures) as $a | ($then[0] | figures) as $b
+            | (($b | keys_unsorted) + (($a | keys_unsorted) - ($b | keys_unsorted)))[] as $k
+            | select(($a | has($k)) != ($b | has($k)) or $a[$k] != $b[$k])
+            | "\($k)\t\(if $a | has($k) then $a[$k] | tojson else "nothing" end)\t\(if $b | has($k) then $b[$k] | tojson else "nothing" end)"' 2>&1)" || {
+            differed=$((differed + 1))
+            fail count-reruns "the comparison of what coordination/count.py printed with evidence/count.json stopped before its end: $(printf '%s' "$differs" | tail -1 | head -c 240)"
+            differs=""
+        }
+        while IFS=$'\t' read -r key now then; do
+            [ -n "$key" ] || continue
+            differed=$((differed + 1))
+            case "$key" in
+            classes | denominator_records_read | instances)
+                fail count-reruns "coordination/count.py ran again over $over and printed $key $now, and evidence/count.json holds $key $then"
+                ;;
+            *)
+                fail count-reruns "coordination/count.py ran again over $over and printed a count that differs from evidence/count.json at $key"
+                ;;
+            esac
+        done <<<"$differs"
+        [ "$differed" -eq 0 ] && pass count-reruns "coordination/count.py ran again over $over and printed evidence/count.json again, every figure equal but feed.events_read, the rows of the whole feed it read up to the run, which is no figure of the window: $(jq -r '.feed.events_read // "none"' "$reran" 2>/dev/null) now, $(jq -r '.feed.events_read // "none"' "$committed" 2>/dev/null) in evidence/count.json"
+    fi
+
     if [ ! -s "$window" ]; then
         fail count-window "the count names no window"
         return
@@ -4174,7 +4270,15 @@ replay_count() {
             fail count-class "the count does not carry the class '$class'"
         }
     done
-    [ "$missing" -eq 0 ] && pass count-class "the classes are the three the specification names"
+    # The classes of the count taken again are the three keys count.py writes for them.
+    if [ -z "$reran" ]; then
+        missing=$((missing + 1))
+        fail count-class "the count was not taken again into one JSON object, so the classes coordination/count.py prints are unread"
+    elif ! jq -e '(.classes | type) == "object" and (.classes | keys) == ["across_sessions", "between_an_agent_and_a_person", "inside_one_tree"]' "$reran" >/dev/null 2>&1; then
+        missing=$((missing + 1))
+        fail count-class "the count coordination/count.py printed again carries the classes $(jq -c '.classes | if type == "object" then keys else . end' "$reran" 2>/dev/null), not exactly between_an_agent_and_a_person, inside_one_tree and across_sessions"
+    fi
+    [ "$missing" -eq 0 ] && pass count-class "the classes are the three the specification names, in count.md and in the count coordination/count.py printed again"
 
     # Each class is a row of the table: the class, what it counted, and the denominator,
     # which is the records read in the window.
@@ -4195,7 +4299,16 @@ replay_count() {
             zero_classes="$zero_classes '$class'"
         fi
     done < <(grep -E "^\|[^|]+\| *[0-9]+ *\| *[0-9]+ *\|" "$count")
-    [ "$without" -eq 0 ] && pass count-denominator "every class carries its denominator, the records read in the window"
+    # The count taken again carries its denominator, the comments and messages it read in
+    # the window, a whole number above zero.
+    if [ -z "$reran" ]; then
+        without=$((without + 1))
+        fail count-denominator "the count was not taken again into one JSON object, so the denominator coordination/count.py prints is unread"
+    elif ! jq -e '.denominator_records_read | type == "number" and . > 0 and . == floor' "$reran" >/dev/null 2>&1; then
+        without=$((without + 1))
+        fail count-denominator "the count coordination/count.py printed again reads $(jq -c '.denominator_records_read' "$reran" 2>/dev/null) records, which is no whole number above zero"
+    fi
+    [ "$without" -eq 0 ] && pass count-denominator "every class carries its denominator, the records read in the window, and the count coordination/count.py printed again read $(jq -r '.denominator_records_read' "$reran") records"
 
     local judgement
     judgement="$(judgement_text)"
@@ -5208,6 +5321,24 @@ MD
 
 Each class carries its denominator, the records read in the window.
 MD
+    # The fixture's walker of the count, which --replay runs again through live_read
+    # (count-reruns): it prints one fixed JSON object, the count of count.md above, and
+    # reads nothing, neither the network nor window.json, so no planted fault but its own
+    # moves what it prints. evidence/count.json is what it prints, written as the
+    # committed count is, by running it.
+    cat >"$evidence/coordination/count.py" <<'PY'
+import json
+
+print(json.dumps({
+    "window": {"from": "2026-10-29T00:00:00Z", "to": "2026-11-12T00:00:00Z", "project": "INFRA"},
+    "feed": {"events_read": 1000, "first_event_id_in_window": 101, "last_event_id_in_window": 900},
+    "denominator_records_read": 100,
+    "instances": 40,
+    "classes": {"between_an_agent_and_a_person": 5, "inside_one_tree": 20, "across_sessions": 10},
+    "unclassed": {"no_cited_record": 5, "cited_record_not_held": 0, "cited_author_unknown": 0, "other": 0},
+}, indent=1))
+PY
+    python3 "$evidence/coordination/count.py" >"$evidence/evidence/count.json"
     printf '# The table\n\nNine pairs [f-behaviour-1].\n' >"$evidence/similarity/table.md"
     printf 'the quoted sentence of a published page\n' >"$evidence/published/page.txt"
     printf '# The fixture\n' >"$evidence/README.md"
@@ -5420,6 +5551,7 @@ fixture_plant() {
     mas-lab-question) sed -i 's/\[f-project-1\]//' "$evidence/mas-lab/ctl.md" ;;
     interview-fixed-row) sed -i '/"id":"i-three-tiers"/d' "$evidence/claims.jsonl" ;;
     our-data-input) sed -i 's#^Input: dispatch://INFRA-3134#Input: tests/fixtures/golden-transcript.json#' "$evidence/tests/concord.md" ;;
+    count-reruns) sed -i 's/"instances": 40,/"instances": 41,/' "$evidence/evidence/count.json" ;;
     count-window) rm -f "$evidence/coordination/window.json" ;;
     count-class) sed -i 's/| inside one tree |/| inside one pod |/' "$evidence/coordination/count.md" ;;
     count-denominator) sed -i 's/| across sessions | 10 | 100 |/| across sessions | 10 |/' "$evidence/coordination/count.md" ;;
