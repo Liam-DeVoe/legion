@@ -144,8 +144,9 @@ func newBrokerTokens(config listenerBrokerConfig) *brokerTokens {
 
 // open builds the verifier over the spent-proof bucket on conn's JetStream, and is the listener's
 // refusal to serve this credential any other way: a listener configured to take broker tokens on
-// a bus that does not open the bucket fails here, naming EnvBrokerURL, and its start tries again
-// until the bucket opens (openSpentProofBucket), rather than falling back to a store in its own
+// a bus that does not open the bucket fails here, naming EnvBrokerURL. Its start tries again
+// when NATS does not answer, its grant refuses the bucket or the cluster's state refuses it, and
+// ends on any other failure (openSpentProofBucket), rather than falling back to a store in its own
 // memory, which would let one replica accept a proof another replica had already spent. ctx is
 // the start's (bus.EnsureKeyValue).
 func (b *brokerTokens) open(ctx context.Context, conn *nats.Conn, replicas int) error {
