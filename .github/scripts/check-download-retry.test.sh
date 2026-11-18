@@ -12841,19 +12841,22 @@ check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')
 # brace in the target's last element, by bash, as a command word and in a `bash -c` text, are
 # refused as a run built from data; a `*` in its directory names the file by its name. Beside them
 # a glob character in quotes or after a backslash is that character, as bash reads it, so bash
-# opens no such file and runs nothing, and passes; and a glob in an argument of a program that
-# runs no file, `ls` and `rm`, and a `case` pattern or a piece of a `[[ … =~ … ]]` regex, which
-# CallScanner reads as commands of their own, pass too. Two quoting shapes of the same review
-# passed the same way: `bash $'.github/scripts/x.py'`, whose `$'…'` this check read as a `$` and a
-# quote, so it named no file, and a command word `.github/scripts/x."sh"`, whose name SCRIPT_CALL
-# never found in the text as written, so the 1050 s of its script were charged nothing. A run's
-# target is now read as bash reads it, its quotes removed and a `$'…'`'s escapes read: the first
-# is refused by name as the same path unquoted is; the second is charged its script's 1050 s, so
-# it is refused under its one-minute key and passes under a key of 18 that holds them, as the
-# same path unquoted would, and so is a command word whose `$'…'` spells the dot as `\x2e`; and a
-# backslash in a name in a `bash -c` text is read the same way, refused as that script's run in
-# the text of a shell is. `python3` running the program written in `$'…'` with that escape
-# passes, as `python3` running it plainly does.
+# opens no such file and runs nothing, and passes; and `rm -rf "$RUNNER_TEMP"/*`, a glob in an
+# argument with no literal `.github/`, and a `case` pattern or a piece of a `[[ … =~ … ]]` regex,
+# which CallScanner reads as commands of their own, pass too. `ls .github/scripts/*.sh` passed
+# here until the word reading of W18: it could name a CI script that fetches, so it is refused by
+# name where it stands, as every such word is, and this case's count went from 11 to 12. Two
+# quoting shapes of the same review passed the same way: `bash $'.github/scripts/x.py'`, whose
+# `$'…'` this check read as a `$` and a quote, so it named no file, and a command word
+# `.github/scripts/x."sh"`, whose name SCRIPT_CALL never found in the text as written, so the
+# 1050 s of its script were charged nothing. A run's target is now read as bash reads it, its
+# quotes removed and a `$'…'`'s escapes read: the first is refused by name as the same path
+# unquoted is; the second is charged its script's 1050 s, so it is refused under its one-minute
+# key and passes under a key of 18 that holds them, as the same path unquoted would, and so is a
+# command word whose `$'…'` spells the dot as `\x2e`; and a backslash in a name in a `bash -c`
+# text is read the same way, refused as that script's run in the text of a shell is. `python3`
+# running the program written in `$'…'` with that escape passes, as `python3` running it plainly
+# does.
 echo "case: r37 W17 a path holding a glob or a brace expansion is read as built at run time and refused by name"
 root=$(fixture r37-w17-globs)
 printf '%s\n. .github/scripts/ci-retry.sh\nretry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b\n' \
@@ -12943,14 +12946,186 @@ check "charges the script an escape in ANSI-C quotes names its 1050 s, so its on
   "$(contains "$out" "::error file=.github/workflows/case.yaml,line=38::step 'Run the fetching script with an escape in ANSI-C quotes as a command' carries .timeout-minutes: 1., 60 s, and its own retries take 1050 s to exhaust, which that budget does not strictly exceed\. That arithmetic is the step's own and that of .github/scripts/r38-fetch\.sh, which it runs")"
 check "passes the quoted part of a name under a key that holds its script's 1050 s" \
   "$(is "$(contains "$out" "step 'Run the fetching script with a quoted part in its name under a key that holds it'")" false)"
+check "refuses the star in an argument of ls, which could name a CI script that fetches" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=47::step 'Write glob characters where no run is' of job 'build' writes ..github/scripts/.\.sh. as an argument of .ls., which could name .github/scripts/[a-z-]*\.sh, .* a script that fetches or a file this check does not read")"
 for line in "45	a question mark in quotes" "46	a question mark after a backslash" \
-  "47	a star in an argument of ls" "48	a star in an argument of rm" "49	python3 runs it" \
+  "48	a star in an argument of rm" "49	python3 runs it" \
   "50	python3 runs it in ANSI-C quotes" "53	a case pattern after a comment line" \
   "55	a piece of a [[ =~ ]] regex"; do
   IFS=$'\t' read -r at form <<<"$line"
   check "passes $form" "$(is "$(contains "$out" "file=.github/workflows/case.yaml,line=$at::")" false)"
 done
-check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 11)"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 12)"
+
+# W18. Seventeen shapes the class search drove past the gate at 548d180b, each exit 0 under a
+# one-minute key (dispatch://INFRA-1545, round 38): a word that is no literal path, its globs,
+# braces and expansions filled in as the step runs, named zz-c.sh, a CI script whose retries take
+# 1050 s, or zz-x.py, a Python program holding shell text, through a patterned or expanded
+# directory the run-target reading took for a tool's, through `. --`, behind a program this check
+# does not read as a run (`xargs`, `find -exec`, `flock`, `taskset`, a set with no end), or inside
+# a `$( … )` on a line a `[[` opens or a quoted `[[` stands on, which pattern_place read as a
+# pattern. The rule is read by the word, not the program: a word that could name a CI script that
+# fetches or a file this check does not read is refused by name wherever it stands, read at a
+# run's target by its last element and anywhere else where its literal text holds `.github/`
+# (pattern_words); and a command inside a `$( … )` is a run, and a quoted `[[` opens no test, so
+# the three `[[` shapes are runs the target reading refuses as it refuses W17's. Beside them, three
+# rows prove what the rule rests on, that a word with no literal `.github/` names a file there
+# only through a variable, and that the variable is refused where the step sets it to such a
+# path: `flock /tmp/l "$s"` and `timeout 5 "$s"` after `s=.github/scripts/zz-c.sh`, and
+# `bash scripts/zz-c.sh` after `cd .github`, a name SCRIPT_CALL reads. The three were refused at
+# 548d180b already. A literal tool path, a glob naming no CI script, a glob with no `.github/`
+# and an argument of `echo` pass.
+echo "case: r37 W18 a word that could name a CI script that fetches is refused by name wherever it stands"
+root=$(fixture r37-w18-words)
+printf '%s\n. .github/scripts/ci-retry.sh\nretry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b\n' \
+  '#!/usr/bin/env bash' > "$root/.github/scripts/zz-c.sh"
+printf '%s\n. .github/scripts/ci-retry.sh\nretry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b\n' \
+  '#!/usr/bin/env python3' > "$root/.github/scripts/zz-x.py"
+chmod +x "$root/.github/scripts/zz-c.sh" "$root/.github/scripts/zz-x.py"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run the script through a star in its directory with bash
+        timeout-minutes: 1
+        run: |
+          bash .github/scr*/zz-c.s[h]
+      - name: Run the script through a directory variable with bash
+        timeout-minutes: 1
+        run: |
+          d=.github/scripts; bash "$d"/zz-c.s[h]
+      - name: Run the script through a question mark with bash
+        timeout-minutes: 1
+        run: |
+          bash .github/scr*/zz-c.s?
+      - name: Run the script through a bracket in its directory as a command
+        timeout-minutes: 1
+        run: |
+          .github/scr[i]pts/zz-c.s[h]
+      - name: Source the script through stars
+        timeout-minutes: 1
+        run: |
+          . .github/*/zz-c.s*
+      - name: Run the script through a directory variable as a command
+        timeout-minutes: 1
+        run: |
+          d=.github/scripts; "$d"/zz-c.s?
+      - name: Run the Python program through a star with bash
+        timeout-minutes: 1
+        run: |
+          bash .github/scr*/zz-x.p[y]
+      - name: Source the script after a double dash
+        timeout-minutes: 1
+        run: |
+          . -- .github/scripts/zz-c.s[h]
+      - name: Run the script inside a test's substitution
+        timeout-minutes: 1
+        run: |
+          [[ -n "$(.github/scripts/zz-c.s[h])" ]]
+      - name: Run the script inside a second test's substitution
+        timeout-minutes: 1
+        run: |
+          [[ -n "$(echo ok)" ]] && [[ -n "$(.github/scripts/zz-c.s[h])" ]]
+      - name: Run the script after a quoted test opener
+        timeout-minutes: 1
+        run: |
+          echo '[['; .github/scripts/zz-c.s[h]
+      - name: Hand the script to xargs
+        timeout-minutes: 1
+        run: |
+          true | xargs .github/scripts/zz-c.s[h]
+      - name: Hand the script to find
+        timeout-minutes: 1
+        run: |
+          find . -maxdepth 0 -exec .github/scripts/zz-c.s[h] \;
+      - name: Hand the script to flock
+        timeout-minutes: 1
+        run: |
+          flock /tmp/zz.lock .github/scripts/zz-c.s[h]
+      - name: Hand the script to taskset
+        timeout-minutes: 1
+        run: |
+          taskset -c 0 .github/scripts/zz-c.s[h]
+      - name: Hand the script to xargs with a placeholder
+        timeout-minutes: 1
+        run: |
+          echo x | xargs -I{} .github/scripts/zz-c.s[h] {}
+      - name: Hand the script to flock with a backslash in its name
+        timeout-minutes: 1
+        run: |
+          flock /tmp/zz.lock .github/scripts/zz-c.s\h
+      - name: Hand a variable naming the script to flock
+        timeout-minutes: 1
+        run: |
+          s=.github/scripts/zz-c.sh
+          flock /tmp/l "$s"
+      - name: Run a variable naming the script behind timeout
+        timeout-minutes: 1
+        run: |
+          s=.github/scripts/zz-c.sh
+          timeout 5 "$s"
+      - name: Run the script by a relative path after a cd
+        timeout-minutes: 1
+        run: |
+          s=.github/scripts/zz-c.sh
+          cd .github && bash scripts/zz-c.sh
+      - name: Write words that name no CI script
+        timeout-minutes: 1
+        run: |
+          "$HOME/.local/bin/mise" --version
+          ls .github/workflows/*.yaml
+          ls packages/*/package.json
+          echo .github/scripts/zz-c.s[h]
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+could="which could name .github/scripts/zz-c\.sh, a script that fetches or a file this check does not read"
+for refusal in \
+  "10	Run the script through a star in its directory with bash	runs ..github/scr./zz-c\.s.h.. with .bash., $could" \
+  "14	Run the script through a directory variable with bash	runs .\$d/zz-c\.s.h.. with .bash., $could" \
+  "18	Run the script through a question mark with bash	runs ..github/scr./zz-c\.s.. with .bash., $could" \
+  "22	Run the script through a bracket in its directory as a command	runs ..github/scr.i.pts/zz-c\.s.h.. as a command, $could" \
+  "26	Source the script through stars	sources ..github/./zz-c\.s.., $could" \
+  "30	Run the script through a directory variable as a command	runs .\$d/zz-c\.s.. as a command, $could" \
+  "34	Run the Python program through a star with bash	runs ..github/scr./zz-x\.p.y.. with .bash., which could name .github/scripts/zz-x\.py, a script that fetches or a file this check does not read" \
+  "38	Source the script after a double dash	writes ..github/scripts/zz-c\.s.h.. as an argument of .\.., $could" \
+  "54	Hand the script to xargs	writes ..github/scripts/zz-c\.s.h.. as an argument of .xargs., $could" \
+  "58	Hand the script to find	writes ..github/scripts/zz-c\.s.h.. as an argument of .find., $could" \
+  "62	Hand the script to flock	writes ..github/scripts/zz-c\.s.h.. as an argument of .flock., $could" \
+  "66	Hand the script to taskset	writes ..github/scripts/zz-c\.s.h.. as an argument of .taskset., $could" \
+  "70	Hand the script to xargs with a placeholder	writes ..github/scripts/zz-c\.s.h.. as an argument of .xargs., $could" \
+  "74	Hand the script to flock with a backslash in its name	writes ..github/scripts/zz-c\.sh. as an argument of .flock., $could"; do
+  IFS=$'\t' read -r line step says <<<"$refusal"
+  check "refuses '$step' by name, as a word that could name a CI script that fetches" \
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' $says")"
+done
+for refusal in "42	Run the script inside a test's substitution" \
+  "46	Run the script inside a second test's substitution" \
+  "50	Run the script after a quoted test opener"; do
+  IFS=$'\t' read -r line step <<<"$refusal"
+  check "refuses '$step' at its run, which a test or a quoted test opener no longer hides" \
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' runs ..github/scripts/zz-c\.s.h.. as a command, which names a file under .github/scripts/ through an expansion, so this check cannot name the script that runs there")"
+done
+for refusal in \
+  "78	Hand a variable naming the script to flock	names .github/scripts/zz-c\.sh in a variable assignment, a place this check does not read as a call, and that script fetches" \
+  "83	Run a variable naming the script behind timeout	names .github/scripts/zz-c\.sh in a variable assignment, a place this check does not read as a call, and that script fetches" \
+  "84	Run a variable naming the script behind timeout	runs .\$s. as a command, whose last path element is an expansion, so this check cannot name the script that runs there" \
+  "88	Run the script by a relative path after a cd	names .github/scripts/zz-c\.sh in a variable assignment, a place this check does not read as a call, and that script fetches" \
+  "89	Run the script by a relative path after a cd	names .github/scripts/zz-c\.sh in an argument of .bash., a place this check does not read as a call, and that script fetches"; do
+  IFS=$'\t' read -r line step says <<<"$refusal"
+  check "refuses '$step' at line $line, where a word with no literal .github/ names the script" \
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' $says")"
+done
+for line in "93	a literal tool path" "94	a glob naming no CI script" \
+  "95	a glob with no literal .github/" "96	an argument of echo"; do
+  IFS=$'\t' read -r at form <<<"$line"
+  check "passes $form" "$(is "$(contains "$out" "file=.github/workflows/case.yaml,line=$at::")" false)"
+done
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 22)"
 
 # F2. A heredoc line reading `timeout-minutes: 20` is text, no key: it took the block's one key,
 # so the job's own key went unpaired and the job passed under the 1200 s its block states. The
@@ -14066,7 +14241,10 @@ check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')
 # a path built from data, `.github/scripts/$n.sh`, handed to a script whose top level runs `"$@"`
 # or `"$1"`, set as a step's parameters or put in an array the step then runs, each passed r37-c.sh,
 # 1050 s, under a key of one minute. A function this text defines and calls with literal words is
-# read at its callers, and passes.
+# read at its callers, and passes. Since the word reading of W18 the built path itself,
+# `.github/scripts/$n.sh`, is refused where each step writes it, a word that could name a CI script
+# that fetches, whatever runs it, so the case's count went from 4 to 8 (dispatch://INFRA-1545,
+# round 38).
 echo "case: r37 E5 a run of the words a text is handed or sets itself, outside any function, is refused by name"
 root=$(fixture r37-handed-on)
 cat > "$root/.github/scripts/r37-c.sh" <<'SH'
@@ -14131,7 +14309,15 @@ check "tells each to name the command it runs literally" \
   "$(is "$(printf '%s\n' "$out" | grep -c 'follows neither to the program they name, so this check cannot name the script that runs there.*Name the command this text runs literally')" 4)"
 check "passes the function wrapper called with literal words" \
   "$(is "$(contains "$out" "r37-run.sh")" false)"
-check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 4)"
+for refusal in "11	Hand a built name to a script that runs its arguments	as an argument of .bash." \
+  "16	Hand a built name to a script that runs its first argument	as an argument of .bash." \
+  "21	Set a built name as the parameters and run them	as an argument of .set." \
+  "27	Put a built name in an array and run it	as a word this check reads as a pattern rather than a run"; do
+  IFS=$'\t' read -r line step place <<<"$refusal"
+  check "refuses the built path '$step' writes, where it writes it" \
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' writes ..github/scripts/\$n\.sh. $place, which could name .github/scripts/[a-z-]*\.sh, .* a script that fetches or a file this check does not read")"
+done
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 8)"
 
 # The promise rule 8 exists to keep: no retried job whose key is below its own sum reaches main.
 # Every case above proves one shape on a fixture written for it, which leaves open whether a shape

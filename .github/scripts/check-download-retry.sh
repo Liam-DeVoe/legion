@@ -163,18 +163,32 @@
 #      `.github/scripts/x.[s]h` and `bash .github/scr*/x.py` are refused, the last by the name
 #      of the file it reaches, where until round 38 each read as a file no tree holds and ran
 #      unread. A pattern character in quotes or after a backslash is the character, as bash
-#      reads it, and a pattern in any other word, `ls .github/scripts/*.sh` or `rm -rf
-#      "$dir"/*`, keeps the reading it had; a `case` pattern and a piece of a `[[ … =~ … ]]`
-#      regex, which this check reads as commands of their own, are no targets (globs_in,
-#      run_globs, pattern_place; dispatch://INFRA-1545, round 38). Such a target, the text of a
-#      shell's `-c` too, is read as bash runs it, its quotes and backslashes removed and a
-#      `$'…'`'s escapes read, so the path matched against the scripts and the files under
-#      .github/scripts/ is the one that runs: `.github/scripts/x."sh"` is a run of x.sh and is
-#      charged for it, and `bash $'.github/scripts/x.py'` is refused as `bash
-#      .github/scripts/x.py` is, where until round 38 SCRIPT_CALL read the first as written,
-#      which names no script, and the `$` of the second was read as written (run_names,
-#      ansi_c_escape; dispatch://INFRA-1545, round 38). A quote around the whole of a path,
-#      `"$script_dir/ci-retry.sh"`, leaves the path as written, and reads as it did. And a route
+#      reads it; a `case` pattern and a piece of a `[[ … =~ … ]]` regex, which this check reads
+#      as commands of their own, are no targets, but a command inside a `$( … )` is a run
+#      wherever it stands, and a `[[` in quotes opens no test (globs_in, run_globs,
+#      pattern_place; dispatch://INFRA-1545, round 38). And A NON-LITERAL WORD THAT COULD NAME
+#      A CI SCRIPT THAT FETCHES OR A FILE THIS CHECK DOES NOT READ IS REFUSED WHEREVER IT STANDS,
+#      its globs, braces and expansions read as bash fills them in, every expansion a wildcard:
+#      at a run's target it is read by its last element, whatever its directory, so `bash
+#      .github/scr*/x.s[h]`, `"$d"/x.s?` and `. .github/*/x.s*` are refused where x.sh fetches;
+#      anywhere else, but an argument of `echo` or `printf` and the places this tree writes an
+#      unread file, it is read as a whole path where its literal text holds `.github/`, so
+#      `flock /tmp/l .github/scripts/x.s[h]` and `ls .github/scripts/*.sh` are refused, behind
+#      whatever program, a set with no end, and `ls .github/workflows/*.yaml` and `rm -rf
+#      "$dir"/*` pass (pattern_words; dispatch://INFRA-1545, round 38). A word with no literal
+#      `.github/` names such a file through a variable, refused where the text sets it to that
+#      file's literal path, `s=.github/scripts/x.sh`, or through a name SCRIPT_CALL reads, `cd
+#      .github && bash scripts/x.sh`; a variable built from data and handed to a program this
+#      check does not read as a run, `s=$(printf …); flock /tmp/l "$s"`, is read by no rule
+#      here. A run's target, the text of a shell's `-c` too, is read as bash runs it, its quotes
+#      and backslashes removed and a `$'…'`'s escapes read, so the path matched against the
+#      scripts and the files under .github/scripts/ is the one that runs:
+#      `.github/scripts/x."sh"` is a run of x.sh and is charged for it, and `bash
+#      $'.github/scripts/x.py'` is refused as `bash .github/scripts/x.py` is, where until round
+#      38 SCRIPT_CALL read the first as written, which names no script, and the `$` of the second
+#      was read as written (run_names, ansi_c_escape; dispatch://INFRA-1545, round 38). A quote
+#      around the whole of a path, `"$script_dir/ci-retry.sh"`, leaves the path as written, and
+#      reads as it did. And a route
 #      from text to a program is refused whatever the text: `eval`; a shell reading its program
 #      from its standard input, a here-string, a file redirected into it or a process
 #      substitution, and a `.` or `source` of a process substitution; output piped into a shell
@@ -3464,10 +3478,17 @@ def pattern_place(commands: list[Command], index: int, text: str) -> bool:
     `*"$version"* | …)` and `^seconds=([0-9]{1,6})`, and dispatch-browser-postgres.sh's
     `'' | *[!0-9]* | 0)`. A one-word command ending at the `)` of a `( … )` subshell, or of a
     substitution, is a run, `( .github/scripts/x?.sh )` among them, which leaves a `case` written
-    inside one of them read as runs, which the tree writes nowhere."""
+    inside one of them read as runs, which the tree writes nowhere. A command inside a `$( … )` or
+    backticks is a run wherever it stands, and a `[[` written in quotes opens no test: until round
+    38 `[[ -n "$(.github/scripts/x.s[h])" ]]` and `echo '[['; .github/scripts/x.s[h]` each read as
+    a pattern and ran a script that fetches, charged nothing. Measured at 9ea48457, that changes
+    the reading of no command of the tree (dispatch://INFRA-1545, round 38)."""
     command = commands[index]
+    if command.context and command.context[-1] in ("dollar", "tick"):
+        return False
     offset = command.offset or 0
-    before = text[text.rfind("\n", 0, offset) + 1:offset]
+    before = re.sub(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"", "",
+                    text[text.rfind("\n", 0, offset) + 1:offset])
     if before.count("[[") > before.count("]]"):
         return True
     while index < len(commands):
@@ -5877,6 +5898,14 @@ MOVED_RUN = ("the name of a file this text writes elsewhere, which a `cd` or a `
              "does not follow may make the file it runs")
 NO_DIRECTORY_RUN = ("which names a script with no directory, so the shell finds it through the "
                     "working directory or `PATH`, neither of which this check follows")
+# A word that is no literal path, its globs, braces, quotes, backslashes and expansions read as
+# bash reads them with every expansion a wildcard, which could name a CI script that fetches or a
+# file under .github/scripts/ this check does not read (pattern_words; dispatch://INFRA-1545,
+# round 38). One reason and one cure, wherever the word stands: at a run's target, read by its
+# last element, and anywhere else, where its literal text holds `.github/`.
+PATTERN_RUN = ("a script that fetches or a file this check does not read, since bash fills in its "
+               "patterns and expansions from the files and the values the step holds as it runs, "
+               "which this check does not see")
 REASON_CURES = {
     WRITTEN_RUN: (
         "Run no file this text writes: write its commands in the step itself, or move them "
@@ -5892,6 +5921,11 @@ REASON_CURES = {
         "Name the command this text runs literally, `.github/scripts/<name>.sh …` or `grep …`, "
         "with what varies as its arguments; a wrapper that runs the words it is handed is read "
         "only as a function this text defines and calls with literal words, `run grep …`"),
+    PATTERN_RUN: (
+        "Write the path of the script that runs there literally, `.github/scripts/<name>.sh …`, "
+        "with what varies as its arguments, and run a Python program with `python3 "
+        ".github/scripts/<name>.py …`; a pattern that names no such file, such as `ls "
+        ".github/workflows/*.yaml`, passes"),
 }
 
 
@@ -5983,11 +6017,12 @@ def globs_in(word: str, plain: frozenset[int]) -> list[tuple[int, int]]:
     where the word holds a pattern character written unquoted (Command.plain): a `*` or a `?`, a
     `[` with a `]` after it, and a `{` with its `}` holding a `,` or a `..` (dispatch://INFRA-1545,
     round 38). A pattern character written in quotes, or after a backslash, is the character
-    itself, as bash reads it, and no pattern. Read only where the word is a run's target
-    (run_globs): there a pattern names the file that runs from the names the file system holds as
-    the step runs, as a variable names one from what it holds, and until round 38 `bash
-    .github/scripts/x-fetc?.sh` ran a script that fetches charged nothing, and `bash
-    .github/scripts/x.[p]y` a file this check does not read refused nothing."""
+    itself, as bash reads it, and no pattern. At a run's target (run_globs) a pattern names the
+    file that runs from the names the file system holds as the step runs, as a variable names one
+    from what it holds, and until round 38 `bash .github/scripts/x-fetc?.sh` ran a script that
+    fetches charged nothing, and `bash .github/scripts/x.[p]y` a file this check does not read
+    refused nothing; and wherever a word stands, a pattern is filled in the same way, which is
+    how pattern_words reads a word that could name such a file."""
     spans: list[tuple[int, int]] = []
     opened: list[int] = []
     places = sorted(plain)
@@ -6013,11 +6048,11 @@ def globs_in(word: str, plain: frozenset[int]) -> list[tuple[int, int]]:
 def run_globs(command: "Command", at: int) -> list[tuple[int, int]]:
     """globs_in for the word at `at` of a command CallScanner read, where that word is a run's
     target: the command word, or what a shell, `.` or `source` runs, in the step or in the text
-    of a shell's `-c` (dispatch://INFRA-1545, round 38). An argument of any other program is not
-    read for one: `ls .github/scripts/*.sh` and `rm -rf "$dir"/*` name files to list or to
-    delete, which no rule reads as a run, and keep the reading they had. Nor is a word that
-    assigns an array's element, `taken[$leg]=$n`, which bash reads as an assignment and expands
-    into no names."""
+    of a shell's `-c` (dispatch://INFRA-1545, round 38). An argument of any other program is
+    read by pattern_words instead, which refuses it where it could name a CI script that fetches
+    or a file this check does not read, `ls .github/scripts/*.sh`, and passes it where it could
+    not, `rm -rf "$dir"/*`. A word that assigns an array's element, `taken[$leg]=$n`, is read for
+    no pattern here, since bash reads it as an assignment and expands it into no names."""
     if not 0 <= at < min(len(command.words), len(command.plain)):
         return []
     if re.match(r"[A-Za-z_]\w*(?:\[[^]]*\])?\+?=", command.words[at]):
@@ -6206,6 +6241,179 @@ def unread_uses(text: str, first_line: int, action: str | None, elsewhere: bool,
             if kind == "text" and target:
                 found += unread_uses(target, command.line, action, elsewhere,
                                      f"in the text `{head} -c` runs, ", depth + 1)
+    return found
+
+
+def word_pattern(word: str, plain: frozenset[int],
+                 action: str | None) -> tuple[str, str] | None:
+    """The paths a word may name as bash reads it, as a regular expression of the whole path and
+    one of its last element, or None where it holds no glob, brace expansion or expansion
+    (pattern_words; dispatch://INFRA-1545, round 38). Its quotes and backslashes are gone as
+    CallScanner reads it. A `*` is any run of characters in one path element and a `?` any one, a
+    `[…]` its class and a `{a,b}` either word, written unquoted (globs_in); an expansion, `$x`,
+    `${x}`, `$(…)`, backticks or a GitHub expression, is any text at all, `/` included. The root
+    is written as target_parts writes it, and the literal directory in front of the first of them
+    normalised, so a composite action's `$GITHUB_ACTION_PATH/../../scripts/x*` is
+    `.github/scripts/x*`."""
+    word, spans, cut, patterns = target_parts(word, action, globs_in(word, plain))
+    if not spans:
+        return None
+
+    def regex(start: int, end: int) -> str:
+        out = ""
+        at = start
+        while at < end:
+            span = next((span for span in spans if span[0] == at), None)
+            if span is None:
+                out += re.escape(word[at])
+                at += 1
+                continue
+            text = word[span[0]:span[1]]
+            if span not in patterns:
+                out += ".*"
+            elif text in ("*", "?"):
+                out += "[^/]*" if text == "*" else "[^/]"
+            elif text.startswith("["):
+                inner = text[1:-1]
+                negate = inner[:1] in ("!", "^")
+                inner = inner[1:] if negate else inner
+                out += ("[^/]" if "[:" in inner or not inner else
+                        "[" + ("^/" if negate else "")
+                        + inner.replace("\\", "\\\\").replace("[", "\\[") + "]")
+            elif "," in text and "{" not in text[1:-1]:
+                out += "(?:" + "|".join(re.escape(part) for part in text[1:-1].split(",")) + ")"
+            else:
+                out += ".*"
+            at = span[1]
+        return out
+
+    slash = word.rfind("/", 0, spans[0][0])
+    prefix = os.path.normpath(word[:slash + 1]) if slash >= 0 else "."
+    prefix = "" if prefix == "." else prefix.rstrip("/") + "/"
+    return re.escape(prefix) + regex(slash + 1, len(word)), regex(cut + 1, len(word))
+
+
+def holds_github(word: str, plain: frozenset[int]) -> bool:
+    """Whether a word's literal text holds `.github/` as a path element of its own, outside its
+    expansions and its patterns (pattern_words; dispatch://INFRA-1545, round 38)."""
+    spans = expansions_in(word) + globs_in(word, plain)
+    return any((match.start() == 0 or word[match.start() - 1] == "/")
+               and not any(start < match.end() and match.start() < end for start, end in spans)
+               for match in re.finditer(r"\.github/", word))
+
+
+def word_place(words: list[str], at: int | None, start: int) -> str:
+    """Where the word at `at` of a command's words is written, which is no run's target, as a
+    refusal says it: `start` is where the command reduce_words reads begins, and `at` None a
+    file a redirect names (pattern_words; dispatch://INFRA-1545, round 38)."""
+    head = PROGRAM.sub("", words[start]).rsplit("/", 1)[-1] if start < len(words) else ""
+    if at is None:
+        return f"as a file a redirect of `{head}` names" if head else "as a redirect's file"
+    if at < start:
+        return "in the words before its command, a variable's value or a wrapper's argument"
+    if at == start:
+        return "as a word this check reads as a pattern rather than a run"
+    return f"as an argument of `{head}`"
+
+
+def pattern_words(text: str, first_line: int, action: str | None, elsewhere: bool,
+                  within: str = "", depth: int = 0) -> list[tuple[int, int, str]]:
+    """Each command of a body holding a word that is no literal path and could name a CI script
+    that fetches or a file of unread_files, as (the first and the last line of the command, what
+    it does with the first such word), UNNAMED_RUN's `does`, whose reason is PATTERN_RUN
+    (dispatch://INFRA-1545, round 38). The word is read as bash reads it (word_pattern): its
+    globs, braces and expansions are filled in from the files and the values the step holds as
+    it runs, so it names whatever matches then.
+      - At a run's target (run_places), in the step or in the text a shell's `-c` runs, the word
+        is read by its last element, whatever its directory is, a pattern, an expansion or a
+        literal one: `bash .github/scr*/x.s[h]`, `"$d"/x.s?` and `. .github/*/x.s*` could name
+        x.sh. A last element written literally is read by its name, as SCRIPT_CALL and
+        unread_named read it, and one that is all expansion as unnamed_target reads it.
+      - Anywhere else but an argument of `echo` or `printf` and the places where this tree writes
+        a file of unread_files (unread_place), the word is read as a whole path where its literal
+        text holds `.github/` (holds_github): `flock /tmp/l .github/scripts/x.s[h]`, `xargs`,
+        `find -exec`, `taskset` and every other program that runs its argument included, a set
+        with no end, which is why the word is read and not the program. A word naming no such
+        file passes, `ls .github/workflows/*.yaml`, and so does one with no literal `.github/`,
+        `ls packages/*/package.json` or `rm -rf "$RUNNER_TEMP"/*`.
+    A file a word names literally, which SCRIPT_CALL or unread_named reads by its name, is left to
+    that reading, which charges a call or refuses it by name. A `cd` or a `pushd` in the text, or
+    a working directory the step runs in (`elsewhere`), moves where a literal path is read from
+    (unread_file). Measured at 9ea48457, the tree writes no word this refuses: its 11 run targets
+    with a pattern or a partial expansion in their last element, array elements such as
+    `taken[$leg]=$number` and `"$state_dir/$name.state"`, name no such file, and its three other
+    words holding `.github/` and an expansion are `python3 "$root/.github/…"` arguments, two
+    naming ci-fault-proxy.py by its name and one ci-tools.yaml, no file of .github/scripts/.
+    Until round 38 each of the 17 shapes the round's class search drove past the gate at
+    548d180b ran a 1050 s fetch, or a file this check does not read, under a one-minute key."""
+    scanner = CallScanner(first_line)
+    commands = scanner.scan(text)
+    elsewhere = elsewhere or any(reduce_words(command.words)[0][:1] in (["cd"], ["pushd"])
+                                 for command in commands)
+    runs = {index: run_places(commands, index, text)
+            for index, _command, after_bar in commands_read(commands, text) if not after_bar}
+    candidates = sorted(script_files | unread_files)
+    found = []
+    for index, command in enumerate(commands):
+        words = command.words
+        reduced = reduce_words(words)[0]
+        start = len(words) - len(reduced)
+        head = PROGRAM.sub("", reduced[0]).rsplit("/", 1)[-1] if reduced else ""
+        plains = command.plain or [frozenset()] * len(words)
+        for at, word in [*enumerate(words), *((None, word) for word in command.redirected)]:
+            value = (word.partition("=")[2]
+                     if "=" in word and (word.startswith("-") or ASSIGNMENT.match(word))
+                     else word)
+            plain = plains[at] if at is not None and value == word else frozenset()
+            if at in runs.get(index, ()) and value == word:
+                plain = plain if run_globs(command, at) else frozenset()
+                pattern = word_pattern(word, plain, action)
+                normal, spans, cut, patterns = target_parts(word, action, globs_in(word, plain))
+                last = [span for span in spans if span[0] > cut]
+                if pattern is None or not last or (
+                        not any(span in patterns for span in last)
+                        and sum(end - begin for begin, end in last) == len(normal) - cut - 1):
+                    continue
+                files = [file for file in candidates
+                         if re.fullmatch(pattern[1], Path(file).name, re.DOTALL)]
+                does = (f"sources `{word}`" if at > start and head in (".", "source")
+                        else f"runs `{word}` with `{head}`" if at > start
+                        else f"runs `{word}` as a command")
+            else:
+                if at is not None and at > start and head in ("echo", "printf"):
+                    continue
+                quoted = at is not None and at < len(command.quoted) and command.quoted[at]
+                pattern = word_pattern(value, plain, action)
+                if (pattern is None and not quoted) or not holds_github(value, plain):
+                    continue
+                whole = (pattern[0] if pattern is not None
+                         else re.escape(os.path.normpath(target_parts(value, action)[0])))
+                files = [file for file in candidates
+                         if re.fullmatch(whole, file, re.DOTALL)
+                         or re.fullmatch(whole, "/" + file, re.DOTALL)]
+                does = f"writes `{word}` {word_place(words, at, start)}"
+            span = command.spans[at] if at is not None and at < len(command.spans) else None
+            named = {str(SCRIPTS / match.group(1))
+                     for match in SCRIPT_CALL.finditer(text[span[0]:span[1] + 1] if span else word)}
+            named |= set(unread_named(value, action, elsewhere)[0])
+            files = [file for file in files if file not in named
+                     and (file in unread_files or not retries_nothing(file, set()))]
+            if not files or (does.startswith("writes") and all(file in unread_files
+                                                               for file in files)
+                             and unread_place(words, at, start, files, None) is None):
+                continue
+            names = ", ".join(files[:3]) + (f" and {len(files) - 3} more" if len(files) > 3
+                                            else "")
+            ends = [span[1] for span in command.spans if span]
+            last_line = first_line + text.count("\n", 0, max(ends)) if ends else command.line
+            found.append((command.line, max(last_line, command.line),
+                          f"{within}{does}, which could name {names}"))
+            break
+        if head in INTERPRETERS and depth < 3:
+            kind, target = shell_operand(reduced)
+            if kind == "text" and target:
+                found += pattern_words(target, command.line, action, elsewhere,
+                                       f"in the text `{head} -c` runs, ", depth + 1)
     return found
 
 
@@ -6734,6 +6942,16 @@ for path, name, (who, loops, found, called), owner in body_reads:
     for line, sentence in unread_uses(without_arithmetic(loops.text), loops.first_line, action,
                                       loops.elsewhere):
         problem(path, line, f"{who} {sentence} (dispatch://INFRA-1545, round 38).")
+    # A word that is no literal path and could name a CI script that fetches, or a file this
+    # check does not read, is refused by name wherever it stands (pattern_words;
+    # dispatch://INFRA-1545, round 38), where no refusal above names its command already.
+    for line, last, does in pattern_words(without_arithmetic(loops.text), loops.first_line,
+                                          action, loops.elsewhere):
+        named_at = tuple(f"::error file={path},line={at}::{who} " for at in range(line, last + 1))
+        if not any(earlier.startswith(named_at) for earlier in problems):
+            problem(path, line, f"{who} " + UNNAMED_RUN.format(does=does, why=PATTERN_RUN,
+                                                               cure=REASON_CURES[PATTERN_RUN])
+                    + " (dispatch://INFRA-1545, round 38).")
     for command, word in variable_calls(loops) if owed else ():
         entry = next((entry for entry in DECLARED_CALLS
                       if name == "-" and (entry.path, entry.word) == (path, word)), None)
