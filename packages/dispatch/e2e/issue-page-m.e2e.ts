@@ -213,6 +213,7 @@ test("the conversation is the outline and the history is in the panel", async ({
       exact: true,
       name: CONTROL_LABELS.load_older,
     });
+    // Read once a page's answer has landed and two frames drew it, so Load older is drawn or gone.
     for (let presses = 1; await older.isVisible(); presses += 1) {
       expect(
         presses,
@@ -230,6 +231,7 @@ test("the conversation is the outline and the history is in the panel", async ({
     }
     const folded = historyPanel(page).locator('[data-history-day] > button[aria-expanded="false"]');
     await expect(folded.first(), "no day before today is folded to one line").toHaveText(/ · \d+$/);
+    // The whole log is read and drawn by now, so the folded days counted here stay as counted.
     for (let left = await folded.count(); left > 0; left -= 1) {
       await folded.first().click();
       await expect(folded).toHaveCount(left - 1);
@@ -1724,6 +1726,7 @@ async function verifyGapDetection(
     // box it is clipped to: the reader is moved by that offset, so the gap lands on the very
     // point `ViewportAnchor` probes (`rowAtCenter`).
     const clip = await historyViewport(page);
+    // One instant's layout is what this measures: the gaps' places now, for the scroll below.
     const gap = await page.evaluate((clipBox) => {
       const entries = [
         ...document.querySelectorAll<HTMLElement>(
@@ -1759,6 +1762,7 @@ async function verifyGapDetection(
     }
 
     await scrollHistoryBy(page, gap.fromCenter);
+    // The centre is read at this instant on purpose: the hit test below probes exactly this point.
     const centre = await page.evaluate(
       ({ clipBox, root }) => {
         const history = document.querySelector(root);
