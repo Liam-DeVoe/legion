@@ -245,6 +245,17 @@ function setSearchHighlights(root: HTMLElement, query: string): void {
   CSS.highlights.set("dispatch-search", new Highlight(...ranges));
 }
 
+/** The page editor's `keydown` handler of `handleDOMEvents`: true for a plain Escape, which
+ *  ProseMirror then leaves to the page (`leave-editor`); a press during an input method's
+ *  composition, or with a modifier, stays the editor's. */
+function plainEscape(_view: EditorHandle["view"], event: KeyboardEvent): boolean {
+  return (
+    event.key === "Escape" &&
+    !event.isComposing &&
+    !(event.altKey || event.ctrlKey || event.metaKey || event.shiftKey)
+  );
+}
+
 export function ProofDocument({
   anchoredThread,
   artifact,
@@ -262,6 +273,8 @@ export function ProofDocument({
   version,
 }: ProofDocumentProps): ReactNode {
   const root = useRef<HTMLDivElement>(null);
+  /** The document's frame, which Escape in the editor gives the focus to (`leave-editor`). */
+  const article = useRef<HTMLElement>(null);
   const editorRef = useRef<EditorHandle | undefined>(undefined);
   // The handle this document's references are drawn through, beside the ref the callbacks reach
   // it by: the titles are a render of their own, so the surface that draws them re-renders with
@@ -622,6 +635,19 @@ export function ProofDocument({
               );
             },
           },
+          {
+            // Escape takes the focus out of the editor the reader edits, onto the document's own
+            // frame, so the page's keys work again; the next Tab goes back into the editor, where
+            // ProseMirror kept the caret. The editor leaves the press to the page (`plainEscape`):
+            // the page editor runs in margin mode, which installs no mark popover, so no menu of
+            // the editor's own takes Escape.
+            action: "document.leave-editor",
+            run: () => article.current?.focus({ preventScroll: true }),
+            when: () => {
+              const view = editorRef.current?.view;
+              return view?.editable === true && view.hasFocus();
+            },
+          },
         ]
       : []
   );
@@ -756,6 +782,16 @@ export function ProofDocument({
           setActiveBlocks: (blockIds) => handle.setActiveBlocks(blockIds),
           setActiveMarks: (markIds) => handle.setActiveMarks(markIds),
           whenSent,
+        });
+      }
+      // ProseMirror's base keymap binds Escape to "select the parent node", which claims the press
+      // before the page's registry reads it; on the page, Escape takes the focus out of the editor
+      // (`leave-editor`). A `handleDOMEvents` handler that answers true leaves the event to the
+      // page: ProseMirror neither handles it nor prevents its default. The editor's own direct
+      // handlers stay beside it (`ask-content.ts` in the editor library sets them).
+      if (page) {
+        handle.view.setProps({
+          handleDOMEvents: { ...handle.view.props.handleDOMEvents, keydown: plainEscape },
         });
       }
       const unbindRemoteMarks = bindRemoteMarks(connection.doc, handle);
@@ -1201,11 +1237,15 @@ export function ProofDocument({
           This document could not load: {shownLoadError}
         </p>
       )}
+      {/* The page's document takes the focus Escape gives it out of the editor (`leave-editor`),
+          which no Tab reaches; a pane's takes none, since its editor takes no edits. */}
       <article
         aria-label="Document"
-        className="dispatch-doc relative"
+        className="dispatch-doc relative outline-none"
         data-read-only={isClosed || schemaReadOnly}
         hidden={version !== undefined || admissionHidesEditor}
+        ref={article}
+        tabIndex={page ? -1 : undefined}
       >
         <div ref={root} />
         {anchoredThread === undefined || anchoredHost === undefined

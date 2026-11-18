@@ -1116,6 +1116,89 @@ test("Alt+Enter opens the link at the caret while the editor has focus and takes
   expect(appKeymap.describe().some((entry) => entry.id === "open-link")).toBe(false);
 });
 
+/** Presses Escape on `target` through the application's registry, as `KeymapProvider`'s window
+ *  listener does, and answers whether a binding claimed it. */
+function pressEscape(target: Element): boolean {
+  const event = new KeyboardEvent("keydown", {
+    bubbles: true,
+    cancelable: true,
+    code: "Escape",
+    key: "Escape",
+  });
+  act(() => {
+    target.dispatchEvent(event);
+    appKeymap.handleKeyDown(event);
+  });
+  return event.defaultPrevented;
+}
+
+test("Escape takes the focus out of the editor the reader edits onto the document, and nowhere else does anything", async () => {
+  const { editors, rerender, sync, view } = renderProofDocument();
+  const composer = document.body.appendChild(document.createElement("textarea"));
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    const editor = editors[0];
+    if (editor === undefined) throw new Error("no editor");
+    // ProseMirror leaves a plain Escape to the page, whose registry reads it; an Escape with a
+    // modifier, and every other key, stay the editor's.
+    const { keydown } = editor.viewProps.handleDOMEvents as {
+      keydown(view: unknown, event: KeyboardEvent): boolean;
+    };
+    expect(keydown(null, new KeyboardEvent("keydown", { key: "Escape" }))).toBe(true);
+    expect(keydown(null, new KeyboardEvent("keydown", { key: "Escape", shiftKey: true }))).toBe(
+      false
+    );
+    expect(keydown(null, new KeyboardEvent("keydown", { key: "Enter" }))).toBe(false);
+    expect(appKeymap.describe().filter((entry) => entry.id === "leave-editor")).toMatchObject([
+      { keys: ["Escape"], label: "Take the focus out of the editor", scope: "document" },
+    ]);
+    const article = within(view.container).getByRole("article", { name: "Document" });
+    // The document is no Tab stop of its own: the focus Escape gives it is the only way in, and
+    // the next Tab from it goes into the editor it holds.
+    expect(article.tabIndex).toBe(-1);
+    editor.root.contentEditable = "true";
+    editor.root.tabIndex = 0;
+    editor.root.focus();
+
+    expect(pressEscape(editor.root)).toBe(true);
+    expect(document.activeElement).toBe(article);
+    // Out of the editor the key is not the document's any more.
+    expect(pressEscape(article)).toBe(false);
+    expect(document.activeElement).toBe(article);
+
+    // Focus in a comment composer: Escape is the composer's.
+    composer.focus();
+    expect(pressEscape(composer)).toBe(false);
+    expect(document.activeElement).toBe(composer);
+
+    // A closed issue's document takes no edits, so there is no typing to leave.
+    editor.root.focus();
+    rerender({ isClosed: true });
+    expect(pressEscape(editor.root)).toBe(false);
+    expect(document.activeElement).toBe(editor.root);
+  } finally {
+    composer.remove();
+    view.unmount();
+  }
+  expect(appKeymap.describe().some((entry) => entry.id === "leave-editor")).toBe(false);
+
+  // A pane's editor takes no edits: its document binds no Escape and takes no focus.
+  const pane = renderProofDocument({ surface: "pane" });
+  try {
+    await pane.sync();
+    await waitFor(() => expect(pane.editors).toHaveLength(1));
+    expect(appKeymap.describe().some((entry) => entry.id === "leave-editor")).toBe(false);
+    expect(pane.editors[0]?.viewProps.handleDOMEvents).toBeUndefined();
+    expect(
+      within(pane.view.container).getByRole("article", { name: "Document" })
+    ).not.toHaveAttribute("tabindex");
+  } finally {
+    pane.view.unmount();
+  }
+});
+
 // ---------------------------------------------------------------------------------------------
 // `surface="pane"`: the same live document drawn in a reading column beside a list (the Inbox's).
 // It takes no edits, publishes no presence, and claims none of the page-level singletons.

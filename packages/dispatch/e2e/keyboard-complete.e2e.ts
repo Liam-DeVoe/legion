@@ -19,6 +19,7 @@ import {
   createAsk,
   createComment,
   createIssue,
+  createIssueArtifact,
   createProject,
   createProjectDocument,
   editArtifact,
@@ -29,6 +30,7 @@ import {
   patchIssue,
   putRepoProject,
   requestApproval,
+  reviewArtifact,
   snoozeAsk,
   withOpenedAsk,
 } from "./api";
@@ -2731,9 +2733,122 @@ test("k-approval-keys: in the drawer a approves the request in hand with one pre
   await approvalCardSteps(page, "the drawer");
 });
 
-// t11: the issue-page steps of k-approval-keys go here - `a` on the header's Approve of an issue
-// whose spec waits on the reader, Shift+R opening its Request changes, nothing from a turn of the
-// Conversation tab, and nothing on an issue whose Verification document alone waits.
+// ---------------------------------------------------------------------------
+// k-approval-keys (R7), today's issue page: `a` and Shift+R press the header's Approve and Request
+// changes while the issue's spec has an approval request that waits on the reader, and send
+// nothing while only another document's request waits - the Verification document's, since
+// Dispatch refuses an approval request of a plan (`PLAN_APPROVED_BY_REVIEW`, the plan's D1).
+// ---------------------------------------------------------------------------
+
+// t11 (R22): the check's step on the Conversation tab - with the focus on the turn of the first
+// request's question, `a` and Shift+R send nothing - needs a turn that takes the focus, which R22
+// gives the Conversation's turns; it lands here with them.
+
+/** The lines of the `?` help's Issue section. */
+function issueKeyHelp(page: Page): Locator {
+  return page
+    .getByRole("dialog", { name: "Keyboard shortcuts" })
+    .getByRole("region", { exact: true, name: "Issue" })
+    .getByRole("listitem");
+}
+
+// SLOW(>=2s): an approval request seeded at version 2, the issue page loaded and one review read
+// back.
+test("k-approval-keys: on today's issue page a approves the spec from the header's Approve and Shift+R opens its Request changes while the spec's request waits on the reader", async ({
+  page,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const title = "Ledger handover";
+  const approval = await seedApprovalAtVersionTwo("CORE", title);
+  const reviews = watchReviews(page, [approval]);
+  const step = (text: string) => `k-approval-keys: the issue page: ${text}`;
+  const header = page.getByTestId("issue-header");
+  const dialog = page.getByRole("dialog", { name: "Request changes" });
+
+  await page.setViewportSize(WIDE);
+  await openIssue(page, approval.issueKey, title);
+  await expect(
+    header.getByRole("button", { disabled: false, exact: true, name: "Approve" }),
+    step("the header draws the spec's Approve")
+  ).toBeVisible();
+
+  await page.keyboard.press("Shift+R");
+  await expect(dialog, step("Shift+R opens Request changes")).toBeVisible();
+  await expect(
+    dialog.getByLabel("Reason"),
+    step("Shift+R puts the focus in the reason field")
+  ).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(dialog, step("Escape closes Request changes")).toHaveCount(0);
+  expect(reviewCount(reviews), step("Shift+R and Escape send nothing")).toBe(0);
+
+  await page.keyboard.press("a");
+  await expect
+    .poll(() => reviews[0]?.versioned.length, {
+      message: step("a sends one review of the spec's version 2"),
+    })
+    .toBe(1);
+  expect(reviews[0]?.versioned[0]?.input, step("the review approves")).toEqual({
+    state: "approved",
+  });
+  expect(reviewCount(reviews), step("a sends that one review and nothing else")).toBe(1);
+  await expect(dialog, step("a opens no dialog")).toHaveCount(0);
+});
+
+// SLOW(>=2s): an approved spec, a Verification document and its approval request seeded, the
+// issue page loaded and the help opened.
+test("k-approval-keys: on today's issue page a and Shift+R send nothing while only the Verification document's request waits on the reader, and ? shows both not available", async ({
+  page,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const title = "Mirror replay";
+  const issue = await createIssue({ project: "CORE", spec: `# ${title}\n\nThe plan.\n`, title });
+  // The spec is approved, so while another document's request is open the header still draws
+  // the spec's Request changes beside its pill: a key that read that button alone would act.
+  await reviewArtifact(issue.primary_artifact_id, { state: "approved" }, { login: "alice" });
+  const verification = await createIssueArtifact(issue.key, {
+    content: "# Verification\n\nThe mirror replays the ledger.\n",
+    name: "verification.md",
+  });
+  const requested = withOpenedAsk(
+    await requestApproval(verification.artifact.id, { summary: "The checks." }, asker)
+  );
+  expect(
+    requested.ask,
+    "k-approval-keys: the Verification document's request waits on the reader"
+  ).toMatchObject({ state: "open", waiting_on_person: "alice" });
+  const writes = [
+    reviewWrites(page, issue.primary_artifact_id),
+    versionReviewWrites(page, issue.primary_artifact_id, 1),
+    reviewWrites(page, verification.artifact.id),
+    versionReviewWrites(page, verification.artifact.id, requested.version),
+    answerWrites(page, requested.ask.id),
+  ];
+  const step = (text: string) =>
+    `k-approval-keys: the issue whose Verification document alone waits: ${text}`;
+  const header = page.getByTestId("issue-header");
+  const dialog = page.getByRole("dialog", { name: "Request changes" });
+
+  await page.setViewportSize(WIDE);
+  await openIssue(page, issue.key, title);
+  await expect(
+    header.getByRole("button", { exact: true, name: "Request changes" }),
+    step("the header draws the spec's Request changes")
+  ).toBeVisible();
+  await page.keyboard.press("a");
+  await page.keyboard.press("Shift+R");
+  await expect(dialog, step("Shift+R opens no Request changes")).toHaveCount(0);
+  await page.keyboard.press("?");
+  for (const label of ["Approve", "Request changes"]) {
+    await expect(
+      issueKeyHelp(page).filter({ hasText: new RegExp(`^${label}`) }),
+      step(`the ? help shows ${label} not available`)
+    ).toHaveAttribute("data-enabled", "false");
+  }
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toHaveCount(0);
+  expect(countOf(writes), step("a and Shift+R send nothing")).toBe(0);
+});
 
 // ---------------------------------------------------------------------------
 // k-next-item (R8): after the reader snoozes, dismisses, moves back to the Inbox, approves,
@@ -4264,4 +4379,253 @@ test("k-remap: a key changed in Settings works at once on the Inbox in another p
   } finally {
     await context.close();
   }
+});
+
+// ---------------------------------------------------------------------------
+// k-issue-tabs (R21): on today's issue page `]` and `[` walk the tab strip in its order and wrap
+// at either end, the `t` chords stay, and the chord hint lists each second key of `t` and `g` with
+// its action until the second press or the end of the one second; Escape in the spec the reader
+// edits takes the focus out of the editor, so the page's keys work, and Tab back into the document
+// puts the caret where it was.
+// ---------------------------------------------------------------------------
+
+/** The issue page's tabs in the order of its strip: each tab's address segment and its name. */
+const ISSUE_TABS = [
+  ["spec", "Spec"],
+  ["verification", "Verification"],
+  ["plan", "Plan"],
+  ["conversation", "Conversation"],
+  ["children", "Children"],
+  ["artifacts", "Artifacts"],
+  ["activity", "Activity"],
+  ["decisions", "Decisions"],
+  ["collaborators", "Collaborators"],
+] as const;
+
+type IssueTabAt = (typeof ISSUE_TABS)[number];
+
+/** Each key the chord hint lists after `t`, with the action it names. */
+const TAB_CHORD_HINT = [
+  "s Spec tab",
+  "k Verification tab",
+  "p Plan tab",
+  "c Conversation tab",
+  "h Children tab",
+  "a Artifacts tab",
+  "v Activity tab",
+  "d Decisions tab",
+  "o Collaborators tab",
+];
+
+/** Each key the chord hint lists after `g`, with the action it names. */
+const GO_CHORD_HINT = [
+  "i Go to Inbox",
+  "a Go to Agents",
+  "s Go to Settings",
+  "d Go to Documents",
+  "p Go to project…",
+];
+
+/** The paragraph and the list item of k-issue-tabs' spec the rows click into. */
+const TABS_PARAGRAPH = "The ledger keeps one clock for every mirror.";
+const TABS_ITEM = "The second mirror replays the ledger.";
+
+/** An open issue of CORE whose spec holds a paragraph and a bulleted list, and whose plan and
+ *  Verification document each hold text. */
+async function seedIssueTabs(): Promise<{ key: string; title: string }> {
+  await createProject({ key: "CORE", name: "Core" });
+  const title = "Ledger tabs";
+  const issue = await createIssue({
+    project: "CORE",
+    spec: `# ${title}\n\n${TABS_PARAGRAPH}\n\n- The first mirror reads the ledger.\n- ${TABS_ITEM}\n`,
+    title,
+  });
+  await createIssueArtifact(issue.key, {
+    content: "# Plan\n\nRead the ledger, then each mirror.\n",
+    name: "plan.md",
+  });
+  await createIssueArtifact(issue.key, {
+    content: "# Verification\n\nEach mirror agrees with the ledger.\n",
+    name: "verification.md",
+  });
+  return { key: issue.key, title };
+}
+
+/** Opens the issue's Spec tab with the focus on the page itself, outside the document. */
+async function openSpecTab(page: Page, key: string, title: string): Promise<void> {
+  await page.goto(`/issues/${key}/spec`);
+  await expect(
+    page.getByTestId("issue-header").getByRole("heading", { level: 1, name: title })
+  ).toBeVisible();
+  await page.locator("body").focus();
+}
+
+/** Waits until the strip has `tab` selected and the address names it. */
+async function expectTab(page: Page, key: string, tab: IssueTabAt, message: string): Promise<void> {
+  const [segment, name] = tab;
+  await expect(
+    page
+      .getByRole("tablist", { name: "Issue detail" })
+      .getByRole("tab", { name: new RegExp(`^${name}`) }),
+    message
+  ).toHaveAttribute("aria-selected", "true");
+  await expect(page, `${message}, and the address follows`).toHaveURL(
+    new RegExp(`/issues/${key}/${segment}$`)
+  );
+}
+
+/** Each line the chord hint lists, its second key and the action it names, in key order. */
+function chordHint(page: Page): Promise<string[]> {
+  return page
+    .getByTestId("chord-indicator")
+    .getByRole("listitem")
+    .evaluateAll((items) =>
+      items
+        .map(
+          (item) =>
+            `${item.querySelector("kbd")?.textContent} ${item.querySelector("span")?.textContent}`
+        )
+        .sort()
+    );
+}
+
+// SLOW(>=2s): the issue page loaded, every tab of its strip opened twice, and a chord hint left
+// to its one second.
+test("k-issue-tabs: ] and [ walk the tab strip in its order and wrap, the t chords stay, and the chord hint lists each second key of t and g with its action", async ({
+  page,
+}) => {
+  const seed = await seedIssueTabs();
+  const step = (text: string) => `k-issue-tabs: ${text}`;
+  const hint = page.getByTestId("chord-indicator");
+  await page.setViewportSize(WIDE);
+  await openSpecTab(page, seed.key, seed.title);
+
+  for (const tab of [...ISSUE_TABS.slice(1), ISSUE_TABS[0]]) {
+    await page.keyboard.press("]");
+    await expectTab(page, seed.key, tab, step(`] selects ${tab[1]}`));
+  }
+  for (const tab of [...ISSUE_TABS].reverse()) {
+    await page.keyboard.press("[");
+    await expectTab(page, seed.key, tab, step(`[ selects ${tab[1]}`));
+  }
+
+  await page.keyboard.press("t");
+  await expect(hint.locator("kbd").first(), step("t shows the chord hint")).toHaveText("t");
+  await expect
+    .poll(() => chordHint(page), {
+      message: step("after t the chord hint lists each tab's key with its tab"),
+    })
+    .toEqual([...TAB_CHORD_HINT].sort());
+  await page.keyboard.press("c");
+  await expect(hint, step("c ends the chord and its hint")).toHaveCount(0);
+  await expectTab(
+    page,
+    seed.key,
+    ["conversation", "Conversation"],
+    step("t c selects Conversation")
+  );
+
+  await page.locator("body").focus();
+  await page.keyboard.press("g");
+  await expect
+    .poll(() => chordHint(page), {
+      message: step("after g the chord hint lists each page's key with its page"),
+    })
+    .toEqual([...GO_CHORD_HINT].sort());
+  await expect(
+    hint,
+    step("the hint goes at the end of the one second, with no second press")
+  ).toHaveCount(0, { timeout: 5_000 });
+  await expect(page, step("a g with no second press goes nowhere")).toHaveURL(
+    new RegExp(`/issues/${seed.key}/conversation$`)
+  );
+});
+
+/** Whether the focus is inside the Spec tab's editor. */
+function focusInSpec(page: Page): Promise<boolean> {
+  return specEditor(page).evaluate((root) => root.contains(document.activeElement));
+}
+
+/** The Spec tab's editor. */
+function specEditor(page: Page): Locator {
+  return page
+    .getByRole("tabpanel", { name: "Spec" })
+    .getByRole("textbox", { name: "Document editor" });
+}
+
+/** Where the page's caret stands: the text of its node and its offset there. */
+interface Caret {
+  readonly collapsed: boolean;
+  readonly offset: number;
+  readonly text: string;
+}
+
+/** Where the page's caret stands now, or null with no selection. */
+function caretOf(page: Page): Promise<Caret | null> {
+  return page.evaluate(() => {
+    const selection = window.getSelection();
+    if (selection === null || selection.rangeCount === 0) return null;
+    return {
+      collapsed: selection.isCollapsed,
+      offset: selection.anchorOffset,
+      text: selection.anchorNode?.textContent ?? "",
+    };
+  });
+}
+
+// SLOW(>=2s): the spec opened and connected, two tabs left and come back to twice, and Tab walked
+// back into the document.
+test("k-issue-tabs: Escape in the spec the reader edits takes the focus out of the editor so ] works, changes no text, and Tab back in puts the caret where it was", async ({
+  page,
+}) => {
+  const seed = await seedIssueTabs();
+  const step = (text: string) => `k-issue-tabs: ${text}`;
+  await page.setViewportSize(WIDE);
+  await openSpec(page, seed.key, TABS_PARAGRAPH);
+  const before = (await getIssueArtifactText(seed.key, "spec")).markdown;
+  const editor = specEditor(page);
+
+  let caret: Caret | null = null;
+  for (const [text, where] of [
+    [TABS_PARAGRAPH, "a paragraph"],
+    [TABS_ITEM, "an item of the list"],
+  ] as const) {
+    await editor.getByText(text).click();
+    await expect(editor, step(`a click puts the caret in ${where}`)).toBeFocused();
+    caret = await caretOf(page);
+    expect(caret?.text, step(`the caret stands in ${where}`)).toBe(text);
+    await page.keyboard.press("Escape");
+    expect(
+      await focusInSpec(page),
+      step(`Escape in ${where} takes the focus out of the editor`)
+    ).toBe(false);
+    await page.keyboard.press("]");
+    await expectTab(
+      page,
+      seed.key,
+      ["verification", "Verification"],
+      step(`after Escape in ${where}, ] selects the next tab`)
+    );
+    expect(
+      (await getIssueArtifactText(seed.key, "spec")).markdown,
+      step(`Escape in ${where} leaves the spec's Markdown as it was`)
+    ).toBe(before);
+    await page.keyboard.press("[");
+    await expectTab(page, seed.key, ["spec", "Spec"], step("[ goes back to the Spec tab"));
+  }
+
+  // Back on the Spec tab, Tab goes on from where the focus last was until it is in the document.
+  for (let press = 0; press < TAB_PRESSES && !(await focusInSpec(page)); press += 1) {
+    await page.keyboard.press("Tab");
+  }
+  expect(await focusInSpec(page), step("Tab goes back into the document")).toBe(true);
+  await expect
+    .poll(() => caretOf(page), {
+      message: step("Tab back into the document puts the caret where it was"),
+    })
+    .toEqual(caret);
+  expect(
+    (await getIssueArtifactText(seed.key, "spec")).markdown,
+    step("the spec's Markdown is as it was")
+  ).toBe(before);
 });

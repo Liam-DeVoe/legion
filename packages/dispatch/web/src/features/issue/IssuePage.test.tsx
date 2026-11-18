@@ -37,6 +37,7 @@ import type {
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { appKeymap } from "../shell/keymap";
 import { IssuePage } from "./IssuePage";
 
 const issue = {
@@ -1220,6 +1221,64 @@ test("IssuePage opens the Collaborators tab with the t o chord", async () => {
   }
 });
 
+/** The `issue` scope's binding `id` as the `?` help describes it now. */
+function issueBinding(id: string) {
+  return appKeymap.describe().find((entry) => entry.scope === "issue" && entry.id === id);
+}
+
+// `]` and `[` walk the strip in its own order and wrap at either end, as its arrow keys do; the
+// address follows each tab. (`[[` is how user-event types a `[`.)
+test("IssuePage selects the next tab with ] and the previous with [, wrapping at either end", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const collaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue({
+    agents: [],
+    issue_key: "CORE-1",
+    legion_registry: "ok",
+    people: [],
+  });
+  const view = renderIssuePage("/issues/CORE-1/spec");
+  const route = () => screen.getByTestId("current-route").textContent;
+
+  try {
+    await screen.findByRole("tab", { name: "Spec", selected: true });
+    expect(issueBinding("next-tab")).toMatchObject({
+      enabled: true,
+      keys: ["]"],
+      label: "Next tab",
+    });
+    expect(issueBinding("previous-tab")).toMatchObject({
+      enabled: true,
+      keys: ["["],
+      label: "Previous tab",
+    });
+
+    await user.keyboard("]");
+    await screen.findByRole("tab", { name: "Verification", selected: true });
+    expect(route()).toBe("/issues/CORE-1/verification");
+    await user.keyboard("]");
+    await screen.findByRole("tab", { name: "Plan", selected: true });
+    expect(route()).toBe("/issues/CORE-1/plan");
+    await user.keyboard("[[");
+    await screen.findByRole("tab", { name: "Verification", selected: true });
+    await user.keyboard("[[");
+    await screen.findByRole("tab", { name: "Spec", selected: true });
+    expect(route()).toBe("/issues/CORE-1/spec");
+
+    // Before the first tab is the last one, and after the last the first.
+    await user.keyboard("[[");
+    await screen.findByRole("tab", { name: "Collaborators", selected: true });
+    expect(route()).toBe("/issues/CORE-1/collaborators");
+    await user.keyboard("]");
+    await screen.findByRole("tab", { name: "Spec", selected: true });
+    expect(route()).toBe("/issues/CORE-1/spec");
+  } finally {
+    view.unmount();
+    collaborators.mockRestore();
+    restore();
+  }
+});
+
 test("IssuePage renders a not-found view for an unrecognized tab suffix without fetching the issue", async () => {
   const getIssueSpy = spyOn(api, "getIssue").mockResolvedValue(issue);
   const getMyStateSpy = spyOn(api, "getMyState").mockResolvedValue({
@@ -2336,6 +2395,160 @@ test("IssuePage keeps an unrequested draft approval passive", async () => {
     expect(screen.queryByRole("button", { name: "Request changes" })).not.toBeInTheDocument();
   } finally {
     view.unmount();
+    restore();
+  }
+});
+
+type OpenAsk = NonNullable<IssueDetails["open_asks"]>[number];
+
+/** An approval request open on the issue, whose turn is `waitingOn`'s, waiting on `person`. */
+function openApproval(id: string, waitingOn: "agent" | "human", person: string): OpenAsk {
+  return {
+    ...openIssueAsk,
+    id,
+    kind: "approval",
+    last_reply: null,
+    waiting_on: waitingOn,
+    waiting_on_person: person,
+  };
+}
+
+/** The issue with its spec awaiting approval of version 2 through the request `askId`, and
+ *  `openAsks` open on it. */
+function awaitingSpec(askId: string, openAsks: OpenAsk[]): IssueDetails {
+  return {
+    ...issue,
+    artifacts: [
+      {
+        ...issue.artifacts[0],
+        approval: { ask_id: askId, latest_version: 2, state: "awaiting" },
+      },
+    ],
+    open_asks: openAsks,
+  };
+}
+
+test("a approves the spec from the header and Shift+R opens its Request changes while the spec's request waits on the reader, and neither acts from a turn of the Conversation", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(
+    awaitingSpec("ask-approval", [openApproval("ask-approval", "human", "alice")])
+  );
+  const listComments = spyOn(api, "listComments").mockResolvedValue([
+    { ...itemComment, anchor: null },
+  ]);
+  // The review stays out, so the request stays in hand for the steps after it.
+  const review = spyOn(api, "createArtifactVersionReview").mockImplementation(
+    () => new Promise(() => {})
+  );
+  const view = renderIssuePage("/issues/CORE-1/conversation");
+
+  try {
+    const header = await screen.findByTestId("issue-header");
+    await within(header).findByRole("button", { name: "Approve" });
+    expect(issueBinding("approve")).toMatchObject({ enabled: true, keys: ["a"], label: "Approve" });
+    expect(issueBinding("request-changes")).toMatchObject({
+      enabled: true,
+      keys: ["Shift+R"],
+      label: "Request changes",
+    });
+
+    // Shift+R opens the box with the focus in its reason, and Escape closes it sending nothing.
+    await user.keyboard("{Shift>}R{/Shift}");
+    const dialog = screen.getByRole("dialog", { name: "Request changes" });
+    await waitFor(() => expect(within(dialog).getByLabelText("Reason")).toHaveFocus());
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Request changes" })).not.toBeInTheDocument();
+    expect(review).not.toHaveBeenCalled();
+
+    // On a turn of the Conversation the reader is on that turn, and neither key acts.
+    const turn = (await screen.findByText("Anchored note.")).closest<HTMLElement>("[data-turn]");
+    if (turn === null) throw new Error("the comment drew no turn");
+    turn.tabIndex = -1;
+    act(() => turn.focus());
+    expect(issueBinding("approve")?.enabled).toBe(false);
+    expect(issueBinding("request-changes")?.enabled).toBe(false);
+    await user.keyboard("a");
+    await user.keyboard("{Shift>}R{/Shift}");
+    expect(review).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog", { name: "Request changes" })).not.toBeInTheDocument();
+
+    // Off the turn, `a` approves the version the header read, and opens no box.
+    act(() => turn.blur());
+    await user.keyboard("a");
+    await waitFor(() => expect(review).toHaveBeenCalledTimes(1));
+    expect(review).toHaveBeenCalledWith("artifact-1", 2, { state: "approved" }, keyedAttempt);
+    expect(screen.queryByRole("dialog", { name: "Request changes" })).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    listComments.mockRestore();
+    review.mockRestore();
+    restore();
+  }
+});
+
+test("a and Shift+R do nothing while only another document's request waits, though the header draws Request changes, and while the spec's request waits on someone else", async () => {
+  const user = userEvent.setup();
+  // The spec is approved, and only another document's request (the Verification document's)
+  // waits on the reader: the header still draws the spec's Request changes beside its pill.
+  const restore = stubIssuePage({
+    ...issue,
+    artifacts: [
+      {
+        ...issue.artifacts[0],
+        approval: { latest_version: 1, state: "approved", version: 1 },
+      },
+    ],
+    open_asks: [openApproval("ask-verification", "human", "alice")],
+  });
+  const review = spyOn(api, "createArtifactVersionReview").mockImplementation(
+    () => new Promise(() => {})
+  );
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  const view = renderIssuePage("/issues/CORE-1/conversation", undefined, undefined, queryClient);
+
+  try {
+    const header = await screen.findByTestId("issue-header");
+    await within(header).findByRole("button", { name: "Request changes" });
+    expect(issueBinding("approve")?.enabled).toBe(false);
+    expect(issueBinding("request-changes")?.enabled).toBe(false);
+    await user.keyboard("a");
+    await user.keyboard("{Shift>}R{/Shift}");
+    expect(screen.queryByRole("dialog", { name: "Request changes" })).not.toBeInTheDocument();
+
+    // The spec's own request, with its turn another person's, and then an agent's.
+    for (const [waitingOn, person] of [
+      ["human", "bob"],
+      ["agent", "alice"],
+    ] as const) {
+      act(() =>
+        queryClient.setQueryData<IssueDetails>(
+          ["issue", "CORE-1"],
+          awaitingSpec("ask-approval", [openApproval("ask-approval", waitingOn, person)])
+        )
+      );
+      await within(header).findByRole("button", { name: "Approve" });
+      expect(issueBinding("approve")?.enabled).toBe(false);
+      expect(issueBinding("request-changes")?.enabled).toBe(false);
+      await user.keyboard("a");
+      await user.keyboard("{Shift>}R{/Shift}");
+      expect(screen.queryByRole("dialog", { name: "Request changes" })).not.toBeInTheDocument();
+    }
+    expect(review).not.toHaveBeenCalled();
+
+    // Once that request waits on the reader, both keys are theirs.
+    act(() =>
+      queryClient.setQueryData<IssueDetails>(
+        ["issue", "CORE-1"],
+        awaitingSpec("ask-approval", [openApproval("ask-approval", "human", "alice")])
+      )
+    );
+    expect(issueBinding("approve")?.enabled).toBe(true);
+    expect(issueBinding("request-changes")?.enabled).toBe(true);
+  } finally {
+    view.unmount();
+    review.mockRestore();
     restore();
   }
 });

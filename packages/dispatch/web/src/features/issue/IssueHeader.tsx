@@ -19,7 +19,7 @@ import {
   issuePatchRequest,
 } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
-import { projectsQuery, userStateQuery } from "../../api/queries";
+import { projectsQuery, userStateQuery, whoAmIQuery } from "../../api/queries";
 import type { Artifact, IssueDetails, UserIssueState, UserState } from "../../api/types";
 import { ChoiceMenu } from "../../components/ChoiceMenu";
 import { focusOnMount } from "../../components/focus-place";
@@ -60,6 +60,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { ApprovalChip } from "../doc/ApprovalChip";
+import { outsideAskCard } from "../inbox/ask-card";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { issueStatuses, openIssueStatuses, statusLabel, statusText } from "../project/board-model";
@@ -74,6 +75,7 @@ import { AssigneeControl } from "./AssigneeControl";
 import { ClaimChip } from "./ClaimChip";
 import { GitHubLink } from "./GitHubLink";
 import { gatedStepEntries } from "./gated-steps";
+import { usableControl } from "./header-control";
 import { IssueComponentsLine } from "./IssueComponentsLine";
 import { IssueLabels } from "./IssueLabels";
 import { issuePriority } from "./issue-priority";
@@ -94,6 +96,11 @@ const routeHint =
   "New asks, comments, and messages on this issue wake this agent or role; replies inside a thread reach their participants directly. It is where messages go, not who is working the issue — that is the claim.";
 
 const titleRefusals = new Set(["CAP_EXCEEDED", "ISSUE_CLOSED"]);
+
+/** A turn of the Conversation tab, or a reply inside one. While the focus is on one the reader is
+ *  on that turn, not on the header, so the header's Approve and Request changes keys stand down. */
+const CONVERSATION_TURN =
+  "#issue-conversation-panel [data-turn], #issue-conversation-panel [data-reply]";
 
 /** Whether `input` is the Status pill's pick alone: that control shows its write in the shell's
  *  indicator and rolls back on a refusal, where every other header field holds its draft and
@@ -266,6 +273,43 @@ export function IssueHeader({
   const showApprovalActions =
     documentArtifact?.approval !== undefined &&
     (documentArtifact.approval.state !== "draft" || approvalRequestOpen);
+  // `a` and Shift+R press the header's Approve and Request changes (R7) while the primary
+  // document's own approval request waits on the reader: its `ask_id` names an open ask of this
+  // issue whose turn is a person's, and that person is the reader. `showApprovalActions` is not
+  // that test: it draws Request changes on an approved spec while only another document of the
+  // issue waits, whose request the reader reaches on the Artifacts tab. Inside an ask card the
+  // card's controls own the keys, and on a turn of the Conversation tab the reader is on that
+  // turn; a text field keeps both keys already, since neither fires while one has the focus.
+  const viewer = useQuery(whoAmIQuery()).data?.login;
+  const approvalAskId = documentArtifact?.approval?.ask_id;
+  const approvalWaitsOnReader =
+    viewer !== undefined &&
+    openAsks.some(
+      (ask) =>
+        ask.id === approvalAskId && ask.waiting_on === "human" && ask.waiting_on_person === viewer
+    );
+  /** The header's Approve or Request changes, while the key that presses it is the reader's:
+   *  drawn, taking a press, and the request waiting on them. */
+  const approvalControl = (action: "approve" | "request-changes"): HTMLElement | null =>
+    approvalWaitsOnReader &&
+    outsideAskCard() &&
+    document.activeElement?.closest(CONVERSATION_TURN) == null
+      ? usableControl(`[data-approval-action="${action}"]`)
+      : null;
+  useKeymap("issue", [
+    {
+      action: "issue.approve",
+      run: () => approvalControl("approve")?.click(),
+      when: () => approvalControl("approve") !== null,
+    },
+    {
+      // Request changes opens its box with the focus in the reason, where Ctrl or Cmd+Enter
+      // sends and Escape closes it sending nothing (`ApprovalChip`).
+      action: "issue.request-changes",
+      run: () => approvalControl("request-changes")?.click(),
+      when: () => approvalControl("request-changes") !== null,
+    },
+  ]);
   const pinGuard = useSubmitGuard();
   const updateState = useKeyedWrite({
     label: (pinned: boolean) => `${issue.key} ${pinned ? "pinned" : "unpinned"}`,

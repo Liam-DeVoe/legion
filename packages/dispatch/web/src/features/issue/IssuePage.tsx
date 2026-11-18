@@ -35,9 +35,11 @@ import { VerificationTab } from "../verification/VerificationTab";
 import { ChildrenTab } from "./ChildrenTab";
 import { CollaboratorsTab } from "./CollaboratorsTab";
 import { DecisionsPanel } from "./DecisionsPanel";
+import { usableControl } from "./header-control";
 import { IssueHeader } from "./IssueHeader";
 import { IssueTabs } from "./IssueTabs";
 import { ItemMatchList } from "./ItemMatchList";
+import { issueTabs } from "./issue-tab-list";
 import { stateForIssue } from "./pins";
 import { SpecRequirements } from "./SpecRequirements";
 import { SpecToolbar } from "./SpecToolbar";
@@ -95,33 +97,12 @@ function ItemLandingFailure({
   );
 }
 
-/**
- * What the `issue` scope acts on. Every target is a control the header or the tablist already
- * renders, so a key does exactly what a click on it does. Scoping the lookup to
- * `[data-issue-header]` keeps a child issue's row in the Children tab - it carries the same
- * accessible names - out of reach.
- */
-const HEADER = "[data-issue-header]";
+/** The header controls the `issue` scope presses (`usableControl`, `header-control.ts`). */
 const LABELS_TRIGGER = 'button[aria-label="Edit labels"]';
 const PIN_TOGGLE = 'button[aria-label="Pin issue"], button[aria-label="Unpin issue"]';
 const PRIORITY_MENU = "[data-priority-menu]";
 const STATUS_MENU = "[data-status-menu]";
 const TITLE_HEADING = 'h1[tabindex="0"]';
-
-/** The header control `selector` names, or `null` when it is absent or refuses input (a closed
- *  issue, a save in flight, which holds a menu's trigger with `aria-disabled`): the one fact both
- *  the key's `run` and the `when` that offers it read, so a shortcut is listed exactly while its
- *  control would take a click. */
-function usableControl(selector: string): HTMLElement | null {
-  const node = document.querySelector(HEADER)?.querySelector<HTMLElement>(selector);
-  if (node == null) {
-    return null;
-  }
-  const disabled =
-    ((node instanceof HTMLButtonElement || node instanceof HTMLSelectElement) && node.disabled) ||
-    node.getAttribute("aria-disabled") === "true";
-  return disabled ? null : node;
-}
 
 /**
  * Whether focus is outside every `<input>` and outside every ask card. `0`-`3` and `Shift+P` are
@@ -259,9 +240,19 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   // The scope is the issue page itself, and every binding drives the header control or the tab
   // its label names - the same handler a click reaches, offered while that control is. The
   // digits go through `useIssuePriority` on the route's key, the query key this page reads, so
-  // a keyed priority lands in the same cache the picker writes. `IssueHeader` registers the
-  // palette-only issue actions into this same scope; it never pushes one of its own.
+  // a keyed priority lands in the same cache the picker writes. `IssueHeader` registers the keys
+  // of its own actions (close, reopen, the priorities, Approve and Request changes) into this
+  // same scope; it never pushes one of its own.
   const priorityWrite = useIssuePriority(route.key);
+  /** Selects the tab `step` places from the one shown, in the strip's order (`issueTabs`),
+   *  through its button as a click does; past either end it wraps, as the strip's own arrow keys
+   *  do (`Tabs.tsx`). */
+  const stepTab = (step: 1 | -1) => {
+    const tabs = issueTabs(issue.data?.artifacts?.length ?? 0);
+    const at = tabs.findIndex((tab) => tab.id === activeTab);
+    const next = tabs[(at + step + tabs.length) % tabs.length];
+    if (next !== undefined) document.getElementById(tabButtonId("issue", next.id))?.click();
+  };
   useKeymapScope("issue");
   useKeymap("issue", [
     {
@@ -302,6 +293,17 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       action,
       run: () => document.getElementById(tabButtonId("issue", tab))?.click(),
       when: () => document.getElementById(tabButtonId("issue", tab)) !== null,
+    })),
+    // Offered while the strip is drawn, which it is once the issue has been read.
+    ...(
+      [
+        ["issue.next-tab", 1],
+        ["issue.previous-tab", -1],
+      ] as const
+    ).map(([action, step]) => ({
+      action,
+      run: () => stepTab(step),
+      when: () => document.getElementById(tabButtonId("issue", activeTab)) !== null,
     })),
   ]);
 
