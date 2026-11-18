@@ -115,7 +115,11 @@ case "$mode" in
     # One attempt: a fresh copy, package add in it, then the build package add's tidy prepared.
     # The CLI runs as pulumitest.NewCLI runs it in the test: a PULUMI_HOME and a file backend of
     # its own, so it reads and writes nothing of the runner's and asks no service who is logged
-    # in (with no backend the CLI looks up an account on Pulumi Cloud and, logged out, makes one).
+    # in (with no backend the CLI looks up an account on Pulumi Cloud and, logged out, makes one),
+    # no update check (which asks api.pulumi.com for the CLI's latest version), and the Pulumi
+    # Cloud API at a local port that refuses: where an AI coding agent's variable is set
+    # (CLAUDECODE and the others the CLI's agentdetect reads), package add asks the registry at
+    # api.pulumi.com for the package it added, and no setting of the CLI turns that lookup off.
     # The attempt's own preparation - the directory, the copy, the backend and home - is no
     # service's fault, so a failure of it ends the step at once, naming what failed, rather than
     # leaving package add and the build to run on a copy that is not the consumer: a function
@@ -130,7 +134,8 @@ case "$mode" in
         { echo "::error::go-fetch: could not make the Pulumi backend and home under $work" >&2; exit 1; }
       # go-offline: this is the fetch step itself, run before the tests and tried again on failure.
       (cd "$dir" && GOWORK=off PULUMI_HOME="$work/home" PULUMI_BACKEND_URL="file://$work/backend" \
-        PULUMI_CONFIG_PASSPHRASE=test PULUMI_SKIP_UPDATE_CHECK=true pulumi package add "$plugin" &&
+        PULUMI_CONFIG_PASSPHRASE=test PULUMI_SKIP_UPDATE_CHECK=true PULUMI_API=http://127.0.0.1:1 \
+        pulumi package add "$plugin" &&
         GOWORK=off go build ./...)
     }
     echo "go-fetch: the Pulumi consumer $src, on the plugin $plugin" >&2

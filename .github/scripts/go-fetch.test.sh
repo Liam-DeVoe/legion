@@ -38,7 +38,7 @@ if [ "$(basename "$0")" = go ] && [ "$1" = install ]; then
   echo "GOBIN=${GOBIN:-}" >> "$GO_FETCH_TEST_CALLS.gobin"
 fi
 if [ "$(basename "$0")" = pulumi ]; then
-  echo "PULUMI_BACKEND_URL=${PULUMI_BACKEND_URL:-} PULUMI_HOME=${PULUMI_HOME:-}" >> "$GO_FETCH_TEST_CALLS.pulumi-env"
+  echo "PULUMI_BACKEND_URL=${PULUMI_BACKEND_URL:-} PULUMI_HOME=${PULUMI_HOME:-} PULUMI_SKIP_UPDATE_CHECK=${PULUMI_SKIP_UPDATE_CHECK:-} PULUMI_API=${PULUMI_API:-}" >> "$GO_FETCH_TEST_CALLS.pulumi-env"
   [ ! -e sdks ] || { echo "sdks already exists" >&2; exit 3; }
   mkdir sdks
 fi
@@ -141,6 +141,8 @@ check "exits 0" "$(is "$rc" 0)"
 check "runs package add of the plugin" "$(contains "$calls" " pulumi package add $work/plugin$")"
 check "on a file backend of its own, so it asks Pulumi Cloud for no account" \
   "$(contains "$pulumi_env" '^PULUMI_BACKEND_URL=file:///[^ ]* PULUMI_HOME=/')"
+check "with no update check and the Pulumi Cloud API at a local port that refuses, so it asks api.pulumi.com nothing" \
+  "$(contains "$pulumi_env" ' PULUMI_SKIP_UPDATE_CHECK=true PULUMI_API=http://127\.0\.0\.1:1$')"
 check "then the build, in the same copy" \
   "$(is "$(awk '{print $1}' <<< "$calls" | sort -u | grep -c .)" 1)"
 check "builds the copy" "$(contains "$calls" ' go build ./...$')"

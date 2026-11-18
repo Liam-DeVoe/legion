@@ -194,15 +194,21 @@ type CLI struct {
 }
 
 // NewCLI returns a CLI that runs pulumi in dir with the caller's environment plus the test
-// binary's PULUMI_HOME, a file backend in a temporary directory, the test passphrase, and no
-// update check.
+// binary's PULUMI_HOME, a file backend in a temporary directory, the test passphrase, no update
+// check, and no Pulumi Cloud API to reach.
 func NewCLI(t testing.TB, dir string) *CLI {
 	t.Helper()
 	return &CLI{t: t, dir: dir, env: append(os.Environ(),
 		"PULUMI_HOME="+pulumiHome(t),
 		"PULUMI_BACKEND_URL=file://"+t.TempDir(),
 		"PULUMI_CONFIG_PASSPHRASE=test",
+		// The update check asks api.pulumi.com for the CLI's latest version.
 		"PULUMI_SKIP_UPDATE_CHECK=true",
+		// The Pulumi Cloud API at a local port that refuses. Where a variable of an AI coding agent
+		// is set (CLAUDECODE and the others the CLI's agentdetect reads), `package add` asks the
+		// registry at api.pulumi.com for the package it added, and no setting of the CLI turns that
+		// lookup off. Refused here, it gives up after its four tries and the command goes on.
+		"PULUMI_API=http://127.0.0.1:1",
 	)}
 }
 
