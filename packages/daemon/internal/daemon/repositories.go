@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -1388,18 +1389,18 @@ func (w *workflowRuntime) awaitRecovery(repo, tree, child, parent string) {
 }
 
 // tellReleaseWaits tells the architects of the children of waits the recovery of repos left
-// unrecorded what to release again, each child with whether its parent is recorded now: one
-// child-release-stalled notice for each issue a child's notice is queued on, which is its parent
-// when the record holds that parent in the child's tree, and else the tree root. The owner walk
-// takes a notice on the parent to the architect that owns the parent, which is the architect that
-// releases the parent's children; a parent the record does not hold, or holds in another tree, has
-// no architect of this tree, so the child is the tree's architect's to release. A child recorded
-// since is told nothing; its record's own notices carry it.
+// unrecorded what to release again, each child with its parent and whether that parent is recorded
+// now: one child-release-stalled notice for each issue a child's notice is queued on, which is its
+// parent when the record holds that parent in the child's tree, and else the tree root. The owner
+// walk takes a notice on the parent to the architect that owns the parent, which is the architect
+// that releases the parent's children; a parent the record does not hold, or holds in another
+// tree, has no architect of this tree, so the child is the tree's architect's to release. A child
+// recorded since is told nothing; its record's own notices carry it.
 func (w *workflowRuntime) tellReleaseWaits(ctx context.Context, repos []string, waits map[string]releaseWait) error {
 	if len(waits) == 0 {
 		return nil
 	}
-	byIssue := map[string][]string{}
+	byIssue := map[string][]texts.UnrecordedChild{}
 	for _, child := range slices.Sorted(maps.Keys(waits)) {
 		wait := waits[child]
 		recorded, err := w.recordOf(ctx, child)
@@ -1413,15 +1414,11 @@ func (w *workflowRuntime) tellReleaseWaits(ctx context.Context, repos []string, 
 		if err != nil {
 			return err
 		}
-		line := fmt.Sprintf("%s (its parent %s is recorded now: release %s again)", child, wait.parent, child)
 		on := wait.tree
-		switch {
-		case parent == nil:
-			line = fmt.Sprintf("%s (its parent %s is not recorded: release %s first, then %s)", child, wait.parent, wait.parent, child)
-		case parent.Tree == wait.tree:
+		if parent != nil && parent.Tree == wait.tree {
 			on = parent.Key
 		}
-		byIssue[on] = append(byIssue[on], line)
+		byIssue[on] = append(byIssue[on], texts.UnrecordedChild{Child: child, Parent: wait.parent, ParentRecorded: parent != nil})
 	}
 	if len(byIssue) == 0 {
 		return nil
@@ -1430,9 +1427,12 @@ func (w *workflowRuntime) tellReleaseWaits(ctx context.Context, repos []string, 
 	scoped, committed := intake.WithCommitHooks(ctx)
 	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
 		for _, issue := range slices.Sorted(maps.Keys(byIssue)) {
-			row, err := record.NewOutboxRow(issue, record.Notice{Kind: "child-release-stalled", Role: claim.RoleArchitect, Reason: fmt.Sprintf(
-				"GitHub answered for %s again (its App installation read, or its default-branch read past GitHub's rate limit), and the daemon recovered its issues from Dispatch's listing, but these children a release_children released while it was unread are still not recorded: %s",
-				strings.Join(repos, ", "), strings.Join(byIssue[issue], "; "))}, now)
+			notice, err := record.NoticeOf(texts.ChildReleaseStalledRecord{NoticeHead: texts.NoticeHead{Kind: texts.ChildReleaseStalled, Issue: issue},
+				Stall: texts.StallRecoveredUnrecorded, Repos: repos, Unrecorded: byIssue[issue]})
+			if err != nil {
+				return err
+			}
+			row, err := record.NewOutboxRow(issue, notice, now)
 			if err != nil {
 				return err
 			}

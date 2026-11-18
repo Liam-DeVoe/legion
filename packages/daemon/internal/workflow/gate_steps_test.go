@@ -126,12 +126,13 @@ func noticesOfKind(t *testing.T, pool *pgxpool.Pool, issue string, kind record.N
 	return notices
 }
 
-// awaitingNotices is the reason of every awaiting-person notice the outbox holds for issue: the
-// row that tells the controller the root waits on a person.
+// awaitingNotices is every awaiting-person notice the outbox holds for issue, the row that tells
+// the controller the root waits on a person, as what it waits on: `<document> v<version>` for a
+// document under review, `<ask>` for a question.
 func awaitingNotices(t *testing.T, pool *pgxpool.Pool, issue string) []string {
 	t.Helper()
-	rows, err := pool.Query(t.Context(), `select payload->>'reason' from outbox where kind = 'controller_notice' and issue = $1
-		and payload->>'kind' = $2 order by id`, issue, string(record.AwaitingPersonNotice))
+	rows, err := pool.Query(t.Context(), `select coalesce(payload->>'ask', (payload->>'document') || ' v' || (payload->>'version'))
+		from outbox where kind = 'controller_notice' and issue = $1 and payload->>'kind' = $2 order by id`, issue, string(record.AwaitingPersonNotice))
 	if err != nil {
 		t.Fatalf("read the awaiting-person notices of %s: %v", issue, err)
 	}
@@ -366,8 +367,8 @@ func TestGatedStepsHoldEveryPhaseUntilEveryStepIsApproved(t *testing.T) {
 				t.Fatalf("the root = %#v, want it waiting unanswered on %s version %d", waiting.Awaiting, tc.closedDoc, tc.closedVersion)
 			}
 			reasons := awaitingNotices(t, pool, gatedRoot)
-			if len(reasons) != 1 || !strings.Contains(reasons[0], "keeps its admission slot") {
-				t.Fatalf("awaiting-person notices = %q, want one saying the root keeps its admission slot", reasons)
+			if len(reasons) != 1 || !strings.HasPrefix(reasons[0], "dispatch://"+gatedRoot+"/") || !strings.HasSuffix(reasons[0], fmt.Sprintf(" v%d", tc.closedVersion)) {
+				t.Fatalf("awaiting-person notices = %q, want one naming the document of %s at version %d", reasons, gatedRoot, tc.closedVersion)
 			}
 
 			if entered := reconcileAwaiting(t, pool, engine); len(entered) != 0 {

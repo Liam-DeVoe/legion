@@ -2,7 +2,9 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -16,18 +18,19 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // A CI settlement moves no issue, in any phase (dispatch://INFRA-714/spec R1): a failed check is
 // information the worker holding the phase decides on - re-run, wait, or fix - and not the
-// daemon's to read the semantics of. What the settlement says is told instead, as one message per
-// role to three roles: the worker holding the issue's phase, the implementer, whose code the
-// checks ran on, and the architect that owns the issue, here the root's, since the issue is the
-// tree's root. Each message names every check the settlement reports and the conclusion it
-// reports for it, in name order. A role named twice - the implementer holding the phase, the
-// architect holding admitted or accepting - is told once, and a phase no worker holds names none.
-// Nothing else happens: no phase moves, no architect hears checks-red, no worker is started, and
-// no return is counted.
+// daemon's to read the semantics of. What the settlement says is told instead, as one ci-settled
+// message per role to three roles: the worker holding the issue's phase, the implementer, whose
+// code the checks ran on, and the architect that owns the issue, here the root's, since the issue
+// is the tree's root. Each message names each check that did not pass with its conclusion, counts
+// the passed ones, and goes at the urgency the settlement's rule gives its reader in that phase.
+// A role named twice - the implementer holding the phase, the architect holding admitted or
+// accepting - is told once, and a phase no worker holds names none. Nothing else happens: no
+// phase moves, no architect hears checks-red, no worker is started, and no return is counted.
 func TestASettlementMovesNothingAndTellsTheThreeRoles(t *testing.T) {
 	for _, tc := range []struct {
 		from   phase.Phase
@@ -66,11 +69,7 @@ func TestASettlementMovesNothingAndTellsTheThreeRoles(t *testing.T) {
 			if pass := implementerPass(t, pool); pass != 0 {
 				t.Fatalf("pass = %d, want none counted: nothing went back", pass)
 			}
-			want := make([]record.RoleMessage, 0, len(tc.roles))
-			for _, role := range tc.roles {
-				want = append(want, record.RoleMessage{Role: roleToken(t, role), Body: toldBody("CI settled at head: \"build\" succeeded, \"unit\" failed")})
-			}
-			assertRoleMessages(t, pool, "LEGION-208", want)
+			assertRoleMessages(t, pool, "LEGION-208", settledTold(t, tc.roles, tc.from, "head", 1, failed("unit")))
 		})
 	}
 }
@@ -90,23 +89,20 @@ func TestASettlementThatSaysNothingNewTellsNobodyAgain(t *testing.T) {
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim"})
 	engine := mergingEngine()
-	messages := []record.RoleMessage{}
+	messages := []roleTold{}
+	testers := []claim.Role{claim.RoleArchitect, claim.RoleTester, claim.RoleImplementer}
 	for i, step := range []struct {
 		fact intake.Fact
-		// settled is the line the roles are told, "" when the settlement says nothing new.
-		settled string
+		// told is what the roles are told, nil when the settlement says nothing new.
+		told []roleTold
 	}{
-		{settledAt("head", 1, "unit"), "CI settled at head: \"build\" succeeded, \"unit\" failed"},
-		{settledAt("head", 2, "unit"), ""},
-		{settledAt("head", 3), "CI settled at head: \"build\" succeeded, \"unit\" succeeded"},
-		{settledAt("head", 4, "unit"), "CI settled at head: \"build\" succeeded, \"unit\" failed"},
+		{settledAt("head", 1, "unit"), settledTold(t, testers, phase.Testing, "head", 1, failed("unit"))},
+		{settledAt("head", 2, "unit"), nil},
+		{settledAt("head", 3), settledTold(t, testers, phase.Testing, "head", 2)},
+		{settledAt("head", 4, "unit"), settledTold(t, testers, phase.Testing, "head", 1, failed("unit"))},
 	} {
 		applyRefusingNothing(t, pool, engine, step.fact)
-		if step.settled != "" {
-			for _, role := range []claim.Role{claim.RoleArchitect, claim.RoleTester, claim.RoleImplementer} {
-				messages = append(messages, record.RoleMessage{Role: roleToken(t, role), Body: toldBody(step.settled)})
-			}
-		}
+		messages = append(messages, step.told...)
 		if got := issuePhase(t, pool); got != phase.Testing {
 			t.Fatalf("after settlement %d the issue is in %s, want testing", i+1, got)
 		}
@@ -138,11 +134,8 @@ func TestACheckGitHubNeverRanIsToldLikeAnyOtherConclusion(t *testing.T) {
 		t.Fatalf("the architect was told %v, want nothing but the role message", got)
 	}
 	assertOutboxCount(t, pool, "supervise", 0)
-	want := []record.RoleMessage{}
-	for _, role := range []claim.Role{claim.RoleArchitect, claim.RoleTester, claim.RoleImplementer} {
-		want = append(want, record.RoleMessage{Role: roleToken(t, role), Body: toldBody("CI settled at head: \"pr-checks-result\" failed, \"unit\" succeeded")})
-	}
-	assertRoleMessages(t, pool, "LEGION-208", want)
+	assertRoleMessages(t, pool, "LEGION-208", settledTold(t, []claim.Role{claim.RoleArchitect, claim.RoleTester, claim.RoleImplementer},
+		phase.Testing, "head", 1, failed("pr-checks-result")))
 }
 
 // Linger holds a member of a closed tree where it stood (record.TreeLingers): every role of the
@@ -253,13 +246,8 @@ func TestAReopenStartsTheCheckSettlementAfreshAndTellsItAgain(t *testing.T) {
 			UpdatedAt: time.Date(2026, 9, 26, 0, 0, 0, 0, time.UTC), Reopened: true},
 		settledAt("head", 2, "unit"))
 
-	want := []record.RoleMessage{}
-	for range 2 {
-		for _, role := range []claim.Role{claim.RoleArchitect, claim.RoleTester, claim.RoleImplementer} {
-			want = append(want, record.RoleMessage{Role: roleToken(t, role), Body: toldBody("CI settled at head: \"build\" succeeded, \"unit\" failed")})
-		}
-	}
-	assertRoleMessages(t, pool, "LEGION-208", want)
+	once := settledTold(t, []claim.Role{claim.RoleArchitect, claim.RoleTester, claim.RoleImplementer}, phase.Testing, "head", 1, failed("unit"))
+	assertRoleMessages(t, pool, "LEGION-208", append(once, once...))
 }
 
 // The implementer pushes and completes without waiting for CI, so a check can settle on its head
@@ -351,14 +339,18 @@ func TestAConflictingHeadSendsTheIssueBackToImplementingFromEveryLaterPhase(t *t
 				return
 			}
 			want := "the head conflicts with main: GitHub runs no checks on it; merge main forward"
-			reason, from := checksRedNotice(t, pool)
+			red := checksRedNotice(t, pool)
 			var status, posted string
 			if err := pool.QueryRow(context.Background(),
 				"select payload->>'status', coalesce(payload->>'reason', '') from outbox where kind = 'dispatch_status'").Scan(&status, &posted); err != nil {
 				t.Fatalf("read the status write: %v", err)
 			}
-			if task := implementerTask(t, pool); !strings.Contains(task, want) || !strings.Contains(reason, want) || from != tc.from || status != "in_progress" {
-				t.Fatalf("task %q, notice %q from %q, status %q; want both to say %q, from %s, and the issue in_progress", task, reason, from, status, want, tc.from)
+			if task := implementerTask(t, pool); !strings.Contains(task, want) || status != "in_progress" {
+				t.Fatalf("task %q, status %q; want the task to say %q and the issue in_progress", task, status, want)
+			}
+			if red.Phase != tc.from || red.ConflictsWith != "main" || red.Head != "head" || red.PullRequest != "sjawhar/legion#42" ||
+				red.Issue != "LEGION-208" || red.Role != "" || red.Reason != "" {
+				t.Fatalf("the checks-red notice is %+v, want LEGION-208 from %s with head head conflicting with main on sjawhar/legion#42, no role and no reason", red, tc.from)
 			}
 			// The move is the daemon's own, so no worker's act on Dispatch says why the issue went
 			// back: the status write posts the reason on the issue first, naming the phase it left,
@@ -406,14 +398,12 @@ func TestEveryConflictingReadDecidesAndTheMoveItselfStopsTheRepeat(t *testing.T)
 	if got := issuePhase(t, pool); got != phase.Implementing {
 		t.Fatalf("after the same conflicting read again the issue is in %s, want implementing", got)
 	}
-	want := "the head conflicts with main: GitHub runs no checks on it; merge main forward"
 	var notices int
 	if err := pool.QueryRow(context.Background(), "select count(*) from outbox where kind = 'notice' and payload->>'kind' = 'checks-red'").Scan(&notices); err != nil {
 		t.Fatalf("count the architect's checks-red notices: %v", err)
 	}
-	reason, _ := checksRedNotice(t, pool)
-	if notices != 1 || !strings.Contains(reason, want) {
-		t.Fatalf("checks-red notices = %d, reason %q; want exactly one saying %q", notices, reason, want)
+	if red := checksRedNotice(t, pool); notices != 1 || red.ConflictsWith != "main" || red.Head != "head" {
+		t.Fatalf("checks-red notices = %d, the notice %+v; want exactly one of head head conflicting with main", notices, red)
 	}
 	if pass := implementerPass(t, pool); pass != 1 {
 		t.Fatalf("pass = %d, want the one return to implementing counted once", pass)
@@ -451,10 +441,31 @@ func pushedFromTo(from, to, pusher string) intake.Fact {
 	return intake.Push{Repo: "sjawhar/legion", Branch: "legion/LEGION-208", Before: from, After: to, Pusher: pusher}
 }
 
-// toldBody is the whole message a role is sent for one settlement of pull request 42 (workflow's
-// tellChecks): what the settlement says, and that nothing moved on it.
-func toldBody(settled string) string {
-	return "Pull request #42: " + settled + ". Nothing moved on it: decide whether to re-run the checks, wait for them, or fix the code."
+// failed is check, failed, as a ci-settled message names a check that did not pass.
+func failed(check string) texts.CheckConclusion {
+	return texts.CheckConclusion{Check: check, Conclusion: string(record.RunFailed)}
+}
+
+// roleTold is one role message a test expects: the role topic it goes to, the urgency it goes
+// at, and the record it carries.
+type roleTold struct {
+	Role    string
+	Urgency texts.Urgency
+	Record  any
+}
+
+// settledTold is the ci-settled message of a settlement of LEGION-208's pull request 42 at head,
+// in phase at, to each of roles at the urgency the settlement's rule gives it there: passed checks
+// passed and the checks of red did not (workflow's tellChecks).
+func settledTold(t *testing.T, roles []claim.Role, at phase.Phase, head string, passed int, red ...texts.CheckConclusion) []roleTold {
+	t.Helper()
+	told := make([]roleTold, 0, len(roles))
+	for _, role := range roles {
+		told = append(told, roleTold{Role: roleToken(t, role), Urgency: texts.UrgencyOf(texts.CISettled, role, texts.Variant{Phase: at}),
+			Record: texts.CISettledRecord{RoleHead: texts.RoleHead{Kind: texts.CISettled, Issue: "LEGION-208"}, PullRequest: "sjawhar/legion#42",
+				Head: head, Phase: at, NotPassed: red, Passed: passed, ListPassed: "gh pr checks 42 --repo sjawhar/legion"}})
+	}
+	return told
 }
 
 // roleToken is the Envoy role token of LEGION-208's role, the address a role message carries.
@@ -467,44 +478,64 @@ func roleToken(t *testing.T, role claim.Role) string {
 	return string(token)
 }
 
-// assertRoleMessages holds the role messages the outbox has queued for issue, in order, to want.
-func assertRoleMessages(t *testing.T, pool *pgxpool.Pool, issue string, want []record.RoleMessage) {
+// assertRoleMessages holds the role messages the outbox has queued for issue, in order, to want:
+// each goes to its role topic at its urgency and carries its kind's record, field for field.
+func assertRoleMessages(t *testing.T, pool *pgxpool.Pool, issue string, want []roleTold) {
 	t.Helper()
-	rows, err := pool.Query(t.Context(), "select payload->>'role', payload->>'body' from outbox where kind = 'role_message' and issue = $1 order by id", issue)
+	got := roleMessageRows(t, pool, issue)
+	if len(got) != len(want) {
+		t.Fatalf("%d role messages %+v, want %d %+v", len(got), got, len(want), want)
+	}
+	for i, message := range got {
+		rec, err := message.Record()
+		if err != nil {
+			t.Fatalf("role message %d carries no record: %v", i+1, err)
+		}
+		told := roleTold{Role: message.Role, Urgency: message.Urgency, Record: reflect.ValueOf(rec).Elem().Interface()}
+		if !reflect.DeepEqual(told, want[i]) {
+			t.Fatalf("role message %d is %+v, want %+v", i+1, told, want[i])
+		}
+	}
+}
+
+// roleMessageRows is every role message the outbox has queued for issue, in order.
+func roleMessageRows(t *testing.T, pool *pgxpool.Pool, issue string) []record.RoleMessage {
+	t.Helper()
+	rows, err := pool.Query(t.Context(), "select payload from outbox where kind = 'role_message' and issue = $1 order by id", issue)
 	if err != nil {
 		t.Fatalf("read the role messages: %v", err)
 	}
 	defer rows.Close()
 	var got []record.RoleMessage
 	for rows.Next() {
-		var message record.RoleMessage
-		if err := rows.Scan(&message.Role, &message.Body); err != nil {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
 			t.Fatalf("scan a role message: %v", err)
+		}
+		var message record.RoleMessage
+		if err := json.Unmarshal(payload, &message); err != nil {
+			t.Fatalf("decode a role message %s: %v", payload, err)
 		}
 		got = append(got, message)
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate the role messages: %v", err)
 	}
-	if len(got) != len(want) {
-		t.Fatalf("%d role messages %+v, want %d %+v", len(got), got, len(want), want)
-	}
-	for i, message := range got {
-		if message.Role != want[i].Role || message.Body != want[i].Body {
-			t.Fatalf("role message %d is %+v, want %+v", i+1, message, want[i])
-		}
-	}
+	return got
 }
 
-// checksRedNotice is the architect's checks-red notice the outbox holds: its reason, and the phase
-// the conflict or the failed merge stopped.
-func checksRedNotice(t *testing.T, pool *pgxpool.Pool) (reason string, from phase.Phase) {
+// checksRedNotice is the architect's checks-red notice the outbox holds.
+func checksRedNotice(t *testing.T, pool *pgxpool.Pool) record.Notice {
 	t.Helper()
-	var stopped string
-	if err := pool.QueryRow(context.Background(), "select payload->>'reason', coalesce(payload->>'phase', '') from outbox where kind = 'notice' and payload->>'kind' = 'checks-red'").Scan(&reason, &stopped); err != nil {
+	var payload []byte
+	if err := pool.QueryRow(context.Background(), "select payload from outbox where kind = 'notice' and payload->>'kind' = 'checks-red'").Scan(&payload); err != nil {
 		t.Fatalf("read the architect's checks-red notice: %v", err)
 	}
-	return reason, phase.Phase(stopped)
+	var notice record.Notice
+	if err := json.Unmarshal(payload, &notice); err != nil {
+		t.Fatalf("decode the checks-red notice %s: %v", payload, err)
+	}
+	return notice
 }
 
 // phaseStartKeys is every key a phase worker's start payload carries

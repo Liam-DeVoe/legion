@@ -194,7 +194,7 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 		s.endPodUpdates(group, open)
 		return nil
 	}
-	reasons, reading := s.groupDrift(ctx, issue, group)
+	drift, reading := s.groupDrift(ctx, issue, group)
 	if reading == podGone {
 		s.endRoundOverAGonePod(ctx, issue, group, open, pod)
 		return nil
@@ -202,7 +202,7 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 	if reading != podRead {
 		return nil
 	}
-	if len(reasons) == 0 && open == "" {
+	if len(drift) == 0 && open == "" {
 		// A pod that has drifted from nothing, with no round open over it, needs no replacement:
 		// returning here is what keeps the code below from opening a round over it.
 		return nil
@@ -216,7 +216,7 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 	// it was told would be replaced. Replacing it is one restart of each role in its own session,
 	// which the alternative — a release of the answered roles that the daemon alone knows about —
 	// is not.
-	terms := strings.Join(reasons, ", ")
+	terms, items := driftTerms(drift)
 	// One live read, given to both decisions below, so the claims the replacement waits on and
 	// the claims the post records the round on, which the ask then reaches, are one set. Read
 	// live by the replacement and from the snapshot by the post, a claim whose session registered
@@ -252,7 +252,7 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 	if open == "" {
 		live = s.liveGroup(group)
 	}
-	if s.openPodUpdate(ctx, issue, live, pod, terms) && opening {
+	if s.openPodUpdate(ctx, issue, live, pod, terms, items) && opening {
 		s.recordPodUpdateOpening(sweep, issue, round, now)
 	}
 	return nil
@@ -1067,13 +1067,13 @@ func (s *supervision) endRoundOverAGonePod(ctx context.Context, issue string, gr
 // read as an opening of this daemon's still in flight at every later sweep (podUpdateOpenings),
 // hold that slot for ever, and leave every other drifted issue waiting until the daemon
 // restarts.
-func (s *supervision) openPodUpdate(ctx context.Context, issue string, group []supervise.Claim, pod, reasons string) bool {
+func (s *supervision) openPodUpdate(ctx context.Context, issue string, group []supervise.Claim, pod, reasons string, drift []runtime.DriftItem) bool {
 	round := supervise.PodRound(pod)
 	blocking := blockingClaims(group)
 	reached := len(askedClaims(group)) > 0
 	s.askRound(ctx, issue, group, round, pod)
 	for _, c := range blocking {
-		s.supervisor.post(c.Token, supervise.PodUpdateOpen{Claim: c.Token, Round: round, Reasons: reasons})
+		s.supervisor.post(c.Token, supervise.PodUpdateOpen{Claim: c.Token, Round: round, Reasons: reasons, Drift: drift})
 	}
 	return reached
 }
@@ -1086,9 +1086,10 @@ func (s *supervision) openPodUpdate(ctx context.Context, issue string, group []s
 // of its workers that they have not already been asked, and the operator reads it through the
 // controller.
 //
-// reasons is the one string the round records and the ask states (supervise.Claim.UpdateReasons),
-// never a list: each reason carries ", " inside it already, so nothing here may cut one up
-// (record.UpdateStalled).
+// reasons is the one string the round records (supervise.Claim.UpdateReasons), never a list:
+// each reason carries ", " inside it already, so nothing here may cut one up. The notice names the
+// round's drift by its items instead (roundDrift, supervise.DriftFacts), and the text only for a
+// round an older daemon opened, which recorded no items (record.UpdateStalled).
 type updateStall struct {
 	issue   string
 	round   string
@@ -1113,10 +1114,16 @@ func (s *supervision) tellUpdateStalled(ctx context.Context, stall updateStall) 
 			"issue", stall.issue, "round", stall.round, "reason", stall.reason)
 		return
 	}
+	update := &record.UpdateStalled{Round: stall.round, Pod: stall.pod, Waiting: stall.waiting}
+	if drift := roundDrift(stall.group, stall.round); len(drift) > 0 {
+		update.Images, update.Settings = supervise.DriftFacts(drift)
+	} else {
+		update.Reasons = stall.reasons
+	}
 	rows := []record.OutboxPayload{record.ControllerNotice{
 		Kind:   record.UpdateStalledNotice,
 		Reason: stall.reason,
-		Update: &record.UpdateStalled{Round: stall.round, Pod: stall.pod, Reasons: stall.reasons, Waiting: stall.waiting},
+		Update: update,
 	}}
 	if err := s.enqueue(ctx, stall.issue, rows...); err != nil {
 		if ctx.Err() == nil {
@@ -1153,11 +1160,11 @@ func (s *supervision) markUpdateTold(ctx context.Context, group []supervise.Clai
 // claim's own role on the issue, the architect's included, since every role whose process runs
 // in the pod loses it when the round replaces the pod (dispatch://INFRA-2981 R1).
 //
-// The text is the round's own terms, as its claims recorded them: the reasons the round opened
-// with (roundReasons), never the drift this tick read, and the moment the round ends at the
-// latest, its recorded opening plus pod_update_grace_minutes (supervise.UpdateTask). So every
-// role of one round reads one text, and the record an operator reads names the same reasons
-// (dispatch://INFRA-2981 R9).
+// The ask is the round's own terms, as its claims recorded them: the drift the round opened with
+// (roundDrift, or roundReasons for a round an older daemon opened), never the drift this tick
+// read, and the moment the round ends at the latest, its recorded opening plus
+// pod_update_grace_minutes (supervise.UpdateTask). So every role of one round reads one ask, and
+// the record an operator reads names the same drift (dispatch://INFRA-2981 R9).
 //
 // Every row of the round goes in one enqueue, so the round's asks land together or not at all
 // (workflowRuntime.enqueueOutbox), and each claim is marked afterwards (supervise's
@@ -1217,10 +1224,11 @@ func (s *supervision) askRound(ctx context.Context, issue string, group []superv
 			"issue", issue, "round", round, "roles", namesOf(asking))
 		return
 	}
-	text := supervise.UpdateTask(round, roundReasons(group, round), *bound)
+	ask := supervise.UpdateTask(issue, round, pod, roundDrift(group, round), roundReasons(group, round), *bound)
 	rows := make([]record.OutboxPayload, len(asking))
 	for i, c := range asking {
-		rows[i] = record.UpdateAsk{Role: c.Role, Round: round, Pod: pod, Text: text}
+		rows[i] = record.UpdateAsk{Role: c.Role, Round: round, Pod: pod,
+			Images: ask.Images, Settings: ask.Settings, Reasons: ask.Reasons, EndsAt: ask.EndsAt}
 	}
 	if err := s.enqueue(ctx, issue, rows...); err != nil {
 		if ctx.Err() == nil {
@@ -1307,8 +1315,8 @@ const (
 )
 
 // groupDrift is why the group's pod has drifted: the union of the runtime's PodDrift over every
-// claim of the group that records a process, in the claims' own order and without repeats, with
-// the reading that says what those reasons are worth (podReading).
+// claim of the group that records a process, in the claims' own order and without repeating a
+// reason, with the reading that says what those reasons are worth (podReading).
 //
 // It reads podUnread when the runtime could not be asked at all: an error is never a statement
 // that something drifted, and a round must neither open nor end on one.
@@ -1319,8 +1327,8 @@ const (
 // that has drifted from nothing, it would carry the round on over a pod that took its workers'
 // unpushed work with it. Read as nothing at all, it would leave that round open over a pod that is
 // not there. The caller is what logs it, because the caller is what decides it.
-func (s *supervision) groupDrift(ctx context.Context, issue string, group []supervise.Claim) ([]string, podReading) {
-	var reasons []string
+func (s *supervision) groupDrift(ctx context.Context, issue string, group []supervise.Claim) ([]runtime.Drift, podReading) {
+	var drifted []runtime.Drift
 	for _, c := range group {
 		if c.Locator == nil {
 			continue
@@ -1335,13 +1343,26 @@ func (s *supervision) groupDrift(ctx context.Context, issue string, group []supe
 			}
 			return nil, podUnread
 		}
-		for _, reason := range drift {
-			if !slices.Contains(reasons, reason) {
-				reasons = append(reasons, reason)
+		for _, d := range drift {
+			if !slices.ContainsFunc(drifted, func(seen runtime.Drift) bool { return seen.Reason == d.Reason }) {
+				drifted = append(drifted, d)
 			}
 		}
 	}
-	return reasons, podRead
+	return drifted, podRead
+}
+
+// driftTerms is the drift a round opens with, as the round records it on each claim
+// (supervise.PodUpdateOpen): its reasons as one text, joined by ", " and never cut up again, and
+// its items, which the round's ask and its notice name (roundDrift).
+func driftTerms(drift []runtime.Drift) (string, []runtime.DriftItem) {
+	reasons := make([]string, len(drift))
+	var items []runtime.DriftItem
+	for i, d := range drift {
+		reasons[i] = d.Reason
+		items = append(items, d.DriftItem)
+	}
+	return strings.Join(reasons, ", "), items
 }
 
 // groupPod is the pod every claim of the group that records one runs in, and whether they record
@@ -1383,7 +1404,8 @@ func openPodRound(group []supervise.Claim) string {
 }
 
 // roundReasons is what the round was opened for, as its claims recorded it: the one string the
-// round's ask states, never cut up (record.UpdateStalled).
+// agent surfaces serve (supervise.Claim.UpdateReasons), never cut up, and the field the round's ask
+// and notice name for a round an older daemon opened (record.UpdateStalled).
 func roundReasons(group []supervise.Claim, round string) string {
 	for _, c := range group {
 		if c.UpdateRound == round && c.UpdateReasons != "" {
@@ -1391,6 +1413,18 @@ func roundReasons(group []supervise.Claim, round string) string {
 		}
 	}
 	return ""
+}
+
+// roundDrift is the same drift as items, read off the claim roundReasons reads, so the text and
+// the items are one claim's record of one opening (supervise.Claim.UpdateDrift): nil for a round
+// an older daemon opened, which recorded the text alone.
+func roundDrift(group []supervise.Claim, round string) []runtime.DriftItem {
+	for _, c := range group {
+		if c.UpdateRound == round && c.UpdateReasons != "" {
+			return c.UpdateDrift
+		}
+	}
+	return nil
 }
 
 // roundOpenedAt is when the round opened, the earliest its claims record, and nil when no claim of

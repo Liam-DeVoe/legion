@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // A turn that ends in a provider error does not retire its task (dispatch://INFRA-956 R2). The
@@ -59,8 +61,8 @@ func promptRetryDelay(attempt int) time.Duration {
 // the ladder. Oh My Pi's Retryable flag is logged and read by nothing: the status alone decides.
 //
 // The cause is named once here and handed to whoever writes it down, since one failed turn has
-// one cause and the words are the same in the claim's failure, in the prompt the task goes
-// behind and in the controller's notice.
+// one cause and the words are the same in the claim's failure and in the controller's notice; the
+// prompt the task goes behind states the status it is built from (ProviderErrorNote).
 func (m *Machine) providerErrored(ctx context.Context, r StreamPromptResult) error {
 	cause := providerErrorCause(r.HTTPStatus)
 	m.claim.ProviderErrorRun++
@@ -76,7 +78,7 @@ func (m *Machine) providerErrored(ctx context.Context, r StreamPromptResult) err
 	if holdsTheIssue(r.HTTPStatus) {
 		return m.fail(ctx, CauseProviderError, "a provider error that cannot clear ended this claim's turn: "+cause)
 	}
-	return m.providerErrorClears(ctx, cause)
+	return m.providerErrorClears(ctx, cause, r.HTTPStatus)
 }
 
 // holdsTheIssue is whether an error of this HTTP status fails the claim, so that the workflow
@@ -104,14 +106,15 @@ func holdsTheIssue(status int) bool {
 }
 
 // providerErrorClears keeps the task on the claim and arms the next step of the ladder for it:
-// the delivery counts one more send, carries the sentence the re-sent prompt is given
-// (Delivery.ProviderErrorNote), and is written with the claim's run of provider-error turns in
+// the delivery counts one more send, carries the note the re-sent prompt is given
+// (Delivery.ProviderErrorNote: the provider-error note of the HTTP status the provider answered,
+// ProviderErrorNote, rendered), and is written with the claim's run of provider-error turns in
 // one transaction. Its timer's firing is what sends it (promptRetryDue); until then sendPending
 // holds it, and a newer task queued meanwhile replaces it rather than waiting behind it (queue).
-func (m *Machine) providerErrorClears(ctx context.Context, cause string) error {
+func (m *Machine) providerErrorClears(ctx context.Context, cause string, status int) error {
 	p := m.claim.Pending
 	p.ProviderErrorRetries++
-	p.ProviderErrorNote = providerErrorTask(cause)
+	p.ProviderErrorNote = partText(ProviderErrorNote(m.claim.Issue, status))
 	if err := m.saved(m.deps.Store.PutClaimAndDelivery(ctx, m.stored(), *p)); err != nil {
 		return err
 	}
@@ -135,8 +138,8 @@ func promptRetryDue(m *Machine, ctx context.Context, _ Event) error {
 // status the provider answered, else nothing more than that a provider failed. A refusal's
 // own explanation is itself refused when it is sent back
 // (dispatch://INFRA-956/artifact/cause-evidence-md), so the provider's text reaches neither the
-// prompt this is written into nor the controller's notice. A content filter's refusal carries no
-// status, so it is the second of the two.
+// claim's failure nor the controller's notice. A content filter's refusal carries no status, so it
+// is the second of the two.
 func providerErrorCause(status int) string {
 	if status != 0 {
 		return "a provider error (HTTP " + strconv.Itoa(status) + ")"
@@ -144,14 +147,17 @@ func providerErrorCause(status int) string {
 	return "a provider error"
 }
 
-// providerErrorTask is the sentence a task taken back by a provider error is sent behind, as the
-// relaunch's sentence is the one a task taken back from a turn its process could not finish is
-// sent behind (relaunchSentence, interruptedTask). Another agent reads it, so it follows
-// ASD-STE100: one instruction per sentence, and active voice.
-func providerErrorTask(cause string) string {
-	return "Your previous turn on this task stopped because of " + cause + ". Your work did not cause it. " +
-		"The daemon sends you the task again. Read what that turn already did in your workspace and on the " +
-		"issue's branch. Then continue the task."
+// ProviderErrorNote is the provider-error note of issue (texts.ProviderErrorNoteRecord), which a
+// task taken back by a provider error is sent behind, as the relaunch note is the one a task
+// taken back from a turn its process could not finish is sent behind (RelaunchNote, CutTurnNote).
+// It is built from the HTTP status the provider answered alone, and names none where it answered
+// none (status 0): the provider's own text reaches no prompt (providerErrorCause). What the agent
+// does on reading it is its role prompt's.
+func ProviderErrorNote(issue string, status int) texts.ProviderErrorNoteRecord {
+	return texts.ProviderErrorNoteRecord{
+		TaskHead:   texts.TaskHead{Kind: texts.ProviderErrorNote, Issue: issue},
+		HTTPStatus: status,
+	}
 }
 
 // tellControllerOfProviderErrors tells the project's controller, once, when the claim's run of

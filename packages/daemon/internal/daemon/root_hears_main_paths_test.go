@@ -638,7 +638,7 @@ func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
 				t.Fatalf("decode the catch-up %d of %s: %v", row.ID, rig.key, err)
 			}
 			notice, ok := payload.(record.Notice)
-			named = named || (ok && row.ID == kept[0].ClaimedBy && notice.CatchUp != nil && strings.Contains(notice.CatchUp.Decided, ref))
+			named = named || (ok && row.ID == kept[0].ClaimedBy && notice.CatchUp != nil && strings.Contains(catchUpKeptRefs(notice.CatchUp), ref))
 		}
 		if !named {
 			t.Fatalf("no catch-up of %s claims and names %s, want the one the re-admission's start wrote", rig.key, ref)

@@ -2149,6 +2149,17 @@ update parked_decisions set words = null;
 A cleared row costs one thing: a text about that act gives the act and its reference with no words, as the earlier release did.
 The reader then reads the words in Dispatch.
 
+**The update round's drift items need no statement.**
+The migration `20261118101218_update_drift_items` adds one `jsonb` column, `claims.update_drift`.
+It holds the drift that an update round was opened for as items: each image, and the key of each setting, with the round that the items are of.
+The ask of the round and its `update-stalled` notice name the image by a short digest and each setting by its key.
+The agent surfaces and the message about a pod that went before its round was over keep the text in `claims.update_reasons`, as before.
+An earlier image names the column in none of its reads or writes, so it reads every claim and ignores the items.
+A claim that the earlier image writes keeps the items it held.
+This release reads the items only when their round is the round that the claim is in (`claims.update_round`).
+So it never gives the items of one round as those of a round that the earlier image opened after it.
+A round that the earlier image opened has no items, and its ask and its notice give its text in one field.
+
 **The earlier release refuses the outbox rows that this release writes.**
 An earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`).
 This release adds fields to the payloads that its outbox queues:

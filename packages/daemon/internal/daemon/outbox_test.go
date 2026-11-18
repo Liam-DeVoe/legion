@@ -2395,13 +2395,13 @@ func TestAProductionCheckLaunchFailureNotifiesTheArchitect(t *testing.T) {
 	if err := runner.execute(context.Background(), checkStart(t, root, 1)); err == nil {
 		t.Fatal("check start succeeded after the implementer's launch failed")
 	}
-	var kind, reason string
-	if err := pool.QueryRow(context.Background(), `select payload->>'kind', payload->>'reason'
-		from outbox where issue = $1 and kind = $2`, root.Key, string(record.OutboxKindNotice)).Scan(&kind, &reason); err != nil {
+	var kind, detail string
+	if err := pool.QueryRow(context.Background(), `select payload->>'kind', coalesce(payload->'failure'->>'detail', '')
+		from outbox where issue = $1 and kind = $2`, root.Key, string(record.OutboxKindNotice)).Scan(&kind, &detail); err != nil {
 		t.Fatalf("read the architect notice: %v", err)
 	}
-	if kind != "worker-died" || !strings.Contains(reason, "workspace-init could not fetch the clone") {
-		t.Fatalf("architect notice = kind %q, reason %q; want worker-died naming the launch failure", kind, reason)
+	if kind != "worker-died" || !strings.Contains(detail, "workspace-init could not fetch the clone") {
+		t.Fatalf("architect notice = kind %q, failure detail %q; want worker-died naming the launch failure", kind, detail)
 	}
 }
 
@@ -3013,9 +3013,10 @@ func TestAStartThatFindsTheRootArchitectRunningTellsItItsTree(t *testing.T) {
 	if err := runner.execute(ctx, mustOutboxRow(t, root.Key, record.SuperviseRequest{Op: "start", Tree: root.Tree, Role: claim.RoleArchitect, Generation: 1}, time.Now())); err != nil {
 		t.Fatalf("start the architect: %v", err)
 	}
+	// catchUpReasons is each catch-up the outbox holds, as its generation and launch.
 	catchUpReasons := func() []string {
 		t.Helper()
-		rows, err := pool.Query(ctx, "select (payload->>'reason') || ' launch=' || (payload->'catch_up'->>'launch') from outbox where kind = 'notice' and payload->>'kind' = 'catch-up' order by id")
+		rows, err := pool.Query(ctx, "select 'generation=' || (payload->'catch_up'->>'generation') || ' launch=' || (payload->'catch_up'->>'launch') from outbox where kind = 'notice' and payload->>'kind' = 'catch-up' order by id")
 		if err != nil {
 			t.Fatalf("read the catch-ups: %v", err)
 		}
@@ -3052,7 +3053,7 @@ func TestAStartThatFindsTheRootArchitectRunningTellsItItsTree(t *testing.T) {
 		t.Fatalf("start the running architect for generation 2: %v", err)
 	}
 	told := catchUpReasons()
-	want := fmt.Sprintf("the tree of LEGION-208 at generation 2 as the daemon records it now; start or resume it as your role says launch=%d", launch)
+	want := fmt.Sprintf("generation=2 launch=%d", launch)
 	if len(told) != 1 || told[0] != want || machine.Claim().State != supervise.StateReady {
 		t.Fatalf("after the generation 2 start, catch-ups %q with the architect %s; want one, %q, and the architect left running", told, machine.Claim().State, want)
 	}

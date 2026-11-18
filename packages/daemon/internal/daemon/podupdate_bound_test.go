@@ -657,9 +657,10 @@ const podUpdateDeployReset = `update claims
 //
 // With the migration's reset, the round starts its bound at the deploy: the first sweeps publish
 // the ask to each role, once, naming the deploy plus pod_update_grace_minutes as the end, and
-// replace nothing. The control keeps the clock the earlier release left: the first sweep finds
-// the round past its bound and replaces the pod, and no role is ever asked, because each claim
-// already holds the mark this release reads as its ask.
+// replace nothing. The round recorded its drift as text alone, so the ask names that text as its
+// reasons. The control keeps the clock the earlier release left: the first sweep finds the round
+// past its bound and replaces the pod, and no role is ever asked, because each claim already
+// holds the mark this release reads as its ask.
 func TestPodUpdateRoundOpenAtTheDeployStartsItsBoundAndItsAskAgain(t *testing.T) {
 	deploy := podUpdateStart.Add(3 * time.Hour)
 	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
@@ -709,13 +710,10 @@ func TestPodUpdateRoundOpenAtTheDeployStartsItsBoundAndItsAskAgain(t *testing.T)
 			for range 3 {
 				next.tick()
 			}
-			text := supervise.UpdateTask(podUpdateRound, podUpdateDrift, deploy.Add(podUpdateGrace))
 			asked := map[claim.Role]int{}
 			for _, ask := range next.asks() {
 				asked[ask.Role]++
-				if ask.Text != text {
-					t.Errorf("the ask to the %s says:\n%s\nwant the end at the deploy plus the grace:\n%s", ask.Role, ask.Text, text)
-				}
+				wantAskOf(t, ask, nil, nil, podUpdateDrift, deploy.Add(podUpdateGrace))
 			}
 			for _, role := range roles {
 				if asked[role] != 1 {
@@ -767,13 +765,10 @@ func TestPodUpdateRoundOpenAtTheDeployKeepsItsAnswerAndAsksOnlyTheUnanswered(t *
 	for range 3 {
 		next.tick()
 	}
-	text := supervise.UpdateTask(podUpdateRound, podUpdateDrift, deploy.Add(podUpdateGrace))
 	asked := map[claim.Role]int{}
 	for _, ask := range next.asks() {
 		asked[ask.Role]++
-		if ask.Text != text {
-			t.Errorf("the ask to the %s says:\n%s\nwant the end at the deploy plus the grace:\n%s", ask.Role, ask.Text, text)
-		}
+		wantAskOf(t, ask, nil, nil, podUpdateDrift, deploy.Add(podUpdateGrace))
 	}
 	want := map[claim.Role]int{claim.RoleImplementer: 1, claim.RoleTester: 0, claim.RolePlanner: 0}
 	for role, n := range want {

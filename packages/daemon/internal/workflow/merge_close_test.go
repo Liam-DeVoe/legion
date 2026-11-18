@@ -632,9 +632,8 @@ func assertWaitNotice(t *testing.T, pool *pgxpool.Pool, waiting string) {
 			got = append(got, notice)
 		}
 	}
-	want := fmt.Sprintf("pull request #42 merged, and LEGION-208's close is waiting for %s, still in the workflow; LEGION-208 closes once the last of them leaves. Park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and say in a comment which of those it is", waiting)
-	if len(got) != 1 || got[0].Reason != want {
-		t.Fatalf("pr-merged notices = %+v, want one reading %q", got, want)
+	if len(got) != 1 || strings.Join(got[0].WaitingFor, ", ") != waiting || got[0].PullRequest == "" || got[0].Reason != "" {
+		t.Fatalf("pr-merged notices = %+v, want one naming its pull request and waiting for %s", got, waiting)
 	}
 }
 

@@ -3463,7 +3463,7 @@ func (r *keptRun) observe() {
 			r.fatalf("the catch-up published under %s to the architect of %s was taken by the listener without its root's generation read",
 				delivered.key, tree.key)
 		}
-		for _, ref := range r.refsIn(notice.CatchUp.Decided) {
+		for _, ref := range r.refsIn(catchUpKeptRefs(notice.CatchUp)) {
 			r.tell(keptTelling{ref: ref, named: notice.CatchUp.Generation, root: generation, row: keptRowOfKey(delivered.key), tree: tree.key,
 				issueTree: r.treeOf(r.refIssue[ref]), step: r.step,
 				how: fmt.Sprintf("the catch-up published under %s", delivered.key)})

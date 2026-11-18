@@ -481,8 +481,8 @@ func TestSkillsConfigurationDriftsAndKeptLaunchesUseTheHeldRepository(t *testing
 			s := &sandbox{}
 			s.Spec.PodTemplate = old.podTemplate(l)
 			now := skillsRuntime(t)
-			if reasons := now.shapeDrift(s, l.shapeKey()); len(reasons) != 1 || !strings.Contains(reasons[0], "skills_repository") {
-				t.Errorf("skills change produced no ordinary pod drift: %q", reasons)
+			if drifted := now.shapeDrift(s, l.shapeKey()); len(drifted) != 1 || drifted[0].Key != "skills_repository" || !strings.Contains(drifted[0].Reason, "skills_repository") {
+				t.Errorf("skills change produced no ordinary pod drift: %+v", drifted)
 			}
 			kept, readable := now.keptBy(s, l)
 			if !readable {

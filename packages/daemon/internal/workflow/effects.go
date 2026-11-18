@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // PhaseFinished says whether issue's phase is over by its own terminating fact rather than by its
@@ -278,25 +279,45 @@ func backwardReasonRefusal(from, to phase.Phase, reason string) (string, string)
 	return "BACKWARD_REASON_TOO_LONG", fmt.Sprintf("the reason makes a message Dispatch refuses: %s; the move was not applied, so ask again with a shorter reason", over)
 }
 
-// notice tells the architect that owns the issue; a notice of no kind (noticeFor's, for a move
-// that tells it nothing) enqueues nothing.
-func (e *Engine) notice(ctx context.Context, tx pgx.Tx, issue string, notice record.Notice) error {
-	if notice.Kind == "" {
+// notice tells the architect that owns the issue rec, the record of a notice kind on the list
+// (texts.PhaseFinishedRecord and the others), as the notice that carries it (record.NoticeOf); a
+// nil record (noticeFor's, for a move that tells it nothing) enqueues nothing.
+func (e *Engine) notice(ctx context.Context, tx pgx.Tx, issue string, rec any) error {
+	if rec == nil {
 		return nil
+	}
+	notice, err := record.NoticeOf(rec)
+	if err != nil {
+		return err
 	}
 	return e.enqueue(ctx, tx, issue, notice)
 }
 
-// noticeWithController tells the architect that owns the issue and, in an outbox row of its own,
-// the project's controller: the two publishes retry apart, so a controller topic that keeps failing never sends
-// the architect the same notice again. Every hold is told this way, since the architect answers one
-// with a retry or an escalation to the controller, and so is the tree architect's own failed
-// claim, since every notice of the tree that no child's own architect takes reaches that architect.
-func (e *Engine) noticeWithController(ctx context.Context, tx pgx.Tx, issue string, notice record.Notice) error {
-	if err := e.notice(ctx, tx, issue, notice); err != nil {
+// noticeWithController tells the architect that owns the issue rec and, in an outbox row of its
+// own, the project's controller: the two publishes retry apart, so a controller topic that keeps
+// failing never sends the architect the same notice again. Every hold is told this way, since the
+// architect answers one with a retry or an escalation to the controller, and so is the tree
+// architect's own failed claim, since every notice of the tree that no child's own architect takes
+// reaches that architect.
+func (e *Engine) noticeWithController(ctx context.Context, tx pgx.Tx, issue string, rec any) error {
+	notice, err := record.NoticeOf(rec)
+	if err != nil {
+		return err
+	}
+	if err := e.enqueue(ctx, tx, issue, notice); err != nil {
 		return err
 	}
 	return e.enqueue(ctx, tx, issue, record.ControllerNotice(notice))
+}
+
+// roleMessage tells the holder of token rec, the record of a role-message kind on the list, at
+// urgency, the urgency the kind's rule gives that reader (texts.UrgencyOf), in a row of issue.
+func (e *Engine) roleMessage(ctx context.Context, tx pgx.Tx, issue string, token claim.Token, rec any, urgency texts.Urgency) error {
+	message, err := record.NewRoleMessage(string(token), rec, urgency)
+	if err != nil {
+		return err
+	}
+	return e.enqueue(ctx, tx, issue, message)
 }
 
 // logOnCommit writes one Info line once the fact's transaction commits (intake.OnCommit), so a
@@ -972,57 +993,47 @@ func ResumePhaseTask(issue record.Issue) string {
 }
 
 // HeldNotice is the notice of issue's hold as its architect answers one, with a retry or an
-// escalation: the phase the hold came from, the role that works it, and why it is held. Admission
-// tells a carried root's own architect with it, since the hold's first notice was routed in the
-// tree the root was handed over from, where it reached an architect above the root unless the
-// root's own architect held its role then.
-func HeldNotice(issue record.Issue) record.Notice {
-	return record.Notice{Kind: "held", Role: phase.RoleFor(issue.Hold.From), Phase: issue.Hold.From, Reason: string(issue.Hold.Reason)}
+// escalation: the phase the hold came from, the role that works it, and the hold's reason word.
+// Admission tells a carried root's own architect with it, since the hold's first notice was
+// routed in the tree the root was handed over from, where it reached an architect above the root
+// unless the root's own architect held its role then; so its variant is texts.HoldCarried.
+func HeldNotice(issue record.Issue) texts.HeldRecord {
+	return texts.HeldRecord{NoticeHead: texts.NoticeHead{Kind: texts.Held, Issue: issue.Key}, Role: phase.RoleFor(issue.Hold.From),
+		Phase: issue.Hold.From, Hold: texts.HoldCarried, Reason: string(issue.Hold.Reason)}
 }
 
 // ChildReenteredNotice is the notice the architect above a re-entered child is told, whichever path
 // re-enters it: reenterChild for a live tree's reopened child, or admission's
 // reenterStrandedChildren for one a reopen declined to re-enter for want of the label until its
-// root's own promotion made the tree live.
-func ChildReenteredNotice(child, root string) record.Notice {
-	return record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: fmt.Sprintf("%s is todo; it runs again under %s", child, root)}
+// root's own promotion made the tree live. The child is todo again, and runs again under root.
+func ChildReenteredNotice(child, root string) texts.ChildStatusRecord {
+	return texts.ChildStatusRecord{NoticeHead: texts.NoticeHead{Kind: texts.ChildStatus, Issue: child}, Change: texts.ChangeTodo, Tree: root}
 }
 
 // ChildStartedNotice is the notice the architect above a child is told whenever the child starts
-// its first phase (Engine.StartFirstPhase), its reason saying why it starts now and that the
-// child's own architect starts with it. waited is every issue the child's mirror row still names,
-// in Dispatch's own order, all of them done by now: the last of them closed, which is what freed
-// the child.
+// its first phase (Engine.StartFirstPhase): the child starts planning under root, and waited is
+// every issue the child's mirror row still names, in Dispatch's own order, all of them done by
+// now: the last of them closed, which is what freed the child.
 //
-// Empty, the child's own links say nothing about why it starts, and the reason says what is true
-// of every child the line starts instead: it reached the front of the waiting line and took a
-// slot. That covers both an issue that never named a blocker — which is most of them now that a
-// child waits for a slot like any other issue — and one whose blocked-by links a person or the
-// architect took off while it waited, which the record cannot tell apart from the first. Naming
-// links that were taken off would be a guess, and a reason the architect reads and cannot check
-// is worse than a plain one.
+// Empty, the child's own links say nothing about why it starts, and the notice names none: the
+// child reached the front of the waiting line and took a slot. That covers both an issue that
+// never named a blocker — which is most of them now that a child waits for a slot like any other
+// issue — and one whose blocked-by links a person or the architect took off while it waited,
+// which the record cannot tell apart from the first. Naming links that were taken off would be a
+// guess, and a fact the architect reads and cannot check is worse than none.
 //
-// The reason then says what the reader keeps of the child: from this start the child's own
-// architect owns it — its decomposition, its children and its acceptance — while that architect
-// holds its role. So the reader hears the child's child-status and child-closed and that
-// architect's worker-died and worker-stalled, and, while that architect does not hold its role,
-// every other notice of the child too (record.OwningArchitect).
+// From this start the child's own architect owns it — its decomposition, its children and its
+// acceptance — while that architect holds its role (record.OwningArchitect); the architect's
+// prompt says what the reader keeps of the child.
 //
 // A start nobody hears of is the silent state the hold's report exists to remove, so no child
 // starts without one. It is the same child-status kind a child's leave and a re-entry are told
 // with — the daemon's notice routing starts the walk for one at the child's parent, so it reaches
 // the architect above the child — and not phase-finished: no phase of the child ended, it is
 // beginning its first.
-func ChildStartedNotice(child, root string, waited []string) record.Notice {
-	why := fmt.Sprintf("every issue it waited on (%s) is done", strings.Join(waited, ", "))
-	if len(waited) == 0 {
-		why = "it reached the front of the waiting line and took an admission slot"
-	}
-	reason := fmt.Sprintf("%s starts planning under %s: %s. Its own architect starts with it and owns it while that architect "+
-		"holds its role: its decomposition, its children and its acceptance. You hear its child-status and child-closed "+
-		"notices, a worker-died or worker-stalled of its architect, and its other notices while its architect does not "+
-		"hold its role, which the daemon's holdsRole decides", child, root, why)
-	return record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: reason}
+func ChildStartedNotice(child, root string, waited []string) texts.ChildStatusRecord {
+	return texts.ChildStatusRecord{NoticeHead: texts.NoticeHead{Kind: texts.ChildStatus, Issue: child}, Change: texts.ChangeStarted,
+		Tree: root, WaitedOn: waited}
 }
 
 func (e *Engine) lingerAt() time.Time { return e.now().Add(e.cfg.Linger) }

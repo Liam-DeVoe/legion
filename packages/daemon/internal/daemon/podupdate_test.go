@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -53,8 +54,12 @@ const (
 	// phase worker's last recorded step may be in the past before the silence sweep reads that
 	// worker as one nothing will prompt (config.Config.WorkerSilence). It is the shipped default.
 	podUpdateSilence = 30 * time.Minute
-	// podUpdateDrift is the drift the fake runtime reports for the issue's pod.
-	podUpdateDrift = "image"
+	// podUpdateImage is the image a pod of the issue is built from now, and podUpdateDigest the
+	// short digest a text about the round names it by (texts.ShortDigest).
+	podUpdateImage  = "ghcr.io/cybermonklabs/legion-worker@sha256:7e3a9c1b5d2f4086a1c3e5b7d9f0a2c4e6b8d0f1a3c5e7b9d1f3a5c7e9b1d3f5"
+	podUpdateDigest = "7e3a9c1b5d2f"
+	// podUpdateDrift is the drift the fake runtime reports for the issue's pod: its image moved.
+	podUpdateDrift = "image ghcr.io/cybermonklabs/legion-worker@sha256:0000000000000000000000000000000000000000000000000000000000000000, now " + podUpdateImage
 	// podUpdateKeptDrift is a drift of the kind a launch keeps the pod for and starts its role
 	// degraded in: the operator's volume holding that role's overlay moved, so a pod built before
 	// the move cannot carry the file the role's Oh My Pi would be told to read. The launch starts
@@ -291,8 +296,24 @@ func podUpdateLocator(token claim.Token, issue, pod string) *runtime.Locator {
 func (r *podUpdateRig) drifts(reasons ...string) {
 	r.t.Helper()
 	for _, token := range r.tokens {
-		r.rt.ScriptPodDrift(token, reasons...)
+		r.rt.ScriptPodDrift(token, driftOf(reasons...)...)
 	}
+}
+
+// driftOf is each reason as the Sandbox runtime answers it (PodDrift): the reason whole, and its
+// item, whose key is the reason's first word, as every reason is written (`<key> <held>, now
+// <handed>`), and which names, for the image, the image a pod is built from now.
+func driftOf(reasons ...string) []runtime.Drift {
+	drift := make([]runtime.Drift, len(reasons))
+	for i, reason := range reasons {
+		key, rest, _ := strings.Cut(reason, " ")
+		item := runtime.DriftItem{Key: key}
+		if _, handed, found := strings.Cut(rest, ", now "); found && key == runtime.DriftImage {
+			item.Image = handed
+		}
+		drift[i] = runtime.Drift{DriftItem: item, Reason: reason}
+	}
+	return drift
 }
 
 // tick is one orphan sweep: the claims as the store holds them now, put to the sweep.
@@ -823,8 +844,9 @@ func TestPodUpdateToldOnceAtTheBoundOfARoundAnOperatorsSuspensionHolds(t *testin
 	if notice.Update.Round != podUpdateRound || notice.Update.Pod != podUpdatePod {
 		t.Errorf("the notice names round %q of pod %q, want %q of %q", notice.Update.Round, notice.Update.Pod, podUpdateRound, podUpdatePod)
 	}
-	if want := podUpdateDrift + ", disk"; notice.Update.Reasons != want {
-		t.Errorf("the notice names reasons %q, want %q", notice.Update.Reasons, want)
+	if got := notice.Update; !slices.Equal(got.Images, []string{podUpdateDigest}) || !slices.Equal(got.Settings, []string{"disk"}) || got.Reasons != "" {
+		t.Errorf("the notice names images %q, settings %q and reasons %q; want the image %s and the setting disk by its key, and no text",
+			got.Images, got.Settings, got.Reasons, podUpdateDigest)
 	}
 	if !strings.Contains(notice.Reason, "An operator suspended") || !strings.Contains(notice.Reason, string(claim.RoleImplementer)) {
 		t.Errorf("the notice says %q, want it to name the operator's suspension of the implementer", notice.Reason)
@@ -1344,7 +1366,7 @@ type podGoneAfterTheDriftRead struct {
 	reads atomic.Int64
 }
 
-func (r *podGoneAfterTheDriftRead) PodDrift(ctx context.Context, k runtime.Known) ([]string, error) {
+func (r *podGoneAfterTheDriftRead) PodDrift(ctx context.Context, k runtime.Known) ([]runtime.Drift, error) {
 	if r.reads.Add(1) == 1 {
 		return r.Runtime.PodDrift(ctx, k)
 	}

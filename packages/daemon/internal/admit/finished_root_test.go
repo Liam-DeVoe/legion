@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -455,7 +456,7 @@ func TestACarriedRootResumesFromTheApprovedHeadAndTheHold(t *testing.T) {
 				}
 				return
 			}
-			want := record.Notice{Kind: "held", Role: claim.RoleTester, Phase: phase.Testing, Reason: string(record.HoldEscalated)}
+			want := record.Notice{Kind: "held", Issue: child, Role: claim.RoleTester, Phase: phase.Testing, Hold: texts.HoldCarried, Reason: string(record.HoldEscalated)}
 			if len(held) != 1 || !reflect.DeepEqual(held[0], want) {
 				t.Fatalf("held notices to the carried root = %+v, want %+v once", held, want)
 			}

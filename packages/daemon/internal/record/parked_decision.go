@@ -1,6 +1,7 @@
 package record
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -133,8 +134,11 @@ func RelayParkedDecision(ctx context.Context, tx pgx.Tx, store Store, issue stri
 	if waiting {
 		return RelayKept, nil
 	}
-	row, err := NewOutboxRow(issue, ControllerNotice{Kind: ParkedDecisionNotice, Decision: decision.Decision, Root: root.Key,
-		Ref: decision.Ref, Actor: decision.Actor, Version: version, Reason: reason}, decision.At)
+	notice, err := NoticeOf(ParkedDecisionNoticeOf(issue, root.Key, decision, version))
+	if err != nil {
+		return RelayNone, err
+	}
+	row, err := NewOutboxRow(issue, ControllerNotice(notice), decision.At)
 	if err != nil {
 		return RelayNone, err
 	}
@@ -142,6 +146,38 @@ func RelayParkedDecision(ctx context.Context, tx pgx.Tx, store Store, issue stri
 		return RelayNone, err
 	}
 	return RelaySent, nil
+}
+
+// ParkedDecisionNoticeOf is the parked-decision notice of decision, made on issue of root's tree:
+// what the person did, the tree's root, the decision's reference, who and when (the act's own
+// time where its words carry one, else the time the daemon kept it), a spec decision's version,
+// and the person's words, cut to texts.OneAct and named in the words object with the person and
+// the time: a changes request's reason, or an ask's answer, resolution or reply as its answer with
+// the options it chose. The reference is where the rest of the words is read.
+func ParkedDecisionNoticeOf(issue, root string, decision ParkedDecision, version int) texts.ParkedDecisionRecord {
+	notice := texts.ParkedDecisionRecord{NoticeHead: texts.NoticeHead{Kind: texts.ParkedDecision, Issue: issue}, Decision: string(decision.Decision),
+		Root: root, Ref: decision.Ref, Actor: decision.Actor, At: decision.At, Version: version}
+	words := decision.Words
+	if words == nil {
+		return notice
+	}
+	if !words.At.IsZero() {
+		notice.At = words.At
+	}
+	notice.Options = words.Options
+	if words.Text == "" {
+		return notice
+	}
+	carried := texts.Carry(words.Text, texts.OneAct, words.More)
+	field := "answer"
+	if decision.Decision == DecisionDesignChangesRequested {
+		field, notice.Reason = "reason", carried.Text
+	} else {
+		notice.Answer = carried.Text
+	}
+	by := cmp.Or(words.By, decision.Actor)
+	notice.Words = map[string]texts.WordsMeta{field: {By: by, At: notice.At, Rest: carried.Rest, More: carried.More}}
+	return notice
 }
 
 // DecisionMark identifies one kept decision an architect's start task or catch-up named: the

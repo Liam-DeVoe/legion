@@ -419,7 +419,8 @@ func TestAClosedRegisteredGateKeepsItsRootsRowWhileTheNextRootWaits(t *testing.T
 	}
 	var noticed bool
 	for _, effect := range effects(t, pool) {
-		if payload, ok := effect.payload.(record.ControllerNotice); ok && effect.issue == "LEGION-100" && payload.Kind == record.AwaitingPersonNotice && strings.Contains(payload.Reason, "keeps its admission slot") {
+		if payload, ok := effect.payload.(record.ControllerNotice); ok && effect.issue == "LEGION-100" && payload.Kind == record.AwaitingPersonNotice &&
+			payload.Issue == "LEGION-100" && payload.Document != "" && payload.Version == 3 && payload.Reason == "" {
 			noticed = true
 		}
 	}

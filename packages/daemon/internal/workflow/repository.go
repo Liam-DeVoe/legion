@@ -7,9 +7,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // Repositories is what the daemon holds in memory of the repositories of its project, which the
@@ -152,6 +152,6 @@ func (e *Engine) refuseChild(ctx context.Context, tx pgx.Tx, root record.Issue, 
 		}
 	}
 	e.logOnCommit(ctx, "workflow: child not recorded; its repository is not one Legion serves", "issue", key, "tree", root.Key, "resolved", resolved, "reason", refused.Refusal)
-	return e.notice(ctx, tx, on, record.Notice{Kind: "child-not-recorded", Role: claim.RoleArchitect,
-		Reason: fmt.Sprintf("%s was not recorded under your tree: %s; the daemon said so on the issue. Set its repository to one of the project's (dispatch issue-update --repo owner/name), then release it again.", key, refused.Refusal)})
+	return e.notice(ctx, tx, on, texts.ChildNotRecordedRecord{NoticeHead: texts.NoticeHead{Kind: texts.ChildNotRecorded, Issue: on},
+		Child: key, Resolved: resolved, Refusal: refused.Refusal})
 }

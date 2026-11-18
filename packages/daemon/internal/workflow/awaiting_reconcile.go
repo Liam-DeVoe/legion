@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // ReconcileAwaiting moves each admitted root of project that now waits only on a person into
@@ -109,7 +110,7 @@ func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project strin
 		decision := decideAwait(view)
 		switch decision.Act {
 		case actEnter:
-			if err := e.enterAwaiting(ctx, tx, root, decision.Waiting, decision.Why); err != nil {
+			if err := e.enterAwaiting(ctx, tx, root, decision.Waiting, gates, decision.Why); err != nil {
 				return nil, false, err
 			}
 			entered = append(entered, root.Key)
@@ -506,8 +507,10 @@ func answerOfAct(ask record.RootAsk, seq int64, otherwise record.Answer) record.
 // enterAwaiting moves root into awaiting_person on waiting, which keeps the slot the root holds:
 // a root in awaiting_person keeps its row through that wait (record.KeepsSlot), even where it
 // waits on another issue as well (blockers.waitsOf leaves it out). The architect stays live to
-// read the person's answer, and the controller is told.
-func (e *Engine) enterAwaiting(ctx context.Context, tx pgx.Tx, root record.Issue, waiting record.Awaiting, reason string) error {
+// read the person's answer, and the controller is told (AwaitingPersonNotice), the document of a
+// gate wait named by the step of gates that records it. reason is the decision's, for the log.
+func (e *Engine) enterAwaiting(ctx context.Context, tx pgx.Tx, root record.Issue, waiting record.Awaiting,
+	gates map[record.DesignStep]record.DesignGate, reason string) error {
 	root.Phase, root.Awaiting = phase.AwaitingPerson, &waiting
 	if err := e.store.PutIssue(ctx, tx, root); err != nil {
 		return err
@@ -522,13 +525,35 @@ func (e *Engine) enterAwaiting(ctx context.Context, tx pgx.Tx, root record.Issue
 	if err := e.store.MarkIssueMoved(ctx, tx, root.Key, e.now()); err != nil {
 		return err
 	}
-	waitReason := fmt.Sprintf("%s waits on a person (%s): it keeps its admission slot until they answer", root.Key, reason)
-	if err := e.enqueue(ctx, tx, root.Key, record.ControllerNotice{Kind: record.AwaitingPersonNotice, Reason: waitReason}); err != nil {
+	var step record.DesignStep
+	for at, gate := range gates {
+		if waiting.Artifact != "" && gate.ArtifactID == waiting.Artifact {
+			step = at
+		}
+	}
+	notice, err := record.NoticeOf(AwaitingPersonNotice(root.Key, waiting, step))
+	if err != nil {
+		return err
+	}
+	if err := e.enqueue(ctx, tx, root.Key, record.ControllerNotice(notice)); err != nil {
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: root waits on a person and keeps its admission slot", "issue", root.Key, "tree", root.Tree,
 		"reason", reason, "since_seq", waiting.Since.Seq)
 	return nil
+}
+
+// AwaitingPersonNotice is the awaiting-person notice of root, which waits on a person and keeps
+// its admission slot: the ask it waits on (a dispatch:// link), or the document of step whose
+// version waits on a person's review (a dispatch:// link, stepRef) and that version.
+func AwaitingPersonNotice(root string, waiting record.Awaiting, step record.DesignStep) texts.AwaitingPersonRecord {
+	notice := texts.AwaitingPersonRecord{NoticeHead: texts.NoticeHead{Kind: texts.AwaitingPerson, Issue: root}}
+	if waiting.GateVersion != 0 {
+		notice.Document, notice.Version = stepRef(root, step), waiting.GateVersion
+	} else {
+		notice.Ask = itemRef(root, "ask", waiting.Ask)
+	}
+	return notice
 }
 
 // tellInPlace gives the architect of a root it would have released the resume task naming the act

@@ -102,7 +102,8 @@ func TestAPersonsAnswerOnAParkedTreeGoesToTheController(t *testing.T) {
 		}
 	}
 	want := []effect{{kind: record.OutboxKindControllerNotice, issue: "LEGION-ROOT", payload: record.ControllerNotice{
-		Kind: record.ParkedDecisionNotice, Decision: record.DecisionAskAnswered, Root: "LEGION-ROOT", Ref: "dispatch://LEGION-ROOT/ask/ask-1", Actor: "user:alice"}}}
+		Kind: record.ParkedDecisionNotice, Issue: "LEGION-ROOT", Decision: record.DecisionAskAnswered, Root: "LEGION-ROOT", Ref: "dispatch://LEGION-ROOT/ask/ask-1", Actor: "user:alice",
+		At: fixedNow}}}
 	if got := parkedDecisionNotices(t, pool); !reflect.DeepEqual(got, want) {
 		t.Fatalf("parked-decision notices = %#v, want %#v", got, want)
 	}
@@ -163,7 +164,8 @@ func TestAPersonsReplyOnAParkedChildNamesItsRoot(t *testing.T) {
 		t.Fatalf("apply the reply: %v", err)
 	}
 	want := []effect{{kind: record.OutboxKindControllerNotice, issue: "LEGION-KID", payload: record.ControllerNotice{
-		Kind: record.ParkedDecisionNotice, Decision: record.DecisionAskReply, Root: "LEGION-ROOT", Ref: "dispatch://LEGION-KID/comment/c-9", Actor: "user:alice"}}}
+		Kind: record.ParkedDecisionNotice, Issue: "LEGION-KID", Decision: record.DecisionAskReply, Root: "LEGION-ROOT", Ref: "dispatch://LEGION-KID/comment/c-9", Actor: "user:alice",
+		At: fixedNow}}}
 	if got := parkedDecisionNotices(t, pool); !reflect.DeepEqual(got, want) {
 		t.Fatalf("parked-decision notices = %#v, want %#v", got, want)
 	}

@@ -30,16 +30,13 @@ import (
 // phase-ended row (record.PhaseEnded) is what tells it, published to that role's own Envoy topic in
 // the same drain as the start: the tester in testing, the reviewer in reviewing whether or not it
 // completed its round, the merger in merging, and the implementer in retro, which is told besides
-// that its implementing task follows. The message is the daemon's own sentence, pinned here for
-// each of the five, and it ends with the reason the architect's notice carries, behind
-// the `Reason:` label a started worker's task carries it under, so the branch names GitHub
-// supplies stand apart from the daemon's own words. It is no
-// architect notice: the architect's own notice goes out beside it, to the architect's topic.
+// that its implementing task follows. The row states the conflict as facts: the base the head
+// conflicts with, the head and the pull request (record.PhaseEnded.Record), and no reason. The
+// message the runner publishes today is the daemon's own sentence, whose first line is pinned
+// here for each of the five (T7 publishes the row's record instead). It is no architect notice:
+// the architect's own notice goes out beside it, to the architect's topic.
 func TestAConflictTellsTheRoleWhosePhaseEndedOnItsOwnTopic(t *testing.T) {
 	const why = "the head conflicts with main: GitHub runs no checks on it; merge main forward"
-	tail := " Nothing of yours is stopped: your turn, your jobs, your process and your session run on." +
-		" The workspace is the implementing phase's now, so stop writing it at once and leave whatever you have uncommitted." +
-		" Reason: " + why + "."
 	for _, tc := range []struct {
 		name   string
 		from   phase.Phase
@@ -50,16 +47,16 @@ func TestAConflictTellsTheRoleWhosePhaseEndedOnItsOwnTopic(t *testing.T) {
 		message     string
 	}{
 		{name: "the tester in testing", from: phase.Testing, status: "testing", role: claim.RoleTester,
-			message: "LEGION-208: the daemon ended your testing phase, and the issue is in implementing now." + tail},
+			message: "LEGION-208: the daemon ended your testing phase, and the issue is in implementing now."},
 		{name: "the reviewer in a round it completed", from: phase.Reviewing, status: "needs_review", role: claim.RoleReviewer,
-			message: "LEGION-208: the daemon ended your reviewing phase, and the issue is in implementing now." + tail},
+			message: "LEGION-208: the daemon ended your reviewing phase, and the issue is in implementing now."},
 		{name: "the reviewer in a round it did not complete", from: phase.Reviewing, status: "needs_review", role: claim.RoleReviewer, uncompleted: true,
-			message: "LEGION-208: the daemon ended your reviewing phase, and the issue is in implementing now." + tail},
+			message: "LEGION-208: the daemon ended your reviewing phase, and the issue is in implementing now."},
 		{name: "the merger in merging", from: phase.Merging, status: "retro", role: claim.RoleMerger,
-			message: "LEGION-208: the daemon ended your merging phase, and the issue is in implementing now." + tail},
+			message: "LEGION-208: the daemon ended your merging phase, and the issue is in implementing now."},
 		{name: "the implementer in retro", from: phase.Retro, status: "retro", role: claim.RoleImplementer,
 			message: "LEGION-208: the daemon ended your retro phase, and the issue is in implementing now." +
-				" Your implementing task follows." + tail},
+				" Your implementing task follows."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -75,6 +72,11 @@ func TestAConflictTellsTheRoleWhosePhaseEndedOnItsOwnTopic(t *testing.T) {
 			applyTheConflict(t, ctx, pool, runner)
 			if !slotted(t, pool, "LEGION-208") {
 				t.Fatalf("LEGION-208 holds no slot after the conflict: the admission pass of that fact grants the implementing start its row")
+			}
+			ended := phaseEndedRows(t, pool, "LEGION-208")
+			if len(ended) != 1 || ended[0].Role != tc.role || ended[0].From != tc.from || ended[0].To != phase.Implementing ||
+				ended[0].ConflictsWith != "main" || ended[0].Head == "" || ended[0].PullRequest == "" || ended[0].Reason != "" {
+				t.Fatalf("phase-ended rows = %+v, want one for the %s from %s naming the base, the head and the pull request, and no reason", ended, tc.role, tc.from)
 			}
 			if err := runner.RunOnce(ctx); err != nil {
 				t.Fatalf("run the conflict's effects: %v", err)
@@ -97,8 +99,8 @@ func TestAConflictTellsTheRoleWhosePhaseEndedOnItsOwnTopic(t *testing.T) {
 			if len(told) != 1 {
 				t.Fatalf("publishes to %s = %#v, want the one phase-ended message", topic, told)
 			}
-			if told[0].message != tc.message || told[0].payload != any(tc.message) {
-				t.Fatalf("the %s was told\n\t%q\nwant\n\t%q", tc.role, told[0].message, tc.message)
+			if !strings.HasPrefix(told[0].message, tc.message) || told[0].payload != any(told[0].message) {
+				t.Fatalf("the %s was told\n\t%q\nwant it to begin\n\t%q", tc.role, told[0].message, tc.message)
 			}
 			t.Logf("the %s was told: %s", tc.role, told[0].message)
 			if _, ok := record.ParseOutboxKey(told[0].key); !ok {
@@ -282,4 +284,31 @@ func slotted(t *testing.T, pool *store.Pool, issue string) bool {
 		t.Fatalf("read the slot of %s: %v", issue, err)
 	}
 	return holds
+}
+
+// phaseEndedRows is every phase-ended row the outbox holds for issue, oldest first, decoded.
+func phaseEndedRows(t *testing.T, pool *store.Pool, issue string) []record.PhaseEnded {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), "select id, kind, issue, payload from outbox where kind = $1 and issue = $2 order by id",
+		string(record.OutboxKindPhaseEnded), issue)
+	if err != nil {
+		t.Fatalf("read the phase-ended rows of %s: %v", issue, err)
+	}
+	defer rows.Close()
+	var ended []record.PhaseEnded
+	for rows.Next() {
+		var row record.OutboxRow
+		if err := rows.Scan(&row.ID, &row.Kind, &row.Issue, &row.Payload); err != nil {
+			t.Fatalf("scan a phase-ended row of %s: %v", issue, err)
+		}
+		payload, err := record.DecodeOutboxPayload(row)
+		if err != nil {
+			t.Fatalf("decode phase-ended row %d: %v", row.ID, err)
+		}
+		ended = append(ended, payload.(record.PhaseEnded))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the phase-ended rows of %s: %v", issue, err)
+	}
+	return ended
 }

@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/projection"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // A tree's architect is who every notice of its tree reaches that no child's own architect takes,
@@ -44,7 +45,7 @@ func TestATreeArchitectsFailedClaimIsNoticedAndHoldsNoPhase(t *testing.T) {
 	if gotPhase != phase.Planning || heldFrom != nil {
 		t.Fatalf("root phase = %s held from %v, want planning and not held", gotPhase, heldFrom)
 	}
-	died := record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Planning}
+	died := record.Notice{Kind: "worker-died", Issue: "LEGION-208", Role: claim.RoleArchitect, Phase: phase.Planning}
 	if got, want := noticeRows(t, pool), []record.OutboxPayload{died, record.ControllerNotice(died)}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("notice rows = %+v, want %+v, to the issue and then to the controller", got, want)
 	}
@@ -76,16 +77,16 @@ func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 			root:  record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"},
 			child: record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Parent: &root, Project: "LEGION", Title: "child", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "V"},
 			role:  claim.RolePlanner, wantPhase: phase.Implementing,
-			want: []record.OutboxPayload{record.Notice{Kind: "worker-died", Role: claim.RolePlanner, Phase: phase.Implementing,
-				Reason: "the planner does not work LEGION-209's phase implementing; nothing is held"}},
+			want: []record.OutboxPayload{record.Notice{Kind: "worker-died", Issue: "LEGION-209", Role: claim.RolePlanner, Phase: phase.Implementing,
+				Working: phase.Implementing}},
 		},
 		{
 			name:  "the tester while the issue is merging",
 			root:  record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"},
 			child: record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Parent: &root, Project: "LEGION", Title: "child", Phase: phase.Merging, Generation: 1, Status: "retro", Rank: "V"},
 			role:  claim.RoleTester, wantPhase: phase.Merging,
-			want: []record.OutboxPayload{record.Notice{Kind: "worker-died", Role: claim.RoleTester, Phase: phase.Merging,
-				Reason: "the tester does not work LEGION-209's phase merging; nothing is held"}},
+			want: []record.OutboxPayload{record.Notice{Kind: "worker-died", Issue: "LEGION-209", Role: claim.RoleTester, Phase: phase.Merging,
+				Working: phase.Merging}},
 		},
 		{
 			name: "the tester while the implementer's phase is held",
@@ -93,8 +94,8 @@ func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 			child: record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Parent: &root, Project: "LEGION", Title: "child", Phase: phase.Held, Hold: &record.Hold{From: phase.Implementing},
 				Generation: 1, Status: "in_progress", Rank: "V"},
 			role: claim.RoleTester, wantPhase: phase.Held,
-			want: []record.OutboxPayload{record.Notice{Kind: "worker-died", Role: claim.RoleTester, Phase: phase.Held,
-				Reason: "the tester does not work LEGION-209's phase implementing; nothing is held"}},
+			want: []record.OutboxPayload{record.Notice{Kind: "worker-died", Issue: "LEGION-209", Role: claim.RoleTester, Phase: phase.Held,
+				Working: phase.Implementing}},
 		},
 		{
 			name:  "the planner of a lingering tree",
@@ -113,8 +114,7 @@ func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 			root:  record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"},
 			child: record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Parent: &root, Project: "LEGION", Title: "child", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "V"},
 			role:  claim.RoleArchitect, wantPhase: phase.Implementing,
-			want: []record.OutboxPayload{record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Implementing,
-				Reason: "LEGION-209's own architect failed; its notices come to you until it runs again, and the daemon starts it again at LEGION-209's next phase start"}},
+			want: []record.OutboxPayload{record.Notice{Kind: "worker-died", Issue: "LEGION-209", Role: claim.RoleArchitect, Phase: phase.Implementing}},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -190,8 +190,8 @@ func TestTheHeldNoticeNamesTheFailure(t *testing.T) {
 		if gotPhase != phase.Held || heldFrom == nil || *heldFrom != string(phase.Planning) {
 			t.Fatalf("root phase = %s held from %v, want held from planning", gotPhase, heldFrom)
 		}
-		held := record.Notice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning, Failure: named}
-		died := record.Notice{Kind: "worker-died", Role: claim.RolePlanner, Phase: phase.Planning, Failure: named}
+		held := record.Notice{Kind: "held", Issue: root.Key, Role: claim.RolePlanner, Phase: phase.Planning, Hold: texts.HoldFailure, Failure: named}
+		died := record.Notice{Kind: "worker-died", Issue: root.Key, Role: claim.RolePlanner, Phase: phase.Planning, Failure: named}
 		got := noticeRows(t, pool)
 		if want := []record.OutboxPayload{held, record.ControllerNotice(held), died}; !sameNotices(got, want) {
 			t.Fatalf("notice rows = %+v, want %+v: the hold, its controller copy and the worker-died, each naming the failure", got, want)
@@ -220,13 +220,13 @@ func TestTheHeldNoticeNamesTheFailure(t *testing.T) {
 		if _, err := intake.ApplyFact(context.Background(), pool, "supervise", "architect-failed", failed(root.Key, claim.RoleArchitect), testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
 			t.Fatalf("ApplyFact the architect's failed claim: %v", err)
 		}
-		died := record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Planning}
+		died := record.Notice{Kind: "worker-died", Issue: root.Key, Role: claim.RoleArchitect, Phase: phase.Planning}
 		if got, want := noticeRows(t, pool), []record.OutboxPayload{died, record.ControllerNotice(died)}; !sameNotices(got, want) {
 			t.Fatalf("notice rows = %+v, want %+v, naming no failure", got, want)
 		}
 	})
 
-	t.Run("a role that does not work the phase names it beside its own reason", func(t *testing.T) {
+	t.Run("a role that does not work the phase names it beside the phase the issue works", func(t *testing.T) {
 		pool := migratedPool(t)
 		working := root
 		working.Phase = phase.Implementing
@@ -237,14 +237,14 @@ func TestTheHeldNoticeNamesTheFailure(t *testing.T) {
 		if _, err := intake.ApplyFact(context.Background(), pool, "supervise", "planner-failed", failed(child.Key, claim.RolePlanner), testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
 			t.Fatalf("ApplyFact the finished planner's failed claim: %v", err)
 		}
-		died := record.Notice{Kind: "worker-died", Role: claim.RolePlanner, Phase: phase.Implementing, Failure: named,
-			Reason: "the planner does not work LEGION-209's phase implementing; nothing is held"}
+		died := record.Notice{Kind: "worker-died", Issue: child.Key, Role: claim.RolePlanner, Phase: phase.Implementing, Failure: named,
+			Working: phase.Implementing}
 		if got, want := noticeRows(t, pool), []record.OutboxPayload{died}; !sameNotices(got, want) {
-			t.Fatalf("notice rows = %+v, want %+v: the sentence it had, and the failure beside it", got, want)
+			t.Fatalf("notice rows = %+v, want %+v: the phase the issue works, and the failure beside it", got, want)
 		}
 	})
 
-	t.Run("a production check look names none", func(t *testing.T) {
+	t.Run("a production check look names its look and the failure", func(t *testing.T) {
 		rig := childCheckRig(t)
 		rig.apply("tester-failed", failed("LEGION-209", claim.RoleTester))
 		var died []record.Notice
@@ -253,10 +253,9 @@ func TestTheHeldNoticeNamesTheFailure(t *testing.T) {
 				died = append(died, notice)
 			}
 		}
-		want := record.Notice{Kind: "worker-died", Role: claim.RoleTester,
-			Reason: "production check look 1 lost its tester: " + sentence}
-		if len(died) != 1 || !reflect.DeepEqual(died[0], want) {
-			t.Fatalf("worker-died notices of the ended look = %+v, want %+v once: its reason names the failure already", died, want)
+		if len(died) != 1 || died[0].Issue != "LEGION-209" || died[0].Role != claim.RoleTester || died[0].Look != 1 || died[0].Phase != "" ||
+			died[0].Failure == nil || died[0].Failure.Detail != sentence || died[0].Reason != "" {
+			t.Fatalf("worker-died notices of the ended look = %+v, want one of the tester's look 1 naming the failure %q", died, sentence)
 		}
 	})
 }
@@ -274,7 +273,7 @@ func TestAnEscalationIsRecordedOnTheHoldForAControllerThatStartsLater(t *testing
 	if got, reason := projectedHold(t, pool, "LEGION-208"); got != phase.Held || reason != "escalated" {
 		t.Fatalf("after the escalation the state reads phase %s hold reason %q, want held and escalated", got, reason)
 	}
-	escalated := record.Notice{Kind: "held", Phase: phase.Planning, Reason: "escalated"}
+	escalated := record.Notice{Kind: "held", Issue: "LEGION-208", Phase: phase.Planning, Hold: texts.HoldEscalation, Reason: "escalated"}
 	if got, want := noticeRows(t, pool), []record.OutboxPayload{escalated, record.ControllerNotice(escalated)}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("notice rows = %+v, want %+v, to the issue and then to the controller", got, want)
 	}
@@ -309,8 +308,22 @@ func TestAnEscalationCarriesTheArchitectsReason(t *testing.T) {
 				testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
 				t.Fatalf("escalate: %v", err)
 			}
-			escalated := record.Notice{Kind: "held", Phase: phase.Testing, Reason: "escalated", Escalation: tc.reason}
-			if got, want := noticeRows(t, pool), []record.OutboxPayload{escalated, record.ControllerNotice(escalated)}; !reflect.DeepEqual(got, want) {
+			escalated := record.Notice{Kind: "held", Issue: "LEGION-208", Phase: phase.Testing, Hold: texts.HoldEscalation, Reason: "escalated",
+				Escalation: tc.reason}
+			got := noticeRows(t, pool)
+			for i, payload := range got {
+				notice := asNotice(payload)
+				if by := notice.Words["escalation"].By; (tc.reason != "") != (by == string(claim.RoleArchitect)) {
+					t.Fatalf("notice %d names the escalation's words as %+v, want the architect's where it named a reason", i, notice.Words)
+				}
+				notice.Words = nil
+				if _, controller := payload.(record.ControllerNotice); controller {
+					got[i] = record.ControllerNotice(notice)
+				} else {
+					got[i] = notice
+				}
+			}
+			if want := []record.OutboxPayload{escalated, record.ControllerNotice(escalated)}; !reflect.DeepEqual(got, want) {
 				t.Fatalf("notice rows = %+v, want %+v: the architect's words beside the escalation, to the issue and to the controller", got, want)
 			}
 			// Read off the stored row's own keys, since a notice carrying "" decodes the same.
@@ -408,7 +421,7 @@ func TestALingeringTreesFailedClaimHoldsNothingAndItsArchitectsIsStillTold(t *te
 	if _, err := intake.ApplyFact(ctx, pool, "supervise", "architect-failed", intake.ClaimFailed{Issue: root, Role: claim.RoleArchitect}, testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
 		t.Fatalf("ApplyFact the architect's failed claim: %v", err)
 	}
-	died := record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Done}
+	died := record.Notice{Kind: "worker-died", Issue: root, Role: claim.RoleArchitect, Phase: phase.Done}
 	if got, want := noticeRows(t, pool), []record.OutboxPayload{died, record.ControllerNotice(died)}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("notice rows = %+v, want %+v, to the issue and then to the controller", got, want)
 	}
@@ -459,6 +472,14 @@ func projectedHold(t *testing.T, pool *pgxpool.Pool, key string) (phase.Phase, s
 // want — through reflect.DeepEqual, since record.Notice holds a slice and is not comparable.
 func sameNotices(got, want []record.OutboxPayload) bool {
 	return len(got) == 0 && len(want) == 0 || reflect.DeepEqual(got, want)
+}
+
+// asNotice is the notice payload carries, a notice or a controller notice.
+func asNotice(payload record.OutboxPayload) record.Notice {
+	if copied, ok := payload.(record.ControllerNotice); ok {
+		return record.Notice(copied)
+	}
+	return payload.(record.Notice)
 }
 
 // noticeRows is every notice and controller notice row's payload, oldest first.
@@ -708,14 +729,13 @@ func TestAnArchitectsClaimFailedHoldsNoIssueAndWritesNoHeldNotice(t *testing.T) 
 		{
 			name: "the tree's architect while its root stands at admitted", key: root, at: phase.Admitted,
 			want: []record.OutboxPayload{
-				record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Admitted},
-				record.ControllerNotice(record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Admitted}),
+				record.Notice{Kind: "worker-died", Issue: root, Role: claim.RoleArchitect, Phase: phase.Admitted},
+				record.ControllerNotice(record.Notice{Kind: "worker-died", Issue: root, Role: claim.RoleArchitect, Phase: phase.Admitted}),
 			},
 		},
 		{
 			name: "a child's sub-architect while the child is in accepting", key: "LEGION-209", at: phase.Accepting, child: true,
-			want: []record.OutboxPayload{record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Accepting,
-				Reason: "LEGION-209's own architect failed; its notices come to you until it runs again, and the daemon starts it again at LEGION-209's next phase start"}},
+			want: []record.OutboxPayload{record.Notice{Kind: "worker-died", Issue: "LEGION-209", Role: claim.RoleArchitect, Phase: phase.Accepting}},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -1381,13 +1381,13 @@ func (w *workflowRuntime) claimDurableState(c supervise.Claim, state supervise.C
 // (`controller: daemon`) holds a claim on no issue, so neither is a workflow fact for it: its
 // relaunch is the controller keeper's (controllerKeeper).
 //
-// The ready carries the sentence the claim's untold record of what its last let-go ended is told
-// in (supervise.RelaunchSentence, intake.ClaimReady.Relaunch), read from the claim the ready
-// wrote, so an architect's catch-up opens with it (workflow's QueueCatchUp). A record that
-// still tells here beside an abandoned session still to tell is one of the fresh session's own
-// processes (supervise's forgetSession), and the catch-up opens with its sentence as it would for
-// any claim. The boot's replay of a ready reads the stored claim, whose record is persisted, and
-// carries what is still untold.
+// The ready carries what the claim's untold record of its last let-go ended
+// (supervise.EndedWork.Facts, intake.ClaimReady.Relaunch), read from the claim the ready wrote,
+// so an architect's catch-up carries it (workflow's QueueCatchUp). A record that still tells here
+// beside an abandoned session still to tell is one of the fresh session's own processes
+// (supervise's forgetSession), and the catch-up carries its facts as it would for any claim. The
+// boot's replay of a ready reads the stored claim, whose record is persisted, and carries what is
+// still untold.
 //
 // The failure carries what a notice of it says beside the sentence: the cause the site that
 // failed the claim chose, the claim's budgets as that failure left them, and the limits those
@@ -1403,7 +1403,8 @@ func (w *workflowRuntime) applyTerminal(ctx context.Context, c supervise.Claim, 
 	case supervise.StateReady:
 		ready := intake.ClaimReady{Issue: c.Issue, Role: c.Role, Launch: c.Generation}
 		if c.EndedWork.Tells() {
-			ready.Relaunch = supervise.RelaunchSentence(c.EndedWork)
+			facts := c.EndedWork.Facts(false)
+			ready.Relaunch = &facts
 		}
 		fact = ready
 	case supervise.StateFailed:

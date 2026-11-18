@@ -111,14 +111,14 @@ type Runtime interface {
 	// tell the daemon's stop from a refusal, and charges that try nothing.
 	LaunchBound() time.Duration
 	// PodDrift is why the place k's process runs in no longer matches the configuration the
-	// runtime would build it from now, one short phrase an operator reads per reason, and nil when
-	// nothing differs. Only a runtime whose processes share a place fixed at its creation has any
-	// — the Sandbox runtime's issue pod, whose image, reservation, operator volumes and mounts,
-	// disk, role overlays, secrets broker enrollment and session store are all fixed for the pod's
-	// life — and only for a claim that runs in one: it answers nothing for a claim with no
-	// process, which records no place at all, and nothing for the project controller's own pod,
-	// which has no issue workspace and nothing to push. The daemon opens an update round on a
-	// non-empty answer: the round asks each role of that place to push its work and answer (api's
+	// runtime would build it from now, one Drift per part that differs, and nil when nothing
+	// differs. Only a runtime whose processes share a place fixed at its creation has any — the
+	// Sandbox runtime's issue pod, whose image, reservation, operator volumes and mounts, disk,
+	// role overlays, secrets broker enrollment and session store are all fixed for the pod's life
+	// — and only for a claim that runs in one: it answers nothing for a claim with no process,
+	// which records no place at all, and nothing for the project controller's own pod, which has
+	// no issue workspace and nothing to push. The daemon opens an update round on a non-empty
+	// answer: the round asks each role of that place to push its work and answer (api's
 	// claims/ready-for-update), and replaces the place (ReplacePod) once every asked role has
 	// answered and no turn runs, or at the round's bound (pod_update_grace_minutes) whatever the
 	// roles answered, an operator's suspension excepted.
@@ -128,7 +128,7 @@ type Runtime interface {
 	// nothing can be read of a place that is going, so nothing says it has drifted from nothing,
 	// and the round open over it ends. Any other error means the runtime itself could not be
 	// asked, and is never a statement that something drifted either.
-	PodDrift(ctx context.Context, k Known) ([]string, error)
+	PodDrift(ctx context.Context, k Known) ([]Drift, error)
 	// ReplacePod ends the place k's process runs in, once its update round is over, and returns
 	// when the runtime no longer has it. It creates nothing in its stead: every process it ends is
 	// reported ended by the daemon's own act (Observation.Displaced), and the supervisor's resume
@@ -188,6 +188,29 @@ var ErrSessionStore = errors.New("the session store could not be asked")
 // endRoundOverAGonePod, supervise's Claim.UpdateLeftRound), so the sweep that reads this need
 // not come before the roles are relaunched into the pod that replaced this one.
 var ErrPodGone = errors.New("the pod the locator records is not there")
+
+// DriftImage is the key of the image every container of a place runs (DriftItem.Key).
+const DriftImage = "image"
+
+// DriftItem is one part of the configuration a place was built from that a place created now
+// would not carry, as a text names it: the part's key — the image (DriftImage), or the key of a
+// setting, such as `resources`, `disk`, `account` or the variable an address is handed in — and,
+// for the image, the image a place is built from now. A setting is named by its key alone, never
+// by its value, so a text that names it carries neither a credential nor a whole configuration.
+// It is what an update round records of the drift it was opened for beside the reasons' text
+// (supervise's Claim.UpdateDrift), as JSON with the keys key and image.
+type DriftItem struct {
+	Key   string `json:"key"`
+	Image string `json:"image,omitempty"`
+}
+
+// Drift is one part PodDrift answers: the item, and the reason an operator reads in a log line
+// and in the text the round records (supervise's Claim.UpdateReasons): the key, what the place
+// holds and what a place created now would be handed.
+type Drift struct {
+	DriftItem
+	Reason string
+}
 
 // IssuePodReader reads which pod an issue's Sandbox holds now, asked by the issue alone: the uid
 // of that pod, "" where the runtime holds no Sandbox of the issue or the Sandbox holds no pod, and

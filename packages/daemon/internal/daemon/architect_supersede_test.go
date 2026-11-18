@@ -126,7 +126,7 @@ func TestADecisionASupersededTaskNamedIsToldToTheReadmittedArchitect(t *testing.
 	if err != nil {
 		t.Fatalf("decode the catch-up %d: %v", catchUp.ID, err)
 	}
-	if notice := payload.(record.Notice); notice.CatchUp == nil || !strings.Contains(notice.CatchUp.Decided, ref) {
+	if notice := payload.(record.Notice); notice.CatchUp == nil || !strings.Contains(catchUpKeptRefs(notice.CatchUp), ref) {
 		t.Fatalf("the catch-up of launch %d is %#v, want it naming %s", ready.Generation, payload, ref)
 	}
 	if kept := keptDecisions(t, r.pool, r.records, r.key); len(kept) != 1 || kept[0].ClaimedBy != catchUp.ID {
@@ -146,7 +146,7 @@ func TestADecisionASupersededTaskNamedIsToldToTheReadmittedArchitect(t *testing.
 	publisher := r.runner.notices.(*outboxPublisher)
 	for _, published := range publisher.publishes() {
 		notice, ok := published.payload.(record.Notice)
-		told = told || (ok && notice.CatchUp != nil && strings.Contains(notice.CatchUp.Decided, ref) &&
+		told = told || (ok && notice.CatchUp != nil && strings.Contains(catchUpKeptRefs(notice.CatchUp), ref) &&
 			strings.HasSuffix(published.topic, strings.ToLower(string(r.token))))
 	}
 	if !told {

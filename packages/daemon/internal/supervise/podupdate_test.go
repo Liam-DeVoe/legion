@@ -27,7 +27,10 @@ package supervise
 // called directly.
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -36,6 +39,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 const (
@@ -48,7 +52,13 @@ const (
 	testRound = PodRoundPrefix + testRoundPod
 	// testReasons is what the daemon found, as Claim.UpdateReasons holds it.
 	testReasons = "image"
+	// testImage is the image a pod is built from now, which the round's drift names.
+	testImage = "ghcr.io/cybermonklabs/legion-worker@sha256:4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a1284c1b8e2a6f9d3047b5e1c8a2"
 )
+
+// testDrift is the drift the sweep posts with testReasons: the image, as items
+// (Claim.UpdateDrift).
+var testDrift = []runtime.DriftItem{{Key: runtime.DriftImage, Image: testImage}}
 
 // updateHarness is a machine whose daemon speaks contract. The register() walk records that same
 // number as the claim's own plugin contract, so contract decides whether this claim can answer an
@@ -66,10 +76,10 @@ func updateHarness(t *testing.T, contract int) *harness {
 }
 
 // openUpdate is the daemon's sweep posting the round over this claim, as it does at every tick
-// while the round is open.
+// while the round is open, with the drift as text and as items.
 func (h *harness) openUpdate(round, reasons string) {
 	h.t.Helper()
-	h.must(PodUpdateOpen{Claim: h.token, Round: round, Reasons: reasons})
+	h.must(PodUpdateOpen{Claim: h.token, Round: round, Reasons: reasons, Drift: testDrift})
 }
 
 // leftAsk is the claim as this daemon restores it from an older daemon's record when that daemon
@@ -106,8 +116,8 @@ func (h *harness) olderDaemonsAsk(round string, sent bool, set ...func(*Delivery
 	if asked, err := h.m.PodUpdateAsked(h.ctx, round); err != nil || !asked {
 		h.t.Fatalf("mark the older daemon's ask of %s = %t, %v; want it marked", round, asked, err)
 	}
-	ask := Delivery{ID: updateTaskID(round), Task: UpdateTask(round, testReasons, epoch.Add(time.Hour)),
-		QueuedAt: h.clock.Now()}
+	ask := Delivery{ID: updateTaskID(round), QueuedAt: h.clock.Now(),
+		Task: "The daemon must replace the pod that runs this issue's roles. The round is " + round + "."}
 	if sent {
 		if err := h.conn.Prompt(h.ctx, ask.ID, ask.Task); err != nil {
 			h.t.Fatalf("the older daemon's send of its ask of %s: %v", round, err)
@@ -199,10 +209,10 @@ func (h *harness) diesIntoPod(pod string) {
 	}
 }
 
-// A round opened over a ready claim records itself — its id, its reasons and its own clock — and
-// persists, and the machine gives the worker nothing: no task is queued and no prompt is sent. The
-// round's ask is the sweep's, published to the role's Envoy topic once the claim records the
-// round, and the publish mark is unset until the sweep makes it (PodUpdateAsked).
+// A round opened over a ready claim records itself — its id, its reasons as text and as items, and
+// its own clock — and persists, and the machine gives the worker nothing: no task is queued and no
+// prompt is sent. The round's ask is the sweep's, published to the role's Envoy topic once the
+// claim records the round, and the publish mark is unset until the sweep makes it (PodUpdateAsked).
 func TestPodUpdateOpensARoundAndSendsTheWorkerNothing(t *testing.T) {
 	h := updateHarness(t, PodUpdateContract)
 	h.reach(StateReady)
@@ -211,8 +221,8 @@ func TestPodUpdateOpensARoundAndSendsTheWorkerNothing(t *testing.T) {
 
 	h.wantState(StateReady)
 	c := h.wantRound(testRound)
-	if c.UpdateReasons != testReasons {
-		t.Errorf("UpdateReasons = %q, want %q", c.UpdateReasons, testReasons)
+	if c.UpdateReasons != testReasons || !slices.Equal(c.UpdateDrift, testDrift) {
+		t.Errorf("UpdateReasons = %q and UpdateDrift = %+v, want %q and %+v", c.UpdateReasons, c.UpdateDrift, testReasons, testDrift)
 	}
 	if c.UpdateOpenedAt == nil || !c.UpdateOpenedAt.Equal(epoch) {
 		t.Errorf("UpdateOpenedAt = %v, want the round's own clock at %v", c.UpdateOpenedAt, epoch)
@@ -224,7 +234,8 @@ func TestPodUpdateOpensARoundAndSendsTheWorkerNothing(t *testing.T) {
 		t.Errorf("pending = %+v, want no task: the round's ask is a message on the role's topic", c.Pending)
 	}
 	h.wantPrompts(0)
-	if stored := h.store.load(h.token); stored.UpdateRound != testRound || stored.UpdateReasons != testReasons {
+	if stored := h.store.load(h.token); stored.UpdateRound != testRound || stored.UpdateReasons != testReasons ||
+		!slices.Equal(stored.UpdateDrift, testDrift) {
 		t.Errorf("the round was not persisted: stored claim %+v", stored)
 	}
 }
@@ -241,12 +252,14 @@ func TestPodUpdateALaterOpenOfTheSameRoundKeepsTheTermsItOpenedWith(t *testing.T
 	settled := len(h.store.history())
 
 	h.advance(time.Minute)
-	h.openUpdate(testRound, testReasons+", resources")
+	h.must(PodUpdateOpen{Claim: h.token, Round: testRound, Reasons: testReasons + ", resources",
+		Drift: append(slices.Clone(testDrift), runtime.DriftItem{Key: "resources"})})
 	h.openUpdate(testRound, testReasons)
 
 	c := h.wantRound(testRound)
-	if c.UpdateReasons != testReasons {
-		t.Errorf("UpdateReasons = %q, want the %q the round opened with", c.UpdateReasons, testReasons)
+	if c.UpdateReasons != testReasons || !slices.Equal(c.UpdateDrift, testDrift) {
+		t.Errorf("UpdateReasons = %q and UpdateDrift = %+v, want the %q and %+v the round opened with",
+			c.UpdateReasons, c.UpdateDrift, testReasons, testDrift)
 	}
 	if c.UpdateOpenedAt == nil || !c.UpdateOpenedAt.Equal(epoch) {
 		t.Errorf("UpdateOpenedAt = %v, want the first post's %v", c.UpdateOpenedAt, epoch)
@@ -503,9 +516,12 @@ func TestPodUpdateHoldsTheNextTaskUntilTheRoundEnds(t *testing.T) {
 		t.Errorf("the task after the round = %q, want the held one", released.Message)
 	}
 	c := h.wantRound("")
-	if c.UpdateReasons != "" || c.UpdateOpenedAt != nil || c.UpdateTaskedAt != nil ||
+	if c.UpdateReasons != "" || c.UpdateDrift != nil || c.UpdateOpenedAt != nil || c.UpdateTaskedAt != nil ||
 		c.UpdateSignalledAt != nil || c.UpdateHead != "" || c.UpdateToldAt != nil {
 		t.Errorf("claim after the round ended = %+v, want every update field cleared", c)
+	}
+	if stored := h.store.load(h.token); stored.UpdateDrift != nil {
+		t.Errorf("the store holds the ended round's drift %+v, want none", stored.UpdateDrift)
 	}
 	h.wantCalls("Resume", 0)
 }
@@ -595,42 +611,75 @@ func TestPodUpdateARestartLeavesTheHeldTaskToNoTurnButItsOwn(t *testing.T) {
 	}
 }
 
-// The ask says when the pod goes and what that costs. It keeps the round's id, the drift and the
-// push instruction, names the moment the round ends in RFC 3339 UTC, says that every answer
-// brings that moment forward and that no answer delays it, and names what goes with the pod
-// then. It says that only the role's own push keeps its work, and that work not pushed before
-// the pod goes is lost; it names no check of the disk and no rescue branch. A role whose tool
-// has no ready_for_update is told to push, because the round ends at that moment whatever it
-// does: the end of its turn is no answer.
+// The ask states each fact of the round as a field (dispatch://INFRA-2981 R4): the round's id, the
+// branch to push to, the op that answers it, the moment the round ends in UTC, that every answer
+// brings that moment forward and that no answer delays it, that only the role's own push keeps its
+// work, what goes with the pod then, and that the process starts again in the same session while
+// its next task waits. The drift is named by the image's short digest and by each setting's key,
+// the account among them, and never by a value: a round of a new image and 30 changed settings
+// names the digest's first 12 hexadecimal characters and the 30 keys, and its fields hold neither
+// the whole digest nor any setting's value (dispatch://INFRA-321 R5). A round an older daemon
+// opened recorded the drift as text alone, and its ask names that text as one field.
 func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
 	endsAt := time.Date(2026, 11, 13, 14, 30, 0, 0, time.FixedZone("UTC+2", 2*60*60))
-	text := UpdateTask(testRound, `image "sha256:1"`, endsAt)
-	for _, want := range []string{
-		"The round is " + testRound + ".",
-		`The reasons are: image "sha256:1".`,
-		"Push every commit that you want to keep to this issue's branch.",
-		`Call the ` + "`legion`" + ` tool with op: "ready_for_update" and round: "` + testRound + `".`,
-		"The round ends at 2026-11-13T12:30:00Z (UTC).",
-		"If every role answers, the round can end before that moment.",
-		"If a role does not answer, the round still ends at 2026-11-13T12:30:00Z.",
-		"A turn in progress does not delay that moment.",
-		"The round ends at 2026-11-13T12:30:00Z whatever you do.",
-		"- The turn that is in progress.",
-		"- The background jobs of that turn.",
-		"- Each commit and each file that you did not push.",
-		"- The pod's test database.",
-		"- The pod's caches.",
-		"Only your own push keeps your work. Work that you do not push before the pod goes is lost.",
-		"The daemon holds your next task until your process runs again.",
-	} {
-		if !strings.Contains(text, want) {
-			t.Errorf("the ask does not say %q:\n%s", want, text)
+	drift := []runtime.Drift{{
+		DriftItem: runtime.DriftItem{Key: runtime.DriftImage, Image: testImage},
+		Reason:    "image ghcr.io/cybermonklabs/legion-worker@sha256:" + strings.Repeat("0", 64) + ", now " + testImage,
+	}}
+	var keys, values []string
+	for i := range 30 {
+		key, held, handed := fmt.Sprintf("LEGION_SETTING_%02d", i+1), fmt.Sprintf("held-value-%02d", i+1), fmt.Sprintf("handed-value-%02d", i+1)
+		if i == 29 {
+			key, held, handed = "account", "legion-old", "legion-new"
+		}
+		keys, values = append(keys, key), append(values, held, handed)
+		drift = append(drift, runtime.Drift{DriftItem: runtime.DriftItem{Key: key}, Reason: key + " " + held + ", now " + handed})
+	}
+	items := make([]runtime.DriftItem, len(drift))
+	reasons := make([]string, len(drift))
+	for i, d := range drift {
+		items[i], reasons[i] = d.DriftItem, d.Reason
+	}
+
+	ask := UpdateTask("LEGION-209", testRound, testRoundPod, items, strings.Join(reasons, ", "), endsAt)
+
+	if ask.Kind != texts.UpdateAsk || ask.Issue != "LEGION-209" || ask.Round != testRound || ask.Pod != testRoundPod {
+		t.Errorf("the ask is of kind %q, issue %q, round %q, pod %q; want update-ask, LEGION-209, %s, %s",
+			ask.Kind, ask.Issue, ask.Round, ask.Pod, testRound, testRoundPod)
+	}
+	if want := []string{"4c1b8e2a6f9d"}; !slices.Equal(ask.Images, want) {
+		t.Errorf("the ask names the images %q, want the image's short digest %q", ask.Images, want)
+	}
+	if !slices.Equal(ask.Settings, keys) {
+		t.Errorf("the ask names the settings %q, want each of the 30 keys %q", ask.Settings, keys)
+	}
+	if ask.Reasons != "" {
+		t.Errorf("the ask names the reasons %q, want none: the round recorded its drift as items", ask.Reasons)
+	}
+	if !ask.EndsAt.Equal(endsAt) || ask.EndsAt.Location() != time.UTC {
+		t.Errorf("the ask ends at %v, want %v in UTC", ask.EndsAt, endsAt.UTC())
+	}
+	if ask.PushTo != "legion/LEGION-209" || ask.Answer != "ready_for_update" || !ask.EveryAnswerBringsItForward ||
+		!ask.NoAnswerDelaysIt || !ask.KeptByPushOnly || ask.Restart != "same_session" || !ask.NextTaskHeld {
+		t.Errorf("the ask states %+v, want the push to legion/LEGION-209, the ready_for_update op, every answer bringing the end forward, no answer delaying it, only the push keeping work, the same session and the next task held", ask)
+	}
+	if want := []string{"turn", "background_jobs", "unpushed_work", "test_database", "caches"}; !slices.Equal(ask.GoesWithPod, want) {
+		t.Errorf("the ask says %q goes with the pod, want %q", ask.GoesWithPod, want)
+	}
+	encoded, err := json.Marshal(ask)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range append(values, testImage, "sha256:") {
+		if strings.Contains(string(encoded), value) {
+			t.Errorf("the ask holds %q, a value of the drift: %s", value, encoded)
 		}
 	}
-	for _, gone := range []string{"reads the end of this turn as your answer", "WAITING", "Each commit that the workspace holds and the remote does not have.", "Each file that .gitignore ignores.", "push check", "rescue"} {
-		if strings.Contains(text, gone) {
-			t.Errorf("the ask still says %q, which this round does not do:\n%s", gone, text)
-		}
+
+	older := UpdateTask("LEGION-209", testRound, testRoundPod, nil, `image "sha256:1"`, endsAt)
+	if older.Reasons != `image "sha256:1"` || len(older.Images) != 0 || len(older.Settings) != 0 {
+		t.Errorf("the ask of a round an older daemon opened names images %q, settings %q and reasons %q; want its text as the reasons alone",
+			older.Images, older.Settings, older.Reasons)
 	}
 }
 
@@ -1099,12 +1148,12 @@ func TestAPluginRoundAnEarlierDaemonLeftEndsAndReleasesTheTaskItHeld(t *testing.
 			}
 
 			// The suspension let a process go that had run a turn and left no report the daemon
-			// took (its plugin is stale here), so the resumed claim's task carries the sentence
-			// of what it may have ended (dispatch://INFRA-3276 R3); the live claim's process was
+			// took (its plugin is stale here), so the resumed claim's task carries the note of
+			// what it may have ended (dispatch://INFRA-3276 R3); the live claim's process was
 			// never let go, and its task goes as it was queued.
 			want := next
 			if tc.suspend {
-				want = relaunchSentence(h.claim().EndedWork, true) + "\n\n" + next
+				want = h.relaunchNote(h.claim().EndedWork, true) + "\n\n" + next
 			}
 			if got := h.wantPrompts(sent + 2)[sent+1]; got.Message != want {
 				t.Fatalf("the prompt after the end is %+v, want the task %q the round held back", got, want)

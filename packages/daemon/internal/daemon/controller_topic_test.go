@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // A planner whose launches run out holds its issue: the architect's role topic takes the held and
@@ -130,7 +131,7 @@ func TestAHeldNoticeReachesTheControllerTopicAndItsRetriesNeverResendTheArchitec
 	}
 	limit := supervise.Limits{LaunchFailures: cfg.LaunchFailureLimit,
 		PromptFailures: cfg.PromptFailureLimit, PromptRetires: cfg.PromptRetireLimit}
-	want := record.Notice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning, Failure: &record.NoticeFailure{
+	want := record.Notice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning, Issue: issue, Hold: texts.HoldFailure, Failure: &record.NoticeFailure{
 		Cause:          string(supervise.CauseLaunchRefused),
 		Detail:         "launch failures ran out: pane launch failed",
 		LaunchFailures: record.FailureBudget{Count: limit.LaunchFailures, Limit: limit.LaunchFailures},

@@ -127,6 +127,8 @@ var ClaimRecordFields = []RecordFieldDecision{
 		Reason: "the round the claim is in, which says the process holding it is waiting to be replaced"},
 	{Field: "UpdateReasons", Column: ColumnAgents, Keys: []string{"updateReasons"},
 		Reason: "why the daemon must replace this pod, which the worker answering the round is told to act on"},
+	{Field: "UpdateDrift", Column: ColumnWithheld,
+		Reason: "the same drift as `updateReasons`, as items the daemon's own texts name by image digest and setting key; the agent surfaces serve the drift as that text, which the worker answering the round reads"},
 	{Field: "UpdateOpenedAt", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "UpdateTaskedAt", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "UpdateSignalledAt", Column: ColumnWithheld, Reason: BookkeepingReason},

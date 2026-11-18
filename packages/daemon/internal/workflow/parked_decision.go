@@ -226,7 +226,7 @@ func CatchUpTheTreesOwed(ctx context.Context, tx pgx.Tx, store record.Store, ste
 		if !hears {
 			continue
 		}
-		if err := QueueCatchUp(ctx, tx, store, steps, *root, launches[key], "", now, time.Time{}); err != nil {
+		if err := QueueCatchUp(ctx, tx, store, steps, *root, launches[key], nil, now, time.Time{}); err != nil {
 			return err
 		}
 	}

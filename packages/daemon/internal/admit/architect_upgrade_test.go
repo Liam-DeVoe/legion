@@ -147,7 +147,7 @@ func TestTheArchitectUpgradeSendsNoTaskAndRaisesNoWakeOnTheFirstPasses(t *testin
 			t.Fatalf("the starts written for %s = %+v, want none: the fill settled every role of it at the entry its row names", root, starts)
 		}
 		if reasons := architectWakes(t, pool, root); len(reasons) != 0 {
-			t.Fatalf("the architect wakes of %s = %q, want none: the release wakes the controller for no root it does not repair", root, reasons)
+			t.Fatalf("the architect wakes of %s = %+v, want none: the release wakes the controller for no root it does not repair", root, reasons)
 		}
 		marks := architectWakeMarks(t, pool, root, architectUpgradeGeneration)
 		if !slices.Equal(marks, upgradeMarks) {
@@ -338,7 +338,7 @@ func TestTheArchitectUpgradeReadmissionRaisesTheEntryAgainAndStartsItsOwnBounds(
 
 	sweepAt(t, pool, admission, "readmitted-inside", fixedNow.Add(insideTheGate))
 	if reasons := architectWakes(t, pool, root); len(reasons) != 0 {
-		t.Fatalf("the architect wakes of the re-admitted %s = %q, want none inside its own bound", root, reasons)
+		t.Fatalf("the architect wakes of the re-admitted %s = %+v, want none inside its own bound", root, reasons)
 	}
 	sweepAt(t, pool, admission, "readmitted-past", fixedNow.Add(pastTheGate))
 
@@ -692,7 +692,7 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 					t.Fatalf("the starts written for %s after the roll-forward = %+v, want none: its architect is settled again", root.key, starts)
 				}
 				if reasons := architectWakes(t, pool, root.key); len(reasons) != 0 {
-					t.Fatalf("the architect wakes of %s after the roll-forward = %q, want none of any arm", root.key, reasons)
+					t.Fatalf("the architect wakes of %s after the roll-forward = %+v, want none of any arm", root.key, reasons)
 				}
 				marks := architectWakeMarks(t, pool, root.key, root.generation)
 				if !slices.Equal(marks, upgradeMarks) {

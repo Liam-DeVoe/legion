@@ -49,8 +49,7 @@ func TestARootArchitectIsToldItsTreeAtEachLaunchsReady(t *testing.T) {
 				gates = "spec(gated=false,unregistered=true)"
 			}
 			told := func(generation, launch int) string {
-				return fmt.Sprintf("gen=%d launch=%d gates=%s issues=LEGION-1,LEGION-2 reason=the tree of LEGION-1 at generation %d as the daemon records it now; start or resume it as your role says",
-					generation, launch, gates, generation)
+				return fmt.Sprintf("gen=%d launch=%d gates=%s issues=LEGION-1,LEGION-2 done= accepting=", generation, launch, gates)
 			}
 
 			claimReady(t, pool, engine, "LEGION-1", claim.RoleArchitect, 1)
@@ -135,19 +134,19 @@ func TestARelaunchedArchitectsCatchUpNamesTheDecisionsKeptForIt(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("keep a decision: %v", err)
 	}
-	want := "While nobody in LEGION-1's tree could hear it, a person decided on the tree: dispatch://LEGION-1/spec (design-approved by user:alice). Read each before you continue."
 	claimReady(t, pool, engine, "LEGION-1", claim.RoleArchitect, 1)
 	first := lastCatchUp(t, pool)
-	if first.Decided != want {
-		t.Fatalf("the relaunch's catch-up names %q, want %q", first.Decided, want)
+	if first.Decided != "" {
+		t.Fatalf("the relaunch's catch-up writes the decisions as text %q, want them as fields alone", first.Decided)
 	}
 	if first.Kept == nil || len(first.Kept.Decisions) != 1 || first.Kept.Decisions[0].Ref != "dispatch://LEGION-1/spec" ||
-		!first.Kept.Decisions[0].At.Equal(at) {
+		!first.Kept.Decisions[0].At.Equal(at) || first.Kept.Decisions[0].Decision != record.DecisionDesignApproved ||
+		first.Kept.Decisions[0].Actor != "user:alice" {
 		t.Fatalf("the catch-up's kept record %#v, want the decision it named, at %s", first.Kept, at)
 	}
 	claimReady(t, pool, engine, "LEGION-1", claim.RoleArchitect, 2)
-	if got := lastCatchUp(t, pool); got.Decided != want || len(catchUps(t, pool)) != 1 {
-		t.Fatalf("after a relaunch dropped that catch-up undelivered, catch-ups %v naming %q; want one naming %q", catchUps(t, pool), got.Decided, want)
+	if got := lastCatchUp(t, pool); got.Kept == nil || len(got.Kept.Decisions) != 1 || len(catchUps(t, pool)) != 1 {
+		t.Fatalf("after a relaunch dropped that catch-up undelivered, catch-ups %v naming %#v; want one naming the decision again", catchUps(t, pool), got.Kept)
 	}
 	// The delivery of a catch-up forgets exactly what it named and its row claims, and nothing else
 	// does.
@@ -161,8 +160,8 @@ func TestARelaunchedArchitectsCatchUpNamesTheDecisionsKeptForIt(t *testing.T) {
 		t.Fatalf("forget what the delivered catch-up named: %v", err)
 	}
 	claimReady(t, pool, engine, "LEGION-1", claim.RoleArchitect, 3)
-	if got := lastCatchUp(t, pool); got.Decided != "" || got.Kept != nil {
-		t.Fatalf("the launch after a delivered catch-up is told %q (kept %#v), want nothing", got.Decided, got.Kept)
+	if got := lastCatchUp(t, pool); got.Kept != nil {
+		t.Fatalf("the launch after a delivered catch-up is told kept %#v, want nothing", got.Kept)
 	}
 }
 
@@ -189,23 +188,21 @@ func lastCatchUp(t *testing.T, pool *pgxpool.Pool) record.CatchUp {
 // workflow (signOff), and the catch-up is what tells the architect the issue is there to be
 // decided.
 func TestACatchUpNamesEveryIssueWaitingForTheArchitectsAcceptance(t *testing.T) {
-	const base = "the tree of LEGION-1 at generation 1 as the daemon records it now; start or resume it as your role says"
-	awaiting := func(keys string) string {
-		return base + "; in accepting, waiting for your acceptance, which no worker gives: " + keys + " (read the evidence, then sign_off or request_backward_move)"
-	}
 	for _, tc := range []struct {
 		name                    string
 		root, child             phase.Phase
 		rootStatus, childStatus string
-		want                    string
+		// issues are the issues named with their fields, done the done ones by key, accepting
+		// the ones waiting for the architect's acceptance.
+		issues, done, accepting string
 	}{
-		{"the root accepting, its child done", phase.Accepting, phase.Done, "needs_review", "done", awaiting("LEGION-1")},
-		{"the root accepting, its child parked in backlog", phase.Accepting, phase.Done, "needs_review", "backlog", awaiting("LEGION-1")},
-		{"the root accepting, its child still implementing", phase.Accepting, phase.Implementing, "needs_review", "in_progress", awaiting("LEGION-1")},
-		{"a child accepting while the root implements", phase.Implementing, phase.Accepting, "in_progress", "needs_review", awaiting("LEGION-2")},
-		{"the root and its child both accepting", phase.Accepting, phase.Accepting, "needs_review", "needs_review", awaiting("LEGION-1, LEGION-2")},
-		{"the root merging", phase.Merging, phase.Done, "retro", "done", base},
-		{"nothing accepting", phase.Reviewing, phase.Testing, "needs_review", "testing", base},
+		{"the root accepting, its child done", phase.Accepting, phase.Done, "needs_review", "done", "LEGION-1", "LEGION-2", "LEGION-1"},
+		{"the root accepting, its child parked in backlog", phase.Accepting, phase.Done, "needs_review", "backlog", "LEGION-1,LEGION-2", "", "LEGION-1"},
+		{"the root accepting, its child still implementing", phase.Accepting, phase.Implementing, "needs_review", "in_progress", "LEGION-1,LEGION-2", "", "LEGION-1"},
+		{"a child accepting while the root implements", phase.Implementing, phase.Accepting, "in_progress", "needs_review", "LEGION-1,LEGION-2", "", "LEGION-2"},
+		{"the root and its child both accepting", phase.Accepting, phase.Accepting, "needs_review", "needs_review", "LEGION-1,LEGION-2", "", "LEGION-1,LEGION-2"},
+		{"the root merging", phase.Merging, phase.Done, "retro", "done", "LEGION-1", "LEGION-2", ""},
+		{"nothing accepting", phase.Reviewing, phase.Testing, "needs_review", "testing", "LEGION-1,LEGION-2", "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -217,7 +214,7 @@ func TestACatchUpNamesEveryIssueWaitingForTheArchitectsAcceptance(t *testing.T) 
 				Phase: tc.child, Generation: 1, Status: tc.childStatus, Rank: "V"})
 			claimReady(t, pool, testEngine(config.DesignGateRootIssues, nil), root.Key, claim.RoleArchitect, 1)
 			got := catchUps(t, pool)
-			want := fmt.Sprintf("gen=1 launch=1 gates=spec(gated=true,unregistered=true) issues=LEGION-1,LEGION-2 reason=%s", tc.want)
+			want := fmt.Sprintf("gen=1 launch=1 gates=spec(gated=true,unregistered=true) issues=%s done=%s accepting=%s", tc.issues, tc.done, tc.accepting)
 			if len(got) != 1 || got[0] != want {
 				t.Fatalf("catch-ups %v; want [%s]", got, want)
 			}
@@ -245,7 +242,7 @@ func TestOnlyALiveTreesArchitectsAreToldTheirIssues(t *testing.T) {
 		{"a lingering tree set back to todo", lingering, "LEGION-1", claim.RoleArchitect, nil},
 		{"a tree moved to backlog", func(root *record.Issue) { root.Status = "backlog" }, "LEGION-1", claim.RoleArchitect, nil},
 		{"a sub-architect", func(*record.Issue) {}, "LEGION-2", claim.RoleArchitect, []string{
-			"gen=1 launch=1 gates= issues=LEGION-2 reason=the issues under LEGION-2, which you own, at generation 1 as the daemon records them now; start or resume your issue as your role says"}},
+			"gen=1 launch=1 gates= issues=LEGION-2 done= accepting="}},
 		{"a phase worker on the root", func(*record.Issue) {}, "LEGION-1", claim.RolePlanner, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -289,8 +286,9 @@ func claimReady(t *testing.T, pool *pgxpool.Pool, engine *Engine, issue string, 
 }
 
 // catchUps is every catch-up notice the outbox holds, in order: the generation it names, the
-// launch it was written for, the design-gate steps it states, the tree's issue keys it lists, and
-// its reason.
+// launch it was written for, the design-gate steps it states, the keys of the issues it names
+// that are not done, the done ones, and the ones waiting for the architect's acceptance. No
+// catch-up carries a reason.
 func catchUps(t *testing.T, pool *pgxpool.Pool) []string {
 	t.Helper()
 	got := []string{}
@@ -298,6 +296,9 @@ func catchUps(t *testing.T, pool *pgxpool.Pool) []string {
 		notice, ok := payload.(record.Notice)
 		if !ok || notice.Kind != "catch-up" {
 			continue
+		}
+		if notice.Reason != "" {
+			t.Fatalf("a catch-up carries the reason %q, want none", notice.Reason)
 		}
 		keys := []string{}
 		for _, issue := range notice.CatchUp.Issues {
@@ -307,7 +308,8 @@ func catchUps(t *testing.T, pool *pgxpool.Pool) []string {
 		for _, gate := range notice.CatchUp.Gates {
 			steps = append(steps, fmt.Sprintf("%s(gated=%t,unregistered=%t)", gate.Step, gate.Gated, gate.Unregistered))
 		}
-		got = append(got, fmt.Sprintf("gen=%d launch=%d gates=%s issues=%s reason=%s", notice.CatchUp.Generation, notice.CatchUp.Launch, strings.Join(steps, ","), strings.Join(keys, ","), notice.Reason))
+		got = append(got, fmt.Sprintf("gen=%d launch=%d gates=%s issues=%s done=%s accepting=%s", notice.CatchUp.Generation, notice.CatchUp.Launch,
+			strings.Join(steps, ","), strings.Join(keys, ","), strings.Join(notice.CatchUp.Done, ","), strings.Join(notice.CatchUp.Accepting, ",")))
 	}
 	return got
 }

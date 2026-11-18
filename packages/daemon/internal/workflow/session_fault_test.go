@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 func seedTestingIssue(t *testing.T, pool *pgxpool.Pool, key string) {
@@ -45,8 +46,9 @@ func TestALostSessionIsToldOnTheIssueToItsArchitectAndToTheController(t *testing
 	if len(posted) != 1 || !strings.Contains(posted[0], "ses-abc") {
 		t.Fatalf("the issue was told %v, want one message naming the lost session", posted)
 	}
-	if reason, told := noticeKindReasons(t, pool, "LEGION-209")["session-lost"]; !told || !strings.Contains(reason, "fresh agent") {
-		t.Fatalf("the architect was told %q, want a session-lost notice saying a fresh agent runs", reason)
+	lost := noticesOfKind(t, pool, "LEGION-209", texts.SessionLost)
+	if len(lost) != 1 || lost[0].Role != claim.RoleTester || lost[0].Phase != phase.Testing || !strings.Contains(lost[0].Detail, "ses-abc") || lost[0].Reason != "" {
+		t.Fatalf("the architect was told %+v, want one session-lost of the tester in testing naming the lost session", lost)
 	}
 	if got := controllerNoticeKinds(t, pool); len(got) != 1 || got[0] != "session-lost" {
 		t.Fatalf("the controller was told %v, want the lost session", got)

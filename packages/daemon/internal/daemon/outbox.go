@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -28,6 +29,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -1533,22 +1535,34 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 }
 
 // roleMessage publishes one message to a role's topic, keyed by the row so a retried row is one
-// delivery (record.RoleMessage). A role with no live holder is told nothing and the row is done:
-// the message reports a moment - a head's checks as they settled - that has passed by the time
-// anyone claims the role, and every recipient reads the pull request on GitHub for itself, so
-// waiting would retry forever for a message that is stale when it lands. A holder that refuses
-// the message's delivery mode (notify.ErrRefusedByHolder), and the listener's own NATS grant
-// denying the forward (notify.ErrPublishDenied), end the row the same way, since both refuse
-// every attempt until a session or an operator changes them; a holder that did not confirm in
-// time (notify.ErrNotDelivered) is retried on the row's backoff as any failed publish is. So is a
-// holder the listener calls only unresponsive (notify.ErrHolderUnresponsive): its session is past
-// the listener's live window but still holds the role, so the message is kept for it rather than
-// dropped as a message to a role nobody holds (dispatch://INFRA-392).
+// delivery (record.RoleMessage). A row of a kind is published as its kind's record, an object
+// (record.RoleMessage.Record, in the record's own field order), under the summary
+// `<kind> on <KEY>` a notice goes under (noticeSummary); a row of no kind, which a daemon before
+// the list queued, is published as its body, as it was. A role with no live holder is told
+// nothing and the row is done: the message reports a moment - a head's checks as they settled -
+// that has passed by the time anyone claims the role, and every recipient reads the pull request
+// on GitHub for itself, so waiting would retry forever for a message that is stale when it lands.
+// A holder that refuses the message's delivery mode (notify.ErrRefusedByHolder), and the
+// listener's own NATS grant denying the forward (notify.ErrPublishDenied), end the row the same
+// way, since both refuse every attempt until a session or an operator changes them; a holder
+// that did not confirm in time (notify.ErrNotDelivered) is retried on the row's backoff as any
+// failed publish is. So is a holder the listener calls only unresponsive
+// (notify.ErrHolderUnresponsive): its session is past the listener's live window but still holds
+// the role, so the message is kept for it rather than dropped as a message to a role nobody holds
+// (dispatch://INFRA-392).
 func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload record.RoleMessage) error {
 	if r.notices == nil {
 		return errors.New("role message executor has no Envoy publisher")
 	}
-	err := r.notices.Publish(ctx, notify.RoleTopicPrefix+payload.Role, payload.Body, payload.Body, record.OutboxKey(row.ID))
+	summary, message := payload.Body, any(payload.Body)
+	if payload.Kind != "" {
+		rec, err := payload.Record()
+		if err != nil {
+			return fmt.Errorf("read %s's %s role message: %w", row.Issue, payload.Kind, err)
+		}
+		summary, message = noticeSummary(payload.Kind, row.Issue), rec
+	}
+	err := r.notices.Publish(ctx, notify.RoleTopicPrefix+payload.Role, summary, message, record.OutboxKey(row.ID))
 	if errors.Is(err, notify.ErrHolderUnresponsive) {
 		// A wait, not a failure: settle logs a wait.ErrWaiting at INFO then DEBUG rather than
 		// ERROR on every attempt, as the notice executor's own unresponsive branch does
@@ -1674,11 +1688,16 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 }
 
 // updateAsk publishes an update round's ask (record.UpdateAsk) to the Envoy topic of the role the
-// row names, the claim of that role on the row's issue, and to nothing else. The text is the
-// sweep's, built for the round when it opened (supervise.UpdateTask), and it reaches a worker and
-// the issue's architect alike: every role whose process runs in the pod loses that process when
-// the round replaces the pod. It rides the role-message lane (record.LaneRoleMessage), so it
-// waits behind no architect notice of its issue.
+// row names, the claim of that role on the row's issue, and to nothing else. The ask is the
+// sweep's, built from the round's record when it opened (supervise.UpdateTask), and it reaches a
+// worker and the issue's architect alike: every role whose process runs in the pod loses that
+// process when the round replaces the pod. It rides the role-message lane
+// (record.LaneRoleMessage), so it waits behind no architect notice of its issue.
+//
+// A row that carries the round's facts is published as its kind's record (record.UpdateAsk.Record)
+// under the summary `update-ask on <KEY>`, the record's object as the payload. A row an older
+// daemon queued carries the text that daemon's sweep built in place of the facts, and goes as that
+// text, as it went then (record.UpdateAsk.Message).
 //
 // It wakes nothing, where phaseEnded, hookPrompt and mergeQueueRemoval call wakeForDelivery
 // first. A role whose pod an idle release took is not brought back to be asked: its topic has no
@@ -1690,10 +1709,10 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // records the row's round: the round ended, another round replaced it, or this daemon no longer
 // supervises the claim. A role is never asked about a round that is not its own.
 //
-// A topic with no live holder (notify.ErrNoHolder) ends the row with one log line. Every other
-// failure of the publish keeps the ordinary retry, as phaseEnded's does: a holder that did not
-// confirm in time, one that does not advertise the delivery mode, and a forward the listener's
-// own NATS grant denies can each go through on a later attempt.
+// A topic with no live holder (notify.ErrNoHolder) ends the row with one log line, as publishToRole
+// ends one. Every other failure of the publish keeps the ordinary retry, as phaseEnded's does: a
+// holder that did not confirm in time, one that does not advertise the delivery mode, and a
+// forward the listener's own NATS grant denies can each go through on a later attempt.
 func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload record.UpdateAsk) error {
 	if r.notices == nil {
 		return errors.New("update ask executor has no Envoy publisher")
@@ -1712,14 +1731,23 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 	}
 	topic := notify.RoleTopicPrefix + string(token)
 	fields := []any{"row", row.ID, "issue", row.Issue, "round", payload.Round, "pod", payload.Pod, "claim", string(token), "role", payload.Role, "topic", topic}
-	published, err := r.publishToRole(ctx, row, topic, payload.Message(row.Issue),
-		"outbox update ask finished undelivered: no live session holds the role", fields...)
+	message, body := payload.Message(row.Issue), any(payload.Message(row.Issue))
+	if payload.Text == "" {
+		encoded, err := json.Marshal(payload.Record(row.Issue))
+		if err != nil {
+			return fmt.Errorf("encode the ask of round %s for %s: %w", payload.Round, row.Issue, err)
+		}
+		message, body = noticeSummary(texts.UpdateAsk, row.Issue), json.RawMessage(encoded)
+	}
+	err = r.notices.Publish(ctx, topic, message, body, record.OutboxKey(row.ID))
+	if errors.Is(err, notify.ErrNoHolder) {
+		r.log.Info("outbox update ask finished undelivered: no live session holds the role", fields...)
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("publish the ask of round %s for %s to its %s: %w", payload.Round, row.Issue, payload.Role, err)
 	}
-	if published {
-		r.log.Info("outbox update ask published to the role topic", fields...)
-	}
+	r.log.Info("outbox update ask published to the role topic", fields...)
 	return nil
 }
 
@@ -1735,8 +1763,9 @@ func roleToken(project string, row record.OutboxRow, role claim.Role) (claim.Tok
 
 // publishToRole publishes message to topic, the Envoy topic of one role's claim
 // (notify.RoleTopicPrefix and the claim's token), under the row's own key, so a retried row is
-// one delivery. It is the publish that phaseEnded, hookPrompt and updateAsk share. Each of them
-// decides what comes before the publish, and each wraps the error it returns.
+// one delivery. It is the publish that phaseEnded and hookPrompt share; updateAsk publishes its
+// record object under the same rule for a topic with no holder. Each of them decides what comes
+// before the publish, and each wraps the error it returns.
 //
 // Three other executors publish to a role's topic, each through its own call of the publisher and
 // with its own rules for what the publisher answers: deliverNotice, an architect's notice, holds

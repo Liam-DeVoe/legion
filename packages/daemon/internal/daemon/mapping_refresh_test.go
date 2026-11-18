@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -1549,6 +1550,18 @@ func TestTheUnreadRepositoryBackoffDoublesToItsCapAndResets(t *testing.T) {
 	}
 }
 
+// recoveredUnrecorded says whether payload, a notice as JSON text, is the child-release-stalled
+// notice of a recovery that names exactly the children want, each with its parent, and no reason.
+func recoveredUnrecorded(t *testing.T, payload string, want []texts.UnrecordedChild) bool {
+	t.Helper()
+	var notice record.Notice
+	if err := json.Unmarshal([]byte(payload), &notice); err != nil {
+		t.Fatalf("decode the notice %s: %v", payload, err)
+	}
+	return notice.Kind == "child-release-stalled" && notice.Stall == texts.StallRecoveredUnrecorded &&
+		slices.Equal(notice.Unrecorded, want) && notice.Reason == ""
+}
+
 // treeNotices is the payload, as JSON text, of every notice queued on tree, in queue order.
 func treeNotices(t *testing.T, w *workflowRuntime, tree string) []string {
 	t.Helper()
@@ -1618,9 +1631,8 @@ func TestARecoveryTellsTheArchitectOfTheChildrenItDidNotRecord(t *testing.T) {
 		t.Fatalf("%s recorded as %+v under backlog %s", c, got, p)
 	}
 	notices := treeNotices(t, w, tree)[before:]
-	if len(notices) != 1 || !strings.Contains(notices[0], "child-release-stalled") ||
-		!strings.Contains(notices[0], c+" (its parent "+p+" is not recorded: release "+p+" first, then "+c+")") || strings.Contains(notices[0], e) {
-		t.Fatalf("notices to %s's architect after the recovery = %q, want one naming %s and %s, not %s", tree, notices, c, p, e)
+	if len(notices) != 1 || !recoveredUnrecorded(t, notices[0], []texts.UnrecordedChild{{Child: c, Parent: p}}) {
+		t.Fatalf("notices to %s's architect after the recovery = %q, want one naming %s under %s, not recorded, and not %s", tree, notices, c, p, e)
 	}
 	time.Sleep(10 * installReadRetry.Max)
 	if got := treeNotices(t, w, tree)[before:]; len(got) != 1 {
@@ -1686,8 +1698,8 @@ func TestARecoveryHeldPastItsBoundTellsItsReleaseWaitsOnce(t *testing.T) {
 	testwait.Eventually(t, "the recovery's listing held", func() bool { return served(h.w, "zeta/tools") && h.admission.Held() })
 	testwait.Eventually(t, "the release wait told past the bound", func() bool { return h.notices(t) > before })
 	notices := treeNotices(t, h.w, heldTree)[before:]
-	if len(notices) != 1 || !strings.Contains(notices[0], heldChild+" (its parent "+heldParent+" is not recorded: release "+heldParent+" first, then "+heldChild+")") {
-		t.Fatalf("notices once the hold outlasted its bound = %q, want one naming %s and %s", notices, heldChild, heldParent)
+	if len(notices) != 1 || !recoveredUnrecorded(t, notices[0], []texts.UnrecordedChild{{Child: heldChild, Parent: heldParent}}) {
+		t.Fatalf("notices once the hold outlasted its bound = %q, want one naming %s under %s, not recorded", notices, heldChild, heldParent)
 	}
 	time.Sleep(4 * recoveryHoldBound)
 	if n := h.notices(t) - before; n != 1 || !h.admission.Held() {

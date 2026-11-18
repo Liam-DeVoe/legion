@@ -72,7 +72,8 @@ import (
 // is applied last of the kind lists: it is now the last word of outbox_kind_check, and it names
 // every kind the merge-queue list names and its own. dispatch://INFRA-3686's words of a person's
 // acts (20261118092930) stand above it and are applied after it; they add three columns to
-// root_asks and parked_decisions and touch no outbox_kind_check.
+// root_asks and parked_decisions and touch no outbox_kind_check. Its update round's drift items
+// (20261118101218) come last; they add one column to claims and touch no outbox_kind_check.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -80,7 +81,7 @@ var thisBranchsMigrations = []int{
 	20261107095842, 20261108152000, 20261108190000, 20261109130413, 20261111045636, 20261111181500,
 	20261111214351, 20261111225552, 20261112070503, 20261112180548, 20261113082214, 20261113082415,
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
-	20261114061900, 20261116165926, 20261118092930,
+	20261114061900, 20261116165926, 20261118092930, 20261118101218,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -91,7 +92,7 @@ var thisBranchsMigrations = []int{
 // and 20261113110610, dispatch://INFRA-3276's 20261113082415, dispatch://INFRA-3146's
 // 20261113090512, dispatch://INFRA-3274's 20261114031356, dispatch://INFRA-2614's
 // 20261113181500, 20261113182000, 20261114020537 and 20261114061900, the role-holders
-// publication's 20261116165926 and dispatch://INFRA-3686's 20261118092930, which is why the loop
+// publication's 20261116165926 and dispatch://INFRA-3686's 20261118092930 and 20261118101218, which is why the loop
 // below holds the list rather than counting it, so that a version added above any of them is
 // named here rather than read as main's.
 const mainsNewestMigration = 20261111212544

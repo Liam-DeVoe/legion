@@ -138,11 +138,11 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 			return err
 		}
 	}
-	kind := texts.ChildStatus
-	if status == "done" {
-		kind = texts.ChildClosed
+	var told any = texts.ChildClosedRecord{NoticeHead: texts.NoticeHead{Kind: texts.ChildClosed, Issue: issue.Key}}
+	if status != "done" {
+		told = texts.ChildStatusRecord{NoticeHead: texts.NoticeHead{Kind: texts.ChildStatus, Issue: issue.Key}, Change: texts.ChangeLeft, Status: status}
 	}
-	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: kind, Role: claim.RoleArchitect, Reason: fmt.Sprintf("%s is %s", issue.Key, status)}); err != nil {
+	if err := e.notice(ctx, tx, issue.Key, told); err != nil {
 		return err
 	}
 	// This departure may be the last one any merged ancestor of the issue waited for, and not

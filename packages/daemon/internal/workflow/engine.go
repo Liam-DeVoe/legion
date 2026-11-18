@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/jackc/pgx/v5"
 
@@ -21,6 +20,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // Hook is one hook of the deployment as the engine runs it: its words are the text, never a
@@ -534,8 +535,8 @@ func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record
 	if agent {
 		return true, nil
 	}
-	return true, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "status-reasserted", Role: claim.RoleArchitect,
-		Reason: fmt.Sprintf("session %s set %s to %s, and the daemon set it back to %s", fact.ActorSession, issue.Key, fact.Status, issue.Status)})
+	return true, e.notice(ctx, tx, issue.Key, texts.StatusReassertedRecord{NoticeHead: texts.NoticeHead{Kind: texts.StatusReasserted, Issue: issue.Key},
+		Session: fact.ActorSession, Wrote: fact.Status, Status: issue.Status})
 }
 
 // observedIssue is issue with everything an observation of fact records on it: its title, rank,
@@ -893,7 +894,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 			return intake.Result{}, e.transition(ctx, tx, *issue, TriggerTesterPassed, "", row, pr, "")
 		}
 	case phase.Reviewing:
-		_, err := e.settleRound(ctx, tx, *issue, row, pr, found, byCompletion)
+		_, err := e.settleRound(ctx, tx, *issue, row, pr, found, texts.StuckByCompletion)
 		return intake.Result{}, err
 	case phase.Retro:
 		return intake.Result{}, e.transition(ctx, tx, *issue, TriggerRetroCompleted, "", row, pr, "")
@@ -934,7 +935,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 //
 // A phase role that finished its phase stays live until its issue closes, so its claim can fail
 // while another role works the issue's phase, or while the issue waits on a person: the architect
-// is told in a worker-died of that role, its reason saying the role does not work the issue's phase,
+// is told in a worker-died of that role, which names the phase the issue works (Working),
 // and nothing is held, since the phase is not that role's. A later start of the role relaunches its
 // session (the outbox executor's retry of a failed claim). An issue that left the workflow
 // suspended its claims (a parked child) or closed them (a child closed as done), and a lingering
@@ -949,7 +950,7 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 		return intake.Result{}, err
 	}
 	if claim.IsTreeArchitect(fact.Role, issue.Key, issue.Tree) {
-		return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase})
+		return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, workerDied(issue.Key, fact.Role, issue.Phase, nil))
 	}
 	if fact.Role == claim.RoleArchitect {
 		if !record.InWorkflow(*issue) {
@@ -958,8 +959,7 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 		if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 			return intake.Result{}, err
 		}
-		return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase, Failure: noticeFailure(fact),
-			Reason: fmt.Sprintf("%s's own architect failed; its notices come to you until it runs again, and the daemon starts it again at %s's next phase start", issue.Key, issue.Key)})
+		return intake.Result{}, e.notice(ctx, tx, issue.Key, workerDied(issue.Key, fact.Role, issue.Phase, noticeFailure(fact)))
 	}
 	// The failure of the role an open check records ends the look of its closed issue's production
 	// check, as its bound would. Which role that is the check's own row says (record.ProductionCheck.Role,
@@ -979,13 +979,9 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 			if err := e.endLook(ctx, tx, check, "claim failed"); err != nil {
 				return intake.Result{}, err
 			}
-			reason := fact.Reason
-			if reason == "" {
-				reason = fmt.Sprintf("the %s's claim failed before it reported the look", check.Role)
-			}
-			return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{
-				Kind: "worker-died", Role: fact.Role, Reason: fmt.Sprintf("production check look %d lost its %s: %s", check.Looks, check.Role, reason),
-			})
+			died := workerDied(issue.Key, fact.Role, "", noticeFailure(fact))
+			died.Look = check.Looks
+			return intake.Result{}, e.notice(ctx, tx, issue.Key, died)
 		}
 	}
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers || issue.Phase == phase.Done {
@@ -994,8 +990,9 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	working := issue.WorkingPhase()
 	failure := noticeFailure(fact)
 	if phase.RoleFor(working) != fact.Role {
-		return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase, Failure: failure,
-			Reason: fmt.Sprintf("the %s does not work %s's phase %s; nothing is held", fact.Role, issue.Key, working)})
+		died := workerDied(issue.Key, fact.Role, issue.Phase, failure)
+		died.Working = working
+		return intake.Result{}, e.notice(ctx, tx, issue.Key, died)
 	}
 	if issue.Phase == phase.Held {
 		return intake.Result{}, nil
@@ -1014,12 +1011,18 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
 		return intake.Result{}, err
 	}
-	if err := e.noticeWithController(ctx, tx, issue.Key, record.Notice{Kind: "held", Role: fact.Role, Phase: from,
-		Failure: failure}); err != nil {
+	if err := e.noticeWithController(ctx, tx, issue.Key, texts.HeldRecord{NoticeHead: texts.NoticeHead{Kind: texts.Held, Issue: issue.Key},
+		Role: fact.Role, Phase: from, Hold: texts.HoldFailure, Failure: failure}); err != nil {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: from,
-		Failure: failure})
+	return intake.Result{}, e.notice(ctx, tx, issue.Key, workerDied(issue.Key, fact.Role, from, failure))
+}
+
+// workerDied is the worker-died notice of issue that role's claim failed, at the issue's phase
+// (empty where the notice names none, as a production check's look does), with the failure where
+// the daemon recorded its cause.
+func workerDied(issue string, role claim.Role, at phase.Phase, failure *record.NoticeFailure) texts.WorkerDiedRecord {
+	return texts.WorkerDiedRecord{NoticeHead: texts.NoticeHead{Kind: texts.WorkerDied, Issue: issue}, Role: role, Phase: at, Failure: failure}
 }
 
 // sessionLost tells the issue, its architect and the controller that a worker's recorded session
@@ -1030,10 +1033,10 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 // is merely slow. An issue the record does not hold tells nobody.
 //
 // The detail is the runtime's own account of the failed resume, which carries a session file name
-// and a transport error from outside the daemon, and this sentence is read into an agent's
-// prompt, so it is quoted as a Go string (strconv.Quote): the quotes bound it, and a quote or a
-// newline inside it is escaped rather than closing the one around it. sessionStoreFault quotes
-// its own detail for the same reason.
+// and a transport error from outside the daemon. The message posted on the issue is read by a
+// person and quotes it as a Go string (strconv.Quote), so a quote or a newline inside it is
+// escaped rather than closing the one around it; the notice carries it as a field of its own.
+// sessionStoreFault does the same with its own detail.
 func (e *Engine) sessionLost(ctx context.Context, tx pgx.Tx, fact intake.SessionLost) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
@@ -1045,8 +1048,8 @@ func (e *Engine) sessionLost(ctx context.Context, tx pgx.Tx, fact intake.Session
 		return intake.Result{}, err
 	}
 	e.warnOnCommit(ctx, "workflow: a worker's recorded session was in no session store", "issue", issue.Key, "role", fact.Role, "detail", fact.Detail)
-	return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, record.Notice{
-		Kind: "session-lost", Role: fact.Role, Phase: issue.Phase, Reason: told})
+	return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, texts.SessionLostRecord{NoticeHead: texts.NoticeHead{Kind: texts.SessionLost, Issue: issue.Key},
+		Role: fact.Role, Phase: issue.Phase, Detail: fact.Detail})
 }
 
 // sessionStoreFault tells the issue and the controller that no worker of the issue can start
@@ -1065,8 +1068,12 @@ func (e *Engine) sessionStoreFault(ctx context.Context, tx pgx.Tx, fact intake.S
 		return intake.Result{}, err
 	}
 	e.warnOnCommit(ctx, "workflow: the session store could not be asked for a start", "issue", issue.Key, "role", fact.Role, "detail", fact.Detail)
-	return intake.Result{}, e.enqueue(ctx, tx, issue.Key, record.ControllerNotice(record.Notice{
-		Kind: "session-store-fault", Role: fact.Role, Phase: issue.Phase, Reason: told}))
+	notice, err := record.NoticeOf(texts.SessionStoreFaultRecord{NoticeHead: texts.NoticeHead{Kind: texts.SessionStoreFault, Issue: issue.Key},
+		Role: fact.Role, Phase: issue.Phase, Detail: fact.Detail, RetryEvery: supervise.SessionStoreRetry.String()})
+	if err != nil {
+		return intake.Result{}, err
+	}
+	return intake.Result{}, e.enqueue(ctx, tx, issue.Key, record.ControllerNotice(notice))
 }
 
 // memoryGuardKill tells the role whose process an issue pod's memory guard ended, or a microVM
@@ -1078,12 +1085,13 @@ func (e *Engine) sessionStoreFault(ctx context.Context, tx pgx.Tx, fact intake.S
 // row runs is told nothing, and the outbox finishes the row (roleMessage); the kill's line in the
 // pod's own log stays.
 //
-// The report's cause chooses the note: the kernel's (kernelKillNote) for
-// shimwire.MemoryKillCauseKernel, a command of the role's; the kernel's for one of the processes
-// that run the role's session (kernelProtectedKillNote) for
-// shimwire.MemoryKillCauseKernelProtected; and the guard's (memoryGuardNote) for
-// shimwire.MemoryKillCauseGuard, the only other cause the launcher session lets through
-// (shimwire.LauncherMemoryKill.Validate). The line logged names the cause.
+// The report's cause chooses the record's cause and the pod's reading it names: the kernel's
+// (texts.KillKernel) for shimwire.MemoryKillCauseKernel, a command of the role's; the kernel's for
+// one of the processes that run the role's session (texts.KillKernelProtected) for
+// shimwire.MemoryKillCauseKernelProtected, each beside the pod's memory counter; and the guard's
+// (texts.KillGuard) for shimwire.MemoryKillCauseGuard, the only other cause the launcher session
+// lets through (shimwire.LauncherMemoryKill.Validate), beside the pod's anonymous memory reading.
+// The line logged names the cause.
 //
 // An issue the daemon does not record has no role of the workflow's to tell, so the fact is
 // logged and dropped.
@@ -1098,16 +1106,16 @@ func (e *Engine) memoryGuardKill(ctx context.Context, tx pgx.Tx, fact intake.Mem
 			"issue", fact.Issue, "role", fact.Token, "pod", fact.PodUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID, "cause", report.Cause)
 		return intake.Result{}, nil
 	}
-	var note, told string
-	switch report.Cause {
-	case shimwire.MemoryKillCauseKernel:
-		note, told = kernelKillNote(report), "workflow: the role whose process the pod's kernel stopped is told why"
-	case shimwire.MemoryKillCauseKernelProtected:
-		note, told = kernelProtectedKillNote(report), "workflow: the role whose session's own process the pod's kernel stopped is told why"
-	default:
-		note, told = memoryGuardNote(report), "workflow: the role whose process the memory guard ended is told why"
+	rec := MemoryKillMessage(issue.Key, report)
+	told := "workflow: the role whose process the memory guard ended is told why"
+	switch rec.Cause {
+	case texts.KillKernel:
+		told = "workflow: the role whose process the pod's kernel stopped is told why"
+	case texts.KillKernelProtected:
+		told = "workflow: the role whose session's own process the pod's kernel stopped is told why"
 	}
-	if err := e.enqueue(ctx, tx, issue.Key, record.RoleMessage{Role: string(fact.Token), Body: note}); err != nil {
+	reader, _ := fact.Token.Role()
+	if err := e.roleMessage(ctx, tx, issue.Key, fact.Token, rec, texts.UrgencyOf(texts.MemoryKill, reader, texts.Variant{})); err != nil {
 		return intake.Result{}, err
 	}
 	e.logOnCommit(ctx, told,
@@ -1117,107 +1125,22 @@ func (e *Engine) memoryGuardKill(ctx context.Context, tx pgx.Tx, fact intake.Mem
 	return intake.Result{}, nil
 }
 
-// The ends of the notes of a role's process stopped for memory. memoryKillGoesOn says what goes
-// on after a command of the role's is stopped, in the guard's note and the kernel's note of a
-// command; it is not true of a process that runs the role's session, whose note says what happens
-// instead (kernelProtectedKillEnd). memoryKillHeavyWork, where heavy work runs instead, ends every
-// note.
-const (
-	memoryKillGoesOn    = "The pod's other processes and your session go on. "
-	memoryKillHeavyWork = "Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: " +
-		"read skill://legion-worker/references/tools.md before you run it again."
-)
-
-// kernelProtectedKillEnd is what a role reads of one of the processes that run its session
-// stopped by the pod's kernel (shimwire.MemoryKillCauseKernelProtected): the role-init, the shim,
-// the agent and the helpers the launcher's classifier protects. The agent's end ends the shim's
-// (the shim returns the agent's exit), the shim's ends the role-init's, which ends every process
-// of the role with it, and the launcher reports that generation's exit. The daemon reads that as
-// the role's process gone, as it reads every exit a role's process makes on its own: it takes
-// back the task the turn was running, charges one launch failure, and relaunches the same
-// session, which is sent that task again, or fails the claim where the launch failures have
-// reached their limit (supervise's died, interrupted, relaunchAfterFailure). A helper of the
-// agent's may end alone, which is why the note says what follows only of the agent.
-const kernelProtectedKillEnd = "It was one of the processes that run your session, not a command you ran. " +
-	"If it was your agent, your turn ended with it, and so did every other process of your role. " +
-	"The daemon then starts the same session again and sends again any task that the turn was running. " +
-	"It counts each such exit of a role's process as a failed launch, and at the limit of failed launches it fails your claim instead. "
-
-// memoryGuardNote is what a role reads when the memory guard ended one of its processes: which
-// process, how much it held, how near the limit the pod was, that nothing else of the role
-// stopped, and where heavy work runs instead. The sizes are binary units a reader can compare at
-// a glance (binarySize); the process is named by its executable as the launcher sent it, the base
-// name escaped and cut to shimwire.MemoryKillExecutableBytes there, with none of its arguments,
-// which the role that started it already has, set as a code span nothing in it can end
-// (codeSpan).
-func memoryGuardNote(report shimwire.LauncherMemoryKill) string {
-	return fmt.Sprintf("The launcher's memory guard stopped one of your processes with SIGKILL because the pod was near its memory limit: "+
-		"%s (pid %d) held %s of anonymous memory while the pod's anonymous memory read %s of its %s limit. "+memoryKillGoesOn+memoryKillHeavyWork,
-		codeSpan(report.Executable), report.PID, binarySize(report.SizeBytes), binarySize(report.ReadingBytes), binarySize(report.LimitBytes))
-}
-
-// kernelKillNote is what a role reads when a microVM pod's own kernel stopped one of its commands
-// because the pod ran out of memory (shimwire.MemoryKillCauseKernel): which process, how much it
-// held, the pod's memory counter against its limit (kernelKillLead), that nothing else of the role
-// stopped, and where heavy work runs instead.
-func kernelKillNote(report shimwire.LauncherMemoryKill) string {
-	return kernelKillLead(report) + memoryKillGoesOn + memoryKillHeavyWork
-}
-
-// kernelProtectedKillNote is what a role reads when a microVM pod's own kernel stopped one of the
-// processes that run its session (shimwire.MemoryKillCauseKernelProtected): which process, how
-// much it held, the pod's memory counter against its limit (kernelKillLead), what that process's
-// end does to the role (kernelProtectedKillEnd), and where heavy work runs instead. It never says
-// the session goes on, which the end of the agent's own process makes false.
-func kernelProtectedKillNote(report shimwire.LauncherMemoryKill) string {
-	return kernelKillLead(report) + kernelProtectedKillEnd + memoryKillHeavyWork
-}
-
-// kernelKillLead opens each note of a process the pod's kernel stopped: which process, how much it
-// held, and the pod's memory counter against its limit, the process and the sizes written as
-// memoryGuardNote writes them.
-func kernelKillLead(report shimwire.LauncherMemoryKill) string {
-	return fmt.Sprintf("The pod's kernel stopped one of your processes because the pod ran out of memory: "+
-		"%s (pid %d) held %s when the pod's memory read %s of its %s limit. ",
-		codeSpan(report.Executable), report.PID, binarySize(report.SizeBytes), binarySize(report.CounterBytes), binarySize(report.LimitBytes))
-}
-
-// codeSpan is text as one Markdown code span that nothing in text ends early or spreads over
-// lines. The fence is one backtick longer than the longest run of backticks text holds, so a
-// backtick in a file name is text inside the span; text that begins or ends with a backtick, or
-// that begins and ends with a space, is padded with one space on each side, which a Markdown
-// reader strips, and empty text is one space, since two backticks alone are no span. Every
-// character that does not print is written as its Go escape (`\n`, `\x1b`, `\u202e`): the
-// launcher sends none (it escapes each), but the note is read into an agent's prompt, so its
-// shape rests on this daemon and not on the sender being Legion's own launcher, as the session
-// facts' quoted details do (sessionLost).
-func codeSpan(text string) string {
-	var inner strings.Builder
-	longest, run := 0, 0
-	for _, r := range text {
-		if r == '`' {
-			run++
-			longest = max(longest, run)
-		} else {
-			run = 0
-		}
-		if !unicode.IsPrint(r) {
-			quoted := strconv.QuoteRune(r)
-			inner.WriteString(quoted[1 : len(quoted)-1])
-			continue
-		}
-		inner.WriteRune(r)
+// MemoryKillMessage is the memory-kill message of issue for report: what stopped the process (a
+// texts.Kill word), the process by its executable as the launcher sent it (the base name escaped
+// and cut to shimwire.MemoryKillExecutableBytes there, with none of its arguments, which the role
+// that started it already has), its pid, how much it held, and the pod's memory against its
+// limit: the anonymous memory reading for the guard, the memory counter for the kernel. The sizes
+// are binary units a reader can compare at a glance (binarySize).
+func MemoryKillMessage(issue string, report shimwire.LauncherMemoryKill) texts.MemoryKillRecord {
+	cause, pod := texts.KillGuard, report.ReadingBytes
+	switch report.Cause {
+	case shimwire.MemoryKillCauseKernel:
+		cause, pod = texts.KillKernel, report.CounterBytes
+	case shimwire.MemoryKillCauseKernelProtected:
+		cause, pod = texts.KillKernelProtected, report.CounterBytes
 	}
-	body := inner.String()
-	switch {
-	case body == "":
-		body = " "
-	case strings.HasPrefix(body, "`") || strings.HasSuffix(body, "`") ||
-		(strings.HasPrefix(body, " ") && strings.HasSuffix(body, " ")):
-		body = " " + body + " "
-	}
-	fence := strings.Repeat("`", longest+1)
-	return fence + body + fence
+	return texts.MemoryKillRecord{RoleHead: texts.RoleHead{Kind: texts.MemoryKill, Issue: issue}, Cause: cause, Process: report.Executable,
+		PID: report.PID, Size: binarySize(report.SizeBytes), PodMemory: binarySize(pod), Limit: binarySize(report.LimitBytes)}
 }
 
 // binaryUnits are the units binarySize writes a size of a KiB or more in, smallest first.
@@ -1280,10 +1203,15 @@ func (e *Engine) retryOrEscalate(ctx context.Context, tx pgx.Tx, fact intake.Ret
 		}
 		// The architect's own words where it named any, beside the cause the hold already names:
 		// the controller must act on this hold, and why the architect escalated it is what it
-		// acts on. They travel in a field of their own, since Reason is the word `escalated`
-		// both agents' texts branch on (record.Notice.Escalation).
-		return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, record.Notice{Kind: "held", Phase: issue.Hold.From,
-			Reason: string(record.HoldEscalated), Escalation: fact.Reason})
+		// acts on. They travel in a field of their own, named in the words object as the
+		// architect's, since Reason is the word `escalated` both agents' texts branch on
+		// (record.Notice.Escalation).
+		held := texts.HeldRecord{NoticeHead: texts.NoticeHead{Kind: texts.Held, Issue: issue.Key}, Phase: issue.Hold.From,
+			Hold: texts.HoldEscalation, Reason: string(record.HoldEscalated), Escalation: fact.Reason}
+		if fact.Reason != "" {
+			held.Words = map[string]texts.WordsMeta{"escalation": {By: string(claim.RoleArchitect), At: e.now()}}
+		}
+		return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, held)
 	}
 	if fact.Decision != intake.RetryDecision {
 		return intake.Result{}, nil
@@ -1612,10 +1540,10 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			return err
 		}
 	}
-	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, row.To, handoff, reason)); err != nil {
+	if err := e.notice(ctx, tx, issue.Key, noticeFor(issue.Key, trigger, from, row.To, handoff, pr, reason, e.now())); err != nil {
 		return err
 	}
-	if err := e.phaseEnded(ctx, tx, issue, trigger, from, row.To, starting, reason); err != nil {
+	if err := e.phaseEnded(ctx, tx, issue, trigger, from, row.To, starting, pr); err != nil {
 		return err
 	}
 	if mergedAlready {
@@ -1627,59 +1555,91 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	return nil
 }
 
-// noticeFor is what a transition on trigger out of from into to tells the architect: that from
-// finished, with its worker's handoff, or, when the head started conflicting with its base
-// (TriggerConflict), why, under the checks-red kind the architect's prompt reads, since that is
-// the daemon stopping the phase on something it read of the head. Two moves tell it nothing (a
-// notice of no kind, which notice drops): its own sign-off, whose only recipient would be the
-// architect that just acted, and the merge that closes the issue, whose close tells the architect
-// above a child child-closed itself (leave) and closes the child's own architect with its other
-// claims, and suspends a root's architect with the rest of its tree. A third move names no role:
-// the gate's opening, the one move out of admitted (Table), whose role is the architect. A
-// phase-finished names the worker whose phase ended, and admitted has none: its role is an
-// architect, the role that reads this notice.
+// noticeFor is what a transition of issue on trigger out of from into to tells the architect: that
+// from finished, with its worker's handoff, or, when the head started conflicting with its base
+// (TriggerConflict), the base, the head and the pull request pr, under the checks-red kind the
+// architect's prompt reads, since that is the daemon stopping the phase on something it read of
+// the head. Two moves tell it nothing (a nil record, which notice drops): its own sign-off, whose
+// only recipient would be the architect that just acted, and the merge that closes the issue,
+// whose close tells the architect above a child child-closed itself (leave) and closes the child's
+// own architect with its other claims, and suspends a root's architect with the rest of its tree.
+// A third move names no role: the gate's opening, the one move out of admitted (Table), whose role
+// is the architect. A phase-finished names the worker whose phase ended, and admitted has none:
+// its role is an architect, the role that reads this notice.
+//
+// A phase-finished names the phase the issue moved to (to), which the urgency rule reads: a
+// reviewer's request for changes moves it to implementing, an approval to accepting. It carries
+// the worker's summary cut to texts.Summary, the rest counted in the words object, with the
+// handoff's reference beside it: its phase word and version (decision 9 of the plan), and the
+// handoff commit.
 //
 // A worker's own backward move (TriggerBackward, request_backward_move) keeps the phase-finished
-// kind the architect's prompt routes on, and says in its reason what happened and who asked: the
-// phase it moved the issue to, the role that moved it and the words that role gave. The handoff
-// row a move writes is empty, so without that reason the architect reads a completion with no
-// summary and no verdict and cannot tell it from a worker that finished its phase.
-func noticeFor(trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRow, reason string) record.Notice {
+// kind the architect's prompt routes on, and carries in reason the words the role that moved it
+// gave, whole, by that role at now: Dispatch's own bound already holds them, since the move posts
+// them on the issue (backwardReasonRefusal). The handoff row a move writes is empty, so without
+// those words the architect reads a completion with no summary and no verdict and cannot tell it
+// from a worker that finished its phase.
+func noticeFor(issue string, trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRow, pr *record.PullRequest, reason string, now time.Time) any {
+	head := texts.NoticeHead{Kind: texts.PhaseFinished, Issue: issue}
 	switch trigger {
 	case TriggerConflict:
-		return record.Notice{Kind: "checks-red", Role: claim.RoleArchitect, Phase: from, Reason: reason}
+		red := texts.ChecksRedRecord{NoticeHead: texts.NoticeHead{Kind: texts.ChecksRed, Issue: issue}, Phase: from}
+		if pr != nil {
+			red.ConflictsWith, red.Head, red.PullRequest = pr.Base, pr.HeadSHA, pullRequestRef(*pr)
+		}
+		return red
 	case TriggerGateOpened:
-		return record.Notice{Kind: "phase-finished", Phase: from, Summary: handoff.Summary, Verdict: handoff.Verdict}
+		return texts.PhaseFinishedRecord{NoticeHead: head, Phase: from, To: to}
 	case TriggerBackward:
-		return record.Notice{Kind: "phase-finished", Role: RoleFor(from), Phase: from,
-			Reason: fmt.Sprintf("moved back to %s by the %s: %s", to, RoleFor(from), reason)}
+		by := RoleFor(from)
+		finished := texts.PhaseFinishedRecord{NoticeHead: head, Role: by, Phase: from, To: to, Reason: reason}
+		if reason != "" {
+			finished.Words = map[string]texts.WordsMeta{"reason": {By: string(by), At: now}}
+		}
+		return finished
 	case TriggerSignOff, TriggerPullRequestMerged:
-		return record.Notice{}
+		return nil
 	}
-	return record.Notice{Kind: "phase-finished", Role: phase.RoleFor(from), Phase: from, Summary: handoff.Summary, Verdict: handoff.Verdict}
+	by := phase.RoleFor(from)
+	finished := texts.PhaseFinishedRecord{NoticeHead: head, Role: by, Phase: from, To: to, Verdict: handoff.Verdict, HandoffCommit: handoff.HandoffCommit}
+	if handoff.HandoffRecord != "" {
+		finished.HandoffPhase, finished.HandoffVersion = handoffWord(handoff.Role), handoff.HandoffVersion
+	}
+	if handoff.Summary != "" {
+		summary, rest := texts.Bound(handoff.Summary, texts.Summary)
+		finished.Summary = summary
+		finished.Words = map[string]texts.WordsMeta{"summary": {By: string(by), At: handoff.CompletedAt, Rest: rest}}
+	}
+	return finished
 }
 
 // phaseEnded tells the role a conflicting-head transition out of from leaves with no phase that
-// its phase ended, which phase the issue is in now and why (record.PhaseEnded), on that role's own
-// Envoy topic. Only that move sends one: every other move out of a phase is the working role's own
+// its phase ended, which phase the issue is in now, and the conflict: the base the head of pr
+// conflicts with, that head and the pull request (record.PhaseEnded), on that role's own Envoy
+// topic. Only that move sends one: every other move out of a phase is the working role's own
 // completion or backward move, which that role made and so already knows of, and the approval and
-// the merge the daemon raises of its own leave a role that has just finished the work they report,
-// with no reason of the kind this message carries. A CI result moves no issue
-// (dispatch://INFRA-714 R1), so the trigger is a head that starts conflicting with its base.
-// The recipient is phase.RoleFor(from) whenever that is a role other than the architect, read from
-// the transition alone rather than from what the role had done: the tester in testing, the reviewer
-// in reviewing whether or not it completed its round, the merger in merging, and the implementer in
-// retro, which is also the role starting, told that its task for the new phase follows. Accepting
-// sends none — its role is the architect, which the conflict notice tells (noticeFor). Without the
-// message nothing tells that role: no transition stops a worker, and the daemon's next task for a
-// role is delivered only once that role's turn ends, while this message reaches its session at its
-// next model turn and ends a wait.
-func (e *Engine) phaseEnded(ctx context.Context, tx pgx.Tx, issue record.Issue, trigger TriggerKind, from, to phase.Phase, starting claim.Role, reason string) error {
+// the merge the daemon raises of its own leave a role that has just finished the work they report.
+// A CI result moves no issue (dispatch://INFRA-714 R1), so the trigger is a head that starts
+// conflicting with its base. The recipient is phase.RoleFor(from) whenever that is a role other
+// than the architect, read from the transition alone rather than from what the role had done: the
+// tester in testing, the reviewer in reviewing whether or not it completed its round, the merger
+// in merging, and the implementer in retro, which is also the role starting, told that its task for
+// the new phase follows. Accepting sends none — its role is the architect, which the conflict
+// notice tells (noticeFor). Without the message nothing tells that role: no transition stops a
+// worker, and the daemon's next task for a role is delivered only once that role's turn ends, while
+// this message reaches its session at its next model turn and ends a wait.
+func (e *Engine) phaseEnded(ctx context.Context, tx pgx.Tx, issue record.Issue, trigger TriggerKind, from, to phase.Phase, starting claim.Role, pr *record.PullRequest) error {
 	ended := phase.RoleFor(from)
-	if trigger != TriggerConflict || ended == "" || ended == claim.RoleArchitect {
+	if trigger != TriggerConflict || ended == "" || ended == claim.RoleArchitect || pr == nil {
 		return nil
 	}
-	return e.enqueue(ctx, tx, issue.Key, record.PhaseEnded{Role: ended, From: from, To: to, Reason: reason, TaskFollows: ended == starting})
+	return e.enqueue(ctx, tx, issue.Key, record.PhaseEnded{Role: ended, From: from, To: to, TaskFollows: ended == starting,
+		ConflictsWith: pr.Base, Head: pr.HeadSHA, PullRequest: pullRequestRef(*pr)})
+}
+
+// pullRequestRef is the reference of pr, owner/name#n (texts.PullRequestRef).
+func pullRequestRef(pr record.PullRequest) string {
+	return texts.PullRequestRef(pr.Repo, pr.Number)
 }
 
 func (e *Engine) row(from phase.Phase, trigger TriggerKind, target phase.Phase, snapshot Snapshot) (Row, bool) {

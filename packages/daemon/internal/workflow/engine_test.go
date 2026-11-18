@@ -350,12 +350,14 @@ func TestReviewRoundCapPostsOneMessageAndNoticeForTheThirdRound(t *testing.T) {
 	if len(messages) != 1 || messages[0] != want || blocked != 1 {
 		t.Fatalf("the cap posted %q and %d pr-blocked notices, want one message %q and one notice", messages, blocked, want)
 	}
-	var reason string
-	if err := pool.QueryRow(ctx, "select payload->>'reason' from outbox where kind = 'notice' and payload->>'kind' = 'pr-blocked'").Scan(&reason); err != nil {
+	var cap, counted string
+	var conflicts *string
+	if err := pool.QueryRow(ctx, "select payload->>'cap', payload->>'counted', payload->>'conflict_rounds' from outbox where kind = 'notice' and payload->>'kind' = 'pr-blocked'").
+		Scan(&cap, &counted, &conflicts); err != nil {
 		t.Fatalf("read the architect's pr-blocked notice: %v", err)
 	}
-	if reason != want {
-		t.Fatalf("the pr-blocked notice reads %q, want %q: the architect reads the same two numbers", reason, want)
+	if cap != "3" || counted != "3" || conflicts != nil && *conflicts != "0" {
+		t.Fatalf("the pr-blocked notice names cap %s, counted %s, conflict rounds %v; want 3, 3 and none: the architect reads the same numbers", cap, counted, conflicts)
 	}
 }
 
@@ -1033,9 +1035,11 @@ func TestABackwardMovesNoticeNamesTheMoveAndItsReason(t *testing.T) {
 	if err := json.Unmarshal(payload, &notice); err != nil {
 		t.Fatalf("decode notice %s: %v", payload, err)
 	}
-	want := "moved back to implementing by the tester: the harness needs a fixture the plan does not name"
-	if notice["role"] != "tester" || notice["phase"] != "testing" || notice["reason"] != want {
-		t.Fatalf("the backward move's notice = %s, want the tester's phase-finished for testing reading %q", payload, want)
+	words, _ := notice["words"].(map[string]any)
+	by, _ := words["reason"].(map[string]any)
+	if notice["role"] != "tester" || notice["phase"] != "testing" || notice["to"] != "implementing" ||
+		notice["reason"] != "the harness needs a fixture the plan does not name" || by["by"] != "tester" {
+		t.Fatalf("the backward move's notice = %s, want the tester's phase-finished for testing to implementing, carrying its words by the tester", payload)
 	}
 	if notice["summary"] != nil || notice["verdict"] != nil {
 		t.Fatalf("the backward move's notice = %s, want no summary and no verdict: the row a move writes is empty", payload)

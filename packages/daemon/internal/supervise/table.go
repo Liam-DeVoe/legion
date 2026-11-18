@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // The events. Each carries the claim it is for and the fields its fences read: an observation its
@@ -246,70 +247,61 @@ type PodUpdateOpen struct {
 	Claim   claim.Token
 	Round   string
 	Reasons string
+	// Drift is the drift the round is opened for as items, which the round records beside the
+	// reasons' text (Claim.UpdateDrift) and its ask names (UpdateTask).
+	Drift []runtime.DriftItem
 }
 
-// UpdateTask is the text a pod's update round asks each role with. round is the round, which the
-// role answers with. reasons is what the daemon found, as Claim.UpdateReasons holds it. endsAt is
-// the moment the round ends at the latest: the round's recorded opening (Claim.UpdateOpenedAt)
-// plus pod_update_grace_minutes. The sweep (internal/daemon) builds the text from the round's
-// record, so the text names one moment for every role of the round, and the text rides
-// record.UpdateAsk to the role's own Envoy topic. That message can arrive in the middle of a
-// turn, so the text tells the role to act now rather than after the turn.
+// UpdateTask is the ask a pod's update round puts to each role of issue (texts.UpdateAskRecord),
+// which the daemon's sweep publishes on the role's own Envoy topic (record.UpdateAsk). The sweep
+// builds it from the round's record, so every role of one round reads the same ask, and the
+// record an operator reads names the same drift (dispatch://INFRA-2981 R9).
 //
-// The text names the round's own id, and the role passes it back in its answer
-// (PodUpdateSignalled): an answer counts only for the round whose ask the role read, so the id
-// in the role's hand is what says which round it is answering. A role that reads this ask while
-// a later round has already replaced it names the round it read, and is refused rather than
-// counted for the round it never saw (podUpdateSignalled).
+// round is the round's own id, which the role passes back in its answer (PodUpdateSignalled): an
+// answer counts only for the round whose ask the role read, so a role that reads this ask while a
+// later round has already replaced it names the round it read, and is refused rather than
+// counted for the round it never saw (podUpdateSignalled). pod is the pod the round was opened
+// over.
 //
-// An answer only brings the round's end forward. No answer, and no turn, holds the pod past
-// endsAt, so the text names that moment and what goes with the pod then: the turn in progress,
-// its background jobs, each commit and each file the role did not push, the pod's test database
-// and its caches. The step to answer is the one step a role can be unable to do: the op list its
-// `legion` tool holds is a closed enum compiled into its plugin, and a plugin below
-// PodUpdateContract has no ready_for_update in it. Such a role is told to push all the same,
-// because its round ends at endsAt whatever it does.
+// drift is what the round was opened for, as its claims recorded it (Claim.UpdateDrift): each
+// changed image is named by its short digest and each changed setting by its key, the account
+// among them, never by its value (DriftFacts, dispatch://INFRA-321 R5). reasons is the same drift
+// as one text (Claim.UpdateReasons), which the ask names only for a round an older daemon opened:
+// such a round recorded no items.
 //
-// Only the role's own push keeps its work: the daemon saves nothing of the disk before the pod
-// goes, so the text says that work not pushed before the pod goes is lost.
-//
-// The text is built in pieces, and reasons goes in a piece of its own. A reason is the JSON the
-// daemon read of a pod (internal/runtime/sandbox's shapeValue), so a reason can hold a quote
-// character. A value put between two constant pieces that both hold that same quote reads as the
-// end of a quoted word of the text around it (CodeQL go/unsafe-quoting). The sentence that holds
-// reasons has no quote character in it, and the sentences on each side of it are pieces of their
-// own.
-//
-// Another agent reads it, so it follows ASD-STE100: one instruction per sentence, active voice,
-// and no word that has a second reading.
-func UpdateTask(round, reasons string, endsAt time.Time) string {
-	ends := endsAt.UTC().Format(time.RFC3339)
-	return "The daemon must replace the pod that runs this issue's roles. " +
-		fmt.Sprintf("The reasons are: %s.", reasons) +
-		fmt.Sprintf(`
+// endsAt is the moment the round ends at the latest: the round's recorded opening
+// (Claim.UpdateOpenedAt) plus pod_update_grace_minutes. An answer only brings the round's end
+// forward. No answer, and no turn, holds the pod past endsAt. Only the role's own push keeps its
+// work: the daemon saves nothing of the disk before the pod goes. The ask states each of these as
+// a field (texts.NewUpdateAsk), with the branch to push to, the op that answers, what goes with
+// the pod, and that the role's process starts again in the same session, while its next task
+// waits (dispatch://INFRA-2981 R4). The steps a role takes on reading it are its role prompt's.
+func UpdateTask(issue, round, pod string, drift []runtime.DriftItem, reasons string, endsAt time.Time) texts.UpdateAskRecord {
+	images, settings := DriftFacts(drift)
+	ask := texts.NewUpdateAsk(issue, round, pod, images, settings, endsAt.UTC())
+	if len(drift) == 0 {
+		ask.Reasons = reasons
+	}
+	return ask
+}
 
-The round is %s. The round ends at %s (UTC). When the round ends, the daemon deletes the pod and the disk. The disk holds your workspace. Only your own push keeps your work. Work that you do not push before the pod goes is lost.
-
-If every role answers, the round can end before that moment. The round then ends when no role is in a turn. If a role does not answer, the round still ends at %s. A turn in progress does not delay that moment.
-
-This message can arrive while you are in a turn. Do these four steps now:
-
-1. Push every commit that you want to keep to this issue's branch.
-2. If you need a scratch file as evidence, put it on Dispatch.
-3. Call the `+"`legion`"+` tool with op: "ready_for_update" and round: "%s".
-4. End your turn.
-
-If your `+"`legion`"+` tool has no "ready_for_update" operation, do step 1 and step 2 now. Then end your turn. The round ends at %s whatever you do.
-
-These things go with the pod when the round ends:
-
-- The turn that is in progress.
-- The background jobs of that turn.
-- Each commit and each file that you did not push.
-- The pod's test database.
-- The pod's caches.
-
-The daemon starts your process again on the new pod, in this same session. The daemon holds your next task until your process runs again. Do not start new work now.`, round, ends, ends, round, ends)
+// DriftFacts is a round's drift as its texts name it — the ask to each role (UpdateTask) and the
+// controller's update-stalled notice — each once, in the order the drift names them: each changed
+// image by its short digest (texts.ShortDigest), and each changed setting by its key alone, so no
+// text carries a setting's value: an address, a credential's name, a whole volume.
+func DriftFacts(drift []runtime.DriftItem) (images, settings []string) {
+	for _, item := range drift {
+		if item.Key == runtime.DriftImage {
+			if digest := texts.ShortDigest(item.Image); digest != "" && !slices.Contains(images, digest) {
+				images = append(images, digest)
+			}
+			continue
+		}
+		if !slices.Contains(settings, item.Key) {
+			settings = append(settings, item.Key)
+		}
+	}
+	return images, settings
 }
 
 // PodUpdateEnded is the update round over for this claim: every update_* field goes, the task the
@@ -2738,6 +2730,7 @@ func openPodUpdate(m *Machine, ctx context.Context, ev Event) error {
 	opened := m.deps.Clock.Now()
 	m.clearUpdate()
 	m.claim.UpdateRound, m.claim.UpdateReasons, m.claim.UpdateOpenedAt = open.Round, open.Reasons, &opened
+	m.claim.UpdateDrift = slices.Clone(open.Drift)
 	if err := m.persist(ctx); err != nil {
 		return err
 	}
@@ -2950,6 +2943,7 @@ func (m *Machine) endCurrentPluginRound(ctx context.Context) error {
 // restart each leave it exactly as it is.
 func (m *Machine) clearUpdate() {
 	m.claim.UpdateRound, m.claim.UpdateReasons, m.claim.UpdateHead = "", "", ""
+	m.claim.UpdateDrift = nil
 	m.claim.UpdateOpenedAt, m.claim.UpdateTaskedAt = nil, nil
 	m.claim.UpdateSignalledAt, m.claim.UpdateToldAt = nil, nil
 	m.claim.UpdateLeftRound = ""

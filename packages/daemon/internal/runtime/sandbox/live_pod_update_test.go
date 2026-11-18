@@ -77,7 +77,7 @@ func (r *liveRig) checkPodUpdate() error {
 			return fmt.Errorf("PodDrift(%s): %w", c.name, err)
 		}
 		if len(drifted) > 0 {
-			return fmt.Errorf("the pod %s a launch of this run just made reads drifted for %s: %s", short(old.Sandbox.PodUID), c.name, strings.Join(drifted, "; "))
+			return fmt.Errorf("the pod %s a launch of this run just made reads drifted for %s: %s", short(old.Sandbox.PodUID), c.name, strings.Join(reasonsOf(drifted), "; "))
 		}
 	}
 	note("runtime", "PodDrift of the pod %s a launch just made: nothing, for %s and %s alike", short(old.Sandbox.PodUID), first.name, second.name)
@@ -100,7 +100,7 @@ func (r *liveRig) checkPodUpdate() error {
 	note("operator", "patched Sandbox %s: its pod template now records %s=%s, a configuration its running pod %s was never built from",
 		name, podShapeAnnotation, moved, short(old.Sandbox.PodUID))
 
-	var drifted []string
+	var drifted []runtime.Drift
 	if err := r.poll(liveAdoptTimeout, "the runtime to read the moved shape of "+name, func() (bool, error) {
 		var err error
 		drifted, err = r.rt.PodDrift(r.ctx, runtime.Known{Claim: first.token, Locator: first.loc})
@@ -113,8 +113,8 @@ func (r *liveRig) checkPodUpdate() error {
 		if err != nil {
 			return fmt.Errorf("PodDrift(%s): %w", c.name, err)
 		}
-		if !slices.Equal(drifted, []string{reason}) {
-			return fmt.Errorf("PodDrift(%s) names %v, want the moved disk alone (%s): nothing else of the pod moved", c.name, drifted, reason)
+		if !slices.Equal(reasonsOf(drifted), []string{reason}) {
+			return fmt.Errorf("PodDrift(%s) names %v, want the moved disk alone (%s): nothing else of the pod moved", c.name, reasonsOf(drifted), reason)
 		}
 	}
 	note("runtime", "PodDrift of %s's pod, for both workers: %s — what the round is opened on", issue, reason)
@@ -219,7 +219,7 @@ func (r *liveRig) checkPodUpdate() error {
 			return fmt.Errorf("PodDrift(%s) after the round: %w", c.name, err)
 		}
 		if len(drifted) > 0 {
-			return fmt.Errorf("the pod %s the round made reads drifted for %s: %s", short(fresh.Sandbox.PodUID), c.name, strings.Join(drifted, "; "))
+			return fmt.Errorf("the pod %s the round made reads drifted for %s: %s", short(fresh.Sandbox.PodUID), c.name, strings.Join(reasonsOf(drifted), "; "))
 		}
 	}
 	note("runtime", "PodDrift of the pod %s the round made: nothing — the replacement carries the configuration a pod made now is built from", short(fresh.Sandbox.PodUID))
@@ -462,7 +462,7 @@ func (r *liveRig) checkPodUpdateFleet() error {
 			}
 			if len(drifted) > 0 {
 				return fmt.Errorf("the pod %s of issue %s reads drifted for %s before any change: %s",
-					short(round.uid), round.issue, c.name, strings.Join(drifted, "; "))
+					short(round.uid), round.issue, c.name, strings.Join(reasonsOf(drifted), "; "))
 			}
 		}
 	}
@@ -513,8 +513,8 @@ func (r *liveRig) checkPodUpdateFleet() error {
 			if err != nil {
 				return fmt.Errorf("PodDrift(%s): %w", c.name, err)
 			}
-			if !slices.Equal(drifted, []string{reason}) {
-				return fmt.Errorf("PodDrift(%s) names %v, want the one reason the fleet's change left (%s)", c.name, drifted, reason)
+			if !slices.Equal(reasonsOf(drifted), []string{reason}) {
+				return fmt.Errorf("PodDrift(%s) names %v, want the one reason the fleet's change left (%s)", c.name, reasonsOf(drifted), reason)
 			}
 		}
 	}
@@ -658,7 +658,7 @@ func (r *liveRig) replaceFleetPod(round *liveFleetRound, mark int) (runtime.Loca
 		}
 		if len(drifted) > 0 {
 			return runtime.Locator{}, fmt.Errorf("the pod %s %s's round made reads drifted for %s: %s",
-				short(fresh.Sandbox.PodUID), round.issue, c.name, strings.Join(drifted, "; "))
+				short(fresh.Sandbox.PodUID), round.issue, c.name, strings.Join(reasonsOf(drifted), "; "))
 		}
 	}
 	note("runtime", "PodDrift of the pod %s %s's round made: nothing — the replacement carries the configuration a pod made now is built from",
