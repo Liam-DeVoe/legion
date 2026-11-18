@@ -5291,9 +5291,7 @@ function eventWhileCommentsOut(latency: number): RuleWay {
     words: `an event of the issue that posts a comment 200 ms into a read of the comments again, which Dispatch answers ${latency} ms after it was sent`,
     does: async (rig) => {
       (api.listComments as Mock<typeof api.listComments>).mockImplementation(async () => {
-        const answered = Promise.withResolvers<void>();
-        setTimeout(answered.resolve, latency);
-        await answered.promise;
+        await Bun.sleep(latency);
         return [rig.held, ...rig.posted];
       });
       await act(async () => {
@@ -5306,38 +5304,10 @@ function eventWhileCommentsOut(latency: number): RuleWay {
   };
 }
 
-/** A write naming another issue (`writeKeyOf(OTHER_KEY)`) pressed on the page, so a write of this
- *  issue too; the reader leaves; a second write under the same key, pressed on another page while
- *  the first is out, which names no issue of the page and began with no tree drawn; the first
- *  settles; the reader comes back; an event of the issue while the second is out, read at once,
- *  since no write of this issue is out; the second then settles. */
-const EVENT_DURING_OTHER_WRITE_UNDER_OWN_KEY: RuleWay = {
-  words:
-    "a write naming another issue pressed on the page, a second under its key pressed on another page while it is out, the first settling, the reader back and an event of the issue while the second is out",
-  does: async (rig) => {
-    const settleFirst = holdKeyedWrite(rig, writeKeyOf(OTHER_KEY));
-    await tick(500, 10);
-    leave(rig);
-    await tick(500, 10);
-    const settleSecond = holdKeyedWrite(rig, writeKeyOf(OTHER_KEY));
-    await tick(500, 10);
-    act(() => settleFirst());
-    await tick(500, 10);
-    comeBack(rig);
-    await quiet(rig);
-    const before = ruleReads(rig);
-    await commentsEvent(rig);
-    await tick(1_500, 10);
-    expect(ruleReads(rig) - before, "the reads while the second write is out").toBe(1);
-    act(() => settleSecond());
-    await tick(50, 10);
-  },
-};
-
 /** A write pressed on another page while the reader is away, under `away`, with, where `onPage` is
  *  given, a write under `onPage` pressed on the page before the reader left and settling once the
- *  second is out; the reader back; an event of the issue while the second is out, read at once
- *  where the second is no write of this issue; the second then settling. */
+ *  second is out; the reader back; an event of the issue while the second is out, read at once,
+ *  since the second is no write of this issue; the second then settling. */
 function eventDuringWriteAway(
   words: string,
   onPage: readonly string[] | undefined,
@@ -5376,9 +5346,7 @@ function eventWhileDecisionsOut(latency: number): RuleWay {
     does: async (rig) => {
       let kept = false;
       (api.getIssueDecisions as Mock<typeof api.getIssueDecisions>).mockImplementation(async () => {
-        const answered = Promise.withResolvers<void>();
-        setTimeout(answered.resolve, latency);
-        await answered.promise;
+        await Bun.sleep(latency);
         return { decisions: [], document: kept ? "kept" : null, entries: [], open_questions: [] };
       });
       await act(async () => {
@@ -5393,15 +5361,63 @@ function eventWhileDecisionsOut(latency: number): RuleWay {
   };
 }
 
+/** An event of the issue that posts a comment 200 ms into a read of the comments again, which
+ *  Dispatch refuses `latency` ms after it was sent; it answers every later comments read, each as
+ *  late. The scheduler owes the comments one more read once the one out lands, refused or not,
+ *  and that read begins after the tree read the event asked for. One event, read once. */
+function eventWhileCommentsRefused(latency: number): RuleWay {
+  return {
+    words: `an event of the issue that posts a comment 200 ms into a read of the comments again, which Dispatch refuses ${latency} ms after it was sent`,
+    does: async (rig) => {
+      let refused = false;
+      (api.listComments as Mock<typeof api.listComments>).mockImplementation(async () => {
+        await Bun.sleep(latency);
+        if (!refused) {
+          refused = true;
+          throw new Error("the comments read was refused");
+        }
+        return [rig.held, ...rig.posted];
+      });
+      await act(async () => {
+        void rig.client.refetchQueries({ queryKey: ["comments", KEY] });
+      });
+      await tick(200, 10);
+      rig.posted.push(postedComment);
+      await commentsEvent(rig);
+    },
+  };
+}
+
+/** The reader leaving the issue and coming back to it while a write of the issue is out: a new
+ *  load of the stage, with the filter that was on, which resets the views (`resetViews`) and reads
+ *  the open one at once, and once more as the write settles. */
+const RELOAD_DURING_WRITE: RuleWay = {
+  words: "the reader leaving the issue and coming back to it while a write of the issue is out",
+  does: async (rig) => {
+    const settleWrite = holdWrite(rig);
+    await tick(10, 10);
+    const before = ruleReads(rig);
+    stageOf(rig).unmount();
+    rig.stage = undefined;
+    await tick(100, 10);
+    mountStage(rig);
+    await tick(300, 10);
+    expect(ruleReads(rig) - before, "the load's read, sent while the write is out").toBe(1);
+    act(() => settleWrite());
+    await tick(50, 10);
+  },
+};
+
 /** A write of the issue whose own callback, as Dispatch answers it 200 ms on, does what a Settle,
- *  a Keep's reading of the decisions again and a Change do: invalidates the coverage, refreshes
- *  the tree and drops the views (`dropViews`). TanStack runs the callback before the write leaves
- *  `pending`, so the drop is a refresh the write holds: nothing of the tree or its views is read
- *  while the write is out, and the tree and the open view are read once as it settles. With
- *  `press`, the reader presses the row's filter on, its view never read, halfway through the
- *  write: that first read is sent at once, and the view is read once more as the write settles.
- *  With `dropOnly`, the callback drops the views and nothing else, so no change of the issue asks
- *  for the view at the settle: the drop alone is owed there, and the tree is not read. */
+ *  a Keep reading the decisions again and a Change do - code that calls `dropViews` there, which
+ *  no load does: invalidates the coverage, refreshes the tree and drops the views. TanStack runs
+ *  the callback before the write leaves `pending`, so the drop is a refresh the write holds:
+ *  nothing of the tree or its views is read while the write is out, and the tree and the open
+ *  view are read once as it settles. With `press`, the reader presses the row's filter on, its
+ *  view never read, halfway through the write: that first read is sent at once, and the view is
+ *  read once more as the write settles. With `dropOnly`, the callback drops the views and nothing
+ *  else, so no change of the issue asks for the view at the settle: the drop alone is owed there,
+ *  and the tree is not read. */
 function writeDroppingViews({
   dropOnly = false,
   press = false,
@@ -5560,7 +5576,7 @@ const WAYS = {
     words: "the reader leaving the issue and coming back to it",
     // A new load of the stage, with the filter that was on: the page mounts the stage once for
     // each issue it opens, and the stage's mount drops every view a past load held
-    // (`dropViews`).
+    // (`resetViews`).
     does: async (rig) => {
       stageOf(rig).unmount();
       rig.stage = undefined;
@@ -5643,7 +5659,11 @@ const WAYS = {
   eventSoonAfterCommentsRead: EVENT_SOON_AFTER_COMMENTS_READ,
   eventWhileCommentsOut600: eventWhileCommentsOut(600),
   eventWhileCommentsOut1500: eventWhileCommentsOut(1_500),
-  eventDuringOtherWriteUnderOwnKey: EVENT_DURING_OTHER_WRITE_UNDER_OWN_KEY,
+  eventDuringOtherWriteUnderOwnKey: eventDuringWriteAway(
+    "a write naming another issue pressed on the page, a second under its key pressed on another page while it is out, the first settling, the reader back and an event of the issue while the second is out",
+    writeKeyOf(OTHER_KEY),
+    writeKeyOf(OTHER_KEY)
+  ),
   eventDuringOtherWriteExtendingOwnKey: eventDuringWriteAway(
     "a write naming another issue pressed on the page, a second under its key and one more part pressed on another page while it is out, the first settling, the reader back and an event of the issue while the second is out",
     writeKeyOf(OTHER_KEY),
@@ -5664,6 +5684,8 @@ const WAYS = {
   writeDroppingViews: writeDroppingViews({}),
   firstPressDuringWriteDroppingViews: writeDroppingViews({ press: true }),
   writeDroppingViewsOnly: writeDroppingViews({ dropOnly: true }),
+  eventWhileCommentsRefused600: eventWhileCommentsRefused(600),
+  reloadDuringWrite: RELOAD_DURING_WRITE,
 } satisfies Record<string, RuleWay>;
 
 /** How many reads of a query a way starts: a count, or the least and the most. */
@@ -6487,6 +6509,11 @@ const READ_RULES: readonly ReadRule[] = [
     now: 2,
     back: 0,
   },
+  // A load while a write of the issue is out reads the open view at once, and once more as the
+  // write settles: the load's reset holds nothing.
+  { read: "spec", state: "answered", observed: true, way: "reloadDuringWrite", now: 2 },
+  // One event, read once, while a read of the comments is out that Dispatch then refuses.
+  { read: "tree", state: "answered", observed: true, way: "eventWhileCommentsRefused600", now: 1 },
 ];
 
 describe("the rule for when a read of the tree or of a view starts", () => {

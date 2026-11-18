@@ -64,23 +64,31 @@ export function viewKey(
   return ["issue-tree", key, filter];
 }
 
-/** Drops every view of issue `key` the cache holds (`resetQueries`), so a held one is gone and
- *  the one a filter watches is read again. It is for any caller after which a held view could be
- *  older than the tree the page draws, so that no view is drawn older than its tree. A view it
- *  drops while a write of the issue holds it - a write's own callback dropping the views as
- *  Dispatch answers it - is a refresh: read once as the last write settles, not at once
- *  (`mayReadNow`). `subscribeTreeFreshness` drops none: it refreshes each held view through
- *  `refreshQueries`, and the view keeps what it draws until its new answer lands. */
+/** Resets every view of issue `key` the cache holds (`resetQueries`) for a load of the issue
+ *  (`ViewReadProvider`), so a view a past load held is gone and each is read once: the open one at
+ *  the load, at once, whether a write of the issue is out or not, and another when its filter is
+ *  next on. It marks none. `subscribeTreeFreshness` resets none: it refreshes each held view
+ *  through `refreshQueries`, and the view keeps what it draws until its new answer lands. */
+export function resetViews(queryClient: QueryClient, key: string): void {
+  for (const filter of TREE_FILTERS) {
+    void queryClient.resetQueries({ exact: true, queryKey: viewKey(key, filter) });
+  }
+}
+
+/** Drops every view of issue `key` for a write's own callback, as Dispatch answers the write - a
+ *  Settle, a Keep reading the decisions again, a Change - after which a held view could be older
+ *  than the tree the page draws. A view it drops after a read of it, while a write of the issue
+ *  holds it, is a refresh: held as an answered one and read once as the last write settles
+ *  (`droppedWhileHeld`, `mayReadNow`). One never read still reads at once. */
 export function dropViews(queryClient: QueryClient, key: string): void {
   for (const filter of TREE_FILTERS) {
-    const queryKey = viewKey(key, filter);
-    const view = queryClient.getQueryCache().find({ exact: true, queryKey });
+    const view = queryClient.getQueryCache().find({ exact: true, queryKey: viewKey(key, filter) });
     if (view !== undefined && heldByWrites.has(view)) {
       const { fetchStatus, status } = view.state;
       if (status !== "pending" || fetchStatus !== "idle") droppedWhileHeld.add(view);
     }
-    void queryClient.resetQueries({ exact: true, queryKey });
   }
+  resetViews(queryClient, key);
 }
 
 /**
@@ -150,21 +158,21 @@ function mayReadOnMount(query: Pick<Query, "state">): boolean {
  *  as plain objects, as `askedAgain` is. */
 const heldByWrites = new WeakSet<object>();
 
-/** The views a drop (`dropViews`) reset while a write of their issue held them, after a read of
- *  them - answered, refused or still out - until the last write settles, as the page's
- *  subscription records it: a write's own callback drops the views as Dispatch answers it, which
- *  TanStack runs before the write leaves `pending`. A view never read that a drop resets holds
- *  nothing either way, and its first read is still sent at once. Held as plain objects, as
- *  `askedAgain` is. */
+/** The views a write's own callback dropped (`dropViews`) while a write of their issue held them,
+ *  after a read of them - answered, refused or still out - until the last write settles, as the
+ *  page's subscription records it: TanStack runs the callback before the write leaves `pending`.
+ *  A view never read that a drop resets holds nothing either way, and its first read is still
+ *  sent at once; a load's reset (`resetViews`) marks none. Held as plain objects, as `askedAgain`
+ *  is. */
 const droppedWhileHeld = new WeakSet<object>();
 
 /** Whether TanStack may read the tree or a view of its own accord or for a refresh (`TREE_FRESH`'s
  *  `enabled`): always for a read that holds neither an answer nor a refusal yet - a first load, a
- *  view's first filter press, one a load dropped (`dropViews`) - and for any other only while no
+ *  view's first filter press, one a load reset (`resetViews`) - and for any other only while no
  *  write of its issue holds it (`heldByWrites`), since a read sent then reads a tree Dispatch may
- *  not have changed yet. A view dropped after a read of it while a write holds it
- *  (`droppedWhileHeld`) holds nothing either, but is a refresh, held as an answered one. A
- *  disabled query is no query of a refresh: the app's client refetches none
+ *  not have changed yet. A view a write's own callback dropped after a read of it, while a write
+ *  holds it (`dropViews`, `droppedWhileHeld`), holds nothing either, but is a refresh, held as an
+ *  answered one. A disabled query is no query of a refresh: the app's client refetches none
  *  (`api/query-client.ts`), the refresh scheduler only marks it stale (`api/query-refresh.ts`)
  *  and a new observer reads none of it, so nothing is sent while the write is out, and the
  *  subscription reads what was asked for once the last write settles. The reader's Retry is an
@@ -186,9 +194,10 @@ function mayReadNow(query: Pick<Query, "state">): boolean {
  *  subscription asked for it again since its last read began (`mayReadOnMount`, as both
  *  `retryOnMount`, for a read that holds no answer, and `refetchOnMount`, for one that holds an
  *  answer). The views are owed besides at each load of the issue, answered or refused: a load
- *  drops them (`dropViews`), so each is read once, the open one at the load and another when its
- *  filter is next on. A read that holds an answer which a write or an event marked stale while
- *  nothing observed it is read when something next observes it, and a read never made is made. */
+ *  resets them (`resetViews`), so each is read once, the open one at the load, at once, with a
+ *  write of the issue out or none, and another when its filter is next on. A read that holds an
+ *  answer which a write or an event marked stale while nothing observed it is read when something
+ *  next observes it, and a read never made is made. */
 const TREE_FRESH = {
   ...REFRESHED_BY_EVENTS,
   enabled: mayReadNow,
@@ -365,17 +374,18 @@ function byRole<Value>(make: (role: TreeFilter) => Value): (role: TreeFilter) =>
  * (`mayReadNow`), so the app's client, the refresh scheduler and a new observer send none of it,
  * and nothing waits in a query function; a first load, a view's first filter press and the
  * reader's Retry are sent at once, and each is owed one more read once the last write settles,
- * which answers the write. A view dropped meanwhile (`dropViews`) - as a write's own callback
- * drops the views when Dispatch answers it, before TanStack lets the write go - is no first
- * read but a refresh: held as an answered one, and read once at that settle. The asks of a held
- * read the subscription hears are owed at that settle too (`owedReads`): a stale mark put on it -
- * by a refresh of every query, the write store's for a write that lands with no answer or the
- * event feed's after an incomplete replay, and by the subscription's own asks - which a held
- * refused read hears as well, since it is marked valid while held (`hearAsks`); a focus's ask
- * while the live feed is down and the feed's return; and a new observer, whose read the hold
- * holds, where the read is marked stale and the observer may read it (`mayReadOnMount`). A
- * `refetchQueries` of a held read is not heard: TanStack's client skips a disabled query and
- * tells nothing of it, and nothing in the page asks for the tree or a view that way. While the
+ * which answers the write. A view a write's own callback drops meanwhile (`dropViews`) - a
+ * Settle, a Keep reading the decisions again, a Change, as Dispatch answers the write and before
+ * TanStack lets it go - is no first read but a refresh: held as an answered one, and read once at
+ * that settle; a load's reset (`resetViews`) is not. The asks of a held read the subscription
+ * hears are owed at that settle too (`owedReads`): a stale mark put on it - by a refresh of every
+ * query, the write store's for a write that lands with no answer or the event feed's after an
+ * incomplete replay, and by the subscription's own asks - which a held refused read hears as
+ * well, since it is marked valid while held (`hearAsks`); a focus's ask while the live feed is
+ * down and the feed's return; and a new observer, whose read the hold holds, where the read is
+ * marked stale and the observer may read it (`mayReadOnMount`). A `refetchQueries` of a held read
+ * is not heard: TanStack's client skips a disabled query and tells nothing of it, and nothing in
+ * the page asks for the tree or a view that way. While the
  * writes are out an invalidation of a query of the issue is a change, as it is with none out: an
  * event may refresh reads that answer what they held, and the trigger is what the tree owes, not
  * its answer. So a write Dispatch refuses, whose rollback puts the comments back and reads them
@@ -714,28 +724,26 @@ function watchTree(
   // The reads of the issue an invalidation reached while their read was out: the scheduler, or
   // the app's client, reads each once more as that read lands, until a read of it begins.
   const owedAfterOut = new Set<string>();
+  // Whether the decisions read is the one this subscription holds itself (`heldAsks`), which no
+  // other read waits for: asked for inside its own call, it never counts as newer.
+  const heldHere = (one: Query): boolean => heldAsks.has(decisions) && matchQuery(decisions, one);
   // Whether a read of the issue owed so is still out, which the tree's held ask waits for until it
-  // lands (`arm`). The decisions read this subscription holds itself is none.
-  const owedOut = (): boolean =>
-    issueQueries.some((filters) =>
-      cache
-        .findAll(filters)
-        .some(
-          (one) =>
-            owedAfterOut.has(one.queryHash) &&
-            one.isActive() &&
-            one.state.fetchStatus !== "idle" &&
-            !(heldAsks.has(decisions) && matchQuery(decisions, one))
-        )
-    );
+  // lands (`arm`). Each hash is entered only for a query of the issue, and leaves with its query.
+  const owedOut = (): boolean => {
+    for (const hash of owedAfterOut) {
+      const one = cache.get(hash);
+      if (one?.isActive() && one.state.fetchStatus !== "idle" && !heldHere(one)) return true;
+    }
+    return false;
+  };
   // The moments the reads of the issue the scheduler owes are due at, each at or after `since`: a
   // query of the issue something observes, with no read out, which the scheduler holds back until
   // a second after its last read began - one marked invalid and answered, or one owed once more
-  // as its read out landed (`owedAfterOut`). A query in error is owed nothing: nothing reads it
-  // until what reads it again comes. One due before `since` and not begun is no read the
-  // scheduler holds back, since it begins at once a read that is due. The decisions read this
-  // subscription holds itself is none either: asked for inside its own call, it never counts as
-  // newer.
+  // as its read out landed (`owedAfterOut`), answered or refused, since the scheduler reads it
+  // again either way. Any other query in error is owed nothing: nothing reads it until what reads
+  // it again comes. One due before `since` and not begun is no read the scheduler holds back,
+  // since it begins at once a read that is due. Nor is the decisions read this subscription holds
+  // itself (`heldHere`).
   const owedDues = (since: number): number[] =>
     issueQueries.flatMap((filters) =>
       cache.findAll(filters).flatMap((one) => {
@@ -743,13 +751,15 @@ function watchTree(
         const owed =
           one.isActive() &&
           fetchStatus === "idle" &&
-          status === "success" &&
-          (isInvalidated || owedAfterOut.has(one.queryHash)) &&
-          !(heldAsks.has(decisions) && matchQuery(decisions, one));
+          (owedAfterOut.has(one.queryHash) || (isInvalidated && status === "success")) &&
+          !heldHere(one);
         const due = dueOf(one);
         return owed && due >= since ? [due] : [];
       })
     );
+  // Whether the tree's held ask still waits for a read of the issue the scheduler owes: one out
+  // that is owed once more as it lands, or one due at or after `since` and not begun.
+  const treeWaits = (since: number): boolean => owedOut() || owedDues(since).length > 0;
   // Asks for a held read once the scheduler begins it at once, so the read begins inside this
   // subscription's own call; never while a read of it is out. The tree's waits besides until
   // every read of the issue the scheduler owes has begun - an owed one still out until it lands,
@@ -772,8 +782,7 @@ function watchTree(
         const read = cache.find(target);
         if (
           read !== undefined &&
-          (Date.now() < dueOf(read) ||
-            (target === tree && (owedOut() || owedDues(heldAsk.since).length > 0)))
+          (Date.now() < dueOf(read) || (target === tree && treeWaits(heldAsk.since)))
         ) {
           heldAsk.since = Date.now();
           arm(target);
@@ -830,7 +839,7 @@ function watchTree(
       const read = targets.includes(target) ? cache.find(target) : undefined;
       if (read === undefined || !read.isActive()) return false;
       if (heldAsks.has(target)) return true;
-      if (target === tree) return owedOut() || owedDues(Date.now()).length > 0;
+      if (target === tree) return treeWaits(Date.now());
       return read.state.fetchStatus !== "idle" || Date.now() < dueOf(read);
     });
     ask(targets.filter((target) => !holds.includes(target)));
@@ -881,10 +890,10 @@ function watchTree(
         // A refresh asked for while a write holds the read sends nothing (`mayReadNow`): the
         // stale mark it puts on the query is the ask, owed until the last write settles.
         if (action.type === "invalidate" && holding()) owedReads.add(hash);
-        // A view a drop reset (`dropViews`) while the writes hold it, after a read of it, is a
-        // refresh: held as an answered one (`droppedWhileHeld`, `mayReadNow`) and owed until the
-        // last write settles. The drop marks it before the reset, which TanStack tells of before
-        // it asks for the reads it reset, so none is sent.
+        // A view a write's own callback dropped (`dropViews`) while the writes hold it, after a
+        // read of it, is a refresh: held as an answered one (`droppedWhileHeld`, `mayReadNow`) and
+        // owed until the last write settles. The drop marks it before the reset, which TanStack
+        // tells of before it asks for the reads it reset, so none is sent.
         if (action.type === "setState" && droppedWhileHeld.has(query)) owedReads.add(hash);
         // A read a focus or the feed's return found out has ended: where it ended refused it is
         // asked for once more, outside this notification, since the cache is still dispatching
@@ -960,7 +969,7 @@ function watchTree(
     // The held decisions read is asked for once no read of it is out, and the held tree read
     // waits again once a read of the issue lands (`arm`).
     if (isDecisions) arm(decisions);
-    if (heldAsks.has(tree)) arm(tree);
+    arm(tree);
     if (calling || (action.type !== "invalidate" && action.type !== "success")) return;
     if (action.type === "invalidate") {
       // An invalidation is a change, while a write of the issue is out too: an event of the issue
