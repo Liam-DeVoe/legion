@@ -1965,6 +1965,15 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return fmt.Errorf("start %s of %s: %w", payload.Role, issue.Key, held.RuleHoldError())
 			}
 		}
+		// The start of a step's entry whose claim holds another role gives the claim that role
+		// (reroleForStep): the steps of one key are one claim, and its next step may be of another
+		// role. A start of no entry — a wake, a resume, a role admission brings back — starts the
+		// claim with the role it holds.
+		if found && payload.Entry > 0 && payload.Phase != "" && machine.Claim().Role != payload.Role {
+			if err := r.reroleForStep(ctx, machine, token, issue.Key, payload.Role); err != nil {
+				return err
+			}
+		}
 		if !found {
 			if err := r.provisionWorkspace(ctx, issue); err != nil {
 				return err
@@ -2338,6 +2347,29 @@ func (r *outbox) stopElsewhere(ctx context.Context, issue record.Issue) error {
 		return wait.Errorf("start of %s in tree %s waits for %s to stop", issue.Key, issue.Tree, strings.Join(running, ", "))
 	}
 	return nil
+}
+
+// reroleForStep gives machine's claim role, the role of the step its agent is started for, and is
+// a wait (wait.ErrWaiting) while the claim still runs a process. That process runs the role it was
+// started with, so the start asks it to suspend, as the daemon and keeping its session, and the
+// start waits on the row's backoff: a claim in a turn holds the suspension for the turn's end and a
+// launching one until its agent is ready (supervise's suspend rows), as stopElsewhere's suspension
+// is held, so the step before it is not cut off mid-turn. Once the claim runs nothing it takes the
+// role (supervise.Machine.Rerole), and the start resumes it on its session with that role. This is
+// the one place a claim's role changes.
+func (r *outbox) reroleForStep(ctx context.Context, machine *supervise.Machine, token claim.Token, issue string, role claim.Role) error {
+	if held := machine.Claim(); !held.RunsNothing() {
+		err := machine.Handle(ctx, supervise.RequestSuspend{Claim: token, By: supervise.SuspendedByDaemon,
+			Reason: fmt.Sprintf("its agent's next step on %s is the %s's", issue, role)})
+		var refused *supervise.RefusedError
+		if err != nil && !errors.Is(err, supervise.ErrSuspendHeld) && !errors.As(err, &refused) {
+			return fmt.Errorf("suspend claim %s for its %s step: %w", token, role, err)
+		}
+		if held = machine.Claim(); !held.RunsNothing() {
+			return wait.Errorf("the %s step of %s waits for its claim %s to end its turn as %s", role, issue, token, held.Role)
+		}
+	}
+	return machine.Rerole(ctx, role)
 }
 
 // carriedStopDeadline is when a carried child's role still running in its old tree, under oldRoot,

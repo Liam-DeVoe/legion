@@ -3,9 +3,11 @@ package supervise
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
@@ -230,5 +232,31 @@ func (m *Machine) Retree(ctx context.Context, tree string) error {
 	}
 	m.log.Info("supervise: the claim's issue moved to another tree", "claim", m.claim.Token, "from", m.claim.Tree, "to", tree)
 	m.claim.Tree, m.claim.TreeEpoch = tree, 0
+	return m.persist(ctx)
+}
+
+// ErrRunsAProcess is Rerole's refusal of a claim that still runs a process: that process was
+// started with the claim's role's prompt and App, so the role it holds is the one it runs.
+var ErrRunsAProcess = errors.New("the claim still runs a process")
+
+// Rerole gives a claim the role of its agent's next step, which a step of another role than the
+// claim holds asks for (the daemon's outbox, the start of a phase entry): one key is one claim
+// across roles, and its next generation registers, is prompted and acts as the App of the role it
+// holds then. Only a claim that runs nothing takes a new role, so a process keeps the role it was
+// started with; one that still runs is ErrRunsAProcess, and the start suspends it first, keeping
+// its session, and waits for its turn to end. The claim keeps its session, so its next generation
+// resumes it.
+func (m *Machine) Rerole(ctx context.Context, role claim.Role) error {
+	m.mu.Lock()
+	defer m.unlock()
+	if m.claim.Role == role {
+		return nil
+	}
+	if !m.claim.RunsNothing() {
+		return fmt.Errorf("give claim %s the role %s for its agent's next step: it is %s as %s: %w",
+			m.claim.Token, role, m.claim.State, m.claim.Role, ErrRunsAProcess)
+	}
+	m.log.Info("supervise: the claim takes the role of its agent's next step", "claim", m.claim.Token, "from", m.claim.Role, "to", role)
+	m.claim.Role = role
 	return m.persist(ctx)
 }
