@@ -1086,10 +1086,16 @@ func (p *rigReport) writes(heading string, writes []rigWrite, start time.Time) {
 	p.text.WriteString("\n")
 }
 
-// write puts the report in TMPDIR under name and logs its path.
+// write puts the report in a fresh directory under TMPDIR (os.MkdirTemp with no base, the
+// placement testtmp's check allows) under name, and logs its path. The directory outlives the
+// test, since the person reads the table after the run.
 func (p *rigReport) write(name string) string {
 	p.r.t.Helper()
-	path := filepath.Join(os.TempDir(), fmt.Sprintf("dispatch-broker-%s-%s.md", name, time.Now().UTC().Format("20060102T150405Z")))
+	dir, err := os.MkdirTemp("", "dispatch-broker-"+name+"-")
+	if err != nil {
+		p.r.t.Fatalf("make a directory for the %s table: %v", name, err)
+	}
+	path := filepath.Join(dir, fmt.Sprintf("dispatch-broker-%s-%s.md", name, time.Now().UTC().Format("20060102T150405Z")))
 	if err := os.WriteFile(path, []byte(p.text.String()), 0o644); err != nil {
 		p.r.t.Fatalf("write the %s table: %v", name, err)
 	}
