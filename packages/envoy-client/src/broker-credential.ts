@@ -262,6 +262,10 @@ export interface TradedToken {
   readonly token: BrokerToken;
   readonly key: DpopKey;
   readonly session: string;
+  /** The login the token presents as: the client's entry ({@link keyOf}: the session and the
+   *  variables the factory read) and the sign-in it trades, or "" for the machine's own. Two
+   *  tokens with one identity are one login to Dispatch; any change of the three is another. */
+  readonly identity: string;
 }
 
 /**
@@ -310,11 +314,13 @@ async function tradedToken(
       "AGENT_SECRETS_URL and AGENT_SECRETS_MACHINE_IDENTITY no longer name a broker and an identity to trade"
     );
   }
+  const { session, variables } = keyOf(env, own);
   try {
     return {
       token: await client.token(signal, { waitForReady }),
       key: client.key,
       session: own,
+      identity: JSON.stringify([session, variables, made.signIn]),
     };
   } catch (error) {
     if (made.signIn !== "" && isFinalRefusal(error)) entry.refused.set(made.signIn, error);
@@ -378,6 +384,8 @@ export function brokerCredential(
   session?: BrokerSessionName | undefined
 ): RequestCredential {
   let presented = "";
+  // The login each presentation was made as, by the headers object it answered (`identity`).
+  const presentedAs = new WeakMap<object, string>();
   /** The session whose credential answers a call acting for `acting`, which `headers` and
    *  `stale` read alike. */
   const own = (acting: string | undefined): string => (acting ?? "").trim() || sessionName(session);
@@ -389,13 +397,16 @@ export function brokerCredential(
       acting?: string,
       signal?: AbortSignal
     ): Promise<Readonly<Record<string, string>>> {
-      const { token, key } = await tradedToken(env, own(acting), signal);
+      const { token, key, identity } = await tradedToken(env, own(acting), signal);
       presented = token.accessToken;
-      return {
+      const headers = {
         Authorization: `DPoP ${token.accessToken}`,
         DPoP: await key.proof({ method, url, accessToken: token.accessToken }),
       };
+      presentedAs.set(headers, identity);
+      return headers;
     },
+    identity: (headers) => presentedAs.get(headers),
     stale(acting?: string): void {
       // Looked up, never made: a session this process never traded for is given no entry.
       const key = keyOf(env, own(acting));

@@ -174,18 +174,19 @@ export class DispatchGatewayError extends DispatchServiceError {
 }
 
 /**
- * A write that ended, once an attempt of it may have landed (write-outcome.ts), with anything but a
- * 2xx read whole or a refusal Dispatch's keyed layer judged for its key, so it may or may not have
- * taken effect: a 5xx, a 408 or 429, `409 KEY_IN_FLIGHT` or a body that broke off with no attempt
- * or time left; a page something in Dispatch's place wrote, a 2xx that is no answer of Dispatch's,
- * a 3xx or a refusal Dispatch's auth made before the keyed layer ran; a credential that could not
- * present; or no answer at all: its last attempt cut off for silence, the call's deadline or the
+ * A write that ended, once an attempt of it may have landed (write-outcome.ts), with anything but
+ * Dispatch's own 2xx read whole or a refusal Dispatch's keyed layer judged for its key, so it may
+ * or may not have taken effect: a 5xx, a 408 or 429, `409 KEY_IN_FLIGHT` or a body that broke off
+ * with no attempt or time left; a page something in Dispatch's place wrote, a 2xx that is no
+ * answer of Dispatch's, a 3xx or a refusal Dispatch's auth made before the keyed layer ran; a
+ * credential that could not present, or that would present as another login than the attempts
+ * before it; or no answer at all: its last attempt cut off for silence, the call's deadline or the
  * caller's stop. This is deliberately no `DispatchServiceError`, which a caller reads as a refusal
  * Dispatch decided. `last` (also the `cause`) is what ended it. `key` is the `Idempotency-Key`
- * every attempt of the write carried: a resend under it is answered from what Dispatch stored,
- * never written twice. Where the call saw Dispatch's keyed layer judge the write (`keyed`), the
- * message says Dispatch finishes an attempt it received, and that a resend is a new command's,
- * under a new key, so the write is to be read back first.
+ * every attempt of the write carried, all of them as one login: a resend under it, as that login,
+ * is answered from what Dispatch stored, never written twice. Where the call saw Dispatch's keyed
+ * layer judge the write (`keyed`), the message says Dispatch finishes an attempt it received, and
+ * that a resend is a new command's, under a new key, so the write is to be read back first.
  */
 export class DispatchWriteUnsettledError extends Error {
   override readonly name = "DispatchWriteUnsettledError";
@@ -270,8 +271,18 @@ function asErrorShape(value: unknown): DispatchServiceErrorShape {
   return typeof value === "object" && value !== null ? (value as DispatchServiceErrorShape) : {};
 }
 
+/**
+ * Whether an answer's `Content-Type` names a JSON media type: `application/json`, or one ending in
+ * `+json`, its parameters left out and letter case aside, as Dispatch's own rule reads it
+ * (`compressibleAnswer`, packages/envoy/internal/dispatch/api/response_compression.go).
+ */
 function isJson(response: Response): boolean {
-  return response.headers.get("content-type")?.includes("application/json") ?? false;
+  const [type = ""] = (response.headers.get("content-type") ?? "").split(";");
+  const mediaType = type.trim().toLowerCase();
+  return (
+    mediaType === "application/json" ||
+    (mediaType.length > "+json".length && mediaType.endsWith("+json"))
+  );
 }
 
 /** Whether `error` is a Dispatch process's answer that it has no route for the request (`404
@@ -667,7 +678,7 @@ interface WriteAnswer {
   readonly malformed: boolean;
   /** Whether it is a status that carries a body and its body is empty or its `Content-Type` does
    *  not say JSON. Every answer Dispatch writes to a keyed write is JSON or a bodiless 204 or 205
-   *  (`writeJSON`, packages/envoy/internal/dispatch/api), so such a 2xx is no answer of its own. */
+   *  (`WriteJSON`, packages/envoy/internal/dispatch/api/server.go), so such a 2xx is no answer of its own. */
   readonly notJson: boolean;
   /** The body as read: "" for a status that carries none. */
   readonly text: string;
@@ -827,13 +838,10 @@ async function tokenNotLive(response: Response): Promise<boolean> {
 /**
  * Why `answer` is not the page `listIssuePage` asked for, and whether asking again can change
  * that; undefined when it is one. A JSON answer that is not a page is Dispatch's own and comes back
- * the same; text (`#response` returns a body it could not read as JSON as its text) looks like a
- * proxy or gateway in the way, which a retry can get past.
+ * the same. A 2xx that is not JSON never reaches here: `#response` refuses it as something in
+ * Dispatch's place, which a retry can get past.
  */
 function whyNotAPage(answer: unknown): string | undefined {
-  if (typeof answer === "string") {
-    return `text that is not a JSON page, ${GATEWAY_PAGE}, so a retry may succeed.`;
-  }
   let what: string;
   if (Array.isArray(answer)) {
     what =
@@ -861,11 +869,9 @@ function whyNotAPage(answer: unknown): string | undefined {
 /**
  * Why `answer` is not the bare array `listAllIssues` asked for. A page here is the telling case:
  * it means Dispatch paged a request that carried neither `limit` nor `offset`, so the caller did
- * not get the exact set it needs. Text looks like a proxy in the way, which a retry can get past.
+ * not get the exact set it needs. A 2xx that is not JSON never reaches here (`#response`).
  */
 function whyNotAnArray(answer: unknown): string {
-  if (typeof answer === "string")
-    return `text that is not JSON, ${GATEWAY_PAGE}, so a retry may succeed`;
   if (answer === null) return "null";
   if (typeof answer !== "object") return `a ${typeof answer}`;
   if ("issues" in answer && Array.isArray(answer.issues)) {
@@ -2216,11 +2222,17 @@ export class DispatchClient {
     let answer = undefined as WriteAnswer | undefined;
     let failure: unknown;
     let attemptEvent = "exhausted" as WriteEvent;
-    // The failure of the last presentation whose trade goes on (`no-credential`) since an attempt
-    // last went out. Before anything may have landed, it is why nothing was sent, so a deadline or
-    // a stop that ends the wait for the next presentation ends the write with it, not with the
-    // wait's own error.
+    // The latest failure of the credential's own, never the call's stop (`limit.reason`), since an
+    // attempt last went out or a presentation last answered. Before anything may have landed, it
+    // is why nothing was sent, so a deadline or a stop that ends the wait for the next
+    // presentation ends the write with it, not with the wait's own error.
     let credentialFailure: unknown;
+    // The login the write's attempts went out as (`RequestCredential.identity`). Dispatch keys a
+    // write per login (`requestKeyLogin`, request_keys.go), so once an attempt may have landed a
+    // presentation as another login (a sign-out, a sign-in, a session switch) is never sent: its
+    // repeat would be a new key there. Before that, a repeat reaches no handler, and the write
+    // goes as the login it presents now.
+    let login: string | undefined;
     // What the last attempt's answer's headers said, whether or not its body then came whole: that
     // the keyed layer answered (the key echoed), and the wait it asked for (`Retry-After`). A
     // resend after a body that broke off reads them as it reads a whole answer's.
@@ -2240,17 +2252,26 @@ export class DispatchClient {
           undefined,
           this.#credentialSignal(limit)
         );
+        credentialFailure = undefined;
         this.#sent.note(presented);
         // A credential that answered after the call's signal ended still sends nothing.
         limit.throwIfAborted();
       } catch (error) {
         failure = error;
         attemptEvent = stoppedEvent(limit, false, error) ?? credentialEvent(error);
-        if (attemptEvent === "no-credential") credentialFailure = error;
+        if (error !== limit.reason) credentialFailure = error;
         return attemptEvent;
       }
+      const presentsAs = this.#credential.identity?.(presented);
+      if (state === "may-have-landed" && presentsAs !== login) {
+        failure = new Error(
+          `${write.request} would present as another login than the attempt before it (a sign-out, a sign-in or a session switch came between them), and Dispatch keys a write per login, so it is not sent again`
+        );
+        attemptEvent = "no-credential-final";
+        return attemptEvent;
+      }
+      login = presentsAs;
       progress.sent += 1;
-      credentialFailure = undefined;
       let response: Response;
       try {
         response = await this.#attempt(
@@ -2612,20 +2633,23 @@ export class DispatchClient {
    * The answer's payload, or the refusal it carries. Dispatch's own refusal is JSON with a string
    * `error` (`writeError` in the server), and it renders as that text with its `code`. Any other
    * non-2xx body — a gateway's HTML page, an empty body, JSON of another shape — did not come
-   * from Dispatch, so it is a `DispatchGatewayError` naming the request (method, URL and query;
-   * the URL's user and password are left out, and the token travels in a header, never the URL),
-   * the status and reason phrase, a one-line plain-text excerpt of the body (or, when none of
-   * what the excerpt reads is text, the body's size), and what asking again can do for that
-   * method and status. A write Dispatch made whose answer is gone —
+   * from Dispatch, so it is a `DispatchGatewayError` (`#gatewayError`). So is a 2xx whose body is
+   * empty, not typed JSON or not JSON, but for a bodiless 204 or 205: every answer Dispatch gives
+   * a route this client reads as JSON is JSON (`WriteJSON`), so such a 2xx is something in its
+   * place, a captive portal's 200 page for one, and never the route's answer (the acceptance of
+   * #4140 at be17859eca: a portal's 200 text page read as `open-asks`' answer told a session that
+   * nothing waited on it). A write Dispatch made whose answer is gone —
    * `409 IDEMPOTENCY_KEY_COMMITTED`, or a replayed 2xx reading `IDEMPOTENCY_ANSWER_NOT_KEPT`
    * (`answerNotKept`) — is a `DispatchWriteLandedError`, neither a refusal nor a payload.
    */
   async #response<T>(method: string, url: string, response: Response): Promise<T> {
     const text = await response.text();
     let payload: unknown = text;
+    let parsed = false;
     if (text && isJson(response)) {
       try {
         payload = JSON.parse(text);
+        parsed = true;
       } catch {
         payload = text;
       }
@@ -2650,21 +2674,10 @@ export class DispatchClient {
           error.mismatches
         );
       }
-      const tokens = this.#sent.with(this.token);
-      const body = bodyForText(text, tokens, "Dispatch's error JSON");
-      const reasonPhrase = excerpt(response.statusText, tokens);
-      const reason = reasonPhrase === "" ? "" : ` ${reasonPhrase}`;
-      // A redirect is never followed (`#fetch`), so its error names where it pointed: the origin
-      // alone, which is what tells a Dispatch URL to correct from one that something answers for.
-      const target = redirectOrigin(response, url, tokens);
-      const redirected =
-        target === undefined ? "" : ` (a redirect to ${target}, which this client does not follow)`;
-      const request = `${method} ${requestForText(this.#baseUrl, url, DISPATCH_URL_SETTING)}`;
-      throw new DispatchGatewayError(
-        response.status,
-        `${request} answered ${response.status}${reason}${redirected} with ${body}, ${GATEWAY_PAGE}`,
-        gatewayAdvice(method, response.status)
-      );
+      throw this.#gatewayError(method, url, response, text, "Dispatch's error JSON");
+    }
+    if (!parsed && !NULL_BODY_STATUSES.has(response.status)) {
+      throw this.#gatewayError(method, url, response, text, "JSON");
     }
     const replayed = response.headers.get(IDEMPOTENCY_REPLAYED_HEADER)?.trim() === "?1";
     if (answerNotKept(response.status, replayed, payload)) {
@@ -2676,5 +2689,41 @@ export class DispatchClient {
       );
     }
     return payload as T;
+  }
+
+  /**
+   * The error for an answer something in Dispatch's place wrote (`#response`): the request
+   * (method, URL and query; the URL's user and password left out, and the token travels in a
+   * header, never the URL), the status and reason phrase, the origin a redirect pointed at, a
+   * one-line plain-text excerpt of `text` (`bodyForText`: a body that is not `notWhat`, an empty
+   * body, or the body's size where none of what the excerpt reads is text, with every token this
+   * client presented redacted), and what asking again can do for that method and status.
+   */
+  #gatewayError(
+    method: string,
+    url: string,
+    response: Response,
+    text: string,
+    notWhat: string
+  ): DispatchGatewayError {
+    const tokens = this.#sent.with(this.token);
+    const body = bodyForText(text, tokens, notWhat);
+    const reasonPhrase = excerpt(response.statusText, tokens);
+    const reason = reasonPhrase === "" ? "" : ` ${reasonPhrase}`;
+    // A redirect is never followed (`#fetch`), so its error names where it pointed: the origin
+    // alone, which is what tells a Dispatch URL to correct from one that something answers for.
+    const target = redirectOrigin(response, url, tokens);
+    const redirected =
+      target === undefined ? "" : ` (a redirect to ${target}, which this client does not follow)`;
+    const request = `${method} ${requestForText(this.#baseUrl, url, DISPATCH_URL_SETTING)}`;
+    return new DispatchGatewayError(
+      response.status,
+      `${request} answered ${response.status}${reason}${redirected} with ${body}, ${GATEWAY_PAGE}`,
+      // A read's 2xx in Dispatch's place is a proxy or portal in the way, which a retry can get
+      // past, as the listings always judged it; a write's never reaches here (`answerEvent`).
+      response.ok && method === "GET"
+        ? "a retry may succeed"
+        : gatewayAdvice(method, response.status)
+    );
   }
 }

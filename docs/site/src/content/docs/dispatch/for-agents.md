@@ -389,13 +389,13 @@ upload of a megabyte or more, whose every ask sends the whole file again, keeps 
 Once an attempt may have reached Dispatch, it asks again only of a Dispatch that judges the key:
 one whose answer carried the key back, or whose `/healthz` said `idempotency_keys: true` in the
 last five minutes, whatever its status; any other would make a repeated write twice. An attempt
-that reached nothing (a refused connection, a credential that could not present) is asked again
+that reached nothing (a refused connection, a credential whose trade goes on) is asked again
 without that check, since its repeat is no second write. Dispatch makes the write once per key and
 answers a repeat with the first answer, so the command never makes a write twice. When the write
 landed but Dispatch has no answer to give for it (`409 KEY_COMMITTED`, or a first answer too large
 to keep), the command exits 0 and says it was made: read it back to see it. When an attempt may
 have reached Dispatch and the command got no answer Dispatch's keyed layer gave (no attempt
-answered, a page something in Dispatch's place wrote, a 2xx that is not JSON), the command says
+answered, a page something in Dispatch's place wrote, a 2xx that is not typed JSON), the command says
 the write may or may not have taken effect: read it back before you run the command again, since
 a new command is a new key. Reads, and the `PUT` and `DELETE` of
 `dispatch follow` and `dispatch claim --release`, carry no key and go once. A script that calls

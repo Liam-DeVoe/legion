@@ -573,7 +573,8 @@ const failedReads: readonly {
   },
   {
     kind: "a 200 HTML sign-in page",
-    reason: "Dispatch answered with something that is not an answers list",
+    reason:
+      /^HTTP_200: GET \S+\/answers\?since=[^&\s]+&max_chars=8000 answered 200 with a body that is not JSON \("Sign in"\), which looks like a proxy or gateway page rather than Dispatch's own answer, so a retry may succeed\.$/,
     deadlineMs: 2_000,
     respond: () => page(200, "<!doctype html><html><title>Sign in</title><form></form></html>"),
   },
@@ -591,7 +592,8 @@ const failedReads: readonly {
   },
   {
     kind: "a 200 with an empty body",
-    reason: "Dispatch answered with something that is not an answers list",
+    reason:
+      /^HTTP_200: GET \S+\/answers\?since=[^&\s]+&max_chars=8000 answered 200 with an empty body, which looks like a proxy or gateway page rather than Dispatch's own answer, so a retry may succeed\.$/,
     deadlineMs: 2_000,
     respond: () => new Response("", { status: 200 }),
   },

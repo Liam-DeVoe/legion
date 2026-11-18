@@ -648,8 +648,8 @@ ended by either while it was in flight; a refused connection or a name that did 
 reached nothing. Every answer's body is read inside its attempt, so a 2xx settles only once its
 body is read whole. From "may have landed", only such a 2xx or a refusal Dispatch's keyed layer
 judged for the key (the key echoed back) settles the write. A 2xx that is no answer of Dispatch's
-settles nothing from either state: one whose body is empty or not JSON (a captive portal's 200
-page; every Dispatch write answers JSON, or a bodiless 204 or 205), whatever the process knows,
+settles nothing from either state: one whose body is empty or not typed JSON (a captive portal's
+200 page; every Dispatch write answers JSON, or a bodiless 204 or 205), whatever the process knows,
 and one that carries no key back from a Dispatch this process knows runs the keyed layer. Every
 other end — a 3xx, a page something in Dispatch's place wrote, a refusal Dispatch's auth made
 before its keyed layer ran (a 401, `403 READ_ONLY_TOKEN`, a second `401
@@ -660,12 +660,17 @@ a write that ends is told that event's own error: the refusal (a 3xx included, w
 reached Dispatch), the transport's failure (a refused connection on every attempt is told as
 Dispatch being unreachable), the credential's, the deadline's or the stop's. A credential whose
 trade goes on (the broker credential's fail-fast `TradeRetryingError`) is presented again on the
-write's pacing, and a deadline or a stop that ends the wait after it ends the write with that
-credential's error; a trade still unanswered, a pod's registration still pending (each told only
-once the credential has waited out its share of the deadline) and a credential refused for good
-end the write at once. When the write ends unsettled after this call saw the keyed layer judge
-it, the error says Dispatch finishes an attempt it received, and to read the write back before
-sending it again, since a new command sends it under a new key. A conversion that writes nothing
+write's pacing, and before anything may have landed a deadline or a stop that ends the wait after
+it ends the write with that credential's error (after a landing, the write is unsettled with the
+deadline's or the stop's own); a trade still unanswered, a pod's registration still pending (each
+told only once the credential has waited out its share of the deadline) and a credential refused
+for good end the write at once. A write presents as one login: Dispatch keys a write per login
+(`requestKeyLogin`), so once an attempt may have landed, a presentation as another login (a
+sign-out, a sign-in, a session switch; `RequestCredential.identity`) is never sent, and the write
+ends unsettled with its key; before that, a repeat reaches no handler and goes as the new login.
+When the write ends unsettled after this call saw the keyed layer judge it, the error says
+Dispatch finishes an attempt it received, and to read the write back before sending it again,
+since a new command sends it under a new key. A conversion that writes nothing
 (the markdown round trip) never leaves "nothing sent", so it keeps its own answers.
 `dispatch-write-outcomes.test.ts` drives the client through every (state, event) pair and every
 sequence of events up to its limits against that rule.
@@ -673,7 +678,7 @@ sequence of events up to its limits against that rule.
 A write that may have landed is asked again only against a Dispatch this process has lately seen
 run the keyed layer, since an earlier Dispatch ignores the header and would run a retried write a
 second time; before anything may have landed (a refused connection, a 408 or 429, a credential
-that could not present), a repeat is no second write, and nothing is asked first. A failing
+whose trade goes on), a repeat is no second write, and nothing is asked first. A failing
 answer that echoes the request's key (`Idempotency-Key: <key>`) is that proof itself, a 2xx whose
 body then broke off included, so one of Dispatch's 5xx, 429 or `409 KEY_IN_FLIGHT` is resent
 without a probe, paced by the `Retry-After` its headers carried. A transport failure, a silence cut and a
@@ -724,7 +729,13 @@ Dispatch, so the advice is to check whether it took effect before retrying. The 
 `advice`, `transient` and `mayHaveReachedDispatch` let a caller that knows more about its own
 request, such as `dispatch issue-update`'s close path, give its own advice instead. The executor
 reads a status as Dispatch's meaning (a 404 as no linked issue, no such document, or a server
-without the route) only when `fromDispatch` is true.
+without the route) only when `fromDispatch` is true. A 2xx is no answer of Dispatch's either where
+its body is empty, not typed JSON (`application/json` or a `+json` type, letter case aside, as
+Dispatch's own rule reads it) or not JSON, but for a bodiless 204 or 205: every route this client
+reads as JSON answers JSON (`WriteJSON`), so such a read is a `DispatchGatewayError` too, naming
+the body the same way, and a retry may succeed, since a proxy or a captive portal in the way can
+be got past. Before, its text was handed back as the route's answer, and `dispatch open-asks` read a
+portal's page as no asks at all.
 
 `DispatchWriteUnsettledError` is deliberately not a `DispatchServiceError`, since a caller reads
 one as a refusal Dispatch decided: its message is the last answer or failure, the number of

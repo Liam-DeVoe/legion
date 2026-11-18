@@ -39,8 +39,8 @@ body: |-
   key, paced by the `Retry-After` its headers carried and with the key they echoed read as
   Dispatch's keyed layer. Once an attempt may have landed, only a 2xx whose body was read whole,
   or a refusal Dispatch's keyed layer judged for the key, settles the write. A 2xx that is no
-  answer of Dispatch's settles nothing, wherever it comes: one whose body is empty or not JSON
-  (a captive portal's 200 page; every Dispatch write answers JSON, or a bodiless 204 or 205),
+  answer of Dispatch's settles nothing, wherever it comes: one whose body is empty or not typed
+  JSON (a captive portal's 200 page; every Dispatch write answers JSON, or a bodiless 204 or 205),
   whatever the process knows, and one that carries no key back from a Dispatch this process
   knows runs the keyed layer. Every other end — a 3xx, a gateway's
   page, Dispatch's auth refusal (a 401, `403 READ_ONLY_TOKEN`, a second `401
@@ -54,9 +54,13 @@ body: |-
   pod's registration still pending, which the credential tells only once it has waited out its
   share of the call's deadline, and a credential refused for good, end the write at once with
   their own error. Where the deadline or the caller's stop ends the wait after such a failure,
-  before anything landed, the write ends with the credential's error, not the wait's. Before
-  anything of a write may have landed (a refused connection, a 408 or 429, a credential that could
-  not present), it is asked again without asking `/healthz` first, since a repeat then is no second
+  before anything landed, the write ends with the credential's latest error, not the wait's. A
+  write presents as one login: once an attempt may have landed, a presentation as another (a
+  sign-out, a sign-in or a session switch between two attempts) is never sent, since Dispatch
+  keys a write per login and would run the repeat a second time; the write ends unsettled with
+  its key. Before
+  anything of a write may have landed (a refused connection, a 408 or 429, a credential whose trade
+  goes on), it is asked again without asking `/healthz` first, since a repeat then is no second
   write; before, the probe came first, and a fail-fast credential, which failed the probe's
   presentation too, ended the write there. The `/healthz` probe now presents no credential, since
   Dispatch serves it outside its API, so a credential failing at that moment no longer ends a
@@ -77,7 +81,12 @@ body: |-
   308 from Google's security token service would have sent the projected token in its body on to
   another origin. The dead token's re-send happens once per write call. The markdown round-trip,
   a POST that writes nothing, is never read as a write that may have landed, so a 503 and then an
-  old build's no route leave the route absent and the upload goes on, as before this change.
+  old build's no route leave the route absent and the upload goes on, as before this change. A
+  Dispatch read whose 2xx is empty, not typed JSON or not JSON (a captive portal's 200 page) is
+  refused as something in Dispatch's place, naming the body in one redacted line, where its text
+  was handed back as the route's answer: `dispatch open-asks` and Claude Code's session hook read
+  such a page as no asks at all. A JSON type is read as Dispatch reads it, letter case aside and
+  with `+json` types.
 time: 2026-11-17T12:39:04Z
 custom:
     Issue: pr4140

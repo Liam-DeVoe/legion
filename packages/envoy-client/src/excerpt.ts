@@ -170,8 +170,10 @@ export class SentTokens {
     this.#tokens.length = Math.min(this.#tokens.length, SENT_TOKENS_KEPT);
   }
 
-  /** `current` (the credential's secret now) and the tokens kept. */
+  /** `current` (the credential's secret now) and the tokens kept, each once, none empty. */
   with(current: string): readonly string[] {
-    return [current, ...this.#tokens];
+    const held = current.trim();
+    if (held === "") return [...this.#tokens];
+    return [held, ...this.#tokens.filter((token) => token !== held)];
   }
 }

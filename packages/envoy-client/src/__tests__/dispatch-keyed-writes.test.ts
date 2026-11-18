@@ -1681,7 +1681,7 @@ describe("DispatchClient's writes", () => {
   });
 
   // A3 (the review of 99b1e438db): every Dispatch write answers JSON or a bodiless 204 or 205
-  // (`writeJSON`, `api/routes_shapes.go`), so a 2xx with an empty body or a body that is not JSON
+  // (`WriteJSON`, `api/server.go`), so a 2xx with an empty body or a body that is not JSON
   // is something in Dispatch's place, a captive portal's 200 for one, whether or not this process
   // knows the keyed layer: whether that sender passed the write on cannot be told, so the write
   // ends unsettled with its key, never as a success.
@@ -1793,6 +1793,179 @@ describe("DispatchClient's writes", () => {
     expect(error).toBeInstanceOf(SignInEndedError);
     expect(sent).toHaveLength(0);
     expect(presented).toBe(1);
+  });
+
+  // A5 (the review of be17859eca): Dispatch keys a write per login (`requestKeyLogin`,
+  // request_keys.go), so a repeat that presents as another login is a new key there and can run
+  // the write a second time. Once an attempt may have landed, a presentation as another login
+  // than the write's (a sign-out, a session switch) ends the write unsettled with its key, and
+  // nothing is presented again; before that, a repeat reaches no handler, and the write goes as
+  // the new login.
+  const switching = () => {
+    let login = "person-a";
+    let presented = 0;
+    const byHeaders = new WeakMap<object, string>();
+    const credential: RequestCredential = {
+      scheme: "DPoP",
+      headers: () => {
+        presented += 1;
+        const headers = { Authorization: `DPoP ${login}-token`, DPoP: "proof" };
+        byHeaders.set(headers, login);
+        return headers;
+      },
+      identity: (presentedHeaders) => byHeaders.get(presentedHeaders),
+      secret: () => `${login}-token`,
+    };
+    return {
+      credential,
+      switchTo: (next: string) => {
+        login = next;
+      },
+      presentations: () => presented,
+    };
+  };
+
+  test("a repeat that would present as another login after an attempt that may have landed ends the write unsettled, carrying its key", async () => {
+    const { credential, switchTo, presentations } = switching();
+    const { fetchImpl, sent } = scripted([
+      () => {
+        switchTo("person-b");
+        return refusal(503, "UNAVAILABLE", "the database is restarting");
+      },
+      json(posted, 201),
+    ]);
+
+    const error = await failure(
+      new DispatchClient("http://dispatch.test", credential, fetchImpl, {
+        writeRetry: pacing().retry,
+      }).comment("DSP-1", comment)
+    );
+
+    expect(sent).toHaveLength(1);
+    expect(presentations()).toBe(2);
+    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+    expect((error as DispatchWriteUnsettledError).key).toBe(
+      sent[0]?.headers["Idempotency-Key"] as string
+    );
+    expect((error as DispatchWriteUnsettledError).last.message).toContain(
+      "would present as another login than the attempt before it"
+    );
+  });
+
+  test("before anything may have landed, a repeat as another login goes as that login", async () => {
+    const { credential, switchTo } = switching();
+    const { fetchImpl, sent } = scripted([
+      () => {
+        switchTo("person-b");
+        throw refused();
+      },
+      json(posted, 201),
+    ]);
+
+    await expect(
+      new DispatchClient("http://dispatch.test", credential, fetchImpl, {
+        writeRetry: pacing().retry,
+      }).comment("DSP-1", comment)
+    ).resolves.toEqual(posted);
+
+    expect(sent.map((request) => request.headers.Authorization)).toEqual([
+      "DPoP person-a-token",
+      "DPoP person-b-token",
+    ]);
+  });
+
+  // F1 (the review of be17859eca): the failure a write ends with is the latest of its
+  // credential's, never an older one: a presentation that the caller's stop ends while it throws
+  // its own error ends the write with that error, and one that answered before the stop leaves no
+  // earlier failure behind.
+  test("a stop during a later presentation ends the write with that presentation's own error, not an earlier one", async () => {
+    const controller = new AbortController();
+    let presented = 0;
+    const credential: RequestCredential = {
+      scheme: "DPoP",
+      headers: () => {
+        presented += 1;
+        if (presented === 1) {
+          throw new TradeRetryingError("the secrets broker answered 503 temporarily_unavailable");
+        }
+        controller.abort(new DOMException("The operation was aborted.", "AbortError"));
+        throw new RegistrationPendingError(
+          "ses_pod",
+          new BrokerRefusedError(
+            400,
+            "pod_session_not_registered",
+            "pod_session_not_registered: No registration says this pod may write as ses_pod",
+            "this pod"
+          )
+        );
+      },
+      secret: () => "",
+    };
+    const { fetchImpl, sent } = scripted([]);
+
+    const error = await failure(
+      new DispatchClient("http://dispatch.test", credential, fetchImpl, {
+        signal: controller.signal,
+        writeRetry: pacing().retry,
+      }).comment("DSP-1", comment)
+    );
+
+    expect(sent).toHaveLength(0);
+    expect(error).toBeInstanceOf(RegistrationPendingError);
+  });
+
+  test("a stop right after a presentation answered ends the write with the stop, not an earlier credential failure", async () => {
+    const controller = new AbortController();
+    let presented = 0;
+    const credential: RequestCredential = {
+      scheme: "DPoP",
+      headers: () => {
+        presented += 1;
+        if (presented === 1) {
+          throw new TradeRetryingError("the secrets broker answered 503 temporarily_unavailable");
+        }
+        controller.abort(new DOMException("The operation was aborted.", "AbortError"));
+        return { Authorization: "DPoP live", DPoP: "proof" };
+      },
+      secret: () => "live",
+    };
+    const { fetchImpl, sent } = scripted([]);
+
+    const error = await failure(
+      new DispatchClient("http://dispatch.test", credential, fetchImpl, {
+        signal: controller.signal,
+        writeRetry: pacing().retry,
+      }).comment("DSP-1", comment)
+    );
+
+    expect(sent).toHaveLength(0);
+    expect(error).not.toBeInstanceOf(TradeRetryingError);
+    expect((error as Error).name).toBe("AbortError");
+  });
+
+  // F4 (the review of be17859eca): a JSON answer is one whose media type is `application/json` or
+  // ends in `+json`, letter case aside, as Dispatch's own rule reads it (`compressibleAnswer`,
+  // response_compression.go); so a proxy that rewrites the type's case leaves Dispatch's answer
+  // Dispatch's.
+  test.each([
+    "Application/JSON; charset=utf-8",
+    "application/vnd.dispatch+json",
+  ])("a 201 typed %s settles the write as Dispatch's answer", async (type) => {
+    const { fetchImpl, sent } = scripted([
+      (signal) => {
+        void signal;
+        const key = sent[0]?.headers["Idempotency-Key"] ?? "";
+        return new Response(JSON.stringify(posted), {
+          status: 201,
+          headers: { "Content-Type": type, "Idempotency-Key": key },
+        });
+      },
+    ]);
+
+    await expect(client(fetchImpl, pacing().retry).comment("DSP-1", comment)).resolves.toEqual(
+      posted
+    );
+    expect(sent).toHaveLength(1);
   });
 
   // F3: a Dispatch known to run the keyed layer answers every keyed write with its key, so a 2xx

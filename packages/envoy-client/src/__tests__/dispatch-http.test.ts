@@ -127,8 +127,9 @@ describe("DispatchClient", () => {
   });
 
   // A JSON answer that is not a page is Dispatch's own and comes back the same on a retry; text in
-  // its place is most likely a proxy or gateway page, which a retry can get past. The agent acts on
-  // the advice, so each kind gets its own.
+  // its place is most likely a proxy or gateway page, which a retry can get past, and the read
+  // path refuses it before any listing reads it (`#response`). The agent acts on the advice, so
+  // each kind gets its own.
   test("refuses an issue listing answer that is not a page, naming what arrived and whether a retry can help", async () => {
     const { fetchImpl } = fakeFetch([
       jsonResponse({ issues: "DSP-1", total: 1 }),
@@ -150,14 +151,22 @@ describe("DispatchClient", () => {
       ". Retrying will not help: the same request gets the same answer until that Dispatch is " +
       "upgraded or fixed.";
     const maySucceed =
-      "and got text that is not a JSON page, which looks like a proxy or gateway page rather than " +
-      "Dispatch's own answer, so a retry may succeed.";
+      "which looks like a proxy or gateway page rather than Dispatch's own answer, so a retry may " +
+      "succeed.";
 
     expect(await refusal()).toEndWith(
       `and got an object without an issues array or a numeric limit or a numeric offset${sameAgain}`
     );
     expect(await refusal()).toEndWith(`and got null${sameAgain}`);
-    for (const text of [await refusal(), await refusal()]) {
+    const html = await refusal();
+    expect(html).toStartWith(
+      'GET http://dispatch.test/api/v1/issues?project=DSP&limit=50&offset=0 answered 200 with a body that is not JSON ("bad gateway")'
+    );
+    const truncated = await refusal();
+    expect(truncated).toStartWith(
+      'GET http://dispatch.test/api/v1/issues?project=DSP&limit=50&offset=0 answered 200 with a body that is not JSON ("{truncat")'
+    );
+    for (const text of [html, truncated]) {
       expect(text).toEndWith(maySucceed);
       expect(text).not.toContain("Retrying will not help");
     }
