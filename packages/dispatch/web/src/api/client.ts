@@ -748,8 +748,7 @@ export interface IssueTreeNode {
    *  none (an ask, a comment, a message, a lens, a risk), which comes after the ranked ones. */
   rank: string | null;
   /** Every author of the node's first version, whoever made it first ahead of the rest; an empty
-   *  list where none is recorded, never one Actor or null. A row that draws one name draws the
-   *  first. */
+   *  list where none is recorded. A row that draws one name draws the first. */
   author: Actor[];
   state: "live" | "proposed" | "overtaken" | "settled";
   visibility: "project" | "author";

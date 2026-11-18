@@ -107,8 +107,8 @@ async function readTree(
  * slot the stage mounts again past the app's 30 s `staleTime` sends no read; only a read whose
  * last answer failed is read again on focus (`refetchFailedOnFocus`), so a read that failed
  * recovers on the open page while a healthy one stays quiet. Every read of `useIssueTree` that an
- * event refreshes takes it, which names it `EVENT_FRESH`; the tree read and its views take it but
- * for the focus (`TREE_FRESH`).
+ * event refreshes takes it, which names it `EVENT_FRESH`; the tree read and its views take it,
+ * with the changes `TREE_FRESH` names.
  */
 export const REFRESHED_BY_EVENTS = {
   refetchOnWindowFocus: refetchFailedOnFocus,
@@ -458,6 +458,12 @@ function watchTree(
   // this record is never earlier than the scheduler's own, whichever of the two hears of the read
   // first.
   const startedAt = new Map<string, number>();
+  // Records that the read of `hash` began, in a microtask, so every listener has heard it began.
+  const recordStart = (hash: string): void => {
+    queueMicrotask(() => {
+      startedAt.set(hash, Date.now());
+    });
+  };
   // The tree read and the decisions read a refresh asked for while the scheduler would hold them
   // back, each until the refresh asks for it once the scheduler begins it at once (`timer`), or a
   // read of it begins. `since` is the moment from which the tree's waits for the reads of the
@@ -565,14 +571,9 @@ function watchTree(
   // millisecond - the ask waits once more, now counting only what is due from then.
   const arm = (target: RefreshTarget): void => {
     const heldAsk = heldAsks.get(target);
+    if (heldAsk === undefined || heldAsk.timer !== undefined) return;
     const query = cache.find(target);
-    if (
-      heldAsk === undefined ||
-      heldAsk.timer !== undefined ||
-      query?.state.fetchStatus !== "idle"
-    ) {
-      return;
-    }
+    if (query?.state.fetchStatus !== "idle") return;
     const owed = target === tree ? owedDues(heldAsk.since) : [];
     heldAsk.timer = window.setTimeout(
       () => {
@@ -670,20 +671,17 @@ function watchTree(
     if (event.type !== "updated") return;
     const { action } = event;
     if (matchQuery({ queryKey: issueTreeKey(key) }, query)) {
-      const isTree = matchQuery(tree, query);
       if (action.type !== "fetch") {
         // The held tree read is asked for once no read of it is out.
-        if (isTree) arm(tree);
+        if (heldAsks.has(tree) && matchQuery(tree, query)) arm(tree);
         return;
       }
-      // A read begins, which answers whatever asked for the view again.
+      // A read begins, which answers whatever asked for the tree or the view again.
       askedAgain.delete(query);
       const now = turnNow();
       beganIn.set(hash, now);
-      if (!isTree) return;
-      queueMicrotask(() => {
-        startedAt.set(hash, Date.now());
-      });
+      if (!matchQuery(tree, query)) return;
+      recordStart(hash);
       // A read of the tree begun since a refresh held its ask answers that ask, whoever began it.
       if (!calling) drop(tree, false);
       treeBegan = now;
@@ -698,9 +696,7 @@ function watchTree(
     if (!issueQueries.some((filters) => matchQuery(filters, query))) return;
     const isDecisions = matchQuery(decisions, query);
     if (action.type === "fetch") {
-      queueMicrotask(() => {
-        startedAt.set(hash, Date.now());
-      });
+      recordStart(hash);
       // A read of the decisions begun since a refresh asked for it answers that ask, whoever
       // began it, as it pays a refresh the scheduler owes; it is no read of the refresh's own.
       if (isDecisions && !calling) drop(decisions, false);

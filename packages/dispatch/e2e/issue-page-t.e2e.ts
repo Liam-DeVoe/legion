@@ -682,8 +682,8 @@ test("the first load reads the tree once and a filter its view once", async ({ b
 
 // c-tree-requests' Decisions clause, owed on the model's decisions view of the tree read
 // (`decisionsViewGate`): the decisions read moves onto the tree read's `view=decisions`, which the
-// load reads once whoever asks; the Decisions filter's one read of the decisions document stays
-// until the page draws the decisions from the tree read's nodes.
+// load reads once whoever asks, and the Decisions filter reads no blocks at all, since decisions
+// are nodes of the spec.
 // SLOW(>=2s): the whole seeded issue, its load waited out to a 1.5 s quiet window, and Decisions
 // pressed on and off twice with each press waited out.
 test("the first load reads the tree once and a filter its view once, and the load reads the Decisions view once @owed", async ({
@@ -699,7 +699,7 @@ test("the first load reads the tree once and a filter its view once, and the loa
       treeReads(load, seeded.key, "decisions"),
       "the load reads the Decisions view once, whoever asks"
     ).toBe(1);
-    for (const press of [1, 2]) {
+    for (let press = 0; press < 2; press += 1) {
       const from = traffic.requests.length;
       await pressFilter(page, traffic, "decisions");
       const pressed = traffic.requests.slice(from);
@@ -708,14 +708,7 @@ test("the first load reads the tree once and a filter its view once, and the loa
         "Decisions turned on sends no view read beside the load's"
       ).toBe(0);
       const blocks = blocksReads(pressed);
-      expect(
-        blocks.filter((path) => !path.includes(seeded.decisionsArtifactId)),
-        "Decisions reads no blocks but the decisions document's"
-      ).toEqual([]);
-      expect(
-        blocks.length,
-        "Decisions reads the decisions document once in a load, while decisions are no tree nodes"
-      ).toBeLessThanOrEqual(press === 1 ? 1 : 0);
+      expect(blocks, "Decisions reads no blocks").toEqual([]);
       await releaseFilter(page, "decisions");
     }
   });

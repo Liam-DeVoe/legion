@@ -6,6 +6,7 @@ import { QueryError } from "../../../components/QueryError";
 import { focusOnDocument } from "../../shell/roving";
 import { bringOnScreen } from "../identity-block";
 import { ANSWER_LINES, CONTROL_LABELS, type Preset } from "../page-words";
+import { TAB_STOP_ROW } from "../tree-focus";
 import {
   dropViews,
   subscribeTreeFreshness,
@@ -151,11 +152,6 @@ export function TreeReadFailed({ issue }: { issue: IssueDetails }): ReactNode {
     </div>
   ) : null;
 }
-
-/** The row of the outline's tree that holds its one tab stop: the stage's own selector
- *  (`slots/stage.tsx`'s `TAB_STOP_ROW`), which this file cannot import, since the stage imports
- *  this file. */
-const TAB_STOP_ROW = '[role="tree"] [role="treeitem"][tabindex="0"]';
 
 /** The outline's tree itself (`IssueTree.tsx`), by its name. */
 const OUTLINE_TREE = `[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`;
