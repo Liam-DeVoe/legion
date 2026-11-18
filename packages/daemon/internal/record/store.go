@@ -3066,6 +3066,7 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 	}
 
 	rows, err := tx.Query(ctx, `select `+outboxColumns+`, coalesce(payload->>'role', ''), coalesce(payload->>'generation', ''),
+		coalesce(payload->>'claim', ''),
 		now() - created_at, coalesce(lease_token <> '' and lease_until > now(), false)
 		from outbox where kind = $1 and issue = any($2) order by id`, string(OutboxKindSupervise), issues)
 	if err != nil {
@@ -3073,17 +3074,20 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 	}
 	for rows.Next() {
 		var row OutboxRow
-		var kind, role, generation string
+		var kind, role, generation, named string
 		var payload []byte
 		var age time.Duration
 		var running bool
 		if err := rows.Scan(&row.ID, &kind, &row.Issue, &payload, &row.Attempts, &row.NextAt, &row.LastError,
-			&row.CreatedAt, &row.LeaseToken, &row.LeaseUntil, &role, &generation, &age, &running); err != nil {
+			&row.CreatedAt, &row.LeaseToken, &row.LeaseUntil, &role, &generation, &named, &age, &running); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("read the queued role runs of %d issues: %w", len(issues), err)
 		}
+		// A row that names a claim (SuperviseRequest.Claim) is that claim's alone: a keyed agent
+		// on a step of another role holds the role beside the role's own claim from an earlier
+		// version, and a start that names one is no queued run of the other.
 		token, wanted := candidates[roleRunIdentity{issue: row.Issue, role: role, generation: generation}]
-		if !wanted {
+		if !wanted || (named != "" && named != string(token)) {
 			continue
 		}
 		row.Kind = OutboxKind(kind)
