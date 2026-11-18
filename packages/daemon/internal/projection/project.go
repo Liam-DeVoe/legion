@@ -185,6 +185,12 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 				view.HoldReason = string(issue.Hold.Reason)
 			}
 		}
+		// The role of the running step, which no phase names, where the issue stands at step or its
+		// hold took it out of step, beside the phase that hold left (api.Issue.StepRole). At every
+		// other phase the phase names the role, so the view names none.
+		if issue.Phase == phase.Step || issue.Hold != nil && issue.Hold.From == phase.Step {
+			view.StepRole = string(issue.StepRole)
+		}
 		if slot, ok := slotViews[issue.Key]; ok {
 			view.Slot = &slot
 		}
@@ -239,14 +245,15 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 		// The entry the role of this issue's current phase stands on and the entry that role was
 		// given: what a reader tells a role holding the work its row names from one the daemon has
 		// still to send that work to (api.Issue.PhaseEntry and GivenEntry). A root carries them as
-		// a child does, since phase.RoleFor answers the architect for admitted and accepting and a
-		// phase role for each phase after; a phase no role works carries neither, where no row
-		// would be read and a difference written for one would never close. No row of a role the
-		// issue has moved past is read either, since that role keeps its entry and is sent nothing.
+		// a child does, since Issue.RoleAt answers the architect for admitted and accepting, a
+		// phase role for each phase of Legion's after, and at step the role of the running step; a
+		// phase no role works carries neither, where no row would be read and a difference written
+		// for one would never close. No row of a role the issue has moved past is read either,
+		// since that role keeps its entry and is sent nothing.
 		// The entry is 0 where the rows hold none of that role (record.PhaseRowOf), a role no
 		// transition has ever handed work on, which is the number admit's owedEntryRoles weighs
 		// the same role's claim against, so the state shows what the admission pass weighs.
-		role := phase.RoleFor(issue.Phase)
+		role := issue.RoleAt(issue.Phase)
 		if role != "" {
 			view.PhaseEntry, view.GivenEntry = record.PhaseRowOf(phases, role).Entry, entries[issueRole{issue: issue.Key, role: role}].given
 		}

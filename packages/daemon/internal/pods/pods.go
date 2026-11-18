@@ -136,7 +136,10 @@ type IdleRoot struct {
 // IdleView is one issue's pod as the idle rule reads it, in one read per issue: every claim of
 // the pod, whether any queued outbox row is addressed to one of its roles, the issue's own place
 // in the workflow and its tree root's. Found is false for an issue the record does not hold,
-// which is no pod of the workflow's to release.
+// which is no pod of the workflow's to release. StepRole is the role of the step the issue's task
+// stands at, read from its plan rows as the issue's own record reads it (record.Issue.StepRole),
+// and "" where they hold none: at step, the worker of the issue's open phase, which no phase
+// names.
 //
 // It is a record type rather than a store type because the rule that reads it is the workflow's
 // (workflow.IdleRelease) and the store is what fills it, so neither of the two imports the other
@@ -146,6 +149,7 @@ type IdleView struct {
 	Tree        string
 	Found       bool
 	Phase       phase.Phase
+	StepRole    claim.Role
 	Status      string
 	Generation  uint64
 	LingerUntil *time.Time

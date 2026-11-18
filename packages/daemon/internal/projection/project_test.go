@@ -1138,3 +1138,86 @@ func TestProjectShowsWhatAReviewRoundWaitsOnFromGitHub(t *testing.T) {
 		}
 	}
 }
+
+// An issue at step is worked by the role of its running step, which no phase names
+// (phase.RoleFor answers none for step), so the served issue names that role (`stepRole`,
+// record.Issue.StepRole) and carries that role's entry and the entry its claim was given, as an
+// issue at testing carries its tester's; a child at step carries that role's handshake too, as a
+// child at testing carries its tester's. An issue held from step names the role too, as it names
+// `heldFrom`, and carries neither number, as every held issue does. An issue at a phase of
+// Legion's names no `stepRole`, whatever its plan rows say runs there: its phase names the role.
+func TestTheServedStateNamesTheRunningDeploymentRole(t *testing.T) {
+	const project, checker = "LEGION", claim.Role("checker")
+	issue := func(key string, p phase.Phase, running claim.Role) record.Issue {
+		return record.Issue{Key: key, Project: project, Tree: key, Phase: p, Status: "in_progress",
+			Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Rank: key, StepRole: running}
+	}
+	held := issue("LEGION-71", phase.Held, checker)
+	held.Hold = &record.Hold{From: phase.Step, Reason: record.HoldEscalated}
+	child := issue("LEGION-73", phase.Step, checker)
+	child.Tree, child.Generation = "LEGION-70", 1
+	queuedAt, confirmedAt := projectedAt.Add(-20*time.Minute), projectedAt.Add(-15*time.Minute)
+	store := projectionStore{
+		issues: []record.Issue{issue("LEGION-70", phase.Step, checker), held, issue("LEGION-72", phase.Testing, claim.RoleTester), child},
+		phases: map[string][]record.PhaseRow{
+			"LEGION-70": {
+				{Issue: "LEGION-70", Role: claim.RoleImplementer, Claim: "legion-70-implementer", Entry: 2},
+				{Issue: "LEGION-70", Role: checker, Claim: "legion-70-checker", Entry: 3},
+			},
+			"LEGION-71": {{Issue: "LEGION-71", Role: checker, Claim: "legion-71-checker", Entry: 4}},
+			"LEGION-72": {{Issue: "LEGION-72", Role: claim.RoleTester, Claim: "legion-72-tester", Entry: 2}},
+			"LEGION-73": {{Issue: "LEGION-73", Role: checker, Claim: "legion-73-checker", Entry: 2}},
+		},
+	}
+	claims := []supervise.Claim{
+		{Token: "legion-70-implementer", Issue: "LEGION-70", Role: claim.RoleImplementer, State: supervise.StateIdle,
+			Session: "ses_implementer_70", GivenEntry: 2},
+		{Token: "legion-70-checker", Issue: "LEGION-70", Role: checker, State: supervise.StateSuspended,
+			Session: "ses_checker_70", GivenEntry: 1},
+		{Token: "legion-71-checker", Issue: "LEGION-71", Role: checker, State: supervise.StateSuspended,
+			Session: "ses_checker_71", GivenEntry: 1},
+		{Token: "legion-72-tester", Issue: "LEGION-72", Role: claim.RoleTester, State: supervise.StateWorking,
+			Session: "ses_tester_72", GivenEntry: 2},
+		{Token: "legion-73-checker", Issue: "LEGION-73", Role: checker, State: supervise.StateWorking,
+			Session: "ses_checker_73", GivenEntry: 2,
+			Handshake: supervise.EntryHandshake{Entry: 2, Generation: 1, QueuedAt: queuedAt, ConfirmedAt: confirmedAt}},
+	}
+
+	got, err := Project(context.Background(), nil, store, project, nil, nil, claims, nil, nil, projectedAt)
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+	for _, want := range []struct {
+		key                    string
+		stepRole, heldFrom     string
+		phaseEntry, givenEntry int64
+	}{
+		// The checker's own row and claim, not the implementer's that ran the step before.
+		{key: "LEGION-70", stepRole: "checker", phaseEntry: 3, givenEntry: 1},
+		{key: "LEGION-71", stepRole: "checker", heldFrom: "step"},
+		{key: "LEGION-72", phaseEntry: 2, givenEntry: 2},
+		{key: "LEGION-73", stepRole: "checker", phaseEntry: 2, givenEntry: 2},
+	} {
+		view, known := got.Issues[want.key]
+		if !known {
+			t.Fatalf("%s is in no issue of the projected state; this test proves nothing", want.key)
+		}
+		document := wire(t, view)
+		served, carried := document["stepRole"]
+		if want.stepRole == "" && carried {
+			t.Errorf("%s is served stepRole %v, want no stepRole: its phase names its role", want.key, served)
+		}
+		if want.stepRole != "" && served != want.stepRole {
+			t.Errorf("%s is served stepRole %v, want %q: %s", want.key, served, want.stepRole, canonical(t, document))
+		}
+		if view.HeldFrom != want.heldFrom || view.PhaseEntry != want.phaseEntry || view.GivenEntry != want.givenEntry {
+			t.Errorf("%s is projected held from %q with entry %d given %d, want held from %q with entry %d given %d",
+				want.key, view.HeldFrom, view.PhaseEntry, view.GivenEntry, want.heldFrom, want.phaseEntry, want.givenEntry)
+		}
+	}
+	if view := got.Issues["LEGION-73"]; view.EntryQueuedAt == nil || !view.EntryQueuedAt.Equal(queuedAt) ||
+		view.EntryConfirmedAt == nil || !view.EntryConfirmedAt.Equal(confirmedAt) {
+		t.Errorf("the child LEGION-73 at step carries the handshake queued %v confirmed %v, want its checker's, queued %s confirmed %s",
+			view.EntryQueuedAt, view.EntryConfirmedAt, queuedAt, confirmedAt)
+	}
+}
