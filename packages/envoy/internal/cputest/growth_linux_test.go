@@ -24,8 +24,9 @@ const (
 	faultRounds  = 2
 )
 
-// spinSink keeps the compiler from dropping the work of userWork.
-var spinSink uint64
+// spinSink keeps the compiler from dropping the work of userWork. It is atomic because
+// holdEachProcessor runs userWork on several goroutines at once.
+var spinSink atomic.Uint64
 
 // userWork is steps of xorshift, work in user mode that makes no system call and allocates nothing.
 func userWork(steps int) {
@@ -35,7 +36,7 @@ func userWork(steps int) {
 		state ^= state >> 7
 		state ^= state << 17
 	}
-	spinSink += state
+	spinSink.Add(state)
 }
 
 // faultPages maps faultedBytes of fresh memory faultRounds times, in small pages, and writes one
