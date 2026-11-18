@@ -11,6 +11,7 @@ import {
   editMessage,
   getCommentHistory,
   getMessageHistory,
+  search,
 } from "./api";
 import { marginCard, openSpec } from "./editor";
 import { hasReadingPane, inboxPane } from "./inbox-pane";
@@ -30,20 +31,21 @@ import { asUser } from "./users";
  * (`data-post-deleted`) where its text was, with no part of that text anywhere on the page
  * (`web/src/features/refs/PostBody.tsx`).
  *
- * Five rows. Three read the four pages chk-pages names: the issue's Conversation and the margin
+ * Six rows. Three read the four pages chk-pages names: the issue's Conversation and the margin
  * of its spec in one row, which read one deleted comment two ways from one seeding; the Inbox
  * thread of a reply to such a comment; and a session's own conversation page. Each of those
  * seeds through the API and then reads the page, because the mark is the server's record drawn
  * by the component rather than anything the browser can make on its own, and each pays a Go
  * server, a Postgres, a sign-in and a database reset for that, which is why the two pages that
- * read one comment are read by one row. The other two hold a page open while the post's author
+ * read one comment are read by one row. Two more hold a page open while the post's author
  * edits it and then deletes it through the API - the Inbox's thread rows and the answers page -
  * and read the marks without a reload: the event each correction appends makes the page read its
- * list again (`web/src/api/event-refresh.ts`). Every other surface that prints a body is covered
+ * list again (`web/src/api/event-refresh.ts`). The last holds the search palette open over a
+ * comment's hit while its author deletes it. Every other surface that prints a body is covered
  * by a test of its component in `web/src`, which CI runs.
  *
  * No row here carries the ` @pr` tag, so the suite that answers a pull request schedules none
- * of them and the full lane, which the merge queue and the nightly run, holds all five:
+ * of them and the full lane, which the merge queue and the nightly run, holds all six:
  * `main` is gated exactly as it would be with the tag. The lane's real-stack share is full at
  * its 150 (`e2e/__tests__/pull-request-lane.test.ts`), and the stubbed layer cannot take these
  * rows, because each writes to the server — a `PATCH` of a message, a `DELETE` of a comment —
@@ -321,6 +323,59 @@ test("the agent conversation page marks an edited issue message", async ({ brows
     await expect(sent).toContainText("Planner, the export failed at 02:00 UTC.");
     await expect(sent.getByText("edited")).toBeVisible();
     await expect(page.getByText("Planner, the export failed at 02:00 local.")).toHaveCount(0);
+  } finally {
+    await alice.close();
+  }
+});
+
+// R3 of dispatch://INFRA-1523: the search palette left open over a comment's hit, and the same
+// words typed again into a palette reopened at once, print none of the comment once its author
+// deletes it, with no reload. The palette keeps each answer under its words for 30 s
+// (`useTieredSearch.ts`, the page's staleTime), so a correction that refreshes no search leaves
+// the deleted words on the page for as long as that answer is kept.
+// SLOW(>=2s): a comment written and found by the API search before the palette opens, then
+// deleted through the API and waited for on the open page.
+test("an open search palette prints none of a comment its author deletes", async ({ browser }) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "The palette window" });
+  const comment = await createComment(issue.key, {
+    body: "The zarquonpalette window closes at noon.",
+  });
+  await expect
+    .poll(async () => JSON.stringify(await search("zarquonpalette")), { timeout: 60_000 })
+    .toContain(comment.id);
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto("/");
+    await expect(page.getByRole("button", { name: /^search/i })).toBeVisible();
+    await page.locator("body").focus();
+    await page.keyboard.press("Control+k");
+    const box = page.getByRole("combobox", { name: "Search" });
+    const dialog = page.getByRole("dialog", { name: "Search" });
+    await expect(box).toBeFocused();
+    // Both tiers answer before the delete: the keystroke's (`keywords_only`) and the pause's, so
+    // no search the typing started can land after the delete and stand in for a refresh.
+    const paused = page.waitForResponse(
+      (response) =>
+        /\/api\/v1\/search(\/results)?\?/.test(response.url()) &&
+        response.url().includes("zarquonpalette") &&
+        !response.url().includes("keywords_only")
+    );
+    await box.pressSequentially("zarquonpalette", { delay: 25 });
+    await paused;
+    await expect(dialog).toContainText("window closes at noon");
+
+    await deleteComment(comment.id);
+    await expect(dialog).not.toContainText("window closes at noon", { timeout: 15_000 });
+
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("Control+k");
+    await expect(box).toBeFocused();
+    await box.fill("zarquonpalette");
+    await page.waitForTimeout(1_500);
+    await expect(dialog).not.toContainText("window closes at noon");
   } finally {
     await alice.close();
   }
