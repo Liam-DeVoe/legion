@@ -125,29 +125,59 @@ describe("refuse_leftovers", () => {
     return boot - Math.floor(boot);
   }
 
+  const btime = Number(/^btime (\d+)$/m.exec(readFileSync("/proc/stat", "utf8"))?.[1]);
+  const ticksPerSecond = Number(Bun.spawnSync(["getconf", "CLK_TCK"]).stdout.toString());
+
+  /** The tick since the boot that a reading of whole seconds since btime gives the moment `ms` of
+   *  the wall clock: the reading of a container's creation that refuse_leftovers must not make. */
+  const wholeSeconds = (ms: number) => (Math.floor(ms / 1000) - btime) * ticksPerSecond;
+
+  /** The tick since the boot in which the kernel dates a process's start (proc(5), stat field
+   *  22). */
+  function startTick(pid: number): number {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    return Number(stat.slice(stat.lastIndexOf(") ") + 2).split(" ")[19]);
+  }
+
   /** A live process of this row's, started at a moment of the wall clock whose fraction of a
-   *  second is past btime's by at least 50 ms: where a reading of whole seconds since btime dates
-   *  a container made in the same second before the process's own start. Answers the process and
-   *  the moments, in milliseconds, before and after its spawn. */
-  async function startedPastTheBootsFraction() {
-    const from = Math.min(bootFraction() + 0.05, 0.9);
-    // A real wait for a fraction of the wall clock's second: the fault is in how the kernel's
-    // ticks since the boot meet Docker's wall-clock creation and btime's whole second, and no fake
-    // timer moves /proc or the `date` that refuse_leftovers runs in its own bash.
-    while (!((Date.now() % 1000) / 1000 > from && (Date.now() % 1000) / 1000 < 0.95)) {
-      await Bun.sleep(5);
+   *  second is in [from, to - 30 ms), with the moments, in milliseconds, before and after its
+   *  spawn, and whether whole seconds since btime misread the case the row makes of it
+   *  (`misread`, from the kernel's own tick of the start). Where that range is narrower than
+   *  50 ms the row has no start to wait for and says so (`window` false); where load moved the
+   *  start out of it, it starts another, up to 20 times. */
+  async function startedAt(
+    from: number,
+    to: number,
+    misread: (tick: number, before: number, after: number) => boolean
+  ) {
+    const window = to - 0.03 - from >= 0.05;
+    for (let tries = 1; ; tries++) {
+      // A real wait for a fraction of the wall clock's second: the fault is in how the kernel's
+      // ticks since the boot meet Docker's wall-clock creation and btime's whole second, and no
+      // fake timer moves /proc or the `date` that refuse_leftovers runs in its own bash.
+      while (
+        window &&
+        !((Date.now() % 1000) / 1000 >= from && (Date.now() % 1000) / 1000 < to - 0.03)
+      )
+        await Bun.sleep(5);
+      const before = Date.now();
+      const child = Bun.spawn(["sleep", "120"]);
+      const after = Date.now() + 1;
+      const read = misread(startTick(child.pid), before, after);
+      if (read || !window || tries === 20) return { child, before, after, window, misread: read };
+      child.kill();
     }
-    const before = Date.now();
-    const child = Bun.spawn(["sleep", "120"]);
-    const after = Date.now() + 1;
-    return { child, before, after };
   }
 
   // Docker dates a container in nanoseconds and the kernel a process's start in ticks (10 ms):
   // refuse_leftovers compares them at that precision. A driver that made its container in the same
   // second it started, after a boot whose fraction of a second btime drops, read as younger than
   // its container when the creation was read in whole seconds since btime, and its live run's
-  // container was refused.
+  // container was refused. These rows start the driver in a tick of the boot's own wall-clock
+  // second after the boot's fraction, where that reading refuses it: from 20 ms past the fraction
+  // to 30 ms before the second ends. A boot in the last 100 ms of its second leaves no such range
+  // (at its last 10 ms no such start at all: whole seconds then date each container made in its
+  // owner's tick right), and there the row of the 50 ms below sets the case of that reading.
   for (const [form, suffix] of [
     ["<pid>", ""],
     ["<pid>-<random>", "-fedcba9876543210"],
@@ -155,31 +185,52 @@ describe("refuse_leftovers", () => {
     test(
       `a live run's container named ${form} and made in the tick its driver started is no leftover`,
       async () => {
-        const { child, after } = await startedPastTheBootsFraction();
+        const started = await startedAt(
+          bootFraction() + 0.02,
+          1,
+          (tick, _before, after) => tick > wholeSeconds(after)
+        );
         try {
           const prefix = `legion-e2eyoung${process.pid}`;
-          const out = refuse(prefix, [`${prefix}-nats-${child.pid}${suffix}|`], new Date(after));
-          expect(out).toBe("exit 0\npassed\n");
+          const name = `${prefix}-nats-${started.child.pid}${suffix}`;
+          const out = refuse(prefix, [`${name}|`], new Date(started.after));
+          // Where the boot's second leaves a window, the row's case is one whole seconds misread.
+          expect({ out, caseSet: started.misread || !started.window }).toEqual({
+            out: "exit 0\npassed\n",
+            caseSet: true,
+          });
         } finally {
-          child.kill();
+          started.child.kill();
         }
       },
       walkBound
     );
   }
 
+  // The same reading dates a container made 50 ms before a later process of its pid started, in
+  // the same second and before the boot's fraction, at or after that start, so the dead run's
+  // container read as the live one's: this row starts that process from 70 ms into a second to
+  // 20 ms before the boot's fraction. A boot in the first 170 ms of its second leaves no such
+  // range, and there the two rows above set the case.
   test(
     "a container made 50 ms before the process that now has its pid started is that dead run's leftover",
     async () => {
-      const { child, before } = await startedPastTheBootsFraction();
+      const started = await startedAt(
+        0.07,
+        bootFraction() - 0.02,
+        (tick, before) => tick <= wholeSeconds(before - 50)
+      );
       try {
         const prefix = `legion-e2elater${process.pid}`;
-        const name = `${prefix}-nats-${child.pid}-0123456789abcdef`;
-        const out = refuse(prefix, [`${name}|`], new Date(before - 50));
-        expect(out).toStartWith("exit 1\nFAIL: ");
-        expect(out).toContain(`container ${name} (docker rm -f -v ${name})`);
+        const name = `${prefix}-nats-${started.child.pid}-0123456789abcdef`;
+        const out = refuse(prefix, [`${name}|`], new Date(started.before - 50));
+        expect({
+          failed: out.startsWith("exit 1\nFAIL: "),
+          named: out.includes(`container ${name} (docker rm -f -v ${name})`),
+          caseSet: started.misread || !started.window,
+        }).toEqual({ failed: true, named: true, caseSet: true });
       } finally {
-        child.kill();
+        started.child.kill();
       }
     },
     walkBound

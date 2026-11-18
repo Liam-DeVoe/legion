@@ -245,6 +245,13 @@ omp_ancestor() {
   done
 }
 
+# A batch removes the Postgres of dead stacks first, before each check of its start but one of its
+# own inputs (scripts/e2e/lib/sweep-order.ts): a check that refuses the batch for what a dead batch
+# of this work directory left, as lock_services's of the lock it leaves, would end every later
+# batch with that Postgres still there (scripts/e2e/lib/leftovers.sh).
+# shellcheck source-path=SCRIPTDIR/../../../.. source=scripts/e2e/lib/leftovers.sh
+. "$root/scripts/e2e/lib/leftovers.sh"
+case "${1:-}" in batch) remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run" ;; esac
 case "$work/" in "$root"/*) fail "SKILL_SCENARIOS_WORK $work is inside the checkout $root, where jj would snapshot it" ;; esac
 if found=$(omp_ancestor "$work"); then
   fail "SKILL_SCENARIOS_WORK $work is under $found: Oh My Pi reads that .omp as the configuration of every run's cwd, so a run would load its plugins and not its label's; give a work directory with no .omp in it or above it"
@@ -274,8 +281,6 @@ evidence=$work
 timeout_hook=
 # shellcheck source-path=SCRIPTDIR/../../../.. source=scripts/e2e/lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
-# shellcheck source-path=SCRIPTDIR/../../../.. source=scripts/e2e/lib/leftovers.sh
-. "$root/scripts/e2e/lib/leftovers.sh"
 
 tag=skill-scenarios-$(printf '%s' "$work" | sha256sum | cut -c1-8)
 # The ids of the batch's own containers, by which services_down removes them (start_container).
@@ -785,8 +790,8 @@ services_up() {
   # Each by the id its create printed (start_container, lib/rig.sh), which services_down removes:
   # a batch of another work directory with the same hash, or of the same path in another mount
   # namespace on one Docker daemon, holds the same names, and its create then fails rather than
-  # take these. The batch's Postgres carries its mark (scripts/e2e/lib/leftovers.sh); cmd_batch
-  # removed the Postgres of dead stacks before it took the lock.
+  # take these. The batch's Postgres carries its mark (scripts/e2e/lib/leftovers.sh); the batch
+  # removed the Postgres of dead stacks at its start, before it took the lock.
   pg_mark=$(postgres_mark "$work" "$tag-pg") || fail "the mark of $tag-pg could not be made"
   start_container service_containers "$tag-pg" --label "$pg_mark" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
     -e POSTGRES_PASSWORD=ci -p 127.0.0.1::5432 ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 \
@@ -1593,10 +1598,6 @@ cmd_batch() {
     first=$(next_run "$batch_scenario" "$1")
     ;;
   esac
-  # The Postgres of a dead stack goes first, before lock_services, whose refusal of the lock a dead
-  # batch of this work directory left would end the batch with that Postgres still there
-  # (scripts/e2e/lib/leftovers.sh).
-  remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
   lock_services
   on_exit stop_batch
   services_up

@@ -63,6 +63,16 @@ if [ "$model_route" = box-login ] && [ -n "${LEGION_OMP_PATH:-}" ]; then
   echo "FAIL setup: LEGION_OMP_PATH is set ($LEGION_OMP_PATH); under LEGION_E2E_MODEL_ROUTE=box-login the panes run the operator's own Oh My Pi build alone, so unset LEGION_OMP_PATH" >&2
   exit 1
 fi
+# The Postgres of a dead stack goes before the lock and each other check of the start but one of its
+# own inputs (lib/sweep-order.ts): a pane that a dead run left still holds the lock, and a check that
+# refuses the start for what a dead run left would end every later start with that Postgres still
+# there. This run's own carries its mark (lib/leftovers.sh).
+# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
+. "$root/scripts/e2e/lib/leftovers.sh"
+remove_leftover_postgres || {
+  echo "FAIL setup: the removal of the Postgres of dead stacks could not run" >&2
+  exit 1
+}
 if [ "$model_route" = box-login ] && ! take_box_login_lock; then
   echo "FAIL setup: another box-login proof is running on this box (the holder is named above)" >&2
   exit 1
@@ -397,12 +407,6 @@ port_of "the second daemon's keeper" "$work/deadline.port" "$deadline_keeper_pid
 built=$(bash "$root/scripts/e2e/lib/built-from.sh" "$root" "$work/legion") || fail "lib/built-from.sh could not say what the run built"
 while IFS= read -r line; do note "$line"; done <<<"$built"
 
-# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
-. "$root/scripts/e2e/lib/leftovers.sh"
-# The Postgres of a dead stack goes first, on every run, before refuse_leftovers, whose refusal of
-# what the same dead run left would end the start with that Postgres still there; this run's
-# carries its mark (lib/leftovers.sh).
-remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
 refuse_leftovers legion-e2e2
 
 if [ -z "${LEGION_E2E_PG_DSN:-}" ]; then

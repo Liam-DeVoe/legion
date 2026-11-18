@@ -84,6 +84,11 @@ left() {
   note "kubectl -n legion get sandboxes,persistentvolumeclaims: none"
 }
 
+# The Postgres of a dead stack goes first, before each check of the start but one of its own inputs
+# (lib/sweep-order.ts): a check that refuses the start for what a dead run left would end every
+# later start with that Postgres still there. This run's own carries its mark (lib/leftovers.sh).
+remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
+
 begin prerequisites
 [ "$(uname -m)" = x86_64 ] || fail "the proof runs on amd64 (x86_64) only, since the gVisor release it installs and the driver it builds are amd64; this host is $(uname -m)"
 for tool in docker go kubectl curl zstd tar sha256sum sha512sum "$kind_bin"; do
@@ -128,8 +133,6 @@ kind_sandbox_internal_kubeconfig "$work/kubeconfig-internal"
 pass
 
 begin store
-# The Postgres of a dead stack goes first, and this run's carries its mark (lib/leftovers.sh).
-remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
 pg_mark=$(postgres_mark "$work" "$pg") || fail "the mark of $pg could not be made"
 docker run -d --name "$pg" --label "$pg_mark" --cpus 2 --memory 2g --network kind --tmpfs /var/lib/postgresql -e POSTGRES_PASSWORD=p "$pg_image" >/dev/null
 for _ in $(seq 1 60); do

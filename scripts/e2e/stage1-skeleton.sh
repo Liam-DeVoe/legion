@@ -139,6 +139,12 @@ readyz_200() {
 . "$root/scripts/e2e/lib/rig.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
 . "$root/scripts/e2e/lib/leftovers.sh"
+# The Postgres of a dead stack goes first, on every run, before each check of the start but one of
+# its own inputs (lib/sweep-order.ts), as each start of a stack removes it: a check that refuses the
+# start for what a dead run left would end every later start with that Postgres still there. CI
+# passes its service's DSN; the devbox brings its own container on an ephemeral port, which carries
+# this run's mark (lib/leftovers.sh).
+remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
 # A devbox's first tmux can be a wrapper script or a mise shim. mise runs it from the daemon's
 # working directory, under the daemon's tmux environment, which moves the XDG directories under the
 # state directory; this run's own HOME (pane_home, below) has the same effect. From a working
@@ -173,10 +179,6 @@ keep_port daemon_keeper port
 go build -o "$work/legion" ./cmd/legion
 bash "$root/scripts/e2e/lib/built-from.sh" "$root" "$work/legion" | sed 's/^/   /'
 
-# The Postgres of a dead stack goes first, on every run, as each start of a stack removes it
-# (lib/leftovers.sh). CI passes its service's DSN; the devbox brings its own container on an
-# ephemeral port, which carries this run's mark.
-remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
 if [ -z "${LEGION_E2E_PG_DSN:-}" ]; then
   docker ps >/dev/null # a broken docker is a failure of this run, not of the daemon
   # ghcr.io/cybermonklabs/legion/ci, the copy of PostgreSQL 18 (.github/ci-images.yaml), the major

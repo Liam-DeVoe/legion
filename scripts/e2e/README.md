@@ -6202,7 +6202,7 @@ Only processes in the caller's own pid namespace are read, since a pid means not
 What a live run started is left alone, since Stages 2 and 3 take no lock and two lanes may run one at once.
 
 A Postgres container is not the check's.
-Every shell stack that starts one marks it as the browser pool marks its own (`packages/dispatch/e2e/harness-postgres-marks.ts`), and first of all, before `refuse_leftovers`, `ports_free` or the skill scenarios' `lock_services`, each of which refuses a start for what a dead run left, it removes the Postgres of each test stack that is gone, the pool's among them, by the one removal every start of a test stack runs; a refusal before it would end the start with the dead stack's Postgres still there:
+Every shell stack that starts one marks it as the browser pool marks its own (`packages/dispatch/e2e/harness-postgres-marks.ts`), and first of all, before each check that can refuse the start but a check of its own inputs (its arguments, its environment and the tools on its `PATH`), it removes the Postgres of each test stack that is gone, the pool's among them, by the one removal every start of a test stack runs; a refusal before it for what a dead run left, such as `refuse_leftovers`, `ports_free`, the skill scenarios' `lock_services`, Stage 4a's check of its ports or the box-login lock of Stages 2 and 3, would end every later start with the dead stack's Postgres still there:
 
 ```sh
 remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"

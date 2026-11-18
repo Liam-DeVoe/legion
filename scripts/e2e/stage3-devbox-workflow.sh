@@ -69,6 +69,16 @@ if [ "$model_route" = box-login ] && [ -n "${LEGION_OMP_PATH:-}" ]; then
   echo "FAIL setup: LEGION_OMP_PATH is set ($LEGION_OMP_PATH); under LEGION_E2E_MODEL_ROUTE=box-login the panes run the operator's own Oh My Pi build alone, so unset LEGION_OMP_PATH" >&2
   exit 1
 fi
+# The Postgres of a dead stack goes before the lock and each other check of the start but one of its
+# own inputs (lib/sweep-order.ts): a pane that a dead run left still holds the lock, and a check that
+# refuses the start for what a dead run left would end every later start with that Postgres still
+# there. This run's own carries its mark (lib/leftovers.sh).
+# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
+. "$root/scripts/e2e/lib/leftovers.sh"
+remove_leftover_postgres || {
+  echo "FAIL setup: the removal of the Postgres of dead stacks could not run" >&2
+  exit 1
+}
 if [ "$model_route" = box-login ] && ! take_box_login_lock; then
   echo "FAIL setup: another box-login proof is running on this box (the holder is named above)" >&2
   exit 1
@@ -155,8 +165,6 @@ fail() { printf 'FAIL %s: %s\n' "$check" "$*" >&2; exit 1; }
 . "$root/scripts/e2e/lib/omp-home.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/workflow.sh
 . "$root/scripts/e2e/lib/workflow.sh"
-# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
-. "$root/scripts/e2e/lib/leftovers.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/operator-dispatch.sh
 . "$root/scripts/e2e/lib/operator-dispatch.sh"
 # Nothing the run starts inherits the operator's production bearer (lib/operator-dispatch.sh).
@@ -608,10 +616,6 @@ report_architect_suspension() {
 }
 
 begin prerequisites
-# The Postgres of a dead stack goes first, before refuse_leftovers, whose refusal of what the same
-# dead run left would end the start with that Postgres still there; this run's carries its mark
-# (lib/leftovers.sh).
-remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
 refuse_leftovers legion-e2e3
 for tool in go docker jq curl python3 tmux bun mise secrets agent-secrets gh shellcheck jj pgrep; do command -v "$tool" >/dev/null || fail "$tool is required"; done
 # Legion's two role Apps, this deployment's own ids unless the App inputs name another's, with the

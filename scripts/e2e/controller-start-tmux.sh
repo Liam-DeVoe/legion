@@ -115,6 +115,10 @@ env_of() { tr '\0' '\n' <"/proc/$1/environ" | sed -n "s/^$2=//p"; }
 
 # ---- setup -----------------------------------------------------------------------------------------
 for tool in go docker jq curl python3 tmux bun mise; do command -v "$tool" >/dev/null || fail "$tool is required"; done
+# The Postgres of a dead stack goes first, before each check of the start but one of its own inputs
+# (lib/sweep-order.ts): a check that refuses the start for what a dead run left would end every
+# later start with that Postgres still there. This run's own carries its mark (lib/leftovers.sh).
+remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
 mkdir -p "$state" "$work/xdg" "$work/tmux"
 make_omp_home "$omp_home"
 export XDG_STATE_HOME=$work/xdg TMUX_TMPDIR=$work/tmux
@@ -131,10 +135,6 @@ keep_port daemon_keeper daemon_port
 (cd "$root/packages/envoy" && go build -o "$work/envoy-listener" ./cmd/listener)
 note "legion $("$work/legion" version); OMP pin $pin; daemon port $daemon_port"
 
-# The Postgres of a dead stack goes first, before refuse_leftovers, whose refusal of what the same
-# dead run left would end the start with that Postgres still there; this run's carries its mark
-# (lib/leftovers.sh).
-remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
 refuse_leftovers legion-e2e-controller
 (umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/postgres-password")
 # Docker chooses each container's host port and binds it itself, trying the next port when one is

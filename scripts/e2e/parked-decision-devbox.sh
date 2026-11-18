@@ -66,6 +66,15 @@ case "${1:-}" in
 esac
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
+# The Postgres of a dead stack goes first, before each check of the start but one of its own inputs
+# (lib/sweep-order.ts): a check that refuses the start for what a dead run left would end every
+# later start with that Postgres still there. This run's own carries its mark (lib/leftovers.sh).
+# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
+. "$root/scripts/e2e/lib/leftovers.sh"
+remove_leftover_postgres || {
+  echo "FAIL setup: the removal of the Postgres of dead stacks could not run" >&2
+  exit 1
+}
 work=$(mktemp -d "/tmp/legion-e2e-pd.$$.XXXXXXXX")
 evidence=${PARKED_DECISION_EVIDENCE_DIR:-$(mktemp -d /tmp/legion-e2e-pd-evidence.XXXXXXXX)}
 # Refused before anything is written into the evidence directory or any trap is set
@@ -138,8 +147,6 @@ fail() { printf 'FAIL %s: %s\n' "$check" "$*" >&2; exit 1; }
 . "$root/scripts/e2e/lib/omp-home.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/workflow.sh
 . "$root/scripts/e2e/lib/workflow.sh"
-# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
-. "$root/scripts/e2e/lib/leftovers.sh"
 
 tm() { tmux -L "$tmux_server" "$@"; }
 
@@ -636,10 +643,6 @@ case "$model_route" in
     fi ;;
   *) fail "LEGION_E2E_MODEL_ROUTE must be gateway or key-file, not '$model_route'" ;;
 esac
-# The Postgres of a dead stack goes first, before refuse_leftovers, whose refusal of what the same
-# dead run left would end the start with that Postgres still there; this run's carries its mark
-# (lib/leftovers.sh).
-remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
 refuse_leftovers legion-e2e-pd
 require_proof_human
 gh repo view "$repo" --json name >/dev/null || fail "the devbox's ordinary gh cannot read $repo"

@@ -120,6 +120,12 @@ for tool in go docker kubectl jq curl python3 base64; do
 done
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
+# The Postgres of a dead run goes first, before each check of the start but one of its own inputs
+# (lib/sweep-order.ts), and one of a run that still runs stays, so this run's start of a container
+# of that name then fails (lib/leftovers.sh); this run's carries its mark.
+# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
+. "$root/scripts/e2e/lib/leftovers.sh"
+remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
 work=$(mktemp -d /tmp/verifiers-e2e.XXXXXXXX)
 echo "== the run's directory: $work"
 mkdir -p "$work/home"
@@ -143,13 +149,8 @@ absent_issuer="${issuer%/*}/00000000000000000000000000000000"
 echo "== pgvector/pgvector (pinned digest) and the hub's nats-server (lib/nats-image.sh) on ephemeral loopback ports"
 # shellcheck source-path=SCRIPTDIR source=lib/nats-image.sh
 . "$root/scripts/e2e/lib/nats-image.sh"
-# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
-. "$root/scripts/e2e/lib/leftovers.sh"
 docker rm -f -v "$nats_name" >/dev/null 2>&1 || docker ps >/dev/null # a missing container is fine; a broken docker is not
 trap cleanup EXIT
-# The Postgres of a dead run goes, and one of a run that still runs stays, so this run's start of a
-# container of that name then fails (lib/leftovers.sh); this run's carries its mark.
-remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
 pg_mark=$(postgres_mark "$work" "$pg_name") || fail "the mark of $pg_name could not be made"
 pg_id=$(docker run -d --name "$pg_name" --label "$pg_mark" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
   -e POSTGRES_USER=dispatch -e POSTGRES_PASSWORD=dispatch \

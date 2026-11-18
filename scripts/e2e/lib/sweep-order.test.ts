@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import {
   chmodSync,
+  copyFileSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -11,14 +12,15 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mark, refusals, sweep, sweepOrder } from "./sweep-order";
+import { type Driver, mark, sweep, sweepOrder } from "./sweep-order";
 
 // R3 of pull request #4236: "The next start of a test stack removes each Postgres of a stack that
 // it can show dead. … It leaves a Postgres whose stack it cannot judge, and it names that Postgres
 // in one line." A shell stack's start that refuses, because of what a dead run left, before it
 // runs remove_leftover_postgres never reaches the removal while those leftovers stay: the dead
 // stack's Postgres stays and no line names it. A start that creates its own Postgres before the
-// removal starts it beside the dead stacks' (lib/sweep-order.ts names the refusals and the mark).
+// removal starts it beside the dead stacks' (lib/sweep-order.ts reads each refusal by what it does,
+// and each mark).
 //
 // The first rows run the search over this tree and over planted scripts. The rest run each
 // driver's own file, in its own order: lib/sweep-order.ts names the drivers, the refusals each one
@@ -29,11 +31,43 @@ const root = join(import.meta.dir, "..", "..", "..");
 const scratch = mkdtempSync(join(tmpdir(), "sweep-order-"));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
+/** The refusals whose leftovers the rows below can plant, each a function of the scripts. */
+const named = ["refuse_leftovers", "ports_free", "lock_services"] as const;
+
+/** A planted tree at `name` with the real lib/leftovers.sh and each script of `scripts`, by its
+ *  path under scripts/e2e, given as its lines. */
+function plant(name: string, scripts: Record<string, string[]>): string {
+  const planted = join(scratch, name);
+  mkdirSync(join(planted, "scripts", "e2e", "lib"), { recursive: true });
+  copyFileSync(
+    join(import.meta.dir, "leftovers.sh"),
+    join(planted, "scripts", "e2e", "lib", "leftovers.sh")
+  );
+  for (const [path, lines] of Object.entries(scripts))
+    writeFileSync(join(planted, "scripts", "e2e", path), `${lines.join("\n")}\n`);
+  return planted;
+}
+
+/** Each refusal and mark a planted search found before a removal, as `NAME at AT from FROM
+ *  through VIA`. */
+function found(tree: string): string[] {
+  return sweepOrder(tree).findings.flatMap((f) =>
+    f.before.map((c) => `${c.name} at ${c.at} from ${c.from} through ${c.via.join(",")}`)
+  );
+}
+
+const head = [
+  "#!/usr/bin/env bash",
+  '. "$root/scripts/e2e/lib/leftovers.sh"',
+  'fail() { echo "$*" >&2; exit 1; }',
+];
+
 describe("the search for a start that refuses or creates its Postgres before it removes the Postgres of dead stacks", () => {
   test("no driver of this tree refuses or marks before its removal, and the search reads every driver", () => {
-    const { drivers, findings } = sweepOrder(root);
+    const { drivers, findings, unread } = sweepOrder(root);
     // A search that read nothing passed nothing: every shell stack that starts a Postgres
-    // container runs the removal (leftovers.test.ts's list), so each one is a driver here.
+    // container runs the removal (leftovers.test.ts's list), so each one is a driver here, and the
+    // search parsed every script a driver is or calls.
     expect(drivers.map((each) => each.driver).sort()).toEqual([
       "packages/pi-legion/scripts/skill-scenarios/rig.sh",
       "scripts/e2e/claude-backend-sandbox.sh",
@@ -49,6 +83,7 @@ describe("the search for a start that refuses or creates its Postgres before it 
       "scripts/e2e/stage4b-sandbox-tree.sh",
       "scripts/e2e/verifiers-staging-token.sh",
     ]);
+    expect(unread.filter((each) => each.matters)).toEqual([]);
     expect(findings).toEqual([]);
   });
 
@@ -74,46 +109,122 @@ describe("the search for a start that refuses or creates its Postgres before it 
   });
 
   test("a planted driver whose refusal or mark comes first, directly or through a function of a library it sources, is found", () => {
-    const planted = join(scratch, "planted");
-    mkdirSync(join(planted, "scripts", "e2e", "lib"), { recursive: true });
-    writeFileSync(
-      join(planted, "scripts", "e2e", "lib", "planted.sh"),
-      "check_ports() {\n  ports_free 1234\n}\n"
-    );
-    writeFileSync(
-      join(planted, "scripts", "e2e", "first.sh"),
-      [
-        "#!/usr/bin/env bash",
+    const planted = plant("planted", {
+      "lib/planted.sh": [
+        "check_port() {",
+        '  [ -z "$(ss -Hltn "sport = :$1")" ] || fail "port $1 is taken"',
+        "}",
+      ],
+      "first.sh": [
+        ...head,
         '. "$root/scripts/e2e/lib/planted.sh"',
         "begin() {",
         "  refuse_leftovers legion-planted",
         "}",
         "begin",
-        "check_ports",
+        "check_port 1234",
         'pg_mark=$(postgres_mark "$work" "$pg") || fail "no mark"',
         'remove_leftover_postgres || fail "no removal"',
-        "",
-      ].join("\n")
-    );
-    writeFileSync(
-      join(planted, "scripts", "e2e", "after.sh"),
-      'remove_leftover_postgres || fail "no removal"\nrefuse_leftovers legion-after\n'
-    );
-    const { drivers, findings } = sweepOrder(planted);
-    expect(drivers.map((each) => each.driver)).toEqual([
+      ],
+      "after.sh": [
+        ...head,
+        'remove_leftover_postgres || fail "no removal"',
+        "refuse_leftovers legion-after",
+      ],
+    });
+    expect(sweepOrder(planted).drivers.map((each) => each.driver)).toEqual([
       "scripts/e2e/after.sh",
       "scripts/e2e/first.sh",
     ]);
-    expect(findings).toEqual([
-      {
-        driver: "scripts/e2e/first.sh",
-        before: [
-          { name: "refuse_leftovers", at: "scripts/e2e/first.sh:4" },
-          { name: "ports_free", at: "scripts/e2e/lib/planted.sh:2" },
-          { name: "postgres_mark", at: "scripts/e2e/first.sh:8" },
-        ],
-        sweep: "scripts/e2e/first.sh:9",
-      },
+    expect(found(planted)).toEqual([
+      "fail at scripts/e2e/lib/leftovers.sh:137 from scripts/e2e/first.sh:8 through begin,refuse_leftovers",
+      "fail at scripts/e2e/lib/planted.sh:2 from scripts/e2e/first.sh:9 through check_port",
+      "postgres_mark at scripts/e2e/first.sh:10 from scripts/e2e/first.sh:10 through ",
+      // The mark's own refusal: its check runs the mark's command.
+      "fail at scripts/e2e/first.sh:10 from scripts/e2e/first.sh:10 through ",
+    ]);
+  });
+
+  test("the search reads a refusal in each form a command takes on one line, and a removal after `; then`", () => {
+    // held refuses where a lock file exists, a file a dead run can leave; each line calls it in
+    // one form, before the removal.
+    const forms: [string, string][] = [
+      ["after ;", 'true; held "$lock"'],
+      ["after &&", 'true && held "$lock"'],
+      ["after ||", 'false || held "$lock"'],
+      ["after |", 'true | held "$lock"'],
+      ["after then", 'if true; then held "$lock"; fi'],
+      ["after then, a library's refusal", 'if [ -n "$X" ]; then refuse_leftovers legion-then; fi'],
+      ["after do", 'for x in 1; do held "$lock"; done'],
+      ["after else", 'if false; then :; else held "$lock"; fi'],
+      ["after elif", 'if false; then :; elif held "$lock"; then :; fi'],
+      ["after if", 'if held "$lock"; then :; fi'],
+      ["after while", 'while held "$lock"; do break; done'],
+      ["after until", 'until held "$lock"; do break; done'],
+      ["after !", '! held "$lock"'],
+      ["after {", '{ held "$lock"; }'],
+      ["after (", '( held "$lock" )'],
+      ["after $(", 'x=$(held "$lock")'],
+      ["after a backquote", 'x=`held "$lock"`'],
+    ];
+    const lines = [
+      ...head,
+      'held() { [ ! -e "$1" ] || fail "$1 is held"; }',
+      "lock=/run/planted.lock",
+    ];
+    const planted = plant("forms", {
+      "forms.sh": [
+        ...lines,
+        ...forms.map(([, line]) => line),
+        'remove_leftover_postgres || fail "no removal"',
+      ],
+      // The review's planted script: a refusal, then the removal after `; then` on one line.
+      "then-sweep.sh": [
+        ...head,
+        "refuse_leftovers legion-ts",
+        'if [ -n "$X" ]; then remove_leftover_postgres || fail "no removal"; fi',
+      ],
+    });
+    const { drivers, findings } = sweepOrder(planted);
+    const from = new Set(findings.flatMap((f) => f.before.map((c) => c.from)));
+    expect(
+      Object.fromEntries(
+        forms.map(([form], i) => [form, from.has(`scripts/e2e/forms.sh:${lines.length + i + 1}`)])
+      )
+    ).toEqual(Object.fromEntries(forms.map(([form]) => [form, true])));
+    expect(drivers.find((each) => each.driver === "scripts/e2e/then-sweep.sh")?.sweep).toBe(
+      "scripts/e2e/then-sweep.sh:5"
+    );
+    expect(found(planted)).toContain(
+      "fail at scripts/e2e/lib/leftovers.sh:137 from scripts/e2e/then-sweep.sh:4 through refuse_leftovers"
+    );
+  });
+
+  test("a check of an input, a tool or the model route can come before the removal; a check of a file or of a command's output cannot", () => {
+    const planted = plant("inputs", {
+      "inputs.sh": [
+        ...head,
+        'need() { [ -n "$1" ] || fail "$2 is empty"; }',
+        'pid_ok() { [ -n "$1" ] || fail "no pid"; }',
+        "route=$PLANTED_ROUTE",
+        'case "$route" in gateway | key-file) ;; *) fail "no route $route" ;; esac',
+        '[ -n "$PLANTED_KEY" ] || fail "PLANTED_KEY is unset"',
+        'for tool in docker bun; do command -v "$tool" >/dev/null || fail "$tool is required"; done',
+        'need "$route" route',
+        '[[ $route =~ ^[a-z-]+$ ]] || fail "route $route"',
+        '[ -r "$PLANTED_KEY" ] || fail "PLANTED_KEY names no readable file"',
+        'taken=$(ss -Hltn "sport = :4242")',
+        '[ -z "$taken" ] || fail "port 4242 is taken"',
+        'pid_ok "$(cat /run/planted.pid)"',
+        '(set -C && : >/run/planted.lock) || fail "a batch holds the lock"',
+        'remove_leftover_postgres || fail "no removal"',
+      ],
+    });
+    expect(found(planted)).toEqual([
+      "fail at scripts/e2e/inputs.sh:12 from scripts/e2e/inputs.sh:12 through ",
+      "fail at scripts/e2e/inputs.sh:14 from scripts/e2e/inputs.sh:14 through ",
+      "fail at scripts/e2e/inputs.sh:5 from scripts/e2e/inputs.sh:15 through pid_ok",
+      "fail at scripts/e2e/inputs.sh:16 from scripts/e2e/inputs.sh:16 through ",
     ]);
   });
 
@@ -130,11 +241,13 @@ describe("the search for a start that refuses or creates its Postgres before it 
 /** A stand-in for each command a driver runs on its way, and for mktemp, which makes each
  *  directory under $STANDIN_ROOT. Each records its call in $STANDIN_CALLS. `docker ps` of a name
  *  prefix lists a dead run's NATS container where $STANDIN_DEAD_PID is set; `ss` lists a listener
- *  on the port it is asked of where $STANDIN_TAKEN is set; `bun … sweep` is the removal, recorded
- *  as SWEEP, and `bun … label` is the real mark command, which only prints a label. A `docker run`
- *  or `docker create` is recorded as CREATE, with its name and its mark, where it carries a mark,
- *  else as RUN. $STANDIN_STOP_AT ends the driver with SIGTERM at the create of that number, or,
- *  set to `first`, at the first of the removal and any container. */
+ *  on the port it is asked of where $STANDIN_TAKEN is set, and on the port $STANDIN_TAKEN_PORT
+ *  names alone where that is set; `bun … sweep` is the removal, recorded as SWEEP, and `bun … label`
+ *  is the real mark command, which only prints a label. A `docker run` or `docker create` is
+ *  recorded as CREATE, with its name and its mark, where it carries a mark, else as RUN.
+ *  $STANDIN_STOP_AT ends the driver with SIGTERM at the create of that number, or, set to `first`,
+ *  at the first of the removal and any container. `flock` is the real one, on a lock file of the
+ *  row's own. */
 const standIn = `#!/usr/bin/env bash
 name=\${0##*/}
 printf '%s %s\\n' "$name" "$*" >>"$STANDIN_CALLS"
@@ -174,7 +287,9 @@ case $name in
       *" sweep "*) echo SWEEP >>"$STANDIN_CALLS"; [ "\${STANDIN_STOP_AT:-}" != first ] || stop ;;
       *" label "*) exec "$STANDIN_BUN" "$@" ;;
     esac ;;
-  ss) [ -z "\${STANDIN_TAKEN:-}" ] || echo "LISTEN 0 4096 127.0.0.1:\${*##*:} 0.0.0.0:* users:((\\"stand-in\\",pid=1,fd=3))" ;;
+  ss)
+    case " $* " in *":\${STANDIN_TAKEN_PORT:-none} "*) echo "LISTEN 0 4096 127.0.0.1:\${*##*:} 0.0.0.0:* users:((\\"docker-proxy\\",pid=1,fd=3))" ;; esac
+    [ -z "\${STANDIN_TAKEN:-}" ] || echo "LISTEN 0 4096 127.0.0.1:\${*##*:} 0.0.0.0:* users:((\\"stand-in\\",pid=1,fd=3))" ;;
 esac
 exit 0
 `;
@@ -186,7 +301,6 @@ const standIns = [
   "claude",
   "curl",
   "docker",
-  "flock",
   "gh",
   "getent",
   "go",
@@ -207,34 +321,42 @@ const standIns = [
   "tmux",
 ];
 
-/** What a row cuts: the functions that run whole, the other names that run, and whether the
- *  driver's own `set` runs. A row that runs the driver to its creates skips `set`, so no errexit or
- *  nounset ends the driver at a line that reads what a skipped command would have made: the shell
- *  still reaches each line in the order the driver's own lines and branches give. */
+/** What a row cuts: the functions that run whole, the other names that run, whether the driver's
+ *  own `set` runs, and, where a row makes one refusal refuse, the file and line its branch begins
+ *  at, from which every command runs. A row that runs the driver to its creates skips `set`, so no
+ *  errexit or nounset ends the driver at a line that reads what a skipped command would have made:
+ *  the shell still reaches each line in the order the driver's own lines and branches give. */
 interface Cut {
   readonly run: readonly string[];
   readonly follow: readonly string[];
   readonly keepSet: boolean;
+  readonly from?: string;
 }
 
 /** The shell that runs a driver's own file in its own order with what is slow or outside the
  *  machine cut. A DEBUG trap (bash's extdebug: a trap that answers non-zero skips the command)
  *  runs, at the driver's top level and in each function on its way: each assignment, source,
- *  `case`, test and builtin of the shell's own control, every command in a subshell or a command
- *  substitution, the whole of each function of `run`, and each call of a name of `follow`; it
- *  skips every other command, and names each in $GATE_SKIPPED. The cut cannot change the order of
- *  the calls the rows read: it runs every line of the driver on the way to them and skips only
- *  commands that call none of them, so the shell reaches them in the order the driver's own lines
- *  and branches give. What a skipped command would have refused (a missing tool, an input left
- *  unset) is never refused, and the driver's own traps are skipped too, so a driver the row ends
- *  runs no cleanup. */
-function gate({ run, follow, keepSet }: Cut): string {
+ *  `for`, `case`, test and builtin of the shell's own control, every command in a subshell or a
+ *  command substitution, the whole of each function of `run`, each call of a name of `follow`, and
+ *  each command from the line `from` names on; it skips every other command, and names each in
+ *  $GATE_SKIPPED. The cut cannot change the order of the calls the rows read: it runs every line of
+ *  the driver on the way to them and skips only commands that call none of them, so the shell
+ *  reaches them in the order the driver's own lines and branches give. What a skipped command
+ *  would have refused (a missing tool, an input left unset) is never refused, and the driver's
+ *  own traps are skipped too, so a driver the row ends runs no cleanup. */
+function gate({ run, follow, keepSet, from }: Cut): string {
   return `shopt -s extdebug
 set -T
 export GATE_DRIVER=$$
 __gate_run=" ${run.join(" ")} "
 __gate_follow=" ${[...run, ...follow].join(" ")} "
+__gate_from=${JSON.stringify(from === undefined ? "" : join(root, from))}
 __gate_skip() {
+  [ -z "\${__gate_reached:-}" ] || return 1
+  if [ -n "$__gate_from" ] && [ "\${BASH_SOURCE[1]}:$1" = "$__gate_from" ]; then
+    __gate_reached=1
+    return 1
+  fi
   [ "$BASH_SUBSHELL" -eq 0 ] || return 1
   local frame
   for frame in "\${FUNCNAME[@]:1}"; do
@@ -242,13 +364,13 @@ __gate_skip() {
   done
   local word=\${BASH_COMMAND%%[[:space:]]*}
   case $word in
-    *=* | . | source | ${keepSet ? "set | " : ""}shopt | shift | '[[' | '[' | test | true | false | : | return | break | continue | local | declare | typeset | export | readonly | unset | read | mapfile | readarray | case) return 1 ;;
+    *=* | for | . | source | ${keepSet ? "set | " : ""}shopt | shift | '[[' | '[' | test | true | false | : | return | break | continue | local | declare | typeset | export | readonly | unset | read | mapfile | readarray | case) return 1 ;;
   esac
   case $__gate_follow in *" $word "*) return 1 ;; esac
   printf '%s\\n' "$BASH_COMMAND" >>"$GATE_SKIPPED"
   return 0
 }
-trap '! __gate_skip' DEBUG
+trap '! __gate_skip "$LINENO"' DEBUG
 # A skipped background start leaves $! as it was; one no-op job gives it a pid, of a job that ended.
 : &
 wait "$!"
@@ -256,7 +378,7 @@ wait "$!"
 }
 
 /** What makes each refusal refuse, and the words of its refusal. */
-const refuses: Record<(typeof refusals)[number], { env: Record<string, string>; said: RegExp }> = {
+const refuses: Record<(typeof named)[number], { env: Record<string, string>; said: RegExp }> = {
   refuse_leftovers: {
     env: {},
     said: /an earlier \S+ run whose driver is gone left these running: container \S+-nats-\d+ /,
@@ -354,15 +476,27 @@ function start(
 
 const { drivers } = sweepOrder(root);
 
+/** The functions of a driver whose calls reach the removal, a mark, or a refusal of `named`: the
+ *  functions the rows' gate follows into. */
+function reaching(driver: Driver): string[] {
+  const on = driver.calls.filter(
+    (call) =>
+      call.kind !== "refusal" || call.via.some((fn) => (named as readonly string[]).includes(fn))
+  );
+  return [...new Set(on.flatMap((call) => call.via))];
+}
+
 describe("each driver runs the removal of the Postgres of dead stacks before each refusal, in its own order", () => {
   for (const driver of drivers) {
-    for (const kind of refusals.filter((name) => driver.calls.some((call) => call.name === name))) {
+    for (const kind of named.filter((name) =>
+      driver.calls.some((call) => call.via.includes(name))
+    )) {
       test(
         `${driver.driver}: the removal runs though ${kind} refuses what a dead run left`,
         () => {
           const ran = start(
             driver.driver,
-            { run: [...refusals, sweep], follow: driver.reaching, keepSet: true },
+            { run: [...named, sweep], follow: reaching(driver), keepSet: true },
             {
               ...refuses[kind].env,
               ...(kind === "refuse_leftovers" ? { STANDIN_DEAD_PID: deadPid() } : {}),
@@ -391,14 +525,123 @@ describe("each driver runs the removal of the Postgres of dead stacks before eac
   }
 });
 
+// The deep audit of round 12 found two refusals that no name of `named` reaches, each before its
+// driver's removal: Stage 4a's check of its two ports, which the session database a dead run left
+// still publishes, and the box-login lock of Stages 2 and 3, which a pane of a dead run still
+// holds. Each row runs the driver's own file through the gate from the line where that refusal's
+// branch begins, which the search names, so the refusal's own words and exit run.
+describe("each driver runs the removal of the Postgres of dead stacks before a refusal of a port or a lock that a dead run holds", () => {
+  const driverOf = (path: string) => drivers.find((each) => each.driver === path);
+  const refusalOf = (path: string, reads: RegExp) =>
+    driverOf(path)?.calls.find(
+      (call) => call.kind === "refusal" && call.reads.some((read) => reads.test(read))
+    );
+  const stage4a = "scripts/e2e/stage4a-sandbox-runtime.sh";
+  const portCut = (): Cut => ({
+    run: [sweep, mark],
+    follow: ["docker"],
+    keepSet: false,
+    from: refusalOf(stage4a, /^ss$/)?.begins,
+  });
+  test(
+    "scripts/e2e/stage4a-sandbox-runtime.sh: the removal runs though the start refuses the session database port that a dead run's container still publishes",
+    () => {
+      expect(portCut().from).toBeDefined();
+      const ran = start(stage4a, portCut(), {
+        STANDIN_TAKEN_PORT: operatorInputs.LEGION_E2E_SESSION_DB_PORT,
+      });
+      expect({
+        refused: /port 13377 is taken on the devbox/.test(ran.said),
+        removalRan: ran.log.includes("SWEEP"),
+        said: ran.said.trim().split("\n").slice(-3),
+      }).toEqual({ refused: true, removalRan: true, said: expect.any(Array) });
+    },
+    walkBound
+  );
+  test(
+    "scripts/e2e/stage4a-sandbox-runtime.sh control: with no port taken, the same cut reaches the removal",
+    () => {
+      const ran = start(stage4a, portCut(), { STANDIN_STOP_AT: "first" });
+      expect({
+        refused: /is taken on the devbox/.test(ran.said),
+        removalRan: ran.log.includes("SWEEP"),
+        said: ran.said.trim().split("\n").slice(-3),
+      }).toEqual({ refused: false, removalRan: true, said: expect.any(Array) });
+    },
+    walkBound
+  );
+
+  for (const path of [
+    "scripts/e2e/stage2-tmux-supervision.sh",
+    "scripts/e2e/stage3-devbox-workflow.sh",
+  ]) {
+    const lockCut = (): Cut => {
+      const driver = driverOf(path);
+      return {
+        run: [...named, sweep, "take_box_login_lock"],
+        follow: driver === undefined ? [] : reaching(driver),
+        keepSet: true,
+        from: refusalOf(path, /^flock in take_box_login_lock$/)?.begins,
+      };
+    };
+    const lockFile = () => join(mkdtempSync(join(scratch, "lock-")), "box-login.lock");
+    const boxLogin = (lock: string) => ({
+      LEGION_E2E_MODEL_ROUTE: "box-login",
+      box_login_lock_file: lock,
+    });
+    test(
+      `${path}: the removal runs though the box-login lock that a process of a dead run still holds refuses the start`,
+      async () => {
+        expect(lockCut().from).toBeDefined();
+        const lock = lockFile();
+        writeFileSync(lock, "");
+        // A process that holds the lock, as a pane or daemon of a dead run that kept the
+        // descriptor. It prints a line once flock gave it the lock.
+        const holder = Bun.spawn(["flock", lock, "sh", "-c", "echo held; exec sleep 120"], {
+          stdout: "pipe",
+          stderr: "ignore",
+        });
+        try {
+          const reader = holder.stdout.getReader();
+          await reader.read();
+          reader.releaseLock();
+          expect(Bun.spawnSync(["flock", "-n", lock, "true"]).exitCode).toBe(1);
+          const ran = start(path, lockCut(), boxLogin(lock));
+          expect({
+            refused: /another box-login proof holds/.test(ran.said),
+            removalRan: ran.log.includes("SWEEP"),
+            said: ran.said.trim().split("\n").slice(-3),
+          }).toEqual({ refused: true, removalRan: true, said: expect.any(Array) });
+        } finally {
+          holder.kill();
+          await holder.exited;
+        }
+      },
+      walkBound
+    );
+    test(
+      `${path} control: with the box-login lock free, the same cut reaches the removal`,
+      () => {
+        const ran = start(path, lockCut(), { ...boxLogin(lockFile()), STANDIN_STOP_AT: "first" });
+        expect({
+          refused: /another box-login proof holds/.test(ran.said),
+          removalRan: ran.log.includes("SWEEP"),
+          said: ran.said.trim().split("\n").slice(-3),
+        }).toEqual({ refused: false, removalRan: true, said: expect.any(Array) });
+      },
+      walkBound
+    );
+  }
+});
+
 // The rows of each create run the driver past its refusals to its creates: they cut the refusals
 // themselves, which either pass, calling nothing, or end the start, so the cut cannot move a
 // create before or after the removal; and a dead run another program of the machine left cannot
 // refuse the row.
-const createCut = (reaching: readonly string[]): Cut => ({
+const createCut = (driver: Driver): Cut => ({
   run: [sweep, mark, "start_container"],
-  follow: [...reaching, "docker", "session_db_start"].filter(
-    (name) => !(refusals as readonly string[]).includes(name)
+  follow: [...reaching(driver), "docker", "session_db_start"].filter(
+    (name) => !(named as readonly string[]).includes(name)
   ),
   keepSet: false,
 });
@@ -410,7 +653,7 @@ describe("each driver runs the removal of the Postgres of dead stacks before eac
       test(
         `${driver.driver}: the removal runs before its Postgres ${index + 1} of ${marks.length} (marked at ${marked.at}) is created, and the create carries its mark`,
         () => {
-          const ran = start(driver.driver, createCut(driver.reaching), {
+          const ran = start(driver.driver, createCut(driver), {
             STANDIN_STOP_AT: String(index + 1),
           });
           const creates = ran.log.filter((line) => line.startsWith("CREATE "));
@@ -453,7 +696,7 @@ describe("each driver runs the removal of the Postgres of dead stacks before eac
       test(
         `${driver.driver}: with LEGION_E2E_PG_DSN set, the removal runs before any container of the start`,
         () => {
-          const ran = start(driver.driver, createCut(driver.reaching), {
+          const ran = start(driver.driver, createCut(driver), {
             LEGION_E2E_PG_DSN: "postgres://stand-in@127.0.0.1:1/stand-in",
             STANDIN_STOP_AT: "first",
           });

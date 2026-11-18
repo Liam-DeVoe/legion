@@ -203,6 +203,12 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+# The Postgres of a dead stack goes first, before each check of the start but one of its own inputs
+# (lib/sweep-order.ts): a check that refuses the start for what a dead run left, as the session
+# database's port that its container still publishes, would end every later start with that Postgres
+# still there. This run's own carries its mark (lib/leftovers.sh).
+remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
+
 begin prerequisites
 for tool in go kubectl curl ss agent-secrets diff docker jq bun; do command -v "$tool" >/dev/null || fail "$tool is required"; done
 [ -n "$runtime_context" ] || fail "LEGION_E2E_RUNTIME_CONTEXT is unset: the runtime must run as the Legion daemon's restricted identity, never the operator's"
@@ -402,8 +408,6 @@ session_db_password=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')
 )
 unset session_db_password
 session_db_started=1
-# The Postgres of a dead stack goes first, and this one carries the run's mark (lib/leftovers.sh).
-remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
 session_db_mark=$(postgres_mark "$work" "$session_db") || fail "the mark of $session_db could not be made"
 docker run -d --name "$session_db" --label "$session_db_mark" --cpus 2 --memory 4g --mount type=tmpfs,destination=/var/lib/postgresql \
   --env-file "$work/session-db.env" -p "$bind_host:$session_db_port:5432" "$session_db_image" >/dev/null ||

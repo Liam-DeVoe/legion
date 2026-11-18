@@ -54,6 +54,15 @@
 set -Eeuo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
+# The Postgres of a dead stack goes first, before each check of the start but one of its own inputs
+# (lib/sweep-order.ts): a check that refuses the start for what a dead run left would end every
+# later start with that Postgres still there. This run's own carries its mark (lib/leftovers.sh).
+# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
+. "$root/scripts/e2e/lib/leftovers.sh"
+remove_leftover_postgres || {
+  echo "FAIL setup: the removal of the Postgres of dead stacks could not run" >&2
+  exit 1
+}
 work=$(mktemp -d "${TMPDIR:-/tmp}/legion-e2ecc.$$.XXXXXXXX")
 evidence=${CLAUDE_E2E_EVIDENCE_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/legion-e2ecc-evidence.XXXXXXXX")}
 if ! reason=$(bash "$root/scripts/e2e/lib/model-gateway-unserved.sh" --fresh "$evidence"); then
@@ -109,8 +118,6 @@ fail() { printf 'FAIL %s: %s\n' "$check" "$*" >&2; exit 1; }
 . "$root/scripts/e2e/lib/omp-home.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/workflow.sh
 . "$root/scripts/e2e/lib/workflow.sh"
-# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
-. "$root/scripts/e2e/lib/leftovers.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/claude-transcript.sh
 . "$root/scripts/e2e/lib/claude-transcript.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/model-endpoint.sh
@@ -577,10 +584,6 @@ if [ "$model_route" = key-file ]; then
   [ -f "$agent_key_file" ] && [ -r "$agent_key_file" ] ||
     fail "LEGION_E2E_ANTHROPIC_KEY_FILE names $agent_key_file, which is not a readable file"
 fi
-# The Postgres of a dead stack goes first, before refuse_leftovers, whose refusal of what the same
-# dead run left would end the start with that Postgres still there; this run's carries its mark
-# (lib/leftovers.sh).
-remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
 refuse_leftovers legion-e2ecc
 for tool in go docker jq curl python3 tmux bun mise gh jj pgrep claude; do command -v "$tool" >/dev/null || fail "$tool is required"; done
 command -v agent-secrets >/dev/null || fail "agent-secrets, the secrets broker's client the implement App's token_command runs, is required"

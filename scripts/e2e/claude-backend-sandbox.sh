@@ -1148,8 +1148,14 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# The operator's inputs come first, before the run reads a tool, a key or the cluster: an unset one
-# is a run that was never going to happen, and it is refused by its own name.
+# The Postgres of a dead stack goes first, before each check of the start but one of its own inputs
+# (lib/sweep-order.ts): a check that refuses the start for what a dead run left, as its containers,
+# its processes and the session database port its container still publishes, would end every
+# later start with that Postgres still there. This run's own carries its mark (lib/leftovers.sh).
+remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
+
+# Then the operator's inputs, before the run reads a tool, a key or the cluster: an unset one is a
+# run that was never going to happen, and it is refused by its own name.
 begin prerequisites
 [ -n "$runtime_context" ] ||
   fail "LEGION_E2E_RUNTIME_CONTEXT is unset: the runtime must run as the Legion daemon's restricted identity, never the operator's"
@@ -1234,11 +1240,6 @@ tools=(go docker jq curl ss kubectl bun gh sha256sum)
 for tool in "${tools[@]}"; do command -v "$tool" >/dev/null || fail "$tool is required"; done
 command -v agent-secrets >/dev/null || fail "agent-secrets, the secrets broker's client the implement App's tokens come through, is required"
 [ -r "$runtime_kubeconfig" ] || fail "the runtime kubeconfig $runtime_kubeconfig is not readable"
-# The Postgres of a dead stack goes first, before refuse_leftovers and ports_free, whose refusals of
-# what the same dead run left (its containers and processes, and the session database port its
-# container still publishes) would end the start with that Postgres still there; this run's carries
-# its mark (lib/leftovers.sh).
-remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
 refuse_leftovers legion-e2eccs
 ports_free "$port_daemon" "$port_worker_stream" "$port_dispatch" "$port_listener" "$port_nats" "$port_session_db"
 mkdir -p "$state"
