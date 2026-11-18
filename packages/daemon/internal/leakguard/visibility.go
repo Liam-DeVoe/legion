@@ -561,8 +561,8 @@ const githubOrigin = "https://github.com"
 //     netrc lookup on, and libcurl reads the .netrc under HOME and sends its credential to a
 //     server that asks for one: measured with git 2.47.3, a server a ~/.netrc named answered
 //     git's request 401, and git sent the request again carrying that netrc credential;
-//   - GIT_CONFIG_NOSYSTEM and GIT_CONFIG_GLOBAL=/dev/null take away the system file and the
-//     user's, the second also the one under XDG_CONFIG_HOME, which the read keeps;
+//   - it reads neither the system file nor the user's, the one under XDG_CONFIG_HOME, which the
+//     read keeps, among them (readsNoConfigFile);
 //   - it runs in /, a directory only root can write, so it finds no repository and no
 //     repository's configuration;
 //   - `-c credential.helper=` empties the helper list again on the command line, after anything
@@ -626,7 +626,7 @@ func (g *Guard) lsRemote(ctx context.Context, origin, slug string) (Visibility, 
 		dir:       "/",
 		inherit:   lsRemoteInherits,
 		noAskpass: true,
-		env:       []string{"HOME=" + home, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "LC_ALL=C"},
+		env:       append([]string{"HOME=" + home, "LC_ALL=C"}, readsNoConfigFile...),
 		stderr:    &stderr,
 	})
 	if err != nil {

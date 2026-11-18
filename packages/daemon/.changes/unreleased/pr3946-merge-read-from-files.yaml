@@ -11,5 +11,6 @@ body: |-
   `origin/rehearsal`, or to a local bare push URL of `origin`, was not read at its push to
   `origin`. Each push with an update that is not a deletion, to a destination the guard scans,
   costs that one `git ls-remote`, which reads no git configuration but its own command line and
-  so runs with no credential helper, and a read that fails refuses the push as a setup failure
+  so runs with no credential helper and no transport setting made in git configuration (a proxy,
+  a certificate file, an ssh command), and a read that fails refuses the push as a setup failure
   naming the remote and the URL.

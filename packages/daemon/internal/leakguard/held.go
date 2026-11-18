@@ -69,6 +69,12 @@ func (g *Guard) holds(ctx context.Context, dir, sha string) (bool, error) {
 // since a commit read in a partial clone needs the blobs it lacks fetched (blobBatch).
 var fetchesNothing = []string{"GIT_NO_LAZY_FETCH=1"}
 
+// readsNoConfigFile is the environment of a read that must read neither the machine's git
+// configuration nor the user's (Guard.advertised, Guard.lsRemote): GIT_CONFIG_NOSYSTEM=1 and
+// GIT_CONFIG_GLOBAL=/dev/null take away the system file and the user's, the second also the one
+// under XDG_CONFIG_HOME, and with them every file either includes.
+var readsNoConfigFile = []string{"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null"}
+
 // advertised are the commits the repository at url holds at its branches and tags, of those the
 // repository at dir has: what a push to url need not publish again (Guard.commits). The read is
 // of url itself, never of a ref of dir's own, which says nothing reliable of what url holds
@@ -91,14 +97,17 @@ var fetchesNothing = []string{"GIT_NO_LAZY_FETCH=1"}
 // configuration or the machine's would lead the read to another repository the same way, so it
 // reads no git configuration but its own command line's, which a git wrapper of a host's own can
 // still add to, the case `legion git --after` runs: of the caller's environment it keeps no
-// GIT_CONFIG_COUNT block and no GIT_CONFIG_PARAMETERS (heldReadInherits), and
-// GIT_CONFIG_NOSYSTEM=1 and GIT_CONFIG_GLOBAL=/dev/null take away the system file and the user's,
-// the second also the one under XDG_CONFIG_HOME, and with them every file either includes. So the
-// credential helper a pod sets in its GIT_CONFIG_COUNT block does not reach the read, which over
-// https is anonymous where no .netrc under HOME names the host: a public repository on GitHub
-// answers it, and while GitHub asks some Git-over-HTTPS reads to authenticate, the read fails and
-// the push is refused as a setup failure, as it is for a destination the guard cannot name that
-// wants a credential set in git configuration.
+// GIT_CONFIG_COUNT block and no GIT_CONFIG_PARAMETERS (heldReadInherits), and it reads neither
+// the system file nor the user's (readsNoConfigFile). So the credential helper a pod sets in its
+// GIT_CONFIG_COUNT block does not reach the read, which over https is anonymous where no netrc
+// file, the one under HOME or, from curl 8.16, one NETRC names, names the host: a public
+// repository on GitHub answers it, and while GitHub asks some Git-over-HTTPS reads to
+// authenticate, the read fails and the push is refused as a setup failure, as it is for a
+// destination the guard cannot name that wants a credential set in git configuration. No
+// transport setting made in git configuration reaches the read either, in the user's file, the
+// system's or a GIT_CONFIG_COUNT block: a push that needs a core.sshCommand, an http.proxy or an
+// http.sslCAInfo set there to reach its destination is refused as a setup failure the same way,
+// while the environment variables that make the same settings reach it (heldReadInherits).
 //
 // The read runs under the guard's prompt settings (promptsNothing), whose GIT_TERMINAL_PROMPT=0
 // and askpass that answers nothing make a read that wants a credential fail rather than prompt,
@@ -125,7 +134,7 @@ func (g *Guard) advertised(ctx context.Context, dir, url string) ([]string, erro
 		argv:    gitArgv("ls-remote", "--heads", "--tags", "--", againstDir(dir, url)),
 		dir:     "/",
 		inherit: heldReadInherits,
-		env:     []string{"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null"},
+		env:     readsNoConfigFile,
 		stderr:  &stderr,
 	})
 	if err != nil {
@@ -177,7 +186,9 @@ func (g *Guard) advertised(ctx context.Context, dir, url string) ([]string, erro
 // itself, and GIT_CONFIG, which git config reads. Every other name stays: HOME, where ssh finds
 // its keys and libcurl a .netrc, SSH_AUTH_SOCK, GIT_SSH_COMMAND, GIT_ALLOW_PROTOCOL,
 // GIT_SSL_CAINFO, GIT_SSL_CAPATH and the proxy variables, so the read reaches a destination over
-// ssh, through a proxy or under the certificates the caller trusts as the push did.
+// ssh, through a proxy or under the certificates the caller trusts as the push did where these
+// variables set them; where git configuration sets them instead, they do not reach the read, and
+// the push is refused as a setup failure (Guard.advertised).
 func heldReadInherits(name string) bool {
 	return name != "GIT_DIR" && !strings.HasPrefix(name, "GIT_CONFIG")
 }

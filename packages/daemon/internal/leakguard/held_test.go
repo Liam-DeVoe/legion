@@ -2,11 +2,14 @@ package leakguard
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
@@ -211,35 +214,37 @@ func TestTheReadOfWhatTheDestinationHoldsIsMadeOutsideTheClone(t *testing.T) {
 // (Guard.advertised), so no setting of the environment the guard runs under leads it to another
 // repository either: not the global file GIT_CONFIG_GLOBAL names, nor the system file
 // GIT_CONFIG_SYSTEM names where GIT_CONFIG_NOSYSTEM=0 lets git read one, nor a GIT_CONFIG_COUNT
-// block, nor GIT_CONFIG_PARAMETERS, nor a file the global file includes. Each case puts in one of
-// those places a url.<decoy>.insteadOf that rewrites the destination's path to the decoy's, which
-// a plain git ls-remote of the destination under that environment follows. The decoy holds the
-// commit the push adds, a line the rules refuse, and the destination, which the push is made to
-// by its path, holds only the commit before it. A read the rewrite led to the decoy would take
-// that commit as held and pass the push unread; the read of the destination reads it, and the
-// push is refused.
+// block, nor GIT_CONFIG_PARAMETERS, nor the user's own files, ~/.gitconfig and
+// $XDG_CONFIG_HOME/git/config, which git reads where no GIT_CONFIG_GLOBAL names another file.
+// Each case puts in one of those places a url.<stand-in>.insteadOf that rewrites the
+// destination's path to the stand-in's, which a plain git ls-remote of the destination under that
+// environment follows. The stand-in holds the commit the push adds, a line the rules refuse, and
+// the destination, which the push is made to by its path, holds only the commit before it. A read
+// the rewrite led to the stand-in would take that commit as held and pass the push unread; the
+// read of the destination reads it, and the push is refused.
 func TestTheReadOfWhatTheDestinationHoldsReadsNoConfigurationButItsCommandLine(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		// env is what the case adds to the guard's environment to set key to value, config
-		// making a configuration file of the case's own that holds one setting.
-		env func(config func(key, value string) string, key, value string) []string
+		// env is what the case adds to the environment to set key to value: dir is a directory
+		// of the case's own, and config writes that one setting to the configuration file at a
+		// path and answers the path.
+		env func(dir string, config func(file string) string, key, value string) []string
 	}{
 		{
 			name: "the global file GIT_CONFIG_GLOBAL names",
-			env: func(config func(string, string) string, key, value string) []string {
-				return []string{"GIT_CONFIG_GLOBAL=" + config(key, value)}
+			env: func(dir string, config func(string) string, _, _ string) []string {
+				return []string{"GIT_CONFIG_GLOBAL=" + config(filepath.Join(dir, "gitconfig"))}
 			},
 		},
 		{
 			name: "the system file GIT_CONFIG_SYSTEM names, under GIT_CONFIG_NOSYSTEM=0",
-			env: func(config func(string, string) string, key, value string) []string {
-				return []string{"GIT_CONFIG_NOSYSTEM=0", "GIT_CONFIG_SYSTEM=" + config(key, value)}
+			env: func(dir string, config func(string) string, _, _ string) []string {
+				return []string{"GIT_CONFIG_NOSYSTEM=0", "GIT_CONFIG_SYSTEM=" + config(filepath.Join(dir, "gitconfig"))}
 			},
 		},
 		{
 			name: "a GIT_CONFIG_COUNT block",
-			env: func(_ func(string, string) string, key, value string) []string {
+			env: func(_ string, _ func(string) string, key, value string) []string {
 				return []string{"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=" + key, "GIT_CONFIG_VALUE_0=" + value}
 			},
 		},
@@ -247,34 +252,50 @@ func TestTheReadOfWhatTheDestinationHoldsReadsNoConfigurationButItsCommandLine(t
 			// git hands the git it starts for `git -c <key>=<value>` GIT_CONFIG_PARAMETERS in this
 			// form, each half quoted for sh: measured with git 2.47.3.
 			name: "GIT_CONFIG_PARAMETERS",
-			env: func(_ func(string, string) string, key, value string) []string {
+			env: func(_ string, _ func(string) string, key, value string) []string {
 				return []string{"GIT_CONFIG_PARAMETERS=" + shQuote(key) + "=" + shQuote(value)}
 			},
 		},
 		{
-			name: "a file the global file includes",
-			env: func(config func(string, string) string, key, value string) []string {
-				return []string{"GIT_CONFIG_GLOBAL=" + config("include.path", config(key, value))}
+			name: "the user's file under HOME",
+			env: func(dir string, config func(string) string, _, _ string) []string {
+				config(filepath.Join(dir, ".gitconfig"))
+				return []string{"HOME=" + dir}
+			},
+		},
+		{
+			name: "the user's file under XDG_CONFIG_HOME",
+			env: func(dir string, config func(string) string, _, _ string) []string {
+				config(filepath.Join(dir, "git", "config"))
+				return []string{"XDG_CONFIG_HOME=" + dir}
 			},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			repo, base, head, destination := pushOf(t, nil, nil, map[string]string{"notes.md": "the runner answers at " + theHost + "\n"}, nil)
 			fixture := fixturegit.Isolated(t, t.TempDir())
-			decoy := filepath.Join(t.TempDir(), "decoy.git")
-			fixture.Run(repo, fixturegit.InitBare(decoy, "main")...)
-			fixture.Run(repo, "git", "push", "--quiet", decoy, head+":refs/heads/main")
-			config := func(key, value string) string {
-				dir := t.TempDir()
-				file := filepath.Join(dir, "gitconfig")
-				fixture.Run(dir, "git", "config", "--file", file, key, value)
+			standIn := filepath.Join(t.TempDir(), "stand-in.git")
+			fixture.Run(repo, fixturegit.InitBare(standIn, "main")...)
+			fixture.Run(repo, "git", "push", "--quiet", standIn, head+":refs/heads/main")
+			key := "url." + standIn + ".insteadOf"
+			config := func(file string) string {
+				if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				fixture.Run(filepath.Dir(file), "git", "config", "--file", file, key, destination)
 				return file
 			}
-			env := tc.env(config, "url."+decoy+".insteadOf", destination)
-			if listed := fixture.With(env...).Run("/", "git", "ls-remote", "--heads", destination); !strings.HasPrefix(listed, head) {
-				t.Fatalf("git ls-remote of %s under the case's environment lists %q, want the decoy's main at %s: the case would prove nothing", destination, listed, head)
+			// The environment is fixtureenv.Isolated's without its GIT_CONFIG_GLOBAL=/dev/null, as
+			// a host's is, so that git reads the user's files there, and the case's own names on
+			// top. The control ls-remote runs under it whole, since Runner.With only adds names.
+			env := append(slices.DeleteFunc(fixtureenv.Isolated(t.TempDir()), func(entry string) bool {
+				return strings.HasPrefix(entry, "GIT_CONFIG_GLOBAL=")
+			}), tc.env(t.TempDir(), config, key, destination)...)
+			control := fixturegit.Runner{TB: t, Env: env}
+			if listed := control.Run("/", "git", "ls-remote", "--heads", destination); !strings.HasPrefix(listed, head) {
+				t.Fatalf("git ls-remote of %s under the case's environment lists %q, want the stand-in's main at %s: the case would prove nothing", destination, listed, head)
 			}
-			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, env...)
+			guard := New(Options{Check: leakguardtest.Write(t, t.TempDir(), passes), Visibility: answers(Public, nil), Env: env})
 			err := guard.Push(bound(t), mainPush(repo, base, head, "origin", destination))
 			wantRefused(t, err, []string{"notes.md: " + theClass})
 		})
