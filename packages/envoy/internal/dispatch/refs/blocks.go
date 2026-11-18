@@ -483,9 +483,7 @@ func CurrentPreventionsSQL(columns, blocks string) string {
 // Each retraction is dated at, the version's time, and signed by writer, as a dropped pair of
 // block_refs is, and rides with the facts the pass states for the version's event, so it is
 // appended in the pass's own transaction (graphstore.Caused). The pass holds the document's owner
-// row, which a write that asserts a prevented_by takes before it reads the check (api's
-// lockReasoningOwners), so one that races the pass commits wholly before it, and is retracted
-// here, or wholly after it, finds the check gone, and is refused.
+// row (its race with a prevented_by write: api's lockReasoningOwners).
 //
 // It logs how many it retracts at each block, with the block's address, and answers the number to
 // no reader: the risk a check covered may be one only its author may see, and a count served

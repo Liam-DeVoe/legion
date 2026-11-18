@@ -476,8 +476,8 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 //
 //  1. the owner row comes first, through ownerRowLock (owner.go) or lockArtifactOwner
 //     (docs/service.go), as it does for every other writer above, and a write that stands under
-//     several owners takes all of them first, in one events.LockOwnerRows call, once each in
-//     ascending owner key;
+//     several owners takes all of them first, in one call that takes them once each in ascending
+//     owner key (events.LockOwnerRows, events.Broker.LockOwners);
 //  2. a node's graph_nodes row is written before any projection row whose foreign key names it
 //     (document_blocks, block_refs and comments, migration 20261109022248), so the write that
 //     makes a node and the write that points at it never meet in the opposite order;

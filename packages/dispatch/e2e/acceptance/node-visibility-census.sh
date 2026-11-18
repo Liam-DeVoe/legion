@@ -414,8 +414,8 @@ at() {
   "$@"
 }
 
-# census_kind FILE KIND: KIND's counts in the census report FILE, into $c_nodes, $c_rows,
-# $c_row_differences and $c_node_differences, and into $c_side what its store side counts: node,
+# census_kind FILE KIND: KIND's counts in the census report FILE, into $c_store, $c_rows,
+# $c_row_differences and $c_store_differences, and into $c_side what its store side counts: node,
 # or tuple for a kind the census holds triple by triple (graphcensus's KindReport.Triples), whose
 # line counts tuples where every other kind's counts nodes.
 census_kind() {
@@ -423,22 +423,22 @@ census_kind() {
   line="$(grep -m 1 -E "^census: store kind=$2 (nodes|tuples)=" "$1")" || return 1
   [[ "$line" =~ (node|tuple)s=([0-9,]+)\ rows=([0-9,]+)\ .*\ rows_without_a_(node|tuple)=([0-9,]+)\ (node|tuple)s_without_a_row=([0-9,]+) ]] || return 1
   c_side="${BASH_REMATCH[1]}"
-  c_nodes="${BASH_REMATCH[2]//,/}"
+  c_store="${BASH_REMATCH[2]//,/}"
   c_rows="${BASH_REMATCH[3]//,/}"
   c_row_differences="${BASH_REMATCH[5]//,/}"
-  c_node_differences="${BASH_REMATCH[7]//,/}"
+  c_store_differences="${BASH_REMATCH[7]//,/}"
 }
 
 # census_zero SECTION NAME KIND: the census NAME read KIND at zero differences in both directions,
 # having checked more than zero rows of it; a kind that checked no row fails, named.
 census_zero() {
   census_kind "$work/census.$2" "$3" || fail "$1" "the census reads the kind $3" "no line of it in: $(<"$work/census.$2")"
-  [[ "$c_row_differences" == 0 && "$c_node_differences" == 0 ]] ||
+  [[ "$c_row_differences" == 0 && "$c_store_differences" == 0 ]] ||
     fail "$1" "the census reads $3 at zero differences" \
-      "$c_row_differences row(s) without a $c_side and $c_node_differences $c_side(s) without a row: $(grep -E "^census: store kind=$3 " "$work/census.$2" | tr '\n' ' ')"
+      "$c_row_differences row(s) without a $c_side and $c_store_differences $c_side(s) without a row: $(grep -E "^census: store kind=$3 " "$work/census.$2" | tr '\n' ' ')"
   [[ "$c_rows" -gt 0 ]] ||
     fail "$1" "the census checked more than zero rows of the kind $3" "it checked $c_rows rows of $3, so it proves nothing of it"
-  pass "$1" "the census reads $3 at zero differences: it checked $c_rows row(s) against $c_nodes $c_side(s)"
+  pass "$1" "the census reads $3 at zero differences: it checked $c_rows row(s) against $c_store $c_side(s)"
 }
 
 # The eight kinds of the store cybermonklabs/legion#4173 adds: a decision's shaped, from_ask and
@@ -1304,10 +1304,10 @@ for moved in "lens|lens|$premortem_id|proposed" "finding|block|$finding_store|se
   IFS='|' read -r present live held <<<"$answer"
   census_kind "$work/census.h3" "${kind}_visibility_state" ||
     fail C "the census reads the kind ${kind}_visibility_state" "no line of it in: $(<"$work/census.h3")"
-  [[ "$held" == "$state" && "$c_nodes" == "$present" && "$present" -gt "$live" ]] ||
+  [[ "$held" == "$state" && "$c_store" == "$present" && "$present" -gt "$live" ]] ||
     fail C "the census counts the $kind $id at $state among the nodes of its kind, as it counts a live one" \
-      "the store holds it at $held, $present $kind node(s) are not gone and $live are live, and the census checked $c_nodes"
-  pass C "the census counts the $kind $id at $state among the $c_nodes $kind node(s) it checked, every one not gone, $live of them live, at zero differences"
+      "the store holds it at $held, $present $kind node(s) are not gone and $live are live, and the census checked $c_store"
+  pass C "the census counts the $kind $id at $state among the $c_store $kind node(s) it checked, every one not gone, $live of them live, at zero differences"
 done
 want_value C "every interaction node is at visibility author" "0|true" \
   "select count(*) filter (where visibility <> 'author') || '|' || (count(*) > 0)::text
@@ -1393,17 +1393,17 @@ census_kind "$work/census.plants" interaction ||
   fail C "the census reads the kind interaction" "no line of it in: $(<"$work/census.plants")"
 found="$(grep -E '^census: store kind=interaction difference at ' "$work/census.plants" || true)"
 want_re="^census: store kind=interaction difference at interaction $planted_run: an? [a-z]+ node no row projects\$"
-[[ "$c_row_differences" == 0 && "$c_node_differences" == 1 && "$found" =~ $want_re ]] ||
+[[ "$c_row_differences" == 0 && "$c_store_differences" == 1 && "$found" =~ $want_re ]] ||
   fail C "the census reads the planted node as one difference of the kind interaction, naming the run $planted_run" \
-    "$c_row_differences row(s) without a node and $c_node_differences node(s) without a row: ${found:-no difference named}"
+    "$c_row_differences row(s) without a node and $c_store_differences node(s) without a row: ${found:-no difference named}"
 pass C "the census reads the planted node as one difference of the kind interaction, naming the run: $found"
 census_kind "$work/census.plants" frame ||
   fail C "the census reads the kind frame" "no line of it in: $(<"$work/census.plants")"
 found="$(grep -E '^census: store kind=frame difference at ' "$work/census.plants" || true)"
 want_re="^census: store kind=frame difference at frame $run_ahead $ahead_frame: the row and its node disagree: the row digests [0-9a-f]{32} and the node [0-9a-f]{32}\$"
-[[ "$c_row_differences" == 1 && "$c_node_differences" == 0 && "$found" =~ $want_re ]] ||
+[[ "$c_row_differences" == 1 && "$c_store_differences" == 0 && "$found" =~ $want_re ]] ||
   fail C "the census reads the planted frame value as one difference of the kind frame, naming the run $run_ahead" \
-    "$c_row_differences row(s) without a node and $c_node_differences node(s) without a row: ${found:-no difference named}"
+    "$c_row_differences row(s) without a node and $c_store_differences node(s) without a row: ${found:-no difference named}"
 pass C "the census reads the planted frame value as one difference of the kind frame, naming the run: $found"
 census_zero C plants interaction_visibility_state
 line="$(grep -m 1 -E '^census: store rows_checked=' "$work/census.plants")" ||

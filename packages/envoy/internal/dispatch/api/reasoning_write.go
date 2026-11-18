@@ -96,19 +96,15 @@ func lockReasoningOwners(ctx context.Context, tx pgx.Tx, issue string, checks []
 	if len(documents) > 0 {
 		rows, err := tx.Query(ctx, `
 			select ref_key, id::text, coalesce(issue_key, '') from artifacts where ref_key = any($1)
-		`, slices.Sorted(maps.Keys(documents)))
+		`, slices.Collect(maps.Keys(documents)))
 		if err != nil {
 			return fmt.Errorf("read the documents of the checks the write names: %w", err)
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var refKey, id, issueKey string
-			if err := rows.Scan(&refKey, &id, &issueKey); err != nil {
-				return fmt.Errorf("read the documents of the checks the write names: %w", err)
-			}
+		var refKey, id, issueKey string
+		if _, err := pgx.ForEachRow(rows, []any{&refKey, &id, &issueKey}, func() error {
 			owners.Add(issueKey, id, "the check "+documents[refKey])
-		}
-		if err := rows.Err(); err != nil {
+			return nil
+		}); err != nil {
 			return fmt.Errorf("read the documents of the checks the write names: %w", err)
 		}
 	}
@@ -160,9 +156,8 @@ func lockReasoningOwners(ctx context.Context, tx pgx.Tx, issue string, checks []
 // end that stands under no issue - a has_kind tuple's lens_kind, a constraint of the catalogue a
 // lens_kind reaches - are no nodes FindNodeUnderIssue answers but 404 for, and are found through
 // refs.Node with the caller's visibility instead (pointerEnd). A caller whose write asserts a
-// prevented_by first takes the owner row of each check's document with the issue's
-// (lockReasoningOwners), so its read of the check and the store's read of whether the check's
-// document is retired stand under the row a retirement and the index pass take first.
+// prevented_by first takes the owner row of each check's document with the issue's (its race with
+// a retirement or an index pass: lockReasoningOwners).
 //
 // It answers the nodes the request wrote, in the order it named them, without their authors':
 // the nodes this write made, which are the ones a write made for a run names as changed by it
@@ -269,13 +264,13 @@ type reasoningPointer struct {
 // retargets out of a lens, a risk or a requirement block, and of the moved_to the pre-mortem
 // conversion appends out of the document it retires (retireConvertedDocument), in the caller's
 // transaction. It takes the issue's row first (lockIssueRow), which a caller that asserts a
-// prevented_by holds already, taken with the owner row of the check's document
-// (lockReasoningOwners), and then writes through the store, which holds the tuple to its type rule
-// (graphstore's pointerRules) and takes the node rows that rule names after the owner row: an
-// append and a retraction through graphstore.Write, a retarget through graphstore.Retarget. No
-// event is appended, as none is for the nodes these tuples tie (writeReasoningNodes). The pointer
-// is marked as changing the node it goes out of (graphstore.Tuple's Changes), so a write made for
-// a run names that node, and not its far end, as changed by it.
+// prevented_by holds already (lockReasoningOwners), and then writes through the store, which holds
+// the tuple to its type rule (graphstore's pointerRules) and takes the node rows that rule names
+// after the owner row: an append and a retraction through graphstore.Write, a retarget through
+// graphstore.Retarget. No event is appended, as none is for the nodes these tuples tie
+// (writeReasoningNodes). The pointer is marked as changing the node it goes out of
+// (graphstore.Tuple's Changes), so a write made for a run names that node, and not its far end,
+// as changed by it.
 //
 // A retraction of a tuple the node does not hold now is a 404, as a retarget of one is
 // (graphstore.ErrPointerNotHeld): there is nothing to retract. An append of a tuple the node holds

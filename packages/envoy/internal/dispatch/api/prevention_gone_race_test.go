@@ -2,9 +2,9 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -13,15 +13,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
-
-// goneCheckRefusal is what the pointer route answers an append of a prevented_by that waited on an
-// index pass and then found its check gone: the answer an append to a check no current version
-// holds gets, since the route reads such a check as a far end that does not exist (pointerEnd,
-// nodeNotFound), and the refusal names the check by the address the append gave.
-var goneCheckRefusal = struct {
-	status int
-	code   string
-}{http.StatusNotFound, "NOT_FOUND"}
 
 // TestAPreventedByAppendedWhileItsCheckIsMarkedGoneIsNotLeftStanding holds open, in a transaction,
 // the index pass of a version of a check's document that no longer holds the check - the owner row
@@ -72,6 +63,10 @@ func TestAPreventedByAppendedWhileItsCheckIsMarkedGoneIsNotLeftStanding(t *testi
 		t.Fatalf("inside the pass the check %s reads %+v (held %t, %v), want it gone", rig.otherIssueCheckNode, node, held, err)
 	}
 
+	var pass uint32
+	if err := tx.QueryRow(ctx, `select pg_backend_pid()`).Scan(&pass); err != nil {
+		t.Fatalf("read the index pass's backend: %v", err)
+	}
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		answered <- rig.post(nodePath(risk.Address, "pointers"), map[string]any{
@@ -79,11 +74,23 @@ func TestAPreventedByAppendedWhileItsCheckIsMarkedGoneIsNotLeftStanding(t *testi
 		}, "alice")
 	}()
 	var appended *httptest.ResponseRecorder
-	select {
-	case appended = <-answered:
+	waitUntil(t, 30*time.Second, "the append to "+rig.otherIssueCheck+" waiting on the index pass, or answering", func() bool {
+		select {
+		case appended = <-answered:
+			return true
+		default:
+		}
+		var waiting bool
+		if err := rig.database.Pool.QueryRow(ctx, `
+			select exists (select 1 from pg_stat_activity where $1::integer = any(pg_blocking_pids(pid)))
+		`, int64(pass)).Scan(&waiting); err != nil {
+			t.Fatalf("read what waits on the index pass: %v", err)
+		}
+		return waiting
+	})
+	if appended != nil {
 		t.Errorf("the append to %s answered %d %s while the index pass marking it gone was still open, want it held at the owner row of the check's document",
 			rig.otherIssueCheck, appended.Code, appended.Body.String())
-	case <-time.After(3 * time.Second):
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the index pass: %v", err)
@@ -95,19 +102,17 @@ func TestAPreventedByAppendedWhileItsCheckIsMarkedGoneIsNotLeftStanding(t *testi
 			t.Fatalf("the append to %s did not answer within 30 s of the index pass's commit", rig.otherIssueCheck)
 		}
 	}
-	t.Logf("the append to %s while an index pass marked it gone: status=%d body=%s",
-		rig.otherIssueCheck, appended.Code, appended.Body.String())
 
 	if node, held, err := graphstore.ReadNode(ctx, rig.database.Pool, refs.BlockNodeKind, rig.otherIssueCheckNode); err != nil || !held || node.State != graphstore.StateGone {
 		t.Fatalf("after the pass committed the check %s reads %+v (held %t, %v), want it gone", rig.otherIssueCheckNode, node, held, err)
-	}
-	if appended.Code != goneCheckRefusal.status || !strings.Contains(appended.Body.String(), goneCheckRefusal.code) ||
-		!strings.Contains(appended.Body.String(), rig.otherIssueCheck) {
-		t.Errorf("the append to %s, a check the index pass marked gone, answered %d %s; want %d %s naming the check",
-			rig.otherIssueCheck, appended.Code, appended.Body.String(), goneCheckRefusal.status, goneCheckRefusal.code)
 	}
 	if held := rig.current(graphstore.KindRisk, risk.ID, graphstore.TuplePreventedBy); len(held) != 0 {
 		t.Errorf("after the index pass marked %s gone, the risk %s is prevented by %v, a check no version holds "+
 			"(the append answered %d)", rig.otherIssueCheck, risk.Address, held, appended.Code)
 	}
+	// The route reads a check no current version holds as a far end that does not exist
+	// (pointerEnd, nodeNotFound), so the append that waited on the pass and then found its check
+	// gone is the 404 such a far end gets, naming the check by the address the append gave.
+	requireRefused(t, "the append to "+rig.otherIssueCheck+", a check the index pass marked gone", appended,
+		http.StatusNotFound, "NOT_FOUND", fmt.Sprintf("no node %q under %s", rig.otherIssueCheck, rig.issue))
 }

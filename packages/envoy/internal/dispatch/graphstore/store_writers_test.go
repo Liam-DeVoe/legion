@@ -109,16 +109,16 @@ var storeWriteCallSites = map[string]string{
 	"api/message_delivery.go#completeMessageDelivery": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	// The nodes and tuples of the reasoning kinds a request writes - a lens, its findings, a
 	// risk and a constraint - with the author's node where the credential proves one: the issue's
-	// owner row, taken with the owner row of each check a risk's prevented_by names in one
-	// events.LockOwnerRows call (api's lockReasoningOwners) where the write names one, then one
-	// Write of every node in ascending (kind, id) and every tuple at the sentinel, appending no
-	// event. Its order is the order TestEveryStoreWriteTakesOneLockOrder proves of Write.
+	// owner row, with the owner row of each check's document where a risk names a prevented_by
+	// (api's lockReasoningOwners), then one Write of every node in ascending (kind, id) and every
+	// tuple at the sentinel, appending no event. Its order is the order
+	// TestEveryStoreWriteTakesOneLockOrder proves of Write.
 	"api/reasoning_write.go#writeReasoningNodes": "graphstore#TestEveryStoreWriteTakesOneLockOrder",
 	// One pointer tuple a request appends, retracts or retargets out of a node of an issue
-	// (has_kind, triggered_by, constrained_by, prevented_by): the issue's owner row, taken for an
-	// append or a retarget of a prevented_by with the owner row of the check's document in one
-	// events.LockOwnerRows call, then one Write of the tuple, or Retarget, which takes the node's
-	// row and writes through Write. It appends no event. Its order is the order
+	// (has_kind, triggered_by, constrained_by, prevented_by): the issue's owner row, with the owner
+	// row of the check's document for an append or a retarget of a prevented_by (api's
+	// lockReasoningOwners), then one Write of the tuple, or Retarget, which takes the node's row and
+	// writes through Write. It appends no event. Its order is the order
 	// TestEveryStoreWriteTakesOneLockOrder proves of Write, after the owner rows
 	// writeReasoningNodes takes first too.
 	"api/reasoning_write.go#writeReasoningPointer": "graphstore#TestEveryStoreWriteTakesOneLockOrder",

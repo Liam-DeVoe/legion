@@ -579,23 +579,21 @@ func premortemChecks(ctx context.Context, q refs.Queryer, who model.Actor, entri
 // the write records (reasoningWrite): it is the one conversion, which the route and the command
 // both run.
 //
-// It first takes, in one call (lockReasoningOwners), the issue's row `for no key update` - the
-// owner row the lock order on api/inbox_read.go's markInboxReadThreads puts before every other,
-// and the owner of the document it converts - and the owner row of the document of every check the
-// map names. So two conversions of one issue queue there and the second reads what the first
-// wrote, and a retirement of a check's document or an index pass that marks a check gone, which
-// take that row first, commits wholly before the conversion reads the check, or wholly after it,
-// and retracts the prevented_by with the rest (spec requirement r-constraint-risk). It
-// reads the document's newest version. A document whose address carries a moved_to tuple already
-// is converted: the call answers that lens, AlreadyConverted, and writes nothing. Otherwise it
-// parses the document (parsePremortem), holds entries to it (checkPremortemMap), retires the
-// document and moves its address to the lens (retireConvertedDocument), and then writes, through
-// writeReasoningNodes at graphstore.NoEvent, one lens of kind pre-mortem under the issue's node,
-// whose verdict is the document's verdict followed by its two closing sections, and under it one
-// risk for each risk of the document in the order of their numbers, each with its heading, its
-// early warning and its prevention and a prevented_by tuple to each check its entry names. It
-// answers the report and the events the conversion appended - the document.retired of the
-// retirement - which the caller publishes once tx commits.
+// It first takes, in one call, the issue's row `for no key update` - the owner row the lock order
+// on api/inbox_read.go's markInboxReadThreads puts before every other, and the owner of the
+// document it converts - and the owner row of the document of every check the map names (its race
+// with a retirement or an index pass: lockReasoningOwners). So two conversions of one issue queue
+// there and the second reads what the first wrote. It reads the document's newest version. A
+// document whose address carries a moved_to tuple already is converted: the call answers that
+// lens, AlreadyConverted, and writes nothing. Otherwise it parses the document (parsePremortem),
+// holds entries to it (checkPremortemMap), retires the document and moves its address to the lens
+// (retireConvertedDocument), and then writes, through writeReasoningNodes at graphstore.NoEvent,
+// one lens of kind pre-mortem under the issue's node, whose verdict is the document's verdict
+// followed by its two closing sections, and under it one risk for each risk of the document in
+// the order of their numbers, each with its heading, its early warning and its prevention and a
+// prevented_by tuple to each check its entry names. It answers the report and the events the
+// conversion appended - the document.retired of the retirement - which the caller publishes once
+// tx commits.
 //
 // The document is retired before the risks are written so that the store holds their
 // prevented_by tuples to the document as it will stand: nobody runs a retired document's checks,
