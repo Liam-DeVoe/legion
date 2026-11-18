@@ -1401,8 +1401,10 @@ type CheckResultRetracted struct {
 // document (check_results). IssueKey is the issue it was recorded on, which may be a descendant
 // of CheckIssueKey, the issue whose Verification document holds the check. CheckVersion and
 // CheckSHA256 are the block's changed_version and text_sha256 when the result was recorded, so
-// a read can tell a result whose check has been reworded since. CommitStands, CheckWordsMoved
-// and Retracted are read when the results are read and are absent from the record's own answer.
+// a read can tell a result whose check has been reworded since: one whose check's digest and
+// version both moved, since a block respelled by another renderer version takes a new digest
+// and keeps its changed version (refs.IndexBlocks). CommitStands, CheckWordsMoved and Retracted
+// are read when the results are read and are absent from the record's own answer.
 type CheckResult struct {
 	ID              string    `json:"id"`
 	IssueKey        string    `json:"issue_key"`
@@ -1428,9 +1430,10 @@ type CheckResult struct {
 	EventSeq        *int64    `json:"event_seq,omitempty"`
 	// CommitStands is where this result's commit stands against what its check compared with,
 	// and CheckWordsMoved whether the check's words moved after the result was recorded, which
-	// CheckSHA256 beside the check's SHA256 decides. They are two facts and two fields: a
-	// result at the compared commit under an older wording is both, and one word for both
-	// would hide which.
+	// CheckSHA256 and CheckVersion beside the check's SHA256 and Version decide: the words moved
+	// where both differ (api's comparisonReader.answer says why). They are two facts and two
+	// fields: a result at the compared commit under an older wording is both, and one word for
+	// both would hide which.
 	CommitStands    *ResultCommitStands   `json:"commit_stands,omitempty"`
 	CheckWordsMoved *bool                 `json:"check_words_moved,omitempty"`
 	Retracted       *CheckResultRetracted `json:"retracted,omitempty"`

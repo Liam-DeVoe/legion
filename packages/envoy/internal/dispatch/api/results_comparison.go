@@ -185,16 +185,25 @@ const noDefaultBranchNamed = ""
 //
 // The two facts a result states are kept apart and read apart. Where its commit stands is one
 // question, answered against the bases, and whether the check's words moved is another,
-// answered by the digest the result recorded beside the digest the check carries now. A result
-// at the compared commit under an older wording is both, and one word for both would hide
-// which of the two a reader is looking at.
+// answered by the digest and the changed version the result recorded beside those the check
+// carries now: the words moved when the digests differ and the versions differ too. A check's
+// changed version moves with every change of its words. The one case where its digest moves
+// while its changed version stays is refs.IndexBlocks keeping a block whose text recorded at
+// that version another renderer version spelled and which reads as its text now, the same words
+// in a new spelling. That is the one rule for text another renderer version stored, whatever the
+// renderer change, so this reader agrees with it. Renderer version 2 changed how lists are
+// spelled and respells no check, since a check holds paragraphs alone; a later change that
+// spells a paragraph or a check's opening line otherwise would. At a build without that rule a
+// digest that moves always moves the changed version, so the comparison of versions changes
+// nothing there. A result at the compared commit under an older wording is both, and one word
+// for both would hide which of the two a reader is looking at.
 func (c *comparisonReader) answer(ctx context.Context, check *model.CheckBlock) {
 	compared := c.comparedWith(ctx, *check)
 	check.ComparedWith = compared.bases
 	check.ComparedNothing = compared.reason
 	for index := range check.Results {
 		result := &check.Results[index]
-		moved := check.SHA256 != result.CheckSHA256
+		moved := check.SHA256 != result.CheckSHA256 && check.Version != result.CheckVersion
 		result.CheckWordsMoved = &moved
 		stands := c.commitStands(ctx, *check, compared, *result)
 		result.CommitStands = &stands

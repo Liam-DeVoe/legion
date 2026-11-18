@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -292,6 +293,182 @@ func TestADeletedBlockTakesItsWindowRow(t *testing.T) {
 	indexVersionAndWindow(t, tx, artifact, 3, markdown, blocks, "the empty version")
 	if got := windowRowsOf(t, tx, DocumentWindowKind, artifact); len(got) != 0 {
 		t.Fatalf("the emptied document holds %d windows, want none", len(got))
+	}
+}
+
+// respelledDocument is version 1 of a document as another renderer version stored it, in a
+// spelling no build writes that reads as the tree this build writes otherwise: a top-level loose
+// list and a quote holding one, each with a blank line between its last two items alone, where
+// a build writes the same blank line between every two. respelledDocumentBlocks is each of its
+// blocks in document order, with its type and its slice of the document as that renderer's build
+// indexed it.
+const respelledDocument = "Opening paragraph.\n\n- first\n- second\n\n- third\n\n> - alpha\n> - bravo\n>\n> - charlie\n\nClosing paragraph.\n"
+
+var respelledDocumentBlocks = []struct{ nodeType, text string }{
+	{"paragraph", "Opening paragraph."},
+	{"bullet_list", "- first\n- second\n\n- third"},
+	{"paragraph", "first"},
+	{"paragraph", "second"},
+	{"paragraph", "third"},
+	{"blockquote", "> - alpha\n> - bravo\n>\n> - charlie"},
+	{"bullet_list", "- alpha\n> - bravo\n>\n> - charlie"},
+	{"paragraph", "alpha"},
+	{"paragraph", "bravo"},
+	{"paragraph", "charlie"},
+	{"paragraph", "Closing paragraph."},
+}
+
+// respelledVersionBlocks is the blocks of markdown, which reads as tree, as another renderer's
+// build handed them to IndexBlocks: tree's blocks in document order, each with its id and type
+// from tree and its offsets from its slice of markdown in cuts.
+func respelledVersionBlocks(t *testing.T, tree *pmdoc.Node, markdown string, cuts []struct{ nodeType, text string }) []model.ArtifactBlock {
+	t.Helper()
+	_, offsets, err := pmdoc.RenderWithBlockOffsets(tree)
+	if err != nil {
+		t.Fatalf("render the tree of %q: %v", markdown, err)
+	}
+	if len(offsets) != len(cuts) {
+		t.Fatalf("the tree of %q holds %d blocks (%+v), want %d", markdown, len(offsets), offsets, len(cuts))
+	}
+	blocks := make([]model.ArtifactBlock, len(offsets))
+	from := 0
+	for index, offset := range offsets {
+		want := cuts[index]
+		at := strings.Index(markdown[from:], want.text)
+		if offset.Type != want.nodeType || at < 0 {
+			t.Fatalf("block %d of the tree of %q is a %s, want a %s whose text %q follows offset %d", index, markdown, offset.Type, want.nodeType, want.text, from)
+		}
+		from += at
+		blocks[index] = model.ArtifactBlock{ID: offset.ID, Type: offset.Type, From: from, To: from + len(want.text)}
+	}
+	return blocks
+}
+
+// insertRenderedVersion stores version number of document artifact, written at at, holding
+// markdown, as a build of renderer version stamp writes it.
+func insertRenderedVersion(t *testing.T, tx pgx.Tx, artifact string, number int, markdown string, stamp int, at time.Time) {
+	t.Helper()
+	if _, err := tx.Exec(context.Background(), `
+		insert into artifact_versions (artifact_id, number, markdown, authors, renderer_version, created_at)
+		values ($1, $2, $3, '[{"kind":"user","id":"alice"}]', $4, $5)
+	`, artifact, number, markdown, stamp, at); err != nil {
+		t.Fatalf("store version %d of %s: %v", number, artifact, err)
+	}
+}
+
+// A version another renderer version stored spells its tree otherwise than this build does, so
+// the next version moves the sum of a block whose tree did not change. That version, which
+// rewords the closing paragraph, keeps the changed version and time of each block whose text
+// recorded at version 1 reads, alone, as its text now - the top-level list and the quote - and
+// gives each the new text's sum and excerpt with no text recorded at version 2, so a citation
+// of the list is not counted as moved. The list inside the quote, whose recorded text carries
+// the quote's prefix on its later lines and reads alone as another tree, takes version 2, as
+// does the reworded paragraph, and a citation of it is counted.
+func TestABlockKeepsItsChangedVersionAcrossAnotherRenderersSpelling(t *testing.T) {
+	ctx := context.Background()
+	tx := windowFixture(t)
+	artifact, refKey := createReferenceArtifact(t, tx, "WIND-1", "WIND", "respelled-md")
+	tree, err := pmdoc.ParseRendering(respelledDocument)
+	if err != nil {
+		t.Fatalf("read %q: %v", respelledDocument, err)
+	}
+	stored := respelledVersionBlocks(t, tree, respelledDocument, respelledDocumentBlocks)
+	recorded := make(map[string]string, len(stored))
+	for _, block := range stored {
+		recorded[block.ID] = respelledDocument[block.From:block.To]
+	}
+	list, quote, quotedList, closing := stored[1].ID, stored[5].ID, stored[6].ID, stored[10].ID
+	versionOneAt := time.Date(2026, time.November, 1, 9, 0, 0, 0, time.UTC)
+	insertRenderedVersion(t, tx, artifact, 1, respelledDocument, pmdoc.RendererVersion-1, versionOneAt)
+	if _, err := IndexBlocks(ctx, tx, artifact, 1, versionOneAt, respelledDocument, stored, nil, nil); err != nil {
+		t.Fatalf("index version 1: %v", err)
+	}
+	citing := createReferenceComment(t, tx, "WIND-1")
+	insertReference(t, tx, "comment", citing, "block", refKey+"#"+list)
+	insertReference(t, tx, "comment", citing, "block", refKey+"#"+quotedList)
+
+	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+		if node.Type == "text" && node.Text == "Closing paragraph." {
+			node.Text = "Closing paragraph, reworded."
+		}
+		return true
+	})
+	markdown, offsets, err := pmdoc.RenderWithBlockOffsets(tree)
+	if err != nil {
+		t.Fatalf("render version 2: %v", err)
+	}
+	blocks := make([]model.ArtifactBlock, len(offsets))
+	for index, offset := range offsets {
+		blocks[index] = model.ArtifactBlock{ID: offset.ID, Type: offset.Type, From: offset.From, To: offset.To}
+	}
+	versionTwoAt := versionOneAt.Add(time.Hour)
+	insertRenderedVersion(t, tx, artifact, 2, markdown, pmdoc.RendererVersion, versionTwoAt)
+	moved, err := IndexBlocks(ctx, tx, artifact, 2, versionTwoAt, markdown, blocks, nil, nil)
+	if err != nil {
+		t.Fatalf("index version 2: %v", err)
+	}
+
+	type indexedBlock struct {
+		changedVersion int
+		changedAt      time.Time
+		sum, excerpt   string
+	}
+	rows, err := tx.Query(ctx, `
+		select block_id, changed_version, changed_at, text_sha256, excerpt from document_blocks where artifact_id = $1
+	`, artifact)
+	if err != nil {
+		t.Fatalf("read the blocks of version 2: %v", err)
+	}
+	indexed := map[string]indexedBlock{}
+	for rows.Next() {
+		var id string
+		var block indexedBlock
+		if err := rows.Scan(&id, &block.changedVersion, &block.changedAt, &block.sum, &block.excerpt); err != nil {
+			t.Fatalf("scan a block of version 2: %v", err)
+		}
+		indexed[id] = block
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the blocks of version 2: %v", err)
+	}
+	// The list inside the quote and the reworded paragraph take version 2. Every other block
+	// keeps version 1: the top-level list and the quote, whose texts recorded at version 1 read
+	// alone as their texts now, and the blocks whose texts did not move.
+	for _, block := range blocks {
+		body := markdown[block.From:block.To]
+		if (block.ID == list || block.ID == quote) && body == recorded[block.ID] {
+			t.Fatalf("this build writes block %s as version 1 recorded it, %q; the test needs a spelling no build writes", block.ID, body)
+		}
+		wantVersion, wantAt := 1, versionOneAt
+		if block.ID == quotedList || block.ID == closing {
+			wantVersion, wantAt = 2, versionTwoAt
+		}
+		got := indexed[block.ID]
+		if got.changedVersion != wantVersion || !got.changedAt.Equal(wantAt) {
+			t.Errorf("block %s, a %s written %q and recorded at version 1 as %q, changed at version %d (%s), want version %d (%s)",
+				block.ID, block.Type, body, recorded[block.ID], got.changedVersion, got.changedAt.UTC(), wantVersion, wantAt)
+		}
+		if got.sum != BlockTextSum(body) || got.excerpt != text.HeadRunes(body, BlockExcerptRunes) {
+			t.Errorf("block %s holds the sum %s and the excerpt %q, want the sum and excerpt of %q", block.ID, got.sum, got.excerpt, body)
+		}
+	}
+	var textsAtTwo []string
+	if err := tx.QueryRow(ctx, `
+		select coalesce(array_agg(block_id), '{}') from document_block_texts where artifact_id = $1 and version = 2
+	`, artifact).Scan(&textsAtTwo); err != nil {
+		t.Fatalf("read the block texts of version 2: %v", err)
+	}
+	slices.Sort(textsAtTwo)
+	want := []string{quotedList, closing}
+	slices.Sort(want)
+	if !slices.Equal(textsAtTwo, want) {
+		t.Errorf("version 2 records the texts of blocks %v, want those of the list inside the quote and the reworded paragraph alone (%v)", textsAtTwo, want)
+	}
+	if slices.Contains(moved, Target{Kind: "block", ID: refKey + "#" + list}) {
+		t.Errorf("version 2 counts the cited top-level list as moved (%v); its text holds the tree it held", moved)
+	}
+	if !slices.Contains(moved, Target{Kind: "block", ID: refKey + "#" + quotedList}) {
+		t.Errorf("version 2 does not count the cited list inside the quote as moved (%v); it took version 2", moved)
 	}
 }
 

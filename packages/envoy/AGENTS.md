@@ -378,7 +378,7 @@ Each item below names a task and where its code is, then notes on it.
   `GET` lists each check of the issue's Verification document with every result recorded against it.
   What a read says about a result is computed at the read, never written by a push.
   Each check answers the commits and branches its results are compared with (`compared_with`), why it has none where it has none (`compared_nothing`) and whether a pass of it stands (`pass_stands`);
-  each result answers where its commit stands against those (`commit_stands`) and whether the check's words moved after it was recorded (`check_words_moved`):
+  each result answers where its commit stands against those (`commit_stands`) and whether the check's words moved after it was recorded (`check_words_moved`, true where the block's `text_sha256` and its `changed_version` both differ from those the result kept: a check's changed version moves with every change of its words, and `refs.IndexBlocks` keeps the changed version of a block whose recorded text another renderer version spelled and which reads as its text now, under the new sum):
 
   - a `before_merge` check is compared with every head Dispatch holds for the check's own issue — the head of an `open` pull request, or the final head of a `merged` one (`pull_request_heads`, which the GitHub intake and the reconcile keep);
     the issue a result was recorded on counts for nothing here, so a child's pull request is never a basis for a check above it;
@@ -1780,6 +1780,9 @@ a mention inside it starts at the innermost node holding it, or at the document 
 The version is still written.
 Its tables are migration 0121's: `document_blocks` holds each block the latest indexed version holds, with its text's sha256, its text cut to 480 runes as its excerpt, and `changed_version` and `changed_at`, the version its text last changed in, which an unchanged text keeps.
 `document_block_texts` records a block's whole text in each version that makes it new, changes it, restores it, or deletes it (a null text).
+A text whose sha256 moved keeps `changed_version` and `changed_at` too when another renderer version stored that version, or none stamped it (`pmdoc.OtherRenderer`), and the text `document_block_texts` records for the block there reads, alone, as the new text (`pmdoc.ReadsAs`, `refs.respelledBlocks`):
+the row takes the new text's sha256 and excerpt, no text is recorded at the new version, and `IndexBlocks` counts the block as unchanged, so a pin to an earlier version still reads `unchanged`, and `refs.CurrentBlockText`, a pinned read and search show the earlier spelling until the block's text next changes.
+A block whose recorded text does not read alone as the tree it held takes the new version: one inside a quote, whose later lines carry the quote's prefix, or a list whose slice renders otherwise alone (its marker chosen against a list before it).
 `document_indexed_versions` names each version a block-aware build indexed, and `document_block_versions` the version a document's blocks stand at, null while the document is owed an index.
 `block_refs` holds each link a block holds, keyed on the block, its target and the link's `kind`.
 `document_blocks.node_id` and `block_refs.from_node` are hash indexed, never B-tree:
