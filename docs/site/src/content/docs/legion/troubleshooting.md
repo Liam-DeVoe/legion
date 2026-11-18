@@ -28,7 +28,7 @@ legion start --config legion.yaml --check-config
 | `<key> must be an IP address or an ASCII DNS name; got "…\u212a…"` (for `advertise_host`, `bind`, an NFS volume's `server`, or the host of `daemon_url`, `envoy_url`, `dispatch_url`, a `nats_urls` entry or `agent_secrets.url`) | The host has a character outside ASCII, printed as a `\u` or `\U` escape. Write the name in ASCII letters, digits, hyphens and dots (an internationalized name in its `xn--` form). |
 | `<key> is required when runtime is kubernetes: …` | Add the key; the message says why a pod needs it. |
 | `worker_stop_timeout_seconds must be at least 9 when runtime is kubernetes: …` | Raise it to 9 or more. A role's stop gives its agent 5 s to exit, drains its output for 1 s and waits at least 3 s for the CodeGraph warm-up to release its lease on the issue volume; a smaller grace would let the pod kill the shim with the lease held, and the role's relaunch would skip its own build for a minute. |
-| `worker_take_timeout_seconds must be a positive integer` (or the same for `worker_turn_start_timeout_seconds`) | The two waits a worker is charged on are whole numbers of seconds above 0: 300 and 1500 by default ([legion.yaml](/legion/legion/running-legion/#legionyaml)). |
+| `worker_take_timeout_seconds must be a positive integer` or `worker_take_timeout_seconds must be at most 2147483` (or the same for `worker_turn_start_timeout_seconds`) | The two waits a worker is charged on are whole numbers of seconds above 0 and at most 2147483: 300 and 1500 by default ([legion.yaml](/legion/legion/running-legion/#legionyaml)). A take whose adoption of the working copy the shim refused is charged too, at the shim's answer, and waits on neither. |
 | `projects must configure <PROJECT>, the daemon's own project` | `project` must also be a key of `projects`. |
 | `postgres_dsn is required (or set LEGION_POSTGRES_DSN)` | Give the daemon its database. |
 | `unknown key <key>` | A typo, or a setting Legion no longer has; the message says which when it knows. `Unknown key "projects.<KEY>.repo": Dispatch holds the project's repository mapping …` is one: map the repositories in Dispatch and delete the key ([Upgrade](/legion/legion/running-legion/#upgrade)). |
@@ -77,8 +77,9 @@ cluster and the image:
   hands each worker its task through that bucket on Envoy's NATS and boots only once it opens or
   creates it, so it refuses rather than waiting, since no wait gives a user a grant it lacks. The
   open asks only the bucket stream's info and, for a bucket not created yet, JetStream's account
-  info, the notification stream's info and the create, so a grant that lacks only the bucket's
-  gets, key writes, purge or watch boots, and each call it then refuses is logged
+  info, the notification stream's info, the create and, when another daemon created the bucket
+  first with an older discard or direct-get setting, the stream's update, so a grant that lacks
+  only the bucket's gets, key writes, purge or watch boots, and each call it then refuses is logged
   ([GitHub, NATS and the Secrets Broker](#github-nats-and-the-secrets-broker)). Apply the
   `envoy-infra` release whose daemon grant carries the bucket
   ([Envoy](/legion/dispatch/envoy/#the-nats-grant-a-legion-daemon-needs) lists its subjects),
@@ -480,12 +481,13 @@ the decision. Its JSON log names the issue and the root on each of these lines:
   architect (`outbox start finished without giving its claim the task; the decisions it named are
   handed over`), or leaves it for the next start while the tree is parked.
 - `supervise: the root of this task's tree has no architect to hear it; the task stays pending`: a
-  root architect's start task met a parked, lingering or waiting tree. It is sent when the tree's
-  next start runs; nothing to do.
-- `supervise: a decision this held task named is owed to another tree now; the task is sent without
-  it`, or `supervise: everything this held task named is owed to another tree now; it is retired
-  rather than sent`: while the task waited, an issue it named left this tree. What left is owed to
-  the tree it stands in now, whose architect is written a catch-up naming it at once; nothing to do.
+  root architect's start task met a parked, lingering or waiting tree. The tree's next start
+  writes its value again and the architect takes it then; nothing to do.
+- `supervise: a decision this held task named is owed to another tree now; the task is taken
+  without it`, or `supervise: everything this held task named is owed to another tree now; it is
+  dropped rather than taken`: while the task waited, an issue it named left this tree. What left
+  is owed to the tree it stands in now, whose architect is written a catch-up naming it at once;
+  nothing to do.
 - `workflow: a session's reply on a parked tree is not relayed`, `workflow: a session's answer or
   resolution on a parked tree is not relayed`, or `workflow: a session's decision on a tree waiting
   for its slot is not kept`: an agent wrote it. It stays on the ask for the person who asked.
@@ -555,7 +557,8 @@ two claims of one issue each get a notice of their own, and in a provider outage
 reaches six is told.
 
 When an agent's budget runs out (launches that failed, deaths with work outstanding, tasks it did
-not take or started no turn for within their bounds) the daemon stops relaunching it and holds
+not take or started no turn for within their bounds, takes whose adoption of the working copy the
+shim refused) the daemon stops relaunching it and holds
 the issue. The daemon logs JSON lines, and the one to look for is the error whose `msg` is
 `supervise: claim failed`, whose `why` says which budget ran out (`launch failures ran out`,
 `deaths with work outstanding ran out`, `prompt retirements ran out`):
@@ -1011,7 +1014,7 @@ The project's controller reads the same issue in the `silent` list of its period
 The rule is this: the claim's process is up and between turns, it holds no task, and its agent's last recorded step is older than `worker_silence_minutes`.
 That bound is 30 minutes by default, and the configuration refuses a value under 16 minutes when it loads.
 
-The daemon sends the worker its work again, chosen by the phase entry the issue's phase row names for the role: the work of that entry where the worker's claim was never given it, and the phase's task again where the claim is on that entry already.
+The daemon gives the worker its work again, a task the worker takes, chosen by the phase entry the issue's phase row names for the role: the work of that entry where the worker's claim was never given it, and the phase's task again where the claim is on that entry already.
 The notice says what the daemon wrote, which is that start row, so the worker is coming back and there is nothing to do.
 A suspension an operator holds over the claim is the one thing that refuses the start when the outbox runs it, and the notice says so as well: resume the claim, or have the architect message the role and the controller start its session again with `fresh_session`.
 
@@ -1585,7 +1588,7 @@ These arrive as messages on the Dispatch issue:
   naming a newer record — is answered `HANDOFF_NOT_CURRENT_PHASE` instead, in the words the
   workflow answers that code with, `the <role> does not run phase <phase> of <KEY>; this
   completion changed nothing`, and nothing is recorded: the task of that role's entry was
-  queued for the phase the issue has left, so the daemon drops it unsent and owes the claim
+  queued for the phase the issue has left, so the daemon drops it untaken and owes the claim
   none.
 
 An issue back in `in_progress` from `retro` or `merging` has a head that conflicts with its base:
@@ -1593,8 +1596,10 @@ GitHub computes no merge ref for such a head and runs no check on it at all, so 
 the issue back to the implementer with the base to merge forward and told the architect. GitHub
 sends no event when a head starts conflicting, so after each push onto the base the daemon reads
 GitHub's merge state for every open pull request on that base whose issue is in `testing`,
-`accepting`, `retro` or `merging`, or in `reviewing` with its round waiting on GitHub's answer
-for the head; a head it reads conflicting goes back the same way from each of them. From
+`reviewing`, `accepting`, `retro` or `merging`: once for an issue in `merging`, whose head GitHub
+answers `unknown` for as long as it sits in the merge queue, and for the others up to five times,
+half a minute apart, while GitHub answers `unknown`; a head it reads conflicting goes back the
+same way from each of them. From
 `retro` the implementer kept its turn and was handed the implementing task once that turn ended;
 from `merging` the merger kept its turn, its jobs, its process and its session. Neither turn was
 interrupted: each role was told on its own Envoy role topic that its phase had ended and that the

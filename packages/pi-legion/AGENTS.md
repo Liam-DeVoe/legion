@@ -97,7 +97,16 @@ refused naming that number. The split of the one plugin into this package and `@
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
 number is the one `DaemonAPIVersion` declares, last bumped by contract 157 (dispatch://INFRA-2811:
 a claim's task is a value its worker takes over `claims/task`, `claims/task-seen` and
-`claims/take`, and the daemon sends no prompt frame), after contract 146 (dispatch://INFRA-2614:
+`claims/take`, and the daemon sends no prompt frame), after contract 152's App-installed
+repositories (dispatch://INFRA-2543: the GitHub App installation, and no longer the project's
+Dispatch repository mapping, decides which repositories a project works in, so the `repositories`
+block of `GET /legion/v1/state` stops being that mapping and each of its entries gains `apps`,
+which `packages/contracts/src/legion-api.ts` reads as optional), after contract 151's microVM
+issue pods (dispatch://INFRA-3729: the launcher's command line gains `--microvm`, the answer to its
+hello `kernelKills` and its kill report `cause`, the state's settings block carries
+`runtime.kubernetes.sandbox`, which the plugin parses loosely, and no other shape the plugin parses
+moves), after contract 146
+(dispatch://INFRA-2614:
 a root at `admitted` carries its architect's `phaseEntry` and `givenEntry`, every issue carries
 `entryQueuedAt` and `entryConfirmedAt`, the two times of a claim's own record of its handshake of
 its last entry, which outlast that entry's task and which a tree's own root carries from its
@@ -766,8 +775,8 @@ phase stays open (`@legion/pi-shared/phase-reminder`): run `handoff_complete`, o
 line starting WAITING. A final message holding a tool call written as text is told so first. The
 first reminder of a run is the host's own continuation (`{continue: true, additionalContext}`),
 one more turn of the same session; every one after it comes from a timer as a steered
-`legion-phase-reminder` message that starts a turn (`pi.sendMessage`), so the run settles and the
-daemon sees the turn end and can deliver a queued task. A WAITING reply buys
+`legion-phase-reminder` message that starts a turn (`pi.sendMessage`), so the run settles, the
+host is idle again and its take can ask for a task the daemon queued. A WAITING reply buys
 `LEGION_STALL_WAITING_MS` of quiet and then the same reminder. The host's timer cannot be
 cancelled, so a generation counter, bumped by everything that makes an armed timer stale (a turn
 starting, a settle, a session change, the phase closing, a reminder going out), is the whole
@@ -878,7 +887,7 @@ closed.
 - Register every schema through the injected `pi.zod` (`toolSchema` in `src/tools.ts`). Every field counts, not just the outer object: OMP's converter reads internals (`.ir`) only its own Zod produces, and a field from another Zod instance fails the whole extension load.
 - Nothing under `extensions/` or `src/` imports `packages/pi-envoy`: what both plugins need lives in `@legion/pi-shared`, and this entry reaches the Envoy plugin through the interface alone (`src/no-cross-import.test.ts`). The tests may load the sibling's entry by path.
 - A `task` subagent's session shares its parent's identity (`subagentSessionCheck` in `@legion/pi-shared/subagent-session`): in a Legion process it claims no role, calls no daemon route, gets no `legion` tool, and never exits (`extensions/legion.ts`). The check asks the host's own roster first (`AgentRegistry.global()` from `@oh-my-pi/pi-coding-agent`) and falls back to the transcript; the process-local signal it reads is the transcript path the claim session's boot and a launched controller's claim record on the shared interface (`bootstrappedSession`), so a later `session_start` in the same process with a different transcript path is a subagent even under `OMP_SESSION_STORAGE=sql`. The full account is the subagent convention in `packages/pi-envoy/AGENTS.md`.
-- `claim-session.ts` registers the heartbeat's regain listener on the shared interface's `roleClaim.regained` slot (`@legion/pi-shared/interface`) only once it holds a Legion identity — `bootLegionClaim` sets it after the first `claims/ready` — since a `task` subagent's re-bound instance shares the process and would otherwise replace it; the regain re-runs `claims/ready` with bounded retries, and the controller re-runs nothing.
+- `claim-session.ts` registers the heartbeat's regain listener on the shared interface's `roleClaim.regained` slot (`@legion/pi-shared/interface`) only once it holds a Legion identity — `bootLegionClaim` sets it after the first `claims/ready` — since a `task` subagent's re-bound instance shares the process and would otherwise replace it; the regain reads the claim's task value again (`claims/task`, once, a failure logged) and sends no second `claims/ready`, and the controller re-runs nothing.
 - A daemon refusal of the boot registration itself — `/legion/v1/claims/register` — ends the process (`bootLegionClaim`'s `stop`, which `src/claim-session.ts` makes `exitProcess(1)`, after one log line naming the route, the status, and the daemon's sentence) for every 4xx: a 400 or 404 (a request or a route the daemon does not have), a 403 (the boot token is stale, consumed, or unknown), and a 409 (the same-agent rule, `Worker respawn must resume the same agent session`: this session is not the one the resumed claim recorded; under a database session store that is Oh My Pi having started a fresh session at a path whose row is gone). None changes on retry, and a process that stayed up unregistered would sit alive under the daemon's registration deadline with nothing ever retiring it; exiting hands the outcome to the daemon, which counts the launch failure. Every other error there — a 5xx, a transport failure — propagates out of `session_start` without exiting (LEGION-81; `extensions/legion.test.ts` pins 400, 403, 404 and 409, and 500/503 as the negative control). The Envoy-plugin refusals above take the same exit.
 - Do not alter `~/.omp` from this package. The README documents the development install.
 

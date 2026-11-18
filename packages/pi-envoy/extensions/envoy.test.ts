@@ -12961,8 +12961,8 @@ console.log(JSON.stringify(args));
   test("the first healthy tick after a stall re-asserts the role once as a re-registration", async () => {
     // The listener reaps a role claim whose holder left the session registry, so a stall that
     // lasted long enough to risk that is an outage like a failed registration: the next healthy
-    // tick must fire the regain hook, which is what re-runs a Legion worker's daemon ready call.
-    // Once, not once per tick: each extra regain is another claims/ready round-trip.
+    // tick must fire the regain hook, which is what has a Legion worker read its claim's task
+    // value again. Once, not once per tick: each extra regain is another claims/task round-trip.
     // The wait is real: the queue abandons its task on a real timer, read at the task's start.
     // The deadline is never shorter than the refresh interval, so the interval names 25 ms for
     // a 200 ms deadline to stand; every tick here is hand-driven, so none of them fires on it.

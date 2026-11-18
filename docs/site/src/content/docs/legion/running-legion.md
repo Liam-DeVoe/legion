@@ -740,9 +740,11 @@ What each part is for:
   puts back the Dispatch status of every issue it works whose status is not the status of the
   phase that issue stands in, so raising it to quiet the controller slows that repair with it.
 - **`worker_take_timeout_seconds`** (300) and **`worker_turn_start_timeout_seconds`** (1500) are
-  the two waits a worker's prompt budget (`prompt_failure_limit`) is charged on. A worker takes
-  its task: the daemon writes the task's number for the worker's claim, the worker reports seeing
-  it and asks to take it once its session is idle, and the take's answer carries the task's text.
+  the two waits a worker's prompt budget (`prompt_failure_limit`) is charged on; its third charge,
+  a take whose adoption of the working copy the shim refused, is made at the shim's answer and
+  waits on neither. A worker takes its task: the daemon writes the task's number for the worker's
+  claim, the worker reports seeing it and asks to take it once its session is idle, and the take's
+  answer carries the task's text.
   The first bound is how long a ready, idle worker under no hold that reported seeing its task has
   to ask for it; the second is how long after an accepted take the task's turn has to start, which
   holds the harness's setup, an automatic compaction among it, and its default is twice the
@@ -754,7 +756,8 @@ What each part is for:
   turn is still retired at the limit. Time the daemon was not serving counts toward neither bound,
   and a seen report a started daemon read from its database charges nobody at the first bound: the
   daemon writes the value again, and charges the worker one bound after it reports the new
-  revision seen. Each is a positive whole number of seconds; any other value is refused by name.
+  revision seen. Each is a positive whole number of seconds, at most 2147483 (the largest whose
+  milliseconds fit a signed 32-bit timer); any other value is refused by name.
 - **`worker_wakes_per_minute`** (8) and **`worker_wake_burst`** (1) pace the wakes the daemon
   causes: the role processes it starts, and the tasks and notices it queues to wake a session that
   already runs. Each wake has its session read its whole context again, which the provider charges
@@ -1240,8 +1243,9 @@ Closing the terminal leaves the project without one, and the daemon logs
    `legion probe-boot` reports the same; a grant that lacks the bucket's other subjects boots, and
    the daemon logs each call NATS refuses it
    ([Envoy](/legion/dispatch/envoy/#the-nats-grant-a-legion-daemon-needs)). With the listener left
-   behind, a worker is handed its value only at its registration and at each new epoch of its
-   relay, and `legion state` names each running claim whose value nobody reported seeing
+   behind, a worker reads its value only at its registration, right after its ready, at each
+   regain of its role and at each new epoch of its relay, and `legion state` names each running
+   claim whose value nobody reported seeing
    ([Observe](#observe)). A worker whose plugin predates the release takes no task, so the daemon
    moves it: a worker it can relaunch is relaunched onto the current plugin even inside the update
    round the new image opens, and a role on Claude Code, whose plugin only its pod's image moves,

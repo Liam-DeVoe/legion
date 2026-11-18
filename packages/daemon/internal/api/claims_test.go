@@ -452,8 +452,9 @@ func TestABootReadyQueuesTheRolePublicationBeforeTheMachineTakesIt(t *testing.T)
 	}
 }
 
-// A ready that carries a capability report is a live session's report at an idle tick, not a boot
-// and not a role-regain, so it queues no publication: the boot's ready already did.
+// A ready that carries a capability report is a live session's report at an idle tick, not a
+// boot's ready (a regain of the role sends no ready; it reads claims/task), so it queues no
+// publication: the boot's ready already did.
 func TestAReadyWithACapabilityReportQueuesNothing(t *testing.T) {
 	h := newHarness(t)
 	token, boot := h.launch("LEGION-208", claim.RoleImplementer)

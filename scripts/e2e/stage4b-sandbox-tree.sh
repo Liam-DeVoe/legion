@@ -744,14 +744,16 @@ pod_commands() {
 pod_runs() { local out; out=$(pod_commands "$1" "$2") || return 1; grep -qF -- "$3" <<<"$out"; }
 pod_file() { pod_exec "$1" "$2" test -s "$3"; }
 # conflict_task_taken ISSUE: the daemon's own record that the implementer the conflict started
-# took its task — its claim is working on a delivery of the implementing phase whose turn the
-# daemon has seen start (confirmedAt). It is the start acting, read from the state rather than
-# from the agent's session, and the one fact conflict-no-takeover times the tester's reads
-# against: a start that waited for the outgoing worker's turn, as the deleted takeover did, would
-# not reach it while the tester's own turn runs.
+# took its task — its claim is working, on a task of the implementing phase whose take the daemon
+# accepted (confirmedAt). That is read from the operator's view of the claim (`legion claims list
+# --json`, api's DeliveryView), since the state's claim view carries `pendingTask`, which names
+# the task's phase and says nothing of its take. It is the start acting, read from the daemon
+# rather than from the agent's session, and the one fact conflict-no-takeover times the tester's
+# reads against: a start that waited for the outgoing worker's turn, as the deleted takeover did,
+# would not reach it while the tester's own turn runs.
 conflict_task_taken() {
-  claim_view "$1" implementer |
-    jq -e '.state == "working" and .pending != null and .pending.phase == "implementing" and (.pending.confirmedAt // "") != ""' >/dev/null
+  claims_cli list --json | jq -e --arg issue "$1" \
+    'any(.claims[]; .issue == $issue and .role == "implementer" and .state == "working" and .pending != null and .pending.phase == "implementing" and (.pending.confirmedAt // "") != "")' >/dev/null
 }
 # aborted_turns_jq selects every aborted turn of a session read as one raw string: an assistant
 # message Oh My Pi ended on an abort, which is what an interrupt of a running turn leaves behind
@@ -4696,8 +4698,8 @@ conflict_sha=$(jq -cn --arg path "$conflict_path" --arg branch "$pr_base" --arg 
 note "the proof human committed a conflicting $conflict_path to $pr_base as $conflict_sha while the tester's witness job ran"
 on_tree "$tree1" wait_for_phase "$tree1" implementing 900
 # The start acting is read where production reads it: the daemon's own record that the implementer
-# the conflict started took its task — its claim working on a delivery of the implementing phase it
-# has confirmed — and the task in its session. The tester's process list and its witness file are
+# the conflict started took its task — its claim working on a task of the implementing phase whose
+# take it accepted — and the task in its session. The tester's process list and its witness file are
 # read in the same breath, so what they say is what held while the start acted.
 on_tree "$tree1" until_true 900 "the implementer to be in a turn of the task the conflict handed it" conflict_task_taken "$tree1"
 on_tree "$tree1" until_true 300 "the implementer's conflict task to reach its session" session_contains "$tree1" implementer "Reason: the head conflicts with"
@@ -4706,7 +4708,7 @@ grep -qF -- "/usr/bin/sleep 600" <<<"$witness_commands" ||
   fail "the tester's witness job is gone from its pod's process list while the implementer takes its task: the conflict stopped work it must leave alone"
 ! pod_file "$tester_pod" tester "$witness" ||
   fail "the tester's witness file $witness was written before the implementer took its task, so its absence proves nothing of the conflict"
-note "the implementer is in a turn of the conflict's task ($(claim_view "$tree1" implementer | jq -c '{state, pending: {phase: .pending.phase, confirmedAt: .pending.confirmedAt}}')) while the tester's /usr/bin/sleep 600 still runs in $tester_pod and $witness is absent"
+note "the implementer is in a turn of the conflict's task ($(claims_cli list --json | jq -c --arg issue "$tree1" '[.claims[] | select(.issue == $issue and .role == "implementer") | {state, pending: {phase: .pending.phase, confirmedAt: .pending.confirmedAt}}]')) while the tester's /usr/bin/sleep 600 still runs in $tester_pod and $witness is absent"
 # The tester's turn was not taken over: no turn of its session was aborted, its claim is still the
 # one it registered with in its first pod, and nothing suspended it.
 tester_session=$evidence/conflict-tester-session.jsonl
@@ -6410,7 +6412,7 @@ merge_recorded() {
   daemon_state | jq -e --arg issue "$tree1" '.issues[$issue] | .phase == "merging" and .pullRequest.state == "merged"' >/dev/null
 }
 on_tree "$tree1" until_true 600 "the daemon to record pull request #$pr_number merged on $tree1, which stays in merging" merge_recorded
-waiting_for=$(log_lines "workflow: a merged root's close waits for the rest of its tree" |
+waiting_for=$(log_lines "workflow: a merged issue's close waits for the issues beneath it" |
   jq -r -s --arg issue "$tree1" '[.[] | select(.issue == $issue)] | last | .waitingFor // empty')
 [ "$waiting_for" = "$child3, $child4" ] ||
   fail "the daemon logged $tree1's merged close waiting for '${waiting_for:-nothing}', want \"$child3, $child4\""
@@ -6449,9 +6451,9 @@ done
 on_tree "$tree1" wait_for_phase "$tree1" "done" 900
 phase_change_logged "$tree1" merging "done" pull_request_merged ||
   fail "the daemon log has no \"workflow: phase changed\" line moving $tree1 from merging to done on pull_request_merged"
-closed_last=$(log_lines "workflow: a merged root closes once its last child left the workflow" | jq -c --arg issue "$tree1" 'select(.issue == $issue)' | grep -c . || true)
+closed_last=$(log_lines "workflow: a merged issue closes once the last issue beneath it left the workflow" | jq -c --arg issue "$tree1" 'select(.issue == $issue)' | grep -c . || true)
 [ "$closed_last" = 1 ] ||
-  fail "the daemon logged \"a merged root closes once its last child left the workflow\" for $tree1 $closed_last times, want once, at $child4's park"
+  fail "the daemon logged \"a merged issue closes once the last issue beneath it left the workflow\" for $tree1 $closed_last times, want once, at $child4's park"
 until_true 120 "the daemon's done status on the Dispatch board" dispatch_status_is "$tree1" "done"
 state_file merged-closed
 # No issue of tree 1 holds an admission slot once it closes: the root's row went when it reached

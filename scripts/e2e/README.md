@@ -67,7 +67,7 @@ Each item below names a script, then what it proves.
   — in its private tmux server, against a real Envoy listener and NATS:
   the plugin gate refuses another contract, a disabled plugin, a profile without the Envoy plugin, a missing skill, a skill only the role prompts load, and a task agent whose model role no one configured;
   an agent registers, holds its Envoy role and is ready;
-  a task queued before ready runs once, its model turn through the configured route, and a retried frame starts no second turn;
+  a task queued before ready is taken once, its model turn through the configured route;
   a killed pane resumes the same session; suspend and resume keep it;
   a stale hello is refused; an agent that never registers is retired at the deadline and counted; a restart re-adopts every live claim
 
@@ -313,9 +313,9 @@ Each item below names a script, then what it proves.
 - `provider-error-retry.sh`
 
   a turn that ends in a provider error keeps its task, and the operator restarts the claims such turns leave (dispatch://INFRA-956 R2 and R3), driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with three real `omp --mode rpc` panes under the real `legion worker-shim`, each carrying this checkout's two plugins and answered by a model stand-in of the driver's own:
-  a 529 keeps the task on the claim and the daemon sends it to the same session again after 30 s, 60 s and 120 s;
+  a 529 keeps the task on the claim and the daemon gives it to the same session again after 30 s, 60 s and 120 s, writing its value again for the worker to take;
   the sixth such turn in a row tells the project's controller, once, and holds nothing;
-  an OpenAI `finish_reason: content_filter` with no fallback model left carries no HTTP status at all, so the task goes again after 30 s, holding the issue for nobody;
+  an OpenAI `finish_reason: content_filter` with no fallback model left carries no HTTP status at all, so the task is given again after 30 s, holding the issue for nobody;
   an HTTP 400, a client error that is none of 401, 403, 408 and 429, fails the claim and holds its issue for its architect;
   and `legion claims stop`, `legion claims retry --fresh-session` and `legion claims list`, the built binary against that daemon, drive and read the claims the first and the fourth leave.
   Needs an Oh My Pi (`LEGION_OMP_PATH`); no cluster and no tmux, so a Legion pod and a devbox both run it
@@ -358,7 +358,7 @@ Each item below names a script, then what it proves.
 
   a relaunched process reads what the relaunch ended in the first prompt it runs, the text of the first take its plugin had accepted (dispatch://INFRA-3276 R3, carried onto the take by dispatch://INFRA-2811), driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with three real `omp --mode rpc` panes under the real `legion worker-shim`, each carrying this checkout's two plugins and answered by a model stand-in of the driver's own:
   the first prompt the relaunched process runs names the work its relaunch ended and the death, for a phase worker and a root architect that die with a `task` subagent running, the architect a second time holding a task in its turn, and a worker that dies in its task's turn with an `async` bash job running; the root architect's catch-up opens with the same sentence, and each claim row's `ended_work` records it.
-  `--base-commit <rev>` makes the same run over a `git archive` of that commit, which is the negative control: `<rev>` carries INFRA-2811's task numbers and not INFRA-3276's record of a let-go, as `4b5621b7c882` does, and each of the three steps fails there at the assertion it names.
+  `--base-commit <rev>` makes the same run over a `git archive` of that commit, which is the negative control: `<rev>` carries INFRA-2811's task numbers and not INFRA-3276's record of a let-go, as `4b5621b7c882` does, which the script fetches from `refs/pull/3993/head` when the checkout does not hold it, and each of the three steps fails there at the assertion it names.
   Needs an Oh My Pi (`LEGION_OMP_PATH`); no cluster, no Claude Code and no tmux, so a Legion pod and a devbox both run it
 
 - `refusal-fallback-omp.sh`
@@ -682,6 +682,9 @@ What it stands up, all of it the run's own:
   the restart keeps it), as the second daemon's is by a keeper of its own, `probe_interval_seconds: 5`, and the operator token file `legion claims` presents.
   `XDG_STATE_HOME` and `TMUX_TMPDIR` point into the work directory, so the legions registry and the private tmux servers are the run's.
 
+This run holds no check of a re-sent frame, since the daemon sends no prompt frame: a task is a value the worker takes (`claims/take`).
+The take's once-only is proven by [`task-take.sh`](#task-takesh) on a real NATS — a process killed mid-turn has its next registration take the same number once (its step 3), and a daemon restart takes no finished number again (its step 6) — and by `packages/daemon/internal/supervise`'s `TestTakeRepeatedIsAnsweredTheSameAndRecordsNothing`: a take sent again for a number already accepted is answered the same text and records nothing.
+
 The checks, in order, each printing what it observed (`== <check>` … `ok <check>`):
 
 | check | what it does and requires |
@@ -695,15 +698,14 @@ The checks, in order, each printing what it observed (`== <check>` … `ok <chec
 | `architect-registers-and-is-ready` | `legion start` passes the gate (its log line, `boot gate: pi-legion speaks this daemon's contract and loads with pi-envoy`); `legion claims spawn` of a root architect whose role prompt says to reply `ready` and wait; the claim reaches `ready` and the daemon logged its registration at contract 1 |
 | `envoy-role-held` | `GET /v1/roles/<claim token>` on the listener names the claim's session as holder |
 | `ready-in-state` | `legion state --json` shows the issue's architect `ready`, with that session and a tmux locator |
-| `task-queued-before-ready-runs-once` | a second claim spawned with a task: the spawn's answer holds the delivery unsent while the claim is launching; it ends `idle` with nothing pending, and OMP's session file holds the task once |
+| `task-queued-before-ready-runs-once` | a second claim spawned with a task: the spawn's answer holds the task untaken (no `pending.confirmedAt`) while the claim is launching; it ends `idle` with nothing pending, and OMP's session file holds the task once |
 | `model-turn-through-the-route` | every assistant turn in that claim's session file ran on the `anthropic` provider as the profile's pinned model (`anthropic/claude-opus-4-8`), none ending in an error, and the key command served more calls than its preflight, which records none |
-| `retried-frame-starts-no-second-turn` | stops the claim's shim (SIGSTOP) and delivers a task: every send goes unanswered, and the daemon sends the same delivery id again at the next sweep (`the prompt was lost to the transport` twice in its log); resumed, the shim hands OMP the first frame and answers the repeat from its record — the session file holds the task once, and no prompt failure is charged |
 | `kill-pane-resumes-the-same-session` | `tmux kill-pane` on the architect: the next generation is ready in a new pane with the same session, its OMP started with `--resume=<session file>`, and the Envoy role still held |
 | `suspend-keeps-the-session` | `legion claims suspend`: `suspended`, no locator, the pane gone, the session and its file kept |
 | `resume-on-demand` | `legion claims resume`: `ready` at the next generation in a new pane, same session |
 | `stale-generation-hello-refused` | writes a hello carrying generation 1's boot token to `<state_dir>/worker-stream.sock`: the daemon closes it with nothing written and logs `rejected hello (stale worker generation)` |
 | `unregistered-agent-retired-at-the-deadline` | a second daemon whose `LEGION_OMP_PATH` stub answers the plugin gate and the boot's `config get retry.modelFallback --json`, and otherwise sleeps, with a 10 s registration deadline (5 s × 2): the claim's shim connects and its process lives, the agent never registers, and at the deadline the process is retired and one launch failure counted |
-| `restart-readopts-the-live-panes` | SIGTERM, then start again: `boots` +1, both claims keep their generation, incarnation and pane, no pane opens or closes, and a task delivered after the restart runs once — over the connection the shim's reconnect hello opened |
+| `restart-readopts-the-live-panes` | SIGTERM, then start again: `boots` +1, both claims keep their generation, incarnation and pane, no pane opens or closes, the restarted daemon rejects no hello, and a task delivered after the restart runs once, a value the worker takes over the listener's relay or at its next read of the claim's value |
 | `omp-child-environment` | the boot log names the resolved pinned OMP binary for both probes and panes; the pane's process is `/bin/sh -c`; walking first children from it to `argv[0] == omp` finds that exact executable, never the OMP wrapper that remains first on the ordinary daemon PATH; the pane's shell and that OMP carry all four XDG base directories under `<state_dir>/home` and no `DBUS_SESSION_BUS_ADDRESS` (LEGION-206 P1, with the gateway route in place); OMP carries `GEMINI_API_KEY` (length only) that its shim does not, and no `ANTHROPIC_API_KEY`, `GEMINI_API_KEY_TESTS`, `SOPS_AGE_KEY_FILE` or `SECRETSD_CONFIG` |
 | `stray-pane-reaped-after-the-grace` | opens a window marked as the daemon's (`@legion_owner`) holding no recorded pane, and an unmarked one beside it: the periodic orphan sweep (every 60 s, 120 s grace) reaps the marked one no sooner than 120 s after it opened, and keeps the unmarked window and both claims' panes |
 | `stop` | `legion claims stop` of the root architect is refused — 409, "the tree's root claim ends only when its tree closes; suspend it to stop its process; no workflow issue backs its tree, so legion claims close ends it" — and moves nothing: its state, generation, and pane are what they were; `legion claims suspend` suspends the root; `legion claims stop` of a second worker, S2-3's tester, retires it and its pane is gone; no workflow issue backs S2-1, so `legion claims close` of its root closes the tree while its first worker is still live: the root and the worker are both retired and the worker's pane is gone; `legion stop` ends the daemon with exit 0 |
@@ -2148,7 +2150,7 @@ the first look and the bound's last are the only two, which is what the root's p
 Since daemon API contract 157 a worker takes its task from a value the Envoy listener relays out of the task bucket `legion_tasks` on NATS, and this is the only `elsewhere` script that drives tasks through a production listener ([`.github/e2e-scripts.json`](../../.github/e2e-scripts.json)).
 So a run of a branch at that contract passes only once production carries the bucket: its NATS grants (the envoy-infra release) and a listener image that runs the relay, the first two steps of dispatch://INFRA-3388.
 The run's daemon inherits the operator's environment, and it connects as a daemon's own NATS user only where that environment names one (`NATS_DAEMON_NKEY_SEED_FILE` or `NATS_DAEMON_NKEY_SEED`):
-on the agents' seed (`NATS_NKEY_SEED_FILE`) it refuses to boot, since that user holds no grant on the bucket, and with the grants but a listener older than the relay a worker is handed its value only at its registration and at each new epoch of its relay.
+on the agents' seed (`NATS_NKEY_SEED_FILE`) it refuses to boot, since that user holds no grant on the bucket, and with the grants but a listener older than the relay a worker reads its value only at its registration, right after its ready, at each regain of its role and at each new epoch of its relay.
 
 ```sh
 LEGION_E2E_RUNTIME_CONTEXT=<restricted context> LEGION_E2E_IMAGE=ghcr.io/cybermonklabs/legion-worker@sha256:<digest> \
@@ -2891,14 +2893,14 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   before the merger merges, since that merge can follow its assignment by seconds: the smoke main's lock is taken (`hold_smoke_main`).
   Then the merger's own merge of the head it read — the proof only reads the pull request until it merges (`await_merger_merge`) and never merges it by hand; the note names the merge commit.
   **The merge does not close tree 1**, since children 3 and 4 are still in the workflow (INFRA-229):
-  the daemon records it (`legion state`: the root's `pullRequest.state` `merged` while its phase stays `merging`) and logs `workflow: a merged root's close waits for the rest of its tree` with `waitingFor` naming both children in order;
+  the daemon records it (`legion state`: the root's `pullRequest.state` `merged` while its phase stays `merging`) and logs `workflow: a merged issue's close waits for the issues beneath it` with `waitingFor` naming both children in order;
   its architect gets one `pr-merged` notice naming the pull request and both;
   the root holds no slot (its row went at `accepting`), no production check is open, Dispatch still reads `retro`, no `workflow: tree lingers` line names tree 1, and no claim of it is suspended.
   The proof human then parks the children one at a time (`backlog`, each leaving the workflow with its planner suspended, and within 600 s with no Sandbox, no pod and no disk:
   the park deletes the child's Sandbox as a close does, and the disk goes with the pod, read inside the same wait, `child_parked`):
   child 3's park leaves the root in `merging`, and child 4's
   — the last member of the tree to leave — closes it, as the merge of a finished tree's root does.
-  `merging` → `done` within 900 s (the log's `workflow: phase changed … from=merging to=done trigger=pull_request_merged` and `workflow: a merged root closes once its last child left the workflow`;
+  `merging` → `done` within 900 s (the log's `workflow: phase changed … from=merging to=done trigger=pull_request_merged` and `workflow: a merged issue closes once the last issue beneath it left the workflow`;
   Dispatch `done` within 120 s), the production check opens on the merge commit at its first look, woken by the merge (`check_opened_on`:
   `looks: 1`, `lookOpen: true`, `lastWake.kind: merge`, `role: tester`), and the close hands the tester — the role a project that names no `production_check` gets — that look in the still-live pod.
   No issue of tree 1 holds an admission slot at the close: the root's row went when it reached `accepting`, its children's at their parks, and the close frees whatever is left.
@@ -4657,7 +4659,7 @@ the script starts none, so CI's service, a devbox container and a pod's own embe
 The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
 The broker is the run's own, as for [`conflict-no-takeover.sh`](#conflict-no-takeoversh).
 A whole run took 317 s measured in a Legion worker pod (omp/18.16.0), the driver 300 s of it:
-the ladder's first three gaps are waited out where they are real, 30 s, 60 s and 120 s of wall clock between the daemon's sends, while its fourth and fifth are driven on the daemon's own clock (`ladderClock`, which shortens those two durations and no others), since waiting them out would add twelve minutes and measure the same ladder twice.
+the ladder's first three gaps are waited out where they are real, 30 s, 60 s and 120 s of wall clock between the moments the daemon gives the task again, while its fourth and fifth are driven on the daemon's own clock (`ladderClock`, which shortens those two durations and no others), since waiting them out would add twelve minutes and measure the same ladder twice.
 The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `conflict-no-takeover.sh` and `child-adoption.sh` make too.
 
 | check | what it holds |
@@ -4673,7 +4675,7 @@ The planner's is the task step 1 measures, and the ladder keeps it unconfirmed, 
 Each worker is a real `omp --mode rpc` under the real `legion worker-shim`, started by the package's own local runtime (`internal/daemon/localruntime_live_test.go`), which makes a pane a child process group rather than a tmux window, with this checkout's `@sjawhar/pi-envoy` and `@sjawhar/pi-legion` in an Oh My Pi profile of the run's own.
 The agents register, report ready, take their tasks and report each turn's result over the daemon's own HTTP routes and worker stream, as they do in production.
 What stands in is the model endpoint and nothing else: three HTTP stand-ins of the driver's own, one per pane.
-`overloaded` answers every request 529 with `retry-after: 3600`, which is over Oh My Pi's own cap for a retry delay, so one send is one request and the host's retries hide none of the ladder's gaps;
+`overloaded` answers every request 529 with `retry-after: 3600`, which is over Oh My Pi's own cap for a retry delay, so one take's turn is one request and the host's retries hide none of the ladder's gaps;
 `filtered` streams text and then ends an OpenAI chat completion `finish_reason: content_filter`, which Oh My Pi reports with no HTTP status at all, and that role's chain names one model, so no fallback is left;
 `malformed` answers every request 400 with an `invalid_request_error` body, which Oh My Pi reports with status 400 — a client error that is none of 401, 403, 408 and 429.
 Those two answer a turn that ends until the step that drives them arms them, which is how their claims answer the warm-up task the seed left pending; `overloaded` is armed from the start, because the task its claim holds at boot is the ladder step 1 measures.
@@ -4685,7 +4687,7 @@ Each pane's Oh My Pi overlay sets `retry.enabled: false`, so the host walks no c
 | `step2-the-sixth-turn-in-a-row-tells-the-controller` | nothing: the sixth turn of that run | exactly one `provider-errors` notice on the project's controller topic, naming the run of six turns, with the issue still in its phase — the notice is the run's one exit, and no attempt limit holds the issue |
 | `step3-a-content-filter-carries-no-status-and-the-task-goes-again` | one task delivered to the implementer once it has answered the warm-up task its seed left pending, with its stand-in then armed to end every turn with a content filter | the turn reported with no HTTP status at all, the task given again after 30 s, the claim still holding it, the issue still `implementing` and its architect told nothing |
 | `step4-an-error-that-cannot-clear-fails-the-claim-and-holds-the-issue` | one task delivered to the tester once it has answered its own warm-up task, with its stand-in then armed to answer 400 | the turn reported with status 400, the claim failed and the issue held for its architect |
-| `step5-the-operator-stops-retries-and-reads-the-claims` | `legion claims stop`, then `legion claims retry --fresh-session`, then `legion claims list`, and the same retry of the claim step 4 failed, each the built `legion` against that daemon | the stopped planner retired, its retry running in a session that is not the one it recorded, the task its ladder kept sent to that fresh session, and the failed tester's claim running again |
+| `step5-the-operator-stops-retries-and-reads-the-claims` | `legion claims stop`, then `legion claims retry --fresh-session`, then `legion claims list`, and the same retry of the claim step 4 failed, each the built `legion` against that daemon | the stopped planner retired, its retry running in a session that is not the one it recorded, that fresh session's claim holding the task its ladder kept, and the failed tester's claim running again |
 
 What the proof stands in for lies outside the rule:
 the broker is a native `nats-server`, GitHub is the REST stand-in the whole-daemon drivers share, Dispatch is their board (`liveDispatch`, in `internal/daemon/live_proof_test.go`), Envoy's listener is the package's `noticeListener`, the two Apps' tokens are placeholders, and each pane's provider is a stand-in.
@@ -4927,6 +4929,9 @@ Each pane talks to a model stand-in of the driver's own, which answers every tur
 The driver names no Go symbol of INFRA-3276's: it reads the claim row's `ended_work` through SQL and the relaunch sentence as literals, so over a base whose schema has no such column the read itself fails `claim-row`.
 Its seed numbers each claim's task (`supervise.Claim.TaskWritten`, `supervise.Delivery.Number`), so `<rev>` must carry INFRA-2811's take and not INFRA-3276's record of a let-go.
 `4b5621b7c882`, INFRA-2811's head before the forward merge that brought cybermonklabs/legion#3983 in, is such a commit.
+It is in the history of cybermonklabs/legion#3993's branch alone, never `main`'s, since GitHub squash-merges a pull request, and GitHub keeps that pull request's head as `refs/pull/3993/head`, whose history holds it.
+So a `<rev>` the checkout does not hold is fetched first, as `refs/pull/3993/head` of `https://github.com/cybermonklabs/legion.git`:
+a fetch that fails ends the run with exit 1, naming its log (`fetch-base.log` in the evidence directory), and a `<rev>` still missing after it is refused with exit 2.
 Over a commit without the take, a commit of `main` from before INFRA-2811 among them, the driver does not build, so the base run reaches no step and the control fails.
 That run must fail, and the script's `negative-control` check reads its `proof.log` for the three steps each failing at the assertion it names: `relaunch-subagent-worker` and `relaunch-subagent-architect` at `sentence`, and `relaunch-task` at `claim-row`.
 An empty `<rev>` is refused with exit 2; the DSN is read with the same loopback guard before the tree is taken, and a refusal of the base run (exit 2) is the script's own exit 2; and a `proof.log` an earlier run left in the evidence directory is removed before the base run, so only that run's steps are read.

@@ -8,4 +8,6 @@ body: |-
   envoy-infra grants the daemon's NATS user create, update, read, write and purge of the bucket,
   the listener's user its reads, and no session user anything of it. Roll out in this order: the
   envoy-infra release first, then this listener, then each project's Legion daemon and worker
-  image together.
+  image together. Applying the envoy-infra release replaces the VM of a `gcp:NatsHub` that has a
+  `listener`, a `listenerMachineId` or a `daemon: true` user, once, with NATS down while it is
+  replaced, since those users' rendered grants change; a hub with none of them keeps its VM.

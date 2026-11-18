@@ -1249,9 +1249,10 @@ export type LegionCapabilityRow = LegionCapabilityReportBody["rows"][number];
 
 /** `claim.ReadyRequest`, the body of `POST /legion/v1/claims/ready`: the registered claim says its
  * agent has booted and can be prompted, authenticated by the registration's secret and naming the
- * launch generation it answers for. A boot's ready and a role-regain's carry no report; a claimed
- * session sends its report on a `claims/ready` of its own, from the interval it runs while it is
- * idle. A ready without a `capabilities` report reports nothing and changes no row. */
+ * launch generation it answers for. A boot's ready carries no report, and a regain of the role
+ * sends no ready (it reads `claims/task`); a claimed session sends its report on a `claims/ready`
+ * of its own, from the interval it runs while it is idle. A ready without a `capabilities` report
+ * reports nothing and changes no row. */
 export const LegionReadyRequest = z.strictObject({
   claimToken: nonEmptyString,
   sessionId: nonEmptyString,

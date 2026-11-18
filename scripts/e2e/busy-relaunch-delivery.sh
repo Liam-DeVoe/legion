@@ -56,7 +56,12 @@
 # column through SQL and the relaunch sentence as literals — but its seed numbers each claim's
 # task (supervise.Claim.TaskWritten, supervise.Delivery.Number), so <rev> must carry INFRA-2811's
 # take and not INFRA-3276's record of a let-go. 4b5621b7c882, INFRA-2811's head before the
-# forward merge that brought cybermonklabs/legion#3983 in, is such a commit; over a commit without
+# forward merge that brought cybermonklabs/legion#3983 in, is such a commit. It is in the history
+# of cybermonklabs/legion#3993's branch alone, never main's, since GitHub squash-merges a pull
+# request; GitHub keeps that pull request's head as refs/pull/3993/head, whose history holds it.
+# So a <rev> this checkout does not hold is fetched first, as refs/pull/3993/head of
+# https://github.com/cybermonklabs/legion.git: a fetch that fails ends the run with exit 1,
+# naming its log, and a <rev> still missing after it is refused with exit 2. Over a commit without
 # the take the driver does not build, and the control fails with the run reaching no step. The
 # control passes when that run fails and each of the three steps fails at the assertion it names:
 # relaunch-subagent-worker and relaunch-subagent-architect at sentence (the base names no work in
@@ -108,6 +113,10 @@ fi
 
 test_name=TestARelaunchSaysWhatItEndedLive
 driver_file=packages/daemon/internal/daemon/busy_relaunch_live_test.go
+# Where a --base-commit this checkout does not hold is fetched from: the head of the pull request
+# whose branch carries 4b5621b7c882, which GitHub keeps after the squash merge.
+control_repository=https://github.com/cybermonklabs/legion.git
+control_ref=refs/pull/3993/head
 
 # The steps the base must fail, each with the assertion it must fail at (the driver's `fails`).
 base_failures=(
@@ -154,8 +163,13 @@ negative_control() {
   unset PGHOSTADDR PGSERVICE PGSERVICEFILE
   require_loopback_dsn db_host LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "this run creates and drops a database there" ||
     refuse "$db_host"
+  if ! git -C "$root" rev-parse --quiet --verify "$base_commit^{commit}" >/dev/null; then
+    note "--base-commit '$base_commit' is not in this checkout; fetching $control_ref from $control_repository"
+    git -C "$root" fetch --no-tags "$control_repository" "$control_ref" >"$base_evidence/fetch-base.log" 2>&1 ||
+      fail "--base-commit '$base_commit' is not in this checkout, and fetching $control_ref from $control_repository failed; see $base_evidence/fetch-base.log"
+  fi
   base_sha=$(git -C "$root" rev-parse --verify "$base_commit^{commit}" 2>/dev/null) ||
-    refuse "--base-commit '$base_commit' names no commit of this repository"
+    refuse "--base-commit '$base_commit' names no commit of this repository, nor of $control_ref"
   base_work=$(mktemp -d "${TMPDIR:-/tmp}/legion-e2e-busy-relaunch-delivery-base.XXXXXXXX")
   git -C "$root" archive "$base_sha" | tar -x -C "$base_work" ||
     fail "could not take the tree of $base_sha"

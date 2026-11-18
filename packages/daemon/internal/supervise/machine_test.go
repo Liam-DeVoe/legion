@@ -224,7 +224,8 @@ func TestReadyResetsTheLaunchBudget(t *testing.T) {
 	}
 }
 
-// The plugin calls ready again whenever it regains its Envoy role; that is not a transition.
+// A ready after the claim's first — a capability report rides a claims/ready of its own, and the
+// boot sends its ready again when it lost the answer — is not a transition.
 func TestARepeatedReadyIsAcceptedWithoutMovingTheClaim(t *testing.T) {
 	for _, state := range []ClaimState{StateReady, StateWorking, StateIdle} {
 		t.Run(string(state), func(t *testing.T) {

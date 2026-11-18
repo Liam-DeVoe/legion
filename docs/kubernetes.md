@@ -2409,7 +2409,7 @@ The commits already stamped keep their line: it is in their messages, which noth
 **The phase entry (daemon API contract 94).**
 A release at contract 94 holds the work a role is owed as numbers of the record rather than as one token carried on one outbox row.
 `phases` carries `entry`, `entry_task` and `entry_raised_at` — the entry the role of the issue's current phase stands on, the work of that entry, and when the transition raised it — and `claims` carries `given_entry` and `served_entry`, the entry of the last task the claim was queued and the entry its worker confirmed, with `pending_task_deliveries.entry` carrying the number from the start row to the claim.
-An issue of `GET /legion/v1/state` carries `phaseEntry` and `givenEntry` from those columns where `phase.RoleFor` names a role for the issue's current phase (`internal/projection/project.go`), and the daemon sends the entry's own work to every role whose claim stands below the entry its `phases` row names, on each admission pass and on a sweep of its own each minute.
+An issue of `GET /legion/v1/state` carries `phaseEntry` and `givenEntry` from those columns where `phase.RoleFor` names a role for the issue's current phase (`internal/projection/project.go`), and the daemon gives the entry's own work, a task the role's worker takes, to every role whose claim stands below the entry its `phases` row names, on each admission pass and on a sweep of its own each minute.
 Both keys are absent together for an issue in a phase no role works — `awaiting_person`, `done` and `held` — and each is absent where it is 0 (`internal/api/state.go`), so an issue whose role the daemon holds no claim row of carries `phaseEntry` alone.
 A root at `admitted` carried neither key at contract 94, when `phase.RoleFor` named no role for that phase;
 from contract 146 that phase is the architect's, so such a root carries its architect's two numbers by the same rules, and the two times the next paragraph names by its own.
@@ -2662,7 +2662,7 @@ The pieces reach a deployment in this order, so nothing is used before it exists
    give that daemon a plugin pair before step 3 instead and it relaunches every old worker itself, or replace the pods sooner by deleting each issue's Sandbox once its roles have pushed (`kubectl -n legion delete sandbox <name>`), whose next launch creates it from the configuration.
 
 Nothing stops step 3 before step 2:
-a daemon of this release refuses to boot only where its NATS user cannot open or create the bucket, and with no listener relaying the values a worker is handed its value at its registration and at each new epoch of its relay only.
+a daemon of this release refuses to boot only where its NATS user cannot open or create the bucket, and with no listener relaying the values a worker reads its value only at its registration, right after its ready, at each regain of its role and at each new epoch of its relay (`bootLegionClaim`, `packages/pi-shared/src/legion-claim-core.ts`).
 `legion state` then names every running claim whose value nobody reported seeing for a whole `worker_take_timeout_seconds` (`task values nobody reported seeing`, `unseenTaskValues` in `--json`), which charges no worker: the daemon writes such a value again once per that bound.
 
 A worker whose plugin is below contract 157 (`supervise.TaskTakeContract`) takes no task, so step 3 moves it as soon as the daemon can ("Contract discipline" below):
@@ -4100,7 +4100,7 @@ The cleaning covers the fixed list of shapes in `packages/contracts/fixtures/cap
 after a `Bearer` or an API-key label the word up to the next whitespace or quote is masked, whatever its shape, except a trailing run of backslashes, closing brackets and `,;:.!?`, which stays outside the word where only whitespace, a quote or the line's end follows it;
 such a run that any other character follows is masked with the word;
 a secret that no named pattern marks, such as a positional argument (`mysql -p hunter2`, `curl -u user:pw`), is not masked.
-A boot's ready and the ready after a regained Envoy role carry no report at all, and the controller measures nothing and sends none.
+A boot's ready carries no report at all, a regained Envoy role sends no ready (it reads the claim's task value again, `claims/task`), and the controller measures nothing and sends none.
 Each row's check, and the fact a passing one reports:
 
 - `subagents`: `pi.agents` is exposed, the `task` tool is registered, and every agent the registration's `promptAgents` names (the task agents the role's prompts dispatch) is resolved by `discoverAgents` in the workspace and none is in `task.disabledAgents` — `task resolves <n>

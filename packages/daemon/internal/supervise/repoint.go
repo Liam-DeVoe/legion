@@ -50,13 +50,13 @@ func (m *Machine) repoint(ctx context.Context, observation runtime.Observation) 
 // (`runtime.tmux.take_over`) and cannot see. The observation's detail names which. The process did
 // nothing wrong, so it is recovered as repoint recovers a stale one: nothing is charged, neither a
 // launch failure nor a death with work outstanding, and the claim's session is relaunched at once
-// (replaceProcess). A turn the process was in is lost, and its task goes back to waiting, sent
-// again once the session resumes; a held suspension ends in a suspension. The process is gone, so
-// a compaction running over it is dropped before this runs and its end gives the claim back
-// nothing (judge, compactionLostProcess). It is the one recovery that carries an out-of-memory
-// end's note (runtime.Observation.OutOfMemory), since a pod the daemon replaced can also have run
-// out of memory before the replacement landed, and the role whose turn that end cut off is told
-// so wherever the end is recovered.
+// (replaceProcess). A turn the process was in is lost, and its task is taken back under its
+// number, which the resumed session takes again; a held suspension ends in a suspension. The
+// process is gone, so a compaction running over it is dropped before this runs and its end gives
+// the claim back nothing (judge, compactionLostProcess). It is the one recovery that carries an
+// out-of-memory end's note (runtime.Observation.OutOfMemory), since a pod the daemon replaced can
+// also have run out of memory before the replacement landed, and the role whose turn that end cut
+// off is told so wherever the end is recovered.
 //
 // What the displacement ended is recorded first, as a death's is (died): the process is gone
 // whatever the replacement goes on to do, and the take-back it begins with changes the task the

@@ -46,7 +46,7 @@ func TestAnAgentThatDiesWithWorkOutstandingIsFailedAtTheLimit(t *testing.T) {
 			h.must(StreamTurnStart{Claim: testToken})
 			h.wantState(StateWorking)
 		},
-		"dies ready, before the re-sent task's turn": func(h *harness) { h.wantState(StateReady) },
+		"dies ready, before the turn of the task it took again": func(h *harness) { h.wantState(StateReady) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t)
@@ -314,7 +314,7 @@ func TestADeathWhoseTakeBackWriteFailedIsChargedAtTheReportThatTakesItBack(t *te
 // limit (`STALL_EXIT_CAP`, `packages/pi-shared/src/stall-watchdog.ts`, kept in the state
 // directory by `packages/pi-legion/src/stall-exits.ts`). This is the daemon's side of that
 // pairing: a worker that spends the whole of its cap is relaunched on its own session every
-// time, with the task re-sent and still owed, and the claim is live for its owner to read; the
+// time, with the task taken again and still owed, and the claim is live for its owner to read; the
 // death at the limit — the one the plugin's cap never reaches — fails the claim instead, with
 // the task kept.
 func TestAWorkerThatEndsItselfForAStallIsRelaunchedToItsCapAndFailedAtTheDeathLimit(t *testing.T) {
@@ -337,11 +337,11 @@ func TestAWorkerThatEndsItselfForAStallIsRelaunchedToItsCapAndFailedAtTheDeathLi
 		h.relaunched()
 
 		h.wantBudgets(Budgets{Deaths: exit})
-		resent := h.wantPrompts(1 + exit)[exit]
-		if want := interruptedTask(h.claim().EndedWork.Cause) + "implement the plan"; resent.Message != want {
-			t.Fatalf("stall exit %d: the take was answered %q, want %q", exit, resent.Message, want)
+		retaken := h.wantPrompts(1 + exit)[exit]
+		if want := interruptedTask(h.claim().EndedWork.Cause) + "implement the plan"; retaken.Message != want {
+			t.Fatalf("stall exit %d: the take was answered %q, want %q", exit, retaken.Message, want)
 		}
-		if p := h.pending(); p.ID != resent.DeliveryID || !p.awaitsTurn() {
+		if p := h.pending(); p.ID != retaken.DeliveryID || !p.awaitsTurn() {
 			t.Fatalf("stall exit %d: pending %+v, want the task taken again and still owed", exit, p)
 		}
 		h.must(StreamTurnStart{Claim: testToken}) // the relaunched worker walks into the same stall
@@ -438,8 +438,8 @@ func TestATaskThatEndsTakesItsDeathsWithIt(t *testing.T) {
 	h.wantBudgets(Budgets{LaunchFailures: 1, Deaths: 1})
 }
 
-// Deaths are counted until the agent next completes a turn, so an agent that finishes each
-// re-sent task after the death that interrupted it is relaunched every time: a pod lost now and
+// Deaths are counted until the agent next completes a turn, so an agent that finishes each task
+// it takes again after the death that interrupted it is relaunched every time: a pod lost now and
 // then to its node is not a broken agent.
 func TestACompletedTurnAfterEachDeathKeepsTheClaimRelaunching(t *testing.T) {
 	h := newHarness(t)

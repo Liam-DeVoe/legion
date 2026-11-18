@@ -103,7 +103,7 @@ func TestTakeAfterADeathCarriesTheNoteOfTheEndThatCutItsLastTurn(t *testing.T) {
 // while the task waits for the relaunch (Claim.TaskTaken): for a claim that has served no run, it
 // is what attributes a completion reported before the relaunched worker takes the task again to
 // the task's run (ServingRun), where a task that lost it would have that completion refused.
-func TestAnInterruptedTaskKeepsItsReadMarkUntilTheResend(t *testing.T) {
+func TestAnInterruptedTaskKeepsItsReadMarkUntilItIsTakenAgain(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
 	h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", Generation: 5})
@@ -122,7 +122,7 @@ func TestAnInterruptedTaskKeepsItsReadMarkUntilTheResend(t *testing.T) {
 
 // A task taken and not yet begun when the process died was never run, so the relaunched agent's
 // take of it is answered as it was: nothing was interrupted.
-func TestATaskNotYetBegunWhenTheProcessDiedIsResentAsItWas(t *testing.T) {
+func TestATaskNotYetBegunWhenTheProcessDiedIsTakenAgainAsItWas(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
 	h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", Generation: 5})
@@ -131,15 +131,16 @@ func TestATaskNotYetBegunWhenTheProcessDiedIsResentAsItWas(t *testing.T) {
 	h.observe(runtime.Gone)
 	h.relaunched()
 
-	if resent := h.wantPrompts(2)[1]; resent.Message != "implement the plan" {
-		t.Fatalf("the take after the relaunch was answered %q, want the task as it was", resent.Message)
+	if retaken := h.wantPrompts(2)[1]; retaken.Message != "implement the plan" {
+		t.Fatalf("the take after the relaunch was answered %q, want the task as it was", retaken.Message)
 	}
 }
 
 // Taking an interrupted task back is one delivery write, and a write that fails leaves the task as
 // it was, confirmed. Were it left taken back in memory only, the next death would find nothing to
 // take back and relaunch with the store still holding the confirmed delivery, and a restart before
-// the re-send's acknowledgement would retire it as served: the stranded phase this exists to stop.
+// the relaunched worker took it again would retire it as served: the stranded phase this exists
+// to stop.
 //
 // The death is the next report's to charge, since the report that could not write the take-back
 // charged nothing (died): one dead process is one death, and this one costs the claim a death
