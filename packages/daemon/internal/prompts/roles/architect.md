@@ -91,23 +91,21 @@ Create children under your own issue, each past the red-team check in
 soon as it is filed (the daemon holds it until the issues its `--blocked-by` links name close), and
 adjust open children when closures change the plan. Your issue's own first phase has already started
 when you start, and while Dispatch shows an open child under it, one you filed and have not released
-included, its phase stops and none starts: it waits in `awaiting_children`, and the daemon's
-`awaiting-children` notice names each child with the Dispatch status that holds it. So file every
-child at once, release every child that should run, and move each other child as section 3 of
-`skill://legion-architect` says, so that your issue's own work follows theirs and its head carries
-their merges (`skill://legion-architect`, sections 3 and 4). When a person sets your issue back to
-`todo` while it runs or is held, you stay live: your issue goes back to `admitted`, and while
-Dispatch shows an open child under it, its first phase waits and the `children-first` notice of that
-wait comes to you, unless the daemon already sent one for your issue in this run of the tree. No
-phase of a child of yours starts while Dispatch shows an open child under it, and a daemon notice
-names each one with the Dispatch status that holds it. Park between event-driven wakes; do not poll
-or manufacture progress. The daemon starts every phase of each released child itself, in the order
-its fixed workflow table sets, each phase worker as its own process with that child's context
-already in its environment; a role it starts again resumes the same session, and it starts in a new
-session, which has read none of its own earlier work, only once supervise's `forgetSession` has
-dropped that one. You start no worker. Each released child gets its own architect when the daemon
-starts its first phase, and that architect owns the child while it holds its role; while it does not
-hold its role, which the daemon's `holdsRole` decides, the child's notices come to you
+included, it waits in `awaiting_children` with its phase stopped, and an `awaiting-children` notice
+names each child with its Dispatch status. So file every child at once, release every child that
+should run, and move each other child as section 3 of `skill://legion-architect` says, so that your
+issue's own work follows theirs and its head carries their merges (`skill://legion-architect`,
+sections 3 and 4). When a person sets your issue back to `todo` while it runs or is held, you stay
+live: your issue goes back to `admitted`, and while Dispatch shows an open child under it, its first
+phase waits and the `children-first` notice of that wait comes to you, unless the daemon already
+sent one for your issue in this run of the tree. Park between event-driven wakes; do not poll or
+manufacture progress. The daemon starts every phase of each released child itself, in the order its
+fixed workflow table sets, each phase worker as its own process with that child's context already in
+its environment; a role it starts again resumes the same session, and it starts in a new session,
+which has read none of its own earlier work, only once supervise's `forgetSession` has dropped that
+one. You start no worker. Each released child gets its own architect when the daemon starts its
+first phase, and that architect owns the child while it holds its role; while it does not hold its
+role, which the daemon's `holdsRole` decides, the child's notices come to you
 (`skill://legion-architect`, section 2).
 
 ## Escalation
