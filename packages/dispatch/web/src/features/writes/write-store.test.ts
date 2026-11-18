@@ -239,6 +239,92 @@ test("one key per press, reused by every attempt the store makes", async () => {
   });
 });
 
+// A write of an issue tells that issue's listeners where it stands, from going out to settling.
+// Its issue is its press's, or the issue of its request's path: at its press for a write made
+// from its request, at its first attempt for one made by an attempt. A write naming no issue, or
+// another, tells this one nothing.
+test("a write of an issue tells that issue's listeners as it goes out and settles", async () => {
+  await onFakeClock(async () => {
+    const { writes } = storeOf();
+    const told: string[] = [];
+    const stop = writes.onIssueWrite("CORE-1", (phase, write) => {
+      told.push(`${write.label}: ${phase}`);
+    });
+    const elsewhere: string[] = [];
+    const stopOther = writes.onIssueWrite("CORE-2", (phase) => elsewhere.push(phase));
+
+    // Named by its press: out at once, before its attempt starts.
+    const answer = Promise.withResolvers<unknown>();
+    const keep = writes.run({
+      detail: null,
+      issue: "CORE-1",
+      kind: plainWrite,
+      label: "Keep",
+      presentation: "indicator",
+      write: () => answer.promise,
+    });
+    expect(told).toEqual(["Keep: out"]);
+    expect(writes.writesOutOf("CORE-1").map((write) => write.label)).toEqual(["Keep"]);
+    answer.resolve({ kept: true });
+    expect(await keep).toEqual({ kept: true });
+    expect(told).toEqual(["Keep: out", "Keep: landed"]);
+    expect(writes.writesOutOf("CORE-1")).toEqual([]);
+
+    // Named by its first attempt's request, refused, and out again on its Retry.
+    told.length = 0;
+    let refuse = true;
+    const refused = statusWrite(writes, () =>
+      refuse ? Promise.reject(verdict) : Promise.resolve({ key: "CORE-1" })
+    ).catch((error: unknown) => error);
+    expect(await refused).toBe(verdict);
+    expect(told).toEqual(["CORE-1 set to done: out", "CORE-1 set to done: refused"]);
+    expect(row(writes)?.issue).toBe("CORE-1");
+    refuse = false;
+    writes.retry(row(writes)?.id ?? 0);
+    await tick(1_000);
+    expect(told.slice(2)).toEqual(["CORE-1 set to done: out", "CORE-1 set to done: landed"]);
+
+    // Made from its request on a line: named at its press. One waiting its turn behind it,
+    // discarded before it was sent, settles as discarded.
+    told.length = 0;
+    const first = Promise.withResolvers<unknown>();
+    const ahead = statusWrite(writes, () => first.promise, { label: "Ahead", target: "issue" });
+    const behind = statusWrite(writes, async () => null, {
+      label: "Behind",
+      target: "issue",
+    }).catch((error: unknown) => error);
+    expect(told).toEqual(["Ahead: out", "Behind: out"]);
+    const waiting = writes.rows().find((write) => write.label === "Behind");
+    expect(writes.discard(waiting?.id ?? 0)).toBe(true);
+    expect(told).toEqual(["Ahead: out", "Behind: out", "Behind: discarded"]);
+    first.resolve({ key: "CORE-1" });
+    await ahead;
+    await behind;
+    expect(told.at(-1)).toBe("Ahead: landed");
+
+    // A pin's request names no issue in its path; a write of another issue tells that one.
+    told.length = 0;
+    await writes.run({
+      detail: null,
+      kind: plainWrite,
+      label: "Pin",
+      presentation: "indicator",
+      write: attemptOf(put, async () => ({ seq: 3 })),
+    });
+    await writes.run({
+      detail: null,
+      issue: "CORE-2",
+      kind: plainWrite,
+      label: "Other",
+      presentation: "indicator",
+      write: async () => ({ key: "CORE-2" }),
+    });
+    expect(told).toEqual([]);
+    expect(elsewhere).toEqual(["out", "landed"]);
+    stop();
+    stopOther();
+  });
+});
 // Dispatch's verdict ends the write: a 4xx it answered is not made again, and the write stays for
 // the reader with that refusal until Discard drops it. An error of the page's own - a bug - is
 // refused at once too, never retried for good.

@@ -212,6 +212,7 @@ function ConversationReply({
   const text = useAgentText();
   const targetName = recipientOf(reply.deliveries ?? [], root.root.target);
   const retry = useKeyedWrite({
+    issue: issueKey,
     label: (delivery: MessageDeliveryMode) =>
       `Delivery to ${text.part(targetName)} again, as ${MODE_LABELS[delivery]}`,
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["issue-messages", issueKey] }),
@@ -1049,6 +1050,7 @@ export function ConversationTab({
     open: phoneThread !== undefined,
   });
   const commentActions = useCommentActionQueue({
+    issue: issueKey,
     // Resolving a comment, or accepting or rejecting its suggestion, is the reader done with its
     // thread: once the server takes it, the thread closes. A refusal leaves the thread and the
     // reply the reader was writing as they were, and a thread whose own reply is out stays open,

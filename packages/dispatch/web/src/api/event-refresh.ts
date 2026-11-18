@@ -6,6 +6,7 @@ import {
   architectureSourcesQuery,
   inboxQuery,
   inboxThreadsKey,
+  issueTreeKey,
   myRepliesKey,
   projectArchitectureSourcesQuery,
   projectDefaultAssigneesQuery,
@@ -1171,6 +1172,10 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     { queryKey: ["events", key] },
     // Every event an issue owns moves its `last_seq`, which a project list's unread dot reads.
     { queryKey: project === undefined ? ["issues", "project"] : ["issues", "project", project] },
+    // The issue page's tree read, and each view of it under its key: the tree answers what every
+    // event of its issue may have moved, so it is told of each one, read once by the scheduler
+    // where something draws it and marked stale where nothing does.
+    { queryKey: issueTreeKey(key) },
   ];
   if (movesInboxThreads(event, viewer)) {
     targets.push({ queryKey: myRepliesKey });

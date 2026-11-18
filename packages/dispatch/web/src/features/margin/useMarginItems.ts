@@ -550,6 +550,7 @@ export function useMarginItems(
   const { actionFailure, mutateItem, pendingActionIds, retryItem } = useCommentActionQueue<{
     previous: Comment[] | undefined;
   }>({
+    issue: issueKey,
     onError: (_error, _input, context) => {
       queryClient.setQueryData(commentsQueryKey, context?.previous);
       void queryClient.invalidateQueries({ queryKey: commentsQueryKey });

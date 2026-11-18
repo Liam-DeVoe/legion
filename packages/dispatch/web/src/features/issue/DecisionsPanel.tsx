@@ -470,6 +470,7 @@ function WaitingDecision({
   const quote = blocks[0]?.text;
   const keep = useKeyedWrite({
     inline: true,
+    issue: issueKey,
     label: () => `Keep ${decision.heading}`,
     // The sum of the text this card showed: a decision the agent changed since is refused
     // (`409 DECISION_CHANGED`), so a Keep never stands over words the reader did not see.
