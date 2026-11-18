@@ -3411,7 +3411,18 @@ type ReferenceTarget struct {
 	// Ambiguous is true for a reference whose short id two or more items carry in the scope
 	// that the reference names. Such a member is gone, with the name "", and every other
 	// member of the read is answered. The key is left out otherwise.
-	Ambiguous bool        `json:"ambiguous,omitempty"`
+	Ambiguous bool `json:"ambiguous,omitempty"`
+	// EditedAt is the time the author of a comment or a message last edited it, on a member
+	// naming the post or a block of it, as the post's graph node carries it; absent on a post
+	// never edited and on a member of any other kind.
+	EditedAt *time.Time `json:"edited_at,omitempty"`
+	// DeletedAt and DeletedBy mark a comment or a message its author deleted, as every read of
+	// the post carries them (Comment, Message). A member naming the post is not gone, since the
+	// post keeps its place, and its name is "", the body the delete cleared; a member naming a
+	// block of it is gone, with no name and no tree, since the delete removed every block, and
+	// the mark says why. Both are absent on a post that stands and on every other kind.
+	DeletedAt *time.Time  `json:"deleted_at,omitempty"`
+	DeletedBy *Actor      `json:"deleted_by,omitempty"`
 	TextTree  DisplayTree `json:"text_tree,omitempty"`
 }
 

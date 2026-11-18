@@ -558,6 +558,32 @@ func TestResolvePrefixCarriesAPostsEditAndDeleteMarks(t *testing.T) {
 	}
 }
 
+// ResolvePrefixes, the batched copy of ResolvePrefix's queries that GET
+// /api/v1/reference-targets reads short ids through, carries the same marks: a comment and an
+// issue message, each edited and then deleted and each asked within its issue, are one candidate
+// through both functions (resolvedPrefix compares the two whole), the edit's time and alice's
+// delete included.
+func TestResolvePrefixesCarriesAPostsEditAndDeleteMarks(t *testing.T) {
+	tx := prefixFixture(t)
+	const comment = "7d440000-0000-4000-8000-000000000005"
+	const message = "7e550000-0000-4000-8000-000000000006"
+	issueKey := "CORE-1"
+	insertPrefixComment(t, tx, comment, issueKey, "Corrected, then withdrawn.")
+	insertPrefixMessage(t, tx, message, &issueKey, `{"kind":"user","id":"alice"}`, "Corrected, then withdrawn.", nil, nil)
+	editedAt := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+	deletedAt := time.Date(2026, 11, 3, 11, 0, 0, 0, time.UTC)
+	markPrefixPost(t, tx, "comments", comment, &editedAt, &deletedAt)
+	markPrefixPost(t, tx, "messages", message, &editedAt, &deletedAt)
+
+	for _, post := range []struct{ kind, id, prefix string }{{"comment", comment, "7d440000"}, {"message", message, "7e550000"}} {
+		got := resolvedPrefix(t, tx, post.kind, Scope{IssueKey: issueKey}, post.prefix, Viewer{})
+		if got.ID != post.id || got.EditedAt == nil || !got.EditedAt.Equal(editedAt) ||
+			got.DeletedAt == nil || !got.DeletedAt.Equal(deletedAt) || got.DeletedBy == nil || got.DeletedBy.ID != "alice" {
+			t.Fatalf("the edited and deleted %s = %#v, want the edit at %s and alice's delete at %s", post.kind, got, editedAt, deletedAt)
+		}
+	}
+}
+
 // ResolvePrefixes copies the owner and version checks of the queries of ResolvePrefix, and
 // resolvedPrefix and requireNoPrefixMatch ask both, so each check below has one answer through
 // both functions, asked as the index-time resolver asks. A comment written on a project document

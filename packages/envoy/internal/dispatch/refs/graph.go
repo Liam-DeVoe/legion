@@ -400,18 +400,39 @@ func Node(ctx context.Context, q Queryer, kind, id string, byRefKey bool) (model
 	return node.GraphNode, found, nil
 }
 
+// TargetName is what TargetNames answers for one target: Name, the words it is named by, and
+// the marks of a comment or a message its author corrected, which a target naming the post or a
+// block of it carries as the post's graph node does (model.GraphNode): EditedAt, the time of its
+// author's last edit, and DeletedAt and DeletedBy, the mark of its author's delete. All three are
+// nil on a post that stands as first written and on a target of any other kind. Gone is true on
+// the one entry for a target nothing addresses now: a block of a deleted post.
+type TargetName struct {
+	Name      string
+	Gone      bool
+	EditedAt  *time.Time
+	DeletedAt *time.Time
+	DeletedBy *model.Actor
+}
+
 // TargetNames is the words each of targets is named by where a reader is shown a reference to it
 // rather than its own text: an issue's title, a document's name, an ask's question, a comment's
 // or a message's body, a component's title and a block's text, each cut to the bound an edge's
 // excerpt is cut to (resolvedNode.name), which is what GET /api/v1/references already shows
 // beside an edge at that node. The targets are addressed as the to side of an edge addresses
-// them (TargetOf), so an artifact's id is its ref_key.
+// them (TargetOf), so an artifact's id is its ref_key. A comment or a message, and a block of
+// one, carries its post's marks beside its name (TargetName). A deleted post's node stands, with
+// the empty body its delete left, so its name is "" beside its delete mark.
 //
 // One entry per target that resolves: a target with no entry is one nothing addresses now — its
 // node was deleted, or its kind is one this build cannot address (resolveNodes) — which is what
-// a caller draws as a reference whose target is gone. Each kind is read in one statement
-// whatever the number of targets, so a batch costs a statement per kind, not per target.
-func TargetNames(ctx context.Context, q Queryer, targets []Target) (map[Target]string, error) {
+// a caller draws as a reference whose target is gone. A block of a deleted comment or message
+// resolves to nothing too, since the delete removed every block of its post (TombstoneItem), but
+// it has an entry: Gone, with no name and its post's delete mark, as a block read of it is
+// refused naming the deletion (api's itemBlockNotFound). Each kind is read in one statement
+// whatever the number of targets, so a batch costs a statement per kind, not per target; a block
+// of a comment or a message that resolves to nothing costs one statement more per kind of post,
+// which reads whether its post was deleted.
+func TargetNames(ctx context.Context, q Queryer, targets []Target) (map[Target]TargetName, error) {
 	rows := make([]edgeRow, len(targets))
 	for index, target := range targets {
 		rows[index] = edgeRow{otherKind: target.Kind, otherID: target.ID}
@@ -420,11 +441,56 @@ func TargetNames(ctx context.Context, q Queryer, targets []Target) (map[Target]s
 	if err != nil {
 		return nil, err
 	}
-	names := make(map[Target]string, len(nodes))
+	names := make(map[Target]TargetName, len(nodes))
 	for key, node := range nodes {
-		names[Target{Kind: key[0], ID: key[1]}] = node.name()
+		names[Target{Kind: key[0], ID: key[1]}] = TargetName{
+			Name: node.name(), EditedAt: node.EditedAt, DeletedAt: node.DeletedAt, DeletedBy: node.DeletedBy,
+		}
+	}
+	if err := deletedPostBlocks(ctx, q, targets, names); err != nil {
+		return nil, err
 	}
 	return names, nil
+}
+
+// deletedPostBlocks enters into names, Gone and under its post's delete mark, each of targets
+// that is a block of a comment or a message (ParseItemBlockNode) with no entry in names, whose
+// post its author deleted. The posts are read as nodes of their own kind (resolveNodes), in one
+// statement per kind of post, and none when every block resolved.
+func deletedPostBlocks(ctx context.Context, q Queryer, targets []Target, names map[Target]TargetName) error {
+	var posts []edgeRow
+	blocks := map[[2]string][]Target{}
+	for _, target := range targets {
+		if _, named := names[target]; named {
+			continue
+		}
+		kind, itemID, _, ok := ParseItemBlockNode(target.ID)
+		if !ok || kind == ItemAsk || target.Kind != kind.BlockKind() {
+			continue
+		}
+		post := [2]string{string(kind), itemID}
+		if _, held := blocks[post]; !held {
+			posts = append(posts, edgeRow{otherKind: post[0], otherID: post[1]})
+		}
+		blocks[post] = append(blocks[post], target)
+	}
+	if len(posts) == 0 {
+		return nil
+	}
+	nodes, err := resolveNodes(ctx, q, true, posts)
+	if err != nil {
+		return err
+	}
+	for post, held := range blocks {
+		node, found := nodes[post]
+		if !found || node.DeletedAt == nil {
+			continue
+		}
+		for _, target := range held {
+			names[target] = TargetName{Gone: true, DeletedAt: node.DeletedAt, DeletedBy: node.DeletedBy}
+		}
+	}
+	return nil
 }
 
 // resolvedNode is a graph node with the text an excerpt is cut from: a block's is its stored

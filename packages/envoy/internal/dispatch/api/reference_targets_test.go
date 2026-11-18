@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -249,4 +250,120 @@ func TestReferenceTargetsRefuseASetPastTheCapAndAReferenceItCannotRead(t *testin
 	if members := decodeBody[model.ReferenceTargets](t, cleared).Targets; !reflect.DeepEqual(members, wanted) {
 		t.Fatalf("once no block carries the prefix, the set answered %#v, want %#v", members, wanted)
 	}
+}
+
+// A member naming a comment or an issue message, or the first block of one (#b-b1), carries its
+// post's marks as every read of the post does, with trees and without. Before any correction no
+// member carries a mark, each is named by its post's words, and each block's tree, for a caller
+// that asked for trees, holds them. After the author's edit, which leaves the first block as it
+// was, each member carries the edit's time, the block's name and tree as they were. After the
+// delete no member gives a word of either post, with trees or without: a member naming the post
+// keeps its place, not gone, named "" and carrying the delete's mark, and a member naming its
+// block is gone, with no name and no tree and the same mark, as a block read of it is refused
+// naming the deletion. The tag of a set naming the two blocks alone, which the edit leaves as
+// they were, changes at the edit and again at the delete: a holder of the older tag is answered
+// the new answer, never 304.
+func TestReferenceTargetsMarkAnEditedPostAndGiveNoWordOfADeletedOne(t *testing.T) {
+	handler, _ := blockIndexHandler(t)
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createReferenceAPIIssue(t, handler, "CORE")
+	const commentWords, messageWords = "zarquoncommentwords", "zarquonmessagewords"
+	comment := createReferenceAPIComment(t, handler, issue.Key, commentWords+" first block.\n\nSecond block.")
+	message := createIssueMessage(t, handler, issue.Key, map[string]any{"body": messageWords + " first block.\n\nSecond block."}, "alice")
+	commentRef := "dispatch://" + issue.Key + "/comment/" + comment.ID
+	messageRef := "dispatch://" + issue.Key + "/message/" + message.ID
+	set := []string{commentRef, commentRef + "#b-b1", messageRef, messageRef + "#b-b1"}
+	words := []string{commentWords, commentWords, messageWords, messageWords}
+	blocks := []string{set[1], set[3]}
+
+	// read is the answer to the whole set, as a caller given trees or given none is answered it,
+	// and that answer's body.
+	read := func(trees bool) ([]model.ReferenceTarget, string) {
+		t.Helper()
+		response := listRead(t, handler, referenceTargetsOf(set...), listReadOptions{trees: trees})
+		if response.Code != http.StatusOK {
+			t.Fatalf("read the set (trees %t): status=%d body=%s", trees, response.Code, response.Body.String())
+		}
+		members := decodeBody[model.ReferenceTargets](t, response).Targets
+		if len(members) != len(set) {
+			t.Fatalf("the set (trees %t) answered %#v, want one member per reference", trees, members)
+		}
+		return members, response.Body.String()
+	}
+	// changedBlocks reads the two blocks holding etag, and fails t unless it is answered the new
+	// answer under a new tag, which it answers.
+	changedBlocks := func(what, etag string) ([]model.ReferenceTarget, string) {
+		t.Helper()
+		response := referenceTargetsRequest(t, handler, blocks, etag)
+		if response.Code != http.StatusOK || response.Header().Get("ETag") == etag {
+			t.Fatalf("the blocks %s, read holding the tag before it, answered status=%d etag=%q (was %q), want the new answer under a new tag",
+				what, response.Code, response.Header().Get("ETag"), etag)
+		}
+		return decodeBody[model.ReferenceTargets](t, response).Targets, response.Header().Get("ETag")
+	}
+
+	for _, trees := range []bool{false, true} {
+		members, _ := read(trees)
+		for index, member := range members {
+			if member.Gone || !strings.Contains(member.Name, words[index]) {
+				t.Errorf("before any correction (trees %t) %s answered %#v, want its post's words", trees, set[index], member)
+			}
+			if member.EditedAt != nil || member.DeletedAt != nil || member.DeletedBy != nil {
+				t.Errorf("before any correction (trees %t) %s carries a mark: %#v", trees, set[index], member)
+			}
+			if block := member.Kind == "block"; trees && block != strings.Contains(string(member.TextTree), words[index]) {
+				t.Errorf("before any correction (trees %t) %s answered the tree %s, want its block's words in a block's tree alone", trees, set[index], member.TextTree)
+			}
+		}
+	}
+	standingBlocks, standingTag := referenceTargets(t, handler, blocks)
+
+	commentEdited := editThreadComment(t, handler, comment.ID, commentWords+" first block.\n\nSecond block, corrected.", "alice")
+	messageEdited := editIssueMessage(t, handler, message.ID, messageWords+" first block.\n\nSecond block, corrected.", "alice").EditedAt
+	if messageEdited == nil {
+		t.Fatalf("the edit of the message answered no edited_at")
+	}
+	editedAt := []time.Time{commentEdited, commentEdited, *messageEdited, *messageEdited}
+	for _, trees := range []bool{false, true} {
+		members, _ := read(trees)
+		for index, member := range members {
+			if member.Gone || !strings.Contains(member.Name, words[index]) || member.DeletedAt != nil || member.DeletedBy != nil {
+				t.Errorf("after the edit (trees %t) %s answered %#v, want its post's words and no delete mark", trees, set[index], member)
+			}
+			if member.EditedAt == nil || !member.EditedAt.Equal(editedAt[index]) {
+				t.Errorf("after the edit (trees %t) %s carries edited_at %v, want the edit's time %s", trees, set[index], member.EditedAt, editedAt[index])
+			}
+		}
+	}
+	editedBlocks, editedTag := changedBlocks("after the edit", standingTag)
+	for index, member := range editedBlocks {
+		if member.Name != standingBlocks[index].Name {
+			t.Errorf("after the edit %s is named %q, want the name the edit left as it was, %q", blocks[index], member.Name, standingBlocks[index].Name)
+		}
+	}
+
+	commentDeleted := deleteThreadComment(t, handler, comment.ID, "alice").DeletedAt
+	messageDeleted := deleteIssueMessage(t, handler, message.ID, "alice").DeletedAt
+	if commentDeleted == nil || messageDeleted == nil {
+		t.Fatalf("the deletes answered no mark: comment %v, message %v", commentDeleted, messageDeleted)
+	}
+	deletedAt := []*time.Time{commentDeleted, commentDeleted, messageDeleted, messageDeleted}
+	for _, trees := range []bool{false, true} {
+		members, body := read(trees)
+		for _, word := range []string{commentWords, messageWords} {
+			if strings.Contains(body, word) {
+				t.Errorf("after the delete (trees %t) the read gives the deleted words %q: %s", trees, word, body)
+			}
+		}
+		for index, member := range members {
+			if block := member.Kind == "block"; member.Gone != block || member.Name != "" || len(member.TextTree) != 0 {
+				t.Errorf("after the delete (trees %t) %s answered %#v, want no name and no tree, the post in its place and its block gone", trees, set[index], member)
+			}
+			if member.DeletedAt == nil || !member.DeletedAt.Equal(*deletedAt[index]) ||
+				member.DeletedBy == nil || member.DeletedBy.Kind != "user" || member.DeletedBy.ID != "alice" {
+				t.Errorf("after the delete (trees %t) %s carries the mark %v by %#v, want alice's delete at %s", trees, set[index], member.DeletedAt, member.DeletedBy, *deletedAt[index])
+			}
+		}
+	}
+	changedBlocks("after the delete", editedTag)
 }
