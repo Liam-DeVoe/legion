@@ -42,15 +42,19 @@ You file an issue only when nobody owns that code.
    repository both role GitHub Apps are installed on, the only repositories Legion records an
    issue on (your addressing line names the owners your own App is installed on, and
    `read_state`'s `repositories.refused` names a repository either App is missing from).
-   Otherwise reply `Not filed: <reason>` under the evidence and open an ask for it, as
-   `findings.md` says.
+   Otherwise reply `Not filed: <reason>` under the evidence, the reason naming the choice a
+   person must make or the repository the Apps miss, and open nothing: the finder opens its ask
+   itself, as `findings.md` says.
 2. Search first (`skill://dispatch-first`). When an open issue tracks it, comment the evidence
    there, reply `Filed dispatch://<that KEY>` under the evidence, and file nothing.
-3. Check that no running tree owns that code: no root in `admission.trees`, the live trees, whose
-   repository and component match, read from `read_state` and `dispatch read`. Read it there
-   rather than in `admission.active`, which holds the issues the daemon has started: an issue
-   holds one as [Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label) says, and a tree runs
-   whether or not any issue of it holds one. When one matches, send nothing on and file nothing:
+3. Check that no running tree owns that code: no live tree whose repository and component match.
+   Find the live trees as `skill://legion-controller/references/admission.md` says: each
+   recorded root is a record whose `tree` field is its own key, and its row there says when its
+   tree is live. Read the roots with `read_state` and `issues`, and each candidate with
+   `dispatch read`. `admission.active` does not say it: it holds the issues the daemon has
+   started, and a tree runs whether or not any issue of it holds a slot
+   ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)).
+   When one matches, send nothing on and file nothing:
    reply `Not filed: dispatch://<ROOT> owns it; write to role:<its architect's token>` under the
    evidence, with the token `issues.<ROOT>.architect.locator.claim` names, so the role writes to
    that tree itself. A second issue would split the work.

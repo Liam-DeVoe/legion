@@ -115,8 +115,9 @@ these that fits.
 
 - **A question about state.** "What is Legion working on?", "Where is ACME-12?", "Why is it held?"
   Answer from `read_state` and Dispatch as they stand now, never from memory: each issue's
-  `issues.<KEY>.phase` and `issues.<KEY>.tree`, its pull request, `admission.trees` for the trees
-  that run, and `admission.active` and `admission.waiting` for the issues holding a slot and the
+  `issues.<KEY>.phase` and `issues.<KEY>.tree`, its pull request, the roots whose trees run (each
+  a record whose `tree` is its own key, live as `skill://legion-controller/references/admission.md`
+  says), and `admission.active` and `admission.waiting` for the issues holding a slot and the
   issues in the line: an issue holds a slot as [Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)
   says, so `admission.active` names some of a tree's waits as well as its work. Say what you
   read, citing for each fact the `read_state` field or the `dispatch read` line it came from.

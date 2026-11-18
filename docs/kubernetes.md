@@ -1463,6 +1463,14 @@ A deployment of an earlier layout clears all of it before it upgrades ([Upgradin
 The daemon runs on a host its pods can reach and serves the worker stream they dial.
 The controller is `legion controller start` on the operator's machine, or, under `controller: daemon`, a pod of its own with one launcher that the daemon launches ([The controller](#the-controller)).
 
+### Reaching the daemon's database by hand
+
+A step below that reads or writes the daemon's database by hand gives `psql` or `pg_dump` the database's URL with no password in it, `<postgres_url>`, and the password in a file, never as an argument, because every process on the machine can read another's arguments.
+`<postgres_url>` is the daemon's `postgres_dsn` with its password taken out: `postgres://<user>@<host>:<port>/<database>?sslmode=...`.
+`<pgpass file>` is a file of mode `0600` that holds one line, `<host>:<port>:<database>:<user>:<password>`, which libpq reads when `PGPASSFILE` names it (https://www.postgresql.org/docs/current/libpq-pgpass.html).
+So each command reads `PGPASSFILE=<pgpass file> psql '<postgres_url>' …`, and libpq takes the password from the file.
+Delete the file when the step is done.
+
 ### Daemon migration identifiers and release order
 
 A migration's version is the leading digits of its file name (`internal/store/migrations`).
@@ -1542,15 +1550,15 @@ No migration turns a per-claim Sandbox or locator into an issue pod's, and nothi
    ```
 
    ```sql
-   -- connected as the daemon is, with its postgres_dsn
+   -- connected as the daemon is, as "Reaching the daemon's database by hand" says
    select token, state from claims where project = '<project>' and locator->>'runtime' = 'sandbox';
    ```
 
    The query lists every claim that records a Sandbox locator at all, which is stricter than the boot check:
    on the earlier release every such locator is a per-claim one.
 
-5. **Dump the database**, `pg_dump -Fc -T omp_session_files -T omp_session_files_parts -f <dump
-   file> '<postgres_dsn>'` with the daemon's `postgres_dsn`.
+5. **Dump the database**, `PGPASSFILE=<pgpass file> pg_dump -Fc -T omp_session_files -T omp_session_files_parts -f <dump
+   file> '<postgres_url>'`, with the daemon's database as [Reaching the daemon's database by hand](#reaching-the-daemons-database-by-hand) gives it.
    It is the only way back ([Rolling back](#rolling-back-the-upgrade)).
    The two `-T` options leave out Oh My Pi's session tables:
    where they share the daemon's database under a login of their own, the daemon's login cannot read them and a `pg_dump` that names them exits 1 with `permission denied for table
@@ -2253,8 +2261,8 @@ pin the worker image with the daemon release, since the image probe refuses an i
 The release before it is contract 38, the blocked issues (INFRA-225), whose issue pods run the six role containers of contract 37, the pod-owned disk ([Cutting over to the pod-owned disk](#cutting-over-to-the-pod-owned-disk)), and this section is written against it:
 a deployment still on a release before contract 37 cuts over to the pod-owned disk first.
 A rollback rewrites the database in place and needs no dump (below);
-a safety copy taken with the daemon stopped does no harm, as `pg_dump -Fc -T omp_session_files -T
-omp_session_files_parts -f <dump file> '<postgres_dsn>'` with the daemon's `postgres_dsn`:
+a safety copy taken with the daemon stopped does no harm, as `PGPASSFILE=<pgpass file> pg_dump -Fc -T omp_session_files -T
+omp_session_files_parts -f <dump file> '<postgres_url>'`, with the daemon's database as [Reaching the daemon's database by hand](#reaching-the-daemons-database-by-hand) gives it:
 where Oh My Pi's two session tables share that database under a login of their own, the daemon's login cannot read them and a `pg_dump` that does not leave them out exits 1 with `permission denied for
 table omp_session_files`.
 At boot, store migration 0054 rewrites every stored claim locator naming a per-role container to `roles`, and the boot census passes a pod of either layout and refuses everything else as before.
@@ -2312,7 +2320,7 @@ In this order:
    the controller's locators still name `controller` and are not touched, and a tmux locator, or one with no `sandbox` member, matches neither statement:
 
    ```sh
-   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+   PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'
    begin;
    update claims set locator = jsonb_set(locator, '{sandbox,container}', to_jsonb(role))
    where locator->>'runtime' = 'sandbox'
@@ -2405,7 +2413,7 @@ the record a role's completion of its current phase named, and its version.
 To roll this release back to contract 44, stop the daemon and drop both columns, with the row `schema_version` records for 20261101144900_handoff_records, which leaves the store at the earlier release's schema, 67:
 
 ```sh
-psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'
 begin;
 alter table phases drop column if exists handoff_record, drop column if exists handoff_version;
 delete from schema_version where version = 20261101144900;
@@ -2533,7 +2541,7 @@ To roll a release at contract 146 back to contract 144 instead, the release just
 The block below is the way back of those four migrations, and the header of each carries it:
 
 ```sh
-psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'
 begin;
 alter table phases drop column if exists entry_verbatim;
 delete from schema_version where version = 20261114061900;
@@ -2598,7 +2606,7 @@ The eleven statements, after that block where it runs, leave the store at the ea
 20261112180548, the earlier release's own version, on a store the release at contract 94 migrated, which records it above this migration's own 20261111225552, and 20261114031356, the highest row neither block deletes, on a store a release at contract 146 migrated.
 
 ```sh
-psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'
 begin;
 alter table phases add column if not exists assignment text not null default '';
 alter table claims add column if not exists serving_assignment text not null default '';
@@ -4924,7 +4932,9 @@ GNU tar 1.35 and git 2.47.3 were measured doing each of these: tar replaced a re
 
 **The controller's route.**
 A project's controller carries an issue pod's unpushed work itself before it deletes the pod, where its own pod holds `create pods/exec` and `delete pods` in `legion` (`skills/legion-controller/references/operations.md`, "A pod delete with nothing lost").
-It runs steps 1 and 3 as above, step 3 through the worker image's `git` wrapper with the implement App token the secrets broker lends.
+It runs step 1 as above, and a step 3 of its own:
+it fetches the issue branch and the default branch from GitHub into a fresh clone with the implement App token the secrets broker lends, narrowed to the one repository, then fetches the bundle into that clone with git's object check, and pushes through the worker image's `git` wrapper, so the leak guard checks the push;
+where GitHub answers that `legion/<KEY>` was never pushed, or the fetch fails another way, it deletes nothing and tells the issue's architect by a mention naming git's first line.
 Its pod has no Docker, so it runs step 2's script in that pod with `CARRY_OUT_STAGE` unset:
 the script runs itself under `unshare --user --map-root-user --net --mount --pid --fork --mount-proc`, mounts a tmpfs over `/run` and over `$HOME`, and runs the rebuild there.
 It stops where `unshare` is refused, so it never rebuilds with the network.
@@ -6062,7 +6072,7 @@ The daemon deletes the bundle once the launcher confirms the restore, and delete
 A bundle is offered to one pod and one only: the first pod of the issue that is not the pod the work came off to ask for it, which in an ordinary release is the pod the teardown's next launch made.
 That pod is sent the bundle when it was created after the save, and refused when it was not — a pod the release did not replace, or the replacement itself on a node whose clock runs ahead of the API server's — and either way no later pod is sent it, because the roles of the pod that asked go on working and pushing from the workspace their own fetch provisioned.
 A restore that fails, and a refusal, each keep the work: it is still in the database and no pod has it, so the daemon holds the issue's next pod open rather than release it again over a workspace that never had that work, which is the `bundle_unrestored` hold above, and the work stays there for an operator to carry out of the database by hand.
-The row's `bundle` column is a git bundle, so an operator reads it out with `psql '<postgres_dsn>' -XAt -c "select encode(bundle, 'base64') from workspace_bundles where issue = '<KEY>'" | base64 -d > <KEY>.bundle` and checks it with `git bundle list-heads <KEY>.bundle`.
+The row's `bundle` column is a git bundle, so an operator reads it out with `PGPASSFILE=<pgpass file> psql '<postgres_url>' -XAt -c "select encode(bundle, 'base64') from workspace_bundles where issue = '<KEY>'" | base64 -d > <KEY>.bundle` ([Reaching the daemon's database by hand](#reaching-the-daemons-database-by-hand)) and checks it with `git bundle list-heads <KEY>.bundle`.
 Then, in a clone of the repository fetched from GitHub first, the operator fetches it with git's object check, as step 3 of [Carrying unpushed work out of an issue's pod](#carrying-unpushed-work-out-of-an-issues-pod) fetches its bundle: `git -c fetch.fsckObjects=true fetch <dir>/<KEY>.bundle 'refs/legion-bundle/*:refs/remotes/bundle-<KEY>/*'`, with `<dir>` the directory the `psql` command wrote it to, where the row's `head` is the working copy's commit and `bookmarks` maps each bookmark to its commit.
 Git makes that check of a bundle's objects from 2.46.0 on (`VERIFY_BUNDLE_FSCK`, `bundle.h`), so this fetch needs git 2.46 or later: an earlier git takes the option and fetches the bundle unchecked.
 A bundle stays through a linger and a park, and goes when its issue is done or its tree closes.
@@ -6124,7 +6134,7 @@ For an issue whose push you cannot confirm, carry its work out of the resumed po
 Then stop this release's daemon, and leave the claims in a state the earlier release acts on:
 
 ```sh
-psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'
 begin;
 update claims set suspended_by = 'daemon' where state = 'suspended' and suspended_by = 'released';
 delete from workspace_bundles;
@@ -6153,7 +6163,7 @@ The window is the gap between the pass that marks such a release and its teardow
 let the releases in flight finish before you stop this release's daemon, and then, with the daemon stopped, clear any mark still standing.
 
 ```sh
-psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'
 begin;
 delete from issue_releases where kind = 'unowned';
 commit;

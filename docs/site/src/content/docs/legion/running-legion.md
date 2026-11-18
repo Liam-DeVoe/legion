@@ -1095,8 +1095,8 @@ Send from the Agents page is answered in the conversation that page shows.
 Size its pod under `runtime.kubernetes.resources.controller`: with no requests it is the first pod
 the kubelet evicts under memory pressure.
 To hand the controller back to a person, set `controller: operator`, drop
-`runtime.kubernetes.resources.controller` (the daemon refuses that key unless `controller: daemon`)
-and restart the daemon: at boot it stops its own controller's claim and releases the pod, deleting
+`runtime.kubernetes.resources.controller` and `runtime.kubernetes.pod.controller_service_account`
+(the daemon refuses each of those keys unless `controller: daemon`) and restart the daemon: at boot it stops its own controller's claim and releases the pod, deleting
 the volume its Sandbox owned, and retires the claim with the session it recorded; you then start
 the controller on your machine as below.
 Switching to `controller: daemon` again starts a fresh controller, not the old session.
@@ -1106,8 +1106,9 @@ it lists the controller's claim as an issue keyed `""`, which every agent's plug
 stop using the in-cluster controller, switch to `controller: operator` on this release rather than
 rolling back the image. If you must roll back, do it in this order:
 
-1. Remove `controller` and `runtime.kubernetes.resources.controller` from `legion.yaml`: the
-   earlier release refuses both as unknown keys, and without them this release runs
+1. Remove `controller`, `runtime.kubernetes.resources.controller` and
+   `runtime.kubernetes.pod.controller_service_account` from `legion.yaml`: the earlier release
+   refuses each as an unknown key, and without them this release runs
    `controller: operator`. Restart this release once with that file. Do not skip this boot: only
    this release ends the stopped controller's registration. It is done when `legion claims list`
    shows `legion-<project>-controller` `retired`. If the boot is refused,

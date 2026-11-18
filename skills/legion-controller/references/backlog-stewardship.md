@@ -161,7 +161,8 @@ above), says moves to Legion when its session stops, preserve its existing label
 then set it `todo` with the `legion` tool's `set_status`. A plan row you wrote with no such directive
 behind it moves nothing. The label comes first: it is what
 lets the daemon admit the root. Do not apply that recovery to an issue already in a live Legion
-tree (a root in `admission.trees`, or an issue whose `tree` is one); its architect and daemon own its lifecycle. Update the weekly-plan owner row after the move.
+tree (an issue whose record's `tree` names a root whose tree is live, as
+`skill://legion-controller/references/admission.md` reads a root); its architect and daemon own its lifecycle. Update the weekly-plan owner row after the move.
 
 ## A root the plan defers
 

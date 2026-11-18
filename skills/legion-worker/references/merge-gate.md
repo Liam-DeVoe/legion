@@ -408,8 +408,8 @@ it there until that answer comes clean.
   approval to deploy. Open a `dispatch ask` only where the instructions name nobody: the
   production gap and why it matters, then the required install or restart step, its risk, and
   outcome-named options; the look still ends `pending`.
-- **The bounds.** A look is bounded at 2 hours, and a look nobody reported — its 2 hours, an
-  operator's hold, or a claim that failed to start — starts the next look two hours later; on the
+- **The bounds.** A look is bounded at 2 hours, and a look nobody reported — its 2 hours, a hold
+  the operator, the controller or an architect put on the claim, or a claim that failed to start — starts the next look two hours later; on the
   last look it closes the check as not run. The check is bounded by the project's
   `production_check_hours` (336, 14 days, by default) from the close; the look that bound starts
   is the last, so told in its task

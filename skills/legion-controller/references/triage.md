@@ -10,11 +10,13 @@ Read this on a `triage` wake, at every start, and when a person hands you an iss
    match in one request, so no row is missed or repeated while the list changes.
 2. The rows show no parent, so `dispatch read` each one and follow `Links:` up through each
    `child_of` parent. A `child_of` under `Referenced by:` is a child of this issue, not its parent.
-3. Leave a child whose `issues.<KEY>.tree` is a root in `admission.trees`, or that has an ancestor
-   that is, because that tree's architect owns it. `admission.trees` is the live trees: a slot is
+3. Leave a child whose `issues.<KEY>.tree` is a root whose tree is live, or that has an ancestor
+   that is, because that tree's architect owns it. `read_state` does not list the live trees: read
+   the root with `read_state` and `issues`, and its row in
+   `skill://legion-controller/references/admission.md` says when its tree is live. A slot is
    one issue the daemon has started, held as [Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label) says, so a tree is live whether or not its root holds one.
 4. Every other row with no `issues.<KEY>` entry in `read_state` is a root to you, a child whose
-   tree is not in `admission.trees` included. Read who set its label
+   tree is not live included. Read who set its label
    ("Triage a root", step 2). A root a person labelled is queued by the daemon and needs nothing
    from you. Triage, as a root, each one whose label a session set.
 5. A root `read_state` records and that is now in `triage` is one a person pulled back. Never

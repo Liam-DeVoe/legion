@@ -16,7 +16,8 @@ For capacity, the only lever is order. You cannot change `admission.cap`: it is 
 `legion.yaml` setting, and `set_status` is your only admission move. The cap counts the issues the
 daemon has started, a root or a child, not trees, and an issue holds one as
 [Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label) says, so a tree's own children compete for it with every other
-tree's. Read `admission.active`, `admission.waiting` and `admission.trees`, tell the architect
+tree's. Read `admission.active` and `admission.waiting`, and the tree each of their issues stands
+in from its record's `tree` field (`read_state` with `issues`), tell the architect
 where its tree's issues stand in the line, as a Dispatch comment on the owning issue that mentions
 its role (`skill://legion-controller/SKILL.md#rules`), and open a finding ask when the deployment
 needs a larger cap.

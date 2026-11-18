@@ -193,6 +193,12 @@ The issue's agents run while you copy. Work they write after step 1 goes with th
      -cf - .' sh /legion/workspaces/<owner>/<repo>/<key> > "$TMPDIR/<KEY>-tree.tar"
    ```
 
+   An exec that `kubectl` refuses (`Forbidden`) is an operation you lack: delete nothing, and name
+   it in the day's report. Any other exit that is not 0 is a copy you cannot use: the `test` that
+   refuses a directory reached through a symlink, an exec cut off, or a tar that fails. Make step 1
+   again once. A second such exit means delete nothing, and tell the issue's architect by a
+   mention that names the command and its last line of output.
+
 2. **Rebuild the work into a bundle in your own pod.** `carry-out.sh` runs itself in a user,
    network, mount and PID namespace of its own, with a tmpfs over `/run` and over `$HOME`, and
    refuses to run outside it. It checks the type of each entry of both archives. It refuses an
@@ -408,8 +414,8 @@ with that refusal, the text on stdin
 ## Each kind of request the controller sent
 
 On 2026-11-13, the controllers of one deployment sent other sessions requests of thirteen kinds,
-as the request-kind labeller counted them in dispatch://INFRA-2709/artifact/request-kinds-md. Each
-row says what you do now in place of such a request.
+as a labeller of that day's transcripts counted them for cybermonklabs/legion#4065. Each row says
+what you do now in place of such a request.
 An operation is one of the sections above. A decision that only a person may make is a
 `dispatch ask`. Every other request goes to the session whose work it is, as a Dispatch comment
 that mentions its role (`skill://legion-worker/references/findings.md#write-to-the-owner`). Send
@@ -420,7 +426,7 @@ it to no other session.
 | `change a claim or a session` | [A claim's state](#a-claims-state): the six `legion` tool operations. Under the operator's suspension: [A claim the operator holds](#a-claim-the-operator-holds). A pod that must go: [A pod delete with nothing lost](#a-pod-delete-with-nothing-lost). |
 | `change a Dispatch record` | Your own `dispatch` commands (a comment, an ask, an artifact, the fields of an issue other than its status) and `set_status`. A lifecycle status stays the daemon's. |
 | `merge or queue a pull request` | Not yours: you merge and enqueue nothing. The architect of the tree that owns the pull request enqueues it, after it reads `merge-holds-md` (`skill://legion-architect/references/acceptance.md#a-pull-request-no-merger-merges`). Write to that architect by a mention. A merge that only a person may schedule is a `dispatch ask`. |
-| `act on the cluster, cloud or CI` | [A restart of your project's daemon](#a-restart-of-your-projects-daemon), [A re-run of a CI run](#a-re-run-of-a-ci-run), [A pod delete with nothing lost](#a-pod-delete-with-nothing-lost), and the reads of your project's pods and Sandboxes in `legion`. Any other act, such as a quota, a pin or a Pulumi value, is a change of code. It goes by a mention to the architect of the tree whose code it is, or it is a Legion root you file when no tree owns that code (`skill://legion-controller/references/finding-asks.md#file-a-clear-defect-no-tree-owns`). An apply window that only a person may set is a `dispatch ask`. |
+| `act on the cluster, cloud or CI` | [A restart of your project's daemon](#a-restart-of-your-projects-daemon), [A re-run of a CI run](#a-re-run-of-a-ci-run), [A pod delete with nothing lost](#a-pod-delete-with-nothing-lost), and the reads of your project's pods and Sandboxes in `<namespace>`. Any other act, such as a quota, a pin or a Pulumi value, is a change of code. It goes by a mention to the architect of the tree whose code it is, or it is a Legion root you file when no tree owns that code (`skill://legion-controller/references/finding-asks.md#file-a-clear-defect-no-tree-owns`). An apply window that only a person may set is a `dispatch ask`. |
 | `do or change work` | No operation: it is the recipient's own work. Write to its owner by a mention. |
 | `investigate and report` | No operation: it is the recipient's own work. Read and measure what you can reach yourself. Write the rest to its owner by a mention. |
 | `review or verify` | No operation: it is the recipient's own work. Write to its owner by a mention. |

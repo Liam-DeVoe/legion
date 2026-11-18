@@ -102,10 +102,11 @@ controller no message about it.
 
 ## The token the secrets broker lends
 
-These GitHub writes of your tree's work take the implement App token that the secrets broker
+Three GitHub writes of your tree's work take the implement App token that the secrets broker
 lends every enrolled pod (`skill://agent-secrets`): a re-run of your tree's CI run, the enqueue of
-a pull request that no merger merges, and any other write that your own `gh` cannot make, such as
-a comment on a pull request in a repository that your `gh` does not reach. Take the token
+a pull request that no merger merges, and a comment on a pull request in a repository that your
+`gh` does not reach. Any other GitHub write your `gh` cannot make is a finding
+(`skill://legion-worker/references/findings.md`), never a use of this token. Take the token
 narrowed to the one repository, in this form:
 
 ```sh
@@ -173,7 +174,9 @@ the person's words, to you by a mention, and tells an agent that asks it to writ
    nothing.
 3. Read the merge holds, as [A merge hold](#a-merge-hold) reads them before a sign-off. A line
    that names `<owner>/<repo>` or `all`, and whose end is not past, holds the enqueue: enqueue
-   nothing, and name the hold in your summary. The `merge-holds-changed` notice reaches you only
+   nothing, and name the hold in your summary. A read that answers `not found by slug` is no hold;
+   any other failed read decides nothing, so enqueue nothing on it and name the failed read with
+   its first line in your summary. The `merge-holds-changed` notice reaches you only
    for an issue in `accepting`, so read the document again on each wake before you enqueue.
 4. Read the base:
 
