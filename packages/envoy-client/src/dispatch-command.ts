@@ -26,7 +26,8 @@ import { messageFor } from "./errors";
  * - any other object or array: `--<field>-json <json>` and `--<field>-json-file <path>`.
  * A JSON flag's help lists the keys of its object, or of each item of its list, from the same
  * schema, with each key's type, whether it is required, and its description (`shapeLines`).
- * Every command also takes `--help`, `--dry-run` and `--idempotency-key <key>`.
+ * Every command also takes `--help`, `--dry-run`, `--dry-run-out <file>` and
+ * `--idempotency-key <key>`.
  */
 
 type ScalarArray = "string" | "number" | "number-or-null";
@@ -53,6 +54,7 @@ type FlagAction =
   | "false"
   | "help"
   | "dry-run"
+  | "dry-run-out"
   | "idempotency-key";
 
 interface FlagEntry {
@@ -85,6 +87,9 @@ export type ParsedCommand =
       readonly tool: string;
       readonly args: Record<string, unknown>;
       readonly dryRun: boolean;
+      /** The file the dry run writes its JSON to (`--dry-run-out`) instead of printing it; set
+       *  only with `dryRun`. */
+      readonly dryRunOut?: string;
       /** The key a write that may have landed named (`--idempotency-key`), which the call sends
        *  its writes under again; absent for a new call. */
       readonly idempotencyKey?: string;
@@ -376,6 +381,11 @@ function flagTable(tool: string, fields: ReadonlyMap<string, FieldInfo>): Map<st
     action: "dry-run",
     text: "Checks the arguments as the call would, then prints them as JSON and sends nothing.",
   });
+  add("--dry-run-out", {
+    action: "dry-run-out",
+    value: "<file>",
+    text: "A dry run (--dry-run) that writes the JSON to <file> instead of printing it, and prints nothing.",
+  });
   add("--idempotency-key", {
     action: "idempotency-key",
     value: "<key>",
@@ -409,6 +419,7 @@ export function parseCommand(
   let help = false;
   let dryRun = false;
   let idempotencyKey: string | undefined;
+  let dryRunOut: string | undefined;
   let stdinFlag: string | undefined;
 
   const read = (flag: string, path: string): string | undefined => {
@@ -522,6 +533,14 @@ export function parseCommand(
       value = next;
       index++;
     }
+    if (action === "dry-run-out") {
+      if (dryRunOut !== undefined) problems.push(`${flag} is given twice`);
+      else {
+        dryRunOut = value;
+        dryRun = true;
+      }
+      continue;
+    }
     if (action === "idempotency-key") {
       if (idempotencyKey !== undefined) problems.push(`${flag} is given twice`);
       else if (COMMAND_KEY.test(value)) idempotencyKey = value;
@@ -592,6 +611,7 @@ export function parseCommand(
     tool,
     args,
     dryRun,
+    ...(dryRunOut === undefined ? {} : { dryRunOut }),
     ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
   };
 }
@@ -794,7 +814,7 @@ export function commandsHelp(): string {
       return `  ${commandName(spec.name).padEnd(width)}  ${sentence}`;
     }),
     "",
-    "Run dispatch <command> --help for its flags and an example; --dry-run checks a command's arguments as the call would and prints them as given, sending nothing.",
+    "Run dispatch <command> --help for its flags and an example; --dry-run checks a command's arguments as the call would and prints them as given, sending nothing, and --dry-run-out <file> writes them to <file> instead.",
     "",
   ].join("\n");
 }

@@ -1,4 +1,14 @@
-import { closeSync, constants, existsSync, fstatSync, openSync, readFileSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  openSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
 import {
   askgateState,
@@ -453,8 +463,12 @@ export async function runDispatchCli(
   if (parsed.dryRun) {
     // The call's own argument check, so the call refuses no arguments its dry run passed; what
     // the call needs besides (Dispatch's configuration, this session's state, Dispatch's answers)
-    // a dry run does not read. It runs with Dispatch off too, reading a dashboard-URL ref only
-    // against a server it knows, and its standard output is the JSON alone.
+    // a dry run does not read, and it writes no state of the session's. It runs with Dispatch off
+    // too, reading a dashboard-URL ref only against a server it knows. Its output is the JSON
+    // alone and whole: on standard output, or in the file `--dry-run-out` names, with standard
+    // output empty. Claude Code shows the first CLAUDE_OUTPUT_MAX characters of a command's
+    // output, so under it a JSON longer than that also gets one line on standard error naming
+    // its size and the same call with `--dry-run-out` and a file of the caller's to read it whole.
     const settings =
       file.path === null
         ? null
@@ -469,7 +483,31 @@ export async function runDispatchCli(
     if (problems.length > 0) {
       return refuse(new ToolInputError(parsed.tool, problems).message, USAGE, parsed.tool);
     }
-    print(JSON.stringify(parsed.args, null, 2));
+    const json = `${JSON.stringify(parsed.args, null, 2)}\n`;
+    if (parsed.dryRunOut !== undefined) {
+      try {
+        writeFileSync(resolve(io.cwd, parsed.dryRunOut), json);
+      } catch (error) {
+        return refuse(
+          `dispatch: the dry run's JSON could not be written to ${parsed.dryRunOut}: ${messageFor(error)}`,
+          USAGE,
+          parsed.tool
+        );
+      }
+      return OK;
+    }
+    io.stdout(json);
+    if (host === "claude" && json.length > CLAUDE_OUTPUT_MAX) {
+      const out = join(tmpdir(), `dispatch-dry-run-${crypto.randomUUID()}.json`);
+      const again = dispatchLine([...argv, "--dry-run-out", out]);
+      const how =
+        again.length <= RESEND_COMMAND_MAX
+          ? `run: ${again}`
+          : `run this call's own command again with \`--dry-run-out ${out}\` added`;
+      io.stderr(
+        `dispatch: warning: this dry run's JSON is ${json.length.toLocaleString("en-US")} characters, past the ${CLAUDE_OUTPUT_MAX.toLocaleString("en-US")} Claude Code shows; to read it whole, ${how}\n`
+      );
+    }
     return OK;
   }
   if (file.path === null) {

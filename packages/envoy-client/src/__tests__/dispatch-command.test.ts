@@ -75,6 +75,28 @@ describe("the dispatch command surface", () => {
     expect(commandFlags("dispatch_message")).toContain("--idempotency-key");
   });
 
+  // `--dry-run-out <file>` is a dry run whose JSON goes to the file the caller names.
+  test("--dry-run-out is a dry run that names the file its JSON goes to", () => {
+    const message = ["message", "--issue", "LEGION-2", "--body", "hi"];
+    expect(parseCommand([...message, "--dry-run-out", "out.json"], noFiles)).toEqual({
+      kind: "call",
+      tool: "dispatch_message",
+      args: { issue: "LEGION-2", body: "hi" },
+      dryRun: true,
+      dryRunOut: "out.json",
+    });
+    expect(parseCommand([...message, "--dry-run-out"], noFiles)).toEqual({
+      kind: "refused",
+      tool: "dispatch_message",
+      problems: ["--dry-run-out needs a value"],
+    });
+    expect(parseCommand([...message, "--dry-run-out=a", "--dry-run-out=b"], noFiles)).toEqual({
+      kind: "refused",
+      tool: "dispatch_message",
+      problems: ["--dry-run-out is given twice"],
+    });
+  });
+
   // Whatever else a call's words hold, the CLI reads the key they name, so a refused call that
   // names the key of a write an earlier call may have landed says that write may have landed:
   // an unknown command or flag included. A value that is no key the CLI names is none.

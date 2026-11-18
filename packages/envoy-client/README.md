@@ -882,7 +882,12 @@ an example, and `--dry-run` runs the call's own argument check (`checkDispatchCa
 strict schema, the cross-field checks and the picture files), refusing the arguments the call would
 refuse with the call's message, and otherwise prints the arguments as given, not as the call fills
 them (an issue from LEGION_ISSUE or the ref). It reads neither Dispatch nor this session's state,
-so it runs with Dispatch off too, and a call it passed can still stop on either.
+and writes none of the session's, so it runs with Dispatch off too, and a call it passed can still
+stop on either. Its output is the JSON alone and whole: on standard output, or, with
+`--dry-run-out <file>` (a dry run of its own), in the file the caller names, with standard output
+empty. Under Claude Code, which shows a command's first 25,000 characters, a longer JSON still
+prints whole, and one line on standard error names its size and the same call with
+`--dry-run-out` and a file to read it whole.
 `--idempotency-key <key>` sends the call's writes again under the key a write that exited 75 named,
 a lower-case UUID; any other value is a usage error.
 
