@@ -42,6 +42,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/embedqueue"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
+	"github.com/sjawhar/envoy/internal/dispatch/grapherase"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
@@ -455,6 +456,9 @@ func main() {
 		Identity:    requestIdentity,
 		ServerURL:   serverURL,
 		BuildCommit: buildCommit,
+		// The block-index tick erases, through the erase's own path, each node a build before
+		// this one left standing behind no row (docs' writeObjectNodesAnotherBuildWrote).
+		EraseOrphanedNode: grapherase.EraseOrphaned(boot.DatabaseURL, api.StoreTreesTimeout),
 	})
 	publishRoomFigures(documentService)
 	restoreDecidedWordings(ctx, documentService, decidedWordingRestoreTimeout)

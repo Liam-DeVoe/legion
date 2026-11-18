@@ -1,6 +1,7 @@
 // Package grapherase is `envoy-dispatch erase --node <kind>:<id>`: the one path in the tree that
 // deletes a node of the store, its tuples and its projection rows, and that takes the erased bytes
-// out of every row that derives from that node. Only cmd/dispatch imports it.
+// out of every row that derives from that node. cmd/dispatch imports it, for the command and for
+// the block-index tick's sweep of the nodes a build before this one orphaned (EraseOrphaned).
 //
 // It is a package of its own, and not a pass of graphcensus, because it writes through docs and
 // api inside its own transaction - a document's live state (docs.ReadErasedLiveText) and the term
@@ -11,6 +12,7 @@ package grapherase
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/user"
@@ -23,6 +25,52 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
 )
+
+// ErrRowStands is the erase's refusal of an issue's, a document's, an ask's or a message's node
+// while its row stands: its text is in that row, which the erase does not reach, so erasing the
+// node would report an erasure that left that text in place. No command erases that text, and the
+// node can be erased once no row stands behind it.
+var ErrRowStands = errors.New("its row stands and holds the node's text, which the erase does not reach, " +
+	"so erasing the node would report an erasure that left that text in place; no command erases that text, " +
+	"and the node can be erased once no row stands behind it")
+
+// errNoNode is the erase's answer for a node the store does not hold: none was ever written, or
+// a run before this one erased it.
+var errNoNode = errors.New("no such node")
+
+// EraseOrphaned is the block-index tick's erase of one node the project census reads as orphaned
+// (docs.Deps' EraseOrphanedNode, graphcensus.OrphanedObjectNodes): the node of an issue, a
+// document, an ask or a message whose row a build before this one removed without stating it
+// gone, which writes no node. It runs the erase an operator runs, through this one path (Erase):
+// the listing, then the confirmed run over that listing's digest, which takes the store's lock
+// order, owner rows first, and reads under its lock of the node whether a row stands.
+//
+// It answers whether it erased the node. A node it may not erase is left, with no error, for the
+// census to name and the next tick to read again: a row that stands behind it by the time the
+// confirmed run reads (ErrRowStands, a create that got there first), a node the store no longer
+// holds, another node's row that states something about it (Blockers), a listing that moved
+// between the two runs (Mismatch), and live text that holds its bytes (Unredacted).
+func EraseOrphaned(databaseURL string, treeStoreBound time.Duration) func(ctx context.Context, kind, id string) (bool, error) {
+	return func(ctx context.Context, kind, id string) (bool, error) {
+		listing, err := Erase(ctx, databaseURL, kind, id, "", treeStoreBound)
+		switch {
+		case errors.Is(err, ErrRowStands), errors.Is(err, errNoNode):
+			return false, nil
+		case err != nil:
+			return false, err
+		case len(listing.Blockers) > 0:
+			return false, nil
+		}
+		erased, err := Erase(ctx, databaseURL, kind, id, listing.Digest, treeStoreBound)
+		switch {
+		case errors.Is(err, ErrRowStands), errors.Is(err, errNoNode):
+			return false, nil
+		case err != nil:
+			return erased != nil && erased.Applied, err
+		}
+		return erased.Applied, nil
+	}
+}
 
 // eraseApplicationName is how the erase appears in pg_stat_activity, as the census names itself:
 // an operator reading the activity of a database sees which pass holds its rows.

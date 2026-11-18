@@ -3,6 +3,7 @@ package graphcensus
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -198,11 +199,13 @@ const zeroUUID = "00000000-0000-0000-0000-000000000000"
 // and a document's with no such event, are at the sentinel. It appends no event.
 func backfillObjectNodes(ctx context.Context, database *store.Store) ([]KindBackfill, error) {
 	var done []KindBackfill
+	var moved []error
 	for _, kind := range objectKinds {
-		report, err := writeObjectKind(ctx, database, kind)
+		report, _, refused, err := writeObjectKind(ctx, database, kind, nil)
 		if err != nil {
 			return done, err
 		}
+		moved = append(moved, refused...)
 		var remaining int64
 		if err := database.Pool.QueryRow(ctx, `select count(*) from (`+kind.read+`) as remaining`, kind.start, nil).Scan(&remaining); err != nil {
 			return done, fmt.Errorf("count the %s rows their marker does not mark: %w", kind.kind, err)
@@ -211,7 +214,17 @@ func backfillObjectNodes(ctx context.Context, database *store.Store) ([]KindBack
 		report.Complete = report.Remaining == 0
 		done = append(done, report)
 	}
-	return done, nil
+	return done, errors.Join(moved...)
+}
+
+// ObjectPass is what one run of WriteOwedObjectNodes did: how many rows it wrote a node for,
+// whether it stopped at its batch budget with rows of its kinds still to read (More), and the
+// rows it could not write because the store holds their node in another project (Moved, nil
+// where there is none): a difference the census reports (`differs`), which no second run cures.
+type ObjectPass struct {
+	Rows  int64
+	More  bool
+	Moved error
 }
 
 // WriteOwedObjectNodes is the backfill's object pass (backfillObjectNodes) without its count of
@@ -220,44 +233,90 @@ func backfillObjectNodes(ctx context.Context, database *store.Store) ([]KindBack
 // after it, and on each process's first tick (docs' markVersionsAnotherBuildWrote). That build
 // creates an issue, a document, an ask and a message with no node, and a conversation's file with
 // no event either, so the pass reads rows, not events: it writes, through writeObjectBatch alone,
-// the node of every row its marker does not mark, as the backfill does, and answers how many rows
-// it wrote a node for.
-func WriteOwedObjectNodes(ctx context.Context, database *store.Store) (int64, error) {
-	var rows int64
+// the node of every row its marker does not mark, as the backfill does.
+//
+// It writes at most batches batches across the four kinds, zero being no bound, so one tick never
+// holds the block-index lease for the whole backlog a first deploy leaves: it answers More where it
+// stopped with rows left, and the next run reads on, from the start of each kind's key, past the
+// rows the last one marked. A kind that fails holds back none of the others: the run goes on to
+// them and answers every failure joined.
+func WriteOwedObjectNodes(ctx context.Context, database *store.Store, batches int) (ObjectPass, error) {
+	var pass ObjectPass
+	var failed, moved []error
+	budget := &batches
+	if batches <= 0 {
+		budget = nil
+	}
 	for _, kind := range objectKinds {
-		report, err := writeObjectKind(ctx, database, kind)
-		rows += report.Rows
+		if budget != nil && *budget == 0 {
+			pass.More = true
+			break
+		}
+		report, more, refused, err := writeObjectKind(ctx, database, kind, budget)
+		pass.Rows += report.Rows
+		pass.More = pass.More || more
+		moved = append(moved, refused...)
 		if err != nil {
-			return rows, err
+			failed = append(failed, err)
 		}
 	}
-	return rows, nil
+	pass.Moved = errors.Join(moved...)
+	return pass, errors.Join(failed...)
 }
 
 // writeObjectKind walks kind's rows its marker does not mark, one batch at a time from the
 // start of its key, and writes each batch's nodes (writeObjectBatch), answering what it wrote.
-func writeObjectKind(ctx context.Context, database *store.Store, kind objectKind) (KindBackfill, error) {
-	report := KindBackfill{Kind: kind.kind}
+// Each batch spends one of budget's batches, nil being no bound, and the walk stops with more
+// true once budget is spent before the kind's rows are. A batch the store refuses because one of
+// its nodes stands in another project (graphstore.ErrProjectMoved) is written again one row at a
+// time, so that row alone is left and answered in moved, and every other row of it is written.
+func writeObjectKind(ctx context.Context, database *store.Store, kind objectKind, budget *int) (report KindBackfill, more bool, moved []error, err error) {
+	report = KindBackfill{Kind: kind.kind}
 	after := kind.start
-	for {
-		nodes, err := readObjectNodes(ctx, database, kind.kind, kind.read, after, backfillBatch)
-		if err != nil {
-			return report, err
-		}
-		if len(nodes) == 0 {
-			return report, nil
-		}
-		after = nodes[len(nodes)-1].ID
-		written, err := writeObjectBatch(ctx, database, kind, nodes)
-		if err != nil {
-			return report, err
-		}
+	add := func(written KindBackfill) {
 		report.Rows += written.Rows
 		report.Nodes += written.Nodes
 		report.Tuples += written.Tuples
 		report.Skipped += written.Skipped
+	}
+	for {
+		if budget != nil && *budget == 0 {
+			return report, true, moved, nil
+		}
+		nodes, err := readObjectNodes(ctx, database, kind.kind, kind.read, after, backfillBatch)
+		if err != nil {
+			return report, false, moved, err
+		}
+		if len(nodes) == 0 {
+			return report, false, moved, nil
+		}
+		if budget != nil {
+			*budget--
+		}
+		after = nodes[len(nodes)-1].ID
+		written, err := writeObjectBatch(ctx, database, kind, nodes)
+		switch {
+		case errors.Is(err, graphstore.ErrProjectMoved) && len(nodes) > 1:
+			for _, node := range nodes {
+				one, err := writeObjectBatch(ctx, database, kind, []objectRow{node})
+				switch {
+				case errors.Is(err, graphstore.ErrProjectMoved):
+					moved = append(moved, err)
+				case err != nil:
+					return report, false, moved, err
+				default:
+					add(one)
+				}
+			}
+		case errors.Is(err, graphstore.ErrProjectMoved):
+			moved = append(moved, err)
+		case err != nil:
+			return report, false, moved, err
+		default:
+			add(written)
+		}
 		if len(nodes) < backfillBatch {
-			return report, nil
+			return report, false, moved, nil
 		}
 	}
 }

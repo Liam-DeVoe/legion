@@ -94,8 +94,10 @@ type BlockIndexTick struct {
 	Marked       int
 	AnotherBuild bool
 	// ObjectNodes is how many issues, documents, asks and messages whose row named no node the
-	// tick wrote the node of, on a tick of a roll (writeObjectNodesAnotherBuildWrote).
-	ObjectNodes int
+	// tick wrote the node of, and OrphansErased how many of their nodes whose row another build
+	// removed it erased, while this build owed the object pass (writeObjectNodesAnotherBuildWrote).
+	ObjectNodes   int
+	OrphansErased int
 	// OwedDocuments, OwedTexts, OwedItems and OwedItemBlocks are what is still owed after the tick.
 	OwedDocuments  int
 	OwedTexts      int
@@ -197,7 +199,7 @@ func (s *Service) blockIndexTick(ctx context.Context, cursors BlockIndexCursors,
 		slog.Error("dispatch: block index reconciliation", "error", err)
 	}
 	if tick.Documents > 0 || tick.Items > 0 || tick.ItemBlocks > 0 || tick.Texts > 0 ||
-		tick.Windows > 0 || tick.Retired > 0 || tick.Events > 0 || tick.Marked > 0 || tick.ObjectNodes > 0 ||
+		tick.Windows > 0 || tick.Retired > 0 || tick.Events > 0 || tick.Marked > 0 || tick.ObjectNodes > 0 || tick.OrphansErased > 0 ||
 		tick.AnotherBuild != logged.AnotherBuild || tick.LiveAhead != logged.LiveAhead ||
 		tick.OwedDocuments != logged.OwedDocuments || tick.OwedItems != logged.OwedItems ||
 		tick.OwedItemBlocks != logged.OwedItemBlocks || tick.OwedTexts != logged.OwedTexts ||
@@ -210,7 +212,7 @@ func (s *Service) blockIndexTick(ctx context.Context, cursors BlockIndexCursors,
 		slog.Info("dispatch: block index", "documents", tick.Documents, "items", tick.Items,
 			"item_blocks", tick.ItemBlocks, "texts", tick.Texts, "windows", tick.Windows,
 			"retired", tick.Retired, "events", tick.Events, "marked", tick.Marked,
-			"object_nodes", tick.ObjectNodes, "another_build", tick.AnotherBuild, "owed_documents", tick.OwedDocuments,
+			"object_nodes", tick.ObjectNodes, "orphans_erased", tick.OrphansErased, "another_build", tick.AnotherBuild, "owed_documents", tick.OwedDocuments,
 			"owed_items", tick.OwedItems, "owed_item_blocks", tick.OwedItemBlocks,
 			"owed_texts", tick.OwedTexts, "live_ahead", tick.LiveAhead,
 			"oldest_owed_at", refs.OwedTimeText(tick.OldestOwedDocumentAt),
@@ -285,21 +287,23 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 	// drained by it when the batch has room. A marking that fails is logged and holds back
 	// nothing else of the tick: the cursor stays where it was, and the next tick reads the same
 	// events again. The object pass runs after it, so the node of a document the marking marks
-	// is there before the documents batch states its blocks; one that fails is logged too, and
-	// runs again on the next tick.
-	eventsFull, roll, err := s.markVersionsAnotherBuildWrote(ctx, &tick)
+	// is there before the documents batch states its blocks; one that fails, or stops with work
+	// left, is logged and leaves this build's debt, so the next tick runs it again.
+	eventsFull, owedPass, err := s.markVersionsAnotherBuildWrote(ctx, &tick)
 	switch {
 	case ctx.Err() != nil:
 		return tick, ctx.Err()
 	case err != nil:
 		slog.Error("dispatch: block index could not mark the documents another build's versions name", "error", err)
 	}
-	switch err := s.writeObjectNodesAnotherBuildWrote(ctx, &tick, roll); {
+	objectsLeft, err := s.writeObjectNodesAnotherBuildWrote(ctx, &tick, owedPass)
+	switch {
 	case ctx.Err() != nil:
 		return tick, ctx.Err()
 	case err != nil:
 		slog.Error("dispatch: block index could not write the nodes of the rows another build wrote", "error", err)
 	}
+	eventsFull = eventsFull || objectsLeft
 	owed, err := s.owedDocuments(ctx, after)
 	if err != nil {
 		return tick, err

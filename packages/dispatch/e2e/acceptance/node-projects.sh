@@ -314,6 +314,22 @@ envoy-dispatch backfill-graph-store >"$work/backfill" 2>&1 ||
 pass "$section" "backfill-graph-store runs"
 census_complete "$section" "after the backfill"
 
+# The server's block-index tick owes its build the object pass on the first tick that joins the
+# build's cursor, and runs it then: it writes the node of every row that names none and erases
+# every node no row stands behind (docs' writeObjectNodesAnotherBuildWrote). The sections below
+# take a row's node away or remove a row as an earlier build would, and read the census before
+# any backfill, so they wait until that pass has run and cleared its debt; with no other build
+# serving, no later tick runs it again.
+section=pass
+for attempt in $(seq 1 120); do
+  query "$section" "read whether the server's object pass has run" \
+    "select coalesce(bool_and(object_nodes_owed_at is null), false) from block_index_event_cursors"
+  [[ "$answer" == t ]] && break
+  [[ "$attempt" == 120 ]] && fail "$section" "the server's object pass runs" "no cursor without a debt within 120 s"
+  sleep 1
+done
+pass "$section" "the server's object pass has run and owes nothing"
+
 section=control
 query "$section" "take the ask's node away" "
   with tuples as (delete from graph_tuples where from_kind = 'ask' and from_id = '$ask' returning 1),
