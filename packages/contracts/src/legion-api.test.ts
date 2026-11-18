@@ -48,7 +48,7 @@ import {
   LegionWaveReleaseRequest,
   LegionWaveReleaseResponse,
 } from "./legion-api";
-import { DISPATCH_KEY_PATTERN, isLegionRole, LEGION_ROLES } from "./legion-roles";
+import { DISPATCH_KEY_PATTERN, isStepRole, LEGION_ROLES } from "./legion-roles";
 
 const fixtureDir = path.join(import.meta.dir, "..", "fixtures", "daemon-api");
 
@@ -209,6 +209,23 @@ test("every Go-written fixture parses to a value equal to the file", () => {
   }
 });
 
+// The roles whose start waits for the issue's pod (`api.Issue.StartWaitsForPod`): a plugin parses
+// the state through `legionIssue`, which strips a key it does not name, so a mirror without the
+// line would drop the list in silence, and the gate above names the key the day a golden holds it.
+test("a served issue keeps the roles whose start waits for its pod", () => {
+  const state = fixture("state.json") as { issues: Record<string, Record<string, unknown>> };
+  const atStep = state.issues["LEGION-240"];
+  if (atStep?.phase !== "step") {
+    throw new Error("state fixture lacks LEGION-240 at step");
+  }
+  atStep.startWaitsForPod = ["checker"];
+
+  expect(droppedFromState(state)).toBeUndefined();
+  expect(LegionStateResponse.parse(state).issues["LEGION-240"]?.startWaitsForPod).toEqual([
+    "checker",
+  ]);
+});
+
 // The other direction of that gate, and the hole a merge opened in it: the case above walks the
 // goldens, so an answer schema no golden names is walked by nothing and a Go field it gains is
 // dropped in silence — which is what `LegionReleaseRecordsResponse` was between the merge that
@@ -279,8 +296,9 @@ test("the gate names a key no schema names, and is blind under the loose blocks"
 
 // `workers` is keyed by a plain string, so the schema no longer holds the role names and the gate
 // above cannot see a role the Go side adds. The key list it held is held here instead: every
-// worker key of every golden is one of this build's roles.
-test("every golden's worker keys are roles this build knows", () => {
+// worker key of every golden is a role of the step grammar, one of Legion's six or a role of the
+// deployment (contract 161), as LEGION-240's `checker` is.
+test("every golden's worker keys are roles of the step grammar", () => {
   const states = Object.keys(schemas).filter((name) => schemas[name] === LegionStateResponse);
   expect(states.length).toBeGreaterThan(0);
 
@@ -289,7 +307,7 @@ test("every golden's worker keys are roles this build knows", () => {
     const state = LegionStateResponse.parse(fixture(name));
     for (const [key, issue] of Object.entries(state.issues)) {
       for (const role of Object.keys(issue.workers)) {
-        expect(isLegionRole(role), `${name}: ${key} carries the worker ${role}`).toBeTrue();
+        expect(isStepRole(role), `${name}: ${key} carries the worker ${role}`).toBeTrue();
         seen += 1;
       }
     }
@@ -529,6 +547,7 @@ test("the phase lists are the daemon's, with awaiting_person after admitted and 
     "implementing",
     "testing",
     "reviewing",
+    "step",
     "accepting",
     "retro",
     "merging",
@@ -542,6 +561,7 @@ test("the phase lists are the daemon's, with awaiting_person after admitted and 
     "implementing",
     "testing",
     "reviewing",
+    "step",
     "accepting",
     "retro",
     "merging",
@@ -556,6 +576,27 @@ test("the phase lists are the daemon's, with awaiting_person after admitted and 
       reason: "retro reopened the review",
     }).success
   ).toBeTrue();
+});
+
+// Contract 161: a step of a role of the deployment runs as the phase `step`, and the issue names
+// the role that works it, `stepRole`, at `step` and while a hold keeps it out of that step.
+test("the state golden carries an issue at step and the role of the deployment that works it", () => {
+  const state = LegionStateResponse.parse(fixture("state.json"));
+  const atStep = state.issues["LEGION-240"];
+  expect([atStep?.phase, atStep?.stepRole]).toEqual(["step", "checker"]);
+  expect(Object.keys(atStep?.workers ?? {})).toEqual(["checker"]);
+  const held = state.issues["LEGION-241"];
+  expect([held?.phase, held?.heldFrom, held?.stepRole]).toEqual(["held", "step", "checker"]);
+});
+
+// Contract 161: a move back may go to `step` and name the step it returns to by its place,
+// 1 for the task's first (`api.PhaseBackwardRequest.ReturnTo`), as a failed completion does.
+test("a move back may go to step and name the place it returns to", () => {
+  const move = { grantId: "grant-208", to: "step", reason: "the check failed", returnTo: 2 };
+  expect(LegionPhaseBackwardRequest.safeParse(move).error?.issues ?? []).toEqual([]);
+  const { returnTo: _, ...unnamed } = move;
+  expect(LegionPhaseBackwardRequest.safeParse(unnamed).success).toBeTrue();
+  expect(LegionPhaseBackwardRequest.safeParse({ ...move, returnTo: 0 }).success).toBeFalse();
 });
 
 // Contract 40: the state golden carries LEGION-212, a root waiting on a person whose question the
@@ -1437,6 +1478,11 @@ test("every request the plugin sends parses and names its required fields", () =
       { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
     ],
     [
+      "claim recovery of a deployment role",
+      LegionClaimRequest,
+      { grantId: "grant-208", issue: "LEGION-209", role: "checker" },
+    ],
+    [
       "gate register",
       LegionGateRegisterRequest,
       {
@@ -1997,11 +2043,17 @@ const strandedClaimAt45 = z.strictObject({
 });
 
 test("a reader at the previous contract parses the state body this daemon serves", () => {
-  const state = fixture("state.json") as { strandedClaims: { state: string }[] };
+  const state = fixture("state.json") as {
+    strandedClaims: { issue: string; role: string; state: string }[];
+  };
+  const builtin = new Set<string>(LEGION_ROLES);
   // The golden carries all three kinds: a failed claim, a released one whose wake never brought
   // its pod back — the entry a `suspendedBy` would have ridden on — and the retired claim
-  // contract 56 added. Every entry but the retired one is read by the 45 reader as it stands.
-  const older = state.strandedClaims.filter((stranded) => stranded.state !== "retired");
+  // contract 56 added. Every entry but the retired one and a deployment role's (below) is read by
+  // the 45 reader as it stands.
+  const older = state.strandedClaims.filter(
+    (stranded) => stranded.state !== "retired" && builtin.has(stranded.role)
+  );
   expect(older.length).toBeGreaterThan(1);
   for (const stranded of older) {
     expect(strandedClaimAt45.safeParse(stranded).error?.issues ?? []).toEqual([]);
@@ -2019,6 +2071,18 @@ test("a reader at the previous contract parses the state body this daemon serves
     const refused = strandedClaimAt45.safeParse(stranded);
     expect(refused.success).toBeFalse();
     expect(refused.error?.issues[0]?.path).toEqual(["state"]);
+  }
+
+  // A claim of a role of the deployment (contract 161), LEGION-241's checker, is the other entry
+  // this reader cannot take: its role enum names Legion's six. That is why the state route serves
+  // a pod below 161 the report without it (`api`'s row of `stateNarrowings` for the roles of a
+  // deployment, pinned on the Go side) rather than the body it would refuse.
+  const deployed = state.strandedClaims.filter((stranded) => !builtin.has(stranded.role));
+  expect(deployed).toEqual([{ issue: "LEGION-241", role: "checker", state: "failed" }]);
+  for (const stranded of deployed) {
+    const refused = strandedClaimAt45.safeParse(stranded);
+    expect(refused.success).toBeFalse();
+    expect(refused.error?.issues[0]?.path).toEqual(["role"]);
   }
 
   // What serving it would do, and why it is not served: the 45 reader does not know the key, and
@@ -2155,6 +2219,7 @@ test("the state golden names the claims nothing will wake, and the list cannot b
     { issue: "LEGION-210", role: "implementer", state: "failed" },
     { issue: "LEGION-211", role: "implementer", state: "suspended" },
     { issue: "LEGION-212", role: "tester", state: "retired" },
+    { issue: "LEGION-241", role: "checker", state: "failed" },
   ]);
   expect(LegionStateResponse.parse(fixture("state-stage3.json")).strandedClaims).toEqual([]);
 
@@ -2441,4 +2506,38 @@ test("a claim's registration and the controller's are told apart by their schema
   expect(LegionControllerRegisterResponse.safeParse(controller).success).toBeTrue();
   expect(LegionRegisterResponse.safeParse(controller).success).toBeFalse();
   expect(LegionControllerRegisterResponse.safeParse(claim).success).toBeFalse();
+});
+
+// A role of the deployment (contract 161): a claim of it registers, an operator acts on it, and
+// the state names it among the claims nothing will wake and the wakes the pacing holds. The
+// controller's claim holds no issue, so no request of a claim recovery may name it.
+test("a claim, a registration and an operator's claim take a role of the deployment", () => {
+  const registration = { ...fixtureBody("register.json"), role: "checker" };
+  expect(LegionRegisterResponse.safeParse(registration).error?.issues ?? []).toEqual([]);
+
+  const operatorClaim = { ...fixtureBody("operator-claim.json"), role: "checker" };
+  expect(LegionOperatorClaimResponse.safeParse(operatorClaim).error?.issues ?? []).toEqual([]);
+
+  const stranded = LegionStateResponse.shape.strandedClaims.element;
+  expect(
+    stranded.safeParse({ issue: "LEGION-241", role: "checker", state: "failed" }).success
+  ).toBeTrue();
+  const waking = LegionStateResponse.shape.wakesWaiting.unwrap().element;
+  expect(
+    waking.safeParse({
+      claim: "legion-legion-legion-241-checker",
+      issue: "LEGION-241",
+      role: "checker",
+      kind: "launch",
+      dueAt: "2026-11-17T12:00:00Z",
+    }).success
+  ).toBeTrue();
+
+  expect(
+    LegionClaimRequest.safeParse({ grantId: "grant-208", issue: "LEGION-209", role: "controller" })
+      .success
+  ).toBeFalse();
+  expect(
+    LegionRegisterResponse.safeParse({ ...registration, role: "Checker" }).success
+  ).toBeFalse();
 });
