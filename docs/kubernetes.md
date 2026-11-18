@@ -7318,7 +7318,11 @@ The daemon makes its first trade at boot, before it opens its store, for a token
 Then it reads `GET /api/v1/whoami` with that token.
 It waits out a broker or a Dispatch that does not answer, and no boot budget bounds that wait.
 From then on every Dispatch call of the daemon carries `Authorization: DPoP <token>` and a proof of the call's URL.
-The daemon trades a new token before the old one expires, with no restart, and after a Dispatch answer of `401 BROKER_TOKEN_NOT_ACTIVE` it drops that token, so the next call trades again (`brokerclient.NewTokenTransport`).
+Once `whoami` passes, the daemon renews its token in the background, with no restart (`renewDispatchCredential`): it trades again when the boot's token comes due, five minutes before it expires or halfway through the life of a token that lives less than five minutes, and likewise for each token after it.
+It asks a broker that does not answer again from 15 s, doubling to 5 minutes, and meanwhile each Dispatch call presents the token in hand, without waiting on that trade, until 10 s before the token expires (`brokerclient.NewTokenTransport`).
+Only a call that finds no token good for that long trades for one itself.
+A refusal that no retry cures stops the renewal, logged at Error as `legion daemon's Dispatch credential renewal stopped` with the `session` and the `error`, and each call then trades for itself.
+After a Dispatch answer of `401 BROKER_TOKEN_NOT_ACTIVE` the daemon drops that token, so the next call trades again.
 After the boot, a failed trade is a failed Dispatch call that sent nothing, and the outbox waits it out as it waits out a Dispatch outage.
 The boot refuses, in words that name the cause:
 

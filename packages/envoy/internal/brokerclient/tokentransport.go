@@ -30,12 +30,18 @@ type tokenTransport struct {
 }
 
 // NewTokenTransport is a RoundTripper that presents client's token on every request it sends
-// through base (http.DefaultTransport when nil): it asks client.Token for a live token, sets
-// `Authorization: DPoP <token>` on a copy of the request, and sends that copy through
-// NewDPoPTransport(client.Key(), base), so the request's proof names the request's own URL and
-// carries ath, the hash of the token beside it. It is how a caller presents a Client's token to
-// Dispatch or the listener; Token renews the token ahead of its expiry, so nothing of the caller
-// restarts across a renewal.
+// through base (http.DefaultTransport when nil): it sets `Authorization: DPoP <token>` on a copy
+// of the request and sends that copy through NewDPoPTransport(client.Key(), base), so the
+// request's proof names the request's own URL and carries ath, the hash of the token beside it.
+// It is how a caller presents a Client's token to Dispatch or the listener.
+//
+// The token is the one client holds while that token is good for liveMargin more, read without
+// waiting on a trade in flight, so a renewal the broker is slow to answer, or never answers,
+// holds up no request while a live token is in hand. Only a request that finds none asks
+// client.Token, which trades. A caller renews off the request path by running client.Run beside
+// the transport, as the Legion daemon does; without it, the first request that finds no token
+// good for liveMargin trades for the next one. Either way nothing of the caller restarts across
+// a renewal.
 //
 // A trade that fails sends nothing: the request answers Token's error, so no request goes out
 // without a token. A 401 whose JSON code is BROKER_TOKEN_NOT_ACTIVE, which the server answers a
@@ -50,13 +56,16 @@ func NewTokenTransport(client *Client, base http.RoundTripper) http.RoundTripper
 }
 
 func (t *tokenTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	token, err := t.client.Token(r.Context())
-	if err != nil {
-		// A RoundTripper closes the body it is given, whether it sends the request or not.
-		if r.Body != nil {
-			r.Body.Close()
+	token := t.client.live()
+	if token == nil {
+		var err error
+		if token, err = t.client.Token(r.Context()); err != nil {
+			// A RoundTripper closes the body it is given, whether it sends the request or not.
+			if r.Body != nil {
+				r.Body.Close()
+			}
+			return nil, err
 		}
-		return nil, err
 	}
 	presented := r.Clone(r.Context())
 	presented.Header.Set("Authorization", "DPoP "+token.AccessToken)

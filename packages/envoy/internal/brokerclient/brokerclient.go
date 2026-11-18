@@ -36,6 +36,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -56,6 +57,11 @@ const (
 	// a renewal lands with the held token still good and nothing of the caller's restarts. The
 	// broker mints a machine's token for an hour or less.
 	DefaultRenewBefore = 5 * time.Minute
+	// liveMargin is how long the held token must still be good for live to answer it, so a
+	// request that presents it reaches its server and is read there before it lapses. It is a
+	// small part of RenewBefore, so a renewal loop (Run) that waits out a broker that does not
+	// answer leaves requests presenting the token in hand for nearly all of that window.
+	liveMargin = 10 * time.Second
 	// defaultRetryWait is the wait after a trade the broker did not answer or answered 5xx,
 	// doubling to maxRetryWait. The grant has no rotation window to miss, so an outage longer
 	// than one token's life is the same event as a short one: the loop keeps trading until the
@@ -238,8 +244,13 @@ type Client struct {
 	// now", which two of are one.
 	wake chan struct{}
 
-	mu   sync.Mutex
-	held *Token
+	// mu serialises the trades, and every write of held with them: one trade runs at a time, and
+	// no token is replaced by what an older trade answered.
+	mu sync.Mutex
+	// held is the token this client holds: nil before its first trade, after Drop, and after a
+	// failed trade with nothing live left. Only a holder of mu writes it, and live reads it
+	// without mu, so a request that finds a token still good here never queues behind a trade.
+	held atomic.Pointer[Token]
 }
 
 // WithoutTrailingSlashes is raw without the slashes it ends in: the one rule both halves of this
@@ -312,21 +323,33 @@ func (c *Client) Key() *ecdsa.PrivateKey { return c.key }
 func (c *Client) Token(ctx context.Context) (*Token, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.held != nil && c.now().Before(c.held.Expiry.Add(-c.renewBefore)) {
-		return c.held, nil
+	held := c.held.Load()
+	if held != nil && c.now().Before(held.Expiry.Add(-c.renewBefore)) {
+		return held, nil
 	}
 	token, err := c.trade(ctx)
 	if err == nil {
-		c.held = token
+		c.held.Store(token)
 		return token, nil
 	}
 	var refused *RefusedError
-	if !(errors.As(err, &refused) && refused.Permanent()) && c.held != nil && c.now().Before(c.held.Expiry) {
+	if !(errors.As(err, &refused) && refused.Permanent()) && held != nil && c.now().Before(held.Expiry) {
 		c.logf(ctx, "the secrets broker did not answer a renewal; the token in hand is still live", "error", err.Error())
-		return c.held, nil
+		return held, nil
 	}
-	c.held = nil
+	c.held.Store(nil)
 	return nil, err
+}
+
+// live is the held token while it is good for at least liveMargin more, and nil otherwise. It
+// takes no lock, so it never waits on a trade in flight: a caller holding a token inside its
+// renewal window presents it while a renewal loop (Run) trades for the next one, or waits out a
+// broker that does not answer or hangs, rather than queue behind that trade (NewTokenTransport).
+func (c *Client) live() *Token {
+	if held := c.held.Load(); held != nil && c.now().Add(liveMargin).Before(held.Expiry) {
+		return held
+	}
+	return nil
 }
 
 // Drop forgets token when it is still the one this client holds, so the next Token trades afresh
@@ -342,8 +365,8 @@ func (c *Client) Drop(token *Token) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.held != nil && c.held.AccessToken == token.AccessToken {
-		c.held = nil
+	if held := c.held.Load(); held != nil && held.AccessToken == token.AccessToken {
+		c.held.Store(nil)
 	}
 }
 
@@ -371,7 +394,7 @@ func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) 
 		c.mu.Lock()
 		token, err := c.trade(ctx)
 		if err == nil {
-			c.held = token
+			c.held.Store(token)
 		}
 		c.mu.Unlock()
 		switch {

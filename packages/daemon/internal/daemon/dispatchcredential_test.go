@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/brokerclient"
+	"github.com/sjawhar/envoy/brokertest"
 
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -393,6 +397,81 @@ func TestTheBootLogNamesTheDispatchCredential(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestTheDaemonRenewsItsDispatchTokenOffTheRequestPath: once boot has settled the daemon's
+// Dispatch credential at the real broker, the client's own renewal loop trades for the next token
+// when boot's comes due, with no Dispatch call made, so the first call after that presents a new
+// token that the broker issued before the call was sent: no call traded for it. The broker's
+// tokens live 40 s, so boot's comes due 20 s in, and the transport would still present it until
+// 10 s before it lapses (brokerclient's liveMargin); the call goes between the two.
+func TestTheDaemonRenewsItsDispatchTokenOffTheRequestPath(t *testing.T) {
+	const lifetime = 40 * time.Second
+	if os.Getenv("BROKER_TEST_DATABASE_URL") == "" && os.Getenv("GITHUB_ACTIONS") == "true" {
+		t.Fatal("BROKER_TEST_DATABASE_URL is unset on GitHub Actions: ci.yaml's daemon-go job names its Postgres service")
+	}
+	rig := brokertest.NewRig(t, brokertest.WithAccessLifetime(lifetime))
+	dispatchServer := newCredentialDispatch(t, daemonWhoami("EXAMPLE"))
+	env := map[string]string{
+		brokerclient.BrokerURLVar: rig.URL, brokerclient.IdentityVar: brokerclient.IdentityKubernetes,
+		brokerclient.MachineTokenFileVar: writeSecret(t, "daemon-exchange-token", rig.MintSubjectToken(t, brokertest.DaemonExchangeAccount, "daemon-pod-uid")),
+	}
+	booted := time.Now()
+	transport, _, err := dispatchCredential(t.Context(), brokerConfig(dispatchServer.URL), "", getenvOf(env), quietLogger())
+	if err != nil {
+		t.Fatalf("dispatchCredential: %v", err)
+	}
+	client := dispatch.New(dispatchServer.URL, transport)
+	// presented makes one Dispatch call, answering the token it carried and when it was sent.
+	presented := func() (string, time.Time) {
+		t.Helper()
+		sent := time.Now()
+		if _, err := client.Whoami(t.Context()); err != nil {
+			t.Fatalf("a Dispatch call: %v", err)
+		}
+		requests := dispatchServer.received()
+		authorization := requests[len(requests)-1].header.Get("Authorization")
+		token, found := strings.CutPrefix(authorization, "DPoP ")
+		if !found || token == "" {
+			t.Fatalf("the call carried Authorization %q, want the broker's token under DPoP", authorization)
+		}
+		return token, sent
+	}
+
+	boot, _ := presented()
+	time.Sleep(time.Until(booted.Add(lifetime/2 + 5*time.Second)))
+	renewed, sent := presented()
+	if renewed == boot {
+		t.Fatalf("the call %s after boot presented boot's token, want the one the renewal loop traded for when boot's came due",
+			sent.Sub(booted).Round(time.Second))
+	}
+
+	// When the broker issued the renewed token: its expiry less its life, read back at the
+	// broker's introspection as the listener reads it.
+	request, err := http.NewRequest(http.MethodPost, rig.URL+"/v1/oauth/introspect", strings.NewReader(url.Values{"token": {renewed}}.Encode()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.Header.Set("Authorization", "Bearer "+rig.ListenerToken)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("introspect the renewed token: %v", err)
+	}
+	defer response.Body.Close()
+	var read struct {
+		Active bool  `json:"active"`
+		Exp    int64 `json:"exp"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&read); err != nil || response.StatusCode != http.StatusOK || !read.Active || read.Exp == 0 {
+		t.Fatalf("introspect the renewed token: %d %+v (%v), want a live token with its expiry", response.StatusCode, read, err)
+	}
+	// exp is whole seconds, so a token issued in the second the call was sent could read as up to
+	// a second earlier: before that second is what proves the trade came first.
+	if issued := time.Unix(read.Exp, 0).Add(-lifetime); !issued.Before(sent.Add(-time.Second)) {
+		t.Fatalf("the broker issued the renewed token at %s, want it issued before the call that presented it was sent, at %s: that call traded for it",
+			issued.Format(time.RFC3339), sent.Format(time.RFC3339Nano))
 	}
 }
 

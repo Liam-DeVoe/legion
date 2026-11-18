@@ -727,8 +727,9 @@ const dispatchCredentialLine = "legion daemon's Dispatch credential"
 // it, the daemon's own pod identity, which getenv names as it does for every machine client of the
 // broker (daemonBrokerClient), is traded at the secrets broker for a token of the session
 // legion-daemon:<PROJECT> (dispatch.DaemonSession), presented as `Authorization: DPoP` beside a
-// proof of the request's own URL and renewed ahead of its expiry with no restart
-// (brokerclient.NewTokenTransport). Those reads and the first trade are boot's alone, never
+// proof of the request's own URL (brokerclient.NewTokenTransport), and renewed ahead of its expiry
+// with no restart by the client's own renewal loop, off the request path, for as long as ctx lives
+// (renewDispatchCredential). Those reads and the first trade are boot's alone, never
 // `--check-config`'s (readBoot; dispatch://INFRA-4425 R1).
 //
 // The first trade runs here, at the boot gate's pacing (readinessRetry): a refusal no retry cures
@@ -755,8 +756,10 @@ func dispatchCredential(ctx context.Context, cfg config.Config, dispatchToken st
 		return nil, nil, err
 	}
 	session := dispatch.DaemonSession(cfg.Project)
+	var held *brokerclient.Token
 	err = bootprobe.Run(ctx, "daemon's Dispatch credential trade", readinessRetry, log, readinessAttempt(func(ctx context.Context) error {
-		_, err := client.Token(ctx)
+		var err error
+		held, err = client.Token(ctx)
 		return err
 	}, bootTimeout, tradeTransient))
 	if err != nil {
@@ -776,12 +779,35 @@ func dispatchCredential(ctx context.Context, cfg config.Config, dispatchToken st
 	if err := checkDaemonCaller(caller, cfg.Project); err != nil {
 		return nil, nil, err
 	}
+	go renewDispatchCredential(ctx, client, held, session, log)
 	attrs := []any{"credential", "broker", "session", session}
 	if cfg.DispatchTokenTransitionFile != "" {
 		attrs = append(attrs, "transitionFile", cfg.DispatchTokenTransitionFile)
 	}
 	log.Info(dispatchCredentialLine, attrs...)
 	return transport, client, nil
+}
+
+// renewDispatchCredential renews the daemon's Dispatch token off the request path until ctx ends,
+// so a Dispatch call presents the token in hand while it is still good, without trading for the
+// next one or waiting on that trade (brokerclient.NewTokenTransport). Boot has just traded for
+// held, so the loop starts when held comes due for renewal (brokerclient.Client.RenewalAt) rather
+// than trade again at once. The loop is the client's own (brokerclient.Client.Run): it trades
+// RenewBefore ahead of each token's expiry, and waits out a broker that does not answer from 15 s
+// doubling to 5 minutes. A refusal no retry cures ends it, logged once at Error; the transport then
+// trades on the call that finds no token still good, as it would with no loop, and that call
+// answers the refusal.
+func renewDispatchCredential(ctx context.Context, client *brokerclient.Client, held *brokerclient.Token, session string, log *slog.Logger) {
+	due := time.NewTimer(time.Until(client.RenewalAt(held)))
+	defer due.Stop()
+	select {
+	case <-ctx.Done():
+		return
+	case <-due.C:
+	}
+	if err := client.Run(ctx, func(context.Context, *brokerclient.Token) error { return nil }); err != nil {
+		log.Error("legion daemon's Dispatch credential renewal stopped", "session", session, "error", err)
+	}
 }
 
 // daemonBrokerClient is the broker client of the daemon's own pod identity, and the broker it
@@ -917,8 +943,9 @@ type plan struct {
 	dispatchToken string
 	// dispatchBroker is the broker client whose token every Dispatch call of the daemon's presents
 	// under dispatch_token_broker (dispatchCredential), set once boot has made its first trade; nil
-	// without the setting. The daemon's other callers of a service that takes its broker token
-	// take this same one.
+	// without the setting. Its renewal loop runs on this same client (renewDispatchCredential), and
+	// nothing reads the field yet: the daemon's listener caller, when one is added, is to take this
+	// client rather than trade for a token of its own.
 	dispatchBroker *brokerclient.Client
 	// hookPrompts are the words boot read for each hook whose `prompt_file` names a file, by
 	// hook name (readBoot): the engine is given words and never a path (engineConfig).
