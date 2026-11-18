@@ -280,9 +280,11 @@ function RequestChangesDialog({
           )}
           <div className="flex items-center justify-end gap-2">
             <button
-              // Inside `NoTooltips`, while the write is out, Cancel is `aria-disabled` and a press
-              // of it does nothing, so the focus a reader put on it stays there. Outside it is
-              // `disabled` while the write is out, as on `main`.
+              // Inside `NoTooltips`, while the write is out, Cancel is `aria-disabled` and its
+              // press does nothing, so the focus a reader put on it stays there. Its own check of
+              // `saving` refuses it; `onClose` makes no such check, since Escape and the backdrop
+              // still close the dialog then and leave the write going. Outside it is `disabled`
+              // while the write is out, as on `main`.
               aria-disabled={(page !== null && saving) || undefined}
               className={`rounded-lg border px-3 py-1.5 text-sm font-medium ${page === null ? `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}` : ON_PAGE.action}`}
               disabled={page === null && saving}
@@ -399,7 +401,8 @@ export function ApprovalChip({
       // stale go on after it, as on `main`. Inside, `onSuccess` returns those reads, which
       // TanStack Query awaits before the write stops pending: Approve, Request changes and the
       // dialog stay refused, and keep the focus, until the new approval is read, and only then
-      // does the dialog close and give the focus back to the button that opened it.
+      // does a dialog the reader has not closed (`onClose`) close and give the focus back to the
+      // button that opened it.
       if (page === null) setRequestChangesOpen(false);
       onReviewed?.();
       const rereads = [
@@ -430,14 +433,18 @@ export function ApprovalChip({
   // submit, is remembered until its write stops pending, which is once the new approval is read
   // (`onSuccess` returns its reads, and closes a change request's dialog before the write stops
   // pending). Approve and Request changes are never `disabled` there, so while they are drawn they
-  // keep the focus, and the dialog gives it back to Request changes as it closes. Once the read
-  // has taken the sent review's own button off the page, Approve for an approval and Request
+  // keep the focus, and the dialog gives it back to Request changes as it closes: once the read is
+  // drawn, or at once when the reader closes it with Escape or the backdrop while the write is
+  // out, which goes on (`onClose`). Once the write stops pending with the dialog closed and the
+  // read has taken the sent review's own button off the page, Approve for an approval and Request
   // changes for a change request, a focus that fell with it to the document (`focusOnDocument`)
-  // goes to the chip; a focus anywhere else is left where it is. A refused change request keeps
-  // its dialog open with its error, and the focus in it. The review is forgotten whenever the
-  // write stops pending, landed or not. It is state, not a ref, so the render the press makes
-  // reads the write pending, and a write that ends before its own pending render is drawn still
-  // ends it.
+  // goes to the chip; a focus anywhere else is left where it is. A change request refused while
+  // its dialog is open keeps the dialog open with its error, and the focus in it. One refused
+  // after the reader closed its dialog moves no focus: its refusal is in the shell's write
+  // indicator, and the dialog opened next shows its error, as it shows any refusal of a review
+  // left over, until a submit or a close clears it. The review is forgotten whenever the write
+  // stops pending, landed or not. It is state, not a ref, so the render the press makes reads the
+  // write pending, and a write that ends before its own pending render is drawn still ends it.
   const [sentReview, setSentReview] = useState<CreateArtifactReviewInput["state"] | null>(null);
   const approveButton = useRef<HTMLButtonElement>(null);
   const requestChangesButton = useRef<HTMLButtonElement>(null);
@@ -557,12 +564,16 @@ export function ApprovalChip({
         <RequestChangesDialog
           error={review.isError ? review.error : null}
           onClose={() => {
-            // Inside `NoTooltips` Escape, the backdrop and Cancel close nothing while the write is
-            // out: `reset` would let go of the write, and Approve and Request changes could be
-            // pressed again before it lands. Outside they close the dialog at any time, as on
-            // `main`.
-            if (page !== null && review.isPending) return;
-            review.reset();
+            // Escape and the backdrop close the dialog at any time; Cancel refuses while the
+            // write is out (`RequestChangesDialog`). Outside `NoTooltips` closing lets go of the
+            // write (`reset`), as on `main`. Inside, a write that is out goes on, and Approve and
+            // Request changes stay refused until it lands and its read is drawn, or until it ends
+            // without landing: `reset` would let them be pressed again before it lands. A refusal
+            // that comes later is shown by the shell's write indicator, as every write's is. A
+            // write that keeps trying never holds the reader in the dialog, whose focus trap would
+            // keep the indicator's Stop trying out of reach. With nothing out, closing clears the
+            // refusal the dialog showed, on both sides.
+            if (page === null || !review.isPending) review.reset();
             setRequestChangesOpen(false);
           }}
           onSubmit={(reason) =>
