@@ -27,7 +27,7 @@ import { basename, dirname, join } from "node:path";
 import type { Subprocess } from "bun";
 
 import * as marks from "../harness-postgres-marks";
-import { statMs } from "../harness-postgres-processes";
+import { statMs, statStartMs } from "../harness-postgres-processes";
 import {
   claimEventMs,
   endChild,
@@ -35,6 +35,7 @@ import {
   harnessScript,
   holding,
   leaveData,
+  neverAnswering,
   owners,
   scratch,
   slowReleasingPostmaster,
@@ -405,68 +406,43 @@ test.skipIf(!onLinux)(
   600_000
 );
 
-/** The stand-in FUSE server of the next row (`never-answers-fuse.py`), and whether this machine
- *  can mount it for its user: Python, `fusermount3` and `/dev/fuse`. CI installs `fuse3` for the
- *  row; a machine without them outside CI skips it. */
-const neverAnswers = join(import.meta.dir, "never-answers-fuse.py");
-const fuse =
-  onLinux &&
-  Bun.which("python3") !== null &&
-  Bun.which("fusermount3") !== null &&
-  existsSync("/dev/fuse");
-
 // A path on a network or FUSE mount whose server hangs never answers a stat, and a start whose
-// holder read waits on it waits for ever with no line. The stand-in mount answers every other
-// process of the machine at once, so only this row's own starts wait on it.
-test.skipIf(!onLinux || (!fuse && process.env.CI === undefined))(
+// holder read waits on it waits for ever with no line. The row's start reads where each path
+// leads through a stand-in reader (`neverAnswering`) that answers every path at once but the one
+// the holder names, on which it never answers, as such a mount does; a real mount of that kind
+// needs `/dev/fuse` and `fusermount3`, which a CI runner may not have.
+test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a start leaves a dead stack's data directory, and its mark, that a process may hold since a path it names answers no stat, names that process and that path in one line, and waits on that path no longer than its bound",
   async () => {
-    if (!fuse) throw new Error("this row needs python3, fusermount3 and /dev/fuse (fuse3)");
     const { tmp, run } = scratch();
     const data = join(run, "worker-0", "pgdata");
     leaveData(data);
     const mark = writeMark(run, owners().gone, data, mkdtempSync(join(tmp, "no-bin-")));
-    const mountpoint = mkdtempSync(join(tmp, "never-answers-"));
-    // The row never reads this path itself: it is of this process's tree, and would wait too.
-    const named = join(mountpoint, "pgdata");
-    const server = Bun.spawn(["python3", neverAnswers, mountpoint, String(process.pid)], {
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "ignore",
-    });
-    let holder: StandIn | undefined;
+    const named = join(tmp, "never-answers", "pgdata");
+    const holds = standIn(tmp, [
+      process.execPath,
+      "--eval",
+      "setTimeout(() => {}, 600_000)",
+      named,
+    ]);
     let sweeping: Subprocess | undefined;
     try {
-      // A bound on the server, another process, which no fake clock of this one reaches.
-      const said = await Promise.race([
-        firstLineOf(server),
-        Bun.sleep(claimEventMs).then(() => "nothing within the bound"),
-      ]);
-      expect(said.trim()).toBe("mounted");
-      const holds = standIn(tmp, [
-        process.execPath,
-        "--eval",
-        "setTimeout(() => {}, 600_000)",
-        named,
-      ]);
-      holder = holds;
       await until(
         () => readFileSync(`/proc/${holds.pid}/cmdline`, "utf8").includes(named),
         "the holder's arguments",
         claimEventMs
       );
 
-      const started = startSweep(tmp);
+      const started = startSweep(tmp, undefined, neverAnswering(named));
       sweeping = started.child;
       // A bound on another process, which no fake clock of this one reaches: the row's own end
-      // for a start that waits on the path for ever.
-      const lines = await Promise.race([
-        started.lines,
-        Bun.sleep(claimEventMs + statMs).then(() => undefined),
-      ]);
-      if (lines === undefined) {
-        throw new Error(`the sweep did not end within ${(claimEventMs + statMs) / 1000} s`);
-      }
+      // for a start that waits on the path for ever. The sweep's child, and each of the two
+      // children its holder read may run (the one the path holds, and one for the paths after
+      // it), may take `claimEventMs` and `statStartMs` to start under load, and the read waits
+      // `statMs` on the path.
+      const limit = claimEventMs + 2 * statStartMs + statMs;
+      const lines = await Promise.race([started.lines, Bun.sleep(limit).then(() => undefined)]);
+      if (lines === undefined) throw new Error(`the sweep did not end within ${limit / 1000} s`);
 
       expect([existsSync(data), existsSync(mark)]).toEqual([true, true]);
       expect(holding(lines, `${mark} (${data}, which `)).toEqual([
@@ -475,17 +451,12 @@ test.skipIf(!onLinux || (!fuse && process.env.CI === undefined))(
         ),
       ]);
     } finally {
-      // The server's end ends each wait on its mount, the sweep's among them.
-      server.kill("SIGKILL");
-      await server.exited;
       if (sweeping !== undefined) await endChild(sweeping);
-      holder?.stop();
-      Bun.spawnSync(["fusermount3", "-u", "-z", mountpoint]);
+      holds.stop();
       rmSync(tmp, { recursive: true, force: true });
     }
   },
-  // The row waits for the server's mount and the holder's start, each for at most `claimEventMs`,
-  // and for one start's sweep, a `bun` child that may take `claimEventMs` to start and then waits
-  // `statMs` on the path that never answers.
-  600_000
+  // The row waits for the holder's start for at most `claimEventMs`, and for the sweep for at
+  // most its own limit above.
+  2 * claimEventMs + 2 * statStartMs + statMs + 60_000
 );

@@ -5,7 +5,8 @@
  *  listing does not read (`servedElsewhere`). Every read is of `/proc` and of the paths it names;
  *  none signals, renames or removes anything. The paths that the processes name are read in a
  *  child, each within a bound (`identities`), since one on a mount whose server hangs never
- *  answers. */
+ *  answers; the program that child runs is the caller's (`StatReader`), so a row can stand in one
+ *  that never answers. */
 import { spawn } from "node:child_process";
 import { lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
@@ -99,14 +100,15 @@ function pathsIn(argument: string): string[] {
  *  hold the start in the kernel. Past this the start cannot judge that process, and leaves the
  *  directory. */
 export const statMs = 10_000;
-/** How long the child that reads those paths (`statScript`) may take to start: a `bun` child took
+/** How long the child that reads those paths (`StatReader`) may take to start: a `bun` child took
  *  more than 180 s once to start its sweep on a shared Linux machine under a load of 1,217, on
  *  2026-11-17. */
-const statStartMs = 240_000;
+export const statStartMs = 240_000;
 
-/** The child that reads where each path leads: `process.execPath`, Bun or Node, reads the paths
- *  from its standard input, separated by NUL, says it is ready, and then writes one line for each
- *  path in turn as soon as it has read it: its device and inode, or `-` where it names nothing. */
+/** The script of the start's own reader of where each path leads (`statReader`): it reads the
+ *  paths from its standard input, separated by NUL, says it is ready, and then writes one line for
+ *  each path in turn as soon as it has read it: its device and inode, or `-` where it names
+ *  nothing. */
 const statScript = `
 const { readFileSync, statSync, writeSync } = require("node:fs");
 const paths = readFileSync(0, "utf8").split("\\0");
@@ -121,23 +123,33 @@ for (const path of paths) {
 }
 `;
 
+/** The program that reads where each path a process names leads, with its arguments, run as a
+ *  child of the start: it reads and writes as `statScript` does. A start runs `statReader`; a row
+ *  runs a stand-in that never answers one path, as a stat on a mount whose server hangs never
+ *  does, to see the start's bound on it (`identities`). */
+export type StatReader = readonly [program: string, ...args: string[]];
+
+/** The start's own `StatReader`: the runtime of this process, Bun or Node, with `statScript`. */
+export const statReader: StatReader = [process.execPath, "-e", statScript];
+
 /** Each path that answered no stat within `statMs` in this process: it is not asked again, since
  *  a mount that hangs holds each later stat of it too. */
 const unanswered = new Set<string>();
 
-/** What one child (`statScript`) read of the paths it was given, in their order: whether it
+/** What one child (`StatReader`) read of the paths it was given, in their order: whether it
  *  started, and where each path it read leads, "<dev>:<ino>", or null where it names nothing. */
 interface ChildRead {
   readonly started: boolean;
   readonly read: readonly (string | null)[];
 }
 
-/** What one child (`statScript`) read of `paths` before it ended or was ended (`ChildRead`). It is
- *  ended where it has not started within `statStartMs`, or has read no next path within `statMs`,
- *  and nothing waits for a child that the kernel still holds after SIGKILL. */
-function statInChild(paths: readonly string[]): Promise<ChildRead> {
+/** What one child that runs `reader` read of `paths` before it ended or was ended (`ChildRead`).
+ *  It is ended where it has not started within `statStartMs`, or has read no next path within
+ *  `statMs`, and nothing waits for a child that the kernel still holds after SIGKILL. */
+function statInChild(paths: readonly string[], reader: StatReader): Promise<ChildRead> {
   const { promise, resolve } = Promise.withResolvers<ChildRead>();
-  const child = spawn(process.execPath, ["-e", statScript], { stdio: ["pipe", "pipe", "ignore"] });
+  const [program, ...args] = reader;
+  const child = spawn(program, args, { stdio: ["pipe", "pipe", "ignore"] });
   const read: (string | null)[] = [];
   let started = false;
   let pending = "";
@@ -175,16 +187,19 @@ function statInChild(paths: readonly string[]): Promise<ChildRead> {
   return promise;
 }
 
-/** Where each of `paths` leads, as children of this process read them (`statInChild`): its device
- *  and inode, "<dev>:<ino>", or null where it names nothing. A path that answered no stat within
- *  `statMs`, here or earlier in this process (`unanswered`), has no entry; each read after one is
- *  read by a child of its own. A child that did not start leaves the paths it was given without
- *  an entry too, and they are asked again at the next read. */
-async function identities(paths: readonly string[]): Promise<Map<string, string | null>> {
+/** Where each of `paths` leads, as children of this process that run `reader` read them
+ *  (`statInChild`): its device and inode, "<dev>:<ino>", or null where it names nothing. A path
+ *  that answered no stat within `statMs`, here or earlier in this process (`unanswered`), has no
+ *  entry; each read after one is read by a child of its own. A child that did not start leaves the
+ *  paths it was given without an entry too, and they are asked again at the next read. */
+async function identities(
+  paths: readonly string[],
+  reader: StatReader
+): Promise<Map<string, string | null>> {
   const found = new Map<string, string | null>();
   let rest = paths.filter((path) => !unanswered.has(path));
   while (rest.length > 0) {
-    const { started, read } = await statInChild(rest);
+    const { started, read } = await statInChild(rest, reader);
     for (const [at, identity] of read.entries()) found.set(rest[at] ?? "", identity);
     const hung = rest[read.length];
     if (!started || hung === undefined) break;
@@ -216,14 +231,16 @@ export interface Holding {
  *  `postmaster` is the pid of the postmaster `postmasterOf` verified, which this start stops
  *  itself, and neither it nor a process it started (its parent pid) is counted. A process that
  *  ends while it is read, or whose links this user may not read, holds nothing here, and nothing
- *  holds a directory that is gone. `/proc` is read here; where each path leads is read in a child,
- *  each path within `statMs` (`identities`), and a process none of whose paths leads into the
- *  directory, but one of whose paths did not answer, is one the start cannot judge (`unread`).
- *  Answers each holder and each process it cannot judge, in pid order (`Holding`). */
+ *  holds a directory that is gone. `/proc` is read here; where each path leads is read in a child
+ *  that runs `reader` (`StatReader`), each path within `statMs` (`identities`), and a process none
+ *  of whose paths leads into the directory, but one of whose paths did not answer, is one the
+ *  start cannot judge (`unread`). Answers each holder and each process it cannot judge, in pid
+ *  order (`Holding`). */
 export async function holdersOf(
   directory: string,
   spellings: readonly string[],
   uid: number,
+  reader: StatReader,
   postmaster?: number
 ): Promise<Holding> {
   let target: string;
@@ -280,7 +297,7 @@ export async function holdersOf(
       }
     }
   }
-  const leads = await identities([...every]);
+  const leads = await identities([...every], reader);
   // Whether `path` is `directory` or in it, or undefined where a stat of it or of a directory
   // above it did not answer and none above it is the directory.
   const known = new Map<string, boolean | undefined>();

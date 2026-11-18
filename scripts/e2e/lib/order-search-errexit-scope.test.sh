@@ -62,6 +62,9 @@ for name in "${names[@]}"; do
   lines+=('echo "removal reached"' 'remove_leftover_postgres')
   printf '%s\n' "${lines[@]}" >"$t/scripts/e2e/driver.sh"
   chmod +x "$t/scripts/e2e/driver.sh"
+  # A planted run is bash, lib/leftovers.sh and four commands, with no sweep: well under a second
+  # at a load of 500. 20 s is room for a box under far more load; a run without the lock that this
+  # limit ends is UNKNOWN below.
   printf 'held\n' >"$lock"
   blocked=$(LOCK=$lock timeout 20 "$t/scripts/e2e/driver.sh" 2>&1 | grep -c 'removal reached')
   rm -f -- "$lock"

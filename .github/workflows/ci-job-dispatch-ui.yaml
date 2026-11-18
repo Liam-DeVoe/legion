@@ -82,11 +82,9 @@ jobs:
         working-directory: packages/dispatch
       # e2e/__tests__/outside-path-reach-input.test.ts runs the path-reach driver under zsh, which
       # must refuse to run and name bash, and skips that row where zsh is missing; the runner image
-      # has no zsh (dash, the other shell it runs under, is Ubuntu's /bin/sh). A row of
-      # e2e/__tests__/harness-postgres-holders.test.ts mounts a FUSE file system of its own
-      # (never-answers-fuse.py) with fuse3's fusermount3, and fails in CI where it is missing.
-      - name: Install zsh and fuse3
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh fuse3
+      # has no zsh (dash, the other shell it runs under, is Ubuntu's /bin/sh).
+      - name: Install zsh
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh
       # The database cases of e2e/__tests__/psql-session.test.ts, harness-stacks.test.ts and
       # replace-blocks-guard.test.ts make a database of their own on the server LEGION_TEST_PG_DSN
       # names, this job's service, and drop it again; the login is the image's superuser, since

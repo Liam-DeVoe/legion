@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import type { Subprocess } from "bun";
 
 import * as marks from "../harness-postgres-marks";
+import type { StatReader } from "../harness-postgres-processes";
 import type { RemovalBounds } from "../harness-postgres-removal";
 import { type StandIn, standIn } from "./planted-marks";
 
@@ -186,11 +187,16 @@ while [ "$SECONDS" -lt "$end" ]; do read -r -t 0.05 -u 3 _; done`;
 const removalModule = fileURLToPath(new URL("../harness-postgres-removal.ts", import.meta.url));
 
 /** The start's sweep, as a child of this file runs it: within the start's own bounds of a
- *  container's removal, or the row's (`RemovalBounds`), where `ANSWER_MS` and `BOUND_MS` give them. */
+ *  container's removal, or the row's (`RemovalBounds`), where `ANSWER_MS` and `BOUND_MS` give them,
+ *  and with the start's own reader of where each path a process names leads, or the row's
+ *  (`StatReader`), where `STAT_READER` gives it. */
 const sweepScript = `
 import { removeLeftoverPostgres } from ${JSON.stringify(removalModule)};
-const { ANSWER_MS, BOUND_MS } = process.env;
-await removeLeftoverPostgres(ANSWER_MS === undefined ? undefined : { answerMs: Number(ANSWER_MS), boundMs: Number(BOUND_MS) });
+const { ANSWER_MS, BOUND_MS, STAT_READER } = process.env;
+await removeLeftoverPostgres(
+  ANSWER_MS === undefined ? undefined : { answerMs: Number(ANSWER_MS), boundMs: Number(BOUND_MS) },
+  STAT_READER === undefined ? undefined : JSON.parse(STAT_READER)
+);
 `;
 
 /** The environment that gives a start's removal of a container in a child of this file the
@@ -199,23 +205,55 @@ function boundsEnv({ answerMs, boundMs }: RemovalBounds): Record<string, string>
   return { ANSWER_MS: String(answerMs), BOUND_MS: String(boundMs) };
 }
 
+/** A stand-in for the program a start's holder read runs (`StatReader`): it reads the paths from
+ *  its standard input, separated by NUL, says it is ready, and writes where each path leads, in
+ *  turn, as the start's own reader does; but at `never` it writes nothing more and waits, as a stat
+ *  of a path on a mount whose server hangs waits, until it is killed, for at most 600 s. */
+export function neverAnswering(never: string): StatReader {
+  return [
+    process.execPath,
+    "--eval",
+    `
+const { readFileSync, statSync, writeSync } = require("node:fs");
+setTimeout(() => process.exit(1), 600_000);
+const paths = readFileSync(0, "utf8").split("\\0");
+writeSync(1, "ready\\n");
+for (const path of paths) {
+  if (path === ${JSON.stringify(never)}) break;
+  let line = "-";
+  try {
+    const stats = statSync(path, { bigint: true });
+    line = stats.dev + ":" + stats.ino;
+  } catch {}
+  writeSync(1, line + "\\n");
+}
+`,
+  ];
+}
+
 /** A start's sweep running in a child with `tmp` for its `TMPDIR` and `empty`, a directory with no
- *  program in it, for its `PATH`, so no row changes the environment of this process: what it
- *  printed so far, the lines it printed once it ended, and the child, for a row to end. */
+ *  program in it, for its `PATH`, so no row changes the environment of this process, and with the
+ *  row's `reader` where it gives one: what it printed so far, the lines it printed once it ended,
+ *  and the child, for a row to end. */
 export function startSweep(
   tmp: string,
-  empty = mkdtempSync(join(tmp, "no-programs-"))
+  empty = mkdtempSync(join(tmp, "no-programs-")),
+  reader?: StatReader
 ): { stderr(): string; readonly lines: Promise<string[]>; readonly child: Subprocess } {
   const child = Bun.spawn([process.execPath, "--eval", sweepScript], {
-    env: { TMPDIR: tmp, PATH: empty },
+    env: {
+      TMPDIR: tmp,
+      PATH: empty,
+      ...(reader === undefined ? {} : { STAT_READER: JSON.stringify(reader) }),
+    },
     stdout: "ignore",
     stderr: "pipe",
   });
   let stderr = "";
   const read = (async () => {
-    const reader = child.stderr.getReader();
+    const stream = child.stderr.getReader();
     const decoder = new TextDecoder();
-    for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
+    for (let chunk = await stream.read(); !chunk.done; chunk = await stream.read()) {
       stderr += decoder.decode(chunk.value, { stream: true });
     }
   })();

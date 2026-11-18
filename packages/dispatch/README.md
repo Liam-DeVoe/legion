@@ -247,6 +247,9 @@ its mark, where a process's working directory, an open file or a path that an
 argument names is that directory or in it. It judges a holder by the directory
 itself, its device and inode, whatever spells it: through a link, relative to
 where the process runs, or with a doubled `/`. A later start judges it again.
+It waits at most 10 s for each path a process names: a path on a network or
+FUSE mount whose server hangs never answers, and a start cannot judge a process
+by it, so it leaves the directory and names that process and that path.
 A removal that fails is one line, and the start goes on. A start waits for its
 `docker rm` of a container while Docker answers each ask, a `docker ps` every 5 s
 that exits 0 within 60 s: a daemon many sessions share took 91 s over one
@@ -299,9 +302,10 @@ What a start leaves and names, and what you do to remove it by hand:
 - A mark from a machine with no `/proc`, such as macOS, carries no owner, and a
   start there judges no mark. Stop its Postgres the same way by hand.
 - A dead stack's directory that a process of this user still holds, such as a
-  `pg_ctl start` the stack began before it was killed: a start leaves it and its
-  mark, and names the process. Once that process has ended, the next start
-  removes what is left.
+  `pg_ctl start` the stack began before it was killed, or that a process may
+  hold, as it names a path that answered no stat within 10 s: a start leaves it
+  and its mark, and names the process and any such path. Once that process has
+  ended, or the path answers, the next start removes what is left.
 - A run directory of another `TMPDIR` whose postmaster has already ended holds
   no running server, so no start finds it: remove that `dispatch-e2e-run-*`
   directory by hand. One whose postmaster still runs is removed as above, and

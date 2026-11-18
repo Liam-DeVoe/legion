@@ -112,8 +112,10 @@ import {
   holdersOf,
   type Postmaster,
   postmasterOf,
+  type StatReader,
   servedElsewhere,
   statMs,
+  statReader,
 } from "./harness-postgres-processes";
 
 const execFileAsync = promisify(execFile);
@@ -394,16 +396,18 @@ function heldError(path: string, claim: string): Error {
  *  is gone, under this start's claim (`claimForRemoval`): of two starts that both find it, one
  *  removes it, and the other says that another start removed it ("lost"). A directory that a
  *  process of this user still holds (`holdersOf`, read before the claim, with `spellings`, the
- *  paths the mark names it by) it leaves under its name, naming each holder, for a later start to
- *  judge again. Throws, naming `path`, where it is anything else, since a file, a link or another
- *  user's directory is nothing a stack made, where another start's claim of it outlasts the wait,
- *  and where the removal fails, which gives the directory back under `path` for the next start. */
+ *  paths the mark names it by, through `reader`) it leaves under its name, naming each holder, for
+ *  a later start to judge again. Throws, naming `path`, where it is anything else, since a file, a
+ *  link or another user's directory is nothing a stack made, where another start's claim of it
+ *  outlasts the wait, and where the removal fails, which gives the directory back under `path`
+ *  for the next start. */
 async function removeDirectory(
   path: string,
   spellings: readonly string[],
-  uid: number
+  uid: number,
+  reader: StatReader
 ): Promise<Removal> {
-  const claim = await claimForRemoval(path, uid, (name) => holdersOf(name, spellings, uid));
+  const claim = await claimForRemoval(path, uid, (name) => holdersOf(name, spellings, uid, reader));
   if (claim.kind === "absent") return "absent";
   if (claim.kind === "elsewhere") return "lost";
   if (claim.kind === "busy") return { heldBy: claim.heldBy };
@@ -444,19 +448,21 @@ export async function stopPostmaster({ pid, start }: Postmaster, data: string): 
  *  postmaster. Answers whether this call's signal stopped a postmaster, and what came of the
  *  directory: a start that finds `data` claimed by another start stops nothing. A directory that
  *  another process of this user still holds (`holdersOf`, with `spellings`, the paths the mark
- *  names it by), before the claim or after the stop, it leaves under its name, naming each holder:
- *  before the claim it claims and stops nothing. Throws, giving `data` back under its name, where
- *  the postmaster fails a check of `postmasterOf` or still runs after its stop. */
+ *  names it by, through `reader`), before the claim or after the stop, it leaves under its name,
+ *  naming each holder: before the claim it claims and stops nothing. Throws, giving `data` back
+ *  under its name, where the postmaster fails a check of `postmasterOf` or still runs after its
+ *  stop. */
 async function removePostmaster(
   bin: string,
   data: string,
   spellings: readonly string[],
-  uid: number
+  uid: number,
+  reader: StatReader
 ): Promise<{ readonly stopped: boolean; readonly removal: Removal }> {
   // Before the claim, the postmaster that serves the directory under the name it has, which this
   // start would stop itself, and each other process that holds it.
   const claim = await claimForRemoval(data, uid, (name) =>
-    holdersOf(name, spellings, uid, postmasterOf(name, bin, uid)?.pid)
+    holdersOf(name, spellings, uid, reader, postmasterOf(name, bin, uid)?.pid)
   );
   if (claim.kind === "absent") return { stopped: false, removal: "absent" };
   if (claim.kind === "elsewhere") return { stopped: false, removal: "lost" };
@@ -477,10 +483,10 @@ async function removePostmaster(
   let after: Holding = { holders: [], unread: [] };
   if (stopped) {
     const deadline = Date.now() + postmasterChildrenMs;
-    after = await holdersOf(claim.path, spellings, uid);
+    after = await holdersOf(claim.path, spellings, uid, reader);
     while (held(after) && Date.now() < deadline) {
       await sleep(postmasterPollMs);
-      after = await holdersOf(claim.path, spellings, uid);
+      after = await holdersOf(claim.path, spellings, uid, reader);
     }
   }
   if (held(after)) {
@@ -736,11 +742,13 @@ export async function removeContainer(
  *  where there is no `docker` on PATH, which says nothing here, since a start of the binaries
  *  provider needs none. A start that cannot list the containers leaves each mark of a container
  *  and names it (`sweepRun`): with no `docker` it cannot tell whether the container still runs,
- *  from a `docker` of another PATH. */
+ *  from a `docker` of another PATH. Whether a process holds a socket directory it reads through
+ *  `reader` (`removeDirectory`). */
 async function removeContainers(
   self: Owner | null,
   left: Left,
-  bounds: RemovalBounds
+  bounds: RemovalBounds,
+  reader: StatReader
 ): Promise<Containers | undefined> {
   const listed = new Set<string>();
   const removed = new Set<string>();
@@ -822,7 +830,7 @@ async function removeContainers(
       const socketRemoval =
         sockets === undefined
           ? "absent"
-          : await removeDirectory(sockets, [sockets, mark.sockets ?? sockets], verdict.uid);
+          : await removeDirectory(sockets, [sockets, mark.sockets ?? sockets], verdict.uid, reader);
       const andSockets = socketRemoval === "removed" ? ` and ${sockets}` : "";
       console.error(
         `${named}: removed ${what} (${mark.container})${andSockets}, which ${by} left when it ` +
@@ -860,14 +868,16 @@ function absent(path: string): boolean {
  *  goes with it. It reads a run directory, a mark and a path a mark names only where
  *  `whyUntrusted` finds no other user could have put it there, and acts on the paths a mark names
  *  only where the mark's one spelling of its run directory is the run directory it checked
- *  (`markedPaths`). Answers the data directory of each postmaster mark it read, or undefined
- *  where it named the run directory itself on a line. */
+ *  (`markedPaths`). Whether a process holds a directory it reads through `reader`
+ *  (`removePostmaster`, `removeDirectory`). Answers the data directory of each postmaster mark it
+ *  read, or undefined where it named the run directory itself on a line. */
 async function sweepRun(
   run: string,
   uid: number,
   self: Owner | null,
   containers: Containers | undefined,
-  left: Left
+  left: Left,
+  reader: StatReader
 ): Promise<ReadonlySet<string> | undefined> {
   const untrusted = whyUntrusted(run, uid, "directory");
   if (untrusted !== undefined) {
@@ -964,7 +974,8 @@ async function sweepRun(
           mark.postmaster.bin,
           data,
           [data, mark.postmaster.data],
-          verdict.uid
+          verdict.uid,
+          reader
         );
         if (stopped) done.push(`the postmaster of ${data}`);
         if (removal === "removed") done.push(stopped ? "that directory" : data);
@@ -975,7 +986,8 @@ async function sweepRun(
         const removal = await removeDirectory(
           sockets,
           [sockets, mark.sockets ?? sockets],
-          verdict.uid
+          verdict.uid,
+          reader
         );
         if (removal === "removed") done.push(sockets);
         else if (removal === "lost") lost.push(sockets);
@@ -1013,14 +1025,15 @@ async function sweepRun(
 
 /** Sweeps each run directory of `parent`, this start's TMPDIR, that the pool named, and each other
  *  run directory that a postmaster of this user serves from (`servedElsewhere`), by the same steps
- *  (`sweepRun`), and names each such postmaster that no mark of its run directory names and that
- *  still runs once that sweep is done: one another start removed meanwhile is no Postgres this
- *  start left. */
+ *  (`sweepRun`, with `reader`), and names each such postmaster that no mark of its run directory
+ *  names and that still runs once that sweep is done: one another start removed meanwhile is no
+ *  Postgres this start left. */
 async function removeRunDirectories(
   parent: string,
   self: Owner | null,
   containers: Containers | undefined,
-  left: Left
+  left: Left,
+  reader: StatReader
 ): Promise<void> {
   const uid = process.getuid?.() ?? -1;
   let real = parent;
@@ -1037,12 +1050,12 @@ async function removeRunDirectories(
     left.unread.push(`${parent} (${firstLine(error)})`);
   }
   for (const entry of entries.filter((name) => name.startsWith(runDirectoryPrefix)).sort()) {
-    await sweepRun(join(real, entry), uid, self, containers, left);
+    await sweepRun(join(real, entry), uid, self, containers, left, reader);
   }
   // The kernel shows a working directory with no link in it, the one spelling marks hold.
   const served = servedElsewhere(real, uid);
   for (const run of new Set(served.map((postmaster) => postmaster.run))) {
-    const read = await sweepRun(run, uid, self, containers, left);
+    const read = await sweepRun(run, uid, self, containers, left, reader);
     if (read === undefined) continue;
     for (const postmaster of served.filter((each) => each.run === run && !read.has(each.data))) {
       // Read again, by its pid and the start the listing read: another start may have removed
@@ -1059,14 +1072,18 @@ async function removeRunDirectories(
  *  Docker lists with a mark, every mark in a run directory of `tmpdir()`, and every mark in a run
  *  directory elsewhere that a postmaster of this user serves from. Leaves every other one, and
  *  names what it left on one line per kind. Never throws: a removal that fails is one line, and
- *  the start goes on. `bounds` are the start's own (`dockerMs`, `removalMs`) but for a row. */
-export async function removeLeftoverPostgres(bounds = removalBounds): Promise<void> {
+ *  the start goes on. `bounds` are the start's own (`dockerMs`, `removalMs`) but for a row, and so
+ *  is `reader`, the program that reads where each path a process names leads (`statReader`). */
+export async function removeLeftoverPostgres(
+  bounds = removalBounds,
+  reader = statReader
+): Promise<void> {
   const self = stackOwner();
   const left: Left = { unread: [], untrusted: [], unjudged: [], held: [] };
   try {
     // The containers first, so a container goes before the socket directory it serves in.
-    const containers = await removeContainers(self, left, bounds);
-    await removeRunDirectories(tmpdir(), self, containers, left);
+    const containers = await removeContainers(self, left, bounds, reader);
+    await removeRunDirectories(tmpdir(), self, containers, left, reader);
   } catch (error) {
     console.error(
       `${named}: the Postgres of stacks that are gone is not looked for: ${firstLine(error)}`
