@@ -2902,21 +2902,29 @@ markdown table per input file, so a base run and a head run read side by side,
 counting a part only for the rows that run it and dividing a part paid once per
 worker over that worker's rows.
 `capture-fixture.ts` writes and re-reads the files under `e2e/fixtures/`:
-`--issue <KEY> --out <path>` captures that issue's `spec` and decisions
-documents at their highest version, with every ask and its answer, and
-`--premortem <slug>` captures a pre-mortem document with its verdict and its
-risks instead. `--verify <path>` re-reads every source of a captured file at
-the version that file records, never by slug. It gates on the documents
-alone, exiting non-zero on the first one that differs, because a document
-read back at a recorded version is reproducible by construction and a
-difference there means the file is a false record. What the capture holds of
-an unversioned thing, the issue's title and its asks, it reads by identity
-rather than by position and reports as drift without failing: a person may
-open an ask, answer one or rename the issue at any time, and none of that
-makes the file a wrong record of its capture. Gating on that would turn the
-check red for every live issue as the days pass, and a red that always means
-nothing stops being read. It reads `DISPATCH_URL` and `DISPATCH_TOKEN_FILE`,
-and never prints the token.
+`--source-project <KEY> --issue <N> --out <path>` captures the issue
+`<KEY>-<N>`'s `spec` and decisions documents at their highest version, with
+every ask and its answer, and `--premortem <slug>` captures a pre-mortem
+document with its verdict and its risks instead. `--verify <path>` re-reads
+every source of a captured file at the version that file records, never by
+slug. It gates on the documents alone, exiting non-zero on the first one that
+differs, because a document read back at a recorded version is reproducible by
+construction and a difference there means the file is a false record. What the
+capture holds of an unversioned thing, the issue's title and its asks, it reads
+by identity rather than by position and reports as drift without failing: a
+person may open an ask, answer one or rename the issue at any time, and none of
+that makes the file a wrong record of its capture. Gating on that would turn
+the check red for every live issue as the days pass, and a red that always
+means nothing stops being read. No fixture names the deployment it came from,
+and every run requires two inputs that no file in the tree holds: the live
+project's key, `--source-project`, and `--private-words`, a file the operator
+keeps outside the repository, one `word=neutral` per line, of the deployment's
+own words. A capture writes the key as `ACME`, every email address as
+`person-<k>@example.com` and each listed word as its neutral form, in the case
+the word had, and records no host; a verification reads the live key for the
+file's `ACME-<n>` and puts the server's answer through the same rewriting
+before it compares. It reads `DISPATCH_URL` and `DISPATCH_TOKEN_FILE`, and
+never prints the token or a listed word.
 
 `DISPATCH_E2E_PROCESSES` picks how many Dispatch servers the harness runs
 (`e2e/harness-processes.ts`): unset or `1` is the one server above, `2` is two-process mode, and

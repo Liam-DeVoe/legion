@@ -1,7 +1,7 @@
 // routes_shapes.go is the side map that gives every row of the route table its Go types: what it
 // takes, what it answers, and with which status. The table itself carries paths, auth and prose
 // and no shapes (routeRow), so a document emitted from the table alone would describe no body;
-// this file is the data that document is reflected out of (INFRA-1406). No handler decodes a
+// this file is the data that document is reflected out of. No handler decodes a
 // request into a type declared below, and the query structs are declarations rather than what a
 // handler reads its values from - `r.URL.Query().Get` and `.Has` differ on an absent key, so
 // moving forty handlers' reads onto a struct would be a behaviour change, and is not this file's

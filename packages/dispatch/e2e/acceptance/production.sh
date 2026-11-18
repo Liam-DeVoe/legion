@@ -6,23 +6,25 @@
 # and the daemon refuses a report from any other with CHECK_ROLE_MISMATCH, so it is not the
 # implementer's unless the check was opened before that setting existed.
 #
-# It does not make the assertions itself. legion/checks/dispatch-production-check.sh, in
-# theorem-labs/agent-infra, makes them and prints one `PASS <text>` or `FAIL <text>` line for each:
+# It does not make the assertions itself. The check script at PRODUCTION_CHECK_PATH, in the
+# deployment repository, makes them and prints one `PASS <text>` or `FAIL <text>` line for each:
 # /healthz answers 200 and names the commit the running build was built from; GitHub reports that
 # commit identical to or ahead of the merged one; the issue page is served and is the application
 # shell; the entry script that shell names is served; and each named route exists in the running
 # build. This driver fetches that script, runs it, prints everything it printed, and reads its own
 # verdict out of those per-assertion lines rather than out of its exit status alone.
 #
-# Inputs: DISPATCH_URL, the address of the running Dispatch, and MERGE_SHA, the commit this tree
-# merged as. NEXT_LOOK_SECONDS is optional, and only the waiting verdict below reads it. There is
-# no bearer input: the bearer is this pod's own, which lib.sh's `read_bearer` takes from
-# DISPATCH_TOKEN or DISPATCH_TOKEN_FILE and never prints. The driver writes it to a file of this
-# run's own under TMPDIR, readable by its owner alone, names that file to the check script as
-# DISPATCH_TOKEN_FILE, which the script requires for a route read, and removes it in the cleanup
-# trap. There is no PROJECT: the check script reads no project. The driver sets no GH_TOKEN and no
-# GITHUB_TOKEN, because a Legion role's `gh` refuses every command run under either of them; `gh`
-# is authenticated from GH_CONFIG_DIR instead.
+# Inputs: DISPATCH_URL, the address of the running Dispatch; ISSUE, the key of the issue this check
+# judges; PRODUCTION_CHECK_PATH, the check script's GitHub contents path in the deployment
+# repository (`repos/<owner>/<repo>/contents/<path>`, no `?ref=`), which the driver reads at
+# `?ref=main`; and MERGE_SHA, the commit this tree merged as. NEXT_LOOK_SECONDS is optional, and
+# only the waiting verdict below reads it. There is no bearer input: the bearer is this pod's own,
+# which lib.sh's `read_bearer` takes from DISPATCH_TOKEN or DISPATCH_TOKEN_FILE and never prints.
+# The driver writes it to a file of this run's own under TMPDIR, readable by its owner alone, names
+# that file to the check script as DISPATCH_TOKEN_FILE, which the script requires for a route
+# read, and removes it in the cleanup trap. There is no PROJECT: the check script reads no project.
+# The driver sets no GH_TOKEN and no GITHUB_TOKEN, because a Legion role's `gh` refuses every
+# command run under either of them; `gh` is authenticated from GH_CONFIG_DIR instead.
 #
 # Every call it makes is a read: of GitHub, with the role's own credential, and of Dispatch. It
 # writes nothing to either.
@@ -45,7 +47,8 @@
 # not serve would read exactly like a build that has not rolled yet, and the record would not tell
 # a reader which it was. The route assertions therefore gate and the commit comparison does not.
 # Rebuilding the deploy pipeline, so that a merge reaches production with nobody deploying by hand,
-# is dispatch://INFRA-64's work; this check records that gap rather than closing it.
+# is the work of the issue that builds Dispatch's deploy pipeline; this check records that gap
+# rather than closing it.
 #
 # The waiting verdict states the time of the next look itself, because the daemon refuses a
 # `pending` on any look but the last unless it carries one, and that refusal leaves the look open.
@@ -77,6 +80,9 @@ set +x
 usage() {
   cat >&2 <<'USAGE'
 Usage: DISPATCH_URL=<the running Dispatch, which a Legion pod already exports> \
+         ISSUE=<the key of the issue this check judges> \
+         PRODUCTION_CHECK_PATH=<repos/<owner>/<repo>/contents/<path> of the check script in the
+           deployment repository, without ?ref=, which the driver reads at ?ref=main> \
          MERGE_SHA=<merge commit> [NEXT_LOOK_SECONDS=21600] production.sh
        (the bearer is this pod's own, read from DISPATCH_TOKEN or DISPATCH_TOKEN_FILE and never
        printed; there is no PROJECT, since the check script reads no project;
@@ -87,19 +93,21 @@ USAGE
 
 # shellcheck source-path=SCRIPTDIR source=lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
-require_env DISPATCH_URL MERGE_SHA
+require_env DISPATCH_URL ISSUE PRODUCTION_CHECK_PATH MERGE_SHA
 require_commands bash curl date gh grep jq
 read_bearer
 # The check script reads DISPATCH_URL from its environment. read_bearer has unset both bearer
 # variables, so the only bearer that reaches the script is the file this driver names below.
+# shellcheck disable=SC2031 # the DISPATCH_URL `cli` exports is its own; this one is the caller's
 export DISPATCH_URL
 
 # shellcheck disable=SC2153 # MERGE_SHA is the caller's input, checked by name above
 readonly merge_sha="$MERGE_SHA"
-# The issue this check judges, its page, and the two reads the record is about: the decisions read
-# behind the decisions view (b-r-decisions-view) and the inbox read (b-r-inbox). Both paths are
-# the ones packages/envoy/internal/dispatch/api/testdata/routes.txt lists.
-readonly issue="INFRA-1098"
+# The issue this check judges (ISSUE), its page, and the two reads the record is about: the
+# decisions read behind the decisions view (b-r-decisions-view) and the inbox read (b-r-inbox).
+# Both paths are the ones packages/envoy/internal/dispatch/api/testdata/routes.txt lists.
+# shellcheck disable=SC2153 # ISSUE is the caller's input, checked by name above
+readonly issue="$ISSUE"
 readonly page="/issues/$issue"
 readonly routes=("/api/v1/issues/$issue/decisions" "/api/v1/inbox")
 
@@ -146,14 +154,16 @@ refuse() {
 }
 
 printf 'production.sh at %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+# shellcheck disable=SC2031 # the DISPATCH_URL `cli` exports is its own; this one is the caller's
 printf 'dispatch: %s\n' "$DISPATCH_URL"
 printf 'merge commit (MERGE_SHA): %s\n' "$merge_sha"
 printf 'page: %s\n' "$page"
 printf 'routes: %s\n\n' "${routes[*]}"
 
 # The check script, into a file. `gh api … | bash` would hide a failed fetch, which is what the
-# `-s` test below and the second negative control are about.
-readonly check_source='repos/theorem-labs/agent-infra/contents/legion/checks/dispatch-production-check.sh?ref=main'
+# `-s` test below and the second negative control are about. PRODUCTION_CHECK_PATH names no ref,
+# so the script is read from the deployment repository's main.
+readonly check_source="${PRODUCTION_CHECK_PATH}?ref=main"
 gh api "$check_source" -H 'Accept: application/vnd.github.raw' >"$check_script" 2>"$work/gh.err" ||
   refuse fetch "the check script came from gh api $check_source" \
     "gh api exited $?: $(head -c 600 "$work/gh.err")"
@@ -190,6 +200,7 @@ case "$script_status" in
   refuse run "the check script ran to a verdict" "it exited $script_status: $last_line"
   ;;
 esac
+# shellcheck disable=SC2031 # the DISPATCH_URL `cli` exports is its own; this one is the caller's
 pass run "the check script ran against $DISPATCH_URL and ended: $last_line"
 
 # The verdict is read from the script's own per-assertion lines. Its exit status says only that
@@ -276,7 +287,8 @@ elif ((commit_failed > 0)); then
   # The commit comparison alone failed: every route this change needs is served, and the build
   # serving them was built from some other commit.
   printf "the running build does not carry this tree's change.\n"
-  printf 'Nothing deploys Dispatch on a merge today; dispatch://INFRA-64 closes that gap.\n'
+  printf 'Nothing deploys Dispatch on a merge today; the issue that builds its deploy pipeline\n'
+  printf 'closes that gap.\n'
   next_look="$(date -u -d "+$next_look_seconds seconds" +%Y-%m-%dT%H:%M:%SZ)" ||
     refuse waiting "state the time of the next look" \
       "date could not add $next_look_seconds seconds to now"
