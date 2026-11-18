@@ -188,6 +188,7 @@ dispatch_server: &dispatch_server
   - 'packages/envoy/internal/dispatch/githubapp/ratelimit/*'
   - 'packages/envoy/internal/dispatch/identity/*'
   - 'packages/envoy/internal/dispatch/itemblocks/*'
+  - 'packages/envoy/internal/dispatch/legion/*'
   - 'packages/envoy/internal/dispatch/model/*'
   - 'packages/envoy/internal/dispatch/outbox/*'
   - 'packages/envoy/internal/dispatch/pmdoc/**'
@@ -1717,6 +1718,7 @@ envoy_go:
   - 'packages/contracts/fixtures/github-envelopes/**'
   - 'packages/contracts/fixtures/decision-blocks/**'
   - 'packages/contracts/fixtures/checks-settlement/**'
+  - 'packages/contracts/fixtures/daemon-api/state.json'
   - 'packages/daemon/internal/intake/testdata/dispatch/server-started.json'
   # why: .github/ci-notes/ci.md#envoy_go-internaldispatchtextwhitespace_fixture_testgo-holds-unicodeisspace-to-this
   - 'packages/contracts/fixtures/go-unicode-isspace.json'
@@ -2129,6 +2131,7 @@ listener_server_change:
   - 'packages/envoy/internal/dispatch/githubapp/ratelimit/*'
   - 'packages/envoy/internal/dispatch/identity/*'
   - 'packages/envoy/internal/dispatch/itemblocks/*'
+  - 'packages/envoy/internal/dispatch/legion/*'
   - 'packages/envoy/internal/dispatch/model/*'
   # cmd/listener/dispatch_kept_role_test.go drives Dispatch's outbox end to end, so the
   # serverchange soak compiles this package: a change to it must re-run that soak.
@@ -2715,6 +2718,7 @@ envoy_go_race:
   - '!packages/envoy/internal/dispatch/horizontest/**/*_test.go'
   - '!packages/envoy/internal/dispatch/identity/**/*_test.go'
   - '!packages/envoy/internal/dispatch/itemblocks/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/legion/**/*_test.go'
   - '!packages/envoy/internal/dispatch/model/**/*_test.go'
   - '!packages/envoy/internal/dispatch/outbox/**/*_test.go'
   - '!packages/envoy/internal/dispatch/pmdoc/**/*_test.go'
@@ -2844,6 +2848,8 @@ envoy_go_race_api:
   - 'packages/envoy/internal/dispatch/horizontest/*'
   - 'packages/envoy/internal/dispatch/identity/*'
   - 'packages/envoy/internal/dispatch/itemblocks/*'
+  - 'packages/envoy/internal/dispatch/legion/*'
+  - 'packages/envoy/internal/dispatch/legion/metrics/*'
   - 'packages/envoy/internal/dispatch/model/*'
   - 'packages/envoy/internal/dispatch/outbox/*'
   - 'packages/envoy/internal/dispatch/pmdoc/*'
@@ -2941,6 +2947,7 @@ envoy_go_race_api:
   - '!packages/envoy/internal/dispatch/horizontest/**/*_test.go'
   - '!packages/envoy/internal/dispatch/identity/**/*_test.go'
   - '!packages/envoy/internal/dispatch/itemblocks/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/legion/**/*_test.go'
   - '!packages/envoy/internal/dispatch/model/**/*_test.go'
   - '!packages/envoy/internal/dispatch/outbox/**/*_test.go'
   - '!packages/envoy/internal/dispatch/pmdoc/**/*_test.go'
