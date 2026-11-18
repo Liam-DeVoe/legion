@@ -2,10 +2,17 @@
  *  `e2e/harness-postgres-removal.ts` reads them before it acts on what a dead stack's mark names:
  *  the postmaster that serves a data directory (`postmasterOf`), each process that still holds a
  *  directory (`holdersOf`), and each postmaster that serves from a run directory the sweep's own
- *  listing does not read (`servedElsewhere`). Every read is of `/proc`; none signals, renames or
- *  removes anything. */
-import { lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+ *  listing does not read (`servedElsewhere`). Every read is of `/proc` and of the paths it names;
+ *  none signals, renames or removes anything. */
+import {
+  lstatSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
+import { basename, dirname, isAbsolute, join } from "node:path";
 
 import {
   codeOf,
@@ -78,33 +85,85 @@ function names(argument: string, path: string): boolean {
   return false;
 }
 
-/** Each process of the user `uid` that still holds one of `paths`, the directories of a dead
- *  stack's mark, as the kernel shows it: its working directory, or a file it holds open, is that
- *  directory or in it, or one of its arguments names it (`names`). A process the stack started
- *  that its death did not end holds them so: a `pg_ctl start` or an `initdb` still running, a
- *  `docker create` that mounts the socket directory, the postmaster such a `pg_ctl` is starting.
+/** The paths that `argument`, one argument of a process, can name, each as the process spells it:
+ *  each piece between its spaces, `=`, `:`, `,` and quotes, as `postgres -D <data>`, `pg_ctl`'s
+ *  `-o "-k <sockets>"` and Docker's `--mount type=bind,source=<sockets>,…` write it, but an
+ *  option, and the value an option of one letter holds glued to it, as `-D<data>` writes it. */
+function pathsIn(argument: string): string[] {
+  return argument.split(/[\s=:,'"]+/).flatMap((piece) => {
+    if (!piece.startsWith("-")) return piece === "" ? [] : [piece];
+    const glued = /^-[A-Za-z](.+)$/.exec(piece)?.[1];
+    return glued === undefined ? [] : [glued];
+  });
+}
+
+/** Each process of the user `uid` that still holds `directory`, a directory of a dead stack's
+ *  mark, as the kernel shows it: its working directory, a file it holds open, or a path one of its
+ *  arguments names (`pathsIn`), read from its working directory where it is relative, is that
+ *  directory or in it. A holder is judged by the directory itself, its device and its inode, and
+ *  by no spelling of it: a `pg_ctl` that a stack started under a TMPDIR spelt through a link, with
+ *  a `-D` relative to where it runs or with a doubled `/`, holds it all the same. `spellings`, the
+ *  paths the mark names it by, are read in the arguments as they are written too (`names`), for a
+ *  spelling that no longer leads to it, such as a link removed since. A process the stack started
+ *  that its death did not end holds a directory so: a `pg_ctl start` or an `initdb` still running,
+ *  a `docker create` that mounts the socket directory, the postmaster such a `pg_ctl` is starting.
  *  A stack is not dead while one of them runs, so a start removes no directory it holds.
  *  `postmaster` is the pid of the postmaster `postmasterOf` verified, which this start stops
  *  itself, and neither it nor a process it started (its parent pid) is counted. A process that
- *  ends while it is read, or whose links this user may not read, holds nothing here. Answers
- *  "<program> <pid>" for each holder, in pid order. */
-export function holdersOf(paths: readonly string[], uid: number, postmaster?: number): string[] {
-  const within = (target: string) =>
-    paths.some((path) => target === path || target.startsWith(`${path}/`));
+ *  ends while it is read, or whose links this user may not read, holds nothing here, and nothing
+ *  holds a directory that is gone. Answers "<program> <pid>" for each holder, in pid order. */
+export function holdersOf(
+  directory: string,
+  spellings: readonly string[],
+  uid: number,
+  postmaster?: number
+): string[] {
+  let target: string;
+  try {
+    const stats = lstatSync(directory, { bigint: true });
+    target = `${stats.dev}:${stats.ino}`;
+  } catch {
+    // A directory gone, or one whose identity this user cannot read, has no holder to read here;
+    // the rename or the removal that follows says what it is.
+    return [];
+  }
+  // Whether `path` is `directory` or in it, read once for each path in one call.
+  const known = new Map<string, boolean>();
+  const inside = (path: string): boolean => {
+    const seen = known.get(path);
+    if (seen !== undefined) return seen;
+    let answer = false;
+    try {
+      const stats = statSync(path, { bigint: true });
+      answer = `${stats.dev}:${stats.ino}` === target;
+    } catch {
+      // A path that names nothing, such as a file a process will write, is in its parent.
+    }
+    const parent = dirname(path);
+    answer ||= parent !== path && inside(parent);
+    known.set(path, answer);
+    return answer;
+  };
   const holders: string[] = [];
   for (const pid of readdirSync("/proc").filter((entry) => /^\d+$/.test(entry))) {
     try {
       if (Number(pid) === postmaster || lstatSync(`/proc/${pid}`).uid !== uid) continue;
       const parent = /^PPid:\s+(\d+)$/m.exec(readFileSync(`/proc/${pid}/status`, "utf8"))?.[1];
       if (postmaster !== undefined && Number(parent) === postmaster) continue;
+      const cwd = readlinkSync(`/proc/${pid}/cwd`);
       const holds =
-        within(readlinkSync(`/proc/${pid}/cwd`)) ||
+        inside(cwd) ||
         readFileSync(`/proc/${pid}/cmdline`, "utf8")
           .split("\0")
-          .some((argument) => paths.some((path) => names(argument, path))) ||
+          .some(
+            (argument) =>
+              spellings.some((path) => names(argument, path)) ||
+              pathsIn(argument).some((path) => inside(isAbsolute(path) ? path : `${cwd}/${path}`))
+          ) ||
         readdirSync(`/proc/${pid}/fd`).some((fd) => {
           try {
-            return within(readlinkSync(`/proc/${pid}/fd/${fd}`));
+            const open = readlinkSync(`/proc/${pid}/fd/${fd}`);
+            return isAbsolute(open) && inside(open);
           } catch {
             return false;
           }

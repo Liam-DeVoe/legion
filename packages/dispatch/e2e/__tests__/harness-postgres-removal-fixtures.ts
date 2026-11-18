@@ -1,7 +1,8 @@
-/** The fixtures of the rows of `harness-postgres-removal.test.ts`: the marks, data directories and
- *  stand-in postmasters a row plants, the start's sweep and a start's claim, each run in a child
- *  of the row, the end of such a child, and the stack's harness and the stand-in `pg_ctl` a row
- *  kills hard. The rows and what they require stay in that file. */
+/** The fixtures of the rows of `harness-postgres-removal.test.ts` and
+ *  `harness-postgres-holders.test.ts`: the marks, data directories and stand-in postmasters a row
+ *  plants, the start's sweep and a start's claim, each run in a child of the row, the end of such
+ *  a child, and the stack's harness and the stand-in `pg_ctl` a row kills hard. The rows and what
+ *  they require stay in those files. */
 
 import { expect } from "bun:test";
 import {
@@ -135,6 +136,50 @@ done`;
   return postmaster;
 }
 
+/** A FIFO at `path`: a read of it waits, for `read -t` of a stand-in's shell, with no process
+ *  forked to wait. */
+function fifoAt(path: string): string {
+  const made = Bun.spawnSync(["mkfifo", path], { stdout: "ignore", stderr: "pipe" });
+  if (made.exitCode !== 0) throw new Error(`mkfifo ${path} failed: ${made.stderr.toString()}`);
+  return path;
+}
+
+/** A stand-in postmaster of the cluster in `data` whose child outlives it, as the processes of a
+ *  postmaster do for a moment after it ends: a copy of `bash` in `bin` that only the row's own
+ *  starts find (`postmasterProgram`), run with `data` for its working directory, which `data`'s
+ *  `postmaster.pid` names, and a child of it with `data` for its working directory too. On SIGQUIT
+ *  the postmaster ends at once; its child runs 0.5 s more, which is longer than a start's poll of
+ *  `/proc` and shorter than its wait for the processes of a postmaster it stopped, then writes
+ *  `present` to `saw` where `data` still holds its `PG_VERSION`, or `gone`, and ends. Both wait
+ *  with `read -t` on a FIFO beside `saw`, so neither forks a process in `data`. */
+export function slowReleasingPostmaster(bin: string, data: string, saw: string): StandIn {
+  const bash = Bun.which("bash");
+  if (bash === null) throw new Error("no bash on PATH to stand in for a postmaster");
+  const postgres = postmasterProgram(bin, bash, "its TMPDIR");
+  mkdirSync(data, { recursive: true });
+  const child = `until [ -e "$1" ]; do read -r -t 0.05 -u 3 _; done
+read -r -t 0.5 -u 3 _
+if [ -e PG_VERSION ]; then echo present; else echo gone; fi >>"$2"`;
+  const script = `exec 3<>"$3"
+trap 'echo >"$1"; exit 0' QUIT
+"$BASH" -c "$4" child "$1" "$2" &
+end=$((SECONDS + 600))
+while [ "$SECONDS" -lt "$end" ]; do read -r -t 0.05 -u 3 _; done`;
+  const fifo = fifoAt(`${saw}.fifo`);
+  const postmaster = standIn(data, [
+    postgres,
+    "-c",
+    script,
+    "postgres",
+    `${saw}.quit`,
+    saw,
+    fifo,
+    child,
+  ]);
+  leaveData(data, postmaster.pid);
+  return postmaster;
+}
+
 const removalModule = fileURLToPath(new URL("../harness-postgres-removal.ts", import.meta.url));
 
 /** The start's sweep, as a child of this file runs it. */
@@ -217,11 +262,12 @@ export function leaveContainerMark(run: string, owner: unknown) {
 }
 
 /** A start's claim of `CLAIM_PATH` (`claimForRemoval`) in a child of this file: it prints the
- *  claim, and then waits to be killed, for at most 600 s. */
+ *  claim, and then waits to be killed, for at most 600 s. No process holds what a row claims so,
+ *  so it reads none. */
 const claimScript = `
 import { claimForRemoval } from ${JSON.stringify(removalModule)};
 setTimeout(() => process.exit(1), 600_000);
-console.log(JSON.stringify(await claimForRemoval(process.env.CLAIM_PATH, process.getuid())));
+console.log(JSON.stringify(await claimForRemoval(process.env.CLAIM_PATH, process.getuid(), () => [])));
 `;
 
 /** SIGKILLs `child`, a child of this file, where it still runs, and waits for its end. */
@@ -279,7 +325,9 @@ const marksModule = fileURLToPath(new URL("../harness-postgres-marks.ts", import
 /** A stack's harness, as `e2e/harness-postgres.ts` starts stack 0 of the binaries provider: it
  *  marks its Postgres, makes its data directory and runs `HARNESS_BIN`'s `pg_ctl ... start` on it,
  *  with the arguments the provider gives it, and prints that pg_ctl's pid. Then it waits to be
- *  killed, which is the row's own SIGKILL, for at most 600 s. */
+ *  killed, which is the row's own SIGKILL, for at most 600 s. `HARNESS_DATA`, where it is set, is
+ *  the data directory as the stack spells it to `pg_ctl -D`, and `HARNESS_CWD` the directory
+ *  that `pg_ctl` runs in: a spelling of its own, which the mark does not hold. */
 export const harnessScript = `
 import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -293,7 +341,9 @@ mkdirSync(data, { recursive: true });
 writeFileSync(join(data, "PG_VERSION"), "18\\n");
 const options = \`-c listen_addresses='' -k \${sockets}\`;
 const log = join(run, "worker-0", "postgres.log");
-const ctl = spawn(join(bin, "pg_ctl"), ["-D", data, "-l", log, "-o", options, "-w", "start"], {
+const spelt = process.env.HARNESS_DATA || data;
+const ctl = spawn(join(bin, "pg_ctl"), ["-D", spelt, "-l", log, "-o", options, "-w", "start"], {
+  cwd: process.env.HARNESS_CWD || undefined,
   stdio: "ignore",
 });
 console.log(ctl.pid);
@@ -319,3 +369,13 @@ export function startingPgCtl(bin: string, go: string): void {
     { mode: 0o755 }
   );
 }
+
+/** The lines of `lines` that hold `text`. */
+export function holding(lines: readonly string[], text: string): string[] {
+  return lines.filter((line) => line.includes(text));
+}
+
+/** How long a row waits for one event of another process: a `bun` child's start of its sweep
+ *  under load, which took more than 180 s once on a shared Linux machine under a load of 1,217, on
+ *  2026-11-17, is the longest of them. */
+export const claimEventMs = 240_000;

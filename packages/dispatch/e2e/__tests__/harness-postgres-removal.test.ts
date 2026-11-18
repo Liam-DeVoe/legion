@@ -53,10 +53,10 @@ import * as marks from "../harness-postgres-marks";
 import { servingPostmasters, stopPostmaster } from "../harness-postgres-removal";
 import {
   claimAndDie,
+  claimEventMs,
   claimInChild,
   endChild,
-  firstLineOf,
-  harnessScript,
+  holding,
   leaveContainerMark,
   leaveData,
   leaveElsewhere,
@@ -64,7 +64,6 @@ import {
   scratch,
   signalCountingPostmaster,
   standInPostmaster,
-  startingPgCtl,
   startSweep,
   sweep,
   until,
@@ -78,14 +77,9 @@ import {
   standIn,
 } from "./planted-marks";
 
-const { marksDirectory, runDirectoryPrefix } = marks;
+const { runDirectoryPrefix } = marks;
 
 const onLinux = process.platform === "linux";
-
-/** The lines of `lines` that hold `text`. */
-function holding(lines: readonly string[], text: string): string[] {
-  return lines.filter((line) => line.includes(text));
-}
 
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a mark whose postmaster.bin is the planter's and whose stack directory is a link out of the run is left: its program never runs, the live process stays, the directory outside stays",
@@ -494,11 +488,6 @@ test.skipIf(!onLinux)(
   }
 );
 
-/** How long a row of the claim waits for one event of another process: a `bun` child's start of
- *  its sweep under load, which took more than 180 s once on a shared Linux machine under a load of
- *  1,217, on 2026-11-17, is the longest of them. */
-const claimEventMs = 240_000;
-
 // Two starts at once on one dead mark whose postmaster still serves. The first claims the data
 // directory (`claimForRemoval`) and signals the postmaster, which then runs on until the row says
 // go; the second starts only after that signal, so it finds the claim held, and says that it waits
@@ -710,83 +699,5 @@ test.skipIf(!onLinux)(
   },
   // The row waits for a claimer and two starts' sweeps, each a `bun` child, and for two events
   // between them, each for at most `claimEventMs`; the sweeps then end in well under a second.
-  600_000
-);
-
-// A stack killed hard while its `pg_ctl start` runs leaves that pg_ctl running, and the
-// postmaster it then starts. A start in between finds no postmaster.pid yet: it must leave the
-// directories that pg_ctl names, with the mark, and name them, and the next start after that
-// pg_ctl ended removes the postmaster it started.
-test.skipIf(!onLinux)(
-  "v-no-leftover-postgres: a start leaves the Postgres of a stack killed while its pg_ctl start runs, and names it in one line, since that pg_ctl still holds its directories; the next start after that pg_ctl ended removes the postmaster it started",
-  async () => {
-    const { tmp, run } = scratch();
-    const bin = join(tmp, "bin");
-    const go = join(tmp, "go");
-    const sockets = mkdtempSync(join(run, "pg-0-"));
-    const data = join(run, "worker-0", "pgdata");
-    const mark = join(run, marksDirectory, "worker-0.json");
-    startingPgCtl(bin, go);
-    const harness = Bun.spawn([process.execPath, "--eval", harnessScript], {
-      env: { ...process.env, HARNESS_RUN: run, HARNESS_BIN: bin, HARNESS_SOCKETS: sockets },
-      stdout: "pipe",
-      stderr: "ignore",
-    });
-    let pgCtl: { pid: number; start: string } | undefined;
-    let postmaster: { pid: number; start: string } | undefined;
-    const startOfPid = (pid: number) => marks.startOf(readFileSync(`/proc/${pid}/stat`, "utf8"));
-    try {
-      const pid = Number(await firstLineOf(harness));
-      // The harness's child runs pg_ctl once it has its arguments, which name the data directory.
-      await until(
-        () => readFileSync(`/proc/${pid}/cmdline`, "utf8").includes(data),
-        "the start of the stack's pg_ctl",
-        claimEventMs
-      );
-      pgCtl = { pid, start: startOfPid(pid) };
-      // The harness dies as a stack killed hard does: its pg_ctl runs on.
-      await endChild(harness);
-      expect(marks.stillRuns(pgCtl.pid, pgCtl.start)).toBe(true);
-
-      const first = await sweep(tmp);
-
-      expect([existsSync(data), existsSync(sockets), existsSync(mark)]).toEqual([true, true, true]);
-      expect(holding(first, "removed")).toEqual([]);
-      const left = holding(first, mark);
-      expect(left).toEqual([expect.stringContaining(`${mark} (${data}, which `)]);
-      expect(left[0]).toContain(` ${pgCtl.pid} still holds)`);
-
-      writeFileSync(go, "");
-      const ended = pgCtl;
-      await until(
-        () => !marks.stillRuns(ended.pid, ended.start),
-        "the end of the stack's pg_ctl",
-        claimEventMs
-      );
-      const served = Number.parseInt(readFileSync(join(data, "postmaster.pid"), "utf8"), 10);
-      postmaster = { pid: served, start: startOfPid(served) };
-      const second = await sweep(tmp);
-
-      expect(marks.stillRuns(postmaster.pid, postmaster.start)).toBe(false);
-      expect([existsSync(data), existsSync(sockets), existsSync(mark)]).toEqual([
-        false,
-        false,
-        false,
-      ]);
-      expect(
-        holding(second, `removed the postmaster of ${data}, that directory and ${sockets}`)
-      ).toHaveLength(1);
-    } finally {
-      await endChild(harness);
-      for (const each of [pgCtl, postmaster]) {
-        if (each !== undefined && marks.stillRuns(each.pid, each.start)) {
-          process.kill(each.pid, "SIGKILL");
-        }
-      }
-      rmSync(tmp, { recursive: true, force: true });
-    }
-  },
-  // The row waits for a harness and two starts' sweeps, each a `bun` child, and for two events of
-  // a pg_ctl between them, each for at most `claimEventMs`; the sweeps end in under a second.
   600_000
 );

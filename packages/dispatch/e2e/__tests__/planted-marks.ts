@@ -34,8 +34,15 @@ export interface StandIn {
   stop(): void;
 }
 
-export function standIn(cwd: string, command = ["sleep", "600"]): StandIn {
-  const child: Subprocess = Bun.spawn(command, { cwd, stdout: "ignore", stderr: "ignore" });
+/** Starts `command` in `cwd`, with `stdin` for its standard input where it is given: a file
+ *  descriptor of this process, which the child then holds open. */
+export function standIn(cwd: string, command = ["sleep", "600"], stdin?: number): StandIn {
+  const child: Subprocess = Bun.spawn(command, {
+    cwd,
+    stdin: stdin ?? "ignore",
+    stdout: "ignore",
+    stderr: "ignore",
+  });
   const start = startTimeOf(child.pid);
   const alive = () => start !== "" && startTimeOf(child.pid) === start;
   return {

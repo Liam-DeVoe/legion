@@ -241,16 +241,22 @@ no program that a mark names. It leaves the Postgres of a process that still
 runs without a word, and it names each one it leaves, one line per kind. A
 stack is not dead while a process it started still holds its directories: a
 harness killed while its `pg_ctl start`, `initdb` or `docker create` runs leaves
-that child running, and before a start removes a data or socket directory it
-reads every process of its user, and leaves the directory, with its mark, where
-a process's working directory, an open file or an argument names it. A later
-start judges it again. A removal that fails is one line, and the start goes on.
+that child running, and before a start claims a data or socket directory it
+reads every process of its user, and leaves the directory under its name, with
+its mark, where a process's working directory, an open file or a path that an
+argument names is that directory or in it. It judges a holder by the directory
+itself, its device and inode, whatever spells it: through a link, relative to
+where the process runs, or with a doubled `/`. A later start judges it again.
+A removal that fails is one line, and the start goes on.
 A start whose own `TMPDIR` is gone still reads the containers and `/proc`, and
 names that `TMPDIR` on one line. The logs of a killed run stay in its directory.
 
 Two starts at once on one dead stack act on each of its parts once. A
 directory, and the postmaster that serves from a data directory, are claimed by
-a rename to `<path>.removing-<pid>-<start>`, the claimer's pid and start; a
+a rename to `<path>.removing-<pid>-<start>`, the claimer's pid and start. The
+rename is the claim: one of two renames wins, and a start killed after it
+leaves no other file behind. A start renames only a directory that no process
+of its user holds, read just before the rename. A
 container is claimed by Docker's own removal, which removes it for one
 `docker rm` and refuses it, or finds it gone, for the other. The start that
 holds the claim removes the part and says "removed", of a postmaster only where

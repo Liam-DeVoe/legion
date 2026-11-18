@@ -4,7 +4,7 @@
  *  run directory by (`e2e/postgres-mark.ts label`). A mark another user wrote needs a second user,
  *  which a test run has none of, so these rows read owners from a stubbed `lstat`. The start's
  *  removal of a dead stack's Postgres, which acts only on what these checks trust, has its rows in
- *  `harness-postgres-removal.test.ts`. */
+ *  `harness-postgres-removal.test.ts` and `harness-postgres-holders.test.ts`. */
 
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
