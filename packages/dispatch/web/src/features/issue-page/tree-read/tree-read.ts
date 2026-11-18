@@ -367,10 +367,12 @@ function byRole<Value>(make: (role: TreeFilter) => Value): (role: TreeFilter) =>
  *
  * Two kinds of write hold nothing, and the event that follows each is read at once: a write of
  * the issue made on another page - the inbox's drawer, a list - which names no issue and begins
- * while the issue's tree is not drawn; and a write made outside any TanStack mutation - the write
- * store's Retry of a write, the writes it restores after a reload, a pin (`pin-write.ts`), a row
- * action of the issues table (`issues-table-actions.ts`), an offer of the search
- * (`search/offer.ts`) - which the mutation cache never tells of.
+ * while the issue's tree is not drawn; and a write the write store makes with no mutation, of a
+ * kind with no `started` - a plain write, a pin, a broadcast, a row action of the issues table, an
+ * offer of the search - with its Retry and its restore after a reload, which the mutation cache
+ * never tells of. A composer's send holds its name in the mutation cache on each press, Retry
+ * and restore after a reload (`features/conversation/held-sends.ts`), so the Conversation
+ * composer's, which names the issue, holds the tree each time.
  *
  * A window focus reads the tree and its views only while the live feed is down (`liveFeedUp`):
  * a refused one is read again then, or, where a write of the issue is out, once the last write
@@ -526,8 +528,7 @@ function watchTree(
   let queued = false;
   let stopped = false;
   // Whether the decisions read's own invalidation is one of this turn's changes, or came while a
-  // write was out, for the refresh held back for the writes; forgotten as they settle where no
-  // refresh was held.
+  // write was out, for the refresh held back for the writes.
   let decisionsInvalidated = false;
   // When the tree read and each read of the issue last began, as this subscription records it:
   // once the cache has told every listener that the read began, the scheduler among them, so
@@ -554,11 +555,12 @@ function watchTree(
   // element equal to `key`, as the issue's own update does), or that began while this issue's
   // page drew its tree (the tree observed as the mutation cache told of the write), or whose key
   // extends the key of such a write still out - a composer's send held past its deadline under
-  // its name and one more part (`features/conversation/held-sends.ts`' `pastDeadlineKey`), made
-  // before the name lets go, is the same send, whatever page the reader is on by then. A write the
-  // client holds names no issue otherwise, so one begun on another page holds nothing here. And
-  // whether one of them is out (`unmutate`): the hold, from the first going out to the last
-  // settling, which `settling` keeps until the settle's reads run, a microtask on.
+  // its name and one more part (`pastDeadlineKey`, `hooks/useSending.ts`), as
+  // `features/conversation/held-sends.ts` holds a late send, made before the name lets go, is the
+  // same send, whatever page the reader is on by then. A write the client holds names no issue
+  // otherwise, so one begun on another page holds nothing here. And whether one of them is out
+  // (`unmutate`): the hold, from the first going out to the last settling, which `settling` keeps
+  // until the settle's reads run, a microtask on.
   const names = (mutation: Mutation): boolean =>
     mutation.options.mutationKey?.includes(key) === true;
   const ownWrites = new Set<Mutation>(
@@ -895,7 +897,6 @@ function watchTree(
     // The held decisions read is asked for once no read of it is out.
     if (isDecisions) arm(decisions);
     if (calling || (action.type !== "invalidate" && action.type !== "success")) return;
-    let changed: boolean;
     if (action.type === "invalidate") {
       // An invalidation is a change, while a write of the issue is out too: an event of the issue
       // may refresh reads that answer what they held - another person's new version of the plan
@@ -904,16 +905,16 @@ function watchTree(
       // So a refused write's rollback, whose invalidation is no other, reads it once there too.
       // The read the invalidation brings is still judged (`judged`), so its answer, landing after
       // that settle, reads the tree no second time. The decisions read's own invalidation leaves
-      // its read out or owed either way.
+      // its read out or owed, with a write out or none.
       if (isDecisions) decisionsInvalidated = true;
       if (holding()) judged.add(hash);
-      changed = true;
-    } else {
-      // A write the page put in the cache reads the tree only while the live feed is down: while
-      // it is up, the write's event does.
-      changed = action.manual === true ? !liveFeedUp(queryClient) : answeredNewer(query);
-      if (action.manual !== true) judged.delete(hash);
+      queue();
+      return;
     }
+    // A write the page put in the cache reads the tree only while the live feed is down: while it
+    // is up, the write's event does.
+    const changed = action.manual === true ? !liveFeedUp(queryClient) : answeredNewer(query);
+    if (action.manual !== true) judged.delete(hash);
     if (changed) queue();
   });
   // Takes the tree and each view whose read was refused and is not out, to ask for again: a window
@@ -1043,7 +1044,6 @@ function watchTree(
       return owedReads.has(query.queryHash) || (query.state.isInvalidated && mayReadOnMount(query));
     });
     owedReads.clear();
-    decisionsInvalidated = false;
     const targets = [...new Set([...owed, ...refused])];
     if (targets.length > 0) ask(targets);
   };
@@ -1057,8 +1057,13 @@ function watchTree(
     if (event.type !== "added" && event.type !== "removed" && event.type !== "updated") return;
     const { mutation } = event;
     if (event.type === "added") {
-      const observed = (cache.find(tree)?.getObserversCount() ?? 0) > 0;
-      if (!names(mutation) && !observed && !extendsOwnWrite(mutation)) return;
+      if (
+        !names(mutation) &&
+        !extendsOwnWrite(mutation) &&
+        (cache.find(tree)?.getObserversCount() ?? 0) === 0
+      ) {
+        return;
+      }
       ownWrites.add(mutation);
     } else {
       if (!ownWrites.has(mutation)) return;
