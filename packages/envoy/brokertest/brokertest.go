@@ -45,6 +45,18 @@ const DaemonExchangeAccount = internal.DaemonExchangeAccount
 // other-project-worker for project OTHER and names the Rig's Operator as its person.
 const OtherProjectAccount = internal.OtherProjectAccount
 
+// OtherProject is internal/broker/brokertest.OtherProject: the project OtherProjectAccount's entry
+// names, and OtherProjectSession the session that entry fixes.
+const (
+	OtherProject        = internal.OtherProject
+	OtherProjectSession = internal.OtherProjectSession
+)
+
+// ExchangeProject is internal/broker/brokertest.ExchangeProject: the project every account of the
+// Rig's exchange but OtherProjectAccount names, ExchangeRolesAccount's and DaemonExchangeAccount's
+// among them.
+const ExchangeProject = internal.ExchangeProject
+
 // NewRig forwards to internal/broker/brokertest.NewRig, including its own skip when
 // BROKER_TEST_DATABASE_URL is unset.
 func NewRig(t *testing.T, opts ...Option) *Rig {
