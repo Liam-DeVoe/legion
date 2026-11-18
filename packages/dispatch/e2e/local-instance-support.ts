@@ -226,22 +226,41 @@ export interface InstanceBanner {
   readonly env: Readonly<Record<string, string | undefined>>;
 }
 
+/** The broker switches (e2e/harness-broker.ts) the shell of this command set. */
+function brokerSwitches(banner: InstanceBanner): string[] {
+  return ["DISPATCH_E2E_AGENT_SECRETS_URL", "DISPATCH_E2E_AGENT_SECRETS_ACCOUNT_TOKEN_FILE"].filter(
+    (variable) => banner.env[variable] !== undefined
+  );
+}
+
+/** The variables the command reads from the shell that runs it, never writing their values: a
+ *  DATABASE_URL the person set, and each broker switch the shell set. Either may carry a password
+ *  (the broker's URL may carry a user part). */
+function fromShell(banner: InstanceBanner): string[] {
+  return [...(banner.databaseGiven ? ["DATABASE_URL"] : []), ...brokerSwitches(banner)];
+}
+
 /** The harness inputs a command needs to reach this instance, as a shell prefix: the database,
- *  each port the harness reported, and the broker switch (e2e/harness-broker.ts) this shell set.
- *  A DATABASE_URL the person set is read from the shell that runs the command, never written in
- *  it: it may carry a password. */
+ *  each port the harness reported, and the broker switch this shell set, each variable of
+ *  `fromShell` written as its own name read from the shell. */
 function harnessEnvironment(banner: InstanceBanner): string {
-  const switches = [
-    "DISPATCH_E2E_AGENT_SECRETS_URL",
-    "DISPATCH_E2E_AGENT_SECRETS_ACCOUNT_TOKEN_FILE",
-  ].filter((variable) => banner.env[variable] !== undefined);
   return [
     banner.databaseGiven
       ? 'DATABASE_URL="$DATABASE_URL"'
       : `DATABASE_URL=${shellQuote(banner.databaseUrl)}`,
     ...Object.entries(banner.ports).map(([variable, port]) => `${variable}=${port}`),
-    ...switches.map((variable) => `${variable}=${shellQuote(banner.env[variable] ?? "")}`),
+    ...brokerSwitches(banner).map((variable) => `${variable}="$${variable}"`),
   ].join(" ");
+}
+
+/** The banner's line that says which variables the command reads from the shell, or nothing. */
+function fromShellLine(banner: InstanceBanner): string {
+  const names = fromShell(banner);
+  if (names.length === 0) return "";
+  const listed =
+    names.length === 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+  const them = names.length === 1 ? "it" : "them";
+  return `  The command reads ${listed} as the shell that runs it sets ${them}: set ${them} there as you set ${them} here.\n`;
 }
 
 /** The banner `bun run dispatch:local` prints once its instance is up: where to open it, the
@@ -269,9 +288,7 @@ export function instanceBanner(banner: InstanceBanner): string {
     "reseed):\n" +
     `    DISPATCH_E2E_REUSE_SERVERS=1 ${harnessEnvironment(banner)} bunx ` +
     "playwright test --config e2e/playwright.config.ts --project=chromium e2e/broadcast.e2e.ts\n" +
-    (banner.databaseGiven
-      ? "  The command reads DATABASE_URL as the shell that runs it sets it: set it there as you set it here.\n"
-      : "") +
+    fromShellLine(banner) +
     "Open exactly that origin: 'localhost' is another Host and the server refuses it (421).\n" +
     "Press Ctrl-C to stop."
   );

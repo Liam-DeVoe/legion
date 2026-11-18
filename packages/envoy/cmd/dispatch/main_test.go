@@ -164,8 +164,10 @@ func TestResolveBootConfigRefusesSignInSettingsItCannotUse(t *testing.T) {
 			lead + "DISPATCH_SIGNIN_ISSUER, DISPATCH_SIGNIN_CLIENT_ID set, DISPATCH_SIGNIN_CLIENT_SECRET, DISPATCH_SIGNIN_GROUP or DISPATCH_SIGNIN_DOMAIN missing"},
 		{"a domain under a Cognito pool", googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://issuer.example/pool"}),
 			"DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is https://issuer.example/pool"},
+		// A schemeless value is one redact.URL cannot prove clean, so the refusal names it as
+		// redact.NotPrinted: user:password@host would read as no user at all.
 		{"a domain under Google's schemeless issuer", googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "accounts.google.com"}),
-			"DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is accounts.google.com"},
+			"DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is " + redact.NotPrinted},
 		{"a malformed domain under another issuer", googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://issuer.example/pool", "DISPATCH_SIGNIN_DOMAIN": "Example.com"}),
 			"DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is https://issuer.example/pool"},
 		{"a group under Google's issuer", signInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://accounts.google.com"}),
@@ -1510,10 +1512,11 @@ const devSignInOrigin = "http://127.0.0.1:8799"
 func TestDevSignInRefusesAnAppKeyThatReachesGitHub(t *testing.T) {
 	withKey := &auth.AppConfig{ClientID: "Iv1.app", PEM: "app private key"}
 	fromEnv := appCredentialSource{}
-	// Unset, the App calls https://api.github.com.
+	// Unset, the App calls https://api.github.com. The refusal names the base through redact.URL,
+	// so the one whose user part is 127.0.0.1 is named as redact.NotPrinted.
 	for _, base := range []string{"", "https://api.github.com", "http://10.0.0.5:9022", "http://127.0.0.1@api.github.com"} {
 		err := devSignInLoadedFence(devSignInBoot(t, map[string]string{"DISPATCH_GITHUB_API_BASE": base}), devSignInOrigin, withKey, fromEnv)
-		if err == nil || !strings.Contains(err.Error(), "DISPATCH_GITHUB_API_BASE="+strconv.Quote(base)) || !strings.Contains(err.Error(), "DISPATCH_APP_PEM_B64") {
+		if err == nil || !strings.Contains(err.Error(), "DISPATCH_GITHUB_API_BASE="+strconv.Quote(redact.URL(base))) || !strings.Contains(err.Error(), "DISPATCH_APP_PEM_B64") {
 			t.Errorf("DISPATCH_GITHUB_API_BASE=%q: err = %v, want a refusal naming DISPATCH_GITHUB_API_BASE and DISPATCH_APP_PEM_B64", base, err)
 		}
 	}
@@ -1840,5 +1843,94 @@ func TestExplainMigrateErrorPassesThroughAnUnrelatedMigrationFailure(t *testing.
 	}
 	if explainMigrateError(nil) != nil {
 		t.Error("explainMigrateError(nil) is not nil")
+	}
+}
+
+// A refusal at boot that names a setting whose value can be a URL names it through redact.URL, or
+// by its length, so its user part reaches no log line; main prints each one whole. Each case's
+// control is the same setting with no user part, which is refused too and still named. The user
+// and the password are made for this test.
+func TestBootRefusalsNameNoUserPartOfASettingURL(t *testing.T) {
+	const (
+		user     = "made-up-user"
+		password = "not-a-secret-5e1c07"
+	)
+	for _, tc := range []struct {
+		name, setting string
+		// env is the environment whose setting carries userPart, which the control leaves empty.
+		env func(userPart string) settingValues
+	}{
+		{"ENVOY_URL with no scheme", "ENVOY_URL", func(userPart string) settingValues {
+			return bootEnvironment(map[string]string{"ENVOY_URL": userPart + "envoy.example:9020"})
+		}},
+		{"ENVOY_URL under the dev sign-in", "ENVOY_URL", func(userPart string) settingValues {
+			return devSignInEnvironment(map[string]string{"ENVOY_URL": "http://" + userPart + "envoy.example:9020"})
+		}},
+		{"a DATABASE_URL pgx cannot parse", "DATABASE_URL", func(userPart string) settingValues {
+			return devSignInEnvironment(map[string]string{"DATABASE_URL": "postgres://" + userPart + "127.0.0.1:5432/x?sslmode=bogus"})
+		}},
+		{"a DATABASE_URL whose user part holds a /", "DATABASE_URL", func(userPart string) settingValues {
+			if userPart == "" {
+				return devSignInEnvironment(map[string]string{"DATABASE_URL": "postgres://db.example/x"})
+			}
+			return devSignInEnvironment(map[string]string{"DATABASE_URL": "postgres://" + user + "/" + password + "@db.example/x"})
+		}},
+		{"DISPATCH_AZURE_EMBED_ENDPOINT", "DISPATCH_AZURE_EMBED_ENDPOINT", func(userPart string) settingValues {
+			return envGetter(azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_ENDPOINT": "https://" + userPart + "embed.example/models?x=1"}))
+		}},
+		{"DISPATCH_CHAT_ENDPOINT", "DISPATCH_CHAT_ENDPOINT", func(userPart string) settingValues {
+			return envGetter(endpointChatEnvironment(map[string]string{"DISPATCH_CHAT_ENDPOINT": "https://" + userPart + "chat.example/v1?x=1"}))
+		}},
+		{"DISPATCH_SIGNIN_ISSUER under a domain", "DISPATCH_SIGNIN_ISSUER", func(userPart string) settingValues {
+			return envGetter(googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://" + userPart + "issuer.example/pool"}))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := resolveBootConfig(tc.env(user + ":" + password + "@"))
+			if err == nil || !strings.Contains(err.Error(), tc.setting) {
+				t.Fatalf("err = %v, want a refusal naming %s", err, tc.setting)
+			}
+			if strings.Contains(err.Error(), password) || strings.Contains(err.Error(), user) {
+				t.Errorf("the refusal holds the user part: %q", err)
+			}
+			if _, err := resolveBootConfig(tc.env("")); err == nil || !strings.Contains(err.Error(), tc.setting) {
+				t.Errorf("the control with no user part: err = %v, want a refusal naming %s", err, tc.setting)
+			}
+		})
+	}
+}
+
+// With the flag, an App key from the environment may sign calls only to a loopback host, and the
+// refusal of another base names it through redact.URL: a base with a user part prints none of it.
+// The control is a base with no user part, which the refusal names. The password is made for this
+// test.
+func TestDevSignInLoadedFenceNamesNoUserPartOfTheGitHubBase(t *testing.T) {
+	const password = "not-a-secret-2b94d0"
+	withKey := &auth.AppConfig{ClientID: "Iv1.app", PEM: "app private key"}
+	err := devSignInLoadedFence(devSignInBoot(t, map[string]string{"DISPATCH_GITHUB_API_BASE": "https://made-up-user:" + password + "@github.example"}), devSignInOrigin, withKey, appCredentialSource{})
+	if err == nil || !strings.Contains(err.Error(), "DISPATCH_GITHUB_API_BASE") || strings.Contains(err.Error(), password) || strings.Contains(err.Error(), "made-up-user") {
+		t.Errorf("err = %v, want a refusal naming DISPATCH_GITHUB_API_BASE and no part of its user part", err)
+	}
+	if err := devSignInLoadedFence(devSignInBoot(t, map[string]string{"DISPATCH_GITHUB_API_BASE": "https://github.example"}), devSignInOrigin, withKey, appCredentialSource{}); err == nil || !strings.Contains(err.Error(), `DISPATCH_GITHUB_API_BASE="https://github.example"`) {
+		t.Errorf("the control with no user part: err = %v, want a refusal naming the base", err)
+	}
+}
+
+// The boot line that says the server verifies service-account tokens names their issuer through
+// redact.URL, so an issuer with a user part prints none of it; one with none is named as written.
+// The password is made for this test.
+func TestServiceTokenLineNamesNoUserPartOfTheIssuer(t *testing.T) {
+	const password = "not-a-secret-7a31f9"
+	for _, tc := range []struct{ issuer, want string }{
+		{"https://made-up-user:" + password + "@issuer.example", redact.NotPrinted},
+		{"https://issuer.example", "https://issuer.example"},
+	} {
+		var logged bytes.Buffer
+		logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
+		logServiceTokens(bootConfig{OIDCIssuer: tc.issuer, OIDCAudience: "dispatch"})
+		line := logged.String()
+		if strings.Contains(line, password) || strings.Contains(line, "made-up-user") || !strings.Contains(line, tc.want) {
+			t.Errorf("issuer %q: logged %q, want the issuer named as %q", tc.issuer, line, tc.want)
+		}
 	}
 }

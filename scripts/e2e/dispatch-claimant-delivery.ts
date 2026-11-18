@@ -20,11 +20,17 @@ if (dispatchUrl === undefined || natsUrl === undefined || envoyUrl === undefined
   );
   process.exit(2);
 }
-// The URL may carry a user and a password: one that `shownSettingUrl` would not show is refused
+// The URLs may carry a user and a password: one that `shownSettingUrl` would not show is refused
 // before anything parses it, named by its length and what to correct (`unshownSettingUrl`).
 if (shownSettingUrl(dispatchUrl) === undefined) {
   process.stderr.write(
     `<dispatch-url> must be an http or https URL: ${unshownSettingUrl(dispatchUrl)}\n`
+  );
+  process.exit(2);
+}
+if (shownSettingUrl(envoyUrl) === undefined) {
+  process.stderr.write(
+    `<fake-envoy-url> must be an http or https URL: ${unshownSettingUrl(envoyUrl)}\n`
   );
   process.exit(2);
 }

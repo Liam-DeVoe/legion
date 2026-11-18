@@ -454,7 +454,7 @@ func main() {
 
 	serviceTokens := serviceTokenVerifier(boot)
 	if serviceTokens != nil {
-		slog.Info("dispatch: verifying service-account tokens", "issuer", boot.OIDCIssuer, "audience", boot.OIDCAudience)
+		logServiceTokens(boot)
 		go serviceTokens.Run(ctx)
 	}
 
@@ -1311,7 +1311,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	}
 	parsed, err := url.Parse(envoyURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-		return bootConfig{}, fmt.Errorf("ENVOY_URL=%q (expected an absolute http(s) URL)", envoyURL)
+		return bootConfig{}, fmt.Errorf("ENVOY_URL=%q (expected an absolute http(s) URL)", redact.URL(envoyURL))
 	}
 	boot.EnvoyURL = strings.TrimSuffix(envoyURL, "/")
 
@@ -1394,7 +1394,7 @@ func devSignInFence(boot bootConfig, env settingValues) error {
 		}
 	}
 	if !routes.LoopbackURL(boot.EnvoyURL) {
-		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 delivers through this machine's Envoy listener only: ENVOY_URL=%q must name 127.0.0.1, [::1] or localhost", boot.EnvoyURL)
+		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 delivers through this machine's Envoy listener only: ENVOY_URL=%q must name 127.0.0.1, [::1] or localhost", redact.URL(boot.EnvoyURL))
 	}
 	return nil
 }
@@ -1424,9 +1424,16 @@ func devSignInLoadedFence(boot bootConfig, serverURL string, app *auth.AppConfig
 		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 refuses the App private key in %s, whatever DISPATCH_GITHUB_API_BASE names: that file is where the real App's key is kept, and with the flag any loopback client can have the App sign calls. Pass a throwaway App in the environment instead (DISPATCH_APP_CLIENT_ID and a generated DISPATCH_APP_PEM_B64, which take precedence over app.json), with DISPATCH_GITHUB_API_BASE naming a GitHub fake on a loopback host, as packages/dispatch/e2e/run-server.sh does", source.Path)
 	}
 	if !routes.LoopbackURL(boot.GitHubAPIBase) {
-		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 lets the App private key (DISPATCH_APP_PEM_B64) sign calls only to a loopback host: DISPATCH_GITHUB_API_BASE=%q (empty is https://api.github.com) must name 127.0.0.1, [::1] or localhost. Use a throwaway key: every App call hands a signed App JWT to whatever listens there", boot.GitHubAPIBase)
+		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 lets the App private key (DISPATCH_APP_PEM_B64) sign calls only to a loopback host: DISPATCH_GITHUB_API_BASE=%q (empty is https://api.github.com) must name 127.0.0.1, [::1] or localhost. Use a throwaway key: every App call hands a signed App JWT to whatever listens there", redact.URL(boot.GitHubAPIBase))
 	}
 	return nil
+}
+
+// logServiceTokens writes the boot line that says the server verifies service-account tokens,
+// naming their issuer through redact.URL (an issuer may carry a user and a password) and their
+// audience.
+func logServiceTokens(boot bootConfig) {
+	slog.Info("dispatch: verifying service-account tokens", "issuer", redact.URL(boot.OIDCIssuer), "audience", boot.OIDCAudience)
 }
 
 // logDevSignInMounted writes the WARN line that says the dev sign-in route is mounted. It names
@@ -1450,21 +1457,43 @@ func logDevSignInMounted(boot bootConfig, serverURL string) {
 // loopbackDatabase refuses a DATABASE_URL with a host that is not this machine: the data a
 // dev-sign-in server serves to any local process must be a scratch database here. pgx parses
 // both the URL and the key=value forms, multi-host lists included, exactly as store.Open will.
+// The value may carry a user and a password, so a refusal names it by its length: pgx's own error
+// for a value it cannot parse names its user, and a user part that holds a / ends where pgx ends
+// the host, so the host pgx read is then a part of the user part. A host is named only when net/url
+// finds the whole user part, which leaves no @ once it is taken out.
 func loopbackDatabase(databaseURL string) error {
 	config, err := pgx.ParseConfig(databaseURL)
 	if err != nil {
-		return fmt.Errorf("DATABASE_URL: %w", err)
+		return fmt.Errorf("DATABASE_URL, a value of %d characters, is not a Postgres connection string pgx can parse", len(databaseURL))
 	}
 	hosts := []string{config.Host}
 	for _, fallback := range config.Fallbacks {
 		hosts = append(hosts, fallback.Host)
 	}
 	for _, host := range hosts {
-		if !strings.HasPrefix(host, "/") && !routes.LoopbackName(host) {
-			return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 serves a loopback database only: DATABASE_URL names host %q", host)
+		if strings.HasPrefix(host, "/") || routes.LoopbackName(host) {
+			continue
 		}
+		if userPartLeftOver(databaseURL) {
+			return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 serves a loopback database only: DATABASE_URL, a value of %d characters, names a host this server cannot read apart from its user part; write each @, /, ?, # and \\ in that part percent-encoded (@ as %%40, / as %%2F), or remove the user part", len(databaseURL))
+		}
+		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 serves a loopback database only: DATABASE_URL names host %q", host)
 	}
 	return nil
+}
+
+// userPartLeftOver reports whether an @ is left in raw once the user part net/url found is taken
+// out, or net/url cannot parse it: then a host read from it may be a part of its user part.
+func userPartLeftOver(raw string) bool {
+	if !strings.Contains(raw, "@") {
+		return false
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return true
+	}
+	parsed.User = nil
+	return strings.Contains(parsed.String(), "@")
 }
 
 // explainMigrateError wraps a migration failure Postgres attributes to a missing CREATE
