@@ -48,8 +48,7 @@ const (
 // value, and whether nobody reported seeing it (unseen) or the worker saw it and asked no take.
 type firstWait struct {
 	unseen   bool
-	epoch    string
-	revision uint64
+	revision TaskRevision
 }
 
 // UnseenTask is a claim's latest value that went a whole first bound with nobody reporting it
@@ -138,14 +137,14 @@ func (m *Machine) armWaits() {
 func (m *Machine) firstWaitNow() (firstWait, bool) {
 	c := &m.claim
 	p := c.Pending
-	if m.deps.Timeouts.Take <= 0 || m.awaitsAct || p == nil || p.taken() || c.TaskWrittenRevision == 0 {
+	if m.deps.Timeouts.Take <= 0 || m.awaitsAct || p == nil || p.taken() || c.TaskWrittenRevision.Revision == 0 {
 		return firstWait{}, false
 	}
 	if !SaidReady(c.State) {
 		return firstWait{}, false
 	}
-	written := firstWait{epoch: c.TaskWrittenEpoch, revision: c.TaskWrittenRevision}
-	if c.TaskSeenEpoch != c.TaskWrittenEpoch || c.TaskSeenRevision < c.TaskWrittenRevision {
+	written := firstWait{revision: c.TaskWrittenRevision}
+	if c.TaskWrittenRevision.after(c.TaskSeenRevision) {
 		written.unseen = true
 		return written, true
 	}
@@ -208,7 +207,7 @@ func takeBoundOver(m *Machine, ctx context.Context, _ Event) error {
 	if now.unseen {
 		m.unseenListed = true
 		m.log.Info("supervise: nobody reported seeing the claim's latest value within the first bound; it is written again under its number, and nobody is charged",
-			"task", p.Number, "epoch", now.epoch, "revision", now.revision, "bound", m.deps.Timeouts.Take)
+			"task", p.Number, "epoch", now.revision.Epoch, "revision", now.revision.Revision, "bound", m.deps.Timeouts.Take)
 		return m.writeValue(ctx, TaskValueUnseen)
 	}
 	hold, dropped, err := m.takeable(ctx)
@@ -221,11 +220,11 @@ func takeBoundOver(m *Machine, ctx context.Context, _ Event) error {
 		return nil
 	case m.seenFromStore:
 		m.log.Info("supervise: the first bound passed over a revision whose seen report this daemon read from the store; it is written again under its number, and nobody is charged",
-			"task", p.Number, "epoch", now.epoch, "revision", now.revision, "bound", m.deps.Timeouts.Take)
+			"task", p.Number, "epoch", now.revision.Epoch, "revision", now.revision.Revision, "bound", m.deps.Timeouts.Take)
 		return m.writeValue(ctx, TaskValueUnseen)
 	}
 	return m.chargePrompt(ctx, WaitTake, fmt.Sprintf("%s: the worker reported seeing task %d at revision %d and asked no take of it within %s",
-		WaitTake, p.Number, now.revision, m.deps.Timeouts.Take))
+		WaitTake, p.Number, now.revision.Revision, m.deps.Timeouts.Take))
 }
 
 // turnStartBoundOver is the second bound passing (TimerTurnStart): the take of the pending task
@@ -260,13 +259,13 @@ func turnStartBoundOver(m *Machine, ctx context.Context, _ Event) error {
 }
 
 // reconnectDeadline is the reconnect deadline of a claim a daemon start restored with its agent
-// ready, idle or working (NewMachine): its shim has not said hello since. It probes as the
-// registration deadline does (registrationDeadline). A process found gone takes the death path
-// (judge, died). A process found alive is retired and relaunched with a charged launch failure,
-// CauseNeverReconnected, since a live process whose shim never comes back is held by nothing
-// else: no frame of it reaches the daemon, so none of R5's waits can be judged of it. The task
-// its turn was running is taken back first, as a replacement takes it (interrupted), so the
-// relaunched worker takes it again under its number.
+// ready, idle or working (NewMachine): its shim has not said hello since. It probes and retires
+// as the registration deadline does (registrationDeadline, retireNeverReady). A process found
+// gone takes the death path (judge, died). A process found alive is retired and relaunched with a
+// charged launch failure, CauseNeverReconnected, since a live process whose shim never comes back
+// is held by nothing else: no frame of it reaches the daemon, so none of R5's waits can be judged
+// of it. The task its turn was running is taken back first, as a replacement takes it
+// (interrupted), so the relaunched worker takes it again under its number.
 //
 // A suspension held for the claim's turn ends here instead: no turn's end will reach it from a
 // shim that never came back. A relaunch the tree lifecycle refuses, a take-back the store would
@@ -291,21 +290,16 @@ func reconnectDeadline(m *Machine, ctx context.Context, _ Event) error {
 			"askedAt", m.askedAt)
 		return m.refreshPlugin(ctx, m.askTrigger, false)
 	}
-	return m.probe(ctx, func(ctx context.Context) error {
-		if err := m.checkLaunch(ctx); err != nil {
-			m.arm(TimerRegistration, m.deps.Timeouts.Probe, "")
-			return fmt.Errorf("retire %s, whose shim never reconnected: %w", m.claim.Token, err)
-		}
-		if err := m.interrupted(ctx, "the shim never reconnected after the daemon started", ordinaryEnd); err != nil {
-			m.arm(TimerRegistration, m.deps.Timeouts.Probe, "")
-			return fmt.Errorf("retire %s, whose shim never reconnected: take the task back: %w", m.claim.Token, err)
-		}
-		incarnation := m.claim.Locator.Incarnation
-		if err := m.suspendProcess(ctx, endNeverReady("never said hello to the daemon that started")); err != nil {
-			m.arm(TimerRegistration, m.deps.Timeouts.Probe, "")
-			return fmt.Errorf("retire %s, whose shim never reconnected: suspend: %w", m.claim.Token, err)
-		}
-		m.log.Warn("supervise: the shim never reconnected after the daemon started; retired its process", "incarnation", incarnation)
-		return m.relaunchAfterFailure(ctx, CauseNeverReconnected, noEnd)
-	}, TimerRegistration, m.deps.Timeouts.Probe)
+	return m.retireNeverReady(ctx, neverReady{
+		whose: "shim never reconnected",
+		never: "never said hello to the daemon that started",
+		line:  "supervise: the shim never reconnected after the daemon started; retired its process",
+		cause: CauseNeverReconnected,
+		before: func(ctx context.Context) error {
+			if err := m.interrupted(ctx, "the shim never reconnected after the daemon started", ordinaryEnd); err != nil {
+				return fmt.Errorf("take the task back: %w", err)
+			}
+			return nil
+		},
+	})
 }

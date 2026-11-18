@@ -219,19 +219,16 @@ type Claim struct {
 	TaskTaken           uint64
 	TaskFinished        uint64
 	TaskFinishedSession string
-	// TaskSeenEpoch and TaskSeenRevision are the bucket epoch and revision of this claim's value
-	// that its worker last reported seeing, and TaskTakeState what came of a take at that
-	// revision. TaskWrittenEpoch and TaskWrittenRevision are the epoch and revision of the
-	// daemon's own last write of the value. A revision is read only beside its epoch, because a
-	// bucket created again counts its revisions from 1 again: a record whose epoch is not the
-	// bucket's current one has seen, and written, nothing of it. Empty epochs and zero
-	// revisions are a claim that has seen and written nothing, which is every claim the
-	// migration filled.
-	TaskSeenEpoch       string
-	TaskSeenRevision    uint64
+	// TaskSeenRevision is the revision of this claim's value, with its bucket epoch, that its
+	// worker last reported seeing, and TaskTakeState what came of a take at that revision.
+	// TaskWrittenRevision is the revision of the daemon's own last write of the value. A revision
+	// is read only beside its epoch, because a bucket created again counts its revisions from 1
+	// again (TaskRevision): a record whose epoch is not the bucket's current one has seen, and
+	// written, nothing of it. The zero revision is a claim that has seen and written nothing,
+	// which is every claim the migration filled.
+	TaskSeenRevision    TaskRevision
 	TaskTakeState       TakeState
-	TaskWrittenEpoch    string
-	TaskWrittenRevision uint64
+	TaskWrittenRevision TaskRevision
 	// Handshake is the handshake between the daemon and this claim's worker over the last phase
 	// entry the claim was queued a task of: that entry, the issue generation the task was of, when
 	// a task of that entry was first queued to the claim and when a take of it by its worker was
@@ -1033,7 +1030,7 @@ type Deps struct {
 	// which this package cannot import: the store imports it). nil applies the decision on the
 	// machine's context unchanged.
 	Worker func(context.Context) context.Context
-	// TaskValues is the task bucket the machine writes each claim's value to (take.go): written
+	// TaskValues is the task bucket the machine writes each claim's value to (taskvalue.go): written
 	// when a task is queued and again when a hold that refused its take ends, deleted when the
 	// record finishes or drops it, and read for what a registration is told. nil writes and reads
 	// nothing, which a daemon with no bucket and every test that reads no value runs on.
@@ -1189,10 +1186,8 @@ type Machine struct {
 	timers map[TimerKind]armed
 	seq    uint64
 	// taking is the take Machine.Take is answering, nil for none: a second take that arrives
-	// meanwhile waits for its answer (take.go). decided is what the take's last row decided,
-	// read back by Machine.Take once that row returns.
-	taking  *taking
-	decided takeDecision
+	// meanwhile waits for its answer (take.go).
+	taking *taking
 	// valueUnwritten is a write of the claim's value the bucket refused (putValue), made again at
 	// the claim's next chance whatever the worker last asked (offerPending). It is memory only: a
 	// restart compares the bucket with the record at boot, which repairs it.
@@ -1573,7 +1568,7 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 		timers:        map[TimerKind]armed{},
 		stale:         map[string]bool{},
 		awaitsAct:     true,
-		seenFromStore: c.TaskSeenEpoch != "" || c.TaskSeenRevision != 0,
+		seenFromStore: c.TaskSeenRevision != TaskRevision{},
 	}
 	m.idle = sync.NewCond(&m.mu)
 	switch c.State {
@@ -2140,9 +2135,9 @@ func (m *Machine) stoppingProcess() func() {
 // and changes none of them. The sections that defer it are Handle, which every event and every
 // timer of this package comes through, ReleaseUncertainLaunch, markRound (PodUpdateTold,
 // PodUpdateAsked), StartedBy, ReadProcess and Retree; the sections that take mu without it are
-// Claim, OnDurableState, Wait, compaction, Machine.Take's own sections and takeDecided (take.go),
-// and the goroutine tail in secrets.go. It is that rule a section added later has to keep, rather
-// than this list of the sections there are now.
+// Claim, OnDurableState, Wait, compaction, Machine.Take's own sections (take.go), and the
+// goroutine tail in secrets.go. It is that rule a section added later has to keep, rather than
+// this list of the sections there are now.
 func (m *Machine) unlock() {
 	m.endRefreshLane()
 	m.armFinishAtAct()

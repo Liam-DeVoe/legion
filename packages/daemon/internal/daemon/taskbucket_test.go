@@ -397,9 +397,9 @@ func TestTaskBucketRepairsOnlyItsOwnProjectsKeys(t *testing.T) {
 	if causes := r.writes(w.token); !slices.Equal(causes, []string{"queued", "repair"}) {
 		t.Fatalf("the daemon wrote the claim's value for %v, want its queue and one repair", causes)
 	}
-	if stored := storedClaim(t, r.cfg, w.token); stored.TaskWrittenRevision != repaired.Revision() || stored.TaskWritten != number {
+	if stored := storedClaim(t, r.cfg, w.token); stored.TaskWrittenRevision.Revision != repaired.Revision() || stored.TaskWritten != number {
 		t.Fatalf("the record holds written %d at revision %d, want task %d at the repair's revision %d",
-			stored.TaskWritten, stored.TaskWrittenRevision, number, repaired.Revision())
+			stored.TaskWritten, stored.TaskWrittenRevision.Revision, number, repaired.Revision())
 	}
 
 	taken := w.driver.mustTake(t, "the worker takes the repaired value")
@@ -531,9 +531,9 @@ func valueRepairedOnce(t *testing.T, change func(r *bucketRig, key string, numbe
 		t.Fatalf("the daemon wrote the claim's value for %v, want its queue and one repair", causes)
 	}
 	stored := storedClaim(t, r.cfg, w.token)
-	if stored.TaskWritten != number || stored.Pending == nil || stored.Pending.Number != number || stored.TaskWrittenRevision != repaired.Revision() {
+	if stored.TaskWritten != number || stored.Pending == nil || stored.Pending.Number != number || stored.TaskWrittenRevision.Revision != repaired.Revision() {
 		t.Fatalf("the record holds written %d, pending %+v, last write at %d; want task %d still its number, written at %d",
-			stored.TaskWritten, stored.Pending, stored.TaskWrittenRevision, number, repaired.Revision())
+			stored.TaskWritten, stored.Pending, stored.TaskWrittenRevision.Revision, number, repaired.Revision())
 	}
 	if taken := w.driver.mustTake(t, "the worker takes the repaired value"); taken.Number != number {
 		t.Fatalf("the worker took task %d, want %d", taken.Number, number)
@@ -578,8 +578,8 @@ func TestTaskValueWrittenFromTheRecordWhenTheBucketIsCreatedAgain(t *testing.T) 
 	if causes := r.writes(w.token); !slices.Equal(causes, []string{"queued", "repair"}) {
 		t.Fatalf("the daemon wrote the claim's value for %v, want its queue and one repair", causes)
 	}
-	if stored := storedClaim(t, r.cfg, w.token); stored.TaskWrittenEpoch != epoch || stored.TaskWritten != number {
-		t.Fatalf("the record holds written %d under epoch %q, want task %d under the new epoch %q", stored.TaskWritten, stored.TaskWrittenEpoch, number, epoch)
+	if stored := storedClaim(t, r.cfg, w.token); stored.TaskWrittenRevision.Epoch != epoch || stored.TaskWritten != number {
+		t.Fatalf("the record holds written %d under epoch %q, want task %d under the new epoch %q", stored.TaskWritten, stored.TaskWrittenRevision.Epoch, number, epoch)
 	}
 	if taken := w.driver.mustTake(t, "the worker takes the value of the new epoch"); taken.Number != number {
 		t.Fatalf("the worker took task %d, want %d", taken.Number, number)

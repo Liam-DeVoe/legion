@@ -119,7 +119,7 @@ func (r *heldTaskRig) execAll(statements ...string) {
 func (r *heldTaskRig) takeAt(machine *supervise.Machine, value supervise.TaskValue) (supervise.TakeAnswer, error) {
 	c := machine.Claim()
 	answer, err := machine.Take(r.ctx, supervise.RequestTake{Claim: r.token, Generation: c.Generation, Session: c.Session,
-		Number: value.Number, Epoch: value.Epoch, Revision: value.Revision})
+		Number: value.Number, Revision: supervise.TaskRevision{Epoch: value.Epoch, Revision: value.Revision}})
 	machine.Wait()
 	return answer, err
 }

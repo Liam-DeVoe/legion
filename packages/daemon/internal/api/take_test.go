@@ -226,7 +226,7 @@ func TestTakeRouteRefusesAnUnknownCallerWithACodeAndRecordsNothing(t *testing.T)
 				if stored.TaskTakeState != before.TaskTakeState || stored.TaskSeenRevision != before.TaskSeenRevision ||
 					stored.TaskTaken != 0 || !stored.Pending.ConfirmedAt.IsZero() {
 					t.Fatalf("the refused request left take state %q, seen revision %d, taken %d, confirmed %v; want nothing recorded",
-						stored.TaskTakeState, stored.TaskSeenRevision, stored.TaskTaken, stored.Pending.ConfirmedAt)
+						stored.TaskTakeState, stored.TaskSeenRevision.Revision, stored.TaskTaken, stored.Pending.ConfirmedAt)
 				}
 			})
 		}
@@ -298,9 +298,9 @@ func TestTakeRouteAnswersRefusedNotOwedAndDroppedOverARealMachine(t *testing.T) 
 	if recorder.Code != http.StatusOK || answer != (claim.TakeResponse{Outcome: string(supervise.TakeOutcomeRefused), Hold: supervise.HoldNotOwed}) {
 		t.Fatalf("the take of a number not owed = %d %+v (body %s), want 200 refused %q", recorder.Code, answer, recorder.Body, supervise.HoldNotOwed)
 	}
-	if stored := h.stored(c.token); stored.TaskTakeState != "" || stored.TaskSeenRevision != 0 || stored.TaskTaken != 0 {
+	if stored := h.stored(c.token); stored.TaskTakeState != "" || stored.TaskSeenRevision.Revision != 0 || stored.TaskTaken != 0 {
 		t.Fatalf("the refused take of a number not owed left take state %q, seen revision %d, taken %d; want nothing recorded",
-			stored.TaskTakeState, stored.TaskSeenRevision, stored.TaskTaken)
+			stored.TaskTakeState, stored.TaskSeenRevision.Revision, stored.TaskTaken)
 	}
 
 	holds = false
@@ -363,8 +363,8 @@ func TestTakeRouteRecordsATaskSeenReport(t *testing.T) {
 	if recorder.Code != http.StatusNoContent || recorder.Body.Len() != 0 {
 		t.Fatalf("the seen report = %d (body %q), want 204 with no body", recorder.Code, recorder.Body)
 	}
-	if stored := h.stored(c.token); stored.TaskSeenEpoch != value.Epoch || stored.TaskSeenRevision != value.Revision || stored.TaskTakeState != "" {
-		t.Fatalf("the claim records seen %s/%d with take state %q, want %s/%d and no take", stored.TaskSeenEpoch, stored.TaskSeenRevision,
+	if stored := h.stored(c.token); stored.TaskSeenRevision.Epoch != value.Epoch || stored.TaskSeenRevision.Revision != value.Revision || stored.TaskTakeState != "" {
+		t.Fatalf("the claim records seen %s/%d with take state %q, want %s/%d and no take", stored.TaskSeenRevision.Epoch, stored.TaskSeenRevision.Revision,
 			stored.TaskTakeState, value.Epoch, value.Revision)
 	}
 
@@ -373,8 +373,8 @@ func TestTakeRouteRecordsATaskSeenReport(t *testing.T) {
 	if recorder.Code != http.StatusNoContent {
 		t.Fatalf("the bridge's seen report = %d (body %s), want 204", recorder.Code, recorder.Body)
 	}
-	if stored := h.stored(c.token); stored.TaskSeenRevision != value.Revision+1 {
-		t.Fatalf("the claim records seen revision %d, want the bridge's %d", stored.TaskSeenRevision, value.Revision+1)
+	if stored := h.stored(c.token); stored.TaskSeenRevision.Revision != value.Revision+1 {
+		t.Fatalf("the claim records seen revision %d, want the bridge's %d", stored.TaskSeenRevision.Revision, value.Revision+1)
 	}
 }
 

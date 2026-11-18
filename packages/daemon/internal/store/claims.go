@@ -344,9 +344,9 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 	if c.Generation > math.MaxInt64 {
 		return fmt.Errorf("put claim %s: generation %d does not fit a bigint", c.Token, c.Generation)
 	}
-	if max(c.TaskWritten, c.TaskTaken, c.TaskFinished, c.TaskSeenRevision, c.TaskWrittenRevision) > math.MaxInt64 {
+	if max(c.TaskWritten, c.TaskTaken, c.TaskFinished, c.TaskSeenRevision.Revision, c.TaskWrittenRevision.Revision) > math.MaxInt64 {
 		return fmt.Errorf("put claim %s: a task number or revision does not fit a bigint: written %d, taken %d, finished %d, seen revision %d, written revision %d",
-			c.Token, c.TaskWritten, c.TaskTaken, c.TaskFinished, c.TaskSeenRevision, c.TaskWrittenRevision)
+			c.Token, c.TaskWritten, c.TaskTaken, c.TaskFinished, c.TaskSeenRevision.Revision, c.TaskWrittenRevision.Revision)
 	}
 	if c.Handshake.Generation > math.MaxInt64 {
 		return fmt.Errorf("put claim %s: the generation %d of its handshake does not fit a bigint", c.Token, c.Handshake.Generation)
@@ -507,7 +507,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		string(c.FailureCause), instant(c.FailedAt), string(c.PendingCause), c.LeakCheckCause, endedWork,
 		c.Handshake.Entry, int64(c.Handshake.Generation), instant(c.Handshake.QueuedAt), instant(c.Handshake.ConfirmedAt),
 		int64(c.TaskWritten), int64(c.TaskTaken), int64(c.TaskFinished), c.TaskFinishedSession,
-		c.TaskSeenEpoch, int64(c.TaskSeenRevision), string(c.TaskTakeState), c.TaskWrittenEpoch, int64(c.TaskWrittenRevision),
+		c.TaskSeenRevision.Epoch, int64(c.TaskSeenRevision.Revision), string(c.TaskTakeState), c.TaskWrittenRevision.Epoch, int64(c.TaskWrittenRevision.Revision),
 	)
 	if err != nil {
 		return fmt.Errorf("put claim %s: %w", c.Token, err)
@@ -857,7 +857,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&c.Handshake.Entry, &handshakeGeneration, &handshakeQueued, &handshakeConfirmed,
 		&servingCheckLook, &servingCheckOpened,
 		&taskWritten, &taskTaken, &taskFinished, &c.TaskFinishedSession,
-		&c.TaskSeenEpoch, &seenRevision, &takeState, &c.TaskWrittenEpoch, &writtenRevision,
+		&c.TaskSeenRevision.Epoch, &seenRevision, &takeState, &c.TaskWrittenRevision.Epoch, &writtenRevision,
 		&enrollmentID, &enrollmentIC, &by,
 		&c.PluginContract, &c.PluginRelaunchFor, &c.DeliveredRows,
 		&turnStart, &turnEnd,
@@ -888,7 +888,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 	c.FailedAt = orZero(failedAt)
 	c.Generation, c.TreeEpoch, c.ServingGeneration = uint64(generation), uint64(treeEpoch), uint64(servingGeneration)
 	c.TaskWritten, c.TaskTaken, c.TaskFinished = uint64(taskWritten), uint64(taskTaken), uint64(taskFinished)
-	c.TaskSeenRevision, c.TaskWrittenRevision = uint64(seenRevision), uint64(writtenRevision)
+	c.TaskSeenRevision.Revision, c.TaskWrittenRevision.Revision = uint64(seenRevision), uint64(writtenRevision)
 	c.TaskTakeState = supervise.TakeState(takeState)
 	c.ServingCheckLook = supervise.CheckLook{Look: servingCheckLook, OpenedAt: orZero(servingCheckOpened)}
 	// The handshake's two moments are nullable (20261114020537_claim_entry_handshake): a claim queued

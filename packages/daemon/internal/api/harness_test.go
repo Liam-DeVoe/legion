@@ -570,7 +570,7 @@ func takePending(t *testing.T, machine *supervise.Machine) supervise.TakeAnswer 
 	}
 	request := supervise.RequestTake{Claim: c.Token, Generation: c.Generation, Session: c.Session, Number: c.Pending.Number}
 	if current.Value != nil {
-		request.Epoch, request.Revision = current.Value.Epoch, current.Value.Revision
+		request.Revision = supervise.TaskRevision{Epoch: current.Value.Epoch, Revision: current.Value.Revision}
 	}
 	answer, err := machine.Take(context.Background(), request)
 	if err != nil {

@@ -133,8 +133,8 @@ func (h *harness) olderDaemonsAsk(round string, set ...func(*Delivery)) Delivery
 	h.seedValue(&c)
 	if ask.taken() {
 		c.TaskTaken = ask.Number
-		c.TaskSeenEpoch, c.TaskSeenRevision, c.TaskTakeState = c.TaskWrittenEpoch, c.TaskWrittenRevision, TakeAccepted
-		value := TaskValue{Number: ask.Number, Epoch: c.TaskWrittenEpoch, Revision: c.TaskWrittenRevision}
+		c.TaskSeenRevision, c.TaskTakeState = c.TaskWrittenRevision, TakeAccepted
+		value := TaskValue{Number: ask.Number, Epoch: c.TaskWrittenRevision.Epoch, Revision: c.TaskWrittenRevision.Revision}
 		w := h.worker
 		w.at(c.Generation)
 		w.seen[value], w.asked[value] = true, true

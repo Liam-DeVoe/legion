@@ -1754,13 +1754,13 @@ func bootInterval(m *Machine, ctx context.Context, _ Event) error {
 
 // registrationDeadline is a process that has had its boot intervals and whose agent never became
 // ready — it never registered, or registered and never said it was ready. Without a held
-// suspension, it is retired, counted and relaunched. A relaunch the tree lifecycle refuses is
-// checked before the retirement, so the process is kept and the deadline tried again at the probe
-// interval, as one whose stop fails is. An operator suspension retained through a rule-resuming
-// launch instead completes here: no ready will arrive to run it, and relaunching would drop the
-// operator's hold. The retirement's stop records what it ended as the deadline's (endNeverReady,
-// letGo) — what its agent never did is no turn, so a record comes only of background work the
-// process reported — and the relaunch that follows lets nothing more go.
+// suspension, it is retired, counted and relaunched (retireNeverReady). A relaunch the tree
+// lifecycle refuses is checked before the retirement, so the process is kept and the deadline
+// tried again at the probe interval, as one whose stop fails is. An operator suspension retained
+// through a rule-resuming launch instead completes here: no ready will arrive to run it, and
+// relaunching would drop the operator's hold. The retirement's stop records what it ended as the
+// deadline's (endNeverReady, letGo) — what its agent never did is no turn, so a record comes only
+// of background work the process reported — and the relaunch that follows lets nothing more go.
 func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
 	if m.held != nil && m.held.By == SuspendedByOperator {
 		return m.suspendHeld(ctx)
@@ -1769,18 +1769,54 @@ func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
 	if m.claim.State == StateRegistered {
 		never = "registered and never said it was ready"
 	}
+	return m.retireNeverReady(ctx, neverReady{
+		whose: "agent " + never,
+		never: never,
+		line:  "supervise: the agent " + never + "; retired its process",
+		cause: CauseNeverRegistered,
+	})
+}
+
+// neverReady is what one deadline retires a process for, whose agent never became ready to the
+// daemon (retireNeverReady): whose names the claim's process in the errors ("agent never
+// registered"), never is what its agent never did as its end records it (endNeverReady), line is
+// the Warn line of the retirement, cause the charged launch failure, and before a step of the
+// deadline's own between the relaunch's check and the stop, nil for none.
+type neverReady struct {
+	whose  string
+	never  string
+	line   string
+	cause  FailureCause
+	before func(context.Context) error
+}
+
+// retireNeverReady is the sequence the registration deadline and the reconnect deadline share
+// (registrationDeadline, reconnectDeadline): the process is probed, and one found gone takes the
+// death path (probe). One found alive is retired and relaunched with a charged launch failure:
+// the relaunch the tree lifecycle would refuse is checked first (checkLaunch), the deadline's own
+// step runs (neverReady.before), the stop records what it ended as the deadline's (endNeverReady,
+// letGo), and the relaunch that follows lets nothing more go. A refused check, a failed step and
+// a stop the runtime refuses each keep the process, and the deadline is tried again at the probe
+// interval.
+func (m *Machine) retireNeverReady(ctx context.Context, r neverReady) error {
 	return m.probe(ctx, func(ctx context.Context) error {
 		if err := m.checkLaunch(ctx); err != nil {
 			m.arm(TimerRegistration, m.deps.Timeouts.Probe, "")
-			return fmt.Errorf("retire %s, whose agent %s: %w", m.claim.Token, never, err)
+			return fmt.Errorf("retire %s, whose %s: %w", m.claim.Token, r.whose, err)
+		}
+		if r.before != nil {
+			if err := r.before(ctx); err != nil {
+				m.arm(TimerRegistration, m.deps.Timeouts.Probe, "")
+				return fmt.Errorf("retire %s, whose %s: %w", m.claim.Token, r.whose, err)
+			}
 		}
 		incarnation := m.claim.Locator.Incarnation
-		if err := m.suspendProcess(ctx, endNeverReady(never)); err != nil {
+		if err := m.suspendProcess(ctx, endNeverReady(r.never)); err != nil {
 			m.arm(TimerRegistration, m.deps.Timeouts.Probe, "")
-			return fmt.Errorf("retire %s, whose agent %s: suspend: %w", m.claim.Token, never, err)
+			return fmt.Errorf("retire %s, whose %s: suspend: %w", m.claim.Token, r.whose, err)
 		}
-		m.log.Warn("supervise: the agent "+never+"; retired its process", "incarnation", incarnation)
-		return m.relaunchAfterFailure(ctx, CauseNeverRegistered, noEnd)
+		m.log.Warn(r.line, "incarnation", incarnation)
+		return m.relaunchAfterFailure(ctx, r.cause, noEnd)
 	}, TimerRegistration, m.deps.Timeouts.Probe)
 }
 
@@ -1797,7 +1833,7 @@ func spawn(m *Machine, ctx context.Context, ev Event) error {
 //
 // The process that registers reads its value afresh (CurrentTask) and has seen and asked nothing
 // at any revision of it, so the seen report and the take the record kept are the process before
-// it's: they go (Claim.TaskSeenEpoch, TaskSeenRevision, TaskTakeState), and the value reads as
+// it's: they go (Claim.TaskSeenRevision, TaskTakeState), and the value reads as
 // one nobody reported seeing until the new process reports it seen. A registration whose read of
 // the bucket failed answers the process no value, and the listener hands it none either, since
 // neither its session nor the revision moved; kept, the old process's report would put that
@@ -1813,7 +1849,7 @@ func register(m *Machine, ctx context.Context, ev Event) error {
 	if r.PluginContract == m.deps.PluginContract {
 		m.claim.PluginRelaunchFor = 0
 	}
-	m.claim.TaskSeenEpoch, m.claim.TaskSeenRevision, m.claim.TaskTakeState = "", 0, ""
+	m.claim.TaskSeenRevision, m.claim.TaskTakeState = TaskRevision{}, ""
 	m.claim.State = StateRegistered
 	m.log.Info(agentRegisteredLine, "generation", m.claim.Generation, "session", r.Session)
 	m.disarm(TimerBoot)

@@ -355,10 +355,10 @@ func fenced(ev Event, c Claim) Event {
 		return RequestTurnOutcome{Claim: c.Token, Generation: c.Generation, Sequence: 1}
 	case RequestTaskSeen:
 		return RequestTaskSeen{Claim: c.Token, Generation: c.Generation, Session: c.Session,
-			Number: c.Pending.Number, Epoch: testEpoch, Revision: 1}
+			Number: c.Pending.Number, Revision: TaskRevision{Epoch: testEpoch, Revision: 1}}
 	case RequestTake:
 		return RequestTake{Claim: c.Token, Generation: c.Generation, Session: c.Session,
-			Number: c.Pending.Number, Epoch: testEpoch, Revision: 1}
+			Number: c.Pending.Number, Revision: TaskRevision{Epoch: testEpoch, Revision: 1}}
 	case RequestCompact:
 		return RequestCompact{Claim: c.Token}
 	case CompactEnded:

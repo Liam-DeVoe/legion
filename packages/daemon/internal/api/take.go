@@ -73,7 +73,7 @@ func (s *server) taskSeen(w http.ResponseWriter, r *http.Request) {
 	defer decided()
 	if err := m.Handle(ctx, supervise.RequestTaskSeen{
 		Claim: token, Generation: req.Generation, Session: callerSession(caller),
-		Number: req.Number, Epoch: req.Epoch, Revision: req.Revision,
+		Number: req.Number, Revision: supervise.TaskRevision{Epoch: req.Epoch, Revision: req.Revision},
 	}); err != nil {
 		s.taskRefusal(w, "seen report", token, err)
 		return
@@ -83,9 +83,11 @@ func (s *server) taskSeen(w http.ResponseWriter, r *http.Request) {
 
 // take is the worker asking to take the task its value names, because its host is idle. The
 // answer is the machine's (supervise's Machine.Take): accepted with the text the worker runs as
-// its turn's user message, refused naming the hold that stands, or dropped. A decision that failed
-// after its answer was made still answers it: the worker's take was answered, and the failure
-// (logged by the machine) is the rest of the decision's.
+// its turn's user message, refused naming the hold that stands, or dropped. The machine answers
+// every take with an outcome or fails it with an error, and a take it failed with no answer is
+// refused in the coded shape (taskRefusal). A decision that failed after its answer was made
+// still answers it: the worker's take was answered, and the failure (logged by the machine) is
+// the rest of the decision's.
 func (s *server) take(w http.ResponseWriter, r *http.Request) {
 	var req claim.TakeRequest
 	if !s.readTaskBody(w, r, &req) {
@@ -100,12 +102,9 @@ func (s *server) take(w http.ResponseWriter, r *http.Request) {
 	defer decided()
 	answer, err := m.Take(ctx, supervise.RequestTake{
 		Claim: token, Generation: req.Generation, Session: callerSession(caller),
-		Number: req.Number, Epoch: req.Epoch, Revision: req.Revision,
+		Number: req.Number, Revision: supervise.TaskRevision{Epoch: req.Epoch, Revision: req.Revision},
 	})
 	if answer.Outcome == "" {
-		if err == nil {
-			err = errors.New("the claim's machine answered the take with no outcome")
-		}
 		s.taskRefusal(w, "take", token, err)
 		return
 	}

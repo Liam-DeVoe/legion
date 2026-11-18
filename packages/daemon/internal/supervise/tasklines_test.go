@@ -142,6 +142,46 @@ func TestTaskValueLogNamesNumberClaimOriginAndFinished(t *testing.T) {
 	}
 }
 
+// A seen report that moves the revision the claim records is logged with its number, its claim,
+// and the revision it reports beside that revision's epoch, under the attribute names the write's
+// line uses (epoch, revision): a bucket created again counts its revisions from 1 again, so a
+// reading of the log tells which write a seen report saw only by the pair. A report of the same
+// revision again moves nothing and logs nothing.
+//
+// The negative control is the seen line without its epoch.
+func TestTaskSeenLogNamesTheEpochBesideTheRevision(t *testing.T) {
+	h := newHarness(t)
+	h.manualTakes()
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: testToken, Task: "implement the plan"})
+	value := h.seen()
+	h.seen()
+
+	seen := h.records.of(seenLiteral)
+	if len(seen) != 1 {
+		t.Fatalf("logged %d seen reports, want one: the report sent again moves nothing", len(seen))
+	}
+	r := seen[0]
+	if r.level != slog.LevelInfo {
+		t.Fatalf("the seen report is logged at %s, want INFO", r.level)
+	}
+	wantAttr(t, r, "claim", string(testToken))
+	wantAttr(t, r, "task", slog.Uint64Value(value.Number).String())
+	wantAttr(t, r, "epoch", testEpoch)
+	wantAttr(t, r, "revision", slog.Uint64Value(value.Revision).String())
+	written := h.records.of(writtenLine)
+	if len(written) != 1 {
+		t.Fatalf("logged %d value writes, want the queue's one", len(written))
+	}
+	for _, key := range []string{"epoch", "revision"} {
+		wrote, _ := written[0].attr(key)
+		saw, _ := r.attr(key)
+		if wrote.String() != saw.String() {
+			t.Fatalf("the seen report names %s %v, want the write's %v", key, saw, wrote)
+		}
+	}
+}
+
 // The silence repair's start (workflow's repairSilence) names its own origin in both of its
 // branches, and the write of its task says so: origin silence, never resume, even where the task
 // is the phase's resume task and the claim had finished its last task in its session — the worker

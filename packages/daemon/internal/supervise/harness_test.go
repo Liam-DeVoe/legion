@@ -925,7 +925,7 @@ func (h *harness) workerAsks() {
 	if !w.seen[value] {
 		w.seen[value] = true
 		_ = h.m.Handle(h.ctx, RequestTaskSeen{Claim: h.token, Generation: c.Generation, Session: c.Session,
-			Number: value.Number, Epoch: value.Epoch, Revision: value.Revision})
+			Number: value.Number, Revision: value.revision()})
 	}
 	if (c.State != StateReady && c.State != StateIdle) || w.asked[value] {
 		return
@@ -940,7 +940,7 @@ func (h *harness) workerAsks() {
 func (h *harness) takeValue(value TaskValue) (TakeAnswer, error) {
 	c := h.m.Claim()
 	answer, err := h.m.Take(h.ctx, RequestTake{Claim: h.token, Generation: c.Generation, Session: c.Session,
-		Number: value.Number, Epoch: value.Epoch, Revision: value.Revision})
+		Number: value.Number, Revision: value.revision()})
 	h.m.Wait()
 	if answer.Outcome == "" {
 		return answer, err
@@ -964,7 +964,7 @@ func (h *harness) seen() TaskValue {
 		h.t.Fatal("the bucket holds no value for the claim")
 	}
 	if err := h.m.Handle(h.ctx, RequestTaskSeen{Claim: h.token, Generation: h.generation(), Session: h.claim().Session,
-		Number: value.Number, Epoch: value.Epoch, Revision: value.Revision}); err != nil {
+		Number: value.Number, Revision: value.revision()}); err != nil {
 		h.t.Fatalf("report the value seen: %v", err)
 	}
 	return value
@@ -1008,7 +1008,7 @@ func (h *harness) seedValue(c *Claim) {
 	if err != nil {
 		h.t.Fatalf("seed the restored value: %v", err)
 	}
-	c.TaskWrittenEpoch, c.TaskWrittenRevision = epoch, revision
+	c.TaskWrittenRevision = TaskRevision{Epoch: epoch, Revision: revision}
 }
 
 func (h *harness) must(ev Event) {

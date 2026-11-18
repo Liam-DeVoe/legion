@@ -559,8 +559,8 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 	// the number unwritten, so its retry queues the task under the same number.
 	stored := m.stored()
 	stored.TaskWritten = d.Number
-	if epoch, revision, written := m.putValue(ctx, d, TaskValueQueued); written {
-		stored.TaskWrittenEpoch, stored.TaskWrittenRevision = epoch, revision
+	if revision, written := m.putValue(ctx, d, TaskValueQueued); written {
+		stored.TaskWrittenRevision = revision
 	}
 	if request.Row > 0 {
 		stored.DeliveredRows = append(slices.Clone(m.claim.DeliveredRows), request.Row)

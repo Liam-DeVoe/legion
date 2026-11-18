@@ -237,8 +237,8 @@ func TestTaskNumberSurvivesAStoreRestartWithEveryColumn(t *testing.T) {
 	want := tmuxClaim("legion-LEGION-209-implementer")
 	want.State = supervise.StateWorking
 	want.TaskWritten, want.TaskTaken, want.TaskFinished, want.TaskFinishedSession = 7, 7, 6, "ses_implementer"
-	want.TaskSeenEpoch, want.TaskSeenRevision, want.TaskTakeState = "2026-11-13T17:56:49.123456789Z", 41, supervise.TakeAccepted
-	want.TaskWrittenEpoch, want.TaskWrittenRevision = "2026-11-13T17:56:49.123456789Z", 42
+	want.TaskSeenRevision, want.TaskTakeState = supervise.TaskRevision{Epoch: "2026-11-13T17:56:49.123456789Z", Revision: 41}, supervise.TakeAccepted
+	want.TaskWrittenRevision = supervise.TaskRevision{Epoch: "2026-11-13T17:56:49.123456789Z", Revision: 42}
 	want.Pending = &supervise.Delivery{
 		ID: "outbox:71", Task: "Implement the change. Issue: LEGION-209. Phase: implementing.",
 		Phase: phase.Implementing, Generation: 4, Entry: 3, QueuedAt: at(1), ConfirmedAt: at(2),
@@ -448,7 +448,7 @@ func TestMigrationTaskNumbersWayBackLetsTheReleaseBeforeReadAndReArmsTheFill(t *
 	taken := tmuxClaim("legion-LEGION-209-implementer")
 	taken.State = supervise.StateWorking
 	taken.TaskWritten, taken.TaskTaken, taken.TaskTakeState = 7, 7, supervise.TakeAccepted
-	taken.TaskSeenEpoch, taken.TaskSeenRevision = "2026-11-13T17:56:49Z", 12
+	taken.TaskSeenRevision = supervise.TaskRevision{Epoch: "2026-11-13T17:56:49Z", Revision: 12}
 	task := supervise.Delivery{ID: "outbox:71", Task: "Implement the change.", Phase: phase.Implementing,
 		Generation: 4, QueuedAt: at(1), ConfirmedAt: at(2), Number: 7, Origin: supervise.OriginPhaseStart, TakenText: "Implement the change."}
 	if err := store.PutClaimAndDelivery(ctx, taken, task); err != nil {

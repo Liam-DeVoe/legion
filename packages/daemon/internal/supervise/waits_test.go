@@ -227,9 +227,9 @@ func TestChargeATakeWithNoTurnWithinTheSecondBoundTakesItBack(t *testing.T) {
 	if len(written) != 2 || written[1].Number != taken.Number {
 		t.Fatalf("values written %+v, want task %d written again under its number", written, taken.Number)
 	}
-	if c := h.claim(); c.TaskWritten != taken.Number || c.TaskWrittenRevision != written[1].Revision {
+	if c := h.claim(); c.TaskWritten != taken.Number || c.TaskWrittenRevision.Revision != written[1].Revision {
 		t.Fatalf("the claim records written %d at revision %d, want %d at the rewrite's %d",
-			c.TaskWritten, c.TaskWrittenRevision, taken.Number, written[1].Revision)
+			c.TaskWritten, c.TaskWrittenRevision.Revision, taken.Number, written[1].Revision)
 	}
 	if back := h.records.of(takenBackLiteral); len(back) != 1 {
 		t.Fatalf("logged %d take-backs, want one", len(back))
@@ -708,8 +708,8 @@ func TestSilentRegistrationOfANewProcessClearsTheSeenAndTakeState(t *testing.T) 
 	h.store.fail("PutDelivery", errBoom)
 	_, _ = h.takeValue(seen)
 	h.store.fail("PutDelivery", nil)
-	if c := h.claim(); c.TaskSeenRevision != seen.Revision || c.TaskTakeState != TakeRefused {
-		t.Fatalf("the old process left seen revision %d and take %q, want revision %d seen and its take refused", c.TaskSeenRevision, c.TaskTakeState, seen.Revision)
+	if c := h.claim(); c.TaskSeenRevision.Revision != seen.Revision || c.TaskTakeState != TakeRefused {
+		t.Fatalf("the old process left seen revision %d and take %q, want revision %d seen and its take refused", c.TaskSeenRevision.Revision, c.TaskTakeState, seen.Revision)
 	}
 	written := len(h.values.written())
 
@@ -717,8 +717,8 @@ func TestSilentRegistrationOfANewProcessClearsTheSeenAndTakeState(t *testing.T) 
 	h.relaunched()
 
 	for where, c := range map[string]Claim{"the machine": h.claim(), "the store": h.store.load(testToken)} {
-		if c.TaskSeenEpoch != "" || c.TaskSeenRevision != 0 || c.TaskTakeState != "" {
-			t.Fatalf("%s holds seen %q/%d and take %q after the new process registered, want none", where, c.TaskSeenEpoch, c.TaskSeenRevision, c.TaskTakeState)
+		if c.TaskSeenRevision.Epoch != "" || c.TaskSeenRevision.Revision != 0 || c.TaskTakeState != "" {
+			t.Fatalf("%s holds seen %q/%d and take %q after the new process registered, want none", where, c.TaskSeenRevision.Epoch, c.TaskSeenRevision.Revision, c.TaskTakeState)
 		}
 	}
 	h.advance(takeBound)
@@ -750,18 +750,18 @@ func TestSilentReconnectHelloAfterADaemonRestartClearsNothing(t *testing.T) {
 	h.must(RequestDeliver{Claim: testToken, Task: "the task"})
 	h.mustTake()
 	before := h.claim()
-	if before.TaskTakeState != TakeAccepted || before.TaskSeenRevision == 0 {
+	if before.TaskTakeState != TakeAccepted || before.TaskSeenRevision.Revision == 0 {
 		t.Fatalf("before the restart the claim holds seen %q/%d and take %q, want the accepted take at its revision",
-			before.TaskSeenEpoch, before.TaskSeenRevision, before.TaskTakeState)
+			before.TaskSeenRevision.Epoch, before.TaskSeenRevision.Revision, before.TaskTakeState)
 	}
 
 	h.outage(time.Minute)
 	h.connect()
 
 	for where, c := range map[string]Claim{"the machine": h.claim(), "the store": h.store.load(testToken)} {
-		if c.TaskSeenEpoch != before.TaskSeenEpoch || c.TaskSeenRevision != before.TaskSeenRevision || c.TaskTakeState != before.TaskTakeState {
+		if c.TaskSeenRevision.Epoch != before.TaskSeenRevision.Epoch || c.TaskSeenRevision.Revision != before.TaskSeenRevision.Revision || c.TaskTakeState != before.TaskTakeState {
 			t.Fatalf("%s holds seen %q/%d and take %q after the reconnect hello, want %q/%d and %q as before the restart",
-				where, c.TaskSeenEpoch, c.TaskSeenRevision, c.TaskTakeState, before.TaskSeenEpoch, before.TaskSeenRevision, before.TaskTakeState)
+				where, c.TaskSeenRevision.Epoch, c.TaskSeenRevision.Revision, c.TaskTakeState, before.TaskSeenRevision.Epoch, before.TaskSeenRevision.Revision, before.TaskTakeState)
 		}
 	}
 	if p := h.pending(); !p.awaitsTurn() {

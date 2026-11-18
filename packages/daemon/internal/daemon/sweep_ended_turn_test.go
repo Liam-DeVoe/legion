@@ -69,7 +69,7 @@ func TestASweepEndedTurnReleasesTheIssuesHeldTake(t *testing.T) {
 	}
 	held := waiting.Claim()
 	answer, err := waiting.Take(rig.ctx, supervise.RequestTake{Claim: tester, Generation: held.Generation, Session: held.Session,
-		Number: held.Pending.Number, Epoch: current.Value.Epoch, Revision: current.Value.Revision})
+		Number: held.Pending.Number, Revision: supervise.TaskRevision{Epoch: current.Value.Epoch, Revision: current.Value.Revision}})
 	if err != nil || answer.Outcome != supervise.TakeOutcomeRefused || answer.Hold != supervise.HoldIssueInTurn {
 		t.Fatalf("the tester's take while the restored implementer's turn was open = %+v, %v, want it refused %s", answer, err, supervise.HoldIssueInTurn)
 	}

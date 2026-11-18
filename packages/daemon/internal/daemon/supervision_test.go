@@ -1224,7 +1224,7 @@ func acceptTake(ctx context.Context, t *testing.T, machine *supervise.Machine) s
 	if current, err := machine.CurrentTask(ctx); err != nil {
 		t.Fatalf("read the task value of %s: %v", c.Token, err)
 	} else if current.Value != nil {
-		request.Epoch, request.Revision = current.Value.Epoch, current.Value.Revision
+		request.Revision = supervise.TaskRevision{Epoch: current.Value.Epoch, Revision: current.Value.Revision}
 	}
 	answer, err := machine.Take(ctx, request)
 	if err != nil || answer.Outcome != supervise.TakeOutcomeAccepted {

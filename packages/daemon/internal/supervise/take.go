@@ -3,7 +3,6 @@ package supervise
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -13,40 +12,14 @@ import (
 
 // A claim's task reaches its worker as a value the worker takes (dispatch://INFRA-2811). The
 // record queues a task under a number (queue), writes the claim's value in the task bucket under
-// that number (TaskValues), and the worker, once its host is idle, asks to take the number it was
-// handed (RequestTake). The answer is decided here, from the record: accepted with the text to
-// run, refused naming the hold that stands, or dropped with the value deleted. The holds, the
-// drops, the adoption of the working copy and the telling of the workflow all happen in that
-// answer, and the task's turn is the first turn that starts after it (turnStarted). The task is
-// finished by the turn-outcome report that names its number, or, for a worker whose plugin names
-// no number, by the end of that turn when no report comes (finishTask, endFrameFinishes).
-
-// TaskValues is the task bucket as a machine writes it: one value per claim, keyed on the claim's
-// token, naming the number of the task the record owes it. The daemon's implementation is the
-// legion_tasks bucket on NATS (internal/daemon's task bucket); a fake stands in for it in tests.
-//
-// A write answers the bucket's epoch and the revision the write made, which the claim records as
-// the daemon's own last write (Claim.TaskWrittenEpoch, TaskWrittenRevision). Each call is a store
-// write of the machine's own, made under the machine's lock and the claim-write deadline, as its
-// claim writes are (write).
-type TaskValues interface {
-	// Write puts the claim's value under number, and answers the epoch of the bucket it wrote
-	// to and the revision the write made.
-	Write(ctx context.Context, token claim.Token, number uint64) (epoch string, revision uint64, err error)
-	// Delete deletes the claim's value.
-	Delete(ctx context.Context, token claim.Token) error
-	// Read is the claim's current value, and false where the bucket holds none for it.
-	Read(ctx context.Context, token claim.Token) (TaskValue, bool, error)
-}
-
-// TaskValue is one claim's value as the bucket holds it: the task number, and the epoch and
-// revision of the write that put it there. A revision is read only beside its epoch, because a
-// bucket created again counts its revisions from 1 again.
-type TaskValue struct {
-	Number   uint64
-	Epoch    string
-	Revision uint64
-}
+// that number (TaskValues, taskvalue.go), and the worker, once its host is idle, asks to take the
+// number it was handed (RequestTake). The answer is decided here, from the record: accepted with
+// the text to run, refused naming the hold that stands, or dropped with the value deleted. The
+// holds, the drops, the adoption of the working copy and the telling of the workflow all happen
+// in that answer, and the task's turn is the first turn that starts after it (turnStarted). The
+// task is finished by the turn-outcome report that names its number, or, for a worker whose
+// plugin names no number, by the end of that turn when no report comes (finishTask,
+// endFrameFinishes).
 
 // TaskTakeContract is the plugin contract at which a worker takes its task rather than being
 // sent it (dispatch://INFRA-2811): the contract whose entry in internal/api's version.go brings
@@ -108,31 +81,17 @@ func originOf(request RequestDeliver) string {
 	}
 }
 
-// RequestTaskSeen is the worker reporting that it was handed the claim's value at this epoch and
-// revision, whether or not its host is idle. Number is the task the value names. The claim
-// records the newest such report (Claim.TaskSeenEpoch, TaskSeenRevision), and a revision it had
-// not recorded leaves no take at it yet (Claim.TaskTakeState). Generation is the launch the
-// reporting process runs at, and Session its session where the caller names one: the boot form
-// of the claim's route names none, since its boot token already names the launch.
-type RequestTaskSeen struct {
-	Claim      claim.Token
-	Generation uint64
-	Session    string
-	Number     uint64
-	Epoch      string
-	Revision   uint64
-}
-
-// RequestTake is the worker asking to take the task Number, the one its value at this epoch and
-// revision names, because its host is idle. It is answered through Machine.Take, which answers
-// every take (TakeAnswer). Generation and Session are fenced as RequestTaskSeen's are.
+// RequestTake is the worker asking to take the task Number, the one its value at this revision
+// names, because its host is idle. It is answered through Machine.Take, which answers every take
+// (TakeAnswer). Generation and Session are fenced as RequestTaskSeen's are.
 type RequestTake struct {
 	Claim      claim.Token
 	Generation uint64
 	Session    string
 	Number     uint64
-	Epoch      string
-	Revision   uint64
+	Revision   TaskRevision
+	// t is the take Machine.Take is answering, which the take's rows decide it in (taking).
+	t *taking
 }
 
 // TakeAdopted is the working copy's adoption a take made outside the machine's lock (Machine.Take),
@@ -145,39 +104,12 @@ type TakeAdopted struct {
 	Generation uint64
 	Number     uint64
 	Err        error
+	// t is the take the adoption was made for, which its rows answer (taking).
+	t *taking
 }
 
-// TaskValueRead is what the task bucket holds for the claim's key, as the daemon read it
-// (internal/daemon's task bucket): once at its boot, for every claim it supervises, again for
-// every claim when the bucket was created again, and from then on at each change its watch of the
-// whole bucket hands over on a key of this daemon's project. The machine compares it with the
-// record and writes the record's value again where the two differ (valueRead), so the record
-// stays the one truth and the bucket its delivered copy (R3 of dispatch://INFRA-2811).
-//
-// Value is the bucket's entry: the task its value names, the bucket's epoch, and the entry's
-// revision. Held is false where the bucket holds no value for the key: one deleted, whose
-// Revision is the delete's, and one never written or since purged, whose Revision is the bucket's
-// last revision when the daemon read it, so a read made before the daemon's own last write is
-// told apart from one made after. Cause is TaskValueBoot or TaskValueRepair, the cause a write it
-// makes is logged under.
-type TaskValueRead struct {
-	Claim claim.Token
-	Value TaskValue
-	Held  bool
-	Cause string
-}
-
-// The causes a write a TaskValueRead makes is logged under: the boot's read of the bucket, and
-// the watch's, which reads the bucket again whole once it was created again.
-const (
-	TaskValueBoot   = "boot"
-	TaskValueRepair = "repair"
-)
-
-func (RequestTaskSeen) isEvent() {}
-func (RequestTake) isEvent()     {}
-func (TakeAdopted) isEvent()     {}
-func (TaskValueRead) isEvent()   {}
+func (RequestTake) isEvent() {}
+func (TakeAdopted) isEvent() {}
 
 // TakeOutcome is how a take was answered.
 type TakeOutcome string
@@ -238,8 +170,8 @@ type TakeAnswer struct {
 // differs between the call sites belongs in the attributes, never in the message:
 //
 //   - taskSeenLine is every seen report that moves the revision the claim records seen (taskSeen):
-//     the number and that revision, which is where the cost reading's clock of R5's first wait
-//     starts;
+//     the number and that revision with its epoch, which is where the cost reading's clock of R5's
+//     first wait starts;
 //   - takeAnsweredLine is every answer to a take: the number, the revision it was asked at, the
 //     outcome, the hold a refusal names, and whether it repeats an accepted answer from the record
 //     (answerAgain), which a reading counts as no second take;
@@ -265,21 +197,6 @@ const (
 // clock at it, as at a refused take.
 const takeUndecidedLine = "supervise: a take could not be decided or recorded; it is refused at its revision, and the value is written again under its number once the task is free to take"
 
-// The causes a write of the claim's value is logged under (valueWrittenLine), beside TaskValueBoot
-// and TaskValueRepair: the task's first queue (queue), the end of a hold that refused a take
-// (offerPending), a task taken back in this same process that can be taken again (offerPending,
-// Machine.rewrite), a task whose take this same process failed to decide or record, once the task
-// is free to take again (offerPending, Machine.rewrite), and the first bound passing over a value
-// nobody reported seeing, or one whose seen report this daemon read from the store
-// (takeBoundOver).
-const (
-	TaskValueQueued     = "queued"
-	TaskValueHoldEnded  = "hold-ended"
-	TaskValueRetake     = "retake"
-	TaskValueTakeFailed = "take-failed"
-	TaskValueUnseen     = "unseen"
-)
-
 // What finished a task, as its line names it (taskFinishedLine), which the cost reading counts
 // the finished numbers by: the turn-outcome report that named its number (reportedTask), or the
 // end of its turn with no report after it (finishAtTurnsEnd, and settle and interrupted for a
@@ -301,33 +218,18 @@ const (
 	takenBackSuspended     = "suspended"
 )
 
-// The causes a delete of the claim's value is logged under (valueDeletedLine): a task finished
-// (finishTask), a task the record dropped (dropPending: a phase the issue left, an older daemon's
-// ask of an update round, a root task that names nothing any more), a phase task a daemon
-// suspension ended (settle), and a round's ask a retirement dropped (retire). A value the record
-// owes nothing is deleted under the cause of the read that found it (valueRead).
-const (
-	valueDeletedFinished  = "finished"
-	valueDeletedDropped   = "dropped"
-	valueDeletedSuspended = "suspended"
-	valueDeletedRetired   = "retired"
-)
-
-// taking is a take being answered (Machine.Take): the request, and its answer once it has one.
-// done closes when the answer is in, so a second take of the same claim that arrives meanwhile
-// waits for it and answers from it (dispatch://INFRA-2811).
+// taking is a take being answered (Machine.Take): the request, what the take's rows decided of it
+// — the answer, or the adoption of the working copy the answer waits on — and the failure its
+// decision ended in. The take's two events carry it (RequestTake.t, TakeAdopted.t), so a row
+// writes what it decided on the take it decides, and Machine.Take returns it from there. done
+// closes when the answer is in, so a second take of the same claim that arrives meanwhile waits
+// for it and answers from it (dispatch://INFRA-2811).
 type taking struct {
 	request RequestTake
 	answer  TakeAnswer
+	adopt   *adoption
 	err     error
 	done    chan struct{}
-}
-
-// takeDecision is what the take's row decided, read back by Machine.Take once the row returns:
-// an answer, or the adoption the answer waits on.
-type takeDecision struct {
-	answer TakeAnswer
-	adopt  *adoption
 }
 
 // adoption is the working copy's adoption a take makes before it is answered, captured under the
@@ -349,7 +251,8 @@ type adoption struct {
 // let go, because a shim's adoption can take seconds or its whole command timeout, and every other
 // event of the claim would wait behind it. Its outcome comes back as an event of its own
 // (TakeAdopted), where the generation and the number are fenced again and the take is accepted or
-// refused.
+// refused. Every take returns an answer with an outcome, an error, or both where the decision
+// failed after its answer (answerTake).
 //
 // The issue's roles share one working copy, so a take that adopts holds the issue's lock from the
 // in-turn check to its answer (Deps.LockIssue): two roles cannot both pass the check and both
@@ -378,7 +281,9 @@ func (m *Machine) Take(ctx context.Context, request RequestTake) (TakeAnswer, er
 			return inFlight.answer, inFlight.err
 		}
 	}
-	t := &taking{request: request, done: make(chan struct{})}
+	t := &taking{done: make(chan struct{})}
+	request.t = t
+	t.request = request
 	m.taking = t
 	issue := m.claim.Issue
 	m.mu.Unlock()
@@ -392,7 +297,7 @@ func (m *Machine) Take(ctx context.Context, request RequestTake) (TakeAnswer, er
 		unlock := m.deps.LockIssue(issue)
 		defer unlock()
 	}
-	t.answer, t.err = m.answerTake(ctx, request)
+	t.err = m.answerTake(ctx, t)
 	return t.answer, t.err
 }
 
@@ -404,56 +309,38 @@ func (m *Machine) Take(ctx context.Context, request RequestTake) (TakeAnswer, er
 // fence's refusal of a generation the claim has left, or an adoption made for it — is not its
 // answer. It waits for the old one and is decided afresh, so what it asked is recorded.
 func sameTake(a, b RequestTake) bool {
-	return a.Number == b.Number && a.Epoch == b.Epoch && a.Revision == b.Revision &&
+	return a.Number == b.Number && a.Revision == b.Revision &&
 		a.Generation == b.Generation && a.Session == b.Session
 }
 
-// answerTake decides the take, makes the adoption it waits on, and answers it. A decision that
-// fails after the take was answered returns that answer beside its error: the worker's take was
-// answered, and the failure is the rest of the decision's — a retirement the refused adoption's
-// charge made that the tree lifecycle refused, a claim write the store did not take. That failure
-// is logged here, since the caller answers the worker and has nothing of its own to do with it.
-// One that fails before any answer returns the zero answer, and leaves the take refused at its
-// revision, so the value is written again for the worker to ask at (undecided).
-func (m *Machine) answerTake(ctx context.Context, request RequestTake) (TakeAnswer, error) {
-	if err := m.Handle(ctx, request); err != nil {
-		return m.answeredBeside(request, err)
+// answerTake decides the take, makes the adoption it waits on, and leaves its answer in t. A
+// decision that fails after the take was answered leaves that answer beside its error: the
+// worker's take was answered, and the failure is the rest of the decision's — a retirement the
+// refused adoption's charge made that the tree lifecycle refused, a claim write the store did not
+// take. That failure is logged here, since the caller answers the worker and has nothing of its
+// own to do with it. One that fails before any answer leaves none, and leaves the take refused at
+// its revision, so the value is written again for the worker to ask at (undecided).
+//
+// Every take ends in an answer or in an error. Each row of the take's two events answers it,
+// sends it to its adoption, or fails (take, takeInTurn, takeNotReady, adopted, adoptedTooLate),
+// and a take that reaches no row fails in Handle: a fence's refusal, or a state that refuses the
+// request.
+func (m *Machine) answerTake(ctx context.Context, t *taking) error {
+	err := m.Handle(ctx, t.request)
+	if a := t.adopt; err == nil && a != nil {
+		adoptErr := m.adopt(ctx, *a)
+		// The answer is the claim's whatever became of ctx: a caller that hung up still leaves the
+		// adoption's outcome to record.
+		err = m.Handle(context.WithoutCancel(ctx), TakeAdopted{Claim: a.token, Generation: a.generation, Number: a.number, Err: adoptErr, t: t})
 	}
-	decided := m.takeDecided()
-	if decided.adopt == nil {
-		return decided.answer, nil
-	}
-	a := decided.adopt
-	err := m.adopt(ctx, *a)
-	// The answer is the claim's whatever became of ctx: a caller that hung up still leaves the
-	// adoption's outcome to record.
-	if err := m.Handle(context.WithoutCancel(ctx), TakeAdopted{Claim: a.token, Generation: a.generation, Number: a.number, Err: err}); err != nil {
-		return m.answeredBeside(request, err)
-	}
-	return m.takeDecided().answer, nil
-}
-
-// answeredBeside is the answer a failed decision left, if it left one, with the failure, which is
-// logged where an answer was given.
-func (m *Machine) answeredBeside(request RequestTake, err error) (TakeAnswer, error) {
-	answer := m.takeDecided().answer
-	if answer.Outcome != "" {
+	if err != nil && t.answer.Outcome != "" {
 		m.log.Warn("supervise: the decision a take was answered in failed after its answer",
-			"task", request.Number, "outcome", string(answer.Outcome), "error", err)
+			"task", t.request.Number, "outcome", string(t.answer.Outcome), "error", err)
 	}
-	return answer, err
+	return err
 }
 
-// takeDecided is the take's decision the last take row left, and clears it.
-func (m *Machine) takeDecided() takeDecision {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	decided := m.decided
-	m.decided = takeDecision{}
-	return decided
-}
-
-// answer records a take's answer for Machine.Take and logs it. Every take row ends here or in
+// answer records a take's answer on the take (taking) and logs it. Every take row ends here or in
 // answerAgain, so every answer is logged once.
 func (m *Machine) answer(take RequestTake, answer TakeAnswer) {
 	m.answerAs(take, answer, false)
@@ -468,8 +355,8 @@ func (m *Machine) answerAgain(take RequestTake, answer TakeAnswer) {
 }
 
 func (m *Machine) answerAs(take RequestTake, answer TakeAnswer, repeat bool) {
-	m.decided = takeDecision{answer: answer}
-	m.log.Info(takeAnsweredLine, "task", take.Number, "revision", take.Revision, "outcome", string(answer.Outcome),
+	take.t.answer = answer
+	m.log.Info(takeAnsweredLine, "task", take.Number, "revision", take.Revision.Revision, "outcome", string(answer.Outcome),
 		"hold", answer.Hold, "repeat", repeat)
 }
 
@@ -498,7 +385,7 @@ func (m *Machine) refuseTake(ctx context.Context, take RequestTake, hold string)
 // worker meanwhile: the first waits only on a revision no take came at (firstWaitNow), and no
 // take stands accepted for the second (secondWaitNow).
 //
-// A row that answered before it failed is no such take (answeredBeside), and neither is a take
+// A row that answered before it failed is no such take (answerTake), and neither is a take
 // of a number the claim no longer holds pending and untaken, nor one at a revision the worker has
 // since replaced (recordTake). A refusal records itself before its write (refuseTake), so a
 // failure there leaves the take refused already, and the hold's end writes the value. The
@@ -510,7 +397,7 @@ func (m *Machine) refuseTake(ctx context.Context, take RequestTake, hold string)
 // this decision's own settle (accept leaves the delivery unsaved) or the next decision's repair,
 // so a write here would only wait out a second claim-write deadline under the issue's lock.
 func (m *Machine) undecided(ctx context.Context, request RequestTake, err error) error {
-	if err == nil || m.decided.answer.Outcome != "" || m.decided.adopt != nil {
+	if err == nil || request.t.answer.Outcome != "" {
 		return err
 	}
 	p := m.claim.Pending
@@ -518,7 +405,7 @@ func (m *Machine) undecided(ctx context.Context, request RequestTake, err error)
 		return err
 	}
 	m.rewrite = valueRewrite{number: p.Number, cause: TaskValueTakeFailed}
-	m.log.Warn(takeUndecidedLine, "task", p.Number, "revision", request.Revision, "error", err)
+	m.log.Warn(takeUndecidedLine, "task", p.Number, "revision", request.Revision.Revision, "error", err)
 	if m.owedWrite != nil {
 		return err
 	}
@@ -531,9 +418,9 @@ func (m *Machine) undecided(ctx context.Context, request RequestTake, err error)
 // revision of the same epoch is an ask the worker has since replaced, and records nothing.
 func (c *Claim) recordTake(take RequestTake, state TakeState) bool {
 	switch {
-	case take.Epoch != c.TaskSeenEpoch || take.Revision > c.TaskSeenRevision:
-		c.TaskSeenEpoch, c.TaskSeenRevision = take.Epoch, take.Revision
-	case take.Revision < c.TaskSeenRevision:
+	case take.Revision.after(c.TaskSeenRevision):
+		c.TaskSeenRevision = take.Revision
+	case take.Revision.before(c.TaskSeenRevision):
 		return false
 	}
 	if c.TaskTakeState == state {
@@ -605,10 +492,10 @@ func (m *Machine) takePending(ctx context.Context, request RequestTake) error {
 	}
 	p := m.claim.Pending
 	if m.adopts(*p) {
-		m.decided = takeDecision{adopt: &adoption{
+		request.t.adopt = &adoption{
 			number: p.Number, generation: m.claim.Generation, delivery: p.ID, phase: p.Phase,
 			token: m.claim.Token, issue: m.claim.Issue, role: m.claim.Role, loc: m.claim.Locator,
-		}}
+		}
 		return nil
 	}
 	return m.accept(ctx, request)
@@ -660,7 +547,7 @@ func takeNotReady(m *Machine, ctx context.Context, ev Event) error {
 // (refusedAdoption).
 func adopted(m *Machine, ctx context.Context, ev Event) error {
 	a := ev.(TakeAdopted)
-	request := m.adoptedRequest(a)
+	request := a.t.request
 	p := m.claim.Pending
 	if a.Generation != m.claim.Generation || p == nil || p.Number != a.Number || p.taken() {
 		m.answer(request, TakeAnswer{Outcome: TakeOutcomeRefused, Hold: HoldNotOwed})
@@ -680,22 +567,13 @@ func adopted(m *Machine, ctx context.Context, ev Event) error {
 // names a hold for every such state).
 func adoptedTooLate(m *Machine, ctx context.Context, ev Event) error {
 	a := ev.(TakeAdopted)
-	request := m.adoptedRequest(a)
+	request := a.t.request
 	hold := m.claimHold()
 	if a.Generation != m.claim.Generation {
 		m.answer(request, TakeAnswer{Outcome: TakeOutcomeRefused, Hold: hold})
 		return nil
 	}
 	return m.refuseTake(ctx, request, hold)
-}
-
-// adoptedRequest is the take an adoption's outcome answers: the one Machine.Take is answering,
-// or, posted without one, a take of the adoption's own number.
-func (m *Machine) adoptedRequest(a TakeAdopted) RequestTake {
-	if t := m.taking; t != nil && t.request.Number == a.Number {
-		return t.request
-	}
-	return RequestTake{Claim: a.Claim, Generation: a.Generation, Number: a.Number}
 }
 
 // refusedAdoption is a take whose adoption of the working copy failed. It is recorded on the
@@ -951,259 +829,6 @@ func (m *Machine) claimHold() string {
 	return ""
 }
 
-// offerPending writes the claim's value again under its pending task's number where the worker
-// asked at the latest revision the daemon wrote and the task is free to take now: the worker
-// asks once per revision, so a value its take was refused at — by a hold, or because the daemon
-// failed to decide or record the take (undecided) — or one whose take a provider error, a
-// compaction or a death took back says nothing new until it is written again. It is the end of
-// every hold that refused a take, and runs at each point one can end: the agent's ready, the
-// shim's hello, the sweep's observation, the end of a turn on this claim or another of its issue,
-// a start's arrival, the end of a provider error's wait and of a compaction, the end of an update
-// round. Which hold ended is not asked: takeable says whether any still stands, and the value is
-// written only where none does, so a hold that still stands costs the worker nothing and the
-// sweep never writes for one.
-//
-// A value the worker has not reported seeing at that revision is left alone: the worker has not
-// asked at it. A write the bucket refused is made here at the next chance, whatever the worker
-// asked (valueUnwritten), and so is a delete the bucket refused while the record owes the claim
-// no task (valueUndeleted, deleteAgain).
-//
-// The write's cause is the one the latest event that left one names (Machine.rewrite):
-// TaskValueTakeFailed where this same process failed to decide or record the take at that
-// revision, TaskValueRetake where the task was taken back in this same process and can be taken
-// again now — after a provider error's wait, a compaction, the second wait — and
-// TaskValueHoldEnded for every other write here.
-//
-// A take-failed write waits while the claim owes a write the store did not take (owedWrite): the
-// store is still away, so a take at the new revision would fail its own write in turn, and a task
-// whose takeable reads nothing of the store — one of no phase — would go round a value write, a
-// take and a failed answer at every sweep for as long as the store is away. The write is made at
-// the first chance after the owed write lands, which the next decision's repair makes.
-func (m *Machine) offerPending(ctx context.Context) error {
-	p := m.claim.Pending
-	if p == nil {
-		m.deleteAgain(ctx)
-		return nil
-	}
-	if p.taken() {
-		return nil
-	}
-	c := &m.claim
-	asked := c.sawLatestWrite() && (c.TaskTakeState == TakeAccepted || c.TaskTakeState == TakeRefused)
-	if !asked && !m.valueUnwritten {
-		return nil
-	}
-	cause := TaskValueHoldEnded
-	if r := m.rewrite; r.number == p.Number && r.cause != "" {
-		cause = r.cause
-	}
-	if cause == TaskValueTakeFailed && m.owedWrite != nil {
-		m.log.Debug("supervise: the value of a take that failed on the store waits for the store's owed write to land",
-			"task", p.Number)
-		return nil
-	}
-	hold, dropped, err := m.takeable(ctx)
-	if err != nil || dropped || hold != "" {
-		return err
-	}
-	return m.writeValue(ctx, cause)
-}
-
-// valueRewrite is a pending task whose next value write at a hold's end is logged under a cause of
-// its own (Machine.rewrite): the task's number, and the cause.
-type valueRewrite struct {
-	number uint64
-	cause  string
-}
-
-// writeValue writes the claim's value under the pending task's number and records the write as
-// the daemon's own last (Claim.TaskWrittenEpoch, TaskWrittenRevision). A write the bucket
-// refuses fails nothing of the decision: it is logged, and made again at the claim's next chance
-// (valueUnwritten, offerPending).
-func (m *Machine) writeValue(ctx context.Context, cause string) error {
-	p := m.claim.Pending
-	epoch, revision, written := m.putValue(ctx, *p, cause)
-	if !written {
-		return nil
-	}
-	m.claim.TaskWrittenEpoch, m.claim.TaskWrittenRevision = epoch, revision
-	return m.persist(ctx)
-}
-
-// putValue writes d's number as the claim's value, under the claim-write deadline, and reports
-// the write: a claim the daemon has no bucket for writes nothing and reports none. The line it
-// logs (valueWrittenLine) is read off the claim before the write: whether the claim had finished
-// the last task written to it in the session it runs (Claim.finishedLastTask), which only the
-// queue of a new number can find true — a write of the number pending finds that number written
-// and not finished — and that session.
-func (m *Machine) putValue(ctx context.Context, d Delivery, cause string) (string, uint64, bool) {
-	if m.deps.TaskValues == nil || d.Number == 0 {
-		return "", 0, false
-	}
-	finished := m.claim.finishedLastTask()
-	var epoch string
-	var revision uint64
-	err := m.write(ctx, func(ctx context.Context) error {
-		var err error
-		epoch, revision, err = m.deps.TaskValues.Write(ctx, m.claim.Token, d.Number)
-		return err
-	})
-	if err != nil {
-		m.valueUnwritten = true
-		m.log.Warn("supervise: the task value could not be written; it is written again at the claim's next chance",
-			"task", d.Number, "origin", d.Origin, "cause", cause, "error", err)
-		return "", 0, false
-	}
-	m.valueUnwritten, m.valueWrittenAt, m.rewrite, m.seenFromStore = false, m.deps.Clock.Now(), valueRewrite{}, false
-	m.log.Info(valueWrittenLine, "task", d.Number, "origin", d.Origin, "finished", finished,
-		"session", m.claim.Session, "epoch", epoch, "revision", revision, "cause", cause)
-	return epoch, revision, true
-}
-
-// finishedLastTask is whether the claim had finished the last task written to it, in the session
-// it runs now: the record has written it a task, the last task it finished is that one, and the
-// session it finished it in is the session it holds (dispatch://INFRA-2811 R7, the waited figure
-// of R9). A task written to such a claim is written to a worker whose phase stood waiting, which
-// is what the cost reading counts (ReadTaskCost); workflow's finishedInItsSession is the same
-// question asked of a claim that holds no task.
-func (c Claim) finishedLastTask() bool {
-	return c.TaskWritten != 0 && c.TaskFinished == c.TaskWritten && c.TaskFinishedSession == c.Session
-}
-
-// deleteValue deletes the claim's value: the record no longer owes the task it named. A delete
-// the bucket refuses is logged and marked (valueUndeleted), and made again at the claim's next
-// chance while the record still owes it no task (offerPending, deleteAgain): the daemon's own
-// watch of the bucket leaves a value that is its own last write alone (valueRead), so nothing
-// else would delete it before the claim's next task or the daemon's next boot, and every new
-// holder of the role would be handed it meanwhile.
-func (m *Machine) deleteValue(ctx context.Context, number uint64, cause string) {
-	if m.deps.TaskValues == nil {
-		return
-	}
-	if err := m.write(ctx, func(ctx context.Context) error { return m.deps.TaskValues.Delete(ctx, m.claim.Token) }); err != nil {
-		m.valueUndeleted = valueDelete{number: number, cause: cause}
-		m.log.Warn("supervise: the task value could not be deleted; it is deleted again at the claim's next chance",
-			"task", number, "cause", cause, "error", err)
-		return
-	}
-	m.valueUndeleted = valueDelete{}
-	m.log.Info(valueDeletedLine, "task", number, "cause", cause)
-}
-
-// valueDelete is a delete of the claim's value the bucket refused (Machine.valueUndeleted): the
-// number the value named and the delete's cause, which its line names again when it is made.
-type valueDelete struct {
-	number uint64
-	cause  string
-}
-
-// deleteAgain makes the delete of the claim's value the bucket refused, where one is marked
-// (valueUndeleted). It is called only while the record owes the claim no task (offerPending): a
-// task queued since the refused delete has its own value in the bucket, which this must not
-// delete, and that task ends in a delete of its own, which replaces the mark either way. Any value
-// the bucket holds while the record owes nothing is one the record has dropped (R1).
-func (m *Machine) deleteAgain(ctx context.Context) {
-	if d := m.valueUndeleted; d != (valueDelete{}) {
-		m.deleteValue(ctx, d.number, d.cause)
-	}
-}
-
-// dropPending retires the pending task because the record no longer owes it, and deletes its
-// value: the take that meets it is answered dropped, and a worker reading the bucket finds
-// nothing to ask about.
-func (m *Machine) dropPending(ctx context.Context, cause string) error {
-	number := m.claim.Pending.Number
-	if err := m.retirePending(ctx); err != nil {
-		return err
-	}
-	m.deleteValue(ctx, number, cause)
-	return nil
-}
-
-// taskSeen records the newest revision of the claim's value its worker reports seeing. A revision
-// of its epoch it had already recorded, or an older one, changes nothing: the take state is the
-// newest revision's (Claim.TaskTakeState), and a new revision has had no take yet. A report that
-// moves the revision is logged (taskSeenLine), and is one this process received, so the first
-// wait on it charges as any does (Machine.seenFromStore).
-func taskSeen(m *Machine, ctx context.Context, ev Event) error {
-	seen := ev.(RequestTaskSeen)
-	c := &m.claim
-	if seen.Epoch == c.TaskSeenEpoch && seen.Revision <= c.TaskSeenRevision {
-		return nil
-	}
-	c.TaskSeenEpoch, c.TaskSeenRevision, c.TaskTakeState = seen.Epoch, seen.Revision, ""
-	m.seenFromStore = false
-	m.log.Info(taskSeenLine, "task", seen.Number, "revision", seen.Revision)
-	return m.persist(ctx)
-}
-
-// valueRead compares the bucket's value for the claim with the record (TaskValueRead). A read
-// older than the daemon's own last write of the value — its epoch, an earlier revision — is one the
-// record has moved past, and changes nothing: the watch hands over each change in order, and the
-// daemon may have written again before this read reached the machine. Otherwise:
-//
-//   - a claim the record owes a task has its value written again, under the pending task's own
-//     number, wherever the bucket holds anything but the daemon's own last write: no value,
-//     another number, a later revision someone else wrote, or another epoch, which is the bucket
-//     created again (writeValue). Nothing of the record's numbers moves; the write only records
-//     the daemon's new last write (Claim.TaskWrittenEpoch, TaskWrittenRevision);
-//   - where the bucket holds that last write, nothing is written, but for the one value R3 names:
-//     at the boot, a task the record owes again after a take accepted at its latest revision —
-//     a provider error's wait or a compaction the restart cut off took it back — is written once,
-//     since its worker asks once per revision and has asked at this one (owedAgainAfterTake). A
-//     take that revision's hold refused is written at that hold's end instead (offerPending), and
-//     a value still unseen or seen and not asked about is left as it stands;
-//   - a claim the record owes nothing has the value the bucket holds deleted, unless it is the
-//     daemon's own last write, whose delete is already on its way; at the boot, whatever it is,
-//     since no write of this daemon's is in flight then.
-func valueRead(m *Machine, ctx context.Context, ev Event) error {
-	read := ev.(TaskValueRead)
-	c := &m.claim
-	if read.Value.Epoch == c.TaskWrittenEpoch && read.Value.Revision < c.TaskWrittenRevision {
-		return nil
-	}
-	own := read.Held && read.Value.Epoch == c.TaskWrittenEpoch && read.Value.Revision == c.TaskWrittenRevision
-	p := c.Pending
-	if p == nil || p.Number == 0 {
-		if read.Held && (!own || read.Cause == TaskValueBoot) {
-			m.log.Info("supervise: the task bucket holds a value for a claim the record owes nothing; it is deleted",
-				"task", read.Value.Number, "epoch", read.Value.Epoch, "revision", read.Value.Revision, "cause", read.Cause)
-			m.deleteValue(ctx, read.Value.Number, read.Cause)
-		}
-		return nil
-	}
-	if own && read.Value.Number == p.Number {
-		if read.Cause == TaskValueBoot && m.owedAgainAfterTake() {
-			m.log.Info("supervise: the task was taken back after a take at its latest revision, and its worker asks once per revision; it is written again",
-				"task", p.Number, "revision", c.TaskWrittenRevision)
-			return m.writeValue(ctx, read.Cause)
-		}
-		m.log.Debug("supervise: the task bucket holds the value the record wrote", "task", p.Number,
-			"epoch", read.Value.Epoch, "revision", read.Value.Revision, "cause", read.Cause)
-		return nil
-	}
-	m.log.Info("supervise: the task bucket holds another value than the record's; it is written again from the record",
-		"task", p.Number, "held", read.Held, "heldTask", read.Value.Number, "epoch", read.Value.Epoch,
-		"revision", read.Value.Revision, "written", c.TaskWrittenRevision, "writtenEpoch", c.TaskWrittenEpoch, "cause", read.Cause)
-	return m.writeValue(ctx, read.Cause)
-}
-
-// owedAgainAfterTake is whether the claim owes its pending task again after a take accepted at
-// the latest revision the daemon wrote of its value: the worker reported that revision seen and
-// its take was accepted, and the take has since gone (takeBack) with the task still pending. Its
-// worker asks once per revision, so nothing but a new revision makes it ask again (R3).
-func (m *Machine) owedAgainAfterTake() bool {
-	c := &m.claim
-	return c.TaskTakeState == TakeAccepted && c.sawLatestWrite() && !c.Pending.taken()
-}
-
-// sawLatestWrite is whether the newest revision of the claim's value its worker reported seeing is
-// the daemon's own last write of it (Claim.TaskSeenEpoch and TaskSeenRevision against
-// TaskWrittenEpoch and TaskWrittenRevision).
-func (c Claim) sawLatestWrite() bool {
-	return c.TaskSeenEpoch == c.TaskWrittenEpoch && c.TaskSeenRevision == c.TaskWrittenRevision
-}
-
 // takeBack returns a taken task to waiting under the number it has, for a reason that keeps the
 // process: a provider error's turn, a compaction, and the second wait. The take goes (ConfirmedAt,
 // TakenText, TurnStarted), so the next take of the number is decided afresh and its text composed
@@ -1360,30 +985,4 @@ func (m *Machine) armFinishAtAct() {
 	if _, armed := m.timers[TimerFinish]; !armed {
 		m.armEndFrameBound(p.ID)
 	}
-}
-
-// CurrentTask is what a claim's worker is told of its task when it registers or asks: the value
-// the bucket holds for the claim now, nil where it holds none, and the number of the last task
-// the claim finished.
-type CurrentTask struct {
-	Value    *TaskValue
-	Finished uint64
-}
-
-// CurrentTask reads the claim's value from the bucket and the finished number from the claim as
-// its machine last published it, waiting on no decision and copying no claim (View, WaitingWake).
-func (m *Machine) CurrentTask(ctx context.Context) (CurrentTask, error) {
-	view := m.view.Load()
-	current := CurrentTask{Finished: view.TaskFinished}
-	if m.deps.TaskValues == nil {
-		return current, nil
-	}
-	value, held, err := m.deps.TaskValues.Read(ctx, view.Token)
-	if err != nil {
-		return CurrentTask{}, fmt.Errorf("read the task value of %s: %w", view.Token, err)
-	}
-	if held {
-		current.Value = &value
-	}
-	return current, nil
 }

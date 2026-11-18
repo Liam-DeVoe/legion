@@ -318,7 +318,7 @@ func TestTakeSentTwiceWhileTheFirstIsAnsweredWaitsForItsAnswer(t *testing.T) {
 		h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", Phase: phase.Implementing, Generation: 7})
 		value := h.seen()
 		request := RequestTake{Claim: testToken, Generation: h.generation(), Session: session,
-			Number: value.Number, Epoch: value.Epoch, Revision: value.Revision}
+			Number: value.Number, Revision: value.revision()}
 
 		var wg sync.WaitGroup
 		answers := make([]TakeAnswer, 2)
@@ -495,8 +495,8 @@ func TestTakeValueTheBucketRefusedIsWrittenAtTheNextChance(t *testing.T) {
 	if !held || value.Number != number {
 		t.Fatalf("the bucket holds %+v (held %v) after the next chance, want task %d's value", value, held, number)
 	}
-	if c := h.claim(); c.TaskWrittenRevision != value.Revision {
-		t.Fatalf("the claim records the write at revision %d, want the bucket's %d", c.TaskWrittenRevision, value.Revision)
+	if c := h.claim(); c.TaskWrittenRevision.Revision != value.Revision {
+		t.Fatalf("the claim records the write at revision %d, want the bucket's %d", c.TaskWrittenRevision.Revision, value.Revision)
 	}
 	if text := h.wantPrompts(1)[0].Message; text != "the task" {
 		t.Fatalf("the worker took %q, want the task", text)
@@ -593,9 +593,9 @@ func TestTaskValueIsWrittenAtTheQueueAndDeletedWhenTheRecordDropsTheTask(t *test
 	if len(written) != 1 || written[0].Number != 1 {
 		t.Fatalf("values written = %+v, want task 1's one value", written)
 	}
-	if c := h.claim(); c.TaskWritten != 1 || c.TaskWrittenEpoch != written[0].Epoch || c.TaskWrittenRevision != written[0].Revision {
+	if c := h.claim(); c.TaskWritten != 1 || c.TaskWrittenRevision != written[0].revision() {
 		t.Fatalf("the claim records written %d at %q/%d, want 1 at the write's %q/%d",
-			c.TaskWritten, c.TaskWrittenEpoch, c.TaskWrittenRevision, written[0].Epoch, written[0].Revision)
+			c.TaskWritten, c.TaskWrittenRevision.Epoch, c.TaskWrittenRevision.Revision, written[0].Epoch, written[0].Revision)
 	}
 	if stored := h.store.load(testToken); stored.TaskWritten != 1 || stored.Pending == nil || stored.Pending.Number != 1 {
 		t.Fatalf("the stored claim records written %d with pending %+v, want task 1 durable with its number", stored.TaskWritten, stored.Pending)
@@ -697,7 +697,7 @@ func TestTakeOfARelaunchedProcessIsDecidedAfreshWhileItsPredecessorsTakeAdopts(t
 		h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", Phase: phase.Implementing, Generation: 7})
 		value := h.seen()
 		old := RequestTake{Claim: testToken, Generation: h.generation(), Session: session,
-			Number: value.Number, Epoch: value.Epoch, Revision: value.Revision}
+			Number: value.Number, Revision: value.revision()}
 
 		var wg sync.WaitGroup
 		var oldAnswer, newAnswer TakeAnswer
