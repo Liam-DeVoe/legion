@@ -45,7 +45,8 @@ func newRoleClaimRenewalRig(t *testing.T) *roleClaimRenewalRig {
 }
 
 // newRoleClaimRenewalRigOn is newRoleClaimRenewalRig with the listener's own bounds, the
-// registration's sendRequestBudget among them, on clk; nil is the real clock.
+// registration's sendRequestBudget among them, and the bound of its consumer calls
+// (sessionConsumerCallTimeout) on clk; nil is the real clock.
 func newRoleClaimRenewalRigOn(t *testing.T, clk clock.Clock) *roleClaimRenewalRig {
 	t.Helper()
 	registry, sessions := setupSessionsTest(t, nil, nil)
@@ -55,6 +56,7 @@ func newRoleClaimRenewalRigOn(t *testing.T, clk clock.Clock) *roleClaimRenewalRi
 	// and the first registration of every holder here is one: the rig's session cache has never
 	// seen it.
 	deps := withRoleClaimDrain(t, &listenerDeps{client: setupPublishTestClient(t), registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil), clock: clk})
+	deps.consumers.clock = clk
 	return &roleClaimRenewalRig{
 		t:         t,
 		registry:  registry,
@@ -208,11 +210,12 @@ func TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim(t *testin
 	if err != nil {
 		t.Fatalf("encode the registration: %v", err)
 	}
-	// The registration's budget runs on the listener's clock. The suite stands that clock still,
-	// so its verdict is the renewal's own and never how fast a loaded machine reduces these
-	// topics. Whether the work fits in the budget is a service level, read on a quiet machine with
-	// DISPATCH_BENCH_TIMING set, where the row runs on the real clock and the budget decides it as
-	// it decided the incident.
+	// The registration's budget, and the bound its consumer calls run under
+	// (sessionConsumerCallTimeout), run on the listener's clock. The suite stands that clock
+	// still, so its verdict is the renewal's own and never how fast a loaded machine reduces these
+	// topics or creates a consumer filtering on them. Whether the work fits in the budget is a
+	// service level, read on a quiet machine with DISPATCH_BENCH_TIMING set, where the row runs on
+	// the real clock and the budget decides it as it decided the incident.
 	var listenerClock clock.Clock
 	if os.Getenv(benchtime.TimingEnv) == "" {
 		listenerClock = clocktest.New(time.Now())

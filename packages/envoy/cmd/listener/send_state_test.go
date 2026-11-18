@@ -205,13 +205,15 @@ func (rig *knownSessionRig) sendInBackground(t *testing.T, target string, fields
 	return answered
 }
 
-// stillClock puts the rig's routes on a fake clock the row never moves (listenerDeps.clock), so
-// no bound the routes arm on it - the probe's second, the sender stamp's, the send's budget - can
-// end: a send answered on it (sendOnStillClock) is answered by no wait of the route's own. It is
-// called before the row's first request.
+// stillClock puts the rig's routes on a fake clock the row never moves (listenerDeps.clock), and
+// a registration's consumer calls with them (sessionDelivery.clock), so no bound the routes arm
+// on it - the probe's second, the sender stamp's, the send's budget, a registration's consumer
+// calls' - can end: a send answered on it (sendOnStillClock) is answered by no wait of the route's
+// own. It is called before the row's first request.
 func (rig *knownSessionRig) stillClock() *clocktest.Fake {
 	fake := clocktest.New(time.Now())
 	rig.deps.clock = fake
+	rig.deps.consumers.clock = fake
 	return fake
 }
 
@@ -425,6 +427,7 @@ func TestASilentRelaySubscriberReadsConnected(t *testing.T) {
 	t.Cleanup(client.Close)
 	rig := newKnownSessionRigOn(t, client, url)
 	rig.deps.clock = fake
+	rig.deps.consumers.clock = fake
 	startSecondListener(t, rig.url)
 
 	const quiet = "ses_silent_subscriber"

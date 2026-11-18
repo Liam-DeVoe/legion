@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
@@ -30,8 +31,12 @@ type writeRouteRig struct {
 	registry *store.Registry
 	sessions *session.SessionRegistry
 	mux      *http.ServeMux
-	// clock is what the routes' own bounds are armed on, so a request the silent bus leaves
-	// unanswered ends when this test moves the clock past the budget and at no other moment.
+	// clock is what the routes' own bounds are armed on, a registration's consumer calls' among
+	// them (sessionDelivery.clock), so a request the silent bus leaves unanswered ends when this
+	// test moves the clock to its budget and at no other moment. It stands still between the
+	// test's moves (clocktest.New), so each bound is armed at the request's moment plus its own
+	// length, whatever the machine took to reach it: the consumer calls' 5 s lies past the
+	// budget's 3.5 s however long the calls ran before the move.
 	clock *clocktest.Fake
 }
 
@@ -55,8 +60,10 @@ func newWriteRouteRig(t *testing.T) *writeRouteRig {
 	// The session consumers connect to the server directly, not through the relay: the freeze
 	// under test is the store's, and a registration reaches the store only once it has its
 	// consumer.
-	now := clocktest.Held()
-	registerV1Routes(mux, withRoleClaimDrain(t, &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, client), clock: now}), "test-machine", logging.New("test"))
+	now := clocktest.New(time.Now())
+	consumers := setupSessionConsumers(t, client)
+	consumers.clock = now
+	registerV1Routes(mux, withRoleClaimDrain(t, &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: consumers, clock: now}), "test-machine", logging.New("test"))
 	return &writeRouteRig{relay: relay, registry: registry, sessions: sessions, mux: mux, clock: now}
 }
 
@@ -81,26 +88,30 @@ func (rig *writeRouteRig) serve(method, path, body string) *httptest.ResponseRec
 }
 
 // serveFrozen runs the request against the silent bus and gives its answer. The route must bound
-// its bus work with a budget of its own, armed on rig.clock: a route that left the call to
-// nats.go's own 10 s MaxWait arms nothing here, and the wait for its bound fails naming the bound,
-// or the answer the route gave without arming it. The answer must not come before the move, and
-// must come once the fake has passed sendRequestBudget, so what ends the request is the route's
-// budget and not the machine's clock.
+// its bus work with a budget of its own, armed on rig.clock at the request's moment plus
+// sendRequestBudget: a route that left the call to nats.go's own 10 s MaxWait arms nothing there,
+// and the wait for that deadline fails naming it, or the answer the route gave without arming it.
+// The answer must not come before the move, and must come once the fake has reached that
+// deadline, so what ends the request is the route's budget and not the machine's clock. The move
+// is to the budget's own deadline, and so reaches no bound armed past it: the consumer calls' of a
+// registration still under way (sessionConsumerCallTimeout) is never ended by it, however late
+// the move comes.
 func (rig *writeRouteRig) serveFrozen(t *testing.T, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
+	budgetEnds := rig.clock.Now().Add(sendRequestBudget)
 	answers := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		recorder := httptest.NewRecorder()
 		rig.mux.ServeHTTP(recorder, httptest.NewRequest(method, path, strings.NewReader(body)))
 		answers <- recorder
 	}()
-	awaitArmedBeforeReturn(t, rig.clock, method+" "+path+"'s own bound on its work against the silent bus", timersArmed(1), answerReturned(answers))
+	awaitArmedBeforeReturn(t, rig.clock, method+" "+path+"'s own budget on its work against the silent bus", deadlineArmed(armedAt(budgetEnds)), answerReturned(answers))
 	select {
 	case recorder := <-answers:
 		t.Fatalf("%s %s answered %d before its budget was spent: %s", method, path, recorder.Code, recorder.Body.String())
 	default:
 	}
-	rig.clock.Advance(sendRequestBudget)
+	rig.clock.Set(budgetEnds)
 	return testwait.Receive(t, method+" "+path+"'s answer once its budget was spent", answers)
 }
 
@@ -221,7 +232,7 @@ func TestTheWriteRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *testing.
 			{"delete a session", http.MethodDelete, "/v1/sessions/" + leaver, ""},
 		} {
 			// The frozen requests share one rig, and so one fake clock, which each of them
-			// moves past its own budget: they run one at a time.
+			// moves to its own budget's deadline: they run one at a time.
 			t.Run(request.name, func(t *testing.T) {
 				wantWriteBusUnanswered(t, request.method+" "+request.path, rig.serveFrozen(t, request.method, request.path, request.body))
 			})

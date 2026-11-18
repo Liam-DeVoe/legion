@@ -236,11 +236,12 @@ func newSenderLimitRig(t *testing.T) *senderLimitRig {
 
 // newSenderLimitRigOnServer is a senderLimitRig on a server of its own, which the test can stop
 // answering under live connections (testnats.Server.Freeze and FreezeReplies) or stop, with the
-// rig's routes (listenerDeps.clock) and the listener's bus client (bus.WithClock and
-// bus.WithPublishAcknowledgementClock) on the one clocktest.Fake it returns, which only the test
-// moves. A route's budget, the bounds of its reads and its probe, and a publish's own bound then
-// end when the test moves the fake to them, once what the case is about has happened, and never on
-// the machine's clock, so no answer turns on how long a step of a loaded run takes.
+// rig's routes (listenerDeps.clock), a registration's consumer calls (sessionDelivery.clock) and
+// the listener's bus client (bus.WithClock and bus.WithPublishAcknowledgementClock) on the one
+// clocktest.Fake it returns, which only the test moves. A route's budget, the bounds of its reads,
+// its probe and its consumer calls, and a publish's own bound then end when the test moves the
+// fake to them, once what the case is about has happened, and never on the machine's clock, so no
+// answer turns on how long a step of a loaded run takes.
 func newSenderLimitRigOnServer(t *testing.T) (*senderLimitRig, *testnats.Server, *clocktest.Fake) {
 	t.Helper()
 	server, url := testnats.Start(t)
@@ -252,6 +253,7 @@ func newSenderLimitRigOnServer(t *testing.T) (*senderLimitRig, *testnats.Server,
 	t.Cleanup(client.Close)
 	rig := newSenderLimitRigOn(t, client, url)
 	rig.deps.clock = fake
+	rig.deps.consumers.clock = fake
 	return rig, server, fake
 }
 
