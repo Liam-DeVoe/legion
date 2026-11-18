@@ -2254,6 +2254,20 @@ func keepsStartTask(held supervise.Claim, payload record.SuperviseRequest) bool 
 	return pending != nil && payload.Phase != "" && pending.StillWorked(payload.Generation, payload.Phase, held.State)
 }
 
+// issueRoles is every role whose claim issue may hold (record.IssueRoles: Legion's six and each
+// role of the deployment that ran on it), read in a transaction of its own.
+func (r *outbox) issueRoles(ctx context.Context, issue string) ([]claim.Role, error) {
+	var roles []claim.Role
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		var err error
+		roles, err = record.IssueRoles(ctx, tx, r.records, issue)
+		return err
+	}); err != nil {
+		return nil, fmt.Errorf("read the roles of %s: %w", issue, err)
+	}
+	return roles, nil
+}
+
 // stopElsewhere suspends, as the daemon and keeping its session, every claim of issue that still
 // runs a process in a tree other than the issue's, and is a wait (wait.ErrWaiting) until none
 // does. A claim in a turn holds the suspension for the turn's end and a launching one until its
@@ -2269,8 +2283,12 @@ func keepsStartTask(held supervise.Claim, payload record.SuperviseRequest) bool 
 // (runtime/sandbox's ensureSandbox). A claim already in the issue's tree is skipped on its view,
 // which only Retree changes, so a start waits on no decision a sibling claim has in flight.
 func (r *outbox) stopElsewhere(ctx context.Context, issue record.Issue) error {
+	roles, err := r.issueRoles(ctx, issue.Key)
+	if err != nil {
+		return err
+	}
 	var running []string
-	for _, role := range claim.Roles {
+	for _, role := range roles {
 		token, err := claim.NewToken(r.project, issue.Key, role)
 		if err != nil {
 			return fmt.Errorf("derive the %s claim of %s: %w", role, issue.Key, err)
@@ -3090,8 +3108,14 @@ func (r *outbox) removeWorkspace(ctx context.Context, row record.OutboxRow, payl
 	}
 	// The workspace goes only once the close has retired every claim of the issue: a claim whose
 	// release the runtime refused still runs there, and one that is re-admitted before its close
-	// lands goes on in it. A retired claim's relaunch provisions the workspace again.
-	for _, role := range claim.Roles {
+	// lands goes on in it. A retired claim's relaunch provisions the workspace again. The claims are
+	// those of each role the issue may hold (record.IssueRoles), a role of the deployment's among
+	// them.
+	roles, err := r.issueRoles(ctx, row.Issue)
+	if err != nil {
+		return err
+	}
+	for _, role := range roles {
 		token, err := claim.NewToken(r.project, row.Issue, role)
 		if err != nil {
 			return fmt.Errorf("derive claim for outbox row %d: %w", row.ID, err)
