@@ -390,7 +390,9 @@ func (e *Engine) stopTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: a task is stopped", "issue", issue.Key, "tree", issue.Tree, "task", w.Task, "from", from, "reason", why)
-	role := phase.RoleFor(from)
+	// The role that works the step the task stood at (Issue.RoleAt): at step, the role of the
+	// deployment that runs it.
+	role := issue.RoleAt(from)
 	if role == "" || role == claim.RoleArchitect {
 		return nil
 	}
@@ -464,7 +466,7 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 	if err := e.stopTask(ctx, tx, *issue, w, why, why, stepStopped); err != nil {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "task-stopped", Role: phase.RoleFor(from), Phase: from,
+	return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "task-stopped", Role: issue.RoleAt(from), Phase: from,
 		StoppedBy: fact.By, Reason: why + ", the architect " + string(fact.By)})
 }
 

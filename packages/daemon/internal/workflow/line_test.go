@@ -451,7 +451,7 @@ func seedTwoDeploymentSteps(t *testing.T, pool *pgxpool.Pool, key string, genera
 func TestATaskMovesToItsRowsPlaceAndCountsItsReturn(t *testing.T) {
 	t.Run("two passes", func(t *testing.T) {
 		pool := migratedPool(t)
-		engine := returnEngine()
+		engine := deploymentEngine()
 		root := stepRoot(t, pool, phase.Step)
 		seedTwoDeploymentSteps(t, pool, root.Key, root.Generation, 2)
 
@@ -463,7 +463,7 @@ func TestATaskMovesToItsRowsPlaceAndCountsItsReturn(t *testing.T) {
 
 	t.Run("a move back from step 3 to step 2", func(t *testing.T) {
 		pool := migratedPool(t)
-		engine := returnEngine()
+		engine := deploymentEngine()
 		root := stepRoot(t, pool, phase.Step)
 		seedTwoDeploymentSteps(t, pool, root.Key, root.Generation, 3)
 

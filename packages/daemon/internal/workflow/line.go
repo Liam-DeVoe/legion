@@ -280,6 +280,42 @@ func returnStep(issue record.Issue, w Walk, at record.TaskPlace, n int, act retu
 	return record.TaskPlace{Kind: record.PlaceStep, Position: n}, "", nil
 }
 
+// lostAt says whether place is a step of w's task whose role d does not define: a role the
+// deployment lost, whose step no role may start (stopLostRole). Legion's own roles are in every
+// deployment (config.Config.Deployment, and New's default), so only a role of a deployment's own
+// can be lost.
+func (w Walk) lostAt(place record.TaskPlace, d plan.Deployment) (record.TaskPlace, bool) {
+	if !w.Stored || place.Kind != record.PlaceStep || place.Position < 1 || place.Position > len(w.Steps) {
+		return record.TaskPlace{}, false
+	}
+	if _, defined := d.Roles[w.Steps[place.Position-1].Role]; defined {
+		return record.TaskPlace{}, false
+	}
+	return place, true
+}
+
+// lostStep is the first step w's task still has to run whose role d does not define (lostAt): the
+// step it stands at and each after it, or every step of a task at no act; none for a task at its
+// retro or its merge, done, left or stopped.
+func (w Walk) lostStep(d plan.Deployment) (record.TaskPlace, bool) {
+	if !w.Stored || w.State != record.TaskRunning && w.State != record.TaskWaiting {
+		return record.TaskPlace{}, false
+	}
+	first := 1
+	switch w.Place.Kind {
+	case record.PlaceStep:
+		first = w.Place.Position
+	case record.PlaceRetro, record.PlaceMerge:
+		return record.TaskPlace{}, false
+	}
+	for n := first; n <= len(w.Steps); n++ {
+		if lost, ok := w.lostAt(record.TaskPlace{Kind: record.PlaceStep, Position: n}, d); ok {
+			return lost, true
+		}
+	}
+	return record.TaskPlace{}, false
+}
+
 // reviewFails says whether the step at w.Place, whose fail is the move, counts a review round
 // toward review_round_cap: a step of the type review whose agent is not the owner, since the
 // owner's own step reviews nothing another agent wrote.

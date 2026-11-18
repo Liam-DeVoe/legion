@@ -42,7 +42,7 @@ func TestTheReadersOfWhereATaskStandsReadItsPlace(t *testing.T) {
 
 	t.Run("moved on to step 3", func(t *testing.T) {
 		pool := migratedPool(t)
-		engine := returnEngine()
+		engine := deploymentEngine()
 		root := stepRoot(t, pool, phase.Step)
 		seedStepsAt(t, pool, root.Key, root.Generation, 2, types, "implementer", "checker", "linter")
 		move(t, pool, engine, root.Key, TriggerStepPassed, record.TaskPlace{}, record.PhaseRow{})
@@ -63,7 +63,7 @@ func TestTheReadersOfWhereATaskStandsReadItsPlace(t *testing.T) {
 
 	t.Run("moved back from step 3 to step 1", func(t *testing.T) {
 		pool := migratedPool(t)
-		engine := returnEngine()
+		engine := deploymentEngine()
 		root := stepRoot(t, pool, phase.Step)
 		seedStepsAt(t, pool, root.Key, root.Generation, 3, types, "implementer", "checker", "linter")
 		move(t, pool, engine, root.Key, TriggerBackward, stepPlace(1), record.PhaseRow{})
@@ -76,7 +76,7 @@ func TestTheReadersOfWhereATaskStandsReadItsPlace(t *testing.T) {
 
 	t.Run("the known pass: phases that each stand once", func(t *testing.T) {
 		pool := migratedPool(t)
-		engine := returnEngine()
+		engine := deploymentEngine()
 		root := stepRoot(t, pool, phase.Testing)
 		seedStepsAt(t, pool, root.Key, root.Generation, 3, nil, "implementer", "reviewer", "tester")
 
@@ -114,7 +114,7 @@ func TestTheRecordOfAReturnNamesThePlaceItReturnsTo(t *testing.T) {
 
 	t.Run("the critic at step 4 moves back to step 3", func(t *testing.T) {
 		pool := migratedPool(t)
-		engine := returnEngine()
+		engine := deploymentEngine()
 		root := stepRoot(t, pool, phase.Step)
 		seedStepsAt(t, pool, root.Key, root.Generation, 4, map[string]string{"checker": "testing", "linter": "review", "critic": "review"},
 			"implementer", "checker", "linter", "critic")
@@ -129,7 +129,7 @@ func TestTheRecordOfAReturnNamesThePlaceItReturnsTo(t *testing.T) {
 
 	t.Run("the known pass: a rejected review returns to step 1", func(t *testing.T) {
 		pool := migratedPool(t)
-		engine := returnEngine()
+		engine := deploymentEngine()
 		root := stepRoot(t, pool, phase.Admitted)
 		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
 		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})

@@ -60,13 +60,18 @@ import (
 // for the issue's admission slot in a phase up to the review and for none past it. A role a start
 // already covers (StartFor) gets no second.
 //
-// The sweep runs first so the resume reads the trees it closed as lingering. The owners' read
+// The sweep runs first so the resume reads the trees it closed as lingering. The stop of each task
+// a step of a role the deployment no longer defines still has to run (stopLostRoles) comes next,
+// so the resume finds those issues held and starts no lost role. The owners' read
 // (suspendedPhaseOwners) comes next, and the status repair runs on the issues and running roots
 // that read holds, before any start. The read writes nothing, and the repair writes none of the
 // pull requests, claims and queued starts the read takes beside the issues, so the read answers
 // what it would answer after the repair.
 func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (intake.Result, error) {
 	if err := e.sweepMerged(ctx, tx); err != nil {
+		return intake.Result{}, err
+	}
+	if err := e.stopLostRoles(ctx, tx); err != nil {
 		return intake.Result{}, err
 	}
 	owners, err := e.suspendedPhaseOwners(ctx, tx)

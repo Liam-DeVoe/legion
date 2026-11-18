@@ -47,7 +47,7 @@ func TestAFailedStepReturnsToThePlaceItNames(t *testing.T) {
 
 	t.Run("the critic at step 4", func(t *testing.T) {
 		pool := migratedPool(t)
-		engine := returnEngine()
+		engine := deploymentEngine()
 		root := stepRoot(t, pool, phase.Step)
 		seedStepsAt(t, pool, root.Key, root.Generation, 4, types, "implementer", "checker", "linter", "critic")
 
@@ -74,7 +74,7 @@ func TestAFailedStepReturnsToThePlaceItNames(t *testing.T) {
 
 	t.Run("the linter at step 3", func(t *testing.T) {
 		pool := migratedPool(t)
-		engine := returnEngine()
+		engine := deploymentEngine()
 		root := stepRoot(t, pool, phase.Step)
 		seedStepsAt(t, pool, root.Key, root.Generation, 3, types, "implementer", "checker", "linter")
 
@@ -99,7 +99,7 @@ func TestAStepWithNoImplementationBeforeItStopsNamingItsPlace(t *testing.T) {
 	}{{"the linter at step 2", 2, "linter"}, {"the critic at step 1", 1, "critic"}} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
-			engine := returnEngine()
+			engine := deploymentEngine()
 			root := stepRoot(t, pool, phase.Step)
 			seedStepsAt(t, pool, root.Key, root.Generation, tc.at, map[string]string{"critic": "review", "linter": "testing"}, "critic", "linter", "implementer")
 

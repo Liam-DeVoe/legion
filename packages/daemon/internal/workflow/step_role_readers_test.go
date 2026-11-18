@@ -91,7 +91,7 @@ func TestTheResumePathsGiveTheRunningDeploymentRoleItsWork(t *testing.T) {
 					Tree: key, Project: "LEGION", Title: "a root", Generation: 1, Status: "in_progress", Rank: "U"}, held)
 				seedTreeLifecycle(t, pool, key)
 				seedRuleSuspendedOwner(t, pool, project, key, deploymentChecker)
-				engine := testEngine(config.DesignGateRootIssues, nil)
+				engine := withDeployment(testEngine(config.DesignGateRootIssues, nil))
 
 				if _, err := intake.ApplyFact(t.Context(), pool, "daemon", "boot:LEGION:1", intake.DaemonBooted{Boot: 1}, engine, admissionStub{}); err != nil {
 					t.Fatalf("apply the boot: %v", err)

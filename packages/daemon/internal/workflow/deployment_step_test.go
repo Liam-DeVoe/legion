@@ -15,8 +15,30 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
+
+// deploymentRoles is Legion's own roles of a step and the roles these tests' plans name, as the
+// settings of a deployment that defines them give the engine (config.Config.Deployment). A step's
+// type is read from its stored row, which each test writes; the types here are what a new plan's
+// rows would take.
+func deploymentRoles() plan.Deployment {
+	roles := plan.BuiltinRoles()
+	for name, typ := range map[string]plan.Type{"checker": plan.TypeTesting, "linter": plan.TypeTesting, "critic": plan.TypeReview, "audit": "security"} {
+		roles[name] = plan.RoleDef{Name: name, Type: typ}
+	}
+	return plan.Deployment{Roles: roles}
+}
+
+// withDeployment is engine with deploymentRoles as its deployment.
+func withDeployment(engine *Engine) *Engine {
+	engine.cfg.Deployment = deploymentRoles()
+	return engine
+}
+
+// deploymentEngine is returnEngine under a deployment that defines the roles these tests name.
+func deploymentEngine() *Engine { return withDeployment(returnEngine()) }
 
 // stepHead is the commit every completion of these tests reports.
 const stepHead = "0123456789abcdef0123456789abcdef01234567"
@@ -58,7 +80,7 @@ func TestADeploymentRoleOfAnyTypeStartsAndReports(t *testing.T) {
 	} {
 		t.Run(string(tc.role), func(t *testing.T) {
 			pool := migratedPool(t)
-			engine := returnEngine()
+			engine := deploymentEngine()
 			root := stepRoot(t, pool, phase.Admitted)
 			seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", string(tc.role))
 			if _, err := pool.Exec(t.Context(), "update plan_steps set type = $2 where issue = $1 and task = 'a' and position = 2", root.Key, tc.typ); err != nil {
@@ -132,7 +154,7 @@ func TestTwoDeploymentStepsAreTwoPlaces(t *testing.T) {
 
 	t.Run("implementer checker linter", func(t *testing.T) {
 		pool := migratedPool(t)
-		engine := returnEngine()
+		engine := deploymentEngine()
 		root := stepRoot(t, pool, phase.Step)
 		seedStepsAt(t, pool, root.Key, root.Generation, 2, types, "implementer", "checker", "linter")
 
@@ -162,7 +184,7 @@ func TestTwoDeploymentStepsAreTwoPlaces(t *testing.T) {
 
 	t.Run("implementer checker linter critic", func(t *testing.T) {
 		pool := migratedPool(t)
-		engine := returnEngine()
+		engine := deploymentEngine()
 		root := stepRoot(t, pool, phase.Step)
 		seedStepsAt(t, pool, root.Key, root.Generation, 4, types, "implementer", "checker", "linter", "critic")
 
@@ -181,7 +203,7 @@ func TestTwoDeploymentStepsAreTwoPlaces(t *testing.T) {
 // implementer` the critic's pass, with no pull request recorded, starts the implementer.
 func TestADeploymentRoleBeforeTheImplementerNeedsNoPullRequest(t *testing.T) {
 	pool := migratedPool(t)
-	engine := returnEngine()
+	engine := deploymentEngine()
 	root := record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208",
 		Project: "LEGION", Title: "root", Phase: phase.Step, Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 1}
 	seedIssue(t, pool, root)
@@ -202,7 +224,7 @@ func TestADeploymentRoleBeforeTheImplementerNeedsNoPullRequest(t *testing.T) {
 func TestAHeldStepOfTheDeploymentNamesItsRole(t *testing.T) {
 	t.Run("the checker's failed claim", func(t *testing.T) {
 		pool := migratedPool(t)
-		engine := returnEngine()
+		engine := deploymentEngine()
 		root := stepRoot(t, pool, phase.Step)
 		seedStepsAt(t, pool, root.Key, root.Generation, 2, map[string]string{"checker": "testing"}, "implementer", "checker")
 
@@ -225,7 +247,7 @@ func TestAHeldStepOfTheDeploymentNamesItsRole(t *testing.T) {
 
 	t.Run("the checker's pass", func(t *testing.T) {
 		pool := migratedPool(t)
-		engine := returnEngine()
+		engine := deploymentEngine()
 		root := stepRoot(t, pool, phase.Step)
 		seedStepsAt(t, pool, root.Key, root.Generation, 2, map[string]string{"checker": "testing"}, "implementer", "checker")
 
@@ -244,7 +266,7 @@ func TestAHeldStepOfTheDeploymentNamesItsRole(t *testing.T) {
 // and Legion runs step 3 now, its handoff record kept on its row, and the task stays at step 3.
 func TestALateCompletionBeforeADeploymentStepIsAnsweredAsAnEndedStep(t *testing.T) {
 	pool := migratedPool(t)
-	engine := returnEngine()
+	engine := deploymentEngine()
 	root := stepRoot(t, pool, phase.Admitted)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer", "checker")
 	if _, err := pool.Exec(t.Context(), "update plan_steps set type = 'testing' where issue = $1 and task = 'a' and role = 'checker'", root.Key); err != nil {
@@ -285,7 +307,7 @@ func checkerAtStep2(t *testing.T, pool *pgxpool.Pool) record.Issue {
 func TestARetryOfADeploymentStepRestartsItsRole(t *testing.T) {
 	t.Run("the retry of a hold from step", func(t *testing.T) {
 		pool := migratedPool(t)
-		engine := returnEngine()
+		engine := deploymentEngine()
 		root := checkerAtStep2(t, pool)
 		applyRefusingNothing(t, pool, engine, intake.ClaimFailed{Issue: root.Key, Role: "checker", Reason: "the pane died"})
 
@@ -299,7 +321,7 @@ func TestARetryOfADeploymentStepRestartsItsRole(t *testing.T) {
 
 	t.Run("the operator's restart", func(t *testing.T) {
 		pool := migratedPool(t)
-		engine := returnEngine()
+		engine := deploymentEngine()
 		root := checkerAtStep2(t, pool)
 
 		applyRefusingNothing(t, pool, engine, intake.RestartPhase{Issue: root.Key, Role: "checker"})
@@ -314,7 +336,7 @@ func TestARetryOfADeploymentStepRestartsItsRole(t *testing.T) {
 
 	t.Run("a todo on a task stopped at its critic's first step", func(t *testing.T) {
 		pool := migratedPool(t)
-		engine := returnEngine()
+		engine := deploymentEngine()
 		root := stepRoot(t, pool, phase.Step)
 		seedStepsAt(t, pool, root.Key, root.Generation, 1, map[string]string{"critic": "review"}, "critic", "implementer")
 		if result := applyFacts(t, pool, engine)("stop", ownersStop(t, root.Key, "a")); result.Refusal != nil {
@@ -335,7 +357,7 @@ func TestARetryOfADeploymentStepRestartsItsRole(t *testing.T) {
 // The start of a step of a role the deployment defines names that role's claim as its agent.
 func TestTheStartOfADeploymentStepNamesItsAgent(t *testing.T) {
 	pool := migratedPool(t)
-	engine := returnEngine()
+	engine := deploymentEngine()
 	root := checkerAtStep2(t, pool)
 	issue := issueOf(t, pool, engine, root.Key)
 	want, err := claim.NewToken("legion", root.Key, "checker")
@@ -373,7 +395,7 @@ func phaseEndsOf(t *testing.T, pool *pgxpool.Pool, key string) []record.PhaseEnd
 // conflict ends testing; the implementer starts as it does for every conflict.
 func TestAConflictOutOfADeploymentStepTellsItsRole(t *testing.T) {
 	pool := migratedPool(t)
-	engine := returnEngine()
+	engine := deploymentEngine()
 	root := checkerAtStep2(t, pool)
 
 	move(t, pool, engine, root.Key, TriggerConflict, record.TaskPlace{}, record.PhaseRow{})
@@ -410,7 +432,7 @@ func TestABackwardMoveToStepNamesWhichStep(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
-			engine := returnEngine()
+			engine := deploymentEngine()
 			root := stepRoot(t, pool, phase.Accepting)
 			at := len(tc.words)
 			seedStepsAt(t, pool, root.Key, root.Generation, at, map[string]string{"checker": "testing", "critic": "review", "linter": "testing"}, tc.words...)
@@ -501,7 +523,7 @@ func TestAClosedIssueReachesItsDeploymentRolesClaim(t *testing.T) {
 		root := stepRoot(t, pool, phase.Merging)
 		seedPhase(t, pool, record.PhaseRow{Issue: root.Key, Role: claim.RoleMerger, Claim: "merger", HandoffCommit: "head"})
 		seedPhase(t, pool, record.PhaseRow{Issue: root.Key, Role: "checker", Claim: "root-checker", Verdict: "pass"})
-		applyRefusingNothing(t, pool, returnEngine(), intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge-42"})
+		applyRefusingNothing(t, pool, deploymentEngine(), intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge-42"})
 		wantEachRole(t, superviseRequests(t, pool, "suspend"), root.Key, "")
 		if closed := superviseRequests(t, pool, "issue_close"); len(closed) != 0 {
 			t.Fatalf("issue_close rows %v, want none for a root, whose tree lingers", closed)
@@ -540,4 +562,116 @@ func TestALingersEndClosesADeploymentRolesClaim(t *testing.T) {
 	applyRefusingNothing(t, pool, engine, intake.LingerExpired{Issue: root.Key, Generation: root.Generation})
 
 	wantEachRole(t, superviseRequests(t, pool, "tree_close"), root.Key, "")
+}
+
+// lostChecker is an engine whose deployment holds Legion's own roles and no checker: the settings
+// the daemon restarted with no longer define it.
+func lostChecker() *Engine {
+	engine := deploymentEngine()
+	engine.cfg.Deployment = plan.Deployment{Roles: plan.BuiltinRoles()}
+	return engine
+}
+
+// A step whose role the deployment no longer defines stops its task where the task would start it:
+// in `implementer checker`, the implementer's completion starts no checker, the task stops naming
+// step 2 and the checker, the issue is held from implementing for the stopped task, and the owner is
+// told once, in a task-stopped notice that names the checker.
+func TestAStepWhoseRoleTheDeploymentLostStopsTheTask(t *testing.T) {
+	pool := migratedPool(t)
+	engine := lostChecker()
+	root := stepRoot(t, pool, phase.Implementing)
+	seedStepsAt(t, pool, root.Key, root.Generation, 1, map[string]string{"checker": "testing"}, "implementer", "checker")
+
+	stepReports(t, pool, engine, root.Key, claim.RoleImplementer, "", "built", "impl-1", 0)
+
+	if starts := startsOf(t, pool, root.Key, "checker"); len(starts) != 0 {
+		t.Fatalf("the implementer's completion started the checker %+v, want none: the deployment no longer defines it", starts)
+	}
+	const why = "step 2 names the role checker, which the deployment no longer defines"
+	if task := taskOf(t, pool, engine, root.Key); task.State != record.TaskStopped || task.StoppedReason != why {
+		t.Fatalf("task a = %s stopped with %q, want stopped with %q", task.State, task.StoppedReason, why)
+	}
+	want := record.Hold{From: phase.Implementing, Reason: record.HoldTaskStopped}
+	if issue := issueOf(t, pool, engine, root.Key); issue.Phase != phase.Held || issue.Hold == nil || *issue.Hold != want {
+		t.Fatalf("%s stands in %s with hold %+v, want held %+v", root.Key, issue.Phase, issue.Hold, want)
+	}
+	stopped := noticesOf(t, pool, root.Key, "task-stopped")
+	if len(stopped) != 1 || stopped[0].Role != "checker" || stopped[0].Reason != "task a of LEGION-208 was stopped: "+why {
+		t.Fatalf("the task-stopped notices = %+v, want exactly one, the checker's, with the reason", stopped)
+	}
+}
+
+// A daemon that restarts with settings that no longer define the role of a step its task still has
+// to run stops that task at its boot: the checker running at step 2 is stopped (step_stop), the
+// task stops naming it, and the owner is told once. A task whose steps the deployment all defines
+// is left alone.
+func TestABootStopsATaskWhoseRoleTheDeploymentLost(t *testing.T) {
+	pool := migratedPool(t)
+	engine := lostChecker()
+	root := checkerAtStep2(t, pool)
+	seedTreeLifecycle(t, pool, root.Key)
+
+	applyRefusingNothing(t, pool, engine, intake.DaemonBooted{Boot: 1})
+
+	const why = "step 2 names the role checker, which the deployment no longer defines"
+	if task := taskOf(t, pool, engine, root.Key); task.State != record.TaskStopped || task.StoppedReason != why {
+		t.Fatalf("task a after the boot = %s stopped with %q, want stopped with %q", task.State, task.StoppedReason, why)
+	}
+	if stops := superviseRequests(t, pool, "step_stop"); stops[root.Key+"/checker"] != 1 {
+		t.Fatalf("step_stop rows %v, want one for the running checker", stops)
+	}
+	if roles := rolesOf(noticesOf(t, pool, root.Key, "task-stopped")); len(roles) != 1 || roles[0] != "checker" {
+		t.Fatalf("the task-stopped notices name %v, want the checker once", roles)
+	}
+
+	kept := migratedPool(t)
+	defined := checkerAtStep2(t, kept)
+	seedTreeLifecycle(t, kept, defined.Key)
+	applyRefusingNothing(t, kept, deploymentEngine(), intake.DaemonBooted{Boot: 1})
+	if task := taskOf(t, kept, deploymentEngine(), defined.Key); task.State != record.TaskRunning {
+		t.Fatalf("task a under a deployment that defines the checker = %s (%q) after the boot, want running", task.State, task.StoppedReason)
+	}
+}
+
+// An engine whose configuration sets no deployment holds Legion's own roles, so none of them is
+// lost: `implementer tester` starts the implementer at the gate's opening and the tester at the
+// implementer's completion, and no task stops.
+func TestAConfigWithoutADeploymentStartsLegionsRoles(t *testing.T) {
+	pool := migratedPool(t)
+	engine := New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateOff.Steps(), ReviewRoundCap: 3, Linger: time.Hour,
+		ProductionCheckRole: claim.RoleTester, ReviewAppLogin: testReviewApp, Repositories: testRepositories, Clock: func() time.Time { return stepClock }}, nil)
+	root := stepRoot(t, pool, phase.Admitted)
+	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "tester")
+
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	stepReports(t, pool, engine, root.Key, claim.RoleImplementer, "", "built", "impl-1", 0)
+
+	if starts := startsOf(t, pool, root.Key, claim.RoleTester); len(starts) != 1 {
+		t.Fatalf("the tester's starts = %+v, want one", starts)
+	}
+	if task := taskOf(t, pool, engine, root.Key); task.State != record.TaskRunning {
+		t.Fatalf("task a is %s (%q), want running", task.State, task.StoppedReason)
+	}
+	if stopped := noticesOf(t, pool, root.Key, "task-stopped"); len(stopped) != 0 {
+		t.Fatalf("task-stopped notices %+v, want none", stopped)
+	}
+}
+
+// The owner's stop_task while a role the deployment defines runs stops that role's process and
+// names it in the notice.
+func TestAStopReachesTheDeploymentRoleThatRuns(t *testing.T) {
+	pool := migratedPool(t)
+	engine := deploymentEngine()
+	root := checkerAtStep2(t, pool)
+
+	if result := applyFacts(t, pool, engine)("stop", ownersStop(t, root.Key, "a")); result.Refusal != nil {
+		t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
+	}
+
+	if stops := superviseRequests(t, pool, "step_stop"); stops[root.Key+"/checker"] != 1 {
+		t.Fatalf("step_stop rows %v, want one for the checker", stops)
+	}
+	if roles := rolesOf(noticesOf(t, pool, root.Key, "task-stopped")); len(roles) != 1 || roles[0] != "checker" {
+		t.Fatalf("the task-stopped notices name %v, want the checker once", roles)
+	}
 }

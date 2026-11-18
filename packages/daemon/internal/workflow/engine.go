@@ -1664,6 +1664,12 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			return fmt.Errorf("return the work of %s from %+v to %+v: its line %v holds no such return", issue.Key, w.Place, to, w.Line)
 		}
 	}
+	// A move into the step of a role the deployment no longer defines starts no role: the task
+	// stops where it stands, naming the step (stopLostRole), and the step it stood at ends as the
+	// move would have ended it.
+	if lost, ok := w.lostAt(row.ToPlace, e.cfg.Deployment); ok {
+		return e.stopLostRole(ctx, tx, issue, w, lost, endOfTransition(w, trigger, issue.Phase, stepSite{}, handoff, ended))
+	}
 	// Two counters move here, and they count different things. Every move back to an earlier phase
 	// counts the task a pass: the tester's fail, a review's request for changes, a worker's
 	// backward move, and the one move the daemon makes on its own, a head that conflicts with its
@@ -1978,6 +1984,53 @@ func (e *Engine) gateOpened(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 		return err
 	}
 	return e.transition(ctx, tx, issue, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{}, nil, "")
+}
+
+// stopLostRole stops w's task of issue, whose step at lost names a role the engine's deployment no
+// longer defines (Walk.lostAt): the daemon restarted with settings that dropped the role while a
+// task still had a step of it to run. The task stops where it stands as stop_task stops it
+// (stopTask), its step ending as end says, with the reason that names the step and the role, and
+// the task's owner is told once, in a task-stopped notice that names the lost role. The owner's
+// next version of the plan, or a person who defines the role again and sets the root back to
+// todo, starts the task again.
+func (e *Engine) stopLostRole(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, lost record.TaskPlace, end StepEnd) error {
+	role := w.Steps[lost.Position-1].Role
+	why := fmt.Sprintf("step %d names the role %s, which the deployment no longer defines", lost.Position, role)
+	said := fmt.Sprintf("task %s of %s was stopped: %s", w.Task, issue.Key, why)
+	from := record.StandsAt(issue)
+	if err := e.stopTask(ctx, tx, issue, w, why, said, end); err != nil {
+		return err
+	}
+	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "task-stopped", Role: claim.Role(role), Phase: from, Reason: said})
+}
+
+// stopLostRoles stops, at the daemon's boot, the task of each issue of the project in the workflow
+// whose task still has a step to run of a role the engine's deployment no longer defines
+// (Walk.lostStep), running or waiting: the settings are read at the start, so a restart is where a
+// role leaves the deployment while the store still names it. A task its plan already holds
+// (planHold) has nothing to stop.
+func (e *Engine) stopLostRoles(ctx context.Context, tx pgx.Tx) error {
+	issues, err := e.store.Issues(ctx, tx)
+	if err != nil {
+		return err
+	}
+	for _, issue := range issues {
+		if issue.Project != e.cfg.Project || issue.Phase == phase.Done || record.OutOfWorkflow(issue.Status) || planHold(issue) {
+			continue
+		}
+		w, err := e.walk(ctx, tx, issue)
+		if err != nil {
+			return err
+		}
+		lost, ok := w.lostStep(e.cfg.Deployment)
+		if !ok {
+			continue
+		}
+		if err := e.stopLostRole(ctx, tx, issue, w, lost, stepStopped); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // everyClaim enqueues op for every claim an issue can hold but except's: its architect, which
