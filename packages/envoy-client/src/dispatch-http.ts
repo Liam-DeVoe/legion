@@ -1,8 +1,4 @@
-import {
-  RegistrationPendingError,
-  TradeRetryingError,
-  TradeUnansweredError,
-} from "@legion/broker-client/token-errors";
+import { TradeRetryingError } from "@legion/broker-client/token-errors";
 import type {
   AcceptedMessageDelivery,
   Actor,
@@ -761,18 +757,16 @@ function answerEvent(
 }
 
 /**
- * The table's event for a credential that could not present an attempt: `no-credential` where
- * its failure says the secrets broker's trade goes on in the background (`TradeRetryingError`, a
- * trade still unanswered, a pod's registration still pending), so a later presentation can
- * succeed; `no-credential-final` for any other, which no later presentation cures. A fail-fast
- * broker credential says the first at once after a failed trade (`BrokerTokenClient.token`).
+ * The table's event for a credential that could not present an attempt: `no-credential` for the
+ * fail-fast broker credential's `TradeRetryingError`, which it throws at once after a failed trade
+ * while the trade goes on (`BrokerTokenClient.token`), so a later presentation within the call can
+ * succeed; `no-credential-final` for any other. That includes a trade still unanswered
+ * (`TradeUnansweredError`) and a pod's registration still pending (`RegistrationPendingError`),
+ * which the token client throws only once the presentation's signal has ended: the credential's
+ * share of the call's deadline (`credentialDeadline`), so no later presentation fits in the call.
  */
 function credentialEvent(error: unknown): WriteEvent {
-  return error instanceof TradeRetryingError ||
-    error instanceof TradeUnansweredError ||
-    error instanceof RegistrationPendingError
-    ? "no-credential"
-    : "no-credential-final";
+  return error instanceof TradeRetryingError ? "no-credential" : "no-credential-final";
 }
 
 /**
@@ -2202,6 +2196,11 @@ export class DispatchClient {
     let answer = undefined as WriteAnswer | undefined;
     let failure: unknown;
     let attemptEvent = "exhausted" as WriteEvent;
+    // The failure of the last presentation whose trade goes on (`no-credential`) since an attempt
+    // last went out. Before anything may have landed, it is why nothing was sent, so a deadline or
+    // a stop that ends the wait for the next presentation ends the write with it, not with the
+    // wait's own error.
+    let credentialFailure: unknown;
     // One presentation and attempt, its answer's body read inside it: its event.
     const attempt = async (): Promise<WriteEvent> => {
       answer = undefined;
@@ -2221,9 +2220,11 @@ export class DispatchClient {
       } catch (error) {
         failure = error;
         attemptEvent = stoppedEvent(limit, false, error) ?? credentialEvent(error);
+        if (attemptEvent === "no-credential") credentialFailure = error;
         return attemptEvent;
       }
       progress.sent += 1;
+      credentialFailure = undefined;
       let response: Response;
       try {
         response = await this.#attempt(
@@ -2292,7 +2293,11 @@ export class DispatchClient {
             state,
             event === "exhausted" ? attemptEvent : event,
             answer,
-            failure,
+            state === "nothing-sent" &&
+              credentialFailure !== undefined &&
+              (event === "deadline" || event === "cancelled")
+              ? credentialFailure
+              : failure,
             write,
             event === "exhausted" && attemptEvent === "no-route" && this.#retryNoRoute
           );

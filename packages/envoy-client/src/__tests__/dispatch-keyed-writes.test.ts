@@ -1523,9 +1523,11 @@ describe("DispatchClient's writes", () => {
     expect(presented).toBe(3);
   });
 
-  // A credential whose trade never comes back within the call: each of the three failures that
-  // say the trade goes on is presented again on the write's pacing, and the write ends with that
-  // failure once the pacing is spent, nothing sent; after a landing it ends unsettled with its key.
+  // A credential whose trade never comes back within the call. The fail-fast `TradeRetryingError`
+  // is presented again on the write's pacing, and the write ends with it once the pacing is spent;
+  // a trade still unanswered and a registration still pending are told only once the
+  // presentation has waited out its share of the call's deadline, so the write ends with them at
+  // once (R3-99b1). Nothing is sent; after a landing each ends unsettled with its key.
   const goingOn = [
     [
       "TradeRetryingError",
@@ -1559,9 +1561,8 @@ describe("DispatchClient's writes", () => {
     return { credential, writes: () => presentations.filter((url) => !url.endsWith("/healthz")) };
   };
 
-  test.each(
-    goingOn
-  )("a credential that keeps failing with %s ends the write with that failure once its pacing is spent", async (_, make) => {
+  test("a credential that keeps failing with TradeRetryingError ends the write with it once its pacing is spent", async () => {
+    const [, make] = goingOn[0];
     const { credential, writes } = failing(make);
     const { retry, clock } = pacing();
     const { fetchImpl, sent } = scripted([]);
@@ -1572,10 +1573,29 @@ describe("DispatchClient's writes", () => {
       }).comment("DSP-1", comment)
     );
 
-    expect(error).toBeInstanceOf(make().constructor as new (...args: never[]) => Error);
+    expect(error).toBeInstanceOf(TradeRetryingError);
     expect(sent).toHaveLength(0);
     expect(writes().length).toBe(DISPATCH_WRITE_RETRY.pausesMs.length + 1);
     expect(clock()).toBeLessThanOrEqual(DISPATCH_WRITE_RETRY.withinMs);
+  });
+
+  test.each(
+    goingOn.slice(1)
+  )("a credential that fails with %s, told after its share of the deadline, ends the write at once with it", async (_, make) => {
+    const { credential, writes } = failing(make);
+    const { retry, pauses } = pacing();
+    const { fetchImpl, sent } = scripted([]);
+
+    const error = await failure(
+      new DispatchClient("http://dispatch.test", credential, fetchImpl, {
+        writeRetry: retry,
+      }).comment("DSP-1", comment)
+    );
+
+    expect(error).toBeInstanceOf(make().constructor as new (...args: never[]) => Error);
+    expect(sent).toHaveLength(0);
+    expect(writes()).toHaveLength(1);
+    expect(pauses).toEqual([]);
   });
 
   test.each(

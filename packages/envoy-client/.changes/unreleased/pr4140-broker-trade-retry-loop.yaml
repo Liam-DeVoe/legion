@@ -46,11 +46,14 @@ body: |-
   `DispatchWriteUnsettledError`, carrying the write's key as `key`, with that failure as its
   cause. Before, a 5xx on every attempt, a 3xx, a cancellation or a refusal after a landing could
   each reach the caller as a plain refusal, which reads as nothing written and invited a resend
-  under a new key that wrote twice. A credential whose trade goes on (`TradeRetryingError`, a
-  trade still unanswered, a pod's registration still pending) is presented again on the write's
-  pacing; one refused for good ends the write at once with its refusal. Before anything of a
-  write may have landed (a refused connection, a 408 or 429, a credential that could not
-  present), it is asked again without asking `/healthz` first, since a repeat then is no second
+  under a new key that wrote twice. A fail-fast credential whose trade goes on
+  (`TradeRetryingError`) is presented again on the write's pacing; a trade still unanswered and a
+  pod's registration still pending, which the credential tells only once it has waited out its
+  share of the call's deadline, and a credential refused for good, end the write at once with
+  their own error. Where the deadline or the caller's stop ends the wait after such a failure,
+  before anything landed, the write ends with the credential's error, not the wait's. Before
+  anything of a write may have landed (a refused connection, a 408 or 429, a credential that could
+  not present), it is asked again without asking `/healthz` first, since a repeat then is no second
   write; before, the probe came first, and a fail-fast credential, which fails the probe's
   presentation too, ended the write there. No Dispatch or Envoy request follows a redirect any
   more (`redirect: "manual"`): a 301, 302 or 303 turned a write's POST into a GET whose 2xx read

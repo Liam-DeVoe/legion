@@ -22,7 +22,13 @@
 // every event in that place.
 
 import { beforeEach, expect, test } from "bun:test";
-import { SignInEndedError, TradeRetryingError } from "@legion/broker-client/token-errors";
+import {
+  BrokerRefusedError,
+  RegistrationPendingError,
+  SignInEndedError,
+  TradeRetryingError,
+  TradeUnansweredError,
+} from "@legion/broker-client/token-errors";
 import {
   type CommentWriteResponse,
   IDEMPOTENCY_KEY_COMMITTED,
@@ -60,7 +66,8 @@ const posted = {
  *   whose body broke off or is not the JSON it says, a credential whose trade goes on);
  * - `dead-token`: Dispatch's `401 BROKER_TOKEN_NOT_ACTIVE`, made before any handler ran;
  * - `no-route`: an old build's "no route for …", made before any handler ran;
- * - `credential-final`: a credential that cannot present, for good;
+ * - `credential-final`: a credential that cannot present again within the call: for good, or
+ *   told only once it has waited out its share of the call's deadline;
  * - `stop-in-flight`: the deadline or the caller's stop while an attempt, its body included, is out;
  * - `stop-wait`: the deadline or the caller's stop between attempts.
  */
@@ -83,7 +90,7 @@ type Ending =
   | { readonly as: "landed" }
   | { readonly as: "unsettled" }
   | { readonly as: "credential" }
-  | { readonly as: "credential-final" }
+  | { readonly as: "credential-final"; readonly name: string }
   | { readonly as: "unreachable" }
   | { readonly as: "deadline" }
   | { readonly as: "cancelled" };
@@ -106,6 +113,8 @@ interface Kind {
   readonly status?: number;
   /** How a write that ends after it with nothing landed is told: its own error. */
   readonly own?: Ending;
+  /** What a credential kind's presentation throws. */
+  readonly fails?: () => Error;
   readonly respond?: (key: string, init: RequestInit, run: Run) => Response | Promise<Response>;
 }
 
@@ -458,8 +467,40 @@ const KINDS: readonly Kind[] = [
       return hang(init.signal);
     },
   },
-  { name: "no credential", role: "repeatable", at: "credential", own: { as: "credential" } },
-  { name: "no credential final", role: "credential-final", at: "credential" },
+  {
+    name: "no credential",
+    role: "repeatable",
+    at: "credential",
+    own: { as: "credential" },
+    fails: () => new TradeRetryingError("the secrets broker answered 503 temporarily_unavailable"),
+  },
+  {
+    name: "no credential final",
+    role: "credential-final",
+    at: "credential",
+    fails: () => new SignInEndedError("https://issuer.test", "person@example.test"),
+  },
+  {
+    name: "registration pending",
+    role: "credential-final",
+    at: "credential",
+    fails: () =>
+      new RegistrationPendingError(
+        "ses_pod",
+        new BrokerRefusedError(
+          400,
+          "pod_session_not_registered",
+          "pod_session_not_registered: No registration says this pod may write as ses_pod",
+          "this pod"
+        )
+      ),
+  },
+  {
+    name: "trade unanswered",
+    role: "credential-final",
+    at: "credential",
+    fails: () => new TradeUnansweredError("this machine's pool identity"),
+  },
   { name: "deadline", role: "stop-wait", at: "wait", own: { as: "deadline" } },
   { name: "stop", role: "stop-wait", at: "wait", own: { as: "cancelled" } },
 ];
@@ -514,10 +555,15 @@ function oracle(events: readonly Kind[]): Decision[] {
   let roundPauses = 0;
   let routeWaits = 0;
   let deadTokens = 0;
+  // Whether the last presentation could not present while its trade goes on, and no attempt went
+  // out after it: a wait's stop before a landing then ends with the credential's failure.
+  let credentialFailed = false;
   const end = (ending: Ending): Decision => ({ asks: false, ending });
   const endAfter = (own: Ending): Decision => end(landed ? UNSETTLED : own);
   return events.map((event): Decision => {
     const refusal: Ending = { as: "refusal", status: event.status ?? 0 };
+    if (event.at === "attempt") credentialFailed = false;
+    if (event.at === "credential") credentialFailed = event.role === "repeatable";
     switch (event.role) {
       case "applied":
         // A 2xx without the key, from a Dispatch known to answer every keyed write with it, is
@@ -532,11 +578,14 @@ function oracle(events: readonly Kind[]): Decision[] {
       case "redirect":
         return endAfter(refusal);
       case "credential-final":
-        return endAfter({ as: "credential-final" });
+        return endAfter({
+          as: "credential-final",
+          name: (event.fails as () => Error)().constructor.name,
+        });
       case "stop-in-flight":
         return end(UNSETTLED);
       case "stop-wait":
-        return endAfter(event.own as Ending);
+        return endAfter(credentialFailed ? { as: "credential" } : (event.own as Ending));
       case "dead-token":
         if (deadTokens < LIMITS.deadTokens) {
           deadTokens += 1;
@@ -590,10 +639,7 @@ async function drive(script: readonly Kind[]): Promise<{ run: Run; error?: unkno
       if (next?.at === "credential") {
         run.cursor += 1;
         run.consumed.push(next);
-        if (next.role === "credential-final") {
-          throw new SignInEndedError("https://issuer.test", "person@example.test");
-        }
-        throw new TradeRetryingError("the secrets broker answered 503 temporarily_unavailable");
+        throw (next.fails as () => Error)();
       }
       return { Authorization: "DPoP live" };
     },
@@ -682,9 +728,9 @@ function mismatch(
         ? undefined
         : `want the credential's error, got ${got}`;
     case "credential-final":
-      return error instanceof SignInEndedError
+      return (error as Error | undefined)?.constructor.name === ending.name
         ? undefined
-        : `want the credential's final refusal, got ${got}`;
+        : `want the credential's ${ending.name}, got ${got}`;
     case "unreachable":
       return !unsettled && String((error as Error)?.message).includes("is unreachable")
         ? undefined
@@ -803,6 +849,8 @@ const ENDINGS: readonly Kind[] = [
   kind("308 redirect"),
   kind("304"),
   kind("no credential final"),
+  kind("registration pending"),
+  kind("trade unanswered"),
   kind("deadline in flight"),
   kind("stop in flight"),
   kind("deadline"),

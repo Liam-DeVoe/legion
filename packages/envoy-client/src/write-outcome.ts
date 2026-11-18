@@ -13,7 +13,8 @@
 // the deadline, the caller's stop, running out of retries or of time — is
 // `DispatchWriteUnsettledError` carrying the key. Before anything may have landed, a write that ends
 // is told the event's own error: the refusal, the transport's failure, the credential's, the
-// deadline's.
+// deadline's; but where the deadline or the caller's stop ends the wait after a credential that
+// could not present, the credential's failure, since it is why nothing was sent.
 //
 // The cells rest on what Dispatch does (`packages/envoy/internal/dispatch/api/request_keys.go`):
 // every answer its keyed layer gives a keyed POST or PATCH carries the key back, a 5xx included; a
@@ -21,7 +22,8 @@
 // `422 KEY_REUSED`) and never run twice; a 401, 408, 429 or 5xx is never stored; Dispatch's auth and
 // its old builds' "no route" answer before the keyed layer runs. And on what the secrets broker's
 // trade does (`packages/broker-client/src/token-client.ts`): a fail-fast caller is told the trade's
-// last failure at once while the trade goes on in the background.
+// last failure at once while the trade goes on in the background (`TradeRetryingError`); a trade
+// not yet answered and a registration still pending are told only once the caller's signal ends.
 
 /** Where a write stands between its attempts. A settled write is no state: the call returns. */
 export type WriteState = "nothing-sent" | "may-have-landed";
@@ -65,14 +67,15 @@ export type WriteEvent =
   /** A transport failure that reached no server: a refused connection, a name that did not
    *  resolve (`reachedNothing`). */
   | "unreached"
-  /** The credential could not present the attempt, and says its trade goes on (the secrets
-   *  broker's `TradeRetryingError`, `TradeUnansweredError`, `RegistrationPendingError`): nothing of
-   *  the attempt was sent, and a later presentation can succeed, so the write asks again. A
-   *  fail-fast broker credential answers this at once after a failed trade, so it is no sign the
-   *  call's time is spent. */
+  /** The fail-fast broker credential could not present the attempt, and says its trade goes on
+   *  (`TradeRetryingError`, told at once after a failed trade): nothing of the attempt was sent,
+   *  and a later presentation within the call can succeed, so the write asks again. */
   | "no-credential"
-  /** The credential could not present the attempt, for good: a refusal no trade cures, a sign-in
-   *  its issuer ended, a closed client or a configuration that names no broker. Nothing was sent. */
+  /** The credential could not present the attempt, and no later presentation within the call
+   *  can: a refusal no trade cures, a sign-in its issuer ended, a closed client, a configuration
+   *  that names no broker; or a trade still unanswered (`TradeUnansweredError`) or a pod's
+   *  registration still pending (`RegistrationPendingError`), which the token client tells only
+   *  once the presentation has waited out its share of the call's deadline. Nothing was sent. */
   | "no-credential-final"
   /** Dispatch's `401 BROKER_TOKEN_NOT_ACTIVE`, the first of the call, where the credential can be
    *  told its token is not live: it is presented afresh and the write sent again at once. */
