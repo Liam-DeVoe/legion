@@ -40,11 +40,28 @@ import { approvalPillClassName, LabelPill, Pill, StatusPill } from "../../compon
 import { PinButton } from "../../components/PinButton";
 import { RefusableButton } from "../../components/RefusableButton";
 import { withoutEllipsis } from "../../components/tooltips";
-import { pageHeaderControl, pageInkText, pageQuietText } from "../../theme/classes";
+import {
+  borderDefault,
+  focusBorder,
+  focusVisibleRing,
+  inputClasses,
+  PAGE_COLORS,
+  pageFailedText,
+  pageHairBorder,
+  pageHeaderControl,
+  pageInkText,
+  pageLineBorder,
+  pageMutedText,
+  pagePaperBg,
+  pageQuietText,
+  textMutedOnSurface,
+  textPrimaryOnSurface,
+} from "../../theme/classes";
 import { mentionOptions } from "../conversation/MentionComposer";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { ConnectionDot } from "../doc/ConnectionDot";
 import { AskCard } from "../inbox/AskCard";
+import { UnsentReply } from "../inbox/AskThread";
 import { ApprovalSteps } from "../issue/ApprovalSteps";
 import { AssigneeControl } from "../issue/AssigneeControl";
 import { badgeSelectWrapper } from "../issue/badge-select";
@@ -2212,10 +2229,16 @@ test("the default shapes keep main's class strings", async () => {
     "AskCard own words": "min-h-11 text-sm font-medium text-slate-700 dark:text-slate-300",
     "AskCard reason label": "mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300",
     "AskCard submit hint": "text-xs text-slate-500 dark:text-slate-400",
-    // `main`'s features/inbox/AskCard.tsx: the unsent answer's box, its note and its words.
-    "AskCard unsent answer": "mt-3 rounded-xl border p-3 border-slate-200 dark:border-slate-800",
+    // `main`'s features/inbox/UnsentText.tsx, as AskCard draws it: the unsent answer's box, its
+    // note and its words.
+    "AskCard unsent answer": "rounded-xl border p-3 border-slate-200 dark:border-slate-800 mt-3",
     "AskCard unsent answer note": "text-xs text-slate-500 dark:text-slate-400",
     "AskCard unsent answer words":
+      "mt-1 text-sm whitespace-pre-wrap text-slate-900 dark:text-slate-100",
+    // `main`'s features/inbox/UnsentText.tsx as UnsentReply draws it with no `className`.
+    "AskThread unsent reply": "rounded-xl border p-3 border-slate-200 dark:border-slate-800 ",
+    "AskThread unsent reply note": "text-xs text-slate-500 dark:text-slate-400",
+    "AskThread unsent reply words":
       "mt-1 text-sm whitespace-pre-wrap text-slate-900 dark:text-slate-100",
     // `main`'s features/inbox/AskCard.tsx: a decision question's "Open in document" line, the
     // warning that the question changed under the reader, and Cancel while an answer is changed.
@@ -3148,6 +3171,18 @@ test("the default shapes keep main's class strings", async () => {
     undraw(laterCards);
   }
 
+  // A reply typed under a settled ask that opened again, read-only in the composer's place, with
+  // no spacing of a caller's.
+  const unsentReply = draw(<UnsentReply text="Ship it after the freeze." />, "outside");
+  try {
+    const box = within(unsentReply.container).getByTestId("ask-unsent-reply");
+    classAt("AskThread unsent reply", box);
+    classAt("AskThread unsent reply note", box.querySelector("p"));
+    classAt("AskThread unsent reply words", within(box).getByText("Ship it after the freeze."));
+  } finally {
+    undraw(unsentReply);
+  }
+
   // A compact approval request: its label, its document, the disclosure of the reader's own
   // words, and the reason Request changes asks for.
   const approval = openAsk({
@@ -3729,12 +3764,324 @@ test("inside NoTooltips a repository row draws a long repository as text that wr
   }
 });
 
+// Inside `NoTooltips` the box a repository row opens fills the row's value at every width. Details
+// draws the value as a flex row, in which the control's line is only as wide as what it holds
+// unless it is as wide as the value, and the box's own `w-full` then fills no more than that,
+// which cuts a name the value has room for. Read by classes, since happy-dom lays nothing out:
+// the line is as wide as the value, every element from the box up to the value is too, and none
+// keeps a width of its own or its line. The box draws no datalist arrow, which Chromium draws in a
+// box with a list and which takes some of a narrow row's room from the name, shrinks within its
+// place, and keeps no right padding for the clear control: the control is not laid over the box
+// but drawn after it in the box's place, which wraps, so it goes onto the line under the box.
+// Outside, the box is `main`'s 200 px box with its arrow, and the line as wide as what it holds.
+test("inside NoTooltips the repository box fills its row's value and keeps no room a name needs", async () => {
+  const user = userEvent.setup();
+  const noArrow = "[&::-webkit-calendar-picker-indicator]:hidden";
+  for (const surface of ["inside", "outside"] as const) {
+    const view = draw(
+      <div className="flex min-w-0 flex-wrap items-center" data-case="value">
+        <RepoControl
+          inRow
+          issueKey="CORE-1"
+          project="CORE"
+          repo="cybermonklabs/legion"
+          resolvedRepo="cybermonklabs/legion"
+        />
+      </div>,
+      surface
+    );
+    try {
+      const scope = within(view.container);
+      const value = caseOf(view, "value");
+      const line = value.firstElementChild;
+      if (line === null) throw new Error("the value holds no control");
+      const box = () => scope.getByRole("combobox", { name: "Repository of CORE-1" });
+      if (surface === "outside") {
+        await settleReads();
+        expect(classOf(box())).toContain("w-[200px]");
+        expect(classOf(box())).not.toContain(noArrow);
+        expect(classOf(box())).not.toContain("w-full");
+        expect(classOf(line)).not.toContain("w-full");
+        continue;
+      }
+      // The press of the repository's text draws the box in its place; the focus in the box
+      // starts the mappings' read, which lands before the box is read.
+      await user.click(
+        scope.getByRole("button", { name: "cybermonklabs/legion, Repository of CORE-1" })
+      );
+      await settleReads();
+      expect(document.activeElement).toBe(box());
+      expect(classOf(line)).toContain("w-full");
+      const narrower: string[] = [];
+      const held: string[] = [];
+      for (let outer: Element | null = box(); outer !== null && outer !== value; ) {
+        if (!classOf(outer).includes("w-full")) narrower.push(outer.tagName);
+        held.push(
+          ...classOf(outer).filter((token) =>
+            ["shrink-0", "w-[200px]", "whitespace-nowrap"].includes(token)
+          )
+        );
+        outer = outer.parentElement;
+      }
+      expect(narrower).toEqual([]);
+      expect(held).toEqual([]);
+      expect(classOf(box())).toEqual(expect.arrayContaining([noArrow, "min-w-0", "pr-1.5"]));
+      expect(classOf(box())).not.toContain("pr-8");
+      // The clear control follows the box inside the box's place, in its flow, and the place
+      // wraps, so the control goes onto the line under the box.
+      const place = box().parentElement;
+      if (place === null) throw new Error("the box has no place");
+      const clear = scope.getByRole("button", { name: "Clear the repository of CORE-1" });
+      const following: Element[] = [];
+      for (let next = box().nextElementSibling; next !== null; next = next.nextElementSibling) {
+        following.push(next);
+      }
+      expect(following).toContain(clear);
+      expect(classOf(clear)).not.toContain("absolute");
+      expect(classOf(place)).toEqual(expect.arrayContaining(["relative", "flex-wrap"]));
+    } finally {
+      undraw(view);
+    }
+  }
+});
+
 /** A repository row's two texts in Details, each by the name its button answers to and the
  *  repository the issue holds and resolves to: "None", and the repository. */
 const ROW_TEXTS = [
   [`${CONTROL_LABELS.none}, Repository of CORE-1`, null],
   ["acme/api, Repository of CORE-1", "acme/api"],
 ] as const;
+
+// Inside `NoTooltips` Escape in a repository row's box is the box's, as in the route box: opened
+// from the row's text by Enter, the repository's or "None", the box is given up by Escape, which
+// draws the text again with the focus on it, and the press, marked `defaultPrevented`, passes by
+// the dialog binding of Details, a sheet on a phone that closes on Escape too. A second Escape,
+// pressed on the text, closes the sheet, so the binding the first press passed is one that would
+// have closed it. Outside, the row is `main`'s box: Escape puts back what the issue holds, and
+// the press, unmarked, closes the sheet as on `main`.
+test("inside NoTooltips Escape in the repository box closes the box and not the sheet around it", async () => {
+  const user = userEvent.setup();
+  for (const surface of ["inside", "outside"] as const) {
+    for (const [name, repo] of ROW_TEXTS) {
+      // What each Escape closed, in order.
+      const closed: string[] = [];
+      const escapes = recordEscapes();
+      const view = draw(
+        <KeymapProvider>
+          <EscapeSheet onClose={() => closed.push("sheet")}>
+            <RepoControl inRow issueKey="CORE-1" project="CORE" repo={repo} resolvedRepo={repo} />
+          </EscapeSheet>
+        </KeymapProvider>,
+        surface
+      );
+      try {
+        const scope = within(view.container);
+        const box = () =>
+          scope.getByRole("combobox", { name: "Repository of CORE-1" }) as HTMLInputElement;
+        if (surface === "outside") {
+          // The sheet's first focus lands in `main`'s box, which is drawn from the start.
+          await waitFor(() => expect(document.activeElement).toBe(box()));
+          await settleReads();
+          await user.keyboard("x");
+          expect(box().value).not.toBe(repo ?? "");
+
+          await user.keyboard("{Escape}");
+          expect(box().value).toBe(repo ?? "");
+          expect(document.activeElement).toBe(box());
+          expect(closed).toEqual(["sheet"]);
+          continue;
+        }
+        const text = () => scope.getByRole("button", { name });
+        // The sheet's first focus lands on the row's text before the case presses anything.
+        await waitFor(() => expect(document.activeElement).toBe(text()));
+        await settleReads();
+        await user.keyboard("{Enter}");
+        expect(document.activeElement).toBe(box());
+        // The focus in the box starts the mappings' read, which lands before what follows.
+        await settleReads();
+
+        await user.keyboard("{Escape}");
+        expect(scope.queryByRole("combobox")).toBeNull();
+        expect(document.activeElement).toBe(text());
+        expect(closed).toEqual([]);
+        expect(escapes.presses.map((event) => event.defaultPrevented)).toEqual([true]);
+
+        await user.keyboard("{Escape}");
+        expect(closed).toEqual(["sheet"]);
+      } finally {
+        escapes.stop();
+        undraw(view);
+      }
+    }
+  }
+});
+
+// Inside `NoTooltips` Escape on the box's clear control is the box's as well, the control being
+// part of the box's place in a row of Details: the box, opened by Enter from the text of an issue
+// with a repository of its own, gives the focus to the control by Tab, and Escape there draws the
+// text again with the focus on it and writes nothing. The press, marked `defaultPrevented`, passes
+// by the dialog binding of Details, a sheet on a phone that closes on Escape too; a second Escape,
+// pressed on the text, closes the sheet, so the binding the first press passed is one that would
+// have closed it. Outside, the row is `main`'s box, which takes no Escape on its clear control:
+// the press closes the sheet as on `main`, and the box and the focus stay where they were.
+test("inside NoTooltips Escape on the repository box's clear control closes the box and not the sheet around it", async () => {
+  const user = userEvent.setup();
+  for (const surface of ["inside", "outside"] as const) {
+    const unemulate = emulateChromiumFocusFixup();
+    const patchIssue = answerIssuePatches();
+    // What each Escape closed, in order.
+    const closed: string[] = [];
+    const escapes = recordEscapes();
+    const view = draw(
+      <KeymapProvider>
+        <EscapeSheet onClose={() => closed.push("sheet")}>
+          <ReadRepositoryRow
+            read={async () => ({ key: "CORE-1", repo: "acme/api", resolved_repo: "acme/api" })}
+          />
+        </EscapeSheet>
+      </KeymapProvider>,
+      surface
+    );
+    try {
+      const scope = within(view.container);
+      const box = () => scope.getByRole("combobox", { name: "Repository of CORE-1" });
+      const clearName = "Clear the repository of CORE-1";
+      const clear = () => scope.getByRole("button", { name: clearName });
+      if (surface === "outside") {
+        await scope.findByRole("combobox", { name: "Repository of CORE-1" });
+        await settleReads();
+        await act(async () => box().focus());
+        await settleReads();
+        await user.tab();
+        expect(document.activeElement).toBe(clear());
+
+        await user.keyboard("{Escape}");
+        expect(closed).toEqual(["sheet"]);
+        expect(box()).toBeInTheDocument();
+        expect(document.activeElement).toBe(clear());
+        expect(patchIssue).not.toHaveBeenCalled();
+        continue;
+      }
+      const textName = "acme/api, Repository of CORE-1";
+      const text = () => scope.getByRole("button", { name: textName });
+      await scope.findByRole("button", { name: textName });
+      await settleReads();
+      await act(async () => text().focus());
+      await user.keyboard("{Enter}");
+      expect(document.activeElement).toBe(box());
+      // The focus in the box starts the mappings' read, which lands before what follows.
+      await settleReads();
+      await user.tab();
+      expect(document.activeElement).toBe(clear());
+
+      await user.keyboard("{Escape}");
+      expect(closed).toEqual([]);
+      expect(escapes.presses.map((event) => event.defaultPrevented)).toEqual([true]);
+      expect(scope.queryByRole("combobox")).toBeNull();
+      expect(scope.queryByRole("button", { name: clearName })).toBeNull();
+      expect(document.activeElement).toBe(text());
+      expect(patchIssue).not.toHaveBeenCalled();
+
+      await user.keyboard("{Escape}");
+      expect(closed).toEqual(["sheet"]);
+    } finally {
+      escapes.stop();
+      patchIssue.mockRestore();
+      unemulate();
+      undraw(view);
+    }
+  }
+});
+
+// Inside `NoTooltips` the box's clear control is part of the box in a row of Details. Opened from
+// the text of an issue with a repository of its own, the box gives the focus to the control by
+// Tab, both still drawn and nothing written, since nothing was typed; Shift+Tab takes it back to
+// the box, both drawn all along. Tab from the control on to a control after the row gives the row
+// back to the text, the focus staying where Tab put it. Enter on the control writes the clear
+// once; while the write is out the control has left the page and the focus is in the box, as a
+// pointer press leaves it, and once it lands the row reads what the issue then resolves to, which
+// takes the focus.
+test("inside NoTooltips the repository box's clear control is reached by Tab in a row of Details", async () => {
+  const user = userEvent.setup();
+  const unemulate = emulateChromiumFocusFixup();
+  const stored: Pick<Issue, "repo" | "resolved_repo"> = {
+    repo: "acme/api",
+    resolved_repo: "acme/api",
+  };
+  const read = mock(async () => ({ key: "CORE-1", ...stored }));
+  const written = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => written.promise);
+  const view = draw(
+    <>
+      <ReadRepositoryRow read={read} />
+      <button type="button">After the row</button>
+    </>,
+    "inside"
+  );
+  try {
+    const scope = within(view.container);
+    const textName = "acme/api, Repository of CORE-1";
+    const text = () => scope.getByRole("button", { name: textName });
+    const box = () => scope.getByRole("combobox", { name: "Repository of CORE-1" });
+    const clear = () => scope.getByRole("button", { name: "Clear the repository of CORE-1" });
+    const after = scope.getByRole("button", { name: "After the row" });
+    await scope.findByRole("button", { name: textName });
+    await settleReads();
+
+    // Tab from the box opened from the text puts the focus on the clear control, and both stay.
+    await user.click(text());
+    expect(document.activeElement).toBe(box());
+    // The focus in the box starts the mappings' read, which lands before what follows.
+    await settleReads();
+    await user.tab();
+    expect(document.activeElement).toBe(clear());
+    expect(box()).toBeInTheDocument();
+    expect(patchIssue).not.toHaveBeenCalled();
+
+    // Shift+Tab takes the focus back to the box, and both stay.
+    await user.tab({ shift: true });
+    expect(document.activeElement).toBe(box());
+    expect(clear()).toBeInTheDocument();
+
+    // Tab from the control on past the row draws the text again, the focus where Tab put it.
+    await user.tab();
+    expect(document.activeElement).toBe(clear());
+    await user.tab();
+    expect(document.activeElement).toBe(after);
+    expect(scope.queryByRole("combobox")).toBeNull();
+    expect(text()).toBeInTheDocument();
+    expect(patchIssue).not.toHaveBeenCalled();
+
+    // Enter on the control writes the clear once. While the write is out the control has left
+    // the page and the focus is in the box. Once it lands the row reads the repository the issue
+    // then inherits, and its text takes the focus the box held.
+    await user.click(text());
+    expect(document.activeElement).toBe(box());
+    await user.tab();
+    expect(document.activeElement).toBe(clear());
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: null }, keyedAttempt)
+    );
+    expect(scope.queryByRole("button", { name: "Clear the repository of CORE-1" })).toBeNull();
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBe(box());
+    stored.repo = null;
+    stored.resolved_repo = "acme/web";
+    written.resolve({} as Issue);
+    await settleReads();
+    expect(scope.queryByRole("combobox")).toBeNull();
+    const landed = scope.getByRole("button", { name: "acme/web, Repository of CORE-1" });
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBe(landed);
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+  } finally {
+    written.resolve({} as Issue);
+    patchIssue.mockRestore();
+    unemulate();
+    undraw(view);
+  }
+});
 
 // The row's text and the box that takes its place hand the focus on only where it fell to the
 // document with the one that left: a press of "None" or of the repository's text by a click that
@@ -5452,6 +5799,207 @@ test("inside NoTooltips an editor's Save and Cancel keep the focus while its sav
   }
 });
 
+/** The identity block's two editors, each by the property's word its box is named by and the
+ *  word on its Save. */
+const FIELD_EDITORS = [
+  ["route", PROPERTY_LABELS.route, CONTROL_LABELS.save_route],
+  ["parent", PROPERTY_LABELS.parent, CONTROL_LABELS.save_parent],
+] as const;
+
+// An editor's Escape is the editor's from its buttons as well as from its box: Escape on Save or
+// on Cancel closes the editor once, and the press, marked `defaultPrevented`, passes by the dialog
+// binding of Details, a sheet on a phone that closes on Escape too. A second Escape, with the
+// editor gone, closes the sheet, so the binding the first press passed is one that would have
+// closed it. The editors are drawn only on the new issue page, so the case is drawn inside
+// `NoTooltips` alone.
+test("inside NoTooltips Escape on an editor's Save or Cancel closes the editor and not the sheet around it", async () => {
+  const user = userEvent.setup();
+  for (const [field, label, saveLabel] of FIELD_EDITORS) {
+    for (const pressed of [saveLabel, CONTROL_LABELS.cancel]) {
+      // What each Escape closed, in order.
+      const closed: string[] = [];
+      const escapes = recordEscapes();
+      const view = draw(
+        <KeymapProvider>
+          <EscapeSheet onClose={() => closed.push("sheet")}>
+            <OpenFieldForm field={field} onClose={() => closed.push("editor")} />
+          </EscapeSheet>
+        </KeymapProvider>,
+        "inside"
+      );
+      try {
+        const scope = within(view.container);
+        const box = scope.getByRole("textbox", { name: label });
+        await waitFor(() => expect(document.activeElement).toBe(box));
+        const button = scope.getByRole("button", { name: pressed });
+        await act(async () => button.focus());
+        expect(document.activeElement).toBe(button);
+
+        await user.keyboard("{Escape}");
+        expect(closed).toEqual(["editor"]);
+        expect(escapes.presses.map((event) => event.defaultPrevented)).toEqual([true]);
+        expect(scope.queryByRole("textbox", { name: label })).toBeNull();
+
+        await user.keyboard("{Escape}");
+        expect(closed).toEqual(["editor", "sheet"]);
+      } finally {
+        escapes.stop();
+        undraw(view);
+      }
+    }
+  }
+});
+
+/** `main`'s focus indicator, which the page keeps, since its palette holds no focus colour: the
+ *  ring and a field's focus rule. */
+const MAIN_FOCUS: readonly string[] = [...tokens(focusVisibleRing), ...tokens(focusBorder)];
+
+/** The colour a class token names after its variants, or `undefined` for a token that names none
+ *  (`text-sm`, `border`, `ring-2`, `outline-none`): what follows a colour's property, as
+ *  `shared-controls.tooltips.test.tsx` reads it, an opacity dropped - a palette shade
+ *  (`slate-300`), a keyword colour (`white`, `transparent`), an arbitrary colour, or a colour of
+ *  the page's palette by its own name (`page-ink`), which `PAGE_COLORS` must then hold. */
+function colourNamed(token: string): string | undefined {
+  const utility = /^(?:[^:[\]]+:)*(.+)$/.exec(token)?.[1] ?? token;
+  const named =
+    /^-?(?:text|bg|border(?:-[xytrblse])?|outline|ring(?:-offset)?|placeholder|decoration|divide|caret|accent|fill|stroke|shadow|from|via|to)-(.+)$/
+      .exec(utility)?.[1]
+      ?.replace(/\/(?:\d+|\[[^\]]*\])$/, "");
+  if (named === undefined) return undefined;
+  return /^(?:[a-z]+-\d{2,3}|white|black|transparent|\[(?:#|rgba?\(|hsla?\(|oklch\(|oklab\(|color:|var\(--color-).*|(?:page|icon-rail)(?:-[a-z]+)*)$/.test(
+    named
+  )
+    ? named
+    : undefined;
+}
+
+/** Each class token of `root` and of every element inside it that names a colour the page's
+ *  palette (`PAGE_COLORS`) does not hold and that is no token of `main`'s focus indicator, and
+ *  how many of their tokens name a colour at all. */
+function offPageTokens(root: Element): { readonly colours: number; readonly offenders: string[] } {
+  const offenders: string[] = [];
+  let colours = 0;
+  for (const element of [root, ...root.querySelectorAll("*")]) {
+    for (const token of classOf(element)) {
+      const colour = colourNamed(token);
+      if (colour === undefined) continue;
+      colours += 1;
+      if (!Object.hasOwn(PAGE_COLORS, colour) && !MAIN_FOCUS.includes(token)) {
+        offenders.push(`<${element.tagName.toLowerCase()}> ${token}`);
+      }
+    }
+  }
+  return { colours, offenders };
+}
+
+/** The form an editor's box sits in. */
+function formOf(box: HTMLElement): HTMLFormElement {
+  const form = box.closest("form");
+  if (form === null) throw new Error("the box is in no form");
+  return form;
+}
+
+// The identity block's editors are drawn in a row of Details on the new issue page alone, so each
+// draws the page's colours, read here inside `NoTooltips`. The box is the page's field, as the
+// repository box in Details is: a border in the page's hairline rule, its paper and its ink, with
+// `main`'s focus ring, the application's one focus indicator, and none of the colours of `main`'s
+// field (`inputClasses`) but its focus rule. Save is the page's bordered action and Cancel its
+// quiet act, each with that focus ring. Every colour a class of the form names, the route's
+// refusal of a draft Dispatch would not take among them, is the page's or that focus indicator.
+test("the route and parent editors draw the page's field, with a border and a focus ring", async () => {
+  const user = userEvent.setup();
+  const mainField = tokens(inputClasses(true)).filter((token) => !MAIN_FOCUS.includes(token));
+  for (const [field, label, saveLabel] of FIELD_EDITORS) {
+    const view = draw(<OpenFieldForm field={field} onClose={() => undefined} />, "inside");
+    try {
+      const scope = within(view.container);
+      const box = scope.getByRole("textbox", { name: label });
+      await waitFor(() => expect(document.activeElement).toBe(box));
+      expect(classOf(box)).toEqual(
+        expect.arrayContaining([
+          "border",
+          "focus-visible:ring-2",
+          ...tokens(pageHairBorder),
+          ...tokens(pagePaperBg),
+          ...tokens(pageInkText),
+          ...tokens(focusVisibleRing),
+        ])
+      );
+      expect(classOf(box).filter((token) => mainField.includes(token))).toEqual([]);
+      expect(classOf(scope.getByRole("button", { name: saveLabel }))).toEqual(
+        expect.arrayContaining([
+          "border",
+          ...tokens(pageLineBorder),
+          ...tokens(pagePaperBg),
+          ...tokens(pageMutedText),
+          "not-refused:hover:text-page-ink",
+          "focus-visible:ring-2",
+          ...tokens(focusVisibleRing),
+        ])
+      );
+      expect(classOf(scope.getByRole("button", { name: CONTROL_LABELS.cancel }))).toEqual(
+        expect.arrayContaining([
+          ...tokens(pageQuietText),
+          "not-refused:hover:text-page-muted",
+          "focus-visible:ring-2",
+          ...tokens(focusVisibleRing),
+        ])
+      );
+      if (field === "route") {
+        await user.clear(box);
+        await user.type(box, "nobody");
+        const refusal = document.getElementById(box.getAttribute("aria-describedby") ?? "");
+        if (refusal === null) throw new Error("the route box names no description");
+        expect(classOf(refusal)).toEqual(expect.arrayContaining(tokens(pageFailedText)));
+      }
+      const read = offPageTokens(formOf(box));
+      expect(read.offenders).toEqual([]);
+      // A walk that found no colour would pass with nothing read.
+      expect(read.colours).toBeGreaterThan(0);
+    } finally {
+      undraw(view);
+    }
+  }
+});
+
+/** The words of each text node inside `root` that a reader sees: none inside an element drawn
+ *  for a screen reader alone (`sr-only`). */
+function seenWords(root: Element): string[] {
+  const seen: string[] = [];
+  const walk = (node: Node) => {
+    if (node.nodeType === node.TEXT_NODE) {
+      const words = node.textContent?.trim() ?? "";
+      if (words !== "") seen.push(words);
+    } else if (!(node instanceof Element && classOf(node).includes("sr-only"))) {
+      for (const child of node.childNodes) walk(child);
+    }
+  };
+  walk(root);
+  return seen;
+}
+
+// Each editor is drawn in the row of Details that draws its property's label, so the editor's own
+// label is for a screen reader alone (`sr-only`): the box keeps the property's word as its name,
+// and no word of the form a reader sees is that label again.
+test("the route and parent editors name their box without drawing the row's label again", async () => {
+  for (const [field, label, saveLabel] of FIELD_EDITORS) {
+    const view = draw(<OpenFieldForm field={field} onClose={() => undefined} />, "inside");
+    try {
+      const box = within(view.container).getByRole("textbox", { name: label });
+      await waitFor(() => expect(document.activeElement).toBe(box));
+      const labels = [...view.container.querySelectorAll(`label[for="${box.id}"]`)];
+      expect(labels.map((element) => element.textContent)).toEqual([label]);
+      expect(labels.map((element) => classOf(element).includes("sr-only"))).toEqual([true]);
+      const seen = seenWords(formOf(box));
+      expect(seen).not.toContain(label);
+      // The walk reads the words the form draws: its two buttons'.
+      expect(seen).toEqual(expect.arrayContaining([saveLabel, CONTROL_LABELS.cancel]));
+    } finally {
+      undraw(view);
+    }
+  }
+});
+
 /** An AskCard's queries, as a case reads them (`within`'s). */
 type CardScope = BoundFunctions<typeof queries>;
 
@@ -6145,5 +6693,28 @@ test("outside NoTooltips AskCard sends an answer pressed while the ask is read a
       createComment.mockRestore();
       undraw(view);
     }
+  }
+});
+
+// A reply the reader typed under a settled ask that opened again is drawn inside `NoTooltips` in
+// the page's colours rather than `main`'s, and its words are the reader's, a value that breaks
+// anywhere: a long run with no space wraps inside the box rather than run past it.
+test("inside NoTooltips an unsent reply draws in the page's colours, and its words break anywhere", () => {
+  const typed = "x".repeat(200);
+  const view = draw(<UnsentReply text={typed} />, "inside");
+  try {
+    const box = within(view.container).getByTestId("ask-unsent-reply");
+    expect(classOf(box)).toEqual(expect.arrayContaining(tokens(pageLineBorder)));
+    expect(classOf(box).filter((token) => tokens(borderDefault).includes(token))).toEqual([]);
+    const note = classOf(within(box).getByText(/^This question opened again before you sent/));
+    expect(note).toEqual(expect.arrayContaining(tokens(pageQuietText)));
+    expect(note.filter((token) => tokens(textMutedOnSurface).includes(token))).toEqual([]);
+    const words = classOf(within(box).getByText(typed));
+    expect(words).toEqual(
+      expect.arrayContaining([...tokens(pageInkText), "max-w-full", "[overflow-wrap:anywhere]"])
+    );
+    expect(words.filter((token) => tokens(textPrimaryOnSurface).includes(token))).toEqual([]);
+  } finally {
+    undraw(view);
   }
 });
