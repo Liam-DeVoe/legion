@@ -22,6 +22,7 @@ import {
   seedAgentThread,
   seedBulkReplyThreads,
   seedCommentThread,
+  seenOf,
   THREAD_SESSION,
   unreadThreadRows,
 } from "./inbox-threads";
@@ -158,9 +159,7 @@ async function seenReplies(): Promise<Record<string, InboxDismissSeen>> {
       .map(inboxThreadRow)
       .map((row) => [
         row.kind === "agent" ? agentRowId(row.thread_id) : replyRowId(row.thread_id),
-        row.kind === "agent"
-          ? { newest_reply: row.reply.id, unread_replies: row.unread_reply_ids }
-          : { version: row.version },
+        seenOf(row),
       ])
   );
 }

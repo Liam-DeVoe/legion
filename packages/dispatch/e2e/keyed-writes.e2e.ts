@@ -27,7 +27,7 @@ import {
   watchAnswers,
   watchWrites,
 } from "./keyed-writes";
-import { pickFromMenu } from "./menus";
+import { pickFromMenu, statusTrigger } from "./menus";
 import { httpsTarget, plainHttpSkipReason } from "./plain-http-origin";
 import { sql } from "./psql";
 import { expect, type Locator, type Page, test } from "./test";
@@ -51,11 +51,6 @@ const agent = {
  *  (`PendingWritesIndicator`); gone while none is pending. */
 function pendingWrites(page: Page): Locator {
   return page.getByRole("region", { name: "Pending changes" });
-}
-
-/** The issue header's Status, the trigger of its menu, which shows the status it holds. */
-function statusControl(page: Page): Locator {
-  return page.getByTestId("issue-header").getByRole("button", { exact: true, name: "Status" });
 }
 
 /** How much of an upload's body the shell says has gone up (`Uploading… N%`,
@@ -106,7 +101,7 @@ async function queueBehindAHeldStatus(page: Page, issue: string, label: string):
     return route.fallback();
   });
   await page.bringToFront();
-  await pickFromMenu(statusControl(page), "Backlog");
+  await pickFromMenu(statusTrigger(page), "Backlog");
   await expect(pendingWrites(page).getByRole("status")).toHaveText("Saving 1 change…");
   const editLabels = page.getByRole("button", { name: "Edit labels" });
   await editLabels.click();
@@ -255,7 +250,7 @@ test("a write whose key has expired stops and offers a new write @webkit @firefo
     await outage(page, `**${path}/comments`, "POST");
     await page.clock.install();
     await page.goto(`/issues/${issue.key}/conversation`);
-    await pickFromMenu(statusControl(page), "Todo");
+    await pickFromMenu(statusTrigger(page), "Todo");
     const composer = page.getByRole("form", { name: "Comment composer" }).last();
     await composer.getByLabel("Comment").fill("Older than its key");
     await composer.getByRole("button", { exact: true, name: "Send" }).click();
@@ -319,7 +314,7 @@ test("a status change whose answer is lost survives a reload, lands once, and th
     const reached = dropFirstAnswer(page, `**${path}`, "PATCH", reloaded.promise);
     const resumed = replayed(page, "PATCH", path);
     await page.goto(`/issues/${issue.key}`);
-    await pickFromMenu(statusControl(page), "Todo");
+    await pickFromMenu(statusTrigger(page), "Todo");
     expect(await reached).toBe(200);
     const indicator = pendingWrites(page);
     await expect(indicator.getByRole("status")).toHaveText("Saving 1 change…");
@@ -332,7 +327,7 @@ test("a status change whose answer is lost survives a reload, lands once, and th
     expect(patches[0]).toEqual({ input: { status: "todo" }, key: expect.any(String) });
     expect(patches[1]).toEqual(patches[0]);
     await expect(indicator).toHaveCount(0);
-    await expect(statusControl(page)).toHaveText("Todo");
+    await expect(statusTrigger(page)).toHaveText("Todo");
     expect(await getIssue(issue.key)).toMatchObject({ status: "todo" });
     expect(await statusEvents(issue.key, "todo")).toHaveLength(1);
     // A landed write leaves the tab's queue, so the next load resumes nothing.
@@ -1017,7 +1012,7 @@ for (const landed of [false, true]) {
       await signingOut.goto("/");
 
       await holding.bringToFront();
-      await pickFromMenu(statusControl(holding), "Backlog");
+      await pickFromMenu(statusTrigger(holding), "Backlog");
       await expect(pendingWrites(holding).getByRole("status")).toHaveText("Saving 1 change…");
       await signingOut.bringToFront();
       await signingOut.getByRole("button", { name: "Sign out" }).click();
@@ -1241,7 +1236,7 @@ test("a write pending for alice is dropped when bob signs in from another tab, a
     });
     const network = await outage(page, `**${path}`, "PATCH");
     await page.goto(`/issues/${issue.key}`);
-    await pickFromMenu(statusControl(page), "Todo");
+    await pickFromMenu(statusTrigger(page), "Todo");
     await expect(pendingWrites(page).getByRole("status")).toHaveText("Saving 1 change…");
     await expect.poll(() => keptWrites(page)).toBe(1);
 

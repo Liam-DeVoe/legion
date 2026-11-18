@@ -12,7 +12,7 @@ import {
 } from "./api";
 import { chooseDisplay, controlRow, displayChoice, filterPicker, openDisplayMenu } from "./filters";
 import { dropFirstAnswer, watchWrites } from "./keyed-writes";
-import { pickFromMenu } from "./menus";
+import { pickFromMenu, priorityTrigger } from "./menus";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
@@ -103,7 +103,7 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
     const second = await context.newPage();
     await second.goto(`/issues/${target.key}`);
     await expect(second.getByRole("heading", { level: 1, name: target.title })).toBeVisible();
-    const priority = second.getByRole("button", { exact: true, name: `Priority of ${target.key}` });
+    const priority = priorityTrigger(second, target.key);
     // The menu's trigger is held to the priority the seed gave the issue before the edit picks the
     // other of 0 and 1, so the trigger read is one the page has drawn rather than a first empty one.
     const before = target.priority === null ? "Priority" : `P${target.priority}`;
@@ -114,9 +114,7 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
       .poll(() => getIssue(target.key).then((issue) => issue.priority))
       .toBe(Number(next));
     await expect(
-      page
-        .locator(`[data-issue-row="${target.key}"]`)
-        .getByRole("button", { exact: true, name: `Priority of ${target.key}` })
+      priorityTrigger(page.locator(`[data-issue-row="${target.key}"]`), target.key)
     ).toHaveText(`P${next}`);
     await expect(page.getByText("Page 2 of 2", { exact: true })).toBeVisible();
     await expect(targetSelection).toBeChecked();

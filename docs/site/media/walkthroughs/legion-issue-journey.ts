@@ -5,6 +5,7 @@
 // is on screen.
 import type { Page } from "@playwright/test";
 
+import { statusTrigger } from "../../../../packages/dispatch/e2e/menus";
 import { expect } from "../harness";
 import {
   accept,
@@ -49,9 +50,6 @@ async function seed(): Promise<Seeded> {
 }
 
 const header = (page: Page) => page.getByTestId("issue-header");
-/** The header's Status: the trigger of its menu, which shows the status the issue is in. */
-const statusControl = (page: Page) =>
-  header(page).getByRole("button", { exact: true, name: "Status" });
 /** The words the Status shows for each status this video reads off it. */
 const STATUS_TEXT = {
   needs_review: "Needs review",
@@ -86,18 +84,18 @@ const legionIssueJourney: Walkthrough<Seeded> = {
       ],
       open: async (page, seeded) => {
         await openConversation(page, seeded.done);
-        await expect(statusControl(page)).toHaveText("Done");
+        await expect(statusTrigger(page)).toHaveText("Done");
         await expect(turns(page)).toContainText("Signed off.");
       },
       act: async (page, _seeded, cue) => {
         await linger(page, 0.6);
-        await highlight(page, statusControl(page));
+        await highlight(page, statusTrigger(page));
         cue("status");
         await linger(page, 1.2);
         await highlight(page, turns(page).getByText(/^Signed off\./));
         cue("signoff");
         await linger(page, 1.2);
-        await highlight(page, statusControl(page));
+        await highlight(page, statusTrigger(page));
         cue("merge");
         await linger(page, 1.8);
       },
@@ -132,7 +130,7 @@ const legionIssueJourney: Walkthrough<Seeded> = {
         await pointTo(page, labels);
         await labels.click();
         await expect(header(page).getByText("legion", { exact: true })).toBeVisible();
-        const status = statusControl(page);
+        const status = statusTrigger(page);
         await pointTo(page, status);
         await status.click();
         const todo = page
@@ -222,7 +220,7 @@ const legionIssueJourney: Walkthrough<Seeded> = {
       },
       act: async (page, seeded, cue) => {
         await linger(page, 0.4);
-        const pill = statusControl(page);
+        const pill = statusTrigger(page);
         // The daemon's status writes as the phases run; the open page hears each one. Nothing is
         // pointed at or ringed: the pointer stays off screen, so no one is seen setting a status.
         // (The Conversation would show each write as the daemon's activity line, but it follows

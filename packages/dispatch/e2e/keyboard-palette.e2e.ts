@@ -3,6 +3,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { issueSearchIn, openAgents, seedAgents, shownAgentRows } from "./agents";
 import { createIssue, createProject, getIssue, patchIssue } from "./api";
 import { openIssue, searchPath } from "./keyboard-palette";
+import { priorityTrigger } from "./menus";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
@@ -121,9 +122,7 @@ test("the palette lists the issue page's actions, guarded like their buttons, an
     );
     await input.press("Enter");
     await expect(dialog).toHaveCount(0);
-    await expect(
-      page.getByRole("button", { exact: true, name: `Priority of ${issue.key}` })
-    ).toHaveText("P2");
+    await expect(priorityTrigger(page, issue.key)).toHaveText("P2");
     await expect.poll(() => getIssue(issue.key).then((read) => read.priority)).toBe(2);
   } finally {
     await context.close();
@@ -388,7 +387,7 @@ test("a Set priority row the server refuses is reported by the header, in the di
     // The row writes through the page's one priority write, so the header reports its refusal
     // and the badge rolls back, exactly as for the menu and the digit keys.
     const header = page.getByTestId("issue-header");
-    const priority = header.getByRole("button", { exact: true, name: `Priority of ${issue.key}` });
+    const priority = priorityTrigger(header, issue.key);
     const failure = header
       .getByRole("alert")
       .filter({ hasText: `Could not update the priority of ${issue.key}.` });

@@ -3,7 +3,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { createIssue, createProject, getIssue, listIssues, patchIssue, putIssueState } from "./api";
 import { pickFilterOption } from "./filters";
 import { nextFrames } from "./frames";
-import { pickFromMenu } from "./menus";
+import { pickFromMenu, priorityTrigger } from "./menus";
 import { expect, type Locator, type Page, test } from "./test";
 import { centerOf, pressFinger, touchDrag, touchHold } from "./touch";
 import { asUser } from "./users";
@@ -13,11 +13,6 @@ function priorityBadge(scope: Locator, label: string): Locator {
   return scope
     .getByRole("button", { name: /^Priority of / })
     .filter({ hasText: new RegExp(`^${label}$`) });
-}
-
-/** The trigger of the priority menu of the issue `key`, inside `scope`. */
-function priorityMenu(scope: Locator, key: string): Locator {
-  return scope.getByRole("button", { exact: true, name: `Priority of ${key}` });
 }
 
 function patchOf(page: Page, key: string) {
@@ -500,7 +495,7 @@ test("project list rows and board cards set an issue's priority in place", async
     const page = await context.newPage();
     await page.goto("/projects/CORE");
     const listRow = page.getByRole("row", { name: `${issue.key} Prioritized card`, exact: true });
-    const listControl = priorityMenu(listRow, issue.key);
+    const listControl = priorityTrigger(listRow, issue.key);
     await expect(priorityBadge(listRow, "P1")).toBeVisible();
     // The badge stays small; the tap target around it is 32 px from md.
     const listBox = await listControl.boundingBox();
@@ -518,7 +513,7 @@ test("project list rows and board cards set an issue's priority in place", async
     await page.getByRole("button", { name: "Board" }).click();
     const card = page.getByRole("article", { name: `${issue.key} Prioritized card` });
     await expect(priorityBadge(card, "P3")).toBeVisible();
-    const cardControl = priorityMenu(card, issue.key);
+    const cardControl = priorityTrigger(card, issue.key);
     const cardPatch = page.waitForRequest(
       (request) =>
         request.method() === "PATCH" &&
@@ -543,7 +538,7 @@ test("project list rows and board cards set an issue's priority in place", async
         request.method() === "PATCH" &&
         new URL(request.url()).pathname === `/api/v1/issues/${unset.key}`
     );
-    await pickFromMenu(priorityMenu(unsetCard, unset.key), "P0");
+    await pickFromMenu(priorityTrigger(unsetCard, unset.key), "P0");
     expect((await unsetPatch).postDataJSON()).toEqual({ priority: 0 });
     await expect(priorityBadge(unsetCard, "P0")).toBeVisible();
     await expect.poll(() => getIssue(unset.key)).toMatchObject({ priority: 0 });
@@ -555,7 +550,7 @@ test("project list rows and board cards set an issue's priority in place", async
     await page.keyboard.press("Tab");
     await expect(unsetCard.getByRole("link")).toBeFocused();
     await page.keyboard.press("Tab");
-    await expect(priorityMenu(unsetCard, unset.key)).toBeFocused();
+    await expect(priorityTrigger(unsetCard, unset.key)).toBeFocused();
     const shot = testInfo.outputPath(`board-priority-${testInfo.project.name}.png`);
     await page.screenshot({ path: shot });
     await testInfo.attach(`board priority (${testInfo.project.name})`, {
@@ -813,7 +808,7 @@ test("on the phone a finger drives the board: hold lifts, tap opens, swipes scro
     await backAtTop();
 
     // A tap on the priority badge opens its menu without lifting the card...
-    const badge = priorityMenu(alphaCard, alpha.key);
+    const badge = priorityTrigger(alphaCard, alpha.key);
     const menu = page.getByRole("menu", { name: `Priority of ${alpha.key}` });
     await touchHold(page, await centerOf(badge), 0);
     await expect(menu).toBeVisible();

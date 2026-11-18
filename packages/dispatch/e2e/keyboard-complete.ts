@@ -5,37 +5,32 @@
  *
  *  The rows run on a build of the merge base as their negative control, with that file and this
  *  one checked out onto it, so nothing here imports what this tree adds to or changes in
- *  `web/src`: a value the rows need from the app, such as the chord timeout, is written here.
+ *  `web/src`.
  *
  *  Every document, project, person and host here is made up: this repository is public, so
  *  nothing names a real one. */
 
-import {
-  type InboxDismissRequest,
-  type InboxDismissResponse,
-  type InboxDismissSeen,
-  inboxThreadRow,
-} from "@legion/contracts";
+import { inboxThreadRow } from "@legion/contracts";
 import { type BrowserContext, expect, type Locator, type Page } from "@playwright/test";
 
 import { type FakeSession, setLiveSessions } from "./agents";
 import {
-  baseUrl,
   createAsk,
   createIssue,
   createPriority,
+  dismissInbox,
   editArtifact,
   listMyReplies,
   patchIssue,
   putArchitectureSource,
   requestApproval,
   syncArchitectureSource,
-  userHeaders,
   withOpenedAsk,
 } from "./api";
 import { composite, contrastRatio, parseComputedColor, toRgbString } from "./colors";
 import { seedFakeGithub } from "./fake-github-helpers";
-import { agentRowId, replyRowId } from "./inbox-threads";
+import { body, notes } from "./inbox-pane-scroll";
+import { agentRowId, replyRowId, seenOf } from "./inbox-threads";
 import { type KeyedWrite, watchWrites } from "./keyed-writes";
 import { machineSession } from "./machines";
 import { sessionIds } from "./session-ids";
@@ -45,11 +40,6 @@ declare global {
     __dispatchDocumentMark?: boolean;
   }
 }
-
-/** How long a chord waits for its next press (`g` then `i`), as the registry waits it
- *  (`CHORD_TIMEOUT_MS` of `web/src/features/shell/keymap.ts`), written here rather than imported,
- *  since the merge base the rows also run on exports no such value. */
-export const CHORD_TIMEOUT_MS = 1000;
 
 /** The session that asks every question these seeds write, and edits every document. */
 export const asker = {
@@ -121,11 +111,6 @@ export interface Contrast {
    *  on an element above it, laid over the ones under it down to the first opaque one, as
    *  `rgb(r, g, b)`. */
   readonly background: string;
-  /** The element's own computed `background-color`, as the browser wrote it. */
-  readonly ownBackground: string;
-  /** That background's alpha: 0 is a transparent background, which a native `<select>` or
-   *  `<option>` must not have (k-menu-contrast). */
-  readonly ownBackgroundAlpha: number;
   /** The WCAG 2.1 contrast ratio of `color` on `background`, from 1 to 21. */
   readonly ratio: number;
 }
@@ -200,8 +185,6 @@ export async function contrastOf(locator: Locator): Promise<Contrast> {
   return {
     background: toRgbString(background),
     color: toRgbString(color),
-    ownBackground: reading.backgrounds[0],
-    ownBackgroundAlpha: layers[0].alpha,
     ratio: contrastRatio(color, background),
   };
 }
@@ -366,20 +349,10 @@ export async function dismissThread(rowId: string, login = "alice"): Promise<voi
   if (row === undefined) {
     throw new Error(`${rowId} is not in the Inbox of ${login}`);
   }
-  const seen: InboxDismissSeen =
-    row.kind === "agent"
-      ? { newest_reply: row.reply.id, unread_replies: row.unread_reply_ids }
-      : { version: row.version };
-  const request: InboxDismissRequest = { seen_replies: { [rowId]: seen }, threads: [rowId] };
-  const response = await fetch(new URL(DISMISS_PATH, baseUrl), {
-    body: JSON.stringify(request),
-    headers: { "Content-Type": "application/json", ...(await userHeaders(login)) },
-    method: "POST",
-  });
-  if (!response.ok) {
-    throw new Error(`POST ${DISMISS_PATH} failed: ${response.status} ${await response.text()}`);
-  }
-  const { dismissed } = (await response.json()) as InboxDismissResponse;
+  const { dismissed } = await dismissInbox(
+    { seen_replies: { [rowId]: seenOf(row) }, threads: [rowId] },
+    { login }
+  );
   if (dismissed !== 1) {
     throw new Error(`POST ${DISMISS_PATH} dismissed ${dismissed} threads where it named ${rowId}`);
   }
@@ -391,12 +364,7 @@ const TALL_PARAGRAPHS = 160;
 
 /** A spec of `TALL_PARAGRAPHS` numbered paragraphs under the heading `title`. */
 function tallSpec(title: string): string {
-  const notes = Array.from(
-    { length: TALL_PARAGRAPHS },
-    (_, index) =>
-      `${title} note ${index + 1}: the ledger and the mirror each keep a clock of their own.`
-  );
-  return [`# ${title}`, "", ...notes.flatMap((note) => [note, ""])].join("\n");
+  return body([`# ${title}`, ...notes(title, TALL_PARAGRAPHS)]);
 }
 
 /** An approval request of one issue's spec, which the reading pane draws as that document. */
@@ -408,12 +376,12 @@ export interface SeededApproval {
   readonly version: number;
 }
 
-/** Three approval requests, each of its own issue's tall spec in `project`, which must exist,
- *  in the order the Inbox lists them: the issues stand at P1, P2 and P3. The three specs share
- *  most of their words, so each issue is made past the server's duplicate check (`force`). */
+/** Two approval requests, each of its own issue's tall spec in `project`, which must exist, in
+ *  the order the Inbox lists them: the issues stand at P1 and P2. The two specs share most of
+ *  their words, so each issue is made past the server's duplicate check (`force`). */
 export async function seedTallAsks(project: string): Promise<SeededApproval[]> {
   const seeded: SeededApproval[] = [];
-  for (const [index, title] of ["Ledger handover", "Mirror replay", "Clock audit"].entries()) {
+  for (const [index, title] of ["Ledger handover", "Mirror replay"].entries()) {
     const issue = await createIssue({ force: true, project, spec: tallSpec(title), title });
     await patchIssue(issue.key, { priority: index + 1 });
     const requested = withOpenedAsk(

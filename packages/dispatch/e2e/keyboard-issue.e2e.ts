@@ -1,7 +1,7 @@
 import { createAsk, createIssue, createProject, getIssue } from "./api";
 import { barAction, selectEditorText } from "./editor";
 import { leaveFocus, openIssue } from "./keyboard-issue";
-import { pickFromMenu } from "./menus";
+import { pickFromMenu, priorityTrigger } from "./menus";
 import { expect, type Request, test } from "./test";
 import { asUser } from "./users";
 
@@ -35,7 +35,7 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
     await page.setViewportSize({ width: 1280, height: 900 });
     await openIssue(page, issue.key, "Keyboard issue");
     const header = page.getByTestId("issue-header");
-    const priority = header.getByRole("button", { exact: true, name: `Priority of ${issue.key}` });
+    const priority = priorityTrigger(header, issue.key);
     const priorityMenu = page.getByRole("menu", { name: `Priority of ${issue.key}` });
     const statusMenu = page.getByRole("menu", { name: "Status" });
 
@@ -195,7 +195,7 @@ test("a priority the server refuses shows the header's own failure, whether the 
     await page.setViewportSize({ width: 1280, height: 900 });
     await openIssue(page, issue.key, "Refused priority");
     const header = page.getByTestId("issue-header");
-    const priority = header.getByRole("button", { exact: true, name: `Priority of ${issue.key}` });
+    const priority = priorityTrigger(header, issue.key);
     await page.route(`**/api/v1/issues/${issue.key}`, async (route) => {
       if (route.request().method() !== "PATCH") {
         await route.continue();

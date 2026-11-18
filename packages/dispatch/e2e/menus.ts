@@ -4,7 +4,29 @@
  *  it is found by the id its trigger's `aria-controls` names while it is open, never under the
  *  trigger. A Snooze choice is an action (`menuitem`); a priority or a status is a value
  *  (`menuitemradio`, the current one checked). Nothing here reads the app's own modules. */
-import { expect, type Locator } from "@playwright/test";
+import { expect, type Locator, type Page } from "@playwright/test";
+
+/** The bar of selected rows' Snooze: the trigger of the menu that snoozes every ticked ask. */
+export function bulkSnoozeTrigger(page: Page): Locator {
+  return page
+    .getByRole("toolbar", { name: "Selected rows" })
+    .getByRole("button", { exact: true, name: "Snooze selected asks" });
+}
+
+/** The bulk Snooze's menu, open: what that trigger, or `b` or `h` with rows ticked, opens. */
+export function bulkSnoozeMenu(page: Page): Locator {
+  return page.getByRole("menu", { name: "Snooze selected asks" });
+}
+
+/** The issue header's Status: the trigger of the status menu, which shows the status it holds. */
+export function statusTrigger(page: Page): Locator {
+  return page.getByTestId("issue-header").getByRole("button", { exact: true, name: "Status" });
+}
+
+/** The trigger of the priority menu of the issue `key`, inside `scope`. */
+export function priorityTrigger(scope: Locator | Page, key: string): Locator {
+  return scope.getByRole("button", { exact: true, name: `Priority of ${key}` });
+}
 
 /** The menu `trigger` holds open: the element its `aria-controls` names. */
 export async function menuOf(trigger: Locator): Promise<Locator> {

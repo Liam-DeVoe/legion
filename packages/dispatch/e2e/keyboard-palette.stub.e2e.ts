@@ -20,6 +20,7 @@ import {
 import { seedFakeGithub } from "./fake-github-helpers";
 import { selectedRow } from "./inbox-pane";
 import { openIssue, searchPath } from "./keyboard-palette";
+import { bulkSnoozeMenu } from "./menus";
 import { stubbed } from "./stub/stub-test";
 
 /** One issue per row, so each keeps the title it was written with, and the second project the
@@ -399,9 +400,7 @@ inboxTest(
     await snooze.click();
     await expect(dialog).toHaveCount(0);
     await expect(
-      page
-        .getByRole("menu", { name: "Snooze selected asks" })
-        .getByRole("menuitem", { exact: true, name: "Later today" })
+      bulkSnoozeMenu(page).getByRole("menuitem", { exact: true, name: "Later today" })
     ).toBeFocused();
     await expect(bar).toContainText("1 selected");
   }

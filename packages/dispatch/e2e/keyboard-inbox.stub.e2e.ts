@@ -30,21 +30,12 @@ import {
   seedPane,
   session,
 } from "./keyboard-inbox";
-import { choiceOf, menuOf, pickFromMenu } from "./menus";
+import { bulkSnoozeMenu, bulkSnoozeTrigger, choiceOf, menuOf, pickFromMenu } from "./menus";
 import { stubbed } from "./stub/stub-test";
-
-/** The bulk bar's Snooze, the trigger of its menu. */
-function bulkSnooze(page: Page): Locator {
-  return page
-    .getByRole("toolbar", { name: "Selected rows" })
-    .getByRole("button", { exact: true, name: "Snooze selected asks" });
-}
 
 /** The first choice of the bulk bar's Snooze menu, which `h` with rows marked opens on. */
 function bulkFirstChoice(page: Page): Locator {
-  return page
-    .getByRole("menu", { name: "Snooze selected asks" })
-    .getByRole("menuitem", { exact: true, name: "Later today" });
+  return bulkSnoozeMenu(page).getByRole("menuitem", { exact: true, name: "Later today" });
 }
 
 /** The three asks the marks are made on. */
@@ -155,7 +146,7 @@ test.describe("inbox selection", () => {
 
     await markFromKeyboard(page, 2);
     const bar = page.getByRole("toolbar", { name: "Selected rows" });
-    await pickFromMenu(bulkSnooze(page), "Tomorrow");
+    await pickFromMenu(bulkSnoozeTrigger(page), "Tomorrow");
 
     await expect(bar).toContainText(
       "Could not snooze 2 of 2: snoozed_until must be a moment, and 1 other reason."
@@ -407,7 +398,7 @@ test.describe("inbox selection", () => {
 
     await markFromKeyboard(page, 2);
     const bar = page.getByRole("toolbar", { name: "Selected rows" });
-    await pickFromMenu(bulkSnooze(page), "Tomorrow");
+    await pickFromMenu(bulkSnoozeTrigger(page), "Tomorrow");
     await expect(bar).toContainText("Could not snooze 2 of 2");
 
     const rows = page.locator("[data-inbox-row]");
@@ -435,7 +426,7 @@ test.describe("inbox selection", () => {
       await expect(hold).toBeFocused();
       await page.keyboard.press("h");
       await expect(hold).toBeFocused();
-      await expect(page.getByRole("menu", { name: "Snooze selected asks" })).toHaveCount(0);
+      await expect(bulkSnoozeMenu(page)).toHaveCount(0);
     }
   );
 
@@ -460,11 +451,10 @@ test.describe("inbox selection", () => {
     await rows.nth(2).getByRole("checkbox").check();
     await expect(bar).toContainText("1 selected");
 
-    await bulkSnooze(page).click();
+    await bulkSnoozeTrigger(page).click();
     await expect(bulkFirstChoice(page)).toBeFocused();
     await page.keyboard.press("Escape");
-    await expect(bulkSnooze(page)).toBeFocused();
-    await expect(rows.nth(0)).not.toBeFocused();
+    await expect(bulkSnoozeTrigger(page)).toBeFocused();
   });
 });
 

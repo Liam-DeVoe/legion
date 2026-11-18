@@ -91,7 +91,7 @@ import {
 } from "./inbox-view";
 import { leaveFocus } from "./keyboard-issue";
 import { searchPath } from "./keyboard-palette";
-import { choiceOf, menuOf, pickFromMenu } from "./menus";
+import { bulkSnoozeMenu, bulkSnoozeTrigger, choiceOf, menuOf, pickFromMenu } from "./menus";
 import { sql } from "./psql";
 import { sessionIds } from "./session-ids";
 import { expandedState, settledState } from "./settled";
@@ -1052,7 +1052,7 @@ test("the selection bar gone from the keyboard hands the focus to the row marked
     await mark(inboxBox(2));
     await mark(inboxBox(1));
     const afterMarked = (await rows.nth(3).getAttribute("data-inbox-row")) ?? "";
-    const picker = inboxBar.getByRole("button", { exact: true, name: "Snooze selected asks" });
+    const picker = bulkSnoozeTrigger(page);
     await picker.focus();
     await page.keyboard.press("Enter");
     await expect(
@@ -3219,7 +3219,8 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
   await page.keyboard.press("ArrowUp");
   await expect(rowOf(order[0] ?? ""), "the ArrowUp key").toBeFocused();
 
-  // The keys on one question: Enter into its answer, Escape back, `h` to its Snooze, `y`, and
+  // The keys on one question: Enter into its answer, Escape back, `h`, which opens its Snooze
+  // menu on the first choice (dispatch://INFRA-2160) and Escape hands back to the row, `y`, and
   // `l`, which has no reading pane to go to here.
   const ledger = seeded((row) => row.type === "question" && row.priority === "P0");
   const ask = rowOf(ledger.id);
@@ -3229,9 +3230,12 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
   await page.keyboard.press("Escape");
   await expect(ask, "the Escape key, back to the row").toBeFocused();
   await page.keyboard.press("h");
-  await expect(ask.locator("[data-inbox-snooze]"), "the h key").toBeFocused();
+  await expect(
+    choiceOf(await menuOf(ask.locator("[data-inbox-snooze]")), "Later today"),
+    "the h key"
+  ).toBeFocused();
   await page.keyboard.press("Escape");
-  await expect(ask).toBeFocused();
+  await expect(ask, "the Escape key, out of the row's Snooze menu").toBeFocused();
   await page.keyboard.press("y");
   await expect
     .poll(async () => (await copied()).join(" "), { message: "the y key" })
@@ -3252,7 +3256,7 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
   await expect(bar, "the x key").toContainText("1 selected");
   await page.keyboard.press("h");
   await expect(
-    choiceOf(page.getByRole("menu", { name: "Snooze selected asks" }), "Later today"),
+    choiceOf(bulkSnoozeMenu(page), "Later today"),
     "the h key, with a row marked"
   ).toBeFocused();
   await page.keyboard.press("Escape");
@@ -3819,87 +3823,83 @@ async function drawnItems(items: Locator, list: string): Promise<DrawnItem[]> {
  * follow the font - are `"lines"`.
  */
 const ITEMS_AT_THE_BASE: Partial<Record<string, Record<ItemList, readonly ItemAtTheBase[]>>> = {
+  // The priority part alone is written, not measured: since dispatch://INFRA-2160/spec the
+  // priority is the trigger of its menu, as the Snooze and the status are.
   chromium: {
     "project Board": [
       {
         box: [114, 288, 288],
-        parts: 'link "CORE-1 Keyboard issue" | "Priority" | combobox "Priority of CORE-1" | "1"',
+        parts: 'link "CORE-1 Keyboard issue" | button "Priority of CORE-1" | "1"',
       },
       {
         box: [114, 288, 288],
-        parts: 'link "CORE-2 Rollout plan" | "Priority" | combobox "Priority of CORE-2"',
+        parts: 'link "CORE-2 Rollout plan" | button "Priority of CORE-2"',
       },
       {
         box: [114, 288, 288],
-        parts:
-          'link "CORE-3 Rollout order" | "Priority" | combobox "Priority of CORE-3" | "frontend" | "1"',
+        parts: 'link "CORE-3 Rollout order" | button "Priority of CORE-3" | "frontend" | "1"',
       },
       {
         box: [114, 288, 288],
-        parts:
-          'link "CORE-4 Rollout budget" | "Priority" | combobox "Priority of CORE-4" | "backend" | "1"',
+        parts: 'link "CORE-4 Rollout budget" | button "Priority of CORE-4" | "backend" | "1"',
       },
       {
         box: [114, 288, 288],
-        parts:
-          'link "CORE-5 Ledger mirror" | "Priority" | combobox "Priority of CORE-5" | "frontend" | "1"',
+        parts: 'link "CORE-5 Ledger mirror" | button "Priority of CORE-5" | "frontend" | "1"',
       },
       {
         box: [114, 288, 288],
-        parts:
-          'link "CORE-6 Clock drift" | "Priority" | combobox "Priority of CORE-6" | "backend" | "1"',
+        parts: 'link "CORE-6 Clock drift" | button "Priority of CORE-6" | "backend" | "1"',
       },
       {
         box: [114, 288, 288],
-        parts:
-          'link "CORE-7 Replay window" | "Priority" | combobox "Priority of CORE-7" | "frontend" | "1"',
+        parts: 'link "CORE-7 Replay window" | button "Priority of CORE-7" | "frontend" | "1"',
       },
       {
         box: [114, 288, 288],
-        parts:
-          'link "CORE-8 Lease handover" | "Priority" | combobox "Priority of CORE-8" | "backend" | "1"',
+        parts: 'link "CORE-8 Lease handover" | button "Priority of CORE-8" | "backend" | "1"',
       },
     ],
     "project List": [
       {
         box: [61, 2319.19, 2319.19],
         parts:
-          'checkbox "Select CORE-1" | "Priority" | combobox "Priority of CORE-1" | link "CORE-1" | link "CORE-1 Keyboard issue" | "1" | "Triage" | "No epic" | "alice" | "alice" | "1" | time',
+          'checkbox "Select CORE-1" | button "Priority of CORE-1" | link "CORE-1" | link "CORE-1 Keyboard issue" | "1" | "Triage" | "No epic" | "alice" | "alice" | "1" | time',
       },
       {
         box: [49, 2319.19, 2319.19],
         parts:
-          'checkbox "Select CORE-2" | "Priority" | combobox "Priority of CORE-2" | link "CORE-2" | link "CORE-2 Rollout plan" | "Triage" | "No epic" | "alice" | "alice" | time',
+          'checkbox "Select CORE-2" | button "Priority of CORE-2" | link "CORE-2" | link "CORE-2 Rollout plan" | "Triage" | "No epic" | "alice" | "alice" | time',
       },
       {
         box: [61, 2319.19, 2319.19],
         parts:
-          'checkbox "Select CORE-3" | "Priority" | combobox "Priority of CORE-3" | link "CORE-3" | link "CORE-3 Rollout order" | "1" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
+          'checkbox "Select CORE-3" | button "Priority of CORE-3" | link "CORE-3" | link "CORE-3 Rollout order" | "1" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
       },
       {
         box: [61, 2319.19, 2319.19],
         parts:
-          'checkbox "Select CORE-4" | "Priority" | combobox "Priority of CORE-4" | link "CORE-4" | link "CORE-4 Rollout budget" | "1" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
+          'checkbox "Select CORE-4" | button "Priority of CORE-4" | link "CORE-4" | link "CORE-4 Rollout budget" | "1" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
       },
       {
         box: [61, 2319.19, 2319.19],
         parts:
-          'checkbox "Select CORE-5" | "Priority" | combobox "Priority of CORE-5" | link "CORE-5" | link "CORE-5 Ledger mirror" | "1" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
+          'checkbox "Select CORE-5" | button "Priority of CORE-5" | link "CORE-5" | link "CORE-5 Ledger mirror" | "1" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
       },
       {
         box: [61, 2319.19, 2319.19],
         parts:
-          'checkbox "Select CORE-6" | "Priority" | combobox "Priority of CORE-6" | link "CORE-6" | link "CORE-6 Clock drift" | "1" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
+          'checkbox "Select CORE-6" | button "Priority of CORE-6" | link "CORE-6" | link "CORE-6 Clock drift" | "1" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
       },
       {
         box: [61, 2319.19, 2319.19],
         parts:
-          'checkbox "Select CORE-7" | "Priority" | combobox "Priority of CORE-7" | link "CORE-7" | link "CORE-7 Replay window" | "1" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
+          'checkbox "Select CORE-7" | button "Priority of CORE-7" | link "CORE-7" | link "CORE-7 Replay window" | "1" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
       },
       {
         box: [61, 2319.19, 2319.19],
         parts:
-          'checkbox "Select CORE-8" | "Priority" | combobox "Priority of CORE-8" | link "CORE-8" | link "CORE-8 Lease handover" | "1" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
+          'checkbox "Select CORE-8" | button "Priority of CORE-8" | link "CORE-8" | link "CORE-8 Lease handover" | "1" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
       },
     ],
     "Agents page": [
@@ -3931,83 +3931,77 @@ const ITEMS_AT_THE_BASE: Partial<Record<string, Record<ItemList, readonly ItemAt
     "project Board": [
       {
         box: ["lines", 288, 288],
-        parts: 'link "CORE-1 Keyboard issue" | "Priority" | combobox "Priority of CORE-1" | "1"',
+        parts: 'link "CORE-1 Keyboard issue" | button "Priority of CORE-1" | "1"',
       },
       {
         box: ["lines", 288, 288],
-        parts: 'link "CORE-2 Rollout plan" | "Priority" | combobox "Priority of CORE-2"',
+        parts: 'link "CORE-2 Rollout plan" | button "Priority of CORE-2"',
       },
       {
         box: ["lines", 288, 288],
-        parts:
-          'link "CORE-3 Rollout order" | "Priority" | combobox "Priority of CORE-3" | "frontend" | "1"',
+        parts: 'link "CORE-3 Rollout order" | button "Priority of CORE-3" | "frontend" | "1"',
       },
       {
         box: ["lines", 288, 288],
-        parts:
-          'link "CORE-4 Rollout budget" | "Priority" | combobox "Priority of CORE-4" | "backend" | "1"',
+        parts: 'link "CORE-4 Rollout budget" | button "Priority of CORE-4" | "backend" | "1"',
       },
       {
         box: ["lines", 288, 288],
-        parts:
-          'link "CORE-5 Ledger mirror" | "Priority" | combobox "Priority of CORE-5" | "frontend" | "1"',
+        parts: 'link "CORE-5 Ledger mirror" | button "Priority of CORE-5" | "frontend" | "1"',
       },
       {
         box: ["lines", 288, 288],
-        parts:
-          'link "CORE-6 Clock drift" | "Priority" | combobox "Priority of CORE-6" | "backend" | "1"',
+        parts: 'link "CORE-6 Clock drift" | button "Priority of CORE-6" | "backend" | "1"',
       },
       {
         box: ["lines", 288, 288],
-        parts:
-          'link "CORE-7 Replay window" | "Priority" | combobox "Priority of CORE-7" | "frontend" | "1"',
+        parts: 'link "CORE-7 Replay window" | button "Priority of CORE-7" | "frontend" | "1"',
       },
       {
         box: ["lines", 288, 288],
-        parts:
-          'link "CORE-8 Lease handover" | "Priority" | combobox "Priority of CORE-8" | "backend" | "1"',
+        parts: 'link "CORE-8 Lease handover" | button "Priority of CORE-8" | "backend" | "1"',
       },
     ],
     "project List": [
       {
         box: [85, 2106.69, 2106.69],
         parts:
-          'checkbox "Select CORE-1" | link "CORE-1" | link "CORE-1 Keyboard issue" | "1" | "Priority" | combobox "Priority of CORE-1" | "Triage" | "No epic" | "alice" | "alice" | "1" | time',
+          'checkbox "Select CORE-1" | link "CORE-1" | link "CORE-1 Keyboard issue" | "1" | button "Priority of CORE-1" | "Triage" | "No epic" | "alice" | "alice" | "1" | time',
       },
       {
         box: [65, 2106.69, 2106.69],
         parts:
-          'checkbox "Select CORE-2" | link "CORE-2" | link "CORE-2 Rollout plan" | "Priority" | combobox "Priority of CORE-2" | "Triage" | "No epic" | "alice" | "alice" | time',
+          'checkbox "Select CORE-2" | link "CORE-2" | link "CORE-2 Rollout plan" | button "Priority of CORE-2" | "Triage" | "No epic" | "alice" | "alice" | time',
       },
       {
         box: [85, 2106.69, 2106.69],
         parts:
-          'checkbox "Select CORE-3" | link "CORE-3" | link "CORE-3 Rollout order" | "1" | "Priority" | combobox "Priority of CORE-3" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
+          'checkbox "Select CORE-3" | link "CORE-3" | link "CORE-3 Rollout order" | "1" | button "Priority of CORE-3" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
       },
       {
         box: [85, 2106.69, 2106.69],
         parts:
-          'checkbox "Select CORE-4" | link "CORE-4" | link "CORE-4 Rollout budget" | "1" | "Priority" | combobox "Priority of CORE-4" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
+          'checkbox "Select CORE-4" | link "CORE-4" | link "CORE-4 Rollout budget" | "1" | button "Priority of CORE-4" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
       },
       {
         box: [85, 2106.69, 2106.69],
         parts:
-          'checkbox "Select CORE-5" | link "CORE-5" | link "CORE-5 Ledger mirror" | "1" | "Priority" | combobox "Priority of CORE-5" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
+          'checkbox "Select CORE-5" | link "CORE-5" | link "CORE-5 Ledger mirror" | "1" | button "Priority of CORE-5" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
       },
       {
         box: [85, 2106.69, 2106.69],
         parts:
-          'checkbox "Select CORE-6" | link "CORE-6" | link "CORE-6 Clock drift" | "1" | "Priority" | combobox "Priority of CORE-6" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
+          'checkbox "Select CORE-6" | link "CORE-6" | link "CORE-6 Clock drift" | "1" | button "Priority of CORE-6" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
       },
       {
         box: [85, 2106.69, 2106.69],
         parts:
-          'checkbox "Select CORE-7" | link "CORE-7" | link "CORE-7 Replay window" | "1" | "Priority" | combobox "Priority of CORE-7" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
+          'checkbox "Select CORE-7" | link "CORE-7" | link "CORE-7 Replay window" | "1" | button "Priority of CORE-7" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
       },
       {
         box: [85, 2106.69, 2106.69],
         parts:
-          'checkbox "Select CORE-8" | link "CORE-8" | link "CORE-8 Lease handover" | "1" | "Priority" | combobox "Priority of CORE-8" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
+          'checkbox "Select CORE-8" | link "CORE-8" | link "CORE-8 Lease handover" | "1" | button "Priority of CORE-8" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
       },
     ],
     "Agents page": [

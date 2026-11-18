@@ -32,7 +32,7 @@ import {
 } from "./inbox-filter";
 import { askCard, askControls, inboxRow } from "./inbox-pane";
 import { expectInboxCount } from "./inbox-threads";
-import { pickFromMenu } from "./menus";
+import { pickFromMenu, priorityTrigger } from "./menus";
 import { setCreatedAt } from "./seed";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, test } from "./test";
@@ -733,7 +733,7 @@ test("the Inbox sets its question's issue priority in place", async ({ browser }
     // the row it is showing. The control's value is what it says it holds - its badge, which
     // describes it - since the reading column's head also draws the control's key inside it.
     const controls = await askControls(page, ask.id);
-    const control = controls.getByRole("button", { exact: true, name: `Priority of ${issue.key}` });
+    const control = priorityTrigger(controls, issue.key);
     await expect(control).toHaveAccessibleDescription("P2");
     const patch = page.waitForRequest(
       (request) =>

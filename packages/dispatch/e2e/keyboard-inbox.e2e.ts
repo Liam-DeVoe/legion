@@ -28,7 +28,7 @@ import {
   seedPane,
   session,
 } from "./keyboard-inbox";
-import { pickFromMenu } from "./menus";
+import { bulkSnoozeMenu, bulkSnoozeTrigger, pickFromMenu } from "./menus";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -46,18 +46,6 @@ function snoozeRequest(page: Page, askId: string) {
       request.method() === "PUT" &&
       new URL(request.url()).pathname === `/api/v1/me/asks/${askId}/snooze`
   );
-}
-
-/** The bulk bar's Snooze menu, open: what `h` with rows marked opens. */
-function bulkMenu(page: Page) {
-  return page.getByRole("menu", { name: "Snooze selected asks" });
-}
-
-/** The bulk bar's Snooze, the trigger of that menu. */
-function bulkSnooze(page: Page) {
-  return page
-    .getByRole("toolbar", { name: "Selected rows" })
-    .getByRole("button", { exact: true, name: "Snooze selected asks" });
 }
 
 // The rows below are keyboard work on the Inbox list: marks, bulk snoozes, the refusals they
@@ -98,7 +86,9 @@ test.describe("inbox selection", () => {
       // h with a selection opens the bulk Snooze menu on its first choice; one pick writes every
       // marked ask.
       await page.keyboard.press("h");
-      await expect(bulkMenu(page).getByRole("menuitem", { name: "Later today" })).toBeFocused();
+      await expect(
+        bulkSnoozeMenu(page).getByRole("menuitem", { name: "Later today" })
+      ).toBeFocused();
       const writes = Promise.all([snoozeRequest(page, first), snoozeRequest(page, second)]);
       await page.keyboard.press("Enter");
       for (const request of await writes) {
@@ -153,7 +143,7 @@ test.describe("inbox selection", () => {
 
       await markFromKeyboard(page, 2);
       const bar = page.getByRole("toolbar", { name: "Selected rows" });
-      await pickFromMenu(bulkSnooze(page), "Tomorrow");
+      await pickFromMenu(bulkSnoozeTrigger(page), "Tomorrow");
 
       // The reason is the server's own, as the per-row control shows it - a refusal a reader
       // cannot tell from a sign-out is not a report.
@@ -201,7 +191,7 @@ test.describe("inbox selection", () => {
 
       await markFromKeyboard(page, 2);
       const bar = page.getByRole("toolbar", { name: "Selected rows" });
-      await pickFromMenu(bulkSnooze(page), "Tomorrow");
+      await pickFromMenu(bulkSnoozeTrigger(page), "Tomorrow");
       await requested.promise;
       await expect(bar).toContainText("Snoozing 2…");
 
@@ -273,7 +263,9 @@ test.describe("inbox selection", () => {
       const bar = page.getByRole("toolbar", { name: "Selected rows" });
       await expect(bar).toContainText("2 selected");
       await page.keyboard.press("h");
-      await expect(bulkMenu(page).getByRole("menuitem", { name: "Later today" })).toBeFocused();
+      await expect(
+        bulkSnoozeMenu(page).getByRole("menuitem", { name: "Later today" })
+      ).toBeFocused();
       await page.keyboard.press("2");
       await requested.promise;
       await expect(bar).toContainText("Snoozing 2…");
@@ -281,7 +273,7 @@ test.describe("inbox selection", () => {
       // `h` was pressed with the focus on nothing, so the pick hands the focus back to the bar's
       // Snooze, which keeps it while the pick is in the air; Escape from off the rows clears the
       // selection then.
-      await expect(bulkSnooze(page)).toBeFocused();
+      await expect(bulkSnoozeTrigger(page)).toBeFocused();
       await page.keyboard.press("Escape");
       await expect(bar).toContainText("Snoozing 2…");
       held.resolve();
@@ -345,7 +337,7 @@ test.describe("inbox selection", () => {
       await page.mouse.move(0, 0);
       const bar = page.getByRole("toolbar", { name: "Selected rows" });
       await expect(bar).toContainText("2 selected");
-      await pickFromMenu(bulkSnooze(page), "Tomorrow");
+      await pickFromMenu(bulkSnoozeTrigger(page), "Tomorrow");
 
       // Both rows go at once; the bar stays while its write is in the air, and counts the pick
       // it is waiting on rather than the selection the optimistic move has just emptied. The
@@ -357,7 +349,7 @@ test.describe("inbox selection", () => {
       await expect(bar).not.toContainText("0 selected");
 
       // The pick is the one thing in the air: the Snooze takes no second one while it settles.
-      await expect(bulkSnooze(page)).toHaveAttribute("aria-disabled", "true");
+      await expect(bulkSnoozeTrigger(page)).toHaveAttribute("aria-disabled", "true");
 
       refuse?.();
 
@@ -412,7 +404,9 @@ test.describe("inbox selection", () => {
       );
       await rows.nth(0).focus();
       await page.keyboard.press("h");
-      await expect(bulkMenu(page).getByRole("menuitem", { name: "Later today" })).toBeFocused();
+      await expect(
+        bulkSnoozeMenu(page).getByRole("menuitem", { name: "Later today" })
+      ).toBeFocused();
       await page.keyboard.press("3");
       await expect(bar).toContainText("Could not snooze 1 of 1: snoozed_until must be a moment.");
 
@@ -423,7 +417,7 @@ test.describe("inbox selection", () => {
       await later.click();
       await expect(rows).toHaveCount(0);
       await expect(bar).toContainText("0 selected");
-      await expect(bulkSnooze(page)).toHaveCount(0);
+      await expect(bulkSnoozeTrigger(page)).toHaveCount(0);
       await expect(bar.getByRole("button", { name: "Clear selection" })).toBeVisible();
 
       // And the keyboard that raised the refusal dismisses it.
@@ -472,7 +466,7 @@ test.describe("inbox selection", () => {
       // the bar's Snooze.
       await page.mouse.move(0, 0);
       await page.keyboard.press("h");
-      await bulkMenu(page).getByRole("menuitem", { name: "Next week" }).click();
+      await bulkSnoozeMenu(page).getByRole("menuitem", { name: "Next week" }).click();
       await expect.poll(() => moment(live.id)).toBeTruthy();
 
       expect(await moment(deferred.id)).toBe(byHand);
@@ -501,9 +495,11 @@ test.describe("inbox selection", () => {
 
       await markFromKeyboard(page, 2);
       const bar = page.getByRole("toolbar", { name: "Selected rows" });
-      const picker = bulkSnooze(page);
+      const picker = bulkSnoozeTrigger(page);
       await page.keyboard.press("h");
-      await expect(bulkMenu(page).getByRole("menuitem", { name: "Later today" })).toBeFocused();
+      await expect(
+        bulkSnoozeMenu(page).getByRole("menuitem", { name: "Later today" })
+      ).toBeFocused();
       const writes: string[] = [];
       page.on("request", (request) => {
         if (request.method() === "PUT") writes.push(request.url());
@@ -517,7 +513,7 @@ test.describe("inbox selection", () => {
       await expect(picker).toHaveAttribute("aria-disabled", "true");
       // A second press on it while the bar's own write is out opens no menu to pick again from.
       await picker.click({ force: true });
-      await expect(bulkMenu(page)).toHaveCount(0);
+      await expect(bulkSnoozeMenu(page)).toHaveCount(0);
       expect(writes.length).toBe(2);
 
       release?.();
@@ -653,7 +649,7 @@ test("j, k and the arrows step through thread rows, o opens them, y copies only 
     await expect(bar).toContainText("1 selected");
     await expect(bar.getByRole("button", { name: "Dismiss selected threads" })).toBeVisible();
     await page.keyboard.press("h");
-    await expect(bulkSnooze(page)).toHaveCount(0);
+    await expect(bulkSnoozeTrigger(page)).toHaveCount(0);
     await expect(page.getByRole("menu")).toHaveCount(0);
     // The mark is the reader's own: a second `x` gives the row back before the walk goes on.
     await page.keyboard.press("x");
