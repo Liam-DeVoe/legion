@@ -25,6 +25,7 @@ import {
   commandName,
   commandsHelp,
   dispatchLine,
+  inDirectory,
   keyNamedIn,
   type ParsedCommand,
   parseCommand,
@@ -178,6 +179,8 @@ interface Resend {
   /** The envoy.json the call would read Dispatch's settings from, and whether it was there. */
   readonly configPath: string;
   readonly configRead: boolean;
+  /** The directory the call ran in, where a relative path its words hold (a picture) reads. */
+  readonly cwd: string;
   /** Keeps the `place`-th text the printed command reads, and answers its path; throws when it
    *  cannot (`writeResendInput`). */
   readonly keep: (text: string, place: number) => string;
@@ -217,13 +220,13 @@ function unsettledLine(resend: Resend): string {
   try {
     const words = rerunWords(resend.argv, resend.read, RESEND_VALUE_MAX, resend.keep);
     if (!resend.named) words.push("--idempotency-key", key);
-    const line = dispatchLine(words);
+    const line = inDirectory(resend.cwd, dispatchLine(words));
     if (line.length <= RESEND_COMMAND_MAX) return `${send} Run: ${line}`;
     why = "it is too long to print whole";
   } catch (error) {
     why = `what the call read could not be kept (${messageFor(error)})`;
   }
-  return `${send} The command is not printed here, because ${why}: send this call's own command again with \`--idempotency-key ${key}\` added. Under the key Dispatch makes no write twice: from this session the call sends each request again as its first call sent it, and from elsewhere Dispatch refuses one whose request changed.`;
+  return `${send} The command is not printed here, because ${why}: in ${resend.cwd}, send this call's own command again with \`--idempotency-key ${key}\` added. Under the key Dispatch makes no write twice: from this session the call sends each request again as its first call sent it, and Dispatch refuses any other request under the key.`;
 }
 
 /** How a gated write gets AskGate's marker, as a refusal or a warn-mode warning tells the agent. */
@@ -784,6 +787,7 @@ export async function runDispatchCli(
       settings: settingsRead(env, host),
       configPath: file.path,
       configRead: existsSync(file.path),
+      cwd: io.cwd,
       keep: (input, place) => writeResendInput(dir, commandKey.key, place, input),
     });
     entry = withLine(keyLine);

@@ -750,6 +750,12 @@ export function dispatchLine(words: readonly string[]): string {
   return ["dispatch", ...words.map(quoteWord)].join(" ");
 }
 
+/** `line` run in `dir`: `cd <dir> && <line>`, the directory quoted as a word is. AskGate lets one
+ *  `cd <path> &&` stand before a Dispatch write, and a relative path the line holds reads there. */
+export function inDirectory(dir: string, line: string): string {
+  return `cd ${quoteWord(dir)} && ${line}`;
+}
+
 /**
  * The key a call's words name with `--idempotency-key` (either form), when it is one the CLI
  * names: the key of a write an earlier call may have landed. Read from the words alone, so a call

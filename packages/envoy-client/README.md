@@ -671,8 +671,9 @@ under the same key as its first call sent it, whatever it built this time (a bod
 revision read afresh, a picture changed), saying so where the two differ (`dispatch: warning: this
 call sent … as its first call sent it, not as this call built it`): Dispatch answers each write it
 ran with that write's first answer, or `409 KEY_COMMITTED` (a landing, exit 0), and runs only the
-writes it never got. From a session without the record, a write whose request changed is refused
-`422 KEY_REUSED`, never run. Dispatch keeps a key 24 hours from the first call that used it
+writes it never got. Any other request under the key (one built again elsewhere, where a multipart
+boundary or the session it names differs) is refused `422 KEY_REUSED`, never run. Dispatch keeps a
+key 24 hours from the first call that used it
 (`IDEMPOTENCY_KEY_TTL_MS`).
 
 After the error the command prints one line, kept whole however the output is cut, that names the
@@ -687,7 +688,9 @@ n-th) and what to do, by what the call learned of Dispatch's keyed layer (`unset
 - Nothing told (`/healthz` did not answer; the call asks it once): the line says to read the write
   back first, then gives the command.
 
-The command is the argv with `--idempotency-key <key>` added unless it names the key already, each
+The command runs in the directory the call ran in (`cd <dir> && dispatch …`, `inDirectory`; AskGate
+lets one `cd <path> &&` stand before a write), so a relative path it holds, such as a picture,
+reads there. It is the argv with `--idempotency-key <key>` added unless it names the key already, each
 word quoted as `commandLine` quotes one (a word that opens with `=` too, which zsh would expand
 bare). Every text the call read from stdin or a `--<field>-file`, and every value over 500
 characters given inline to a flag with a file twin, is kept in a copy at

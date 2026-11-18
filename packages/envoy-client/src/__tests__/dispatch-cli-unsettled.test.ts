@@ -506,7 +506,9 @@ describe("a write whose answer is lost", () => {
 
       const first = await run(row.argv, dispatch.fetchImpl);
       expect(first.code, first.stdout).toBe(75);
-      const { key, words } = resendOf(first.stdout);
+      const { key, cwd, words } = resendOf(first.stdout);
+      // The command runs where the call ran, so a relative path it holds (a picture) still reads.
+      expect(cwd).toBe(stateDir);
       expect(words).toEqual(["dispatch", ...row.argv, "--idempotency-key", key]);
       const lostKey = row.nth === 1 ? key : `${key}.${row.nth}`;
       expect(first.stdout).toContain(`${MAY_HAVE_LANDED} (idempotency key ${lostKey});`);
@@ -577,7 +579,11 @@ describe("a write whose answer is lost", () => {
     const resend = [...MESSAGE, "--idempotency-key", KEY];
     const first = await run(resend, dispatch.fetchImpl);
     expect(first.code, first.stdout).toBe(75);
-    expect(resendOf(first.stdout)).toEqual({ key: KEY, words: ["dispatch", ...resend] });
+    expect(resendOf(first.stdout)).toEqual({
+      key: KEY,
+      cwd: stateDir,
+      words: ["dispatch", ...resend],
+    });
     expect(dispatch.landed).toEqual([{ ...MESSAGE_WRITE, key: KEY }]);
   });
 
@@ -605,7 +611,7 @@ describe("a write whose answer is lost", () => {
     expect(first.code, first.stdout).toBe(75);
     const { key, words } = resendOf(first.stdout);
     expect(first.stdout).toContain(
-      `: dispatch message --issue ${ISSUE} --body '=ls' --idempotency-key ${key}\n`
+      `&& dispatch message --issue ${ISSUE} --body '=ls' --idempotency-key ${key}\n`
     );
     expect(words).toEqual(["dispatch", ...message, "--idempotency-key", key]);
   });
@@ -832,7 +838,7 @@ describe("a write whose answer is lost", () => {
     expect(first.stdout).not.toContain("Run: dispatch");
     const key = dispatch.landed[0]?.key ?? "";
     expect(first.stdout).toContain(
-      `send this call's own command again with \`--idempotency-key ${key}\` added`
+      `: in ${stateDir}, send this call's own command again with \`--idempotency-key ${key}\` added. Under the key Dispatch makes no write twice: from this session the call sends each request again as its first call sent it, and Dispatch refuses any other request under the key.`
     );
   });
 
