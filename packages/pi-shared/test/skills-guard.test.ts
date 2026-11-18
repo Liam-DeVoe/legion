@@ -81,7 +81,7 @@ function reported(page: readonly string[]): string[] {
 }
 
 // Each retired sentence in the words of the file that carried it, the text around it shortened,
-// and the line its pattern's first word stands on. The last three rows are the shapes no file
+// and the line its pattern's first word stands on. The last five rows are the shapes no file
 // carried, in the words a reword would bring them back in. Every row is found by its own pattern
 // alone, so a row whose pattern is taken out of the guard reports nothing and fails.
 const retired: readonly (readonly [source: string, page: readonly string[], line: number])[] = [
@@ -277,6 +277,24 @@ const retired: readonly (readonly [source: string, page: readonly string[], line
       "The reviewer reads the head's checks on GitHub before it approves.",
       "You re-run",
       "nothing, a required check red at the head included.",
+    ],
+    2,
+  ],
+  [
+    'a ban of the re-run of a check that failed, "Never re-run a check that failed."',
+    [
+      "The tester reads the head's checks on GitHub before any verdict.",
+      "Never re-run a",
+      "check that failed.",
+    ],
+    2,
+  ],
+  [
+    'a ban of the re-run of a lane, "Never re-run a lane that failed on itself."',
+    [
+      "The tester reads the head's checks on GitHub before any verdict.",
+      "Never re-run a lane",
+      "that failed on itself.",
     ],
     2,
   ],

@@ -358,12 +358,14 @@ function collapsedOffsets(markdown: string): number[] {
  * run at the head holds the failing check, the role re-runs nothing" (red-at-the-head.md). "No
  * role re-runs a group build." passes because a role is no lane, and "it gets no re-run", said of
  * a check that judges the pull request itself, because a re-run is no lane either. The active form
- * refuses the unqualified ban alone: a ban that a `for`, `that`, `which`, `whose` or `of` limits to
- * some runs, such as merge-gate.md's "never re-run a job for a `cancelled` row that a newer run of
- * the same name has superseded", keeps the re-run of the red the page names, and passes.
+ * lets one limit through, a `for` naming the rows a ban covers: merge-gate.md's "never re-run a job
+ * for a `cancelled` row that a newer run of the same name has superseded" keeps the re-run of the
+ * red the page names, and passes. No other word after the noun is a limit: "Never re-run a check
+ * that failed." and "Never re-run a lane that failed on itself." forbid the very re-run the page
+ * gives, and are refused.
  */
 const NO_LANE_IS_RERUN =
-  /\b(?:no|neither)\s+(?:CI\s+|required\s+|test\s+)?(?:lanes?|checks?|suites?|jobs?)\b[^.]{0,40}?\bre-?run\b|\bnever\s+re-?runs?\s+(?:a|an|any|the)\s+(?:CI\s+|required\s+|test\s+)?(?:lane|check|suite|job)\b(?!\s+(?:for|that|which|whose|of)\b)/i;
+  /\b(?:no|neither)\s+(?:CI\s+|required\s+|test\s+)?(?:lanes?|checks?|suites?|jobs?)\b[^.]{0,40}?\bre-?run\b|\bnever\s+re-?runs?\s+(?:a|an|any|the)\s+(?:CI\s+|required\s+|test\s+)?(?:lane|check|suite|job)\b(?!\s+for\b)/i;
 
 /**
  * The prohibition INFRA-1303 retired from the tester's prompt part

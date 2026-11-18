@@ -61,6 +61,16 @@ func rolePart(t *testing.T, name string) string {
 	return string(body)
 }
 
+// goPart is one embedded Go daemon prompt part, by its path, go/ included.
+func goPart(t *testing.T, name string) string {
+	t.Helper()
+	body, err := goParts.ReadFile(name)
+	if err != nil {
+		t.Fatalf("read Go daemon prompt part %s: %v", name, err)
+	}
+	return string(body)
+}
+
 func TestCoresAndTheInteractiveFragmentCarryNoHeadlessMechanics(t *testing.T) {
 	for _, file := range modeNeutral {
 		text := rolePart(t, file)
@@ -291,11 +301,7 @@ func TestNoPartSaysTheDaemonMerges(t *testing.T) {
 			t.Errorf("roles/merger.md does not say %q", want)
 		}
 	}
-	goMerger, err := goParts.ReadFile("go/merger.md")
-	if err != nil {
-		t.Fatalf("read go/merger.md: %v", err)
-	}
-	if want := "It submits no merge and changes no merge setting"; !strings.Contains(string(goMerger), want) {
+	if want := "It submits no merge and changes no merge setting"; !strings.Contains(goPart(t, "go/merger.md"), want) {
 		t.Errorf("go/merger.md does not say %q", want)
 	}
 }
@@ -407,12 +413,9 @@ func TestNoPartPromisesAnUpdateRoundNoDaemonCanOpen(t *testing.T) {
 	// The pod half is what survives, and the two parts that carry it are listed rather than
 	// counted: a part that stopped telling a role how to answer an update round fails here.
 	for _, part := range []string{"go/worker-common.md", "go/architect-common.md"} {
-		body, err := goParts.ReadFile(part)
-		if err != nil {
-			t.Fatalf("read %s: %v", part, err)
-		}
+		body := goPart(t, part)
 		for _, want := range []string{`op: "ready_for_update"`, "the pod that runs this issue's roles"} {
-			if !strings.Contains(string(body), want) {
+			if !strings.Contains(body, want) {
 				t.Errorf("%s does not say %q", part, want)
 			}
 		}
@@ -597,6 +600,13 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		// no CI to read, and passed a red head without seeing it (dispatch://INFRA-1303,
 		// trial-k-head-5 of its batch of record: "No `ci_check` lane; drove it by hand").
 		{"core/tester.md", "Read the head's checks on GitHub before any verdict, whether or not a check of the issue carries `ci_check`."},
+		// R6's limit for the reviewer: a check the base does not require is neither waited for nor
+		// re-run for the approval, merge-gate.md's rule since cybermonklabs/legion#4211, so the
+		// reviewer's one re-run is of a red on a check the base requires, and a red of the other
+		// kind whose log shows the change breaks something is a finding, as merge-gate.md says. The
+		// sentence is in the reviewer's Go overlay alone, so its row names the part by its go/ path,
+		// which the loop reads through goPart.
+		{"go/reviewer.md", "A check the base does not require you neither wait for nor re-run for the approval: you approve over a red of it that the change did not make and record it as that page says, and a red of it whose log shows that the change breaks something is a finding like any other, as `skill://legion-worker/references/merge-gate.md` says."},
 		// A check CI proves: a check carrying `ci_check` is proved by the CI run it names, so no
 		// role runs it or records its result, and `dispatch results` derives that result
 		// (dispatch://INFRA-3204, R5 of its spec). Each part that orders a check run, recorded or
@@ -619,20 +629,13 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		{"reviewer.md", "Wait for a `ci_check` run still going or unread, and send a name no run answers to the architect."},
 		{"reviewer.md", "A `ci_check` check with no pass takes the end-of-round rule above, with its three cases."},
 	} {
-		if !strings.Contains(rolePart(t, pin.file), pin.rule) {
+		read := rolePart
+		if strings.HasPrefix(pin.file, "go/") {
+			read = goPart
+		}
+		if !strings.Contains(read(t, pin.file), pin.rule) {
 			t.Errorf("%s does not contain %q", pin.file, pin.rule)
 		}
-	}
-	// R6's limit for the reviewer: a check the base does not require is neither waited for nor
-	// re-run for the approval, merge-gate.md's rule since cybermonklabs/legion#4211, so the
-	// reviewer's one re-run is of a red on a check the base requires. The sentence is in the
-	// reviewer's Go overlay alone, which rolePart does not read.
-	goReviewer, err := goParts.ReadFile("go/reviewer.md")
-	if err != nil {
-		t.Fatalf("read go/reviewer.md: %v", err)
-	}
-	if want := "A check the base does not require you neither wait for nor re-run for the approval: you approve over its red and record it as that page says."; !strings.Contains(string(goReviewer), want) {
-		t.Errorf("go/reviewer.md does not contain %q", want)
 	}
 	// The replaced sentence said the planner answers such a decision by naming it, which is what
 	// let a plan complete with four decisions open (dispatch://INFRA-206).

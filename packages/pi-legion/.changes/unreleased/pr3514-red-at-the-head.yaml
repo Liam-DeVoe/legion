@@ -4,6 +4,8 @@ body: |-
   re-runs a red CI check at the head of its pull request once, after it records the repository,
   the pull request, the head, the check, the run, the attempt, the failed job and the failing
   line. The `legion-controller` skill gains the census of those tests: one issue per test, with
-  every later occurrence a comment on it.
+  every later occurrence a comment on it. The reviewer neither waits for nor re-runs a check the
+  base does not require for the approval, while the tester and the implementer still re-run such a
+  red once.
 custom:
   Issue: pr3514
