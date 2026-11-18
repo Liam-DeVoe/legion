@@ -16,7 +16,12 @@ import {
   type ParsedCommand,
   parseCommand,
 } from "./dispatch-command";
-import { defined } from "./dispatch-commands/context";
+import {
+  defined,
+  type ExecuteDispatchToolInput,
+  sessionContext,
+} from "./dispatch-commands/context";
+import { type DispatchToolName, dispatchCommands } from "./dispatch-commands/table";
 import type { ActiveDispatchConfig } from "./dispatch-config";
 import type { DispatchHost } from "./dispatch-cwd";
 import { checkDispatchCall, dispatchServerUrls, executeDispatchTool } from "./dispatch-execute";
@@ -33,6 +38,7 @@ import {
   writePicture,
 } from "./dispatch-session-state";
 import { followedAsk, followNoticeText } from "./dispatch-subscribe";
+import type { SectionOff } from "./envoy-config";
 import { messageFor } from "./errors";
 import {
   handedConfigFile,
@@ -52,6 +58,9 @@ export interface DispatchCliIo {
   readText(path: string): string;
   readonly cwd: string;
   readonly fetchImpl?: typeof fetch;
+  /** How long a dry run waits on Dispatch for its step's answer (`DRY_RUN_DEADLINE_MS` unless
+   *  set); a test sets a shorter one. */
+  readonly dryRunDeadlineMs?: number;
 }
 
 /** Exit codes, as `skill://dispatch` states them: written or read, a refusal, and a usage error.
@@ -130,6 +139,16 @@ export function cliRefusals(text: string): CliRefusal[] {
 /** How long a result waits on the listener for the session's subscriptions, after the write
  *  itself has landed: one attempt, no retry, since the read is best effort. */
 const SUBSCRIPTIONS_TIMEOUT_MS = 1_500;
+
+/** How long a dry run waits on Dispatch for its step's answer (`DispatchCommand.dryRun`): well
+ *  inside the 20 s AskGate gives a dry run, so a slow Dispatch passes the dry run with a warning
+ *  rather than failing it. */
+const DRY_RUN_DEADLINE_MS = 5_000;
+
+/** Why the session's Dispatch is off, in the words the call is refused with after `dispatch: `. */
+function dispatchOffText(off: SectionOff): string {
+  return off.error === null ? off.notice : `dispatch config: ${off.error}`;
+}
 
 /**
  * The output, at most `limit` characters (unbounded for a host that shows all of it). Within the
@@ -297,23 +316,62 @@ export async function runDispatchCli(
     (env.DISPATCH_HOST === undefined ? null : handedConfigFile(env)) ??
     sessionConfigFile(host, env);
   if (parsed.dryRun) {
-    // The call's own argument check, so the call refuses no arguments its dry run passed; what
-    // the call needs besides (Dispatch's configuration, this session's state, Dispatch's answers)
-    // a dry run does not read. It runs with Dispatch off too, reading a dashboard-URL ref only
-    // against a server it knows, and its standard output is the JSON alone.
-    const settings =
-      file.path === null
-        ? null
-        : sessionDispatchSettings(file, env, { cwd: io.cwd, session: sessionId }).dispatch;
-    const { problems } = await checkDispatchCall({
+    // The call's own argument check, so the call refuses no arguments its dry run passed. It runs
+    // with Dispatch off too, reading a dashboard-URL ref only against a server it knows.
+    const resolved = sessionDispatchSettings(file, env, { cwd: io.cwd, session: sessionId });
+    const settings = resolved.dispatch;
+    const checked = await checkDispatchCall({
       tool: parsed.tool,
       args: parsed.args,
       cwd: io.cwd,
       env,
-      serverUrls: settings?.enabled === true ? dispatchServerUrls(settings) : [],
+      serverUrls: settings.enabled ? dispatchServerUrls(settings) : [],
     });
-    if (problems.length > 0) {
-      return refuse(new ToolInputError(parsed.tool, problems).message, USAGE, parsed.tool);
+    if (checked.problems.length > 0) {
+      return refuse(new ToolInputError(parsed.tool, checked.problems).message, USAGE, parsed.tool);
+    }
+    // A command whose call asks Dispatch a question before it writes asks it here too, from the
+    // session's Dispatch as the call resolves it, and is refused as the call is
+    // (`DispatchCommand.dryRun`): `dispatch artifact` asks how Dispatch would store its inline
+    // text. With DISPATCH_DRY_RUN_LOCAL=1 it asks nothing, for a caller that reads the arguments
+    // alone (AskGate's own read). Nothing else the call reads (this session's state, Dispatch's
+    // other answers) is read here. Every line besides a refusal goes to stderr, so the standard
+    // output of a dry run that passes is the JSON alone.
+    const step = dispatchCommands[parsed.tool as DispatchToolName]?.dryRun;
+    if (step !== undefined && env.DISPATCH_DRY_RUN_LOCAL !== "1") {
+      const deadlineMs = io.dryRunDeadlineMs ?? DRY_RUN_DEADLINE_MS;
+      const deadline = AbortSignal.timeout(deadlineMs);
+      const verdict = await step({
+        tool: parsed.tool,
+        args: checked.args,
+        deadline,
+        deadlineMs,
+        client: () => {
+          for (const warning of resolved.warnings) io.stderr(`dispatch: ${warning}\n`);
+          if (!settings.enabled) {
+            throw new Error(file.path === null ? file.error : dispatchOffText(settings));
+          }
+          const input: ExecuteDispatchToolInput = {
+            tool: parsed.tool,
+            args: checked.args,
+            cwd: io.cwd,
+            host,
+            sessionId,
+            config: settings,
+            env,
+            ...(io.fetchImpl === undefined ? {} : { fetchImpl: io.fetchImpl }),
+            signal: deadline,
+            // The waits before asking a route again would outlast the deadline, and the step has
+            // an answer of its own to a Dispatch that holds no such route.
+            retryNoRoute: false,
+          };
+          return sessionContext(input, checked).newClient();
+        },
+      });
+      if (verdict.kind === "refused") {
+        return refuse(verdict.refusal.message, USAGE, parsed.tool);
+      }
+      if (verdict.warning !== undefined) io.stderr(`${verdict.warning}\n`);
     }
     print(JSON.stringify(parsed.args, null, 2));
     return OK;
@@ -330,13 +388,7 @@ export async function runDispatchCli(
   // A checkout's OpenCode-era file, which is not read, is said on every call while it is there.
   for (const warning of warnings) print(`dispatch: ${warning}`);
   if (!resolution.enabled) {
-    return refuse(
-      resolution.error === null
-        ? `dispatch: ${resolution.notice}`
-        : `dispatch: dispatch config: ${resolution.error}`,
-      USAGE,
-      parsed.tool
-    );
+    return refuse(`dispatch: ${dispatchOffText(resolution)}`, USAGE, parsed.tool);
   }
   const config: ActiveDispatchConfig = resolution;
 

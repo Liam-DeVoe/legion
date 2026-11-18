@@ -840,8 +840,18 @@ names a local file. `dispatch --help` lists the commands, `dispatch <command> --
 an example, and `--dry-run` runs the call's own argument check (`checkDispatchCall`: the owner, the
 strict schema, the cross-field checks and the picture files), refusing the arguments the call would
 refuse with the call's message, and otherwise prints the arguments as given, not as the call fills
-them (an issue from LEGION_ISSUE or the ref). It reads neither Dispatch nor this session's state,
-so it runs with Dispatch off too, and a call it passed can still stop on either.
+them (an issue from LEGION_ISSUE or the ref). It stores nothing and reads no state of this session.
+A command whose call asks Dispatch something before it writes asks it in its dry run too, through
+its step in the command table (`DispatchCommand.dryRun`, `dispatch-commands/table.ts`). The one
+such step is `dispatch artifact`'s: for inline content that is not blank, it makes the call's own
+stored-text check (`storedTextCheck`, `POST /api/v1/markdown/round-trip`), and refuses a text that
+Dispatch would store under another spelling with the call's refusal and exit code. The step waits
+at most 5 s. When it gets no answer (no Dispatch configured, a failure, no answer in time, or a
+Dispatch without the route), the dry run passes, and one `dispatch: warning:` line on stderr says
+why and what the call does then, so the JSON stays alone on stdout. With `DISPATCH_DRY_RUN_LOCAL=1`
+the dry run asks Dispatch nothing, for a caller that reads the arguments alone. Every other dry run
+reads no Dispatch, so it runs with Dispatch off too. A call that a dry run passed can still stop on
+what Dispatch answers or on this session's state.
 
 `runDispatchCli` (`dispatch-cli.ts`) runs one call per process. The host plugin sets
 `DISPATCH_HOST` (`omp` or `claude`) and the session's id (`CLAUDE_CODE_SESSION_ID` under Claude

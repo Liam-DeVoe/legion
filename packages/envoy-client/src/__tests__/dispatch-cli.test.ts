@@ -273,6 +273,12 @@ const handoffs: {
   created_at: string;
   body: string;
 }[] = [];
+/** The store ends every document with a line feed, so a text without one comes back with one. */
+const keptText = (markdown: string): Response =>
+  Response.json({ markdown: markdown.endsWith("\n") ? markdown : `${markdown}\n` });
+/** How POST /api/v1/markdown/round-trip answers the markdown it is sent: as the store keeps it,
+ *  unless a test sets another answer. */
+let roundTrip: (markdown: string) => Response | Promise<Response> = keptText;
 
 const server = Bun.serve({
   port: 0,
@@ -312,6 +318,9 @@ const server = Bun.serve({
     const text = await request.text();
     const body = text === "" ? undefined : JSON.parse(text);
     requests.push({ method: request.method, path: pathname, body });
+    if (pathname === "/api/v1/markdown/round-trip" && request.method === "POST") {
+      return roundTrip(body.markdown as string);
+    }
     if (pathname === "/api/v1/issues/DSP-2" && request.method === "GET") {
       return Response.json(blocksIssue);
     }
@@ -526,6 +535,7 @@ beforeEach(() => {
   eventLog = { last: 40, served: 40, queries: [] };
   handoffs.length = 0;
   interests = () => Response.json({ error: "unset" }, { status: 500 });
+  roundTrip = keptText;
   stateDir = makeDirectory();
   // Each run is its own process in production: nothing the library remembers carries over.
   resetAdviceMemory();
@@ -548,7 +558,8 @@ async function run(
   argv: readonly string[],
   extra: Record<string, string | undefined>,
   stdin = "",
-  fetchImpl?: typeof fetch
+  fetchImpl?: typeof fetch,
+  dryRunDeadlineMs?: number
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   let stdout = "";
   let stderr = "";
@@ -562,6 +573,7 @@ async function run(
     readText: (path) => (path === "-" ? stdin : readFileSync(path, "utf-8")),
     cwd: stateDir,
     ...(fetchImpl === undefined ? {} : { fetchImpl }),
+    ...(dryRunDeadlineMs === undefined ? {} : { dryRunDeadlineMs }),
   });
   return { code, stdout, stderr };
 }
@@ -616,6 +628,20 @@ function ledger(sessionId: string): { tool: string; error?: string }[] {
 }
 
 const omp = { DISPATCH_HOST: "omp", DISPATCH_SESSION_ID: "ses-1" };
+
+/** An inline upload, its text read from stdin, and the route its stored-text check asks. */
+const UPLOAD = ["artifact", "--issue", "DSP-1", "--name", "notes.md", "--content-file", "-"];
+const NOTES = "# Notes\n\n* one\n";
+const NOTES_JSON = `${JSON.stringify({ issue: "DSP-1", name: "notes.md", content: NOTES }, null, 2)}\n`;
+const ROUND_TRIP = "/api/v1/markdown/round-trip";
+
+/** The stderr line of an upload's dry run against a Dispatch with no round-trip route. */
+const routeAbsent = (answer: string): string =>
+  `dispatch: warning: this Dispatch cannot say how it would store the text: POST ${ROUND_TRIP} failed with ${answer}. The dry run did not check the spelling. The call uploads the text unchecked.\n`;
+
+/** The stderr line of an upload's dry run whose round trip could not run, for `why`. */
+const unasked = (why: string): string =>
+  `dispatch: warning: the dry run could not ask Dispatch how it would store the text: ${why}. The call refuses the upload until Dispatch answers.\n`;
 
 describe("the dispatch CLI", () => {
   test("refuses without DISPATCH_HOST, naming it, and sends nothing", async () => {
@@ -988,8 +1014,8 @@ describe("the dispatch CLI", () => {
     expect(requests).toEqual([]);
   });
 
-  // A dry run reads nothing from Dispatch, so it checks and prints with Dispatch off too, and
-  // prints the JSON alone.
+  // A dry run of a command with no dry-run step reads nothing from Dispatch, so it checks and
+  // prints with Dispatch off too, and prints the JSON alone.
   test("--dry-run checks and prints with Dispatch off", async () => {
     const off = { ...omp, DISPATCH_URL: undefined, DISPATCH_TOKEN: undefined };
     const passed = await run(["message", "--issue", "DSP-1", "--body", "hi", "--dry-run"], off);
@@ -1004,6 +1030,157 @@ describe("the dispatch CLI", () => {
       "dispatch issue-update was not called: 1 problem\n- reason goes only with status done"
     );
     expect(requests).toEqual([]);
+  });
+
+  // INFRA-4224 R3: an upload's dry run asks Dispatch how it would store its inline text, as the
+  // call does, and is refused for the text's spelling exactly as the call is: the same exit, the
+  // same refusal on the same stream. It stores nothing.
+  test("an upload's dry run refuses a text Dispatch would respell, exactly as the call does", async () => {
+    roundTrip = (markdown) => Response.json({ markdown: markdown.replace("* one", "- one") });
+    const dry = await run([...UPLOAD, "--dry-run"], omp, NOTES);
+    expect(requests).toEqual([{ method: "POST", path: ROUND_TRIP, body: { markdown: NOTES } }]);
+    requests.length = 0;
+
+    const call = await run(UPLOAD, omp, NOTES);
+    expect(call.code).toBe(2);
+    expect(call.stdout).toStartWith(
+      'dispatch artifact was not called: 1 problem\n- Dispatch stores this text under another spelling: line 3 reads "* one" and is stored as "- one".'
+    );
+    expect(dry).toEqual(call);
+    // The call refused it before its upload, as the dry run did.
+    expect(requests.filter((request) => request.method === "POST")).toEqual([
+      { method: "POST", path: ROUND_TRIP, body: { markdown: NOTES } },
+    ]);
+  });
+
+  test("an upload's dry run passes a text Dispatch keeps, printing the arguments alone", async () => {
+    // The store adds the final line feed this text lacks, which is no other spelling.
+    const content = "# Notes\n\n- one";
+    const dry = await run([...UPLOAD, "--dry-run"], omp, content);
+    expect(dry).toEqual({
+      code: 0,
+      stdout: `${JSON.stringify({ issue: "DSP-1", name: "notes.md", content }, null, 2)}\n`,
+      stderr: "",
+    });
+    expect(requests).toEqual([{ method: "POST", path: ROUND_TRIP, body: { markdown: content } }]);
+  });
+
+  // A Dispatch older than the round trip answers no route for it, and the call then uploads the
+  // text unchecked. The dry run asks the route once, with no waits before asking again, so that
+  // answer reaches it well inside its 5 s bound.
+  test("an upload's dry run against a Dispatch with no round-trip route passes within its bound, saying the call uploads unchecked", async () => {
+    roundTrip = () =>
+      Response.json(
+        { code: "NOT_FOUND", error: `no route for POST ${ROUND_TRIP}` },
+        { status: 404 }
+      );
+    const started = performance.now();
+    const dry = await run([...UPLOAD, "--dry-run"], omp, NOTES);
+    expect(performance.now() - started).toBeLessThan(5_000);
+    expect(dry).toEqual({
+      code: 0,
+      stdout: NOTES_JSON,
+      stderr: routeAbsent(`NOT_FOUND: no route for POST ${ROUND_TRIP}`),
+    });
+    expect(requests).toEqual([{ method: "POST", path: ROUND_TRIP, body: { markdown: NOTES } }]);
+  });
+
+  // A dry run whose round trip cannot run passes and says why on stderr: an AskGate that runs the
+  // call after a failed dry run would post the write unreviewed. The JSON stays alone on stdout.
+  test("an upload's dry run passes when the round trip fails, naming the failure on stderr", async () => {
+    const cases = [
+      {
+        status: 405,
+        answer: { code: "METHOD_NOT_ALLOWED", error: "method not allowed" },
+        stderr: routeAbsent("METHOD_NOT_ALLOWED: method not allowed"),
+      },
+      {
+        status: 500,
+        answer: { code: "INTERNAL", error: "the document service is down" },
+        stderr: unasked(`POST ${ROUND_TRIP} failed with INTERNAL: the document service is down`),
+      },
+    ];
+    for (const { status, answer, stderr } of cases) {
+      roundTrip = () => Response.json(answer, { status });
+      const dry = await run([...UPLOAD, "--dry-run"], omp, NOTES);
+      expect(dry, String(status)).toEqual({ code: 0, stdout: NOTES_JSON, stderr });
+    }
+  });
+
+  test("an upload's dry run passes when Dispatch gives no answer within its bound, saying so", async () => {
+    const held = Promise.withResolvers<Response>();
+    roundTrip = () => held.promise;
+    try {
+      const dry = await run([...UPLOAD, "--dry-run"], omp, NOTES, undefined, 200);
+      expect(dry).toEqual({
+        code: 0,
+        stdout: NOTES_JSON,
+        stderr: unasked("Dispatch gave no answer within 0.2 s"),
+      });
+    } finally {
+      held.resolve(keptText(NOTES));
+    }
+  });
+
+  test("an upload's dry run passes with Dispatch off, naming why the call refuses, and sends nothing", async () => {
+    const off = { ...omp, DISPATCH_URL: undefined, DISPATCH_TOKEN: undefined };
+    const call = await run(UPLOAD, off, NOTES);
+    expect(call.code).toBe(2);
+    const why = call.stdout.replace(/^dispatch: /, "").trimEnd();
+    const dry = await run([...UPLOAD, "--dry-run"], off, NOTES);
+    expect(dry.code).toBe(0);
+    expect(dry.stdout).toBe(NOTES_JSON);
+    expect(dry.stderr).toStartWith(
+      `dispatch: warning: the dry run could not ask Dispatch how it would store the text: ${why}`
+    );
+    expect(dry.stderr).toEndWith(" The call refuses the upload until Dispatch answers.\n");
+    expect(requests).toEqual([]);
+  });
+
+  // AskGate reads the arguments alone: with DISPATCH_DRY_RUN_LOCAL=1 the dry run asks Dispatch
+  // nothing, and the call refuses a respelled text itself.
+  test("with DISPATCH_DRY_RUN_LOCAL=1 an upload's dry run checks the arguments alone, sending nothing", async () => {
+    roundTrip = (markdown) => Response.json({ markdown: markdown.replace("* one", "- one") });
+    const dry = await run([...UPLOAD, "--dry-run"], { ...omp, DISPATCH_DRY_RUN_LOCAL: "1" }, NOTES);
+    expect(dry).toEqual({ code: 0, stdout: NOTES_JSON, stderr: "" });
+    expect(requests).toEqual([]);
+  });
+
+  // The call asks the round trip only for inline text that is not blank, and its dry run alike.
+  test("an upload's dry run of a file, of blank text and of a name alone asks Dispatch nothing", async () => {
+    writeFileSync(join(stateDir, "notes.md"), NOTES);
+    const owner = ["artifact", "--issue", "DSP-1", "--name", "notes.md"];
+    const cases: { argv: string[]; args: object }[] = [
+      {
+        argv: [...owner, "--path", "notes.md"],
+        args: { issue: "DSP-1", name: "notes.md", path: "notes.md" },
+      },
+      {
+        argv: [...owner, "--content", " \n\t"],
+        args: { issue: "DSP-1", name: "notes.md", content: " \n\t" },
+      },
+      { argv: owner, args: { issue: "DSP-1", name: "notes.md" } },
+    ];
+    for (const { argv, args } of cases) {
+      const dry = await run([...argv, "--dry-run"], omp);
+      expect(dry, argv.join(" ")).toEqual({
+        code: 0,
+        stdout: `${JSON.stringify(args, null, 2)}\n`,
+        stderr: "",
+      });
+    }
+    expect(requests).toEqual([]);
+  });
+
+  test("artifact's help says its dry run asks Dispatch how it would store the text, and another command's that it sends nothing", async () => {
+    const artifact = await run(["artifact", "--help"], omp);
+    expect(artifact.stdout).toContain(
+      "  --dry-run\n      Checks the arguments as the call would. Then, for inline content, it asks Dispatch how it would store the text (POST /api/v1/markdown/round-trip)"
+    );
+    const message = await run(["message", "--help"], omp);
+    expect(message.stdout).toContain(
+      "  --dry-run\n      Checks the arguments as the call would, then prints them as JSON and sends nothing.\n"
+    );
   });
 
   test("the follow notice is printed once per ask across processes", async () => {

@@ -16,6 +16,7 @@ import type { Owner, ParsedDispatchRef } from "../dispatch-owner";
 import type { AgentArtifactRef, LocalPicture } from "../dispatch-picture-tools";
 import type { ToolImage } from "../dispatch-pictures";
 import { withoutUserinfo } from "../errors";
+import type { ToolInputError } from "../tool-input-errors";
 
 /**
  * Tool arguments as the model supplied them. The tool's Zod schema validates
@@ -68,6 +69,10 @@ export interface ExecuteDispatchToolInput {
   /** The wait before each new attempt of a request Dispatch answered with no route
    *  (`DispatchClient`); a test passes one that returns at once. */
   readonly sleep?: Sleep;
+  /** Whether a request Dispatch answered with no route is asked again (`DispatchClient`'s
+   *  `retryNoRoute`, true unless set). A dry run sets false: it has an answer of its own to a
+   *  missing route, and the waits would outlast its deadline. */
+  readonly retryNoRoute?: boolean;
   readonly exec?: ExecFn;
   /** The topics the session's Envoy subscriptions hold, or null when they cannot be read (Envoy
    *  off, or no answer from its listener); called only by a write that would name its owner as
@@ -89,6 +94,35 @@ export interface DispatchToolResult {
    *  told a create happened. */
   readonly refused?: boolean;
 }
+
+/**
+ * What a command's dry-run step (`DispatchCommand.dryRun`, table.ts) is handed once the call's own
+ * argument check has passed: what the step needs to ask Dispatch what the call asks before it
+ * writes, under the dry run's deadline.
+ */
+export interface DryRunContext {
+  /** The command's tool name, which its refusals name. */
+  readonly tool: string;
+  /** The arguments as the call's check parsed them. */
+  readonly args: ToolArguments;
+  /**
+   * The client the call builds, from the session's Dispatch as the call resolves it. It stops at
+   * `deadline` and asks no request again that Dispatch answered with no route. It prints each
+   * warning of the session's configuration on stderr, and throws, naming why, when the session
+   * has no Dispatch. A step calls it only for arguments it asks Dispatch about, so every other dry
+   * run resolves no Dispatch.
+   */
+  readonly client: () => DispatchClient;
+  /** Aborts once `deadlineMs` have passed, so a failure after it is the deadline's. */
+  readonly deadline: AbortSignal;
+  readonly deadlineMs: number;
+}
+
+/** What a dry-run step found: the call's own refusal, which the dry run prints and exits 2 on, or
+ *  a pass, with a warning for stderr when the step could not get its answer. */
+export type DryRunVerdict =
+  | { readonly kind: "refused"; readonly refusal: ToolInputError }
+  | { readonly kind: "passed"; readonly warning?: string };
 
 export interface ResolvedArtifact {
   readonly owner: Owner;
@@ -326,6 +360,7 @@ export function sessionContext(
         signal: input.signal,
         writeRetry: input.writeRetry,
         sleep: input.sleep,
+        retryNoRoute: input.retryNoRoute,
       }),
   };
 }

@@ -157,14 +157,16 @@ const surfaces = new Map<string, CommandSurface>();
 function surfaceFor(tool: string): CommandSurface {
   const cached = surfaces.get(tool);
   if (cached !== undefined) return cached;
-  const spec = dispatchToolSpecs.find((candidate) => candidate.name === tool);
+  const spec: DispatchToolSpec | undefined = dispatchToolSpecs.find(
+    (candidate) => candidate.name === tool
+  );
   if (spec === undefined) throw new Error(`Unknown Dispatch tool: ${tool}`);
   const fields = fieldKinds(spec);
   const surface: CommandSurface = {
     spec,
     command: commandName(spec.name),
     fields,
-    flags: flagTable(spec.name, fields),
+    flags: flagTable(spec.name, fields, spec.dryRun),
   };
   surfaces.set(tool, surface);
   return surface;
@@ -295,7 +297,13 @@ function placeholder(info: FieldInfo): string {
   return "<text>";
 }
 
-function flagTable(tool: string, fields: ReadonlyMap<string, FieldInfo>): Map<string, FlagEntry> {
+/** The command's flags, each with its help text. `dryRun` is the spec's own sentence for
+ *  `--dry-run`, for a command whose dry run asks Dispatch something past the argument check. */
+function flagTable(
+  tool: string,
+  fields: ReadonlyMap<string, FieldInfo>,
+  dryRun: string | undefined
+): Map<string, FlagEntry> {
   const flags = new Map<string, FlagEntry>();
   const add = (flag: string, entry: FlagEntry): void => {
     if (flags.has(flag)) throw new Error(`${tool}: two fields claim the flag ${flag}`);
@@ -368,7 +376,9 @@ function flagTable(tool: string, fields: ReadonlyMap<string, FieldInfo>): Map<st
   add("--help", { action: "help", text: "Prints this help." });
   add("--dry-run", {
     action: "dry-run",
-    text: "Checks the arguments as the call would, then prints them as JSON and sends nothing.",
+    text:
+      dryRun ??
+      "Checks the arguments as the call would, then prints them as JSON and sends nothing.",
   });
   return flags;
 }
@@ -684,7 +694,7 @@ export function commandsHelp(): string {
       return `  ${commandName(spec.name).padEnd(width)}  ${sentence}`;
     }),
     "",
-    "Run dispatch <command> --help for its flags and an example; --dry-run checks a command's arguments as the call would and prints them as given, sending nothing.",
+    "Run dispatch <command> --help for its flags and an example. --dry-run checks a command's arguments as the call would and prints them as given. It stores nothing. A command whose call asks Dispatch something before it writes asks it in the dry run too, and its --help says so.",
     "",
   ].join("\n");
 }

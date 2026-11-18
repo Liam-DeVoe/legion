@@ -25,6 +25,10 @@ export interface DispatchToolSpec {
   readonly strict?: boolean;
   /** A schema-valid call shown after this tool rejects malformed arguments. */
   readonly example: Readonly<Record<string, unknown>>;
+  /** What the command's `--dry-run` flag does, as its help says, for a command whose dry run asks
+   *  Dispatch something past the argument check every dry run runs. A command without one says
+   *  that its dry run checks the arguments, prints them and sends nothing. */
+  readonly dryRun?: string;
 }
 
 /** Builds a host-owned schema and applies any tool-level cross-field validation. */
@@ -1784,6 +1788,8 @@ export const dispatchToolSpecs = [
   {
     name: "dispatch_artifact",
     example: { issue: "DSP-1", name: "design.md", content: "# Design\n" },
+    dryRun:
+      "Checks the arguments as the call would. Then, for inline content, it asks Dispatch how it would store the text (POST /api/v1/markdown/round-trip), and refuses a text that Dispatch would store under another spelling with the call's own refusal. Otherwise it prints the arguments as JSON. It stores nothing. When Dispatch cannot answer, it says so on stderr and passes.",
     description:
       "Attach a local file or inline text as an issue artifact or project document, or make an empty document from its name alone. Do not use it to edit a live document; use " +
       "dispatch doc-edit instead. Never upload a document's own name to change it (spec.md replaces the spec whole); edit it with dispatch doc-edit. " +

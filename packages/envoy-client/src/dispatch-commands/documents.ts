@@ -6,12 +6,7 @@ import type {
   EditOp,
   EditPrecondition,
 } from "@legion/contracts";
-import {
-  ARTIFACT_NAME_EXISTS_RULE,
-  PATH_KEEPS_BYTES,
-  pathKeepsBytesOf,
-  typedBlockIdAttribute,
-} from "@legion/contracts";
+import { ARTIFACT_NAME_EXISTS_RULE, typedBlockIdAttribute } from "@legion/contracts";
 import { actorText } from "../actor-text";
 import { commandName } from "../dispatch-command";
 import type { DispatchClient } from "../dispatch-http";
@@ -37,6 +32,8 @@ import { otherAdviceLines, renderAdvice } from "./advice";
 import {
   type CommandContext,
   type DispatchToolResult,
+  type DryRunContext,
+  type DryRunVerdict,
   numberArg,
   optionalBoolean,
   optionalNumber,
@@ -45,7 +42,6 @@ import {
   stringArg,
 } from "./context";
 import { approvalLine, documentPlaysPlan, liveBlocks } from "./document-targets";
-import { dispatchAnswered } from "./failures";
 import { openAnchoredThreads, waitsOnPerson } from "./render-item";
 import {
   documentResultDetails,
@@ -55,6 +51,7 @@ import {
   resolvedTopic,
   writeResultDetails,
 } from "./results";
+import { storedTextCheck, storedTextCheckFailed } from "./stored-text";
 
 /** The asks of the document's `ask` blocks. An issue lists them under the issue, since the artifact
  * route refuses an issue document; an unlinked document lists its own. */
@@ -703,137 +700,6 @@ function artifactNameExistsProblem(held: Artifact, owner: string): string {
 }
 
 /**
- * How much of one line a refusal quotes whole. A line of a document is bounded by the document
- * itself, so one differing line can be as long as the whole text, and a quote nobody can read
- * to the end is one nobody acts on — the same reason STORED_TEXT_PRINTED bounds the stored
- * text below, and the cut is named the same way.
- */
-const STORED_LINE_QUOTED = 200;
-
-/** `line` as a refusal quotes it: its JSON spelling whole while the line is short, and
- *  otherwise that of its first STORED_LINE_QUOTED characters, with the cut named after it. */
-function quotedStoredLine(line: string): string {
-  if (line.length <= STORED_LINE_QUOTED) return JSON.stringify(line);
-  const head = JSON.stringify(line.slice(0, STORED_LINE_QUOTED));
-  return `${head} (cut after ${STORED_LINE_QUOTED} of its ${line.length} characters)`;
-}
-
-/** The first line the store would write otherwise, which is the line a reader fixes first. The
- *  two texts differ, so one of the three arms answers. Each quote is bounded, since the line it
- *  names can be as long as the document itself. */
-function firstStoredDifference(given: string, stored: string): string {
-  const written = given.split("\n");
-  const holds = stored.split("\n");
-  // Each side is read as `string | undefined`, since a line past the end of its own text is
-  // undefined and the strict packages that compile this file say so. The two are not equal
-  // here, so exactly one arm below answers and the pair can never both be undefined.
-  for (let line = 0; line < Math.max(written.length, holds.length); line += 1) {
-    const wrote = written[line];
-    const held = holds[line];
-    if (wrote === held) continue;
-    if (wrote === undefined && held !== undefined) {
-      return `the store writes a line ${line + 1}, ${quotedStoredLine(held)}`;
-    }
-    if (held === undefined && wrote !== undefined) {
-      return `the store drops line ${line + 1}, ${quotedStoredLine(wrote)}`;
-    }
-    if (wrote !== undefined && held !== undefined) {
-      return `line ${line + 1} reads ${quotedStoredLine(wrote)} and is stored as ${quotedStoredLine(held)}`;
-    }
-  }
-  return "the stored text differs from the text given";
-}
-
-/**
- * How much of the stored text a refusal prints whole. Past it the refusal prints the first whole
- * lines that fit and says how much it cut: a document is up to 1 MiB, and a refusal nobody can
- * read to the end is one nobody acts on. The line a reader fixes first is named before the text
- * either way, so a cut refusal still says what to change.
- */
-const STORED_TEXT_PRINTED = 2000;
-
-/** The stored text as a refusal prints it, and what the refusal says of the cut: whole while it
- *  is short, and otherwise its first whole lines up to STORED_TEXT_PRINTED characters. */
-function storedTextPrinted(stored: string): { readonly text: string; readonly cut: string } {
-  if (stored.length <= STORED_TEXT_PRINTED) return { text: stored, cut: "" };
-  const head = stored.slice(0, STORED_TEXT_PRINTED);
-  const lastLineFeed = head.lastIndexOf("\n");
-  const text = lastLineFeed === -1 ? head : head.slice(0, lastLineFeed + 1);
-  return {
-    text,
-    cut: ` The text below is cut after ${text.length} of its ${stored.length} characters: change the line named above and send the text again.`,
-  };
-}
-
-/**
- * The refusal of inline text the store would change: where the two first differ, the way out
- * this name has, and the text the store writes, so the writer can send exactly that text. The
- * markers hold the stored text apart from the prose around it. A name `--path` would store as
- * bytes has a second way out, which keeps the text as it was written; a Markdown name has none,
- * since `--path` parses and renders it the same way (`pathKeepsBytesOf`).
- */
-function storedTextProblem(given: string, stored: string, name: string): string {
-  const asBytes = pathKeepsBytesOf(name)
-    ? ` To keep the text as you wrote it, send it as a file with ${PATH_KEEPS_BYTES}.`
-    : "";
-  const printed = storedTextPrinted(stored);
-  return [
-    `Dispatch stores this text under another spelling: ${firstStoredDifference(given, stored)}.`,
-    ` Send the text Dispatch stores, which is between the two marker lines below.${asBytes}`,
-    `${printed.cut}\n--- the text Dispatch stores ---\n${printed.text}`,
-    "--- end of the text Dispatch stores ---",
-  ].join("");
-}
-
-/**
- * The refusal of an upload whose stored-text check could not run. The check is the one thing that
- * says whether the store would write this text under another spelling, so a failure that is not
- * the route's absence leaves that question open, and an upload sent anyway would store the
- * changed text this check exists to stop.
- *
- * A body Dispatch itself refused as too large is the one such failure a repeat can never get
- * through, so that refusal names what to do instead of saying to send the upload again: the
- * text is past what the check reads, and a name whose extension keeps the bytes has `--path`,
- * which stores the file and asks this route nothing.
- */
-function storedTextCheckFailed(error: unknown, name: string): string {
-  const failure = `Dispatch could not say how it would store this text, so nothing was uploaded: POST /api/v1/markdown/round-trip failed with ${messageFor(error)}.`;
-  if (!dispatchAnswered(error, 413)) {
-    return `${failure} Send the upload again once that call is answered.`;
-  }
-  // Only a body past markdownRoundTripLimit reaches here, and that is always text past the
-  // megabyte a markdown document may hold, so every remedy this names has to be one that
-  // takes the text out of one document: a document of its own is no remedy at all, since the
-  // upload refused is already one and a second would be refused the same way.
-  const asBytes = pathKeepsBytesOf(name)
-    ? ` Send it as a file with ${PATH_KEEPS_BYTES}, which asks this check nothing.`
-    : "";
-  return `${failure} This text is longer than the check reads, and sending the upload again does not change that: a markdown document is at most 1 MiB, so shorten it or split it across documents of at most that.${asBytes}`;
-}
-
-/**
- * Whether the round trip failed because Dispatch itself holds no such route: the 404 or 405 a
- * Dispatch older than POST /api/v1/markdown/round-trip answers, as its own JSON. Such a server
- * cannot say what it would store, and refused the upload itself before this check existed, so
- * the upload goes on and that server makes its own answer.
- *
- * A 404 or 405 page from an ingress, a proxy or a load balancer is `DispatchGatewayError`,
- * which says nothing about the route, so `dispatchAnswered` is what this asks: reading such a
- * page as an absent route would skip the check and store the respelled text it exists to stop.
- */
-function roundTripRouteAbsent(error: unknown): boolean {
-  return dispatchAnswered(error, 404) || dispatchAnswered(error, 405);
-}
-
-/** `text` without a final line feed, which is what the stored-text check compares. The store
- *  ends every document it holds with one, so text a writer gave without one comes back with one
- *  and nothing else changed (`markdown_round_trip_test.go` pins "one" stored as "one\n"). That
- *  one line feed is the only difference the check forgives. */
-function withoutFinalLineFeed(text: string): string {
-  return text.endsWith("\n") ? text.slice(0, -1) : text;
-}
-
-/**
  * Text Go's `strings.TrimSpace` empties: no characters at all, or only characters Go's
  * `unicode.IsSpace` reports - `\t`, `\n`, `\v`, `\f`, `\r`, a space, U+0085 and U+00A0, and the
  * Unicode `White_Space` property above Latin-1, which is U+1680, U+2000 to U+200A, U+2028,
@@ -877,8 +743,8 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   // `strings.TrimSpace` empties - the `blank :=` line of jsonArtifactUpload in
   // packages/envoy/internal/dispatch/api/artifacts.go, whose set is goBlankPattern's.
   // JavaScript's `trim` is another set, so it is not read here: goBlankPattern's own comment
-  // says which two characters the two sets differ on. Both checks below read this one
-  // predicate.
+  // says which two characters the two sets differ on. The held-name check and the stored-text
+  // check below both read this one predicate, and so does the dry run (artifactDryRun).
   const blank = content === undefined || goBlankPattern.test(content);
   // An upload under a name the owner already holds writes that document's next version, over
   // the text it holds, so the command reads what the owner holds and refuses it. --force is
@@ -907,9 +773,7 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
       ]);
     }
   }
-  // Inline text is stored as Markdown: Dispatch parses it and stores its rendering, so a
-  // text it would write under another spelling is refused here rather than stored changed.
-  // The round trip is the store's own parse and render (POST /api/v1/markdown/round-trip).
+  // A text the store would write under another spelling is refused here (storedTextCheck).
   // Only a Dispatch that holds no such route leaves the upload to make its own refusal, as
   // it did before this check: every other failure refuses the upload, since a check that did
   // not run says nothing about what the store would write. Blank text goes to the server
@@ -920,19 +784,10 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   // them: the parse and render a seed runs keep every character of this set but a tab, a
   // line feed, a carriage return and a space, each of the rest rendering to itself.
   if (!blank) {
-    let stored: string | undefined;
-    try {
-      stored = await client.markdownRoundTrip(content);
-    } catch (error) {
-      if (!roundTripRouteAbsent(error)) {
-        throw new Error(storedTextCheckFailed(error, name), { cause: error });
-      }
-    }
-    // The store ends a document with a line feed the writer's own text need not carry, and
-    // that one line feed is no other spelling: both sides lose at most one before they are
-    // compared. Every other difference is refused.
-    if (stored !== undefined && withoutFinalLineFeed(stored) !== withoutFinalLineFeed(content)) {
-      throw new ToolInputError(input.tool, [storedTextProblem(content, stored, name)]);
+    const stored = await storedTextCheck(client, input.tool, name, content);
+    if (stored.kind === "respelled") throw stored.refusal;
+    if (stored.kind === "failed") {
+      throw new Error(storedTextCheckFailed(stored.error, name), { cause: stored.error });
     }
   }
   // A call with a path uploads that file, one with content stores that text, and one with
@@ -988,4 +843,55 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
             ...(result.advice === undefined ? {} : { advice: result.advice }),
           },
   };
+}
+
+/** `text` as the end of a sentence: with a full stop added unless it already ends one. */
+function endedSentence(text: string): string {
+  return /[.!?]$/.test(text) ? text : `${text}.`;
+}
+
+/**
+ * `dispatch artifact --dry-run`'s step after the argument check: the call's own stored-text check
+ * (`storedTextCheck`), so the dry run refuses a text the call would refuse for its spelling, with
+ * the call's own refusal, and stores nothing. It reads nothing else the call reads: not whether
+ * the owner holds the name, and none of the server's own refusals. A check that cannot run
+ * passes, with a warning that says what the call then does. A dry run that failed there would
+ * let an AskGate that runs the call after a failed dry run post this write unreviewed.
+ */
+export async function artifactDryRun(context: DryRunContext): Promise<DryRunVerdict> {
+  const { tool, args, deadline, deadlineMs } = context;
+  const content = optionalString(args, "content");
+  // The call asks nothing for blank text, and nothing for a file or a name alone.
+  if (content === undefined || goBlankPattern.test(content)) return { kind: "passed" };
+  const unasked = (why: string): DryRunVerdict => ({
+    kind: "passed",
+    warning: `dispatch: warning: the dry run could not ask Dispatch how it would store the text: ${endedSentence(why)} The call refuses the upload until Dispatch answers.`,
+  });
+  let client: DispatchClient;
+  try {
+    client = context.client();
+  } catch (error) {
+    // A session with no Dispatch, which the call refuses in the same words.
+    return unasked(messageFor(error));
+  }
+  const stored = await storedTextCheck(client, tool, stringArg(args, "name"), content);
+  switch (stored.kind) {
+    case "kept":
+      return { kind: "passed" };
+    case "respelled":
+      return { kind: "refused", refusal: stored.refusal };
+    case "no-route":
+      return {
+        kind: "passed",
+        warning: `dispatch: warning: this Dispatch cannot say how it would store the text: ${endedSentence(`POST /api/v1/markdown/round-trip failed with ${messageFor(stored.error)}`)} The dry run did not check the spelling. The call uploads the text unchecked.`,
+      };
+    case "failed":
+      // The deadline's end reads as what it is: the client's own words for it are a write's,
+      // saying that the write may or may not have taken effect, and the round trip writes nothing.
+      return unasked(
+        deadline.aborted
+          ? `Dispatch gave no answer within ${deadlineMs / 1000} s`
+          : `POST /api/v1/markdown/round-trip failed with ${messageFor(stored.error)}`
+      );
+  }
 }

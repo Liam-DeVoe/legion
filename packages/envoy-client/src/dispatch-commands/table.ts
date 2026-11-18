@@ -6,7 +6,13 @@ import {
   openAsksCommand,
   resolveAskCommand,
 } from "./asks";
-import type { CommandContext, DispatchToolResult, SessionContext } from "./context";
+import type {
+  CommandContext,
+  DispatchToolResult,
+  DryRunContext,
+  DryRunVerdict,
+  SessionContext,
+} from "./context";
 import {
   commentCommand,
   messageCommand,
@@ -16,6 +22,7 @@ import {
 } from "./conversation";
 import {
   artifactCommand,
+  artifactDryRun,
   docEditCommand,
   docReadCommand,
   planApproveCommand,
@@ -43,11 +50,20 @@ import { answersCommand, inboxCommand, limitsCommand, whoamiCommand } from "./se
 export type DispatchToolName = (typeof dispatchToolSpecs)[number]["name"];
 
 /**
+ * What a command's `--dry-run` asks Dispatch after the call's own argument check passed: the
+ * question the call asks before it writes, whose answer can refuse the call. The dry run prints
+ * the refusal the step returns, and otherwise the arguments; it stores nothing. A command with no
+ * step asks Dispatch nothing in its dry run.
+ */
+export type DispatchDryRunStep = (context: DryRunContext) => Promise<DryRunVerdict>;
+
+/**
  * One command, and whether running it resolves this call's origin. `origin: "none"` is a command
  * that answers on the session's context alone, so no subprocess runs for it; every other command
- * is handed the context `commandContext` builds.
+ * is handed the context `commandContext` builds. `dryRun` is the command's dry-run step, when it
+ * has one.
  */
-export type DispatchCommand =
+export type DispatchCommand = (
   | {
       readonly origin: "resolved";
       readonly run: (context: CommandContext) => Promise<DispatchToolResult>;
@@ -55,11 +71,15 @@ export type DispatchCommand =
   | {
       readonly origin: "none";
       readonly run: (context: SessionContext) => Promise<DispatchToolResult>;
-    };
+    }
+) & { readonly dryRun?: DispatchDryRunStep };
 
 /** A command that acts for the session: it is handed the context whose origin was resolved. */
-function acting(run: (context: CommandContext) => Promise<DispatchToolResult>): DispatchCommand {
-  return { origin: "resolved", run };
+function acting(
+  run: (context: CommandContext) => Promise<DispatchToolResult>,
+  dryRun?: DispatchDryRunStep
+): DispatchCommand {
+  return { origin: "resolved", run, ...(dryRun === undefined ? {} : { dryRun }) };
 }
 
 /** A command that answers from the session alone, resolving no origin. */
@@ -96,7 +116,7 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_review: acting(reviewCommand),
   dispatch_result: acting(resultCommand),
   dispatch_results: acting(resultsCommand),
-  dispatch_artifact: acting(artifactCommand),
+  dispatch_artifact: acting(artifactCommand, artifactDryRun),
   dispatch_handoff_write: acting(handoffWriteCommand),
   dispatch_handoff_read: acting(handoffReadCommand),
   dispatch_read: acting(readCommand),
