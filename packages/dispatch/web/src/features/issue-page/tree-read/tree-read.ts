@@ -5,6 +5,7 @@ import {
   type QueryClient,
   type QueryFilters,
   queryOptions,
+  replaceEqualDeep,
   useQuery,
 } from "@tanstack/react-query";
 import { useMemo } from "react";
@@ -82,12 +83,21 @@ export function dropViews(queryClient: QueryClient, key: string): void {
  * names a place in the walk as it stood when the page that gave it was answered. A read TanStack
  * gives up (`signal`: a reset, the last observer gone) ends its page in flight and asks for no
  * next one.
+ *
+ * The first page waits until no write is out on `client` (`writesSettle`), since a tree read
+ * made while a write is out reads a tree Dispatch may not have changed yet. A write the client
+ * holds names no issue, so any write out holds the read of every issue's tree and views, with the
+ * live feed up or down: a read begun meanwhile - the whole-cache refresh the write store makes for
+ * a write that lands with no answer, a filter pressed - is one request, sent as the last write out
+ * settles, and one given up while it waits sends nothing.
  */
 async function readTree(
+  client: QueryClient,
   key: string,
   view: TreeFilter | undefined,
   signal: AbortSignal
 ): Promise<TreeAnswer> {
+  if (client.isMutating() > 0) await writesSettle(client, signal);
   const first = await api.getIssueTree(key, { view }, { signal });
   const pages: [TreeAnswer, ...TreeAnswer[]] = [first];
   const asked = new Set<string>();
@@ -100,6 +110,30 @@ async function readTree(
     cursor = page.cursor;
   }
   return mergeTreePages(pages);
+}
+
+/** Resolves once the last write out on `client` settles (`isMutating`), as the client's mutation
+ *  cache tells it; rejects with the read's abort reason where TanStack gives the read up first
+ *  (`signal`). A read with no write out does not wait for it, so it sends its first page in the
+ *  same turn it begins in. */
+function writesSettle(client: QueryClient, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted();
+  const settled = Promise.withResolvers<void>();
+  const stop = (): void => {
+    unsubscribe();
+    signal.removeEventListener("abort", abort);
+  };
+  const abort = (): void => {
+    stop();
+    settled.reject(signal.reason);
+  };
+  const unsubscribe = client.getMutationCache().subscribe(() => {
+    if (client.isMutating() > 0) return;
+    stop();
+    settled.resolve();
+  });
+  signal.addEventListener("abort", abort);
+  return settled.promise;
 }
 
 /**
@@ -138,12 +172,15 @@ function mayReadOnMount(query: Pick<Query, "state">): boolean {
  *  coming back, or a window focus while the feed is down: the page's one subscription asks for it
  *  again on each of those but the Retry (`subscribeTreeFreshness`). So no window focus reads one
  *  of TanStack's own accord, nor does the browser saying the network is back, which it may say
- *  while the feed never went; and a new observer - a slot drawn, a surface opened, the reader
- *  coming back, a filter pressed - reads a refused one only where the subscription asked for it
- *  again since its last read began (`mayReadOnMount`, as both `retryOnMount`, for a read that
- *  holds no answer, and `refetchOnMount`, for one that holds an answer). A read that holds an
- *  answer which a write or an event marked stale while nothing observed it is read when
- *  something next observes it, and a read never made is made. */
+ *  while the feed never went; and a new observer - a slot drawn, a surface opened, a filter
+ *  pressed, the reader coming back to the issue - reads a refused one only where the
+ *  subscription asked for it again since its last read began (`mayReadOnMount`, as both
+ *  `retryOnMount`, for a read that holds no answer, and `refetchOnMount`, for one that holds an
+ *  answer), so the reader coming back reads a refused tree only where it was asked for again.
+ *  The views are owed besides at each load of the issue, answered or refused: a load drops them
+ *  (`dropViews`), so each is read once, the open one at the load and another when its filter is
+ *  next on. A read that holds an answer which a write or an event marked stale while nothing
+ *  observed it is read when something next observes it, and a read never made is made. */
 const TREE_FRESH = {
   ...REFRESHED_BY_EVENTS,
   refetchOnMount: mayReadOnMount,
@@ -157,7 +194,7 @@ export const issueTreeQuery = (key: string) =>
   queryOptions({
     ...TREE_FRESH,
     queryKey: issueTreeKey(key),
-    queryFn: ({ signal }) => readTree(key, undefined, signal),
+    queryFn: ({ client, signal }) => readTree(client, key, undefined, signal),
   });
 
 /** One view of the issue's tree, one query over every page (`readTree`). A plain query rather
@@ -171,7 +208,7 @@ export const viewQuery = (key: string, filter: TreeFilter) =>
   queryOptions({
     ...TREE_FRESH,
     queryKey: viewKey(key, filter),
-    queryFn: ({ signal }) => readTree(key, filter, signal),
+    queryFn: ({ client, signal }) => readTree(client, key, filter, signal),
   });
 
 /** One role's blocks from the tree read, answered as the blocks read of that role's document
@@ -282,23 +319,14 @@ function byRole<Value>(make: (role: TreeFilter) => Value): (role: TreeFilter) =>
  * `["issue-messages", key, …]` and the decisions read's key) has changed when it is:
  *
  * - invalidated: a page write's `invalidateQueries`, and an event's own refresh
- *   (`api/query-refresh.ts`' `owe`);
+ *   (`api/query-refresh.ts`' `owe`), but while a write is out only where nothing observes the
+ *   query (below);
  * - written by `setQueryData` while the live feed is down: a Keep and a status change write that
  *   way (TanStack's `success` action with `manual`), so such a write refreshes the tree with no
  *   event to do it. While the feed is up the write's event refreshes the tree, so a write that
  *   puts its answer in the cache before Dispatch holds it - the margin's resolve does as it is
  *   pressed, and invalidates the comments once Dispatch answers - reads the tree for that answer
- *   and for its event, twice at most, and never before Dispatch holds it. While the feed is down
- *   no refresh begins while a write is out (`isMutating`), nor does a focus's read of a refused
- *   tree or view (below), since a tree read made then reads a tree Dispatch has not changed yet:
- *   both wait until the last write out settles, the focus's read first, and every change heard
- *   meanwhile is the one refresh, which reads again nothing the focus's read began, so that
- *   resolve reads the tree once, after Dispatch answered. Nor does that refresh read again a
- *   tree or view whose last read began in the turn of the last change it holds or after, which
- *   answers every change it holds already: a write that lands with no answer refreshes every
- *   query while it is still out (`write-store.ts`), which reads the tree and the open view
- *   itself, so it reads them once. A write the client holds names no issue, so any write out
- *   holds back the refresh and the focus's read of every issue;
+ *   and for its event, twice at most, and never before Dispatch holds it;
  * - answered by a read that began in a turn after the tree's last read began (`answeredNewer`),
  *   where the query was marked invalid as that read began, or the answer is other than the data
  *   it held when that tree read began - the issue read's other in a field someone's act moves
@@ -318,6 +346,23 @@ function byRole<Value>(make: (role: TreeFilter) => Value): (role: TreeFilter) =>
  * the decisions again where something observes them. Every change of one turn is one refresh,
  * made in the microtask after it.
  *
+ * No refresh begins while a write is out (`isMutating`), with the live feed up or down, nor does
+ * a tree or view read send (`readTree`): no event says when a write has reached Dispatch, and a
+ * tree read made then reads a tree Dispatch may not have changed yet. A write the client holds
+ * names no issue, so any write out holds the refresh of every issue. While the writes are out an
+ * invalidation is no change by itself: a query's next answer is the change, where it differs from
+ * the data the query held when the first of the writes went out - an invalidation of a query
+ * nothing observes, which is not read again, is one, since no answer can say. So a write Dispatch
+ * refuses, whose rollback puts the comments back and reads them again, reads no tree, while an
+ * event of the issue landing meanwhile, whose refresh answers a new comment, reads it once. Every
+ * change heard while the writes are out is the one refresh, run once the last of them settles,
+ * answered or refused (`unmutate`), after a focus's read of a refused tree or view (below) the
+ * writes held; it reads again no tree or view read the writes held, which sends as they settle
+ * and so answers every change they held, nor one the focus's read began. So the margin's resolve
+ * with the feed down reads the tree once, after Dispatch answered, and a write that lands with
+ * no answer, whose write store refreshes every query while it is still out (`write-store.ts`),
+ * reads the tree and the open view once, as the last write out settles.
+ *
  * A window focus reads the tree and its views only while the live feed is down (`liveFeedUp`):
  * a refused one is read again then, or, where a write is out, once the last write out settles
  * while the feed is still down, and a read of the issue the focus sends may change it as above.
@@ -325,8 +370,11 @@ function byRole<Value>(make: (role: TreeFilter) => Value): (role: TreeFilter) =>
  * of the issue a focus sends answer is no change. The feed coming back after a gap
  * (`onLiveFeedBack`) with the gap replayed whole reads a refused tree or view again at once,
  * since no replayed event need name the issue; after an incomplete replay the event feed's
- * refresh of every query reads it, and the subscription asks for nothing, which would read it
- * twice.
+ * refresh of every query reads each one something observes, and the subscription asks for none
+ * of those, which would read it twice, but only for a refused one nothing observes, which that
+ * refresh marks stale and no more. A tree or view read out as a focus or a whole replay asks for
+ * every refused one is owed: where it then ends refused it is asked for once more, where it
+ * answers nothing more is, and either way it is owed no more.
  *
  * A refused tree or view read, its retries spent, with or without an answer held, so stays
  * refused until the reader's Retry, an event of the issue, the feed coming back or a focus while
@@ -452,10 +500,22 @@ function watchTree(
     exact: true,
     queryKey: viewKey(key, filter),
   }));
+  // What each query of the issue holds now, by its hash.
+  const issueData = (): Map<string, unknown> => {
+    const data = new Map<string, unknown>();
+    for (const filters of issueQueries) {
+      for (const one of cache.findAll(filters)) {
+        if (one.state.data !== undefined) data.set(one.queryHash, one.state.data);
+      }
+    }
+    return data;
+  };
   let calling = false;
   let queued = false;
   let stopped = false;
-  // Whether the decisions read's own invalidation is one of this turn's changes.
+  // Whether the decisions read's own invalidation is one of this turn's changes, or came while a
+  // write was out, for the refresh held back for the writes; forgotten as they settle where no
+  // refresh was held.
   let decisionsInvalidated = false;
   // When the tree read and each read of the issue last began, as this subscription records it:
   // once the cache has told every listener that the read began, the scheduler among them, so
@@ -477,21 +537,32 @@ function watchTree(
   // TanStack begins them a few microtasks after it tells its listeners (`QueryClient.mount`), so
   // a read begun before the next task is the focus's.
   let focusing = false;
-  // Whether a refresh was held back for a write out while the live feed was down (`refresh`):
-  // it runs once the last write out settles (`unmutate`).
+  // Whether a write is out on the client, as its mutation cache last told this subscription
+  // (`unmutate`): the hold, from the first write going out to the last settling. A write the
+  // client holds names no issue, so any write out holds the subscription of every issue.
+  let writing = queryClient.isMutating() > 0;
+  // Whether a refresh was held back for a write out (`refresh`): it runs once the last write out
+  // settles (`unmutate`).
   let heldBack = false;
-  // The turn of the last change the refresh held back holds (`changedIn` as each held refresh
-  // saw it), or 0 where none is held: a read begun in that turn or after answers every change
-  // held. And whether the refresh queued is the held one, which the last write out settling
-  // queued (`unmutate`), and which so asks for no such read (`refresh`).
-  let heldTurn = 0;
-  let resumed = false;
+  // The data each query of the issue held when the first write of the hold went out, and the
+  // queries whose next answer is judged against it (`answeredNewer`): each one read or
+  // invalidated while a write was out, until that answer lands, which may be after the writes
+  // settle.
+  let heldData = writing ? issueData() : new Map<string, unknown>();
+  const judged = new Set<string>();
+  // The tree and view reads begun while a write was out: each sends its first page only once the
+  // last write out settles (`readTree`).
+  const waiting = new Set<string>();
+  // The tree and view reads out when a window focus while the live feed was down, or the feed back
+  // with its gap replayed whole, asked for every refused one (`askRefused`): each is asked for
+  // once more where it ends refused.
+  const owedOnRefusal = new Set<string>();
   // Whether a window focus while the live feed was down came while a write was out: its ask for
   // a refused tree or view runs once the last write out settles (`unmutate`).
   let refusedHeld = false;
   // The turn of the event loop each read last began in, numbered as this subscription sees
   // turns, and the turn the refresh was queued in: its first change's, or, for a refresh held
-  // back, the one the last write out settled in.
+  // back, the one the last write out settled in, where every read the writes held sends.
   let turn = 0;
   let turnOpen = false;
   let changedIn = 0;
@@ -517,15 +588,25 @@ function watchTree(
   // one TanStack reports as nothing - a write's that lands while the query is invalid already,
   // after a failed read or an owed refresh (`owe`) - which that read may be the only sign of.
   const readWhileInvalid = new Set<string>();
+  // A read or an invalidation while a write was out is judged against the data the query held
+  // when the first write of the hold went out, as deep as the answer goes: a rollback that puts
+  // the data back by `setQueryData` keeps no object of what it puts back, and a read answering
+  // the same is then no change.
   const answeredNewer = (query: Query): boolean => {
     const hash = query.queryHash;
     if ((began.get(hash) ?? 0) <= treeBegan) return false;
-    if (readWhileInvalid.has(hash)) return true;
-    if (!seen.has(hash)) return false;
-    const held = seen.get(hash);
-    return matchQuery(issueRead, query)
-      ? !sameActs(held, query.state.data)
-      : held !== query.state.data;
+    let held: unknown;
+    let now: unknown = query.state.data;
+    if (judged.has(hash)) {
+      if (!heldData.has(hash)) return readWhileInvalid.has(hash);
+      held = heldData.get(hash);
+      now = replaceEqualDeep(held, now);
+    } else {
+      if (readWhileInvalid.has(hash)) return true;
+      if (!seen.has(hash)) return false;
+      held = seen.get(hash);
+    }
+    return matchQuery(issueRead, query) ? !sameActs(held, now) : held !== now;
   };
   // Asks the scheduler for `targets`, each tree and view query among them first recorded as asked
   // for again (`askedAgain`), so a new observer may read it though its last read was refused. The
@@ -616,37 +697,26 @@ function watchTree(
   const refresh = (): void => {
     queued = false;
     if (stopped) return;
-    // While the live feed is down no event says when a write has reached Dispatch, and a tree
-    // read made while one is out reads a tree Dispatch has not changed yet, so no refresh begins
-    // until the last write out settles. A write the client holds names no issue, so any write out
-    // holds the refresh back. It is held before it takes the decisions read's own invalidation,
-    // which so still counts, and every change heard meanwhile is the one refresh it runs. Each
-    // held refresh records the turn of the change that queued it, so the record is the last
-    // change's: a change heard after a read began is one that read may not answer. The held
-    // refresh the last write settling queued holds no change of its own, and a write out again
-    // holds it with the record as it stands.
-    if (!liveFeedUp(queryClient) && queryClient.isMutating() > 0) {
-      if (!resumed) heldTurn = changedIn;
-      resumed = false;
+    // No event says when a write has reached Dispatch, and a tree read made while one is out
+    // reads a tree Dispatch may not have changed yet, so no refresh begins until the last write
+    // out settles, with the live feed up or down. A write the client holds names no issue, so
+    // any write out holds the refresh back. It is held before it takes the decisions read's own
+    // invalidation, which so still counts, and every change heard meanwhile is the one refresh
+    // it runs.
+    if (writing) {
       heldBack = true;
       return;
     }
-    heldBack = false;
-    const heldSince = resumed ? heldTurn : 0;
-    heldTurn = 0;
-    resumed = false;
     const decisionsOwed = decisionsInvalidated;
     decisionsInvalidated = false;
     // A read begun in the turn the change was seen in answers it already, since what a turn
     // hears of changed before the turn began and the read reaches the server after it: a
     // whole-cache refresh reads the tree and the open view itself, and they are not asked again.
-    // So, for the held refresh, does a read begun in the turn of the last change it holds or
-    // after: a write that lands with no answer refreshes every query while it is still out.
+    // A tree or view read the writes held counts as begun in the turn they settled in, which is
+    // the held refresh's (`unmutate`).
     const targets = [tree, ...(decisionsOwed ? [] : [decisions]), ...views].filter((target) => {
       const query = cache.find(target);
-      if (query === undefined) return true;
-      const began = beganIn.get(query.queryHash) ?? 0;
-      return began !== changedIn && (heldSince === 0 || began < heldSince);
+      return query === undefined || beganIn.get(query.queryHash) !== changedIn;
     });
     // The tree read and the decisions read the scheduler would hold back - the last read began
     // under a second ago, or one is out - are held here instead: marked stale now, as the
@@ -688,6 +758,10 @@ function watchTree(
       beganIn.delete(hash);
       readWhileInvalid.delete(hash);
       startedAt.delete(hash);
+      judged.delete(hash);
+      heldData.delete(hash);
+      waiting.delete(hash);
+      owedOnRefusal.delete(hash);
       if (matchQuery(tree, query)) watcher.release();
       return;
     }
@@ -695,25 +769,35 @@ function watchTree(
     const { action } = event;
     if (matchQuery({ queryKey: issueTreeKey(key) }, query)) {
       if (action.type !== "fetch") {
+        // A read a focus or the feed's return found out has ended: where it ended refused it is
+        // asked for once more, outside this notification, since the cache is still dispatching
+        // the action that ended it.
+        if (owedOnRefusal.has(hash) && query.state.fetchStatus === "idle") {
+          owedOnRefusal.delete(hash);
+          const target = [tree, ...views].find((one) => matchQuery(one, query));
+          if (action.type === "error" && target !== undefined) {
+            queueMicrotask(() => {
+              if (!stopped) ask([target]);
+            });
+          }
+        }
         // The held tree read is asked for once no read of it is out.
         if (heldAsks.has(tree) && matchQuery(tree, query)) arm(tree);
         return;
       }
-      // A read begins, which answers whatever asked for the tree or the view again.
+      // A read begins, which answers whatever asked for the tree or the view again. One begun
+      // while a write is out, as `readTree` finds the writes, sends once the last of them settles.
       askedAgain.delete(query);
       const now = turnNow();
       beganIn.set(hash, now);
+      if (queryClient.isMutating() > 0) waiting.add(hash);
+      else waiting.delete(hash);
       if (!matchQuery(tree, query)) return;
       recordStart(hash);
       // A read of the tree begun since a refresh held its ask answers that ask, whoever began it.
       if (!calling) drop(tree, false);
       treeBegan = now;
-      seen = new Map();
-      for (const filters of issueQueries) {
-        for (const one of cache.findAll(filters)) {
-          if (one.state.data !== undefined) seen.set(one.queryHash, one.state.data);
-        }
-      }
+      seen = issueData();
       return;
     }
     if (!issueQueries.some((filters) => matchQuery(filters, query))) return;
@@ -730,32 +814,42 @@ function watchTree(
       // The fetch has not cleared the mark: only the answer's success does.
       if (!own && query.state.isInvalidated) readWhileInvalid.add(hash);
       else readWhileInvalid.delete(hash);
+      if (writing) judged.add(hash);
       return;
     }
     // The held decisions read is asked for once no read of it is out.
     if (isDecisions) arm(decisions);
-    // A write the page put in the cache reads the tree only while the live feed is down: while it
-    // is up, the write's event does.
-    const changed =
-      !calling &&
-      (action.type === "invalidate" ||
-        (action.type === "success" &&
-          (action.manual === true ? !liveFeedUp(queryClient) : answeredNewer(query))));
-    if (!changed) return;
-    if (action.type === "invalidate" && matchQuery(decisions, query)) decisionsInvalidated = true;
-    queue();
+    if (calling || (action.type !== "invalidate" && action.type !== "success")) return;
+    let changed: boolean;
+    if (action.type === "invalidate") {
+      // While a write is out an invalidation is no change by itself: the query's next answer
+      // says (`answeredNewer`), but for a query nothing observes, which is not read again. The
+      // decisions read's own invalidation leaves its read out or owed either way.
+      if (isDecisions) decisionsInvalidated = true;
+      if (writing) judged.add(hash);
+      changed = !writing || !query.isActive();
+    } else {
+      // A write the page put in the cache reads the tree only while the live feed is down: while
+      // it is up, the write's event does.
+      changed = action.manual === true ? !liveFeedUp(queryClient) : answeredNewer(query);
+      if (action.manual !== true) judged.delete(hash);
+    }
+    if (changed) queue();
   });
   // Asks again for the tree and each view whose read was refused and is not out: a window focus
   // while the live feed is down does, once no write is out, and the feed coming back with its gap
   // replayed whole. A refused view whose filter is off then is read when its filter is next on,
-  // since the ask records it as asked for again (`ask`).
+  // since the ask records it as asked for again (`ask`). A read out then is owed
+  // (`owedOnRefusal`), and asked for once more where it ends refused.
   const askRefused = (): void => {
-    const refused = [tree, ...views].filter((target) => {
+    const refused: RefreshTarget[] = [];
+    for (const target of [tree, ...views]) {
       const query = cache.find(target);
-      return query?.state.status === "error" && query.state.fetchStatus === "idle";
-    });
-    if (refused.length === 0) return;
-    ask(refused);
+      if (query === undefined) continue;
+      if (query.state.fetchStatus !== "idle") owedOnRefusal.add(query.queryHash);
+      else if (query.state.status === "error") refused.push(target);
+    }
+    if (refused.length > 0) ask(refused);
   };
   // A window focus while the live feed is down reads a refused tree or view again, or, while a
   // write is out, once the last write out settles (`refusedHeld`), since a read made before then
@@ -770,34 +864,69 @@ function watchTree(
       }, 0);
       return;
     }
-    if (queryClient.isMutating() > 0) refusedHeld = true;
+    if (writing) refusedHeld = true;
     else askRefused();
   });
   // The live feed coming back after a gap with the gap replayed whole reads a refused tree or
-  // view again: no replayed event need name the issue. After an incomplete replay it asks for
-  // nothing, since the event feed's refresh of every query reads them, and an ask here as well
-  // would read them twice.
+  // view again: no replayed event need name the issue. After an incomplete replay the event feed's
+  // refresh of every query reads each refused one something observes, and an ask here as well
+  // would read it twice; one nothing observes that refresh only marks stale, so the subscription
+  // asks for it, which reads nothing and records it as asked for again (`ask`) for its next
+  // observer, as no change of the issue does while a write is out.
   const unfeed = onLiveFeedBack(queryClient, (replayComplete) => {
-    if (replayComplete) askRefused();
+    if (replayComplete) {
+      askRefused();
+      return;
+    }
+    const unobserved = [tree, ...views].filter((target) => {
+      const query = cache.find(target);
+      return query?.state.status === "error" && !query.isActive();
+    });
+    if (unobserved.length > 0) ask(unobserved);
   });
-  // What was held back for the writes out runs once the last of them settles, answered or
-  // refused: a focus's ask first, then the refresh, which asks for no read the ask began in that
-  // same turn (`changedIn`), so no read is asked twice, nor any read begun in the turn of the
-  // last change it holds or after (`heldTurn`), which answers what it holds already. What was
-  // heard while the writes were out is still to be read. The focus's ask runs only where the
-  // live feed is still down: where it came back meanwhile, its return read a refused tree or view
-  // already - at once after a whole replay, through the event feed's refresh of every query after
-  // an incomplete one - and a focus while the feed is up reads none.
+  // The hold: the first write going out while none was begins it, with the data each query of
+  // the issue then holds (`heldData`); the last write out settling, answered or refused, ends it.
+  // Each tree and view read the writes held sends its first page then (`readTree`), so it counts
+  // as begun in this turn: the held refresh asks for none of them again, and a read of the issue
+  // begun while the writes were out counts as older than the tree's. What was held back runs
+  // then: a focus's ask first, then the refresh, which asks for no read the ask began in this
+  // same turn (`changedIn`), so no read is asked twice. What was heard while the writes were out
+  // is still to be read. A refresh a change queued that has not run yet runs as the held one, in
+  // this turn, and so reads again none of the reads the writes held. The focus's ask runs only
+  // where the live feed is still down: where it came back meanwhile, its return read a refused
+  // tree or view already - at once after a whole replay, through the event feed's refresh of
+  // every query after an incomplete one - and a focus while the feed is up reads none.
   const unmutate = queryClient.getMutationCache().subscribe(() => {
-    if ((!heldBack && !refusedHeld) || queryClient.isMutating() > 0) return;
+    const out = queryClient.isMutating() > 0;
+    if (out === writing) return;
+    writing = out;
+    if (writing) {
+      heldData = issueData();
+      return;
+    }
+    const settled = turnNow();
+    for (const hash of waiting) {
+      const query = cache.get(hash);
+      if (query === undefined || query.state.fetchStatus === "idle") continue;
+      beganIn.set(hash, settled);
+      if (!matchQuery(tree, query)) continue;
+      treeBegan = settled;
+      seen = issueData();
+    }
+    waiting.clear();
+    for (const hash of heldData.keys()) {
+      if (!judged.has(hash)) heldData.delete(hash);
+    }
     if (refusedHeld) {
       refusedHeld = false;
       if (!liveFeedUp(queryClient)) askRefused();
     }
-    if (heldBack) {
+    if (heldBack || queued) {
       heldBack = false;
-      resumed = true;
       queue();
+      changedIn = settled;
+    } else {
+      decisionsInvalidated = false;
     }
   });
   const watcher: TreeFreshness = {
