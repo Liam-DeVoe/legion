@@ -793,8 +793,9 @@ notice again. When the answer names `kept_until`, that publish uses the same key
 answers it with the copy it still holds, or keeps a new copy once that copy has been forwarded or
 its hour has ended. A listener of an earlier release names no `kept_until` and answers a repeated
 key as the first copy for 72 hours, so such an answer clears the key, and the next attempt mints
-a new one. The stall watch's notice of a stuck tool call (`src/stall-evidence.ts`), to the
-architect or, for a root architect's own call, to the controller, also sends no `keep` field, and
+a new one. The stall watch's notice of a stuck tool call (`src/stall-evidence.ts`) goes to the
+architect; a root architect's own call reaches the controller only by the notice that its ladder
+stopped short of a step it would otherwise have run. Those notices also send no `keep` field, and
 a kept answer reports that no owner was told. The listener answers a session past its send
 limit with 429 `sender_rate_limited` and the whole seconds until it takes the next message: the
 stall watch waits that long and sends its notice again under the same key, at most 3 times, so
