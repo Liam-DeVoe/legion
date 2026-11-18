@@ -617,6 +617,10 @@ beforeAll(() => setNatsConnectForTests(natsStandInConnect));
 afterAll(() => resetNatsConnectForTests());
 
 beforeEach(() => {
+  rowGeneration += 1;
+  jest.useRealTimers();
+  contextTimers.length = 0;
+  resetFileState();
   // `bun test` runs every file in one process: a Legion suite's bootstrapped-session record on
   // the process-wide interface would otherwise make every transcript here look like a
   // subagent's, the top-level session one test publishes would be the reply address the next
@@ -658,30 +662,18 @@ beforeEach(() => {
 });
 
 /**
- * Advanced by the file's `afterEach`, so a poll a row started sees that its row has ended — at its
- * limit included — and stops, rather than running on into the rows after it, whose stubs of
- * `globalThis.fetch` it would then post through.
+ * Advanced by the file's `afterEach` and `beforeEach`, so a poll a row started sees that its row
+ * has ended — at its limit included — and stops, rather than running on into the rows after it,
+ * whose stubs of `globalThis.fetch` it would then post through.
  */
 let rowGeneration = 0;
 
-// A hang guard, not a bound on the work: what can hang here is a managed-timer callback a row
-// scheduled that never settles, which the `await` below waits for; the rest of the body is
-// resets. Timed round the body on this two-CPU pod: 0.47 / 0.79 / 39.22 ms (min / median / max)
-// over the 3 087 invocations of 3 idle runs of this file, and under 96 busy loops (48 per CPU)
-// 2.92 / 1 207.24 / 5 393.72 ms over 10 runs of the `session_shutdown resolves within its budget`
-// row alone and up to 7 275.17 ms over the 359 invocations of a whole-file run. Bun's unwritten
-// 5 s default, which the hook carried at the base, is what failed that row's correct runs there:
-// 1 in 10 here, and one that testing charged 18 876.76 ms, each `a beforeEach/afterEach hook
-// timed out for this test`. 60_000 is 8.2 times the worst body measured and sits well inside the
-// pi-envoy job's `timeout-minutes: 10` (.github/workflows/ci.yaml), so a callback that never
-// settles fails the row it follows, named, instead of cancelling the job, which names nothing.
-afterEach(async () => {
-  rowGeneration += 1;
-  // A row abandoned at its limit while it held the test's clock would otherwise leave fake timers
-  // on for every row after it (`onTestClock` says what that costs), so the clock is put back first.
-  jest.useRealTimers();
-  // A managed-timer callback that rejects fails the test that scheduled it.
-  await Promise.all(contextTimers.splice(0));
+/**
+ * Puts back the file-level state a row may have changed. The file's `afterEach` runs it, and so
+ * does its `beforeEach`, because bun skips the hooks after one that fails, this file's `afterEach`
+ * among them, and the next row must not start from the failed row's state.
+ */
+function resetFileState(): void {
   process.chdir(originalStartCwd);
   if (originalNatsUrl === undefined) delete process.env.ENVOY_NATS_URL;
   else process.env.ENVOY_NATS_URL = originalNatsUrl;
@@ -707,7 +699,11 @@ afterEach(async () => {
   else process.env.TMUX = originalTmux;
   if (originalTmuxPane === undefined) delete process.env.TMUX_PANE;
   else process.env.TMUX_PANE = originalTmuxPane;
-  if (process.env.DISPATCH_STATE_DIR !== undefined) {
+  // Only a row's own scratch directory: once put back, the name holds the caller's own.
+  if (
+    process.env.DISPATCH_STATE_DIR !== undefined &&
+    process.env.DISPATCH_STATE_DIR !== originalDispatchStateDir
+  ) {
     rmSync(process.env.DISPATCH_STATE_DIR, { recursive: true, force: true });
   }
   for (const [name, value] of [
@@ -722,7 +718,7 @@ afterEach(async () => {
     if (value === undefined) delete process.env[name];
     else process.env[name] = value;
   }
-  rmSync(configDirectory, { recursive: true, force: true });
+  if (configDirectory !== "") rmSync(configDirectory, { recursive: true, force: true });
   procmgr.__resetShellConfigCacheForTests();
   clipboardState.copiedSessionIDs.length = 0;
   clipboardState.error = undefined;
@@ -764,6 +760,20 @@ afterEach(async () => {
   natsState.failFlushClosesConnection = false;
   hostBuiltins.length = 0;
   ledgerSeam.beforeFailureNotice = undefined;
+}
+
+// A hang guard: what can hang is a managed-timer callback a row scheduled that never settles,
+// which the `await` below waits for. 60_000. Worst measured cost: 7 275.17 ms, in a whole-file run
+// at 96 busy loops (48 per CPU) on a two-CPU, 8 GiB pod, stopped by its 3 000 s timeout after 359
+// rows.
+afterEach(async () => {
+  rowGeneration += 1;
+  // A row abandoned at its limit while it held the test's clock would otherwise leave fake timers
+  // on for every row after it (`onTestClock` says what that costs), so the clock is put back first.
+  jest.useRealTimers();
+  // A managed-timer callback that rejects fails the test that scheduled it.
+  await Promise.all(contextTimers.splice(0));
+  resetFileState();
 }, 60_000);
 
 function createPi(options: { readonly clipboardError?: Error; readonly zod?: typeof z } = {}) {
@@ -13917,20 +13927,9 @@ console.log(JSON.stringify(args));
        *  before it removes the directory: a command the code under test failed to stop ends with
        *  its row, whether the row returned or the runner abandoned it at its limit. */
       const workDirectories: string[] = [];
-      /** Each booted row's replies, by its working directory. A command the afterEach kills still
-       *  answers the person once its own promise settles (`runShellCommandTurn` posts `The command
-       *  was killed by SIGKILL.`), and posted after its row ended, that reply would land in the
-       *  next row's replies and fail a correct row. So the afterEach waits for it here. */
-      const shellReplies = new Map<string, readonly unknown[]>();
-      // A hang guard, not a bound on the work: on a green run the body is a read, a signal that
-      // finds the group gone and a removal per directory. Timed round it on this two-CPU pod:
-      // 0.34 / 0.64 / 2.47 ms (min / median / max) over the 81 invocations of 3 idle runs of this
-      // describe, and 0.48 / 1.01 / 563.68 ms over the 81 of 3 runs at 96 busy loops (48 per
-      // CPU). After a row that failed while its command ran, it also waits for that command's
-      // reply, and what can hang then is a reply that never comes. Bun's 5 s default is what a
-      // starved host passes on charges alone (hooks of this package were charged 11035.86 ms and
-      // 15887.94 ms at 240 busy loops for work of this size). 60_000 is 3.8 times the worst of
-      // those charges and sits well inside the pi-envoy job's `timeout-minutes: 10`.
+      // A hang guard: what can hang is a killed command's group that does not end, which the poll
+      // below waits up to 1_000 turns for. 60_000. Worst measured cost: 563.68 ms at 96 busy loops
+      // (48 per CPU) on a two-CPU pod.
       afterEach(async () => {
         for (const directory of workDirectories.splice(0)) {
           let pid = 0;
@@ -13939,10 +13938,7 @@ console.log(JSON.stringify(args));
           } catch {
             // This row's command wrote no pid, or never ran.
           }
-          const replies = shellReplies.get(directory);
-          shellReplies.delete(directory);
           if (Number.isInteger(pid) && pid > 0) {
-            const answered = replies?.length ?? 0;
             let killed = false;
             try {
               process.kill(-pid, "SIGKILL");
@@ -13950,8 +13946,20 @@ console.log(JSON.stringify(args));
             } catch {
               // The expected path: the command's group has already ended.
             }
-            if (killed && replies !== undefined) {
-              while (replies.length <= answered) await Bun.sleep(10);
+            // A killed command still answers the person once its group has ended
+            // (`runShellCommandTurn` posts `The command was killed by SIGKILL.`), and that reply
+            // must land before the next row stubs `globalThis.fetch`. So this waits for the group
+            // to end, which the kill makes quick, then lets the reply's continuations run.
+            if (killed) {
+              for (let turn = 0; turn < 1_000; turn += 1) {
+                try {
+                  process.kill(-pid, 0);
+                } catch {
+                  break;
+                }
+                await Bun.sleep(1);
+              }
+              await settle();
             }
           }
           rmSync(directory, { recursive: true, force: true });
@@ -14032,7 +14040,6 @@ console.log(JSON.stringify(args));
         natsState.controls
           .get("agentstream.ses_delivery.control")
           ?.push(JSON.stringify({ type: "watch", v: 1 }));
-        shellReplies.set(work, session.replies);
         return { ...session, work };
       };
 
@@ -14139,7 +14146,10 @@ console.log(JSON.stringify(args));
       test("stops a command past its limit and says when, keeping what it printed", async () => {
         const { agent, delivered, replied, replies } = await bootShellSession(
           "shell-command-stopped",
-          { accept: () => ({ accepted: true, body: "!printf early; sleep 600" }), limitMs: 1_000 }
+          {
+            accept: () => ({ accepted: true, body: "!echo $$ > pid && printf early && sleep 600" }),
+            limitMs: 1_000,
+          }
         );
 
         agent.push(directDispatchEnvelope("steer", "shell-command-stopped"));
@@ -14147,7 +14157,7 @@ console.log(JSON.stringify(args));
         await replied(1);
 
         expect(replies[0]?.body).toMatchObject({
-          body: "!printf early; sleep 600\n\n```\nearly\n```\n\nThe command was stopped after 1000 ms.",
+          body: "!echo $$ > pid && printf early && sleep 600\n\n```\nearly\n```\n\nThe command was stopped after 1000 ms.",
         });
       }, 20_000);
 
@@ -14155,7 +14165,10 @@ console.log(JSON.stringify(args));
       // second message is taken while the first command still runs.
       test("answers a second command naming the one still running", async () => {
         const { agent, replied, replies } = await bootShellSession("shell-command-busy", {
-          accept: (count) => ({ accepted: true, body: count === 1 ? "!sleep 600" : "!printf hi" }),
+          accept: (count) => ({
+            accepted: true,
+            body: count === 1 ? "!echo $$ > pid && sleep 600" : "!printf hi",
+          }),
           limitMs: 1_000,
         });
 
@@ -14166,11 +14179,11 @@ console.log(JSON.stringify(args));
         await replied(2);
 
         expect(replies.find((reply) => reply.path.includes(NEXT_MESSAGE_ID))?.body).toMatchObject({
-          body: "!printf hi\n\nThe command was not run: this session is still running !sleep 600.",
+          body: "!printf hi\n\nThe command was not run: this session is still running !echo $$ > pid && sleep 600.",
         });
         expect(replies.find((reply) => reply.path.includes(DIRECT_MESSAGE_ID))?.body).toMatchObject(
           {
-            body: "!sleep 600\n\nThe command printed nothing.\n\nThe command was stopped after 1000 ms.",
+            body: "!echo $$ > pid && sleep 600\n\nThe command printed nothing.\n\nThe command was stopped after 1000 ms.",
           }
         );
       }, 20_000);
