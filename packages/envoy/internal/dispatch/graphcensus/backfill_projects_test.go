@@ -35,10 +35,11 @@ func TestTheBackfillGivesEveryRowItsNodeAndProject(t *testing.T) {
 		t.Fatalf("read the incomplete rows before the run: %v", err)
 	}
 	for _, want := range []string{
-		"issue BACK-1: missing", "artifact BACK-1/notes-md: missing", "artifact BACK/runbook-md: missing",
-		"artifact agent/" + seeded.session + "/photo-png: missing", "ask " + seeded.ask + ": missing",
-		"message " + seeded.issueMessage + ": missing", "message " + seeded.direct + ": missing",
-		"message " + seeded.reply + ": missing", "comment " + seeded.comment + ": unscoped",
+		"issue BACK-1: missing" + backfillCure, "artifact BACK-1/notes-md: missing" + backfillCure,
+		"artifact BACK/runbook-md: missing" + backfillCure,
+		"artifact agent/" + seeded.session + "/photo-png: missing" + backfillCure, "ask " + seeded.ask + ": missing" + backfillCure,
+		"message " + seeded.issueMessage + ": missing" + backfillCure, "message " + seeded.direct + ": missing" + backfillCure,
+		"message " + seeded.reply + ": missing" + backfillCure, "comment " + seeded.comment + ": unscoped" + backfillCure,
 	} {
 		if !slices.Contains(before, want) {
 			t.Errorf("before the run ProjectComplete answers %v, which lacks %q", before, want)
@@ -127,7 +128,7 @@ func TestTheBackfillGivesEveryRowItsNodeAndProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the incomplete rows after the control: %v", err)
 	}
-	if want := []string{"ask " + seeded.ask + ": missing"}; !slices.Equal(incomplete, want) {
+	if want := []string{"ask " + seeded.ask + ": missing" + backfillCure}; !slices.Equal(incomplete, want) {
 		t.Errorf("with the ask's node taken away ProjectComplete answers %v, want %v", incomplete, want)
 	}
 	census, err := ProjectCensus(ctx, database.Pool)

@@ -28,9 +28,10 @@ const reportedDifferences = 20
 //
 // rows is a select of (row_label, node_kind, node_address, digest): one row per projection row,
 // naming the node that row says it projects and digesting the fields the row and its node
-// share. nodes is a select of (id, digest): one row per live node of the kind, digesting the
-// same fields as the store holds them. The census holds the two against each other in both
-// directions, so a row with no node and a node with no row are each a difference.
+// share. nodes is a select of (id, digest): one row per node of the kind, at any state,
+// digesting the same fields as the store holds them; the census reads those not gone
+// (presentNodes). The census holds the two against each other in both directions, so a row with
+// no node and a node with no row are each a difference.
 //
 // The ties of dispatch://INFRA-1150 - a decision's, a reading's and an ask's - are held triple by
 // triple instead (tuples), so a relation that reaches the wrong node or the wrong far end reads as
@@ -51,7 +52,7 @@ type projection struct {
 	// so the report says what it checked rather than only what it found.
 	note string
 	rows string
-	// nodes is the live nodes of the kind. It names no state: liveNodes wraps it.
+	// nodes is the kind's nodes at any state. It names no state: presentNodes wraps it.
 	nodes string
 	// tuples, where it is set, holds the kind triple by triple, over the triple of holding node,
 	// tuple kind and far end (dispatch://INFRA-1150 c-census), and nodes is unused. It is a
@@ -106,8 +107,8 @@ type projection struct {
 	emptyAgrees bool
 }
 
-// KindReport is one kind's census: how many rows and how many live nodes it read, and what the
-// two said about each other.
+// KindReport is one kind's census: how many rows and how many nodes not gone it read, and what
+// the two said about each other.
 type KindReport struct {
 	Kind, NodeKind, Table, Note string
 	// Rows and Nodes are how many of each side the census read. Of a kind held triple by triple
@@ -194,7 +195,7 @@ func (r *StoreReport) Unresolved() int64 {
 	return unresolved
 }
 
-// ProjectFindings is how many rows the project census found incomplete over every kind.
+// ProjectFindings is how many rows and nodes the project census found incomplete over every kind.
 func (r *StoreReport) ProjectFindings() int64 {
 	var found int64
 	for _, kind := range r.Projects {
@@ -297,7 +298,7 @@ var projections = []projection{{
 	nodes: `
 		select n.id, md5(n.made_at::text || '|' || n.made_by::text || '|' || ` + currentLinks(graphstore.KindComment,
 		`t.kind in ('`+graphstore.TupleAnchoredTo+`', '`+graphstore.TupleOwnedBy+`', '`+graphstore.TupleAuthoredBy+`')`) + `)
-		from graph_nodes n where n.kind = 'comment'`,
+		from graph_nodes n where n.kind = '` + graphstore.KindComment + `'`,
 	pastBound: `
 		select count(*) from comments c
 		left join artifacts anchor on anchor.id = (c.anchor->>'artifact_id')::uuid
@@ -1261,7 +1262,7 @@ func readStoredAuthors(ctx context.Context, tx pgx.Tx) (*storedWriters, error) {
 //
 // A difference is reported by its cause and by the row it was found at, in both directions: a
 // projection row naming no node, naming a node the store does not hold or naming one it holds
-// gone; a row whose shared fields disagree with its node's; and a live node no row projects.
+// gone; a row whose shared fields disagree with its node's; and a node not gone no row projects.
 //
 // Two writes can state one fact twice by design and nothing here reads wrong for it: a tuple at
 // the source_event sentinel is outside both repeat keys, and the backfill writes every fact it
@@ -1317,11 +1318,10 @@ func storeCensus(ctx context.Context, databaseURL string, sizing bool, afterKind
 			return nil, err
 		}
 		if report.ProjectFindings() > 0 {
-			incomplete, err := ProjectComplete(ctx, tx)
-			if err != nil {
+			limit := reportedDifferences
+			if report.ProjectIncomplete, err = projectIncomplete(ctx, tx, &limit); err != nil {
 				return nil, err
 			}
-			report.ProjectIncomplete = incomplete[:min(len(incomplete), reportedDifferences)]
 		}
 	}
 	if sizing {
@@ -1477,7 +1477,7 @@ func blockLinkKinds() []string {
 	})
 }
 
-// censusOfKind reads one kind: how many rows and live nodes there are, and the differences in
+// censusOfKind reads one kind: how many rows and nodes not gone there are, and the differences in
 // each direction with the first reportedDifferences of them. args are what the kind's rows bind,
 // none but for a kind that binds its names (projection.names) or its link kinds
 // (projection.linked).
@@ -1529,58 +1529,62 @@ func censusOfKind(ctx context.Context, tx pgx.Tx, held projection, args []any) (
 type kindSides struct{ nodes, rowsFound, nodesFound string }
 
 // sidesOf is held's reads: of a kind held triple by triple its tuples and the rows and tuples
-// the other side does not hold, and of any other its live nodes and the rows and nodes that
+// the other side does not hold, and of any other its nodes not gone and the rows and nodes that
 // disagree.
 func sidesOf(held projection) kindSides {
 	if held.tuples != "" {
 		return kindSides{nodes: held.tuples, rowsFound: tripleRowDifferences(held), nodesFound: tupleDifferences(held)}
 	}
-	return kindSides{nodes: liveNodes(held), rowsFound: rowDifferences(held), nodesFound: nodeDifferences(held)}
+	return kindSides{nodes: presentNodes(held), rowsFound: rowDifferences(held), nodesFound: nodeDifferences(held)}
 }
 
-// liveNodes is the kind's node side bound to the live state, as (kind, id, digest): a node the
-// store holds gone is no node a row may project, and the row side holds it to that separately
-// (goneNodeCause). The kind's nodes answer (id, digest), and each is given the kind here.
-func liveNodes(held projection) string {
-	return `select node.kind, node.id, node.digest from (
-		select '` + held.nodeKind + `', single.id, single.digest from (` + held.nodes + `) single (id, digest)
-		) node (kind, id, digest)
-		where exists (select 1 from graph_nodes live
-		              where live.kind = node.kind and live.id = node.id
-		                and live.state = '` + graphstore.StateLive + `')`
+// presentNodes is the kind's node side bound to every state but gone: a node the store holds gone
+// is no node a row may project, and the row side holds it to that separately. Any other state is
+// a node a row projects, so a state a later release adds, such as dispatch://INFRA-1950's
+// proposed, settled and overtaken (R8 of dispatch://INFRA-1149), reads here as live does. It
+// answers (kind, id, digest, state): the kind's nodes answer (id, digest), each is given the kind
+// here, and its state beside its digest, which nodeDifferences names a node with.
+func presentNodes(held projection) string {
+	return `select present.kind, node.id, node.digest, present.state from (` + held.nodes + `) node (id, digest)
+		join graph_nodes present on present.kind = '` + held.nodeKind + `' and present.id = node.id
+		                        and present.state <> '` + graphstore.StateGone + `'`
 }
 
 // rowDifferences reads the row side against the store: every row that names no node, names one
 // the store does not hold, names one it holds gone, or disagrees with its node's digest. The
 // gone test is its own cause rather than a missing node, because a row projecting a node the
-// store has ended is a different defect from a row projecting nothing.
+// store has ended is a different defect from a row projecting nothing, and it is the one test
+// of a node's state here: a row may project a node at any other state.
 func rowDifferences(held projection) string {
 	return `
 		select case
 			when row.node_kind is null or row.node_address is null then 'the row names no node'
 			when node.kind is null then 'the row names a node the store does not hold'
-			when node.state <> '` + graphstore.StateLive + `'
+			when node.state = '` + graphstore.StateGone + `'
 				then 'the row names a node the store holds ' || node.state
 			else 'the row and its node disagree: the row digests ' || row.digest
-			     || ' and the node ' || coalesce(live.digest, '(none)')
+			     || ' and the node ' || coalesce(present.digest, '(none)')
 		end,
 		row.row_label
 		from (` + held.rows + `) row (row_label, node_kind, node_address, digest)
 		left join graph_nodes node on node.kind = row.node_kind and node.id = row.node_address
-		left join (` + liveNodes(held) + `) live (kind, id, digest)
-			on live.kind = row.node_kind and live.id = row.node_address
+		left join (` + presentNodes(held) + `) present (kind, id, digest, state)
+			on present.kind = row.node_kind and present.id = row.node_address
 		where row.node_kind is null or row.node_address is null or node.kind is null
-		   or node.state <> '` + graphstore.StateLive + `'
-		   or row.digest is distinct from live.digest
+		   or node.state = '` + graphstore.StateGone + `'
+		   or row.digest is distinct from present.digest
 		order by 2, 1`
 }
 
-// nodeDifferences reads the store against the row side: every live node of the kind no row
-// projects, but a node whose row is owed by a writer that has not run yet (projection.owed).
+// nodeDifferences reads the store against the row side: every node of the kind not gone that no
+// row projects, named with the state it is at, so a live one reads as `a live node no row
+// projects`, but a node whose row is owed by a writer that has not run yet (projection.owed).
 func nodeDifferences(held projection) string {
 	return `
-		select 'a live node no row projects', node.kind || ' ' || node.id
-		from (` + liveNodes(held) + `) node (kind, id, digest)
+		select case when node.state ~ '^[aeiou]' then 'an ' else 'a ' end || node.state
+		       || ' node no row projects',
+		       node.kind || ' ' || node.id
+		from (` + presentNodes(held) + `) node (kind, id, digest, state)
 		where not exists (
 			select 1 from (` + held.rows + `) row (row_label, node_kind, node_address, digest)
 			where row.node_kind = node.kind and row.node_address = node.id)` + notOwed(held) + `
@@ -1726,7 +1730,9 @@ func (r *StoreReport) write(w io.Writer, verbose bool) {
 	case r.Differences() > 0:
 		fmt.Fprintf(w, "census: store REFUSED (%s difference(s))\n", pgmigrate.Thousands(r.Differences()))
 	case r.ProjectFindings() > 0:
-		fmt.Fprintf(w, "census: store REFUSED (%s row(s) whose node names no project or the wrong one)\n",
+		fmt.Fprintf(w, "census: store REFUSED (%s row(s) whose node names no project or the wrong one, or node(s) no row stands behind;"+
+			" run envoy-dispatch backfill-graph-store for the missing, gone and unscoped ones but those naming a party the store"+
+			" refuses, run the erase each orphaned line names, and compare each differs row with its node)\n",
 			pgmigrate.Thousands(r.ProjectFindings()))
 	case r.Unresolved() > 0:
 		fmt.Fprintf(w, "census: store REFUSED (%s far end(s) of a kind no table projects do not resolve)\n",

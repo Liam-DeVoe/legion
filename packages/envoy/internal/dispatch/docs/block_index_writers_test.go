@@ -9,7 +9,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -39,10 +38,10 @@ func deferredList(items int) string {
 }
 
 // writeDocumentThroughTheRequestPath writes one document the way a request writes it (api's
-// storeArtifact): the document's node written before its row, the text seeded in the writer's
-// transaction, the version row, the version's references and blocks indexed from the rendering
-// that transaction wrote, the version's event, and then what the node write and the block index
-// stated, appended under that event.
+// storeArtifact): the document's node and then its row, dated with one time
+// (graphstore.StatementTime), the text seeded in the writer's transaction, the version row, the
+// version's references and blocks indexed from the rendering that transaction wrote, the version's
+// event, and then what the node write and the block index stated, appended under that event.
 func writeDocumentThroughTheRequestPath(t *testing.T, service *Service, database *store.Store, slug, markdown string) string {
 	t.Helper()
 	ctx := context.Background()
@@ -51,23 +50,27 @@ func writeDocumentThroughTheRequestPath(t *testing.T, service *Service, database
 		t.Fatalf("begin the document write: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	documentNode, err := graphstore.WriteUncaused(ctx, tx, []graphstore.Node{graphstore.ArtifactNode(
-		graphstore.ArtifactRefKey("CORE-1", "CORE", "", slug), "CORE", "", model.Actor{Kind: "user", ID: "alice"},
-		time.Now().UTC())}, nil)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	refKey := graphstore.ArtifactRefKey("CORE-1", "CORE", "", slug)
+	createdAt, err := graphstore.StatementTime(ctx, tx, graphstore.KindArtifact, refKey)
+	if err != nil {
+		t.Fatalf("read the time of document %s: %v", slug, err)
+	}
+	documentNode, err := graphstore.WriteUncaused(ctx, tx, []graphstore.Node{graphstore.ArtifactNode(refKey, "CORE", "", alice, createdAt)}, nil)
 	if err != nil {
 		t.Fatalf("write the node of document %s: %v", slug, err)
 	}
 	var artifactID string
 	if err := tx.QueryRow(ctx, `
-		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
-		values ('CORE-1', 'CORE', $1, $1 || '.md', 'doc', false, '{"kind":"user","id":"alice"}')
+		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by, created_at)
+		values ('CORE-1', 'CORE', $1, $1 || '.md', 'doc', false, '{"kind":"user","id":"alice"}', $2)
 		returning id::text
-	`, slug).Scan(&artifactID); err != nil {
+	`, slug, createdAt).Scan(&artifactID); err != nil {
 		t.Fatalf("create document %s: %v", slug, err)
 	}
 	joined, ledger := service.Join(ctx, tx)
 	defer ledger.Discard()
-	stored, err := service.SeedText(joined, artifactID, markdown, model.Actor{Kind: "user", ID: "alice"})
+	stored, err := service.SeedText(joined, artifactID, markdown, alice)
 	if err != nil {
 		t.Fatalf("seed %s: %v", slug, err)
 	}
@@ -560,6 +563,9 @@ var indexPasses = map[string]string{
 	// from what it read of the issue's documents and asks under their locks, mending nothing.
 	"docs/decision_restore.go#writeVersion": "the facts the version's index pass stated and the event that recorded the version",
 	"docs/decision_restore.go#writeFacts":   "the restore's and the conversion's plan, read off the documents and the asks rows it locked",
+	// The removal of an untouched document states its node gone before its row goes, caused by
+	// the artifact.removed event it appends.
+	"api/artifact_removal.go#removeArtifact": "the document the request removes and the event it appended",
 	// The block index's cause: what a version's index pass stated, appended under the event
 	// that recorded the version once it is appended (graphstore.Caused), which reads no
 	// projection and mends nothing.
@@ -605,10 +611,11 @@ var indexPasses = map[string]string{
 	// the store lacks of them, and a node another write made it leaves alone.
 	"graphcensus/backfill.go#writeSessionBatch": "the sessions a row names now or an ask.follower_added event ever named (recordedSessions)",
 	// The backfill of the project of every node: the rows of the issues, documents, asks and
-	// messages that no node marks, and the comment and block nodes that name no project, each
-	// with the row its project is read from.
-	"graphcensus/projects.go#writeObjectBatch": "the issue, document, ask and message rows no node marks",
-	"graphcensus/projects.go#writeScopeBatch":  "the comment and block nodes that name no project, and the rows their project is read from",
+	// messages that their marker does not mark, each read again under its owner row before its node is
+	// written, and the comment and block nodes that name no project, each with the row its
+	// project is read from.
+	"graphcensus/projects_backfill.go#writeObjectBatch": "the issue, document, ask and message rows their marker does not mark",
+	"graphcensus/projects_backfill.go#writeScopeBatch":  "the comment and block nodes that name no project, and the rows their project is read from",
 	// The erase (R5), the one statement of the tree that removes bytes. Its input is the node
 	// the operator named and what the store itself holds about it, which is neither side of a
 	// projection read to mend the other: it deletes both sides together, the store's through

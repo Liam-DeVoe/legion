@@ -60,8 +60,8 @@ func AddressFits(address string) bool { return len(address) <= MaxAddressBytes }
 
 // Node is one thing the store holds. Its row is the projection of its own tuples: Write may
 // write it again, and a second write moves every column but MadeAt and MadeBy, which stay as the
-// row's first write left them, the state and the visibility a write that Restates the node
-// keeps, and Project, which never moves once a write has stated it (ErrProjectMoved).
+// row's first write left them, Project, which never moves once a write has stated it
+// (ErrProjectMoved), and the state and the visibility a write that Restates the node keeps.
 //
 // Project is the key of the project the node belongs to, and Parties the parties a node no
 // project owns is between (PartyPerson, PartySession). Both are base attributes, stated by the

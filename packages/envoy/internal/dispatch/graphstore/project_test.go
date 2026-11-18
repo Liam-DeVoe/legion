@@ -36,7 +36,11 @@ func TestBaseAttributeFactsHoldEachAttributesOwnValue(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			held := map[string]string{}
-			for _, fact := range BaseAttributeFacts([]Node{test.node}) {
+			facts, err := BaseAttributeFacts([]Node{test.node})
+			if err != nil {
+				t.Fatalf("BaseAttributeFacts: %v", err)
+			}
+			for _, fact := range facts {
 				held[fact.Kind] = fact.ToID
 			}
 			if !maps.Equal(held, test.want) {

@@ -12,11 +12,11 @@ package main
 //
 // # The two arms, and why each has a database of its own
 //
-// One arm is this working copy's build, the other the build of the commit this branch forked
-// from (`git merge-base origin/main HEAD`, baseBuild). Each serves a database of its own and
-// migrates it at boot, so each arm runs its own code over its own schema: the older build has
-// no graph_nodes and no graph_tuples, and this build's graph_edges reads the tuple arm over
-// them. One database cannot be both schemas at once, and an
+// One arm is this working copy's build, the other the build of the commit BASELINE_SHA names
+// (baseBuild, testbaseline.Commit), which is the fork point with main for this branch. Each
+// serves a database of its own and migrates it at boot, so each arm runs its own code over its
+// own schema: the older build has no graph_nodes and no graph_tuples, and this build's
+// graph_edges reads the tuple arm over them. One database cannot be both schemas at once, and an
 // older build serving this schema would be measured reading this child's view, which is neither
 // arm. The corpus is therefore written twice, by one seeding pass issuing the same requests to
 // each arm, and both arms are measured in one run, reading by reading, so the pod's load falls

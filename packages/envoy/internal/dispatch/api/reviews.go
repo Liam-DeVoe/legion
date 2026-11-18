@@ -799,10 +799,7 @@ func (s *server) openApprovalAsk(
 	// project), with the document a request on no issue belongs to and who requested it
 	// (graphstore.AskFacts); what that write states waits for the ask.opened event below. The
 	// document is read already, so its project costs no round trip of its own.
-	project, parties := artifact.Project, []string(nil)
-	if project == "" && artifact.SessionID != nil {
-		parties = []string{graphstore.PartySession(*artifact.SessionID)}
-	}
+	project, parties := graphstore.SessionScope(artifact.Project, deref(artifact.SessionID))
 	places, err := graphstore.ReadAskPlaces(ctx, tx, nil, owner.ArtifactID, nil)
 	if err != nil {
 		return nil, model.Event{}, err

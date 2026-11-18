@@ -212,7 +212,15 @@ func backfillBlocks(ctx context.Context, database *store.Store) (KindBackfill, e
 			break
 		}
 		after = rows[len(rows)-1].address
-		written, tuples, err := writeBlockBatch(ctx, database, rows)
+		writable := make([]blockRow, 0, len(rows))
+		for _, row := range rows {
+			if _, parties := graphstore.SessionScope(row.project, row.session); partiesRefused(parties) {
+				done.Skipped++
+				continue
+			}
+			writable = append(writable, row)
+		}
+		written, tuples, err := writeBlockBatch(ctx, database, writable)
 		if err != nil {
 			return done, err
 		}
@@ -359,14 +367,11 @@ func writeBlockBatch(ctx context.Context, database *store.Store, batch []blockRo
 	blockIDs := make([]string, 0, len(held))
 	artifacts := make([]string, 0, len(held))
 	for _, row := range held {
-		var parties []string
-		if row.project == "" && row.session != "" {
-			parties = []string{graphstore.PartySession(row.session)}
-		}
+		project, parties := graphstore.SessionScope(row.project, row.session)
 		nodes = append(nodes, graphstore.Node{
 			Kind: refs.BlockNodeKind, ID: row.address, Supertag: refs.BlockSupertag,
 			Visibility: graphstore.VisibilityProject, State: graphstore.StateLive,
-			Project: row.project, Parties: parties,
+			Project: project, Parties: parties,
 			MadeAt: row.createdAt, MadeBy: backfillActor, SourceEvent: row.event,
 			Restates: true,
 		})
@@ -862,13 +867,23 @@ func backfillComments(ctx context.Context, database *store.Store) (KindBackfill,
 			break
 		}
 		after = batch[len(batch)-1].id
-		nodes, tuples, err := writeCommentBatch(ctx, database, batch)
-		if err != nil {
-			return done, err
+		writable := make([]commentRow, 0, len(batch))
+		for _, row := range batch {
+			if partiesRefused(row.parties) {
+				done.Skipped++
+				continue
+			}
+			writable = append(writable, row)
 		}
-		done.Rows += int64(len(batch))
-		done.Nodes += nodes
-		done.Tuples += tuples
+		if len(writable) > 0 {
+			rows, nodes, tuples, err := writeCommentBatch(ctx, database, writable)
+			if err != nil {
+				return done, err
+			}
+			done.Rows += rows
+			done.Nodes += nodes
+			done.Tuples += tuples
+		}
 		if len(batch) < backfillBatch {
 			break
 		}
@@ -925,9 +940,7 @@ func readCommentRows(ctx context.Context, database *store.Store, after string) (
 		if err := json.Unmarshal(author, &row.author); err != nil {
 			return nil, fmt.Errorf("read the author of comment %s: %w", row.id, err)
 		}
-		if row.project == "" && session != "" {
-			row.parties = []string{graphstore.PartySession(session)}
-		}
+		row.project, row.parties = graphstore.SessionScope(row.project, session)
 		batch = append(batch, row)
 	}
 	return batch, rows.Err()
@@ -952,15 +965,20 @@ func readCommentRows(ctx context.Context, database *store.Store, after string) (
 // project-visible, live and carrying no attribute. The batch restates that node too, so a state
 // or a visibility another write gave it stays.
 //
-// The rows the batch read are still the rows it writes, so it reads none of them again: no route
-// deletes a comment or changes its owner, its author, its time or the artifact its anchor names,
-// and the erase deletes only a row that names its node, which no row of this batch does.
-func writeCommentBatch(ctx context.Context, database *store.Store, batch []commentRow) (int64, int64, error) {
+// The batch is read before this transaction. Another run can mark a row and the erase can then
+// remove it before this run writes. heldCommentRows takes the owners in store order and keeps
+// only rows that still exist and remain unmarked, so a cached batch cannot restore erased nodes.
+// It answers how many rows it gave a node, how many nodes it wrote and how many tuples it stated.
+func writeCommentBatch(ctx context.Context, database *store.Store, batch []commentRow) (int64, int64, int64, error) {
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
-		return 0, 0, fmt.Errorf("begin the comment batch: %w", err)
+		return 0, 0, 0, fmt.Errorf("begin the comment batch: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	batch, err = heldCommentRows(ctx, tx, batch)
+	if err != nil {
+		return 0, 0, 0, err
+	}
 	nodes := make([]graphstore.Node, 0, 2*len(batch))
 	var tuples []graphstore.Tuple
 	ids := make([]string, 0, len(batch))
@@ -992,7 +1010,7 @@ func writeCommentBatch(ctx context.Context, database *store.Store, batch []comme
 		addresses = append(addresses, row.id)
 	}
 	if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
-		return 0, 0, fmt.Errorf("write the nodes of a comment batch: %w", err)
+		return 0, 0, 0, fmt.Errorf("write the nodes of a comment batch: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
 		update comments c
@@ -1000,10 +1018,10 @@ func writeCommentBatch(ctx context.Context, database *store.Store, batch []comme
 		from unnest($1::text[], $2::text[]) as p (id, address)
 		where c.id = p.id::uuid
 	`, ids, addresses, graphstore.KindComment); err != nil {
-		return 0, 0, fmt.Errorf("name the nodes of a comment batch on their rows: %w", err)
+		return 0, 0, 0, fmt.Errorf("name the nodes of a comment batch on their rows: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return 0, 0, fmt.Errorf("commit a comment batch: %w", err)
+		return 0, 0, 0, fmt.Errorf("commit a comment batch: %w", err)
 	}
 	// Each comment's node states its visibility and its state, and its project or its parties
 	// where it belongs to one.
@@ -1013,7 +1031,54 @@ func writeCommentBatch(ctx context.Context, database *store.Store, batch []comme
 			stated++
 		}
 	}
-	return int64(len(nodes)), int64(len(tuples)) + stated, nil
+	return int64(len(batch)), int64(len(nodes)), int64(len(tuples)) + stated, nil
+}
+
+// heldCommentRows rechecks a cached batch's marker under the owner rows the erase takes first.
+// Comments keep their owners, so those locks order the recheck and write against every erase. It
+// answers the rows that still stand unmarked in a slice of its own and leaves batch as it is.
+func heldCommentRows(ctx context.Context, tx pgx.Tx, batch []commentRow) ([]commentRow, error) {
+	ids := make([]string, len(batch))
+	for index, row := range batch {
+		ids[index] = row.id
+	}
+	rows, err := tx.Query(ctx, `
+		select coalesce(c.issue_key, a.issue_key, ''), coalesce(c.artifact_id::text, ''), c.id::text
+		from comments c left join artifacts a on a.id = c.artifact_id
+		where c.id = any($1::text[]::uuid[]) and c.node_kind is null
+	`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("read the owners of a comment batch: %w", err)
+	}
+	owners := events.OwnerRows{}
+	var issue, document, id string
+	if _, err := pgx.ForEachRow(rows, []any{&issue, &document, &id}, func() error {
+		owners.Add(issue, document, "comment "+id)
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("read the owners of a comment batch: %w", err)
+	}
+	if err := events.LockOwnerRows(ctx, tx, owners); err != nil {
+		return nil, err
+	}
+	rows, err = tx.Query(ctx, `select id::text from comments where id = any($1::text[]::uuid[]) and node_kind is null`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("read the unmarked rows of a comment batch: %w", err)
+	}
+	standing := make(map[string]bool, len(batch))
+	if _, err := pgx.ForEachRow(rows, []any{&id}, func() error {
+		standing[id] = true
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("read the unmarked rows of a comment batch: %w", err)
+	}
+	held := make([]commentRow, 0, len(batch))
+	for _, row := range batch {
+		if standing[row.id] {
+			held = append(held, row)
+		}
+	}
+	return held, nil
 }
 
 // roleRow is one role the store census holds to a node (addressedRoles) whose node or page the

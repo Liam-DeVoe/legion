@@ -168,9 +168,9 @@ func IsBaseAttribute(kind string) bool { return slices.Contains(baseAttributes[:
 // written again, and a later write that learns the event id has to be able to move source_event.
 // A node written with no project or no parties keeps what its row holds of each: that writer
 // knows neither, and is no word that the node has none. A node the write restates
-// (Node.Restates) keeps its row's visibility, and its row's state unless that state or the
-// node's is gone: its writer says only whether the node is there, so the row moves to gone when
-// the writer says gone, and to the writer's state only from gone.
+// (Node.Restates) keeps its row's visibility, and its row's state unless that state or the node's
+// is gone: its writer says only whether the node is there, so the row moves to gone when the
+// writer says gone, and to the writer's state only from gone.
 //
 // It answers the base attributes this write states as tuples, one attribute at a time. A node
 // the insert made is stated `visibility` and `state`, and `project` and `parties` where it
@@ -271,7 +271,12 @@ func writeNodes(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple) ([
 			base = statesAttribute(base, own, node, AttributeProject, node.Project)
 		}
 		if marked&markParties != 0 {
-			base = statesAttribute(base, own, node, AttributeParties, PartiesValue(node.Parties))
+			// nodeParams refused a bad party before the write, so the join cannot fail here.
+			value, err := PartiesValue(node.Parties)
+			if err != nil {
+				return nil, fmt.Errorf("node %s/%s: %w", node.Kind, node.ID, err)
+			}
+			base = statesAttribute(base, own, node, AttributeParties, value)
 		}
 	}
 	return base, nil
@@ -485,10 +490,10 @@ func baseAttributeTuple(node Node, attribute, value string) Tuple {
 // into a statement of its own and has no cause yet (WriteArmsUncaused) states none of them there
 // and hands these to Caused instead, so the node row and its base tuples name one event. The
 // nodes given are the ones that write made: a node it found there is another write's to
-// describe.
-func BaseAttributeFacts(nodes []Node) []UncausedTuple {
+// describe. A node between a party PartiesValue refuses answers that refusal.
+func BaseAttributeFacts(nodes []Node) ([]UncausedTuple, error) {
 	if len(nodes) == 0 {
-		return nil
+		return nil, nil
 	}
 	facts := make([]UncausedTuple, 0, len(baseAttributes)*len(nodes))
 	for _, node := range nodes {
@@ -502,7 +507,10 @@ func BaseAttributeFacts(nodes []Node) []UncausedTuple {
 			case AttributeProject:
 				value = node.Project
 			case AttributeParties:
-				value = PartiesValue(node.Parties)
+				var err error
+				if value, err = PartiesValue(node.Parties); err != nil {
+					return nil, fmt.Errorf("node %s/%s: %w", node.Kind, node.ID, err)
+				}
 			}
 			if value == "" {
 				continue
@@ -510,7 +518,7 @@ func BaseAttributeFacts(nodes []Node) []UncausedTuple {
 			facts = append(facts, UncausedTuple{Tuple: baseAttributeTuple(node, attribute, value)})
 		}
 	}
-	return facts
+	return facts, nil
 }
 
 // appendTuples appends the relations and the attributes in two statements, because the two carry

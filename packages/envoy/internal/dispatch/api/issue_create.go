@@ -379,11 +379,18 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 
 	// The issue's node and its spec's node go in before the two rows, in one write that takes
 	// them in the store's order, each in the issue's project; what that write states waits for
-	// the issue.created event below (graphstore.Caused).
-	createdAt := time.Now().UTC()
+	// the issue.created event below (graphstore.Caused). The spec's row and its node are dated
+	// with one time read from the database's clock under the project row this transaction holds
+	// (graphstore.StatementTime), as every create of a document dates them.
+	specRef := graphstore.ArtifactRefKey(key, input.Project, "", "spec")
+	createdAt, err := graphstore.StatementTime(r.Context(), tx, graphstore.KindArtifact, specRef)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	issueNodes, err := graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{
 		graphstore.IssueNode(key, input.Project, actor, createdAt),
-		graphstore.ArtifactNode(graphstore.ArtifactRefKey(key, input.Project, "", "spec"), input.Project, "", actor, createdAt),
+		graphstore.ArtifactNode(specRef, input.Project, "", actor, createdAt),
 	}, nil)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -437,10 +444,10 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 
 	var artifactID string
 	if err := tx.QueryRow(r.Context(), `
-		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
-		values ($1, $2, 'spec', 'spec.md', 'doc', true, $3)
+		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by, created_at)
+		values ($1, $2, 'spec', 'spec.md', 'doc', true, $3, $4)
 		returning id::text
-	`, key, input.Project, actorJSON).Scan(&artifactID); err != nil {
+	`, key, input.Project, actorJSON, createdAt).Scan(&artifactID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
