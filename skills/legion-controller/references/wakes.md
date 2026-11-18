@@ -481,8 +481,10 @@ re-admit nothing, set no status, and start nothing.
 ## `update-stalled on <KEY>` (`{kind: "update-stalled", reason, update}`)
 
 The update round over the issue's pod has passed its bound, and something still holds it: a
-suspension that holds, the operator's, yours or an architect's, which the notice names with who
-can resume each claim; a refused pod replacement; no process in the pod; or two pods. Handle it as
+suspension that holds, the operator's or yours, or an architect's where no architect can act on
+it, which the notice names with who can resume each claim; a refused pod replacement; no process
+in the pod; or two pods. An architect's suspension is told to the architect that owns the held
+claim instead, whenever that architect's claim has not failed. Handle it as
 `skill://legion-controller/references/escalation.md#an-update-round-that-is-not-finishing-update-stalled`
 says.
 

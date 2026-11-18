@@ -5920,8 +5920,9 @@ The sweep opens every round of its tick before it makes any pod replacement, and
 a replacement waits its pod out and a sweep interval at worst, so one made where it is decided would hold every issue behind it in the walk for those minutes, and the limit a minute would open one round per slow sweep rather than the rounds a minute the project asks for.
 What the last sweep decided under the two limits is one line of `legion claims list` ("Contract discipline" above).
 
-A round that outlives its bound is told to the project's controller once, as an `update-stalled` notice, when the bound has passed and something still holds the round (`tellLateRound`):
-a suspension that holds over a claim the round asks — the operator's, the controller's or an architect's, each named with its holder and with who can resume it (`holdSentences`) — a `ReplacePod` the cluster refuses, no claim recording a process in the round's pod or in any pod (`roundWithNoProcessInItsPod`, `tellPodlessRound`), or claims recording two pods at once.
+A round that outlives its bound is told once, as an `update-stalled` notice, when the bound has passed and something still holds the round (`tellLateRound`):
+to the project's controller, but for a hold an architect placed, which goes to the architect that owns the held claim, and to the controller only where that architect's claim has failed or there is none (`tellUpdateStalled`).
+What holds it is a suspension that holds over a claim the round asks — the operator's, the controller's or an architect's, each named with its holder and with who can resume it (`holdSentences`) — a `ReplacePod` the cluster refuses, no claim recording a process in the round's pod or in any pod (`roundWithNoProcessInItsPod`, `tellPodlessRound`), or claims recording two pods at once.
 Its `reason` names that hold, and the notice names the issue, the round, the pod, the drift and every claim the round asked, with that claim's state and whether it answered (`skill://legion-controller/references/escalation.md`).
 One round is told once, however many sweeps find it open.
 A round that waits for its roles before its bound is told to nobody, since the bound ends that wait by itself.
