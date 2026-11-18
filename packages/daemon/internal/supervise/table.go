@@ -2298,14 +2298,22 @@ func spawn(m *Machine, ctx context.Context, ev Event) error {
 	return m.revive(ctx, exemptWake(ev), nil)
 }
 
-// register records the session the agent became. The boot intervals end
-// with the registration, but not the deadline: it is armed again at its base bound, and only the
-// agent's ready ends it. A registration whose answer never reached its agent leaves a claim no
-// ready will ever come for, and from here that looks exactly like an agent slow to boot. A
-// registration whose plugin still differs from the daemon's is relaunched at once and refused
-// (staleRegistration): the agent that just registered is not the one that relaunch starts.
+// register records the session the agent became, once every name of it is held to this claim
+// (holdRecorded): a session another claim recorded first, by its id or by its file, is refused
+// before anything of the registration is recorded or enrolled. The boot intervals end with the
+// registration, but not the deadline: it is armed again at its base bound, and only the agent's
+// ready ends it. A registration whose answer never reached its agent leaves a claim no ready will
+// ever come for, and from here that looks exactly like an agent slow to boot. A registration whose
+// plugin still differs from the daemon's is relaunched at once and refused (staleRegistration): the
+// agent that just registered is not the one that relaunch starts.
 func register(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestRegister)
+	if err := checkSessionNames(r.Session, r.SessionFile); err != nil {
+		return err
+	}
+	if err := m.holdRecorded(ctx, r.Session, r.SessionFile); err != nil {
+		return err
+	}
 	m.claim.Session, m.claim.SessionFile = r.Session, r.SessionFile
 	m.claim.CapabilityHash = bytes.Clone(r.CapabilityHash)
 	m.claim.PluginContract = r.PluginContract
@@ -2328,10 +2336,19 @@ func register(m *Machine, ctx context.Context, ev Event) error {
 
 // reregister is the recorded session registering again: it is issued a new secret, and the
 // deadline stays where the first registration set it, so an agent that keeps registering and never
-// says it is ready is still relaunched. A registration whose plugin still differs from the
-// daemon's is relaunched at once and refused the same way register's is (staleRegistration).
+// says it is ready is still relaunched. The session is held as register holds it, by every name of
+// it: one the claim recorded before the daemon held sessions is the claim's, unless another claim
+// recorded it too, when it is held for neither (the claim_sessions migration). A registration
+// whose plugin still differs from the daemon's is relaunched at once and refused the same way
+// register's is (staleRegistration).
 func reregister(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestRegister)
+	if err := checkSessionNames(r.Session, r.SessionFile); err != nil {
+		return err
+	}
+	if err := m.holdRecorded(ctx, r.Session, r.SessionFile); err != nil {
+		return err
+	}
 	m.claim.SessionFile = r.SessionFile
 	m.claim.CapabilityHash = bytes.Clone(r.CapabilityHash)
 	m.claim.PluginContract = r.PluginContract
@@ -2441,6 +2458,12 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 // live machine, while the store still holds it as AdmitClaim wrote it, until the next persist.
 func retry(m *Machine, ctx context.Context, ev Event) error {
 	if fresh, why := freshSession(ev, m.claim, m.deps.Limits.LaunchFailures); fresh {
+		// A session the claim does not hold is left behind only once its role no longer leads
+		// to the process under it (mayForget); the retry is refused, and the claim left as it
+		// was, until then.
+		if err := m.mayForget(ctx, "retry"); err != nil {
+			return err
+		}
 		m.log.Info("supervise: retrying in a new session", "why", why, "session", m.claim.Session,
 			"refusedRun", m.claim.RefusedRun())
 		// The failure the claim carries is the fuller answer where it has one — it names how many
@@ -2540,13 +2563,17 @@ func issueClose(m *Machine, ctx context.Context, _ Event) error {
 // the claim next, for a phase worker the workflow's own start of its phase, spawns a fresh agent
 // rather than resuming the turns the operator asked to leave behind. The comparison runs under
 // the machine lock, so a decision that changed the claim since an operator saw it cannot clear a
-// later session.
+// later session. A session the claim records but does not hold is cleared only once the Envoy
+// listener no longer names it as the claim's role holder (mayForget).
 func forgetSession(m *Machine, ctx context.Context, ev Event) error {
 	request := ev.(RequestForgetSession)
 	if request.Session != m.claim.Session {
 		return &RefusedError{Request: "forget-session", Err: fmt.Errorf(
 			"%s records session %s; pass --session %s to start fresh", m.claim.Token, m.claim.Session, m.claim.Session,
 		)}
+	}
+	if err := m.mayForget(ctx, "forget-session"); err != nil {
+		return err
 	}
 	m.log.Info("supervise: forgetting the recorded session at the operator's ask", "session", m.claim.Session,
 		"sessionFile", m.claim.SessionFile, "state", string(m.claim.State))
