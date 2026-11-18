@@ -6045,3 +6045,85 @@ test("a picked value too long for its list's trigger ends in an ellipsis before 
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
+
+// SLOW(>=2s): one issue page at two widths, its form opened four times.
+// INFRA-3135, round 13 (the tester's, measured in builds Jobs at 43b5b641): `+` on the issue
+// header's priority line takes itself away and puts the form in its place, whose first control
+// is Priority to advance. In Chromium the focus lands on that list's trigger; in Firefox and
+// WebKit it lands on the rail's Edit labels, after the form, and at 390 the details rail
+// scrolls to it, leaving the form the reader opened out of view (the trigger at -389 px in
+// Firefox and -274 px in WebKit, with the rail scrolled 426 and 311 px). At the merge base
+// 6ef60ff0 the form stands in view in all three engines. A focused control taken away, for which
+// these engines fire no `focusout`: the clause of the `webkit` and `firefox` projects that names
+// the page-own focus row (e2e/playwright.config.ts). By a press of Enter and by a click, at 1440
+// and 390: the trigger holds the focus and stands whole in the window and in the rail.
+test("Add a priority opens its form in view with the focus on Priority to advance, at 1440 and 390 @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Harbour crane" });
+  await createPriority({ owner: "alice", title: "Ship the daemon" });
+  const wrong: string[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    for (const press of ["Enter", "click"] as const) {
+      const at = `${size.width}x${size.height}, by ${press}`;
+      await page.goto(`/issues/${issue.key}`);
+      const add = page.getByRole("button", { exact: true, name: `Add a priority to ${issue.key}` });
+      await expect(add).toBeVisible();
+      if (press === "Enter") {
+        await add.focus();
+        await page.keyboard.press("Enter");
+      } else {
+        await add.click();
+      }
+      const trigger = listTrigger(page, "Priority to advance");
+      await expect(trigger, `${at}: the form opened no Priority to advance`).toBeVisible();
+      const focused = await expect(trigger)
+        .toBeFocused()
+        .then(
+          () => true,
+          () => false
+        );
+      if (!focused) {
+        const holder = await page.evaluate(
+          () =>
+            `${document.activeElement?.tagName.toLowerCase()} "${document.activeElement?.getAttribute("aria-label") ?? document.activeElement?.textContent?.trim().slice(0, 40)}"`
+        );
+        wrong.push(`${at}: the focus is on ${holder}, not on Priority to advance`);
+      }
+      const placed = await expect
+        .poll(() =>
+          trigger.evaluate((node) => {
+            const box = node.getBoundingClientRect();
+            const rail = node
+              .closest('[data-testid="issue-metadata-rail"]')
+              ?.getBoundingClientRect();
+            const inWindow = box.left >= 0 && box.right <= window.innerWidth;
+            const inRail =
+              rail === undefined || (box.left >= rail.left - 1 && box.right <= rail.right + 1);
+            return inWindow && inRail
+              ? "whole"
+              : `at ${Math.round(box.left)}-${Math.round(box.right)} px`;
+          })
+        )
+        .toBe("whole")
+        .then(
+          () => "whole",
+          async () =>
+            trigger.evaluate(
+              (node) =>
+                `at ${Math.round(node.getBoundingClientRect().left)}-${Math.round(node.getBoundingClientRect().right)} px`
+            )
+        );
+      if (placed !== "whole") {
+        wrong.push(`${at}: Priority to advance stands ${placed}, out of the window or the rail`);
+      }
+    }
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
