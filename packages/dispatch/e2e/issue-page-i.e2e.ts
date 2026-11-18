@@ -3634,6 +3634,57 @@ test("a key with nowhere to go says so at its row, and the next move lets it go"
   });
 });
 
+// The architect's rule for an address of a node of the issue: following a link to it opens the
+// branches above the node and puts the focus on its row. At 1440 by 900, zoomed into one thread,
+// a link in a reply of that thread to a comment outside it went to the comment's address, and the
+// tree, still zoomed into the thread, drew no row for the comment: the landing gave up with
+// nothing said, and the focus stayed on the link it was followed from. The following leaves the
+// zoom, and the comment's row takes the focus on screen.
+// SLOW(>=2s): a seeded thread and two comments more, loaded cold, a thread zoomed into and a link
+// in one of its replies followed, waited on until the comment's row has the focus on screen.
+test("a comment's address followed from a link while the reader is zoomed elsewhere lands on the comment's row", async ({
+  browser,
+}) => {
+  await phase(browser, seedReplyNesting, async (page, seeded) => {
+    const elsewhere = await createComment(seeded.key, {
+      body: "A comment outside the thread the reader zooms into.",
+    });
+    const reference = `dispatch://${seeded.key}/comment/${elsewhere.id}`;
+    const pointer = await createComment(seeded.key, {
+      body: `The comment this answers is ${reference} for now.`,
+      reply_to: seeded.head,
+    });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await focusRow(page, seeded.head);
+    await page.keyboard.press(".");
+    await expect(
+      issuePage(page).locator("[data-crumb]"),
+      "the thread's head was not zoomed into"
+    ).toHaveCount(1);
+    await expect(
+      nodeRow(page, elsewhere.id),
+      "the zoom into the thread draws the comment outside it"
+    ).toHaveCount(0);
+
+    await focusRow(page, pointer.id);
+    await rowReference(nodeRow(page, pointer.id).first(), reference).click();
+    await expect(page, "the link did not go to the comment's address").toHaveURL(
+      new RegExp(`/issues/${seeded.key}/comments/${elsewhere.id}$`, "u")
+    );
+    await expect
+      .poll(() => focusedNodeId(page), {
+        message: "the comment's address, followed from a zoom into another thread, landed nowhere",
+      })
+      .toBe(elsewhere.id);
+    await expect(
+      issuePage(page).locator("[data-crumb]"),
+      "the zoom into the other thread stood after the following"
+    ).toHaveCount(0);
+    await expectFocusedRowOnScreen(page, "the following", "left the comment's row off screen");
+  });
+});
+
 // Editing in a node. Enter on a row whose node is a block of one of the issue's documents puts
 // the caret at the start of its words, in that document's one room: the row takes the page's one
 // editor of the document, so the room gets no second connection. A second reader who does the

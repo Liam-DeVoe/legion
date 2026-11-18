@@ -79,6 +79,7 @@ import { useTreeKeymap } from "./useTreeKeymap";
  * into it. From 1024 px up the outline draws three levels below the node it is rooted at.
  */
 export function IssueTree({
+  addressKey,
   artifacts,
   context,
   emptyLine,
@@ -86,6 +87,7 @@ export function IssueTree({
   focusReveal,
   holdsEscape,
   isClosed,
+  landingReport,
   onEditing,
   readsHeld = true,
   request,
@@ -93,6 +95,11 @@ export function IssueTree({
   root,
   rootRow,
 }: {
+  /** Which following of the address `reveal` comes from: the location's own key
+   *  (`useLocation().key`), a new one at each navigation - a link followed again to the address
+   *  the reader is at among them - and the same one at every render of it. The tree lands on
+   *  the address's node once per following (`slots/body.tsx`); left out, once per node. */
+  addressKey?: string;
   /** Each artifact of the issue by its slug, which is how a node names the document it is or
    *  belongs to (`issue-artifacts.ts`). */
   artifacts: ReadonlyMap<string, Artifact>;
@@ -113,6 +120,11 @@ export function IssueTree({
   holdsEscape: boolean;
   /** Whether the issue is closed, which the writes a node's body offers are refused on. */
   isClosed: boolean;
+  /** What the row the address lands on says once it has the focus, as a key's report is said at
+   *  the row it was pressed on, until the reader's next key or move: that the thread of the turn
+   *  the address names is the agents' alone, where the outline draws no row for that turn and
+   *  `reveal` is the chain to its nearest drawn ancestor (`slots/body.tsx`). */
+  landingReport?: string;
   /** The document the reader is editing a node of here, so the page draws that document's one
    *  editor rather than leaving the row with nothing to put a caret in, and hands that editor to
    *  the row; `undefined` whenever the reader is editing nothing. */
@@ -194,6 +206,19 @@ export function IssueTree({
   });
 
   const target = reveal?.at(-1);
+  // Each following of an address that names a node lands on that node's row (`addressKey`), so
+  // a zoom the reader holds on a branch the node is outside of is left as the following is first
+  // drawn, once for it: zoomed elsewhere, the tree drew no row for the node and the landing gave
+  // up with nothing said. A zoom on the chain down to the node - the node itself or a branch
+  // above it - draws its row, and stays.
+  const landingKey = target === undefined ? undefined : `${addressKey ?? ""}:${target.id}`;
+  const [zoomLeftFor, setZoomLeftFor] = useState<string | undefined>(undefined);
+  if (focusReveal && landingKey !== zoomLeftFor) {
+    setZoomLeftFor(landingKey);
+    if (landingKey !== undefined && zoom !== undefined && !reveal?.some((up) => up.id === zoom)) {
+      setZoom(undefined);
+    }
+  }
   // Where the zoomed tree is rooted. Nothing chosen opens it on the issue itself, so a reader
   // on a phone sees the whole issue and can reach any branch of it; an address that names a
   // node opens it on that node's parent, so the node the address named is one of the rows.
@@ -549,6 +574,18 @@ export function IssueTree({
     zoom: zoomed ? on : zoom,
   });
 
+  // The tree is one tab stop, and it rests where the reader last stood: before they have
+  // touched it that is its first row, so Tab reaches the tree rather than passing it by, and
+  // after they have left it that is the row they left, so Shift+Tab brings them back to it.
+  const keys = rows.map(rowKeyOf);
+  const first = rows[0];
+  const tabStop =
+    stop !== undefined && keys.includes(stop)
+      ? stop
+      : first === undefined
+        ? undefined
+        : rowKeyOf(first);
+
   // An address that names a node puts the focus on it, in the frame after the commit that draws
   // its row (`landOnRow`). The row is not on the page until the read that holds it has answered,
   // and the document the preset draws beside the tree mounts later still and can leave the focus
@@ -557,9 +594,16 @@ export function IssueTree({
   // focuses at a page change, which holds the tree), until the reader's first act after it took
   // it (`READER_ACTS`, which end `acts`). Whatever else holds the focus keeps it, and from the
   // reader's first act the focus is theirs wherever they put it, nowhere included - a second
-  // Escape, a press on blank space: the effect takes it no more until another address names
-  // another node. A tree drawn before the landing's frame comes - a read answering - leaves that
-  // landing waiting (`landingAsked`): asked again, it was put off by a frame at each render.
+  // Escape, a press on blank space: the effect takes it no more until the address is followed
+  // again (`landingKey`: the following and the node), to this node or another. Keyed on the node
+  // alone, a link to the node the reader had moved away from, followed again, landed nowhere; a
+  // tree drawn again at the same following lands nowhere again. A tree drawn before the
+  // landing's frame comes - a read answering - leaves that landing waiting (`landingAsked`):
+  // asked again, it was put off by a frame at each render. The issue itself is no row: an
+  // address lands on it for a turn of a thread only agents wrote in whose nearest drawn ancestor
+  // is the issue (`slots/body.tsx`), and the row it lands on is then the tree's tab stop, where
+  // the tree says what has no row of its own. What the landing says (`landingReport`) is said at
+  // the row once it holds the focus: the focus moving there lets go of what was said before.
   const taken = useRef<{ readonly acts: AbortController; readonly id: string } | undefined>(
     undefined
   );
@@ -569,24 +613,35 @@ export function IssueTree({
   >(undefined);
   const targetId = target?.id;
   useEffect(() => {
-    if (targetId === undefined || !focusReveal) return;
-    const held = taken.current?.id === targetId ? taken.current : undefined;
+    if (landingKey === undefined || targetId === undefined || !focusReveal) return;
+    const held = taken.current?.id === landingKey ? taken.current : undefined;
     const loose = focusIsLoose(body.current);
     if (held !== undefined && (held.acts.signal.aborted || !loose)) return;
-    if (!rows.some((row) => row.kind === "node" && row.node.id === targetId)) return;
-    const row = body.current?.querySelector<HTMLElement>(
-      `[data-node-row][data-node-id="${CSS.escape(targetId)}"]`
-    );
+    const selector =
+      targetId === rootId
+        ? tabStop === undefined
+          ? undefined
+          : rowSelectorOf(tabStop)
+        : rows.some((row) => row.kind === "node" && row.node.id === targetId)
+          ? `[data-node-row][data-node-id="${CSS.escape(targetId)}"]`
+          : undefined;
+    const row = selector === undefined ? null : body.current?.querySelector<HTMLElement>(selector);
     if (row === null || row === undefined) return;
+    if (held === undefined) {
+      taken.current?.acts.abort();
+      taken.current = { acts: abortOnReaderAct(), id: landingKey };
+    }
     // The landing on this row still waits for its frame.
     const asked = landingAsked.current;
     if (asked?.row === row && !asked.signal.aborted) return;
-    if (held === undefined) {
-      taken.current?.acts.abort();
-      taken.current = { acts: abortOnReaderAct(), id: targetId };
-    }
-    landingAsked.current = { row, signal: landOnRow(row, onScreenHold).signal };
-  }, [focusReveal, rows, targetId]);
+    const rowKey = row.dataset.rowKey;
+    const landed =
+      landingReport === undefined
+        ? undefined
+        : () =>
+            setReport({ line: landingReport, ...(rowKey === undefined ? {} : { row: rowKey }) });
+    landingAsked.current = { row, signal: landOnRow(row, onScreenHold, landed).signal };
+  }, [focusReveal, landingKey, landingReport, rootId, rows, tabStop, targetId]);
 
   // The page opens with the keyboard focus on the first open question that waits on the reader,
   // in the outline's own order, its path unfolded and its row in the viewport; where none waits
@@ -791,17 +846,6 @@ export function IssueTree({
     };
   }, [landing]);
 
-  // The tree is one tab stop, and it rests where the reader last stood: before they have
-  // touched it that is its first row, so Tab reaches the tree rather than passing it by, and
-  // after they have left it that is the row they left, so Shift+Tab brings them back to it.
-  const keys = rows.map(rowKeyOf);
-  const first = rows[0];
-  const tabStop =
-    stop !== undefined && keys.includes(stop)
-      ? stop
-      : first === undefined
-        ? undefined
-        : rowKeyOf(first);
   return (
     <div className="mb-3 flex min-w-0 flex-col">
       {breadcrumb.length === 0 ? null : (
@@ -945,13 +989,15 @@ export function holdOnScreen(row: HTMLElement): AbortController {
  * Until the frame the landing is what `held` holds, so a later landing, the hold of another row
  * or the tree leaving the page ends it, and so does the reader's own act (`READER_ACTS`): the
  * focus is then where they put it. Answers the landing, which the frame ends as it comes.
+ * `landed` is called once the row holds the focus the frame gave it, and only then.
  *
  * It is exported for the Plan view's chart, which is to land on the row an address names as the
  * outline does.
  */
 export function landOnRow(
   row: HTMLElement,
-  held: RefObject<AbortController | undefined>
+  held: RefObject<AbortController | undefined>,
+  landed?: () => void
 ): AbortController {
   held.current?.abort();
   const landing = abortOnReaderAct();
@@ -966,6 +1012,7 @@ export function landOnRow(
     const now = document.activeElement;
     if (now !== from && !focusOnDocument() && now?.contains(row) !== true) return;
     row.focus({ preventScroll: true });
+    if (row.contains(document.activeElement)) landed?.();
     bringOnScreen(row);
     holdInPlaceOf(row, held);
   });

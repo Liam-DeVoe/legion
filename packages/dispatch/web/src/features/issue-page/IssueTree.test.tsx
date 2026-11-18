@@ -7,20 +7,20 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from "react";
-import { MemoryRouter, useLocation } from "react-router-dom";
+import { MemoryRouter, type NavigateFunction, useLocation, useNavigate } from "react-router-dom";
 import { prosemirrorJSONToYXmlFragment } from "y-prosemirror";
 import * as Y from "yjs";
 
 import { jump, realClock } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
-import { api } from "../../api/client";
+import { ApiError, api } from "../../api/client";
 import { issueCoverageQuery, issueResultsQuery } from "../../api/queries";
-import type { Artifact, Decision, IssueDecisions, IssueDetails } from "../../api/types";
+import type { Artifact, Comment, Decision, IssueDecisions, IssueDetails } from "../../api/types";
 import { pageFocusedRow } from "../../theme/classes";
 import { bindRemoteMarks, createEditor, type EditorHandle } from "../doc/editor";
 import { compiledBlockSchema } from "../doc/schema";
 import { MarginProvider } from "../margin/margin-context";
-import { buildDispatchReference, buildIssuePath } from "../refs/routes";
+import { buildDispatchReference, buildIssuePath, parseIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
 import { issueDetails } from "./decisions-filter/decisions-fixtures";
@@ -6741,5 +6741,243 @@ test("the outline mounted again past 30 s reads none of the reads it waits on ag
   } finally {
     setSystemTime();
     for (const spy of [...reads, ...others]) spy.mockRestore();
+  }
+});
+
+/** A comment as the comments' read answers it, `at` the minute of the hour it was written in:
+ *  `reply_to` is the head of the thread it answers, and `author` alice where none is given. */
+function readComment(
+  id: string,
+  at: number,
+  reply_to: string | null = null,
+  author: Comment["author"] = { id: "alice", kind: "user" }
+): Comment {
+  return {
+    anchor: null,
+    answers: reply_to,
+    artifact_id: null,
+    ask_id: null,
+    author,
+    body: `The words of ${id}.`,
+    created_at: `2026-11-05T01:${String(at).padStart(2, "0")}:00Z`,
+    deliveries: [],
+    edited_at: null,
+    id,
+    issue_key: KEY,
+    mentions: [],
+    reply_block: null,
+    reply_to,
+    resolved: false,
+    resolved_at: null,
+    resolved_by: null,
+    suggestion: null,
+    turn: null,
+  };
+}
+
+/** Two threads of the issue, each a head and one reply under it. */
+const TWO_THREADS: readonly Comment[] = [
+  readComment("head-a", 1),
+  readComment("reply-a", 2, "head-a"),
+  readComment("head-b", 3),
+  readComment("reply-b", 4, "head-b"),
+];
+
+/** The page's body at the address the router holds, as the page's root draws it
+ *  (`IssueOutlinePage.tsx`): the route read from the address at every render. `held.navigate`
+ *  is what a link followed calls. */
+function AddressedBody({
+  held,
+  issue,
+}: {
+  held: { navigate?: NavigateFunction };
+  issue: IssueDetails;
+}): ReactNode {
+  const { pathname, search } = useLocation();
+  held.navigate = useNavigate();
+  const route = parseIssuePath(pathname, search) ?? ({ key: KEY, kind: "issue" } as const);
+  return (
+    <ProvidersSlot issue={issue} route={route}>
+      <IssueScope />
+      <BodySlot issue={issue} route={route} />
+    </ProvidersSlot>
+  );
+}
+
+/** The page's body opened at `path`, every read the tree is built from answered: the issue
+ *  holds `comments` and nothing else. `follow` follows a link to an address, as a row's link or
+ *  the router's does; `redraw` draws the same location again, as a read answering does. */
+function renderAddressedBody(path: string, comments: readonly Comment[]) {
+  const issue: IssueDetails = { ...issueDetails(), artifacts: [] };
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  client.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, { requirements: [] } as never);
+  client.setQueryData(issueResultsQuery(KEY).queryKey, { checks: [] } as never);
+  client.setQueryData(["decisions", KEY], { decisions: [], document: null, open_questions: [] });
+  client.setQueryData(["asks", KEY], []);
+  client.setQueryData(["comments", KEY], comments);
+  client.setQueryData(["issue-messages", KEY], []);
+  const held: { navigate?: NavigateFunction } = {};
+  const draw = () => (
+    <MemoryRouter initialEntries={[path]}>
+      <QueryClientProvider client={client}>
+        <KeymapProvider>
+          <MarginProvider>
+            <AddressedBody held={held} issue={issue} />
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const view = render(draw());
+  return {
+    follow: (to: string) =>
+      act(async () => {
+        await held.navigate?.(to);
+      }),
+    redraw: () => view.rerender(draw()),
+    view,
+  };
+}
+
+// The architect's rule for an address of a node of the issue: following a link to it opens the
+// branches above the node and puts the focus on its row. A zoom the reader held on another branch
+// drew no row for the node, and the landing gave up with nothing said: the focus stayed where it
+// was and the zoom stood. The following leaves a zoom the node is outside of.
+test("a comment's address followed while the reader is zoomed into another branch leaves the zoom and lands on the comment's row", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  try {
+    const body = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS);
+    const { container } = body.view;
+    await waitFor(() => expect(focusedRow(container)).toBe("head-a"));
+    await user.keyboard(".");
+    await waitFor(() => expect(container.querySelector("[data-crumb]")).not.toBeNull());
+    expect(rowsFor(container, "reply-b"), "the zoom into head-a drew the other thread").toEqual([]);
+
+    await body.follow(buildIssuePath({ id: "reply-b", key: KEY, kind: "comment" }));
+    await waitFor(() =>
+      expect(
+        focusedRow(container),
+        "the comment's address, followed from a zoom into another branch, landed nowhere"
+      ).toBe("reply-b")
+    );
+    expect(
+      container.querySelector("[data-crumb]"),
+      "the zoom into the other branch stood after the following"
+    ).toBeNull();
+  } finally {
+    names.mockRestore();
+  }
+});
+
+// The landing was keyed on the node alone, so a link to the node the reader had moved away from,
+// followed again - the same address, a new following - landed nowhere. It is keyed on the
+// following too (the location's own key), and a tree drawn again at the same following - a read
+// answering - lands no more once the reader has moved.
+test("the same address followed twice lands both times, and a redraw of it after the reader moved lands no more", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const address = buildIssuePath({ id: "reply-b", key: KEY, kind: "comment" });
+  try {
+    const body = renderAddressedBody(address, TWO_THREADS);
+    const { container } = body.view;
+    await waitFor(() => expect(focusedRow(container)).toBe("reply-b"));
+    await user.keyboard("k");
+    await waitFor(() => expect(focusedRow(container)).not.toBe("reply-b"));
+    const moved = focusedRow(container);
+    expect(moved, "k left the focus on no row").toBeDefined();
+
+    await body.follow(address);
+    await waitFor(() =>
+      expect(focusedRow(container), "the same address followed a second time landed nowhere").toBe(
+        "reply-b"
+      )
+    );
+
+    await user.keyboard("k");
+    await waitFor(() => expect(focusedRow(container)).toBe(moved));
+    body.redraw();
+    await nextFrame();
+    await nextFrame();
+    expect(focusedRow(container), "a redraw of the same following landed on the node again").toBe(
+      moved
+    );
+  } finally {
+    names.mockRestore();
+  }
+});
+
+// A node the tree does not hold falls back to the address's own page, never to the page's body,
+// once every read the tree is built from has answered: for an id no item of the issue holds, the
+// old page's landing reads the item and finds none (`missing`), and the page says so where the
+// outline would be, with the focus on that line.
+test("an address naming an item no node holds draws the item's failure once the reads are held, with the focus on its line", async () => {
+  setViewport(1440);
+  const gone = "0b6e3f51-9c55-4d9e-8a3e-5b8cfa2c7d10";
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const read = spyOn(api, "getComment").mockRejectedValue(
+    new ApiError(404, { code: "NOT_FOUND", error: "no such comment" })
+  );
+  try {
+    const body = renderAddressedBody(
+      buildIssuePath({ id: gone, key: KEY, kind: "comment" }),
+      TWO_THREADS
+    );
+    const heading = await waitFor(() =>
+      body.view.getByRole("heading", { name: "Comment not found" })
+    );
+    expect(read).toHaveBeenCalledWith(gone);
+    await waitFor(() =>
+      expect(document.activeElement, "the failure's line does not hold the focus").toBe(heading)
+    );
+    expect(heading.parentElement?.textContent).toContain(
+      `That link doesn't name a comment on ${KEY} — it may have been deleted.`
+    );
+    expect(body.view.queryByRole("tree"), "the outline is drawn beside the failure").toBeNull();
+  } finally {
+    names.mockRestore();
+    read.mockRestore();
+  }
+});
+
+// A turn of a thread only agents wrote in is no node of the outline, on purpose (`agents-only.ts`):
+// its address is no missing item. It lands on the turn's nearest drawn ancestor - the issue here,
+// which is no row, so the outline's tab stop - and says at that row that the thread is the agents'
+// alone. The item is not read as the old page reads one: it is named as a kind of its own.
+test("an address naming a turn only agents wrote in lands on its nearest drawn ancestor and says there the thread is the agents' alone", async () => {
+  setViewport(1440);
+  const agent = { id: "session-1", kind: "session" } as const;
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const read = spyOn(api, "getComment");
+  try {
+    const body = renderAddressedBody(
+      buildIssuePath({ id: "agents-1", key: KEY, kind: "comment" }),
+      [...TWO_THREADS, readComment("agents-1", 5, null, agent)]
+    );
+    const { container } = body.view;
+    await waitFor(() =>
+      expect(rowReport(container), "no row says the thread is the agents' alone").toBe(
+        KEY_REPORTS.agents_thread
+      )
+    );
+    expect(focusedRow(container), "the landing is not on the outline's tab stop").toBe("head-a");
+    expect(
+      rowsFor(container, "head-a")[0]?.querySelector("[data-row-report]"),
+      "the report is not drawn at the row the address landed on"
+    ).not.toBeNull();
+    expect(rowsFor(container, "agents-1"), "the outline drew the agents' turn").toEqual([]);
+    expect(
+      read,
+      "the agents' turn was read as an item the issue may not hold"
+    ).not.toHaveBeenCalled();
+    expect(body.view.queryByRole("heading", { name: "Comment not found" })).toBeNull();
+  } finally {
+    names.mockRestore();
+    read.mockRestore();
   }
 });
