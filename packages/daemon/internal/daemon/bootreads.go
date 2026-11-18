@@ -17,6 +17,7 @@ import (
 // name before it writes anything (readBoot).
 type bootReads struct {
 	project, operatorToken, dispatchToken string
+	transitionToken                       string // the shared Dispatch token dispatch_token_transition_file holds, read under dispatch_token_broker alone; "" with no such file, and never on the daemon's own calls
 	secrets                               map[string]string
 	paneNatsUser                          string         // the pane seed's user's public key, "" with no pane seed
 	nats                                  natsConnection // the user the daemon's own NATS connection authenticates as
@@ -44,12 +45,16 @@ type variantInstructions struct {
 // (checkOperatorConfig), the launch secrets (readLaunchSecrets), the daemon's own NATS nkey seed
 // (natsauth.DaemonSeed), the instructions file, every declared variant's instructions file, the
 // file of every hook that reads its words from one (`hooks[].prompt_file`), the Dispatch bearer's
-// file, and the runtime's own reads (readTmux, readSandbox).
+// file, or under dispatch_token_broker the transition token's file where the configuration names
+// one, and the runtime's own reads (readTmux, readSandbox).
 // hostOMP is whether boot runs the host's Oh My Pi, false only for a test that replaced the
 // runtime. prepare runs it first; CheckStart is it for `legion start --check-config`, so the check
-// refuses whatever boot refuses before its first write. What boot does after it is not a check's to
-// do: create the state directory, write the instructions copies and the Dispatch token file, read
-// provider keys from secretsd, and run the plugin gate or the image probe.
+// refuses whatever boot refuses before its first write, with one exception: under
+// dispatch_token_broker, the identity variables boot trades with and its first trade at the
+// secrets broker are boot's alone, so a check reads the file and needs no identity
+// (dispatch://INFRA-4425 R1). What boot does after it is not a check's to do: create the state
+// directory, write the instructions copies and the Dispatch token file, read provider keys from
+// secretsd, and run the plugin gate or the image probe.
 func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func(string) string, hostOMP bool, log *slog.Logger) (bootReads, error) {
 	var r bootReads
 	var err error
@@ -129,7 +134,14 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 			r.variantInstructions = append(r.variantInstructions, variantInstructions{experiment: experiment.Name, variant: variant, contents: contents})
 		}
 	}
-	if cfg.DispatchURL != "" {
+	// The loader takes dispatch_token_broker only beside dispatch_url, and the transition file only
+	// beside the broker, so the broker reads no bearer file.
+	switch {
+	case cfg.DispatchTokenBroker && cfg.DispatchTokenTransitionFile != "":
+		if r.transitionToken, err = config.ReadSecretPointer("dispatch_token_transition_file", cfg.DispatchTokenTransitionFile); err != nil {
+			return bootReads{}, err
+		}
+	case cfg.DispatchURL != "" && !cfg.DispatchTokenBroker:
 		if r.dispatchToken, err = config.ReadSecretPointer("dispatch_token_file", cfg.DispatchTokenFile); err != nil {
 			return bootReads{}, err
 		}

@@ -283,9 +283,11 @@ func pluginsLine(cfg config.Config) string {
 // files they name before it writes anything (daemon.CheckStart, the reads boot's own prepare
 // starts with, the daemon's own NATS nkey seed among them), and nothing else: no store, no team, no
 // file written, and no process but `mise where <tool>` when a tmux configuration's omp_invocation
-// names a mise tool. The OK line names the design-gate steps the file resolved to, in the order
-// it named them (`design-gate-steps=`, `none` for a deployment that gates none), and each NATS
-// nkey seed's public key when there is one, never the seed.
+// names a mise tool. Under dispatch_token_broker it reads the transition token's file where the
+// file names one, and no identity variable: the trade at the secrets broker is boot's alone
+// (dispatch://INFRA-4425 R1). The OK line names the design-gate steps the file resolved to, in
+// the order it named them (`design-gate-steps=`, `none` for a deployment that gates none), and
+// each NATS nkey seed's public key when there is one, never the seed.
 // Right after it comes one line per loader warning (config.Config.Warnings) — a key the file
 // still sets that this daemon no longer reads, whether a project sets it or the file does at its
 // top level — in the words boot logs it with: what the key would have been refused for, and what
