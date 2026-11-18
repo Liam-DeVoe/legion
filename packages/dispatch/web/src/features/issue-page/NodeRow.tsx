@@ -1333,10 +1333,11 @@ export function MoreWords({
  * prototype's own reading (`measureClamps`), by the page's one measurer (`clamp-measurer.ts`):
  * for a row that may be cut - an agent's words and an answered question - as it mounts in view,
  * before the page is painted, and while it stands within one screen of the viewport but wholly
- * outside the view, and again when its width or its words change; never for any other row. A
- * row in view keeps its length until a scroll leaves it wholly outside the view. Undefined where
- * the words are drawn whole, or not measured yet; a row the reader scrolled away from keeps the
- * cut it last had.
+ * outside the view, and again when its width or its words change or the page's typeface
+ * arrives; never for any other row. A row in view keeps its length until a scroll leaves it
+ * wholly outside the view. Undefined where the words are drawn whole, or not measured yet; a row
+ * the reader scrolled away from keeps the cut it last had, save one measured on the fallback
+ * face, which is measured again once the typeface arrives.
  */
 export function useClamp(
   words: RefObject<HTMLElement | null>,

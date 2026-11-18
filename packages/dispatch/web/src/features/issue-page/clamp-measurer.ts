@@ -55,6 +55,10 @@ interface Watched {
   /** The cut the row was last told, or `undefined` while its words are drawn whole or before
    *  they are first measured. */
   clamp: Clamp | undefined;
+  /** How many times the page's typeface had arrived when the row's cut was last measured, or
+   *  `undefined` before it is first measured. A count below the measurer's own marks a cut
+   *  measured on an earlier face: a stale cut. */
+  face: number | undefined;
   /** Whether the words stand within `NEAR_BAND` of the viewport. */
   near: boolean;
   readonly report: Report;
@@ -74,8 +78,15 @@ interface Watched {
  * of the viewport: the observer says which, and the words' own box confirms it as the slice
  * reads it. Where it has none, every row's words are measured. It measures them again when a
  * block of them changes size, or their box changes width or grows while they are whole (one
- * `ResizeObserver`), or the page's typeface arrives (one `loadingdone` listener). Words that come
- * near are measured in the next batch; words that go away keep the cut they last had.
+ * `ResizeObserver`). Words that come near are measured in the next batch; words that go away
+ * keep the cut they last had.
+ *
+ * The page's typeface arrives after the first frame (`font-display: swap`, one `loadingdone`
+ * listener), and words laid out again in it can cross the sixth line where the fallback's did
+ * not, or hold back another count of words. So its arrival marks stale every row whose cut was
+ * measured before it, near or far, and no row keeps a cut measured on the fallback face: a
+ * stale row outside the view is measured in the next batch, wherever it is laid out, and a
+ * stale row in view once it lies wholly outside the view, as every row in view is.
  *
  * A row that stands in view as it mounts is measured once the commit's layout effects have run,
  * with every other such row of the commit, and its cut drawn before the page is painted, so the
@@ -111,6 +122,8 @@ class ClampMeasurer {
   /** The row each box the size observer watches belongs to. */
   readonly #owners = new Map<Element, HTMLElement>();
   readonly #fonts: FontFaceSet | undefined = document.fonts;
+  /** How many times the page's typeface has arrived (`loadingdone`). */
+  #faces = 0;
   readonly #near: IntersectionObserver | undefined;
   readonly #sizes: ResizeObserver | undefined;
   #frame: number | undefined;
@@ -149,10 +162,9 @@ class ClampMeasurer {
               this.#queue(element);
             }
           });
-    // The page's typeface arrives after the first frame (`font-display: swap`), and the words
-    // laid out again in it can cross the sixth line where the fallback's did not, or hold back
-    // another count of words, with no change of the box a resize would see.
-    this.#fonts?.addEventListener("loadingdone", this.#measureNear);
+    // The page's typeface arrives after the first frame, with no change of the box a resize
+    // would see.
+    this.#fonts?.addEventListener("loadingdone", this.#faceArrived);
     // A scroll of the page, or of any box the rows stand in, can leave a row held in view wholly
     // outside it.
     document.addEventListener("scroll", this.#viewMoved, { capture: true, passive: true });
@@ -168,6 +180,7 @@ class ClampMeasurer {
     this.#rows.set(element, {
       boxes,
       clamp: undefined,
+      face: undefined,
       near: this.#near === undefined,
       report,
       width: undefined,
@@ -192,7 +205,7 @@ class ClampMeasurer {
   stop(): void {
     this.#near?.disconnect();
     this.#sizes?.disconnect();
-    this.#fonts?.removeEventListener("loadingdone", this.#measureNear);
+    this.#fonts?.removeEventListener("loadingdone", this.#faceArrived);
     document.removeEventListener("scroll", this.#viewMoved, { capture: true });
     if (this.#frame !== undefined) window.cancelAnimationFrame(this.#frame);
     this.#frame = undefined;
@@ -218,10 +231,15 @@ class ClampMeasurer {
     this.#frame ??= window.requestAnimationFrame(this.#measure);
   }
 
-  readonly #measureNear = (): void => {
+  /** Marks stale every row whose cut was measured before the typeface arrived, by counting the
+   *  arrival, and puts each in the next batch, near or far: one outside the view is measured
+   *  there, and one in view is held until it lies wholly outside the view. */
+  readonly #faceArrived = (): void => {
+    this.#faces += 1;
     for (const [element, watched] of this.#rows) {
-      if (watched.near && element instanceof HTMLElement) this.#queue(element);
+      if (watched.face !== undefined && element instanceof HTMLElement) this.#due.add(element);
     }
+    if (this.#due.size > 0) this.#frame ??= window.requestAnimationFrame(this.#measure);
   };
 
   /** The rows handed over since the commit that mounted them, measured where they stand in view
@@ -267,8 +285,12 @@ class ClampMeasurer {
       this.#held.delete(element);
       const box = element.getBoundingClientRect();
       // With no observer to say which rows come near as the page scrolls, nothing would queue
-      // a far row again, so every row is measured.
-      if (this.#near !== undefined && !withinBand(box)) continue;
+      // a far row again, so every row is measured. A stale row is measured wherever it is laid
+      // out; any other row only within `NEAR_BAND`.
+      const face = this.#rows.get(element)?.face;
+      const stale = face !== undefined && face < this.#faces;
+      const laidOut = box.width > 0 || box.height > 0;
+      if (this.#near !== undefined && !(stale ? laidOut : withinBand(box))) continue;
       if (inView(element, box, screen)) {
         this.#held.add(element);
         continue;
@@ -295,6 +317,7 @@ class ClampMeasurer {
       const watched = this.#rows.get(element);
       if (watched === undefined) continue;
       watched.clamp = clamp;
+      watched.face = this.#faces;
       watched.report(clamp);
     }
   }

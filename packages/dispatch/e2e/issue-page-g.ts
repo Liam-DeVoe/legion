@@ -14,6 +14,7 @@ import {
   NODE_TYPE_NAMES,
   type NodeType,
 } from "../web/src/features/issue-page/page-words";
+import { buildDispatchReference } from "../web/src/features/refs/routes";
 import {
   answerAsk,
   baseUrl,
@@ -1226,30 +1227,53 @@ const ROWS_ABOVE_OWN = 20;
 const OWN_ROWS = 6;
 
 /** What `seedLongRows` wrote: the issue; the planner's long rows by node id, top to bottom; the
- *  reader's own long rows, top to bottom; and the planner's row right above the reader's. */
+ *  reader's own long rows, top to bottom; the planner's row right above the reader's; and the
+ *  planner's long statement, the first row of the body. */
 export interface LongRowsSeed {
   readonly key: string;
   readonly rows: readonly string[];
   readonly own: readonly string[];
   readonly aboveOwn: string;
+  readonly statement: string;
 }
 
 /**
- * One issue whose conversation is the reader's comment and, under it, `LONG_ROWS` replies of the
- * planner's of 160 short words each, which a row cuts at six lines at either width and draws
- * whole shorter than a phone's screen, with a run of `OWN_ROWS` replies of the reader's own of
- * the same words after the first `ROWS_ABOVE_OWN`, which no cut ever shortens. Drawn whole they
- * make a page many screens tall, so a jump into it lands on rows no batch measured.
+ * One issue whose spec opens with one long statement the planner wrote, which a check of its
+ * Verification document serves and no result proves, and whose conversation is the reader's
+ * comment and, under it, `LONG_ROWS` replies of the planner's of 160 short words each, which a
+ * row cuts at six lines at either width and draws whole shorter than a phone's screen, with a
+ * run of `OWN_ROWS` replies of the reader's own of the same words after the first
+ * `ROWS_ABOVE_OWN`, which no cut ever shortens. Drawn whole they make a page many screens tall,
+ * so a jump into it lands on rows no batch measured. The statement is the body's first row, and
+ * the check nothing proves keeps it open in an outline folded to what is open.
  */
 export async function seedLongRows(): Promise<LongRowsSeed> {
   await createProject({ key: PROJECT, name: "Rows" });
-  const { key } = await createIssue({
+  const issue = await createIssue({
     force: true,
     project: PROJECT,
     title: "A conversation of long rows",
   });
-  const head = await createComment(key, { body: "Each reply under this one is long." });
+  const key = issue.key;
   const body = longWords("w", 160);
+  await editArtifact(
+    issue.primary_artifact_id,
+    { ops: [{ after: "end", markdown: `:::requirement{#r-long}\n${body}\n:::\n`, op: "insert" }] },
+    asPlanner
+  );
+  const serves = buildDispatchReference({ block: { id: "r-long" }, key, kind: "spec" });
+  await createIssueArtifact(key, {
+    content:
+      `:::check{#c-long serves="${serves}" surface="browser" run="bun run e2e" ` +
+      `when="before_merge"}\nThe long statement holds.\n:::\n`,
+    name: "verification.md",
+  });
+  const specSlug =
+    ((await getIssue(key)).artifacts ?? []).find((artifact) => artifact.primary)?.slug ?? "";
+  // A question that waits on the reader, which an outline that opens with the focus on such a
+  // question focuses in place of its first row, so the statement keeps its cut.
+  await createAsk(key, { question: "At which width is the cut read?", urgency: "high" }, asPlanner);
+  const head = await createComment(key, { body: "Each reply under this one is long." });
   const rows: string[] = [];
   const own: string[] = [];
   for (let at = 0; at < LONG_ROWS; at += 1) {
@@ -1260,5 +1284,11 @@ export async function seedLongRows(): Promise<LongRowsSeed> {
     }
     rows.push((await createComment(key, { body, reply_to: head.id }, asPlanner)).id);
   }
-  return { aboveOwn: rows[ROWS_ABOVE_OWN - 1] ?? "", key, own, rows };
+  return {
+    aboveOwn: rows[ROWS_ABOVE_OWN - 1] ?? "",
+    key,
+    own,
+    rows,
+    statement: blockNode(specSlug, "r-long"),
+  };
 }
