@@ -4864,6 +4864,20 @@ const EVENT_AFTER_WAITED_READ: RuleWay = {
   },
 };
 
+/** The stage drawn as a slot of its own while a row's way runs, so the row's own stage, which it
+ *  takes down and draws again around the way, is not the one the way drew. */
+function stageSlot(rig: Rig): void {
+  rig.slots.push(
+    renderHook(
+      () => {
+        useIssueTree(issue);
+        return useTreeRead(issue);
+      },
+      { wrapper: turnedStage(rig.client, rig.on) }
+    )
+  );
+}
+
 /** The live feed back with its gap replayed whole while the reader is away, which asks for a
  *  refused read, then the reader coming back while a write is out, so the read waits for the
  *  write, and leaving before the write settles, so the read is given up unsent. */
@@ -4930,6 +4944,25 @@ function twoAnswerlessWrites(feed: "down" | "up"): RuleWay {
       await tick(50, 10);
     },
     ends: treeHoldsComment("settled"),
+  };
+}
+
+/** The stage mounting as the reader opens the issue while a write that lands with no answer
+ *  (`answerlessWrite`) is out, so its first tree read waits for the write, and the write's
+ *  refresh of every query lands while it waits. */
+function openDuringAnswerlessWrite(feed: "down" | "up"): RuleWay {
+  return {
+    words: `the reader opening the issue while a write that lands in 200 ms with no answer is out, with the live feed ${feed}`,
+    does: async (rig) => {
+      if (feed === "down") await feedDown(rig);
+      await writeSettles(
+        () => answerlessWrite(rig).mutate(),
+        200,
+        async () => {
+          stageSlot(rig);
+        }
+      );
+    },
   };
 }
 
@@ -5091,6 +5124,8 @@ const WAYS = {
   retryGoneWhileWaiting: RETRY_GONE_WHILE_WAITING,
   twoAnswerlessUp: twoAnswerlessWrites("up"),
   twoAnswerlessDown: twoAnswerlessWrites("down"),
+  openDuringAnswerlessUp: openDuringAnswerlessWrite("up"),
+  openDuringAnswerlessDown: openDuringAnswerlessWrite("down"),
 } satisfies Record<string, RuleWay>;
 
 /** How many reads of a query a way starts: a count, or the least and the most. */
@@ -5709,6 +5744,16 @@ const READ_RULES: readonly ReadRule[] = [
   { read: "tree", state: "answered", observed: true, way: "twoAnswerlessDown", now: 1 },
   { read: "spec", state: "answered", observed: true, way: "twoAnswerlessUp", now: 1 },
   { read: "spec", state: "answered", observed: true, way: "twoAnswerlessDown", now: 1 },
+  // The issue opened while a write that lands with no answer is out: its first load is one read.
+  { read: "tree", state: "never", observed: false, way: "openDuringAnswerlessUp", now: 1, back: 0 },
+  {
+    read: "tree",
+    state: "never",
+    observed: false,
+    way: "openDuringAnswerlessDown",
+    now: 1,
+    back: 0,
+  },
 ];
 
 describe("the rule for when a read of the tree or of a view starts", () => {
