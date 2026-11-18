@@ -17,24 +17,27 @@ import {
   loadEditsHold,
   selectInEditor,
   selectionIntoBlock,
+  tabStopsFrom,
 } from "./node-caret";
 import { KEY_REPORTS } from "./page-structure";
 import { PRESS_ENDS } from "./press-focus";
+import { rowSelectorOf } from "./tree-focus";
 
 /** The editor the page draws for an edited row, as the row takes it: its ProseMirror view, which
- *  the row holds every edit of to the node's block (`node-caret.ts`'s `holdEditsToBlock`).
- *  `doc/editor.ts`'s `EditorHandle` is one. */
+ *  the row holds every edit of to the node's block (`node-caret.ts`'s `holdEditsToBlock`), and
+ *  whose own selection it reads a key against (`confineKey`). `doc/editor.ts`'s `EditorHandle` is
+ *  one. */
 export interface RowEditor {
   readonly view: EditorView;
 }
 
+/** What the page hands a row's editor to (`OnEditing`). */
+export type OnEditor = (editor: RowEditor | undefined) => void;
+
 /** How the tree tells the page which document a row is being edited in - `undefined` while none
  *  is - so the page draws that document's one editor, and how the page hands the row that editor:
  *  `onEditor`, with the editor as it is made, and with `undefined` as it is torn down. */
-export type OnEditing = (
-  artifactId: string | undefined,
-  onEditor?: (editor: RowEditor | undefined) => void
-) => void;
+export type OnEditing = (artifactId: string | undefined, onEditor?: OnEditor) => void;
 
 /** One row the reader is editing in: the document its node's text lives in, the block of that
  *  document the node is, and the key of the row holding the editor (`rowKeyOf`), which is what
@@ -179,10 +182,13 @@ export function useNodeEditing({
   const holdChanged = useRef<(() => void) | undefined>(undefined);
   // What takes the hold off the editor the page handed over last.
   const letGo = useRef<(() => void) | undefined>(undefined);
+  // The view of the editor the page handed over last, while the page holds it.
+  const editorView = useRef<EditorView | undefined>(undefined);
   const onEditor = useCallback((editor: RowEditor | undefined) => {
     letGo.current?.();
     letGo.current = undefined;
     hold.current = "awaited";
+    editorView.current = editor?.view;
     const parts = load.current?.parts;
     if (editor === undefined || parts === undefined) return;
     hold.current = "loading";
@@ -269,7 +275,7 @@ export function useNodeEditing({
     // and the caret are theirs, inside the node's block: an end of the selection moved out of
     // it - a press on another block of the editor, a drag, a key's move the guard below does
     // not name - goes back to the block's nearer end (`selectionIntoBlock`).
-    const rowSelector = `[data-node-row][data-row-key="${CSS.escape(editingRow)}"]`;
+    const rowSelector = rowSelectorOf(editingRow);
     let settled: (() => void) | undefined;
     // The row is looked at apart from the editor's drawing as well, until the caret is placed:
     // no draw need follow a move off the row to look again - an editor that never draws the
@@ -318,8 +324,9 @@ export function useNodeEditing({
     });
     const confining = new AbortController();
     const confine = () => {
+      if (!acts.signal.aborted) return;
       const row = box.querySelector<HTMLElement>(rowSelector);
-      if (acts.signal.aborted && row !== null) selectionIntoBlock(row, editingBlock);
+      if (row !== null) selectionIntoBlock(row, editingBlock);
     };
     // Whether the editing has ended here, with no caret placed.
     let over = false;
@@ -330,6 +337,23 @@ export function useNodeEditing({
     // goes on - some microtasks before it is handed over, where a look at the row can fall.
     let unhanded = false;
     let handing: number | undefined;
+    // Ends the editing with no caret placed - the reader took the focus out of the row first, or
+    // the editor's hold on its edits cannot go on - and answers whether it did: a press ends it
+    // once it has ended (`ended`), so nothing moves under it.
+    const endUnplaced = (row: HTMLElement, movedOn: boolean): boolean => {
+      if (pressing) return false;
+      over = true;
+      if (movedOn) {
+        setEditing(undefined);
+        return true;
+      }
+      // The row says its editor could not open, where the reader is: a focus their press put in
+      // the editor's box goes back to the row first, as Escape's does, since that box goes.
+      if (holdsRowsFocus(row)) row.focus();
+      report.current(KEY_REPORTS.editor_closed);
+      stopEditing();
+      return true;
+    };
     // Places the caret, or places it again where the focus has fallen to nothing or the caret
     // has left the block, and answers whether the row is done with: the caret placed and the
     // reader acted since, or the editing ended with none placed - the reader took the focus out
@@ -338,56 +362,40 @@ export function useNodeEditing({
       const row = box.querySelector<HTMLElement>(rowSelector);
       if (over) return true;
       if (row === null) return false;
-      if (settled === undefined) {
-        const movedOn = acts.signal.aborted && !holdsRowsFocus(row);
-        if (hold.current === "awaited" && handing === undefined && drawsBlock(row, editingBlock)) {
-          handing = window.setTimeout(() => {
-            // An editor made for a connection the room then refused draws the block and goes
-            // unhanded, and the editor for the next connection comes after a sync: where the
-            // block is no longer drawn, the wait starts again with the next editor that draws it.
-            const now = box.querySelector<HTMLElement>(rowSelector);
-            unhanded = hold.current === "awaited" && now !== null && drawsBlock(now, editingBlock);
-            if (unhanded) changed();
-            else handing = undefined;
-          }, 0);
-        }
-        // The hold cannot go on where what it is built of did not load, or where the page has
-        // handed the row no editor to hold.
-        const unheld = load.current?.failed === true || (unhanded && hold.current === "awaited");
-        if (movedOn || unheld) {
-          // A press ends the editing once it has ended (`ended`), so nothing moves under it.
-          if (pressing) return false;
-          over = true;
-          if (movedOn) {
-            setEditing(undefined);
-            return true;
-          }
-          // The row says its editor could not open, where the reader is: a focus their press
-          // put in the editor's box goes back to the row first, as Escape's does, since that box
-          // goes.
-          if (holdsRowsFocus(row)) row.focus();
-          report.current(KEY_REPORTS.editor_closed);
-          stopEditing();
-          return true;
-        }
-        // No caret goes in an editor that does not hold its edits to the node's block yet: the
-        // focus stays on the row, where no key edits the document, and the row is looked at
-        // again as the hold goes on (`holdChanged`).
-        if (hold.current !== "on" || !caretInBlock(row, editingBlock)) return false;
-        settled = holdEditorAtBlock(row, editingBlock);
-        window.clearTimeout(look);
-        looking.abort();
-        // Only a selection moved after the caret was placed is the editor's doing.
-        document.addEventListener("selectionchange", changed, { signal: acts.signal });
-        document.addEventListener("selectionchange", confine, { signal: confining.signal });
-      } else if (
+      if (settled !== undefined) {
         // An editor made again in the row's place is no editor a caret goes in until its own
         // hold is on.
-        hold.current === "on" &&
-        (focusOnDocument() || caretOutOfBlock(row, editingBlock))
-      ) {
-        caretInBlock(row, editingBlock);
+        if (hold.current === "on" && (focusOnDocument() || caretOutOfBlock(row, editingBlock))) {
+          caretInBlock(row, editingBlock);
+        }
+        return acts.signal.aborted;
       }
+      const movedOn = acts.signal.aborted && !holdsRowsFocus(row);
+      if (hold.current === "awaited" && handing === undefined && drawsBlock(row, editingBlock)) {
+        handing = window.setTimeout(() => {
+          // An editor made for a connection the room then refused draws the block and goes
+          // unhanded, and the editor for the next connection comes after a sync: where the
+          // block is no longer drawn, the wait starts again with the next editor that draws it.
+          const now = box.querySelector<HTMLElement>(rowSelector);
+          unhanded = hold.current === "awaited" && now !== null && drawsBlock(now, editingBlock);
+          if (unhanded) changed();
+          else handing = undefined;
+        }, 0);
+      }
+      // The hold cannot go on where what it is built of did not load, or where the page has
+      // handed the row no editor to hold.
+      const unheld = load.current?.failed === true || (unhanded && hold.current === "awaited");
+      if (movedOn || unheld) return endUnplaced(row, movedOn);
+      // No caret goes in an editor that does not hold its edits to the node's block yet: the
+      // focus stays on the row, where no key edits the document, and the row is looked at
+      // again as the hold goes on (`holdChanged`).
+      if (hold.current !== "on" || !caretInBlock(row, editingBlock)) return false;
+      settled = holdEditorAtBlock(row, editingBlock);
+      window.clearTimeout(look);
+      looking.abort();
+      // Only a selection moved after the caret was placed is the editor's doing.
+      document.addEventListener("selectionchange", changed, { signal: acts.signal });
+      document.addEventListener("selectionchange", confine, { signal: confining.signal });
       return acts.signal.aborted;
     };
     const changed = () => {
@@ -442,7 +450,7 @@ export function useNodeEditing({
     // own: one on blank space takes the focus to nothing in the same task as its `pointerdown`
     // and `mousedown`, and leaves it there. Escape focuses the row, so it takes nothing back
     // either.
-    const rowSelector = `[data-node-row][data-row-key="${CSS.escape(editingRow)}"]`;
+    const rowSelector = rowSelectorOf(editingRow);
     const listening = new AbortController();
     const options = { capture: true, signal: listening.signal };
     let pressed = false;
@@ -478,7 +486,7 @@ export function useNodeEditing({
           pointIn(editable, focus, focusOffset)
         ) {
           editable.focus({ preventScroll: true });
-          selectInEditor(anchor, anchorOffset, focus, focusOffset);
+          selectInEditor([anchor, anchorOffset], [focus, focusOffset]);
         } else {
           caretInBlock(row, editingBlock);
         }
@@ -507,19 +515,71 @@ export function useNodeEditing({
     // while the node's block is not the selection - before the caret is placed, or a Tab into
     // the editable before the block is drawn - no key that could edit reaches the editor at all,
     // and none does while the editor's hold is not on, where the row reads as one with no block.
-    const rowSelector = `[data-node-row][data-row-key="${CSS.escape(editingRow)}"]`;
+    //
+    // Tab and Shift+Tab the editor leaves to the browser - Milkdown answers them in a list item
+    // alone, where it sinks and lifts the item - moved the focus on to whatever the editor draws
+    // next, the whole document's: driving a preview, Tab from a statement's caret went to a
+    // control another block draws, an ask's Copy reference, and the box scrolled to it, away from
+    // the statement. So each such key is read again once the editor has had it (the bubble
+    // phase): where its default stands, the focus goes where the browser would take it, past
+    // every control the editor draws outside the node's block (`tabStopsFrom`): to a control the
+    // block draws itself, or the action bar's while it shows the selection's acts, or back to the
+    // editable, and past those Tab goes to the first tab stop after the editor's box and Shift+Tab
+    // to the row. A stop that refuses the focus, one the page does not draw, is stepped past. Out
+    // of the box, the editing ends: Shift+Tab's as Escape's does, the row holding the focus, and
+    // Tab's as a Tab out of the outline does, which lets go of the row where the focus is out of
+    // the tree (`IssueTree.tsx`'s `useReleaseFocus`); a Tab past the page's last tab stop leaves
+    // the focus on the page itself, as a browser's leaves the page. The key's default goes, so
+    // the box scrolls to nothing on the way, and nothing of the document changes. While the caret
+    // is not in the block the key never gets here (`confineKey`), and goes on to the browser.
+    const rowSelector = rowSelectorOf(editingRow);
     const listening = new AbortController();
     box.addEventListener(
       "keydown",
       (event) => {
         const row = box.querySelector<HTMLElement>(rowSelector);
         if (row === null) return;
-        confineKey(row, hold.current === "on" ? editingBlock : undefined, event);
+        confineKey(
+          row,
+          hold.current === "on" ? editingBlock : undefined,
+          event,
+          editorView.current
+        );
       },
       { capture: true, signal: listening.signal }
     );
+    box.addEventListener(
+      "keydown",
+      (event) => {
+        if (
+          event.key !== "Tab" ||
+          event.defaultPrevented ||
+          event.altKey ||
+          event.ctrlKey ||
+          event.metaKey ||
+          hold.current !== "on" ||
+          !(event.target instanceof Element)
+        ) {
+          return;
+        }
+        const row = box.querySelector<HTMLElement>(rowSelector);
+        const stops =
+          row === null ? null : tabStopsFrom(row, editingBlock, event.target, event.shiftKey);
+        if (row === null || stops === null) return;
+        event.preventDefault();
+        const to = stops.find((stop) => {
+          stop.focus();
+          return document.activeElement === stop;
+        });
+        if (to === undefined) (document.activeElement as HTMLElement | null)?.blur();
+        else if (row.querySelector(`[${EDITOR_BOX_ATTRIBUTE}]`)?.contains(to) === true) return;
+        if (to === row) stopEditing();
+        else setEditing(undefined);
+      },
+      { signal: listening.signal }
+    );
     return () => listening.abort();
-  }, [container, editingBlock, editingRow]);
+  }, [container, editingBlock, editingRow, stopEditing]);
 
   useEffect(() => {
     const box = container.current;
@@ -528,9 +588,7 @@ export function useNodeEditing({
       if (event.key !== "Escape" || event.defaultPrevented) return;
       event.preventDefault();
       (document.activeElement as HTMLElement | null)?.blur();
-      box
-        .querySelector<HTMLElement>(`[data-node-row][data-row-key="${CSS.escape(editingRow)}"]`)
-        ?.focus();
+      box.querySelector<HTMLElement>(rowSelectorOf(editingRow))?.focus();
       stopEditing();
     };
     box.addEventListener("keydown", leave, true);
@@ -544,9 +602,7 @@ export function useNodeEditing({
     const acted = abortOnReaderAct();
     const frame = requestAnimationFrame(() => {
       if (acted.signal.aborted || !focusOnDocument()) return;
-      container.current
-        ?.querySelector<HTMLElement>(`[data-node-row][data-row-key="${CSS.escape(left)}"]`)
-        ?.focus();
+      container.current?.querySelector<HTMLElement>(rowSelectorOf(left))?.focus();
     });
     return () => {
       cancelAnimationFrame(frame);
