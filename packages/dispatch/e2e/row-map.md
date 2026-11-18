@@ -269,6 +269,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/inbox-view.e2e.ts` | a priority write must arrive live |
 | `e2e/inbox.e2e.ts` | writes a reply and re-reads the thread; live event feed; lands in the document's live room |
 | `e2e/issue-page-d.e2e.ts` | each row signs in for real and turns the new page on through that login's stored preference, and the view row's counts are the server's coverage, results and block reads of the seeded issue |
+| `e2e/issue-page-g-view.e2e.ts` | its rows seed long planner replies through the server, three of them taller than the view, and read where the drawn page lays them out as it jumps, on the new page the reader's stored preference turns on |
 | `e2e/issue-page-g.e2e.ts` | the rows draw what the server stored and indexed - a document's blocks, the decisions read, a result, the one batched read of names - on the new page the reader's stored preference turns on |
 | `e2e/issue-page-i.e2e.ts` | the server's reads fold the outline; read marks and typed words persist |
 | `e2e/issue-page-j.e2e.ts` | the Spec view reads the server's stored decisions, ties and results |

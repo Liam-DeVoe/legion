@@ -1,6 +1,7 @@
 import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import type { IssueDecisions } from "../web/src/api/types";
+import { ACTION_WORDS } from "../web/src/features/issue-page/approval-chip-box";
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
 import {
   baseUrl,
@@ -246,45 +247,6 @@ export function lineOrder(page: Page, parts: readonly LinePart[]): Promise<strin
   }, parts);
 }
 
-/**
- * The label chips the frame after the properties line narrows by `by` px draws cut. In one task,
- * so before any frame is drawn and before the labels are read again on the next one, the line
- * takes an inline `max-width` that much under its width, and each chip's box is read against the
- * labels' box: a chip wholly inside it is drawn whole, one wholly outside it is not drawn, and
- * each other one is returned as `<label>: <its box> in <the labels' box>`. The line keeps the
- * inline width; the row takes it off.
- */
-export function labelsCutAsTheLineNarrows(page: Page, by: number): Promise<string[]> {
-  return page.evaluate((by) => {
-    const header = document.querySelector("[data-issue-page] header[data-issue-header]");
-    const line = header?.querySelector<HTMLElement>('[data-testid="issue-state-actions"]');
-    const box = header?.querySelector('[data-testid="issue-header-labels"]');
-    if (line === null || line === undefined || box === null || box === undefined) {
-      return ["the header draws no properties line or no labels"];
-    }
-    line.style.maxWidth = `${line.getBoundingClientRect().width - by}px`;
-    const outer = box.getBoundingClientRect();
-    const edges = (rect: DOMRect) =>
-      `${rect.left.toFixed(1)}-${rect.right.toFixed(1)} x ${rect.top.toFixed(1)}-${rect.bottom.toFixed(1)}`;
-    return [...box.querySelectorAll("[data-header-label]")].flatMap((chip) => {
-      const rect = chip.getBoundingClientRect();
-      const inside =
-        rect.left >= outer.left - 0.5 &&
-        rect.right <= outer.right + 0.5 &&
-        rect.top >= outer.top - 0.5 &&
-        rect.bottom <= outer.bottom + 0.5;
-      const outside =
-        rect.right <= outer.left + 0.5 ||
-        rect.left >= outer.right - 0.5 ||
-        rect.bottom <= outer.top + 0.5 ||
-        rect.top >= outer.bottom - 0.5;
-      return inside || outside
-        ? []
-        : [`${(chip.textContent ?? "").trim()}: ${edges(rect)} in ${edges(outer)}`];
-    });
-  }, by);
-}
-
 /** The longest label Dispatch takes, 40 UTF-16 units (`maxIssueLabel16`,
  *  `packages/envoy/internal/dispatch/api/issue_queries.go`): wider than what the header's line
  *  at 1440 px leaves beside the labels it draws of the twenty, count or no count, so drawn after
@@ -525,28 +487,34 @@ export function undersizedTargets(page: Page): Promise<string[]> {
 }
 
 /** The controls the header holds to 24 px tall at every width: the status, the priority, the
- *  assignee, the count, Approve, Request changes, the labels' count and the control that copies
- *  the key, 24 by 24 px as row one's other controls are, each as `<name>: <height>` where it is
- *  drawn shorter. */
+ *  assignee, the count, Approve (`Approve v3` on a stale approval), Request changes, the labels'
+ *  count and the control that copies the key, 24 by 24 px as row one's other controls are, each
+ *  as `<name>: <height>` where it is drawn shorter. The two actions are the buttons whose words
+ *  are an action's (`ACTION_WORDS`), the patterns the header itself finds them by. */
 export function shortControls(page: Page, key: string): Promise<string[]> {
-  return issueHeader(page).evaluate((header, key) => {
-    const named: [string, Element | null][] = [
-      ["the status", header.querySelector('select[aria-label="Status"]')],
-      ["the priority", header.querySelector(`select[aria-label="Priority of ${key}"]`)],
-      ["the assignee", header.querySelector(`select[aria-label="Assignee of ${key}"]`)],
-      ["the count", header.querySelector('button[data-testid="issue-whose-turn"]')],
-      ["the labels' count", header.querySelector('[data-testid="issue-labels-left"]')],
-      ["Copy issue key", header.querySelector('button[aria-label^="Copy issue key "]')],
-      ...[...header.querySelectorAll("button")]
-        .filter((button) => /^(Approve|Request changes)$/.test((button.textContent ?? "").trim()))
-        .map((button): [string, Element] => [(button.textContent ?? "").trim(), button]),
-    ];
-    return named
-      .filter(([, control]) => control !== null)
-      .map(([name, control]) => [name, control?.getBoundingClientRect().height ?? 0] as const)
-      .filter(([, height]) => height < 24 - 0.5)
-      .map(([name, height]) => `${name}: ${height.toFixed(1)} px`);
-  }, key);
+  const actionWords = Object.values(ACTION_WORDS).map((pattern) => pattern.source);
+  return issueHeader(page).evaluate(
+    (header, { actionWords, key }) => {
+      const actions = actionWords.map((source) => new RegExp(source));
+      const named: [string, Element | null][] = [
+        ["the status", header.querySelector('select[aria-label="Status"]')],
+        ["the priority", header.querySelector(`select[aria-label="Priority of ${key}"]`)],
+        ["the assignee", header.querySelector(`select[aria-label="Assignee of ${key}"]`)],
+        ["the count", header.querySelector('button[data-testid="issue-whose-turn"]')],
+        ["the labels' count", header.querySelector('[data-testid="issue-labels-left"]')],
+        ["Copy issue key", header.querySelector('button[aria-label^="Copy issue key "]')],
+        ...[...header.querySelectorAll("button")]
+          .map((button): [string, Element] => [(button.textContent ?? "").trim(), button])
+          .filter(([words]) => actions.some((action) => action.test(words))),
+      ];
+      return named
+        .filter(([, control]) => control !== null)
+        .map(([name, control]) => [name, control?.getBoundingClientRect().height ?? 0] as const)
+        .filter(([, height]) => height < 24 - 0.5)
+        .map(([name, height]) => `${name}: ${height.toFixed(1)} px`);
+    },
+    { actionWords, key }
+  );
 }
 
 /** The header as its height limit measures it: from the top of the header to the top of the
@@ -788,6 +756,73 @@ export function headerFamilies(page: Page): Promise<string[]> {
       .fontFamily.split(",")
       .map((family) => family.replace(/["']/g, "").trim())
   );
+}
+
+/** The header's labels against their count, read off the drawn page: how many chips are drawn
+ *  wholly inside the labels' box, each chip the box's edge cuts (`<label>: <its box> in <the
+ *  labels' box>`), and the number the count names, 0 where no count is drawn. A chip wholly
+ *  outside the box is not drawn. The count is a count of the rest where the chips drawn whole and
+ *  its number make every label, and no chip is cut. */
+export interface LabelsAgainstTheCount {
+  readonly cut: readonly string[];
+  readonly left: number;
+  readonly whole: number;
+}
+
+/**
+ * Reads `LabelsAgainstTheCount` on the header's properties line. With `narrowBy`, it reads the
+ * frame after the line narrows by that many px: in one task, so before any frame is drawn and
+ * before the labels are read again on the next one, the line takes an inline `max-width` that
+ * much under its width and the chips are then read. The line keeps the inline width; the row
+ * takes it off.
+ */
+export function labelsAgainstTheCount(
+  page: Page,
+  narrowBy?: number
+): Promise<LabelsAgainstTheCount> {
+  return propertiesLine(page).evaluate((line, narrowBy) => {
+    if (narrowBy !== undefined) {
+      line.style.maxWidth = `${line.getBoundingClientRect().width - narrowBy}px`;
+    }
+    const box = line.querySelector('[data-testid="issue-header-labels"]');
+    if (box === null) throw new Error("the header draws no labels' box");
+    const outer = box.getBoundingClientRect();
+    const edges = (rect: DOMRect) =>
+      `${rect.left.toFixed(1)}-${rect.right.toFixed(1)} x ${rect.top.toFixed(1)}-${rect.bottom.toFixed(1)}`;
+    const cut: string[] = [];
+    let whole = 0;
+    for (const chip of box.querySelectorAll("[data-header-label]")) {
+      const rect = chip.getBoundingClientRect();
+      const inside =
+        rect.left >= outer.left - 0.5 &&
+        rect.right <= outer.right + 0.5 &&
+        rect.top >= outer.top - 0.5 &&
+        rect.bottom <= outer.bottom + 0.5;
+      const outside =
+        rect.right <= outer.left + 0.5 ||
+        rect.left >= outer.right - 0.5 ||
+        rect.bottom <= outer.top + 0.5 ||
+        rect.top >= outer.bottom - 0.5;
+      if (inside) whole += 1;
+      else if (!outside)
+        cut.push(`${(chip.textContent ?? "").trim()}: ${edges(rect)} in ${edges(outer)}`);
+    }
+    const count = line.querySelector('[data-testid="issue-labels-left"]');
+    return { cut, left: Number(/\d+/.exec(count?.textContent ?? "")?.[0] ?? "0"), whole };
+  }, narrowBy);
+}
+
+/** Holds the header's labels' box at the width the chips it draws now fill, rounded up to a
+ *  whole pixel, whatever the rest of the line does after: an inline `flex` of that basis that
+ *  neither grows nor shrinks. */
+export function holdLabelsAtTheirChips(page: Page): Promise<void> {
+  return propertiesLine(page).evaluate((line) => {
+    const box = line.querySelector<HTMLElement>('[data-testid="issue-header-labels"]');
+    const last = [...(box?.querySelectorAll("[data-header-label]") ?? [])].at(-1);
+    if (box === null || last === undefined) throw new Error("the header draws no label");
+    const width = Math.ceil(last.getBoundingClientRect().right - box.getBoundingClientRect().left);
+    box.style.flex = `0 0 ${width}px`;
+  });
 }
 
 /** What the count's press left in the history entry: its `waitingPress` number, or null. */

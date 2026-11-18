@@ -202,7 +202,8 @@ export interface ProofDocumentProps {
   /** Called with this document's live editor as the document makes it, and with `undefined` as
    *  it tears that editor down: a host that acts on the editor's view itself - a row of an
    *  issue's outline holds every edit of it to the row's own block (`issue-page/node-caret.ts`) -
-   *  takes it here, before the editor has drawn the document. */
+   *  takes it here, in the task the editor is made in, which has drawn the document by then
+   *  where the room already held it. */
   onEditorHandle?(handle: EditorHandle | undefined): void;
   onToolbarChange?(toolbar: DocumentToolbar | undefined): void;
   /** Called in `pane` only, with the server's reason, when the document cannot be opened: a tree
@@ -450,7 +451,13 @@ export function ProofDocument({
     inline: true,
     label: () => `Rebuild of ${artifact.name}`,
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
+      const reread = queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
+      // Outside `NoTooltips` the rebuild stops pending as it lands and the document's reads go on
+      // after it, as on `main`. Inside, `onSuccess` returns them, which TanStack Query awaits
+      // before the rebuild stops pending: Rebuild stays refused, and keeps the focus, until the
+      // rebuilt document is read, and a text read that succeeds then takes the offer off the page.
+      if (tooltips) return;
+      return reread;
     },
     write: (_variables, bounds) => api.rebuildArtifact(artifact.id, undefined, bounds),
   });

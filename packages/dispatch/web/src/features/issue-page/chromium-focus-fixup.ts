@@ -1,10 +1,10 @@
 /**
  * For unit tests only: makes the test's document drop the focus as Chromium does when the
  * element that holds it turns disabled. Chromium moves the focus of a focused button that turns
- * disabled to the body, and enabling the button again does not bring the focus back
- * (`DecisionActions.tsx` measured it), so a keyboard reader whose control is disabled while its
- * write or read is out loses their place on the page. happy-dom keeps the focus on a disabled
- * button, so without this a unit case cannot see that happen.
+ * disabled to the body, and enabling the button again does not bring the focus back, so a
+ * keyboard reader whose control is disabled while its write or read is out loses their place on
+ * the page. happy-dom keeps the focus on a disabled button, so without this a unit case cannot
+ * see that happen.
  *
  * While it is installed, a `disabled` set on the element that holds the focus blurs it, which
  * leaves the focus on the body. The move runs from a MutationObserver, so it has happened once

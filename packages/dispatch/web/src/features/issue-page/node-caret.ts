@@ -66,6 +66,13 @@ export function caretInBlock(host: HTMLElement, blockId: string | undefined): bo
   return true;
 }
 
+/** Whether the editor in `host` draws `blockId`'s block, which is when a caret can go in it
+ *  (`caretInBlock`). */
+export function drawsBlock(host: HTMLElement, blockId: string | undefined): boolean {
+  const editable = host.querySelector<HTMLElement>('[contenteditable="true"]');
+  return editable !== null && blockIn(editable, blockId) !== null;
+}
+
 /**
  * Puts the selection from `anchor` to `focus` in the editor holding the focus, and has the
  * editor take it as its own at once. The editor reads a selection put in it only once the
@@ -108,9 +115,9 @@ export function caretOutOfBlock(host: HTMLElement, blockId: string | undefined):
   return anchor === null || anchor === undefined || !block.contains(anchor);
 }
 
-/** The keys a row's editor takes wherever its selection stands: they move the focus out of the
- *  editor or end the editing (`useNodeEditing.ts`), or are a modifier held for the next key, and
- *  none of them edits. */
+/** The keys `confineKey` leaves to a row's editor wherever its selection stands, and has it read
+ *  no caret for: Escape, which ends the editing (`useNodeEditing.ts`), and the modifiers, held for
+ *  the next key. None of them edits. Tab is no such key: Milkdown answers it in a list item. */
 const PASSING_KEYS: Readonly<Record<string, true>> = {
   Alt: true,
   AltGraph: true,
@@ -119,7 +126,6 @@ const PASSING_KEYS: Readonly<Record<string, true>> = {
   Escape: true,
   Meta: true,
   Shift: true,
-  Tab: true,
 };
 
 /** The keys held with Ctrl or Meta that the editor answers with an edit, or the browser does, by
@@ -167,7 +173,8 @@ type Point = readonly [node: Node, offset: number];
  * - every key that could edit (`couldEdit`) while the selection is not inside the block, or the
  *   editor draws no such block: before the caret is placed, or a Tab into the editable before the
  *   block is drawn, no key edits the document, while the browser's own keys - find, print, the
- *   address bar, a function key - still reach it;
+ *   address bar, a function key - still reach it. Tab alone is kept from the editor rather than
+ *   refused, so the browser still moves the focus on with it;
  * - Up on the block's first line and Down on its last, Left at its start and Right at its end,
  *   PageUp and PageDown, which leave the caret where it is.
  *
@@ -188,11 +195,43 @@ export function confineKey(
   const block = blockIn(editable, blockId);
   const selected = block === null ? null : selectionIn(block);
   if (block === null || selected === null) {
-    if (couldEdit(event)) event.preventDefault();
+    if (event.key === "Tab") {
+      // Tab is how the reader leaves an editor with no caret in the block, so its default - the
+      // focus moving on - stays. But Milkdown answers Tab and Shift+Tab in a list item, on its own
+      // selection wherever that stands (SinkListItem, LiftListItem): an edit no hold may be on to
+      // refuse yet (`useNodeEditing.ts`), and where one is, the hold refuses the edit but the
+      // keymap still prevents the key's default, which holds the focus in the editor. So the key
+      // goes no further than the element this is called at in the capture phase, the row's box
+      // (`useNodeEditing.ts`): ProseMirror's listener on the editable never hears it. The
+      // listeners that hear a key before the box - the window's and the document's in the
+      // capture phase, and the box's own for Escape - hear it as before. The page's keymap
+      // listens on the window in the bubble phase, so it no longer hears this Tab, and it binds
+      // no Tab in an editable anyway (`shell/keymap.ts`'s `isEditableTarget`).
+      event.stopPropagation();
+    } else if (couldEdit(event)) {
+      event.preventDefault();
+    }
     return;
   }
   const taken = keyAtBlock(event, block, ...selected);
-  if (taken === undefined) return;
+  if (taken === undefined) {
+    // The editor answers a key on its own selection, which it reads from the page only once the
+    // browser reports a move of the caret, a task later: in a Job like CI's, Backspace right after
+    // ArrowRight at a heading's start acted at the start, and the letter before the caret stayed
+    // (2 runs of 10). Tab and Shift+Tab are such keys: Milkdown sinks and lifts the list item its
+    // own selection is in (SinkListItem, LiftListItem), so a Tab right after ArrowDown to the next
+    // item, before the browser reported the move, would sink the item the caret had left. So
+    // before each key that goes on to the editor with the selection in the block, Escape and the
+    // modifiers aside (`PASSING_KEYS`), the editor reads the caret now, which reads nothing new
+    // where the caret has not moved (`DOMObserver.onSelectionChange`). Not during a composition:
+    // the input method holds the caret then, and ProseMirror reads the page itself as a
+    // composition starts and as it ends, and leaves a key pressed in one alone
+    // (`inOrNearComposition`).
+    if (!event.isComposing && event.key !== "Process") {
+      document.dispatchEvent(new Event("selectionchange"));
+    }
+    return;
+  }
   event.preventDefault();
   if (taken !== null) selectInEditor(taken[0][0], taken[0][1], taken[1][0], taken[1][1]);
 }
@@ -211,26 +250,20 @@ function couldEdit(event: KeyboardEvent): boolean {
  *  marks each transaction the collaboration brings with. Both are the editor library's own,
  *  which sits behind its own `import()` (`doc/editor.ts`), so they are imported here only once a
  *  row is edited, and kept from then on. */
-type HoldParts = readonly [state: typeof ProseMirrorState, sync: typeof YProseMirror];
-let holdParts: HoldParts | undefined;
+export type HoldParts = readonly [state: typeof ProseMirrorState, sync: typeof YProseMirror];
 let loadingHoldParts: Promise<HoldParts> | undefined;
 
 /** Loads what `holdEditsToBlock` is built of, once. A row asks for it as it starts editing, so
- *  the parts are held by the time the page hands the row its editor. A load that failed is tried
- *  again by the next call. */
+ *  it has loaded by the time the page hands the row its editor, and the row gives the hold what
+ *  this answers. A load that failed is the caller's to answer for, and the next call loads
+ *  again. */
 export function loadEditsHold(): Promise<HoldParts> {
   loadingHoldParts ??= importWhenOnline(() =>
     Promise.all([import("@milkdown/kit/prose/state"), import("y-prosemirror")])
-  ).then(
-    (parts) => {
-      holdParts = parts;
-      return parts;
-    },
-    (error: unknown) => {
-      loadingHoldParts = undefined;
-      throw error;
-    }
-  );
+  ).catch((error: unknown) => {
+    loadingHoldParts = undefined;
+    throw error;
+  });
   return loadingHoldParts;
 }
 
@@ -256,55 +289,67 @@ const BLOCK_ID_PROPERTY = "blockId";
  * heading's words (`syncHeadingIdPlugin`), and writes it in a transaction of its own after every
  * change of them, to each heading whose name that change moves.
  *
- * Every transaction the collaboration brings applies, wherever it lands: a collaborator's edit
- * and the marks the room projects, each marked with y-prosemirror's `ySyncPluginKey`. The
+ * Every transaction the collaboration brings applies, wherever it lands, each marked with
+ * y-prosemirror's `ySyncPluginKey`: what y-prosemirror draws from the room - a collaborator's
+ * edit, the span of a mark set there - and the editor's projection of the room's `marks` map
+ * (`doc/editor.ts`'s `bindRemoteMarks`, through `proof-sdk-upstream`'s `applyRemoteMarks`, which
+ * marks its transaction as y-prosemirror marks its own), which carries the marks' records and
+ * takes the spans of the suggestions the room has accepted or rejected out of the text. The
  * block's place is mapped through each transaction, and found again by its id where one moved it
- * elsewhere. y-prosemirror's undo (Mod-z, `@milkdown/plugin-collab`) reaches the document the
- * same way, and applies too: the row's editor is made for the row, so its undo manager holds this
- * editor's own edits alone, each inside the block. A transaction that changes neither the
- * document nor the selection - a decoration drawn, a mark stored for the next letter - leaves the
- * document as it was, and applies.
+ * elsewhere. Mod-z is answered first by Milkdown's own history, as a local transaction this
+ * filter checks like any other: two rows of one document share one editor, so an undo that would
+ * take back an earlier row's edit, outside this row's block, is refused. A transaction that
+ * changes neither the document nor the selection - a decoration drawn, a mark stored for the next
+ * letter - leaves the document as it was, and applies.
  *
- * The plugin goes on in the call where `loadEditsHold` has loaded what it is built of, which the
- * row asks for as it starts editing: so as the page hands over the editor, before the editor has
- * drawn the document, and before the caret is placed; else once they have loaded. A change of the
- * editor's plugins makes ProseMirror make each plugin's view again (`useNodeEditing.ts`). The
- * collaborators' cursors go on later in the same way, keeping every plugin the editor holds
- * (`@legion/proof-editor`'s `installCollabCursorsWhenReady`). While `heldBlock` names no block, or
- * the document holds no block of its id, no edit of the editor's own goes in. Answers what takes
- * the plugin off again.
+ * The plugin goes on once `parts` have loaded - what it is built of, which the row asks for as it
+ * starts editing (`loadEditsHold`) - and `onHeld` is called as it goes on: the row puts no caret
+ * in the editor before that (`useNodeEditing.ts`). Where they had loaded before the page handed
+ * the editor over, that is in the task it was handed over in, before a key or a press can reach
+ * the editor; the editor may have drawn the document by then. A load that failed puts no plugin
+ * on, and is the row's to answer for, which asked for it. A change of the editor's plugins makes
+ * ProseMirror make each plugin's view again (`useNodeEditing.ts`). The collaborators' cursors go
+ * on later in the same way, keeping every plugin the editor holds (`@legion/proof-editor`'s
+ * `installCollabCursorsWhenReady`). While `heldBlock` names no block, or the document holds no
+ * block of its id, no edit of the editor's own goes in. Answers what takes the plugin off again,
+ * or keeps it from going on.
  */
 export function holdEditsToBlock(
   view: EditorView,
-  heldBlock: () => string | undefined
+  heldBlock: () => string | undefined,
+  parts: Promise<HoldParts>,
+  onHeld: () => void
 ): () => void {
   let held: Plugin | undefined;
   let letGo = false;
-  const hold = ([state, sync]: HoldParts) => {
-    if (letGo || view.isDestroyed) return;
-    const plugin: Plugin<number | undefined> = new state.Plugin<number | undefined>({
-      filterTransaction: (transaction, editorState) =>
-        transaction.getMeta(sync.ySyncPluginKey) !== undefined ||
-        (!transaction.docChanged && !transaction.selectionSet) ||
-        keepsToBlock(transaction, editorState, heldBlock(), plugin.getState(editorState)),
-      // The block's start, as last found: the guess a transaction checks before it searches.
-      state: {
-        apply: (transaction, start, _, { doc }) =>
-          !transaction.docChanged
-            ? start
-            : blockStart(
-                doc,
-                heldBlock(),
-                start === undefined ? undefined : transaction.mapping.map(start, 1)
-              ),
-        init: (_, { doc }) => blockStart(doc, heldBlock(), undefined),
-      },
-    });
-    held = plugin;
-    view.updateState(view.state.reconfigure({ plugins: [...view.state.plugins, plugin] }));
-  };
-  if (holdParts === undefined) void loadEditsHold().then(hold);
-  else hold(holdParts);
+  void parts.then(
+    ([state, sync]) => {
+      if (letGo || view.isDestroyed) return;
+      const plugin: Plugin<number | undefined> = new state.Plugin<number | undefined>({
+        filterTransaction: (transaction, editorState) =>
+          transaction.getMeta(sync.ySyncPluginKey) !== undefined ||
+          (!transaction.docChanged && !transaction.selectionSet) ||
+          keepsToBlock(transaction, editorState, heldBlock(), plugin.getState(editorState)),
+        // The block's start, as last found: the guess a transaction checks before it searches.
+        state: {
+          apply: (transaction, start, _, { doc }) =>
+            !transaction.docChanged
+              ? start
+              : blockStart(
+                  doc,
+                  heldBlock(),
+                  start === undefined ? undefined : transaction.mapping.map(start, 1)
+                ),
+          init: (_, { doc }) => blockStart(doc, heldBlock(), undefined),
+        },
+      });
+      held = plugin;
+      view.updateState(view.state.reconfigure({ plugins: [...view.state.plugins, plugin] }));
+      onHeld();
+    },
+    // The row answers for a load that failed, which asked for it.
+    () => undefined
+  );
   return () => {
     const plugin = held;
     held = undefined;
