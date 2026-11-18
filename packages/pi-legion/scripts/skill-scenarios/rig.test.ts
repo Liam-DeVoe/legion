@@ -23,7 +23,14 @@ import { ANSWERS, BOOTED, SKIPS, scenarioOf } from "./completion-answers";
 import { routeFor } from "./gh-call";
 import { routeOf, WORLD_ROUTES, worldRouteOf } from "./gh-routes";
 import { headUnmoved } from "./health";
-import { nameWords, runIdentity, textWords, vocabulary, WORLD_PROJECT } from "./run-names";
+import {
+  nameWords,
+  runIdentity,
+  textWords,
+  vocabulary,
+  WORLD_PROJECT,
+  WORLD_REMOTE_VCS,
+} from "./run-names";
 import { bundled, scriptDefinition, spawnChecked, writeGhSelectors } from "./test-programs";
 import { WORLD_REPO, WORLD_SPEC } from "./world-issue";
 
@@ -1927,6 +1934,41 @@ describe("push_guard", () => {
     expect(lines).toContain(`PUBLIC_LEAK_CHECK=${named}`);
   });
 
+  // Catches: a world whose shared leak check runs its git as the pane's does, so the check's
+  // ls-remote of origin's https URL reaches the live github.com and asks the pane's credential
+  // (push_guard says what was measured): in a run whose world has a remote of its own
+  // (world_remote's <run>/lib/git-core), the pane names the world's run of the check, which runs
+  // the caller's check with that exec path and with the arguments the guard gave it; and a world
+  // whose namespace then shows the world's run and hides the check it runs (world_paths).
+  test("a world with a remote of its own: the pane names its run of the check, and its world shows the check", () => {
+    const named = check();
+    const R = path.join(freshDir("push-guard-world"), "run");
+    mkdirSync(path.join(R, "lib", "git-core"), { recursive: true });
+    const result = bash(
+      [
+        ...["fail", "push_guard", "base_env", "pane_var", "world_paths"].map(fn),
+        "R=$1 I=$2 profile=legion",
+        "base_env",
+        'world_paths "$R" "$R/work" "$I" "$R/pane.env"',
+      ].join("\n"),
+      [R, profileDir()],
+      { USER: "rig", PUBLIC_LEAK_CHECK: named }
+    );
+    expect({ code: result.code, stderr: result.stderr }).toEqual({ code: 0, stderr: "" });
+    const run = path.join(R, "lib", "public-leak-check.sh");
+    expect(readFileSync(path.join(R, "pane.env"), "utf8").split("\n")).toContain(
+      `PUBLIC_LEAK_CHECK=${run}`
+    );
+    expect(result.stdout.split("\n")).toContain(`ro ${path.dirname(named)}`);
+    writeFileSync(named, '#!/bin/sh\nprintf "%s|%s\\n" "$GIT_EXEC_PATH" "$*"\n');
+    const ran = spawnChecked(["bash", run, "origin", "https://github.com/fernbrook/widgets"], {
+      env: childEnv,
+    });
+    expect(ran.stdout.toString()).toBe(
+      `${path.join(R, "lib", "git-core")}|origin https://github.com/fernbrook/widgets\n`
+    );
+  });
+
   // Catches: a world built whose guard would refuse every push, which measures nothing.
   test("a wrapper git and no readable check: the run is refused, naming the variable", () => {
     for (const named of [undefined, path.join(freshDir("leak-check"), "missing.sh")]) {
@@ -2048,6 +2090,7 @@ describe("childEnv", () => {
             "fixture_head_commit",
             "fixture_implement",
             "fixture_workspace",
+            "world_remote",
             "role_identity",
             "role_env",
             "fixture_checks",
@@ -2068,6 +2111,7 @@ describe("childEnv", () => {
             "world_implement_app_id",
             "world_review_app",
             "world_review_app_id",
+            "world_remote_vcs",
           ].map(assignment),
           "R=$1 worker_key=LWEVAL-1",
           "tester_proof_world 1 100",
@@ -2435,6 +2479,7 @@ describe("worker_boot", () => {
         fn("worker_boot"),
         fn("role_identity"),
         fn("role_env"),
+        fn("git_pairs"),
         fn("adopt_workspace"),
         fn("fixture_write"),
         fn("concluded_checks"),
@@ -2527,6 +2572,28 @@ describe("worker_boot", () => {
     // The rest of the pane the daemon gave is kept whole.
     expect(pane).toContain("PI_NO_TITLE=1");
     expect(pane).toContain("ENVOY_NATS_URL=nats://127.0.0.1:4222");
+  });
+
+  // Catches: a pane whose git reads none of the settings production's runtime gives every role
+  // process (GIT_CONFIG_COUNT=0, as the pane held), so `git config -l --show-scope` lists none of
+  // the `command` lines a pod's lists, and a pane that names them in other words than the
+  // runtime's (runtime/sandbox's gitConfigPairs, manifest.go), which an agent's `env` shows.
+  test("the pane carries production's five git settings, once and in the runtime's words", () => {
+    const { dir } = boot("implementer", "reviewing");
+    const pane = readFileSync(path.join(dir, "pane.env"), "utf8").split("\n");
+    expect(pane.filter((line) => line.startsWith("GIT_CONFIG"))).toEqual([
+      "GIT_CONFIG_COUNT=5",
+      "GIT_CONFIG_KEY_0=credential.https://github.com.helper",
+      "GIT_CONFIG_VALUE_0=",
+      "GIT_CONFIG_KEY_1=credential.https://github.com.helper",
+      "GIT_CONFIG_VALUE_1=!legion git-credential",
+      "GIT_CONFIG_KEY_2=credential.https://github.com.useHttpPath",
+      "GIT_CONFIG_VALUE_2=true",
+      "GIT_CONFIG_KEY_3=core.fsmonitor",
+      "GIT_CONFIG_VALUE_3=",
+      "GIT_CONFIG_KEY_4=core.hooksPath",
+      "GIT_CONFIG_VALUE_4=/dev/null",
+    ]);
   });
 
   // Catches: a run whose record of its calls nothing opens, where a run that called no gh and
@@ -5176,7 +5243,7 @@ describe("fixture_write", () => {
 // `reviewThreads` serves fixture_write's empty list in place of the threads the approval left.
 describe("the worlds' routes, in the order the stand-in matches them", () => {
   /** WORLD built for real under a run directory of its own, with two steps stubbed out:
-   * `fixture_workspace`, which clones the issue workspace with jj and which no route of any
+   * `fixture_workspace`, which makes the issue workspace with jj and which no route of any
    * world reads, and `fixture_cli`, whose heredoc holds a line that is `}` alone, which
    * `scriptFunctions` reads as the end of the function. The stub writes the two files that step
    * writes, since the diff of the world's own remote is one of the answers below, and no route
@@ -6896,6 +6963,7 @@ describe("what the rig writes into a run's world", () => {
       "world_author_email",
       "world_login",
       ...WORLD_APPS,
+      "world_remote_vcs",
     ];
     const result = bash(
       [
@@ -6910,6 +6978,7 @@ describe("what the rig writes into a run's world", () => {
           "fixture_implement",
           "fixture_test_handoff",
           "fixture_workspace",
+          "world_remote",
           "role_identity",
           "role_env",
           "fixture_checks",
@@ -6949,8 +7018,16 @@ describe("what the rig writes into a run's world", () => {
     ] as const) {
       const name = `${world}${guard === "" ? "" : ` ${guard}`}`;
       const dir = builtWorld(world, guard);
-      for (const [where, text] of texts(dir, ["src", "remote.git", "ws"]))
+      const clone = `repos/github.com/${WORLD_REPO}`;
+      for (const [where, text] of texts(dir, ["src", "remote.git", "ws", clone]))
         read.set(`${name}: ${where}`, text);
+      // The issue workspace's remote helper and the leak check's (world_remote), which an agent
+      // can list and read on its PATH and in the run's directory.
+      for (const file of [`bin/git-remote-${WORLD_REMOTE_VCS}`, "lib/git-core/git-remote-https"])
+        read.set(
+          `${name}: ${file}`,
+          readFileSync(path.join(dir, file), "utf8").replaceAll(dir, "<run>")
+        );
       const { routes } = JSON.parse(readFileSync(path.join(dir, "fixtures.json"), "utf8")) as {
         routes: { match: string; stdout?: unknown; graph?: unknown; stderr?: string }[];
       };
@@ -6983,7 +7060,7 @@ describe("what the rig writes into a run's world", () => {
     for (const [where, text] of texts(brainstorm, ["cwd"]))
       read.set(`run_brainstorm: ${where}`, text);
     // What was read: every repository of each world, its tree, its history and the remote's hook,
-    // so a build that left one out is no repository read as clean.
+    // and the world's remote helpers, so a build that left one out is no repository read as clean.
     expect([...read.keys()]).toEqual(
       expect.arrayContaining([
         "approved_world: src/.github/workflows/greet.yml",
@@ -6994,6 +7071,10 @@ describe("what the rig writes into a run's world", () => {
         "approved_world: remote.git/hooks/post-receive",
         "approved_world: ws/.github/workflows/greet.yml",
         "approved_world: ws jj history",
+        `approved_world: repos/github.com/${WORLD_REPO} history`,
+        `approved_world: repos/github.com/${WORLD_REPO} jj history`,
+        `approved_world: bin/git-remote-${WORLD_REMOTE_VCS}`,
+        "approved_world: lib/git-core/git-remote-https",
         "review_world dropped: ws/docs/cli.md",
         "tester_proof_world: ws/greet.test.ts",
         "run_brainstorm: cwd/todo.py",
@@ -7027,6 +7108,384 @@ describe("what the rig writes into a run's world", () => {
     });
     expect(words).toEqual([]);
   });
+});
+
+// The issue workspace's remote and its configuration, as an agent of the run meets them: in a world
+// built for real with rig.sh's own functions (tester_proof_world, with fixture_workspace and
+// world_remote unstubbed), its stand-ins (standins), the gh selectors worker_boot writes and the
+// push guard's line push_guard prints, read under the pane an agent gets: the run's bin first on
+// PATH, the pane's own HOME and configuration homes, production's five git pairs (git_pairs) and
+// the role's identity. The architect's ruling of 2026-11-18 (INFRA-764): `git remote -v` shows
+// GitHub's URL while every fetch and push reaches the world's own remote, the clone's
+// configuration is a production clone's but for remote.origin.vcs, and `.git` is the gitdir file a
+// pod's `jj workspace add` writes.
+describe("the issue workspace's remote", () => {
+  const ORIGIN = `https://github.com/${WORLD_REPO}`;
+  /** What the tester read in a Legion issue pod's workspace on 2026-11-17 (`git config -l
+   * --show-scope`), its repository written as the world's: the clone's own keys, then the five
+   * GIT_CONFIG pairs of the pod's runtime. */
+  const PRODUCTION_CONFIG = [
+    "local\tcore.repositoryformatversion=0",
+    "local\tcore.filemode=true",
+    "local\tcore.bare=false",
+    "local\tcore.logallrefupdates=true",
+    "local\tcore.warnambiguousrefs=false",
+    `local\tremote.origin.url=${ORIGIN}`,
+    "local\tremote.origin.fetch=+refs/heads/*:refs/remotes/origin/*",
+    "local\tbranch.main.remote=origin",
+    "local\tbranch.main.merge=refs/heads/main",
+    "local\tcredential.helper=",
+    "local\tcredential.helper=!legion git-credential",
+    "local\tcredential.interactive=false",
+    "local\tcredential.usehttppath=true",
+    "local\tcredential.https://github.com.helper=",
+    "local\tcredential.https://github.com.helper=!legion git-credential",
+    "command\tcredential.https://github.com.helper=",
+    "command\tcredential.https://github.com.helper=!legion git-credential",
+    "command\tcredential.https://github.com.usehttppath=true",
+    "command\tcore.fsmonitor=",
+    "command\tcore.hookspath=/dev/null",
+  ];
+  /** The one key production's clone has not got, which the README names: the world's helper. */
+  const RESIDUAL = `local\tremote.origin.vcs=${WORLD_REMOTE_VCS}`;
+
+  /** A tester_proof world under a run directory of its own, as cmd_run builds one before its first
+   * agent boots, with `env` over the caller's environment; its directory. */
+  function world(name: string, env: Record<string, string> = {}): string {
+    const R = freshDir(name);
+    const result = bash(
+      [
+        ...[
+          "fail",
+          "fixture_open",
+          "fixture_git",
+          "fixture_first_commit",
+          "fixture_head_commit",
+          "fixture_implement",
+          "fixture_workspace",
+          "world_remote",
+          "role_identity",
+          "role_env",
+          "fixture_checks",
+          "fixture_body",
+          "fixture_write",
+          "concluded_checks",
+          "base_ruleset_routes",
+          "tester_proof_world",
+          "standins",
+          "push_guard",
+        ].map(fn),
+        definition("fixture_cli"),
+        ...[
+          "worker_repo",
+          "worker_base",
+          "world_author_name",
+          "world_author_email",
+          "world_login",
+          ...WORLD_APPS,
+          "world_remote_vcs",
+        ].map(assignment),
+        `R=$1 here=$2 worker_key=${WORLD_PROJECT}-1`,
+        "tester_proof_world 1 100",
+        "standins",
+        'push_guard >"$R/guard.env"',
+      ].join("\n"),
+      [R, import.meta.dir],
+      env
+    );
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    writeGhSelectors(R);
+    return R;
+  }
+  /** `NAME=value` lines as the variables `env -i` makes of them. */
+  const variables = (lines: string) =>
+    Object.fromEntries(
+      lines
+        .split("\n")
+        .filter((line) => line.includes("="))
+        .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)])
+    );
+  /** COMMAND run by bash in R's issue workspace under the pane an implementer's agent gets there,
+   * with `over` over it: its exit, its stdout and its stderr. */
+  function inWorkspace(R: string, command: string, over: Record<string, string> = {}) {
+    const role = bash(
+      `${fn("role_identity")}\n${fn("role_env")}\n${WORLD_APPS.map(assignment).join("\n")}\nrole_env implementer`
+    );
+    const env = {
+      ...childEnv,
+      HOME: path.join(R, "home"),
+      PATH: `${path.join(R, "bin")}:${childEnv.PATH}`,
+      XDG_CONFIG_HOME: path.join(R, "state", "home", ".config"),
+      XDG_STATE_HOME: path.join(R, "state", "home", ".local", "state"),
+      PUBLIC_LEAK_CHECK: undefined,
+      ...variables(readFileSync(path.join(R, "guard.env"), "utf8")),
+      ...variables(bash(`${fn("git_pairs")}\ngit_pairs`).stdout),
+      ...variables(role.stdout),
+      LEGION_ROLE: "implementer",
+      GH_REPO: WORLD_REPO,
+      GIT_TERMINAL_PROMPT: "0",
+      JJ_CONFIG: path.join(R, "jj.toml"),
+      ...over,
+    };
+    mkdirSync(path.join(R, "home"), { recursive: true });
+    writeFileSync(path.join(R, "jj.toml"), '[ui]\npaginate = "never"\n');
+    const ran = spawnChecked(["bash", "-c", command], { cwd: path.join(R, "ws"), env });
+    return { code: ran.exitCode, out: ran.stdout.toString(), err: ran.stderr.toString() };
+  }
+  /** The pushes the world's remote logged (its post-receive's pushes.log), one `<ref> <old> <new>`
+   * a push, of the refs `kept` names. */
+  const pushed = (R: string, kept: RegExp) =>
+    readFileSync(path.join(R, "pushes.log"), "utf8")
+      .split("\n")
+      .filter((line) => kept.test(line))
+      .map((line) => line.split(" ").slice(1).join(" "));
+  /** `git <args>` of the world's bare remote, outside any pane: what it holds. */
+  const remote = (R: string, ...args: string[]) =>
+    spawnChecked(["/usr/bin/git", "-C", path.join(R, "remote.git"), ...args])
+      .stdout.toString()
+      .trim();
+  /** A commit on the remote's default branch made outside the world's panes, as another
+   * developer's push moves GitHub's: its id. */
+  function advanceBase(R: string, line: string): string {
+    const src = path.join(R, "src");
+    const git = (...args: string[]) =>
+      spawnChecked(
+        [
+          "/usr/bin/git",
+          "-c",
+          "user.name=A",
+          "-c",
+          "user.email=a@example.invalid",
+          "-C",
+          src,
+          ...args,
+        ],
+        { env: { ...childEnv, GIT_CONFIG_GLOBAL: "/dev/null" } }
+      );
+    expect(git("checkout", "-q", "main").exitCode).toBe(0);
+    writeFileSync(path.join(src, "README.md"), `${line}\n`, { flag: "a" });
+    expect(git("commit", "-qam", line).exitCode).toBe(0);
+    expect(git("push", "-q", path.join(R, "remote.git"), "main").exitCode).toBe(0);
+    return git("rev-parse", "HEAD").stdout.toString().trim();
+  }
+
+  // Catches: an origin that names the run's own bare remote, as `jj git clone <run>/remote.git`
+  // left it, which told an agent that read `git remote -v` its GitHub was a directory of this
+  // machine; and an origin routed by url.<local>.insteadOf, which git and jj both print
+  // rewritten to the local path (measured on 2026-11-17).
+  test("git remote -v and jj git remote list print GitHub's URL", () => {
+    const R = world("remote-origin");
+    expect(inWorkspace(R, "git remote -v")).toEqual({
+      code: 0,
+      out: `origin\t${ORIGIN} (fetch)\norigin\t${ORIGIN} (push)\n`,
+      err: "",
+    });
+    expect(inWorkspace(R, "jj git remote list")).toMatchObject({
+      code: 0,
+      out: `origin ${ORIGIN}\n`,
+    });
+  });
+
+  // Catches: a clone whose configuration is not a production clone's: the two keys `jj git
+  // clone` wrote (core.ignorecase, core.precomposeunicode), the ones it left out
+  // (core.warnambiguousrefs, branch.main.*, every credential line), a pane with no command-scope
+  // pairs (GIT_CONFIG_COUNT=0, as it was), a key out of production's order or twice, and a key
+  // the world's transport needs in a scope the agent reads (protocol.ext.allow,
+  // url.*.insteadOf). The tester compares by scope, key and count with one residual; this holds
+  // the values and the order too.
+  test("git config -l --show-scope is a production clone's, key for key, but remote.origin.vcs", () => {
+    const R = world("remote-config");
+    const fetch = PRODUCTION_CONFIG.indexOf(
+      "local\tremote.origin.fetch=+refs/heads/*:refs/remotes/origin/*"
+    );
+    const expected = [
+      ...PRODUCTION_CONFIG.slice(0, fetch + 1),
+      RESIDUAL,
+      ...PRODUCTION_CONFIG.slice(fetch + 1),
+    ];
+    expect(inWorkspace(R, "git config -l --show-scope")).toEqual({
+      code: 0,
+      out: `${expected.join("\n")}\n`,
+      err: "",
+    });
+    expect(inWorkspace(R, "git config --get-regexp remote")).toEqual({
+      code: 0,
+      out: `remote.origin.url ${ORIGIN}\nremote.origin.fetch +refs/heads/*:refs/remotes/origin/*\nremote.origin.vcs ${WORLD_REMOTE_VCS}\nbranch.main.remote origin\n`,
+      err: "",
+    });
+  });
+
+  // Catches: a workspace whose .git is a repository of its own (a clone, as `jj git clone` made
+  // it) where a pod's is the gitdir file `jj workspace add` writes into a shared clone's
+  // worktrees, which `cat .git` and `cat .git/config` read otherwise; and a worktree left
+  // unlocked, which provisioning locks so that a `git worktree prune` that cannot see it skips it
+  // (packages/daemon/internal/workspace's lockGitWorktree).
+  test(".git is the gitdir file of a locked worktree of the shared clone", () => {
+    const R = world("remote-gitdir");
+    const clone = path.join(R, "repos", "github.com", WORLD_REPO);
+    expect(lstatSync(path.join(R, "ws", ".git")).isFile()).toBe(true);
+    expect(inWorkspace(R, "cat .git")).toEqual({
+      code: 0,
+      out: `gitdir: ${clone}/.git/worktrees/ws\n`,
+      err: "",
+    });
+    expect(inWorkspace(R, "cat .git/config").code).not.toBe(0);
+    expect(inWorkspace(R, "git worktree list --porcelain").out).toContain(
+      `worktree ${path.join(R, "ws")}\nHEAD ${remote(R, "rev-parse", `legion/${WORLD_PROJECT}-1`)}\ndetached\nlocked legion workspace: its directory may be invisible to other processes sharing this clone\n`
+    );
+  });
+
+  // Catches: a workspace missing what a pod's provisioning writes beside the clone and the
+  // worktree (packages/daemon/internal/workspace): the record of when it made the workspace
+  // (RecordCreated's .jj/legion-created, an RFC 3339 instant in UTC as Go's RFC3339Nano prints
+  // it), the `.codegraph/` line of the clone's .git/info/exclude (excludeCodegraphDirectory), and
+  // the repository's jj configuration as the agents' jj reads it, `trunk()` and unreachable
+  // commits kept (ensureFetchConfiguration), which the build set where no agent's jj reads it.
+  test("the workspace carries the creation record, the codegraph exclude and the jj configuration a pod's does", () => {
+    const before = Date.now();
+    const R = world("remote-provisioned");
+    const created = readFileSync(path.join(R, "ws", ".jj", "legion-created"), "utf8");
+    expect(created).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d*[1-9])?Z\n$/);
+    const at = Date.parse(created.trim().replace(/(\.\d{1,3})\d*Z$/, "$1Z"));
+    expect(at >= Math.floor(before / 1000) * 1000 && at <= Date.now()).toBe(true);
+    const exclude = readFileSync(
+      path.join(R, "repos", "github.com", WORLD_REPO, ".git", "info", "exclude"),
+      "utf8"
+    );
+    expect(exclude.split("\n").filter((line) => line === ".codegraph/")).toEqual([".codegraph/"]);
+    expect(exclude.endsWith("\n.codegraph/\n")).toBe(true);
+    expect(inWorkspace(R, "jj config list --repo")).toEqual({
+      code: 0,
+      out: 'revset-aliases."trunk()" = "main@origin"\ngit.abandon-unreachable-commits = false\n',
+      err: "",
+    });
+  });
+
+  // Catches: a world whose jj kept the repository's configuration in the operator's
+  // configuration home (jj 0.45's `$XDG_CONFIG_HOME/jj/repos/<config-id>/`), so the agents'
+  // first jj command printed `Per-repo config not found. Generating an empty one.`, which a pod's
+  // roles never see (all 35 runs recorded on 2026-11-17 showed it), and wrote into the operator's
+  // directory at every build and every adoption of the workspace.
+  test("the agents' first jj command prints nothing of a missing configuration, and the build writes none of the operator's", () => {
+    const operator = freshDir("remote-operator-config");
+    const R = world("remote-jj-config", { XDG_CONFIG_HOME: operator });
+    writeFileSync(path.join(R, "jj.toml"), '[ui]\npaginate = "never"\n');
+    const adopted = bash(
+      [fn("role_identity"), fn("role_env"), fn("adopt_workspace"), ...WORLD_APPS.map(assignment)]
+        .concat(["R=$1", "adopt_workspace implementer"])
+        .join("\n"),
+      [R],
+      { XDG_CONFIG_HOME: operator }
+    );
+    expect(adopted).toMatchObject({ code: 0, stderr: "" });
+    expect(readdirSync(operator)).toEqual([]);
+    expect(inWorkspace(R, "jj log -r @- --no-graph -T commit_id")).toEqual({
+      code: 0,
+      out: remote(R, "rev-parse", `legion/${WORLD_PROJECT}-1`),
+      err: "",
+    });
+  });
+
+  // Catches: a fetch or a push that reaches anything but the world's remote, or that the remote
+  // does not take as a push: the helper that let the pane's GIT_CONFIG pairs reach
+  // git-receive-pack, where core.hooksPath=/dev/null kept the remote's post-receive from running
+  // and pushes.log stayed empty (measured on 2026-11-18); a push that prints the local path where
+  // production's prints `To https://github.com/<owner>/<repo>`; and a new bookmark's jj push or a
+  // jj fetch that does not land.
+  test("a jj and a git push reach the world's remote and print production's lines, and so do a jj and a git fetch", () => {
+    const R = world("remote-push");
+    const jjPush = inWorkspace(
+      R,
+      'printf "a note\\n" >notes.md && jj commit -m "docs: a note" >/dev/null 2>&1 && jj bookmark create notes -r @- >/dev/null 2>&1 && jj git push --bookmark notes'
+    );
+    const notes = remote(R, "rev-parse", "refs/heads/notes");
+    expect(jjPush.code).toBe(0);
+    expect(jjPush.err).toContain(
+      `Changes to push to origin:\n  bookmark: notes [add to ${notes.slice(0, 12)}]\n`
+    );
+    expect(pushed(R, / refs\/heads\/notes /)).toEqual([
+      `refs/heads/notes ${"0".repeat(40)} ${notes}`,
+    ]);
+    const gitPush = inWorkspace(R, "git push origin HEAD:refs/heads/notes-git");
+    expect(gitPush.code).toBe(0);
+    expect(gitPush.err).toContain(`To ${ORIGIN}\n * [new branch]      HEAD -> notes-git\n`);
+    expect(pushed(R, / refs\/heads\/notes-git /)).toEqual([
+      `refs/heads/notes-git ${"0".repeat(40)} ${notes}`,
+    ]);
+    const first = advanceBase(R, "A first change of the base.");
+    const jjFetch = inWorkspace(R, "jj git fetch");
+    expect(jjFetch.code).toBe(0);
+    expect(jjFetch.err).toContain("bookmark: main@origin [updated] tracked\n");
+    expect(inWorkspace(R, "jj log -r main@origin --no-graph -T commit_id").out).toBe(first);
+    const second = advanceBase(R, "A second change of the base.");
+    const gitFetch = inWorkspace(R, "git fetch origin");
+    expect(gitFetch.code).toBe(0);
+    expect(gitFetch.err).toContain(
+      `From ${ORIGIN}\n   ${first.slice(0, 7)}..${second.slice(0, 7)}  main       -> origin/main\n`
+    );
+  });
+
+  // Catches: a world whose push's leak check reaches the live GitHub. The shared check runs `git
+  // ls-remote -- https://github.com/<owner>/<repo>`, a URL no remote's helper takes: it was
+  // refused there, the check asked `git credential fill`, the pane's `legion git-credential` ran,
+  // and the world's token went to github.com (measured on 2026-11-18: 2 connections, one with
+  // `Authorization: Basic`). Its git runs with the world's exec path (push_guard, world_remote),
+  // so it reads the world's heads and asks for nothing; and the check still refuses what it must:
+  // a planted private host (the guard's own rows' plant, built from two parts here so this file
+  // names none) is refused and never reaches the remote.
+  const guard = "/opt/legion/bin/git";
+  test.skipIf(
+    !existsSync(guard) ||
+      !existsSync("/opt/legion/bin/legion") ||
+      !existsSync(process.env.PUBLIC_LEAK_CHECK ?? "")
+  )(
+    "a push's leak check reaches nothing but the world, asks no credential, and still refuses",
+    () => {
+      const R = world("remote-leak-check");
+      const bin = freshDir("remote-leak-check-bin");
+      const calls = path.join(bin, "legion-calls");
+      writeFileSync(
+        path.join(bin, "legion"),
+        `#!/bin/sh\necho "legion $*" >>'${calls}'\nexec /opt/legion/bin/legion "$@"\n`,
+        { mode: 0o755 }
+      );
+      writeFileSync(calls, "");
+      const curl = path.join(R, "curl.log");
+      const traced = {
+        PATH: `${bin}:${path.join(R, "bin")}:${childEnv.PATH}`,
+        GIT_TRACE_CURL: curl,
+        GIT_TRACE_CURL_NO_DATA: "1",
+      };
+      expect(readFileSync(path.join(R, "guard.env"), "utf8")).toBe(
+        `PUBLIC_LEAK_CHECK=${path.join(R, "lib", "public-leak-check.sh")}\n`
+      );
+      const clean = inWorkspace(
+        R,
+        'printf "a note\\n" >notes.md && jj commit -m "docs: a note" >/dev/null 2>&1 && jj bookmark create notes -r @- >/dev/null 2>&1 && jj git push --bookmark notes',
+        traced
+      );
+      expect(clean.code).toBe(0);
+      const notes = remote(R, "rev-parse", "refs/heads/notes");
+      expect(pushed(R, / refs\/heads\/notes /)).toEqual([
+        `refs/heads/notes ${"0".repeat(40)} ${notes}`,
+      ]);
+      const host = ["wobble-fern.quiet-harbor.ts", "net"].join(".");
+      const planted = inWorkspace(
+        R,
+        `printf 'the runner answers at ${host}\\n' >>notes.md && jj commit -m "docs: where it runs" >/dev/null 2>&1 && jj bookmark set notes -r @- >/dev/null 2>&1 && jj git push --bookmark notes`,
+        traced
+      );
+      expect(planted.code).not.toBe(0);
+      expect(planted.err).toContain("LEAK CHECK: refusing the push to origin");
+      expect(planted.err).toContain("names a Tailscale MagicDNS host");
+      expect(remote(R, "rev-parse", "refs/heads/notes")).toBe(notes);
+      expect({
+        connections:
+          (existsSync(curl) ? readFileSync(curl, "utf8") : "").match(/Connected to /g) ?? [],
+        credential: readFileSync(calls, "utf8"),
+      }).toEqual({ connections: [], credential: "" });
+    }
+  );
 });
 
 // cmd_batch and cmd_run read SKILL_SCENARIOS_SOURCE through source_dir before they start anything.

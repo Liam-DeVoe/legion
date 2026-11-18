@@ -451,9 +451,11 @@ place with the text around it, where one is there. It reads nothing else the wor
 - not what the run has written (`sessions/`, `out*.txt`, `cwd/`, `ws/`, `calls.jsonl`, a HOME an
   agent used), which holds its agents' own words: read before a run's second agent, the first
   agent's transcript refused it;
-- not the world's repositories and gh answers (`world.json`, `fixtures.json`, `src/`, `ws/`,
-  `remote.git`), which the run writes into after its first agent, and which `rig.test.ts`'s "what
-  the rig writes into a run's world" holds to the same words for every world `rig.sh` builds.
+- not the world's repositories, their remote helpers and gh answers (`world.json`,
+  `fixtures.json`, `src/`, `ws/`, the shared clone `repos/`, `remote.git`, `bin/git-remote-ghapp`
+  and `lib/git-core/git-remote-https`), which the run writes into after its first agent, and which
+  `rig.test.ts`'s "what the rig writes into a run's world" holds to the same words for every world
+  `rig.sh` builds.
 
 The services' logs (`<run>/logs/`) are hidden from the agent under an empty read-only tmpfs. The
 rig's records that are files at the top of the run's directory (`built-from`, `services-from`,
@@ -500,7 +502,58 @@ gateway key command's cached token, which a judge drops to mint one that outlive
 `/tmp` while it ran, by the entries it recorded there when it started, and deletes none of it. A
 run's pushes meet the push guard a Legion pod's do: where the `git` on the
 caller's PATH is Legion's leak-check wrapper, the rig passes the caller's `PUBLIC_LEAK_CHECK` into
-each run's pane and refuses to start a run when it names no readable check.
+each run's pane and refuses to start a run when it names no readable check. In a worker world the
+pane names the world's run of that check instead (below).
+
+A worker world's issue workspace, `<run>/ws`, is made as production's provisioning makes an issue
+pod's (`rig.sh`'s `fixture_workspace`): a shared clone, `<run>/repos/github.com/<owner>/<repo>`,
+cloned with no working tree from the run's own bare remote as a pod's is from its feed, and the
+workspace added to it with `jj workspace add`, which jj colocates as a locked git worktree, so
+`<run>/ws/.git` is the file a pod's is (`gitdir: <clone>/.git/worktrees/ws`). Its origin is
+`https://github.com/<owner>/<repo>`, as a pod's is, and `git remote -v` and `jj git remote list`
+print that URL. Every fetch and push of origin by its name, git's and jj's, still reaches
+`<run>/remote.git`: origin names a remote helper (`remote.origin.vcs=ghapp`), and git runs
+`<run>/bin/git-remote-ghapp` from the pane's PATH, which hands the call to `git remote-ext` and so
+to the bare remote's own upload-pack or receive-pack, with none of the caller's repository
+variables (`git rev-parse --local-env-vars`), as git's own local transport hands it none. Measured
+on 2026-11-18 (git 2.47.3, jj 0.45.1): the pane's `core.hooksPath=/dev/null` reached
+git-receive-pack through remote-ext until the helper dropped them, and the remote's post-receive,
+which writes `pushes.log`, never ran. `url.<local>.insteadOf` was ruled out: `git remote -v` and
+`jj git remote list` print the rewritten local path. The clone's configuration holds a pod's keys in
+a pod's order (the credential lines, `core.warnAmbiguousRefs`, `branch.main.*`; none of the
+`core.ignorecase` and `core.precomposeunicode` that `jj git clone` wrote) and the pane carries the
+five `GIT_CONFIG_COUNT` pairs a pod's runtime gives every role process (`rig.sh`'s `git_pairs`), so
+`git config -l --show-scope` prints a pod's list and `remote.origin.vcs`, which `rig.test.ts`'s
+"the issue workspace's remote" holds line for line. The clone and the workspace get the rest a pod's
+provisioning writes too: `.jj/legion-created`, the `.codegraph/` line of the clone's
+`.git/info/exclude`, and the repository's jj configuration (`trunk()` and
+`git.abandon-unreachable-commits = false`). jj 0.45 keeps that configuration under the
+configuration home of whoever runs jj (`$XDG_CONFIG_HOME/jj/repos/<config-id>/`), and the rig's
+jj wrote it into the operator's, so every agent's first jj command printed `Per-repo config not
+found. Generating an empty one.`, which a pod's roles never see (all 35 runs recorded on
+2026-11-17). Every jj of the world's build and of `adopt_workspace` now runs with the
+configuration home a worker pane gets, `<run>/state/home/.config`, so the agents' jj reads what a
+pod's reads and the operator's directory is not written.
+
+The helper takes a call of origin by its name, and nothing else: a git or jj call that names the
+URL itself (`git ls-remote https://github.com/<owner>/<repo>`, `git clone` of it) reaches the live
+github.com, as it did before origin named it, and health calls the run off its world. The shared
+leak check makes such a call on every push: its `git ls-remote -- <the push's URL>` reached
+github.com, was refused, asked `git credential fill` and so the pane's `legion git-credential`,
+and sent the world's token to github.com (measured: two connections, one with `Authorization:
+Basic`). It deletes every `GIT_CONFIG*` variable before its own git, so a pair cannot route it.
+So the pane's `PUBLIC_LEAK_CHECK` names the world's run of the check, `<run>/lib/public-leak-check.sh`,
+which runs the caller's check (named in `<run>/lib/leak-check`, whose directory the namespace
+shows) with `GIT_EXEC_PATH` at `<run>/lib/git-core`, for that process alone: a link to every
+program of git's own exec path but `git-remote-https`, which sends the world's own URL to the same
+helper and every other URL to git's own. Measured at a push of a real world: no connection to
+github.com, no credential asked, the check passed a clean push, and a planted private host was
+refused and never pushed. The guard's read of the repository's visibility goes to the run's `gh`,
+which answers it from the world's repository (`public`), and `calls.jsonl` records that read as a
+call of the pushing role. No rule counts it: each reader of the record takes a call by what it
+does (`score.ts`: a review, a reply, a thread's resolve or listing, a body it wrote, the billing
+read, a `bun` run; `health.ts`: a refused call, a write), and a GET of the repository that exits 0
+with no body is none of them.
 
 A phase worker whose claim boot is refused before its first turn is launched once more, in the
 same run, as production's daemon relaunches an agent whose process exits at its boot: the daemon
@@ -599,9 +652,12 @@ an assignment of a literal gives that variable, trimmed where the command trims 
 no agent says a
 word of the measurement an input gave it: a scenario or case word with a character that is no
 letter or digit (`text-only`, `threads-closed`), a removed name (`skill-scenarios`, `LWEVAL`,
-`rig-reviewer`), a run's name in the old shape, or a case word beside a label word (`defect
-head`), by the same derived words as the guard's (`run-names.ts`'s `proseNames`; a plain word
-alone is the work's own: `head SHA`, `base branch`, `not a defect`),
+`rig-reviewer`), a name of the world's remote (`git-remote-ghapp`, `ghapp`, which no production
+clone has, so an agent that says one says what the world showed it of itself; the launch guard
+does not read these, since the world shows them by design), a run's name in the
+old shape, or a case word beside a label word (`defect head`), by the same derived words as the
+guard's (`run-names.ts`'s `proseNames`; a plain word alone is the work's own: `head SHA`, `base
+branch`, `not a defect`),
 in its own text or thinking, where its prompt, its system prompt or an entry of a transcript that
 is not an agent's own (a user message, a tool result, a message it was sent, an entry Oh My Pi put
 in its context) held the word before any agent of the run wrote it, its tool calls' arguments
@@ -1103,8 +1159,9 @@ Stated limits, each known and kept so:
   in front of the world's `gh` (measured at about 5.6 minutes of build a label).
 - A behaviour of the Legion gh wrapper that its selector table does not describe is not modelled:
   a gh alias or an extension, a set `GH_TOKEN`, `GITHUB_TOKEN` or `GH_HOST`, an option or an
-  argument the wrapper cannot place, the working directory's git remotes (a world's workspace,
-  a clone of the run's own bare remote, names none), and an option gh's help gives a command
+  argument the wrapper cannot place, the working directory's git remotes (a world's workspace's
+  origin names the world's repository, and the world's gh reads the repository from the pane's
+  `GH_REPO`, never from a remote), and an option gh's help gives a command
   that the label's saved help does not show (`gh variable list -R`: no saved help shows that
   group's inherited `-R`). The world then answers such a call otherwise than production, health
   calls the run unhealthy, and the run is replaced.
@@ -1116,3 +1173,12 @@ Stated limits, each known and kept so:
   document of two operations — is refused as a call the world does not model, where GitHub runs
   it. A field the vendored schema holds no type of is not judged, and GitHub's other validator
   refusals (a selection on a scalar, a variable declared and not used) are not modelled.
+- The issue workspace's clone holds one key no production clone does, `remote.origin.vcs=ghapp`,
+  and the pane's PATH a helper no pod's does, `<run>/bin/git-remote-ghapp`: the transport that takes
+  origin's fetches and pushes to the run's remote. It takes a call of origin by its name alone; a
+  call naming `https://github.com/<owner>/<repo>` reaches the live github.com, which health calls
+  off the world.
+- The pane's `PUBLIC_LEAK_CHECK` names the world's run of the shared check,
+  `<run>/lib/public-leak-check.sh`, where a pod's names the check itself: the run that gives the
+  check's own git the world's exec path (`<run>/lib/git-core`), so its `ls-remote` of origin's URL
+  reads the world's heads.

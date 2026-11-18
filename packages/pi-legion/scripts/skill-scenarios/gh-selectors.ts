@@ -802,8 +802,9 @@ function isWebURL(value: string): boolean {
 /** What the Legion gh wrapper reads of `argv` (gh's arguments, without `gh`) under `env` by the
  * label's `selectors` (gh.go's ghTargetOf): the owners every selector names and the one
  * repository they name, the command's own repository among them where gh resolves it, GH_REPO's
- * for a leaf that reads it. The working directory's git remotes are none: a world's workspace is
- * a clone of the run's own bare remote, a path gh reads no repository from. Undefined for a call
+ * for a leaf that reads it. The working directory's git remotes are not read: a world's workspace's
+ * origin names the world's repository (rig.sh's fixture_workspace), which GH_REPO, the one gh
+ * reads before any remote, names too in every worker pane. Undefined for a call
  * naming no leaf, one that only prints help or a version, and one this cannot place, which the
  * wrapper refuses for some other reason than its owner (`Unplaced`). */
 export function ghTargetOf(

@@ -2474,7 +2474,8 @@ test("a pull request read through the api carries the run's own head in head.sha
 });
 
 /** The top-level values of rig.sh a world's functions read: the repository's own developer, the
- * two Apps the roles act as, the login the run's token acts as and the round's two findings. */
+ * two Apps the roles act as, the login the run's token acts as, the round's two findings and the
+ * issue workspace's remote helper. */
 const WORLD_VALUES = [
   "world_author_name",
   "world_author_email",
@@ -2485,12 +2486,13 @@ const WORLD_VALUES = [
   "world_login",
   "text_finding_doc_line",
   "text_finding_trigger",
+  "world_remote_vcs",
 ];
 /** WORLD (with GUARD) built for real under a run directory of its own by rig.sh's own world
  * functions, as rig.test.ts builds its worlds: `fixture_cli` read whole, here-documents and all
  * (test-programs.ts's `scriptDefinition`), so the CLI and its tests are the rig's own and a
  * review comment on them stands on a line of the pull request's diff, as the world's seeded one
- * does; `fixture_workspace`, which clones the issue workspace with jj and which no gh answer
+ * does; `fixture_workspace`, which makes the issue workspace with jj and which no gh answer
  * reads, stubbed unless `workspace` asks for it; and this checkout's gh selectors written in as
  * worker_boot writes a label's (`writeGhSelectors`). `env` is the operator's own environment the
  * build runs in, over this process's. */
@@ -2519,7 +2521,7 @@ function worldDir(
     "round_world",
     "role_identity",
     "role_env",
-    ...(workspace ? ["fixture_workspace"] : []),
+    ...(workspace ? ["fixture_workspace", "world_remote"] : []),
     world,
   ];
   const built = spawnChecked(

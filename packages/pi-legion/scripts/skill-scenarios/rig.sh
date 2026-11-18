@@ -498,6 +498,12 @@ world_review_app_id=318406277
 # login, in no word of the rig's own — the world answered `rig[bot]` — and the same rig.test.ts
 # row reads every answer the world's routes serve for that.
 world_login='widgets-reviewer[bot]'
+# The remote helper the issue workspace's origin names (`remote.origin.vcs`), which git runs as
+# `git-remote-<vcs>` from the pane's PATH for every fetch and push of origin (world_remote): the
+# name of a helper a GitHub remote could carry, one for a GitHub App's installation, in no word of
+# the measurement. run-names.ts's WORLD_REMOTE_VCS is the same name, which health's names rule
+# reads an agent's text by, since no production clone has the key.
+world_remote_vcs=ghapp
 
 # role_identity ROLE prints, a tab between them, the name and the email every commit ROLE makes
 # carries: its App's bot identity, `<slug>[bot]` and `<id>+<slug>[bot]@users.noreply.github.com`,
@@ -523,17 +529,36 @@ role_env() {
     "GIT_AUTHOR_EMAIL=$email" "GIT_COMMITTER_NAME=$name" "GIT_COMMITTER_EMAIL=$email"
 }
 
+# git_pairs prints the five git settings production's runtime gives every role process
+# (runtime/sandbox's gitConfigPairs in manifest.go, as GIT_CONFIG_COUNT and its numbered pairs, in
+# its spelling), which `git config -l --show-scope` lists as the `command` scope: GitHub's
+# credential through `legion git-credential`, no fsmonitor and no hook. None changes what a fetch
+# or a push of the world does (measured on 2026-11-18): the remote helper asks no credential and
+# drops the pairs for the remote side (world_remote), the leak check's own ls-remote reaches the
+# run's remote and asks none either (push_guard), and a push's pre-push hook still runs, since
+# Legion's git wrapper puts its own `-c core.hooksPath=` after them, which git reads last.
+git_pairs() {
+  printf '%s\n' GIT_CONFIG_COUNT=5 \
+    GIT_CONFIG_KEY_0=credential.https://github.com.helper GIT_CONFIG_VALUE_0= \
+    GIT_CONFIG_KEY_1=credential.https://github.com.helper 'GIT_CONFIG_VALUE_1=!legion git-credential' \
+    GIT_CONFIG_KEY_2=credential.https://github.com.useHttpPath GIT_CONFIG_VALUE_2=true \
+    GIT_CONFIG_KEY_3=core.fsmonitor GIT_CONFIG_VALUE_3= \
+    GIT_CONFIG_KEY_4=core.hooksPath GIT_CONFIG_VALUE_4=/dev/null
+}
+
 # adopt_workspace ROLE gives the issue workspace's working copy ($R/ws) to ROLE before its agent
 # starts, as production's runtime does at every role's start (packages/daemon/internal/shim's
 # `runAdoption`): an undescribed working copy takes ROLE's identity as its author (`jj metaedit
 # --update-author`), and one a previous role described, its own work, is kept and ROLE starts on a
 # new one (`jj new`). jj sets a change's author when it makes the change, so without it a pane's
 # first commit carried the author of the change the fixture made, whatever the pane committed
-# as. A run with no workspace has nothing to adopt.
+# as. A run with no workspace has nothing to adopt. Its jj reads the repository's configuration
+# where the agents' jj does (fixture_workspace), and so writes none into the operator's.
 adopt_workspace() {
   local identity described
   [ -d "$R/ws/.jj" ] || return 0
   mapfile -t identity < <(role_env "$1")
+  identity+=("XDG_CONFIG_HOME=$R/state/home/.config")
   described=$(cd "$R/ws" && env "${identity[@]}" JJ_CONFIG="$R/jj.toml" \
     jj log -r '@ ~ description(exact:"")' --no-graph -T commit_id) || return 1
   if [ -n "$described" ]; then
@@ -985,17 +1010,41 @@ install_superpowers() {
 # pointer file under the configuration home (packages/daemon/internal/leakguard's Resolve). A pod
 # carries PUBLIC_LEAK_CHECK (runtime/sandbox's mainEnvironment), and a run's configuration home is
 # its own ($R/home, or $R/state/home for a worker pane), which holds no pointer file. So:
-#   - PUBLIC_LEAK_CHECK set in the caller's environment: passed to the pane as it is;
+#   - PUBLIC_LEAK_CHECK set in the caller's environment: passed to the pane as it is, or, in a
+#     world whose issue workspace has a remote of its own (world_remote), as the world's run of it
+#     (below);
 #   - the caller's `git` a leak-check wrapper (a script that sets `core.hooksPath=` for a push) and
 #     PUBLIC_LEAK_CHECK naming no readable file: the run is refused, naming the variable, since
 #     its guard would refuse every push the run made (tester v21, k1 and k2: every push of the
 #     batch refused with `LEAK CHECK SETUP ERROR`, and agents reading other runs' directories for
 #     a pointer file to get through);
 #   - any other `git`, and no PUBLIC_LEAK_CHECK: nothing is added.
+#
+# The world's run of the check is $R/lib/public-leak-check.sh, which runs the caller's check (named
+# in $R/lib/leak-check, which world_paths shows) with GIT_EXEC_PATH at $R/lib/git-core, for that
+# process and its children alone. The check runs `git ls-remote -- <the push's URL>`, which is
+# origin's https URL: a URL argument, so no remote's vcs helper takes it, and git reached the live
+# github.com, refused (the world's repository is no repository there), asked `git credential fill`
+# and so the pane's `legion git-credential`, and asked github.com again with the world's token
+# (measured on 2026-11-18: GIT_TRACE_CURL showed 2 connections to github.com, one with
+# `Authorization: Basic`, and `legion git-credential get`, `erase`, `get`). A GIT_CONFIG pair
+# cannot route it: the check deletes every GIT_CONFIG* variable before its own git
+# (public_leak_check.py's CALLER_GIT_CONFIG_ENV), measured with url.<remote>.insteadOf appended to
+# the pane's pairs. GIT_EXEC_PATH it keeps, and its git-remote-https (world_remote) sends the
+# world's own URL to the run's remote: measured, 0 connections, no credential asked, the clean
+# push passed, a credential in an added line refused by the shared check and a planted private
+# host by the guard's own rules. So the pane's PUBLIC_LEAK_CHECK names the run's path, not the
+# pod's, which an agent that reads the variable or the file sees: a residual the README names.
 push_guard() {
-  local git_path
-  if [ -n "${PUBLIC_LEAK_CHECK:-}" ] && [ -f "$PUBLIC_LEAK_CHECK" ] && [ -r "$PUBLIC_LEAK_CHECK" ]; then
-    printf 'PUBLIC_LEAK_CHECK=%s\n' "$PUBLIC_LEAK_CHECK"
+  local git_path check=${PUBLIC_LEAK_CHECK:-}
+  if [ -n "$check" ] && [ -f "$check" ] && [ -r "$check" ]; then
+    if [ -n "${R:-}" ] && [ -d "$R/lib/git-core" ]; then
+      printf '%s\n' "$check" >"$R/lib/leak-check"
+      check=$R/lib/public-leak-check.sh
+      printf '#!/usr/bin/env bash\nGIT_EXEC_PATH=%q exec bash "$(<%q)" "$@"\n' \
+        "$R/lib/git-core" "$R/lib/leak-check" >"$check"
+    fi
+    printf 'PUBLIC_LEAK_CHECK=%s\n' "$check"
     return 0
   fi
   if git_path=$(command -v git) && [ -f "$git_path" ] && [ "$(head -c 2 "$git_path")" = '#!' ] &&
@@ -1173,8 +1222,10 @@ world_paths() {
     # The pinned Oh My Pi, wherever `mise where` put it.
     [ -z "$pin_dir" ] || printf 'ro %s\n' "$pin_dir"
     # The push guard's shared check (push_guard's PUBLIC_LEAK_CHECK), which a Legion pod keeps
-    # outside the scratch root.
+    # outside the scratch root. In a world with a remote of its own the pane names the world's run
+    # of it, in the run's own directory, and the check it runs is the one $R/lib/leak-check names.
     entry=$(pane_var PUBLIC_LEAK_CHECK "$pane")
+    if [ "$entry" = "$R/lib/public-leak-check.sh" ] && [ -f "$R/lib/leak-check" ]; then entry=$(<"$R/lib/leak-check"); fi
     [ -z "$entry" ] || printf 'ro %s\n' "$(dirname -- "$entry")"
   } | while read -r kind entry; do
     # A shown path that is a link, or lies under one, is shown at what it resolves to as well, read
@@ -3074,21 +3125,123 @@ fixture_test_handoff() {
      failures:[]}' >"$R/test.json"
 }
 
-# fixture_workspace clones the remote into $R/ws, the issue workspace every role of the run
-# shares, as the implement App, the App production's workspace provisioning clones with
-# (packages/daemon/internal/daemon's outbox `createBranch`); each role then adopts its working copy
-# at its boot (adopt_workspace). It is isolated from the operator's own jj configuration
-# (fsmonitor.backend = "watchman" on a devbox that runs it) by a bare JJ_CONFIG naming only
-# fsmonitor.backend = "none", so jj falls back to its built-in defaults and `jj new`'s
-# working-copy snapshot never registers this run's workspace with the operator's long-running
-# watchman; and from the operator's own identity by the App's (role_env).
+# world_remote writes the transport the issue workspace's origin reaches the run's remote by, into
+# the run's own directory, which the agent's namespace shows. Production's origin is
+# https://github.com/<owner>/<repo>, and the world's is too, which `git remote -v` and `jj git
+# remote list` print; url.<local>.insteadOf would route it, and both print the local path instead
+# (measured on 2026-11-17, jj 0.45.1, git 2.47.3). So origin names a remote helper
+# (remote.origin.vcs, fixture_workspace), $R/bin/git-remote-<vcs> on the pane's PATH (base_env),
+# which git runs for every fetch and push of origin by its name, git's own and jj's alike: `git
+# remote-ext` hands the call to git-upload-pack or git-receive-pack of $R/remote.git. It drops the
+# variables of the caller's repository first (`git rev-parse --local-env-vars`: GIT_DIR,
+# GIT_CONFIG_COUNT and its pairs, GIT_CONFIG_PARAMETERS and the rest), as git's own local transport
+# drops them for the remote side: measured on 2026-11-18, the pane's core.hooksPath=/dev/null
+# reached git-receive-pack through remote-ext, and the remote's post-receive, which writes
+# pushes.log, never ran. protocol.ext.allow is set nowhere: git asks it of an ext:: URL, and none is
+# one here (measured: a fetch and a push exit 0 without it). A call that names the URL itself
+# (`git ls-remote https://github.com/<owner>/<repo>`) is no call of origin by its name: git takes
+# it to github.com, and health calls it off the world.
+#
+# And $R/lib/git-core, the exec path the shared leak check's own git runs with (push_guard): a
+# link to every program of git's own exec path but git-remote-https, which sends the world's own
+# URL, with `.git` or without, to the same helper, and every other URL to git's own.
+world_remote() {
+  local real remote=$R/remote.git url=https://github.com/$worker_repo entry
+  real=$(git --exec-path)
+  mkdir -p "$R/bin" "$R/lib/git-core"
+  # remote-ext splits its command at each space and reads `%` as a placeholder's start: `% ` and
+  # `%%` are the literal two.
+  remote=${remote//%/%%}
+  # shellcheck disable=SC2016 # the helper's own expansions
+  printf '#!/bin/sh\nunset $(git rev-parse --local-env-vars)\nexec git remote-ext "$1" %q\n' \
+    "git-%s ${remote// /% }" >"$R/bin/git-remote-$world_remote_vcs"
+  for entry in "$real"/*; do ln -s "$entry" "$R/lib/git-core/${entry##*/}"; done
+  rm "$R/lib/git-core/git-remote-https"
+  # shellcheck disable=SC2016 # the helper's own expansions
+  printf '#!/bin/sh\ncase $2 in %q | %q) unset GIT_EXEC_PATH; exec %q "$@" ;; esac\nexec %q "$@"\n' \
+    "$url" "$url.git" "$R/bin/git-remote-$world_remote_vcs" "$real/git-remote-https" \
+    >"$R/lib/git-core/git-remote-https"
+  chmod +x "$R/bin/git-remote-$world_remote_vcs" "$R/lib/git-core/git-remote-https"
+}
+
+# fixture_workspace makes $R/ws, the issue workspace every role of the run shares, as production's
+# provisioning makes an issue pod's (packages/daemon/internal/workspace: provision.go's Provision,
+# clone.go's feedClone, bookmark.go's createWorkspace), as the implement App, the App it
+# provisions with (packages/daemon/internal/daemon's outbox `createBranch`); each role then adopts
+# its working copy at its boot (adopt_workspace):
+#   - the shared clone, $R/repos/github.com/<owner>/<repo> where a pod's is /legion/repos/github.com/
+#     <owner>/<repo>: cloned from the run's remote with no working tree, as a pod's is from its feed
+#     (`git clone --no-checkout`), its origin GitHub's URL with the world's helper (world_remote),
+#     made jj's with no working copy of its own (`jj git init --colocate`, `jj sparse set --clear`,
+#     then `jj abandon @`), the default branch tracked, and unreachable commits kept (`jj config
+#     set --repo git.abandon-unreachable-commits false`, ensureFetchConfiguration);
+#   - the workspace, added to it at the issue branch with `jj workspace add --sparse-patterns
+#     empty`, which jj colocates as a git worktree, so $R/ws/.git is the file a pod's is (`gitdir:
+#     <clone>/.git/worktrees/ws`), its creation recorded in .jj/legion-created as RecordCreated
+#     writes it (an RFC 3339 instant in UTC, its fraction's trailing zeros dropped, as Go's
+#     RFC3339Nano prints one), locked with provisioning's reason (lockGitWorktree), the clone's
+#     .git/info/exclude given `.codegraph/` (excludeCodegraphDirectory) and then checked out (`jj
+#     sparse reset`). Measured on 2026-11-18: `jj log`, `jj commit`, `jj git fetch` and `jj git
+#     push`, and `git status`, `log`, `diff`, `show`, `fetch`, `push` and `ls-remote origin`,
+#     each in the workspace as in a pod's;
+#   - the repository's jj configuration where the agents' own jj reads it: jj 0.45 keeps it under
+#     the configuration home of whoever runs jj, `$XDG_CONFIG_HOME/jj/repos/<.jj/repo/config-id>/`,
+#     and a jj that finds none there prints `Per-repo config not found. Generating an empty one.`
+#     on its first command, as every agent of the 35 runs recorded on 2026-11-17 was shown, since
+#     jj wrote it into the operator's. A pod's workspace-init writes it into the configuration home
+#     each role's is a copy of (runtime/sandbox's manifest.go, xdgConfigHome), so a role's jj
+#     reads `trunk()` and `git.abandon-unreachable-commits = false` there and prints no such line.
+#     So every jj here runs with the configuration home a worker pane gets, $R/state/home/.config
+#     (the tmux runtime's xdgDirectories under the pane's LEGION_STATE_DIR, $R/state), which
+#     adopt_workspace's jj runs with too, and none writes the operator's;
+#   - the clone's git configuration, production's (configureRepositoryCredential,
+#     configureCloneReads): its `local` scope, as the tester read a pod's with `git config -l
+#     --show-scope`, holds production's keys in production's order and remote.origin.vcs. A `jj git
+#     clone` made it before, which added core.ignorecase and core.precomposeunicode, keys no
+#     pod's clone holds, and set no credential and no core.warnAmbiguousRefs. Its git reads none
+#     of the operator's configuration, whose global file and GIT_CONFIG_COUNT pairs are no clone's.
+#     The credential lines are text nothing of the world calls: the helper asks no credential, and
+#     the leak check's own ls-remote reaches the run's remote (push_guard).
+# It is isolated from the operator's own jj configuration (fsmonitor.backend = "watchman" on a
+# devbox that runs it) by a bare JJ_CONFIG naming only fsmonitor.backend = "none", so jj falls back
+# to its built-in defaults and no snapshot registers this run's workspace with the operator's
+# long-running watchman; and from the operator's own identity by the App's (role_env).
 fixture_workspace() {
-  local jj_setup_config=$R/jj-setup.toml identity
+  local jj_setup_config=$R/jj-setup.toml identity clone=$R/repos/github.com/$worker_repo jj git
   mapfile -t identity < <(role_env implementer)
   printf '[fsmonitor]\nbackend = "none"\n' >"$jj_setup_config"
-  env "${identity[@]}" JJ_CONFIG="$jj_setup_config" jj git clone "$R/remote.git" "$R/ws" >/dev/null 2>&1
-  (cd "$R/ws" && env "${identity[@]}" JJ_CONFIG="$jj_setup_config" jj bookmark track "legion/$worker_key" --remote origin &&
-    env "${identity[@]}" JJ_CONFIG="$jj_setup_config" jj new "legion/$worker_key") >/dev/null 2>&1
+  jj=(env "${identity[@]}" JJ_CONFIG="$jj_setup_config" XDG_CONFIG_HOME="$R/state/home/.config" jj)
+  git=(env -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git)
+  world_remote
+  mkdir -p "${clone%/*}"
+  {
+    "${git[@]}" clone --quiet --no-checkout "$R/remote.git" "$clone" &&
+      "${git[@]}" --git-dir="$clone/.git" remote set-url origin "https://github.com/$worker_repo" &&
+      "${git[@]}" --git-dir="$clone/.git" config remote.origin.vcs "$world_remote_vcs" &&
+      (cd "${clone%/*}" && "${jj[@]}" git init --colocate "$clone") &&
+      (
+        cd "$clone" &&
+          "${jj[@]}" sparse set --clear --color=never -R "$clone" &&
+          "${jj[@]}" abandon @ --color=never -R "$clone" &&
+          "${jj[@]}" bookmark track "$worker_base" --remote origin --ignore-working-copy -R "$clone" &&
+          "${jj[@]}" config set --repo git.abandon-unreachable-commits false --ignore-working-copy -R "$clone" &&
+          "${jj[@]}" bookmark track "legion/$worker_key" --remote origin --ignore-working-copy -R "$clone" &&
+          "${jj[@]}" workspace add "$R/ws" --name ws --sparse-patterns empty -R "$clone" \
+            --revision "$("${jj[@]}" log -r "legion/$worker_key@origin" --no-graph -T commit_id --ignore-working-copy -R "$clone")"
+      ) &&
+      printf '%sZ\n' "$(date -u +%FT%T.%N | sed -E 's/\.?0+$//')" >"$R/ws/.jj/legion-created" &&
+      "${git[@]}" --git-dir="$clone/.git" worktree lock \
+        --reason "legion workspace: its directory may be invisible to other processes sharing this clone" "$R/ws" &&
+      "${git[@]}" --git-dir="$clone/.git" config --replace-all credential.helper "" &&
+      "${git[@]}" --git-dir="$clone/.git" config --add credential.helper '!legion git-credential' &&
+      "${git[@]}" --git-dir="$clone/.git" config --replace-all credential.https://github.com.helper "" &&
+      "${git[@]}" --git-dir="$clone/.git" config --add credential.https://github.com.helper '!legion git-credential' &&
+      "${git[@]}" --git-dir="$clone/.git" config credential.interactive false &&
+      "${git[@]}" --git-dir="$clone/.git" config credential.useHttpPath true &&
+      "${git[@]}" --git-dir="$clone/.git" config core.warnAmbiguousRefs false &&
+      printf '.codegraph/\n' >>"$clone/.git/info/exclude" &&
+      (cd "$R/ws" && "${jj[@]}" sparse reset)
+  } >/dev/null 2>&1 || fail "fixture_workspace: the issue workspace $R/ws could not be made from $R/remote.git"
 }
 
 # fixture_checks ROLE... prints the pull request body's `**Checks:**` section: one line per role
@@ -3556,13 +3709,14 @@ worker_boot() {
   # `env -i` decided which one the agent got by the order of the two lines. The pane's line is
   # dropped here: one fact, one line, and a reader of pane.env sees the address the run's
   # sessions actually reach. `sed` rather than `grep -v`, which exits 1 on a worker.env whose
-  # every line it dropped and would take `set -e` with it.
+  # every line it dropped and would take `set -e` with it. Then production's git settings for
+  # every role process (git_pairs), where the pane held GIT_CONFIG_COUNT=0 before.
   {
     sed '/^ENVOY_URL=/d' "$R/worker.env"
     cat "$services_env"
     echo "DISPATCH_URL=http://127.0.0.1:$dispatch_port"
     echo "DISPATCH_TOKEN_FILE=$tokens/dispatch-token"
-    echo "GIT_CONFIG_COUNT=0"
+    git_pairs
     role_env "$role"
     echo "JJ_CONFIG=$R/jj.toml"
     echo "GH_REPO=$worker_repo"

@@ -15,7 +15,14 @@ import {
   unmodelledWrite,
   writtenBy,
 } from "./health";
-import { REMOVED_NAMES, systemPromptOf, vocabulary } from "./run-names";
+import {
+  REMOVED_NAMES,
+  systemPromptOf,
+  vocabulary,
+  WORLD_REMOTE_NAMES,
+  WORLD_REMOTE_VCS,
+} from "./run-names";
+import { WORLD_REPO } from "./world-issue";
 
 /** The world of a run whose pane names only the loopback. */
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "::1"]);
@@ -338,6 +345,32 @@ describe("health: rule 13, off-world network, where git and jj take a repository
     `git remote set-url --delete origin ${remote}`,
     `git config --unset remote.origin.url ${remote}`,
     `git push --repo=${remote} origin main`,
+  ])
+    test(`\`${command}\` reaches no host`, () => {
+      expect(reach(bash(command))).toBeUndefined();
+    });
+});
+
+// Catches: a git or jj call that names the world's own repository by its https URL read as on the
+// world. The issue workspace's origin is that URL (rig.sh's fixture_workspace), and the world's
+// helper takes a call of origin by its name alone (world_remote): a call naming the URL is taken
+// to the live github.com, as it was before the origin named it, so the run reached off its world.
+describe("health: rule 13, off-world network, the world's own repository by its URL", () => {
+  const url = `https://github.com/${WORLD_REPO}`;
+  for (const [command, named] of [
+    [`git ls-remote ${url}`, url],
+    [`git fetch ${url}.git main`, `${url}.git`],
+    [`git clone ${url} src`, url],
+    [`jj git clone ${url} src`, url],
+  ])
+    test(`\`${command}\` is off-world`, () => {
+      expect(reach(bash(command))).toBe(offWorld("github.com", named));
+    });
+
+  for (const command of [
+    "git ls-remote origin",
+    "git fetch origin main",
+    "jj git fetch --remote origin",
   ])
     test(`\`${command}\` reaches no host`, () => {
       expect(reach(bash(command))).toBeUndefined();
@@ -1622,6 +1655,47 @@ describe("health: rule 17, names, traced to where an agent got them", () => {
     expect(namesSaid(alone)).toBe(undefined);
     expect(namesOf(alone).own).toEqual([
       `a thinking part in ${FILE} says "skill-scenario": "${coined}"`,
+    ]);
+  });
+
+  // Catches: the world's remote helper or its vcs value (run-names.ts's WORLD_REMOTE_NAMES) read
+  // as no word of the measurement, so an agent that repeats the `remote.origin.vcs` its `git
+  // config -l` showed it, or the helper its PATH holds, reads healthy, where no production clone
+  // has either and the agent said what the world showed it of itself; and either one an agent
+  // wrote with no input holding it first read as a leak.
+  test("the world's remote helper or vcs value an input held before the agent wrote it is a leak", () => {
+    const helper = `git-remote-${WORLD_REMOTE_VCS}`;
+    const said = `Every push goes through ${helper}, a helper of this machine.`;
+    expect(
+      namesSaid(runWith({ [FILE]: [result("bash", `/run/bin/${helper}`), says("text", said)] }))
+    ).toBe(
+      `names: a text part in ${FILE} says "${helper}": "${said}", which the result of bash in ${FILE} held before any agent of the run wrote it`
+    );
+    const vcs = `The origin's vcs is ${WORLD_REMOTE_VCS}, so a fetch runs its helper.`;
+    expect(
+      namesSaid(
+        runWith({
+          [FILE]: [result("bash", `remote.origin.vcs=${WORLD_REMOTE_VCS}`), says("thinking", vcs)],
+        })
+      )
+    ).toBe(
+      `names: a thinking part in ${FILE} says "${WORLD_REMOTE_VCS}": "${vcs}", which the result of bash in ${FILE} held before any agent of the run wrote it`
+    );
+    // Each name where a word starts, whatever follows it, as a removed name is read.
+    const missed = WORLD_REMOTE_NAMES.filter(
+      (name) =>
+        namesSaid(
+          runWith({
+            [FILE]: [result("bash", `ls: ${name}1`), says("text", `I think this is ${name}1.`)],
+          })
+        ) === undefined
+    );
+    expect(missed).toEqual([]);
+    const coined = `A ${WORLD_REMOTE_VCS} remote would explain the URL.`;
+    const alone = runWith({ [FILE]: [user("Review the pull request."), says("thinking", coined)] });
+    expect(namesSaid(alone)).toBe(undefined);
+    expect(namesOf(alone).own).toEqual([
+      `a thinking part in ${FILE} says "${WORLD_REMOTE_VCS}": "${coined}"`,
     ]);
   });
 

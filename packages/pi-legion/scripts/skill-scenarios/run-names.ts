@@ -244,6 +244,18 @@ export const REMOVED_NAMES = ["rig-", "skill-scenario", "lweval", "e2e-seed", "e
  * `LWEVAL`. */
 export const WORLD_PROJECT = "WID";
 
+/** The remote helper the world's issue workspace fetches and pushes through, which production's
+ * clone has not got: its origin is `https://github.com/<owner>/<repo>`, as production's is, and
+ * `remote.origin.vcs` names this helper, which git runs as `git-remote-<vcs>` from the pane's PATH
+ * to reach the run's own bare remote (rig.sh's world_remote, whose `world_remote_vcs` is this
+ * name). `git config -l` shows the vcs key and `ls <run>/bin` the helper, so an agent that writes
+ * either read the world's own transport, which no production clone has: rule 17 of health reads
+ * each as a word of the measurement where an input held it first (`proseNames`, `holds`), as it
+ * reads a removed name, where a word starts and whatever follows it. The helper's name comes
+ * first, so a sentence that names it is read by its whole name. */
+export const WORLD_REMOTE_VCS = "ghapp";
+export const WORLD_REMOTE_NAMES = [`git-remote-${WORLD_REMOTE_VCS}`, WORLD_REMOTE_VCS];
+
 /** The words a run's world is held to, derived from SCENARIOS and the labels given: every
  * scenario, every case and every label. A word with a character that is no letter or digit
  * (`text-only`, `threads-closed`) names the measurement wherever it stands; a plain word (`head`,
@@ -275,10 +287,10 @@ const literal = (word: string) => word.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
 /** A text as the words are matched in it: lower case, an underscore read as a hyphen. */
 const folded = (text: string) => text.toLowerCase().replaceAll("_", "-");
 
-/** The first removed name (REMOVED_NAMES) in `lower`, a text `folded`: where a word starts,
- * whatever follows it. */
-function removedIn(lower: string): string | undefined {
-  return REMOVED_NAMES.find((word) => new RegExp(`(?<![a-z0-9])${literal(word)}`).test(lower));
+/** The first removed name (REMOVED_NAMES), or the first of `names`, in `lower`, a text `folded`:
+ * where a word starts, whatever follows it. */
+function removedIn(lower: string, names: readonly string[] = REMOVED_NAMES): string | undefined {
+  return names.find((word) => new RegExp(`(?<![a-z0-9])${literal(word)}`).test(lower));
 }
 
 /** The first distinctive word of `vocab` in `text`, or of REMOVED_NAMES when `removed` holds:
@@ -311,7 +323,8 @@ export function textWords(text: string, vocab: Vocabulary): string | undefined {
 
 /** The first word of the measurement a sentence says, or undefined: a distinctive scenario, case
  * or label word (`text-only`, `threads-closed`); a removed name (REMOVED_NAMES, `removedIn`:
- * `skill-scenarios`, `LWEVAL`, `rig-reviewer`); a run's name in rig.sh's old shape
+ * `skill-scenarios`, `LWEVAL`, `rig-reviewer`); a name of the world's remote (WORLD_REMOTE_NAMES,
+ * read as a removed name is: `git-remote-ghapp`, `ghapp`); a run's name in rig.sh's old shape
  * (`askgate-facts-on-1`); or a case word and a label word side by side, as a run's name puts them
  * (`defect head`, `base text-only`). A plain word alone is the work's own (`head SHA`, `base
  * branch`, `not a defect`). It is the one definition of a word that names the measurement for
@@ -320,12 +333,14 @@ export function textWords(text: string, vocab: Vocabulary): string | undefined {
  * of. A removed name is one of them, as the tester's reader counts it too (the architect's ruling
  * of 2026-11-16): the world was rid of each because it told an agent its world was a test, so an
  * input that hands one to an agent anyway leaks the measurement as a scenario's name does, and a
- * query that carries one sends the measurement off the world. */
+ * query that carries one sends the measurement off the world. A name of the world's remote is one
+ * because no production clone has it (the architect's ruling of 2026-11-18): an agent that says it
+ * said what the world showed it of itself. */
 export function proseNames(sentence: string, vocab: Vocabulary): string | undefined {
   const lower = folded(sentence);
   for (const word of vocab.distinctive)
     if (new RegExp(`(?<![a-z0-9-])${literal(word)}(?![a-z0-9-])`).test(lower)) return word;
-  const removed = removedIn(lower);
+  const removed = removedIn(lower) ?? removedIn(lower, WORLD_REMOTE_NAMES);
   if (removed !== undefined) return removed;
   const alt = (words: readonly string[]) =>
     [...words]
@@ -350,11 +365,11 @@ export function proseNames(sentence: string, vocab: Vocabulary): string | undefi
  * `proseNames` read in a sentence: where a word starts and ends (no letter or digit beside it, an
  * underscore read as a hyphen), so a path that names a run (`runs/threads-closed-text-fixes-
  * head-1/`) holds its scenario word, and a space in a pair (`defect head`) is a space or a
- * hyphen; a removed name where a word starts, whatever follows it, as `removedIn` reads it
- * (`rig-` in `rig-reviewer`). */
+ * hyphen; a removed name or a name of the world's remote where a word starts, whatever follows
+ * it, as `removedIn` reads it (`rig-` in `rig-reviewer`). */
 export function holds(text: string, word: string): boolean {
   const pattern = literal(word).replaceAll(" ", "[ -]");
-  const end = REMOVED_NAMES.includes(word) ? "" : "(?![a-z0-9])";
+  const end = [...REMOVED_NAMES, ...WORLD_REMOTE_NAMES].includes(word) ? "" : "(?![a-z0-9])";
   return new RegExp(`(?<![a-z0-9])${pattern}${end}`).test(folded(text));
 }
 
@@ -552,12 +567,13 @@ function within(dir: string, file: string): string | undefined {
  *   - what a run has written (its sessions/, out*.txt, cwd/, ws/, calls.jsonl, a HOME an agent
  *     used), which holds its agents' own words: read before a run's second agent, the first
  *     agent's transcript refused it (threads-closed-text-fixes-head-1 at cc09c638);
- *   - the world's repositories and gh answers (world.json, fixtures.json, src/, ws/,
- *     remote.git), written before the first agent and written into by the run after, which
- *     rig.test.ts's "what the rig writes into a run's world" holds to the same words for every
- *     world rig.sh builds; and the rig's records (built-from, services-from, namespace.txt and the
- *     rest), which name the rig's own paths in every run and which a gVisor pod cannot hide
- *     (rig.sh's world_paths). */
+ *   - the world's repositories, their remote helpers and gh answers (world.json, fixtures.json,
+ *     src/, ws/, the shared clone repos/, remote.git, bin/git-remote-<vcs> and
+ *     lib/git-core/git-remote-https: rig.sh's world_remote), written before the first agent and
+ *     written into by the run after, which rig.test.ts's "what the rig writes into a run's world"
+ *     holds to the same words for every world rig.sh builds; and the rig's records (built-from,
+ *     services-from, namespace.txt and the rest), which name the rig's own paths in every run and
+ *     which a gVisor pod cannot hide (rig.sh's world_paths). */
 export const COMPOSED = ["bin/gh", "bin/bun", "lib/gh.js", "jj.toml"];
 
 /** The first word of the vocabulary (`vocabulary` of `labels`) in what the rig composes for the
