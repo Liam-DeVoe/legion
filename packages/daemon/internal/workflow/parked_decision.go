@@ -93,8 +93,7 @@ func ParkedDecisionTask(ctx context.Context, tx pgx.Tx, store record.Store, step
 	}
 	var kept record.KeptDecisions
 	for _, d := range decisions {
-		kept.Decisions = append(kept.Decisions, record.DecisionMark{Ref: d.Ref, At: d.At, Issue: d.Issue,
-			Decision: d.Decision, Actor: d.Actor})
+		kept.Decisions = append(kept.Decisions, d.Mark())
 	}
 	if approval.Approved > 0 && len(steps) > 0 {
 		kept.KeptApproval = approval

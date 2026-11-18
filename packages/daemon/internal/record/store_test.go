@@ -2560,6 +2560,92 @@ func TestAParkedDecisionKeepsTheNewestPerRefAndIsForgottenOnlyWhereItWasNamed(t 
 	})
 }
 
+// A kept decision keeps the person's words of it on its row, whole, and reads them back through
+// Postgres, so the send-time rewrite of a start task, which builds the task again from the marks
+// the rows gave (ParkedDecision.Mark), names the same words: an answer's text with the options it
+// chose, a reply whose event marked more to follow, each by the person at the act's own time, and
+// none for an approval. A newer decision on the same reference replaces the words with its own,
+// or with none. RelayParkedDecision keeps a changes request's reason as the words of that review.
+func TestAKeptDecisionKeepsThePersonsWords(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	t0 := time.Date(2026, 11, 18, 9, 0, 0, 0, time.UTC)
+	ask, reply, spec := "dispatch://LEGION-212/ask/a", "dispatch://LEGION-212/comment/c", "dispatch://LEGION-212/spec"
+	answer := &ActWords{Text: strings.Repeat("é", 1500), Options: []string{"ship", "tell the vendor"}, By: "user:alice", At: t0.Add(-time.Minute)}
+	cut := &ActWords{Text: "The first part of a long reply", By: "user:alice", At: t0.Add(-2 * time.Minute), More: true}
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, issueFixture("LEGION-212")))
+		must(t, records.AddParkedDecision(ctx, tx, ParkedDecision{Issue: "LEGION-212", Ref: ask, Decision: DecisionAskAnswered,
+			Actor: "user:alice", At: t0, Words: answer}))
+		must(t, records.AddParkedDecision(ctx, tx, ParkedDecision{Issue: "LEGION-212", Ref: reply, Decision: DecisionAskReply,
+			Actor: "user:alice", At: t0.Add(time.Second), Words: cut}))
+		must(t, records.AddParkedDecision(ctx, tx, ParkedDecision{Issue: "LEGION-212", Ref: spec, Decision: DecisionDesignApproved,
+			Actor: "user:alice", At: t0.Add(2 * time.Second)}))
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		named, _, err := records.UnclaimedKept(ctx, tx, "LEGION-212")
+		must(t, err)
+		if len(named) != 3 || named[0].Ref != spec || named[1].Ref != reply || named[2].Ref != ask {
+			t.Fatalf("the tree is owed %#v, want the approval, the reply and the answer, newest first", named)
+		}
+		for i, want := range []*ActWords{nil, cut, answer} {
+			if !reflect.DeepEqual(named[i].Words, want) {
+				t.Fatalf("%s reads back the words %#v, want %#v", named[i].Ref, named[i].Words, want)
+			}
+		}
+		mark := named[2].Mark()
+		if mark.Ref != ask || !mark.At.Equal(t0) || mark.Issue != "LEGION-212" || mark.Decision != DecisionAskAnswered || mark.Actor != "user:alice" ||
+			mark.Answer != answer.Text || !reflect.DeepEqual(mark.Options, answer.Options) || !mark.AnswerAt.Equal(answer.At) || mark.More {
+			t.Fatalf("the answer's mark is %#v, want its identity, its author and its words whole", mark)
+		}
+		if mark := named[1].Mark(); mark.Answer != cut.Text || !mark.More || !mark.AnswerAt.Equal(cut.At) || mark.Options != nil {
+			t.Fatalf("the reply's mark is %#v, want its body with more to follow", mark)
+		}
+		if mark := named[0].Mark(); mark.Answer != "" || mark.Options != nil || !mark.AnswerAt.IsZero() || mark.More {
+			t.Fatalf("the approval's mark is %#v, want no words", mark)
+		}
+		t.Logf("the answer's mark: %d units of words, options %v, at %s", len([]rune(mark.Answer)), mark.Options, mark.AnswerAt)
+	})
+	newer := &ActWords{Text: "Hold it a week.", By: "user:bob", At: t0.Add(time.Hour)}
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.AddParkedDecision(ctx, tx, ParkedDecision{Issue: "LEGION-212", Ref: ask, Decision: DecisionAskAnswered,
+			Actor: "user:bob", At: t0.Add(time.Hour), Words: newer}))
+		must(t, records.AddParkedDecision(ctx, tx, ParkedDecision{Issue: "LEGION-212", Ref: reply, Decision: DecisionAskResolved,
+			Actor: "user:bob", At: t0.Add(time.Hour)}))
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		named, err := records.ParkedDecisions(ctx, tx, "LEGION-212")
+		must(t, err)
+		words := map[string]*ActWords{}
+		for _, decision := range named {
+			words[decision.Ref] = decision.Words
+		}
+		if !reflect.DeepEqual(words, map[string]*ActWords{ask: newer, reply: nil, spec: nil}) {
+			t.Fatalf("after newer decisions the words are %#v, want the newer answer's words and none for the resolution", words)
+		}
+	})
+	changes := "Name the vendor's date.\nThen ask again."
+	inTx(t, st, func(tx pgx.Tx) {
+		root, err := records.Issue(ctx, tx, "LEGION-212")
+		must(t, err)
+		outcome, err := RelayParkedDecision(ctx, tx, records, "LEGION-212", *root, true, ParkedDecision{Ref: spec,
+			Decision: DecisionDesignChangesRequested, Actor: "user:carol", At: t0.Add(2 * time.Hour)}, 3, changes, nil)
+		must(t, err)
+		if outcome != RelaySent {
+			t.Fatalf("the changes request on a parked tree = %v, want it sent to the controller", outcome)
+		}
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		named, err := records.ParkedDecisions(ctx, tx, "LEGION-212")
+		must(t, err)
+		want := &ActWords{Text: changes, By: "user:carol", At: t0.Add(2 * time.Hour)}
+		if len(named) == 0 || named[0].Ref != spec || !reflect.DeepEqual(named[0].Words, want) {
+			t.Fatalf("the tree is owed %#v first, want the changes request with its reason as the person's words %#v", named, want)
+		}
+	})
+}
+
 // A root keeps one approval below its spec's latest version for its next architect's start, the
 // newest kept replacing an older one. The start reads it and leaves it; the forget of what the
 // delivered start named deletes exactly that pair, and leaves a pair a later re-admission kept.

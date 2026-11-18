@@ -96,6 +96,11 @@ func WaitsForSlot(ctx context.Context, tx pgx.Tx, store Store, root Issue, steps
 //     slot, and the one parked-decision controller notice that names it, the decision, where in
 //     Dispatch, who made it, and a spec decision's version and a changes request's reason.
 //
+// The kept row carries the person's words of the decision (ParkedDecision.Words), since a start
+// task names them and its send-time rewrite reads them back from the row: the caller's, where the
+// decision's event carried them, and a changes request's reason otherwise, which is the person's
+// words of that review (a carried gate's reason is the daemon's own sentence, never a person's).
+//
 // Every write is in the caller's transaction, which the caller keys so that a replay writes none of
 // them again.
 func RelayParkedDecision(ctx context.Context, tx pgx.Tx, store Store, issue string, root Issue, nobodyHears bool,
@@ -119,6 +124,9 @@ func RelayParkedDecision(ctx context.Context, tx pgx.Tx, store Store, issue stri
 		return RelayNoPerson, nil
 	}
 	decision.Issue = issue
+	if decision.Words == nil && decision.Decision == DecisionDesignChangesRequested && reason != "" {
+		decision.Words = &ActWords{Text: reason, By: decision.Actor, At: decision.At}
+	}
 	if err := store.AddParkedDecision(ctx, tx, decision); err != nil {
 		return RelayNone, err
 	}
@@ -145,8 +153,11 @@ func RelayParkedDecision(ctx context.Context, tx pgx.Tx, store Store, issue stri
 // narrowed at send time (supervise's Deps.RootTask). The issue is also what says which tree the
 // decision is owed to now, which is what that narrowing and the telling both read. Options are
 // the options a person's answer chose, and Answer the words of the act, which a catch-up names
-// as words by the person; a mark an older daemon wrote has neither. Its JSON is
-// texts.DecisionMark's, with the decision a DecisionKind here.
+// as words by the person (Actor), AnswerAt when the person wrote them and More that more follows
+// than the act's event carried (ActWords, ParkedDecision.Mark); a mark an older daemon wrote has
+// none of the four. The words are whole, as the row keeps them: a text that carries them cuts
+// them when it is written. Its JSON is texts.DecisionMark's, with the decision a DecisionKind
+// here.
 type DecisionMark struct {
 	Ref      string       `json:"ref"`
 	At       time.Time    `json:"at"`
@@ -155,6 +166,8 @@ type DecisionMark struct {
 	Actor    string       `json:"actor,omitempty"`
 	Options  []string     `json:"options,omitempty"`
 	Answer   string       `json:"answer,omitempty"`
+	AnswerAt time.Time    `json:"answer_at,omitzero"`
+	More     bool         `json:"more,omitempty"`
 }
 
 // KeptApproval is the approval a root's re-admission kept for its next architect start

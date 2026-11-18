@@ -376,10 +376,27 @@ type ParkedDecision struct {
 	Decision DecisionKind
 	Actor    string
 	At       time.Time
+	// Words are the person's words of the decision, as its Dispatch event carried them: an
+	// answer's text and the options it chose, a reply's body, a resolution's note, a changes
+	// request's reason. They are on the row, not only on the fact, because the send-time rewrite
+	// of a start task builds the task again from what the rows named (DecisionMark). Their time
+	// is the act's own, where At is the time the daemon kept the decision. Nil for a decision
+	// that carries none, an approval, and for a row an older daemon kept.
+	Words *ActWords
 	// ClaimedBy is the outbox row claiming it, 0 when no row does; HeldBy is the claim and the
 	// delivery id of the queued start task holding it, the zero value when none does.
 	ClaimedBy int64
 	HeldBy    DeliveryHold
+}
+
+// Mark is the decision as a start task or catch-up that names it records it (KeptDecisions): the
+// row's identity, what the person did and who, and the words of the act.
+func (d ParkedDecision) Mark() DecisionMark {
+	mark := DecisionMark{Ref: d.Ref, At: d.At, Issue: d.Issue, Decision: d.Decision, Actor: d.Actor}
+	if words := d.Words; words != nil {
+		mark.Options, mark.Answer, mark.AnswerAt, mark.More = words.Options, words.Text, words.At, words.More
+	}
+	return mark
 }
 
 // DeliveryHold is the claim token and delivery id of a start's task queued on an architect's
@@ -1265,21 +1282,32 @@ func SpecGate(gates map[DesignStep]DesignGate) *DesignGate {
 // the question was closed with no answer, and no later event of that ask says otherwise, since
 // Dispatch refuses every transition of a resolved ask and its settlement restores a retracted
 // ask alone.
+//
+// PersonAnswerWords are the words of the person's answer at PersonAnswerSeq, and PersonWords the
+// words of the person's other act at PersonSeq: a reply in the ask's thread, or a resolution,
+// whose words are its note (a decline's note is its Decline's note too). Each is written with the
+// sequence it goes with, from the act's own event (workflow's askChange), so the words on the row
+// are always those of the act its sequence names, and an older act's event that arrives later
+// changes neither. The resume of a root that waits on the person (workflow's resumeTask) reads the
+// words of the act that answered the wait (PersonActSeq). Each is nil where the row records no
+// such act, and on a row an older daemon wrote, which kept no words.
 type RootAsk struct {
-	Issue           string
-	Ask             string
-	Kind            string
-	Artifact        string
-	Open            bool
-	Seq             int64
-	WaitingOn       string
-	WaitingOnSeq    int64
-	ClosedBy        string
-	ClosedSeq       int64
-	ByTree          bool
-	PersonSeq       int64
-	PersonAnswerSeq int64
-	Decline         *AskDecline
+	Issue             string
+	Ask               string
+	Kind              string
+	Artifact          string
+	Open              bool
+	Seq               int64
+	WaitingOn         string
+	WaitingOnSeq      int64
+	ClosedBy          string
+	ClosedSeq         int64
+	ByTree            bool
+	PersonSeq         int64
+	PersonAnswerSeq   int64
+	Decline           *AskDecline
+	PersonAnswerWords *ActWords
+	PersonWords       *ActWords
 }
 
 // AskDecline is a person's decline to answer an ask, which Dispatch records as the resolution
@@ -1292,6 +1320,29 @@ type RootAsk struct {
 type AskDecline struct {
 	Note  string
 	Words string
+}
+
+// ActWords are the words a person wrote in one act on Dispatch — the answer of an ask, a reply in
+// its thread, the note of a resolution, the reason of a changes request — as the act's own
+// Dispatch event carried them: Text whole, the options an answer chose, who wrote them (By, as
+// Dispatch names an actor, `<kind>:<id>`), when (At: the time the payload gives the act, else the
+// event's own), and More, that the event did not carry all of the act: it marked its body cut
+// (body_truncated), or it reached the daemon as a stand-in that left its long fields out
+// (payload_omitted), in which case Text holds what the stand-in kept, usually nothing. The item
+// itself, read through its reference, holds the rest.
+//
+// The words are never cut where they are kept: a text that carries them cuts them when it is
+// written (internal/texts' Carry), so an act read twice is kept equal. They travel whole, from the
+// Dispatch event (intake's DispatchAskClosed and DispatchAskReply) through the ask's mirror row
+// (RootAsk) and the kept decision (ParkedDecision, DecisionMark) to the text that carries them.
+// The JSON is the shape the store keeps them in (root_asks.person_answer_words and person_words,
+// parked_decisions.words).
+type ActWords struct {
+	Text    string    `json:"text,omitempty"`
+	Options []string  `json:"options,omitempty"`
+	By      string    `json:"by,omitempty"`
+	At      time.Time `json:"at,omitzero"`
+	More    bool      `json:"more,omitempty"`
 }
 
 // The ask kinds the mirror knows (RootAsk.Kind): an ordinary question, and the approval request

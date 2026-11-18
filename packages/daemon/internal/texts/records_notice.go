@@ -414,8 +414,9 @@ type KeptApproval struct {
 }
 
 // DecisionMark is one kept decision (main's record.DecisionMark): its reference, the time of the
-// decision, the issue it was made on, what the person did, who, the options the answer chose, and
-// the words of the act (bounded at EachOfSeveral where a catch-up names several).
+// decision, the issue it was made on, what the person did, who, the options the answer chose, the
+// words of the act (bounded at EachOfSeveral where a catch-up names several), when the person
+// wrote them, and whether more follows than the act's event carried (Carry's more).
 type DecisionMark struct {
 	Ref      string    `json:"ref"`
 	At       time.Time `json:"at"`
@@ -424,6 +425,8 @@ type DecisionMark struct {
 	Actor    string    `json:"actor,omitempty"`
 	Options  []string  `json:"options,omitempty"`
 	Answer   string    `json:"answer,omitempty" texts:"words"`
+	AnswerAt time.Time `json:"answer_at,omitzero"`
+	More     bool      `json:"more,omitempty"`
 }
 
 // ChecksRedRecord is the notice that the head conflicts with its base and the daemon moved the

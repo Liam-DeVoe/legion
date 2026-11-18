@@ -346,6 +346,13 @@ func (DispatchAskRestored) isFact() {}
 // no defect to report — Dispatch resolves asks for several reasons and the daemon acts on this
 // one. It carries the person's own note and Dispatch's own words apart (record.AskDecline), each
 // as Dispatch recorded it.
+//
+// Words are the words of the close as its event carried them (record.ActWords), by its actor: an
+// answer's text and the options it chose, at the answer's time; a resolution's note (a decline's
+// among them), at the resolution's time. The event's own time stands where the payload gives
+// none. A close that reached the daemon as a payload_omitted stand-in keeps what the stand-in
+// kept, usually nothing, with More set: the ask itself holds the rest. The decoder sets Words on
+// every close.
 type DispatchAskClosed struct {
 	Key      string
 	Ask      string
@@ -353,6 +360,7 @@ type DispatchAskClosed struct {
 	Artifact string
 	State    string
 	Decline  *record.AskDecline
+	Words    *record.ActWords
 	Actor    dispatch.Actor
 	Mark     record.EventMark
 }
@@ -370,6 +378,12 @@ func (DispatchAskClosed) isFact() {}
 // the actor who made it, its event's place in the issue's Dispatch event log (Mark), and the
 // comment's own id (Comment, empty for a hand-back), which is where in Dispatch a person's reply
 // relayed to the controller was made (workflow's relayParkedDecision).
+//
+// Words are the comment's words as its event carried them (record.ActWords), by its actor at the
+// comment's time (the event's own where the payload gives none): its body, with More set where
+// the event marked the body cut (body_truncated) or reached the daemon as a payload_omitted
+// stand-in, which leaves the body out. The comment itself holds the rest. A hand-back writes no
+// words, so its Words are nil.
 type DispatchAskReply struct {
 	Key       string
 	Ask       string
@@ -379,6 +393,7 @@ type DispatchAskReply struct {
 	Actor     dispatch.Actor
 	Mark      record.EventMark
 	Comment   string
+	Words     *record.ActWords
 }
 
 func (DispatchAskReply) isFact() {}

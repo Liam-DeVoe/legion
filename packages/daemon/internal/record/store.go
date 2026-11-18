@@ -976,12 +976,18 @@ var (
 	approvalNameable = keptCounts("readmitted_approvals", "owner")
 )
 
+// AddParkedDecision keeps the decision's words beside it (parked_decisions.words, ActWords' JSON,
+// null for none): a newer decision that replaces the row replaces its words too.
 func (s *Postgres) AddParkedDecision(ctx context.Context, tx pgx.Tx, decision ParkedDecision) error {
-	if _, err := tx.Exec(ctx, `insert into parked_decisions (issue, ref, decision, actor, at) values ($1, $2, $3, $4, $5)
+	words, err := encodeActWords(decision.Words)
+	if err != nil {
+		return fmt.Errorf("keep the decision %s on %s: encode its words: %w", decision.Ref, decision.Issue, err)
+	}
+	if _, err := tx.Exec(ctx, `insert into parked_decisions (issue, ref, decision, actor, at, words) values ($1, $2, $3, $4, $5, $6)
 		on conflict (issue, ref) do update set decision = excluded.decision, actor = excluded.actor,
-		at = excluded.at, claimed_by = null, held_by_claim = null, held_by_delivery = null
+		at = excluded.at, words = excluded.words, claimed_by = null, held_by_claim = null, held_by_delivery = null
 		where parked_decisions.at <= excluded.at`,
-		decision.Issue, decision.Ref, string(decision.Decision), decision.Actor, decision.At); err != nil {
+		decision.Issue, decision.Ref, string(decision.Decision), decision.Actor, decision.At, words); err != nil {
 		return fmt.Errorf("keep the decision %s on %s: %w", decision.Ref, decision.Issue, err)
 	}
 	return nil
@@ -1023,7 +1029,7 @@ func (s *Postgres) UnclaimedKept(ctx context.Context, tx pgx.Tx, tree string) ([
 // parkedDecisions is every decision owed to tree — every row whose issue stands in tree now — or
 // only those a start or catch-up of tree may name (keptCounts), newest first, ties by ref.
 func parkedDecisions(ctx context.Context, tx pgx.Tx, tree string, nameable bool) ([]ParkedDecision, error) {
-	rows, err := tx.Query(ctx, `select kept.issue, kept.ref, kept.decision, kept.actor, kept.at, coalesce(kept.claimed_by, 0),
+	rows, err := tx.Query(ctx, `select kept.issue, kept.ref, kept.decision, kept.actor, kept.at, kept.words, coalesce(kept.claimed_by, 0),
 		coalesce(kept.held_by_claim, ''), coalesce(kept.held_by_delivery, '')
 		from parked_decisions kept join issues owner on owner.key = kept.issue
 		where owner.tree = $1 and (not $2 or (`+keptNameable+`)) order by kept.at desc, kept.ref`, tree, nameable)
@@ -1034,9 +1040,13 @@ func parkedDecisions(ctx context.Context, tx pgx.Tx, tree string, nameable bool)
 	var decisions []ParkedDecision
 	for rows.Next() {
 		var decision ParkedDecision
-		if err := rows.Scan(&decision.Issue, &decision.Ref, &decision.Decision, &decision.Actor, &decision.At,
+		var words []byte
+		if err := rows.Scan(&decision.Issue, &decision.Ref, &decision.Decision, &decision.Actor, &decision.At, &words,
 			&decision.ClaimedBy, &decision.HeldBy.Claim, &decision.HeldBy.Delivery); err != nil {
 			return nil, fmt.Errorf("scan a decision owed to %s: %w", tree, err)
+		}
+		if decision.Words, err = decodeActWords(words); err != nil {
+			return nil, fmt.Errorf("decode the words of the decision %s owed to %s: %w", decision.Ref, tree, err)
 		}
 		decisions = append(decisions, decision)
 	}
@@ -1795,20 +1805,55 @@ func (s *Postgres) PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) erro
 // A row keeps a decline as three columns and Go as one optional value (RootAsk.Decline): declined
 // is the column that says there is one, and the note and the words are its two parts, each null
 // where Dispatch recorded none. The scan below builds the value from the three, and the write
-// takes it apart again.
+// takes it apart again. The words of a person's acts are one jsonb column each (ActWords' JSON),
+// null where the row records no such act.
 const rootAskColumns = `issue, ask, coalesce(kind, ''), coalesce(artifact, ''), open, seq, coalesce(waiting_on, ''), waiting_on_seq,
-	coalesce(closed_by, ''), closed_seq, by_tree, person_seq, person_answer_seq, declined, coalesce(declined_note, ''), coalesce(declined_words, '')`
+	coalesce(closed_by, ''), closed_seq, by_tree, person_seq, person_answer_seq, declined, coalesce(declined_note, ''), coalesce(declined_words, ''),
+	person_answer_words, person_words`
 
 func scanRootAsk(row scanner) (RootAsk, error) {
 	var ask RootAsk
 	var declined bool
 	var decline AskDecline
-	err := row.Scan(&ask.Issue, &ask.Ask, &ask.Kind, &ask.Artifact, &ask.Open, &ask.Seq, &ask.WaitingOn, &ask.WaitingOnSeq, &ask.ClosedBy,
-		&ask.ClosedSeq, &ask.ByTree, &ask.PersonSeq, &ask.PersonAnswerSeq, &declined, &decline.Note, &decline.Words)
-	if err == nil && declined {
+	var answerWords, words []byte
+	if err := row.Scan(&ask.Issue, &ask.Ask, &ask.Kind, &ask.Artifact, &ask.Open, &ask.Seq, &ask.WaitingOn, &ask.WaitingOnSeq, &ask.ClosedBy,
+		&ask.ClosedSeq, &ask.ByTree, &ask.PersonSeq, &ask.PersonAnswerSeq, &declined, &decline.Note, &decline.Words,
+		&answerWords, &words); err != nil {
+		return ask, err
+	}
+	if declined {
 		ask.Decline = &decline
 	}
-	return ask, err
+	var err error
+	if ask.PersonAnswerWords, err = decodeActWords(answerWords); err != nil {
+		return ask, fmt.Errorf("decode the words of the person's answer of ask %s: %w", ask.Ask, err)
+	}
+	if ask.PersonWords, err = decodeActWords(words); err != nil {
+		return ask, fmt.Errorf("decode the words of the person's act on ask %s: %w", ask.Ask, err)
+	}
+	return ask, nil
+}
+
+// encodeActWords is the jsonb a column of a person's words holds: null for none.
+func encodeActWords(words *ActWords) ([]byte, error) {
+	if words == nil {
+		return nil, nil
+	}
+	return json.Marshal(words)
+}
+
+// decodeActWords reads a column of a person's words back, nil for a null, with the time in UTC
+// as every time the record reads.
+func decodeActWords(raw []byte) (*ActWords, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	var words ActWords
+	if err := json.Unmarshal(raw, &words); err != nil {
+		return nil, err
+	}
+	words.At = words.At.UTC()
+	return &words, nil
 }
 
 func (s *Postgres) RootAsk(ctx context.Context, tx pgx.Tx, issue, ask string) (*RootAsk, error) {
@@ -1827,20 +1872,29 @@ func (s *Postgres) PutRootAsk(ctx context.Context, tx pgx.Tx, ask RootAsk) error
 	if ask.Decline != nil {
 		declined, note, words = true, ask.Decline.Note, ask.Decline.Words
 	}
+	answerWords, err := encodeActWords(ask.PersonAnswerWords)
+	if err != nil {
+		return fmt.Errorf("put ask %s of %s: encode the words of the person's answer: %w", ask.Ask, ask.Issue, err)
+	}
+	actWords, err := encodeActWords(ask.PersonWords)
+	if err != nil {
+		return fmt.Errorf("put ask %s of %s: encode the words of the person's act: %w", ask.Ask, ask.Issue, err)
+	}
 	if _, err := tx.Exec(ctx, `insert into root_asks (issue, ask, kind, artifact, open, seq, waiting_on, waiting_on_seq, closed_by, closed_seq,
-		by_tree, person_seq, person_answer_seq, declined, declined_note, declined_words)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+		by_tree, person_seq, person_answer_seq, declined, declined_note, declined_words, person_answer_words, person_words)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 		on conflict (issue, ask) do update set kind = excluded.kind, artifact = excluded.artifact, open = excluded.open, seq = excluded.seq,
 		waiting_on = excluded.waiting_on, waiting_on_seq = excluded.waiting_on_seq, closed_by = excluded.closed_by,
 		closed_seq = excluded.closed_seq, by_tree = excluded.by_tree,
 		person_seq = excluded.person_seq, person_answer_seq = excluded.person_answer_seq,
-		declined = excluded.declined, declined_note = excluded.declined_note, declined_words = excluded.declined_words
+		declined = excluded.declined, declined_note = excluded.declined_note, declined_words = excluded.declined_words,
+		person_answer_words = excluded.person_answer_words, person_words = excluded.person_words
 		where root_asks.seq <= excluded.seq and root_asks.waiting_on_seq <= excluded.waiting_on_seq
 		and root_asks.closed_seq <= excluded.closed_seq and root_asks.person_seq <= excluded.person_seq
 		and root_asks.person_answer_seq <= excluded.person_answer_seq`,
 		ask.Issue, ask.Ask, nullableText(ask.Kind), nullableText(ask.Artifact), ask.Open, ask.Seq, nullableText(ask.WaitingOn), ask.WaitingOnSeq,
 		nullableText(ask.ClosedBy), ask.ClosedSeq, ask.ByTree, ask.PersonSeq, ask.PersonAnswerSeq,
-		declined, nullableText(note), nullableText(words)); err != nil {
+		declined, nullableText(note), nullableText(words), answerWords, actWords); err != nil {
 		return fmt.Errorf("put ask %s of %s: %w", ask.Ask, ask.Issue, err)
 	}
 	return nil

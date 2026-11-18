@@ -2120,6 +2120,63 @@ Read against that time, its trees are quiet for the whole of the gap, and the fi
 The cost is one notice per tree, cleared by that tree's next movement, which stamps `moved_at` again and lets the measure start from a time the daemon watched.
 Upgrade, and roll back, every daemon of one database in the same change.
 
+#### Rolling back the release that carries a person's words in the daemon's texts
+
+This release writes each daemon text from a record of facts.
+A text about a person's act carries the person's words, which the daemon takes from the Dispatch event of that act: the answer of an ask, a reply in its thread, the note of a decline, and the reason of a changes request.
+The daemon keeps these words whole and cuts them only when it writes a text.
+Its migration `20261118092930_person_words` adds three `jsonb` columns:
+
+- `root_asks.person_answer_words`: the words of the person's answer of the ask.
+
+- `root_asks.person_words`: the words of the person's other act on the ask, a reply or a resolution.
+
+- `parked_decisions.words`: the words of a decision that the daemon keeps for the next start or catch-up of a tree.
+
+**The earlier release ignores the new columns.**
+An earlier image names none of the three columns in its reads or its writes.
+So it reads every row, and the rollback needs no statement for the columns.
+Its writes also do not clear the words.
+When it records a newer act on a `root_asks` row, or replaces a `parked_decisions` row with a newer decision, the row keeps the words of the older act.
+After a roll forward, this release can then give those older words beside the newer act.
+To prevent this, run these statements with the daemon stopped, before the roll forward:
+
+```sql
+-- The words that an earlier daemon's writes can leave on a row of a newer act.
+update root_asks set person_answer_words = null, person_words = null;
+update parked_decisions set words = null;
+```
+
+A cleared row costs one thing: a text about that act gives the act and its reference with no words, as the earlier release did.
+The reader then reads the words in Dispatch.
+
+**The earlier release refuses the outbox rows that this release writes.**
+An earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`).
+This release adds fields to the payloads that its outbox queues:
+
+- Each notice and controller notice carries new keys, such as `issue` and `words`.
+
+- A role message carries `kind`, `urgency` and `fields`.
+
+- A phase-ended message carries `conflictsWith`, `head` and `pullRequest`.
+
+- An update ask carries `images`, `settings`, `reasons` and `endsAt`.
+
+- Each kept decision that a start task or a catch-up names (`record.DecisionMark`) carries the person's words in `options`, `answer`, `answer_at` and `more`.
+
+The earlier release knows none of these fields.
+So each such row that is still queued at the rollback fails and is retried on its backoff for ever.
+A notice row also fails every state read that passes it (`WaitingNotices`, `pacedCatchUps`), which is `GET /legion/v1/state` for the whole project.
+A start row also fails every admission pass of its issue, because `record.Postgres.RoleRuns` decodes every supervise row of the issue.
+No statement removes all of these fields from all of these rows.
+
+**So a rollback past this release is a roll forward.**
+Do not pin an earlier image over a database that this release used.
+To undo a part of this release, release a later version that reverts that part, and deploy that version.
+This is the same rule as for each change that adds an outbox field.
+The migration acts on every project's rows of the database, and each project's daemon decodes only the outbox rows of its own project.
+So a daemon of another project that stays on the earlier image reads and writes its own rows, and it ignores the words.
+
 ### Pinning a release that drops what a running pod still uses
 
 A pod is built whole from the image pinned when it was launched, and no launch replaces a live pod for an image change alone:
