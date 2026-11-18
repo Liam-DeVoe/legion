@@ -522,7 +522,7 @@ test("a later review round reads from the commit its task names, and the pair re
     "thermonuclear pair at the reviewed head <sha> over <the whole change | <last-reviewed-sha>..<sha>>: <verdict>."
   );
   expect(prBody).toContain(
-    "(in a later round whose difference touches no runtime code, the pair half reads `thermonuclear pair at the reviewed head <sha>: not run (<last-reviewed-sha>..<sha> touches no runtime code)`, and the pair half of the last round the pair ran in stays beside it)"
+    "(in a later round whose difference touches no runtime code, the pair half reads `thermonuclear pair at the reviewed head <sha>: not run (<last-reviewed-sha>..<sha> touches no runtime code)`, and the pair half of the newest round the pair ran in stays beside it)"
   );
   expect(mergeGate).toContain(
     "In a later round whose difference touches no runtime code, on a PR that does touch it, the pair half reads as `skill://legion-worker/references/pr-body.md` gives it for that round."
