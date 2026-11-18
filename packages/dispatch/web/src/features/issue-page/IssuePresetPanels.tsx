@@ -6,7 +6,7 @@ import type { DocumentToolbar } from "../doc/ProofDocument";
 import { buildIssuePath } from "../refs/routes";
 import { StagedDocument } from "./StagedDocument";
 import { useToolbarSink } from "./useDocumentToolbars";
-import type { OnEditing, RowEditor } from "./useNodeEditing";
+import type { OnEditing, OnEditor } from "./useNodeEditing";
 
 /**
  * How a body that draws the outline's rows lets one be edited in its document's one editor:
@@ -26,10 +26,9 @@ export function useOutlineEditing(issue: IssueDetails): {
   const navigate = useNavigate();
   const toolbarSink = useToolbarSink();
   const [editing, setEditing] = useState<
-    | { readonly artifactId: string; readonly onEditor?: (editor: RowEditor | undefined) => void }
-    | undefined
+    { readonly artifactId: string; readonly onEditor?: OnEditor } | undefined
   >(undefined);
-  // Stable, as `setEditing` alone was: the rows call it from an effect that depends on it.
+  // Stable: the rows call it from an effect that depends on it.
   const onEditing = useCallback<OnEditing>(
     (artifactId, onEditor) =>
       setEditing(artifactId === undefined ? undefined : { artifactId, onEditor }),
@@ -83,7 +82,7 @@ export function IssuePresetPanels({
   isClosed: boolean;
   issueKey: string;
   /** Takes that document's live editor for the row, as the editor is made and torn down. */
-  onEditor?: (editor: RowEditor | undefined) => void;
+  onEditor?: OnEditor;
   onToolbarSink: (artifactId: string) => (next: DocumentToolbar | undefined) => void;
   onVersionChange: (artifact: Artifact, version: number | null) => void;
 }): ReactNode {

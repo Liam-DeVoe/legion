@@ -30,7 +30,7 @@ import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, NODE_TYPE_NAMES, nodeStateWord } from "./page-words";
 import { PRESS_ENDS, usePressFocus } from "./press-focus";
 import { CYCLE_STATES, EVERYTHING, TreeRows } from "./TreeRows";
-import { focusIsLoose } from "./tree-focus";
+import { focusIsLoose, rowSelectorOf } from "./tree-focus";
 import {
   DRAWN_LEVELS,
   NARROW_LEVELS,
@@ -292,9 +292,7 @@ export function IssueTree({
       setFocusedNode(focusedNodeOf(node));
       if (holdOnFocus.current === node.id) {
         holdOnFocus.current = undefined;
-        const element = body.current?.querySelector<HTMLElement>(
-          `[data-node-row][data-row-key="${CSS.escape(row)}"]`
-        );
+        const element = body.current?.querySelector<HTMLElement>(rowSelectorOf(row));
         if (element !== null && element !== undefined) holdInPlaceOf(element, onScreenHold);
       }
     },
@@ -305,9 +303,7 @@ export function IssueTree({
   const press = usePressFocus<{ readonly node: TreeNode; readonly row: string }>(
     ({ node, row }) => takeFocus(row, node),
     ({ row }) =>
-      body.current
-        ?.querySelector(`[data-node-row][data-row-key="${CSS.escape(row)}"]`)
-        ?.contains(document.activeElement) === true
+      body.current?.querySelector(rowSelectorOf(row))?.contains(document.activeElement) === true
   );
   // The focus leaving the tree lets go of the row it left: its body, its focused look and its
   // own placing on screen, the opening's row and what a key reported. By Tab or a script it goes
@@ -685,9 +681,7 @@ export function IssueTree({
     const first = rows.find((row) => row.kind === "node");
     if (first?.kind !== "node") return;
     const key = rowKeyOf(first);
-    const row = body.current?.querySelector<HTMLElement>(
-      `[data-node-row][data-row-key="${CSS.escape(key)}"]`
-    );
+    const row = body.current?.querySelector<HTMLElement>(rowSelectorOf(key));
     // The row the next frame is to focus is still the first.
     if (row === null || row === undefined || row === held.next?.row) return;
     if (held.next !== undefined) cancelAnimationFrame(held.next.frame);
