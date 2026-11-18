@@ -659,13 +659,15 @@ func (l launch) agentArgv(agent []string) []string {
 // The session is the launch's own (claudeInputs): `--resume <uuid>` of the transcript a replaced
 // pod left, by the id prepare read from the recorded path, and `--session-id <fresh uuid>` when
 // the launch starts a session. Claude Code resumes by id and never by path, so the recorded file
-// name itself is never passed. Options.Agent, the operator's Oh My Pi override, does not reach
-// here: the Claude command is the runtime's, as the tmux lane's is the host's boot-resolved one.
+// name itself is never passed. The model is the spec's (runtime.SpawnSpec.Model, a role of the
+// deployment's `model`), named as `--model` where it is not "". Options.Agent, the operator's Oh
+// My Pi override, does not reach here: the Claude command is the runtime's, as the tmux lane's is
+// the host's boot-resolved one.
 func (l launch) claudeArgv() []string {
 	claude := claudeCodeBinary(roleStateHome(l.spec.Role), l.spec.Generation)
 	paths := claudelaunch.Paths{Legion: l.claude.legion, Claude: claude, PluginDir: claudePluginDir}
 	return claudelaunch.Argv(paths, generationDir(l.spec.Generation)+"/"+claudeMCPFile, l.claude.session, l.claude.resume,
-		systemPromptPath(l.spec.Generation))
+		systemPromptPath(l.spec.Generation), l.spec.Model)
 }
 
 // labels are the pod's resource labels, as its kind gives them (podKind.labels).

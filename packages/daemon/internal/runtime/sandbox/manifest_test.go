@@ -2529,6 +2529,12 @@ func TestAgentArgvCarriesTheConfiguredModel(t *testing.T) {
 			t.Errorf("%s runs %q, want %q", tc.name, got, tc.want)
 		}
 	}
+	modelledClaude := claudeWorkerSpec(t)
+	modelledClaude.Model = "checker-model"
+	if claude := launchOf(t, r, modelledClaude).agentArgv(r.agent); !slices.Contains(claude, "--model") ||
+		claude[slices.Index(claude, "--model")+1] != "checker-model" {
+		t.Errorf("the Claude pod's command for a spec naming its role's model = %q, want it to hold --model checker-model", claude)
+	}
 	if claude := launchOf(t, r, claudeWorkerSpec(t)).agentArgv(r.agent); slices.Contains(claude, "--model") {
 		t.Errorf("the Claude pod's command %q names a model, want claudelaunch's own command", claude)
 	}

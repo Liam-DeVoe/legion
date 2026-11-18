@@ -85,6 +85,10 @@ func TestValidateSpawnSpecRefusesWhatNoRuntimeCouldHonour(t *testing.T) {
 		"resuming a session":          func(s *SpawnSpec) { s.ResumeSessionFile = "/sessions/tester.jsonl" },
 		"on Oh My Pi by name":         func(s *SpawnSpec) { s.Backend = BackendOmp },
 		"on Claude Code":              func(s *SpawnSpec) { s.Backend = BackendClaude },
+		// A role of the deployment runs on Claude Code with the model its settings give it.
+		"a deployment role on Claude Code with its model": func(s *SpawnSpec) {
+			s.Role, s.Claim, s.Backend, s.Model = "checker", "legion-omp-legion-43-checker", BackendClaude, "checker-model"
+		},
 	} {
 		spec := spawnSpec()
 		mutate(&spec)
