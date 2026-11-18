@@ -227,9 +227,10 @@ const STOPS_AT_MOST = 40;
  *  and controls, and fails with `message` where none does. */
 async function pressFTo(page: Page, target: Locator, message: string): Promise<void> {
   for (let pressed = 0; pressed < STOPS_AT_MOST; pressed += 1) {
-    const reached =
-      (await target.count()) > 0 &&
-      (await target.first().evaluate((element) => element === document.activeElement));
+    // A stop is drawn once a press of f reaches its row, so each press reads it again.
+    const drawn = (await target.count()) > 0;
+    // One read per press: f moves the focus before the press returns, so this reads where it is.
+    const reached = drawn && (await target.first().evaluate((el) => el === document.activeElement));
     if (reached) return;
     await page.keyboard.press("f");
   }
@@ -577,18 +578,21 @@ async function expectProposedViews(page: Page, read: ProposedPage): Promise<void
   expect(await ownMarks(check2), "check 2 does not carry Proposed under Verification").toEqual([
     PROPOSED,
   ]);
-  expect(
-    await flagCount(page, "failing"),
-    "the failing flag counts check 4, which is overtaken, or check 2, which is proposed"
-  ).toBe(0);
+  await expect
+    .poll(() => flagCount(page, "failing"), {
+      message: "the failing flag counts check 4, which is overtaken, or check 2, which is proposed",
+    })
+    .toBe(0);
   expect(
     (await checkLegendCounts(page)).failed,
     "the summary counts check 4, which is overtaken, or check 2, which is proposed, as failed"
   ).toBe(0);
-  expect(
-    (await coveredCount(page))?.of,
-    "the Verification summary counts statement 7, which is proposed, or statement 8, which is overtaken"
-  ).toBe(statements - 2);
+  await expect
+    .poll(async () => (await coveredCount(page))?.of, {
+      message:
+        "the Verification summary counts statement 7, which is proposed, or statement 8, which is overtaken",
+    })
+    .toBe(statements - 2);
   await expectNoRawValue(page, "under Verification");
   const result = answer.nodes.find(
     (node) => node.supertag === "result" && node.parent === ids.check2
@@ -621,10 +625,12 @@ async function expectProposedViews(page: Page, read: ProposedPage): Promise<void
     (await decisionsRows(page)).map((row) => row.id),
     "the Decisions view draws the overtaken decision"
   ).not.toContain(treeId(ids.waitingDecision));
-  expect(
-    await flagCount(page, "to_review"),
-    "the to-review flag counts a decision the review part does not hold"
-  ).toBe((await decisionsPartRows(page, "review")).length);
+  const review = (await decisionsPartRows(page, "review")).length;
+  await expect
+    .poll(() => flagCount(page, "to_review"), {
+      message: "the to-review flag counts a decision the review part does not hold",
+    })
+    .toBe(review);
   await expectNoRawValue(page, "under Decisions");
 
   await gotoIssue(page, presetPath(key, "plan"));
@@ -664,9 +670,11 @@ async function expectProposedViews(page: Page, read: ProposedPage): Promise<void
   expect(await ownMarks(statement7), "statement 7 does not carry Proposed under Spec").toEqual([
     PROPOSED,
   ]);
-  expect(await filterCount(page, "spec"), "the Spec control does not count every statement").toBe(
-    statements
-  );
+  await expect
+    .poll(() => filterCount(page, "spec"), {
+      message: "the Spec control does not count every statement",
+    })
+    .toBe(statements);
   await expectNoRawValue(page, "under Spec");
 }
 
@@ -914,14 +922,16 @@ async function readAsReader(
   const plain = presetPath(key, "conversation");
   await gotoSettled(page, traffic, plain);
   const answer = await heldAnswer(tree, `${who}'s tree read`);
+  await expect
+    .poll(
+      async () =>
+        (await foldedCounts(page)).flatMap((row) =>
+          row.readId === null || row.count === heldUnder(answer, key, row.readId) ? [] : [row.id]
+        ),
+      { message: `${who}'s folds do not count what ${who}'s tree read holds under them` }
+    )
+    .toEqual([]);
   const folded = await foldedCounts(page);
-  for (const row of folded) {
-    if (row.readId === null) continue;
-    expect(
-      row.count,
-      `${who}'s fold of ${row.id} does not count what ${who}'s tree read holds under it`
-    ).toBe(heldUnder(answer, key, row.readId));
-  }
   await focusThePage(page);
   await page.keyboard.press("z");
   await page.keyboard.press("z");
@@ -950,7 +960,17 @@ async function readAsReader(
         })
         .toBe(viewCount(held, view));
     }
-    filters[view] = await filterCount(page, view);
+    let count = Number.NaN;
+    await expect
+      .poll(
+        async () => {
+          count = await filterCount(page, view);
+          return Number.isNaN(count);
+        },
+        { message: `${who}'s ${name} control draws no count` }
+      )
+      .toBe(false);
+    filters[view] = count;
     texts.push({ text: await issuePage(page).innerText(), where: `the ${name} view` });
   }
   await pickPreset(page, PRESET_NAMES.conversation);
@@ -1000,10 +1020,12 @@ async function jWalk(page: Page, traffic: ApiRequests, plain: string): Promise<s
   await page.keyboard.press("z");
   await page.keyboard.press("z");
   await openEveryDeeperBranch(page);
+  // The branches are all open once openEveryDeeperBranch returns, so every row is drawn by now.
   const items = await treeItemsDrawn(page);
   await nodeRows(page).first().focus();
   const reached: string[] = [];
   for (let pressed = 0; pressed < items.length + WALK_SLACK; pressed += 1) {
+    // One read per press: j moves the focus before the press returns, so this reads where it is.
     const focused = await focusedRowReadId(page);
     if (focused !== null) reached.push(focused);
     await page.keyboard.press("j");
