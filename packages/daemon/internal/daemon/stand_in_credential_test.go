@@ -13,10 +13,13 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
+	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -37,7 +40,8 @@ func fromTheDaemon(t *testing.T, w http.ResponseWriter, r *http.Request, bearer 
 
 // dispatchBoard starts a Dispatch board, closed when the test ends, and answers its URL. The board
 // serves handler to each request that carries the daemon's Dispatch bearer (workflowDispatchToken)
-// and answers any other request 404 (fromTheDaemon).
+// and answers any other request 404 (fromTheDaemon). Every Dispatch board of daemon_test.go starts
+// here.
 func dispatchBoard(t *testing.T, handler http.HandlerFunc) string {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -49,12 +53,21 @@ func dispatchBoard(t *testing.T, handler http.HandlerFunc) string {
 	return server.URL
 }
 
-// workflowDispatchToken is the bearer the daemon of workflowConfig presents to Dispatch.
-const workflowDispatchToken = "dispatch-test-token"
-
-// workflowAppToken is the GitHub App token of each lease a workflowTokenRecorder's Token mints
-// (ReadToken's lease carries it with "-read" after it).
-const workflowAppToken = "workflow-test-token"
+// workflowBranchGitHub is newBranchGitHub for a daemon whose GitHub App leases a
+// workflowTokenRecorder mints: it serves each request that carries their token (workflowAppToken)
+// and answers any other request 404 (fromTheDaemon), so it records no read or create of another
+// process's.
+func workflowBranchGitHub(t *testing.T, answer func() (int, string)) *branchGitHub {
+	t.Helper()
+	g := &branchGitHub{answer: answer, defaultBranch: "main"}
+	handle := g.handle(t, nil)
+	g.url = githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+		if fromTheDaemon(t, w, r, workflowAppToken) {
+			handle(w, r)
+		}
+	}})
+	return g
+}
 
 // kubeTestToken is the bearer every Kubernetes client of a test presents to the API stand-in
 // (issueSandboxAPI): the user token of the kubeconfig writeKubeconfig writes, and the one
@@ -67,9 +80,10 @@ const kubeTestToken = "kube-test-token"
 // <owner>, which identityTokens' and servedOwnerTokens' leases carry too), loginTokens' and
 // transientOnceTokens' (token), and the installation token appTokens' GitHub mints a real token
 // manager (installation-token), each with "-read" after it for a read lease. It is the
-// githubtest.Spec.Credential of every GitHub stand-in of this package whose daemon leases its
-// tokens from one of them: a test that reads which lease a request carried still tells one from
-// another, and a request with none is another process's.
+// githubtest.Spec.Credential of the GitHub stand-ins of this package whose daemon leases its
+// tokens from one of them, but for workflowBranchGitHub, which serves workflowAppToken's alone
+// (fromTheDaemon): a test that reads which lease a request carried still tells one from another,
+// and a request with none is another process's.
 func aLease(r *http.Request) bool {
 	token, bearer := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !bearer {
@@ -259,5 +273,121 @@ func TestADaemonStandInStillFailsItsTestOnTheDaemonsOwnUnexpectedRequest(t *test
 		if !strings.Contains(string(out), want) {
 			t.Errorf("the child run's output does not name %q:\n%s", want, out)
 		}
+	}
+}
+
+// A stand-in that holds the daemon to its requests answers a stranger's request 404, fails
+// nothing, and counts nothing of it, in each form the request takes: with no credential, with
+// another process's bearer, with the daemon's token under another scheme, with more after the
+// daemon's token, and with a prefix of it. A Dispatch board (dispatchBoard) does not reach its
+// handler. The dequeue rig's GitHub takes no hold of a held read and counts no read of the pull
+// request or of its reviews, the counts TestADequeuedPullRequestReachesItsMerger reads. Its Envoy
+// listener counts no refusal on a merger's topic no session holds and delivers nothing on one a
+// session holds. The moved issue's GitHub (workflowBranchGitHub) records no create of a branch,
+// the record TestAnIssueMovedWhileBootListsIsStillAdmitted reads. The first row's request is the
+// one a helper of the machine sent to a reused port: a read of its metadata server's identity
+// token. The daemon's own credential, sent last, is served and counted, so each count can move.
+func TestAStandInAnswersARequestWithoutTheDaemonsCredential404(t *testing.T) {
+	var reached atomic.Int64
+	board := dispatchBoard(t, func(http.ResponseWriter, *http.Request) { reached.Add(1) })
+	github := newDequeueGitHub(t)
+	issue := dequeueIssue{key: "ACME-1", number: 301, head: dequeueHead(301)}
+	github.serve(issue)
+	release := github.holdRead(issue.number)
+	t.Cleanup(release)
+	var cfg config.Config
+	listener := newDequeueListener(t, &cfg)
+	const unheld, held = "notifications.legion.ACME.role.merger-1", "notifications.legion.ACME.role.merger-2"
+	listener.unheld(unheld)
+	listener.holds(held)
+	branches := workflowBranchGitHub(t, branchCreated)
+	pull := github.url + "/repos/" + startedAgainRepo + "/pulls/301"
+
+	type stand struct{ name, token, method, url, body string }
+	dispatch := stand{"a Dispatch board", workflowDispatchToken, http.MethodGet, board + metadataIdentity, ""}
+	heldRead := stand{"the dequeue rig's GitHub at a held read", workflowAppToken, http.MethodGet, pull, ""}
+	reviews := stand{"the dequeue rig's GitHub at the reviews", workflowAppToken, http.MethodGet, pull + "/reviews", ""}
+	refusal := stand{"the dequeue rig's Envoy listener on an unheld merger's topic", dequeueEnvoyToken, http.MethodPost,
+		cfg.EnvoyURL + "/v1/messages/publish", `{"topic":"` + unheld + `","message":"m"}`}
+	delivery := stand{"the dequeue rig's Envoy listener on a held merger's topic", dequeueEnvoyToken, http.MethodPost,
+		cfg.EnvoyURL + "/v1/messages/publish", `{"topic":"` + held + `","message":"m"}`}
+	branch := stand{"the moved issue's GitHub at a create of its branch", workflowAppToken, http.MethodPost,
+		branches.url + "/repos/acme/widgets/git/refs", `{"ref":"refs/heads/legion/ACME-1","sha":"` + branchBaseCommit + `"}`}
+	// Each request is bounded by the one bound every wait of the test has (testwait.Context).
+	waits := testwait.Context(t)
+	do := func(s stand, authorization string) (int, error) {
+		request, err := http.NewRequestWithContext(waits, s.method, s.url, strings.NewReader(s.body))
+		if err != nil {
+			return 0, err
+		}
+		if authorization != "" {
+			request.Header.Set("Authorization", authorization)
+		}
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			return 0, err
+		}
+		_ = response.Body.Close()
+		return response.StatusCode, nil
+	}
+	send := func(t *testing.T, s stand, authorization string) int {
+		t.Helper()
+		status, err := do(s, authorization)
+		if err != nil {
+			t.Fatalf("%s %s with Authorization %q: %v", s.method, s.url, authorization, err)
+		}
+		return status
+	}
+
+	for _, s := range []stand{dispatch, heldRead, reviews, refusal, delivery, branch} {
+		for _, stranger := range []struct{ name, authorization string }{
+			{"with no credential", ""},
+			{"with another process's bearer", "Bearer another-process-token-not-a-secret"},
+			{"with the daemon's token under another scheme", "token " + s.token},
+			{"with more after the daemon's token", "Bearer " + s.token + "-x"},
+			{"with a prefix of the daemon's token", "Bearer " + s.token[:len(s.token)-1]},
+		} {
+			t.Run(s.name+" "+stranger.name, func(t *testing.T) {
+				if status := send(t, s, stranger.authorization); status != http.StatusNotFound {
+					t.Fatalf("%s %s with Authorization %q: status %d, want 404", s.method, s.url, stranger.authorization, status)
+				}
+			})
+		}
+	}
+	type counted struct {
+		handler, reads, reviewReads, heldReads int
+		holdSet                                bool
+		refusals, deliveries, creates          int
+	}
+	counts := func() counted {
+		github.mu.Lock()
+		p := github.pulls[issue.number]
+		c := counted{handler: int(reached.Load()), reads: p.reads, reviewReads: p.reviewReads, heldReads: p.heldReads, holdSet: p.hold != nil}
+		github.mu.Unlock()
+		c.refusals, c.deliveries, c.creates = listener.refused(unheld), len(listener.accepted(held)), len(branches.created())
+		return c
+	}
+	if got, want := counts(), (counted{holdSet: true}); got != want {
+		t.Errorf("after the strangers' requests the stand-ins counted %+v, want %+v", got, want)
+	}
+	for _, s := range []stand{dispatch, reviews, refusal, delivery, branch} {
+		send(t, s, "Bearer "+s.token)
+	}
+	// The daemon's own read of the held pull request waits for the hold, which the test releases
+	// once GitHub holds the read.
+	answered := make(chan error, 1)
+	go func() {
+		_, err := do(heldRead, "Bearer "+heldRead.token)
+		answered <- err
+	}()
+	testwait.Eventually(t, "GitHub holding the daemon's own read of the held pull request", func() bool {
+		return github.heldReads(issue.number) == 1
+	})
+	release()
+	if err := testwait.Receive(t, "the answer to the daemon's own read of the held pull request", answered); err != nil {
+		t.Fatalf("%s %s with the daemon's token: %v", heldRead.method, heldRead.url, err)
+	}
+	if got, want := counts(), (counted{handler: 1, reads: 1, reviewReads: 1, heldReads: 1, refusals: 1, deliveries: 1, creates: 1}); got != want {
+		t.Errorf("after the daemon's own requests the stand-ins counted %+v, want %+v", got, want)
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -73,7 +74,7 @@ func TestContractALostRefreshAnswerIsRetriedInsideTheGrace(t *testing.T) {
 	// The retry after a lost answer is the refresh loop's own wait, armed on this broker's
 	// clock at the production retry, and fired here rather than shortened.
 	fake := clocktest.New(time.Now())
-	b := &Broker{URL: first.broker.URL, OperatorFile: first.broker.OperatorFile, MachineFile: first.machineFile,
+	b := &Broker{URL: brokeraddr.New(first.broker.URL), OperatorFile: first.broker.OperatorFile, MachineFile: first.machineFile,
 		HTTP: &http.Client{Transport: lossy}, Clock: fake}
 	t.Cleanup(b.Close)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -316,7 +317,7 @@ func TestContractALostRefreshAnswerIsRedeemableUntilTheGraceEnds(t *testing.T) {
 			first.cancel()
 			lossy := &losingTokenTransport{}
 			// A retry an hour out, so the only refresh after Start's is the row's own call.
-			b := &Broker{URL: first.broker.URL, OperatorFile: first.broker.OperatorFile, MachineFile: first.machineFile,
+			b := &Broker{URL: brokeraddr.New(first.broker.URL), OperatorFile: first.broker.OperatorFile, MachineFile: first.machineFile,
 				HTTP: &http.Client{Transport: lossy}, refreshRetry: time.Hour}
 			t.Cleanup(b.Close)
 			ctx, cancel := context.WithCancel(context.Background())

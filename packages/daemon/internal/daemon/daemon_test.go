@@ -14,7 +14,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1291,56 +1290,57 @@ func TestWorkflowBootLogsItsDependencyOrder(t *testing.T) {
 func TestAnIssueMovedWhileBootListsIsStillAdmitted(t *testing.T) {
 	natsURL := workflowNATS(t)
 	js := workflowJetStream(t, natsURL)
-	cfg := workflowConfig(t, natsURL)
 	captured, err := os.ReadFile("../intake/testdata/dispatch/issue-updated.json")
 	if err != nil {
 		t.Fatalf("read the captured Dispatch issue.updated event: %v", err)
 	}
-	// The event is this daemon's project's, with an id of its own: processed events are deduplicated
-	// by Envoy's event id across the shared database. The captured issue carries no labels; this one
-	// is handed to Legion.
-	moved := strings.ReplaceAll(strings.ReplaceAll(string(captured), "CAPTURE", cfg.Project), `"dispatch-15"`, `"dispatch-`+cfg.Project+`"`)
-	moved = strings.Replace(moved, `\"labels\":[]`, `\"labels\":[\"legion\"]`, 1)
-	moved = strings.Replace(moved, `\"resolved_repo\":\"sjawhar/legion\"`, `\"resolved_repo\":\"acme/widgets\"`, 1)
-	key := cfg.Project + "-3"
+	var key, moved string
 	var once sync.Once
-	dispatchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if servedBootCall(t, w, r, cfg.Project) {
-			return
-		}
-		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/issues/"+key {
-			// The admission event of an issue not yet recorded is prepared as Dispatch's detail
-			// shows the issue now: as the move left it.
+	cfg := workflowConfigOn(t, natsURL, func(t *testing.T, project string) string {
+		// The event is this daemon's project's, with an id of its own: processed events are
+		// deduplicated by Envoy's event id across the shared database. The captured issue carries
+		// no labels; this one is handed to Legion.
+		moved = strings.ReplaceAll(strings.ReplaceAll(string(captured), "CAPTURE", project), `"dispatch-15"`, `"dispatch-`+project+`"`)
+		moved = strings.Replace(moved, `\"labels\":[]`, `\"labels\":[\"legion\"]`, 1)
+		moved = strings.Replace(moved, `\"resolved_repo\":\"sjawhar/legion\"`, `\"resolved_repo\":\"acme/widgets\"`, 1)
+		key = project + "-3"
+		return dispatchBoard(t, func(w http.ResponseWriter, r *http.Request) {
+			if servedBootCall(t, w, r, project) {
+				return
+			}
+			if r.Method == http.MethodGet && r.URL.Path == "/api/v1/issues/"+key {
+				// The admission event of an issue not yet recorded is prepared as Dispatch's
+				// detail shows the issue now: as the move left it.
+				w.Header().Set("Content-Type", "application/json")
+				if err := json.NewEncoder(w).Encode(map[string]any{"key": key, "project": project, "title": "Captured workflow issue",
+					"status": "todo", "rank": "UUU", "labels": []string{"legion"}, "last_seq": 2, "resolved_repo": "acme/widgets"}); err != nil {
+					t.Errorf("write Dispatch issue: %v", err)
+				}
+				return
+			}
+			if r.Method != http.MethodGet || r.URL.Path != "/api/v1/issues" {
+				// Once the move is admitted, the outbox reads and writes this project's issue;
+				// those calls are not what this test is about. Another project's issue is never
+				// this daemon's.
+				if !strings.HasPrefix(r.URL.Path, "/api/v1/issues/"+project+"-") {
+					t.Errorf("Dispatch request = %s %s", r.Method, r.URL.Path)
+				}
+				http.Error(w, "unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			// The move lands while the listing is read, which is already past it.
+			once.Do(func() {
+				if _, err := js.Publish(r.Context(), "notifications.dispatch.issue."+key+".issue.updated", []byte(moved)); err != nil {
+					t.Errorf("publish the move: %v", err)
+				}
+			})
 			w.Header().Set("Content-Type", "application/json")
-			if err := json.NewEncoder(w).Encode(map[string]any{"key": key, "project": cfg.Project, "title": "Captured workflow issue",
-				"status": "todo", "rank": "UUU", "labels": []string{"legion"}, "last_seq": 2, "resolved_repo": "acme/widgets"}); err != nil {
-				t.Errorf("write Dispatch issue: %v", err)
-			}
-			return
-		}
-		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/issues" {
-			// Once the move is admitted, the outbox reads and writes this project's issue; those
-			// calls are not what this test is about. Another project's issue is never this daemon's.
-			if !strings.HasPrefix(r.URL.Path, "/api/v1/issues/"+cfg.Project+"-") {
-				t.Errorf("Dispatch request = %s %s", r.Method, r.URL.Path)
-			}
-			http.Error(w, "unavailable", http.StatusServiceUnavailable)
-			return
-		}
-		// The move lands while the listing is read, which is already past it.
-		once.Do(func() {
-			if _, err := js.Publish(r.Context(), "notifications.dispatch.issue."+key+".issue.updated", []byte(moved)); err != nil {
-				t.Errorf("publish the move: %v", err)
+			if err := json.NewEncoder(w).Encode([]any{}); err != nil {
+				t.Errorf("write Dispatch issues: %v", err)
 			}
 		})
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode([]any{}); err != nil {
-			t.Errorf("write Dispatch issues: %v", err)
-		}
-	}))
-	t.Cleanup(dispatchServer.Close)
-	cfg.DispatchURL = dispatchServer.URL
-	github := newBranchGitHub(t, nil, branchCreated)
+	})
+	github := workflowBranchGitHub(t, branchCreated)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	o := overrides{
@@ -1465,28 +1465,26 @@ func TestRunStopsWithTheErrorWhenItsIntakeEnds(t *testing.T) {
 // (readiness_test.go) already covers in isolation.
 func TestRunWaitsThroughADispatch503BeforeServing(t *testing.T) {
 	natsURL := workflowNATS(t)
-	cfg := workflowConfig(t, natsURL)
 	var requests atomic.Int64
-	dispatchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if servedBootCall(t, w, r, cfg.Project) {
-			return
-		}
-		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/issues" {
-			t.Errorf("Dispatch request = %s %s", r.Method, r.URL.Path)
-			return
-		}
-		if requests.Add(1) <= 2 {
-			http.Error(w, "unavailable", http.StatusServiceUnavailable)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode([]any{}); err != nil {
-			t.Errorf("write Dispatch issues: %v", err)
-		}
-	}))
-	t.Cleanup(dispatchServer.Close)
-
-	cfg.DispatchURL = dispatchServer.URL
+	cfg := workflowConfigOn(t, natsURL, func(t *testing.T, project string) string {
+		return dispatchBoard(t, func(w http.ResponseWriter, r *http.Request) {
+			if servedBootCall(t, w, r, project) {
+				return
+			}
+			if r.Method != http.MethodGet || r.URL.Path != "/api/v1/issues" {
+				t.Errorf("Dispatch request = %s %s", r.Method, r.URL.Path)
+				return
+			}
+			if requests.Add(1) <= 2 {
+				http.Error(w, "unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode([]any{}); err != nil {
+				t.Errorf("write Dispatch issues: %v", err)
+			}
+		})
+	})
 	clk := clocktest.New(time.Now())
 	boot := bootOn(t, cfg, &workflowTokenRecorder{}, clk, quietLogger())
 	fireBackoff(t, clk, "the wait before the admission listing's next attempt", readinessRetry, 2)
@@ -1507,28 +1505,27 @@ func TestRunWaitsThroughADispatch503BeforeServing(t *testing.T) {
 // restarted it straight back into the same refusal. Here Dispatch fails the mapping read two times
 // more than appMintRetry's budget allows.
 func TestRunWaitsForTheRepositoryMappingThroughADispatchOutage(t *testing.T) {
-	cfg := workflowConfig(t, workflowNATS(t))
 	refusals := int64(appMintRetry.Attempts + 2)
 	var reads atomic.Int64
-	dispatchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/settings/repo-projects" && reads.Add(1) <= refusals {
-			http.Error(w, "no healthy upstream", http.StatusServiceUnavailable)
-			return
-		}
-		if servedBootCall(t, w, r, cfg.Project) {
-			return
-		}
-		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/issues" {
-			t.Errorf("Dispatch request = %s %s", r.Method, r.URL.Path)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode([]any{}); err != nil {
-			t.Errorf("write Dispatch issues: %v", err)
-		}
-	}))
-	t.Cleanup(dispatchServer.Close)
-	cfg.DispatchURL = dispatchServer.URL
+	cfg := workflowConfigOn(t, workflowNATS(t), func(t *testing.T, project string) string {
+		return dispatchBoard(t, func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet && r.URL.Path == "/api/v1/settings/repo-projects" && reads.Add(1) <= refusals {
+				http.Error(w, "no healthy upstream", http.StatusServiceUnavailable)
+				return
+			}
+			if servedBootCall(t, w, r, project) {
+				return
+			}
+			if r.Method != http.MethodGet || r.URL.Path != "/api/v1/issues" {
+				t.Errorf("Dispatch request = %s %s", r.Method, r.URL.Path)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode([]any{}); err != nil {
+				t.Errorf("write Dispatch issues: %v", err)
+			}
+		})
+	})
 
 	clk := clocktest.New(time.Now())
 	boot := bootOn(t, cfg, &workflowTokenRecorder{}, clk, quietLogger())
@@ -1541,13 +1538,47 @@ func TestRunWaitsForTheRepositoryMappingThroughADispatchOutage(t *testing.T) {
 	}
 }
 
-// workflowConfig is a Stage 3 configuration over natsURL and a Dispatch that lists no issues.
+// workflowDispatchToken is the bearer the daemon of workflowConfig presents to Dispatch.
+const workflowDispatchToken = "dispatch-test-token"
+
+// workflowConfig is a Stage 3 configuration over natsURL and a Dispatch that lists no issues
+// (workflowDispatch).
 func workflowConfig(t *testing.T, natsURL string) config.Config {
 	t.Helper()
+	return workflowConfigOn(t, natsURL, workflowDispatch)
+}
+
+// workflowConfigOn is workflowConfig over the Dispatch board that board starts for the
+// configuration's project, in place of workflowConfig's own: a test that passes its own board here
+// starts no second one.
+func workflowConfigOn(t *testing.T, natsURL string, board func(t *testing.T, project string) string) config.Config {
+	t.Helper()
 	cfg := testConfig(t)
-	dispatchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Boot reads this process's environment, so the real gh is named here: the first gh on a
+	// machine's PATH may be a script, which boot refuses (RefuseScriptGH).
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LEGION_GH_PATH", executable)
+	cfg.DispatchURL = board(t, cfg.Project)
+	cfg.DispatchTokenFile = filepath.Join(t.TempDir(), "dispatch-token")
+	if err := os.WriteFile(cfg.DispatchTokenFile, []byte(workflowDispatchToken+"\n"), 0o600); err != nil {
+		t.Fatalf("write Dispatch token: %v", err)
+	}
+	cfg.Projects = map[string]config.Project{cfg.Project: {}}
+	cfg.NatsURLs = []string{natsURL}
+	return cfg
+}
+
+// workflowDispatch is workflowConfig's board (dispatchBoard): the calls every boot makes
+// (servedBootCall) and an empty listing of issues, and any other call of the daemon's fails the
+// test.
+func workflowDispatch(t *testing.T, project string) string {
+	t.Helper()
+	return dispatchBoard(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case servedBootCall(t, w, r, cfg.Project):
+		case servedBootCall(t, w, r, project):
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/issues":
 			w.Header().Set("Content-Type", "application/json")
 			if err := json.NewEncoder(w).Encode([]any{}); err != nil {
@@ -1556,23 +1587,7 @@ func workflowConfig(t *testing.T, natsURL string) config.Config {
 		default:
 			t.Errorf("Dispatch request = %s %s", r.Method, r.URL.Path)
 		}
-	}))
-	t.Cleanup(dispatchServer.Close)
-	// Boot reads this process's environment, so the real gh is named here: the first gh on a
-	// machine's PATH may be a script, which boot refuses (RefuseScriptGH).
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("LEGION_GH_PATH", executable)
-	cfg.DispatchURL = dispatchServer.URL
-	cfg.DispatchTokenFile = filepath.Join(t.TempDir(), "dispatch-token")
-	if err := os.WriteFile(cfg.DispatchTokenFile, []byte(workflowDispatchToken+"\n"), 0o600); err != nil {
-		t.Fatalf("write Dispatch token: %v", err)
-	}
-	cfg.Projects = map[string]config.Project{cfg.Project: {}}
-	cfg.NatsURLs = []string{natsURL}
-	return cfg
+	})
 }
 
 func workflowJetStream(t *testing.T, natsURL string) jetstream.JetStream {
@@ -1584,6 +1599,10 @@ func workflowJetStream(t *testing.T, natsURL string) jetstream.JetStream {
 	}
 	return js
 }
+
+// workflowAppToken is the GitHub App token of each lease a workflowTokenRecorder's Token mints
+// (ReadToken's lease carries it with "-read" after it).
+const workflowAppToken = "workflow-test-token"
 
 type workflowTokenRecorder struct {
 	mu    sync.Mutex

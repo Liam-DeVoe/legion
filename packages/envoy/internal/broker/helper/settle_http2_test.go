@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -53,7 +54,7 @@ func pointBrokerAtHTTP2(t *testing.T, r *rig, handler http.HandlerFunc) <-chan s
 	h2.EnableHTTP2 = true
 	h2.StartTLS()
 	t.Cleanup(h2.Close)
-	r.srv.Broker.URL = h2.URL
+	r.srv.Broker.URL = brokeraddr.New(h2.URL)
 	r.srv.Broker.HTTP = &http.Client{Transport: neverEndingBody{base: h2.Client().Transport}}
 	return proto
 }

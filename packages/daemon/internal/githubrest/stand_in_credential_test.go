@@ -53,21 +53,21 @@ func (f *failures) reported() []string {
 
 // A stand-in GitHub of this package answers a request without the client's token 404 and fails
 // nothing, while the client's own request to it, under its token, still fails the test where the
-// stand-in does not expect it. The stand-in is the compare test's, which fails the test on any
-// read without per_page=1, run under failures: the read of a metadata server's identity token a
-// helper of the machine sent to a reused port (dispatch://INFRA-3904), in each form a stranger's
-// credential takes, reports nothing; the client's compare with per_page=1 reports nothing; and
-// the same read under the client's token without per_page=1 is reported.
+// stand-in does not expect it. The stand-in is the branch-activity test's, which fails the test on
+// a read without per_page=100, run under failures: the read of a metadata server's identity token
+// a helper of the machine sent to a reused port (dispatch://INFRA-3904), in each form a stranger's
+// credential takes, reports nothing; the client's branch-activity read reports nothing; and the
+// same read under the client's token without per_page=100 is reported.
 func TestAStandInFailsItsTestOnlyOnTheClientsOwnRequests(t *testing.T) {
 	recorded := &failures{TB: t}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !fromTheDaemon(recorded, w, r, testToken) {
 			return
 		}
-		if got := r.URL.Query().Get("per_page"); got != "1" {
-			recorded.Errorf("compare %s asked for per_page=%q, want 1", r.URL.Path, got)
+		if got := r.URL.Query().Get("per_page"); got != "100" {
+			recorded.Errorf("read %s with per_page=%q, want 100", r.URL.Path, got)
 		}
-		_, _ = w.Write([]byte(`{"status":"identical","files":[]}`))
+		_, _ = w.Write([]byte(`[]`))
 	}))
 	t.Cleanup(server.Close)
 	const metadata = "/computeMetadata/v1/instance/service-accounts/default/identity"
@@ -91,14 +91,14 @@ func TestAStandInFailsItsTestOnlyOnTheClientsOwnRequests(t *testing.T) {
 			t.Errorf("GET %s with Authorization %q: status %d, want 404", metadata, stranger, status)
 		}
 	}
-	if _, err := (Client{Token: testToken, API: server.URL + "/repos/acme/widgets"}).Compare(testwait.Context(t), "code", "handoff"); err != nil {
-		t.Fatalf("the client's own compare: %v", err)
+	if _, err := (Client{Token: testToken, API: server.URL + "/repos/acme/widgets"}).BranchActivity(testwait.Context(t), "legion/A-1"); err != nil {
+		t.Fatalf("the client's own branch-activity read: %v", err)
 	}
 	if got := recorded.reported(); len(got) != 0 {
-		t.Fatalf("requests without the client's token and the client's own compare made the stand-in report %q, want nothing", got)
+		t.Fatalf("requests without the client's token and the client's own read made the stand-in report %q, want nothing", got)
 	}
 	send("Bearer " + testToken)
-	if got, want := recorded.reported(), []string{"compare " + metadata + ` asked for per_page="", want 1`}; !slices.Equal(got, want) {
+	if got, want := recorded.reported(), []string{"read " + metadata + ` with per_page="", want 100`}; !slices.Equal(got, want) {
 		t.Fatalf("a read under the client's token that the stand-in does not expect made it report %q, want %q", got, want)
 	}
 }

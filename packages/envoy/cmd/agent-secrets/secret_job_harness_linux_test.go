@@ -39,7 +39,8 @@ type promptShell struct {
 	out      bytes.Buffer
 	pid      int
 	history  string
-	env      string // variables start sets for the helper, each followed by a space
+	typed    []string // the commands start and foregroundState typed, as the history holds them
+	env      string   // variables start sets for the helper, each followed by a space
 	// wrapperIgnores is the signals start's wrapper shell ignores (`trap '' <signals>`), which the
 	// helper it starts inherits as ignored; "TSTP" when empty.
 	wrapperIgnores string
@@ -97,6 +98,30 @@ func (s *promptShell) send(text string) {
 	if _, err := s.controller.Write([]byte(text)); err != nil {
 		s.t.Fatal(err)
 	}
+}
+
+// setupOutranDeadline is what the helper prints when its prompt, given a deadline inside the
+// entry (AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY), reached its first check of that deadline only
+// after it had passed, before it read anything: the machine stalled across the moment between
+// the helper setting the deadline and the prompt's first read.
+const setupOutranDeadline = "SETUP_OUTRAN_DEADLINE"
+
+// stallRetries runs scenario in a new shell, and again in another while it answers false: it
+// does so when the helper printed setupOutranDeadline, a run that says nothing of the prompt. It
+// runs it again for as long as the shared wait waits (testwait), so a machine that stalls past
+// the value deadline in every run fails the test at the test binary's deadline, naming the run
+// it waited for.
+func stallRetries(t *testing.T, scenario func(s *promptShell) bool) {
+	t.Helper()
+	run := 0
+	testwait.Eventually(t, "a run whose prompt reached its first read before the value deadline", func() bool {
+		run++
+		if scenario(newPromptShell(t)) {
+			return true
+		}
+		t.Logf("run %d: the machine stalled past the value deadline before the prompt's first read; running it again", run)
+		return false
+	})
 }
 
 // wait waits until the terminal has shown want (waitFirst).
@@ -187,6 +212,7 @@ func (s *promptShell) start(wrapper bool, background bool) {
 		command += " &"
 	}
 	s.out.Reset()
+	s.typed = append(s.typed, command)
 	s.send(command + "\r")
 	s.wait("HELPER_PID=")
 	s.wait("\r\nHELPER_READY\r\n")
@@ -196,14 +222,19 @@ func (s *promptShell) start(wrapper bool, background bool) {
 		s.t.Fatal(err)
 	}
 	s.pid = pid
+	// The label shows once the prompt holds the terminal in its own mode: a stop
+	// before it discards nothing, so each test's stop comes after it.
+	marker := "Value for DEMO_KEY: "
 	if background {
-		s.wait("PROMPT_STARTING")
-	} else {
-		// The label shows once the prompt holds the terminal in its own mode: a stop
-		// before it discards nothing, so each test's stop comes after it.
-		s.wait("Value for DEMO_KEY: ")
+		marker = "PROMPT_STARTING"
 	}
+	s.wait(marker)
+	// What the terminal showed after the marker is kept: on a loaded machine one read can carry
+	// the marker and what the prompt did next, which may be the line the test waits for.
+	shown := s.out.String()
+	rest := shown[strings.Index(shown, marker)+len(marker):]
 	s.out.Reset()
+	s.out.WriteString(rest)
 }
 
 // foregroundState is the terminal state, as termiosKey writes it, that bash hands a
@@ -211,7 +242,9 @@ func (s *promptShell) start(wrapper bool, background bool) {
 func (s *promptShell) foregroundState() string {
 	s.t.Helper()
 	s.out.Reset()
-	s.send("AGENT_SECRETS_JOB_HELPER=1 AGENT_SECRETS_JOB_PROBE=1 " + shellWord(os.Args[0]) + " -test.run='^TestPromptJobHelper$'\r")
+	probe := "AGENT_SECRETS_JOB_HELPER=1 AGENT_SECRETS_JOB_PROBE=1 " + shellWord(os.Args[0]) + " -test.run='^TestPromptJobHelper$'"
+	s.typed = append(s.typed, probe)
+	s.send(probe + "\r")
 	s.wait("FOREGROUND_STATE=")
 	s.wait(" END")
 	s.wait("PROMPT$ ")
@@ -245,8 +278,19 @@ func (s *promptShell) noShellValue(markers ...string) {
 	if err != nil {
 		s.t.Fatal(err)
 	}
+	// The commands this test typed to start the helper are in the history too, and bash shows a
+	// job's command again at fg and at a stop, with the test binary's path and the helper's
+	// settings in them: a marker that only those hold (a path under a directory named "head") is
+	// no leak, so they are taken out before the check.
+	terminal := s.out.String()
+	for _, command := range s.typed {
+		for _, shown := range []string{command, strings.TrimSuffix(command, " &")} {
+			history = bytes.ReplaceAll(history, []byte(shown), nil)
+			terminal = strings.ReplaceAll(terminal, shown, "")
+		}
+	}
 	for _, marker := range markers {
-		if strings.Contains(s.out.String(), marker) || bytes.Contains(history, []byte(marker)) {
+		if strings.Contains(terminal, marker) || bytes.Contains(history, []byte(marker)) {
 			s.t.Fatalf("value reached the screen or shell history: terminal=%q history=%q", s.out.String(), history)
 		}
 	}
@@ -344,6 +388,9 @@ func TestPromptJobHelper(t *testing.T) {
 	// that by the deadline, not by the wait's bound. It prints DEADLINE_PASSED then, and READING_ON
 	// at the reader's next wait, if it waits again; where the input itself came after the
 	// deadline, the reader is already reading on, and it prints both at once. With
+	// AGENT_SECRETS_JOB_HOLD_READING_ON it holds the wait it prints READING_ON at open until input
+	// comes, so what the test sends after READING_ON arrives inside that wait however slowly this
+	// process runs, whichever of the two ways the deadline passed. With
 	// AGENT_SECRETS_JOB_ANNOUNCE_DEADLINE it prints DEADLINE_REACHED once the deadline has passed,
 	// so a test can send its input after it.
 	var window time.Duration
@@ -375,7 +422,31 @@ func TestPromptJobHelper(t *testing.T) {
 	midEntry, held, readOn := os.Getenv("AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY") != "", false, false
 	real := readTerminal
 	waits, waiting, readSome := 0, false, false
+	// readingOnWait is the wait (k of WAIT k) READING_ON was printed at, which
+	// AGENT_SECRETS_JOB_HOLD_READING_ON holds; 0 while there is none.
+	holdReadingOn, readingOnWait := os.Getenv("AGENT_SECRETS_JOB_HOLD_READING_ON") != "", 0
+	// readingOn prints READING_ON at the wait whose bound is timeout, and answers the bound that
+	// wait runs with: held open until input comes where AGENT_SECRETS_JOB_HOLD_READING_ON asks
+	// for it and the wait has a bound at all.
+	readingOn := func(timeout int) int {
+		fmt.Println("READING_ON")
+		if !holdReadingOn || timeout < 0 {
+			return timeout
+		}
+		readingOnWait = waits
+		return -1
+	}
+	announceIgnoredStop := os.Getenv("AGENT_SECRETS_JOB_ANNOUNCE_IGNORED_STOP") != ""
+	stopRead := false
+	reads := 0
 	readTerminal = func(fd, wake int, buf []byte, timeout int) (int, error) {
+		reads++
+		if stopRead {
+			// The preceding read included Ctrl-Z. Reaching the next read means feed has
+			// handled it, unlike READ_SOME, which is printed before feed sees the bytes.
+			fmt.Println("IGNORED_STOP_HANDLED")
+			stopRead = false
+		}
 		if midEntry && !readSome {
 			timeout = -1
 		}
@@ -384,13 +455,13 @@ func TestPromptJobHelper(t *testing.T) {
 				waits, waiting = waits+1, true
 				fmt.Printf("WAIT %d %d\n", waits, timeout)
 			}
-			if waits <= holds {
+			if waits <= holds || waits == readingOnWait {
 				timeout = -1
 			}
 		}
 		if held && !readOn {
 			readOn = true
-			fmt.Println("READING_ON")
+			timeout = readingOn(timeout)
 		}
 		if midEntry && readSome && !held {
 			// The reader's first wait after input: decided by the deadline itself, not by the
@@ -403,11 +474,14 @@ func TestPromptJobHelper(t *testing.T) {
 			} else {
 				readOn = true
 				fmt.Println("DEADLINE_PASSED")
-				fmt.Println("READING_ON")
+				timeout = readingOn(timeout)
 			}
 		}
 		n, err := real(fd, wake, buf, timeout)
 		waiting = waiting && (n == -2 || (n == -1 && err == nil) || errors.Is(err, unix.EINTR))
+		if announceIgnoredStop && n > 0 && bytes.IndexByte(buf[:n], '\x1a') >= 0 {
+			stopRead = true
+		}
 		if n > 0 && !readSome {
 			readSome = true
 			fmt.Println("READ_SOME")
@@ -422,6 +496,12 @@ func TestPromptJobHelper(t *testing.T) {
 		}
 	}
 	value, err := readSecretValue("DEMO_KEY", "agent-secrets secret set DEMO_KEY", deadline, label)
+	if midEntry && reads == 0 && errors.Is(err, errValueTimedOut) {
+		// The prompt reached its first check of the deadline only after the deadline had passed,
+		// before it read at all: the machine stalled between the helper setting the deadline and
+		// the prompt's first read, and this run says nothing of the entry (stallRetries).
+		fmt.Println(setupOutranDeadline)
+	}
 	restored, restoreErr := unix.IoctlGetTermios(0, unix.TCGETS)
 	fmt.Printf("RETURNED %v MATCH=%t EMPTY=%t RESTORED=%t LABEL_HELD=%t\n", err, value == "headtail", value == "",
 		restoreErr == nil && termiosKey(restored) == reference, label.shown && label.held)
@@ -437,6 +517,19 @@ func (s *promptShell) jobStopped() {
 		s.wait("PROMPT$ ")
 		shown := s.out.String()
 		return shown, strings.Contains(shown, "Stopped")
+	})
+}
+
+// allInputRead waits until the terminal holds nothing unread: the prompt has read all that was
+// sent, so none of it is left for the shell.
+func (s *promptShell) allInputRead() {
+	s.t.Helper()
+	testwait.Until(s.t, "the prompt to read what was typed at it", func() (int, bool) {
+		queued, err := unix.IoctlGetInt(s.terminal, unix.TIOCINQ)
+		if err != nil {
+			s.t.Fatal(err)
+		}
+		return queued, queued == 0
 	})
 }
 

@@ -807,6 +807,50 @@ func TestOverlappingFreezesThawInEitherOrderWithoutPanicking(t *testing.T) {
 	}
 }
 
+// A server whose replies the relay holds still takes what its clients send: a JetStream publish is
+// stored, which StoredOn reads in the server itself, while its acknowledgement waits in the relay
+// on a connection that stays CONNECTED, as an acknowledgement lost on its way back does, and
+// reaches the client once the relay passes the server's replies again.
+func TestFrozenRepliesKeepAPublishAndHoldItsAcknowledgement(t *testing.T) {
+	server, uri := Start(t)
+	conn := Connect(t, uri)
+	defer conn.Close()
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatalf("open JetStream: %v", err)
+	}
+	if _, err := js.AddStream(&natsgo.StreamConfig{Name: "held", Subjects: []string{"held.>"}}, natsgo.Context(testwait.Context(t))); err != nil {
+		t.Fatalf("add the stream: %v", err)
+	}
+
+	thaw := server.FreezeReplies(t)
+	t.Cleanup(thaw)
+	ack, err := js.PublishAsync("held.kept", []byte("kept"))
+	if err != nil {
+		t.Fatalf("publish while the relay holds the server's replies: %v", err)
+	}
+	// The acknowledgement can reach the client only through the relay, which holds it, so each
+	// read of the store, the one that finds the publish stored among them, finds it unanswered on a
+	// connection that is still CONNECTED.
+	testwait.Until(t, "the server to store the publish whose acknowledgement the relay holds", func() (uint64, bool) {
+		stored := server.StoredOn(t, "held", "held.kept")
+		select {
+		case <-ack.Ok():
+			t.Fatal("the publish was acknowledged while the relay held the server's replies")
+		case err := <-ack.Err():
+			t.Fatalf("the publish failed while the relay held the server's replies: %v", err)
+		default:
+		}
+		if status := conn.Status(); status != natsgo.CONNECTED {
+			t.Fatalf("the connection whose replies the relay holds is %v, want CONNECTED", status)
+		}
+		return stored, stored == 1
+	})
+
+	thaw()
+	testwait.Receive(t, "the publish's acknowledgement once the relay passes the server's replies again", ack.Ok())
+}
+
 // The anonymous wait ends at once, failing the test, on a server that refuses a client with no
 // credential: that server is up and has no no_auth_user, so waiting out the deadline would only
 // report the same refusal later.

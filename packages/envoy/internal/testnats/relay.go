@@ -36,6 +36,10 @@ type relay struct {
 	// gate is nil while the relay moves bytes, and open while it is frozen: every copy waits for
 	// it to close, which thawing does.
 	gate chan struct{}
+	// replies is nil while a client port's relay passes what the server sends its clients, and
+	// open while it holds those bytes (freezeReplies): the copies from the server wait for it to
+	// close as well as for gate, and the copies to the server go on.
+	replies chan struct{}
 	// holds is how many holds are in force and closed whether the relay has closed; moved is
 	// signalled whenever either changes.
 	holds  int
@@ -123,7 +127,8 @@ func (r *relay) join(client net.Conn) {
 // closes it: a client that ends its side has the server read the end of the stream after
 // everything the client sent, as a client connected to the server itself does, and the server's
 // replies are read and dropped until the server closes. What the server sends the client passes
-// through j.received, which drops the PONGs that answer the relay's own PINGs (barrier).
+// through j.received, which drops the PONGs that answer the relay's own PINGs (barrier), and waits
+// in the relay while the relay is frozen or holds the server's replies (freezeReplies).
 func (r *relay) joinClient(client, upstream net.Conn) {
 	j := &joined{upstream: upstream, drop: map[int64]bool{}, received: protocolStream{fromServer: true}}
 	r.mu.Lock()
@@ -140,12 +145,12 @@ func (r *relay) joinClient(client, upstream net.Conn) {
 	buffer := make([]byte, 32*1024)
 	delivering := true
 	for {
-		r.pass()
+		r.passReplies()
 		read, err := upstream.Read(buffer)
 		if read > 0 {
 			passed := j.received.filter(buffer[:read], func() bool { return r.pong(j) })
 			if len(passed) > 0 && delivering {
-				r.pass()
+				r.passReplies()
 				if _, err := client.Write(passed); err != nil {
 					delivering = false
 				}
@@ -228,20 +233,50 @@ func (r *relay) pass() {
 	}
 }
 
+// passReplies waits while the relay is frozen or holds the server's replies, and returns at once
+// once it does neither or has closed.
+func (r *relay) passReplies() {
+	for {
+		r.mu.Lock()
+		gate := r.gate
+		if gate == nil {
+			gate = r.replies
+		}
+		r.mu.Unlock()
+		if gate == nil {
+			return
+		}
+		select {
+		case <-gate:
+		case <-r.done:
+			return
+		}
+	}
+}
+
 // freeze stops the relay moving bytes and returns the func that starts it again, which runs once
 // however often it is called.
-func (r *relay) freeze() func() {
+func (r *relay) freeze() func() { return r.shut(&r.gate) }
+
+// freezeReplies stops a client port's relay passing what the server sends its clients, while what
+// they send goes on reaching the server, and returns the func that passes them again, which runs
+// once however often it is called.
+func (r *relay) freezeReplies() func() { return r.shut(&r.replies) }
+
+// shut opens the gate *gate names, under which the copies it guards wait, unless one is open
+// already, and returns the func that closes it again.
+func (r *relay) shut(gate *chan struct{}) func() {
 	r.mu.Lock()
-	if r.gate == nil {
-		r.gate = make(chan struct{})
+	if *gate == nil {
+		*gate = make(chan struct{})
 	}
-	gate := r.gate
+	held := *gate
 	r.mu.Unlock()
 	return sync.OnceFunc(func() {
 		r.mu.Lock()
-		owned := r.gate == gate
+		owned := *gate == held
 		if owned {
-			r.gate = nil
+			*gate = nil
 		}
 		r.mu.Unlock()
 		// A second freeze while this one held the gate shares it: only the thaw that still owns
@@ -249,7 +284,7 @@ func (r *relay) freeze() func() {
 		if !owned {
 			return
 		}
-		close(gate)
+		close(held)
 	})
 }
 
@@ -258,15 +293,15 @@ func (r *relay) freeze() func() {
 // there, with the func that lets the writes through again, which runs once however often it is
 // called. Holds nest: the relay writes again once every hold has been released. Bytes a client
 // sends meanwhile wait in the relay, as a freeze keeps them, while the server's own bytes keep
-// reaching the client. hold fails at once on a frozen relay, whose PONGs barrier could not read,
-// and on a connection the relay cannot read as NATS protocol, and the func it returns must run all
-// the same; a connection that stays part-way through an operation is waited for through the shared
-// wait (await), which fails t when it gives up.
+// reaching the client. hold fails at once on a relay that is frozen or holds the server's replies,
+// whose PONGs barrier could not read, and on a connection the relay cannot read as NATS protocol,
+// and the func it returns must run all the same; a connection that stays part-way through an
+// operation is waited for through the shared wait (await), which fails t when it gives up.
 func (r *relay) hold(t testing.TB) (func(), error) {
 	t.Helper()
 	r.mu.Lock()
 	r.holds++
-	frozen := r.gate != nil
+	frozen := r.gate != nil || r.replies != nil
 	r.mu.Unlock()
 	release := sync.OnceFunc(func() {
 		r.mu.Lock()
@@ -275,7 +310,7 @@ func (r *relay) hold(t testing.TB) (func(), error) {
 		r.mu.Unlock()
 	})
 	if frozen {
-		return release, errors.New("the relay is frozen, so the server's answer to the relay's PING could not reach it")
+		return release, errors.New("the relay is frozen or holds the server's replies, so the server's answer to the relay's PING could not reach it")
 	}
 	return release, r.await(t, "every client's bytes to the server to stop at the end of an operation", func() (bool, error) {
 		for j := range r.joins {

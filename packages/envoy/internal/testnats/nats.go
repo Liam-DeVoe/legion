@@ -7,9 +7,9 @@
 // of its own choosing and is reached through a relay this process owns. The relay's port is the
 // one the test's URL names and it holds that port for the test's life, which buys four things: a
 // URL that survives a stop and a start (Server.Stop, Server.Start), a way to stop the bytes
-// moving in either direction without dropping a connection (Server.Freeze), a reload with no
-// client message in flight (Server.Reload), and a port no other test binary can take while the
-// test runs.
+// moving in either direction without dropping a connection (Server.Freeze), or the server's
+// replies alone (Server.FreezeReplies), a reload with no client message in flight
+// (Server.Reload), and a port no other test binary can take while the test runs.
 //
 // A package's tests share one server rather than start one each, and each test gets it as the user
 // of a JetStream account no earlier test used (URL), so no test ever deletes and recreates a
@@ -361,6 +361,43 @@ func (s *Server) Freeze(t testing.TB) func() {
 	return s.relay.freeze()
 }
 
+// FreezeReplies stops the relay passing what the server sends its clients, while what they send
+// goes on reaching the server, and returns the func that passes it again, as Freeze's does. The
+// server serves every request and stores every publish it is sent, and its answers wait in the
+// relay: a JetStream publish is stored and its acknowledgement never reaches the client, which is
+// an acknowledgement lost on its way back, on a connection that stays CONNECTED. What the server
+// holds meanwhile is read beside the relay (StoredOn).
+func (s *Server) FreezeReplies(t testing.TB) func() {
+	t.Helper()
+	return s.relay.freezeReplies()
+}
+
+// StoredOn is how many messages stream holds on subject, read by a client of the server's own in
+// this process (natsgo.InProcessServer) rather than through the relay, so it answers while the
+// relay holds the server's replies (FreezeReplies) or is frozen (Freeze). It reads a server that
+// admits a client with no credential, as Start's does, and fails t when the read fails.
+func (s *Server) StoredOn(t testing.TB, stream, subject string) uint64 {
+	t.Helper()
+	srv := s.natsServer()
+	if srv == nil {
+		t.Fatalf("read stream %s of a NATS server that is not running", stream)
+	}
+	conn, err := natsgo.Connect(srv.ClientURL(), natsgo.InProcessServer(srv), natsgo.Name("testnats stored-on"))
+	if err != nil {
+		t.Fatalf("connect to the NATS server in this process: %v", err)
+	}
+	defer conn.Close()
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatalf("open JetStream on the NATS server in this process: %v", err)
+	}
+	info, err := js.StreamInfo(stream, &natsgo.StreamInfoRequest{SubjectsFilter: subject}, natsgo.Context(testwait.Context(t)))
+	if err != nil {
+		t.Fatalf("read what stream %s holds on %s in the NATS server itself: %v", stream, subject, err)
+	}
+	return info.State.Subjects[subject]
+}
+
 // Reload has the running server take config as its whole configuration, as an operator signalling
 // a reload does: the server keeps its connections and applies the new configuration to them. It
 // returns the server's own refusal when the server would not take the configuration, and nil when
@@ -602,6 +639,13 @@ func (s *Server) launch(t testing.TB) {
 		srv.Shutdown()
 		srv.WaitForShutdown()
 		t.Fatalf("NATS did not accept connections within %s, what was left before the test binary's deadline less testwait's margin: %s", within, s.log.String())
+	}
+	// Before s.srv is set the relay refuses every connection, so no client request reaches the
+	// server before its system account's response timers are set past any test (responseThreshold).
+	if err := outliveResponseTimers(srv); err != nil {
+		srv.Shutdown()
+		srv.WaitForShutdown()
+		t.Fatalf("keep the NATS server's response timers from firing during the test: %v", err)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

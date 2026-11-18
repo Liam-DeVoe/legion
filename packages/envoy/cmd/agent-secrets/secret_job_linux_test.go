@@ -81,6 +81,7 @@ func TestPromptJobOrphanedBackgroundPromptRefuses(t *testing.T) {
 	s.out.Reset()
 	s.send("(" + command + " &)\r")
 	s.wait("HELPER_PID=")
+	s.wait("\r\nHELPER_READY\r\n") // the whole pid line has come
 	start := strings.Index(s.out.String(), "HELPER_PID=") + len("HELPER_PID=")
 	pid, err := strconv.Atoi(strings.Fields(s.out.String()[start:])[0])
 	if err != nil {
@@ -92,8 +93,10 @@ func TestPromptJobOrphanedBackgroundPromptRefuses(t *testing.T) {
 	if strings.Contains(s.out.String(), "Value for") {
 		t.Fatalf("an orphaned prompt showed its label: %q", s.out.String())
 	}
-	s.send("echo SHELL_ALIVE\r")
-	s.wait("SHELL_ALIVE")
+	// printf, not echo: the terminal's echo of `echo SHELL_ALIVE` would show the word before the
+	// shell had run anything.
+	s.send("printf 'SHELL_%s\\n' ALIVE\r")
+	s.wait("SHELL_ALIVE\r\n")
 }
 
 // A signal that ends the prompt while it waits in the background, after Ctrl-Z and bg, ends it by
@@ -139,6 +142,7 @@ func TestPromptJobSignalInTheBackgroundEndsItWithoutFg(t *testing.T) {
 // editor would read its next paste unbracketed).
 func TestPromptJobOrphanedByItsShellsExitLeavesTheTerminalAlone(t *testing.T) {
 	s := newPromptShell(t)
+	s.out.Reset() // the outer shell's prompt is no sign the inner one is up
 	s.send("bash --norc --noprofile -i\r")
 	s.wait("PROMPT$ ")
 	s.out.Reset()
@@ -149,6 +153,7 @@ func TestPromptJobOrphanedByItsShellsExitLeavesTheTerminalAlone(t *testing.T) {
 	s.send("\x1a")
 	s.wait("Stopped")
 	s.wait("PROMPT$ ")
+	s.out.Reset() // so the prompt waited for next is the one after bg
 	s.send("bg\r")
 	s.wait("PROMPT$ ")
 	s.out.Reset()
@@ -216,18 +221,19 @@ func TestPromptJobControlByteDrainsBeforeReturningToShell(t *testing.T) {
 
 func TestPromptJobInheritedIgnoredStopStaysIgnored(t *testing.T) {
 	s := newPromptShell(t)
+	s.env = "AGENT_SECRETS_JOB_ANNOUNCE_IGNORED_STOP=1 "
 	s.start(true, false)
 	s.send("head\x1a")
-	testwait.Span(t, 100*time.Millisecond, "a Ctrl-Z the wrapper's trap left ignored makes the prompt do nothing at all: "+
-		"no state of its own marks a signal it never saw, the prompt runs over a real pty so synctest does not reach it, "+
-		"and a later action's effect cannot tell a prompt that kept the terminal from one that took it back before reading the rest")
+	// Wait for the reader to handle Ctrl-Z and ask for more input, not just remove the byte
+	// from the kernel's queue: READ_SOME is printed before the reader handles those bytes.
+	s.wait("IGNORED_STOP_HANDLED")
 	if lflag(t, s.terminal)&unix.ECHO != 0 {
 		t.Fatal("ignored Ctrl-Z restored echo")
 	}
 	s.send("tail\r")
 	s.wait("RETURNED <nil> MATCH=true")
 	s.wait("WRAPPER_DONE")
-	s.noShellValue("headtail")
+	s.noShellValue("head", "tail")
 }
 
 func TestPromptControlByteInsideBracketedPasteDrainsThroughEnd(t *testing.T) {
@@ -500,35 +506,43 @@ func TestPromptJobLongPasteDrainsWhileInputKeepsArriving(t *testing.T) {
 // the paste begins before the deadline, or only after it (sent once the helper has said the
 // deadline passed), and the paste's rest goes only once the prompt has either read on past it or
 // given the terminal back to the shell, so a prompt that gives the paste up shows that rest
-// running there. The notice says the paste must end first: inside it Ctrl-C is pasted text, which
-// deletes nothing.
+// running there. Where the prompt reads on, the helper holds that wait open until the rest comes
+// (AGENT_SECRETS_JOB_HOLD_READING_ON), so the rest arrives inside the paste's bound however
+// slowly this test runs. The notice says the paste must end first: inside it Ctrl-C is pasted
+// text, which deletes nothing.
 func TestPromptJobValueDeadlineInsideAPasteDrainsItThroughItsEnd(t *testing.T) {
 	for _, after := range []bool{false, true} {
 		t.Run(fmt.Sprintf("the paste begun after the deadline=%t", after), func(t *testing.T) {
-			s := newPromptShell(t)
-			s.env = "AGENT_SECRETS_JOB_DEADLINE=2s AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY=1 AGENT_SECRETS_JOB_ANNOUNCE_DEADLINE=1 "
-			s.start(false, false)
-			if after {
-				s.wait("DEADLINE_REACHED")
-			}
-			s.send("\x1b[200~pastehead")
-			s.wait("DEADLINE_PASSED")
-			if s.waitFirst("READING_ON", "RETURNED") == "RETURNED" {
-				s.wait("PROMPT$ ")
-			}
-			s.send("\recho PASTE_$((2+3))\r\x1b[201~")
-			s.wait("RETURNED nothing was stored: no value came in time, within 2s")
-			// The prompt said at the deadline that the entry is refused, and that the empty secret
-			// stays until the paste and then the entry end, so the person knows to stop.
-			notice := s.out.String()
-			if !strings.Contains(notice, "The value deadline passed with an entry under way: no value came within 2s of the create, so none is stored. The empty secret DEMO_KEY stays in the store until this entry ends") ||
-				!strings.Contains(notice, "finish the paste, then press Enter") || strings.Contains(notice, "Ctrl-C deletes it now") {
-				t.Fatalf("the prompt's notice at its deadline inside a paste %q; want it to say the paste must end first, and never that Ctrl-C deletes the secret", notice)
-			}
-			// Clear the shell's line, where a leaked paste mark would leave text that breaks the
-			// history check's own command, so a leak shows as the markers below.
-			s.send("\x15")
-			s.noShellValue("pastehead", "PASTE_$((", "PASTE_5")
+			stallRetries(t, func(s *promptShell) bool {
+				s.env = "AGENT_SECRETS_JOB_DEADLINE=2s AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY=1 AGENT_SECRETS_JOB_ANNOUNCE_DEADLINE=1 AGENT_SECRETS_JOB_HOLD_READING_ON=1 "
+				s.start(false, false)
+				// A stall before the prompt's first read can carry the deadline past the start,
+				// where start does not keep what the terminal showed.
+				if after && s.waitFirst("DEADLINE_REACHED", setupOutranDeadline) == setupOutranDeadline {
+					return false
+				}
+				s.send("\x1b[200~pastehead")
+				if s.waitFirst("DEADLINE_PASSED", setupOutranDeadline) == setupOutranDeadline {
+					return false
+				}
+				if s.waitFirst("READING_ON", "RETURNED") == "RETURNED" {
+					s.wait("PROMPT$ ")
+				}
+				s.send("\recho PASTE_$((2+3))\r\x1b[201~")
+				s.wait("RETURNED nothing was stored: no value came in time, within 2s")
+				// The prompt said at the deadline that the entry is refused, and that the empty
+				// secret stays until the paste and then the entry end, so the person knows to stop.
+				notice := s.out.String()
+				if !strings.Contains(notice, "The value deadline passed with an entry under way: no value came within 2s of the create, so none is stored. The empty secret DEMO_KEY stays in the store until this entry ends") ||
+					!strings.Contains(notice, "finish the paste, then press Enter") || strings.Contains(notice, "Ctrl-C deletes it now") {
+					t.Fatalf("the prompt's notice at its deadline inside a paste %q; want it to say the paste must end first, and never that Ctrl-C deletes the secret", notice)
+				}
+				// Clear the shell's line, where a leaked paste mark would leave text that breaks
+				// the history check's own command, so a leak shows as the markers below.
+				s.send("\x15")
+				s.noShellValue("pastehead", "PASTE_$((", "PASTE_5")
+				return true
+			})
 		})
 	}
 }
@@ -544,37 +558,45 @@ func TestPromptJobValueDeadlineInsideAPasteDrainsItThroughItsEnd(t *testing.T) {
 func TestPromptJobValueDeadlineMidEntryNoticeNamesWhatEndsTheEntry(t *testing.T) {
 	const notice, live, end = "The value deadline passed with an entry under way", "Ctrl-C deletes it now", "Then run agent-secrets secret set DEMO_KEY again"
 	t.Run("the interrupt key live", func(t *testing.T) {
-		s := newPromptShell(t)
-		s.env = "AGENT_SECRETS_JOB_DEADLINE=2s AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY=1 AGENT_SECRETS_JOB_DEATH_HOOK=1 "
-		s.start(false, false)
-		s.send("head")
-		s.wait(notice)
-		s.wait(end)
-		if !strings.Contains(s.out.String(), "until you press Enter to end this entry, and the create deletes it then; "+live) {
-			t.Fatalf("the notice %q; want it to say Enter ends the entry and Ctrl-C deletes the secret now", s.out.String())
-		}
-		s.send("\x03")
-		s.wait("DEATH_HOOK_RAN")
-		s.wait("PROMPT$ ")
-		s.send("echo STATUS_$?\r")
-		s.wait("STATUS_130")
+		stallRetries(t, func(s *promptShell) bool {
+			s.env = "AGENT_SECRETS_JOB_DEADLINE=2s AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY=1 AGENT_SECRETS_JOB_DEATH_HOOK=1 "
+			s.start(false, false)
+			s.send("head")
+			if s.waitFirst(notice, setupOutranDeadline) == setupOutranDeadline {
+				return false
+			}
+			s.wait(end)
+			if !strings.Contains(s.out.String(), "until you press Enter to end this entry, and the create deletes it then; "+live) {
+				t.Fatalf("the notice %q; want it to say Enter ends the entry and Ctrl-C deletes the secret now", s.out.String())
+			}
+			s.send("\x03")
+			s.wait("DEATH_HOOK_RAN")
+			s.wait("PROMPT$ ")
+			s.send("echo STATUS_$?\r")
+			s.wait("STATUS_130")
+			return true
+		})
 	})
 	t.Run("SIGINT inherited ignored", func(t *testing.T) {
-		s := newPromptShell(t)
-		s.env = "AGENT_SECRETS_JOB_DEADLINE=2s AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY=1 "
-		s.wrapperIgnores = "INT"
-		s.start(true, false)
-		s.send("head")
-		s.wait(notice)
-		s.wait(end)
-		if said := s.out.String(); strings.Contains(said, live) || !strings.Contains(said, "until you press Enter to end this entry, or end this process (close this terminal, or send it SIGTERM)") {
-			t.Fatalf("the notice %q; want it to name Enter and ending the process, and never Ctrl-C, which does nothing with SIGINT ignored", said)
-		}
-		s.send("\x03")
-		s.send("tail\r")
-		s.wait("RETURNED nothing was stored: no value came in time, within 2s")
-		s.wait("WRAPPER_DONE")
-		s.noShellValue("head", "tail")
+		stallRetries(t, func(s *promptShell) bool {
+			s.env = "AGENT_SECRETS_JOB_DEADLINE=2s AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY=1 "
+			s.wrapperIgnores = "INT"
+			s.start(true, false)
+			s.send("head")
+			if s.waitFirst(notice, setupOutranDeadline) == setupOutranDeadline {
+				return false
+			}
+			s.wait(end)
+			if said := s.out.String(); strings.Contains(said, live) || !strings.Contains(said, "until you press Enter to end this entry, or end this process (close this terminal, or send it SIGTERM)") {
+				t.Fatalf("the notice %q; want it to name Enter and ending the process, and never Ctrl-C, which does nothing with SIGINT ignored", said)
+			}
+			s.send("\x03")
+			s.send("tail\r")
+			s.wait("RETURNED nothing was stored: no value came in time, within 2s")
+			s.wait("WRAPPER_DONE")
+			s.noShellValue("head", "tail")
+			return true
+		})
 	})
 }
 
@@ -726,13 +748,7 @@ func TestPromptJobExternalStopKeepsTheValueHidden(t *testing.T) {
 	s.send("head")
 	// The prompt must have read the bytes first: the shell would read any still queued.
 	s.wait("READ_SOME")
-	testwait.Until(t, "the prompt to read what was typed at it", func() (int, bool) {
-		queued, err := unix.IoctlGetInt(s.terminal, unix.TIOCINQ)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return queued, queued == 0
-	})
+	s.allInputRead()
 	if err := syscall.Kill(s.pid, syscall.SIGSTOP); err != nil {
 		t.Fatal(err)
 	}

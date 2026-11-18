@@ -634,27 +634,28 @@ func TestConnectedOnlyRefusesAStoppedTargetAndStoresNothing(t *testing.T) {
 	}
 }
 
-// awaitAgentWake waits for the agent wake report naming sessionID on wakes, and answers the
-// sessions of the reports it passed over on the way, in the order they arrived.
-func awaitAgentWake(t *testing.T, wakes *natsgo.Subscription, sessionID string) []string {
+// awaitWake waits on wakes for the wake report of kind naming name (wakeNamed), and answers the
+// reports it passed over on the way, in the order they arrived. It fails the test when none
+// arrives before the test binary's deadline less testwait's margin.
+func awaitWake(t *testing.T, wakes *natsgo.Subscription, kind, name string) []wakeReport {
 	t.Helper()
 	ctx := testwait.Context(t)
-	var passed []string
+	var passed []wakeReport
 	for {
 		msg, err := wakes.NextMsgWithContext(ctx)
 		if err != nil {
-			t.Fatalf("no wake report named %s (passed over %v): %v", sessionID, passed, err)
+			t.Fatalf("no %s wake report named %s (passed over %+v): %v", kind, name, passed, err)
 		}
-		named := wakeReportSession(t, msg)
-		if named == sessionID {
+		report := wakeReportIn(t, msg)
+		if wakeNamed(report, kind, name) {
 			return passed
 		}
-		passed = append(passed, named)
+		passed = append(passed, report)
 	}
 }
 
-// wakeReportSession is the session an agent wake report names, empty for any other report.
-func wakeReportSession(t *testing.T, msg *natsgo.Msg) string {
+// wakeReportIn is the wake report msg carries.
+func wakeReportIn(t *testing.T, msg *natsgo.Msg) wakeReport {
 	t.Helper()
 	var item contracts.Envelope
 	if err := json.Unmarshal(msg.Data, &item); err != nil {
@@ -664,10 +665,22 @@ func wakeReportSession(t *testing.T, msg *natsgo.Msg) string {
 	if err := json.Unmarshal([]byte(item.Payload), &report); err != nil {
 		t.Fatalf("decode a wake report's payload %s: %v", item.Payload, err)
 	}
-	if report.Kind != wakeKindAgent {
-		return ""
+	return report
+}
+
+// wakeNamed reports whether report is of kind and names name in the field that kind names: the
+// session of an agent wake, and the role of a role wake. A report of any other kind names neither.
+func wakeNamed(report wakeReport, kind, name string) bool {
+	if report.Kind != kind {
+		return false
 	}
-	return report.Session
+	switch kind {
+	case wakeKindAgent:
+		return report.Session == name
+	case wakeKindRole:
+		return report.Role == name
+	}
+	return false
 }
 
 // A send to a session with no entry within the gone horizon raises the wake report, on the 200
@@ -711,7 +724,7 @@ func TestASendRaisesTheWakeWhereTheEntryIsGoneAndNotForAProbeStoppedEntry(t *tes
 	if stopped.LastSeen != record.LastSeen {
 		t.Fatalf("the stopped answer's last_seen = %d, want the record's %d: %s", stopped.LastSeen, record.LastSeen, stopped.raw)
 	}
-	passed := awaitAgentWake(t, wakes, cleanlyStopped)
+	passed := awaitWake(t, wakes, wakeKindAgent, cleanlyStopped)
 
 	const pastHorizon = "ses_wake_past_horizon"
 	storeSessionHeartbeat(t, rig.harness.client, pastHorizon, time.Now().Add(-(session.GoneHorizon + time.Minute)))
@@ -724,13 +737,13 @@ func TestASendRaisesTheWakeWhereTheEntryIsGoneAndNotForAProbeStoppedEntry(t *tes
 	if gone.LastSeen != horizonRecord.LastSeen {
 		t.Fatalf("the past-horizon answer's last_seen = %d, want the record's %d: %s", gone.LastSeen, horizonRecord.LastSeen, gone.raw)
 	}
-	passed = append(passed, awaitAgentWake(t, wakes, pastHorizon)...)
+	passed = append(passed, awaitWake(t, wakes, wakeKindAgent, pastHorizon)...)
 
 	// Each wake report is published off the route's path in the order the sends raised them, so a
 	// report the first send raised would have arrived before the two the later sends raised, and
 	// been passed over on the way to them.
-	if slices.Contains(passed, unheld) {
-		t.Fatalf("the send to the probe-stopped %s raised a wake report: the waits passed over %v", unheld, passed)
+	if slices.ContainsFunc(passed, func(report wakeReport) bool { return wakeNamed(report, wakeKindAgent, unheld) }) {
+		t.Fatalf("the send to the probe-stopped %s raised a wake report: the waits passed over %+v", unheld, passed)
 	}
 }
 
