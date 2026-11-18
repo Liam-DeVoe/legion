@@ -164,12 +164,12 @@ const cutoverIdleTick = 250 * time.Millisecond
 //     and `completed_at`. Its tester took its testing task, the idle release then released the
 //     tester and the merger, and the record holds no backstop row for either. The migration moves
 //     only `awaiting_merge`, so T stays in testing. The owners' read the repair shares with the
-//     boot (workflow's phaseOwnersOf) answers the suspended owner of any phase, here T's
-//     tester, and every other term of the repair holds for T: a claim suspended by `released`, an
-//     open pull request, the merger's READY head, no backstop of the merger, and no start of the
-//     tester queued (StartFor). The repair's own term of the phase `merging` is the one that
-//     passes over it. No boot step starts T's tester either: the fill puts it level with its
-//     entry, and nothing of the boot starts a released claim level with its entry.
+//     boot (workflow's suspendedAndLivePhaseOwners) answers the suspended owner of any phase, here
+//     T's tester, and every other term of the repair holds for T: a claim suspended by
+//     `released`, an open pull request, the merger's READY head, no backstop of the merger, and
+//     no start of the tester queued (StartFor). The repair's own term of the phase `merging` is
+//     the one that passes over it. No boot step starts T's tester either: the fill puts it level
+//     with its entry, and nothing of the boot starts a released claim level with its entry.
 //   - S: like G, but the old record also holds a start of S's merger on `merging` that never ran.
 //     That release's repair of the slot of an issue whose worker held no task
 //     (ResumeSlottedWorker) wrote it while S stood in merging, at the assignment the merger's

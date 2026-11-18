@@ -43,8 +43,8 @@ import (
 // work untold: released with no wake to come, or live.
 //
 // The claims it weighs are the suspended owners of the project's unfinished phases in running
-// trees (phaseOwnersOf), the read the cutover's repair picks its mergers from too, and it
-// starts each of them whose claim a ByRule source suspended. Each is given the start
+// trees (suspendedAndLivePhaseOwners), the read the cutover's repair picks its mergers from too,
+// and it starts each of them whose claim a ByRule source suspended. Each is given the start
 // admission gives a re-admitted tree's mid-phase child, built where every start of a phase worker
 // is built (Engine.started) and so written through the outbox's start like every other
 // (StartOrOwe), and what that start carries is decided by the entry the role's phases row names,
@@ -74,15 +74,15 @@ import (
 // gave them, under a phase start's origin, which R4's "unless something new is owed to it" names.
 //
 // The sweep runs first so the resume reads the trees it closed as lingering. The owners' read
-// (phaseOwnersOf) comes next, and the status repair runs on the issues and running roots
-// that read holds, before any start. The read writes nothing, and the repair writes none of the
-// pull requests, claims and queued starts the read takes beside the issues, so the read answers
-// what it would answer after the repair.
+// (suspendedAndLivePhaseOwners) comes next, and the status repair runs on the issues and running
+// roots that read holds, before any start. The read writes nothing, and the repair writes none of
+// the pull requests, claims and queued starts the read takes beside the issues, so the read
+// answers what it would answer after the repair.
 func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (intake.Result, error) {
 	if err := e.sweepMerged(ctx, tx); err != nil {
 		return intake.Result{}, err
 	}
-	owners, err := e.phaseOwnersOf(ctx, tx)
+	owners, err := e.suspendedAndLivePhaseOwners(ctx, tx)
 	if err != nil {
 		return intake.Result{}, err
 	}
@@ -124,10 +124,10 @@ func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (
 }
 
 // phaseOwner is a claim that owns its issue's unfinished phase in a running tree
-// (phaseOwnersOf), with what a start of it is weighed against and built from: the issue;
-// its tree root, which StartFor and OwedEntry read; the role that works the phase; that role's
-// claim token; and the role's queued rows and claim at the issue's generation, whose Claim is
-// never nil.
+// (suspendedAndLivePhaseOwners), with what a start of it is weighed against and built from: the
+// issue; its tree root, which StartFor and OwedEntry read; the role that works the phase; that
+// role's claim token; and the role's queued rows and claim at the issue's generation, whose Claim
+// is never nil.
 type phaseOwner struct {
 	issue record.Issue
 	root  record.Issue
@@ -136,10 +136,10 @@ type phaseOwner struct {
 	run   record.RoleRun
 }
 
-// phaseOwners is what phaseOwnersOf reads: every issue the store holds, of every project;
-// the roots of the project's trees that run (record.RunningRoots); the suspended owners of the
-// project's unfinished phases in those trees; and the live owners of those phases, whose claim
-// has a process, launching or up. Both lists are in the order the store lists the issues.
+// phaseOwners is what suspendedAndLivePhaseOwners reads: every issue the store holds, of every
+// project; the roots of the project's trees that run (record.RunningRoots); the suspended owners
+// of the project's unfinished phases in those trees; and the live owners of those phases, whose
+// claim has a process, launching or up. Both lists are in the order the store lists the issues.
 type phaseOwners struct {
 	issues    []record.Issue
 	running   map[string]struct{}
@@ -147,9 +147,9 @@ type phaseOwners struct {
 	live      []phaseOwner
 }
 
-// phaseOwnersOf reads, for each issue of the project, the suspended owner of its phase
-// while that phase is unfinished and the issue's tree runs, and the live owner beside it. The
-// boot's resume by rule (booted) and the cutover's repair of the mergers the `awaiting_merge`
+// suspendedAndLivePhaseOwners reads, for each issue of the project, the suspended owner of its
+// phase while that phase is unfinished and the issue's tree runs, and the live owner beside it.
+// The boot's resume by rule (booted) and the cutover's repair of the mergers the `awaiting_merge`
 // cutover left (cutoverMergerRepair) both read their owners here, and each narrows them by terms
 // of its own, booted to a suspended claim a ByRule source suspended and the repair to a merger
 // the idle release suspended or one live, so a change to how either picks an owner reaches both.
@@ -172,13 +172,18 @@ type phaseOwners struct {
 // A phase its own terminating fact has already met is given no owner either (PhaseFinished): a
 // merged root stands in merging for as long as the rest of its tree runs, and resuming its merger
 // there would hand it the same phase again at every boot, for days.
-// The owner of admitted and of accepting is the tree's architect, which admission starts with the
-// tree, so no issue in either is given one. An owner is answered as suspended while its claim at
-// the issue's generation stands suspended, whatever the source: which sources a start may act on
-// is each caller's to judge. It is answered as live while that claim has a process, launching or
-// up (supervise's Claim.RunsNothing, read the other way), which only the cutover's repair reads:
+// The owner of admitted and of accepting is an architect and no phase worker, so no issue in
+// either is given one. On a root it is the root's own architect, which admission starts with the
+// tree. On a child it is the architect that owns it: its own while that claim holds its role,
+// else the one above. At admitted that is the one above, since the child's own has not started
+// yet or a leave suspended or retired it, unless a person set the child back to todo while it ran
+// or was held: that re-entry starts and stops nothing, so a child's own architect that held its
+// role still holds it (ReenterChild). An owner is answered as suspended while its claim at the
+// issue's generation stands suspended, whatever the source: which sources a start may act on is
+// each caller's to judge. It is answered as live while that claim has a process, launching or up
+// (supervise's Claim.RunsNothing, read the other way), which only the cutover's repair reads:
 // booted starts no live claim.
-func (e *Engine) phaseOwnersOf(ctx context.Context, tx pgx.Tx) (phaseOwners, error) {
+func (e *Engine) suspendedAndLivePhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwners, error) {
 	issues, err := e.store.Issues(ctx, tx)
 	if err != nil {
 		return phaseOwners{}, err
