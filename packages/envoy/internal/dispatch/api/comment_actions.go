@@ -533,13 +533,7 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 	if action == "accept" {
 		// Accepting a suggestion is a decision, so it names the version it produced; the
 		// transactional apply never schedules a settle (R30), so this is the only version write.
-		summary := strings.TrimSpace(comment.Body)
-		if summary == "" {
-			summary = fmt.Sprintf("Accepted suggestion: %q → %q", comment.Anchor.Quote, comment.Suggestion.ReplaceWith)
-		}
-		// The version's name rides the artifact.version event, so it takes the part an event
-		// carries: a comment body is bounded block by block and can be far longer than that.
-		summary, _ = model.EventBody(summary)
+		summary := acceptedVersionName(comment.Body, comment.Anchor.Quote, comment.Suggestion.ReplaceWith)
 		named, err := s.deps.Docs.NamedVersion(documentCtx, comment.Anchor.ArtifactID, summary, actor)
 		if err != nil {
 			s.writeHandlerError(w, err)
@@ -605,4 +599,19 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 type acceptedComment struct {
 	shapedComment
 	Lost *bool `json:"lost"`
+}
+
+// acceptedVersionName is the name an accept gives the document version it makes: the comment's
+// body, or the change the suggestion made where the comment has no body. The name rides the
+// artifact.version event, so it takes the part an event carries (model.EventBody): a comment
+// body is bounded block by block and can be far longer than that. A delete of the comment
+// renames that version to the name a suggestion with no body takes (renameAcceptedVersion),
+// so the one form is written here for both.
+func acceptedVersionName(body, quote, replaceWith string) string {
+	name := strings.TrimSpace(body)
+	if name == "" {
+		name = fmt.Sprintf("Accepted suggestion: %q → %q", quote, replaceWith)
+	}
+	name, _ = model.EventBody(name)
+	return name
 }

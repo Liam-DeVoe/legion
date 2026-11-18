@@ -145,15 +145,63 @@ func (s *server) keyedReplays() map[string]keyedReplay {
 	}
 }
 
+// keyedReread answers a repeat of a keyed write whose first answer the key kept and which is a
+// post, a comment or a message: it reads that post again, id, the one the stored answer names,
+// and answers it as it stands now in the first answer's shape and under its status (status),
+// keeping the replayKeptMembers of stored, the first answer's body (writeRefreshed). A post
+// deleted since its first answer is answered as every read of it gives it, with no body and
+// with its mark, and never as the stored answer holds it.
+type keyedReread func(s *server, w http.ResponseWriter, r *http.Request, id string, status int, stored []byte)
+
+// keyedRereads is every keyed route whose kept answer holds the body of a comment or of an issue
+// message - the post's own, or the text of the block a reply answers (reply_block) - by method
+// and pattern, with the reread a repeat of its key is answered by: an edit, the resolve, reopen,
+// accept and reject of a comment, and a mentioned or targeted session's reply. Such a post can be
+// edited or deleted after the answer was kept, so the bytes the key holds are not what a read of
+// the post gives any more. The creates are not here: each commits a recovery point and is
+// answered from it (keyedReplays). An answer that is no post - a delivery attempt, which a
+// delivery retry answers and a reply route answers for an error report - holds no body, and is
+// replayed as it was kept (keyedAnswerPost). So is the accept of a delivery, which holds the body
+// of a direct message: only a message on an issue is edited or deleted
+// (lockedMessageForCorrection), so that body is the one the message holds. Each key names a
+// registered route (TestEveryKeyedRouteTableNamesARoute).
+var keyedRereads = map[string]keyedReread{
+	http.MethodPatch + " /api/v1/comments/{id}":        (*server).rereadComment,
+	http.MethodPost + " /api/v1/comments/{id}/resolve": (*server).rereadComment,
+	http.MethodPost + " /api/v1/comments/{id}/reopen":  (*server).rereadComment,
+	http.MethodPost + " /api/v1/comments/{id}/accept":  (*server).rereadComment,
+	http.MethodPost + " /api/v1/comments/{id}/reject":  (*server).rereadComment,
+	http.MethodPost + " /api/v1/comments/{id}/reply":   (*server).rereadCommentReply,
+	http.MethodPatch + " /api/v1/messages/{id}":        (*server).rereadMessage,
+	http.MethodPost + " /api/v1/messages/{id}/reply":   (*server).rereadMessageReply,
+}
+
+// keyedAnswerPost is the id of the post a kept success answer is, and "" for any other answer:
+// none kept, or a delivery attempt, which names its post by comment_id or message_id and holds no
+// body. A post's answer carries both its id and its body, the empty body of a deleted post
+// included.
+func keyedAnswerPost(stored []byte) string {
+	var post struct {
+		ID   string          `json:"id"`
+		Body json.RawMessage `json:"body"`
+	}
+	if len(stored) == 0 || json.Unmarshal(stored, &post) != nil || post.Body == nil {
+		return ""
+	}
+	return post.ID
+}
+
 // replayKeptMembers are the members of a write's first answer a replay keeps beside the resource
-// as it stands now: what the write's answer carried that a read of the resource does not.
-var replayKeptMembers = []string{"advice", "ask_waiting_on"}
+// as it stands now: what the write's answer carried that a read of the resource does not - a
+// write's advice, a reply's ask_waiting_on, whether an accept's text was already gone from the
+// live document (lost), and whether a reply route posted nothing (duplicate).
+var replayKeptMembers = []string{"advice", "ask_waiting_on", "lost", "duplicate"}
 
 // writeRefreshed answers a keyed replay with fresh, the resource as it stands now, in the first
-// answer's shape: the replayKeptMembers stored holds and fresh does not (a write's advice, a reply's
-// ask_waiting_on) kept, and nothing else of stored, so a member the fresh read leaves out is never
-// answered stale. With no stored answer it answers fresh alone. Its status is the write's own 201.
-func (s *server) writeRefreshed(w http.ResponseWriter, stored []byte, fresh any) {
+// answer's shape: the replayKeptMembers stored holds and fresh does not kept, and nothing else of
+// stored, so a member the fresh read leaves out is never answered stale. With no stored answer it
+// answers fresh alone. Its status is the write's own, status.
+func (s *server) writeRefreshed(w http.ResponseWriter, status int, stored []byte, fresh any) {
 	encoded, err := json.Marshal(fresh)
 	if err != nil {
 		s.writeHandlerError(w, fmt.Errorf("encode a replayed resource: %w", err))
@@ -174,7 +222,7 @@ func (s *server) writeRefreshed(w http.ResponseWriter, stored []byte, fresh any)
 			}
 		}
 	}
-	WriteJSON(w, http.StatusCreated, current)
+	WriteJSON(w, status, current)
 }
 
 // keyedMethod reports whether register keys a route of this method: a POST or a PATCH. A PUT and a
@@ -219,7 +267,8 @@ type resolvedCaller struct {
 }
 
 // keyedWrites wraps the handler of a POST or PATCH route, method and pattern, in the keyed path
-// above. replay is the route's keyedReplay, nil for a route that commits no recovery point.
+// above. replay is the route's keyedReplay, nil for a route that commits no recovery point; the
+// route's keyedReread, if it has one, is its row of keyedRereads.
 //
 // A keyed request's handler finishes on the server whatever its client does: it runs on its
 // request's context with the client's cancellation taken off (context.WithoutCancel), bounded by
@@ -234,6 +283,7 @@ type resolvedCaller struct {
 func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, replay keyedReplay) http.HandlerFunc {
 	wildcards := patternWildcards(pattern)
 	keepsAnswer := !answerHoldsSecret[method+" "+pattern]
+	reread := keyedRereads[method+" "+pattern]
 	bodyLimit, _ := routeBody(method, pattern)
 	run := handler
 	if s.deps.TestHooksEnabled {
@@ -275,7 +325,7 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 			if s.repeatFoundInFlight != nil {
 				s.repeatFoundInFlight()
 			}
-			s.answerDrainedRepeat(w, r, method, pattern, wildcards, login, key, replay)
+			s.answerDrainedRepeat(w, r, method, pattern, wildcards, login, key, replay, reread)
 			return
 		}
 		digest := sha256.New()
@@ -312,7 +362,7 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 		// header, and retries a 5xx under the key only against the first: an earlier Dispatch would
 		// run the write again.
 		w.Header().Set(contracts.IdempotencyKeyHeader, key)
-		claim, answered := s.claimRequestKey(w, r, login, key, hex.EncodeToString(digest.Sum(nil)), replay)
+		claim, answered := s.claimRequestKey(w, r, login, key, hex.EncodeToString(digest.Sum(nil)), replay, reread)
 		if answered {
 			return
 		}
@@ -795,7 +845,7 @@ func (s *server) requestKeyAnswersItself(ctx context.Context, login, key string)
 // read, would leave the key in flight with no handler behind it, and every repeat told
 // KEY_IN_FLIGHT until its lease lapsed.
 func (s *server) claimRequestKey(
-	w http.ResponseWriter, r *http.Request, login, key, digest string, replay keyedReplay,
+	w http.ResponseWriter, r *http.Request, login, key, digest string, replay keyedReplay, reread keyedReread,
 ) (claim requestKeyClaim, answered bool) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), keyedBookkeeping)
 	defer cancel()
@@ -824,7 +874,7 @@ func (s *server) claimRequestKey(
 			continue
 		}
 		state := held.state(digest, replay != nil)
-		if answerHeldKey(w, r, key, held, state, replay) {
+		if s.answerHeldKey(w, r, key, held, state, replay, reread) {
 			return claim, true
 		}
 		if state == keyExpired {
@@ -880,10 +930,13 @@ func (s *server) readHeldRequestKey(ctx context.Context, login, key string) (hel
 
 // answerHeldKey answers a repeat from the row its key holds, in state, and reports that it did: a
 // different request under the key is refused, a recovery point replayed by its route, an answer
-// replayed, a first request still running told so, and a write that landed and lost its answer said
-// to have landed. A key past its window and one whose holder died with nothing committed answer
-// nothing: the repeat runs the request there.
-func answerHeldKey(w http.ResponseWriter, r *http.Request, key string, held heldRequestKey, state keyState, replay keyedReplay) bool {
+// replayed - the post it is read again where its route rereads one (replayAnswer) - a first
+// request still running told so, and a write that landed and lost its answer said to have landed.
+// A key past its window and one whose holder died with nothing committed answer nothing: the
+// repeat runs the request there.
+func (s *server) answerHeldKey(
+	w http.ResponseWriter, r *http.Request, key string, held heldRequestKey, state keyState, replay keyedReplay, reread keyedReread,
+) bool {
 	switch state {
 	case keyReused:
 		writeError(w, contracts.IdempotencyKeyReused, http.StatusUnprocessableEntity, fmt.Sprintf(
@@ -893,7 +946,7 @@ func answerHeldKey(w http.ResponseWriter, r *http.Request, key string, held held
 		w.Header().Set(contracts.IdempotencyReplayedHeader, "?1")
 		replay(w, r, held.recovery, held.storedSuccess())
 	case keyAnswered:
-		replayStoredAnswer(w, held)
+		s.replayAnswer(w, r, held, reread)
 	case keyInFlight:
 		writeKeyInFlight(w, key)
 	case keyCommitted:
@@ -927,7 +980,7 @@ func answerHeldKey(w http.ResponseWriter, r *http.Request, key string, held held
 // body is past the limit runs unkeyed. Either keeps the read's deadline for net/http's own reads
 // after the answer; only a body read to its end lifts it.
 func (s *server) answerDrainedRepeat(
-	w http.ResponseWriter, r *http.Request, method, pattern string, wildcards []string, login, key string, replay keyedReplay,
+	w http.ResponseWriter, r *http.Request, method, pattern string, wildcards []string, login, key string, replay keyedReplay, reread keyedReread,
 ) {
 	if expectsContinue(r) {
 		w.Header().Set(contracts.IdempotencyKeyHeader, key)
@@ -958,7 +1011,7 @@ func (s *server) answerDrainedRepeat(
 		s.writeHandlerError(w, err)
 		return
 	}
-	if found && answerHeldKey(w, r, key, held, held.state(hex.EncodeToString(digest.Sum(nil)), replay != nil), replay) {
+	if found && s.answerHeldKey(w, r, key, held, held.state(hex.EncodeToString(digest.Sum(nil)), replay != nil), replay, reread) {
 		return
 	}
 	writeKeyFreed(w, key)
@@ -989,6 +1042,22 @@ func writeKeyCommitted(w http.ResponseWriter, key string, held heldRequestKey) {
 	writeError(w, contracts.IdempotencyKeyCommitted, http.StatusConflict, fmt.Sprintf(
 		"the write under %s %q (%s %s) landed, but Dispatch lost its answer, so it is not run again and has no answer to replay: read what it wrote",
 		contracts.IdempotencyKeyHeader, key, held.method, held.path))
+}
+
+// replayAnswer answers a repeat whose key holds its first request's answer (keyAnswered). A kept
+// success that is a post, on a route that rereads one (keyedRereads), is answered by that
+// reread: every header the handler set, then the post as it stands now under the first
+// answer's status. Every other answer is replayed as it was kept (replayStoredAnswer).
+func (s *server) replayAnswer(w http.ResponseWriter, r *http.Request, held heldRequestKey, reread keyedReread) {
+	if reread != nil {
+		if id := keyedAnswerPost(held.storedSuccess()); id != "" {
+			w.Header().Set(contracts.IdempotencyReplayedHeader, "?1")
+			maps.Copy(w.Header(), held.headers)
+			reread(s, w, r, id, *held.status, held.response)
+			return
+		}
+	}
+	replayStoredAnswer(w, held)
 }
 
 // replayStoredAnswer answers a repeat with the first request's stored answer: its status, every

@@ -1,15 +1,18 @@
 // comment_delete.go is DELETE /api/v1/comments/{id}: the author withdraws its own comment. The
 // row and its place in the thread stay; the body goes, and with it every copy a read serves as
 // the comment's own text that does not follow the cleared column — the block index, each
-// block's stored excerpt, the text each revision recorded of a block, and the document margin
-// mark — each rewritten in the one transaction that clears it. The event log's payloads stay as
-// written and are masked at each read (attachPostMarks), and a reply's own events keep the
-// preview they froze. A pending suggestion's proof is in the document itself, so the
-// same transaction rejects it before the clear.
+// block's stored excerpt, the text each revision recorded of a block, the document margin mark,
+// and the name of the document version an accepted suggestion made — each rewritten in the one
+// transaction that clears it. The event log's payloads stay as written and are masked at each
+// read (attachPostMarks), and a reply's own events keep the preview they froze. A pending
+// suggestion's proof is in the document itself, so the same transaction rejects it before the
+// clear.
 package api
 
 import (
+	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/jackc/pgx/v5"
@@ -81,6 +84,16 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// An accepted suggestion's proof is a version of the document, which the accept named
+	// after the comment's body (acceptedVersionName); every read of the document's versions
+	// serves that name, so the delete renames it here, beside the reject above, while the
+	// comment still holds the anchor and the suggestion the clear below takes off it.
+	if comment.Suggestion != nil && comment.Suggestion.Accepted != nil && *comment.Suggestion.Accepted && comment.Anchor != nil {
+		if err := renameAcceptedVersion(r.Context(), tx, comment); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	deletedAt, referenceChanges, err := s.clearDeletedPostBody(
 		r.Context(), tx, refs.ItemComment, comment.ID, comment.Body, actor)
 	if err != nil {
@@ -149,4 +162,51 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	}
 	s.publish(r.Context(), events...)
 	WriteJSON(w, http.StatusOK, comment)
+}
+
+// renameAcceptedVersion renames the document version comment's accepted suggestion made to the
+// name an accept gives a suggestion with no body (acceptedVersionName), in the delete's own
+// transaction, so no read of the document's versions serves any part of the deleted body as a
+// version's name. The artifact.version event the accept appended keeps the name it carried, as
+// every event keeps its payload.
+//
+// No row links the version to the comment, so the version is found by the time the accept wrote
+// it. The accept writes the version (Docs.NamedVersion), the version's artifact.version event and
+// the comment's suggestion.accepted event in one transaction, and the version's created_at and
+// each event's take their column's default, now(), the time that transaction began; nothing
+// updates either afterwards. (The comment's own resolved_at is no such mark: a later resolve
+// moves it and a reopen clears it.) The version is therefore the named version of the anchor's
+// document whose created_at is the time of the comment's suggestion.accepted event, read within
+// the comment's owner, as loadCommentCreatedEvent reads its comment.created event. Another
+// named version of that document carries the same time only when a transaction that began in
+// the same microsecond wrote it, and the accept's own transaction writes no other: a lookup that
+// finds more than one version renames none, and one that finds none - an accept whose event or
+// version is not where this reads them - renames none either, each logged with the comment and
+// the document.
+func renameAcceptedVersion(ctx context.Context, tx pgx.Tx, comment model.Comment) error {
+	ownerColumn, ownerID := commentEventOwner(comment)
+	artifactID := comment.Anchor.ArtifactID
+	rows, err := tx.Query(ctx, `
+		select v.number from artifact_versions v
+		where v.artifact_id = $3 and v.named and v.created_at in (
+			select e.created_at from events e
+			where e.`+ownerColumn+` = $1 and e.type = 'suggestion.accepted' and e.payload ->> 'id' = $2
+		)
+	`, ownerID, comment.ID, artifactID)
+	if err != nil {
+		return err
+	}
+	numbers, err := pgx.CollectRows(rows, pgx.RowTo[int])
+	if err != nil {
+		return err
+	}
+	if len(numbers) != 1 {
+		slog.Warn("dispatch: a deleted comment's accepted suggestion names no single document version, so no version is renamed",
+			"comment", comment.ID, "artifact", artifactID, "versions", numbers)
+		return nil
+	}
+	_, err = tx.Exec(ctx, `
+		update artifact_versions set summary = $3 where artifact_id = $1 and number = $2
+	`, artifactID, numbers[0], acceptedVersionName("", comment.Anchor.Quote, comment.Suggestion.ReplaceWith))
+	return err
 }

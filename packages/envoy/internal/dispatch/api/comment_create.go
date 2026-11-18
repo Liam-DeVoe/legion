@@ -217,7 +217,7 @@ func (s *server) replayComment(w http.ResponseWriter, r *http.Request, point com
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.writeRefreshed(w, stored, hydrated[0])
+	s.writeRefreshed(w, http.StatusCreated, stored, hydrated[0])
 }
 
 // owedCommentMentions is each mention of the comment whose one attempt is pending with no live

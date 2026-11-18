@@ -180,7 +180,47 @@ func (s *server) replayIssueMessage(w http.ResponseWriter, r *http.Request, poin
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.writeRefreshed(w, stored, message)
+	s.writeRefreshed(w, http.StatusCreated, stored, message)
+}
+
+// freshMessage is one message as a write of it answers it: the row with the block it replies to
+// and its delivery attempts (hydrateWrittenMessage), read now from the pool.
+func (s *server) freshMessage(ctx context.Context, id string) (model.Message, error) {
+	pool := s.deps.Store.Pool
+	message, err := s.loadMessage(ctx, pool, "", id)
+	if err != nil {
+		return model.Message{}, err
+	}
+	if err := hydrateMessageReplyBlocks(ctx, pool, &message); err != nil {
+		return model.Message{}, err
+	}
+	if err := s.hydrateWrittenMessage(ctx, pool, &message); err != nil {
+		return model.Message{}, err
+	}
+	return message, nil
+}
+
+// rereadMessage is the keyedReread of PATCH /api/v1/messages/{id}: the message as it stands now
+// (freshMessage), unshaped, as editMessage answers it.
+func (s *server) rereadMessage(w http.ResponseWriter, r *http.Request, id string, status int, stored []byte) {
+	message, err := s.freshMessage(r.Context(), id)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	s.writeRefreshed(w, status, stored, message)
+}
+
+// rereadMessageReply is the keyedReread of POST /api/v1/messages/{id}/reply, whose answer is the
+// reply, not the message the path names: the reply as it stands now (freshMessage), shaped as
+// replyMessage answers it (replyRead), its duplicate mark kept from the first answer.
+func (s *server) rereadMessageReply(w http.ResponseWriter, r *http.Request, id string, status int, stored []byte) {
+	reply, err := s.freshMessage(r.Context(), id)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	s.writeRefreshed(w, status, stored, newShapedMessage(reply, wantsDisplayTrees(r)))
 }
 
 // sendHeldMessageOn makes sure a keyed send's message is on its way before its repeat is answered,

@@ -396,6 +396,50 @@ func (s *server) hydrateWrittenComment(ctx context.Context, tx pgx.Tx, comment m
 	return comments[0], nil
 }
 
+// freshComment is one comment as GET /api/v1/comments/{id} reads it and a write of it answers
+// it (hydrateWrittenComment): the row with its mentions, its delivery attempts and the block it
+// replies to, read now from the pool.
+func (s *server) freshComment(ctx context.Context, id string) (model.Comment, error) {
+	comment, err := s.loadComment(ctx, s.deps.Store.Pool, id)
+	if err != nil {
+		return model.Comment{}, err
+	}
+	comments, err := s.hydrateCommentSideTables(ctx, s.deps.Store.Pool, []model.Comment{comment})
+	if err != nil {
+		return model.Comment{}, err
+	}
+	return comments[0], nil
+}
+
+// rereadComment is the keyedReread of each route that answers one comment shaped for the
+// dashboard - its edit, resolve, reopen, accept and reject: the comment as it stands now
+// (freshComment), shaped as those routes shape it, an accept's lost kept from the first answer.
+func (s *server) rereadComment(w http.ResponseWriter, r *http.Request, id string, status int, stored []byte) {
+	comment, err := s.freshComment(r.Context(), id)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	s.writeRefreshed(w, status, stored, newShapedComment(comment, wantsDisplayTrees(r)))
+}
+
+// rereadCommentReply is the keyedReread of POST /api/v1/comments/{id}/reply, whose answer is the
+// reply, not the comment the path names: a reply the session posted (201) as rereadComment answers
+// a comment, its ask_waiting_on kept, and the stored reply handed back for an attempt already
+// answered (200) unshaped, as replyComment answers it.
+func (s *server) rereadCommentReply(w http.ResponseWriter, r *http.Request, id string, status int, stored []byte) {
+	if status == http.StatusCreated {
+		s.rereadComment(w, r, id, status, stored)
+		return
+	}
+	reply, err := s.freshComment(r.Context(), id)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	s.writeRefreshed(w, status, stored, reply)
+}
+
 func (s *server) loadCommentMentions(ctx context.Context, q queryer, commentIDs []string) (map[string][]model.Mention, error) {
 	mentions := make(map[string][]model.Mention, len(commentIDs))
 	for _, id := range commentIDs {
