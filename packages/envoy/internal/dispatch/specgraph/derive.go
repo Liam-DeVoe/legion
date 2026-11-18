@@ -99,9 +99,10 @@ func Derive(in Input) (State, error) {
 //   - the subject: its commit, its now, exactly one of a branch and a deploy, graph_tx only with a
 //     deploy, and no name of no letter and no digit (subjectFault); with no now no time limit would
 //     end, and with neither, no check of production would be judged;
-//   - each approved node, as ReadApproved refuses it (ApprovedNode.check), Removed and
-//     PartlyChecked set among it, and under its own id, as WriteApproved refuses it: a node with no
-//     version, a block that is not its one block or a key that is not its id would leave the node
+//   - the approved spec, as ReadApproved refuses it (approvedFault), Removed and PartlyChecked of
+//     each node set among it, and each node under its own id, as WriteApproved refuses it: a node
+//     with no version, a block that is not its one block, a relation that names no node of the
+//     approved spec of its kind, or a key that is not its id would leave the node or the relation
 //     out, and a version with no time would make no result suspect (R7: "A change to the text of a
 //     statement makes every result under it suspect");
 //   - each result (Result.fault), its Leg set among it, with the current text of its check when it
@@ -132,14 +133,16 @@ func (in Input) check(current Tree) error {
 	if fault := subjectFault(in.Subject, in.Now); fault != "" {
 		return fmt.Errorf("specgraph: subject: %s", fault)
 	}
+	nodes := make([]ApprovedNode, 0, len(in.Approved.Nodes))
 	for _, id := range slices.Sorted(maps.Keys(in.Approved.Nodes)) {
 		n := in.Approved.Nodes[id]
 		if err := n.keyFault(id); err != nil {
 			return err
 		}
-		if err := n.check(); err != nil {
-			return err
-		}
+		nodes = append(nodes, n)
+	}
+	if err := approvedFault(nodes); err != nil {
+		return err
 	}
 	type text struct {
 		check  Check

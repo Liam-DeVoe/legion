@@ -129,6 +129,34 @@ func TestAnApprovedLeafWithNoCheckReadsNotBuilt(t *testing.T) {
 	}
 }
 
+// A relation names a node of the approved spec of its kind, kept or removed (R22: "Dispatch refuses
+// the approval of a change request that puts a statement under a parent that the approved spec does
+// not hold"). A node that the approved spec removed is one that it holds, so a relation to it is
+// taken, and the derivation reads the current tree, which leaves the removed node out: in
+// wait-cycle with envoy-delivers-messages removed, the two statements under it read at the top of
+// the tree, and the check that serves it is taken and reads nowhere. The wait of u-c on it is
+// dropped, since a unit waits on a current statement.
+// The relations that name no node, or a node of another kind, are rows of TestScenarioRefusals.
+func TestARelationToANodeThatTheApprovedSpecRemovedIsTaken(t *testing.T) {
+	t.Parallel()
+	binary := cmdtest.Build(t, "spec-check")
+	dir := copyScenario(t, "wait-cycle")
+	editApproved(t, filepath.Join(dir, "approved.json"), func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode {
+		approvedNode(t, nodes, "envoy-delivers-messages").Removed = new(true)
+		return nodes
+	})
+	replaceIn(t, filepath.Join(dir, "units.json"), `"waits_on": ["envoy-delivers-messages"]`, `"waits_on": []`)
+	expect(t, runBinary(t, binary, "", "state", "--scenario", dir), result{stdout: `spec-check: subject m1, the head of main
+statement a-message-reaches-a-late-session: met
+  check a-late-session-gets-the-message: true (passed, counted from b1)
+statement a-message-survives-a-restart: not met (check a-restart-keeps-the-message is false)
+  check a-restart-keeps-the-message: false (failed, counted from b1)
+wait of u-a on a-message-reaches-a-late-session: ends
+wait of u-b on a-message-survives-a-restart: holds (not met)
+spec-check: cycle of waits: u-a -> a-message-reaches-a-late-session -> u-b -> a-message-survives-a-restart -> u-a
+`})
+}
+
 // R9: "An agent that did not write the test writes the fault." Through the command, carry's failing
 // example counts at c2 and m2 only while its record names an author of the test and the fault is by
 // another agent: with no test_authors, or an empty list, the check reads unknown, as it does when

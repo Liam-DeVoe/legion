@@ -184,14 +184,17 @@ func TestARunResultOfNoMatrixAnswersNoRunWhereItsJobHadLegs(t *testing.T) {
 // recorded no later than c1's newest record, the passes and the failing examples that failed on
 // their fault, and no newer one. The refusal carries no time, and the history gives no order of
 // commits, so "earlier" is the order of record. It takes out no failure, no run that could not run
-// and no failing example that missed its fault, of any commit, c1's among them, so a refusal moves
-// no state toward true: where a row gives the line with no refusal too, the line with the refusal
-// is not true unless that one is. A refusal at a commit that holds no result of the check counts
-// at that commit alone, as the subject. Each row: carry, with the row's records, and c0 as c1's
-// parent with c1's tree and ties where the row says so; the check reads the row's line at c2, where
-// the results of c0, c1 and m2 carry (R8), and at m2, the head of main. m2's pass and the run of the
-// job that ended at m2 are the reviewer's case; c1's results are recorded on 12 November, its pass
-// at 10:00 and its caught failing example at 10:05.
+// and no failing example that missed its fault, of any commit, c1's among them. The state is what
+// the evidence that remains gives, so a refusal moves no state toward true: where a row gives the
+// line with no refusal too, the line with the refusal is not true unless that one is. It can move
+// a check from false to unknown, when it takes out the only caught failing example, and from
+// unknown to false, when it takes out a pass beside a failure that stands (a row of each). A
+// refusal at a commit that holds no result of the check counts at that commit alone, as the
+// subject. Each row: carry, with the row's records, and c0 as c1's parent with c1's tree and ties
+// where the row says so; the check reads the row's line at c2, where the results of c0, c1 and m2
+// carry (R8), and at m2, the head of main. m2's pass and the run of the job that ended at m2 are
+// the reviewer's case; c1's results are recorded on 12 November, its pass at 10:00 and its caught
+// failing example at 10:05.
 func TestARefusalOfCITakesOutOnlyThePassingEvidenceOfItsCommitAndOlder(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "spec-check")
@@ -242,8 +245,8 @@ func TestARefusalOfCITakesOutOnlyThePassingEvidenceOfItsCommitAndOlder(t *testin
 			changes: []change{at("2026-11-12T10:02:00Z"), fault("m2", "2026-11-13T12:05:00Z", 7)}, uncited: refused, c2: "unknown (uncited)", m2: "unknown (uncited)"},
 		{name: "CI refused the check at c2, which holds no result and no run", why: "the refusal counts at c2 alone", noM2JobRun: true,
 			uncited: map[string]any{"c2": map[string]any{check: "test-not-in-code"}}, c2: "unknown (uncited)", m2: "true (passed, counted from c1)"},
-		// Each row below holds a failure beside a pass. A failure is a report, and no refusal takes it
-		// out, so each reads as with no refusal, or further from true.
+		// Each row below holds a failure. A failure is a report, and no refusal takes it out, so
+		// each reads as with no refusal, or reads the state that the evidence that remains gives.
 		{name: "c2 fails at 10:03, between c1's pass and c1's failing example, then passes at 12:00",
 			why:     "the refusal takes out c1's pass and failing example and keeps c2's failure, so c2 holds a pass and a failure (R7)",
 			changes: []change{run("c2", "fail", "2026-11-12T10:03:00Z", 5), run("c2", "pass", "2026-11-12T12:00:00Z", 6), fault("c2", "2026-11-12T12:05:00Z", 7)},
@@ -256,11 +259,16 @@ func TestARefusalOfCITakesOutOnlyThePassingEvidenceOfItsCommitAndOlder(t *testin
 			why: "the refusal takes out c1's caught failing example and keeps c1's failure, so c0's later pass does not end the report (R7)",
 			c0:  true, changes: []change{failsAtC1, run("c0", "pass", "2026-11-12T11:00:00Z", 5), fault("c0", "2026-11-12T11:05:00Z", 6)},
 			uncited: refused, c2: "unknown (disagree)", m2: "unknown (disagree)", none: "unknown (disagree)"},
-		{name: "c0, c1's parent, passes at 09:00, and c1 fails at 10:00",
+		{name: "false to unknown: c0, c1's parent, passes at 09:00, and c1 fails at 10:00",
 			why: "the refusal takes out c0's pass and the caught failing examples of c0 and c1, each recorded no later than c1's newest record, and keeps c1's failure, " +
-				"so no caught failing example counts (R9), away from the false that reads with no refusal",
+				"so no caught failing example counts (R9): from the false that reads with no refusal to unknown",
 			c0: true, changes: []change{failsAtC1, run("c0", "pass", "2026-11-12T09:00:00Z", 5), fault("c0", "2026-11-12T09:05:00Z", 6)},
 			uncited: refused, c2: "unknown (no_failing_example)", m2: "unknown (no_failing_example)", none: "false (failed, counted from c1)"},
+		{name: "unknown to false: c2 fails at 10:03 and passes at 10:04, before c1's failing example, and catches its fault at 12:05",
+			why: "the refusal takes out c1's pass and failing example and c2's pass, each recorded no later than c1's newest record, and keeps c2's failure and c2's newer caught " +
+				"failing example, the evidence that remains: from the unknown of a pass and a failure at c2 (R7) that reads with no refusal to false",
+			changes: []change{run("c2", "fail", "2026-11-12T10:03:00Z", 5), run("c2", "pass", "2026-11-12T10:04:00Z", 6), fault("c2", "2026-11-12T12:05:00Z", 7)},
+			uncited: refused, c2: "false (failed, counted from c2)", m2: "false (failed, counted from c2)", none: "unknown (disagree)"},
 		{name: "c0, c1's parent, fails at 09:00, and c2 passes at 12:00",
 			why: "the refusal takes out c1's pass and failing example and keeps c0's failure, so c2's later pass does not end the report (R7)",
 			c0:  true, changes: []change{run("c0", "fail", "2026-11-12T09:00:00Z", 5), run("c2", "pass", "2026-11-12T12:00:00Z", 6), fault("c2", "2026-11-12T12:05:00Z", 7)},

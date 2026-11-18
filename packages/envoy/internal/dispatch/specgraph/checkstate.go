@@ -49,14 +49,15 @@ func subjectFault(p Point, now time.Time) string {
 // history of the repository, the time of the derivation, and the checks that CI refused at each
 // commit (R48), by commit and then by check id, each with the rule that refused it. Its tag input
 // marks how each member reads when the caller does not set it (memberMark): a run of a job and a
-// refusal by CI never move a state toward true, and each can move one away from true, so the caller
-// gives JobRuns and Uncited, empty for none, and Input.check refuses nil. With no tie, or no
-// history, no result carries: a result counts only at its own commit, so a failure at another
-// commit then says nothing about this one. So a caller that gives no Ties or no History is refused
-// too, and one that states that it has none gives CommitTies{} or FixtureHistory{Commits:
-// []FixtureCommit{}}, the empty values that are not nil, and gets no carry, as R8 reads a tie that
-// is not known ("A check whose tie to its code is unknown runs on each push to the branch"). The
-// command gives the ties and the history of its scenario.
+// refusal by CI never move a state toward true, and each can move one away from what the evidence
+// without it gives (a refusal: R48, CheckStates step 2), so the caller gives JobRuns and Uncited,
+// empty for none, and Input.check refuses nil. With no tie, or no history, no result carries: a
+// result counts only at its own commit, so a failure at another commit then says nothing about this
+// one. So a caller that gives no Ties or no History is refused too, and one that states that it has
+// none gives CommitTies{} or FixtureHistory{Commits: []FixtureCommit{}}, the empty values that are
+// not nil, and gets no carry, as R8 reads a tie that is not known ("A check whose tie to its code
+// is unknown runs on each push to the branch"). The command gives the ties and the history of its
+// scenario.
 type Input struct {
 	Files    Tree                         `input:"zero: no spec file, so each statement reads not built"`
 	Approved Approved                     `input:"zero: no approved node, so no state is derived"`
@@ -140,14 +141,16 @@ const (
 //     failed on that fault"). The refusal takes out no failing run, no run that could not run and
 //     no failing example that missed its fault, of A or of any other commit (R7: "The failing run
 //     is a report (R11), and a later pass does not end the report"), and no newer candidate (R7:
-//     "Of several results that count, the latest counts"). So a refusal moves no check toward
-//     true. A check whose only caught failing example a refusal took out reads unknown (R9: "a
-//     check whose current text has no failing example that failed when it should"); with no run
-//     that counts at S left: unknown, uncited. Detail is the least rule by its name of the
-//     refusals that count, so that the order of the results does not choose it. The commit of a
-//     candidate is the commit where its job ran (resultCommit); a query or an agent of production
-//     or of the graph has no candidate of a commit, and only a refusal at S.Commit counts for it.
-//     A refusal at a commit that holds no candidate counts at that commit as the subject alone: no
+//     "Of several results that count, the latest counts"). The state is what the candidates that
+//     remain give, so a refusal moves no check toward true, and it can move one from false to
+//     unknown, when it takes out the only caught failing example (R9: "a check whose current text
+//     has no failing example that failed when it should" reads unknown), or from unknown to false,
+//     when it takes out a pass beside a failure that stands; with no run that counts at S left:
+//     unknown, uncited. Detail is the least rule by its name of the refusals that count, so that
+//     the order of the results does not choose it. The commit of a candidate is the commit where its
+//     job ran (resultCommit); a query or an agent of production or of the graph has no candidate of
+//     a commit, and only a refusal at S.Commit counts for it. A refusal at a commit that holds no
+//     candidate counts at that commit as the subject alone: no
 //     order of record places it, a refusal about the tree shows in C's text or in its tied files,
 //     which stop the carry by their own rules, and a refusal about one run says nothing about
 //     another commit. A run of the job is no candidate, and no refusal takes one out: it has no

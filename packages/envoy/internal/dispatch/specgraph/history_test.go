@@ -63,7 +63,8 @@ func TestFixtureHistoryListsBothPathsOfAMove(t *testing.T) {
 // know, one written in other letters or two times, a byte that is not UTF-8, text after the
 // history, a value of another type, named with the form of history.json and its place), a commit
 // with no id, an id on two commits, a tree with no path and a content label of no letter and no
-// digit. A path of a tree keeps its own letters, and a path of one space is one that git holds.
+// digit: "", a space, a tab, a non-breaking space and only punctuation. A label of one letter names
+// a content. A path of a tree keeps its own letters, and a path of one space is one that git holds.
 func TestReadFixtureHistory(t *testing.T) {
 	t.Parallel()
 	paths, err := filepath.Glob("testdata/scenarios/*/history.json")
@@ -94,6 +95,9 @@ func TestReadFixtureHistory(t *testing.T) {
 		`{"commits":[{"id":"c1","files":{"a.md":"1"}},{"id":"c2","files":{}}]}`: `specgraph: history: commit "c2": its files hold no path, and the tree of a commit holds at least one file`,
 		`{"commits":[{"id":"c1","files":{"a.md":"1","b.md":""}}]}`:              `specgraph: history: commit "c1": the content label of "b.md" has no letter and no digit, so it names no content`,
 		`{"commits":[{"id":"c1","files":{"a.md":"1","b.md":" "}}]}`:             `specgraph: history: commit "c1": the content label of "b.md" has no letter and no digit, so it names no content`,
+		`{"commits":[{"id":"c1","files":{"a.md":"1","b.md":"\t"}}]}`:            `specgraph: history: commit "c1": the content label of "b.md" has no letter and no digit, so it names no content`,
+		`{"commits":[{"id":"c1","files":{"a.md":"1","b.md":"\u00a0"}}]}`:        `specgraph: history: commit "c1": the content label of "b.md" has no letter and no digit, so it names no content`,
+		`{"commits":[{"id":"c1","files":{"a.md":"1","b.md":"!?."}}]}`:           `specgraph: history: commit "c1": the content label of "b.md" has no letter and no digit, so it names no content`,
 	} {
 		_, err := ReadFixtureHistory(strings.NewReader(text))
 		if err == nil || !strings.Contains(err.Error(), want) {
@@ -103,6 +107,9 @@ func TestReadFixtureHistory(t *testing.T) {
 	h, err := ReadFixtureHistory(strings.NewReader(`{"commits":[{"id":"c1","files":{"AGENTS.md":"1","docs/README.md":"1"," ":"1"}}]}`))
 	if err != nil || !slices.Equal(slices.Sorted(maps.Keys(h.Commits[0].Files)), []string{" ", "AGENTS.md", "docs/README.md"}) {
 		t.Errorf("ReadFixtureHistory of paths in capitals and of one space: %+v, %v; want each path as written", h, err)
+	}
+	if h, err := ReadFixtureHistory(strings.NewReader(`{"commits":[{"id":"c1","files":{"a.md":"a"}}]}`)); err != nil || h.Commits[0].Files["a.md"] != "a" {
+		t.Errorf("ReadFixtureHistory of a label of one letter: %+v, %v; want the label a", h, err)
 	}
 }
 

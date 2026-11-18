@@ -69,22 +69,16 @@ func notRepoPaths(path string) []string {
 // commit of their test (test_commit), a query of the graph at the transaction of its subject
 // (graph_tx), and a run of a job that has not ended. So each member that a rule reads is in a
 // record of some scenario, and each place of it is swept. The sweep also reads the shapes that no
-// scenario holds (sweepBases). One right: a repository path of a tree written " " is a real path,
-// since git holds a file of that name (git ls-tree of a tree that holds one lists the path " "), so
-// the tree changed at a path that a tie covers, and a result there, a failure among them, carries
-// no more across it (R8: "A result at one commit also counts at another commit when no code that
-// the check runs changed between the two"); a base whose failure at one commit carries to another
-// shows it. A content label is no path, and one of " " names no content, so the reader refuses it
-// and it has no right.
+// scenario holds (sweepBases). One right, which sweepInputs gives the input where it writes it: a
+// repository path of a tree written " " is a real path, since git holds a file of that name (git
+// ls-tree of a tree that holds one lists the path " "), so the tree changed at a path that a tie
+// covers, and a result there, a failure among them, carries no more across it (R8: "A result at
+// one commit also counts at another commit when no code that the check runs changed between the
+// two"); a base whose failure at one commit carries to another shows it. A content label is no
+// path, and one of " " names no content, so the reader refuses it and it has no right.
 func TestNoInputThatSaysNothingMovesAStateTowardTrue(t *testing.T) {
 	t.Parallel()
 	bases := sweepBases(t)
-	byRight := func(what string) string {
-		if strings.HasPrefix(what, "history.json /commits/") && strings.Contains(what, "/files/") && strings.HasSuffix(what, ` as the key " "`) {
-			return `the path " " of the tree is a real path, which git holds, so the tree changed at a path that a tie covers, and the carry ends (R8)`
-		}
-		return ""
-	}
 	for _, name := range slices.Sorted(maps.Keys(bases)) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -94,7 +88,7 @@ func TestNoInputThatSaysNothingMovesAStateTowardTrue(t *testing.T) {
 			if got, err := sweepStates(roundTrip); err != nil || !maps.Equal(got, whole) {
 				t.Fatalf("each JSON file of the scenario written again by the sweep does not read as the scenario: %v", err)
 			}
-			n := sweepAgainst(t, whole, inputs, byRight)
+			n := sweepAgainst(t, whole, inputs)
 			legs := 0 // the inputs that write the leg of no matrix at the leg of a record
 			for _, in := range inputs {
 				if strings.HasSuffix(in.what, `/leg as ""`) {
@@ -202,9 +196,8 @@ func baseStates(t *testing.T, base fs.FS) map[string]string {
 type sweepCount struct{ inputs, refused, same, moved, byRight int }
 
 // sweepAgainst derives each input and compares its states with whole, the states of its base: an
-// input that moves a state toward true fails the test, unless byRight, when it is not nil, gives
-// the reason of a right for it.
-func sweepAgainst(t *testing.T, whole map[string]string, inputs []sweepInput, byRight func(what string) string) sweepCount {
+// input that moves a state toward true fails the test, unless the input has a right to it.
+func sweepAgainst(t *testing.T, whole map[string]string, inputs []sweepInput) sweepCount {
 	t.Helper()
 	n := sweepCount{inputs: len(inputs)}
 	for _, in := range inputs {
@@ -219,7 +212,7 @@ func sweepAgainst(t *testing.T, whole map[string]string, inputs []sweepInput, by
 			toward := towardTrue(whole, got)
 			switch {
 			case len(toward) == 0:
-			case byRight != nil && byRight(in.what) != "":
+			case in.right != "":
 				n.byRight++
 			default:
 				t.Errorf("%s: %s", in.what, strings.Join(toward, "; "))
@@ -262,10 +255,10 @@ func TestAddingARefusalOfCIMovesNoStateTowardTrue(t *testing.T) {
 						uncited[commit] = checks
 						return uncited
 					})
-					inputs = append(inputs, sweepInput{fmt.Sprintf("uncited.json: a refusal of %s at %s", c.ID, commit), fsys})
+					inputs = append(inputs, sweepInput{what: fmt.Sprintf("uncited.json: a refusal of %s at %s", c.ID, commit), fsys: fsys})
 				}
 			}
-			n := sweepAgainst(t, baseStates(t, base), inputs, nil)
+			n := sweepAgainst(t, baseStates(t, base), inputs)
 			t.Logf("%d refusals added: %d refused, %d read as the base, %d read another state", n.inputs, n.refused, n.same, n.moved)
 		})
 	}
@@ -327,22 +320,24 @@ func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 						for _, v := range values[m[1]] {
 							fsys := maps.Clone(base)
 							fsys[file] = &fstest.MapFile{Data: encodeTree(t, treeWith(tree, append(slices.Clone(place), m[0]), v))}
-							inputs = append(inputs, sweepInput{fmt.Sprintf("%s %s with %s %s", file, treePointer(place), m[0], encodeTree(t, v)), fsys})
+							inputs = append(inputs, sweepInput{what: fmt.Sprintf("%s %s with %s %s", file, treePointer(place), m[0], encodeTree(t, v)), fsys: fsys})
 						}
 					}
 				}
 			}
-			n := sweepAgainst(t, baseStates(t, base), inputs, nil)
+			n := sweepAgainst(t, baseStates(t, base), inputs)
 			t.Logf("%d members added: %d refused, %d read as the base, %d read another state", n.inputs, n.refused, n.same, n.moved)
 		})
 	}
 }
 
-// A text inside a block that names nothing, " " or "", at one place: the id or a value of an
-// attribute of the block's opening line, or a line of its body after the marker of a field of a
-// check (blockTexts), in a block of approved.json or of a spec file of the base. No such input may
-// move a state toward true: the reader refuses a relation of an approved block that is no id
-// (notAnID), and Validate refuses one in the files.
+// A text inside a block that names nothing at one place: the id or a value of an attribute of the
+// block's opening line, or a line of its body after the marker of a field of a check (blockTexts),
+// in a block of approved.json or of a spec file of the base, written as " " or "", as an id that
+// no node of the base holds, and as the id of a check of the base, a kind of node that no relation
+// names (relationKinds). No such input may move a state toward true: the reader refuses a relation
+// of an approved block that names no node of the approved spec of its kind (relationFault), and
+// Validate refuses one in the files by the same kinds.
 func TestNoNameOfNothingInsideABlockMovesAStateTowardTrue(t *testing.T) {
 	t.Parallel()
 	bases := sweepBases(t)
@@ -350,6 +345,15 @@ func TestNoNameOfNothingInsideABlockMovesAStateTowardTrue(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			base := bases[name]
+			s, err := ReadScenario(base)
+			if err != nil {
+				t.Fatalf("the base: %v", err)
+			}
+			current, _ := s.Approved.Current()
+			if len(current.Checks) == 0 {
+				t.Fatal("the base holds no check")
+			}
+			names := append(slices.Clone(namesOfNothing), "no-such-node", current.Checks[0].ID)
 			var inputs []sweepInput
 			var tree any
 			if err := json.Unmarshal(base["approved.json"].Data, &tree); err != nil {
@@ -360,11 +364,11 @@ func TestNoNameOfNothingInsideABlockMovesAStateTowardTrue(t *testing.T) {
 					place := []string{"nodes", strconv.Itoa(n), "versions", strconv.Itoa(v), "block"}
 					block := version.(map[string]any)["block"].(string)
 					for _, at := range blockTexts(block) {
-						for _, form := range namesOfNothing {
+						for _, form := range names {
 							if block[at[0]:at[1]] != form {
 								fsys := maps.Clone(base)
 								fsys["approved.json"] = &fstest.MapFile{Data: encodeTree(t, treeWith(tree, place, block[:at[0]]+form+block[at[1]:]))}
-								inputs = append(inputs, sweepInput{fmt.Sprintf("approved.json %s: %q as %q", treePointer(place), block[at[0]:at[1]], form), fsys})
+								inputs = append(inputs, sweepInput{what: fmt.Sprintf("approved.json %s: %q as %q", treePointer(place), block[at[0]:at[1]], form), fsys: fsys})
 							}
 						}
 					}
@@ -376,16 +380,16 @@ func TestNoNameOfNothingInsideABlockMovesAStateTowardTrue(t *testing.T) {
 				}
 				text := string(base[file].Data)
 				for _, at := range blockTexts(text) {
-					for _, form := range namesOfNothing {
+					for _, form := range names {
 						if text[at[0]:at[1]] != form {
 							fsys := maps.Clone(base)
 							fsys[file] = &fstest.MapFile{Data: []byte(text[:at[0]] + form + text[at[1]:])}
-							inputs = append(inputs, sweepInput{fmt.Sprintf("%s at byte %d: %q as %q", file, at[0], text[at[0]:at[1]], form), fsys})
+							inputs = append(inputs, sweepInput{what: fmt.Sprintf("%s at byte %d: %q as %q", file, at[0], text[at[0]:at[1]], form), fsys: fsys})
 						}
 					}
 				}
 			}
-			n := sweepAgainst(t, baseStates(t, base), inputs, nil)
+			n := sweepAgainst(t, baseStates(t, base), inputs)
 			t.Logf("%d texts inside a block: %d refused, %d read as the base, %d read another state", n.inputs, n.refused, n.same, n.moved)
 		})
 	}
@@ -486,11 +490,17 @@ func namesOf(t *testing.T, fsys fstest.MapFS) map[string][]string {
 	return sorted
 }
 
-// sweepInput is one input of the sweep: what it changed, and the files of the scenario with it.
+// sweepInput is one input of the sweep: what it changed, for the line of a failure alone, the files
+// of the scenario with it, and the reason of its right to move a state toward true, "" for none.
 type sweepInput struct {
-	what string
-	fsys fstest.MapFS
+	what  string
+	fsys  fstest.MapFS
+	right string
 }
+
+// pathOfOneSpace is the right of a repository path of a tree of the history written " ": a real
+// path, since git holds a file of that name, so the tree changed at a path that a tie covers.
+const pathOfOneSpace = `the path " " of the tree is a real path, which git holds, so the tree changed at a path that a tie covers, and the carry ends (R8)`
 
 // sweepInputs is each input of the sweep of the scenario base, and base with each JSON file written
 // again by the sweep's own decoder and encoder, unchanged, which the sweep reads as base.
@@ -498,14 +508,15 @@ func sweepInputs(t *testing.T, base fstest.MapFS) ([]sweepInput, fstest.MapFS) {
 	t.Helper()
 	var inputs []sweepInput
 	roundTrip := maps.Clone(base)
-	with := func(what, name string, data []byte) {
+	with := func(what, name string, data []byte) *sweepInput {
 		fsys := maps.Clone(base)
 		if data == nil {
 			delete(fsys, name)
 		} else {
 			fsys[name] = &fstest.MapFile{Data: data}
 		}
-		inputs = append(inputs, sweepInput{what, fsys})
+		inputs = append(inputs, sweepInput{what: what, fsys: fsys})
+		return &inputs[len(inputs)-1]
 	}
 	for _, name := range slices.Sorted(maps.Keys(base)) {
 		with(name+" taken out", name, nil)
@@ -539,7 +550,10 @@ func sweepInputs(t *testing.T, base fstest.MapFS) ([]sweepInput, fstest.MapFS) {
 					}
 					for _, renamed := range renames {
 						if _, taken := v[renamed]; !taken {
-							with(fmt.Sprintf("%s %s as the key %q", name, treePointer(place), renamed), name, encodeTree(t, treeRenamed(tree, place, renamed)))
+							in := with(fmt.Sprintf("%s %s as the key %q", name, treePointer(place), renamed), name, encodeTree(t, treeRenamed(tree, place, renamed)))
+							if paths && renamed == " " {
+								in.right = pathOfOneSpace
+							}
 						}
 					}
 					walk(v[key], place)
@@ -647,9 +661,13 @@ var recordKinds = map[string][][]string{
 // A record taken out whole is another input, not one that says nothing: the history in which the
 // fact did not happen. A record that states a fact against a check, taken out, can move a state
 // toward true by right, and each kind of record has a row here, with the direction that it must
-// have and its reason; a kind with no row fails the test. A file taken out of a commit's tree is
-// not there at that commit, so it changed, and the carry of a result across it ends (R8), as a
-// changed label ends it: that row must not read true. Each row derives the check at the subject of
+// have and its reason; a kind with no row fails the test, and so do two rows of one kind that give
+// it two rights. A file taken out of a commit's tree is not there at that commit, so it changed,
+// and the carry of each result across it ends, a failure's as a pass's (R8: "A result at one
+// commit also counts at another commit when no code that the check runs changed between the
+// two"), as a changed label ends it: it moves a state away from true where a pass carried, and
+// toward true where a failure carried (a row of each), as a path of a tree written " " does in
+// TestNoInputThatSaysNothingMovesAStateTowardTrue. Each row derives the check at the subject of
 // its scenario with the record, and with the record taken out; setup makes the scenario first.
 func TestTakingOutAWholeRecordMovesAStateOnlyByItsRight(t *testing.T) {
 	t.Parallel()
@@ -682,10 +700,12 @@ func TestTakingOutAWholeRecordMovesAStateOnlyByItsRight(t *testing.T) {
 		})
 	}
 	rows := []row{
-		// The first row: a file of a commit's tree must not move a state toward true.
-		{kind: "a file of a commit's tree", reason: "a tied file that the later commit does not hold changed, so the carry ends (R8), as a changed label ends it",
+		{kind: "a file of a commit's tree", reason: "a tied file that the later commit does not hold changed, so c1's pass carries no more to c2 (R8)",
 			scenario: "carry", file: "history.json", place: []string{"commits", "2", "files", "packages/envoy/cmd/listener/main.go"},
-			subject: 1, check: c, with: "true", without: "unknown"},
+			subject: 1, check: c, with: "true", without: "unknown", mayMoveTowardTrue: true},
+		{kind: "a file of a commit's tree", reason: "a tied file that the later commit does not hold changed, so c1's failure carries no more to c2, and c2's own pass and caught failing example count (R8)",
+			scenario: "carry", setup: carriedFailure, file: "history.json", place: []string{"commits", "2", "files", "packages/envoy/cmd/listener/main.go"},
+			subject: 1, check: c, with: "unknown", without: "true", mayMoveTowardTrue: true},
 		{kind: "a failing result", reason: "the failure is the record against the check, and the history without it holds no failure (R7: \"a later failure cancels an earlier pass\")",
 			scenario: "silent-leg", file: "results.json", place: []string{"5"},
 			subject: 3, check: q, with: "false", without: "true", mayMoveTowardTrue: true},
@@ -715,7 +735,12 @@ func TestTakingOutAWholeRecordMovesAStateOnlyByItsRight(t *testing.T) {
 			}
 		}
 	}
+	right := map[string]bool{}
 	for _, r := range rows {
+		if given, held := right[r.kind]; held && given != r.mayMoveTowardTrue {
+			t.Errorf("%s: the rows of this kind give it two rights", r.kind)
+		}
+		right[r.kind] = r.mayMoveTowardTrue
 		if !r.mayMoveTowardTrue && r.without == checkTrue {
 			t.Errorf("%s: a record of this kind must not move a state toward true, and the row reads true without it", r.kind)
 		}

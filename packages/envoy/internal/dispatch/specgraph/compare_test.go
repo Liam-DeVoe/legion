@@ -2,6 +2,7 @@ package specgraph
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -317,63 +318,156 @@ func TestReadApprovedRefusesAMalformedFixture(t *testing.T) {
 }
 
 // An approved block holds each relation by the id of the node that it names, and the derivation
-// reads a relation only by an id: a parent " " would read as no parent, and in wait-cycle the
-// statement above it would then read met where the scenario has it not met. So versionText refuses
-// a value at an id place of a block that is not in the shape of an id (notAnID), naming the member
-// and the value. Each node prints as a block that versionText reads with a value that is an id (the
-// control), and with the row's value it is refused with the row's line.
-func TestAnApprovedBlockWithANameThatIsNoIDAtAnIDPlaceIsRefused(t *testing.T) {
+// reads a relation only to a node of its kind: a parent that names no node, or a check, would read
+// as no parent, and in wait-cycle the statement above it would then read met where the scenario
+// has it not met (R22: "Dispatch refuses the approval of a change request that puts a statement
+// under a parent that the approved spec does not hold"). So the reader and the entry of the
+// derivation (approvedFault), and Current for a caller that builds an Approved itself, refuse a
+// relation that names no node of the approved spec of a kind that relationKinds gives it, the rule
+// that Validate reads in the files, naming the member and the value. A node that the approved spec
+// removed is one that it holds, so a relation to it is taken. Each row sets one relation of one
+// node beside an approved spec of each kind, a node of each kept and removed: each value of the
+// row with no want is taken (the controls), and each other is refused with its line.
+func TestAnApprovedRelationNamesANodeOfTheApprovedSpecOfItsKind(t *testing.T) {
 	t.Parallel()
 	type node interface{ Print() (string, error) }
-	page := func() Statement {
-		return Statement{ID: "a-page-shows-it", Text: "The page shows it.", Kind: KindBehavior}
+	at := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
+	approvedNode := func(t *testing.T, id string, n node, removed bool) ApprovedNode {
+		t.Helper()
+		block, err := n.Print()
+		if err != nil {
+			t.Fatalf("Print of %s: %v", id, err)
+		}
+		return ApprovedNode{ID: id, Removed: new(removed), PartlyChecked: new(false), Versions: []ApprovedVersion{{Version: 1, At: at, Block: block}}}
 	}
-	orders := func() Check {
-		return Check{ID: "a-page-shows-each-order", Serves: "a-page-shows-it", Subject: SubjectProduction, Procedure: ProcedureAgent,
+	statement := func(id string) Statement {
+		return Statement{ID: id, Text: "The pages show each order.", Kind: KindBehavior}
+	}
+	check := func(id, serves string) Check {
+		return Check{ID: id, Serves: serves, Subject: SubjectProduction, Procedure: ProcedureAgent,
 			Claim: "The page shows each order.", ProcedureText: "An agent reads the page.", FailingExample: "A page that shows no order."}
 	}
-	delivery := func() Component {
-		return Component{ID: "envoy-delivery", Name: "Envoy delivery", Purpose: "It delivers each stored message."}
+	component := func(id string) Component {
+		return Component{ID: id, Name: "Envoy", Purpose: "It delivers each stored message."}
 	}
+	envoyToDispatch := component("envoy-to-dispatch")
+	envoyToDispatch.Interface, envoyToDispatch.Joins = true, []string{"dispatch", "envoy"}
+	// others is the approved spec beside the row's node: a node of each kind, kept, and a statement
+	// and a component that it removed.
+	others := func(t *testing.T) []ApprovedNode {
+		return []ApprovedNode{
+			approvedNode(t, "pages", statement("pages"), false),
+			approvedNode(t, "old-pages", statement("old-pages"), true),
+			approvedNode(t, "pages-load", check("pages-load", "pages"), false),
+			approvedNode(t, "dispatch", component("dispatch"), false),
+			approvedNode(t, "envoy", component("envoy"), false),
+			approvedNode(t, "old-envoy", component("old-envoy"), true),
+			approvedNode(t, "envoy-to-dispatch", envoyToDispatch, false),
+			approvedNode(t, "work-unit", Term{ID: "work-unit", Name: "work unit", Definition: "A work unit is work that makes one or more statements true."}, false),
+		}
+	}
+	noNode := func(member, v string) string {
+		return "bad-approved-block: " + member + " " + quoted(v) + " names no node of the approved spec"
+	}
+	wrongKind := func(member, v, names, wanted string) string {
+		return "bad-approved-block: " + member + " " + quoted(v) + " names " + names + ", not " + wanted
+	}
+	type value struct{ v, want string }
 	for _, row := range []struct {
-		name, member, ok, value string
-		node                    func(v string) (id string, n node)
+		name   string
+		node   func(v string) (id string, n node)
+		values []value
 	}{
-		{"a statement's parent of no letter", "parent", "pages", " ", func(v string) (string, node) { s := page(); s.Parent = v; return s.ID, s }},
-		{"a statement's parent in capitals", "parent", "pages", "Pages", func(v string) (string, node) { s := page(); s.Parent = v; return s.ID, s }},
-		{"a statement that it serves", "serves", "pages", "Pages", func(v string) (string, node) { s := page(); s.Serves = []string{v}; return s.ID, s }},
-		{"a component that a statement is about", "about", "pages", "Pages", func(v string) (string, node) { s := page(); s.About = []string{v}; return s.ID, s }},
-		{"the statement that a check serves", "serves", "a-page-shows-it", "Pages", func(v string) (string, node) { c := orders(); c.Serves = v; return c.ID, c }},
-		{"two statements that a check serves", "serves", "a-page-shows-it", "a-page-shows-all a-page-shows-it", func(v string) (string, node) { c := orders(); c.Serves = v; return c.ID, c }},
-		{"a component's parent of no letter", "parent", "envoy", " ", func(v string) (string, node) { c := delivery(); c.Parent = v; return c.ID, c }},
-		{"a component that an interface joins", "joins", "legion", "Legion", func(v string) (string, node) {
-			c := delivery()
-			c.Interface, c.Joins = true, []string{"dispatch", v}
+		{"a statement's parent", func(v string) (string, node) { s := statement("a-page-shows-it"); s.Parent = v; return s.ID, s }, []value{
+			{"pages", ""}, {"old-pages", ""},
+			{"no-such-statement", noNode("parent", "no-such-statement")}, {" ", noNode("parent", " ")}, {"Pages", noNode("parent", "Pages")},
+			{"pages-load", wrongKind("parent", "pages-load", "a check", "a statement")},
+			{"envoy", wrongKind("parent", "envoy", "a component", "a statement")},
+			{"work-unit", wrongKind("parent", "work-unit", "a term", "a statement")},
+		}},
+		{"a statement that a statement serves", func(v string) (string, node) {
+			s := statement("a-page-shows-it")
+			s.Serves = []string{v}
+			return s.ID, s
+		}, []value{
+			{"pages", ""}, {"old-pages", ""},
+			{"no-such-statement", noNode("serves", "no-such-statement")}, {"Pages", noNode("serves", "Pages")},
+			{"pages-load", wrongKind("serves", "pages-load", "a check", "a statement")},
+			{"envoy-to-dispatch", wrongKind("serves", "envoy-to-dispatch", "an interface", "a statement")},
+		}},
+		{"a component or an interface that a statement is about", func(v string) (string, node) {
+			s := statement("a-page-shows-it")
+			s.About = []string{v}
+			return s.ID, s
+		}, []value{
+			{"envoy", ""}, {"envoy-to-dispatch", ""}, {"old-envoy", ""},
+			{"no-such-component", noNode("about", "no-such-component")}, {"Envoy", noNode("about", "Envoy")},
+			{"pages", wrongKind("about", "pages", "a statement", "a component or an interface")},
+		}},
+		{"the statement that a check serves", func(v string) (string, node) { return "a-page-shows-each-order", check("a-page-shows-each-order", v) }, []value{
+			{"pages", ""}, {"old-pages", ""},
+			{"no-such-statement", noNode("serves", "no-such-statement")}, {"Pages", noNode("serves", "Pages")},
+			{"old-pages pages", noNode("serves", "old-pages pages")},
+			{"pages-load", wrongKind("serves", "pages-load", "a check", "a statement")},
+			{"envoy", wrongKind("serves", "envoy", "a component", "a statement")},
+		}},
+		{"a component's parent", func(v string) (string, node) { c := component("envoy-delivery"); c.Parent = v; return c.ID, c }, []value{
+			{"envoy", ""}, {"old-envoy", ""},
+			{"no-such-component", noNode("parent", "no-such-component")}, {" ", noNode("parent", " ")},
+			{"envoy-to-dispatch", wrongKind("parent", "envoy-to-dispatch", "an interface", "a component")},
+			{"pages", wrongKind("parent", "pages", "a statement", "a component")},
+		}},
+		{"a component that an interface joins", func(v string) (string, node) {
+			c := component("envoy-to-legion")
+			c.Interface, c.Joins = true, []string{"envoy", v}
 			return c.ID, c
+		}, []value{
+			{"dispatch", ""}, {"old-envoy", ""},
+			{"legion", noNode("joins", "legion")}, {"Legion", noNode("joins", "Legion")},
+			{"envoy-to-dispatch", wrongKind("joins", "envoy-to-dispatch", "an interface", "a component")},
+			{"pages", wrongKind("joins", "pages", "a statement", "a component")},
 		}},
-		{"the id of a term", "id", "work-unit", "Work-Unit", func(v string) (string, node) {
-			return v, Term{ID: v, Name: "work unit", Definition: "A work unit is work that makes one or more statements true."}
-		}},
+		{"the id of a term", func(v string) (string, node) {
+			return v, Term{ID: v, Name: "work item", Definition: "A work item is one unit of work."}
+		}, []value{{"work-item", ""}, {"Work-Item", `bad-approved-block: id "Work-Item" is no id`}}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			for _, v := range []string{row.ok, row.value} {
-				id, n := row.node(v)
-				block, err := n.Print()
-				if err != nil {
-					t.Fatalf("Print with %q: %v", v, err)
+			for _, v := range row.values {
+				id, n := row.node(v.v)
+				nodes := append(others(t), approvedNode(t, id, n, false))
+				err := approvedFault(nodes)
+				want := ""
+				if v.want != "" {
+					want = fmt.Sprintf("specgraph: approved node %s version 1: %s (line 1 of its block)", quoted(id), v.want)
 				}
-				_, problems := versionText(id, ApprovedVersion{Version: 1, Block: block})
-				want := "bad-approved-block: " + row.member + " " + quoted(v) + " is no id"
+				if got := fmt.Sprint(err); err == nil && want != "" || err != nil && got != want {
+					t.Errorf("%q: the approved spec gives %v; want %q", v.v, err, want)
+				}
+				a := Approved{Nodes: map[string]ApprovedNode{}}
+				for _, n := range nodes {
+					a.Nodes[n.ID] = n
+				}
+				current, problems := a.Current()
+				held := idsOf(current)[id]
 				switch {
-				case v == row.ok && len(problems) != 0:
-					t.Errorf("control: the block %q gives %v; want no problem", block, problems)
-				case v != row.ok && (len(problems) != 1 || problems[0].Detail != want):
-					t.Errorf("the block %q gives %v; want the one problem %q", block, problems, want)
+				case v.want == "" && (len(problems) != 0 || !held):
+					t.Errorf("control %q: Current holds the node %t, problems %v; want it held and no problem", v.v, held, problems)
+				case v.want != "" && (held || len(problems) != 1 || problems[0].Detail != v.want || problems[0].Node != id):
+					t.Errorf("%q: Current holds the node %t, problems %v; want it left out and the one problem %q", v.v, held, problems, v.want)
 				}
 			}
 		})
 	}
+}
+
+// idsOf is the set of the ids of the nodes of tree.
+func idsOf(tree Tree) map[string]bool {
+	ids := map[string]bool{}
+	for _, n := range nodesOf(tree) {
+		ids[n.id] = true
+	}
+	return ids
 }
 
 // ReadApproved names a value of another type than approved.json's form needs by the form and the
@@ -498,7 +592,7 @@ func TestCurrentIsTheNewestTextOfEachNodeThatIsNotRemoved(t *testing.T) {
 }
 
 // An approved spec that a caller builds can hold a node that does not set Removed, which
-// ApprovedNode.check refuses: Current, Since and Compare read it as a node with no current text,
+// approvedFault refuses: Current, Since and Compare read it as a node with no current text,
 // and no false that the caller did not write. The control sets Removed false.
 func TestCurrentLeavesOutANodeThatDoesNotSetRemoved(t *testing.T) {
 	t.Parallel()

@@ -65,13 +65,14 @@ const approvedForm = `{"nodes":[{"id":"<id>","removed":<true or false>,"partly_c
 // in other letters, a field that one object gives two times, a value of another type than
 // approvedForm needs, such as a time that is not RFC 3339, named by its place, no object or text
 // after it, and a null at any place, such as null or "nodes": null), a file with no list of nodes
-// ({}), and what ApprovedNode.check refuses, in an error that names the node, by its id as quoted
+// ({}), and what approvedFault refuses, in an error that names the node, by its id as quoted
 // prints a value of the input: a node with no id, an id on two nodes, a node that does not set
 // removed or partly_checked, since false is a value of each, a node with no version, version
 // numbers that do not go up from 1, a version with no time or with one older than the one before
-// it, and a block that is not its node's one block as Print writes it, or that names a value that
-// is no id at an id place (notAnID), naming the version. It reads the whole file, with no bound on
-// its size.
+// it, a block that is not its node's one block as Print writes it or whose id is no id
+// (versionText), and a block that names at a relation no node of the approved spec of the kind
+// that the relation needs (relationFault), naming the version. It reads the whole file, with no
+// bound on its size.
 func ReadApproved(r io.Reader) (Approved, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
@@ -108,51 +109,68 @@ func WriteApproved(w io.Writer, a Approved) error {
 	return err
 }
 
-// approved is the approved spec that f holds, or the first fault of f that ReadApproved refuses:
-// of each node in its order, a fault of its id or of its texts (ApprovedNode.textFault), and then
-// of each node, a member that it does not set (ApprovedNode.unsetMemberFault).
+// approved is the approved spec that f holds, or the first fault of f that ReadApproved refuses
+// (approvedFault).
 func (f ApprovedFile) approved() (Approved, error) {
 	if f.Nodes == nil {
 		return Approved{}, errors.New(`specgraph: approved spec: it holds no "nodes" list`)
 	}
+	if err := approvedFault(f.Nodes); err != nil {
+		return Approved{}, err
+	}
 	a := Approved{Nodes: make(map[string]ApprovedNode, len(f.Nodes))}
 	for _, n := range f.Nodes {
-		if _, twice := a.Nodes[n.ID]; twice {
-			return Approved{}, fmt.Errorf("specgraph: approved spec: node %s is in the approved spec two times", quoted(n.ID))
-		}
-		if err := n.textFault(); err != nil {
-			return Approved{}, err
-		}
 		a.Nodes[n.ID] = n
-	}
-	for _, n := range f.Nodes {
-		if err := n.unsetMemberFault(); err != nil {
-			return Approved{}, err
-		}
 	}
 	return a, nil
 }
 
-// check is the first fault of n that ReadApproved refuses, or nil: a fault of its id or of its
-// texts, and then a member that it does not set.
-func (n ApprovedNode) check() error {
-	if err := n.textFault(); err != nil {
-		return err
+// approvedFault is the first fault of the approved spec of nodes, in their order, that ReadApproved
+// and the entry of the derivation (Input.check) refuse, or nil: the faults of one node first, of
+// each node an id that a node before it has too, or a fault of its id or of its texts
+// (ApprovedNode.texts), then of each node a member that it does not set
+// (ApprovedNode.unsetMemberFault); then a fault between two nodes, of each node a relation of one
+// of its texts that names no node of the approved spec of a kind that it may name (relationFault),
+// kept or removed. The kind of a node is the kind of its newest text.
+func approvedFault(nodes []ApprovedNode) error {
+	texts := make([][]anyNode, len(nodes))
+	kinds := make(map[string]string, len(nodes))
+	for i, n := range nodes {
+		if _, twice := kinds[n.ID]; twice {
+			return fmt.Errorf("specgraph: approved spec: node %s is in the approved spec two times", quoted(n.ID))
+		}
+		var err error
+		if texts[i], err = n.texts(); err != nil {
+			return err
+		}
+		kinds[n.ID] = kindOf(texts[i][len(texts[i])-1].node)
 	}
-	return n.unsetMemberFault()
+	for _, n := range nodes {
+		if err := n.unsetMemberFault(); err != nil {
+			return err
+		}
+	}
+	for i, n := range nodes {
+		for j, text := range texts[i] {
+			if detail := relationFault(text.node, kinds); detail != "" {
+				return fmt.Errorf("specgraph: approved node %s version %d: %s (line %d of its block)", quoted(n.ID), n.Versions[j].Version, detail, text.pos.Line)
+			}
+		}
+	}
+	return nil
 }
 
-// textFault is the fault of the id or of the texts of n, or nil: no id, no version, version numbers
-// that do not go up from 1, a version with no time or with one older than the one before it, and a
-// block that is not its node's one block as Print writes it or that names a value that is no id at
-// an id place (versionText).
-func (n ApprovedNode) textFault() error {
+// texts is the node that each version of n holds, oldest first, or the fault of the id or of the
+// texts of n: no id, no version, version numbers that do not go up from 1, a version with no time
+// or with one older than the one before it, and a block that versionText refuses.
+func (n ApprovedNode) texts() ([]anyNode, error) {
 	switch {
 	case n.ID == "":
-		return errors.New("specgraph: approved spec: a node has no id")
+		return nil, errors.New("specgraph: approved spec: a node has no id")
 	case len(n.Versions) == 0:
-		return fmt.Errorf("specgraph: approved node %s: it has no version", quoted(n.ID))
+		return nil, fmt.Errorf("specgraph: approved node %s: it has no version", quoted(n.ID))
 	}
+	texts := make([]anyNode, len(n.Versions))
 	for i, v := range n.Versions {
 		fault := ""
 		switch {
@@ -163,15 +181,17 @@ func (n ApprovedNode) textFault() error {
 		case i > 0 && v.At.Before(n.Versions[i-1].At):
 			fault = fmt.Sprintf("it is older than version %d", n.Versions[i-1].Version)
 		default:
-			if _, problems := versionText(n.ID, v); len(problems) != 0 {
+			if text, problems := versionText(n.ID, v); len(problems) != 0 {
 				fault = fmt.Sprintf("%s (line %d of its block)", problems[0].Detail, problems[0].Pos.Line)
+			} else {
+				texts[i] = nodesOf(text)[0]
 			}
 		}
 		if fault != "" {
-			return fmt.Errorf("specgraph: approved node %s version %d: %s", quoted(n.ID), v.Version, fault)
+			return nil, fmt.Errorf("specgraph: approved node %s version %d: %s", quoted(n.ID), v.Version, fault)
 		}
 	}
-	return nil
+	return texts, nil
 }
 
 // unsetMemberFault is the refusal of n that does not set Removed or PartlyChecked, whose false is
@@ -186,9 +206,9 @@ func (n ApprovedNode) unsetMemberFault() error {
 	return nil
 }
 
-// removed is whether the approved spec removed n. A node that does not set Removed, which check
-// refuses, has no current text either: Current and Since leave it out, as they leave out a node
-// with no version.
+// removed is whether the approved spec removed n. A node that does not set Removed, which
+// approvedFault refuses, has no current text either: Current and Since leave it out, as they leave
+// out a node with no version.
 func (n ApprovedNode) removed() bool {
 	return n.Removed == nil || *n.Removed
 }
@@ -206,21 +226,46 @@ func (n ApprovedNode) keyFault(id string) error {
 // Current is the tree of the current text of each node that the approved spec did not remove.
 // Each node is at the position "approved <id> version <n>", line 1. A caller that builds an
 // Approved itself, as the pilot does from the store, can give a block that ReadApproved would
-// refuse: Current leaves that node out and gives each problem of its block. It leaves out a node
-// with no version or that does not set Removed too, which ApprovedNode.check refuses.
+// refuse: Current leaves that node out and gives each problem of its block (versionText), or the
+// problem of its relation that names no node of the approved spec of the kind that it needs
+// (relationFault). It leaves out a node with no version or that does not set Removed too, which
+// approvedFault refuses.
 func (a Approved) Current() (Tree, []Problem) {
 	var tree Tree
 	var problems []Problem
+	kinds := make(map[string]string, len(a.Nodes)) // of each node, kept or removed, by its newest text
+	var kept []anyNode
 	for id, n := range a.Nodes {
-		if n.removed() || len(n.Versions) == 0 {
+		if len(n.Versions) == 0 {
 			continue
 		}
 		text, refused := versionText(id, n.Versions[len(n.Versions)-1])
-		problems = append(problems, refused...)
-		tree.Statements = append(tree.Statements, text.Statements...)
-		tree.Checks = append(tree.Checks, text.Checks...)
-		tree.Components = append(tree.Components, text.Components...)
-		tree.Terms = append(tree.Terms, text.Terms...)
+		if len(refused) == 0 {
+			kinds[id] = kindOf(nodesOf(text)[0].node)
+		}
+		switch {
+		case n.removed():
+		case len(refused) != 0:
+			problems = append(problems, refused...)
+		default:
+			kept = append(kept, nodesOf(text)[0])
+		}
+	}
+	for _, k := range kept {
+		if detail := relationFault(k.node, kinds); detail != "" {
+			problems = append(problems, idProblem(k.pos, k.id, detail))
+			continue
+		}
+		switch n := k.node.(type) {
+		case Statement:
+			tree.Statements = append(tree.Statements, n)
+		case Check:
+			tree.Checks = append(tree.Checks, n)
+		case Component:
+			tree.Components = append(tree.Components, n)
+		case Term:
+			tree.Terms = append(tree.Terms, n)
+		}
 	}
 	slices.SortFunc(tree.Statements, func(x, y Statement) int { return cmp.Compare(x.ID, y.ID) })
 	slices.SortFunc(tree.Checks, func(x, y Check) int { return cmp.Compare(x.ID, y.ID) })
@@ -242,8 +287,9 @@ func (a Approved) Since(id string) time.Time {
 
 // versionText is the tree of the one node that version v of the approved node id holds, at the
 // position "approved <id> version <n>". problems is each reason it holds none: a line that Parse
-// refuses, or bad-approved-block for a block of no node or of two, of a node with another id, with
-// a value at an id place that is not an id (notAnID), or not as Print writes its node.
+// refuses, or bad-approved-block for a block of no node or of two, of a node with another id or
+// with an id that is no id (slug), or not as Print writes its node. A relation of the node is a
+// fact of the whole approved spec, which relationFault reads.
 func versionText(id string, v ApprovedVersion) (Tree, []Problem) {
 	name := fmt.Sprintf("approved %s version %d", id, v.Version)
 	tree, problems := Parse(map[string][]byte{name: []byte(v.Block)})
@@ -259,9 +305,8 @@ func versionText(id string, v ApprovedVersion) (Tree, []Problem) {
 		return refuse(fmt.Sprintf("the block holds %d nodes, not one", len(nodes)))
 	case nodes[0].id != id:
 		return refuse(fmt.Sprintf("the block holds node %s, not %s", quoted(nodes[0].id), quoted(id)))
-	}
-	if member, value, found := notAnID(nodes[0].node); found {
-		return refuse(fmt.Sprintf("%s %s is no id", member, quoted(value)))
+	case !slug.MatchString(id):
+		return refuse(fmt.Sprintf("id %s is no id", quoted(id)))
 	}
 	if printed, err := nodes[0].node.Print(); err != nil || printed != v.Block {
 		return refuse("the block is not as Print writes it")
@@ -269,44 +314,91 @@ func versionText(id string, v ApprovedVersion) (Tree, []Problem) {
 	return tree, nil
 }
 
-// notAnID is the first value of node, the one node of an approved block, at a place that names a
-// node and not in the shape of an id (slug), by its member: its id, its parent, and each node that
-// it serves, is about or joins. The derivation reads a relation only by an id, so a relation of
-// another value, a name of no letter and no digit among them, would read as no relation: a
-// statement at the top of the tree in place of under its parent, which can make that parent met.
-// Validate refuses such a value in the files (no-parent, bad-component, and the rules of serves,
-// about and joins); the approved spec is not validated, so versionText refuses it here. A "" at a
-// place that is not an entry of a list, such as a parent or the statement that a check serves, is
-// one that the node does not set, and each entry of a list is set.
-func notAnID(node any) (member, value string, found bool) {
-	type place struct {
-		member, value string
-		entry         bool
-	}
-	entries := func(member string, ids []string) []place {
-		places := make([]place, len(ids))
-		for i, id := range ids {
-			places[i] = place{member, id, true}
+// relationFault is the refusal of the first relation of node, the one node of an approved block,
+// that names no node of the approved spec of a kind that the relation may name (relationKinds),
+// or "". kinds is the kind of each node of the approved spec, kept or removed (kindOf). The
+// derivation reads a relation only to a node of its kind, so another would read as no relation: a
+// statement at the top of the tree in place of under its parent, or a supporter that supports
+// nothing, which can make a statement met. R22: "Dispatch refuses the approval of a change request
+// that puts a statement under a parent that the approved spec does not hold", so the approved spec
+// holds no such relation, and Validate refuses one in the files by the same kinds. A value that is
+// no id names no node, since the id of each node is an id (versionText). A node that the approved
+// spec removed is one that it holds, so a relation to it is taken: the derivation reads the current
+// tree, which leaves the removed node out.
+func relationFault(node any, kinds map[string]string) string {
+	for _, r := range relationsOf(node) {
+		kind, held := kinds[r.id]
+		switch {
+		case !held:
+			return fmt.Sprintf("bad-approved-block: %s %s names no node of the approved spec", r.member, quoted(r.id))
+		case !slices.Contains(r.kinds, kind):
+			wanted := make([]string, len(r.kinds))
+			for i, k := range r.kinds {
+				wanted[i] = withArticle(k)
+			}
+			return fmt.Sprintf("bad-approved-block: %s %s names %s, not %s", r.member, quoted(r.id), withArticle(kind), strings.Join(wanted, " or "))
 		}
-		return places
 	}
-	var places []place
+	return ""
+}
+
+// relation is one relation of a node: its member, such as parent, the id that it names, and the
+// kinds of node that it may name (relationKinds).
+type relation struct {
+	member, id string
+	kinds      []string
+}
+
+// relationsOf is each relation that node, one node of a tree, sets: its parent, and each node that
+// it serves, is about or joins. A "" at a place that is not an entry of a list, such as a parent,
+// is one that the node does not set, as a statement at the top of the tree has none (R1: "Each
+// statement has one parent, except at the top level"), and Parse drops an empty entry of a list.
+func relationsOf(node any) []relation {
+	var relations []relation
+	add := func(holder, member string, ids ...string) {
+		for _, id := range ids {
+			if id != "" {
+				relations = append(relations, relation{member, id, relationKinds[holder+" "+member]})
+			}
+		}
+	}
 	switch n := node.(type) {
 	case Statement:
-		places = slices.Concat([]place{{"id", n.ID, false}, {"parent", n.Parent, false}}, entries("serves", n.Serves), entries("about", n.About))
+		add("statement", "parent", n.Parent)
+		add("statement", "serves", n.Serves...)
+		add("statement", "about", n.About...)
 	case Check:
-		places = []place{{"id", n.ID, false}, {"serves", n.Serves, false}}
+		add("check", "serves", n.Serves)
 	case Component:
-		places = slices.Concat([]place{{"id", n.ID, false}, {"parent", n.Parent, false}}, entries("joins", n.Joins))
-	case Term:
-		places = []place{{"id", n.ID, false}}
+		add("component", "parent", n.Parent)
+		add("component", "joins", n.Joins...)
 	}
-	for _, p := range places {
-		if (p.entry || p.value != "") && !slug.MatchString(p.value) {
-			return p.member, p.value, true
+	return relations
+}
+
+// kindOf is the kind of node, one node of a tree, as Validate names it: statement, check,
+// component, interface or term.
+func kindOf(node any) string {
+	switch n := node.(type) {
+	case Statement:
+		return "statement"
+	case Check:
+		return "check"
+	case Component:
+		if n.Interface {
+			return "interface"
 		}
+		return "component"
 	}
-	return "", "", false
+	return "term"
+}
+
+// withArticle is kind with its article, such as "a check" or "an interface".
+func withArticle(kind string) string {
+	if strings.ContainsRune("aeiou", rune(kind[0])) {
+		return "an " + kind
+	}
+	return "a " + kind
 }
 
 // idProblem is the problem detail of the node id at pos: its rule is the word before the

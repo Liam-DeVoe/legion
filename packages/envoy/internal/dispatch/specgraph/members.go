@@ -11,7 +11,7 @@ import (
 // it with the tag input, since a member that its writer left out is its zero value, and a rule that
 // read that value as a real one would turn a state toward true or hide a failure. The reader of a
 // file and the entry of the library read a member by one rule, in the functions that both call
-// (Result.fault, JobRun.fault, subjectFault, ApprovedNode.check, FixtureHistory.check,
+// (Result.fault, JobRun.fault, subjectFault, approvedFault, FixtureHistory.check,
 // CommitTies.fault, unitsFault, uncitedFault), or the entry's alone for a member that only an Input
 // holds (Input.check, historyFault), or the reader's alone for one that only a file holds
 // (ApprovedFile.approved, readResults). Each member has one of four marks, and a test fails for a
