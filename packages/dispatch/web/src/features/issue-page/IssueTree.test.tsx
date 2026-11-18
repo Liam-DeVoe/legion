@@ -2622,7 +2622,10 @@ test("the keys that would change the node's heading's level or lines leave it as
 // letter before the caret stayed. The row has the editor read the caret first (`confineKey`), so
 // Backspace there is the browser's delete of that letter. happy-dom moves no caret for an arrow
 // and deletes nothing for Backspace, so the case makes each move and each delete the browser
-// would, and drops happy-dom's report of a move made inside the call that makes it.
+// would, and drops happy-dom's report of a move made inside the call that makes it. It moves the
+// caret and presses the key in one task: a timer the editor set as the caret went in, which a
+// reader's first keys come long after, could otherwise run between them, and read the move, or
+// write the editor's own selection back over it (its focus handler's, 20 ms on).
 test("Backspace right after ArrowRight at the node's heading's start deletes the letter before the caret", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -2637,9 +2640,7 @@ test("Backspace right after ArrowRight at the node's heading's start deletes the
       "the editor's own caret is not at the heading's start"
     ).toEqual(["r1", 0]);
     expect(pressIn(editable, "ArrowRight"), "ArrowRight was not left to the browser").toBe(true);
-    await act(async () => {
-      window.getSelection()?.collapse(words, 1);
-    });
+    window.getSelection()?.collapse(words, 1);
     expect(ownOffset(), "the editor read the move before the browser reported it").toBe(0);
     if (pressIn(editable, "Backspace")) {
       await changePage(() => {
@@ -2652,6 +2653,149 @@ test("Backspace right after ArrowRight at the node's heading's start deletes the
       "Backspace right after ArrowRight did not delete the letter before the caret"
     ).toEqual(withWords(before, "r1", "A heading"));
   } finally {
+    restore();
+  }
+});
+
+// Milkdown lowers a heading a level for Delete at its start, as for Backspace (DowngradeHeading),
+// so a Delete the editor answered on its own caret, still at the start right after ArrowRight,
+// would be that lowering, which the editor refuses (`holdEditsToBlock`), and the letter after the
+// caret would stay. The row has the editor read the caret first (`confineKey`), so Delete there is
+// the browser's delete of that letter, and the heading keeps its level. The case makes each move
+// and each delete the browser would, as the Backspace case above does.
+test("Delete right after ArrowRight at the node's heading's start deletes the letter after the caret", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, view } = await editLive(user, liveBlocks(heading("r1", 2, "YA heading")));
+  const before = blocksOf(view);
+  const restore = dropSelectionReports();
+  try {
+    const words = wordsOf(editable, "r1");
+    const ownOffset = () => view.state.selection.$head.parentOffset;
+    expect(
+      [caretBlock(), ownOffset()],
+      "the editor's own caret is not at the heading's start"
+    ).toEqual(["r1", 0]);
+    expect(pressIn(editable, "ArrowRight"), "ArrowRight was not left to the browser").toBe(true);
+    window.getSelection()?.collapse(words, 1);
+    expect(ownOffset(), "the editor read the move before the browser reported it").toBe(0);
+    if (pressIn(editable, "Delete")) {
+      await changePage(() => {
+        words.deleteData(1, 1);
+        window.getSelection()?.collapse(words, 1);
+      });
+    }
+    expect(
+      blocksOf(view),
+      "Delete right after ArrowRight did not delete the letter after the caret"
+    ).toEqual(withWords(before, "r1", "Y heading"));
+  } finally {
+    restore();
+  }
+});
+
+// Milkdown bolds the selection for Ctrl+B (Meta+B on a Mac, `Mod-b`), the editor's own: right
+// after Shift+ArrowRight selected two letters, before the browser reported the last move, the bold
+// went on the editor's own selection, still short of them - an empty one's bold is a mark for the
+// next letter typed - and the letters selected stayed as they were. The row has the editor read
+// the selection first (`confineKey`), so the bold goes on the letters selected. happy-dom moves no
+// selection for an arrow, so the case makes each move the browser would, in one task with the
+// keys, and drops happy-dom's report of it, as the Backspace case above does.
+test("Ctrl+B right after Shift+ArrowRight in the node's paragraph bolds the letters selected", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, room, view } = await editLive(
+    user,
+    liveBlocks(paragraph("r1", "Bold the first two letters."))
+  );
+  const editor = room.editor;
+  if (editor === undefined) throw new Error("the row's editor was never made");
+  const before = editor.getMarkdown();
+  const restore = dropSelectionReports();
+  try {
+    const words = wordsOf(editable, "r1");
+    const ownSelection = () => {
+      const { $anchor, $head } = view.state.selection;
+      return [$anchor.parentOffset, $head.parentOffset];
+    };
+    expect(
+      [caretBlock(), ...ownSelection()],
+      "the editor's own caret is not at the paragraph's start"
+    ).toEqual(["r1", 0, 0]);
+    for (const end of [1, 2]) {
+      expect(
+        pressIn(editable, "ArrowRight", { shiftKey: true }),
+        `Shift+ArrowRight to ${end} was not left to the browser`
+      ).toBe(true);
+      window.getSelection()?.setBaseAndExtent(words, 0, words, end);
+    }
+    expect(
+      ownSelection(),
+      "the editor read the last move before the browser reported it"
+    ).not.toEqual([0, 2]);
+    // `Mod-b` is the key of the platform the editor's keymap read as it loaded
+    // (`prosemirror-keymap`).
+    const mod = /Mac|iP(hone|[oa]d)/.test(navigator.platform) ? "metaKey" : "ctrlKey";
+    pressIn(editable, "b", { [mod]: true });
+    expect(editor.getMarkdown(), "Ctrl+B did not bold the two letters selected").toBe(
+      before.replace("Bold the", "**Bo**ld the")
+    );
+  } finally {
+    restore();
+  }
+});
+
+// While the reader composes with an input method, the input method holds the caret, and
+// ProseMirror reads the page itself as the composition starts and as it ends: the row has the
+// editor read no caret for a key pressed in a composition - the `Process` a browser sends for a key
+// the input method takes, or any key with `isComposing` - and reads it first for a key pressed
+// after, as for Backspace. The case makes the move and the delete the browser would, as the
+// Backspace case above does.
+test("a key pressed in a composition has the row's editor read no caret, and Backspace after it does", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, view } = await editLive(user, liveBlocks(heading("r1", 2, "YA heading")));
+  const before = blocksOf(view);
+  const restore = dropSelectionReports();
+  let reports = 0;
+  const count = () => {
+    reports += 1;
+  };
+  document.addEventListener("selectionchange", count);
+  try {
+    const words = wordsOf(editable, "r1");
+    const ownOffset = () => view.state.selection.$head.parentOffset;
+    expect(
+      [caretBlock(), ownOffset()],
+      "the editor's own caret is not at the heading's start"
+    ).toEqual(["r1", 0]);
+    expect(pressIn(editable, "ArrowRight"), "ArrowRight was not left to the browser").toBe(true);
+    window.getSelection()?.collapse(words, 1);
+    expect(ownOffset(), "the editor read the move before the browser reported it").toBe(0);
+    for (const [key, modifiers] of [
+      ["Process", { keyCode: 229 }],
+      ["a", { isComposing: true }],
+    ] as const) {
+      reports = 0;
+      pressIn(editable, key, modifiers);
+      expect(reports, `${key} pressed in a composition had the editor read the caret`).toBe(0);
+    }
+    expect(ownOffset(), "the editor read the caret during the composition").toBe(0);
+    reports = 0;
+    const left = pressIn(editable, "Backspace");
+    expect(reports, "Backspace after the composition had the editor read no caret").toBe(1);
+    if (left) {
+      await changePage(() => {
+        words.deleteData(0, 1);
+        window.getSelection()?.collapse(words, 0);
+      });
+    }
+    expect(
+      blocksOf(view),
+      "Backspace after the composition did not delete the letter before the caret"
+    ).toEqual(withWords(before, "r1", "A heading"));
+  } finally {
+    document.removeEventListener("selectionchange", count);
     restore();
   }
 });
