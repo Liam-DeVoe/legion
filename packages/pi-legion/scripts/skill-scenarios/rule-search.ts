@@ -122,7 +122,52 @@ const ENTRIES_HEAD: readonly Entry[] = [
   {
     file: "packages/daemon/internal/prompts/roles/reviewer.md",
     has: "Your approval is gated by the `before_merge` checks",
-    cut: "T5.12's pair of `reviewer.md:38`. The label restores `read at this issue's own head` and `under the check's own line saying whether a pass stands and from which roles`.",
+    cut: "T5.12's pair of `reviewer.md:38`. The label restores `under the check's own line saying whether a pass stands and from which roles`, and of the base's `read at this issue's own head` and `at that head` nothing: with two open pull requests of one issue, a reviewer reads `this issue's own head` as the head it reviews.",
+  },
+  {
+    file: "packages/daemon/internal/prompts/roles/core/reviewer.md",
+    has: "The gate is this issue's own checks at this issue's own head",
+    cut: "A reviewer of one of two open pull requests reads `this issue's own head` as the head it reviews (`sibling-fails`, ablate-head-2: \"My role text says the gate is this issue's own checks at its own head\"). The label deletes ` at this issue's own head`.",
+  },
+  {
+    file: "packages/daemon/internal/prompts/roles/tester.md",
+    has: "Your issue is proved by its own checks, read at its own head",
+    cut: "Where the gate reads, in the words the core sentence above uses. The label deletes `, read at its own head`.",
+  },
+  {
+    file: "skills/legion-worker/references/pr-body.md",
+    has: "Approval is gated by the `before_merge` checks of its own Verification document, read at its own head",
+    cut: "Where approval reads, in the same words. The label deletes `, read at its own head`.",
+  },
+  {
+    file: "skills/legion-worker/references/pr-body.md",
+    has: "A root's own checks are proven at its own head",
+    keep: "A root against its child, after the sentence above. The case has no child.",
+  },
+  {
+    file: "skills/legion-worker/references/merge-gate.md",
+    has: "A child that carries part of a root's requirement proves it with a check on the child's own Verification document",
+    keep: "A child's own check at the child's own head. The case has no child.",
+  },
+  {
+    file: "skills/legion-worker/references/merge-gate.md",
+    has: "A root's own checks are proven at the root's own head",
+    keep: "A root against its child. The case has no child.",
+  },
+  {
+    file: "skills/legion-worker/references/merge-gate.md",
+    has: "Approval is gated by the `before_merge` checks of the issue's own Verification document at its head",
+    keep: "The architect's acceptance of a root against its child, which no reviewer gives.",
+  },
+  {
+    file: "packages/daemon/internal/prompts/go/worker-common.md",
+    has: "This read is of the pull request's own head and of no check",
+    keep: "GitHub's own checks of the head, which gate the merge apart from the checks of Dispatch.",
+  },
+  {
+    file: "skills/legion-worker/SKILL.md",
+    has: "This read is of the pull request's own head and of no check",
+    keep: "GitHub's own checks of the head, which gate the merge apart from the checks of Dispatch.",
   },
   {
     file: "skills/legion-retro/SKILL.md",
@@ -452,7 +497,7 @@ const ENTRIES_TWO_ROLES: readonly Entry[] = [
   {
     file: "packages/daemon/internal/prompts/roles/core/reviewer.md",
     has: "Verify as forge facts, never from reports",
-    cut: "It asks a pass from both roles. The label deletes `from the implementer and from the tester alike,`.",
+    cut: "It asks a pass from both roles. The label deletes `from the implementer and from the tester both,` and `: a line that names one of the two roles alone is no pass for your approval`.",
   },
   {
     file: "packages/daemon/internal/prompts/roles/core/reviewer.md",
@@ -1672,6 +1717,9 @@ export const RULES: Record<string, Rule> = {
     patterns: [
       /dispatch results|pass(es)? stands?\b|pass standing|own (line|answer)\b/i,
       /\bline\b[^.]{0,60}\bhead\b|\bhead\b[^.]{0,60}\bline\b/i,
+      // A reviewer reads "this issue's own head" as the head it reviews when two pull requests of
+      // the issue are open, so a sentence that names its own head states this rule too.
+      /\bown head\b/i,
     ],
     entries: ENTRIES_HEAD,
   },

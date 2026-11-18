@@ -1015,10 +1015,19 @@ export async function headsEvents(
     console.log(`recorded the ${phase} handoff, version ${recorded.version} (${recorded.id})`);
     return { id: recorded.id, version: recorded.version };
   };
+  // The tester's later fail. In architect-pass-and-fail it reads as noise of the runner, not as a
+  // defect of the change: under the old rule (a fail after a pass leaves that pass standing until
+  // someone retracts it) an architect then has a reason to sign off on the tester's pass and the
+  // reviewer's approval, which only the rule "a pass and a fail at one head leave it not known,
+  // whoever recorded them" removes. A fail that repeats k1's negative control is a defect that any
+  // reader sends back, with or without the rule, so it could not show the rule.
   const laterFail: HeadsResult = {
     ...TESTER_PASS,
     verdict: "fail",
-    observed: "A second run of grep -c widgets docs/usage.md printed 0 and exited 1.",
+    observed:
+      world === "architect-pass-and-fail"
+        ? "A second run stopped before grep ran: the runner lost its checkout, so the run printed nothing and exited 1."
+        : "A second run of grep -c widgets docs/usage.md printed 0 and exited 1.",
   };
   let test: z.infer<typeof HandoffRef>;
   let review: z.infer<typeof HandoffRef> | undefined;

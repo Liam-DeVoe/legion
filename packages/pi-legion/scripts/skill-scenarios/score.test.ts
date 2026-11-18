@@ -3079,6 +3079,53 @@ for (const [n, faults] of [2, 4, 3].entries())
     judges: { "faults.json": faultsFile({ "The reader cannot follow a sentence": faults }) },
   });
 
+// The heads scenarios (headsReview, headsArchitect): a WAITING line fails a run only where it waits
+// for the check, before the run's decision, by its message's time. One written after the issue
+// went back, waiting for the next phase, is no wait for the check (verification.md's "writes a
+// WAITING line for it").
+const headsAt = (second: number) => `2026-11-18T08:06:${String(second).padStart(2, "0")}.000Z`;
+const said = (second: number, text: string) => ({
+  type: "message",
+  timestamp: headsAt(second),
+  message: { role: "assistant", content: [{ type: "text", text }] },
+});
+const headsFiles = (extra: Record<string, string>) => ({
+  "out.txt": "exit=0\n",
+  "results-before.txt": `Checks of LWEVAL-1:\n\n- k1 (before_merge). A pass stands: not known.\n  - #702 at ${head}: not known, as pass p1 and fail f1 count at this commit.\n`,
+  ...extra,
+});
+const sentBackAt = (second: number) =>
+  `${JSON.stringify({ at: headsAt(second), path: "/legion/v1/phase/backward", status: 200, body: { to: "testing", reason: "k1 holds a pass and a fail at the head" } })}\n`;
+run("architect-pass-and-fail-head-91", headsFiles({ "daemon.log": sentBackAt(20) }), [
+  ...header,
+  said(10, "k1 holds a pass and a fail at the head."),
+  said(30, "Sent back.\nWAITING for the tester's next phase-finished on LWEVAL-1."),
+]);
+run("architect-pass-and-fail-head-92", headsFiles({ "daemon.log": sentBackAt(20) }), [
+  ...header,
+  said(10, "WAITING for a later result of k1."),
+  said(30, "Sent back."),
+]);
+const requestedChangesAt = (second: number) =>
+  `${JSON.stringify({ at: headsAt(second), as: "gh", argv: ["pr", "review", "702", "--request-changes", "-b", "k1 holds a pass and a fail at this head."], exit: 0 })}\n`;
+const reviewWorld = JSON.stringify({
+  key: "LWEVAL-1",
+  repo: "example/widgets",
+  pr: 702,
+  branch: "legion/LWEVAL-1-702",
+  head,
+});
+run(
+  "reviewer-pass-and-fail-head-91",
+  headsFiles({ "calls.jsonl": requestedChangesAt(20), "world.json": reviewWorld }),
+  [...header, said(10, "k1 is not known at the head."), said(30, "WAITING on the next round.")]
+);
+run(
+  "reviewer-pass-and-fail-head-92",
+  headsFiles({ "calls.jsonl": requestedChangesAt(20), "world.json": reviewWorld }),
+  [...header, said(10, "WAITING for a later result of k1."), said(30, "Changes requested.")]
+);
+
 /** What `score.ts runs` printed over the staged world, and the code it exited with. Both are
  *  read in a hook, below the one that stages that world. */
 let out = "";
@@ -3087,6 +3134,21 @@ beforeAll(() => {
   const scored = Bun.spawnSync(["bun", path.join(import.meta.dir, "score.ts"), "runs", runs]);
   out = scored.stdout.toString();
   scoredExitCode = scored.exitCode;
+});
+
+test("a heads run's WAITING line fails it only where it comes before the run's decision", () => {
+  expect(rowOf("architect-pass-and-fail-head-91")).toMatch(
+    /^architect-pass-and-fail-head-91\tpass=true\t/
+  );
+  expect(rowOf("architect-pass-and-fail-head-92")).toMatch(
+    /^architect-pass-and-fail-head-92\tpass=false\t/
+  );
+  expect(rowOf("reviewer-pass-and-fail-head-91")).toMatch(
+    /^reviewer-pass-and-fail-head-91\tpass=true\t/
+  );
+  expect(rowOf("reviewer-pass-and-fail-head-92")).toMatch(
+    /^reviewer-pass-and-fail-head-92\tpass=false\t/
+  );
 });
 
 test("a run whose agent never got a model turn is a rig error, not a failure", () => {

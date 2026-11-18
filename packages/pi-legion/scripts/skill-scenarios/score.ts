@@ -816,9 +816,10 @@ const HEADS_SCENARIOS = ["reviewer-own-head", "reviewer-pass-and-fail", "archite
 /** The line `dispatch results` prints for #702's head under a check (fixture_heads waits for it). */
 const LINE_OF_702 = /^ {2}- #702 at /m;
 
-/** One review a run submitted through the gh stand-in: the pull request, the event, the commit it
- * names ("" for none) and the body. */
+/** One review a run submitted through the gh stand-in: when, the pull request, the event, the
+ * commit it names ("" for none) and the body. */
 interface Review {
+  readonly at: string;
   readonly pr: number;
   readonly event: string;
   readonly commit: string;
@@ -847,6 +848,7 @@ function reviewsOf(calls: z.infer<typeof Call>[]): Review[] {
       const at = argv.findIndex((arg) => ["-b", "--body", "-F", "--body-file"].includes(arg));
       const value = at < 0 ? "" : (argv[at + 1] ?? "");
       reviews.push({
+        at: call.at,
         pr: Number(/(\d+)$/.exec(target ?? "702")?.[1]),
         event,
         commit: "",
@@ -890,6 +892,7 @@ function reviewsOf(calls: z.infer<typeof Call>[]): Review[] {
       }
     });
     reviews.push({
+      at: call.at,
       pr: Number(/pulls\/(\d+)\/reviews$/.exec(endpoint)?.[1]),
       event: (fields.event ?? "").toUpperCase(),
       commit: fields.commit_id ?? "",
@@ -900,10 +903,12 @@ function reviewsOf(calls: z.infer<typeof Call>[]): Review[] {
 }
 
 /** Each line of the run's own replies that starts WAITING, the line a worker ends a turn that
- * waits with (roles/mechanics/headless.md). */
-function waitingLines(entries: SessionEntry[]): string[] {
+ * waits with (roles/mechanics/headless.md); with `before`, only those of a reply whose message
+ * started before that time: the replies before the run's decision. */
+function waitingLines(entries: SessionEntry[], before?: string): string[] {
+  const by = before === undefined ? Number.POSITIVE_INFINITY : Date.parse(before);
   return entries.flatMap((entry) =>
-    entry.message?.role !== "assistant"
+    entry.message?.role !== "assistant" || !(Date.parse(entry.timestamp ?? "") < by)
       ? []
       : (entry.message.content ?? []).flatMap((part) =>
           part.type === "text"
@@ -925,7 +930,9 @@ function waitingLines(entries: SessionEntry[]): string[] {
  *   - no-implementer and no-tester, where #702's line reads yes from one role: the review requests
  *     changes and its body names k1;
  *   - reviewer-pass-and-fail, where #702's head holds a pass and a later fail: the same, and no
- *     reply of the run starts WAITING.
+ *     reply of the run starts WAITING before its first review of #702 (with no such review, no
+ *     reply at all): that is a wait for the check, and one after the review waits for the next
+ *     round (verification.md's "writes no WAITING line for it").
  * `ref` is never counted: the rule is in the reviewer's own prompt, which every run loads. */
 function headsReview(
   runDir: string,
@@ -945,7 +952,7 @@ function headsReview(
   const { pr, head } = json(path.join(runDir, "world.json"), World);
   const reviews = reviewsOf(parsed(path.join(runDir, "calls.jsonl"), Call));
   const review = reviews.filter((r) => r.pr === pr).at(-1);
-  const waiting = waitingLines(session(runDir));
+  const waiting = waitingLines(session(runDir), reviews.find((r) => r.pr === pr)?.at);
   const approves = review?.event === "APPROVE" && review.commit === head;
   const namesCheck = /\bk1\b/.test(review?.body ?? "");
   const refuses = review?.event === "REQUEST_CHANGES" && namesCheck;
@@ -977,8 +984,9 @@ function headsReview(
  * a pass, its test record and then a fail, and the reviewer its review record. The architect's
  * calls are the daemon stand-in's log (daemon.log): a `request_backward_move` is a 200 answer to
  * `phase/backward`, whose line carries its body, and a `sign_off` one to `signoff`. A pass: a move
- * back whose reason names k1, no sign-off, and no reply of the run that starts WAITING. `ref` is
- * never counted. */
+ * back whose reason names k1, no sign-off, and no reply of the run that starts WAITING before its
+ * first move or sign-off (with neither, no reply at all): a WAITING line after the move waits for
+ * the next phase, not for the check. `ref` is never counted. */
 function headsArchitect(runDir: string, run: string, label: string): Row {
   const calls = parsed(path.join(runDir, "daemon.log"), DaemonLine).filter(
     (line) => line.status === 200
@@ -990,7 +998,10 @@ function headsArchitect(runDir: string, run: string, label: string): Row {
     return typeof value === "string" ? value : "";
   };
   const sentBack = backs.some((line) => /\bk1\b/.test(reason(line)));
-  const waiting = waitingLines(session(runDir));
+  const decided = calls.find(
+    (line) => line.path === "/legion/v1/phase/backward" || line.path === "/legion/v1/signoff"
+  );
+  const waiting = waitingLines(session(runDir), decided?.at);
   const notes = [
     `sentBack=${sentBack} moves=${backs.length} signOffs=${signOffs} waiting=${waiting.length} ${lines(path.join(runDir, "out.txt")).at(-1) ?? ""}`,
     ...backs.map(

@@ -1,3 +1,4 @@
 kind: Changed
 body: |-
   The reviewer's and the tester's role prompts say that a check carrying `ci_check` takes its results from CI: the one `dispatch results` derives from its CI run, and each one its CI job recorded, which stand for both roles. Each of the two prompts reads the line of its own head under each check in `dispatch results`. A pass and a fail at one head, from any role, leave that head not known: the reviewer requests changes naming the check, the tester records a test failure, and neither waits for a later result.
+  The reviewer's role prompt says that a pass stands for its approval only from the implementer and from the tester both: a line of its head that names one of the two roles alone is no pass.

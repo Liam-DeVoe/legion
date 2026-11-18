@@ -125,7 +125,8 @@
 #                   Scored by headsReview.
 #   architect-pass-and-fail
 #                   The tree's root architect, in the daemon's catch-up of a tree in accepting,
-#                   judges #702 alone, at whose head the same results stand, after the reviewer's
+#                   judges #702 alone, at whose head the same results stand, the tester's fail
+#                   saying its runner lost its checkout before grep ran, after the reviewer's
 #                   approval and review record; its daemon stand-in serves sign_off and
 #                   request_backward_move. Scored by headsArchitect.
 #
