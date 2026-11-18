@@ -2499,7 +2499,7 @@ describe("worker_boot", () => {
         assignment("world_author_email"),
         assignment("world_login"),
         ...WORLD_APPS.map(assignment),
-        "fixture_write '[]' '\"\"' '[]'",
+        "fixture_write '[]' '[]'",
         'worker_boot the-run "$4" "$5" "$6" "$7"',
       ].join("\n"),
       [dir, import.meta.dir, "example/widgets", "skillsproject1", role, phase, completed]
@@ -3985,7 +3985,7 @@ describe("health", () => {
         assignment("world_login"),
         "C1=0123456789abcdef0123 body=a-body worker_pr=1001",
         "worker_pr_url=https://example.invalid/pull/1001",
-        "fixture_write '[]' '\"\"' '[]'",
+        "fixture_write '[]' '[]'",
       ].join("\n"),
       [dir]
     );
@@ -5128,7 +5128,7 @@ describe("fixture_write", () => {
         assignment("world_login"),
         "C1=0123456789abcdef0123 body=a-body worker_pr=1001",
         "worker_pr_url=https://example.invalid/pull/1001",
-        "fixture_write '[]' '\"\"' '[]'",
+        "fixture_write '[]' '[]'",
       ].join("\n"),
       [dir]
     );
@@ -5388,8 +5388,10 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
   // GitHub states it for a base a ruleset alone protects — the rules in force on the branch and
   // the ruleset itself — while the branch's classic protection is off and its endpoint refuses a
   // role App 403. Every base requires the checks the head reports, `test` and `lint`, which the
-  // rulesets read prints and the branch's protection does not. Every head's checks are concluded:
-  // `BLOCKED` comes from the threads, not from CI.
+  // rulesets read prints and the branch's protection does not, and its code-scanning tool's
+  // `CodeQL`, which the head reports too. Every head's checks are concluded: `BLOCKED` comes from
+  // the threads, or, in the review round's worlds, from the approval its base requires and no
+  // review has given yet (INFRA-764's ruling of 2026-11-18), never from CI.
   test("a BLOCKED head's base requires conversation resolution, every check green, and a CLEAN head's base requires only its checks", () => {
     for (const [world, guard, blocked] of [
       ["review_world", "", true],
@@ -5421,9 +5423,9 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
       ]).toEqual([
         world,
         guard,
-        { code: 0, out: "test=completed,lint=completed" },
+        { code: 0, out: "test=completed,lint=completed,CodeQL=completed" },
         0,
-        ["pass", "pass"],
+        ["pass", "pass", "pass"],
         { code: 0, out: blocked ? "BLOCKED" : "CLEAN" },
         { code: 0, out: blocked ? "blocked" : "clean" },
       ]);
@@ -5985,13 +5987,23 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
   const headOf = (dir: string) =>
     (JSON.parse(readFileSync(path.join(dir, "world.json"), "utf8")) as { head: string }).head;
   const REPO = "repos/example/widgets";
-  /** The worlds whose base requires conversation resolution and whose head GitHub holds
-   * `BLOCKED` while their threads are open (rig.sh's resolution_protection_routes). */
-  const PROTECTED: readonly WorldName[] = [
-    "review_world",
-    "review_world dropped",
-    "approved_world",
+  /** The rules every world's base holds, production's seven in production's order (rig.sh's
+   * base_ruleset_routes). */
+  const RULE_TYPES = [
+    "deletion",
+    "non_fast_forward",
+    "required_linear_history",
+    "pull_request",
+    "required_status_checks",
+    "merge_queue",
+    "code_scanning",
   ];
+  /** The one world whose head GitHub reports `CLEAN`: its approval stands, every check its base
+   * requires is green and its base requires no thread resolved. Every other world's head is
+   * `BLOCKED`: the tester's and the review round's by the approval their base requires and no
+   * review has given (INFRA-764's ruling of 2026-11-18), the approved text-fixes head by its open
+   * threads (rig.sh's resolution_protection_routes). */
+  const CLEAN_WORLD: WorldName = "approved_world dropped";
   /** The review threads each world's graph holds. */
   const THREADS: Record<WorldName, string> = {
     tester_proof_world: "",
@@ -6106,7 +6118,8 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
         "--jq",
         "[.total_count, (.check_runs | length)]",
       ],
-      answers: (got) => expect(got).toMatchObject({ code: 0, out: "[2,2]" }),
+      // `test`, `lint` and the code-scanning tool's `CodeQL` (rig.sh's concluded_checks).
+      answers: (got) => expect(got).toMatchObject({ code: 0, out: "[3,3]" }),
     },
     "GET repos/{owner}/{repo}/commits/{ref}/status": {
       argv: (head) => [
@@ -6142,14 +6155,10 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
     },
     "GET repos/{owner}/{repo}/rules/branches/{branch+}": {
       argv: () => ["api", "--paginate", `${REPO}/rules/branches/main`, "--jq", "[.[].type]"],
-      answers: (got, world) =>
+      answers: (got) =>
         expect(got).toMatchObject({
           code: 0,
-          out: JSON.stringify(
-            PROTECTED.includes(world)
-              ? ["pull_request", "required_status_checks"]
-              : ["required_status_checks"]
-          ),
+          out: JSON.stringify(RULE_TYPES),
         }),
     },
     "GET repos/{owner}/{repo}/rulesets": {
@@ -6159,14 +6168,10 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
     },
     "GET repos/{owner}/{repo}/rulesets/{id}": {
       argv: () => ["api", `${REPO}/rulesets/1`, "--jq", "[.rules[].type]"],
-      answers: (got, world) =>
+      answers: (got) =>
         expect(got).toMatchObject({
           code: 0,
-          out: JSON.stringify(
-            PROTECTED.includes(world)
-              ? ["pull_request", "required_status_checks"]
-              : ["required_status_checks"]
-          ),
+          out: JSON.stringify(RULE_TYPES),
         }),
     },
     "GET repos/{owner}/{repo}/branches/{branch}/protection": {
@@ -6319,7 +6324,7 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
                   state: "OPEN",
                   mergedAt: null,
                   isInMergeQueue: false,
-                  mergeStateStatus: PROTECTED.includes(world) ? "BLOCKED" : "CLEAN",
+                  mergeStateStatus: world === CLEAN_WORLD ? "CLEAN" : "BLOCKED",
                   headRefOid: head,
                   mergeQueueEntry: null,
                 },
@@ -6591,7 +6596,7 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
       "--jq",
       ".check_runs[].name"
     );
-    expect(paged).toEqual({ code: 0, out: "test\nlint", err: "" });
+    expect(paged).toEqual({ code: 0, out: "test\nlint\nCodeQL", err: "" });
     const second = gh(
       dir,
       "api",
@@ -6599,7 +6604,7 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
       "--jq",
       "[.total_count, [.check_runs[].name]]"
     );
-    expect(second).toEqual({ code: 0, out: JSON.stringify([2, ["lint"]]), err: "" });
+    expect(second).toEqual({ code: 0, out: JSON.stringify([3, ["lint"]]), err: "" });
   });
 
   // What the run did is the world's state: the comments it posted are the pull request's
@@ -7244,8 +7249,10 @@ describe("the issue workspace's remote", () => {
     spawnChecked(["/usr/bin/git", "-C", path.join(R, "remote.git"), ...args])
       .stdout.toString()
       .trim();
-  /** A commit on the remote's default branch made outside the world's panes, as another
-   * developer's push moves GitHub's: its id. */
+  /** A commit on the remote's default branch made outside the world's panes, as GitHub's merge of
+   * another developer's pull request moves it: its id. The remote refuses every push to its base,
+   * as production's ruleset does (rig.sh's fixture_first_commit), so the commit is written into
+   * the remote's base by the remote itself, as GitHub writes a merge, and no push hook runs. */
   function advanceBase(R: string, line: string): string {
     const src = path.join(R, "src");
     const git = (...args: string[]) =>
@@ -7265,7 +7272,12 @@ describe("the issue workspace's remote", () => {
     expect(git("checkout", "-q", "main").exitCode).toBe(0);
     writeFileSync(path.join(src, "README.md"), `${line}\n`, { flag: "a" });
     expect(git("commit", "-qam", line).exitCode).toBe(0);
-    expect(git("push", "-q", path.join(R, "remote.git"), "main").exitCode).toBe(0);
+    expect(
+      spawnChecked(
+        ["/usr/bin/git", "-C", path.join(R, "remote.git"), "fetch", "-q", src, "main:main"],
+        { env: { ...childEnv, GIT_CONFIG_GLOBAL: "/dev/null" } }
+      ).exitCode
+    ).toBe(0);
     return git("rev-parse", "HEAD").stdout.toString().trim();
   }
 

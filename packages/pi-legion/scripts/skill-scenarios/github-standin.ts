@@ -35,6 +35,7 @@ import { type Route, readWorld, routeFor } from "./gh-call";
 import {
   commentsOf,
   conversationOf,
+  mergeableOf,
   mergeStateOf,
   recordedCalls,
   type ThreadRoute,
@@ -112,10 +113,11 @@ function heldRepository(served: Served): Record<string, unknown> {
 
 /** The pull request the world's remote holds, as GitHub's REST API answers it in `form` (rest-
  * objects.ts's `pullRequestJson`): its head the tip of the issue branch at the call and its base
- * the tip of the branch it is open against, read from the run's remote; its merge state the one
- * the run's review threads leave it in, and its comment counts the run's, as the gh stand-in
- * answers them (gh-threads.ts's `mergeStateOf`, `threadState`, `conversationOf`); the rest the
- * world's (fixtures.json's `gh pr view`). Undefined before the world is built. */
+ * the tip of the branch it is open against, read from the run's remote; its merge state and
+ * mergeability the ones its base's rules leave it in with the run's reviews, checks and threads,
+ * and its comment counts the run's, as the gh stand-in answers them (gh-threads.ts's
+ * `mergeStateOf`, `mergeableOf`, `threadState`, `conversationOf`); the rest the world's
+ * (fixtures.json's `gh pr view`). Undefined before the world is built. */
 function pullRequest(served: Served, form: "simple" | "full"): Record<string, unknown> | undefined {
   const read = existsSync(path.join(served.runDir, "world.json"))
     ? readWorld(served.runDir)
@@ -134,8 +136,9 @@ function pullRequest(served: Served, form: "simple" | "full"): Record<string, un
   const view = typeof held === "object" && held !== null ? (held as Record<string, unknown>) : {};
   const comments =
     (Array.isArray(view.comments) ? view.comments.length : 0) + conversationOf(world, calls).length;
+  const state = mergeStateOf(at, threads, mergeStates, head, calls);
   return pullRequestJson(
-    { ...view, mergeStateStatus: mergeStateOf(at, threads, mergeStates, head) },
+    { ...view, mergeStateStatus: state, mergeable: mergeableOf(state) },
     {
       runDir: served.runDir,
       repo: served.repo,

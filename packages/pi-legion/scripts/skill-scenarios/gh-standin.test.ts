@@ -25,7 +25,13 @@ import {
   worldRouteOf,
 } from "./gh-routes";
 import { type GhSelectors, type GhTable, MODELLED } from "./gh-selectors";
-import { mergeStateOf } from "./gh-threads";
+import {
+  mergeableOf,
+  mergeStateOf,
+  type Recorded,
+  reviewDecisionOf,
+  type ThreadWorld,
+} from "./gh-threads";
 import { PR_FIELDS } from "./gh-view";
 import {
   ghUndeclared,
@@ -159,7 +165,7 @@ beforeAll(() => {
         "R=$1 worker_key=LWEVAL-1 worker_repo=example/widgets worker_base=main",
         assignment("world_login"),
         'C1=$2 body="a body" worker_pr=1001 worker_pr_url=https://example.invalid/pull/1001',
-        "fixture_write '[]' '\"\"' '[]'",
+        "fixture_write '[]' '[]'",
       ].join("\n"),
       "-",
       template,
@@ -2060,7 +2066,10 @@ test("each call that leaves a review records the state and head it was answered 
 // onto the next head. Every reader of the head's checks is answered from the world's check-runs
 // answer for the head the run's remote is at: `gh pr checks`, which gh exits 8 on while a check
 // is pending, and the pull request's `statusCheckRollup`. Its merge state is the world's for
-// that head (`mergeStates`), in gh's spelling and the REST one.
+// that head (`mergeStates`), in gh's spelling and the REST one, once its base's rules are met: the
+// head is approved, and the next head reports every check the base requires, its code-scanning
+// tool's `CodeQL` among them, where the world's base holds an unapproved head or a head short of
+// a required check `BLOCKED` (INFRA-764's ruling of 2026-11-18).
 test("the head's checks are the world's check runs on the remote's tip, for gh pr checks and the rollup", () => {
   const { dir, first, second } = runDir({ fixture: true });
   const fixtures = JSON.parse(readFileSync(path.join(dir, "fixtures.json"), "utf8"));
@@ -2077,7 +2086,13 @@ test("the head's checks are the world's check runs on the remote's tip, for gh p
     },
     {
       match: "^gh api .*check-runs",
-      stdout: { check_runs: [run("test", "completed"), run("lint", "completed")] },
+      stdout: {
+        check_runs: [
+          run("test", "completed"),
+          run("lint", "completed"),
+          run("CodeQL", "completed"),
+        ],
+      },
     }
   );
   fixtures.mergeStates = { [first]: "BLOCKED" };
@@ -2113,6 +2128,10 @@ test("the head's checks are the world's check runs on the remote's tip, for gh p
       "--jq",
       '[.statusCheckRollup[].status] | join(",")',
     ]);
+  expect(
+    apiPost(dir, REVIEWS, "-f", `commit_id=${first}`, "-f", "event=APPROVE", "-f", "body=ok")
+      .exitCode
+  ).toBe(0);
   const pending = checks();
   expect([pending.exitCode, pending.stdout.toString()]).toEqual([
     8,
@@ -2122,7 +2141,7 @@ test("the head's checks are the world's check runs on the remote's tip, for gh p
   expect(merge()).toEqual(["BLOCKED", "blocked"]);
   git(path.join(dir, "remote.git"), "update-ref", "refs/heads/legion/LWEVAL-1", second);
   expect(checks().exitCode).toBe(0);
-  expect(rollup()).toBe("COMPLETED,COMPLETED");
+  expect(rollup()).toBe("COMPLETED,COMPLETED,COMPLETED");
   expect(merge()).toEqual(["CLEAN", "clean"]);
 });
 
@@ -3745,7 +3764,9 @@ test("a contents read with no ref answers the default branch's file, and .conten
 
 // GitHub holds a head whose base requires conversation resolution `BLOCKED` while any review
 // thread is open, and reports it `CLEAN` once the run resolves the last one; a thread the run
-// opens holds it again. A base that requires no resolution is moved by no thread. Catches: a
+// opens holds it again. A base that requires no resolution is moved by no thread. The review
+// world's head is approved first: before an approval its base's approval rule holds it `BLOCKED`
+// whatever its threads (INFRA-764's ruling of 2026-11-18). Catches: a
 // merge state frozen into the world, which read `BLOCKED` however many threads a run resolved —
 // the one state of this change's subject a run can observe, an approval left with threads open
 // and an implementer that resolves them — and one that blocks a base that requires nothing. The
@@ -3806,6 +3827,13 @@ test("the merge state follows the threads: BLOCKED until the last one the base r
   const blocked = ["BLOCKED", "blocked", "BLOCKED"];
   const clean = ["CLEAN", "clean", "CLEAN"];
   const guarded = worldDir("review_world");
+  expect(
+    ghCall(
+      guarded,
+      ...["api", "--method", "POST", REVIEWS, "-f", `commit_id=${builtHead(guarded)}`],
+      ...["-f", "event=APPROVE", "-f", "body=approved"]
+    ).code
+  ).toBe(0);
   expect(states(guarded)).toEqual(blocked);
   expect(resolve(guarded, "PRRT_kwDOrig0001")).toBe(0);
   expect(states(guarded)).toEqual(clean);
@@ -3832,8 +3860,11 @@ test("the merge state follows the threads: BLOCKED until the last one the base r
 // and the branch's classic protection names none. Catches: a base that names no required check
 // at the rulesets read, which a reviewer that reads the rulesets alone takes for a base requiring
 // nothing; a base that requires review threads resolved in a world that requires no more than
-// its checks; and check runs that name no head, sit on no page of GitHub's and ran ten months
-// before the commit they report on, read at the world's head and at the head a push made.
+// its checks; check runs that name no head, sit on no page of GitHub's and ran ten months
+// before the commit they report on, read at the world's head and at the head a push made; and a
+// head with no check of the tool the base's code-scanning rule names, or one GitHub Actions
+// reported, where production's heads carry GitHub Advanced Security's `CodeQL` check with its
+// title and summary, linked to GitHub's own page of the run (measured on 2026-11-18, #4346).
 test("the base requires the head's checks, and the head's checks report on that head as GitHub reports them", () => {
   const rules = [
     "api",
@@ -3854,6 +3885,12 @@ test("the base requires the head's checks, and the head's checks report on that 
     "--jq",
     '[.[] | select(.type=="pull_request") | .parameters.required_review_thread_resolution] | @json',
   ];
+  const tools = [
+    "api",
+    "repos/example/widgets/rules/branches/main",
+    "--jq",
+    '.[] | select(.type=="code_scanning") | .parameters.code_scanning_tools[].tool',
+  ];
   for (const [world, guard] of [
     ["tester_proof_world", ""],
     ["approved_world", "dropped"],
@@ -3865,9 +3902,8 @@ test("the base requires the head's checks, and the head's checks report on that 
       { code: 0, out: "test\nlint", err: "" },
       { code: 0, out: "", err: "" },
     ]);
-    expect(ghCall(dir, ...resolution).out).toBe(
-      JSON.stringify(world === "review_world" ? [true] : [])
-    );
+    expect(ghCall(dir, ...resolution).out).toBe(JSON.stringify([world === "review_world"]));
+    expect(ghCall(dir, ...tools)).toEqual({ code: 0, out: "CodeQL", err: "" });
   }
   const dir = worldDir("approved_world", "dropped");
   const head = builtHead(dir);
@@ -3878,10 +3914,11 @@ test("the base requires the head's checks, and the head's checks report on that 
       ...["--jq", ".check_runs[] | [.name, .status, .conclusion] | @tsv"]
     );
   // Each run as GitHub reports it: on the commit read, on GitHub's page of it, with the app's
-  // own link, started no earlier than the commit was made and ended after it started.
+  // own link (GitHub's page itself for the code-scanning tool's check), started no earlier than
+  // the commit was made and ended after it started, by its App, with what that App wrote.
   const reportOf = (sha: string) => {
     const made = git(path.join(dir, "remote.git"), "show", "-s", "--format=%ct", sha);
-    const facts = `[.check_runs[] | [.head_sha, .html_url, .details_url, (.started_at | fromdateiso8601) >= ${made}, (.completed_at | fromdateiso8601) > (.started_at | fromdateiso8601), .app.slug, .app.id]]`;
+    const facts = `[.check_runs[] | [.head_sha, .html_url, .details_url, (.started_at | fromdateiso8601) >= ${made}, (.completed_at | fromdateiso8601) > (.started_at | fromdateiso8601), .app.slug, .app.id, .output.title, .details_url == .html_url]]`;
     const read = ghCall(
       dir,
       "api",
@@ -3895,14 +3932,16 @@ test("the base requires the head's checks, and the head's checks report on that 
   for (const sha of [head, pushFix(dir, "docs/cli.md", "the text fix\n")]) {
     expect(runsOf(sha)).toEqual({
       code: 0,
-      out: "test\tcompleted\tsuccess\nlint\tcompleted\tsuccess",
+      out: "test\tcompleted\tsuccess\nlint\tcompleted\tsuccess\nCodeQL\tcompleted\tsuccess",
       err: "",
     });
+    const scanned = "No new alerts in code changed by this pull request";
     expect(reportOf(sha)).toEqual([
       0,
       [
-        [sha, page, "https://example.invalid/2", true, true, "github-actions", 15368],
-        [sha, page, "https://example.invalid/1", true, true, "github-actions", 15368],
+        [sha, page, "https://example.invalid/2", true, true, "github-actions", 15368, null, false],
+        [sha, page, "https://example.invalid/1", true, true, "github-actions", 15368, null, false],
+        [sha, page, page, true, true, "github-advanced-security", 57789, scanned, true],
       ],
     ]);
   }
@@ -4135,46 +4174,95 @@ function pinnedCall(dir: string, read: PinnedRead, values: Record<string, string
   const got = ghCall(dir, ...argvOf(read, { owner: "example", repo: "widgets", ...values }));
   return { ...got, answer: JSON.parse(got.out) as unknown };
 }
-/** The rules each world's one ruleset holds (rig.sh's base_ruleset_routes): the checks every base
- * requires, the ones the head reports, as GitHub Actions' (integration 15368); and, ahead of them
- * in the resolution world, a pull request rule requiring review threads resolved and no approval
- * (resolution_protection_routes). */
+/** The rules each world's one ruleset holds (rig.sh's base_ruleset_routes): production's seven, in
+ * production's order, at production's values (cybermonklabs/legion ruleset 12331919, read on
+ * 2026-11-17: one approval, no approval dismissed on a push and none asked of the last push, an
+ * extra approval for Copilot's unattributed changes, squash the one merge method, its merge
+ * queue's settings and its code-scanning thresholds), but for review threads resolved in the
+ * resolution world alone (resolution_protection_routes), the checks GitHub Actions reports on the
+ * world's head (integration 15368) and the tool whose check that head reports, `CodeQL`. */
 function rulesOf(world: "tester_proof_world" | "review_world"): object[] {
-  const checks = {
-    type: "required_status_checks",
-    parameters: {
-      strict_required_status_checks_policy: false,
-      do_not_enforce_on_create: false,
-      required_status_checks: [
-        { context: "test", integration_id: 15368 },
-        { context: "lint", integration_id: 15368 },
-      ],
+  return [
+    { type: "deletion" },
+    { type: "non_fast_forward" },
+    { type: "required_linear_history" },
+    {
+      type: "pull_request",
+      parameters: {
+        required_approving_review_count: 1,
+        dismiss_stale_reviews_on_push: false,
+        required_reviewers: [],
+        require_code_owner_review: false,
+        dismissal_restriction: { enabled: false, allowed_actors: [] },
+        require_last_push_approval: false,
+        required_review_thread_resolution: world === "review_world",
+        require_extra_approval_for_unattributed_changes: true,
+        allowed_merge_methods: ["squash"],
+      },
     },
-  };
-  const resolution = {
-    type: "pull_request",
-    parameters: {
-      required_approving_review_count: 0,
-      dismiss_stale_reviews_on_push: false,
-      required_reviewers: [],
-      require_code_owner_review: false,
-      dismissal_restriction: { enabled: false, allowed_actors: [] },
-      require_last_push_approval: false,
-      required_review_thread_resolution: true,
-      require_extra_approval_for_unattributed_changes: false,
-      allowed_merge_methods: ["merge", "squash", "rebase"],
+    {
+      type: "required_status_checks",
+      parameters: {
+        strict_required_status_checks_policy: false,
+        do_not_enforce_on_create: false,
+        required_status_checks: [
+          { context: "test", integration_id: 15368 },
+          { context: "lint", integration_id: 15368 },
+        ],
+      },
     },
-  };
-  return world === "review_world" ? [resolution, checks] : [checks];
+    {
+      type: "merge_queue",
+      parameters: {
+        merge_method: "SQUASH",
+        max_entries_to_build: 5,
+        min_entries_to_merge: 1,
+        max_entries_to_merge: 4,
+        min_entries_to_merge_wait_minutes: 0,
+        grouping_strategy: "ALLGREEN",
+        check_response_timeout_minutes: 180,
+      },
+    },
+    {
+      type: "code_scanning",
+      parameters: {
+        code_scanning_tools: [
+          { tool: "CodeQL", security_alerts_threshold: "high_or_higher", alerts_threshold: "none" },
+        ],
+      },
+    },
+  ];
+}
+/** The rule types production's answer to `read` holds in its list at `list` (`.` the answer, `.rules`
+ * a ruleset's), in production's order: the variants the pin reads that list by. */
+function pinnedTypes(read: PinnedRead, list: "." | ".rules"): string[] {
+  const variant = new RegExp(`^${list === "." ? "\\." : "\\.rules"}\\[type=(\\w+)\\]$`);
+  return Object.keys(read.shape).flatMap((at) => variant.exec(at)?.[1] ?? []);
+}
+/** The `type` of each rule of `rules`, a list of rules as a world answered it. */
+function ruleTypes(rules: unknown): unknown[] {
+  return Array.isArray(rules) ? rules.map((rule) => rule?.type) : [];
 }
 
 // Catches: the rules read in a shape GitHub never gives — a rule without the ruleset it comes
-// from, a parameter in another kind — and a base whose rules name no required check, which a
-// reviewer that reads the rulesets alone takes for a base requiring none: the classic protection
-// named the checks and the rules named nothing (INFRA-764's ruling of 2026-11-17). Each world's
-// rules are its ruleset's, the thread-resolution rule the resolution world's alone.
+// from, a parameter in another kind or of another key — and a base whose rules name no required
+// check, which a reviewer that reads the rulesets alone takes for a base requiring none: the
+// classic protection named the checks and the rules named nothing (INFRA-764's ruling of
+// 2026-11-17). Each of production's seven rules is held to production's rule of its type, and none
+// may be absent: a world holding two of them passed the shape row, since a variant a list holds
+// none of is compared no further (INFRA-764's ruling of 2026-11-18). Each world's rules are its
+// ruleset's, the thread-resolution rule's `true` the resolution world's alone.
 test("the base branch's rules answer as production's, naming the checks every base requires", () => {
   const read = pinnedRead("rules-branches-main");
+  expect(pinnedTypes(read, ".")).toEqual([
+    "deletion",
+    "non_fast_forward",
+    "required_linear_history",
+    "pull_request",
+    "required_status_checks",
+    "merge_queue",
+    "code_scanning",
+  ]);
   for (const world of ["tester_proof_world", "review_world"] as const) {
     const got = pinnedCall(worldDir(world), read);
     expect([world, got.code, got.err, shapeDiff(got.answer, read)]).toEqual([
@@ -4183,6 +4271,7 @@ test("the base branch's rules answer as production's, naming the checks every ba
       read.stderr,
       SAME_SHAPE,
     ]);
+    expect([world, ruleTypes(got.answer)]).toEqual([world, pinnedTypes(read, ".")]);
     const source = { ruleset_source_type: "Repository", ruleset_source: "example/widgets" };
     expect([world, got.answer]).toEqual([
       world,
@@ -4206,11 +4295,11 @@ test("the repository's rulesets answer as production's: the one ruleset on the b
   ]);
 }, 60_000);
 
-// Catches: a ruleset read in another shape, one whose rules are not the rules the branch is under,
-// and a world that answers any id with its ruleset, where GitHub answers an id the repository has
-// no ruleset of with its 404 (measured on 2026-11-17: `gh api repos/cybermonklabs/legion/rulesets/1`,
-// GitHub's error body, `gh: Not Found (HTTP 404)`, exit 1), in the shape of every GitHub error
-// body (the pinned 403's).
+// Catches: a ruleset read in another shape, one whose rules are not the rules the branch is under
+// or lack one of production's, and a world that answers any id with its ruleset, where GitHub
+// answers an id the repository has no ruleset of with its 404 (measured on 2026-11-17: `gh api
+// repos/cybermonklabs/legion/rulesets/1`, GitHub's error body, `gh: Not Found (HTTP 404)`, exit
+// 1), in the shape of every GitHub error body (the pinned 403's).
 test("the base's ruleset answers as production's by its id, and GitHub's 404 for another", () => {
   const read = pinnedRead("ruleset-<id>");
   for (const world of ["tester_proof_world", "review_world"] as const) {
@@ -4221,6 +4310,12 @@ test("the base's ruleset answers as production's by its id, and GitHub's 404 for
       read.exit,
       read.stderr,
       SAME_SHAPE,
+    ]);
+    const { answer } = got;
+    const rules = typeof answer === "object" && answer !== null && "rules" in answer;
+    expect([world, ruleTypes(rules ? answer.rules : undefined)]).toEqual([
+      world,
+      pinnedTypes(read, ".rules"),
     ]);
     expect([world, got.answer]).toMatchObject([
       world,
@@ -4621,9 +4716,11 @@ const PINNED_REST: readonly {
     kinds: [
       ".check_runs[].conclusion: null in production, string in the world",
       ".check_runs[].completed_at: null in production, string in the world",
+      ".check_runs[].output.title: null in production, null|string in the world",
+      ".check_runs[].output.summary: null in production, null|string in the world",
     ],
     state:
-      "production's checks were still running when it was read, and the world's have concluded (rig.sh's concluded_checks)",
+      "production's checks were still running when it was read, and the world's have concluded (rig.sh's concluded_checks); production's read was a workflow's jobs alone, which write no output, and the world's head reports its code-scanning tool's check too, whose App writes a title and a summary, as production's CodeQL check does (measured on 2026-11-18)",
   },
   { name: "gh api GET repos/fernbrook/widgets/commits/{sha}/status" },
   { name: "gh api GET repos/fernbrook/widgets/compare/{sha}...{sha}" },
@@ -4767,15 +4864,364 @@ test("the merge state is BLOCKED by an open thread where the base's rules requir
   });
   const head = world.head;
   expect([
-    mergeStateOf(ruled([pullRequest(true), checks]), thread(false), {}, head),
-    mergeStateOf(ruled([pullRequest(true), checks]), thread(true), {}, head),
-    mergeStateOf(ruled([pullRequest(true), checks]), thread(false, "PENDING"), {}, head),
-    mergeStateOf(ruled([pullRequest(false), checks]), thread(false), {}, head),
-    mergeStateOf(ruled([checks]), thread(false), {}, head),
-    mergeStateOf({ world, routes: [] }, thread(false), {}, head),
-    mergeStateOf(ruled([pullRequest(true), checks]), thread(false), { [head]: "DIRTY" }, head),
+    mergeStateOf(ruled([pullRequest(true), checks]), thread(false), {}, head, []),
+    mergeStateOf(ruled([pullRequest(true), checks]), thread(true), {}, head, []),
+    mergeStateOf(ruled([pullRequest(true), checks]), thread(false, "PENDING"), {}, head, []),
+    mergeStateOf(ruled([pullRequest(false), checks]), thread(false), {}, head, []),
+    mergeStateOf(ruled([checks]), thread(false), {}, head, []),
+    mergeStateOf({ world, routes: [] }, thread(false), {}, head, []),
+    mergeStateOf(ruled([pullRequest(true), checks]), thread(false), { [head]: "DIRTY" }, head, []),
   ]).toEqual(["BLOCKED", "CLEAN", "CLEAN", "CLEAN", "CLEAN", "CLEAN", "DIRTY"]);
 });
+
+// GitHub decides a pull request's review and holds its merge state by its base's rules: one
+// approval required, two checks GitHub Actions reports, and code scanning by CodeQL, as
+// production's `main` requires them (rig.sh's base_ruleset_routes). Measured on 2026-11-18 over
+// cybermonklabs/legion's open pull requests against `main`: no approval read `REVIEW_REQUIRED` and
+// `BLOCKED`, a change request `CHANGES_REQUESTED` and `BLOCKED`, an approval with `ci-ok` not yet
+// reported `BLOCKED`, and an approval with every required check and `CodeQL` successful `CLEAN`
+// and `MERGEABLE`; on a branch no rule protects a change request read `CHANGES_REQUESTED` and
+// `CLEAN`, a pull request with no review `""`; a `DIRTY` one `CONFLICTING`, an `UNKNOWN` one
+// `UNKNOWN`. Catches: a decision and a state frozen into the world, `CLEAN` before any review; a
+// comment or a pending review read as a decision; a later approval of another reviewer read as
+// lifting a change request that stands; an approval dismissed by a push, where the base dismisses
+// none (`dismiss_stale_reviews_on_push` false); a required check that is still running, failed,
+// never reported or reported by another App read as passed, and a skipped one read as failed; a
+// code-scanning tool whose check failed or never reported read as met; a base that requires no
+// approval holding a pull request `BLOCKED` on its review; and a `mergeable` that does not follow
+// the merge state.
+test("the review decision and the merge state follow the base's approvals, its required checks and its code-scanning tool", () => {
+  const world = {
+    key: "LWEVAL-1",
+    repo: "example/widgets",
+    pr: 1001,
+    branch: "legion/LWEVAL-1",
+    base: "main",
+    head: "0123456789abcdef0123",
+  };
+  const head = world.head;
+  const run = (name: string, conclusion: string | null, app = 15368) => ({
+    name,
+    status: conclusion === null ? "in_progress" : "completed",
+    conclusion,
+    app: { id: app },
+  });
+  const green = [run("test", "success"), run("lint", "success"), run("CodeQL", "success", 57789)];
+  const based = (runs = green, held: object[] = [], approvals = 1) => ({
+    world,
+    routes: [
+      {
+        match: "^gh api .*/rules/branches/main",
+        methods: ["GET"],
+        stdout: [
+          {
+            type: "pull_request",
+            parameters: {
+              required_approving_review_count: approvals,
+              dismiss_stale_reviews_on_push: false,
+              require_last_push_approval: false,
+              required_review_thread_resolution: false,
+            },
+          },
+          {
+            type: "required_status_checks",
+            parameters: {
+              required_status_checks: [
+                { context: "test", integration_id: 15368 },
+                { context: "lint", integration_id: 15368 },
+              ],
+            },
+          },
+          { type: "code_scanning", parameters: { code_scanning_tools: [{ tool: "CodeQL" }] } },
+        ],
+      },
+      { match: "^gh api .*/check-runs", methods: ["GET"], stdout: { check_runs: runs } },
+      { match: "^gh api .*pulls/1001/reviews", methods: ["GET"], stdout: held },
+      {
+        match: "^gh api .*graphql",
+        graph: { query: { viewer: { login: "widgets-reviewer[bot]" } } },
+      },
+    ],
+  });
+  const reviewed = (...states: string[]): Recorded[] =>
+    states.map((state) => ({ argv: ["api"], review: { state, head } }));
+  const none = { list: [], next: 7001 };
+  const status = (at: ThreadWorld, calls: Recorded[], tip = head) => [
+    reviewDecisionOf(at, calls),
+    mergeStateOf(at, none, {}, tip, calls),
+  ];
+  const other = [{ state: "APPROVED", commit_id: head, user: { login: "legion-review[bot]" } }];
+  const pushed = "fedcba9876543210fedc";
+  expect({
+    "before review": status(based(), []),
+    "a comment": status(based(), reviewed("COMMENTED")),
+    "a pending review": status(based(), reviewed("PENDING")),
+    "a change request": status(based(), reviewed("CHANGES_REQUESTED")),
+    "a change request, then an approval": status(
+      based(),
+      reviewed("CHANGES_REQUESTED", "APPROVED")
+    ),
+    "an approval, then a comment": status(based(), reviewed("APPROVED", "COMMENTED")),
+    "an approval, then a push": status(based(), reviewed("APPROVED"), pushed),
+    "another reviewer's approval, then a change request": status(
+      based(green, other),
+      reviewed("CHANGES_REQUESTED")
+    ),
+    "another reviewer's approval": status(based(green, other), []),
+    "approved, test running": status(
+      based([run("test", null), ...green.slice(1)]),
+      reviewed("APPROVED")
+    ),
+    "approved, test failed": status(
+      based([run("test", "failure"), ...green.slice(1)]),
+      reviewed("APPROVED")
+    ),
+    "approved, lint never reported": status(
+      based([run("test", "success"), run("CodeQL", "success", 57789)]),
+      reviewed("APPROVED")
+    ),
+    "approved, lint by another App": status(
+      based([
+        run("test", "success"),
+        run("lint", "success", 57789),
+        run("CodeQL", "success", 57789),
+      ]),
+      reviewed("APPROVED")
+    ),
+    "approved, test skipped": status(
+      based([run("test", "skipped"), ...green.slice(1)]),
+      reviewed("APPROVED")
+    ),
+    "approved, CodeQL failed": status(
+      based([...green.slice(0, 2), run("CodeQL", "failure", 57789)]),
+      reviewed("APPROVED")
+    ),
+    "approved, CodeQL never reported": status(based(green.slice(0, 2)), reviewed("APPROVED")),
+    "no approval required, none given": status(based(green, [], 0), []),
+    "no approval required, a change request": status(
+      based(green, [], 0),
+      reviewed("CHANGES_REQUESTED")
+    ),
+    "a conflict, no review": [
+      reviewDecisionOf(based(), []),
+      mergeStateOf(based(), none, { [head]: "DIRTY" }, head, []),
+    ],
+  }).toEqual({
+    "before review": ["REVIEW_REQUIRED", "BLOCKED"],
+    "a comment": ["REVIEW_REQUIRED", "BLOCKED"],
+    "a pending review": ["REVIEW_REQUIRED", "BLOCKED"],
+    "a change request": ["CHANGES_REQUESTED", "BLOCKED"],
+    "a change request, then an approval": ["APPROVED", "CLEAN"],
+    "an approval, then a comment": ["APPROVED", "CLEAN"],
+    "an approval, then a push": ["APPROVED", "CLEAN"],
+    "another reviewer's approval, then a change request": ["CHANGES_REQUESTED", "BLOCKED"],
+    "another reviewer's approval": ["APPROVED", "CLEAN"],
+    "approved, test running": ["APPROVED", "BLOCKED"],
+    "approved, test failed": ["APPROVED", "BLOCKED"],
+    "approved, lint never reported": ["APPROVED", "BLOCKED"],
+    "approved, lint by another App": ["APPROVED", "BLOCKED"],
+    "approved, test skipped": ["APPROVED", "CLEAN"],
+    "approved, CodeQL failed": ["APPROVED", "BLOCKED"],
+    "approved, CodeQL never reported": ["APPROVED", "BLOCKED"],
+    "no approval required, none given": [null, "CLEAN"],
+    "no approval required, a change request": ["CHANGES_REQUESTED", "CLEAN"],
+    "a conflict, no review": ["REVIEW_REQUIRED", "DIRTY"],
+  });
+  expect(["DIRTY", "UNKNOWN", "CLEAN", "BLOCKED", "BEHIND", "UNSTABLE"].map(mergeableOf)).toEqual([
+    "CONFLICTING",
+    "UNKNOWN",
+    "MERGEABLE",
+    "MERGEABLE",
+    "MERGEABLE",
+    "MERGEABLE",
+  ]);
+});
+
+// What gh, GraphQL and the REST pull request each say of the world's pull request at each step of
+// a round, from the world's own routes and the run's own calls: its review decision, its merge
+// state and whether it merges. Catches: a state frozen into the world, which read `CLEAN` before
+// any review and after a change request where production's base, requiring an approval, reads
+// `REVIEW_REQUIRED` and `BLOCKED`, then `CHANGES_REQUESTED` and `BLOCKED`; an approval that does
+// not lift the approval rule, or that lifts the thread rule; a push after the approval that sets
+// it aside, where GitHub keeps it (`dismiss_stale_reviews_on_push` false), so that the fix head
+// whose threads are resolved reads `APPROVED` and `CLEAN`; and one reader saying another state
+// than the others. The approved, green, resolved head reads `CLEAN` and `MERGEABLE`, as
+// production's #4346, #4334, #4328 and #4325 read on 2026-11-18 with their merge queue on.
+test("each reader of the pull request says GitHub's decision and merge state at every step of a round", () => {
+  const read = (dir: string) => {
+    const gh = ghCall(
+      dir,
+      "pr",
+      "view",
+      "1001",
+      "--json",
+      "reviewDecision,mergeStateStatus,mergeable"
+    );
+    const graphql = ghCall(
+      dir,
+      "api",
+      "graphql",
+      "-f",
+      'query={repository(owner:"example",name:"widgets"){pullRequest(number:1001){reviewDecision mergeStateStatus mergeable}}}',
+      "--jq",
+      ".data.repository.pullRequest"
+    );
+    const rest = ghCall(
+      dir,
+      "api",
+      "repos/example/widgets/pulls/1001",
+      "--jq",
+      "{mergeable, mergeable_state}"
+    );
+    return {
+      codes: [gh.code, graphql.code, rest.code],
+      gh: JSON.parse(gh.out),
+      graphql: JSON.parse(graphql.out),
+      rest: JSON.parse(rest.out),
+    };
+  };
+  const said = (decision: string, state: string) => ({
+    codes: [0, 0, 0],
+    gh: { reviewDecision: decision, mergeStateStatus: state, mergeable: "MERGEABLE" },
+    graphql: { reviewDecision: decision, mergeStateStatus: state, mergeable: "MERGEABLE" },
+    rest: { mergeable: true, mergeable_state: state.toLowerCase() },
+  });
+  const review = (dir: string, event: string) =>
+    ghCall(
+      dir,
+      ...["api", "--method", "POST", REVIEWS, "-f", `commit_id=${builtHead(dir)}`],
+      ...["-f", `event=${event}`, "-f", "body=the round's review"]
+    ).code;
+  const round = worldDir("review_world");
+  expect(read(round)).toEqual(said("REVIEW_REQUIRED", "BLOCKED"));
+  expect(review(round, "REQUEST_CHANGES")).toBe(0);
+  expect(read(round)).toEqual(said("CHANGES_REQUESTED", "BLOCKED"));
+  expect(review(round, "APPROVE")).toBe(0);
+  // The approval stands and the base requires review threads resolved: the bot's is open.
+  expect(read(round)).toEqual(said("APPROVED", "BLOCKED"));
+  expect(
+    ghCall(
+      round,
+      ...["api", "graphql", "-f"],
+      "query=mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}",
+      ...["-F", "id=PRRT_kwDOrig0001"]
+    ).code
+  ).toBe(0);
+  expect(read(round)).toEqual(said("APPROVED", "CLEAN"));
+  const fix = pushFix(round, "docs/cli.md", "the text fix\n");
+  expect(
+    ghCall(round, "pr", "view", "1001", "--json", "headRefOid", "--jq", ".headRefOid").out
+  ).toBe(fix);
+  expect(read(round)).toEqual(said("APPROVED", "CLEAN"));
+  // A base that requires no resolution: the approval alone lifts its rules.
+  const tester = worldDir("tester_proof_world");
+  expect(read(tester)).toEqual(said("REVIEW_REQUIRED", "BLOCKED"));
+  expect(review(tester, "APPROVE")).toBe(0);
+  expect(read(tester)).toEqual(said("APPROVED", "CLEAN"));
+}, 120_000);
+
+// GitHub refuses every push that updates or deletes a base its ruleset protects, naming each rule
+// the push breaks, and takes a push to any other branch: production's `main` ruleset holds
+// `deletion`, `non_fast_forward` and `required_linear_history` beside a pull request rule, two
+// required checks and a merge queue, which every update of the base breaks (measured for a plain
+// push on 2026-11-12, INFRA-2713's sandbox: `GH013`, `Changes must be made through a pull
+// request.`, `Required status check "ci" is expected.`, `Changes must be made through the merge
+// queue`; the branch rules' own lines are GitHub's form as public reports print it, unmeasured).
+// Catches: a world's remote that takes a force push, a deletion or a merge commit onto its base,
+// each a success production never gives; one that refuses them as git's own hook does,
+// `(pre-receive hook declined)`, which no GitHub push prints; one that names a rule the push
+// does not break, or not one it does; and one that refuses a push to the issue branch.
+test("the remote refuses a force push, a deletion and a merge commit to the base as GitHub does, and takes the issue branch's push", () => {
+  const dir = worldDir("tester_proof_world");
+  const remote = path.join(dir, "remote.git");
+  const work = path.join(dir, "rules-work");
+  git(dir, "clone", "-q", remote, work);
+  const base = git(remote, "rev-parse", "refs/heads/main");
+  const push = (...args: string[]) => {
+    const made = spawnChecked(
+      [
+        "git",
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@example.invalid",
+        "-C",
+        work,
+        "push",
+        ...args,
+      ],
+      { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } }
+    );
+    const lines = made.stderr
+      .toString()
+      .split("\n")
+      .filter((line) => line.startsWith("remote:") || line.startsWith(" ! "))
+      .map((line) => line.trimEnd());
+    return { code: made.exitCode, lines };
+  };
+  const heading = [
+    "remote: error: GH013: Repository rule violations found for refs/heads/main.",
+    "remote: Review all repository rules at http://github.com/example/widgets/rules?ref=refs%2Fheads%2Fmain",
+    "remote:",
+  ];
+  const through = [
+    "remote: - Changes must be made through a pull request.",
+    "remote:",
+    "remote: - 2 of 2 required status checks are expected.",
+    "remote:",
+    "remote: - Changes must be made through the merge queue",
+    "remote:",
+  ];
+  const rejected = (refs: string) =>
+    ` ! [remote rejected] ${refs} (push declined due to repository rule violations)`;
+  git(work, "commit", "-q", "--allow-empty", "-m", "a direct change");
+  expect(push("origin", "HEAD:main")).toEqual({
+    code: 1,
+    lines: [...heading, ...through, rejected("HEAD -> main")],
+  });
+  git(work, "checkout", "-q", "--orphan", "rewritten");
+  git(work, "commit", "-q", "--allow-empty", "-m", "a rewritten history");
+  expect(push("--force", "origin", "rewritten:main")).toEqual({
+    code: 1,
+    lines: [
+      ...heading,
+      "remote: - Cannot force-push to this branch",
+      "remote:",
+      ...through,
+      rejected("rewritten -> main"),
+    ],
+  });
+  git(work, "checkout", "-q", "-b", "side", base);
+  git(work, "commit", "-q", "--allow-empty", "-m", "a side change");
+  git(work, "checkout", "-q", "-b", "merged", base);
+  git(work, "commit", "-q", "--allow-empty", "-m", "a main change");
+  git(work, "merge", "-q", "--no-ff", "-m", "merge the side change", "side");
+  const merge = git(work, "rev-parse", "HEAD");
+  expect(push("origin", "merged:main")).toEqual({
+    code: 1,
+    lines: [
+      ...heading,
+      "remote: - This branch must not contain merge commits.",
+      "remote:   Found 1 violation:",
+      "remote:",
+      `remote:   ${merge}`,
+      "remote:",
+      ...through,
+      rejected("merged -> main"),
+    ],
+  });
+  expect(push("origin", ":main")).toEqual({
+    code: 1,
+    lines: [...heading, "remote: - Cannot delete this branch", "remote:", rejected("main")],
+  });
+  expect(git(remote, "rev-parse", "refs/heads/main")).toBe(base);
+  git(work, "checkout", "-q", "-b", "fix", "origin/legion/LWEVAL-1");
+  git(work, "commit", "-q", "--allow-empty", "-m", "the fix");
+  expect(push("origin", "fix:legion/LWEVAL-1")).toEqual({ code: 0, lines: [] });
+  expect(git(remote, "rev-parse", "refs/heads/legion/LWEVAL-1")).toBe(
+    git(work, "rev-parse", "HEAD")
+  );
+}, 60_000);
 
 /** rig.sh's own top-level value of `name`, as its assignment line writes it, unquoted. */
 const rigValue = (name: string) =>

@@ -436,11 +436,16 @@ export function routeFor<R extends Route>(
 }
 
 /** One check run as GitHub's check-runs route reports it: its name, `queued`, `in_progress` or
- * `completed`, and the conclusion a completed one came to (`null` until then). */
+ * `completed`, the conclusion a completed one came to (`null` until then), the App that ran it,
+ * by its id (`app`, rig.sh's concluded_checks; GitHub Actions where the world names none,
+ * rest-objects.ts's `checkRunApp`), and the title and summary that App wrote of it (`output`),
+ * where it wrote any. */
 export interface CheckRun {
   readonly name: string;
   readonly status: string;
   readonly conclusion: string | null;
+  readonly app?: unknown;
+  readonly output?: unknown;
   readonly html_url?: string;
   readonly started_at?: string;
   readonly completed_at?: string;
@@ -450,8 +455,9 @@ export interface CheckRun {
  * `gh api repos/<repo>/commits/<head>/check-runs` (`routeFor`), or none when that answer holds no
  * `check_runs` list. A world says what a head's checks are with a route of that head's own
  * ahead of the one every other head takes, so the head the pull request is at decides what every
- * reader of its checks is told. The daemon stand-in moves on no check run: main's engine moves
- * on the merge state (`mergeStateOn`). */
+ * reader of its checks is told. The merge state reads them too, a check the base requires holding
+ * the head `BLOCKED` until it passes (gh-threads.ts's `mergeStateOf`), and the daemon stand-in
+ * moves on that merge state alone, as main's engine does. */
 export function checkRunsOn(routes: readonly Route[], repo: string, head: string): CheckRun[] {
   const answer = routeFor(routes, ["api", `repos/${repo}/commits/${head}/check-runs`])?.stdout;
   const runs =
@@ -479,15 +485,16 @@ export function checkRunsOn(routes: readonly Route[], repo: string, head: string
   );
 }
 
-/** The merge state GitHub reports for the pull request while it is at `head`, in GitHub's own
- * names (`CLEAN`, `UNSTABLE`, `HAS_HOOKS`, `BLOCKED`, `BEHIND`, `DIRTY`, `UNKNOWN`): the state the
- * world's `mergeStates` names for that head — keyed by the head's SHA or a prefix of seven
- * digits or more — or `CLEAN` for a head the world names none for. The world writes it in its
- * fixtures.json beside its routes (rig.sh's fixture_write), since GitHub reports it of the pull
- * request as it stands and no route of a commit answers it. The gh stand-in answers the pull
- * request's `mergeStateStatus` and `mergeable_state` with it, and the daemon stand-in moves the
- * record on it, as main's engine moves on `record.MergeState` (daemon-standin.ts's
- * `roundOutcome`). */
+/** The merge state GitHub reports for the pull request while it is at `head` for a reason no rule
+ * of its base decides, in GitHub's own names (`CLEAN`, `UNSTABLE`, `HAS_HOOKS`, `BEHIND`, `DIRTY`,
+ * `UNKNOWN`): the state the world's `mergeStates` names for that head — keyed by the head's SHA
+ * or a prefix of seven digits or more — or `CLEAN` for a head the world names none for. The world
+ * writes it in its fixtures.json beside its routes (rig.sh's fixture_write), since GitHub reports
+ * it of the pull request as it stands and no route of a commit answers it. A rule of the base
+ * that is unmet holds a state GitHub would merge in `BLOCKED` (gh-threads.ts's `mergeStateOf`),
+ * which the gh stand-in answers the pull request's `mergeStateStatus` and `mergeable_state` with
+ * and the daemon stand-in moves the record on, as main's engine moves on `record.MergeState`
+ * (daemon-standin.ts's `roundOutcome`). */
 export function mergeStateOn(mergeStates: unknown, head: string): string {
   if (typeof mergeStates === "object" && mergeStates !== null)
     for (const [named, state] of Object.entries(mergeStates))

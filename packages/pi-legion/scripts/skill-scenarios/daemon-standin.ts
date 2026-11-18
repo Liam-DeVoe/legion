@@ -180,8 +180,15 @@ import {
   serves,
   standinFacts,
 } from "./daemon-pane";
-import { routeFor, worldOf } from "./gh-call";
-import { heldPullRequest, mergeStateOf, recordedCalls, threadState } from "./gh-threads";
+import { worldOf } from "./gh-call";
+import {
+  DECIDES,
+  heldPullRequest,
+  mergeStateOf,
+  recordedCalls,
+  submittedReviews,
+  threadState,
+} from "./gh-threads";
 import { CALLS, Opened, openingLine } from "./run-records";
 import {
   type CapabilityFacts,
@@ -344,10 +351,11 @@ const startedAt = new Date().toISOString();
  * world reports and never on a completion (`roundOutcome`, read at each state read): the head is
  * the tip of the run's own remote, the decision is the last `APPROVED` or `CHANGES_REQUESTED`
  * among the reviews the world held when the run began and those the run left, and GitHub's merge
- * state for the head is the world's as the run's review threads leave it (gh-threads.ts's
- * `mergeStateOf`, which the gh stand-in answers `mergeStateStatus` with): a base that requires
- * conversation resolution holds it `BLOCKED` until the last thread is resolved. It does what
- * `reviewRound` does with them:
+ * state for the head is the one its base's rules leave it in with those reviews, the head's
+ * checks and the run's review threads (gh-threads.ts's `mergeStateOf`, which the gh stand-in
+ * answers `mergeStateStatus` with): a base that requires an approval holds it `BLOCKED` until one
+ * stands, and one that requires conversation resolution until the last thread is resolved. It
+ * does what `reviewRound` does with them:
  *   - a change request ends the round rejected whatever head it names and whether or not the
  *     reviewer has completed, and the issue goes back to `implementing` (`TriggerReviewRejected`).
  *     reviewer-text-findings' defect case reaches it, in `reviewing`;
@@ -366,11 +374,11 @@ const startedAt = new Date().toISOString();
  * head, then a push"). A reviewer's completion after its decision is a late one, answered as the
  * run's label's engine answers it (`handle`'s `handoff/complete`).
  *
- * The check runs of a head are no part of the move, as they are none of `reviewRound`'s but for
- * the report of a stuck round (`classify.ChecksConcludedOnHead`), which moves nothing: they are
- * what an agent reads (gh-standin.ts's `headRuns`). Not modelled: a push on its way
- * (`classify.CodeOnItsWay`), since the run's remote takes each push whole and its tip is never a
- * head the pull request is still waiting for. */
+ * The check runs of a head move nothing of their own, as they are none of `reviewRound`'s but for
+ * the report of a stuck round (`classify.ChecksConcludedOnHead`): a check the base requires holds
+ * the merge state `BLOCKED` until it passes, and the record moves on that state. Not modelled: a
+ * push on its way (`classify.CodeOnItsWay`), since the run's remote takes each push whole and its
+ * tip is never a head the pull request is still waiting for. */
 let servedPhase = PHASE;
 
 /** The routes of the run's world and the merge state it reports for each head (rig.sh's
@@ -388,27 +396,22 @@ const Fixtures = z.looseObject({
   ),
   mergeStates: z.unknown().optional(),
 });
-/** A review as the world's reviews route lists it, and one line of the gh stand-in's record,
- * which carries the review that call left as that stand-in answered it (gh-standin.ts's
- * `answered`). */
-const ListedReview = z.looseObject({ state: z.string(), commit_id: z.string() });
-const RecordedCall = z.looseObject({
-  review: z.object({ state: z.string(), head: z.string() }).optional(),
-});
-/** The states a review decides a round with (`classify`'s `DecidesRound`): a COMMENT and a
- * pending review decide nothing, and leave the decision before them standing. */
-const DECIDES = ["APPROVED", "CHANGES_REQUESTED"];
 /** The merge states the issue may advance on (`record.MergeState.Mergeable`). */
 const MERGEABLE = ["CLEAN", "UNSTABLE", "HAS_HOOKS"];
 
 /** The run's pull request as its world says it now, read from the files the gh stand-in answers
  * it from, so the record and gh say one thing: the head its branch is at on the run's remote,
  * the state and the merge state GitHub reports for that head (gh-threads.ts's `heldPullRequest`
- * and `mergeStateOf`), and the review that last decided the round, the last `APPROVED` or
- * `CHANGES_REQUESTED` among the reviews the world held and those the run left, its head written
- * whole where the review names the pull request's head by a prefix. `round` is whether the world
- * holds a round to read at all: a run with no remote or no fixtures.json has none, and its pull
- * request is the one its world.json names, open, with no merge state read. */
+ * and `mergeStateOf`), and the review that last decided the round, the last whose state decides
+ * one (gh-threads.ts's DECIDES, `classify`'s `DecidesRound`: a COMMENT and a pending review
+ * decide nothing, and leave the decision before them standing) among the reviews the world held
+ * and those the run left (gh-threads.ts's `submittedReviews`), its head written whole where the
+ * review names the pull request's head by a prefix. That is the round's decision, which main's
+ * record holds (`api.PullRequestView`'s `reviewDecision`, "the latest review round's decision"),
+ * and not GitHub's review decision, which counts each reviewer's approvals against the base's
+ * rule (gh-threads.ts's `reviewDecisionOf`). `round` is whether the world holds a round to read
+ * at all: a run with no remote or no fixtures.json has none, and its pull request is the one its
+ * world.json names, open, with no merge state read. */
 function worldPull(): { pull: PullRequestFacts; round: boolean } {
   const tip = Bun.spawnSync([
     "git",
@@ -423,33 +426,18 @@ function worldPull(): { pull: PullRequestFacts; round: boolean } {
   const { routes, mergeStates } = Fixtures.parse(
     JSON.parse(readFileSync(`${runDir}/fixtures.json`, "utf8"))
   );
-  const listed = routeFor(routes, ["api", `repos/${repo}/pulls/${PR}/reviews`])?.stdout;
   const record = `${runDir}/${CALLS}`;
-  const recorded = existsSync(record)
-    ? readFileSync(record, "utf8")
-        .split("\n")
-        .filter((line) => line.trim() !== "")
-        .flatMap((line) => {
-          const review = RecordedCall.safeParse(JSON.parse(line)).data?.review;
-          return review === undefined ? [] : [review];
-        })
-    : [];
-  const named = [
-    ...(Array.isArray(listed) ? listed : []).flatMap((review: unknown) => {
-      const read = ListedReview.safeParse(review);
-      return read.success ? [{ state: read.data.state, head: read.data.commit_id }] : [];
-    }),
-    ...recorded,
-  ].findLast((review) => DECIDES.includes(review.state));
+  const calls = existsSync(record) ? recordedCalls(record) : [];
   const at = { routes, world };
-  const threads = threadState(at, existsSync(record) ? recordedCalls(record) : []);
+  const named = submittedReviews(at, calls).findLast((review) => DECIDES.includes(review.state));
+  const threads = threadState(at, calls);
   const held = heldPullRequest(routes).state;
   return {
     pull: {
       number: PR,
       head,
       state: typeof held === "string" ? held : "OPEN",
-      mergeState: mergeStateOf(at, threads, mergeStates, head),
+      mergeState: mergeStateOf(at, threads, mergeStates, head, calls),
       decision:
         named === undefined
           ? undefined

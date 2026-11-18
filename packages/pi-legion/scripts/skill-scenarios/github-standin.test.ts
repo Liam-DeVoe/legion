@@ -309,6 +309,57 @@ test("the stand-in answers the measured routes from the run's remote, and refuse
   );
 }, 60_000);
 
+// Catches: the pull request Dispatch reads saying another merge state or mergeability than gh
+// does, or one frozen into the world: its base's rules decide both (gh-threads.ts's
+// `mergeStateOf`, `mergeableOf`), so a base requiring one approval holds it `blocked` until the
+// approval stands, and GitHub's REST `mergeable` is true in both (INFRA-764's ruling of
+// 2026-11-18; measured that day, a `BLOCKED` pull request of cybermonklabs/legion read
+// `MERGEABLE`).
+test("the pull request Dispatch reads carries the merge state and mergeability its base's rules leave it in", async () => {
+  const { dir, second } = world();
+  const file = path.join(dir, "fixtures.json");
+  const fixtures = JSON.parse(readFileSync(file, "utf8"));
+  const reviews = {
+    match: "^gh api .*pulls/1000/reviews",
+    methods: ["GET"],
+    stdout: [] as object[],
+  };
+  fixtures.routes.unshift(
+    {
+      match: "^gh api .*/rules/branches/main",
+      methods: ["GET"],
+      stdout: [{ type: "pull_request", parameters: { required_approving_review_count: 1 } }],
+    },
+    reviews
+  );
+  writeFileSync(file, JSON.stringify(fixtures));
+  const github = await serving(dir);
+  try {
+    const installation = await fetch(`${github.origin}/repos/${REPO}/installation`, {
+      headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${JWT}` },
+    });
+    const { id } = (await installation.json()) as { id: number };
+    const minted = await fetch(`${github.origin}/app/installations/${id}/access_tokens`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${JWT}` },
+    });
+    const { token } = (await minted.json()) as { token: string };
+    const pull = async () => {
+      const answered = await fetch(`${github.origin}/repos/${REPO}/pulls/1000`, {
+        headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${token}` },
+      });
+      const body = (await answered.json()) as { mergeable: unknown; mergeable_state: unknown };
+      return [answered.status, body.mergeable, body.mergeable_state];
+    };
+    expect(await pull()).toEqual([200, true, "blocked"]);
+    reviews.stdout = [{ state: "APPROVED", commit_id: second, user: { login: "a-reviewer" } }];
+    writeFileSync(file, JSON.stringify(fixtures));
+    expect(await pull()).toEqual([200, true, "clean"]);
+  } finally {
+    await github.stop();
+  }
+}, 60_000);
+
 // Catches: an answer of this stand-in short of a field GitHub's description requires of its
 // route's operation — rest-required.json, the extract of github/rest-api-description at
 // c9c95fe34ced that the gh stand-in's routes are held to too (gh-standin.test.ts) — read as

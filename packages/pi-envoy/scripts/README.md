@@ -850,20 +850,20 @@ read from the run's own `calls.jsonl` (`gh-threads.ts`, one replay for the gh st
 daemon stand-in). A thread a review's inline comment or a comment of its own opens is listed by
 `reviewThreads` and by the REST review comments; `resolveReviewThread` reads back
 `isResolved: true`; a reply, through GraphQL or the REST reply route, is its thread's last
-comment; and each comment's `databaseId` is its REST id. A base whose ruleset requires review
-threads resolved holds the pull request `BLOCKED` while any thread is open and reports it `CLEAN`
-once the last is resolved, and the daemon stand-in moves the record on that same state. Every
-world's base is protected as production's `main` is, by one repository ruleset alone (`rig.sh`'s
-`base_ruleset_routes`): its `required_status_checks` rule names the checks the head reports
-(`test`, `lint`), and a world whose base requires review threads resolved holds a `pull_request`
-rule too (`resolution_protection_routes`). The rules of the branch, the repository's rulesets and
+comment; and each comment's `databaseId` is its REST id. Every world's base is protected as
+production's `main` is, by one repository ruleset alone holding production's seven rules
+(`rig.sh`'s `base_ruleset_routes`; what the world does with each is the next section), and the
+pull request's review decision, merge state and mergeability are computed from those rules, the
+reviews, the head's checks and the threads as the run leaves them, and the daemon stand-in moves
+the record on that same state. The rules of the branch, the repository's rulesets and
 the ruleset by its id (GitHub's 404 for any other id) answer from it; the branch read answers the
 branch at its head on the run's remote, `protected: true` with the classic protection off and
 naming no check; and the classic protection's own endpoint (`…/branches/<base>/protection`) is
 GitHub's 403 to a role App, whose token may not read a repository's administration: `gh: Resource
 not accessible by integration (HTTP 403)`, GitHub's error body on stdout, exit 1, with or without
 a `--jq`, which gh runs over no error. The check runs
-are reported on the commit read (its `head_sha`, GitHub Actions as their App, their times counted
+are reported on the commit read (its `head_sha`, its App — GitHub Actions for `test` and `lint`,
+GitHub Advanced Security for `CodeQL` — and their times counted
 from when that commit reached the run's remote). A `contents` read answers the file or directory
 at the ref it names, or on the default branch where it names none, raw or as GitHub's JSON.
 A call naming an owner outside the world's project is refused as the Legion gh wrapper of the
@@ -911,13 +911,99 @@ path production does not show. A review's `url` in `gh pr view --json reviews` i
 asks GitHub for it only on the pages after its first 100 reviews, so production's #2827, of 137,
 holds it on its last 37 and no world, of fewer than 100, holds it (measured on 2026-11-17 on #2827,
 whose reviews from the 100th on carry it and no earlier one does, and on #4326, whose 2 carry
-none). `gh-standin.test.ts` holds each of the five ruleset reads to its
-pin, shape, exit and stderr, with no difference. The branch's head is the world's developer's
+none). `gh-standin.test.ts` holds each of the five ruleset reads to its pin, shape, exit and
+stderr, with no difference, and each of production's seven rules to production's rule of its
+type, none of them absent from the world. The branch's head is the world's developer's
 commit, signed with an SSH key of the developer's own: the world's GitHub holds the developer's
 account by the address the commit carries and the key it signs with (`rig.sh`'s
 `fixture_first_commit` writes `<run>/accounts.json` and `<run>/allowed-signers`), so the commit's
 `author` and `committer` are that account and its `verification` is the one `git verify-commit`
 gives against that key, as production's head is linked and verified.
+
+### The base's ruleset: what each rule does in the world
+
+The world's ruleset holds the seven rules production's `main` holds (cybermonklabs/legion ruleset
+12331919, read 2026-11-17T15:59:18Z, `production-shapes.json`'s three ruleset reads), in
+production's order, each with production's parameter keys in production's value kinds and at
+production's values, since a rule's parameters are the deployment's configuration and no value
+that names production; the exceptions are the checks and the code-scanning tool, which are the
+ones the world's head reports, and `required_review_thread_resolution` where a world's premise
+asks for it. The world's `rulesets` list holds this one ruleset: production's lists two,
+the one on `main` and one on another branch, and the world's repository protects its base and
+no other branch, so its list is what a repository holding production's `main` ruleset alone
+answers, in production's item shape. Each rule is either **modelled**, its effect computed in
+the world, or **shown only**, answered by every ruleset read and acted on by nothing. The text of
+a rule, or of a parameter, with no modelled effect is not claimed faithful: an agent that acts on
+it meets nothing of the world that does.
+
+- `deletion`, `non_fast_forward`, `required_linear_history` — **modelled** at the run's remote
+  (`rig.sh`'s `fixture_first_commit`): once the base is pushed, its `proc-receive` hook takes every
+  push command on `refs/heads/<base>` and refuses it, printing `remote:` lines that name each rule
+  the push breaks and git's ` ! [remote rejected] <src> -> <base> (push declined due to
+  repository rule violations)`, exit 1; a push to any other branch is taken as before. A deletion
+  breaks `deletion` (`- Cannot delete this branch`); an update breaks `non_fast_forward` where the
+  base's tip is not its ancestor (`- Cannot force-push to this branch`), `required_linear_history`
+  where a commit it adds is a merge (`- This branch must not contain merge commits.`, then `Found
+  1 violation:` or `Found <n> violations:` and each merge), and, since the base changes only
+  through a pull request its queue merges, `pull_request`, `required_status_checks` and
+  `merge_queue` whatever it carries.
+  Measured (INFRA-2713's sandbox, 2026-11-12, a direct `git push origin HEAD:main` to a base whose
+  ruleset required a pull request, a check and a merge queue): the first line, `error: GH013:
+  Repository rule violations found for refs/heads/<base>.`, and `- Changes must be made through a
+  pull request.`, `- Required status check "<name>" is expected.` (one check) and `- Changes must
+  be made through the merge queue`. Unmeasured, GitHub's form as public reports of a rejected push
+  print it, since no read-only call makes GitHub refuse a push: the review link (`Review all
+  repository rules at http://github.com/<repo>/rules?ref=refs%2Fheads%2F<base>`), the lines of the
+  three branch rules, `- 2 of 2 required status checks are expected.` for the world's two checks,
+  and the rejection reason. GitHub's pushes print nothing of `code_scanning` here, and the world's
+  neither (unmeasured).
+- `pull_request` — **modelled**: `required_approving_review_count` (1) decides the review decision
+  (`gh pr view --json reviewDecision`, GraphQL `reviewDecision`) — `CHANGES_REQUESTED` while any
+  reviewer's last deciding review requests changes, `APPROVED` once an approval stands,
+  `REVIEW_REQUIRED` before — and holds the merge state `BLOCKED` until it is `APPROVED`
+  (`gh-threads.ts`'s `reviewDecisionOf`, `mergeStateOf`); `dismiss_stale_reviews_on_push` and
+  `require_last_push_approval` are modelled at production's value, false: an approval stands
+  across a push, as production's does and the merge gate's carry rule relies on (a value of true
+  is not modelled); `required_review_thread_resolution` (true where a world's premise is a head
+  its open threads hold `BLOCKED`, `resolution_protection_routes`; false elsewhere and in
+  production) holds the merge state `BLOCKED` while a thread holding a published comment is open.
+  Shown only: `allowed_merge_methods` (`squash`; the world merges nothing, `gh pr merge` being a
+  write it refuses), `dismissal_restriction`, `require_code_owner_review` (the repository holds no
+  CODEOWNERS), `required_reviewers` (none) and `require_extra_approval_for_unattributed_changes`
+  (true, as production's): GitHub's REST description asks that extra approval only of "a pull
+  request Copilot opens without a human collaborator", and every world's pull request is the
+  implement App's, so at production's value it changes no modelled effect. The daemon stand-in's
+  record keeps main's own `reviewDecision`, the
+  decision of the review that last decided the round (`api.PullRequestView`), which reads as gh's
+  wherever the rows compare them: gh's `REVIEW_REQUIRED` is the record's absent decision.
+- `required_status_checks` — **modelled**: each check it names (`test`, `lint`, by GitHub
+  Actions' integration id 15368) holds the merge state `BLOCKED` until the head has a run of that
+  name by that App that completed with `success`, `neutral` or `skipped`; a run still going, one
+  that failed and one never reported are none. Shown only: `strict_required_status_checks_policy`
+  (false; a head behind its base is the world's own `BEHIND` state, `mergeStates`) and
+  `do_not_enforce_on_create`.
+- `merge_queue` — shown only, every parameter, at production's values (`merge_method` `SQUASH`,
+  `max_entries_to_build` 5, `min_entries_to_merge` 1, `max_entries_to_merge` 4,
+  `min_entries_to_merge_wait_minutes` 0, `grouping_strategy` `ALLGREEN`,
+  `check_response_timeout_minutes` 180): the world holds no queue and enqueues nothing. The one
+  effect it has on what an agent reads is the state of an approved head: measured on 2026-11-18
+  at 04:19Z on cybermonklabs/legion, whose `main` queues, its open pull requests #4346, #4334,
+  #4328 and #4325, approved with `ci-ok`, `pr-title` and `CodeQL` successful, read
+  `mergeStateStatus` `CLEAN` and `mergeable` `MERGEABLE`, and a world's approved, green, resolved
+  head reads the same.
+- `code_scanning` — **modelled**: each tool it names (`CodeQL`) holds the merge state `BLOCKED`
+  until the head has a check run of the tool's name that concluded `success`. Every world's head
+  reports one (`rig.sh`'s `concluded_checks`), as production's heads carry CodeQL's: a `CodeQL`
+  check run of GitHub Advanced Security's App, completed `success`, titled `No new alerts in code
+  changed by this pull request`, its link GitHub's page of the run (measured on 2026-11-18 on
+  #4346's head). Shown only: `security_alerts_threshold` and `alerts_threshold` (production's,
+  `high_or_higher` and `none`); the world raises no alert.
+
+`mergeable` follows the merge state, as production's does (measured on 2026-11-18 over the 60
+newest open pull requests): `CONFLICTING` for `DIRTY`, `UNKNOWN` for `UNKNOWN`, `MERGEABLE` for
+every other state; the REST `mergeable` is its boolean, null while `UNKNOWN`. A state a world
+writes for a head (`mergeStates`: `DIRTY`, `BEHIND`, `UNKNOWN`) stands over every rule, as
+production's #4374 read `REVIEW_REQUIRED` and `DIRTY`.
 
 ### The issue record a `read_record` answers
 

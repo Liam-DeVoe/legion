@@ -1,16 +1,20 @@
-// The pull request's review threads as GitHub holds them during a run, and the merge state they
-// leave the pull request in: the world's own threads (rig.sh's fixture_write writes them into the
-// world's GraphQL graph), then the effect of every call the run's record holds, replayed in the
-// order the run made them. GitHub keeps what a run did, so a thread the run opened is listed, a
-// resolution it made reads `isResolved: true`, a reply it posted is its thread's last comment, and
-// a base that requires conversation resolution holds the pull request `BLOCKED` until the last
-// thread is resolved. The gh stand-in answers every read and write of a thread from this state
-// (gh-standin.ts), and the daemon stand-in moves the record on the merge state it leaves
+// The pull request's review threads as GitHub holds them during a run, and the review decision
+// and merge state the base's rules leave the pull request in: the world's own threads (rig.sh's
+// fixture_write writes them into the world's GraphQL graph) and reviews, then the effect of every
+// call the run's record holds, replayed in the order the run made them. GitHub keeps what a run
+// did, so a thread the run opened is listed, a resolution it made reads `isResolved: true`, a
+// reply it posted is its thread's last comment, an approval it submitted counts toward the
+// approvals its base requires, and a base that requires conversation resolution holds the pull
+// request `BLOCKED` until the last thread is resolved. The gh stand-in answers every read and
+// write of a thread, and every read of the pull request's decision and merge state, from this
+// state (gh-standin.ts), and the daemon stand-in moves the record on the merge state it leaves
 // (daemon-standin.ts's `roundOutcome`), so the world an agent was answered from and the world the
 // record moves on are one world, read by one replay. A module of its own, as gh-call.ts is: both
 // stand-ins import it, and the gh stand-in is a program that answers a call when it is loaded.
 import { readFileSync } from "node:fs";
 import {
+  type CheckRun,
+  checkRunsOn,
   endpointPath,
   FIELD_FLAGS,
   FILE_FIELD_FLAGS,
@@ -26,6 +30,7 @@ import {
   type World,
 } from "./gh-call";
 import { argumentsOf, type GraphError, isObject, type Operation, readGraphql } from "./gh-routes";
+import { checkRunApp } from "./rest-objects";
 
 /** A JSON object of the world's, as GitHub's schema names it: a review thread, a review comment,
  * the answer of a call. */
@@ -536,47 +541,166 @@ export function threadCall(
   return { fields };
 }
 
-/** The merge states a ruleset that requires review threads resolved holds `BLOCKED`: the states
- * of a pull request GitHub would otherwise merge. A conflict (`DIRTY`), a base the head is behind
- * (`BEHIND`) and a state GitHub has not computed (`UNKNOWN`) are each the world's own. */
-const MERGEABLE_BUT_FOR_THREADS = ["CLEAN", "UNSTABLE", "HAS_HOOKS"];
-/** The merge state GitHub reports for the pull request at `head`, with its threads `threads`: the
- * world's own state for that head (`mergeStates`, gh-call.ts's `mergeStateOn`), except that a
- * base whose rules require review threads resolved (the world's answer to the rules in force on
- * its base, `rules/branches/<base>`: a `pull_request` rule with
- * `required_review_thread_resolution`) holds a pull request it would otherwise merge `BLOCKED`
- * while any thread with a comment GitHub has published (no pending review's alone) is unresolved.
- * The base is read where GitHub enforces it, its rules, since a ruleset alone protects it (rig.sh's
- * base_ruleset_routes) and a read of the classic protection's fields finds none. GitHub moves a
- * head so protected from `BLOCKED` to `CLEAN` when the last such thread is resolved, and a world
- * whose state never moved told every agent that resolving a thread changes nothing; a base that
- * requires no resolution is moved by no thread. */
-export function mergeStateOf(
-  at: ThreadWorld,
-  threads: Threads,
-  mergeStates: unknown,
-  head: string
-): string {
-  const own = mergeStateOn(mergeStates, head);
+/** The rules in force on the world's base, as its answer to `rules/branches/<base>` lists them
+ * (rig.sh's base_ruleset_routes), none for a run with no world. The base is read where GitHub
+ * enforces it, its rules, since a ruleset alone protects it and a read of the classic
+ * protection's fields finds none. */
+function baseRules(at: ThreadWorld): Json[] {
   const { world } = at;
-  if (world === undefined || !MERGEABLE_BUT_FOR_THREADS.includes(own)) return own;
+  if (world === undefined) return [];
   const rules = routeFor(at.routes, [
     "api",
     `repos/${world.repo}/rules/branches/${world.base}`,
   ])?.stdout;
-  const requires =
-    Array.isArray(rules) &&
-    rules.some(
-      (rule) =>
-        isObject(rule) &&
-        rule.type === "pull_request" &&
-        isObject(rule.parameters) &&
-        rule.parameters.required_review_thread_resolution === true
-    );
+  return Array.isArray(rules) ? rules.filter(isObject) : [];
+}
+/** The parameters of the base's rule of `type` (`{}` for a rule that takes none), or undefined
+ * where its rules hold none of that type. */
+function ruleParameters(rules: readonly Json[], type: string): Json | undefined {
+  const rule = rules.find((one) => one.type === type);
+  if (rule === undefined) return undefined;
+  return isObject(rule.parameters) ? rule.parameters : {};
+}
+
+/** One review of the pull request as GitHub counts it toward the review decision: the login that
+ * submitted it, its state and the head it stands at. */
+export interface SubmittedReview {
+  readonly login: string;
+  readonly state: string;
+  readonly head: string;
+}
+/** The pull request's reviews, oldest first: each the world held (its reviews route's answer,
+ * rig.sh's fixture_write), by its author, then each the run's record holds, in the state and at
+ * the head the gh stand-in answered its create or its submit with (`Recorded`'s `review`), by
+ * the login the run's token acts as (`worldLogin`), the user the world answers each review the
+ * run creates with. A pending create and its submit are two entries, of which the submit alone
+ * decides anything. */
+export function submittedReviews(at: ThreadWorld, calls: readonly Recorded[]): SubmittedReview[] {
+  const { world } = at;
+  const listed =
+    world === undefined
+      ? undefined
+      : routeFor(at.routes, ["api", `repos/${world.repo}/pulls/${world.pr}/reviews`])?.stdout;
+  const login = worldLogin(at.routes);
+  return [
+    ...(Array.isArray(listed) ? listed.filter(isObject) : []).map((review) => ({
+      login: isObject(review.user) ? String(review.user.login ?? "") : "",
+      state: String(review.state ?? ""),
+      head: String(review.commit_id ?? ""),
+    })),
+    ...calls.flatMap((call) => (call.review === undefined ? [] : [{ login, ...call.review }])),
+  ];
+}
+/** The states a review decides its reviewer's standing with: a comment and a pending review
+ * leave the review before them standing. */
+export const DECIDES = ["APPROVED", "CHANGES_REQUESTED"];
+/** GitHub's review decision on the pull request (GraphQL's `reviewDecision`, which gh prints as
+ * `""` where it is null), from each reviewer's last review that decides (`DECIDES`), at whatever
+ * head it stands, since the base dismisses no approval on a push and asks no approval of the last
+ * push (`dismiss_stale_reviews_on_push` and `require_last_push_approval`, false on every world's
+ * base, rig.sh's base_ruleset_routes): `CHANGES_REQUESTED` while any change request stands; else,
+ * where the base's `pull_request` rule requires approvals (`required_approving_review_count`),
+ * `APPROVED` once that many stand and `REVIEW_REQUIRED` until then; and where nothing requires
+ * one, `APPROVED` once one stands and null before. Measured on 2026-11-18 at 04:18Z over
+ * cybermonklabs/legion's 60 newest open pull requests (`gh pr list --json
+ * number,baseRefName,reviewDecision,mergeStateStatus,mergeable`): against `main`, whose ruleset
+ * requires one approval, each read `REVIEW_REQUIRED`, `CHANGES_REQUESTED` or `APPROVED`; against
+ * a branch no ruleset protects, `""` (#4376, #4373, #4370), `APPROVED` (#4320) or
+ * `CHANGES_REQUESTED` (#4355), never `REVIEW_REQUIRED`. */
+export function reviewDecisionOf(at: ThreadWorld, calls: readonly Recorded[]): string | null {
+  const latest = new Map<string, string>();
+  for (const review of submittedReviews(at, calls))
+    if (DECIDES.includes(review.state)) latest.set(review.login, review.state);
+  const states = [...latest.values()];
+  if (states.includes("CHANGES_REQUESTED")) return "CHANGES_REQUESTED";
+  const required =
+    numberOf(ruleParameters(baseRules(at), "pull_request")?.required_approving_review_count) ?? 0;
+  if (required > 0) return states.length >= required ? "APPROVED" : "REVIEW_REQUIRED";
+  return states.length > 0 ? "APPROVED" : null;
+}
+
+/** The conclusions GitHub takes a required status check as passed with. */
+const CHECK_PASSED = ["success", "neutral", "skipped"];
+/** Whether the head's check runs `runs` hold one named `name` — by the App whose id is `app`,
+ * where the rule names one — that GitHub takes as passed: the last such run, completed with one
+ * of `conclusions`. A run still going, one that failed and one never reported are none. */
+function passed(
+  runs: readonly CheckRun[],
+  name: string,
+  conclusions: readonly string[],
+  app?: number
+): boolean {
+  const run = runs.findLast(
+    (one) => one.name === name && (app === undefined || checkRunApp(one).id === app)
+  );
+  return run?.status === "completed" && conclusions.includes(run.conclusion ?? "");
+}
+/** The merge states GitHub reports of a pull request it would merge but for a rule of its base,
+ * which a rule unmet holds `BLOCKED`. A conflict (`DIRTY`), a base the head is behind (`BEHIND`)
+ * and a state GitHub has not computed (`UNKNOWN`) are each the world's own, which no rule moves:
+ * #4374 and #4361 of the measurement below read `REVIEW_REQUIRED` and `DIRTY`. */
+const MERGEABLE_BUT_FOR_RULES = ["CLEAN", "UNSTABLE", "HAS_HOOKS"];
+/** The merge state GitHub reports for the pull request at `head`, with its threads `threads` and
+ * the run's record `calls`: the world's own state for that head (`mergeStates`, gh-call.ts's
+ * `mergeStateOn`), held `BLOCKED` while a rule of its base (`baseRules`) that a merge must meet is
+ * unmet:
+ *   - `pull_request`: fewer approvals stand than it requires, or a change request stands
+ *     (`reviewDecisionOf`); and, where it requires review threads resolved
+ *     (`required_review_thread_resolution`), a thread holding a comment GitHub has published (no
+ *     pending review's alone) is open. GitHub moves a head so protected from `BLOCKED` to `CLEAN`
+ *     when the last such thread is resolved, and a world whose state never moved told every agent
+ *     that resolving a thread changes nothing;
+ *   - `required_status_checks`: a check it names (`context`, by the App its `integration_id`
+ *     names) has no run on the head that GitHub takes as passed (`passed`);
+ *   - `code_scanning`: a tool it names has no check run of the tool's name on the head that
+ *     concluded `success`, the check GitHub reports the tool's analysis of the head with
+ *     (production's `CodeQL`, GitHub Advanced Security's: rest-objects.ts).
+ * Measured on 2026-11-18 at 04:19Z on cybermonklabs/legion's open pull requests against `main`,
+ * whose ruleset requires one approval, the checks `ci-ok` and `pr-title`, and CodeQL's code
+ * scanning: #4346, #4334, #4328 and #4325, approved, with `ci-ok`, `pr-title` and `CodeQL`
+ * successful and every other check successful or skipped, read `CLEAN` and `MERGEABLE`, the
+ * state its merge queue takes them in; #4359, approved with `ci-ok` not yet reported, `BLOCKED`;
+ * each `REVIEW_REQUIRED` or `CHANGES_REQUESTED` one `BLOCKED`. */
+export function mergeStateOf(
+  at: ThreadWorld,
+  threads: Threads,
+  mergeStates: unknown,
+  head: string,
+  calls: readonly Recorded[]
+): string {
+  const own = mergeStateOn(mergeStates, head);
+  const { world } = at;
+  if (world === undefined || !MERGEABLE_BUT_FOR_RULES.includes(own)) return own;
+  const rules = baseRules(at);
+  const runs = checkRunsOn(at.routes, world.repo, head);
+  const review = ruleParameters(rules, "pull_request");
+  const approvals = numberOf(review?.required_approving_review_count) ?? 0;
+  const checks = ruleParameters(rules, "required_status_checks")?.required_status_checks;
+  const tools = ruleParameters(rules, "code_scanning")?.code_scanning_tools;
   const open = threads.list.some(
     (thread) =>
       thread.isResolved !== true &&
       commentsOf(thread).some((comment) => comment.state !== "PENDING")
   );
-  return requires && open ? "BLOCKED" : own;
+  const unmet =
+    (approvals > 0 && reviewDecisionOf(at, calls) !== "APPROVED") ||
+    (review?.required_review_thread_resolution === true && open) ||
+    (Array.isArray(checks) &&
+      checks.some(
+        (check) =>
+          !isObject(check) ||
+          !passed(runs, String(check.context), CHECK_PASSED, numberOf(check.integration_id))
+      )) ||
+    (Array.isArray(tools) &&
+      tools.some((tool) => !isObject(tool) || !passed(runs, String(tool.tool), ["success"])));
+  return unmet ? "BLOCKED" : own;
+}
+/** Whether GitHub merges the pull request in the merge state `state`, as gh and GraphQL name it
+ * (`mergeable`): `CONFLICTING` in a conflict (`DIRTY`), `UNKNOWN` while GitHub has not computed
+ * the state, and `MERGEABLE` in every other. Measured on 2026-11-18 at 04:18Z over
+ * cybermonklabs/legion's 60 newest open pull requests: each `DIRTY` one `CONFLICTING`, each
+ * `UNKNOWN` one `UNKNOWN`, and each `BLOCKED`, `CLEAN` or `UNSTABLE` one `MERGEABLE`. */
+export function mergeableOf(state: string): string {
+  if (state === "DIRTY") return "CONFLICTING";
+  return state === "UNKNOWN" ? "UNKNOWN" : "MERGEABLE";
 }

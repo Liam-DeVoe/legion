@@ -2667,6 +2667,9 @@ case_guard() {
 # The world the tester reads: the CLI, its tests, and the implementer's handoff and check line,
 # with nothing a later phase left. It keeps the blank-name guard, so the CLI meets R2, and a push
 # to legion/<key> is this world's own failure, since the tester ends with no commit of its own.
+# No review stands on its pull request, so GitHub reports it `REVIEW_REQUIRED` and `BLOCKED`, as
+# production reports a head its base's approval is still owed on (gh-threads.ts's
+# `reviewDecisionOf`, `mergeStateOf`).
 tester_proof_world() {
   local index=$1 start=$2 src when worker_pr worker_pr_url C1 body
   fixture_open "$index" "$start"
@@ -2676,7 +2679,7 @@ tester_proof_world() {
   fixture_implement '["greet.ts","greet.test.ts"]'
   fixture_workspace
   fixture_body "**Threads:** 0 resolved, 0 unresolved." "$(fixture_checks implementer)"
-  fixture_write '[]' '""' '[]'
+  fixture_write '[]' '[]'
 }
 
 # The two text findings a round's world carries, each a named constant because a world states
@@ -2730,14 +2733,15 @@ round_world() {
 # (COMMENTED, with no body), so the reviews list holds that review and the thread's comment is a
 # review comment of it, read the same through GraphQL and REST. `dropped` is that change with the
 # blank-name guard gone, the negative control's behavioural finding. A push to legion/<key> is
-# this world's own failure, since a review round pushes nothing at all. The base requires
-# conversation resolution (resolution_protection_routes) and the bot's thread is open, so GitHub
-# reports the head `BLOCKED` with every check green (gh-threads.ts's `mergeStateOf`, from the
-# threads as they stand, until the run resolves the last of them): the approval then waits in
-# `reviewing`, as main's engine leaves it (review.go's `reviewRound`, which reports the round
-# `stuckMergeState`), so a reviewer that reads the record after its approval reads `reviewing`,
-# and the wake of the implementer it owns at the approval is the one step that starts the fix
-# (review 5887659447, finding 3).
+# this world's own failure, since a review round pushes nothing at all. Before the review no
+# approval stands, so GitHub reports the head `REVIEW_REQUIRED` and `BLOCKED` with every check
+# green, as production reports a head awaiting its review (gh-threads.ts's `reviewDecisionOf`,
+# `mergeStateOf`). The base requires conversation resolution too (resolution_protection_routes)
+# and the bot's thread is open, so the head stays `BLOCKED` after the reviewer's approval, until
+# the run resolves the last thread: the approval then waits in `reviewing`, as main's engine
+# leaves it (review.go's `reviewRound`, which reports the round `stuckMergeState`), so a reviewer
+# that reads the record after its approval reads `reviewing`, and the wake of the implementer it
+# owns at the approval is the one step that starts the fix (review 5887659447, finding 3).
 review_world() {
   local index=$1 start=$2 guard=$3 src when worker_pr worker_pr_url C1 body threads reviews
   round_world "$index" "$start" "$guard" "$text_finding_doc_line" "$text_finding_trigger"
@@ -2747,12 +2751,13 @@ review_world() {
       body:"greet.test.ts:4: `greets by name` names the same thing the next test does; name each test for the case it covers."}]}]')
   reviews=$(jq -n --arg head "$C1" '[{id:4001, state:"COMMENTED", commit_id:$head,
     author:{login:"style-bot[bot]"}, user:{login:"style-bot[bot]"}, body:""}]')
-  fixture_write "$(resolution_protection_routes)" '""' "$reviews" '{}' "$threads"
+  fixture_write "$(resolution_protection_routes)" "$reviews" '{}' "$threads"
 }
 
 # The world an approval that left text threads open leaves behind, which threads-closed's two
-# cases build: the round's base world (round_world), and then the approval — the pull request
-# is APPROVED, its body carries the reviewer's `Threads:` count and one open entry per thread,
+# cases build: the round's base world (round_world), and then the approval — the approval stands,
+# so GitHub reports the pull request `APPROVED` (gh-threads.ts's `reviewDecisionOf`), its body
+# carries the reviewer's `Threads:` count and one open entry per thread,
 # the reviewer's handoff body is at $R/review.json for the runner to record, the threads
 # themselves are in the world's GraphQL graph (fixture_write's THREADS), each opened by an inline
 # comment of the approval, and in $R/threads.json, which the score reads. The threads are
@@ -2780,9 +2785,11 @@ review_world() {
 # `stuckMergeState`), the
 # implementer's push sets it aside (`stuckApprovedOtherCode`), and the reviewer's approval of the
 # fix head is what ends the round (daemon-standin.ts's `servedPhase`; run_threads_closed boots
-# both halves in `reviewing`). The state follows the threads: once the last of them is resolved
-# GitHub reports the head `CLEAN`, the approved head and the fix head alike, since resolving them
-# is what lifts the rule. `dropped` is the change
+# both halves in `reviewing`). GitHub's approval stands across that push, as the base dismisses no
+# approval on a push and asks none of the last push (base_ruleset_routes), so the pull request
+# stays `APPROVED` at the fix head. The state follows the threads: once the last of them is
+# resolved GitHub reports the head `CLEAN`, the approved head and the fix head alike, since
+# resolving them is what lifts the rule. `dropped` is the change
 # with the blank-name guard gone, an honest
 # workflow comment, and one thread on the docs/cli.md sentence the change adds, which says that a
 # blank name exits 2: that sentence is false only because the code is wrong, so no text fix closes
@@ -2868,8 +2875,8 @@ $entries"
   #
   # Text-fixes' base requires conversation resolution, which its open threads hold the approved
   # head `BLOCKED` on until the last is resolved (gh-threads.ts's `mergeStateOf`), and the
-  # negative control's base requires none and its head is `CLEAN` (the header above says why
-  # each).
+  # negative control's base requires none, so with its approval standing and every check green
+  # its head is `CLEAN` (the header above says why each).
   local protection='[]'
   [ -n "$guard" ] || protection=$(resolution_protection_routes)
   extra=$(jq -n --arg url "$worker_pr_url" --argjson number "$worker_pr" --arg repo "$worker_repo" \
@@ -2880,7 +2887,7 @@ $entries"
      endpoint:("repos/" + $repo_re + "/pulls/" + ($number|tostring) + "/reviews"),
      stdout:{id:5002, html_url:($url+"#pullrequestreview-5002"), user:{login:$login}}}
   ]')
-  fixture_write "$extra" '"APPROVED"' "$reviews" '{}' "$(jq '[.[] | {id, isResolved:false, path, line,
+  fixture_write "$extra" "$reviews" '{}' "$(jq '[.[] | {id, isResolved:false, path, line,
     review:5001, comments:[{author:{login:"legion-review[bot]"}, body}]}]' <<<"$threads")"
 }
 
@@ -2957,6 +2964,26 @@ fixture_docs_before() {
 # signed and GitHub verifies it (`commit.verification`). The commit's author and committer lines
 # are the developer's as before (fixture_git); the signature is a header of its own.
 # gh-standin.ts's `commitJson` reads both files.
+#
+# Once the base is pushed its ruleset protects it at the remote as GitHub protects production's
+# `main` (base_ruleset_routes): every push that updates or deletes the base is refused, and a
+# push to any other branch is taken as before. The remote hands each command on the base to its
+# proc-receive hook (receive.procReceiveRefs), which refuses it the way GitHub does — `remote:`
+# lines naming each rule the push breaks, then ` ! [remote rejected] <src> -> <base> (push
+# declined due to repository rule violations)`, exit 1 — where a pre-receive hook can only make
+# git print `(pre-receive hook declined)`, which no GitHub push prints. The rules a push breaks,
+# in the ruleset's order: a deletion breaks `deletion` alone (`Cannot delete this branch`); an
+# update breaks `non_fast_forward` where the base's tip is not an ancestor of the new one
+# (`Cannot force-push to this branch`), `required_linear_history` where a commit it adds is a
+# merge (`This branch must not contain merge commits.`, then the violations), and `pull_request`,
+# `required_status_checks` and `merge_queue` whatever it carries, since the base changes only
+# through a pull request the queue merges. The first line, the review link, `Changes must be made
+# through a pull request.`, `Required status check "<name>" is expected.` (for one check) and
+# `Changes must be made through the merge queue` are GitHub's as measured on 2026-11-12 (INFRA-2713's
+# sandbox, a direct `git push origin HEAD:main` to a base whose ruleset required a pull request, a
+# check and its merge queue); the lines of the other rules, the count line for several checks
+# and the rejection line are GitHub's form as public reports of a rejected push print it,
+# unmeasured here, since no read-only call makes GitHub refuse a push.
 fixture_first_commit() {
   local login=${world_author_email%%@*}
   rm -f "$R/signing-key" "$R/signing-key.pub"
@@ -2972,6 +2999,57 @@ fixture_first_commit() {
   fixture_git add -A &&
     fixture_git -c gpg.format=ssh -c user.signingkey="$R/signing-key" commit -S -qm "init"
   fixture_git push -q "$R/remote.git" "$worker_base"
+  local checks
+  checks=$(base_ruleset_routes | jq -r '.[] | select(.match | test("/rules/branches/")) | .stdout[]
+    | select(.type == "required_status_checks") | .parameters.required_status_checks
+    | if length == 1 then "Required status check \"\(.[0].context)\" is expected."
+      else "\(length) of \(length) required status checks are expected." end')
+  {
+    printf '#!/bin/sh\nrepo=%q base=%q checks=%q\n' "$worker_repo" "$worker_base" "$checks"
+    cat <<'EOF'
+pkt() { len=$(head -c 4) && [ -n "$len" ] && [ "$len" != 0000 ] && line=$(head -c $((0x$len - 4)) | tr '\0' ' '); }
+out() { printf '%04x%s\n' $((${#1} + 5)) "$1"; }
+while pkt; do :; done
+out version=1
+printf 0000
+set --
+while pkt; do set -- "$@" "$line"; done
+zero=0000000000000000000000000000000000000000
+for command; do
+  old=${command%% *} new=${command#* } ref=${command##* }
+  new=${new%% *}
+  {
+    printf 'error: GH013: Repository rule violations found for %s.\n' "$ref"
+    printf 'Review all repository rules at http://github.com/%s/rules?ref=refs%%2Fheads%%2F%s\n\n' "$repo" "$base"
+    if [ "$new" = "$zero" ]; then
+      printf -- '- Cannot delete this branch\n\n'
+    else
+      if [ "$old" != "$zero" ] && ! git merge-base --is-ancestor "$old" "$new"; then
+        printf -- '- Cannot force-push to this branch\n\n'
+      fi
+      if [ "$old" = "$zero" ]; then
+        merges=$(git rev-list --merges "$new" --not --all)
+      else
+        merges=$(git rev-list --merges "$new" "^$old")
+      fi
+      if [ -n "$merges" ]; then
+        count=$(printf '%s\n' "$merges" | wc -l)
+        [ "$count" = 1 ] && found='1 violation' || found="$count violations"
+        printf -- '- This branch must not contain merge commits.\n  Found %s:\n\n' "$found"
+        printf '  %s\n' $merges
+        printf '\n'
+      fi
+      printf -- '- Changes must be made through a pull request.\n\n- %s\n\n' "$checks"
+      printf -- '- Changes must be made through the merge queue\n\n'
+    fi
+  } >&2
+  out "ng $ref push declined due to repository rule violations"
+done
+printf 0000
+EOF
+  } >"$R/remote.git/hooks/proc-receive"
+  chmod +x "$R/remote.git/hooks/proc-receive"
+  git -C "$R/remote.git" config receive.procReceiveRefs "refs/heads/$worker_base"
   fixture_git checkout -qb "legion/$worker_key"
 }
 
@@ -3280,35 +3358,40 @@ $2
 **Chain:** not stacked."
 }
 
-# fixture_write EXTRA DECISION REVIEWS writes the two files the run reads the world through: the
-# gh stand-in's answers ($R/fixtures.json), EXTRA's routes ahead of the ones every world shares,
-# and the world the scorer reads ($R/world.json), whose head is the PR's head, the implementer's
-# code commit, and whose base is the branch the pull request is open against, the other side of
-# the diff the gh stand-in serves from the run's own remote (gh-standin.ts).
+# fixture_write EXTRA REVIEWS writes the two files the run reads the world through: the gh
+# stand-in's answers ($R/fixtures.json), EXTRA's routes ahead of the ones every world shares, and
+# the world the scorer reads ($R/world.json), whose head is the PR's head, the implementer's code
+# commit, and whose base is the branch the pull request is open against, the other side of the
+# diff the gh stand-in serves from the run's own remote (gh-standin.ts).
 #
 # `gh pr list` is among the shared routes because the worker skill has a role with no pull
 # request number find one that way (`gh pr list --repo <repo> --head legion/<KEY> --state open
 # --json number`), and a 404 there reads to the agent as a branch with no pull request open on
 # it. The world has exactly one open pull request and its head is `legion/<key>`. The two routes
-# hold the world's own facts of it — its number, node id, URL, title, body, state, branches,
-# mergeability, review decision and the checks of a head no remote holds — and the gh stand-in
-# answers each `gh pr view` and `gh pr list` from them and from what the run did, as gh reads a
-# pull request (gh-standin.ts's `prRead`): its head, checks and merge state, its reviews (the ones
-# the world held, REVIEWS, and the run's), its conversation, the files and commits of its diff,
-# each field `--json` names and gh's text without it, and gh's refusal of a pull request, a
-# repository or a field the world has not got. So no review, comment or file is written here: a
-# copy frozen here answered `gh pr view --json reviews` in GitHub's REST shape, which gh never
-# prints (INFRA-764 round 25's agents read `.commit.oid` null).
+# hold the world's own facts of it — its number, node id, URL, title, body, state, branches and
+# the checks of a head no remote holds — and the gh stand-in answers each `gh pr view` and `gh pr
+# list` from them and from what the run did, as gh reads a pull request (gh-standin.ts's
+# `prRead`): its head, checks, review decision, merge state and mergeability, the last three
+# computed from the base's rules as GitHub computes them (gh-threads.ts's `reviewDecisionOf`,
+# `mergeStateOf`, `mergeableOf`), its reviews (the ones the world held, REVIEWS, and the run's),
+# its conversation, the files and commits of its diff, each field `--json` names and gh's text
+# without it, and gh's refusal of a pull request, a repository or a field the world has not got.
+# So no review, comment, file, decision or merge state is written here: a copy frozen here
+# answered `gh pr view --json reviews` in GitHub's REST shape, which gh never prints (INFRA-764
+# round 25's agents read `.commit.oid` null), and a decision and a state frozen here read `CLEAN`
+# before any review, where production's base, which requires an approval, reads
+# `REVIEW_REQUIRED` and `BLOCKED` (INFRA-764's ruling of 2026-11-18).
 #
 # The base branch's reads are shared routes for the same reason: the merge gate prescribes two of
 # them by name (skill://legion-worker/references/merge-gate.md, "the base branch's rulesets'
 # required checks and its branch protection's"), and that rule has a refused read reported to the
 # architect and never guessed, so a 404 stops a reviewer where GitHub would have answered it — the
 # batch of 2026-11-10 holds 91 refused reads of this kind. Every world's base is protected as
-# production's `main` is, by a repository ruleset alone (base_ruleset_routes, which a world's own
-# routes stand ahead of where its ruleset requires more: resolution_protection_routes): the
-# ruleset requires the checks the head reports (concluded_checks, `test` and `lint`), so the
-# gate's rulesets read prints them, and the base has no branch protection of the classic kind, so
+# production's `main` is, by a repository ruleset alone holding production's seven rules
+# (base_ruleset_routes, which a world's own routes stand ahead of where its ruleset requires
+# review threads resolved: resolution_protection_routes): the ruleset requires an approval and the
+# checks the head reports (concluded_checks, `test` and `lint`), so the gate's rulesets read
+# prints them, and the base has no branch protection of the classic kind, so
 # its branch read answers `protected: true` with that protection off and naming no check, and the
 # classic protection's own endpoint, `…/branches/<base>/protection`, is GitHub's 403 to a role
 # App, whose token may not read a repository's administration: `gh: Resource not accessible by
@@ -3372,17 +3455,18 @@ $2
 # update of its review's body (`PUT …/reviews/5002`, runs/1e2a0aeced4b, calls.jsonl:23) was
 # answered so, the body stayed as it was, and no rule saw it, since a route had matched.
 #
-# fixture_write EXTRA DECISION REVIEWS [MERGE_STATES] writes MERGE_STATES, a JSON object from a
-# head's SHA to the merge state GitHub reports for the pull request while it is at that head for a
-# reason no review thread decides (GitHub's names: `CLEAN`, `BEHIND`, `DIRTY`, …), beside the
-# routes as `mergeStates`, and every head it names none for is `CLEAN` (gh-call.ts's
-# `mergeStateOn`). A base whose ruleset requires review threads resolved holds that state
-# `BLOCKED` while a thread is open, from the threads as the run leaves them (gh-threads.ts's
-# `mergeStateOf`), so no world writes the `BLOCKED` its threads cause. The pull request's own
-# answers carry the state of the head the run's remote is at (gh-standin.ts), and the daemon
-# stand-in moves the record on that same state as main's engine moves on `record.MergeState`
-# (daemon-standin.ts's `servedPhase`).
-# fixture_write EXTRA DECISION REVIEWS MERGE_STATES [THREADS] writes THREADS, the pull request's
+# fixture_write EXTRA REVIEWS [MERGE_STATES] writes MERGE_STATES, a JSON object from a head's SHA
+# to the merge state GitHub reports for the pull request while it is at that head for a reason no
+# rule of its base decides (GitHub's names: `CLEAN`, `BEHIND`, `DIRTY`, …), beside the routes as
+# `mergeStates`, and every head it names none for is `CLEAN` (gh-call.ts's `mergeStateOn`). The
+# base's rules hold that state `BLOCKED` while one of them is unmet — no approval standing, a
+# required check or the code-scanning tool's check not passed on the head, a thread open where
+# the base requires them resolved — from the reviews, checks and threads as the run leaves them
+# (gh-threads.ts's `mergeStateOf`), so no world writes the `BLOCKED` its rules cause. The pull
+# request's own answers carry the state of the head the run's remote is at (gh-standin.ts), and
+# the daemon stand-in moves the record on that same state as main's engine moves on
+# `record.MergeState` (daemon-standin.ts's `servedPhase`).
+# fixture_write EXTRA REVIEWS MERGE_STATES [THREADS] writes THREADS, the pull request's
 # review threads, each given as `id`, `isResolved`, `path`, `line`, `review` (the id of the
 # review whose inline comment opened it, one of REVIEWS) and `comments`, each with its `author`
 # and `body`, into the graph in the shape GitHub's GraphQL answers them: each comment carries its
@@ -3398,9 +3482,9 @@ fixture_write() {
     --arg login "$world_login" --arg when "${when:-}" \
     --arg key "$worker_key" --arg repo "$worker_repo" --arg base "$worker_base" \
     --argjson number "$worker_pr" --argjson extra "$1" \
-    --argjson decision "$2" --argjson reviews "$3" --argjson runs "$(concluded_checks)" \
+    --argjson reviews "$2" --argjson runs "$(concluded_checks)" \
     --argjson ruleset "$(base_ruleset_routes)" \
-    --argjson states "${4:-"{}"}" --argjson threads "${5:-"[]"}" '
+    --argjson states "${3:-"{}"}" --argjson threads "${4:-"[]"}" '
     ($number|tostring) as $n
     | ($repo | split("/")) as [$owner, $name]
     | ($repo | gsub("(?<c>[.+*?()|\\[\\]{}^$\\\\])"; "\\\(.c)")) as $repo_re
@@ -3429,9 +3513,8 @@ fixture_write() {
       | .out) as $seeded
     | {number:$number, id:("PR_kwDOAAAAAc4AAA" + $n), url:$url,
      title:("feat: greet() (" + $key + ")"), state:"OPEN", isDraft:false, isCrossRepository:false,
-     headRefName:$ref, headRefOid:$head, baseRefName:$base, body:$body, mergeable:"MERGEABLE",
-     mergeStateStatus:"CLEAN", mergedAt:null, autoMergeRequest:null,
-     reviewDecision:$decision,
+     headRefName:$ref, headRefOid:$head, baseRefName:$base, body:$body, mergedAt:null,
+     autoMergeRequest:null,
      statusCheckRollup:[$runs[] | {name, status:(.status|ascii_upcase), conclusion:(.conclusion|ascii_upcase)}]} as $pr
     | {id:1, node_id:"R_kgDOAAAAAQ", name:$name, full_name:$repo, owner:{login:$owner, type:"Organization"},
        private:false, visibility:"public", fork:false, archived:false, disabled:false, description:null,
@@ -3515,41 +3598,92 @@ fixture_write() {
     '{key:$key, repo:$repo, pr:$pr, branch:("legion/" + $key), base:$base, head:$head}' >"$R/world.json"
 }
 
-# concluded_checks prints the check runs GitHub reports on a head whose CI has finished: `test`
-# and `lint`, each completed with success, in the shape of the check-runs route, with the link of
-# the app that ran it (`details_url`) and the times `gh pr checks` prints from them. It is the
-# answer every head of every world takes: no world holds a head's CI running, since what holds an
-# approved head `BLOCKED` here is the open threads (resolution_protection_routes), not a check.
-# The times say how long each ran; the gh stand-in reports each on the commit it is read for, its
-# ids that commit's and its times counted from when that commit reached the remote
-# (gh-standin.ts's `reportedRuns`). These two are the checks every world's base requires
+# concluded_checks prints the check runs GitHub reports on a head whose CI has finished, in the
+# shape of the check-runs route, each naming the App that ran it by id (gh-call.ts's `CheckRun`):
+# `test` and `lint`, GitHub Actions' (15368), each completed with success, with the link of the
+# workflow's job (`details_url`); and `CodeQL`, GitHub Advanced Security's (57789), the check that
+# reports the code-scanning tool's analysis of the head, completed with success with the title
+# and summary that App writes where the head brings no new alert, and no link of its own, since
+# GitHub's page of the run is its link (gh-standin.ts's `reportedRuns`). Measured on 2026-11-18 on
+# the heads of open cybermonklabs/legion pull requests: each carried a `CodeQL` check run of that
+# App, beside the `Analyze (<language>)` jobs of the workflow that uploads its results, and an
+# approved head was `CLEAN` only once it had concluded (gh-threads.ts's `mergeStateOf`). The
+# times say how long each ran, and `gh pr checks` prints them. It is the answer every head of
+# every world takes: no world holds a head's CI running, since what holds an approved head
+# `BLOCKED` here is the open threads (resolution_protection_routes), not a check. The gh stand-in
+# reports each on the commit it is read for, its ids that commit's and its times counted from when
+# that commit reached the remote (gh-standin.ts's `reportedRuns`). Every world's base requires
+# the two of GitHub Actions as status checks and the third as its code-scanning tool's
 # (base_ruleset_routes).
 concluded_checks() {
-  jq -n '[
+  jq -n --arg repo "${worker_repo:-}" --arg pr "${worker_pr:-}" '[
     {name:"test", status:"completed", conclusion:"success", details_url:"https://example.invalid/2",
-     started_at:"2026-01-01T00:00:00Z", completed_at:"2026-01-01T00:00:20Z"},
+     started_at:"2026-01-01T00:00:00Z", completed_at:"2026-01-01T00:00:20Z", app:{id:15368}},
     {name:"lint", status:"completed", conclusion:"success", details_url:"https://example.invalid/1",
-     started_at:"2026-01-01T00:00:00Z", completed_at:"2026-01-01T00:00:10Z"}]'
+     started_at:"2026-01-01T00:00:00Z", completed_at:"2026-01-01T00:00:10Z", app:{id:15368}},
+    {name:"CodeQL", status:"completed", conclusion:"success",
+     started_at:"2026-01-01T00:00:00Z", completed_at:"2026-01-01T00:02:30Z", app:{id:57789},
+     output:{title:"No new alerts in code changed by this pull request",
+       summary:("[View all branch alerts](/" + $repo + "/security/code-scanning?query=pr%3A" + $pr + "+tool%3ACodeQL+is%3Aopen).")}}]'
 }
 
-# base_ruleset_routes [RULES] prints the routes of the one repository ruleset that protects every
-# world's base ($worker_base of $worker_repo), as a ruleset alone protects production's `main`
-# (production-shapes.json's ruleset reads): active on the default branch, holding RULES, a JSON
-# list of rules in GitHub's form (none unless a world's base requires more), ahead of the
-# `required_status_checks` rule every world's base requires, naming the checks the head reports
-# (concluded_checks) with the App that reports them, GitHub Actions (integration 15368,
-# gh-standin.ts's GITHUB_ACTIONS, the App the check runs name). Its routes are the three reads of
-# a ruleset GitHub answers a role App, each in production's shape: the rules in force on the
-# branch, each with the ruleset it comes from (`rules/branches/<base>`, the merge gate's rulesets
-# read); the repository's rulesets; and the ruleset by its id, GitHub's 404 for any other id
-# (gh-standin.ts's `ruleset` answer). Its id, node id and times are the world's own.
+# base_ruleset_routes [RESOLUTION] prints the routes of the one repository ruleset that protects
+# every world's base ($worker_base of $worker_repo), as a ruleset alone protects production's
+# `main`: active on the default branch, holding production's seven rules in production's order,
+# each with production's parameters in production's kinds and at production's values
+# (production-shapes.json's ruleset reads of 2026-11-17: a rule's parameters are the
+# deployment's configuration, not a value that names production), but for the checks and the
+# tool, which are the ones the world's head reports, and RESOLUTION. RESOLUTION, `true` or
+# `false` (the default, production's), is whether the base requires review threads resolved,
+# which a world whose premise is a head its open threads hold `BLOCKED` asks for
+# (resolution_protection_routes). The rules, and what the world does with each
+# (packages/pi-envoy/scripts/README.md lists every rule and every parameter nothing acts on):
+#   - `deletion`, `non_fast_forward`, `required_linear_history`: the run's remote refuses a
+#     deletion of the base, a push to it that is no fast-forward and one carrying a merge commit,
+#     as GitHub refuses them, and every other update of it (fixture_first_commit);
+#   - `pull_request`: one approval required, which decides the review decision and holds the merge
+#     state `BLOCKED` until it stands; no approval dismissed on a push and none asked of the last
+#     push, so an approval stands across the implementer's push; threads resolved where RESOLUTION
+#     says so (gh-threads.ts's `reviewDecisionOf`, `mergeStateOf`). Its extra approval for
+#     unattributed changes is asked only of a pull request Copilot opened with no human
+#     collaborator (GitHub's REST description), which no world's is: the implement App's bot opens
+#     it, so nothing acts on it;
+#   - `required_status_checks`: the checks GitHub Actions reports on the head (concluded_checks,
+#     `test` and `lint`), by its integration id, which hold the merge state `BLOCKED` until they
+#     pass;
+#   - `merge_queue`: the world holds no queue, and the merge state of an approved, green, resolved
+#     head is `CLEAN`, as production's is with its queue on (measured on 2026-11-18,
+#     gh-threads.ts's `mergeStateOf`);
+#   - `code_scanning`: the tool whose check the head reports (concluded_checks' `CodeQL`), which
+#     holds the merge state `BLOCKED` until that check succeeds; the world raises no alert, so
+#     nothing acts on its thresholds.
+# The world's `rulesets` list holds this ruleset alone: production's lists two, its `main`'s and
+# one on another branch, and the world's repository protects its base and no other branch, so
+# the list is the one a repository with production's `main` ruleset and nothing else answers, in
+# production's item shape. Its routes are the three reads of a ruleset GitHub answers a role App,
+# each in production's shape: the rules in force on the branch, each with the ruleset it comes
+# from (`rules/branches/<base>`, the merge gate's rulesets read); the repository's rulesets; and
+# the ruleset by its id, GitHub's 404 for any other id (gh-standin.ts's `ruleset` answer). Its id,
+# node id and times are the world's own.
 base_ruleset_routes() {
   jq -n --arg repo "$worker_repo" --arg base "$worker_base" --argjson runs "$(concluded_checks)" \
-    --argjson rules "${1:-[]}" '
+    --argjson resolution "${1:-false}" '
     {id:1, name:$base, target:"branch", source_type:"Repository", source:$repo, enforcement:"active",
      conditions:{ref_name:{exclude:[], include:["~DEFAULT_BRANCH"]}},
-     rules:($rules + [{type:"required_status_checks", parameters:{strict_required_status_checks_policy:false,
-       do_not_enforce_on_create:false, required_status_checks:[$runs[] | {context:.name, integration_id:15368}]}}]),
+     rules:[{type:"deletion"}, {type:"non_fast_forward"}, {type:"required_linear_history"},
+       {type:"pull_request", parameters:{required_approving_review_count:1,
+         dismiss_stale_reviews_on_push:false, required_reviewers:[], require_code_owner_review:false,
+         dismissal_restriction:{enabled:false, allowed_actors:[]}, require_last_push_approval:false,
+         required_review_thread_resolution:$resolution,
+         require_extra_approval_for_unattributed_changes:true, allowed_merge_methods:["squash"]}},
+       {type:"required_status_checks", parameters:{strict_required_status_checks_policy:false,
+         do_not_enforce_on_create:false,
+         required_status_checks:[$runs[] | select(.app.id == 15368) | {context:.name, integration_id:.app.id}]}},
+       {type:"merge_queue", parameters:{merge_method:"SQUASH", max_entries_to_build:5,
+         min_entries_to_merge:1, max_entries_to_merge:4, min_entries_to_merge_wait_minutes:0,
+         grouping_strategy:"ALLGREEN", check_response_timeout_minutes:180}},
+       {type:"code_scanning", parameters:{code_scanning_tools:[$runs[] | select(.app.id == 57789)
+         | {tool:.name, security_alerts_threshold:"high_or_higher", alerts_threshold:"none"}]}}],
      node_id:"RRS_lACqUmVwb3NpdG9yec4AAAABzgAAAAE", created_at:"2026-01-01T00:00:00.000Z",
      updated_at:"2026-01-01T00:00:00.000Z", current_user_can_bypass:"never",
      _links:{self:{href:("https://api.github.com/repos/" + $repo + "/rulesets/1")},
@@ -3564,19 +3698,12 @@ base_ruleset_routes() {
 }
 
 # resolution_protection_routes prints the routes of a base whose ruleset requires review threads
-# resolved beside the checks every world's base requires (base_ruleset_routes), which a world
-# puts ahead of fixture_write's own: a `pull_request` rule with
-# `required_review_thread_resolution`, every other parameter in the kind production's rule carries
-# it (production-shapes.json's `rules-branches-main`) and none asking for an approval, so the one
-# rule that holds a pull request `BLOCKED` with every check green and an approval standing is an
-# open review thread (gh-threads.ts's `mergeStateOf`). Its merge methods are the three the world's
-# repository allows.
+# resolved beside every other rule every world's base holds (base_ruleset_routes), which a world
+# puts ahead of fixture_write's own, so that with its approval standing and every check green the
+# one rule that holds its head `BLOCKED` is an open review thread (gh-threads.ts's
+# `mergeStateOf`).
 resolution_protection_routes() {
-  base_ruleset_routes "$(jq -n '[{type:"pull_request", parameters:{required_approving_review_count:0,
-    dismiss_stale_reviews_on_push:false, required_reviewers:[], require_code_owner_review:false,
-    dismissal_restriction:{enabled:false, allowed_actors:[]}, require_last_push_approval:false,
-    required_review_thread_resolution:true, require_extra_approval_for_unattributed_changes:false,
-    allowed_merge_methods:["merge", "squash", "rebase"]}}]')"
+  base_ruleset_routes true
 }
 
 # run_project SCENARIO CASE LABEL N [BATCH] prints the Legion project token of one worker run.

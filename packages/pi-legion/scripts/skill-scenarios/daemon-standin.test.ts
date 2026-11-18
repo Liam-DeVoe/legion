@@ -583,6 +583,38 @@ test.skipIf(skip)(
   600_000
 );
 
+// GitHub holds a head whose base's ruleset requires an approval `BLOCKED` until one stands, as
+// production's `main` does (INFRA-764's ruling of 2026-11-18; measured that day, every
+// `REVIEW_REQUIRED` pull request of cybermonklabs/legion against `main` read `BLOCKED`), and the
+// run's own approval is the one that lifts it. Catches: a daemon stand-in that reads the merge
+// state without the run's reviews, so the approval the run made never stands for it and the
+// round waits in `reviewing` for ever, while the gh stand-in, which reads them, answers `CLEAN`;
+// and one that moves the record before any approval stands.
+test.skipIf(skip)(
+  "an approval the base requires lifts the merge state it holds BLOCKED, and the round ends on it",
+  async () => {
+    const daemon = await standin("reviewer");
+    try {
+      const pull = pullRequest(daemon.dir);
+      const file = path.join(daemon.dir, "fixtures.json");
+      const fixtures = JSON.parse(readFileSync(file, "utf8"));
+      fixtures.routes.push({
+        match: "^gh api .*/rules/branches/main",
+        stdout: [{ type: "pull_request", parameters: { required_approving_review_count: 1 } }],
+      });
+      writeFileSync(file, JSON.stringify(fixtures));
+      const before = (await daemon.record()).issue;
+      expect([before?.phase, before?.pullRequest?.mergeState]).toEqual(["reviewing", "blocked"]);
+      pull.approve();
+      const after = (await daemon.record()).issue;
+      expect([after?.phase, after?.pullRequest?.mergeState]).toEqual(["accepting", "clean"]);
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
+
 // Catches: a stand-in that takes the request keys of this checkout's contract alone. An older
 // label, main `ff2a10ef` (the base label of 2026-11-12), sends `ready` on every completion, and
 // #2539 took it out of this checkout's strict request, so every base completion of 2026-11-12 was

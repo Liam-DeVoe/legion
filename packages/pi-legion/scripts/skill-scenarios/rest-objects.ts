@@ -1,6 +1,7 @@
 // The objects GitHub's REST API answers with that more than one route of the world carries, built
 // one way for the gh stand-in (gh-standin.ts) and for the HTTP stand-in Dispatch reads
-// (github-standin.ts): an account (`userJson`), an App (`appJson`, GITHUB_ACTIONS), a repository
+// (github-standin.ts): an account (`userJson`), an App (`appJson`, GITHUB_ACTIONS,
+// GITHUB_ADVANCED_SECURITY), a repository
 // (`repositoryJson`) and a pull request (`pullRequestJson`). Each is in the shape GitHub answers
 // it in — every field GitHub's description requires (rest-required.json) and every field
 // production's answer holds (production-shapes.json), and no other — with values read from the
@@ -224,6 +225,42 @@ export const GITHUB_ACTIONS: Json = {
     "workflow_run",
   ],
 };
+
+/** The App GitHub reports a code-scanning tool's check run as made by, GitHub Advanced Security,
+ * as its check-runs route names it: GitHub's own App, no name of this world's. Measured on
+ * 2026-11-18 from a Legion issue pod with the role App token its gh gives: the `CodeQL` check run
+ * of an open cybermonklabs/legion pull request's head (`gh api
+ * repos/<repo>/commits/<head>/check-runs?check_name=CodeQL`) named this App, with these
+ * permissions, no events and no description. */
+export const GITHUB_ADVANCED_SECURITY: Json = {
+  id: 57789,
+  client_id: "Iv1.4643383dd86f00de",
+  slug: "github-advanced-security",
+  node_id: "MDM6QXBwNTc3ODk=",
+  owner: userJson("github", [{ login: "github", id: 9919, type: "Organization" }]),
+  name: "GitHub Advanced Security",
+  description: "",
+  external_url: "https://github.com/features/security",
+  html_url: `${WEB}/apps/github-advanced-security`,
+  created_at: "2020-03-17T21:25:09Z",
+  updated_at: "2026-09-14T08:13:48Z",
+  permissions: {
+    actions: "read",
+    checks: "write",
+    contents: "read",
+    copilot_requests: "write",
+    metadata: "read",
+    pull_requests: "read",
+  },
+  events: [],
+};
+
+/** The App GitHub reports a world's check run `run` as made by: the one its `app` names by id
+ * (rig.sh's concluded_checks), GitHub Actions where it names none. */
+export function checkRunApp(run: { readonly app?: unknown }): Json {
+  const id = isObject(run.app) ? run.app.id : undefined;
+  return id === GITHUB_ADVANCED_SECURITY.id ? GITHUB_ADVANCED_SECURITY : GITHUB_ACTIONS;
+}
 
 /** The reactions of the comment whose API URL is `url`, none, as GitHub answers a comment's. */
 export function reactionsJson(url: string): Json {

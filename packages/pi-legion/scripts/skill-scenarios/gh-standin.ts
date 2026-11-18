@@ -14,10 +14,11 @@
 // and this answer replaces, and its diff and the comparison of two commits, which need no route
 // at all (`branchDiff`, `comparison`). The checks of that head (`gh pr checks` and the pull
 // request's `statusCheckRollup`) are the world's check-runs answer for the head the remote is at,
-// reported on that head as GitHub reports a check run (`headRuns`, `reportedRuns`), and its merge
-// state (`mergeStateStatus`, `mergeable_state`) the one the world reports for that head, held
-// `BLOCKED` while a thread is open where its base requires them resolved (gh-threads.ts's
-// `mergeStateOf`). The rest of a review's life is this
+// reported on that head as GitHub reports a check run (`headRuns`, `reportedRuns`), and its review
+// decision, merge state and mergeability (`reviewDecision`, `mergeStateStatus`, `mergeable`,
+// `mergeable_state`) are computed as GitHub computes them from the base's rules, the reviews the
+// world held and the run left, those checks and the threads as the run left them (gh-threads.ts's
+// `reviewDecisionOf`, `mergeStateOf`, `mergeableOf`). The rest of a review's life is this
 // file's own and no world's, since GitHub answers it from what the run has done: the create of a
 // review, refused 422 where GitHub refuses it and otherwise answered with the state, head and
 // body the call gives it (`reviewCreate`); the submit of a review (`…/reviews/<id>/events`), answered
@@ -103,19 +104,22 @@ import {
   RUN_SELECTORS,
   runSelectors,
 } from "./gh-selectors";
-// The pull request's review threads as the run has left them, and the merge state they leave it
-// in: one replay of the record for this stand-in and the daemon stand-in.
+// The pull request's review threads as the run has left them, and the review decision and merge
+// state its base's rules leave it in: one replay of the record for this stand-in and the daemon
+// stand-in.
 import {
   commentsOf,
   conversationOf,
   graphqlOf,
   heldPullRequest,
   type Json,
+  mergeableOf,
   mergeStateOf,
   NOT_FOUND,
   OWN_REVIEW,
   REVIEW_NODE,
   recordedCalls,
+  reviewDecisionOf,
   routeAnswer,
   type ThreadWorld,
   threadCall,
@@ -143,8 +147,8 @@ import {
 import {
   accountsOf,
   appJson,
+  checkRunApp,
   committerJson,
-  GITHUB_ACTIONS,
   githubInstant,
   githubTime,
   type PullFacts,
@@ -992,10 +996,25 @@ function reviewObject(review: OwnReview): Record<string, unknown> {
     ...(state === "PENDING" ? {} : { submitted_at: githubInstant(made) }),
   });
 }
-/** The world the threads are read against, and the pull request's review threads as this call
- * finds them: the world's, and every call the record holds. */
+/** The world the threads are read against, every call the record holds, and the pull request's
+ * review threads as this call finds them: the world's, and the effect of each of those calls. */
 const threadWorld: ThreadWorld = { routes, world };
-const threads = threadState(threadWorld, recordedCalls(RECORD));
+const calls = recordedCalls(RECORD);
+const threads = threadState(threadWorld, calls);
+/** What GitHub computes of the pull request at `head` from its base's rules, as GraphQL names it
+ * (gh-threads.ts): its review decision (null for none), its merge state and whether it merges. */
+function pullStatus(head: string): {
+  reviewDecision: string | null;
+  mergeStateStatus: string;
+  mergeable: string;
+} {
+  const state = mergeStateOf(threadWorld, threads, fixtures.mergeStates, head, calls);
+  return {
+    reviewDecision: reviewDecisionOf(threadWorld, calls),
+    mergeStateStatus: state,
+    mergeable: mergeableOf(state),
+  };
+}
 /** What GitHub answered this call where it writes a thread, applied to `threads`: a refusal here
  * is GitHub's, and the REST comment it made, or the payloads of its mutation, its answer. */
 const threaded = threadCall(threadWorld, threads, {
@@ -1024,9 +1043,11 @@ const own =
     ? reviewCommentJson(threaded.rest.thread, threaded.rest.comment, "pull")
     : undefined);
 /** A check run as GitHub's check-runs route reports it on the commit it ran on: the world's run —
- * its name, status, conclusion, the link of the app that ran it (`details_url`) and how long it
- * ran — with the ids GitHub gives it, the commit it ran on (`head_sha`), GitHub's own page of it
- * (`html_url`) and the times it ran, counted from when that commit reached the run's remote. */
+ * its name, status, conclusion, the link of the app that ran it (`details_url`), how long it ran,
+ * the title and summary its App wrote, if any, and that App (`app`, by id) — with the ids GitHub
+ * gives it, the commit it ran on (`head_sha`), GitHub's own page of it (`html_url`), the times it
+ * ran, counted from when that commit reached the run's remote, and its App whole
+ * (rest-objects.ts's `checkRunApp`). */
 interface ReportedRun extends CheckRun {
   readonly id: number;
   readonly head_sha: string;
@@ -1054,7 +1075,9 @@ function reachedAt(sha: string): number | undefined {
  * whose every head reported checks run on 2026-01-01, ten months before the commit they tested,
  * left a reviewer asking whether this world's CI ran at all (INFRA-764 round 24,
  * reviewer-text-findings-text-only-base-6). The ids are the commit's own, so a head reads the same
- * runs at every read. */
+ * runs at every read. A workflow's job writes no output, and a code-scanning tool's check carries
+ * the title and summary GitHub Advanced Security wrote (production's `CodeQL`, measured on
+ * 2026-11-18). */
 function reportedRuns(runs: readonly CheckRun[], sha: string): ReportedRun[] {
   const repo = world?.repo ?? "";
   const reached = reachedAt(sha);
@@ -1089,14 +1112,14 @@ function reportedRuns(runs: readonly CheckRun[], sha: string): ReportedRun[] {
       started_at: moved(one.started_at),
       completed_at: moved(one.completed_at),
       output: {
-        title: null,
-        summary: null,
+        title: isObject(one.output) ? (one.output.title ?? null) : null,
+        summary: isObject(one.output) ? (one.output.summary ?? null) : null,
         text: null,
         annotations_count: 0,
         annotations_url: `${api}/annotations`,
       },
       check_suite: { id: 30_000_000_000 + seed },
-      app: GITHUB_ACTIONS,
+      app: checkRunApp(one),
       pull_requests: pulls,
     };
   });
@@ -1351,6 +1374,7 @@ function prView(fields: readonly string[]): Json {
   const held = heldPullRequest(routes);
   const tip = once(branchTip);
   const rest = pullRest;
+  const status = once(() => pullStatus(tip() ?? String(held.headRefOid ?? "")));
   const repository = () => {
     const head = rest().head;
     return isObject(head) && isObject(head.repo) ? head.repo : {};
@@ -1363,12 +1387,12 @@ function prView(fields: readonly string[]): Json {
         return tip() ?? held.headRefOid;
       case "baseRefOid":
         return isObject(rest().base) ? (rest().base as Json).sha : null;
-      case "mergeStateStatus": {
-        const at = tip();
-        return at === undefined
-          ? held.mergeStateStatus
-          : mergeStateOf(threadWorld, threads, fixtures.mergeStates, at);
-      }
+      case "mergeStateStatus":
+      case "mergeable":
+        return status()[field];
+      // gh reads a decision GitHub answers null for as "" (rig.sh's tester-proof world held "").
+      case "reviewDecision":
+        return status().reviewDecision ?? "";
       case "statusCheckRollup": {
         const runs = headRuns();
         return runs === undefined
@@ -2271,15 +2295,17 @@ if (
   });
   if (head !== undefined) answered = { state, head };
 }
-/** The pull request `one` as it stands: at the tip of the run's own remote (`tip`), with the
- * checks of that head (`runs`) and the merge state the world reports for it. A `one` that is no
- * pull request of the world (it carries no `headRefOid`) is its own answer. */
+/** The pull request `one` as it stands: at the tip of the run's own remote (`tip`, its own head
+ * for a run with no remote), with the checks of that head (`runs`), and the review decision,
+ * merge state and mergeability GitHub computes for it from its base's rules (`pullStatus`). A
+ * `one` that is no pull request of the world (it carries no `headRefOid`) is its own answer. */
 function current(
   one: Record<string, unknown>,
   tip: string | undefined,
   runs: ReportedRun[] | undefined
 ): Record<string, unknown> {
-  if (!("headRefOid" in one) || tip === undefined) return one;
+  if (!("headRefOid" in one)) return one;
+  const head = tip ?? String(one.headRefOid);
   const rollup =
     "statusCheckRollup" in one && runs !== undefined
       ? {
@@ -2295,19 +2321,20 @@ function current(
           })),
         }
       : {};
-  const state = mergeStateOf(threadWorld, threads, fixtures.mergeStates, tip);
-  const merge = "mergeStateStatus" in one ? { mergeStateStatus: state } : {};
-  return { ...one, headRefOid: tip, ...rollup, ...merge };
+  return { ...one, headRefOid: head, ...rollup, ...pullStatus(head) };
 }
 // What GitHub answers for a pull request's head is read from the run's own remote, and only for
 // an answer that carries one: the tip is a `git` call, which a call answered by any other route
 // never makes. The checks the object reports (`statusCheckRollup`) are that head's own, in the
 // spelling GitHub's GraphQL gives them (`headRuns`): a rollup frozen into the world read green
-// on a head whose check the check-runs route said was still running. So is its merge state, in
-// gh's spelling (`mergeStateStatus`), which the REST pull request answers in its own
-// (`mergeable_state`, rest-objects.ts's `pullRequestJson`) and the daemon stand-in moves the
-// record on (daemon-standin.ts's `roundOutcome`). gh's own reads of the pull request in a world
-// are this file's (`prRead`), which reads each field it is asked for and no other.
+// on a head whose check the check-runs route said was still running. So are its review decision
+// and merge state, computed from the base's rules (`pullStatus`), in gh's spelling
+// (`mergeStateStatus`, `mergeable`), which the REST pull request answers in its own
+// (`mergeable_state`, `mergeable`, rest-objects.ts's `pullRequestJson`) and the daemon stand-in
+// moves the record on (daemon-standin.ts's `roundOutcome`): a decision and a state frozen into
+// the world read `CLEAN` before any review where production's base, which requires an approval,
+// reads `REVIEW_REQUIRED` and `BLOCKED`. gh's own reads of the pull request in a world are this
+// file's (`prRead`), which reads each field it is asked for and no other.
 if (
   viewed === undefined &&
   (Array.isArray(output) ? output : [output]).some(
