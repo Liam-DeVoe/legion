@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"slices"
 	"sync"
 	"time"
 
@@ -719,6 +720,37 @@ func (k *reachKeeper) tellController(ctx context.Context, notice record.Controll
 		k.marked(marks)
 	}
 	return told
+}
+
+// relaunchRefusal is why the controller's `relaunch` of c is refused before c's machine is asked,
+// and nil where it goes on: the three things only the keeper knows (supervision.relaunch). c must
+// be marked out of reach; its last relaunch — the later of the one the keeper's record has taken
+// in and the one c's own row records, which the relaunch's launch wrote — must be at least 6 hours
+// old; and of siblings, the live claims of c's pod with c among them, two or more must not every
+// one be out of reach, since a relaunch into a pod that reaches Envoy for none of them fails each
+// worker at its deaths limit and recovers none. The caller reads siblings before this takes mu.
+func (k *reachKeeper) relaunchRefusal(c supervise.Claim, siblings []supervise.Claim, now time.Time) error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	rec := k.recordOf(c)
+	last := latest(rec.RelaunchedAt, c.Reach.LastRelaunch)
+	switch {
+	case !rec.Unreachable():
+		return supervise.ErrClaimReachable
+	case !last.IsZero() && now.Sub(last) < supervise.RelaunchAgainAfter:
+		return fmt.Errorf("%w: at %s", supervise.ErrRelaunchedRecently, stamp(last))
+	case len(siblings) < 2:
+		return nil
+	}
+	tokens := make([]claim.Token, 0, len(siblings))
+	for _, other := range siblings {
+		if !k.recordOf(other).Unreachable() {
+			return nil
+		}
+		tokens = append(tokens, other.Token)
+	}
+	slices.Sort(tokens)
+	return fmt.Errorf("%w: pod %s holds %d live claims, every one out of reach: %v", supervise.ErrPodUnreachable, c.Locator.Sandbox.PodUID, len(tokens), tokens)
 }
 
 // guardRefused records that the relaunch guard refused token's relaunch at at: the first refusal

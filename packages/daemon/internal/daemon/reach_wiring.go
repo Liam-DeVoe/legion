@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -154,17 +153,7 @@ func (s *supervision) relaunchOwnController(ctx context.Context, c supervise.Cla
 func (s *supervision) relaunch(ctx context.Context, m *supervise.Machine) error {
 	c := m.Claim()
 	now := s.reach.now()
-	s.reach.mu.Lock()
-	rec := s.reach.recordOf(c)
-	s.reach.mu.Unlock()
-	last := latest(rec.RelaunchedAt, c.Reach.LastRelaunch)
-	switch {
-	case !rec.Unreachable():
-		return supervise.ErrClaimReachable
-	case !last.IsZero() && now.Sub(last) < supervise.RelaunchAgainAfter:
-		return fmt.Errorf("%w: at %s", supervise.ErrRelaunchedRecently, stamp(last))
-	}
-	if err := s.podReachesNone(c); err != nil {
+	if err := s.reach.relaunchRefusal(c, s.podSiblings(c), now); err != nil {
 		return err
 	}
 	step, err := s.reach.stepOf(ctx, c)
@@ -186,33 +175,23 @@ func (s *supervision) relaunch(ctx context.Context, m *supervise.Machine) error 
 	return err
 }
 
-// podReachesNone refuses the relaunch of c when every live claim of the pod c runs in, two or
-// more, is marked out of reach. A claim that runs in no pod (tmux) shares nothing to refuse for.
-// The claims are read as their machines last published them, which is where the daemon holds
-// each claim's process now.
-func (s *supervision) podReachesNone(c supervise.Claim) error {
+// podSiblings is every live claim of the pod c runs in, c among them, as the machines last
+// published them, which is where the daemon holds each claim's process now; none for a claim
+// that runs in no pod (tmux), which shares nothing. It is read before the keeper's lock is taken
+// (reachKeeper.relaunchRefusal), so no machine's lock is waited on under it.
+func (s *supervision) podSiblings(c supervise.Claim) []supervise.Claim {
 	if c.Locator == nil || c.Locator.Sandbox == nil {
 		return nil
 	}
 	pod := c.Locator.Sandbox.PodUID
-	var siblings []claim.Token
-	s.reach.mu.Lock()
-	defer s.reach.mu.Unlock()
+	var siblings []supervise.Claim
 	for _, m := range s.supervisor.supervised() {
 		other := m.View().Claim
-		if other.Locator == nil || other.Locator.Sandbox == nil || other.Locator.Sandbox.PodUID != pod || !runsOnSession(other.State) {
-			continue
+		if other.Locator != nil && other.Locator.Sandbox != nil && other.Locator.Sandbox.PodUID == pod && runsOnSession(other.State) {
+			siblings = append(siblings, other)
 		}
-		if !s.reach.recordOf(other).Unreachable() {
-			return nil
-		}
-		siblings = append(siblings, other.Token)
 	}
-	if len(siblings) < 2 {
-		return nil
-	}
-	slices.Sort(siblings)
-	return fmt.Errorf("%w: pod %s holds %d live claims, every one out of reach: %v", supervise.ErrPodUnreachable, pod, len(siblings), siblings)
+	return siblings
 }
 
 // markControllerLocator puts the mark of the project controller's claim, where the daemon holds
