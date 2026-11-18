@@ -557,8 +557,8 @@ var indexPasses = map[string]string{
 	// messages that no live node marks, each read again under its owner row before its node is
 	// written, and the comment and block nodes that name no project, each with the row its
 	// project is read from.
-	"graphcensus/projects.go#writeObjectBatch": "the issue, document, ask and message rows no live node marks",
-	"graphcensus/projects.go#writeScopeBatch":  "the comment and block nodes that name no project, and the rows their project is read from",
+	"graphcensus/projects_backfill.go#writeObjectBatch": "the issue, document, ask and message rows no live node marks",
+	"graphcensus/projects_backfill.go#writeScopeBatch":  "the comment and block nodes that name no project, and the rows their project is read from",
 	// The erase (R5), the one statement of the tree that removes bytes. Its input is the node
 	// the operator named and what the store itself holds about it, which is neither side of a
 	// projection read to mend the other: it deletes both sides together, the store's through

@@ -130,8 +130,8 @@ var storeWriteCallSites = []string{
 	// them, and the project of the comment and block nodes written before a node named one
 	// (graphstore.FillScopes), the block batch under the revision fence (lockBlockDocuments).
 	// graphcensus' TestTheBackfillGivesEveryRowItsNodeAndProject runs both.
-	"graphcensus/projects.go#writeObjectBatch",
-	"graphcensus/projects.go#writeScopeBatch",
+	"graphcensus/projects_backfill.go#writeObjectBatch",
+	"graphcensus/projects_backfill.go#writeScopeBatch",
 	// The erase, the one writer that deletes from the store, through EraseNode: the tuples on both
 	// sides of the node, then the node's row. It takes the owner rows it writes under before that
 	// row, and its projection rows after it (grapherase's TestTheEraseTakesTheStoreLockOrder).
