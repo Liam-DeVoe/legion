@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, type RefObject, useId, useMemo, useRef, useState } from "react";
 
 import { api } from "../../api/client";
@@ -67,9 +67,11 @@ function HandoffFields({
   /** The Show fields and Hide fields control above the body. */
   toggle: RefObject<HTMLButtonElement | null>;
 }): ReactNode {
+  const queryClient = useQueryClient();
+  const key = ["handoff", handoffId];
   const handoff = useQuery({
     gcTime: Number.POSITIVE_INFINITY,
-    queryKey: ["handoff", handoffId],
+    queryKey: key,
     queryFn: () => api.getHandoff(handoffId),
     staleTime: Number.POSITIVE_INFINITY,
   });
@@ -95,18 +97,21 @@ function HandoffFields({
         failure={handoff.errorUpdateCount}
         message={ANSWER_LINES.handoff_unreadable}
         onRetry={() => {
-          // A press while the read is out sends nothing, as every Retry of Details drops it: a
-          // refetch would cancel the read in flight and send another.
-          if (handoff.isFetching) return;
           // The Retry goes with its line: at once where no body is held, as the read it sends
           // draws the loading line in this one's place, else once that read lands. A focus on
           // a control that goes falls to the page, so a focus on the Retry moves first to the
           // toggle above it, where the reader opened the fields, as `DecisionActions.tsx` moves
-          // a focus before its write takes its control away.
-          if (failure.current?.contains(document.activeElement) === true) {
+          // a focus before its write takes its control away. A press while that read is out
+          // joins it rather than ending it and sending another (`cancelRefetch: false`), and
+          // moves no focus, as its line stays until the read lands: a reader who came back to
+          // the busy Retry stays on it. The query's own state says whether a read is out as the
+          // press lands; the render's `isFetching` can be older than a second press made before
+          // React draws the first one's read.
+          const sends = queryClient.getQueryState(key)?.fetchStatus === "idle";
+          if (sends && failure.current?.contains(document.activeElement) === true) {
             toggle.current?.focus({ preventScroll: true });
           }
-          void handoff.refetch();
+          void handoff.refetch({ cancelRefetch: false });
         }}
         retrying={handoff.isFetching}
       />

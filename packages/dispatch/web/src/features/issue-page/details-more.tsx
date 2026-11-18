@@ -132,17 +132,16 @@ export function DetailsPeople({ issue }: DetailsMoreProps): ReactNode {
           />
         ) : null}
         {/* Neither Retry is disabled while what it sent is out, since Chromium drops the focus of
-            a focused button that turns disabled to the page: its line stays, its Retry busy, and
-            a press then does nothing. Each failure is drawn afresh, so one that repeats in the
-            same words is said again. */}
+            a focused button that turns disabled to the page: its line stays, the read's Retry
+            reads busy and a press then joins the read that is out, and the write's Retry takes
+            no press (`refused`) and a press then is dropped. Each failure is drawn afresh, so one
+            that repeats in the same words is said again. */}
         {subscribers.error ? (
           <DetailsErrorLine
             error={subscribers.failure}
             failure={subscribers.errorUpdateCount}
             message={STATE_LINES.subscribers_unreadable}
-            onRetry={() => {
-              if (!subscribers.fetching) subscribers.refetch();
-            }}
+            onRetry={subscribers.refetch}
             retrying={subscribers.fetching}
           />
         ) : null}
@@ -157,7 +156,7 @@ export function DetailsPeople({ issue }: DetailsMoreProps): ReactNode {
                     if (!subscribers.unsubscribe.isPending) subscribers.unsubscribe.mutate(refused);
                   }
             }
-            retrying={subscribers.unsubscribe.isPending}
+            refused={subscribers.unsubscribe.isPending}
           />
         )}
       </WideRow>

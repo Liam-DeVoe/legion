@@ -26,6 +26,8 @@ export interface IssueSubscribers {
    *  a listener that is refilling from one that failed (`DetailsErrorLine`). */
   readonly failure: unknown;
   readonly fetching: boolean;
+  /** Sends the read again, or joins the read that is out rather than ending it and sending
+   *  another (`cancelRefetch: false`). */
   readonly refetch: () => void;
   readonly rows: readonly Subscriber[];
   readonly unsubscribe: KeyedWriteResult<void, string, unknown>;
@@ -59,7 +61,7 @@ export function useIssueSubscribers(issueKey: string): IssueSubscribers {
     failure: subscribers.error ?? lastFailure.current,
     fetching: subscribers.isFetching,
     refetch: () => {
-      void subscribers.refetch();
+      void subscribers.refetch({ cancelRefetch: false });
     },
     rows,
     unsubscribe,

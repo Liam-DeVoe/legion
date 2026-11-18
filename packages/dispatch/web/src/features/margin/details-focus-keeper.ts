@@ -35,6 +35,11 @@ const WATCHED: MutationObserverInit = {
   subtree: true,
 };
 
+/** The attribute each entry of the new issue page's history carries, its own id there, by which
+ *  the keeper tells a redrawn control of one entry from a control of another
+ *  (`ControlIdentity`). */
+export const HISTORY_ENTRY_ATTRIBUTE = "data-history-entry";
+
 /** What tells a control apart across a redraw, where React draws it anew as another element: the
  *  history entry it stands in, its own `id`, its tag, its role and its name, in one key. */
 type ControlIdentity = string;
@@ -66,19 +71,16 @@ type Loss = "disabled" | "hidden" | "removed";
  * Keeps a keyboard reader's focus inside Details while `active` holds: when the control that has
  * the focus is removed, turns disabled or is no longer drawn, and the focus has fallen to the
  * page, the keeper gives it to another place in `box`. Chromium drops the focus of a button that
- * turns disabled, or is removed, to the body, and enabling the button again does not bring it
- * back. Without the keeper, a reader whose Retry turns busy while it reads, or whose Load older
- * goes away with the log's last page, starts again from the top of the page.
+ * turns disabled, or is removed, to the body. Without the keeper, a reader whose Retry goes with
+ * its line once its read answers, or whose Load older goes away with the log's last page, starts
+ * again from the top of the page.
  *
  * The focus goes, in this order: to the control that replaced the lost one, a control drawn in the
  * same change with the same identity (`ControlIdentity`), as when React draws an entry anew under
  * a new key; else to the control nearest to where the lost one stood, among those that stay
  * enabled, drawn and in sight and are not pinned (`PINNED`), looked for first inside the box that
  * scrolls the lost one, Details' body, and only where that holds none in the rest of the box; else
- * to the box's heading, its first `h2`. A control the keeper moved the focus off because it turned
- * disabled gets the focus back when it is enabled again, if the focus is still where the keeper put
- * it and the reader has done nothing inside the box since - pressed no key, pressed no pointer,
- * moved no focus: a Retry that is busy while it reads, then fails.
+ * to the box's heading, its first `h2`.
  *
  * It is a backstop under each site's own hand-on, not a replacement for it. It hears a change
  * through one MutationObserver on the box, and through a `focusout` that names no next element,
@@ -106,14 +108,9 @@ export function useDetailsFocusKeeper(box: RefObject<HTMLElement | null>, active
 function keepFocusIn(root: HTMLElement): () => void {
   // The control inside the box that holds the focus, with its identity as it was when it took it.
   let held: { readonly control: HTMLElement; readonly identity: ControlIdentity } | null = null;
-  // A control the keeper moved the focus off as it turned disabled, and where it put the focus.
-  let restore: { readonly at: HTMLElement; readonly control: HTMLElement } | null = null;
-  // The move the keeper makes a task after the held control was lost: how it was lost, every
-  // record heard since, and the timer that makes it.
-  let pending: { loss: Loss; readonly records: MutationRecord[]; readonly timer: number } | null =
-    null;
-  // Whether the focus moving now is the keeper's own move.
-  let placing = false;
+  // The move the keeper makes a task after the held control was lost: every record heard since,
+  // and the timer that makes it.
+  let pending: { readonly records: MutationRecord[]; readonly timer: number } | null = null;
   const observer = new MutationObserver((records) => keep(records, false));
   const listening = new AbortController();
 
@@ -131,7 +128,6 @@ function keepFocusIn(root: HTMLElement): () => void {
   function forget(): void {
     cancel();
     held = null;
-    restore = null;
     observer.disconnect();
   }
 
@@ -139,13 +135,6 @@ function keepFocusIn(root: HTMLElement): () => void {
     if (pending === null) return;
     window.clearTimeout(pending.timer);
     pending = null;
-  }
-
-  function place(target: HTMLElement): boolean {
-    placing = true;
-    target.focus({ preventScroll: true });
-    placing = false;
-    return document.activeElement === target;
   }
 
   // `measure` reads whether the held control is still drawn, a layout read the observer makes only
@@ -156,23 +145,6 @@ function keepFocusIn(root: HTMLElement): () => void {
     if (!onPage && !root.contains(focus)) {
       forget();
       return;
-    }
-    if (restore !== null) {
-      const { at, control } = restore;
-      if (!control.isConnected) {
-        restore = null;
-      } else if (
-        focus === at &&
-        records.some(
-          (record) => record.attributeName === "disabled" && record.target.contains(control)
-        ) &&
-        lossOf(control, root, [], true) === null &&
-        drawn(root)
-      ) {
-        restore = null;
-        place(control);
-        return;
-      }
     }
     if (held === null) return;
     const { control } = held;
@@ -197,16 +169,15 @@ function keepFocusIn(root: HTMLElement): () => void {
     // task React queued as the commit ended: the keeper moves in a task of its own, queued behind
     // that one, with every record it heard until then.
     if (pending === null) {
-      pending = { loss, records: [...records], timer: window.setTimeout(move, 0) };
+      pending = { records: [...records], timer: window.setTimeout(move, 0) };
     } else {
-      pending.loss = loss;
       pending.records.push(...records);
     }
   }
 
   function move(): void {
     if (pending === null || held === null) return;
-    const { loss, records } = pending;
+    const { records } = pending;
     pending = null;
     const { control, identity } = held;
     // A focus a site's passive effect or the reader put somewhere since stays where they put it,
@@ -226,30 +197,10 @@ function keepFocusIn(root: HTMLElement): () => void {
       replacementOf(identity, root, records, stood) ??
       nearestTo(stood, root, scrollerOf(removal?.target ?? control.parentElement, root)) ??
       headingOf(root);
-    if (target === null) return;
-    const back = loss === "disabled" ? control : restore?.control;
-    if (!place(target)) return;
-    restore = back === undefined || back === target ? null : { at: target, control: back };
+    target?.focus({ preventScroll: true });
   }
 
-  // Any act of the reader inside the box is theirs to follow: a control the keeper moved the focus
-  // off no longer takes it back once they press a key or a pointer there, as when they press Pin,
-  // where the keeper put the focus, and Pin turns into Unpin under it. Heard as the event comes
-  // down to its target, before the press does anything, and whatever its target's own handler does.
-  const acted = () => {
-    restore = null;
-  };
-  root.addEventListener("keydown", acted, { capture: true, signal: listening.signal });
-  root.addEventListener("pointerdown", acted, { capture: true, signal: listening.signal });
-
-  root.addEventListener(
-    "focusin",
-    (event) => {
-      if (!placing) restore = null;
-      note(event.target);
-    },
-    { signal: listening.signal }
-  );
+  root.addEventListener("focusin", (event) => note(event.target), { signal: listening.signal });
   root.addEventListener(
     "focusout",
     (event) => {
@@ -310,7 +261,7 @@ function removalOf(control: Node, records: readonly MutationRecord[]): MutationR
 
 function identityOf(control: HTMLElement): ControlIdentity {
   return JSON.stringify([
-    control.closest("[data-history-entry]")?.getAttribute("data-history-entry") ?? null,
+    control.closest(`[${HISTORY_ENTRY_ATTRIBUTE}]`)?.getAttribute(HISTORY_ENTRY_ATTRIBUTE) ?? null,
     control.id,
     control.tagName,
     control.getAttribute("role"),

@@ -14,7 +14,6 @@ import {
   railHoverBg,
   railText,
 } from "../../theme/classes";
-import { useDetailsFocusKeeper } from "../issue-page/details-focus-keeper";
 import { DETAILS_ATTRIBUTE, type MarginDrawer, useMarginDrawer } from "../issue-page/margin-slot";
 import { NO_HOVER_PREVIEW_ATTRIBUTE } from "../refs/ref-preview-card";
 import { routeHasMargin } from "../refs/routes";
@@ -25,6 +24,7 @@ import {
   useDialog,
   useMediaQuery,
 } from "../shell/useDialog";
+import { useDetailsFocusKeeper } from "./details-focus-keeper";
 import { MarginSheet, type MarginSheetModel } from "./MarginSheet";
 import { useMargin } from "./margin-context";
 import {

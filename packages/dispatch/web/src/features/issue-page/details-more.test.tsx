@@ -317,13 +317,13 @@ test("a failed Unsubscribe says so, with Retry", async () => {
 
     await waitFor(() => expect(unsubscribeIssueSession).toHaveBeenCalledTimes(2));
     expect(unsubscribeIssueSession).toHaveBeenLastCalledWith(KEY, "planner", keyedAttempt);
-    // Retry stays with its line while its write is out, busy and never disabled, and keeps the
-    // focus the press gave it.
+    // Retry stays with its line while its write is out, taking no press but never disabled, and
+    // keeps the focus the press gave it.
     await waitFor(() =>
-      expect(
-        retry,
-        "Retry does not read busy while the write it sent again is out"
-      ).toHaveAttribute("aria-busy", "true")
+      expect(retry, "Retry takes a press while the write it sent again is out").toHaveAttribute(
+        "aria-disabled",
+        "true"
+      )
     );
     expect(retry, "Retry turned disabled while the write it sent again is out").toBeEnabled();
     expect(
@@ -338,6 +338,62 @@ test("a failed Unsubscribe says so, with Retry", async () => {
     // once the agents were read again; no agent follows it, so the focus is on the Subscribers
     // control rather than on the page.
     expect(document.activeElement, "the focus fell to the page with Retry").toBe(subscribers);
+  } finally {
+    view.unmount();
+    getIssueSubscribers.mockRestore();
+    unsubscribeIssueSession.mockRestore();
+  }
+});
+
+// Unsubscribe's Retry sends a write again, but it read busy while that write was out, as a read's
+// Retry does, whose press joins the read that is out: a write has nothing to join. It takes no
+// press then, as every write's Retry of Details, and a press made meanwhile sends nothing.
+test("Unsubscribe's Retry takes no press while the write it sent again is out", async () => {
+  let subscribed = [SUBSCRIBER];
+  // The write Retry sends is held until the case lets it land.
+  const { promise: landed, resolve: land } = Promise.withResolvers<void>();
+  const getIssueSubscribers = spyOn(api, "getIssueSubscribers").mockImplementation(
+    async () => subscribed
+  );
+  const unsubscribeIssueSession = spyOn(api, "unsubscribeIssueSession")
+    .mockRejectedValueOnce(new ApiError(403, { code: "FORBIDDEN", error: "not yours to remove" }))
+    .mockImplementation(async () => {
+      await landed;
+      subscribed = [];
+    });
+  const view = renderPeople();
+  try {
+    const subscribers = await screen.findByRole("button", { name: SUBSCRIBERS });
+    await waitFor(() => expect(subscribers.textContent).toBe(`${PROPERTY_LABELS.subscribers}:1`));
+    await userEvent.click(subscribers);
+    await userEvent.click(screen.getByRole("button", { name: "Unsubscribe" }));
+    await userEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Confirm" })
+    );
+    expect((await screen.findByRole("alert")).textContent).toBe(ANSWER_LINES.unsubscribe_failed);
+    const retry = screen.getByRole("button", { name: CONTROL_LABELS.retry });
+
+    await userEvent.click(retry);
+    await waitFor(() => expect(unsubscribeIssueSession).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(
+        retry,
+        "Unsubscribe's Retry takes a press while the write it sent again is out"
+      ).toHaveAttribute("aria-disabled", "true")
+    );
+    expect(
+      retry,
+      "Unsubscribe's Retry reads busy while its write is out, as a read's Retry does"
+    ).not.toHaveAttribute("aria-busy");
+    await userEvent.click(retry);
+    expect(
+      unsubscribeIssueSession,
+      "a press of Retry while its write is out sent the write again"
+    ).toHaveBeenCalledTimes(2);
+
+    land();
+    await waitFor(() => expect(subscribers.textContent).toBe(`${PROPERTY_LABELS.subscribers}:0`));
+    expect(unsubscribeIssueSession).toHaveBeenCalledTimes(2);
   } finally {
     view.unmount();
     getIssueSubscribers.mockRestore();
@@ -387,6 +443,45 @@ test("a subscribers' Retry pressed by keyboard over the agents held keeps the fo
     expect(screen.queryByRole("button", { name: "Unsubscribe" })).not.toBeNull();
   } finally {
     restoreFocus();
+    view.unmount();
+    getIssueSubscribers.mockRestore();
+  }
+});
+
+// A second press of the subscribers' Retry made before React draws the read the first one sent
+// found the render's `isFetching` still false, so it read the agents again: a refetch of a read
+// that holds an answer ends the request that is out and sends another. A press while the read is
+// out joins it.
+test("two presses of the subscribers' Retry before a render send one read", async () => {
+  const getIssueSubscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([SUBSCRIBER]);
+  const view = renderPeople();
+  try {
+    const subscribers = await screen.findByRole("button", { name: SUBSCRIBERS });
+    await waitFor(() => expect(subscribers.textContent).toBe(`${PROPERTY_LABELS.subscribers}:1`));
+    getIssueSubscribers.mockRejectedValueOnce(
+      new ApiError(503, { code: "ENVOY_UNAVAILABLE", error: "envoy listener unreachable" })
+    );
+    await act(() => view.client.invalidateQueries({ queryKey: ["subscribers", KEY] }));
+    const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
+    // Every read sent from here is held out until the case lets it land.
+    const again = Promise.withResolvers<Subscriber[]>();
+    getIssueSubscribers.mockImplementation(() => again.promise);
+
+    // Both presses in one task inside one `act`, so React draws nothing between them.
+    act(() => {
+      retry.click();
+      retry.click();
+    });
+    expect(
+      getIssueSubscribers,
+      "the second press ended the read the first one sent and sent another"
+    ).toHaveBeenCalledTimes(3);
+    await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
+
+    await act(async () => again.resolve([SUBSCRIBER]));
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    expect(getIssueSubscribers).toHaveBeenCalledTimes(3);
+  } finally {
     view.unmount();
     getIssueSubscribers.mockRestore();
   }

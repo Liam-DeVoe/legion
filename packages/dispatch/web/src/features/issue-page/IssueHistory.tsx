@@ -26,6 +26,7 @@ import { dateKey } from "../activity/activity-model";
 import { scrollElementToTop } from "../doc/scroll-block";
 import { writePin } from "../issue/pin-write";
 import { eventItemId, isPinnedEvent, stateForIssue } from "../issue/pins";
+import { HISTORY_ENTRY_ATTRIBUTE } from "../margin/details-focus-keeper";
 import { KEEPS_DETAILS_ATTRIBUTE } from "../margin/Margin";
 import { AgentName, type AgentPart, AgentParts } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
@@ -324,18 +325,21 @@ export function IssueHistory({
   // it on the same way; the Retry of a failed read of the log, gone once the read lands, hands
   // it to the heading. None of them is disabled while it reads, since Chromium drops the focus
   // of a focused button that turns disabled to the page, so the focus stays on the control
-  // pressed while its read is out. Each press, made with the focus on its control, is held
-  // until the reads settle; then a focus left on the page moves, and so does one still on that
-  // control once its read has landed - Load older where pages are left hands it on as if it had
-  // gone - while a read that failed leaves it there, beside the line that says so. A reader who
-  // has put the focus elsewhere by then keeps it there. No such move scrolls Details, whose
-  // reader keeps their place: from the press until its reads settle, Details keeps the place of
-  // the entry next to the pressed control (`keepEntryBeside`), so the page that lands, and a cut
-  // of the turns above it in the same commit, leave that entry where the reader saw it, and a
-  // control the page pushed out of view - under files it added to a run above - takes the focus
-  // only when none is in view. The entry the focus moved to is then the place Details holds as
-  // the entries above it change height (`ViewportAnchor` records the place at every focus moved
-  // into its rows).
+  // pressed while its read is out, and a press of it then joins that read rather than ending it
+  // and sending another (`readOlderPage` for a page, `cancelRefetch: false` for the log). Each
+  // press, made with the focus on its control, is held until the reads settle, and a press of
+  // the control already held keeps the first press's hold, the controls drawn before it with it,
+  // so the press that joins changes nothing of the hand-on; then a focus left on the page moves,
+  // and so does one still on that control once its read has landed - Load older where pages are
+  // left hands it on as if it had gone - while a read that failed leaves it there, beside the
+  // line that says so. A reader who has put the focus elsewhere by then keeps it there. No such
+  // move scrolls Details, whose reader keeps their place: from the press until its reads settle,
+  // Details keeps the place of the entry next to the pressed control (`keepEntryBeside`), so the
+  // page that lands, and a cut of the turns above it in the same commit, leave that entry where
+  // the reader saw it, and a control the page pushed out of view - under files it added to a run
+  // above - takes the focus only when none is in view. The entry the focus moved to is then the
+  // place Details holds as the entries above it change height (`ViewportAnchor` records the
+  // place at every focus moved into its rows).
   const pressed = useRef<
     | {
         readonly before: ReadonlySet<HTMLElement>;
@@ -359,11 +363,27 @@ export function IssueHistory({
   const anchor = useRef<ViewportAnchor>(null);
   const keeping = useRef(false);
   const keepEntryBeside = (control: "above" | "under") => {
-    const entries = anchorRoot.current?.querySelectorAll<HTMLElement>("[data-history-entry]");
+    const entries = anchorRoot.current?.querySelectorAll<HTMLElement>(
+      `[${HISTORY_ENTRY_ATTRIBUTE}]`
+    );
     keeping.current = true;
     anchor.current?.keepRow(
       entries === undefined ? null : entries.item(control === "under" ? entries.length - 1 : 0)
     );
+  };
+  // The reader's own read of the next page while it is out, from a press of Load older or of the
+  // next page's Retry: a press made meanwhile joins it and sends nothing, where the render's
+  // `isFetchingNextPage` can be older than a second press made before React draws the first
+  // one's read. It is marked here, at the press, and not joined by `cancelRefetch: false`, which
+  // joins whatever read of the log is out: a refetch a live event sent, common on a busy issue,
+  // would take the press and read no page. A press with no read of its own out reads the next
+  // page as `fetchNextPage` does by default, ending a refetch that is out.
+  const olderRead = useRef<Promise<unknown> | null>(null);
+  const readOlderPage = () => {
+    if (olderRead.current !== null) return;
+    olderRead.current = log.fetchNextPage().finally(() => {
+      olderRead.current = null;
+    });
   };
   useLayoutEffect(() => {
     const press = pressed.current;
@@ -435,16 +455,23 @@ export function IssueHistory({
           // does; the log's Retry, under the heading, to the heading. Neither is disabled while
           // it reads, since Chromium drops the focus of a focused button that turns disabled
           // to the page, so a read that fails again leaves the focus on it; it reads busy then,
-          // and a press while the log is read sends nothing.
+          // and a press while the log is read joins that read rather than ending it and sending
+          // another: the next page's as `readOlderPage` says, the log's by `cancelRefetch: false`,
+          // which the query decides as the press lands, as the render's `isFetching` can be older
+          // than a second press made before React draws the first one's read.
           const active = document.activeElement;
-          if (active !== null && failure.current?.contains(active) === true) {
+          if (
+            active !== null &&
+            failure.current?.contains(active) === true &&
+            pressed.current?.control !== active
+          ) {
             pressed.current = log.isFetchNextPageError
               ? { before: new Set(controlsOfList()), control: active, kind: "older" }
               : { control: active, kind: "retry" };
           }
-          if (log.isFetching) return;
           keepEntryBeside(log.isFetchNextPageError ? "under" : "above");
-          void (log.isFetchNextPageError ? log.fetchNextPage() : log.refetch());
+          if (log.isFetchNextPageError) readOlderPage();
+          else void log.refetch({ cancelRefetch: false });
         }}
         retrying={log.isFetching}
       />
@@ -474,7 +501,7 @@ export function IssueHistory({
       ) : log.data === undefined ? null : (
         <ViewportAnchor
           enabled={holdsPlace}
-          item="data-history-entry"
+          item={HISTORY_ENTRY_ATTRIBUTE}
           ownsScrollAnchoring
           ref={anchor}
           rootRef={anchorRoot}
@@ -547,17 +574,14 @@ export function IssueHistory({
           className={`dispatch-inline-link self-start text-xs font-medium underline ${pageMutedText}`}
           onClick={(event) => {
             // Not disabled while its page is read, since Chromium drops the focus of a focused
-            // button that turns disabled to the page: a press then sends nothing.
-            if (log.isFetchingNextPage) return;
-            if (document.activeElement === event.currentTarget) {
-              pressed.current = {
-                before: new Set(controlsOfList()),
-                control: event.currentTarget,
-                kind: "older",
-              };
+            // button that turns disabled to the page: a press then joins the reader's own read of
+            // that page (`readOlderPage`), and keeps the first press's hold.
+            const control = event.currentTarget;
+            if (document.activeElement === control && pressed.current?.control !== control) {
+              pressed.current = { before: new Set(controlsOfList()), control, kind: "older" };
             }
             keepEntryBeside("under");
-            void log.fetchNextPage();
+            readOlderPage();
           }}
           ref={loadOlder}
           type="button"
@@ -677,7 +701,7 @@ function Entry({
       <li
         className={`${ENTRY} flex min-w-0 flex-wrap items-baseline gap-x-2`}
         data-event-seq={entry.seq}
-        data-history-entry={drawnId}
+        {...{ [HISTORY_ENTRY_ATTRIBUTE]: drawnId }}
       >
         <span className="min-w-40 flex-1 break-words">
           {head}
@@ -711,7 +735,7 @@ function Entry({
       <li
         className={`${ENTRY} flex min-w-0 flex-col`}
         data-event-seq={entry.seq}
-        data-history-entry={drawnId}
+        {...{ [HISTORY_ENTRY_ATTRIBUTE]: drawnId }}
         data-history-uploads={entry.files.length}
       >
         <span className="min-w-0 break-words">
@@ -724,7 +748,7 @@ function Entry({
             return (
               <li
                 className="flex min-w-0 items-center gap-x-2"
-                data-history-entry={`file:${file.id}`}
+                {...{ [HISTORY_ENTRY_ATTRIBUTE]: `file:${file.id}` }}
                 key={file.id}
               >
                 <span className="min-w-0 flex-1 break-words">
@@ -753,7 +777,11 @@ function Entry({
     );
   }
   return (
-    <li className="flex min-w-0 flex-col" data-event-seq={entry.seq} data-history-entry={drawnId}>
+    <li
+      className="flex min-w-0 flex-col"
+      data-event-seq={entry.seq}
+      {...{ [HISTORY_ENTRY_ATTRIBUTE]: drawnId }}
+    >
       <Turn issueKey={issueKey} marked={item === entry.root.id} turn={entry.root} />
       {entry.replies.length === 0 ? null : (
         <ol className="ml-3.5 flex min-w-0 flex-col">

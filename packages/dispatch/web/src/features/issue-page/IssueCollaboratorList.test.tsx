@@ -337,6 +337,46 @@ test("the collaborators' Retry reads busy while its read is out, and a read that
   }
 });
 
+// A second press of Retry made before React draws the read the first one sent found the render's
+// `isFetching` still false, so it read the list again: a refetch of a read that holds an answer
+// ends the request that is out and sends another. A press while the read is out joins it.
+test("two presses of the collaborators' Retry before a render send one read", async () => {
+  const collaborators: IssueCollaborators = {
+    agents: [otherAgent("writer", "2026-10-26T01:00:00Z")],
+    issue_key: "CORE-1",
+    legion_registry: "ok",
+    people: [],
+  };
+  const list = renderCollaborators(collaborators);
+  const key = ["issue", "CORE-1", "collaborators"];
+  try {
+    await screen.findByRole("region", { name: CONTROL_LABELS.collaborators_others });
+    list.read.mockRejectedValueOnce(new Error("the collaborators' read failed"));
+    await act(() => list.client.invalidateQueries({ queryKey: key }));
+    const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
+    // Every read sent from here is held out until the case lets it land.
+    const again = Promise.withResolvers<IssueCollaborators>();
+    list.read.mockImplementation(() => again.promise);
+
+    // Both presses in one task inside one `act`, so React draws nothing between them.
+    act(() => {
+      retry.click();
+      retry.click();
+    });
+    expect(
+      list.read,
+      "the second press ended the read the first one sent and sent another"
+    ).toHaveBeenCalledTimes(3);
+    await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
+
+    await act(async () => again.resolve(collaborators));
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    expect(list.read).toHaveBeenCalledTimes(3);
+  } finally {
+    list.restore();
+  }
+});
+
 // A first read of the list that failed holds no answer, and a fetch of such a read clears its
 // failure as it starts, so the press of its Retry took the line, and the Retry with it, away while
 // the read it sent was out: the focus of a reader who pressed Retry by keyboard went with it. The

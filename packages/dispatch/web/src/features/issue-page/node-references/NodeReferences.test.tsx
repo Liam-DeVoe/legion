@@ -293,6 +293,39 @@ test("the references' Retry pressed by keyboard over the list held keeps the foc
   }
 });
 
+// A second press of Retry made before React draws the read the first one sent found the render's
+// `isFetching` still false, so it read the list again: a refetch of a read that holds an answer
+// ends the request that is out and sends another. A press while the read is out joins it.
+test("two presses of the references' Retry before a render send one read", async () => {
+  const { client, getReferences } = draw(true);
+  const key = ["references", "to", STATEMENT];
+  await userEvent.click(
+    await screen.findByRole("button", { name: NODE_REFERENCES_WORDS.what_references })
+  );
+  await screen.findByRole("link", { name: "Thread 1 opens here." });
+  getReferences.mockRejectedValueOnce(new Error("the references' read failed"));
+  await act(() => client.invalidateQueries({ queryKey: key }));
+  const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
+  // Every read sent from here is held out until the case lets it land.
+  const again = Promise.withResolvers<GraphReferences>();
+  getReferences.mockImplementation(() => again.promise);
+
+  // Both presses in one task inside one `act`, so React draws nothing between them.
+  act(() => {
+    retry.click();
+    retry.click();
+  });
+  expect(
+    getReferences,
+    "the second press ended the read the first one sent and sent another"
+  ).toHaveBeenCalledTimes(3);
+  await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
+
+  await act(async () => again.resolve(ANSWER));
+  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  expect(getReferences).toHaveBeenCalledTimes(3);
+});
+
 // A first read of the list that failed holds no answer, and a fetch of such a read clears its
 // failure as it starts, so the press of its Retry took the line, and the Retry with it, away while
 // the read it sent was out: the focus of a reader who pressed Retry by keyboard went with it. The

@@ -6,12 +6,12 @@ import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState }
 import { MemoryRouter } from "react-router-dom";
 
 import { onFakeClock } from "../../__tests__/fake-clock";
+import { useDetailsFocusKeeper } from "../margin/details-focus-keeper";
 import { Margin } from "../margin/Margin";
 import { MarginProvider } from "../margin/margin-context";
 import { issue, stubMatchMedia } from "../margin/margin-fixture";
 import { buildIssuePath } from "../refs/routes";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
-import { useDetailsFocusKeeper } from "./details-focus-keeper";
 import { useDrawerPage } from "./drawer-page";
 import {
   DETAILS_ATTRIBUTE,
@@ -350,115 +350,6 @@ test("an entry remounted under a new key hands the focus to the same control in 
     expect(await entryRemounted(false), "with no keeper the focus falls to the page").toBe(PAGE);
     // The new entry's Reply stands as near to where the lost Pin stood, and comes first.
     expect(await entryRemounted(true)).toBe("Pin in turn:1");
-  } finally {
-    restore();
-  }
-});
-
-/** The log's Retry, disabled while its read is out: the reader presses it, the read fails, they
- *  press it again, and it fails again. Returns where the focus is after each step. */
-async function retryFailsTwice(active: boolean): Promise<string[]> {
-  const box = drawBox(active, false, (reading, setReading) => (
-    <>
-      <button data-top={300} type="button">
-        Copy link
-      </button>
-      <p data-top={340}>The history could not be read.</p>
-      <button data-top={364} disabled={reading} onClick={() => setReading(true)} type="button">
-        Retry
-      </button>
-    </>
-  ));
-  const seen: string[] = [];
-  const press = async () => {
-    await userEvent.keyboard("{Enter}");
-    await settled();
-    seen.push(focusName());
-  };
-  const fail = async () => {
-    await box.change(false);
-    seen.push(focusName());
-  };
-  try {
-    screen.getByRole("button", { name: "Retry" }).focus();
-    await press();
-    await fail();
-    await press();
-    await fail();
-    return seen;
-  } finally {
-    box.unmount();
-  }
-}
-
-test("a Retry that fails twice never leaves the focus on the page, and gets it back each time", async () => {
-  const restore = chromiumLayout();
-  try {
-    expect(await retryFailsTwice(false), "with no keeper the focus falls to the page").toEqual([
-      PAGE,
-      PAGE,
-      PAGE,
-      PAGE,
-    ]);
-    expect(await retryFailsTwice(true)).toEqual(["Copy link", "Retry", "Copy link", "Retry"]);
-  } finally {
-    restore();
-  }
-});
-
-/** Save, disabled while its write is out, and Pin above it, which reads Unpin once pressed: the
- *  write goes out, the reader presses Pin, where the keeper put the focus, by `press`, and the
- *  write lands. Returns where the focus is after each step. */
-async function pinPressedWhileSaving(press: () => Promise<unknown>): Promise<string[]> {
-  const box = drawBox(true, { pinned: false, writing: false }, (state, set) => (
-    <>
-      <button data-top={420} onClick={() => set({ ...state, pinned: !state.pinned })} type="button">
-        {state.pinned ? "Unpin" : "Pin"}
-      </button>
-      <button data-top={460} disabled={state.writing} type="button">
-        Save
-      </button>
-    </>
-  ));
-  const seen: string[] = [];
-  try {
-    screen.getByRole("button", { name: "Save" }).focus();
-    await box.change({ pinned: false, writing: true });
-    seen.push(focusName());
-    await press();
-    await settled();
-    seen.push(focusName());
-    await box.change({ pinned: true, writing: false });
-    seen.push(focusName());
-    return seen;
-  } finally {
-    box.unmount();
-  }
-}
-
-test("a control the keeper moved the focus off takes it back no more once the reader pressed the control it went to", async () => {
-  const restore = chromiumLayout();
-  try {
-    expect(await pinPressedWhileSaving(() => userEvent.keyboard("{Enter}"))).toEqual([
-      "Pin",
-      "Unpin",
-      "Unpin",
-    ]);
-  } finally {
-    restore();
-  }
-});
-
-// A pointer press on the control that already holds the focus moves no focus, so no focusin says
-// the reader acted there: the press itself has to end the give-back, as a key does.
-test("a control the keeper moved the focus off takes it back no more once the reader pressed the control it went to by pointer", async () => {
-  const restore = chromiumLayout();
-  try {
-    expect(
-      await pinPressedWhileSaving(() =>
-        userEvent.click(screen.getByRole("button", { name: "Pin" }))
-      )
-    ).toEqual(["Pin", "Unpin", "Unpin"]);
   } finally {
     restore();
   }

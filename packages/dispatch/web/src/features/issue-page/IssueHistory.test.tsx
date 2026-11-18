@@ -1072,6 +1072,229 @@ test("Load older pressed by keyboard keeps the focus while its page is read, the
   }
 });
 
+// A second press of a history Retry or of Load older made before React draws the read the first
+// one sent found the render's `isFetching` still false, so it read again: a refetch, or a read of
+// the next page, of a log that holds pages ends the request that is out and sends another. A
+// press while the read is out joins it, and keeps the hold the first press took, so the focus
+// goes where one press hands it.
+test("two presses of the log's Retry before a render send one read, and the focus still goes to the heading", async () => {
+  let readLog = async (): Promise<DispatchEvent[]> => [claim(3), claim(2), claim(1)];
+  const getIssueEvents = spyOn(api, "getIssueEvents").mockImplementation(() => readLog());
+  const reads = [
+    getIssueEvents,
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  let unmount: (() => void) | undefined;
+
+  try {
+    const drawn = drawHistory(undefined);
+    unmount = drawn.unmount;
+    await waitFor(() => expect(document.querySelectorAll("[data-event-seq]")).toHaveLength(3));
+    readLog = async () => {
+      throw new Error("the log is down");
+    };
+    await act(async () => {
+      await drawn.queryClient.refetchQueries({ queryKey: ["events", KEY] });
+    });
+    const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
+    // Every read sent from here is held out until the case lets it land.
+    const again = Promise.withResolvers<DispatchEvent[]>();
+    readLog = () => again.promise;
+    const sent = getIssueEvents.mock.calls.length;
+    act(() => retry.focus());
+
+    // Both presses in one task inside one `act`, so React draws nothing between them.
+    act(() => {
+      retry.click();
+      retry.click();
+    });
+    expect(
+      getIssueEvents,
+      "the second press ended the read the first one sent and sent another"
+    ).toHaveBeenCalledTimes(sent + 1);
+
+    await act(async () => again.resolve([claim(4), claim(3), claim(2), claim(1)]));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull()
+    );
+    expect(getIssueEvents).toHaveBeenCalledTimes(sent + 1);
+    expect(
+      document.activeElement,
+      "the Retry went once its read landed, and the focus did not go to the history's heading"
+    ).toBe(screen.getByRole("heading", { name: CONTROL_LABELS.history }));
+  } finally {
+    unmount?.();
+    for (const read of reads) read.mockRestore();
+  }
+});
+
+test("two presses of Load older before a render read its page once, and the focus still goes to the page it read", async () => {
+  const firstPage = Array.from({ length: 200 }, (_, index) => claimAgo(600 - index, index + 1));
+  const secondPage = Array.from({ length: 200 }, (_, index) => claimAgo(400 - index, index + 201));
+  // The next page is held out until the case lets it land.
+  const older = Promise.withResolvers<DispatchEvent[]>();
+  const getIssueEvents = spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
+    options?.before === undefined ? [...firstPage] : older.promise
+  );
+  const reads = [
+    getIssueEvents,
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  const olderReads = () =>
+    getIssueEvents.mock.calls.filter(([, options]) => options?.before !== undefined).length;
+  let unmount: (() => void) | undefined;
+
+  try {
+    const drawn = drawHistory(undefined);
+    unmount = drawn.unmount;
+    const fetchStatus = () => drawn.queryClient.getQueryState(["events", KEY])?.fetchStatus;
+    const load = await screen.findByRole("button", { name: CONTROL_LABELS.load_older });
+    const list = screen.getByRole("list", { name: CONTROL_LABELS.history_list });
+    const before = new Set(list.querySelectorAll("a[href], button"));
+    act(() => load.focus());
+
+    // Both presses in one task inside one `act`, so React draws nothing between them.
+    act(() => {
+      load.click();
+      load.click();
+    });
+    expect(
+      olderReads(),
+      "the second press ended the read of the page the first one sent and sent another"
+    ).toBe(1);
+
+    await act(async () => older.resolve([...secondPage]));
+    await waitFor(() => expect(fetchStatus()).toBe("idle"));
+    await waitFor(() => expect(load.textContent).toBe(CONTROL_LABELS.load_older));
+    expect(olderReads()).toBe(1);
+    const active = document.activeElement;
+    expect(
+      active !== null && list.contains(active) && !before.has(active),
+      "Load older pressed twice kept the focus once its page landed, rather than handing it to a control that page added"
+    ).toBe(true);
+  } finally {
+    unmount?.();
+    for (const read of reads) read.mockRestore();
+  }
+});
+
+test("two presses of the next page's Retry before a render read that page once, and the focus still goes to the page it read", async () => {
+  const firstPage = Array.from({ length: 200 }, (_, index) => claimAgo(400 - index, index + 1));
+  const olderPage = [claimAgo(10, 300), claimAgo(9, 301)];
+  let readOlder = async (): Promise<DispatchEvent[]> => {
+    throw new Error("the next page is down");
+  };
+  const getIssueEvents = spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
+    options?.before === undefined ? [...firstPage] : readOlder()
+  );
+  const reads = [
+    getIssueEvents,
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  const olderReads = () =>
+    getIssueEvents.mock.calls.filter(([, options]) => options?.before !== undefined).length;
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = drawHistory(undefined).unmount;
+    const load = await screen.findByRole("button", { name: CONTROL_LABELS.load_older });
+    const list = screen.getByRole("list", { name: CONTROL_LABELS.history_list });
+    act(() => load.focus());
+    await userEvent.keyboard("{Enter}");
+    const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
+    const before = new Set(list.querySelectorAll("a[href], button"));
+    // Every read of the next page sent from here is held out until the case lets it land.
+    const again = Promise.withResolvers<DispatchEvent[]>();
+    readOlder = () => again.promise;
+    const sent = olderReads();
+    act(() => retry.focus());
+
+    // Both presses in one task inside one `act`, so React draws nothing between them.
+    act(() => {
+      retry.click();
+      retry.click();
+    });
+    expect(
+      olderReads(),
+      "the second press ended the read of the page the first one sent and sent another"
+    ).toBe(sent + 1);
+
+    await act(async () => again.resolve([...olderPage]));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull()
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: CONTROL_LABELS.load_older })).toBeNull()
+    );
+    expect(olderReads()).toBe(sent + 1);
+    const active = document.activeElement;
+    expect(
+      active !== null && list.contains(active) && !before.has(active),
+      "the next page's Retry pressed twice went once its page landed, and the focus did not go to the page it read"
+    ).toBe(true);
+  } finally {
+    unmount?.();
+    for (const read of reads) read.mockRestore();
+  }
+});
+
+// A live event refetches the log, often on a busy issue. A press of Load older made while that
+// refetch was out joined it, since `cancelRefetch: false` joins whatever read of the log is out,
+// and read no page. Only the reader's own read of the next page takes a press made meanwhile, so
+// a press while a refetch is out reads the next page.
+test("Load older pressed while a refetch of the log is out reads the next page", async () => {
+  const firstPage = Array.from({ length: 200 }, (_, index) => claimAgo(600 - index, index + 1));
+  const secondPage = Array.from({ length: 200 }, (_, index) => claimAgo(400 - index, index + 201));
+  let readFirst = async (): Promise<DispatchEvent[]> => [...firstPage];
+  const getIssueEvents = spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
+    options?.before === undefined ? readFirst() : [...secondPage]
+  );
+  const reads = [
+    getIssueEvents,
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  const olderReads = () =>
+    getIssueEvents.mock.calls.filter(([, options]) => options?.before !== undefined).length;
+  // The refetch is held out until the case ends.
+  const refetched = Promise.withResolvers<DispatchEvent[]>();
+  let unmount: (() => void) | undefined;
+
+  try {
+    const drawn = drawHistory(undefined);
+    unmount = drawn.unmount;
+    const fetchStatus = () => drawn.queryClient.getQueryState(["events", KEY])?.fetchStatus;
+    const load = await screen.findByRole("button", { name: CONTROL_LABELS.load_older });
+    readFirst = () => refetched.promise;
+    act(() => {
+      void drawn.queryClient.invalidateQueries({ queryKey: ["events", KEY] });
+    });
+    await waitFor(() => expect(fetchStatus()).toBe("fetching"));
+
+    await userEvent.click(load);
+    expect(olderReads(), "Load older pressed while a refetch of the log was out read no page").toBe(
+      1
+    );
+    await waitFor(() =>
+      expect(
+        document.querySelector('[data-event-seq="201"]'),
+        "the page Load older read did not land"
+      ).not.toBeNull()
+    );
+  } finally {
+    refetched.resolve([...firstPage]);
+    unmount?.();
+    for (const read of reads) read.mockRestore();
+  }
+});
+
 // The first page holds 199 claims of today and 1 of yesterday, and the last page 2 more claims
 // of yesterday. They go into yesterday's day, drawn folded, so that page adds no control, and the
 // log's end takes Load older away: the focus goes to the last control drawn before the press,
@@ -1478,10 +1701,10 @@ test("a handoff's Retry pressed by keyboard hands the focus to its toggle before
 });
 
 // Where a body is held, the line that says a read of it failed stays, its Retry busy, while the
-// read that Retry sent is out. A press of the busy Retry sends nothing, as every Retry of Details
-// drops it: a refetch would cancel the read in flight and send another. The press that sends the
-// read hands the focus to the toggle; a reader who comes back to the busy Retry and presses it
-// again keeps the focus there.
+// read that Retry sent is out. A press of the busy Retry joins that read rather than ending it
+// and sending another (`cancelRefetch: false`). The press that sends the read hands the focus to
+// the toggle; a reader who comes back to the busy Retry and presses it again keeps the focus
+// there.
 test("a handoff's busy Retry sends no read while the one it sent is out, and keeps the focus", async () => {
   const getHandoff = spyOn(api, "getHandoff").mockResolvedValue(handoffRecord("Second pass"));
   // The read the Retry sends is held out until the case lets it land.
@@ -1520,6 +1743,55 @@ test("a handoff's busy Retry sends no read while the one it sent is out, and kee
     await act(async () => again.resolve(handoffRecord("Third pass")));
     await screen.findByText("Third pass");
     expect(screen.queryByRole("alert")).toBeNull();
+  } finally {
+    unmount?.();
+    getHandoff.mockRestore();
+  }
+});
+
+// A second press of a handoff's Retry made before React draws the read the first one sent found
+// the render's `isFetching` still false, so it read the body again: a refetch of a read that
+// holds a body ends the request that is out and sends another. A press while the read is out
+// joins it, and moves no focus.
+test("two presses of a handoff's Retry before a render send one read", async () => {
+  const getHandoff = spyOn(api, "getHandoff").mockResolvedValue(handoffRecord("Second pass"));
+  // Every read sent from here is held out until the case lets it land.
+  const again = Promise.withResolvers<Handoff>();
+  let unmount: (() => void) | undefined;
+
+  try {
+    const drawn = drawHandoff();
+    unmount = drawn.unmount;
+    const toggle = screen.getByRole("button", { name: CONTROL_LABELS.show_fields });
+    await userEvent.click(toggle);
+    await screen.findByText("Second pass");
+    getHandoff.mockRejectedValueOnce(new Error("the handoff is down"));
+    await act(async () => {
+      await drawn.queryClient.invalidateQueries();
+    });
+    expect(getHandoff).toHaveBeenCalledTimes(2);
+    const retry = screen.getByRole("button", { name: CONTROL_LABELS.retry });
+    getHandoff.mockImplementation(() => again.promise);
+    act(() => retry.focus());
+
+    // Both presses in one task inside one `act`, so React draws nothing between them.
+    act(() => {
+      retry.click();
+      retry.click();
+    });
+    expect(
+      getHandoff,
+      "the second press ended the read the first one sent and sent another"
+    ).toHaveBeenCalledTimes(3);
+    expect(
+      document.activeElement,
+      "the press that sent the read did not hand the focus to the toggle"
+    ).toBe(toggle);
+
+    await act(async () => again.resolve(handoffRecord("Third pass")));
+    await screen.findByText("Third pass");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(getHandoff).toHaveBeenCalledTimes(3);
   } finally {
     unmount?.();
     getHandoff.mockRestore();

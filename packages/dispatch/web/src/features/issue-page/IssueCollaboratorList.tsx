@@ -97,8 +97,10 @@ export function IssueCollaboratorList({
   // the focus goes to the control that opens the list rather than fall to the page, as Unpin in
   // Pinned hands it on (`IssuePins.tsx`). It is never disabled while it reads again, so a read
   // that fails again leaves the focus on it: Chromium drops the focus of a focused button that
-  // turns disabled to the page. It reads busy then, and a press while the list is read does
-  // nothing.
+  // turns disabled to the page. It reads busy then, and a press while the list is read joins
+  // that read rather than ending it and sending another (`cancelRefetch: false`), which the
+  // query decides as the press lands: the render's `isFetching` can be older than a second
+  // press made before React draws the first one's read.
   const retried = useRef<Element | null>(null);
   useLayoutEffect(() => {
     if (retried.current === null || retried.current.isConnected) return;
@@ -119,7 +121,7 @@ export function IssueCollaboratorList({
       message={ANSWER_LINES.collaborators_unreadable}
       onRetry={() => {
         retried.current = document.activeElement;
-        if (!query.isFetching) void query.refetch();
+        void query.refetch({ cancelRefetch: false });
       }}
       retrying={query.isFetching}
     />
