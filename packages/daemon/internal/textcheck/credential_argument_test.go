@@ -34,6 +34,16 @@ import (
 // names nothing after the flag, so it matches nothing.
 var credentialHeader = regexp.MustCompile(`(?i)(?:^|[^\w-])(?:-H|--header)(?:=|\s*)\\?["']?(?:(?:authorization:\s*(?:bearer|token|basic)\s+|[\w-]*(?:api-key|-token)\s*:\s*)(?:\\?["'])*\\?[$<]|\\?\$\{?\w*(?:auth|token|bearer|credential))`)
 
+// workflowCredential matches a GitHub Actions credential expression, `${{ github.token }}` or
+// `${{ secrets.<name> }}`, given to a command as an argument: on a `run:` line after a word, quoted
+// or not (`run: .github/scripts/read.sh "${{ github.token }}"`), or quoted after a word on any line,
+// as in a `run: |` body (`gh-read.sh --token "${{ github.token }}"`). Actions writes the expression's
+// value into the command, so it is in that process's command line. The forms that put it in a
+// process's environment or in an action's input name a key or a variable before it - a step's
+// `env:` key (`GH_TOKEN: ${{ github.token }}`), a `with:` input, `export GH_TOKEN="${{ … }}"` - and
+// match nothing, and so does prose that writes the expression unquoted.
+var workflowCredential = regexp.MustCompile(`(?:\brun:\s(?:.*[^:=\s])?\s+["']?|(?:^|[^:=\s])\s+["'])\$\{\{\s*(?:github\.token|secrets\.\w+)\s*\}\}`)
+
 // credentialFlag finds the flags whose next word is a user's password (`-u`, `--user`), a
 // request's body (`-d`, the `--data` family, wget's `--post-data`, `-F`, `--form`) or a token
 // itself (`--token`, kubectl's and gh's, and curl's `--oauth2-bearer`). It is written
@@ -109,7 +119,7 @@ func shellWord(s string) string {
 
 // credentialArgument says whether a line gives a command a credential as an argument.
 func credentialArgument(line string) bool {
-	if credentialHeader.MatchString(line) {
+	if credentialHeader.MatchString(line) || workflowCredential.MatchString(line) {
 		return true
 	}
 	for _, at := range credentialFlag.FindAllStringSubmatchIndex(line, -1) {
@@ -243,6 +253,9 @@ func TestTheCredentialMatcherCatchesEachSpellingAndPassesAnInputCurlReads(t *tes
 		`curl -sf -m 5 -H "X-aws-ec2-metadata-token: $imds" http://169.254.169.254/latest/meta-data/local-ipv4`,
 		`curl -H "$auth_header" "$url"`,
 		`curl --header "${AUTHORIZATION}" "$url"`,
+		`        run: .github/scripts/dispatch-browser-reading-rows.sh "${{ steps.download-blobs.conclusion }}" "${{ github.token }}"`,
+		`        run: .github/scripts/publish.sh ${{ secrets.DEPLOY_KEY }}`,
+		`          gh-read.sh --token "${{ github.token }}" jobs`,
 	} {
 		if !credentialArgument(line) {
 			t.Errorf("does not catch a credential given as an argument: %s", line)
@@ -278,6 +291,13 @@ func TestTheCredentialMatcherCatchesEachSpellingAndPassesAnInputCurlReads(t *tes
 		`curl -H @"$auth_header_file" "$url"`,
 		`printf 'X-Api-Key: %s' "$KEY" | curl -H @- "$url"`,
 		`curl --oauth2-bearer fixture-token "$url"`,
+		`          GH_TOKEN: ${{ github.token }}`,
+		`          password: ${{ secrets.GITHUB_TOKEN }}`,
+		`            github_token=${{ secrets.GITHUB_TOKEN }}`,
+		`          export GH_TOKEN="${{ github.token }}"`,
+		`        run: echo "${{ steps.download-blobs.conclusion }}"`,
+		`  * its step's token is ${{ github.token }}, and its time limit is short: the act is a`,
+		`mutate "$root/$RELEASE" $'        run: bun install --frozen-lockfile\n' $'        env:\n          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}\n'`,
 	} {
 		if credentialArgument(line) {
 			t.Errorf("catches a line that gives no credential as an argument: %s", line)

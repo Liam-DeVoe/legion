@@ -5,17 +5,19 @@
 #
 # Who runs it, and what it takes:
 #
-#   .github/scripts/dispatch-browser-reading-rows.sh <download conclusion> <token>
+#   GH_TOKEN=<token> .github/scripts/dispatch-browser-reading-rows.sh <download conclusion>
 #
 # <download conclusion> is what the step "Download every leg's blob report" concluded, the merge
 # job's `${{ steps.download-blobs.conclusion }}`: the missing-blob message below reads it,
-# a refused download being why no blob arrived for any leg. <token> is the run's own
-# `${{ github.token }}`, which this script exports as GH_TOKEN for the read of this run's jobs.
+# a refused download being why no blob arrived for any leg. GH_TOKEN is the run's own
+# `${{ github.token }}`, which the step's `env:` gives this script for the read of this run's
+# jobs. It is never an argument: an argument is on the process's command line, which every
+# process of the runner can read in /proc while the step runs.
 #
 # The conclusion is an argument rather than a key of the step's `env:`, for the reason the shard
 # job's head gives: a step `env:` key outside ci_filter_coverage.py's ENV_ALLOWED drops that job
 # out of check-ci-filters.sh's reduction of what a go command compiles. GH_TOKEN is in that set,
-# so that reason does not hold for the token, which is an argument beside it all the same.
+# so that reason does not hold for the token, which is a key of the step's `env:`.
 #
 # It reads $RUNNER_TEMP/selected-blobs, which holds one blob report and one row count per leg,
 # and $RUNNER_TEMP/report.json, the merged report; it writes $RUNNER_TEMP/jobs.json, which
@@ -26,18 +28,19 @@
 # The step runs it from the repository root and carries no working directory of its own: the
 # call to .github/scripts/dispatch-browser-run-reads.sh below is relative to that root.
 #
-# Run from the repository root: .github/scripts/dispatch-browser-reading-rows.sh success "$token"
+# Run from the repository root:
+#   GH_TOKEN=<token> .github/scripts/dispatch-browser-reading-rows.sh success
 # CI runs it in dispatch-browser.yaml's merge job, at the step "Reading one, the rows".
 set -euo pipefail
 
 usage() {
-  echo "::error::dispatch-browser-reading-rows.sh takes the blob download's conclusion and the" \
-    "run's token: .github/scripts/dispatch-browser-reading-rows.sh <download conclusion>" \
-    "<token>. It was given: $*"
+  echo "::error::dispatch-browser-reading-rows.sh takes the blob download's conclusion, with" \
+    "the run's token in GH_TOKEN: GH_TOKEN=<token>" \
+    ".github/scripts/dispatch-browser-reading-rows.sh <download conclusion>. It was given: $*"
   exit 1
 }
 
-[ "$#" -eq 2 ] || usage "$@"
+[ "$#" -eq 1 ] || usage "$@"
 
 blobs="$RUNNER_TEMP/selected-blobs/blob-report"
 counts="$RUNNER_TEMP/selected-blobs/rows"
@@ -45,13 +48,12 @@ report="$RUNNER_TEMP/report.json"
 jobs="$RUNNER_TEMP/jobs.json"
 # What the step "Download every leg's blob report" concluded. It is read here, in the
 # body, rather than in a step `env:` block, for the reason the shard job's head gives
-# and which the `GH_TOKEN` export two lines below already follows. The missing-blob
+# and which the step's `GH_TOKEN` need not follow, that key being in ENV_ALLOWED. The missing-blob
 # message reads it: a download that was refused is why no blob arrived for any leg.
 downloaded=$1
-# The run's own token, exported here rather than in an `env:` block, for the reason the
-# shard job's head gives. `actions: read` is the caller's, and ci.yaml's job that calls
+# The run's own token is GH_TOKEN, a key of the step's `env:` and never an argument, for the
+# reason this script's head gives. `actions: read` is the caller's, and ci.yaml's job that calls
 # this workflow already holds it.
-export GH_TOKEN="$2"
 # This run's attempt's jobs, read once here and read again by reading three below.
 # The call writes $RUNNER_TEMP/jobs.json: the array of {id, name, conclusion, leg}
 # that both readings take. The jobs API lists the caller's jobs too, so the script

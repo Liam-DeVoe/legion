@@ -487,7 +487,9 @@ jobs:
         if: always()
         # 4 x 1.15 = 4.6 s, so 120 + 4.6 = 124.6 s, at the next whole minute above, is the 3 min
         timeout-minutes: 3
-        run: .github/scripts/dispatch-browser-reading-rows.sh "${{ steps.download-blobs.conclusion }}" "${{ github.token }}"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/dispatch-browser-reading-rows.sh "${{ steps.download-blobs.conclusion }}"
       # Reading two. Read from the merged JSON report with jq, and nowhere else: a flake is a row
       # that failed and passed on its retry, which only the report of the whole run holds.
       - name: Reading two, the flake rate
