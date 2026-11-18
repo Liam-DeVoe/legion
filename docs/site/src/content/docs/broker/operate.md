@@ -319,7 +319,7 @@ no project (`<service account>==<person>`), wherever Dispatch's own rules let th
 The token of such an entry holds the OAuth scope `read` alone and the project scope `none`, names
 that service and that session, and names no person and no project. Dispatch serves it on the routes
 its read list names, today `GET /api/v2/projects/{key}/architecture` and, while Dispatch still
-serves `/api/v1`, `GET /api/v1/projects/{key}/architecture`, and answers it
+serves the deprecated `/api/v1`, `GET /api/v1/projects/{key}/architecture`, and answers it
 `403 READ_ONLY_TOKEN` on every other route. That token reads the whole answer of a project's
 architecture for every project that has an architecture source: each
 source, each component, and every issue of the project, closed and iceboxed ones included. No

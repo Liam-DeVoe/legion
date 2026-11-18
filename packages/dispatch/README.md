@@ -17,9 +17,11 @@ From the first `legion-envoy` release that carries pull request #4274 every API 
 `/api/v2`, through the paths and types `@legion/contracts/dispatch-api-v2` generates from
 `packages/contracts/schemas/dispatch-openapi-v2.json`. Every write sends an `Idempotency-Key` and
 retries under it, `PUT` and `DELETE` included, and a list the page shows whole is read page by page
-until it holds the list's `total`. The one `/api/v1` request left replays a write a build before
-it saved, to the path it was first sent to and under its own key; once the deployment has ended
-`/api/v1`, that replay is answered `410`, dropped, and the page says the write was not saved.
+until it holds the list's `total`. `/api/v1` is deprecated from that release and ends at the
+instant the deployment sets in `DISPATCH_API_V1_END`. The one `/api/v1` request left replays a
+write a build before it saved, to the path it was first sent to and under its own key; once the
+deployment has ended `/api/v1`, that replay is answered `410`, dropped, and the page says the write
+was not saved.
 
 The desktop shell has a sidebar, issue content, and review margin. Issue content has Spec,
 Conversation, Children, Artifacts, and Activity tabs; the Conversation lists one card per

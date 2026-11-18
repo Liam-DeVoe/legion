@@ -59,7 +59,7 @@ service and a fixed session instead, and no person and no project: the token hol
 other route with `403 READ_ONLY_TOKEN`, and the Envoy listener refuses it with `401`
 ([Operate](/legion/broker/operate/#what-to-run)). That token reads the whole answer of a project's
 architecture (`GET /api/v2/projects/{key}/architecture`, and `GET /api/v1/projects/{key}/architecture`
-while Dispatch still serves `/api/v1`) for every project that has an architecture source: each
+while Dispatch still serves the deprecated `/api/v1`) for every project that has an architecture source: each
 source, each component, and every issue of the project, closed and iceboxed ones included. No
 setting holds a read entry to some projects.
 
