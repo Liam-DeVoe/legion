@@ -22,8 +22,12 @@
 -- its revisions from 1 again. pending_task_deliveries.number is the number the pending task was
 -- queued under, origin the source that queued it, taken_text the text the accepted take of it was
 -- answered with, empty while no take of it stands accepted, so a take sent again after its answer
--- was lost is answered with that same text, before the take's turn starts and after; and
--- turn_started whether that take's turn has started.
+-- was lost is answered with that same text, before the take's turn starts and after;
+-- turn_started whether that take's turn has started; and take_told which of the claim's two
+-- records of the agent's earlier work that take marked told — 'abandoned' for the session the
+-- claim abandoned (abandoned_session), 'ended' for what the last let-go of its process ended
+-- (ended_work) — so a give-back of that take untells those and nothing an earlier take of the
+-- same task told, whose delivery id is the same (supervise's Delivery.TakeTold).
 --
 -- The fill numbers what the release before this one left as each claim's first task. A claim
 -- holding a pending row holds task 1: the row is number 1 and the claim's task_written is 1. A
@@ -44,14 +48,19 @@
 -- owed value once. origin starts empty, which names no source: the task was queued before the
 -- record kept one. taken_text is the row's own text on an acknowledged row and empty on every
 -- other, since no take of those was ever answered; a confirmed row's take is therefore one a
--- take sent again is refused in-turn, not answered (supervise's answeredFromRecord).
+-- take sent again is refused in-turn, not answered (supervise's answeredFromRecord). take_told
+-- names each of the claim's two records whose toldBy is the row's delivery id: that release
+-- marked a record told at the confirmation of the prompt that carried it, under the delivery's
+-- id, and gave the delivery a new id at every take-back, so a record naming the row's id was told
+-- by the turn that confirmed the row, which is the take the row holds now, and by nothing else. A
+-- row no turn confirmed is named by none.
 --
 -- Once this migration has run, the daemon of the release before it cannot read the claims table
 -- at all: its own claim read names d.delivered_at, d.marked_by and d.prompted
 -- (packages/daemon/internal/store/claims.go, claimSelect), so every claim read fails and the
 -- supervisor loads nothing, and its delivery write names all three (putDelivery). Rolling the image
 -- back therefore needs the three columns back first. This directory keeps no down migrations —
--- migrations here are forward-only and no .down.sql file exists — so the way back is the eighteen
+-- migrations here are forward-only and no .down.sql file exists — so the way back is the nineteen
 -- statements below, run with the daemon stopped. docs/kubernetes.md carries the same block as the
 -- step an operator runs, beside the phase entry's, and the two say the same thing.
 --
@@ -74,19 +83,20 @@
 --   alter table pending_task_deliveries drop column if exists origin;
 --   alter table pending_task_deliveries drop column if exists taken_text;
 --   alter table pending_task_deliveries drop column if exists turn_started;
+--   alter table pending_task_deliveries drop column if exists take_told;
 --   delete from schema_version where version = 20261113175649;
 --   commit;
 --   SQL
 --
 -- The run prints BEGIN, three ALTER TABLEs, UPDATE <n> for the supervise rows whose payload
--- carried the key, thirteen ALTER TABLEs, DELETE 1 and COMMIT. A rerun prints a NOTICE for each of
--- the sixteen columns it finds as it means to leave them, the same ALTER TABLEs, UPDATE 0, DELETE 0
--- and COMMIT, and changes nothing. The transaction, the ON_ERROR_STOP and the if-exists clauses are
--- what make the eighteen one act that may be run twice, for the reason the phase entry's block
--- gives: run as bare statements in a psql without ON_ERROR_STOP, either half a failure leaves is a
--- broken store — the drops taken while the delete fails leave this release a schema it reads by
--- names that no longer stand, and the delete taken while a drop fails stops the roll-forward at
--- its first add column.
+-- carried the key, fourteen ALTER TABLEs, DELETE 1 and COMMIT. A rerun prints a NOTICE for each of
+-- the seventeen columns it finds as it means to leave them, the same ALTER TABLEs, UPDATE 0,
+-- DELETE 0 and COMMIT, and changes nothing. The transaction, the ON_ERROR_STOP and the if-exists
+-- clauses are what make the nineteen one act that may be run twice, for the reason the phase
+-- entry's block gives: run as bare statements in a psql without ON_ERROR_STOP, either half a
+-- failure leaves is a broken store — the drops taken while the delete fails leave this release a
+-- schema it reads by names that no longer stand, and the delete taken while a drop fails stops the
+-- roll-forward at its first add column.
 --
 -- The first three statements are the columns that daemon reads and writes, back at the defaults
 -- their own migrations gave them: no acknowledgement, no marking prompt and no prompt sent. That is
@@ -105,8 +115,8 @@
 -- read as a phase start where it names a phase and an operator's task otherwise (supervise's
 -- originOf), as a row of the release before this one is.
 --
--- The thirteen drops and the deleted version row are for the roll-forward that follows the rollback
--- rather than for the older daemon, which reads none of the thirteen columns and writes none of them:
+-- The fourteen drops and the deleted version row are for the roll-forward that follows the rollback
+-- rather than for the older daemon, which reads none of the fourteen columns and writes none of them:
 -- its claim and delivery upserts name their own columns (putClaim, putDelivery), so a row it
 -- inserts takes each new column's default and a row it updates keeps whatever the column held.
 -- Left standing, those columns would be read on the roll-forward as current when nothing kept them
@@ -116,7 +126,7 @@
 -- versionRecorded asks `select exists (select 1 from schema_version where version = $1::bigint)`
 -- (internal/store/store.go) — so deleting this one row leaves this migration unapplied and every
 -- other migration recorded and untouched, and when the newer image comes back its Migrate runs this
--- file again from its first statement. The thirteen columns go with the row because those first
+-- file again from its first statement. The fourteen columns go with the row because those first
 -- statements add them and `add column` on a column that already stands fails; the three marks the
 -- block brought back are dropped again by this file's last statements. The missing row does not
 -- move the number the state read reports while the older image runs (Store.SchemaVersionTx, the
@@ -137,7 +147,7 @@
 -- roll-forward writes every owed value once under the number the second fill gave it.
 --
 -- The re-arm asks nothing of the other rows. What it does need is that no migration recorded
--- after this one builds on the thirteen columns it drops, and at this release none of the six
+-- after this one builds on the fourteen columns it drops, and at this release none of the six
 -- recorded after it touches them: 20261113181500_architect_stalled_notices adds the table
 -- architect_stalled_notices, 20261113182000_architect_entry_upgrade writes the root architects'
 -- phases rows, their claims' given_entry and served_entry and that table's marks,
@@ -182,6 +192,8 @@ alter table pending_task_deliveries add column number bigint not null default 0;
 alter table pending_task_deliveries add column origin text not null default '';
 alter table pending_task_deliveries add column taken_text text not null default '';
 alter table pending_task_deliveries add column turn_started boolean not null default false;
+alter table pending_task_deliveries add column take_told text[] not null default '{}'
+  check (take_told <@ array['abandoned', 'ended']);
 
 -- A confirmed row's turn started: the release before this one confirmed a task at its turn's
 -- start. This comes before any other fill, so it reads confirmed_at as that release left it.
@@ -204,6 +216,16 @@ where d.claim_token = c.token;
 update claims c set task_written = 1, task_taken = 1, task_finished = 1, task_finished_session = c.session
 where (c.serving_generation <> 0 or c.served_entry > 0)
   and not exists (select 1 from pending_task_deliveries d where d.claim_token = c.token);
+
+-- A record the release before this one marked told names the delivery whose confirmation told it
+-- (toldBy), and that release gave a delivery a new id at every take-back, so a record naming the
+-- row's id was told by the take the row holds now.
+update pending_task_deliveries d set take_told = array_remove(array[
+    case when c.abandoned_session ->> 'toldBy' = d.delivery_id then 'abandoned' end,
+    case when c.ended_work ->> 'toldBy' = d.delivery_id then 'ended' end], null)
+from claims c
+where c.token = d.claim_token
+  and d.delivery_id in (c.abandoned_session ->> 'toldBy', c.ended_work ->> 'toldBy');
 
 alter table pending_task_deliveries drop column delivered_at;
 alter table pending_task_deliveries drop column marked_by;

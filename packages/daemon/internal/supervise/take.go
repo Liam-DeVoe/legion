@@ -625,15 +625,15 @@ func (m *Machine) refusedAdoption(ctx context.Context, request RequestTake, err 
 // (EndedWork) — become told, and it is the rule every other mention of their telling points to. A
 // record is told by the accepted take whose text carried its sentence to this process
 // (Delivery.message answers which it carries), since the worker runs that text as its turn's
-// message, and it records the delivery whose take told it (ToldBy), and the machine which records
-// this take told (Machine.takeTold). A take later taken back gives that telling back with it, so
-// the next accepted take carries the sentence again (giveBackTake) — what this take told and
-// nothing an earlier take of the same delivery told, whose id is the same; one a let-go cuts off
-// once its turn started keeps it, since that turn ran the text (interrupted). A take sent again
-// and answered from the record (answerAgain) marks nothing: the take it repeats marked it. Both
-// records are the claim's fields, so they go in the same write as the take, and a restart reads
-// both or neither. The one record told anywhere else is the old session's record of a let-go,
-// which the abandonment of that session ends by no delivery
+// message, and it records the delivery whose take told it (ToldBy), and the take records which it
+// told (Delivery.TakeTold). A take later taken back gives that telling back with it, so the next
+// accepted take carries the sentence again (giveBackTake) — what this take told and nothing an
+// earlier take of the same delivery told, whose id is the same; one a let-go cuts off once its
+// turn started keeps it, since that turn ran the text (interrupted). A take sent again and
+// answered from the record (answerAgain) marks nothing: the take it repeats marked it. Both
+// records are the claim's fields and the mark is the delivery's, so they go in the same write as
+// the take, and a restart reads all of them or none. The one record told anywhere else is the
+// old session's record of a let-go, which the abandonment of that session ends by no delivery
 // (forgetSession, where that rule is written).
 //
 // A task of the entry the claim's handshake names records its confirmation there too, the first
@@ -668,14 +668,15 @@ func (m *Machine) accept(ctx context.Context, request RequestTake) error {
 	taken.SendFailures, taken.LastSendFailureAt, taken.LastSendError = 0, time.Time{}, ""
 	c := m.stored()
 	c.Handshake = c.Handshake.confirmed(taken)
-	toldAbandoned := told.abandoned && c.Abandoned.Tells()
+	toldAbandoned := told.Abandoned && c.Abandoned.Tells()
 	if toldAbandoned {
 		c.Abandoned.Told, c.Abandoned.ToldBy = true, taken.ID
 	}
-	toldEnded := told.ended && c.EndedWork.Tells()
+	toldEnded := told.Ended && c.EndedWork.Tells()
 	if toldEnded {
 		c.EndedWork.Told, c.EndedWork.ToldBy = true, taken.ID
 	}
+	taken.TakeTold = Sentences{Abandoned: toldAbandoned, Ended: toldEnded}
 	c.TaskTaken = taken.Number
 	c.recordTake(request, TakeAccepted)
 	if err := m.saved(m.owes("PutClaimAndDelivery", m.putClaimAndDelivery(ctx, c, taken))); err != nil {
@@ -685,7 +686,6 @@ func (m *Machine) accept(ctx context.Context, request RequestTake) error {
 	c.Pending = p
 	m.claim = c
 	m.settleOwedWrite("PutClaimAndDelivery")
-	m.takeTold = sentences{abandoned: toldAbandoned, ended: toldEnded}
 	if toldAbandoned {
 		m.log.Info("supervise: an accepted take told the agent of the session its claim abandoned",
 			"task", p.Number, "delivery", p.ID, "session", c.Abandoned.Session)

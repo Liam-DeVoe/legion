@@ -95,6 +95,16 @@ type Delivery struct {
 	// says it was not this task's — it names no task, or another — sets it back, and the take
 	// awaits its turn again (notTheTakesTurn).
 	TurnStarted bool
+	// TakeTold is which of the claim's two records the accepted take of this task marked told
+	// (accept): the ones a give-back of that take untells (untell), and none while no take of it
+	// stands accepted. It goes with the take (interrupted, clearTake), so a later take of the
+	// same task, whose delivery id is the same and which carried nothing, gives back nothing an
+	// earlier take told: a take cut off once its turn started keeps what it told on the claim's
+	// records, since that turn ran its text, and its mark goes with it. It is persisted with the
+	// take, so a daemon restarted between a take and its give-back gives back what that take
+	// told and nothing else; the records' own ToldBy names the delivery, which every take of the
+	// task shares, and cannot say which take told them.
+	TakeTold Sentences
 	// CheckLook is the look of a closed issue's production check this task is of, from the start
 	// row that queued it (record.SuperviseRequest.CheckLook and CheckOpenedAt). It is what says a
 	// turn's completion is a check report rather than a phase completion: the API routes on the
@@ -252,15 +262,15 @@ func (d Delivery) SupersededBy(generation uint64, entry int64) bool {
 	return d.Generation < generation || (d.Generation == generation && d.Entry < entry)
 }
 
-// sentences is which of the claim's two untold records an accepted take's text carries the
-// sentence of: the session the claim abandoned (AbandonedSession, abandonedTask), and what the
-// last let-go of its process ended (EndedWork, relaunchSentence). Delivery.message answers it
-// beside the text it composes, so what an accepted take marks told is what its text holds
-// (accept).
-type sentences struct{ abandoned, ended bool }
+// Sentences is which of the claim's two untold records an accepted take's text carries the
+// sentence of: the session the claim abandoned (Abandoned: AbandonedSession, abandonedTask), and
+// what the last let-go of its process ended (Ended: EndedWork, relaunchSentence).
+// Delivery.message answers it beside the text it composes, so what an accepted take marks told is
+// what its text holds (accept), and the delivery keeps what its take marked (Delivery.TakeTold).
+type Sentences struct{ Abandoned, Ended bool }
 
 // message is the text an accepted take of a delivery is answered with, and which of the claim's
-// two untold records it tells (sentences): its task, behind the sentences the claim's state gives
+// two untold records it tells (Sentences): its task, behind the sentences the claim's state gives
 // it that say what became of the agent's earlier work, and then the provider's. In order:
 //
 //   - The first task the agent that replaced an abandoned session takes names that session
@@ -310,17 +320,17 @@ type sentences struct{ abandoned, ended bool }
 // One case still carries a stale note: the previous release's upsert carries no out_of_memory
 // column, so if an image rollback takes a marked task back again for another end, the row keeps
 // the mark, and a roll-forward carries the note for that end.
-func (d Delivery) message(c Claim) (string, sentences) {
-	text, carried := d.Task, sentences{}
+func (d Delivery) message(c Claim) (string, Sentences) {
+	text, carried := d.Task, Sentences{}
 	relaunch := d.Relaunch()
 	if relaunch && c.EndedWork.Tells() {
-		text, carried.ended = RelaunchSentence(c.EndedWork), true
+		text, carried.Ended = RelaunchSentence(c.EndedWork), true
 	}
 	var prefix string
 	if c.Abandoned.Tells() {
 		// The task's instruction ends the last sentence before the task, so the abandoned
 		// session's carries it only where no record's sentence follows it.
-		prefix, carried.abandoned = abandonedTask(c, !relaunch && !c.EndedWork.Tells()), true
+		prefix, carried.Abandoned = abandonedTask(c, !relaunch && !c.EndedWork.Tells()), true
 	}
 	// oldTurn is whether a turn this task was taken back from is the abandoned session's, whose
 	// sentence stands in place of the notes of that turn: an abandoned session still tells, and
@@ -330,7 +340,7 @@ func (d Delivery) message(c Claim) (string, sentences) {
 	case relaunch:
 		// Its text is the record's sentence already.
 	case c.EndedWork.Tells():
-		prefix, carried.ended = prefix+relaunchSentence(c.EndedWork.inFrontOf(d), true)+"\n\n", true
+		prefix, carried.Ended = prefix+relaunchSentence(c.EndedWork.inFrontOf(d), true)+"\n\n", true
 	case d.Interrupted && !oldTurn:
 		prefix += interruptedTask(c.EndedWork.Cause)
 	}
@@ -1162,14 +1172,16 @@ const outOfMemoryTask = "Your pod ran out of memory. Kubernetes ended the contai
 //
 // What the accepted take told stays told where the take's turn started: that turn ran the take's
 // text, so the agent read the sentence it carried, and the let-go that cuts the turn off takes no
-// telling back. A take whose turn had not started never ran its text, so what it told is given
-// back with it, and the claim's handshake gives back its confirmation of the take's entry
-// (giveBackTake): the next accepted take carries the sentence again, and the state gives no
-// `entryConfirmedAt` for an entry the worker never ran (dispatch://INFRA-2614 R6). The untelling
-// stands in memory whether or not the write lands, since untold is the safe way round, and the
-// claim's next write carries it; the handshake moves only with the take-back's write, which
-// carries the claim with the delivery where either moved, so a write that fails leaves the
-// handshake as the store holds it, for the take-back made again to read.
+// telling back. The take's mark of what it told (Delivery.TakeTold) goes with the take, so no
+// later take of the task gives that telling back. A take whose turn had not started never ran its
+// text, so what it told is given back with it, and the claim's handshake gives back its
+// confirmation of the take's entry (giveBackTake): the next accepted take carries the sentence
+// again, and the state gives no `entryConfirmedAt` for an entry the worker never ran
+// (dispatch://INFRA-2614 R6). The untelling stands in memory whether or not the write lands,
+// since untold is the safe way round, and the claim's next write carries it; the handshake moves
+// only with the take-back's write, which carries the claim with the delivery where either moved,
+// so a write that fails leaves the handshake as the store holds it, for the take-back made again
+// to read.
 func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool) error {
 	p := m.claim.Pending
 	if p == nil || !p.taken() {
@@ -1186,7 +1198,7 @@ func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool)
 	next := *p
 	handshake := m.claim.Handshake
 	claimMoved := p.awaitsTurn() && m.giveBackTake(p)
-	next.ConfirmedAt, next.TakenText, next.TurnStarted = time.Time{}, "", false
+	next.ConfirmedAt, next.TakenText, next.TurnStarted, next.TakeTold = time.Time{}, "", false, Sentences{}
 	if inTurn {
 		next.Interrupted, next.OutOfMemory = true, outOfMemory
 	}
@@ -1222,7 +1234,7 @@ const ordinaryEnd = false
 // takeBackUnstarted for a retirement and a suspension). It reads whether the take's turn had
 // started from p's take (Delivery.turnStarted), so it is called before the take is cleared.
 //
-//   - Each of the claim's two records this take told (Machine.takeTold) goes back to untold, so
+//   - Each of the claim's two records this take told (Delivery.TakeTold) goes back to untold, so
 //     the next accepted take carries its sentence again (untell). A provider error's take-back, whose
 //     turn started, untells too: the error is a model call that failed, often the turn's first, so
 //     the agent never read the text, and where an earlier call of the turn did, the sentence is
@@ -1251,23 +1263,25 @@ func (m *Machine) giveBackTake(p *Delivery) (claimMoved bool) {
 }
 
 // untell takes back what the accepted take of p told (accept): each of the claim's two records
-// that take marked told (Machine.takeTold), and that still names p's id (ToldBy), goes back to
-// untold, so the next accepted take carries its sentence again. It reports whether any record
-// was told by that take.
+// that take marked told (Delivery.TakeTold), and that still names p's id (ToldBy), goes back to
+// untold, so the next accepted take carries its sentence again, and the mark is cleared. It
+// reports whether any record was told by that take.
 //
 // The give-back is keyed on the take, not on the delivery: the id stands across every take-back
 // of the task, so a record an earlier take of the same delivery told — one whose turn started and
 // was cut off, which keeps its telling (interrupted) — names p's id too, and a later take that
-// carried nothing must not give it back, or the next take tells it a second time. The one record
-// told by no take is the old session's record of a let-go, which the abandonment of that session
-// ends (forgetSession), and no take-back untells it.
+// carried nothing must not give it back, or the next take tells it a second time. The mark is the
+// delivery's, written with the take, so a daemon restarted between a take and its give-back reads
+// what that take told rather than every record that names the id. The one record told by no take
+// is the old session's record of a let-go, which the abandonment of that session ends
+// (forgetSession), and no take-back untells it.
 func (m *Machine) untell(p *Delivery) bool {
-	moved, told := false, m.takeTold
-	m.takeTold = sentences{}
-	if a := &m.claim.Abandoned; told.abandoned && a.Told && a.ToldBy == p.ID {
+	moved, told := false, p.TakeTold
+	p.TakeTold = Sentences{}
+	if a := &m.claim.Abandoned; told.Abandoned && a.Told && a.ToldBy == p.ID {
 		a.Told, a.ToldBy, moved = false, "", true
 	}
-	if e := &m.claim.EndedWork; told.ended && e.Told && e.ToldBy == p.ID {
+	if e := &m.claim.EndedWork; told.Ended && e.Told && e.ToldBy == p.ID {
 		e.Told, e.ToldBy, moved = false, "", true
 	}
 	if moved {
@@ -1311,12 +1325,13 @@ func (m *Machine) takeBackUnstarted(cause string) bool {
 
 // clearTake is the take-back of the accepted take of p in memory that takeBack and
 // takeBackUnstarted share, each with its own write: what the take recorded goes back
-// (giveBackTake), the take goes (ConfirmedAt, TakenText, TurnStarted), so the next take of the
-// number is decided afresh and its text composed again (Delivery.message), and the take-back is
-// logged under cause (takenBackLine). It answers giveBackTake's answer, whether the claim changed.
+// (giveBackTake), the take goes (ConfirmedAt, TakenText, TurnStarted, TakeTold), so the next take
+// of the number is decided afresh and its text composed again (Delivery.message), and the
+// take-back is logged under cause (takenBackLine). It answers giveBackTake's answer, whether the
+// claim changed.
 func (m *Machine) clearTake(p *Delivery, cause string) (claimMoved bool) {
 	claimMoved = m.giveBackTake(p)
-	p.ConfirmedAt, p.TakenText, p.TurnStarted = time.Time{}, "", false
+	p.ConfirmedAt, p.TakenText, p.TurnStarted, p.TakeTold = time.Time{}, "", false, Sentences{}
 	m.log.Info(takenBackLine, "task", p.Number, "cause", cause)
 	return claimMoved
 }

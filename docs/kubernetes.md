@@ -2674,13 +2674,14 @@ Deleting the pod alone does not move it: Agent Sandbox recreates a Running Sandb
 **Task numbers (store migration 20261113175649).**
 A release carrying store migration 20261113175649_task_numbers holds a claim's task as a number the record writes and the worker takes, rather than as a prompt the daemon pushes and then judges by its acknowledgement.
 `claims` carries `task_written`, `task_taken`, `task_finished` and `task_finished_session` — the highest number the record queued, the number of the last take the daemon accepted, the number of the last task whose turn finished and the claim's session when it did — beside `task_seen_epoch`, `task_seen_revision` and `task_take_state`, the bucket epoch and revision of the value its worker last reported seeing and what came of a take at it, and `task_written_epoch` and `task_written_revision`, the daemon's own last write of that value.
-`pending_task_deliveries` carries `number`, `origin`, `taken_text` and `turn_started`, the number the pending task was queued under, the source that queued it, the text its accepted take was answered with, and whether that take's turn has started.
+`pending_task_deliveries` carries `number`, `origin`, `taken_text`, `turn_started` and `take_told`, the number the pending task was queued under, the source that queued it, the text its accepted take was answered with, whether that take's turn has started, and which of the claim's two records of the agent's earlier work that take marked told (`abandoned` for the session the claim abandoned, `ended` for what the last let-go of its process ended), so a give-back of that take untells those and nothing an earlier take of the same task told.
 The migration numbers what the release before it left as each claim's task 1 — a pending task is written, an acknowledged one that no turn confirmed is taken too, its take awaiting its turn with the prompt's text, a confirmed one is taken with its turn started, and a claim holding none that served a run or a phase entry finished it in the session it holds — and leaves the epochs and revisions empty, so the first boot writes every owed value once.
 The acknowledged task is taken so that a turn the old process starts for the prompt it holds is that take's turn, and a relaunch before such a turn gives the take back, so the task runs once.
+A pending task's `take_told` names each of the claim's records whose `toldBy` is the task's delivery id: the release before marked a record told at the confirmation of the prompt that carried it and gave a delivery a new id at every take-back, so such a record was told by the take the row holds now and by nothing else.
 It drops the push path's three marks on a pending task, which a task the worker takes has no use for:
 `pending_task_deliveries.delivered_at`, `marked_by` and `prompted`.
 
-To roll this release back to contract 151, the release just before it, stop the daemon and run the eighteen statements below, which leave the store at the earlier release's schema and at that release's own version, 20261116165926:
+To roll this release back to contract 151, the release just before it, stop the daemon and run the nineteen statements below, which leave the store at the earlier release's schema and at that release's own version, 20261116165926:
 every database this release migrated records 20261116165926_role_holders_publish above this migration's own 20261113175649, so the version the store reports is that release's before the block and after it, and the block deletes no row but this migration's.
 
 ```sh
@@ -2703,13 +2704,14 @@ alter table pending_task_deliveries drop column if exists number;
 alter table pending_task_deliveries drop column if exists origin;
 alter table pending_task_deliveries drop column if exists taken_text;
 alter table pending_task_deliveries drop column if exists turn_started;
+alter table pending_task_deliveries drop column if exists take_told;
 delete from schema_version where version = 20261113175649;
 commit;
 SQL
 ```
 
-It prints `BEGIN`, three `ALTER TABLE`s, `UPDATE <n>` for the supervise rows whose payload carried the key, thirteen more `ALTER TABLE`s, `DELETE 1` and `COMMIT`;
-a rerun prints a `NOTICE` for each of the sixteen columns it finds as it means to leave them, the same `ALTER TABLE`s, `UPDATE 0`, `DELETE 0` and `COMMIT`, and changes nothing.
+It prints `BEGIN`, three `ALTER TABLE`s, `UPDATE <n>` for the supervise rows whose payload carried the key, fourteen more `ALTER TABLE`s, `DELETE 1` and `COMMIT`;
+a rerun prints a `NOTICE` for each of the seventeen columns it finds as it means to leave them, the same `ALTER TABLE`s, `UPDATE 0`, `DELETE 0` and `COMMIT`, and changes nothing.
 The three `add column`s come first because the earlier release cannot read the claims table without them:
 its claim read names `d.delivered_at`, `d.marked_by` and `d.prompted` (`claimSelect` in `internal/store/claims.go` at contract 151), so every claim read fails and its supervisor loads nothing, and its delivery write names all three.
 They come back at the defaults their own migrations gave them, which that release reads as a task it has queued and not yet sent:
@@ -2717,7 +2719,7 @@ it sends an unconfirmed pending task at its claim's next ready, as it sends any 
 The `update` takes `origin` back out of every supervise row of the outbox, as the phase entry's block takes out `entry` and `resendEntry`:
 this release writes that key into every start a source queues (`record.SuperviseRequest.Origin`), and the earlier release knows no such key and decodes an outbox payload strictly (`record.DecodeOutboxPayload`), so a row still carrying it would fail to decode for ever, retried on the runner's backoff, and every admission pass of its issue would fail with it (`record.Postgres.RoleRuns`).
 The earlier release records no origin, so nothing it reads goes with the key, and the roll-forward reads a row that names none as a phase start where it names a phase and an operator's task otherwise (`originOf` in `internal/supervise/take.go`).
-The thirteen drops and the deleted row are owed to the roll-forward rather than to the earlier release, which reads and writes none of the thirteen columns:
+The fourteen drops and the deleted row are owed to the roll-forward rather than to the earlier release, which reads and writes none of the fourteen columns:
 together they re-arm the migration, so the newer image's `Migrate` runs the file again (`versionRecorded` in `internal/store/store.go` decides each migration on its own row) and numbers what the earlier release left exactly as it numbered what the release before it left at the first upgrade.
 Left standing, the columns would be read as current when nothing kept them so: a task the earlier release queued carries number 0 under a claim whose `task_written` names an older task, and a task it finished leaves `task_finished` where it stood.
 What the second fill costs is the numbering:
@@ -2725,7 +2727,7 @@ every claim stands at task 1 again, or at 0, whatever number it stood at before 
 The one record a number outlives the rollback in is `processed_events`, which nothing prunes:
 an accepted take's confirmation is applied once under an event id that names the task's delivery id beside its number (`confirmationEventID` in `internal/daemon`), so the confirmation of a task numbered 1 again is not taken for one of the task 1 the claim took before the rollback.
 Nothing else reads a number across the rollback, since the earlier release's worker takes no value and the epochs and revisions start empty again.
-The block needs no migration recorded after this one to build on the thirteen columns it drops, and at this release none of the six recorded after it touches them:
+The block needs no migration recorded after this one to build on the fourteen columns it drops, and at this release none of the six recorded after it touches them:
 20261113181500_architect_stalled_notices adds the table `architect_stalled_notices`, 20261113182000_architect_entry_upgrade writes the root architects' `phases` rows, their claims' `given_entry` and `served_entry` and that table's marks, 20261114020537_claim_entry_handshake adds the four `claims.handshake_*` columns, 20261114031356_merge_queue_removal rewrites `outbox_kind_check`, 20261114061900_phase_entry_verbatim adds `phases.entry_verbatim`, and 20261116165926_role_holders_publish rewrites `outbox_kind_check` again and adds the unique index `outbox_role_holders_publish_issue_unique`.
 Contract 151 carries all six, so the rollback to it runs this block alone and leaves the six standing.
 The earlier release also refuses this release's two keys, `worker_take_timeout_seconds` and `worker_turn_start_timeout_seconds`, as keys it does not know (`unknown key worker_take_timeout_seconds`), so take them out of `legion.yaml` before you pin it, where the file sets them.
@@ -2745,8 +2747,8 @@ The release before the phase entry reads the three marks as contract 151 does, a
 The roll-forward after them applies again, in version order, every migration those ways back re-armed: the phase entry's first, then 20261113110610_drop_claim_update_answer_marks, which the update round's way back re-arms, then this one and contract 146's four after it, so this migration's second fill reads the `served_entry` the phase entry's second fill wrote, before 20261113182000 settles each root architect at entry 1 again.
 The `20261113175649` is the identifier of `20261113175649_task_numbers.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
-The eighteen statements as they stand are run twice, as the one transaction an operator runs, by `TestMigrationTaskNumbersWayBackLetsTheReleaseBeforeReadAndReArmsTheFill` in `internal/store`, over a store migrated to this release's head that holds a claim at task 7 whose pending task its worker had taken, a claim that had finished task 4 in its session, and a supervise start carrying `origin`:
-after them that row's payload carries no `origin` and keeps every other key, the pending task's three marks stand at no acknowledgement, no marking prompt and no prompt sent, none of the thirteen columns does, and `schema_version` records every migration but this one, its highest version unchanged;
+The nineteen statements as they stand are run twice, as the one transaction an operator runs, by `TestMigrationTaskNumbersWayBackLetsTheReleaseBeforeReadAndReArmsTheFill` in `internal/store`, over a store migrated to this release's head that holds a claim at task 7 whose pending task its worker had taken, a claim that had finished task 4 in its session, and a supervise start carrying `origin`:
+after them that row's payload carries no `origin` and keeps every other key, the pending task's three marks stand at no acknowledgement, no marking prompt and no prompt sent, none of the fourteen columns does, and `schema_version` records every migration but this one, its highest version unchanged;
 `Migrate` then applies this one migration again, and the two claims stand at task 1, the first taken and not finished, its pending task number 1 with no origin and no taken text and its turn started, and the second finished in its session.
 
 ### Contract discipline

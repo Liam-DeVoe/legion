@@ -1199,13 +1199,6 @@ type Machine struct {
 	// and the next delete made, that one or a later task's, replaces it. It is memory only, as
 	// valueUnwritten is: a restart's boot read deletes a value the record owes nothing (valueRead).
 	valueUndeleted valueDelete
-	// takeTold is which of the claim's two records the accepted take of the pending task marked
-	// told (accept): the ones a give-back of that take untells (untell), and no give-back of a
-	// later take of the same delivery, since the delivery's id stands across its take-backs and a
-	// record an earlier take told names it too. It is memory only: a machine a daemon start built
-	// reads it from the record (NewMachine) as every record the pending delivery's id told, which
-	// errs, across a restart alone, towards telling a sentence twice rather than not at all.
-	takeTold sentences
 	// finishAtAct is a claim a daemon start restored ready or idle over a take whose turn started
 	// under the daemon before it, which nothing finished, on a plugin whose end frame finishes its
 	// task (NewMachine, endFrameFinishes): its end-frame bound (TimerFinish) is armed at the
@@ -1553,7 +1546,7 @@ type armed struct {
 // serving counts toward neither bound. A seen report the claim was built holding is the store's,
 // not one this daemon received (seenFromStore), so the first wait's first bound over it writes
 // the value again rather than charging (takeBoundOver). Which records the pending take told is
-// read from the record too (Machine.takeTold).
+// the delivery's own mark, read back with it (Delivery.TakeTold).
 func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 	if err := deps.check(); err != nil {
 		return nil, err
@@ -1622,12 +1615,6 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 			if c.State == StateReady || c.State == StateIdle {
 				m.arm(TimerFinish, deps.Timeouts.RPC, c.Pending.ID)
 			}
-		}
-	}
-	if p := c.Pending; p != nil && p.taken() {
-		m.takeTold = sentences{
-			abandoned: c.Abandoned.Told && c.Abandoned.ToldBy == p.ID,
-			ended:     c.EndedWork.Told && c.EndedWork.ToldBy == p.ID,
 		}
 	}
 	m.publish()

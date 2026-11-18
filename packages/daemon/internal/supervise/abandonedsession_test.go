@@ -277,6 +277,75 @@ func TestAbandonedSessionToldByACutOffTurnIsNotToldAgainWhenALaterTakeIsGivenBac
 	h.wantAbandonedToldBy(id, "at take 3")
 }
 
+// A take's give-back untells what that take told, which the take itself records
+// (Delivery.TakeTold) and the store keeps with it, so a daemon restarted between the take and its
+// give-back gives back what one that never stopped would. Take 1 carries the abandoned session's
+// sentence; its turn starts and its process dies in it, so that turn ran the text and the telling
+// stands. Take 2, made by the relaunched process, carries nothing of it. The daemon restarts, and
+// take 2 is given back before its turn starts: its own process dies first. Nothing goes back to
+// untold, and take 3 does not tell the session again (departure 11: told once). The other way
+// round, a take that told the session, accepted before the restart and given back before its
+// turn, gives the telling back, so the next take tells the session rather than lose it.
+//
+// The negative control is the restored machine reading the take's telling from the records that
+// name the pending delivery (ToldBy is its id), as NewMachine did before this change: take 2's
+// give-back then untells what take 1 told, and take 3 carries the sentence a second time.
+func TestTakeBackAfterADaemonRestartGivesBackOnlyWhatThatTakeTold(t *testing.T) {
+	const task = "Continue Workflow. Issue: LEGION-209. Phase: implementing."
+	refusal := "the provider ended the turn with an error at 226k tokens of context"
+
+	t.Run("a take that told nothing", func(t *testing.T) {
+		h := newHarness(t)
+		h.abandonSession(refusal)
+		h.registerFresh()
+		h.manualTakes()
+		h.must(RequestDeliver{Claim: h.token, Task: task})
+
+		first := h.mustTake()
+		wantSays(t, first, refusal)
+		id := h.pending().ID
+		h.must(StreamTurnStart{Claim: h.token})
+		h.observe(runtime.Gone)
+		h.wantAbandonedToldBy(id, "once take 1's turn was cut off")
+
+		h.registerFresh()
+		second := h.mustTake()
+		wantSaysNot(t, second, refusal)
+
+		h.restart()
+		h.connect()
+		h.observe(runtime.Gone)
+		h.wantAbandonedToldBy(id, "once take 2, which carried nothing of it, was given back before its turn after the restart")
+
+		h.registerFresh()
+		third := h.mustTake()
+		wantSaysNot(t, third, refusal)
+		h.wantAbandonedToldBy(id, "at take 3")
+	})
+
+	t.Run("a take that told the session", func(t *testing.T) {
+		h := newHarness(t)
+		h.abandonSession(refusal)
+		h.registerFresh()
+		h.manualTakes()
+		h.must(RequestDeliver{Claim: h.token, Task: task})
+
+		first := h.mustTake()
+		wantSays(t, first, refusal)
+		id := h.pending().ID
+
+		h.restart()
+		h.connect()
+		h.observe(runtime.Gone)
+		h.wantAbandonedToldBy("", "once take 1, which told it, was given back before its turn after the restart")
+
+		h.registerFresh()
+		second := h.mustTake()
+		wantSays(t, second, refusal)
+		h.wantAbandonedToldBy(id, "at take 2")
+	})
+}
+
 // handoffWordsClause is the list of phase words exactly as the prompt renders it, read from the
 // phases themselves as delivery's handoffWords builds it: a phase that gains a handoff is
 // asserted here without anyone remembering to come back. The whole clause is asserted rather

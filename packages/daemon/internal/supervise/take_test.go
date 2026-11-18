@@ -213,10 +213,16 @@ func TestTakeDropsATaskTheRecordNoLongerOwesAndDeletesItsValue(t *testing.T) {
 // after the issue's merge"): a tester stopped holding its testing task untaken, the issue merged
 // and closed, and the production check's look that started the tester again was refused on every
 // retry behind a task nobody was owed. A task the record still owes refuses the newer one, as
-// before (ErrDeliveryPending).
+// before (ErrDeliveryPending). A claim whose record of its last let-go still tells gets no
+// delivery of that record after this drop, where a take's drop gives it one (queueRelaunch): the
+// newer task holds the slot, so the record reaches the worker in front of it, and the accepted
+// take of the newer task, once the claim's process is up, carries the record's sentence in front
+// of its text, once (Delivery.message).
 //
-// The negative control is the queue's drop removed: each of the three dropped tasks refuses the
-// newer task "a delivery is already pending", and the claim keeps the task nobody is owed.
+// The negative control is the queue's drop removed: each of the dropped tasks refuses the newer
+// task "a delivery is already pending", and the claim keeps the task nobody is owed. The record's
+// case has one of its own: the record's sentence left out of the text in front of a task
+// (Delivery.message), under which the newer task's take is answered the task alone.
 func TestTakeDropTestRunsWhenANewerTaskArrives(t *testing.T) {
 	const newer = "look at production after the merge"
 	for _, tc := range []struct {
@@ -230,6 +236,11 @@ func TestTakeDropTestRunsWhenANewerTaskArrives(t *testing.T) {
 	}{
 		{name: "a task whose phase the issue left",
 			held:    Delivery{ID: "outbox:7", Task: "implement the plan", Phase: phase.Implementing, Generation: 7},
+			dropped: "the issue has left the phase this task was queued for; it is dropped rather than taken"},
+		{name: "a task whose phase the issue left, held while the relaunch's record still tells",
+			held: Delivery{ID: "outbox:7", Task: "implement the plan", Phase: phase.Implementing, Generation: 7},
+			ended: EndedWork{At: epoch, Cause: endDisplaced, Generation: 1, Turn: true, Background: true,
+				Kinds: []string{"subagent"}, Reported: true},
 			dropped: "the issue has left the phase this task was queued for; it is dropped rather than taken"},
 		{name: "an older daemon's ask of an update round",
 			held:    Delivery{ID: updateTaskID(testRound), Task: UpdateTask(testRound, testReasons, epoch.Add(time.Hour))},
@@ -292,6 +303,22 @@ func TestTakeDropTestRunsWhenANewerTaskArrives(t *testing.T) {
 			}
 			if value, held := h.values.value(h.token); !held || value.Number != 2 {
 				t.Fatalf("the bucket holds %+v (held %v), want the newer task's value, task 2", value, held)
+			}
+			if !tc.ended.Tells() {
+				return
+			}
+			// The newer task is the one the worker takes once the claim's process is up, behind
+			// the record's sentence, and that take tells the record.
+			h.reach(StateReady)
+			if p := h.pending(); p.ID != "outbox:9" || p.Relaunch() {
+				t.Fatalf("the ready claim holds %+v, want the newer task and no delivery of the record", p)
+			}
+			want := relaunchSentence(tc.ended, true) + "\n\n" + newer
+			if got := h.mustTake(); got != want {
+				t.Fatalf("the take of the newer task was answered %q, want the record's sentence in front of the task, once: %q", got, want)
+			}
+			if e := h.claim().EndedWork; !e.Told || e.ToldBy != "outbox:9" {
+				t.Fatalf("after the take the record is %+v, want it told by the newer task's take", e)
 			}
 		})
 	}
