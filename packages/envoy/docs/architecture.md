@@ -48,7 +48,7 @@ Agent messages  --/       |
 
 ## Listener API
 
-All `/v1/*` endpoints answer 503 `service starting` until NATS is connected and the interest and session caches are warm; they do not wait for the durable consumer. The two list reads, `GET /v1/sessions` and `GET /v1/interests/`, answer that time with the refilling 503 the routes themselves give (below).
+All `/v1/*` endpoints answer 503 `service starting` until NATS is connected and the interest and session caches are warm; they do not wait for the durable consumer. The two list reads, `GET /v1/sessions` and `GET /v1/interests/`, answer that time with the refilling 503 the routes themselves give (below). Which failures end the listener's start and which keep it up and retrying, a NATS that does not answer and an answer from the NATS cluster's state among them, is stated once in `cmd/listener/README.md` ("Start").
 A listener's caches follow their buckets through watchers (`internal/kvwatch`): the interest,
 session and role claim buckets, and the CI bucket on a listener that mounts the GitHub webhook
 route. A start reads each bucket in full, and so does a rewatch after a NATS reconnect or a

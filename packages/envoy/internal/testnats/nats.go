@@ -244,8 +244,8 @@ func deleteStreams(t testing.TB, uri string) {
 }
 
 // Server is a nats-server running in this test process, reached through a relay this process owns.
-// Every helper of this package that starts a server returns one, and start is the only thing that
-// makes one.
+// Every helper of this package that starts a server returns one, and newServer is the only thing
+// that makes one.
 type Server struct {
 	// store is the server's JetStream store, configPath its configuration file and args the
 	// arguments it was started with: a restart and a reload read the configuration again from that
@@ -552,9 +552,21 @@ const hostOnlyConfig = "host: 127.0.0.1\n"
 // its command line after it (so -js for JetStream, -DV for the protocol trace), behind a relay
 // holding the port of the URL it returns, and returns it once it accepts connections. When the
 // test ends the server is shut down, the relay closed and the server's directory removed; until
-// then AwaitConsumerStored finds the server by the relay address its URL names. It is the one
-// place a server of this package is made: every helper here is a call on it.
+// then AwaitConsumerStored finds the server by the relay address its URL names. It is newServer
+// launched: every helper of this package that starts a server is a call on it, and a cluster
+// member a test starts later is newServer alone (StartClusterPart).
 func start(t testing.TB, config string, serverArgs []string) *Server {
+	t.Helper()
+	server := newServer(t, config, serverArgs)
+	server.launch(t)
+	return server
+}
+
+// newServer makes a server whose whole configuration is config, with serverArgs as its command
+// line after it, behind a relay holding the port of its URL, and does not start it: the relay
+// refuses every connection until Start does, as it refuses one to a stopped server. It is the one
+// place a server of this package is made, and the cleanup start describes is registered here.
+func newServer(t testing.TB, config string, serverArgs []string) *Server {
 	t.Helper()
 	if config == "" {
 		config = hostOnlyConfig
@@ -589,7 +601,6 @@ func start(t testing.TB, config string, serverArgs []string) *Server {
 	if err := os.WriteFile(server.configPath, []byte(config), 0o600); err != nil {
 		t.Fatalf("write the server's configuration: %v", err)
 	}
-	server.launch(t)
 	return server
 }
 

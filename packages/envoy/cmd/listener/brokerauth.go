@@ -116,11 +116,12 @@ func resolveListenerBrokerConfig(getenv func(string) string) (listenerBrokerConf
 
 // errBrokerTokensStarting is a DPoP presentation that arrives after /v1 is mounted and before the
 // spent-proof bucket is open: the window between the listening socket and NATS, which lasts for as
-// long as NATS does not answer the bucket's open or its grant refuses it (openSpentProofBucket). It
-// is the starting gate's 503 rather than a 401: the credential is configured and the listener
-// cannot judge it yet, and a caller told its token was refused would discard a live one. It is
-// also what holds a listener to no token accepted without its spent-proof check: apiAuth, on /v1,
-// is the one place a broker token is read.
+// long as NATS does not answer the bucket's open, answers it from its cluster's state or its grant
+// refuses it (openSpentProofBucket; cmd/listener/README.md, "Start"). It is the starting gate's
+// 503 rather than a 401: the credential is configured and the listener cannot judge it yet, and a
+// caller told its token was refused would discard a live one. It is also what holds a listener to
+// no token accepted without its spent-proof check: apiAuth, on /v1, is the one place a broker
+// token is read.
 var errBrokerTokensStarting = errors.New("the listener is still opening the store this credential needs")
 
 // brokerTokens is the listener's broker-token credential as apiAuth reads it: nil on a listener

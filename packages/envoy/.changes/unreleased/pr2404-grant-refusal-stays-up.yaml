@@ -9,4 +9,10 @@ body: |-
     process. Until that bucket opens, `/v1` stays closed and a request that presents a broker access
     token is answered 503 `service starting` with `Retry-After: 1`, so no token is taken without
     its spent-proof check. With two pods an exit sent each pod into a crash loop, and its backoff
-    delayed recovery by minutes after the grant was fixed.
+    delayed recovery by minutes after the grant was fixed. The start also stays up, the same way,
+    when NATS answers from its cluster's state: too few members for the `ENVOY_NATS_REPLICAS`
+    copies, no meta leader, or JetStream temporarily unavailable, as during a NATS rolling restart.
+    It tries the stream or bucket again with the same wait and logs `start refused by the NATS
+    cluster's state; retrying` at ERROR at each try, with the stream or buckets, the setting, the
+    server's code and text, and `retry_in`. Before, a refusal such as `no suitable peers for
+    placement` ended the start.

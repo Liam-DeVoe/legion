@@ -232,6 +232,52 @@ func TestASIGTERMEndsAListenerWaitingForItsNATS(t *testing.T) {
 	}
 }
 
+// A listener whose NATS cluster has fewer members than the copies ENVOY_NATS_REPLICAS asks for
+// stays up and not ready until they join, then serves. On a hub of two servers that a third joins
+// later (testnats.StartClusterPart), the meta group has its leader and can place no stream of three
+// copies: the server answers the start's create of ENVOY_NOTIFICATIONS "no suitable peers for
+// placement" (JSClusterNoPeersErrF, 10005), an answer of the cluster's state and not of the
+// listener's settings (bus.ClusterStateAnswer). The listener logs clusterStateLine at ERROR at
+// each try, naming the stream, the setting and the server's text, after a wait of 1 s and then 2 s
+// (nextRefusedWait), and answers /healthz 503 "starting" and /livez 204 throughout. Once the third
+// server joins, a later try creates the stream at three copies and the listener is ready. Before,
+// the start exited 1 at the refusal (connectListener): the answer is a 400, which
+// natsConnectionError does not retry.
+func TestAListenerWhoseClusterHasTooFewMembersForItsCopiesStaysUnreadyUntilTheyJoin(t *testing.T) {
+	cluster := testnats.StartClusterPart(t, 3, 2)
+	urls := cluster.URLs()
+	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), urls[0]+","+urls[1], "box-cluster-forming",
+		"ENVOY_NATS_REPLICAS=3", "ENVOY_INSTANCE_ID=pod-cluster-forming")
+
+	const while = "its NATS cluster had two members for the three copies it asks"
+	refusals := func() []map[string]any {
+		return linesIn(listener.Output.String(), clusterStateLine,
+			map[string]any{"level": "ERROR", "stream": bus.Stream, "setting": bus.ReplicasEnvVar + "=3"})
+	}
+	for deadline := time.Now().Add(30 * time.Second); len(refusals()) < 2; time.Sleep(200 * time.Millisecond) {
+		requireLiveAndStarting(t, listener, while)
+		if time.Now().After(deadline) {
+			t.Fatalf("the listener named the refused create of %s %d times at ERROR within 30 s, want it named at each try:\n%s",
+				bus.Stream, len(refusals()), listener.Output.String())
+		}
+	}
+	for index, wait := range []string{"1s", "2s"} {
+		record := refusals()[index]
+		text, _ := record["error"].(string)
+		if record["retry_in"] != wait || record["code"] != float64(10005) || !strings.Contains(text, "no suitable peers for placement") {
+			t.Fatalf("refusal %d = %v, want retry_in %s, code 10005 and the server's text", index+1, record, wait)
+		}
+	}
+	requireLiveAndStarting(t, listener, while)
+
+	cluster.Servers[2].Start(t)
+	cluster.AwaitReady(t)
+	listener.waitHealthy(t)
+	if info := testnats.AwaitStreamCopies(t, cluster.JetStream(t), bus.Stream, 3); testnats.Copies(info.Cluster) != 3 {
+		t.Fatalf("the listener is ready and %s holds %d copies, want the 3 it asks for", bus.Stream, testnats.Copies(info.Cluster))
+	}
+}
+
 // bucketDeniedConfig is a NATS server whose one nkey user may publish to anything but KV bucket
 // bucket: the grant of a hub that does not grant the bucket to its listeners.
 func bucketDeniedConfig(user, bucket string) string {

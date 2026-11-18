@@ -229,13 +229,42 @@ The process exits 1.
 A runtime must allow about 28 s after SIGTERM; give it 30 s.
 A lease left unreleased (the budget ran out) is taken by a standby once it expires, as after a hard stop.
 
+## Start: what ends it and what it waits out
+
+From `main` until `/v1` serves and the lease starts, each failure of the start falls in one of three groups, by what decides it (`main.go`).
+This section is the one statement of that rule; the code and the other guides point here.
+
+- **The listener's own configuration ends the start.**
+  An error that the listener's settings alone decide ends the process, exit 1, with one line that names it:
+  no retry gets past it, and a crash loop that carries its name is the signal an operator needs.
+  These are `config.Load`'s refusals, the instance name (`listenerInstance`), a missing, malformed or out-of-range setting (the API auth, OIDC, Google, broker-token and sender-limit settings, the webhook settings, the session windows and the periods), the listening socket, and an origin `brokertoken.New` refuses.
+  A durable that carries an idle heartbeat or ack policy NATS cannot change in place ends it too (`subscribe refused, shutting down`, "Recreating the durable" below): only an operator who recreates it gets past it.
+
+- **An answer from the NATS cluster's state keeps the pod up, and the start tries again.**
+  A server answers some requests from its cluster's state and not from the request, even where the answer reads like a refused setting:
+  no member can place the copies `ENVOY_NATS_REPLICAS` asks for (`no suitable peers for placement`, JetStream error code 10005; `insufficient resources`, 10023; `replicas > 1 not supported in non-clustered mode`, 10074), the meta group has no leader (`JetStream system temporarily unavailable`, 10008), or the member asked leads no longer (10009).
+  A NATS rolling restart and a cluster that is still forming answer so, and the same start succeeds once the members are back, with no setting changed; the start reads the code, never the text (`bus.ClusterStateAnswer`).
+  The start's opens of the stream (the NATS connect, `connectListener`), the spent-proof bucket (`openSpentProofBucket`), the store buckets (`openStartStore`) and the listener state bucket (`openDeliveryLease`) each log `start refused by the NATS cluster's state; retrying` at ERROR at every such try, with what was refused (`stream`, `bucket` or `buckets`), the `setting` it asked (`ENVOY_NATS_REPLICAS=<n>`), the answer's `code`, the server's text in `error` and `retry_in`, and try again after a wait that starts at 1 s and doubles up to 30 s (`waitOutClusterState`, `nextRefusedWait`).
+  A NATS grant that refuses the durable (`durable consumer refused by the NATS grant; retrying`, "A holder that cannot use the durable" above) or the spent-proof bucket (`spent-proof bucket refused by the NATS grant; retrying`, with the refused `subject`) keeps the pod up and backs off the same way:
+  every pod of the machine connects as the same NATS user and would be refused alike, and an exit would only send each pod into a crash loop whose backoff delays the recovery by minutes once the grant is fixed.
+
+- **A NATS that does not answer keeps the pod up, and the start waits for it.**
+  A dial no server answers, a request no server answers, and a step the start's hang guard ends (36 s for one open of the stream or of a bucket, `bus.EnsureKeyValue`) are tried again every 2 s (`startRetry`, `natsConnectionError`) with a WARN, for as long as NATS takes:
+  `NATS connect failed; retrying`, `<store> open failed; retrying`, `spent-proof bucket open failed; retrying` and `listener state bucket open failed; retrying`.
+
+Meanwhile the pod is live (`/livez` 204) and not ready (`/healthz` `503 starting`), `/v1` stays closed, and a SIGTERM or SIGINT ends it at once, since the start installs no handler for either until `/v1` serves.
+
+Four ends of the start come of NATS and not of the listener's settings, and still end it, exit 1, with one ERROR:
+a store bucket the NATS grant refuses (`NATS refused KV bucket <bucket>: the listener's NATS user lacks the grant for it`), a nats-server release the listener refuses (`natsversion.ConnectedRefusal`, asked as the session consumers' connection opens), a role lane the grant refuses in both queue groups, and a connection of the role lane or of the session consumers that fails its ten dials, or a session relay reply subscription that fails, after the stores have opened.
+The listener state bucket's grant refusal ends nothing: the pod delivers without a lease ("Without the grant: no-lease mode" below).
+
 ## Readiness: `/healthz`
 
 `/healthz` takes no credential and answers within 5 s (`healthzDeadline`): a check that has not answered by then makes the answer `503 {"status":"unhealthy"}`.
 
 - `503 {"status":"starting"}`:
   Until the pod can serve: NATS connected, with broker access tokens configured the spent-proof bucket open, the webhook and `/v1` gates open over warm caches, the receive loop started and, with an OIDC issuer or a Google audience configured, each issuer's discovery succeeded.
-  A NATS or issuer that does not answer keeps the pod here, up and retrying, and so does a NATS grant that refuses the spent-proof bucket (`openSpentProofBucket`); it never exits for any of them.
+  An issuer that does not answer keeps the pod here, up and retrying, and so do a NATS that does not answer, an answer from its cluster's state and a grant that refuses the spent-proof bucket ("Start" above); it never exits for any of them.
 
 - `200 {"status":"healthy","role":"active",…}`:
   The pod receives the durable.
