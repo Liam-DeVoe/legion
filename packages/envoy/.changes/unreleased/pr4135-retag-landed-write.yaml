@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  `agent-secrets secret retag` no longer describes the tags as they were before a write it cannot
+  call refused. A tag write whose error is no definite refusal (a service fault, an outage, a lost
+  connection, or an AWS call the SDK retried) may follow a write the store carried out, so the retag
+  now says the store's answer leaves open whether the write landed, and asks the broker to reread
+  the secret. The retag also asks for a reread after an AWS write that landed and whose read-back
+  then failed, not only after a race with another writer. After such a write, it says when the
+  value was not checked. And it no longer says that a shared secret's owner and tier are an
+  administrator's to change when the write landed and only the read-back was refused.
+custom:
+    Issue: pr4135

@@ -54,6 +54,29 @@ func writeLanded(err error) bool {
 	return errors.As(err, &landed)
 }
 
+// tagsUnknown is a tag write's error that leaves open whether the write landed: the store answered
+// with no definite refusal, a service fault, an outage or a lost connection, which may follow a
+// call it carried out (an AWS call is a definite refusal only when it made one attempt whose code
+// awsDefiniteRefusals lists, awsAttempts.definiteRefusal; a GCP update only for a code
+// gcpDefiniteRefusal names). Its text is the store's error with that said after it. It marks the
+// error so a message says the outcome is unknown (writeUnknown) rather than describe the tags as
+// they were before the write.
+type tagsUnknown struct{ err error }
+
+func (e tagsUnknown) Error() string {
+	return e.err.Error() + "; the store's answer leaves open whether this write landed"
+}
+
+// Unwrap is the store's error, so isAccessDenied and errors.Is still read it.
+func (e tagsUnknown) Unwrap() error { return e.err }
+
+// writeUnknown reports whether err, a tag write's error, leaves open whether the write landed
+// (tagsUnknown).
+func writeUnknown(err error) bool {
+	var unknown tagsUnknown
+	return errors.As(err, &unknown)
+}
+
 // tagPairs is tags as sorted `key=value` pairs separated by single spaces, for a message that
 // names one read of a secret's tags beside another. A tag is metadata, never a value.
 func tagPairs(tags map[string]string) string {
@@ -69,13 +92,15 @@ func tagPairs(tags map[string]string) string {
 }
 
 // cmdSecretRetag changes a secret's owner, tier, type, GitHub owners, requesters, scopes, admin
-// mark, project, project channels, max grant or default grant, in one cloud write. A retag that
-// names none (--type none, --github-owners none, --requesters none, --scopes none, --admin none,
-// --project none, --project-channels none, --max-grant none, --default-grant none) removes those
-// tags and does nothing else; --type none also removes the old kind tag and the rollback guard
-// written with the type. Any other retag sets tags. A retag that does both is refused before
-// anything is read or written: AWS removes tags only with UntagResource, so it would be two calls,
-// and a refused second call would leave it half applied.
+// mark, project, project channels, max grant or default grant, in one cloud write; a removal that
+// moves the project tags' rollback guard writes the requesters tag in a second write after it
+// (guardRetag, writeGuardRewrite). A retag that names none (--type none, --github-owners none,
+// --requesters none, --scopes none, --admin none, --project none, --project-channels none,
+// --max-grant none, --default-grant none) removes those tags and sets none of the user's; --type
+// none also removes the old kind tag and the rollback guard written with the type. Any other retag
+// sets tags. A retag that does both is refused before anything is read or written: AWS removes
+// tags only with UntagResource, so it would be two calls, and a refused second call would leave it
+// half applied.
 //
 // Either kind of retag reads the tags the secret holds, builds from them the tags it will hold
 // once the write lands (after), and checks the github-owners rule and the broker's cross-tag
@@ -86,9 +111,11 @@ func tagPairs(tags map[string]string) string {
 // registers is the one thing neither check can answer, since this CLI holds no list of
 // registered services: the broker's answer to the reread below is what catches it, and the
 // retag exits 1 with the tag written. The write is made against that read (heldTags), and a
-// write another writer raced answers errTagsChanged, which the retag prints, exiting 1; on AWS,
-// whose own write lands before it is read back, a write that landed with an error (a race beside
-// that writer's, or a read-back that failed; tagsLanded) also asks the broker to reread.
+// write another writer raced answers errTagsChanged, which the retag prints, exiting 1. A write
+// that landed with an error (AWS: a race beside that writer's, or a read-back that failed;
+// tagsLanded), and one whose answer leaves open whether it landed (a service fault, an outage, a
+// lost connection; tagsUnknown), also ask the broker to reread, and the retag says what it knows
+// of the write and never what the tags held before it.
 //
 // A retag that leaves the secret a type is refused, before anything is written, by a broker whose
 // settings do not say it reads the type tag (requireTypeTag). A retag that changes the type tag
@@ -254,12 +281,17 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	if len(remove) > 0 {
 		if err := s.backend.removeTags(s.ctx, slug, held, remove); err != nil {
 			fmt.Fprintf(stderr, "agent-secrets %s: %v; looked in %s\n", form, s.refusedAs(err), s.storeName())
-			if rewrite != "" && writeLanded(err) {
-				// The removal landed, but on tags another writer changed or that could not be read
-				// back, so the retag writes nothing more on them: the requesters rewrite would
-				// send this retag's owner and tier over whatever the other writer wrote.
-				fmt.Fprintf(stderr, "agent-secrets %s: the removal landed, so its second write, %s's requesters as %q, was not made; read the tags as they now stand with `%s`, and run this retag again\n",
-					form, name, rewrite, pipeCommand(s.backend.signInPrefix(), "secret", "show", name))
+			if rewrite != "" && (writeLanded(err) || writeUnknown(err)) {
+				// The removal landed, or may have: another writer changed the tags beside it, they
+				// could not be read back, or the store's answer was lost. So the retag writes
+				// nothing more on them: the requesters rewrite would send this retag's owner and
+				// tier over whatever the store now holds.
+				outcome := "the removal landed"
+				if writeUnknown(err) {
+					outcome = "whether the removal landed is unknown"
+				}
+				fmt.Fprintf(stderr, "agent-secrets %s: %s, so its second write, %s's requesters as %q, was not made; read the tags as they now stand with `%s`, and run this retag again\n",
+					form, outcome, name, rewrite, pipeCommand(s.backend.signInPrefix(), "secret", "show", name))
 			}
 			rereadIfLanded(s, stdout, stderr, form, name, err)
 			return 1
@@ -280,11 +312,20 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 					rereadRetag(s, stdout, stderr, form, name, policy.TypeFromTags(after))
 					return 1
 				}
-				// The rewrite did not land, so what the requesters tag holds now is what it held
-				// before this retag: the removal did not touch it. The guard was either leaving it
-				// (harmless to leave) or joining it (the secret keeps a project tag with no guard,
-				// which a broker from before the project tags would serve), and the two need
-				// different words.
+				if writeUnknown(err) {
+					// The store's answer to the rewrite leaves open whether it landed: the
+					// requesters tag holds what this retag wrote or what it held before, and only
+					// reading it tells which.
+					fmt.Fprintf(stderr, "agent-secrets %s: the removal stands, but whether %s's requesters were written as %q is unknown: %v; looked in %s. Read the tags as they now stand with `%s`\n",
+						form, name, rewrite, s.refusedAs(err), s.storeName(), pipeCommand(s.backend.signInPrefix(), "secret", "show", name))
+					rereadRetag(s, stdout, stderr, form, name, policy.TypeFromTags(after))
+					return 1
+				}
+				// The store refused the rewrite before acting on it, so what the requesters tag
+				// holds now is what it held before this retag: the removal did not touch it. The
+				// guard was either leaving it (harmless to leave) or joining it (the secret keeps a
+				// project tag with no guard, which a broker from before the project tags would
+				// serve), and the two need different words.
 				_, guarded := policy.SplitRequestersGuard(held.tags[policy.TagRequesters])
 				state := fmt.Sprintf("The requesters tag still holds %s, which only a broker from legion-envoy-v29.23.0 up to the release before the project tags reads, as a refusal", policy.RequestersRollbackGuard)
 				if !guarded {
@@ -301,6 +342,11 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	set[policy.TagOwner], set[policy.TagTier] = owner, tier
 	if err := s.backend.setTags(s.ctx, slug, held, set); err != nil {
 		fmt.Fprintf(stderr, "agent-secrets %s: %v; looked in %s\n", form, s.refusedAs(err), s.storeName())
+		if unchecked != "" && writeLanded(err) {
+			// The write landed, so its value went unchecked as surely as after a write with no
+			// error.
+			fmt.Fprintf(stderr, "agent-secrets %s: %s\n", form, unchecked)
+		}
 		// AWS: IAM conditioned on the request tags leaves a shared secret's owner and tier to
 		// administrators specifically. GCP has no per-secret condition on secretmanager.secrets.update,
 		// so a deployment instead grants that permission at all only to administrators for the
@@ -414,11 +460,12 @@ func checkRetagValue(s *secretSession, name, slug string, held heldTags, after m
 }
 
 // rereadIfLanded asks the broker to reread name after a tag write that landed with an error
-// (writeLanded, AWS): a race beside another writer's, or a read-back that failed. The secret's
-// tags changed, so the broker is asked to serve them as they now stand. A write the store refused
-// wrote nothing (GCP's errTagsChanged alone, or a refused AWS call), and needs no reread.
+// (writeLanded, AWS: a race beside another writer's, or a read-back that failed) or whose answer
+// leaves open whether it landed (writeUnknown). The secret's tags changed, or may have, so the
+// broker is asked to serve them as they now stand. A write the store refused before acting wrote
+// nothing (GCP's errTagsChanged alone, or a definite refusal), and needs no reread.
 func rereadIfLanded(s *secretSession, stdout, stderr io.Writer, form, name string, err error) {
-	if writeLanded(err) {
+	if writeLanded(err) || writeUnknown(err) {
 		rereadAfter(s, stdout, stderr, form, name, true, nil)
 	}
 }

@@ -670,7 +670,9 @@ type secretBackend interface {
 	// annotations, changed, with held's etag, which a raced write fails, so nothing is written;
 	// AWS's tag calls take no condition, so its write lands first and is read back after
 	// (awsBackend.raceCheck), and an error from that read-back comes with the write in the store
-	// and nothing put back (tagsLanded, writeLanded).
+	// and nothing put back (tagsLanded, writeLanded). On either store, a call whose error is no
+	// definite refusal (a service fault, an outage, a lost connection) leaves open whether the
+	// write landed (tagsUnknown, writeUnknown).
 	setTags(ctx context.Context, slug string, held heldTags, tags map[string]string) error
 	removeTags(ctx context.Context, slug string, held heldTags, keys []string) error
 	// delete schedules the secret's deletion and answers the moment it happens (AWS:

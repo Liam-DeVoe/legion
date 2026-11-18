@@ -2,9 +2,9 @@ package policy_test
 
 // This file is the merge-base half of the project tags' rollback guard check: secrets that carry
 // dispatch-project or project-channels as `agent-secrets secret` writes them, with the guard entry
-// in their requesters tag, and two that carry a project tag without it, and what legion main
-// 545b2116, the release before the project tags, answers for each. It uses only API that exists
-// at that commit, so it is the one file the golden is generated from.
+// in their requesters tag, a bare twin of each that carries the same project tags without it, and
+// what legion main 545b2116, the release before the project tags, answers for each. It uses only
+// API that exists at that commit, so it is the one file the golden is generated from.
 // testdata/rollback-guard-merge-base.json was written once, at the merge base, by:
 //
 //	git worktree add --detach <tmp>/guard-base 545b2116

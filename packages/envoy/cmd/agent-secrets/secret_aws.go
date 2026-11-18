@@ -519,20 +519,34 @@ func (b *awsBackend) removeTags(ctx context.Context, slug string, held heldTags,
 	return b.raceCheck(ctx, slug, held)
 }
 
+// tag and untag answer an error that is no definite refusal (awsAttempts.definiteRefusal: one
+// attempt, ending in a code awsDefiniteRefusals lists) as tagsUnknown: a service fault, a throttle
+// after a retry or a lost connection may follow a call the store carried out.
 func (b *awsBackend) tag(ctx context.Context, slug string, tags map[string]string) error {
+	var attempts awsAttempts
 	_, err := b.sm.TagResource(ctx, &secretsmanager.TagResourceInput{
 		SecretId: aws.String(b.id(slug)),
 		Tags:     secrets.TagList(tags),
-	})
-	return err
+	}, attempts.record)
+	return tagOutcome(err, &attempts)
 }
 
 func (b *awsBackend) untag(ctx context.Context, slug string, keys []string) error {
+	var attempts awsAttempts
 	_, err := b.sm.UntagResource(ctx, &secretsmanager.UntagResourceInput{
 		SecretId: aws.String(b.id(slug)),
 		TagKeys:  keys,
-	})
-	return err
+	}, attempts.record)
+	return tagOutcome(err, &attempts)
+}
+
+// tagOutcome is a tag call's error as tag and untag answer it: nil, a definite refusal as it
+// is, and any other error as tagsUnknown.
+func tagOutcome(err error, attempts *awsAttempts) error {
+	if err == nil || attempts.definiteRefusal(err) {
+		return err
+	}
+	return tagsUnknown{err}
 }
 
 // raceCheck is how a tag write on AWS, whose tag calls take no condition, answers for the
