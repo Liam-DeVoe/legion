@@ -1065,6 +1065,19 @@ describe("the dispatch CLI", () => {
     expect(requests).toEqual([]);
   });
 
+  // A dry run that read its text from stdin cannot be repeated by its words alone: stdin is spent.
+  // The hint says to send the call's own command again, its here-document included, with
+  // `--dry-run-out` added, rather than print a command that would read an empty stdin.
+  test("under Claude Code a long dry run of stdin text says to repeat its here-document", async () => {
+    const argv = ["message", "--issue", "DSP-1", "--body-file", "-", "--dry-run"];
+    const { code, stdout, stderr } = await run(argv, claudeHost, "y".repeat(26_100));
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout).body).toHaveLength(26_100);
+    expect(stderr).toMatch(
+      /^dispatch: warning: this dry run's JSON is [\d,]+ characters, past the 25,000 Claude Code shows; to read it whole, run this call's own command again, its here-document included, with `--dry-run-out \S+` added\n$/
+    );
+  });
+
   // The control: outside Claude Code the host shows the whole output, so there is no hint.
   test("outside Claude Code a long dry run prints its JSON whole and no hint", async () => {
     const { code, stdout, stderr } = await run(longDryRun(26_946), omp);

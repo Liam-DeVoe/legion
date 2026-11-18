@@ -166,6 +166,27 @@ function earlierWriteLine(key: string, code: ExitCode): string {
   return `${EARLIER_MAY_HAVE_LANDED}: this call named its idempotency key ${key} and ended without writing it (exit ${code}). Read the write back before you send it again; a run without the key may make it twice.`;
 }
 
+/** The most swapped requests the line names one by one; it counts the rest. */
+const SWAPPED_NAMED = 3;
+
+/**
+ * The one line that says the call sent `writes` as its first call sent them, in place of the
+ * different requests it built (`CommandKey.swappedWrites`), or undefined for none: what differs
+ * was not sent. It names three at most and counts the rest, so it stays short.
+ */
+function swappedLine(writes: readonly SentWrite[]): string | undefined {
+  const [only, ...more] = writes;
+  if (only === undefined) return undefined;
+  const named = (write: SentWrite): string =>
+    `${write.method} ${write.path} under idempotency key ${write.key}`;
+  if (more.length === 0) {
+    return `dispatch: warning: this call sent ${named(only)} as its first call sent it, not as this call built it, which differs (in its text, its files or the directory it ran in): Dispatch holds the first call's request, and what differs in this call was not sent.`;
+  }
+  const listed = writes.slice(0, SWAPPED_NAMED).map(named);
+  const rest = writes.length - listed.length;
+  return `dispatch: warning: this call sent ${writes.length} requests as its first call sent them, not as this call built them, which differ (in their text, their files or the directory it ran in): ${listed.join("; ")}${rest > 0 ? `; and ${rest} more` : ""}. Dispatch holds the first call's requests, and what differs in this call was not sent.`;
+}
+
 /** What `unsettledLine` says how to send again a call whose write may have landed from. */
 interface Resend {
   readonly commandKey: CommandKey;
@@ -466,7 +487,8 @@ export async function runDispatchCli(
   if (parsed.dryRun) {
     // The call's own argument check, so the call refuses no arguments its dry run passed; what
     // the call needs besides (Dispatch's configuration, this session's state, Dispatch's answers)
-    // a dry run does not read, and it writes no state of the session's. It runs with Dispatch off
+    // a dry run does not read, and one that passes writes no state of the session's (a refusal is
+    // recorded in the ledger, as every refusal is). It runs with Dispatch off
     // too, reading a dashboard-URL ref only against a server it knows. Its output is the JSON
     // alone and whole: on standard output, or in the file `--dry-run-out` names, with standard
     // output empty. Claude Code shows the first CLAUDE_OUTPUT_MAX characters of a command's
@@ -503,8 +525,10 @@ export async function runDispatchCli(
     if (host === "claude" && json.length > CLAUDE_OUTPUT_MAX) {
       const out = join(tmpdir(), `dispatch-dry-run-${crypto.randomUUID()}.json`);
       const again = dispatchLine([...argv, "--dry-run-out", out]);
-      const how =
-        again.length <= RESEND_COMMAND_MAX
+      // A call that read stdin cannot be repeated by its words alone: its stdin is spent.
+      const how = read.has("-")
+        ? `run this call's own command again, its here-document included, with \`--dry-run-out ${out}\` added`
+        : again.length <= RESEND_COMMAND_MAX
           ? `run: ${again}`
           : `run this call's own command again with \`--dry-run-out ${out}\` added`;
       io.stderr(
@@ -757,12 +781,10 @@ export async function runDispatchCli(
     }
   }
   // A request the call sent as its first call sent it, in place of a different one it built (a
-  // body edited since): the agent is told its change was not sent.
-  for (const write of commandKey.swappedWrites) {
-    notes.push(
-      `dispatch: warning: this call sent ${write.method} ${write.path} under idempotency key ${write.key} as its first call sent it, not as this call built it, which differs (in its text, its files or the directory it ran in): Dispatch holds the first call's request, and what differs in this call was not sent.`
-    );
-  }
+  // body edited since): the agent is told its change was not sent, in one line however many such
+  // requests there are, so the lines that must stay whole always fit.
+  const swapped = swappedLine(commandKey.swappedWrites);
+  if (swapped !== undefined) notes.push(swapped);
   const withLine = (line: string): ResultInput => ({
     ...entry,
     error: `${entry.error ?? text}\n${line}`,

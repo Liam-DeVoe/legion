@@ -1,9 +1,10 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   appendFileSync,
   closeSync,
   type Dirent,
   fstatSync,
+  linkSync,
   mkdirSync,
   openSync,
   readdirSync,
@@ -273,7 +274,7 @@ export function writeResendInput(dir: string, key: string, place: number, text: 
   return path;
 }
 
-/** The record `writeResendRecord` keeps under a key: each write with its body as text or bytes. */
+/** One write `writeResendRecord` keeps, its body as text or as bytes. */
 interface RecordedWrite {
   readonly key: string;
   readonly method: string;
@@ -283,8 +284,15 @@ interface RecordedWrite {
   readonly base64?: string;
 }
 
-function resendRecordPath(dir: string, key: string): string {
-  return join(dir, "resend", `${key}.json`);
+/** Where the writes a call under `key` sent are kept: one file per write, named by its key. */
+function resendRecordDirectory(dir: string, key: string): string {
+  return join(dir, "resend", `${key}.writes`);
+}
+
+/** A write key's place among its command's writes: `<key>` first, `<key>.<n>` n-th. */
+function writeOrdinal(key: string): number {
+  const place = /\.(\d+)$/.exec(key)?.[1];
+  return place === undefined ? 1 : Number(place);
 }
 
 /** A recorded field: a string, or absent. */
@@ -313,43 +321,46 @@ function recordedWrite(value: unknown): SentWrite | undefined {
 }
 
 /**
- * The writes a call under `key` sent, as `writeResendRecord` kept them, in order: none when the
- * session holds no record of the key. A record that is not one is an error, naming the file.
+ * The writes a call under `key` sent, as `writeResendRecord` kept them, in the command's order:
+ * none when the session holds no record of the key. A record that is not one is an error, naming
+ * the file.
  */
 export function readResendRecord(dir: string, key: string): SentWrite[] {
-  const path = resendRecordPath(dir, key);
-  const text = readIfPresent(path);
-  if (text === undefined) return [];
-  let record: unknown;
+  const at = resendRecordDirectory(dir, key);
+  let names: string[];
   try {
-    record = JSON.parse(text);
+    names = readdirSync(at).filter((name) => name.endsWith(".json"));
   } catch (error) {
-    throw new Error(`the resend record ${path} is not JSON (${(error as Error).message})`);
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
   }
-  const writes =
-    typeof record === "object" && record !== null && "writes" in record ? record.writes : undefined;
-  const read = Array.isArray(writes) ? writes.map(recordedWrite) : [undefined];
-  if (read.some((write) => write === undefined)) {
-    throw new Error(`the resend record ${path} holds a write that is not one`);
-  }
-  return read.filter((write): write is SentWrite => write !== undefined);
+  const writes = names.map((name): SentWrite => {
+    const path = join(at, name);
+    let write: SentWrite | undefined;
+    try {
+      write = recordedWrite(JSON.parse(readFileSync(path, "utf-8")));
+    } catch (error) {
+      throw new Error(`the resend record ${path} is not JSON (${(error as Error).message})`);
+    }
+    if (write === undefined) throw new Error(`the resend record ${path} holds no write`);
+    return write;
+  });
+  return writes.sort((a, b) => writeOrdinal(a.key) - writeOrdinal(b.key));
 }
 
 /**
- * Keeps `writes`, the requests a call under `key` sent, at `resend/<key>.json`, for a call sent
- * again under the key to send each as it was first sent (`CommandKey`). The record never changes
- * what it holds: a write it already holds a request for keeps it, and only the writes it holds none
- * of are added, so a later call under the key never replaces what an earlier call sent. Written
- * atomically and owner-only.
+ * Keeps `writes`, the requests a call under `key` sent, at `resend/<key>.writes/<write key>.json`,
+ * for a call sent again under the key to send each as it was first sent (`CommandKey`). A write's
+ * file is made only where none is: written whole to a file of its own, then linked to its name,
+ * which fails when another call made it first. So the record never changes what it holds, even
+ * when two calls under the key keep their writes at once, and each adds the writes only it sent.
+ * Owner-only.
  */
 export function writeResendRecord(dir: string, key: string, writes: readonly SentWrite[]): void {
-  ensureDirectory(join(dir, "resend"));
-  const held = readResendRecord(dir, key);
-  const keys = new Set(held.map((write) => write.key));
-  const added = writes.filter((write) => !keys.has(write.key));
-  if (added.length === 0 && held.length > 0) return;
-  const record = [...held, ...added].map(
-    (write): RecordedWrite => ({
+  const at = resendRecordDirectory(dir, key);
+  ensureDirectory(at);
+  for (const write of writes) {
+    const recorded: RecordedWrite = {
       key: write.key,
       method: write.method,
       path: write.path,
@@ -359,9 +370,17 @@ export function writeResendRecord(dir: string, key: string, writes: readonly Sen
         : typeof write.content === "string"
           ? { text: write.content }
           : { base64: Buffer.from(write.content).toString("base64") }),
-    })
-  );
-  writeAtomically(resendRecordPath(dir, key), `${JSON.stringify({ writes: record })}\n`);
+    };
+    const staged = join(at, `.${randomUUID()}.tmp`);
+    writeFileSync(staged, `${JSON.stringify(recorded)}\n`, { mode: PRIVATE_FILE });
+    try {
+      linkSync(staged, join(at, `${write.key}.json`));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    } finally {
+      rmSync(staged, { force: true });
+    }
+  }
 }
 
 /** Writes the session's title to `title`, atomically: a concurrent read sees the old or the new. */

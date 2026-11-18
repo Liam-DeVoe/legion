@@ -135,8 +135,49 @@ describe("per-session state", () => {
     const third = { ...message, key: `${key}.3` };
     writeResendRecord(dir, key, [{ ...message, content: '{"body":"another"}' }, third]);
     expect(readResendRecord(dir, key)).toEqual([message, upload, third]);
-    expect(statSync(join(dir, "resend", `${key}.json`)).mode & 0o777).toBe(0o600);
+    expect(statSync(join(dir, "resend", `${key}.writes`, `${key}.json`)).mode & 0o777).toBe(0o600);
   });
+
+  // Two calls under one key can keep their requests at the same moment (two resends run together):
+  // neither replaces a request the other kept, and each keeps the ones only it sent. Each write is
+  // a file of its own, made only when it is not there, so there is no read, merge and write to
+  // race.
+  test("two processes keeping requests under the same keys at once lose none", async () => {
+    const dir = sessionDirectory({ DISPATCH_STATE_DIR: root() }, "s12");
+    const keys = Array.from({ length: 300 }, () => crypto.randomUUID());
+    const module = join(import.meta.dir, "..", "dispatch-session-state.ts");
+    // Both start writing at once: each says it is ready, then waits for the go file the test
+    // makes once both have said so.
+    const go = join(dir, "..", "go");
+    mkdirSync(join(dir, ".."), { recursive: true });
+    const writer = (body: string, extra: number) =>
+      Bun.spawn(
+        [
+          process.execPath,
+          "-e",
+          `import { existsSync } from "node:fs";
+import { writeResendRecord } from ${JSON.stringify(module)};
+console.log("ready");
+while (!existsSync(${JSON.stringify(go)})) {}
+for (const key of ${JSON.stringify(keys)}) {
+  writeResendRecord(${JSON.stringify(dir)}, key, [
+    { key, method: "POST", path: "/m", type: "application/json", content: ${JSON.stringify(body)} },
+    { key: key + ".${extra}", method: "POST", path: "/m", type: "application/json", content: "x" },
+  ]);
+}`,
+        ],
+        { stdout: "pipe", stderr: "pipe" }
+      );
+    const children = [writer("from A", 2), writer("from B", 3)];
+    for (const child of children) await child.stdout.getReader().read();
+    writeFileSync(go, "");
+    expect(await Promise.all(children.map((child) => child.exited))).toEqual([0, 0]);
+    const lost = keys.filter((key) => readResendRecord(dir, key).length !== 3);
+    expect(lost).toEqual([]);
+    for (const key of keys) {
+      expect(["from A", "from B"]).toContain(readResendRecord(dir, key)[0]?.content as string);
+    }
+  }, 60_000);
 
   test("pruning removes sessions idle for 14 days and keeps the rest", () => {
     const r = root();

@@ -2102,10 +2102,12 @@ export class DispatchClient {
   /**
    * `#response` for the answer to a call sent under `key`. A write's 2xx is handed on before its
    * body is read (`writeAnswer`), so the body can still be lost on the way: the connection breaks,
-   * or the deadline ends the read. The write ran, and its answer is lost, so a write of a
-   * `dispatch` command tells `commandKey` (`#unsettle`) before the failure is thrown on. A
-   * confirmed answer or landing resolves that key alone: an earlier no-route attempt may have left
-   * it uncertain, while another write of the command may still be so.
+   * or the deadline ends the read. A write's 2xx whose body is no JSON object or list (`null`, JSON
+   * cut short, a page) is lost the same way: the write ran, and nothing the command can use came
+   * back. Either way a write of a `dispatch` command tells `commandKey` (`#unsettle`) before the
+   * failure is thrown on. A confirmed answer or landing resolves that key alone: an earlier
+   * no-route attempt may have left it uncertain, while another write of the command may still be
+   * so.
    */
   async #answer<T>(
     method: string,
@@ -2115,6 +2117,18 @@ export class DispatchClient {
   ): Promise<T> {
     try {
       const answer = await this.#response<T>(method, url, response);
+      const read: unknown = answer;
+      if (
+        key !== undefined &&
+        response.status !== 204 &&
+        read !== "" &&
+        (typeof read !== "object" || read === null)
+      ) {
+        const said = typeof read === "string" ? read : JSON.stringify(read);
+        throw new Error(
+          `${method} ${withoutUserinfo(url)} was answered ${response.status}, but with no JSON object this client reads (${textHead(said)}), so the write may have landed with its answer lost`
+        );
+      }
       if (key !== undefined) this.#commandKey?.markAnswered(key);
       return answer;
     } catch (error) {
@@ -2444,7 +2458,9 @@ export class DispatchClient {
    * One attempt of a write, under the call's signal and a silence bound of its own: once
    * `silenceMs` pass before its answer begins with none of its body taken by the connection in
    * that time, it is cut off and fails as `WriteAttemptSilent`. The bound ends with the answer's
-   * headers; its body is read under the call's deadline alone.
+   * headers; its body is read under the call's deadline alone. It follows no redirect: the
+   * redirect is the write's answer, since a followed one carries the write elsewhere, and a failure
+   * there (a refused connection) would read as though the write reached nothing.
    */
   async #attempt(
     url: string,
@@ -2466,6 +2482,7 @@ export class DispatchClient {
     try {
       return await this.fetchImpl(url, {
         method,
+        redirect: "manual",
         signal: AbortSignal.any([this.#signal, cut.signal]),
         ...(body === undefined ? { headers } : attemptBody(body, headers, progress)),
       });

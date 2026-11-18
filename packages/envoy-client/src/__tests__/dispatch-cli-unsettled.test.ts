@@ -826,6 +826,29 @@ describe("a write whose answer is lost", () => {
     expect(dispatch.landed).toHaveLength(1);
   });
 
+  // However many recorded requests replaced what the call built, one line says so: a line per
+  // request could fill the 25,000 characters Claude Code shows and push out the line that names
+  // the key.
+  test("several requests sent as first sent make one line", async () => {
+    const comments = { method: "POST", path: `/api/v1/issues/${ISSUE}/comments` };
+    const uploads = { method: "POST", path: `/api/v1/issues/${ISSUE}/artifacts` };
+    writeFileSync(join(stateDir, "shot.png"), PNG);
+    const dispatch = keyedDispatch({ lose: comments });
+    const first = await run(commentWithPicture, dispatch.fetchImpl);
+    const { key } = resendOf(first.stdout);
+    writeFileSync(join(stateDir, "shot.png"), Buffer.concat([PNG, Buffer.from("edited")]));
+    dispatch.heal();
+    nextProcess();
+    const edited = commentWithPicture.map((word) => (word === "Looks good." ? "Edited." : word));
+    const again = await run([...edited, "--idempotency-key", key], dispatch.fetchImpl);
+    expect(again.code, again.stdout).toBe(0);
+    const warnings = again.stdout.split("\n").filter((line) => line.startsWith(SWAPPED));
+    expect(warnings).toEqual([
+      `${SWAPPED} 2 requests as its first call sent them, not as this call built them, which differ (in their text, their files or the directory it ran in): POST ${uploads.path} under idempotency key ${key}; POST ${comments.path} under idempotency key ${key}.2. Dispatch holds the first call's requests, and what differs in this call was not sent.`,
+    ]);
+    expect(dispatch.landed).toHaveLength(2);
+  });
+
   // A command too long to print whole would be cut before its key, and a cut command is a new
   // write. The line then names the key and says to send the call's own command with it.
   test("under Claude Code a command too long to print is not printed, and the key is", async () => {

@@ -1405,6 +1405,62 @@ describe("DispatchClient's writes", () => {
     expect(commandKey.unsettled).toBe(true);
   });
 
+  // A write follows no redirect. A followed one would carry the write to another place, and a
+  // failure there (a refused connection) would read as though the write reached nothing, though
+  // the first place took it. The redirect is the answer, as Dispatch's own refusal is.
+  test("a command's write follows no redirect: the redirect is its answer", async () => {
+    let followed = 0;
+    const target = Bun.serve({
+      port: 0,
+      fetch: () => {
+        followed++;
+        return Response.json(posted, { status: 201 });
+      },
+    });
+    const redirecting = Bun.serve({
+      port: 0,
+      fetch: (request) =>
+        new Response(null, {
+          status: 307,
+          headers: { Location: `http://127.0.0.1:${target.port}${new URL(request.url).pathname}` },
+        }),
+    });
+    try {
+      const commandKey = new CommandKey(KEY);
+      const dispatch = new DispatchClient(
+        `http://127.0.0.1:${redirecting.port}`,
+        bearerCredential("secret"),
+        fetch,
+        { writeRetry: pacing().retry, sleep: async () => undefined, commandKey }
+      );
+      const failed = await failure(dispatch.comment("DSP-1", comment));
+      expect(failed).toBeInstanceOf(DispatchGatewayError);
+      expect((failed as DispatchGatewayError).status).toBe(307);
+      expect(followed).toBe(0);
+    } finally {
+      redirecting.stop(true);
+      target.stop(true);
+    }
+  });
+
+  // A 2xx whose body is no JSON object this client reads (`null`, JSON cut short) answers a write
+  // Dispatch made with nothing the command can use: the answer is lost, as a cut body's is, and
+  // the command says the write may have landed rather than failing as a refusal or printing an
+  // empty success.
+  test("a command's write answered 2xx with no JSON object may have landed unanswered", async () => {
+    for (const text of ["null", '{"id":', "<html>OK</html>"]) {
+      const answer = new Response(text, {
+        status: 201,
+        headers: { "Content-Type": text.startsWith("<") ? "text/html" : "application/json" },
+      });
+      const { fetchImpl } = scripted([answer]);
+      const { dispatch, commandKey } = commandClient(fetchImpl, pacing().retry);
+      const failed = await failure(dispatch.comment("DSP-1", comment));
+      expect({ text, failed: failed instanceof Error }).toEqual({ text, failed: true });
+      expect({ text, unsettled: commandKey.unsettled }).toEqual({ text, unsettled: true });
+    }
+  });
+
   // A Dispatch whose /healthz answers its health (`healthzHandler`: `ok` and `db` on every build)
   // and names no keyed layer would run a write sent again as a second write, which the command must
   // not offer; a probe that tells nothing (it failed, or the JSON is no health answer of
