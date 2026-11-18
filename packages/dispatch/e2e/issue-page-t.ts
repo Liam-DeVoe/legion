@@ -1136,10 +1136,10 @@ export function decisionsViewGate(requests: readonly ApiRequest[], key: string):
   };
 }
 
-/** What `decisionNodesGate` and `partUGate` read where they are not met: the seed's decisions
- *  are sections of `decisions.md`. */
+/** What `decisionNodesGate` and `partUGate` read where they are not met: the seed's decisions,
+ *  written as decision blocks of the spec, are no nodes of the tree read this base answers. */
 const DECISIONS_ARE_SECTIONS =
-  "the seed's decisions are sections of decisions.md here, not nodes of the tree read";
+  "the seed's decisions are no nodes of the tree read this base answers";
 
 /** The decisions work that makes each decision a node of the tree read, and the seeds that then
  *  write their decisions so (`decisionsAreNodes`). */

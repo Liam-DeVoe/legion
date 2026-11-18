@@ -226,10 +226,9 @@ function heldNodes(
 }
 
 /** The rows that take their place from the fixture rather than from the tree read: a row the
- *  answer holds no node for, which is a decision of today's decisions read (a section of
- *  `decisions.md`, until the page draws decisions from the tree read's nodes), and a row drawn
- *  under such a decision, a Change, which the read places under its decision only once the
- *  decision is a node (`decisionNodesGate`). */
+ *  answer holds no node for, which is a decision of today's decisions read (until the page draws
+ *  decisions from the tree read's nodes), and a row drawn under such a decision, a Change, which
+ *  the read places under its decision only once the decision is a node (`decisionNodesGate`). */
 function placedByFixture(
   readings: readonly RowReading[],
   held: ReadonlyMap<string, HeldNode>
