@@ -454,9 +454,25 @@ func withRefusalWork(t *testing.T, cost time.Duration) {
 // refusedFor is how many connections registry counts refused under label, of every kind.
 func refusedFor(t *testing.T, registry *metrics.Registry, label string) int {
 	t.Helper()
+	return countedFor(t, registry, func(line string) bool {
+		return strings.HasPrefix(line, "broker_nats_callout_decisions_total{") && strings.Contains(line, `outcome="refused",reason="`+label+`"}`)
+	})
+}
+
+// recordedFor is how many requests registry counts, answered or dropped, of every kind and reason.
+func recordedFor(t *testing.T, registry *metrics.Registry) int {
+	t.Helper()
+	return countedFor(t, registry, func(line string) bool {
+		return strings.HasPrefix(line, "broker_nats_callout_decisions_total{") || strings.HasPrefix(line, "broker_nats_callout_dropped_total{")
+	})
+}
+
+// countedFor is the sum of registry's counter lines that counts says to count.
+func countedFor(t *testing.T, registry *metrics.Registry, counts func(line string) bool) int {
+	t.Helper()
 	total := 0
 	for _, line := range strings.Split(scrape(t, registry), "\n") {
-		if !strings.HasPrefix(line, "broker_nats_callout_decisions_total{") || !strings.Contains(line, `outcome="refused",reason="`+label+`"}`) {
+		if !counts(line) {
 			continue
 		}
 		n, err := strconv.Atoi(line[strings.LastIndex(line, " ")+1:])
@@ -475,40 +491,59 @@ func refusedFor(t *testing.T, registry *metrics.Registry, label string) int {
 // themselves, and clients failed their connects with the service's fix in place.
 const stormRequests = 120
 
-// requireEveryClientHeardInsideTheHubsTimeout fails unless the hub gave up on no request of a
-// storm, every client heard its answer before the hub's authorization timeout, admitted (a nil
-// error) or refused, and the storm reached what it is for: at least half its requests past the
-// waiting bound, read from registry's refusals. It answers how many were admitted.
-func requireEveryClientHeardInsideTheHubsTimeout(t *testing.T, server *testnats.Server, registry *metrics.Registry, errs []error, took []time.Duration) int {
+// stormRead is what a storm's clients heard, the service's record of it and the hub's count of the
+// requests of it the hub gave up on.
+type stormRead struct {
+	admitted, failed, pastBound, gaveUp int
+	slowest                             time.Duration
+	other                               error
+}
+
+// readStorm reads a storm once every one of its clients has returned, from errs and took. The hub
+// writes each give-up (hubGaveUp) before it refuses that client, so once every client has returned
+// the hub's log names every request it gave up on. The service counts each answer only after it
+// has sent it, so the read waits until registry has counted one for each client that was admitted
+// or refused.
+func readStorm(t *testing.T, server *testnats.Server, registry *metrics.Registry, errs []error, took []time.Duration) stormRead {
 	t.Helper()
-	hubTimeout := testnats.CalloutAuthTimeout * time.Second
-	// Every request of the storm went out before its client returned, and the hub logs giving up on
-	// one a timeout after it sent it, so a timeout from now its log names every one it gave up on.
-	time.Sleep(hubTimeout)
-	admitted, late, failed := 0, 0, 0
-	var slowest time.Duration
-	var other error
+	var storm stormRead
 	for index, err := range errs {
 		switch {
 		case err == nil:
-			admitted++
+			storm.admitted++
 		case !errors.Is(err, nats.ErrAuthorization):
-			failed++
-			other = err
+			storm.failed++
+			storm.other = err
 		}
-		slowest = max(slowest, took[index])
-		if took[index] >= hubTimeout {
-			late++
-		}
+		storm.slowest = max(storm.slowest, took[index])
 	}
-	pastBound, gaveUp := refusedFor(t, registry, labelWaitingBound), strings.Count(server.Log(), hubGaveUp)
-	t.Logf("%d requests: %d admitted, %d past the waiting bound, %d heard at or after %s (slowest %s), %d failed otherwise (%v); the hub gave up on %d",
-		len(errs), admitted, pastBound, late, hubTimeout, slowest, failed, other, gaveUp)
-	require.Zero(t, gaveUp, "the hub gave up on %d requests it sent the service", gaveUp)
-	require.Zero(t, late, "%d clients heard at or after the hub's %s timeout; the slowest after %s", late, hubTimeout, slowest)
-	require.Zero(t, failed, "%d clients failed their connect neither admitted nor refused: %v", failed, other)
-	require.GreaterOrEqual(t, pastBound, len(errs)/2, "the storm did not go past the waiting bound, which is the regime it is for")
-	return admitted
+	testwait.WithinPolling(t, 30*time.Second, 20*time.Millisecond, "the service to count every request of the storm", func() bool {
+		return recordedFor(t, registry) >= len(errs)-storm.failed
+	})
+	storm.pastBound, storm.gaveUp = refusedFor(t, registry, labelWaitingBound), strings.Count(server.Log(), hubGaveUp)
+	t.Logf("%d requests: %d admitted, %d past the waiting bound, %d failed otherwise (%v), the slowest client back after %s; the hub gave up on %d",
+		len(errs), storm.admitted, storm.pastBound, storm.failed, storm.other, storm.slowest, storm.gaveUp)
+	return storm
+}
+
+// requireEveryClientHeardInsideTheHubsTimeout fails unless the hub gave up on no request of a
+// storm, every client was admitted (a nil error) or refused, and the storm reached what it is for:
+// at least half its requests past the waiting bound, read from registry's refusals. It answers how
+// many were admitted.
+//
+// Inside the hub's authorization timeout is the hub's own reading. Its timer runs from the moment
+// it sends the request to the moment it reads the answer, and a request it did not give up on was
+// answered inside it. A client's own time does not measure that. It adds the dial, the client's
+// signature and the hub's work on the CONNECT before the timer starts, all in this one test
+// process. Under the race detector on four loaded CPUs those took up to 0.8 s, and clients the hub
+// had answered in time came back after more than two seconds.
+func requireEveryClientHeardInsideTheHubsTimeout(t *testing.T, server *testnats.Server, registry *metrics.Registry, errs []error, took []time.Duration) int {
+	t.Helper()
+	storm := readStorm(t, server, registry, errs, took)
+	require.Zero(t, storm.gaveUp, "the hub gave up on %d requests it sent the service", storm.gaveUp)
+	require.Zero(t, storm.failed, "%d clients failed their connect neither admitted nor refused: %v", storm.failed, storm.other)
+	require.GreaterOrEqual(t, storm.pastBound, len(errs)/2, "the storm did not go past the waiting bound, which is the regime it is for")
+	return storm.admitted
 }
 
 // A storm of connections far past what one replica holds waiting is answered inside the hub's
@@ -534,6 +569,28 @@ func TestAStormPastTheWaitingBoundIsAnsweredInsideTheHubsTimeout(t *testing.T) {
 	errs, took := connectAll(t, url, sessions)
 	admitted := requireEveryClientHeardInsideTheHubsTimeout(t, server, registry, errs, took)
 	require.Positive(t, admitted, "no connection of the storm was admitted")
+}
+
+// The hub's count that the storms here read sees a storm answered too late: with each refusal's
+// work half a second past the hub's authorization timeout, the hub gives up on every request the
+// storm sends past the waiting bound and refuses those clients itself, and its count holds every one
+// of them.
+func TestTheHubCountsAStormAnsweredPastItsTimeout(t *testing.T) {
+	withRefusalWork(t, testnats.CalloutAuthTimeout*time.Second+500*time.Millisecond)
+	withDecisionSlots(t, 2)
+	withWaitingBound(t, 16)
+	keys := testnats.NewCalloutKeys(t)
+	server, url := startDebugCalloutServer(t, keys)
+	sessions := sessionsNamed(t, "ses_late_storm", stormRequests)
+	deps := slowIntrospect(100*time.Millisecond, sessions...)
+	registry := metrics.New()
+	deps.Metrics = NewMetrics(registry)
+	startService(t, url, keys, deps, Decide)
+
+	errs, took := connectAll(t, url, sessions)
+	storm := readStorm(t, server, registry, errs, took)
+	require.GreaterOrEqual(t, storm.pastBound, len(errs)/2, "the storm did not go past the waiting bound, which is the regime it is for")
+	require.GreaterOrEqual(t, storm.gaveUp, storm.pastBound, "the hub's count missed refusals answered past its timeout: the storms' check cannot see them")
 }
 
 // A flood of connections that hold no credential at all, which any client that reaches the hub can
