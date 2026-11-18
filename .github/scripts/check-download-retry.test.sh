@@ -12458,18 +12458,18 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 for refusal in \
-  "8	Run the Python program with bash	runs ..github/scripts/r37-tool.py. with .bash." \
-  "10	Source the jq filter	sources ..github/scripts/r37-filter.jq." \
-  "12	Source the Python program from the workspace	sources .\$GITHUB_WORKSPACE/.github/scripts/r37-tool.py." \
-  "14	Run the jq filter with ksh	runs ../.github/scripts/r37-filter.jq. with .ksh." \
-  "16	Run the Python program by its name under a variable directory	runs .\$dir/r37-tool.py. with .sh." \
-  "19	Run the Python program from a working directory	runs .\.\./\.\./\.github/scripts/r37-tool.py. with .bash."; do
+  "8	Run the Python program with bash	writes ..github/scripts/r37-tool.py. as an argument of .bash., and it names .github/scripts/r37-tool.py" \
+  "10	Source the jq filter	writes ..github/scripts/r37-filter.jq. as an argument of .\.., and it names .github/scripts/r37-filter.jq" \
+  "12	Source the Python program from the workspace	writes .\$GITHUB_WORKSPACE/.github/scripts/r37-tool.py. as an argument of .source., and it names .github/scripts/r37-tool.py" \
+  "14	Run the jq filter with ksh	writes ../.github/scripts/r37-filter.jq. as an argument of .ksh., and it names .github/scripts/r37-filter.jq" \
+  "16	Run the Python program by its name under a variable directory	writes .\$dir/r37-tool.py. as an argument of .sh., and it names .github/scripts/r37-tool.py" \
+  "19	Run the Python program from a working directory	writes .\.\./\.\./\.github/scripts/r37-tool.py. as an argument of .bash., and it names .github/scripts/r37-tool.py"; do
   IFS=$'\t' read -r line step says <<<"$refusal"
   check "refuses '$step' by name at its run" \
-    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' $says, which is or may be a file under .github/scripts/ that this check does not read as a script, so this check cannot name the script that runs there")"
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' $says, a file under .github/scripts/ this check does not read as a script")"
 done
 check "tells each of the six to run the program with python3 or read the filter with jq -f" \
-  "$(is "$(printf '%s\n' "$out" | grep -c "that this check does not read as a script, so .*Run a Python program with .python3 .github/scripts/<name>.py .*. and read a jq filter with .jq -f .github/scripts/<name>.jq .*.; a shell script goes in .github/scripts/<name>.sh")" 6)"
+  "$(is "$(printf '%s\n' "$out" | grep -c "this check does not read as a script\. Such a file appears in a command only .*Run a Python program with .python3 .github/scripts/<name>.py .*. and read a jq filter with .jq -f .github/scripts/<name>.jq .*.; a shell script goes in .github/scripts/<name>.sh")" 6)"
 check "passes python3 and jq -f given the same files, and a shell given a .py elsewhere" \
   "$(is "$(contains "$out" "step 'Run the Python program and read the jq filter as they are run'")" false)"
 for directory in "r37-linked	it is a symbolic link" "lib/r37-deep	it is a symbolic link" \
@@ -12488,7 +12488,9 @@ check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')
 # text sourcing a `.py` (P15), each refused at the run; and a `.py` of shell commands with no
 # `#!` line run as a command word, which the shell runs as shell text when the kernel will not
 # execute it, refused at the run. A `python3` run of a `.py` and a run of a `.py` whose first
-# line names python3, as a command word, pass beside them.
+# line names python3, as a command word, pass beside them. Since W16's allow-list the first two
+# are refused at the run as well, a command word whose `#!` line names no interpreter of its own,
+# and each refusal at a run says where the file is written and where it may be.
 echo "case: r37 W13 a shell program among the top-level .py and .jq files, a .pyc and a bash -c text, each run by a shell, are refused by name"
 root=$(fixture r37-w13-shell-programs)
 mkdir -p "$root/.github/scripts/__pycache__"
@@ -12535,23 +12537,29 @@ YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
-for program in "r37-shell.py	#!/bin/sh" "r37-shell.jq	#!/usr/bin/env -S bash -e" \
-  "r37-env.py	#!/usr/bin/env -u HOME zsh"; do
-  IFS=$'\t' read -r name shebang <<<"$program"
-  check "refuses .github/scripts/$name by name at its line 1, as the shell program its first line makes it" \
-    "$(contains "$out" "::error file=.github/scripts/$name,line=1::.github/scripts/$name is a .\.${name##*.}. directly in .github/scripts/ whose first line, .$shebang., runs a shell: it is a shell program.*Move a shell program to .github/scripts/<name>.sh")"
+for program in "r37-shell.py	#!/bin/sh	sh	.python3. or .python." \
+  "r37-shell.jq	#!/usr/bin/env -S bash -e	bash	.jq." \
+  "r37-env.py	#!/usr/bin/env -u HOME zsh	zsh	.python3. or .python."; do
+  IFS=$'\t' read -r name shebang runs own <<<"$program"
+  check "refuses .github/scripts/$name by name at its line 1, as the program of another interpreter its first line makes it" \
+    "$(contains "$out" "::error file=.github/scripts/$name,line=1::.github/scripts/$name is a .\.${name##*.}. directly in .github/scripts/ whose first line, .$shebang., runs .$runs., not $own: this check reads no such file as a program of another interpreter.*Move a shell program to .github/scripts/<name>.sh")"
+done
+for run in "9	Run the shell program written as a .py	r37-shell.py" \
+  "12	Run the shell program written as a .jq	r37-shell.jq" \
+  "21	Run the plain Python file as a command	r37-plain.py"; do
+  IFS=$'\t' read -r line step name <<<"$run"
+  check "refuses '$step' at the run, a command word whose first line names no interpreter of its own" \
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' writes ..github/scripts/$name. as a command word that does not open with a .#!. line naming its own interpreter, and it names .github/scripts/$name, a file under .github/scripts/ this check does not read as a script")"
 done
 check "refuses the bytecode handed to bash at the run" \
-  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=15::step 'Run the bytecode with bash' of job 'build' runs ..github/scripts/__pycache__/r37-tool.cpython-313.pyc. with .bash., which is or may be a file under .github/scripts/ that this check does not read as a script")"
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=15::step 'Run the bytecode with bash' of job 'build' writes ..github/scripts/__pycache__/r37-tool.cpython-313.pyc. as an argument of .bash., and it names .github/scripts/__pycache__/r37-tool.cpython-313.pyc, a file under .github/scripts/ this check does not read as a script")"
 check "refuses the bash -c text that sources the Python program, at the run" \
-  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=18::step 'Source the Python program in a bash -c text' of job 'build' runs .bash -c. on text that hands ..github/scripts/r37-tool.py. to .\.., which is or may be a file under .github/scripts/ that this check does not read as a script")"
-check "tells both runs to run the program with python3 or put a shell script in a .sh" \
-  "$(is "$(printf '%s\n' "$out" | grep -c "that this check does not read as a script, so .*Run a Python program with .python3 .github/scripts/<name>.py .*.; a shell script goes in .github/scripts/<name>.sh")" 2)"
-check "refuses the plain Python file run as a command at the run, with the same cure" \
-  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=21::step 'Run the plain Python file as a command' of job 'build' runs ..github/scripts/r37-plain.py. as a command, which is a file under .github/scripts/ that this check does not read as a script, and has no .#!. line, so the shell running it as a command runs it as shell text when the kernel will not execute it, so this check cannot name the script that runs there.*Run a Python program with .python3 .github/scripts/<name>.py .*.; a shell script goes in .github/scripts/<name>.sh")"
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=18::step 'Source the Python program in a bash -c text' of job 'build' writes ..github/scripts/r37-tool.py. in the text .bash -c. runs, as an argument of .\.., and it names .github/scripts/r37-tool.py, a file under .github/scripts/ this check does not read as a script")"
+check "tells each of the five runs to run the program with python3 or put a shell script in a .sh" \
+  "$(is "$(printf '%s\n' "$out" | grep -c "this check does not read as a script\. Such a file appears in a command only .*Run a Python program with .python3 .github/scripts/<name>.py .*.; a shell script goes in .github/scripts/<name>.sh")" 5)"
 check "passes python3 given the Python program, and the program run by its python3 first line" \
   "$(is "$(contains "$out" "step 'Run the Python program as Python'\|r37-tool.py,line=1")" false)"
-check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 6)"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 8)"
 
 # W14 is the verb reader's wrappers (P11, P12): the words after a wrapper the gate drops were read
 # as the command, so `nice -n 10 curl` ran a command named `-n`, and `busybox wget` a command
@@ -12685,16 +12693,16 @@ YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
-for refusal in "9	build	Run the Python program with bash after a cd	runs .\.\./r38-tool.py. with .bash." \
-  "13	build	Run the Python program with bash under a working directory	runs .\.\./r38-tool.py. with .bash." \
-  "19	build	Run the Python program with ash	runs ..github/scripts/r38-tool.py. with .ash." \
-  "38	nested	Run the Python program with bash under the job's working directory	runs .\.\./r38-tool.py. with .bash."; do
+for refusal in "9	build	Run the Python program with bash after a cd	writes .\.\./r38-tool.py. as an argument of .bash." \
+  "13	build	Run the Python program with bash under a working directory	writes .\.\./r38-tool.py. as an argument of .bash." \
+  "19	build	Run the Python program with ash	writes ..github/scripts/r38-tool.py. as an argument of .ash." \
+  "38	nested	Run the Python program with bash under the job's working directory	writes .\.\./r38-tool.py. as an argument of .bash."; do
   IFS=$'\t' read -r line job step says <<<"$refusal"
   check "refuses '$step' by name at its run" \
-    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job '$job' $says, which is or may be a file under .github/scripts/ that this check does not read as a script, so this check cannot name the script that runs there")"
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job '$job' $says, and it names .github/scripts/r38-tool.py, a file under .github/scripts/ this check does not read as a script")"
 done
 check "refuses the plain Python file run as a command after a cd, at the run" \
-  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=16::step 'Run the plain Python file as a command after a cd' of job 'build' runs .\./r38-plain.py. as a command, which is a file under .github/scripts/ that this check does not read as a script, and has no .#!. line")"
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=16::step 'Run the plain Python file as a command after a cd' of job 'build' writes .\./r38-plain.py. as a command word that does not open with a .#!. line naming its own interpreter, and it names .github/scripts/r38-plain.py")"
 check "refuses the heredoc piped into ash as one a shell runs" \
   "$(contains "$out" "::error file=.github/workflows/case.yaml,line=23::step 'Pipe a heredoc into ash' of job 'build' feeds a heredoc to .cat., whose output a pipe on the operator's line hands to a shell, and the body holds a fetch")"
 check "tells each run to run the program with python3 or put a shell script in a .sh" \
@@ -12702,6 +12710,101 @@ check "tells each run to run the program with python3 or put a shell script in a
 check "passes a cd that leaves a path naming another file of the tree, and a python3 program run by its name" \
   "$(is "$(contains "$out" "step 'Run what a cd leaves standing'")" false)"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 6)"
+
+# W16. The class as an allow-list (dispatch://INFRA-1545, round 38). Seven routes the class search
+# drove past the gate at a856bb35, each exit 0 under a one-minute key, from a `.py` that opens
+# `#!/usr/bin/env python3` and holds shell lines, or as named: a wrapper the gate does not know
+# in front of `bash` (S6b `flock`, S7b `taskset`); a `.py` whose `#!` line names a shell the list
+# of shells missed, run as a command word (S8 `#!/bin/busybox sh`, S9 `#!/usr/bin/env mksh`); a
+# `.pyc` that opens `#!/usr/bin/env bash`, run as a command word (S10); the redirect that hands
+# bash its program (S12); and a copy that runs (S13). So a file under .github/scripts/ this check
+# does not read as a script may appear in a command only where the tree writes one, each of
+# which passes beside them: what `python3` runs, the filter `jq -f` or `--from-file` reads, a
+# command word whose `#!` line names its own interpreter, an argument of `echo`, `printf` or
+# `grep`, and the pattern `pkill -f` matches, the one form the tree writes beyond those.
+echo "case: r37 W16 a file under .github/scripts that this check does not read appears in a command only where the tree writes it"
+root=$(fixture r37-w16-allow-list)
+mkdir -p "$root/.github/scripts/__pycache__"
+printf '%s\n. .github/scripts/ci-retry.sh\nretry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b\n' \
+  '#!/usr/bin/env python3' > "$root/.github/scripts/zz-x.py"
+printf '%s\necho quiet\n' '#!/bin/busybox sh' > "$root/.github/scripts/zz-busybox.py"
+printf '%s\necho quiet\n' '#!/usr/bin/env mksh' > "$root/.github/scripts/zz-mksh.py"
+printf '%s\necho quiet\n' '#!/usr/bin/env bash' > "$root/.github/scripts/__pycache__/zz-x.cpython-313.pyc"
+printf '%s\n.name\n' '#!/usr/bin/env -S jq -f' > "$root/.github/scripts/zz-filter.jq"
+chmod +x "$root/.github/scripts/zz-x.py" "$root/.github/scripts/zz-busybox.py" \
+  "$root/.github/scripts/zz-mksh.py" "$root/.github/scripts/__pycache__/zz-x.cpython-313.pyc" \
+  "$root/.github/scripts/zz-filter.jq"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run the program through flock
+        timeout-minutes: 1
+        run: flock /tmp/zz.lock bash .github/scripts/zz-x.py
+      - name: Run the program through taskset
+        timeout-minutes: 1
+        run: taskset -c 0 bash .github/scripts/zz-x.py
+      - name: Run the busybox program
+        timeout-minutes: 1
+        run: .github/scripts/zz-busybox.py
+      - name: Run the mksh program
+        timeout-minutes: 1
+        run: .github/scripts/zz-mksh.py
+      - name: Run the bytecode as a command
+        timeout-minutes: 1
+        run: .github/scripts/__pycache__/zz-x.cpython-313.pyc
+      - name: Feed the program to bash on its standard input
+        timeout-minutes: 1
+        run: bash /dev/stdin < .github/scripts/zz-x.py
+      - name: Copy the program and run the copy
+        timeout-minutes: 1
+        run: |
+          cp .github/scripts/zz-x.py "$RUNNER_TEMP/zz"
+          "$RUNNER_TEMP/zz"
+      - name: Write the files where this tree writes them
+        run: |
+          python3 .github/scripts/zz-x.py
+          .github/scripts/zz-x.py
+          jq -f .github/scripts/zz-filter.jq data.json
+          jq --from-file .github/scripts/zz-filter.jq data.json
+          .github/scripts/zz-filter.jq data.json
+          echo .github/scripts/zz-x.py
+          printf '%s\n' .github/scripts/zz-x.py
+          grep -n retry_fetch .github/scripts/zz-x.py
+          pkill -f zz-x.py || true
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+for refusal in "9	Run the program through flock	zz-x.py	as an argument of .flock." \
+  "12	Run the program through taskset	zz-x.py	as an argument of .taskset." \
+  "15	Run the busybox program	zz-busybox.py	as a command word that does not open with a .#!. line naming its own interpreter" \
+  "18	Run the mksh program	zz-mksh.py	as a command word that does not open with a .#!. line naming its own interpreter" \
+  "21	Run the bytecode as a command	__pycache__/zz-x.cpython-313.pyc	as a command word that does not open with a .#!. line naming its own interpreter" \
+  "24	Feed the program to bash on its standard input	zz-x.py	as a file a redirect of .bash. names" \
+  "28	Copy the program and run the copy	zz-x.py	as an argument of .cp."; do
+  IFS=$'\t' read -r line step name where <<<"$refusal"
+  check "refuses '$step' by name, the file written $where" \
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' writes ..github/scripts/$name. $where, and it names .github/scripts/$name, a file under .github/scripts/ this check does not read as a script\. Such a file appears in a command only where this tree writes one.*Run a Python program with .python3 .github/scripts/<name>.py .*.; a shell script goes in .github/scripts/<name>.sh")"
+done
+for program in "zz-busybox.py	#!/bin/busybox sh	busybox" "zz-mksh.py	#!/usr/bin/env mksh	mksh"; do
+  IFS=$'\t' read -r name shebang runs <<<"$program"
+  check "refuses .github/scripts/$name by name at its line 1, its first line naming $runs" \
+    "$(contains "$out" "::error file=.github/scripts/$name,line=1::.github/scripts/$name is a .\.py. directly in .github/scripts/ whose first line, .$shebang., runs .$runs., not .python3. or .python.")"
+done
+check "refuses the bytecode that opens #! by name at its line 1" \
+  "$(contains "$out" "::error file=.github/scripts/__pycache__/zz-x.cpython-313.pyc,line=1::.github/scripts/__pycache__/zz-x.cpython-313.pyc is Python's bytecode under .github/scripts/__pycache__/ by its name, and it opens .#!.")"
+for line in "32	python3 runs it" "33	a command word whose first line names python3" \
+  "34	jq -f reads it" "35	jq --from-file reads it" "36	a command word whose first line names jq" \
+  "37	echo prints it" "38	printf prints it" "39	grep searches it" "40	pkill -f matches it"; do
+  IFS=$'\t' read -r at form <<<"$line"
+  check "passes the file where $form" \
+    "$(is "$(contains "$out" "file=.github/workflows/case.yaml,line=$at::")" false)"
+done
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 10)"
 
 # F2. A heredoc line reading `timeout-minutes: 20` is text, no key: it took the block's one key,
 # so the job's own key went unpaired and the job passed under the 1200 s its block states. The
