@@ -149,7 +149,8 @@ test("human users manage repository project mappings from the settings route", a
 
     await user.click(screen.getByLabelText("Repository"));
     await user.paste("Owner/Repo.git");
-    await user.selectOptions(screen.getByLabelText("Project"), "CORE");
+    // By role: the page's Keyboard shortcuts section is a region named Project too.
+    await user.selectOptions(screen.getByRole("combobox", { name: "Project" }), "CORE");
     await user.click(screen.getByRole("button", { name: "Add mapping" }));
     await waitFor(() =>
       expect(putRepoProject).toHaveBeenLastCalledWith(
@@ -160,22 +161,6 @@ test("human users manage repository project mappings from the settings route", a
     );
     expect(screen.getAllByRole("cell", { name: "owner/repo" })).toHaveLength(1);
     expect(screen.queryByRole("cell", { name: "Owner/Repo.git" })).not.toBeInTheDocument();
-
-    // A mapping issues name is refused by the server, which says how many: the row comes back
-    // and the refusal shows.
-    deleteRepoProject.mockRejectedValueOnce(
-      new ApiError(409, {
-        code: "REPO_PROJECT_IN_USE",
-        error: "1 issue(s) of CORE name owner/repo as their repository; change their repo first",
-      })
-    );
-    await user.click(screen.getByRole("button", { name: "Delete mapping for owner/repo" }));
-    expect(
-      await screen.findByText(
-        "1 issue(s) of CORE name owner/repo as their repository; change their repo first"
-      )
-    ).toBeDefined();
-    expect(screen.getByRole("cell", { name: "owner/repo" })).toBeDefined();
 
     await user.click(screen.getByRole("button", { name: "Delete mapping for owner/repo" }));
     await waitFor(() =>

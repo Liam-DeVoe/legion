@@ -180,6 +180,13 @@ An agent subscribes with Envoy's `envoy_subscribe` tool, which stores the subscr
 listener. A subscription to `<subject>.>` also covers `<subject>` itself, so subscribing to a pull
 request's `.>` gets its lifecycle events as well as its comments and checks.
 
+An issue's topic, a session's inbox and a role's lane each have a second form that names the
+project too: `notifications.dispatch.issue.<PROJECT>.<KEY>.>`, `notifications.agent.<PROJECT>.<session_id>`
+(`_` for no project) and `notifications.role.<PROJECT>.<role>`. While Envoy moves to it, a session
+receives each event in either form, whichever form it subscribed with. A subscription or a role
+claim that names the form without the project is kept as written and answered with a warning that
+names the new form; nothing is refused for it yet.
+
 A publish to a role through the API resolves the role's holder, waits for the stream to store the
 forward to it, and answers `200` naming the holder and its `holder_state`. If no live session
 holds the role, the listener keeps the message for one hour and answers `202` with
@@ -749,6 +756,15 @@ which starts 2.15.1 on the same volume, and the listener's next start sets the c
 written by nats-server 2.10.29 opens on 2.15.1 with its stream, its messages and its consumers
 intact.
 
+**The listener and the Legion daemon need nats-server v2.11.12, v2.12.4, or v2.14.0 and later**,
+and refuse to start against any other, naming its version and those releases. From v2.10.26, and
+in 2.11 before v2.11.12 and 2.12 before v2.12.4, nats-server can skip a message on a consumer that
+filters on a wildcard and a literal at the same token, and a session's consumer does (its inbox in
+both forms of its name), so on such a server a session would lose messages with no error. No 2.10
+release has the fix, so every 2.10 is refused, and so are the first fixed releases' own
+candidates. The 2.15.1 this file pins is past all of them; a machine still on an earlier file's
+2.10 moves to it as above.
+
 1. Write the machine's settings:
 
    ```sh
@@ -801,9 +817,17 @@ intact.
    curl http://127.0.0.1:9020/v1/sessions
    ```
 
-   With `ENVOY_API_TOKEN` set, add `-H "Authorization: Bearer <token>"`. The answer lists each live
-   session with its `session_id`. Start a second session, and the two can message each other with
-   `envoy_send`.
+   When `.env` sets `ENVOY_API_TOKEN`, send that token as the bearer on standard input, so it is in
+   no command line. This reads it from `envoy.json` with `jq`, which must be installed: without it
+   the header goes out as `Authorization: Bearer ` and the listener refuses it.
+
+   ```sh
+   printf 'Authorization: Bearer %s' "$(jq -r .envoy.token ~/.config/legion/envoy.json)" |
+     curl -H @- http://127.0.0.1:9020/v1/sessions
+   ```
+
+   The answer lists each live session with its `session_id`. Start a second session, and the two
+   can message each other with `envoy_send`.
 
 NATS keeps the event stream and Envoy's key-value buckets in the `envoy-single-node_nats-data`
 volume. A restart keeps the last 72 hours of events, and the subscriptions and role claims of every
