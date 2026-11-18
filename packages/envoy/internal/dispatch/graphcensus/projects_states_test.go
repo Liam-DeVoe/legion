@@ -144,8 +144,12 @@ func TestTheObjectBackfillWritesNoNodeForARowRemovedWhileItRead(t *testing.T) {
 	if _, err := database.Pool.Exec(ctx, `delete from artifacts where ref_key = 'RACE-1/notes-md'`); err != nil {
 		t.Fatalf("remove the document: %v", err)
 	}
-	if _, err := writeObjectBatch(ctx, database, kind, nodes); err != nil {
+	written, err := writeObjectBatch(ctx, database, kind, nodes)
+	if err != nil {
 		t.Fatalf("write the batch: %v", err)
+	}
+	if written.Rows != 0 || written.Nodes != 0 {
+		t.Errorf("the batch wrote %+v, want no row and no node for a row removed after it read it", written)
 	}
 	if node, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindArtifact, "RACE-1/notes-md"); err != nil || (held && node.State == graphstore.StateLive) {
 		t.Errorf("after the batch the removed document's node is %+v (held %t, %v), want gone or none", node, held, err)
