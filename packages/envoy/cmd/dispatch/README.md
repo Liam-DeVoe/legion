@@ -3037,6 +3037,28 @@ The batch that names a document's block nodes writes the mark in its own transac
 So `census --store` reads a difference on every backfilled block until that reconciliation has drained the mark, at twenty documents a tick;
 `TestTheBlockParentCensusReachesZeroAfterTheBackfill` is that whole route end to end.
 
+A document that the release before this one edits during a roll, after this build's drain has cleared its mark, carries no mark, and neither does a document that release creates after the drain, the spec of an issue it creates included:
+that release writes the version's rows with no node, states nothing in the store and never sets `store_owed_at`.
+So while a server process of another build serves, each block-index tick marks owed every document that an `artifact.version` or `artifact.created` event after this build's cursor names, and every document of each issue an `issue.created` event after it names.
+A version event names its document in `payload->>'artifact_id'`, and the event that creates a document carries the whole artifact and names it in `payload->'artifact'->>'id'`.
+An issue's create records its spec's version 1 with the `issue.created` event alone, which names the issue in its `issue_key` and no document, so the tick marks every `doc` artifact of that issue, read from `artifacts` by issue key.
+The tick does so before it lists the owed documents, so the same tick drains a document it marks when its batch has room.
+Another build serves when a live process of the registry (`server_processes`) registered a commit other than this process's own (`main.buildCommit`, which `docs.Deps.BuildCommit` carries), and a fleet with no live process serves this build alone.
+Once the fleet serves this build alone, the first tick that finds it so marks once more what the tick before it left, and once the cursor has passed every event the other build can have written, the tick after it reads no event and moves the cursor to the event log's safe horizon.
+A rollback or a roll forward that stops one build before it starts the other never has two builds serving at once, so a process's first tick that reads a proven horizon also reads once, from the newest cursor any build left through the newest event.
+That start is the highest `event_id` of every row: this build's own where it ran last, and the cursor the build before it stopped reading at where this build holds no row yet.
+A process that boots while others of this build run reads only the few events since their last tick, and one that boots after an absence reads every event since, one page a tick.
+The cursor moves with each tick, so each tick reads only the events since the last one, and nothing scans a whole table.
+The cursor is one row per build commit of `block_index_event_cursors`, a table migration `20261118115645` creates and the previous release never reads.
+Its `event_id` is the highest event id the build's ticks have read or passed, `another_build_seen` says whether the last tick found another build, and `read_through` is the newest event id the log held when a tick found another build serving, found the fleet alone right after one that did, or was its process's first tick with a proven horizon.
+The ticks read on until `event_id` reaches `read_through`: a process leaves the registry only after every event it wrote has committed, so the last versions a departing process wrote are read even where the safe horizon lags the log for a tick or two.
+The build's first tick that reads a proven safe horizon inserts the row at the highest `event_id` any row holds, or at that horizon where no row exists, so the cursor never starts at the beginning of the log.
+A tick reads at most 1,000 events, in id order, after the cursor and at or below the safe horizon (`events.Horizon.Safe`), because event ids are not commit order and an uncapped read could pass an event that is still committing.
+A full page moves the cursor to the last event it read and brings the next tick 2 s later; otherwise the cursor moves to the horizon, and it never moves past it.
+The mark is the backfill's own, set in one statement that takes the documents' `document_block_versions` rows in ascending `artifact_id` order and no owner row, and the marks and the cursor's move commit together.
+The tick's `dispatch: block index` line carries `events=`, the events it read, `marked=`, the documents it marked, and `another_build=`, whether another build served (`TestAVersionThePreviousReleaseWritesAfterTheDrainReachesTheStore`, `TestAVersionThePreviousReleaseWritesWhileThisBuildIsStoppedReachesTheStore`, `TestAVersionThePreviousReleaseWritesBeforeTheNextBuildStartsReachesTheStore`).
+The migration's census answers `0`: the table is new and holds no row at deploy.
+
 A row the release before this one deleted is nothing the run reads.
 That release, indexing a version of a document the store has stated, deletes the `document_blocks` row of each block the version drops and the `block_refs` row of each link a block stops holding, and it states no node `gone` and retracts no tuple.
 No row is left to read, and a node stated `gone` because its row is missing would be a repair.

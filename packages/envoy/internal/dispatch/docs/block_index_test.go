@@ -37,13 +37,22 @@ func blockIndexService(t *testing.T) (*store.Store, *Service) {
 	`); err != nil {
 		t.Fatalf("seed project CORE: %v", err)
 	}
-	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
+	return database, blockIndexProcess(t, database, "")
+}
+
+// blockIndexProcess is one process's document service on database, serving the build of commit
+// (the empty string: an unstamped build's), whose settle delay is an hour, so no timer settles a
+// document during a test. A test that builds a second one on the same database has a second
+// process of that build start beside the first, or after it.
+func blockIndexProcess(t *testing.T, database *store.Store, commit string) *Service {
+	t.Helper()
+	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour, BuildCommit: commit})
 	t.Cleanup(func() {
 		stop, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = service.Shutdown(stop)
 	})
-	return database, service
+	return service
 }
 
 // createOwedDocument creates document slug of issue (CORE-1 or CORE-2), id its uuid (empty: one
