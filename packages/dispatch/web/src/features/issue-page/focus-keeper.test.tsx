@@ -1,5 +1,5 @@
-import { expect, test } from "bun:test";
-// biome-ignore lint/style/noRestrictedImports: the press case needs a press, a blur and a removal inside one task, and user-event's press awaits between its events; the tap cases need a tap's order, its pointer up before the blur its mousedown makes, and user-event moves the focus as its pointer goes down; the cancelled, right-button and clickless press cases need a pointercancel, a press of another button that moves no focus, a contextmenu with no pointerup, and a pointerup with no click after it, which user-event has no form for.
+import { expect, mock, test } from "bun:test";
+// biome-ignore lint/style/noRestrictedImports: the press case needs a press, a blur and a removal inside one task, and user-event's press awaits between its events; the tap cases need a tap's order, its pointer up before the blur its mousedown makes, and user-event moves the focus as its pointer goes down; the cancelled, right-button, clickless and window-blur press cases need a pointercancel, a press of another button that moves no focus, a contextmenu with no pointerup, a pointerup with no click after it, and a blur of the window with a press under way; the press reader's own cases need each way a press ends, a dragend and the window's blur among them, alone after a bare pointerdown, which user-event has no form for.
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useEffect, useRef, useState } from "react";
@@ -8,7 +8,7 @@ import { createPortal } from "react-dom";
 import { jump, onFakeClock } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
-import { type FocusFallback, useFocusKeeper } from "./focus-keeper";
+import { type FocusFallback, hearPresses, useFocusKeeper } from "./focus-keeper";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
 
 /** What has become of the region's Save control: drawn, disabled, removed, or drawn anew under
@@ -281,6 +281,26 @@ test("a right press whose context menu takes its pointerup is no move of the rea
   }
 });
 
+test("a press under way as the window blurs is no move of the reader's when a write then disables the control", async () => {
+  const stopFixup = emulateChromiumFocusFixup();
+  const view = render(<Region />);
+  try {
+    act(() => button("Save").focus());
+    // A press goes down on the page with the focus still on Save, and the reader leaves the window
+    // before its release, which the page may then never hear. The window keeps Save as its focused
+    // element as it blurs. Another reader's write then disables Save. user-event has no form for
+    // a blur of the window.
+    fireEvent.pointerDown(document.body);
+    fireEvent.blur(window);
+    expect(button("Save")).toHaveFocus();
+    view.rerender(<Region save="disabled" />);
+    await waitFor(() => expect(button("First fallback")).toHaveFocus());
+  } finally {
+    view.unmount();
+    stopFixup();
+  }
+});
+
 test("a tap on the page is the reader's move, even when the control then goes", async () => {
   const view = render(<Region />);
   try {
@@ -302,6 +322,95 @@ test("a tap on the page is the reader's move, even when the control then goes", 
     });
   } finally {
     view.unmount();
+  }
+});
+
+/**
+ * Hears the reader's presses on the page with spies for what `hearPresses` tells, on a page whose
+ * Before holds the focus as each press begins and whose After is where a press that moves the
+ * focus moves it. Returns the spies and what ends the hearing and takes the page away.
+ */
+function hearOnPage() {
+  const view = render(
+    <>
+      <button type="button">Before</button>
+      <button type="button">After</button>
+    </>
+  );
+  act(() => button("Before").focus());
+  const begin = mock(() => "begun");
+  const done = mock(() => undefined);
+  const stopHearing = hearPresses(document, begin, done);
+  return {
+    begin,
+    done,
+    stop: () => {
+      stopHearing();
+      view.unmount();
+    },
+  };
+}
+
+// Each way a press is over, after its pointerdown on a blank part of the page with the focus on
+// Before: `done` hears of it once, with where the focus was as it began and what `begin` answered.
+test.each([
+  [
+    "its pointerup once it has moved the focus",
+    0,
+    () => {
+      act(() => button("After").focus());
+      // A mouse press has moved the focus by its pointerup; user-event moves it as it goes down.
+      fireEvent.pointerUp(document.body);
+    },
+  ],
+  // A press of another button sends no click, so its pointerup alone ends it.
+  ["the pointerup of a right press", 2, () => fireEvent.pointerUp(document.body, { button: 2 })],
+  // A click with no pointerup before it, so that the click alone is what ends the press.
+  ["its click", 0, () => fireEvent.click(document.body)],
+  // A press the browser cancels, as a touch it turns into a scroll; user-event cancels none.
+  ["its pointercancel", 0, () => fireEvent.pointerCancel(document.body)],
+  // A press that becomes a drag with no pointercancel; user-event has no form for a drag.
+  ["its dragend", 0, () => fireEvent.dragEnd(document.body)],
+  // A right press whose context menu takes its pointerup; user-event sends none without one.
+  ["the contextmenu of a right press", 2, () => fireEvent.contextMenu(document.body)],
+  // The reader leaves the window mid-press; user-event has no form for a blur of the window.
+  ["the window's blur", 0, () => fireEvent.blur(window)],
+] as const)("a press is over at %s, and done hears where the focus was as it began", (_ending, pressed, end) => {
+  const { begin, done, stop } = hearOnPage();
+  try {
+    // A bare pointerdown, so that the ending alone is what ends the press.
+    fireEvent.pointerDown(document.body, { button: pressed });
+    expect(begin).toHaveBeenCalledTimes(1);
+    expect(done).not.toHaveBeenCalled();
+    end();
+    expect(done).toHaveBeenCalledTimes(1);
+    expect(done).toHaveBeenCalledWith(button("Before"), "begun");
+  } finally {
+    stop();
+  }
+});
+
+// A press with no ending yet: `done` hears nothing of it, and its click then ends it as one press.
+test.each([
+  ["its pointerdown alone", () => undefined],
+  // A tap moves the focus only after its pointer is up, from the mousedown the browser sends it.
+  ["the pointerup of a tap that has moved no focus yet", () => fireEvent.pointerUp(document.body)],
+  // A mouse press blurs the focused control as its button goes down: an element's blur, not the
+  // window's.
+  ["the blur of the control that held the focus", () => act(() => button("Before").blur())],
+] as const)("a press is still under way after %s", (_step, step) => {
+  const { done, stop } = hearOnPage();
+  try {
+    // A bare pointerdown of the primary button, which user-event follows with its own events.
+    fireEvent.pointerDown(document.body, { button: 0 });
+    step();
+    expect(done).not.toHaveBeenCalled();
+    // The press's click, which user-event sends only after a pointerdown of its own.
+    fireEvent.click(document.body);
+    expect(done).toHaveBeenCalledTimes(1);
+    expect(done).toHaveBeenCalledWith(button("Before"), "begun");
+  } finally {
+    stop();
   }
 });
 

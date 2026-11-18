@@ -1162,3 +1162,73 @@ test("a press that ends the edit and turns into a drag leaves the title clamped 
     restore();
   }
 });
+
+// A right press as Chromium sends it where the context menu opens as the button goes down: its
+// pointerdown, its mousedown and its contextmenu, and no release, which the menu takes. The press
+// is over at its contextmenu, so an edit a key then ends draws the title clamped to two lines again
+// at once, not whole until the reader next presses and releases somewhere.
+test("a right press whose context menu takes its release leaves the title clamped once Enter ends the edit", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const view = renderHeader();
+
+  try {
+    const heading = await screen.findByRole("heading", { level: 1, name: issue.title });
+    expect(heading.className).toContain("line-clamp-2");
+    await user.click(heading);
+    const editor = await screen.findByRole("textbox", { name: "Issue title" });
+    await waitFor(() => expect(editor).toHaveFocus());
+    // The press goes down with the focus still in the editor. user-event sends no contextmenu
+    // without a pointerup, and moves the focus as its pointer goes down.
+    fireEvent.pointerDown(document.body, { button: 2, isPrimary: true, pointerType: "mouse" });
+    fireEvent.mouseDown(document.body, { button: 2 });
+    fireEvent.contextMenu(document.body, { button: 2 });
+    expect(editor).toHaveFocus();
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(heading).toHaveFocus());
+    expect(heading.className).toContain("line-clamp-2");
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// A tap on a control outside the title: its pointer goes down and comes up with the focus still in
+// the editor, and only the mousedown the browser sends after that moves the focus and so ends the
+// edit. The tap's press is under way until its click, so that blur holds the title whole, and the
+// title is clamped to two lines again once the click has been dispatched.
+test("a tap that ends the edit holds the title whole until its click", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const view = renderHeader();
+  const outside = document.createElement("button");
+  outside.type = "button";
+  outside.textContent = "Elsewhere";
+  document.body.append(outside);
+
+  try {
+    const heading = await screen.findByRole("heading", { level: 1, name: issue.title });
+    await user.click(heading);
+    const editor = await screen.findByRole("textbox", { name: "Issue title" });
+    await waitFor(() => expect(editor).toHaveFocus());
+    // A tap's order, its pointer up before the mousedown that takes the focus: user-event moves
+    // the focus as its pointer goes down.
+    fireEvent.pointerDown(outside, { button: 0, isPrimary: true, pointerType: "touch" });
+    fireEvent.pointerUp(outside, { button: 0, isPrimary: true, pointerType: "touch" });
+    fireEvent.mouseDown(outside, { button: 0 });
+    act(() => outside.focus());
+    await waitFor(() =>
+      expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument()
+    );
+    // The tap is under way, so the title is held whole for now.
+    expect(heading.className).not.toContain("line-clamp-2");
+    // The tap's mouseup and click, which the browser sends after its mousedown.
+    fireEvent.mouseUp(outside, { button: 0 });
+    fireEvent.click(outside);
+    await waitFor(() => expect(heading.className).toContain("line-clamp-2"));
+  } finally {
+    outside.remove();
+    view.unmount();
+    restore();
+  }
+});

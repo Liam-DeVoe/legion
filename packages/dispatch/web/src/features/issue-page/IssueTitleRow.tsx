@@ -9,6 +9,7 @@ import {
   pageInkText,
 } from "../../theme/classes";
 import type { IssueDrafts } from "../issue/useIssueDrafts";
+import { hearPresses } from "./focus-keeper";
 import { authorText } from "./page-structure";
 
 /**
@@ -45,18 +46,24 @@ export function IssueTitleRow({
   isClosed: boolean;
 }): ReactNode {
   const [editing, setEditing] = useState(false);
-  // Whether the primary mouse button is down right now, read by the editor's blur: a blur a
-  // press caused keeps the heading at the editor's height until that press is released and its
-  // click has been dispatched. A tap's mousedown comes after its pointerup, so the mouse's own
-  // events are the ones that bracket the press on every input. They are listened to while the
-  // row is drawn, not only while it edits: the blur a press causes ends the edit inside the
-  // press's mousedown, so a listener taken away with the editor missed the mouseup, and the next
-  // edit a key ended read a press that was over and held the title unclamped. Only a press of
-  // the primary button is counted: a press of another button makes no click, so nothing waits
-  // on it, and its release may never reach the page - the menu a right press opens can take the
-  // mouseup - which left the next edit a key ended holding the title unclamped.
+  // Whether a press of the reader's is under way, read by the editor's blur: a blur a press
+  // caused keeps the heading at the editor's height until that press is over and its click has
+  // been dispatched to the control under the pointer. The press is read from the page's one
+  // reader of presses (`hearPresses`), which the focus keeper reads too, so it is over at the
+  // first of the ways a press ends: its pointerup where it has moved the focus by then or is of a
+  // button other than the primary one, its click, its pointercancel or its dragend as it becomes
+  // a drag, its contextmenu, and the blur of the window. A tap's pointer is up before the browser
+  // sends it the mousedown that blurs the editor, and the reader keeps a press of the primary
+  // button that has moved no focus by its pointerup under way until its click, so that blur
+  // still finds the tap under way. The presses are heard while the row is drawn, not only while
+  // it edits: the blur a press causes ends the edit while the press is under way, so a hearing
+  // taken away with the editor missed the press's end, and the next edit a key ended read a press
+  // that was over and held the title unclamped.
   const pressing = useRef(false);
   const [held, setHeld] = useState(false);
+  // Whether the heading is held at the editor's height for the press under way, which lets it go
+  // as that press ends.
+  const heldForPress = useRef(false);
   const heading = useRef<HTMLHeadingElement>(null);
   // Set by a key that ends the edit, and read once the heading is drawn again: the focus goes
   // back to it.
@@ -67,18 +74,23 @@ export function IssueTitleRow({
     returning.current = false;
   }, [editing]);
   useEffect(() => {
-    const down = (event: MouseEvent) => {
-      pressing.current = event.button === 0;
-    };
-    const up = () => {
-      pressing.current = false;
-    };
-    window.addEventListener("mousedown", down, true);
-    window.addEventListener("mouseup", up, true);
-    return () => {
-      window.removeEventListener("mousedown", down, true);
-      window.removeEventListener("mouseup", up, true);
-    };
+    const page = heading.current?.ownerDocument;
+    if (page === undefined) return;
+    return hearPresses(
+      page,
+      () => {
+        pressing.current = true;
+      },
+      () => {
+        pressing.current = false;
+        if (!heldForPress.current) return;
+        heldForPress.current = false;
+        // The heading is clamped again one task later: a press of the primary button that moved
+        // the focus is over at its pointerup, and its click follows in the same task, so the
+        // click reaches the control under the pointer before the title shrinks from under it.
+        window.setTimeout(() => setHeld(false), 0);
+      }
+    );
   }, []);
 
   const type = "text-xl leading-[26px] min-[761px]:text-[22px] min-[761px]:leading-[29px]";
@@ -123,13 +135,9 @@ export function IssueTitleRow({
           onBlur={() => {
             drafts.requestTitleSubmit();
             if (pressing.current) {
+              // The press this blur came from lets the heading go as it ends.
+              heldForPress.current = true;
               setHeld(true);
-              // The click follows the mouseup in the same task, so a task queued from the mouseup
-              // runs once the click has been dispatched to the control under the pointer.
-              window.addEventListener("mouseup", () => window.setTimeout(() => setHeld(false), 0), {
-                capture: true,
-                once: true,
-              });
             }
             setEditing(false);
           }}

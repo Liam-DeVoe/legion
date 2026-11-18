@@ -114,21 +114,32 @@ function firstHolder(fallbacks: readonly FocusFallback[], loss: FocusLoss): HTML
 }
 
 /**
- * Hears the reader's pointer presses on `page`, and returns what ends the hearing. `begin` is told
- * of each press as its pointer goes down; once the press's own move of the focus is done, `done`
- * is told where the focus was as the press began and what `begin` answered. A mouse press moves
- * the focus as its button goes down, so a press that has moved it by its pointerup is done then. A
- * tap moves the focus only after its pointer is up, from the mousedown the browser sends it then,
- * so a press of the primary button that has moved no focus by its pointerup is done at its click.
- * That click is heard in the capture phase on the page, before the target's own handler: the
- * header's Details control cancels its mousedown so the focus stays where it is, and closes
- * Details from its click, which must not read as the press moving the focus. A press of any other
- * button sends no click, so it is done at its pointerup, or at its contextmenu where the menu
- * opens as the button goes down and takes the pointerup itself. A press the browser cancels, as it
- * does a touch it turns into a scroll, sends neither a pointerup nor a click, so it is done at its
- * pointercancel. A new pointerdown replaces a press still under way.
+ * Hears the reader's pointer presses on `page`, and returns what ends the hearing. It is the one
+ * reader of presses on the page: the keeper's watches and the header's title row read presses
+ * through it, so a press is over for each of them on the same events. `begin` is told of each
+ * press as its pointer goes down; once the press is over, `done` is told where the focus was as
+ * the press began and what `begin` answered. A press is over at the first of these:
+ * - Its pointerup, where it has moved the focus by then or is of a button other than the primary
+ *   one. A mouse press moves the focus as its button goes down, so a press that has moved it by
+ *   its pointerup has done its move then, and a press of any other button sends no click.
+ * - Its click. A tap moves the focus only after its pointer is up, from the mousedown the browser
+ *   sends it then, so a press of the primary button that has moved no focus by its pointerup is
+ *   still under way until its click. That click is heard in the capture phase on the page, before
+ *   the target's own handler: the header's Details control cancels its mousedown so the focus
+ *   stays where it is, and closes Details from its click, which must not read as the press moving
+ *   the focus.
+ * - Its pointercancel. A press the browser cancels, as it does a touch it turns into a scroll and
+ *   as Chromium does a press it turns into a drag, sends neither a pointerup nor a click.
+ * - Its dragend. A press that becomes a drag sends no pointerup and no click, so the drag's end
+ *   ends the press where no pointercancel did.
+ * - Its contextmenu. Where the menu opens as the button goes down, it takes the pointerup itself.
+ * - The blur of the page's window. A press under way as the reader leaves the window may send the
+ *   page no release at all. The window keeps its focused element as it blurs, so a press that had
+ *   moved no focus by then reads as no move. The blur is heard on the window outside the capture
+ *   phase, and only the window's own: a capture listener there hears every element's blur.
+ * A new pointerdown replaces a press still under way.
  */
-function hearPresses<T>(
+export function hearPresses<T>(
   page: Document,
   begin: (event: PointerEvent) => T,
   done: (from: Element | null, start: T) => void
@@ -156,17 +167,28 @@ function hearPresses<T>(
     // whether or not it moved the focus.
     if (press !== null && (!press.primary || page.activeElement !== press.from)) endPress();
   };
+  const noteWindowBlur = (event: FocusEvent) => {
+    // The window's own blur is the one whose target is the window the listener is on. That is
+    // read from `currentTarget` rather than from `view`: the test DOM, registered on the global
+    // object, sends its window's own events with a target of its own.
+    if (event.target === event.currentTarget) endPress();
+  };
+  const view = page.defaultView;
   page.addEventListener("pointerdown", notePress, true);
   page.addEventListener("pointerup", notePointerUp, true);
   page.addEventListener("pointercancel", endPress, true);
+  page.addEventListener("dragend", endPress, true);
   page.addEventListener("contextmenu", endPress, true);
   page.addEventListener("click", endPress, true);
+  view?.addEventListener("blur", noteWindowBlur);
   return () => {
     page.removeEventListener("pointerdown", notePress, true);
     page.removeEventListener("pointerup", notePointerUp, true);
     page.removeEventListener("pointercancel", endPress, true);
+    page.removeEventListener("dragend", endPress, true);
     page.removeEventListener("contextmenu", endPress, true);
     page.removeEventListener("click", endPress, true);
+    view?.removeEventListener("blur", noteWindowBlur);
   };
 }
 
