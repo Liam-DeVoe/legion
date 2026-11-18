@@ -302,16 +302,18 @@ const requestReplies = 4
 //     and that acknowledgement is its whole outcome, since no receiver answers a request. A reply
 //     that is neither an acknowledgement nor a refusal is passed over and the wait goes on:
 //     anything a subscriber of the subject sends, and the server's no-responders answer, save
-//     where the deployed stream, as the client last read it, leaves the subject out;
+//     where the subject is one this build stores and the deployed stream, as the client last
+//     read it, leaves it out;
 //   - the stream's refusal of the copy, the moment it comes back: an acknowledgement that carries
 //     an error settles the request as that error, a full stream's as ErrStreamFull (outcome,
 //     streamFull). It never wraps ErrNotAcknowledged, which says the stream gave no answer at
 //     all, and the request does not wait out opts.Timeout for an answer that is already in, as a
 //     window's PublishAsync (acknowledged) and Client.StartRequestStoredTo's Wait do not;
-//   - ErrStreamLacksSubject, the moment the server answers, where the deployed stream, as the
-//     client last read it, leaves the subject out (lacksSubject): beside the refusal of another
-//     stream that captures the subject, and beside ErrNotAcknowledged where the server answered
-//     that nothing took the request, which nothing will store while the stream stays so;
+//   - ErrStreamLacksSubject, the moment the server answers, where the subject is one this build
+//     stores and the deployed stream, as the client last read it, leaves it out (lacksSubject):
+//     beside the refusal of another stream that captures the subject, and beside
+//     ErrNotAcknowledged where the server answered that nothing took the request, which nothing
+//     will store while the stream stays so;
 //   - ErrPublishDenied when the server denied the publish: the request's flush shows it
 //     (confirmFlushed), or, when a violation of another subject hid it there, the violation the
 //     connection recorded under this subject does (deniedPublish). The flush runs beside the wait
@@ -434,16 +436,18 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 		// settles the request as that refusal, since the stream answered and nothing later
 		// changes its answer; a full stream's reaches the caller as ErrStreamFull, which is how
 		// a window's PublishAsync hands that refusal over too, and another stream's refusal of a
-		// subject the deployed stream leaves out as ErrStreamLacksSubject (lacksSubject). An
-		// acknowledgement at a sequence answers the request with the copy it asked for, a
-		// duplicate's included; one with no sequence settles nothing, and nats-server 2.15.1, the
-		// version the hub runs, gives none: it records no id for a message its stream refused.
+		// subject this build stores and the deployed stream leaves out as ErrStreamLacksSubject
+		// (lacksSubject). An acknowledgement at a sequence answers the request with the copy it
+		// asked for, a duplicate's included; one with no sequence settles nothing, and nats-server
+		// 2.15.1, the version the hub runs, gives none: it records no id for a message its stream
+		// refused.
 		//
-		// The server's no-responders answer settles the request only where the deployed stream,
-		// as the client last read it, leaves the subject out: nothing will store it, so the
-		// request is answered ErrStreamLacksSubject at once, beside the ErrNotAcknowledged the
-		// wait would have come to. Anywhere else it is passed over and the wait goes on, as
-		// nats.go's own publish retries that answer as a blip of a stream's leader change (js.go).
+		// The server's no-responders answer settles the request only where the subject is one
+		// this build stores and the deployed stream, as the client last read it, leaves it out:
+		// nothing will store it, so the request is answered ErrStreamLacksSubject at once, beside
+		// the ErrNotAcknowledged the wait would have come to. Anywhere else, a role lane among
+		// them, it is passed over and the wait goes on, as nats.go's own publish retries that
+		// answer as a blip of a stream's leader change (js.go).
 		outcome := func(reply *nats.Msg) (bool, error) {
 			ack, ok := acknowledgement(reply)
 			if !ok {
@@ -582,8 +586,8 @@ func (w *window) Probe(timeout time.Duration) error {
 // the connection failed or nats.go reported the disconnect, ErrNotAcknowledged when the
 // acknowledgement ran out of time or the server answered with no responders on a connection that
 // stayed current, or the server's refusal, a full stream's as ErrStreamFull. A no-responders
-// answer or another stream's refusal of a subject the deployed stream leaves out is named
-// ErrStreamLacksSubject beside that (lacksSubject).
+// answer or another stream's refusal of a subject this build stores and the deployed stream leaves
+// out is named ErrStreamLacksSubject beside that (lacksSubject).
 //
 // A denied publish is acknowledged by nothing, so the violation the connection reported
 // (deniedPublish) is the only evidence of it, read under this send's own subject and its own send

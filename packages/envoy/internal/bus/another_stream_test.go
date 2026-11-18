@@ -232,47 +232,58 @@ func TestEveryStoredPublishTheDeployedStreamLeavesOutIsNamedErrStreamLacksSubjec
 }
 
 // A stored publish the notifications stream did not take is named ErrStreamLacksSubject, with its
-// subject and the generation of the stream the client read, exactly when the server's answer says
-// that stream did not take it - no stream answered the subject, or another stream refused a send
-// that named the notifications stream - and the client's last read of the deployed stream carries
-// no subject capturing it. Every other failure keeps its own error, so the listener answers it in
-// its own words: a bus that did not answer, a full stream, and a refusal the read cannot explain,
-// a stream that went away after a read that still carried the subject.
+// subject and the generation of the stream the client read, exactly when the subject is one this
+// build stores, the server's answer says that stream did not take it - no stream answered the
+// subject, or another stream refused a send that named the notifications stream - and the client's
+// last read of the deployed stream carries no subject capturing it. Every other failure keeps its
+// own error, so the listener answers it in its own words: a bus that did not answer, a full
+// stream, a refusal the read cannot explain, a stream that went away after a read that still
+// carried the subject, and an answer to a subject this build never stores, a role lane among
+// them, which no newer build dropped.
 func TestAStoredPublishTheDeployedStreamLeavesOutIsNamedWithItsSubjectAndGeneration(t *testing.T) {
-	const subject = "notifications.agent.ses_left_out"
+	const (
+		agent = "notifications.agent.ses_left_out"
+		role  = "notifications.role.left-out"
+	)
+	if !StreamCaptures(agent) || StreamCaptures(role) {
+		t.Fatalf("StreamCaptures(%s) = %t and StreamCaptures(%s) = %t, want true and false", agent, StreamCaptures(agent), role, StreamCaptures(role))
+	}
 	leavesOut := &deployedRead{subjects: []string{"notifications.github.>"}, generation: 7}
 	carries := &deployedRead{subjects: []string{"notifications.agent.>"}, generation: 7}
 	mismatch := &nats.APIError{Code: 400, ErrorCode: jsStreamNotMatch, Description: "expected stream does not match"}
 	full := streamFull(&nats.APIError{Code: 503, ErrorCode: jsStreamStoreFailed, Description: maxBytesExceeded})
 	for _, tc := range []struct {
 		name     string
+		subject  string
 		deployed *deployedRead
 		err      error
 		lacks    bool
 	}{
-		{"no stream answered and the read leaves the subject out", leavesOut, nats.ErrNoStreamResponse, true},
-		{"nothing answered a window's send or a forward and the read leaves the subject out", leavesOut, fmt.Errorf("bus: %w: %w", ErrNotAcknowledged, nats.ErrNoResponders), true},
-		{"another stream refused and the read leaves the subject out", leavesOut, mismatch, true},
-		{"no stream answered and the read carries the subject", carries, nats.ErrNoStreamResponse, false},
-		{"nothing answered a window's send or a forward and the read carries the subject", carries, nats.ErrNoResponders, false},
-		{"no stream answered and the client has read no stream", nil, nats.ErrNoStreamResponse, false},
-		{"the bus did not answer", leavesOut, context.DeadlineExceeded, false},
-		{"the stream is full", leavesOut, full, false},
+		{"no stream answered and the read leaves the subject out", agent, leavesOut, nats.ErrNoStreamResponse, true},
+		{"nothing answered a window's send or a forward and the read leaves the subject out", agent, leavesOut, fmt.Errorf("bus: %w: %w", ErrNotAcknowledged, nats.ErrNoResponders), true},
+		{"another stream refused and the read leaves the subject out", agent, leavesOut, mismatch, true},
+		{"no stream answered and the read carries the subject", agent, carries, nats.ErrNoStreamResponse, false},
+		{"nothing answered a window's send or a forward and the read carries the subject", agent, carries, nats.ErrNoResponders, false},
+		{"no stream answered and the client has read no stream", agent, nil, nats.ErrNoStreamResponse, false},
+		{"the bus did not answer", agent, leavesOut, context.DeadlineExceeded, false},
+		{"the stream is full", agent, leavesOut, full, false},
+		{"nothing answered a request to a role lane, which this build never stores", role, leavesOut, fmt.Errorf("bus: %w: %w", ErrNotAcknowledged, nats.ErrNoResponders), false},
+		{"another stream refused a role lane, which this build never stores", role, leavesOut, mismatch, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			client := &Client{}
 			if tc.deployed != nil {
 				client.deployed.Store(tc.deployed)
 			}
-			got := client.lacksSubject(subject, tc.err)
+			got := client.lacksSubject(tc.subject, tc.err)
 			if errors.Is(got, ErrStreamLacksSubject) != tc.lacks {
 				t.Fatalf("lacksSubject(%v) = %v; ErrStreamLacksSubject %t, want %t", tc.err, got, !tc.lacks, tc.lacks)
 			}
 			if !errors.Is(got, tc.err) {
 				t.Fatalf("lacksSubject(%v) = %v, which no longer matches the server's answer", tc.err, got)
 			}
-			if tc.lacks && (!strings.Contains(got.Error(), strconv.Quote(subject)) || !strings.Contains(got.Error(), "generation 7")) {
-				t.Fatalf("lacksSubject(%v) = %q, want it to name %s and generation 7", tc.err, got, subject)
+			if tc.lacks && (!strings.Contains(got.Error(), strconv.Quote(tc.subject)) || !strings.Contains(got.Error(), "generation 7")) {
+				t.Fatalf("lacksSubject(%v) = %q, want it to name %s and generation 7", tc.err, got, tc.subject)
 			}
 		})
 	}

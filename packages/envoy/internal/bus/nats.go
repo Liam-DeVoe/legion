@@ -1851,13 +1851,19 @@ var ErrStreamLacksSubject = errors.New("the notifications stream does not captur
 const jsStreamNotMatch = 10060
 
 // lacksSubject names err, the failure of a stored send to subject, as the ErrStreamLacksSubject it
-// is when the server's answer says the notifications stream did not take the send - no stream
-// answered it (nats.ErrNoStreamResponse, nats.ErrNoResponders), or another stream refused it as not
-// the one it named (jsStreamNotMatch) - and the deployed stream, as the client last read it,
-// carries no subject capturing subject. Any other failure it returns as it is: one the client
-// cannot tie to the deployed subjects, as a stream that went away after a read that still carried
-// the subject, keeps the words of a bus that did not answer.
+// is when subject is one this build stores (StreamCaptures), the server's answer says the
+// notifications stream did not take the send - no stream answered it (nats.ErrNoStreamResponse,
+// nats.ErrNoResponders), or another stream refused it as not the one it named (jsStreamNotMatch) -
+// and the deployed stream, as the client last read it, carries no subject capturing subject. Any
+// other failure it returns as it is: a send to a subject this build never stores, a role lane
+// among them, which no newer build dropped and which a stream that carries all of this build's
+// subjects leaves out too; and one the client cannot tie to the deployed subjects, as a stream
+// that went away after a read that still carried the subject, which keeps the words of a bus that
+// did not answer.
 func (c *Client) lacksSubject(subject string, err error) error {
+	if !StreamCaptures(subject) {
+		return err
+	}
 	var apiErr *nats.APIError
 	if !errors.Is(err, nats.ErrNoStreamResponse) && !errors.Is(err, nats.ErrNoResponders) &&
 		!(errors.As(err, &apiErr) && apiErr.ErrorCode == jsStreamNotMatch) {
@@ -2038,9 +2044,10 @@ type StoredAck struct {
 // ErrDuplicateInProcess while a clustered stream is still storing an earlier publish under the
 // same id; subject must be one the notifications stream captures, or the publish fails, as
 // ErrStreamLacksSubject where the server answers that no stream took it, or that another stream
-// refused it, and the stream the client last read leaves the subject out (lacksSubject). A
-// failure after a send that nothing answered wraps ErrUnacknowledged, since the stream may hold
-// the copy, save a resend refused as ErrStreamLacksSubject (sendStored).
+// refused it, and the subject is one this build stores that the stream the client last read
+// leaves out (lacksSubject). A failure after a send that nothing answered wraps
+// ErrUnacknowledged, since the stream may hold the copy, save a resend refused as
+// ErrStreamLacksSubject (sendStored).
 func (c *Client) PublishStoredAck(ctx context.Context, subject string, item contracts.Envelope, msgID string) (StoredAck, error) {
 	if err := checkSubject(subject); err != nil {
 		return StoredAck{}, err
@@ -2429,8 +2436,9 @@ type PendingForward struct {
 // error answer, and the server's no-responders answer (nothing captured the subject) are each
 // ErrForwardNotStored, wrapping the reason and, when publishConfirmed could not confirm the
 // publish, the reason for that. The no-responders answer and another stream's refusal of a
-// subject the deployed stream, as the client last read it, leaves out are ErrStreamLacksSubject
-// too (lacksSubject), which every forward to that subject meets while the stream stays so.
+// subject this build stores and the deployed stream, as the client last read it, leaves out are
+// ErrStreamLacksSubject too (lacksSubject), which every forward to that subject meets while the
+// stream stays so.
 func (f *PendingForward) Wait() error {
 	defer f.replies.Unsubscribe()
 	for {
