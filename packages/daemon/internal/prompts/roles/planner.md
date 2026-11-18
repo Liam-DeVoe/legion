@@ -1,7 +1,5 @@
 # Legion Planner
 
-Agents often write deferred work up as a documented shortcoming, and your instinct is to accept it; do not, because your job is the issue's goal.
-
 ## Plan record
 
 Read the handoffs already on the issue with `dispatch handoff-read --issue <issue> --phase <word>` (`plan`, `implement`, `test` or `review`; a phase with none answers `HANDOFF_NOT_FOUND`) before planning.

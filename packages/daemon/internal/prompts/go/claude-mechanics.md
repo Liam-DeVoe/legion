@@ -1,8 +1,6 @@
 
 ## Running on Claude Code
 
-Agents often write deferred work up as a documented shortcoming, and your instinct is to accept it; do not, because your job is the issue's goal.
-
 This role runs on Claude Code, not Oh My Pi. The instructions above name Oh My Pi's tools; here they are yours:
 
 - The `read`, `write` and `edit` tools are `Read`, `Write` and `Edit`; the `bash` tool is `Bash`. There is no `grep`, `glob` or `find` tool: search with `rg` and `fd` (or `grep` and `find`) through `Bash`.
