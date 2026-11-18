@@ -11,7 +11,7 @@ import {
   type SearchResultsPageAbsentAs,
   snippetText,
 } from "@legion/contracts";
-import { actorText, deletedMark } from "./actor-text";
+import { actorText, deletedMark, editedMark } from "./actor-text";
 import { dispatchWordsText } from "./ask-answer";
 import { dispatchDocumentRef } from "./dispatch-owner";
 
@@ -23,12 +23,15 @@ export function pageSummaryText(offset: number, count: number, total: number): s
 /** One hit's line. A delete takes the post's windows with its body, so a deleted post is no hit
  *  once the delete commits. The mark is the backstop for a hit of one all the same, whose
  *  snippet is empty: the deleted line every read prints for one (`deletedMark`) stands where
- *  the snippet would. */
+ *  the snippet would. A hit of a post its author edited carries the mark every line prints for
+ *  one (`editedMark`) after its snippet. */
 function searchHitLine(result: SearchResult, baseUrl: string): string {
   const href = new URL(result.href, baseUrl).toString();
   const text =
     result.deleted_at == null
-      ? snippetText(result.snippet)
+      ? result.edited_at == null
+        ? snippetText(result.snippet)
+        : `${snippetText(result.snippet)} · ${editedMark(result.edited_at)}`
       : deletedMark(result.deleted_at, result.deleted_by);
   const { owner } = result;
   if (owner.kind === "document") {

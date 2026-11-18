@@ -33,7 +33,7 @@ import {
 } from "@legion/contracts";
 import { encode } from "@toon-format/toon";
 import { z } from "zod";
-import { deletedMark } from "./actor-text";
+import { deletedMark, editedMark } from "./actor-text";
 import { askAnswerText, dispatchWordsText, textHead } from "./ask-answer";
 import { commandLine } from "./dispatch-command";
 import type { ActiveDispatchConfig } from "./dispatch-config";
@@ -579,7 +579,11 @@ function carriedBodyNote(event: DispatchEvent): string | undefined {
  *  the server will not answer is still better read in part than not at all. A direct message,
  *  which belongs to no issue, is read through the session it was delivered to. An item its
  *  author deleted since answers the deleted line every read prints for one (`deletedMark`) in
- *  place of the body the delete cleared; an edited one answers its current body, unmarked. */
+ *  place of the body the delete cleared. An item its author edited answers its current body
+ *  followed by the mark every line prints for one (` · edited <time>`, `editedMark`): the card a
+ *  host renders with this body re-read the post, so it prints the words the post holds now, which
+ *  an edit since the event may have changed. A card that prints only what its frame carried reads
+ *  nothing here, and keeps the delivery Dispatch sent as it was sent. */
 export async function wholeCarriedBody(
   client: DispatchClient,
   item: CarriedItem,
@@ -600,7 +604,8 @@ export async function wholeCarriedBody(
     }
     const post = posts.find((candidate) => candidate.id === item.id);
     if (post === undefined) return undefined;
-    return post.deleted_at == null ? post.body : deletedMark(post.deleted_at, post.deleted_by);
+    if (post.deleted_at != null) return deletedMark(post.deleted_at, post.deleted_by);
+    return post.edited_at == null ? post.body : `${post.body} · ${editedMark(post.edited_at)}`;
   } catch {
     return undefined;
   }
@@ -939,9 +944,10 @@ function isObject(value: unknown): value is Readonly<Record<string, unknown>> {
 }
 
 /** `event` with the whole body of the item it carried only the first part of, or none of: the
- *  body the server answered, or the deleted line for an item deleted since (`wholeCarriedBody`),
- *  and neither flag that said the body on the event was not the item's own (`bodyWasCut`). The
- *  event is left as it arrived when the caller read no body. */
+ *  body the server answered, with the edited mark after it for an item edited since, or the
+ *  deleted line for an item deleted since (`wholeCarriedBody`), and neither flag that said the
+ *  body on the event was not the item's own (`bodyWasCut`). The event is left as it arrived when
+ *  the caller read no body. */
 function withWholeBody(event: DispatchEvent, body: string | undefined): DispatchEvent {
   if (body === undefined || !isObject(event.payload) || !bodyWasCut(event.payload)) return event;
   const { body_truncated: _cut, payload_omitted: _omitted, ...carried } = event.payload;

@@ -434,6 +434,41 @@ describe("dispatch inbox", () => {
     );
   });
 
+  test("a thread whose root its author edited prints the edited mark after its subject", async () => {
+    const now = Date.now();
+    // The subject is the head of the root's words as they stand, which an edit replaced: the line
+    // says the root was edited and when, beside them. The default rows carry no edit and no mark.
+    const rows = threadRows(now);
+    repliesAnswer = {
+      status: 200,
+      body: repliesBody(
+        [
+          {
+            ...rows[0],
+            thread_id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+            ref: "/issues/DSP-6/comments/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+            subject: "The staging box is back",
+            edited_at: "2026-11-02T08:00:00Z",
+          },
+          ...rows,
+        ],
+        now
+      ),
+    };
+
+    const { code, stdout, stderr } = await runInbox();
+
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
+    expect(stdout).toContain(
+      [
+        "Unread threads 3",
+        "- DSP-6 · comment · The staging box is back · edited 2026-11-02T08:00:00Z · user bob@theorem.dev · 5m · /issues/DSP-6/comments/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+        "- DSP-6 · comment · The staging box lost its disk again · user bob@theorem.dev · 5m · /issues/DSP-6/comments/66666666-6666-4666-8666-666666666666",
+      ].join("\n")
+    );
+  });
+
   test("counts the unread threads in the call's details", async () => {
     const { code } = await runInbox();
 

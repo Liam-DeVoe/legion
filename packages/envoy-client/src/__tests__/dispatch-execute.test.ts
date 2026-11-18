@@ -6975,6 +6975,45 @@ describe("executeDispatchTool", () => {
         });
       });
 
+      // An edit of a post rewrites the blocks it changed and leaves the others as they were, so a
+      // block's own revision says nothing of an edit of another block of the post. The post's own
+      // edit mark, which its block node carries, ends the head of every read of the block, a
+      // pinned one's included, and of a message's block too.
+      test("a block of a post its author edited names the edit in its head, pinned or not", async () => {
+        const editedAt = "2026-10-22T00:00:00Z";
+        const node = { ...commentBlock, changed_version: 1, edited_at: editedAt, text: "Beta." };
+        const head = `Block b2 of comment ${comment} (changed in revision 1) · edited ${editedAt}:`;
+        const read = async (ref: string, answered: object) => {
+          const answer = () => response({ node: answered, edges: [] });
+          return (await readBlock(ref, answer, answer).result).text;
+        };
+
+        expect(await read(`${commentRef}#b-b2`, node)).toBe(
+          [head, "Beta.", ...sections].join("\n")
+        );
+        const pinned = `${commentRef}#b-b2@v1`;
+        const pin = { version: 1, ref: pinned, text: "Beta.", state: "unchanged" };
+        expect(await read(pinned, { ...node, pin })).toBe(
+          [
+            head,
+            "Beta.",
+            "Pinned to revision: 1",
+            "Unchanged since revision 1.",
+            "Text at revision 1:",
+            "Beta.",
+            ...sections,
+          ].join("\n")
+        );
+        const messageNode = { ...messageBlock, edited_at: editedAt, text: "The first paragraph." };
+        expect(await read(`${messageRef}#b-b1`, messageNode)).toBe(
+          [
+            `Block b1 of message ${message} · edited ${editedAt}:`,
+            "The first paragraph.",
+            ...sections,
+          ].join("\n")
+        );
+      });
+
       test("a message block prints its message and its text", async () => {
         const block = `${messageRef}#b-b1`;
         const node = { ...messageBlock, text: "The first paragraph." };
@@ -13506,6 +13545,88 @@ describe("executeDispatchTool", () => {
       [
         "Links:",
         `- replies_to comment ${ref(withdrawn)} (Deleted by user alice at 2026-09-09T03:00:00Z · 2026-09-09T02:00:00Z)`,
+        `- mentions comment ${ref(stands)} (A comment that stands. · 2026-09-09T01:00:00Z)`,
+      ].join("\n")
+    );
+  });
+
+  // What a graph row says about a post its author edited: the excerpt is of the words the post
+  // holds now, which an edit replaced, so the mark every line prints for an edited post follows
+  // it, and stands alone on a row the graph has no words for. A post nobody edited reads as it did.
+  test("a graph edge row naming an edited comment carries the edited mark after its excerpt", async () => {
+    const reply = "44444444-4444-4444-8444-444444444444";
+    const edited = "55555555-5555-4555-8555-555555555555";
+    const bare = "66666666-6666-4666-8666-666666666666";
+    const stands = "77777777-7777-4777-8777-777777777777";
+    const ref = (id: string) => `dispatch://DSP-1/comment/${id}`;
+    const node = (id: string, editedAt?: string): GraphReferences["node"] => ({
+      kind: "comment",
+      id,
+      ref: ref(id),
+      made_by: [],
+      made_at: null,
+      changed_by: [],
+      changed_at: null,
+      parent: null,
+      parent_version: null,
+      ...(editedAt === undefined ? {} : { edited_at: editedAt }),
+    });
+    const edge = (target: GraphEdge["node"], at: string, excerpt?: string): GraphEdge => ({
+      kind: "mentions",
+      direction: "out",
+      node: target,
+      ...(excerpt === undefined ? {} : { excerpt: { text: excerpt } }),
+      created_at: at,
+      source_seq: null,
+    });
+    const edges: GraphEdge[] = [
+      edge(node(edited, "2026-09-09T04:00:00Z"), "2026-09-09T03:00:00Z", "The words as edited."),
+      edge(node(bare, "2026-09-09T04:30:00Z"), "2026-09-09T02:00:00Z"),
+      edge(node(stands), "2026-09-09T01:00:00Z", "A comment that stands."),
+    ];
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      if (target.pathname === `/api/v1/comments/${reply}`) {
+        return response({
+          comment: {
+            id: reply,
+            issue_key: "DSP-1",
+            author: { kind: "user", id: "alice" },
+            body: "A reply citing three comments.",
+            anchor: null,
+            reply_to: null,
+            answers: null,
+            resolved: false,
+            suggestion: null,
+            created_at: "2026-09-09T03:00:00Z",
+          },
+          replies: [],
+        });
+      }
+      if (target.pathname === "/api/v1/references") {
+        if (target.searchParams.get("from") === ref(reply)) {
+          return response({ node: node(reply), edges });
+        }
+        return response(emptyGraph("comment"));
+      }
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+    const result = await executeDispatchTool({
+      tool: "dispatch_read",
+      args: { ref: ref(reply) },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect(result.text).toContain(
+      [
+        "Links:",
+        `- mentions comment ${ref(edited)} (The words as edited. · edited 2026-09-09T04:00:00Z · 2026-09-09T03:00:00Z)`,
+        `- mentions comment ${ref(bare)} (edited 2026-09-09T04:30:00Z · 2026-09-09T02:00:00Z)`,
         `- mentions comment ${ref(stands)} (A comment that stands. · 2026-09-09T01:00:00Z)`,
       ].join("\n")
     );

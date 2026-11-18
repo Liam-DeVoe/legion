@@ -878,7 +878,9 @@ CLI outside the form the gate reads and carried an ask for a person (`outcome: "
   send the recorder back to the read and then to the append. Each append carries a key of its own,
   the sha256 of the session and the record's id, so an append Dispatch ran late is replayed to its
   next attempt rather than written twice; the same record sent again with another time in its body
-  gets `422 KEY_REUSED`, is not written, and is counted as not confirmed. Keys
+  gets `422 KEY_REUSED`, is not written, and is counted as not confirmed. An append Dispatch made
+  and gave no copy of its answer for (`409 KEY_COMMITTED`, or a replay of an answer it kept none
+  of) is in the document, so the record is written and counted nowhere as not confirmed. Keys
   belong to the login that sent them, and every Legion pod writes under the shared agent token,
   which is one login for all of them (`requestKeyLogin`,
   `packages/envoy/internal/dispatch/api/request_keys.go`); Dispatch keeps a key 24 h

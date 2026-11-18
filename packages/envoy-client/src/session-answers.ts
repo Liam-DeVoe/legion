@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { actorActText, type SessionAnswer, type SessionAnswerRelation } from "@legion/contracts";
-import { deletedMark } from "./actor-text";
+import { deletedMark, editedMark } from "./actor-text";
 import { dispatchWordsText, QUESTION_HEAD, textHead } from "./ask-answer";
 import type { DispatchConfigResolution } from "./dispatch-config";
 import { DispatchClient, DispatchNoRouteError, isNoRoute } from "./dispatch-http";
@@ -103,7 +103,7 @@ export function renderSessionAnswerItem(item: SessionAnswer): string {
     : item.relation;
   const relation = `${phrase}${item.replaced === true ? " (replaces an earlier answer)" : ""}`;
   const head = [item.at, actorActText(`user ${item.author.id}`, item.author.act), relation];
-  if (item.edited_at !== undefined) head.push(`edited ${item.edited_at}`);
+  if (item.edited_at !== undefined) head.push(editedMark(item.edited_at));
   // No read of a deleted post gives any part of its body: the server sends its text empty, so no
   // words line prints, and the head line ends with the one mark every read prints.
   if (item.deleted_at !== undefined) head.push(deletedMark(item.deleted_at, item.deleted_by));

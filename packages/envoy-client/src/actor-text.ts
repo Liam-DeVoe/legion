@@ -43,3 +43,19 @@ export function actorText(actor: Actor | WrittenActor): string {
 export function deletedMark(at: string, by: Actor | WrittenActor | null | undefined): string {
   return `Deleted by ${by == null ? "its author" : actorText(by)} at ${at}`;
 }
+
+/**
+ * How every line names a post its author edited, beside the words it prints of it: `edited` and
+ * the time of the last edit. The words a line holds can be ones a later edit replaced, so a line
+ * that prints a post's words without this gives a reader stale words with nothing to tell them
+ * by. A line joins it to its other fields with ` · `, after the words where it prints any.
+ *
+ * One wording for every surface: an event of a post (`dispatch-commands/render-issue.ts`), a
+ * graph row naming one and a read of one of its blocks (`dispatch-commands/render-graph.ts`), an
+ * Inbox thread whose root is one (`dispatch-commands/session.ts`), a card's re-read of a body its
+ * event cut (`delivery.ts`), the answers list a session is handed (`session-answers.ts`) and a
+ * search hit of one (`search-answer.ts`) all print it.
+ */
+export function editedMark(at: string): string {
+  return `edited ${at}`;
+}

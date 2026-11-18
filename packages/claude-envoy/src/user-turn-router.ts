@@ -18,7 +18,7 @@
 // the body Dispatch answers with, never the frame's own text.
 import { comparableLines } from "@legion/contracts"
 import type { DispatchDelivery, RenderInboundResult } from "@legion/envoy-client/delivery"
-import type { DispatchClient } from "@legion/envoy-client/dispatch-http"
+import { type DispatchClient, DispatchWriteLandedError } from "@legion/envoy-client/dispatch-http"
 import { pictureAddresses } from "@legion/envoy-client/dispatch-pictures"
 import { messageFor } from "@legion/envoy-client/errors"
 import { type AcceptedUserTurnDelivery, acceptUserTurn } from "@legion/pi-shared/accept-user-turn"
@@ -250,6 +250,12 @@ export function createUserTurnRouter(options: UserTurnRouterOptions): UserTurnRo
           )
           return
         }
+        if (refusal.reason === "landed") {
+          warn(
+            `Dispatch recorded this session's accept of message ${delivery.id} and gave no copy of its answer (${refusal.error.message}), so no turn follows; it arrives as a card`,
+          )
+          return
+        }
         warn(
           `Dispatch did not accept message ${delivery.id} as this session's turn (${messageFor(refusal.error)}); it arrives as a card`,
         )
@@ -327,11 +333,17 @@ export function createUserTurnRouter(options: UserTurnRouterOptions): UserTurnRo
     await reply(delivery, { ...result, followUp })
   }
 
-  /** Posts one reply to a delivery, naming on stderr a reply that did not reach Dispatch. */
+  /** Posts one reply to a delivery, naming on stderr a reply that did not reach Dispatch, and one
+   *  Dispatch made and gave no copy of its answer for (`DispatchWriteLandedError`), which is
+   *  posted: the error's message says what was made. */
   const answer = async (delivery: DispatchDelivery, body: string | undefined): Promise<void> => {
     if (body === undefined) return
     await post(delivery, { body }).catch((error: unknown) => {
-      warn(`a reply to message ${delivery.id} did not reach Dispatch — ${messageFor(error)}`)
+      warn(
+        error instanceof DispatchWriteLandedError
+          ? `a reply to message ${delivery.id} landed on Dispatch, which gave no copy of its answer — ${error.message}`
+          : `a reply to message ${delivery.id} did not reach Dispatch — ${messageFor(error)}`,
+      )
     })
   }
 
@@ -420,7 +432,9 @@ export function createUserTurnRouter(options: UserTurnRouterOptions): UserTurnRo
    *  answer never asks for a follow-up: a BTW is answered one time, and the rule that a frame
    *  this session is handed twice posts no second answer is what Dispatch leans on for it
    *  (`replyAfterAnswer`, `packages/envoy/internal/dispatch/api/message_delivery.go`), since
-   *  nothing here guards a redelivered BTW and the fork would answer it afresh. */
+   *  nothing here guards a redelivered BTW and the fork would answer it afresh. A reply Dispatch
+   *  made and gave no copy of its answer for (`DispatchWriteLandedError`) answered the attempt,
+   *  so no error reply follows it, and stderr says it landed. */
   const runBtw = (delivery: DispatchDelivery): void => {
     void (async () => {
       if (!session.connected()) {
@@ -430,10 +444,15 @@ export function createUserTurnRouter(options: UserTurnRouterOptions): UserTurnRo
       try {
         await reply(delivery, { body: await session.fork(delivery.body) })
       } catch (error) {
+        if (error instanceof DispatchWriteLandedError) throw error
         await reply(delivery, { error: messageFor(error) })
       }
     })().catch((error: unknown) => {
-      warn(`a BTW answer did not reach Dispatch — ${messageFor(error)}`)
+      warn(
+        error instanceof DispatchWriteLandedError
+          ? `a BTW answer to message ${delivery.id} landed on Dispatch, which gave no copy of its answer — ${error.message}`
+          : `a BTW answer did not reach Dispatch — ${messageFor(error)}`,
+      )
     })
   }
 

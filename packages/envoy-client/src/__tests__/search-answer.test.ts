@@ -344,3 +344,19 @@ describe("searchAnswer: a deleted post's hit", () => {
     ]);
   });
 });
+
+describe("searchAnswer: an edited post's hit", () => {
+  // A hit's snippet is of the words the post holds now, which an edit replaced: the line says the
+  // post was edited and when, beside them, as every line that prints an edited post does. A post
+  // nobody edited keeps its snippet alone.
+  test("prints the edited mark after the snippet of a post its author edited", () => {
+    expect(searchText({ ...hit, edited_at: "2026-10-01T00:00:00Z" })).toEqual([
+      askHeader,
+      "LEGION-2 [triage] Astrolabe - comment: Comment about **astrolabe** · edited 2026-10-01T00:00:00Z -> http://dispatch.test/issues/LEGION-2/spec#comment-2",
+    ]);
+    expect(searchText(hit)).toEqual([
+      askHeader,
+      "LEGION-2 [triage] Astrolabe - comment: Comment about **astrolabe** -> http://dispatch.test/issues/LEGION-2/spec#comment-2",
+    ]);
+  });
+});

@@ -229,7 +229,7 @@ describe("renderInbound and a body an event did not carry whole", () => {
     expect(rode.content).not.toContain("first part only");
   });
 
-  test("an item deleted since the event reads as the deleted line; one edited, as its body", async () => {
+  test("an item deleted since the event reads as the deleted line", async () => {
     const deletion = {
       deleted_at: "2026-09-10T00:00:00Z",
       deleted_by: { kind: "user", id: "alice" },
@@ -259,9 +259,41 @@ describe("renderInbound and a body an event did not carry whole", () => {
         SESSION
       )
     ).toBe(mark);
+  });
 
-    // A card is no web page: an edited item's body is its current one, with no mark.
-    const edited = dispatch(false, { body: STORED_BODY, edited_at: "2026-09-10T00:00:00Z" }).client;
-    expect(await wholeCarriedBody(edited, ITEM, SESSION)).toBe(STORED_BODY);
+  // The architect's ruling: a card that re-reads the post prints the mark. The re-read gives the
+  // words the post holds now, which an edit since the event replaced, so the card says it was
+  // edited and when, beside those words, as every line that prints an edited post does.
+  test("a card that re-reads an item edited since carries the edited mark beside its words", async () => {
+    const edit = { body: STORED_BODY, edited_at: "2026-09-10T00:00:00Z" };
+    const marked = `${STORED_BODY} · edited 2026-09-10T00:00:00Z`;
+    const { client, requests } = dispatch(false, edit, edit);
+
+    const body = await wholeCarriedBody(client, ITEM, SESSION);
+    expect(body).toBe(marked);
+    expect(requests).toEqual([`/api/v1/comments/${COMMENT_ID}`]);
+    const whole = renderInbound(envelopeOf(cutEvent), SESSION, undefined, body);
+    expect(whole.content).toContain(`body: ${JSON.stringify(marked)}`);
+    expect(whole.content).not.toContain("first part only");
+    expect(
+      await wholeCarriedBody(
+        client,
+        { resource: "message", id: MESSAGE_ID, issueKey: "DSP-1" },
+        SESSION
+      )
+    ).toBe(marked);
+  });
+
+  // The other half of the ruling: a card that prints only what its delivery frame carried is a
+  // delivery Dispatch already sent, and keeps what it carried, with no mark, though Dispatch now
+  // holds the post edited.
+  test("a card that prints only what its frame carried carries no edited mark", () => {
+    const rode = renderInbound(envelopeOf(wholeEvent), SESSION);
+    expect(rode.content).toContain(`body: ${JSON.stringify(STORED_BODY)}`);
+    expect(rode.content).not.toContain("· edited");
+
+    const kept = renderInbound(envelopeOf(cutEvent), SESSION, undefined, undefined);
+    expect(kept.content).toContain(`body: ${CARRIED_BODY}`);
+    expect(kept.content).not.toContain("· edited");
   });
 });

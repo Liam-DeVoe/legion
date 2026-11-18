@@ -7,8 +7,9 @@ import { expect, test } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { IDEMPOTENCY_KEY_COMMITTED } from "@legion/contracts"
 import { type DispatchDelivery, renderInbound } from "@legion/envoy-client/delivery"
-import type { DispatchClient } from "@legion/envoy-client/dispatch-http"
+import { type DispatchClient, DispatchWriteLandedError } from "@legion/envoy-client/dispatch-http"
 import type { ModCallArguments, ModCallName, ModCallResults, ModEvent } from "../hooks/mod-protocol"
 import { type ModSession, modSession } from "../src/mod-session"
 import {
@@ -29,6 +30,8 @@ import { settled, waitFor } from "./channel-session-harness"
 const SESSION = "ses_claude"
 const DIRECT = `notifications.agent.${SESSION}`
 const MESSAGE = "33333333-3333-4333-8333-333333333333"
+/** Where a reply to MESSAGE is posted, which a reply's landing names. */
+const REPLY_URL = `https://dispatch.test/api/v1/messages/${MESSAGE}/reply`
 
 /** One of a person's direct messages to this session, as the listener publishes it. */
 function personSends(
@@ -131,6 +134,8 @@ interface Harness {
   readonly order: string[]
   readonly accepts: { readonly id: string; readonly attempt: number }[]
   readonly observe: (event: ModEvent) => void
+  /** What the router wrote as a failure that must not stop the session, in order. */
+  readonly warnings: string[]
 }
 
 /** A router on a scratch state file, with the mod and Dispatch both faked. */
@@ -151,6 +156,9 @@ async function harness(input: {
    *  reason. */
   readonly commandEchoMs?: number
   readonly directory?: string
+  /** Every reply is one Dispatch made and gave no copy of its answer for: it is recorded, then
+   *  thrown as `409 KEY_COMMITTED` (`DispatchWriteLandedError`). */
+  readonly repliesLand?: boolean
 }): Promise<Harness> {
   const directory = input.directory ?? (await mkdtemp(join(tmpdir(), "claude-envoy-turns-")))
   const stateFile = userTurnStateFile(directory, SESSION)
@@ -158,6 +166,7 @@ async function harness(input: {
   const replies: { delivery: DispatchDelivery; body?: string }[] = []
   const order: string[] = []
   const accepts: { id: string; attempt: number }[] = []
+  const warnings: string[] = []
   const session = modSession({
     link: input.link,
     warn: () => undefined,
@@ -185,11 +194,16 @@ async function harness(input: {
         ...(result.body === undefined ? {} : { body: result.body }),
         ...(asked === undefined ? {} : { followUp: asked }),
       })
+      if (input.repliesLand === true) {
+        throw new DispatchWriteLandedError(IDEMPOTENCY_KEY_COMMITTED, 409, "POST", REPLY_URL)
+      }
     },
     session,
     sessionId: () => SESSION,
     state,
-    warn: () => undefined,
+    warn: (text) => {
+      warnings.push(text)
+    },
     ...(input.commandWaitingMs === undefined ? {} : { commandWaitingMs: input.commandWaitingMs }),
     ...(input.inbox === undefined ? {} : { inbox: input.inbox }),
   })
@@ -208,6 +222,7 @@ async function harness(input: {
     session,
     state,
     stateFile,
+    warnings,
   }
 }
 
@@ -753,6 +768,82 @@ test("a BTW is answered from the model's fork and adds nothing to the conversati
     expect(session.replies.map((posted) => posted.body)).toEqual(["It is the migration guard."])
     // A BTW is no attempt of a person's own turn: nothing of it is spent.
     expect(session.accepts).toEqual([])
+  } finally {
+    await rm(session.directory, { recursive: true, force: true })
+  }
+})
+
+/** The message of a reply to MESSAGE Dispatch made and gave no copy of its answer for (`repliesLand`). */
+const REPLY_LANDED = new DispatchWriteLandedError(IDEMPOTENCY_KEY_COMMITTED, 409, "POST", REPLY_URL)
+  .message
+
+// A reply Dispatch made and gave no copy of its answer for answered the attempt: an error reply
+// after it would answer the person a second time with the error of a write that was made, and
+// the line says it landed, never that it did not reach Dispatch.
+test("a BTW answer that landed with no answer back is followed by no error reply", async () => {
+  const mod = fakeMod({
+    "model.fork": () => ({ isAnswered: true as const, text: "It is the migration guard." }),
+  })
+  const session = await harness({ link: mod.link, repliesLand: true })
+  try {
+    await session.router.route(frame(personSends("what blocks it?", { mode: "btw" })))
+    await waitFor(async () => session.warnings.length === 1, "the BTW answer's line")
+
+    // Every reply the router posted, an error reply included, in the order it posted them.
+    expect(session.order).toEqual(["reply:It is the migration guard."])
+    expect(session.warnings).toEqual([
+      `a BTW answer to message ${MESSAGE} landed on Dispatch, which gave no copy of its answer — ${REPLY_LANDED}`,
+    ])
+  } finally {
+    await rm(session.directory, { recursive: true, force: true })
+  }
+})
+
+test("a reply that landed with no answer back is not said to have missed Dispatch", async () => {
+  const mod = fakeMod({ "config.set": (args) => ({ value: args.value }) })
+  const session = await harness({
+    link: mod.link,
+    accept: () => accepted("/model anthropic/claude-opus-4-1"),
+    repliesLand: true,
+  })
+  try {
+    await session.router.route(frame(personSends("/model anthropic/claude-opus-4-1")))
+    await waitFor(async () => session.warnings.length === 1, "the reply's line")
+
+    expect(session.order).toEqual(["refresh", `reply:${modelPicked("anthropic/claude-opus-4-1")}`])
+    expect(session.warnings).toEqual([
+      `a reply to message ${MESSAGE} landed on Dispatch, which gave no copy of its answer — ${REPLY_LANDED}`,
+    ])
+  } finally {
+    await rm(session.directory, { recursive: true, force: true })
+  }
+})
+
+// An accept Dispatch recorded and gave no copy of its answer for spent the attempt as this
+// session's, and the stored body a turn is made of is not in hand: the frame keeps its card, and
+// the line says the accept was recorded and why no turn follows, never that Dispatch did not
+// accept it.
+test("an accept that landed with no answer back keeps the card, saying the accept was recorded", async () => {
+  const mod = fakeMod({})
+  const landed = new DispatchWriteLandedError(
+    IDEMPOTENCY_KEY_COMMITTED,
+    409,
+    "POST",
+    `https://dispatch.test/api/v1/messages/${MESSAGE}/deliveries/1/accept`,
+  )
+  const session = await harness({
+    link: mod.link,
+    accept: () => {
+      throw landed
+    },
+  })
+  try {
+    expect(await session.router.route(frame(personSends("ship it")))).toBe(false)
+
+    expect(mod.calls).toEqual([])
+    expect(session.warnings).toEqual([
+      `Dispatch recorded this session's accept of message ${MESSAGE} and gave no copy of its answer (${landed.message}), so no turn follows; it arrives as a card`,
+    ])
   } finally {
     await rm(session.directory, { recursive: true, force: true })
   }

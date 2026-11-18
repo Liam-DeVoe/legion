@@ -4,8 +4,9 @@
  * leaves as the card it was.
  */
 import { expect, test } from "bun:test";
+import { IDEMPOTENCY_ANSWER_NOT_KEPT, IDEMPOTENCY_KEY_COMMITTED } from "@legion/contracts";
 import { type DispatchDelivery, renderInbound } from "@legion/envoy-client/delivery";
-import type { DispatchClient } from "@legion/envoy-client/dispatch-http";
+import { type DispatchClient, DispatchWriteLandedError } from "@legion/envoy-client/dispatch-http";
 import { acceptUserTurn, type UserTurnRefusal } from "./accept-user-turn";
 
 const SESSION = "ses_pi";
@@ -154,6 +155,31 @@ test("an accept answering without the stored body keeps the card", async () => {
 
   expect(accepted).toBeUndefined();
   expect(session.order).toEqual([`handle:${MESSAGE}#1`, `accept:${MESSAGE}#1`, "warn:no-body"]);
+});
+
+// An accept Dispatch recorded and gave no copy of its answer for is no failure: the accept was
+// made, and only the stored body a turn is made of is missing. Its reason says so, so the host
+// says the accept was recorded and why no turn follows, never that Dispatch did not accept it.
+test("an accept that landed with no answer keeps the card under its own reason", async () => {
+  for (const landed of [
+    new DispatchWriteLandedError(IDEMPOTENCY_KEY_COMMITTED, 409, "POST", "https://dispatch.test"),
+    new DispatchWriteLandedError(IDEMPOTENCY_ANSWER_NOT_KEPT, 200, "POST", "https://dispatch.test"),
+  ]) {
+    const session = host({
+      accept: () => {
+        throw landed;
+      },
+    });
+    const accepted = await acceptUserTurn({
+      rendered: renderInbound(personSends("Ship it?"), SESSION, DIRECT),
+      ...session,
+    });
+
+    expect(accepted).toBeUndefined();
+    expect(session.order).toEqual([`handle:${MESSAGE}#1`, `accept:${MESSAGE}#1`, "warn:landed"]);
+    const refusal = session.refusals[0];
+    expect(refusal?.reason === "landed" ? refusal.error : undefined).toBe(landed);
+  }
 });
 
 // A BTW is a side turn, never the session's own, so no attempt of one is ever spent.
