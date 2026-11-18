@@ -442,9 +442,13 @@ jobs:
       # internal/dispatch/specgraph, cmd/architecture-check and cmd/spec-check, which
       # envoy-go-checks tests on every push (NOTE_AND_SPEC_PACKAGES). The pattern is built
       # in .github/scripts/ci_job_reads.py from the same lists those jobs' own steps are built
-      # from, so what the list leaves out and what the other jobs run cannot drift apart. What is
-      # left is the rest of the module less the routes package, internal/dispatch/events and
-      # internal/pgmigrate, each of which has a call and a service of its own, and less the two
+      # from, so what the list leaves out and what the other jobs run cannot drift apart. The
+      # broker's packages, internal/broker and everything under it, are left out too: the
+      # database-skips step below runs them with -json and fails on a failed test as on a skipped
+      # one, so this step ran each of them a second time (DATABASE_SKIPS_TREE in
+      # ci_job_reads.py). What is left is the rest of the module less the routes package,
+      # internal/dispatch/events and internal/pgmigrate, each of which has a call and a service
+      # of its own, and less the two
       # longest packages it held (the API's and the documents service's), which the lane runs
       # now. Its own -timeout is below, with the call. Its one -skip names three tests: the
       # shutdown feed test, which the shutdown call runs on a service of its own, and the two
@@ -505,7 +509,7 @@ jobs:
           github.com/sjawhar/envoy/internal/dispatch/outbox
           github.com/sjawhar/envoy/cmd/dispatch
           github.com/sjawhar/envoy/cmd/agent-secrets"
-          rest=$(go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$|/internal/pgmigrate$|/internal/dispatch/events$' | grep -vxF "$lead")
+          rest=$(go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/internal/broker($|/)|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$|/internal/pgmigrate$|/internal/dispatch/events$' | grep -vxF "$lead")
           printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '^(TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$' -timeout 26m > "$RUNNER_TEMP/go-test-json/unit.json" &
           unit=$!
           # The tests the race detector makes impossible, which the race job of each of these
@@ -712,15 +716,15 @@ jobs:
       - name: Count the store-form rows on each backend
         run: packages/envoy/scripts/backend-count.sh ./cmd/agent-secrets/ ./internal/broker/api/ -- TestEverySecretFormNamesTheSourceItUses TestNoSecretFormAsksTheBrokerForACredential TestUseCommandOutsideASessionReachesTheMachineSource TestTheChainSkipsAbsenceAndStopsOnABrokenSource TestSettingsNameTheGoogleExchangeAudienceOnEitherStore
       # c8 also asks that the database broker suites run with BROKER_TEST_DATABASE_URL set and that
-      # none skips. The unit step runs them, but go test reports a skip as a pass and that step
-      # writes no report to count from, so this step runs ./internal/broker/... again with -json
-      # and fails on any skipped test there, FuzzAirlock apart (it needs a built Lean model of the
-      # airlock, and the airlock-lean job runs it). A report it cannot read prints
-      # database_skips=UNKNOWN and fails too. database-skips.sh's -timeout of 15 minutes bounds
-      # each package's test binary, and the packages run several at a time, so one that starts
-      # late ends up to 15 minutes after its own start: the step's own limit of 25 minutes leaves
-      # a package that starts within the first 10 its whole -timeout, and so its dump. Measured on
-      # a loaded dev box on 2026-11-16: 331 s for the whole step, the slowest package,
+      # none skips. go test reports a skip as a pass, so this step is where the broker's packages
+      # run: it runs ./internal/broker/... with -json, which the unit step above leaves out, fails
+      # on a failed test, and fails on any skipped test there, FuzzAirlock apart (it needs a built
+      # Lean model of the airlock, and the airlock-lean job runs it). A report it cannot read prints
+      # database_skips=UNKNOWN and fails too. database-skips.sh's -timeout of 15 minutes bounds each
+      # package's test binary, and the packages run several at a time, so one that starts late ends
+      # up to 15 minutes after its own start: the step's own limit of 25 minutes leaves a package
+      # that starts within the first 10 its whole -timeout, and so its dump. Measured on a loaded
+      # dev box on 2026-11-16: 331 s for the whole step, the slowest package,
       # internal/broker/helper, 329 s.
       - name: Count the database broker suites' skips
         timeout-minutes: 25

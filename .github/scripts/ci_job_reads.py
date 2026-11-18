@@ -954,6 +954,15 @@ TWO_BUILDS_STEP = "Two-build tests of the Dispatch server"
 TWO_BUILDS_SCRIPT = f"""\
 pattern=$(../../{TAGGED_TESTS} twobuild ./cmd/dispatch)
 go test -tags twobuild -count=1 -timeout 18m -run "$pattern" ./cmd/dispatch"""
+# The same suite in the same file's dispatch-two-builds-same job, with this tree's own build as
+# the previous build, which a merge-group run alone runs (that job's comment says why). Its gates
+# and its TAG_RUNS entry are the Go step's, and its script is the Go step's but for the -timeout,
+# which is the one that job's step carries.
+TWO_BUILDS_SAME_JOB = "dispatch-two-builds-same"
+TWO_BUILDS_SAME_STEP = "Two-build tests of the Dispatch server against its own build"
+TWO_BUILDS_SAME_SCRIPT = f"""\
+pattern=$(../../{TAGGED_TESTS} twobuild ./cmd/dispatch)
+go test -tags twobuild -count=1 -timeout 30m -run "$pattern" ./cmd/dispatch"""
 BROKER_MP_STEP = "Two-process tests of the secrets broker"
 BROKER_MP_SCRIPT = f"""\
 pattern=$(../../{TAGGED_TESTS} multiprocess ./cmd/broker)
@@ -1021,6 +1030,14 @@ def two_builds_go_step():
     ])
 
 
+def two_builds_same_step():
+    """The same-build job's Go step, pinned whole for the Go step's reason, in both of the Go
+    step's gates for the same reason."""
+    return pinned_step(TWO_BUILDS_SAME_JOB, TWO_BUILDS_SAME_STEP, ENVOY, TWO_BUILDS_SAME_SCRIPT, [
+        (ENVOY, ["./cmd/dispatch"], "go test -tags twobuild ./cmd/dispatch", {"tags": "twobuild"}),
+    ], workflow=job_file(TWO_BUILDS_JOB))
+
+
 def two_builds_go_reads():
     """What the two-build job's Go step reads beyond its closure and the RULES rows of the
     twobuild files: the script its -run comes from, the script that wrote the previous build it
@@ -1031,7 +1048,9 @@ def two_builds_go_reads():
         (f"{ENVOY}/scripts/build-dispatch-build.sh",
          f"{at(TWO_BUILDS_JOB, 'Build the previous build')} writes the previous build "
          f"{at(TWO_BUILDS_JOB, TWO_BUILDS_STEP)} runs against (DISPATCH_PREVIOUS_BUILD), whose parts "
-         "cmd/dispatch/twobuild_harness_test.go checks"),
+         "cmd/dispatch/twobuild_harness_test.go checks, and "
+         f"{at(TWO_BUILDS_SAME_JOB, 'Build this tree as the previous build', job_file(TWO_BUILDS_JOB))} "
+         "writes the one its own Go step runs against"),
     ) + ceiling_reads(TWO_BUILDS_JOB) + setup_go(TWO_BUILDS_JOB, f"{ENVOY}/go.mod") + bun_job(TWO_BUILDS_JOB)
 
 
@@ -1474,17 +1493,28 @@ NOTE_AND_SPEC_PKGS = [f"./{p}/" for p in NOTE_AND_SPEC_PACKAGES]
 NOTE_AND_SPEC_SCRIPT = json_stream_script(
     "go test -json -count=1 -timeout 1m " + " ".join(NOTE_AND_SPEC_PKGS), "architecture-notes.json")
 
-# The package list of the unit step runs the module less seven things: the lane's packages,
+# The broker's packages, internal/broker and every package under it, which envoy-go's step
+# "Count the database broker suites' skips" runs with `go test -json` through
+# packages/envoy/scripts/database-skips.sh, and fails on a failed test as on a skipped one. The
+# unit step leaves them out: it ran each of them a second time in the same job, with the same
+# database, about 645 s of package time on a merge-group run of 2026-11-17 (job 133989142856),
+# internal/broker/helper alone 326 s.
+DATABASE_SKIPS_TREE = "internal/broker"
+DATABASE_SKIPS_STEP = "Count the database broker suites' skips"
+DATABASE_SKIPS_SCRIPT = "packages/envoy/scripts/database-skips.sh"
+
+# The package list of the unit step runs the module less eight things: the lane's packages,
 # which the three race jobs run under the detector, internal/integration, which the integration
 # call of the same step runs, the text checks, which the text-check job runs, the
-# architecture-note and spec-file packages, which envoy-go-checks runs, and
-# internal/dispatch/routes, internal/pgmigrate and internal/dispatch/events, which the routes
-# call, the pgmigrate call and the events call of the same step run against Postgres services of
-# their own (the comments on those calls and services in ci-job-envoy-go.yaml say why). Its
-# `grep -Ev` is `/integration`, then the text checks, then the architecture-note and spec-file
-# packages, each the package alone, then, in the lane's own order, each package in the form go
-# list's import paths need - a tree matching the package and everything under it, any other the
-# package alone - and the three packages with a service of their own last.
+# architecture-note and spec-file packages, which envoy-go-checks runs, the broker's tree, which
+# envoy-go's database-skips step runs, and internal/dispatch/routes, internal/pgmigrate and
+# internal/dispatch/events, which the routes call, the pgmigrate call and the events call of the
+# same step run against Postgres services of their own (the comments on those calls and services
+# in ci-job-envoy-go.yaml say why). Its `grep -Ev` is `/integration`, then the text checks, then
+# the architecture-note and spec-file packages, each the package alone, then the broker's tree,
+# then, in the lane's own order, each package in the form go list's import paths need - a tree
+# matching the package and everything under it, any other the package alone - and the three
+# packages with a service of their own last.
 ROUTES_PACKAGE = "internal/dispatch/routes"
 PGMIGRATE_PACKAGE = "internal/pgmigrate"
 EVENTS_PACKAGE = "internal/dispatch/events"
@@ -1492,6 +1522,7 @@ UNIT_TEST_STEP = "Unit test envoy Go package"
 UNIT_TEST_PATTERN = "|".join(
     ["/integration", f"/{TEXT_CHECK_PACKAGE}$"]
     + [f"/{p}$" for p in NOTE_AND_SPEC_PACKAGES]
+    + [f"/{DATABASE_SKIPS_TREE}($|/)"]
     + [f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for job in ENVOY_RACE_LANE for p in job.packages]
     + [f"/{ROUTES_PACKAGE}$", f"/{PGMIGRATE_PACKAGE}$", f"/{EVENTS_PACKAGE}$"])
 
@@ -3043,8 +3074,9 @@ GATES = [
         # integration suite and the agentloop vet beside it. Its Runs together are everything the
         # step compiles:
         #   * the package list is the module but the race lane's packages, internal/integration,
-        #     the text checks, the architecture-note packages, internal/dispatch/routes,
-        #     internal/pgmigrate and internal/dispatch/events. Its Run names the packages the
+        #     the text checks, the architecture-note packages, the broker's tree, which the
+        #     database-skips step below runs, internal/dispatch/routes, internal/pgmigrate and
+        #     internal/dispatch/events. Its Run names the packages the
         #     list's own `grep -Ev` keeps (packages_kept over UNIT_TEST_PATTERN), so it is read
         #     from the pattern the step runs rather than claimed beside it. A Run saying more
         #     would credit this job with tests other jobs run: the race lane's are
@@ -3088,6 +3120,12 @@ GATES = [
             (ENVOY, ["./internal/testnats/"], "go test -tags natslive ./internal/testnats/", {"tags": "natslive"}),
             (ENVOY, ["./internal/bus/"], "go test -tags natslive ./internal/bus/", {"tags": "natslive"}),
             (ENVOY, ["./agentloop/"], "go vet -tags modellive ./agentloop/", {"tags": "modellive", "mode": "vet"}),
+        ]),
+        # The broker's tree, which database-skips.sh runs with `go test -json` from packages/envoy
+        # and the unit step leaves out (DATABASE_SKIPS_TREE).
+        pinned_step("envoy-go", DATABASE_SKIPS_STEP, ".", DATABASE_SKIPS_SCRIPT, [
+            (ENVOY, [f"./{DATABASE_SKIPS_TREE}/..."],
+             "packages/envoy/scripts/database-skips.sh's go test -json of the broker's packages", {}),
         ]),
     ], reads=reads(
         (".github/actions/pull-test-images/**", at("envoy-go", "Pull test container images")),
@@ -3331,6 +3369,7 @@ GATES = [
         ceiling_run(TWO_BUILDS_JOB),
     ], exact=[
         two_builds_go_step(),
+        two_builds_same_step(),
         pinned_step(TWO_BUILDS_JOB, "Build the Dispatch server", ENVOY, "go build -o ./dispatch-e2e ./cmd/dispatch", [
             (ENVOY, ["./cmd/dispatch"], "go build -o ./dispatch-e2e ./cmd/dispatch", {"mode": "build"}),
         ]),
@@ -3353,7 +3392,7 @@ GATES = [
     # twobuild_cli_test.go runs and the scripts the step leans on - and not to the browser half's
     # reads, which a change to cmd/dispatch's untagged tests never needs.
     gate("dispatch_two_builds_go", TWO_BUILDS_JOB, step=TWO_BUILDS_STEP, runs=[ceiling_run(TWO_BUILDS_JOB)],
-         exact=[two_builds_go_step()], reads=two_builds_go_reads()),
+         exact=[two_builds_go_step(), two_builds_same_step()], reads=two_builds_go_reads()),
 
     gate("listener_server_change", "listener-server-change", exact=[
         pinned_step("listener-server-change", SOAK_STEP, ENVOY, SOAK_SCRIPT, [
@@ -3693,6 +3732,9 @@ TAG_RUNS = [
     # The two-build job's Go step has a gate of its own (dispatch_two_builds_go), so envoy_go is
     # held to that step's reads and not to the browser half's.
     TagRun("dispatch_two_builds_go", TWO_BUILDS_JOB, TWO_BUILDS_STEP, "envoy_go", "envoy-go",
+           f"envoy-go's \"{UNIT_TEST_STEP}\" runs ./cmd/dispatch's untagged tests",
+           job_file(TWO_BUILDS_JOB)),
+    TagRun("dispatch_two_builds_go", TWO_BUILDS_SAME_JOB, TWO_BUILDS_SAME_STEP, "envoy_go", "envoy-go",
            f"envoy-go's \"{UNIT_TEST_STEP}\" runs ./cmd/dispatch's untagged tests",
            job_file(TWO_BUILDS_JOB)),
     TagRun("broker_multiprocess", "broker-multiprocess", BROKER_MP_STEP, "envoy_go", "envoy-go",
