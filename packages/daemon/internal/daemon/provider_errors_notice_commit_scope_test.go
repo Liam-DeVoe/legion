@@ -98,16 +98,20 @@ func TestAProviderErrorsNoticeWakesItsLaneOnlyOnceItsRowCommits(t *testing.T) {
 // compacts or refreshes the claim's session, so the controller relays nothing
 // (#4065). A run of the tree's architect's own claim reaches the controller
 // alone: the architect copy would wake the very session the provider keeps refusing, for one more
-// failing turn, and the controller holds that work.
+// failing turn, and the controller holds that work. A run of a child's own architect's claim
+// reaches the architect above that child, here the root's, and never the child's own architect,
+// which still holds its role, so the controller relays nothing for it either.
 func TestAProviderErrorsNoticeReachesTheIssuesArchitectAndTheController(t *testing.T) {
 	const reason = "6 turns in a row on claude-opus-4-8 ended in the provider's reasoning_extraction content filter"
 	for _, tc := range []struct {
-		name        string
-		role        claim.Role
-		architected bool
+		name      string
+		issue     string
+		role      claim.Role
+		architect string // whose architect topic hears it; "" for none
 	}{
-		{name: "a phase worker's run", role: claim.RoleImplementer, architected: true},
-		{name: "the tree architect's own run", role: claim.RoleArchitect, architected: false},
+		{name: "a phase worker's run", issue: "LEGION-1", role: claim.RoleImplementer, architect: "LEGION-1"},
+		{name: "the tree architect's own run", issue: "LEGION-1", role: claim.RoleArchitect},
+		{name: "a child's own architect's run", issue: "LEGION-2", role: claim.RoleArchitect, architect: "LEGION-1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := isolatedOutboxPool(t)
@@ -137,8 +141,8 @@ func TestAProviderErrorsNoticeReachesTheIssuesArchitectAndTheController(t *testi
 			w := &workflowRuntime{pool: pool, records: projected, admission: admission, engine: engine,
 				handlers: []intake.Handler{engine, admission}, dispatchProject: "LEGION", log: log}
 
-			w.providerErrorRunReached(supervise.Claim{Token: mustClaimToken(t, "LEGION-1", tc.role), Project: "legion", Tree: "LEGION-1",
-				Issue: "LEGION-1", Role: tc.role, Generation: 1}, reason)
+			w.providerErrorRunReached(supervise.Claim{Token: mustClaimToken(t, tc.issue, tc.role), Project: "legion", Tree: "LEGION-1",
+				Issue: tc.issue, Role: tc.role, Generation: 1}, reason)
 			// The rows are one transaction, so once the controller's row is there every row is.
 			testwait.Eventually(t, "the provider-errors notices to commit", func() bool {
 				var rows int
@@ -150,6 +154,9 @@ func TestAProviderErrorsNoticeReachesTheIssuesArchitectAndTheController(t *testi
 
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 			architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
+			if tc.issue != "LEGION-1" {
+				architectClaim(t, sup, tc.issue, supervise.StateWorking)
+			}
 			publisher := &holderPublisher{}
 			runner := &outbox{log: log, pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion", now: time.Now}
 			if err := runner.RunOnce(ctx); err != nil {
@@ -162,9 +169,11 @@ func TestAProviderErrorsNoticeReachesTheIssuesArchitectAndTheController(t *testi
 			for _, published := range delivered {
 				byTopic[published.topic] = published
 			}
-			architect, controller := architectTopic(t, "LEGION-1"), notify.ControllerTopic("legion")
+			controller := notify.ControllerTopic("legion")
 			topics := []string{controller}
-			if tc.architected {
+			var architect string
+			if tc.architect != "" {
+				architect = architectTopic(t, tc.architect)
 				topics = append(topics, architect)
 			}
 			if len(delivered) != len(topics) || len(byTopic) != len(topics) || outboxRows(t, pool) != 0 {
@@ -176,11 +185,11 @@ func TestAProviderErrorsNoticeReachesTheIssuesArchitectAndTheController(t *testi
 				if !ok {
 					t.Fatalf("delivered %+v, want a publish on %s", delivered, topic)
 				}
-				if published.message != "provider-errors on LEGION-1" || !reflect.DeepEqual(published.payload, want) {
-					t.Fatalf("the publish on %s = %q %+v, want provider-errors on LEGION-1 carrying %+v", topic, published.message, published.payload, want)
+				if message := "provider-errors on " + tc.issue; published.message != message || !reflect.DeepEqual(published.payload, want) {
+					t.Fatalf("the publish on %s = %q %+v, want %s carrying %+v", topic, published.message, published.payload, message, want)
 				}
 			}
-			if tc.architected && byTopic[architect].key == byTopic[controller].key {
+			if architect != "" && byTopic[architect].key == byTopic[controller].key {
 				t.Fatalf("the two publishes share the key %q, want each under its own row's key", byTopic[architect].key)
 			}
 		})

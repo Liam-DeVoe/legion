@@ -169,7 +169,7 @@ func (m *Machine) tellControllerOfProviderErrors(model, cause string) {
 	}
 	reason := fmt.Sprintf("%d turns in a row%s ended in %s; the daemon keeps the task and sends it again every %s at most",
 		m.claim.ProviderErrorRun, on, cause, promptRetryMax)
-	m.log.Warn("supervise: a run of turns that ended in a provider error; the controller is told, and the issue's architect unless the claim is its own",
+	m.log.Warn("supervise: a run of turns that ended in a provider error; the controller is told, and an architect unless the claim is its tree root's architect's",
 		"providerErrorRun", m.claim.ProviderErrorRun, "model", model, "reason", reason)
 	m.deps.ProviderErrorRunReached(m.current(), reason)
 }

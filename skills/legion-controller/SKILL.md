@@ -92,7 +92,7 @@ Wake details: `skill://legion-controller/references/wakes.md`.
 | `worker-stalled on <KEY>` (`role: "architect"`) | It comes only when the stall's replacement failed the architect's claim: answer the `worker-died` that comes with it, and open a finding ask when the notice says the runtime did not confirm the stop of the stalled process |
 | `update-stalled on <KEY>` | `skill://legion-controller/references/escalation.md#an-update-round-that-is-not-finishing-update-stalled` |
 | `session-store-fault on <KEY>` | Open a finding ask for the operator that names the issue, the role and `reason`, so an operator fixes the session store, as for `update-stalled`. Open one ask for one fault, however many notices it sends |
-| `provider-errors on <KEY>` | Name the run and its model in the day's report; for one claim that stays stuck, `compact` first, and `fresh_session` only when it is still refused after that |
+| `provider-errors on <KEY>` | Name the run and its model in the day's report and send no architect anything; for one claim that stays stuck, `compact` first, and `fresh_session` only when it is still refused after that |
 | An architect's escalation | `skill://legion-controller/references/escalation.md` |
 | A finding ask's reference, or its answer | `skill://legion-controller/references/finding-asks.md` |
 | An answer to a park ask (`Park it`, `Leave it admitted`) or a deferral ask (`Defer it`, `Let it run`) | The procedure that opened it: `skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree` step 4, or `skill://legion-controller/references/backlog-stewardship.md#a-root-the-plan-defers` step 4 |
@@ -140,11 +140,11 @@ An issue whose work must start at a commit other than its base branch's head nee
 ask for that command rather than run it, because you edit no repository, and your one push is the
 issue branch of a workspace whose pod you delete
 (`skill://legion-controller/references/operations.md#a-pod-delete-with-nothing-lost`): for a root,
-whoever hands the work over runs it; for a child of a tree, the tree's architect runs it. The
-daemon sets the deadline: its own `issue_branch` row creates `legion/<KEY>` at the issue's base
-branch and leaves a branch GitHub already has where it is, so a root's branch must exist before
-the issue is admitted, and a child's before the child starts its first phase, which it can do as
-soon as its tree's design gate opens and nothing holds it. Read the branch back before you
+whoever hands the work over runs it; for a child of a tree, the architect that owns the child's
+parent runs it. The daemon sets the deadline: its own `issue_branch` row creates `legion/<KEY>` at
+the issue's base branch and leaves a branch GitHub already has where it is, so a root's branch must
+exist before the issue is admitted, and a child's before the child starts its first phase, which it
+can do as soon as its tree's design gate opens and nothing holds it. Read the branch back before you
 `set_status` the root to `todo`:
 `gh api repos/<owner>/<name>/git/ref/heads/legion/<KEY>`. The issue's own spec tells its worker
 which branch to open the pull request against; nothing else carries that.

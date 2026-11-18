@@ -7,6 +7,9 @@ every Legion role (each phase worker, each architect, the controller) and for ea
 subagents, and it replaces the filing step of `skill://dispatch-first` and `skill://dispatch`. The
 controller edits no repository, so a defect it finds goes to its owner, as [Write to the
 owner](#write-to-the-owner) says.
+A child's own architect opens no ask itself: where this page says to open a `dispatch ask`, it
+sends the finding to the architect above it with `envoy_publish`, and the root's architect opens
+the ask (`skill://legion-architect`, "Every turn").
 
 ## Fix it yourself, else write to its owner, and ask only for a decision
 
@@ -16,10 +19,10 @@ three steps that fits:
 1. **Fix it yourself.** A defect with a clear fix is yours to fix, in whichever repository it is,
    with judgment: in your own pull request, or in a separate pull request of your tree. The fix
    needs no choice a person must make, and the evidence shows the defect. A phase worker whose own
-   pull request cannot carry the fix sends it to its tree's architect, which adds it to an open
-   pull request of the tree or files a child for it. Say in your handoff and in the pull request
-   body what you fixed beside the issue's own work. A fix deferred to another issue is a fix
-   nobody makes.
+   pull request cannot carry the fix sends it to the architect that owns its issue, which adds it
+   to an open pull request of an issue it owns or files a child for it. Say in your handoff and in
+   the pull request body what you fixed beside the issue's own work. A fix deferred to another
+   issue is a fix nobody makes.
 2. **Write to its owner.** A defect goes to another tree's architect only when your fix would
    collide with that tree's open pull request. A defect in a repository your token does not reach
    goes to the architect of the tree whose code it is. When no tree owns that code, it goes to the
@@ -37,15 +40,16 @@ A fix you are not sure of is not step 1: take step 2 when it holds, else step 3.
 - A problem inside your issue is not such a finding: fix it in your change, since nothing needed
   for correctness is deferred.
 - A problem inside your tree is work its root spec's acceptance needs. A phase worker's such
-  problem outside its own issue goes to the tree's architect (`skill://legion-worker`, *Stop
-  rules*), which adds it to an open pull request of the tree, or files a child when it is a
-  separately deliverable change. Anything else, in the same
-  repository or not, is a finding.
+  problem outside its own issue goes to the architect that owns its issue, the one its
+  `Legion addressing` line names (`skill://legion-worker`, *Stop rules*). That architect adds it
+  to an open pull request of an issue it owns, or files a child under its own issue when it is a
+  separately deliverable change. It sends a problem in an issue it does not own to the architect
+  above it. Anything else, in the same repository or not, is a finding.
 - A fault of Legion's own machinery that holds your phase is a finding too, never a request to
   another session to change your claim or your session: a reminder that comes after your phase
   ended, an update round that does not end, or a completion that `handoff_complete` cannot make.
-  Its fix is in Legion's code, so take the three steps above. Tell your own tree's architect too
-  where a stop rule of `skill://legion-worker` says so.
+  Its fix is in Legion's code, so take the three steps above. Tell the architect that owns your
+  issue too where a stop rule of `skill://legion-worker` says so.
 - Search first (`skill://dispatch-first`): when an open issue already tracks the problem, comment
   the evidence on that issue and send or ask nothing. When an open ask on the report issue already
   asks about it (`dispatch open-asks --project <PROJECT>` lists them), add your evidence under that
@@ -54,7 +58,7 @@ A fix you are not sure of is not step 1: take step 2 when it holds, else step 3.
 
 These issues are filed:
 
-- an architect's children of its own tree (`dispatch issue --parent`, `skill://legion-architect`)
+- an architect's children of its own issue (`dispatch issue --parent`, `skill://legion-architect`)
 - a Legion root the controller files for a clear defect no running tree owns
 - an issue a person asked the controller to file, in a direct message, in a Slack request, or in
   their answer to an ask
@@ -94,8 +98,8 @@ report issue, post the comment on your own issue. The controller files the defec
 replies under your comment with the issue it filed.
 
 You file nothing, and you wait for nothing. An architect and its own tree's workers keep their
-Envoy messages: a phase worker sends a fix its pull request cannot carry to its own tree's
-architect with `envoy_publish`, as the Completion section of its role prompt says
+Envoy messages: a phase worker sends a fix its pull request cannot carry to the architect that
+owns its issue with `envoy_publish`, as the Completion section of its role prompt says
 (`packages/daemon/internal/prompts/roles/mechanics/headless.md`). A production check's recorded
 result names your comment, `dispatch://<KEY>/comment/<id>`, and the `fail` that records it closes
 the check, so that look names no next look of its own.
@@ -115,12 +119,12 @@ done`, and Dispatch refuses the ask with `409 ISSUE_CLOSED`), open the ask yours
 of these that holds:
 
 1. **Your own issue is open:** ask on your own issue, the evidence posted there as a comment
-   first. Then publish the ask's reference to your tree's architect (`skill://legion-worker`,
-   *Stop rules*). An architect holds its own. The architect holds your issue's
-   acceptance until a controller has taken the ask (`skill://legion-architect`, "Acceptance and the
-   merge"). That hold is what keeps the ask readable: an open ask on a closed issue drops out of
-   the controller's own listing (`asks.go`'s `listOpenAsks` takes `i.closed_at is null`), so an
-   issue that closed over one hides it for good.
+   first. Then publish the ask's reference to the architect that owns your issue, the one your
+   `Legion addressing` line names (`skill://legion-worker`, *Stop rules*). A root's architect
+   holds its own ask. The architect holds your issue's acceptance until a controller has taken the
+   ask (`skill://legion-architect`, "Acceptance and the merge"). That hold is what keeps the ask
+   readable: an open ask on a closed issue drops out of the controller's own listing (`asks.go`'s
+   `listOpenAsks` takes `i.closed_at is null`), so an issue that closed over one hides it for good.
 2. **Your own issue is closed too** (Dispatch refuses the ask `409 ISSUE_CLOSED`, as on a
    production check): put the report issue back in reach yourself, with the `dispatch` commands
    below, and ask there. Never `legion({op: "set_status"})`, which the controller's report steps

@@ -71,8 +71,8 @@ for a parent, the open children beneath it that children-first holds it for. The
 summary prints the same list as its `blocked <KEY> on <KEYS>` lines, and `legion state` prints it
 as `blocked on Dispatch links:`.
 A link's wait ends when each blocker reaches `done` (a person's close, or the blocker's own merge) or its
-link is taken off (by a person or the tree's architect), and a children-first wait ends when the
-last open child leaves the workflow: name the waits in the day's report and
+link is taken off (by a person or an architect of the tree), and a children-first wait ends when
+the last open child leaves the workflow: name the waits in the day's report and
 take nothing for them.
 
 `held`, when present, is `[{issue, reason, heldBy?}, …]`: every issue the daemon's record holds
@@ -109,13 +109,16 @@ handler refuses a fact of another generation.
 So read the issue's record for every entry rather than taking its architect as told:
 `read_state`'s `issues.<KEY>` gives its phase and each role's claim, and says whether the worker
 has moved since the tick was queued.
-Where the architect of that issue is itself a claim that is not answering, a notice sent to it
-reaches nobody and the work stands still. When the tree's architect claim reads `failed`
+Where the architect that owns that issue is itself a claim that is not answering, a notice sent to
+it reaches nobody and the work stands still. That architect is the issue's own while its claim
+holds its role, else the nearest one above it whose claim holds its role, else the root's. A
+failed claim holds no role, so a notice passes over a failed architect of a child and goes on up
+the tree. When the tree's architect claim reads `failed`
 (`issues.<ROOT>.architect.state`, `<ROOT>` being the silent issue's `tree`), act as the
 `worker-died` section below says, with `<ROOT>` as its `<KEY>`: restart the tree when you find no
 cause or its cause is gone, and otherwise ask the person whether to park it, with no relaunch
-while the cause stays. When its claim does not read `failed` and the Envoy registry shows its
-session gone, `fresh_session` on that architect.
+while the cause stays. When the claim of the architect that owns the issue does not read `failed`
+and the Envoy registry shows its session gone, `fresh_session` on that architect.
 Name each silent issue in the day's report, with its role and the length of its silence.
 
 ## `tree-stalled on <KEY>` (`{kind: "tree-stalled", reason}`)
@@ -179,7 +182,7 @@ A root whose own architect is not taking the work the daemon states it is owed.
 
 - "the architect's claim cannot be reached": the claim is failed or retired and no start of the root's run is the daemon's next move for it, or the root has no architect claim at all, no start of one was queued in the last ten minutes, and the work of its entry has stood that same bound.
   A start the outbox is running is that next move, and so is a start queued in the last ten minutes unless it has already run against the claim and left it failed or retired.
-  While such a start will relaunch a failed or retired claim, the daemon raises no such wake, because that start resumes the session the claim kept.
+  While such a start will relaunch a failed or retired claim, the daemon raises no such wake, because that start brings the claim back, in the session it kept, or in a new one once supervise's `forgetSession` has dropped that.
   The claim reads failed or retired while the outbox runs that start, until the run relaunches it.
   A start that has run against the claim and left it failed or retired, which the daemon retries on its backoff, does not hold the wake back, and neither does one that has stood owed for longer than ten minutes.
   A root waiting on a person raises it as any root does, and its reason then says that the root waits: the daemon queues the next start of its architect only when that wait is answered.
@@ -219,7 +222,7 @@ For the second arm, read the root's architect claim in `read_state` too.
 A `failed` or `retired` claim this wake names has no start that will relaunch it: no start of its run was queued in the last ten minutes, or the one the queue holds has run against it and left it as it is, which the daemon retries on its backoff.
 It takes nothing the daemon sends.
 `fresh_session` on it, with the root's key as the issue and `architect` as the role, starts it again.
-When the reason says the root waits on a person, take no `fresh_session` while it waits, since the start the answer queues relaunches the session the claim kept, and `fresh_session` would discard it.
+When the reason says the root waits on a person, take no `fresh_session` while it waits, since the start the answer queues relaunches the session the claim kept, or a new one once supervise's `forgetSession` has dropped that, and `fresh_session` would discard the kept one.
 Name that root in the day's report with what it waits on (`issues.<KEY>.waitingOn`: the ask, or the version of its gate), so a person knows the tree has no architect that can run until they answer.
 That wake is the arm's one wake of the root's run: the daemon marks the arm told for the run, and the answer starts no new run, so it does not tell you again when the wait is answered or when the start the answer queues fails against the claim.
 So at each `tick` after `issues.<KEY>.waitingOn` is gone, read `issues.<KEY>.architectStalls`, which lists an arm whether or not you were told of it, and when it lists `claim-unreachable`, take `fresh_session` on that claim as for any other claim of this arm.
@@ -231,17 +234,19 @@ For the third, decide what the time means — a tree whose spec is long is worki
 
 ## `parked-decision on <KEY>` (`{kind: "parked-decision", decision, root, ref, actor, version?, reason?}`)
 
-A person's spec decision, or answer, resolution or reply on an ask, on a tree Legion is not
-running, which nobody inside the tree heard. The payload names the decision, the tree's `root`,
-the decision's Dispatch `ref`, the person (`actor`), and a spec decision's `version` and a changes
-request's `reason`. Decide it as `skill://legion-controller/references/parked-decisions.md#deciding`
-says.
+A person's decision that nobody inside its tree heard: a spec decision on a tree Legion is not
+running, or on a tree whose root architect's claim has failed, retired or is not supervised, or an
+answer, resolution or reply on an ask of a tree Legion is not running. The payload names the
+decision, the tree's `root`, the decision's Dispatch `ref`, the person (`actor`), and a spec
+decision's `version` and a changes request's `reason`. Decide it as
+`skill://legion-controller/references/parked-decisions.md#deciding` says.
 
 ## `held on <KEY>` (`{kind: "held", phase, reason: "escalated", escalation?}`)
 
-The daemon sends you a hold only when the tree's architect escalated it: a phase worker's
-launches or prompts ran out, and the architect handed the held issue to you. A hold that the
-architect has not escalated is the architect's to retry or escalate, and does not come to you.
+The daemon sends you a hold only when the architect that owns the issue (a child's own architect
+while it holds its role) escalated it: a phase worker's launches or prompts ran out, and the
+architect handed the held issue to you. A hold that the architect has not escalated is the
+architect's to retry or escalate, and does not come to you.
 Check that the issue's `phase` is `held` and that `issues.<KEY>.holdReason` is `escalated`, then
 handle it as an escalation (`skill://legion-controller/references/escalation.md`). A held issue
 whose tree lingers (the time after its root closes when a reopen resumes it) or is closed waits
@@ -407,19 +412,23 @@ escalated hold above says.
 
 ## `worker-died on <KEY>` (`role: "architect"`)
 
-The tree's architect ran out of launches or prompts, and the daemon relaunches nothing. Every other
-notice of the tree goes to that architect, so nobody inside the tree can act. The daemon sends you
-this wake only while the root's `phase` is not `done`: a root at `done` is parked, lingers or is
-closed, and its failed architect needs nothing from you. Check that
-`issues.<KEY>.architect.state` is `failed`. When the root's `phase` reads `done` by the time you
-read it, the tree is already parked: do nothing (a failed architect reads `failed` until the tree
-closes). Otherwise look for the cause. `issues.<KEY>.architect.failure` holds the record the
-`held` wake above describes. Read after it an open `capabilities` row whose `detail` names the
-architect's session, or the architect's last message on the root issue. When you find none, or it
-is gone, restart the tree
-(`set_status` the root to `backlog`, then, in the same turn, to `todo`: a new generation whose
-architect starts with fresh budgets). That pair is a restart and not a park: the daemon re-admits
-only a root whose tree lingers or is done, so the `backlog` write is how a restart reaches `todo`.
+The root's architect ran out of launches or prompts, and the daemon relaunches nothing. This wake
+comes for a root's architect alone: when a child's own architect fails, the daemon tells the
+architect above that child, and the child's next phase start starts it again. A child's own
+architect that holds its role still takes the notices of its child and of the issues under it,
+but for the child's own `child-status` and `child-closed` and a `worker-died` or `worker-stalled`
+of that architect. Every other notice of the tree goes to the failed architect, so nobody inside
+the tree can act on those. The daemon sends you this wake only while the root's `phase` is not
+`done`: a root at `done` is parked, lingers or is closed, and its failed architect needs nothing
+from you. Check that `issues.<KEY>.architect.state` is `failed`. When the root's `phase` reads
+`done` by the time you read it, the tree is already parked: do nothing (a failed architect reads
+`failed` until the tree closes). Otherwise look for the cause. `issues.<KEY>.architect.failure`
+holds the record the `held` wake above describes. Read after it an open `capabilities` row whose
+`detail` names the architect's session, or the architect's last message on the root issue. When
+you find none, or it is gone, restart the tree (`set_status` the root to `backlog`, then, in the
+same turn, to `todo`: a new generation whose architect starts with fresh budgets). That pair is a
+restart and not a park: the daemon re-admits only a root whose tree lingers or is done, so the
+`backlog` write is how a restart reaches `todo`.
 When the cause stays, the tree stays admitted and keeps working ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)), because a relaunch would fail
 the same way. Ask the person whether to park it, as
 [Ask whether to park a tree](#ask-whether-to-park-a-tree) says, with the architect's cause as
@@ -451,8 +460,9 @@ notice only for that end. Every other end of a stall leaves the architect's task
 fails nothing, and the architect alone is told of it. The architect then opens the finding ask for
 a stop the runtime did not confirm and for stalls that come again and again
 (`skill://legion-architect/references/wake-routing.md`, its `worker-stalled` row), so you open
-none for those ends. You get this one because every other notice of the tree goes to that
-architect, and nobody inside the tree is left to read it.
+none for those ends. You get this one only for a tree's own architect, because no architect stands
+above it to read this one, and that architect is told on its issue as well. A stall of a child's
+own architect goes to the architect above that child.
 
 The `reason` is the record the daemon read: when the agent last stepped and how long ago that was,
 the bound it passed, when the turn began, and the last call the daemon saw, with its tool, its call
@@ -509,9 +519,10 @@ A second notice after you compacted that claim is how you see that it is still r
 Read the role's claim in `read_state`. Name the run and its model in the day's report. When the
 reason names no status, the turns ended on nothing but a message, which is what a content filter
 leaves: the session has already stepped down its model chain, so a run that long says the whole
-chain refuses the same work. The daemon sends the same notice to the issue's architect, which is
-who can narrow the work, except for a run of an architect's own claim, which comes to you alone.
-Send the architect nothing either way. Re-admit nothing and park nothing, because the task is not
+chain refuses the same work. The daemon sends the same notice to the architect that owns the
+issue, which is who can narrow the work, and a run of a child's own architect's claim to the
+architect above that child; a run of the tree root's architect's own claim comes to you alone.
+Send no architect anything either way. Re-admit nothing and park nothing, because the task is not
 lost and the session still runs.
 
 One claim that stays stuck after that is yours to act on, and which door you use depends on what
@@ -525,20 +536,23 @@ one held — what the worker learned of its issue, and what it had not yet pushe
 and cures nothing in a provider outage, where the next session's turns are refused as the last
 one's were.
 
-`compact` is the wrong door for a claim no process stands behind, which is a role that died: it
-refuses such a claim `CLAIM_NOT_RUNNING` and names `fresh_session`, because it has no agent to
-ask. Ask for `fresh_session` there. It is the one way back for a dead role, a dead architect of
-your project included: it suspends the claim where your request arrives, leaves the session that
-claim recorded behind, and starts the claim again with the task its dead turn held. Both doors
-read the claim's process at the moment you ask, not the daemon's memory of an older report,
-which a daemon restart forgets. A refusal of `CLAIM_IN_A_TURN` is a claim whose process that
-read found running, or one whose session is being compacted. A claim whose process the runtime
-would not answer for, one that records no process to read, and one that moved under your
-request and that a second read finds no longer working or gone once more are refused
-`CLAIM_UNSETTLED`, each left exactly as your request found it, so ask again once the runtime
-answers; a claim that moved is otherwise answered as that second read finds it. A claim under a
-relaunch the wake pacing parks is refused `CLAIM_UNSETTLED` too. A claim the operator's own
-suspension holds, landed or held for its turn, is refused `SUSPENDED_BY_OPERATOR` by
+`compact` is the wrong door for a claim no process stands behind, which is a role that died:
+it refuses such a claim `CLAIM_NOT_RUNNING` and names `fresh_session`, because it has no agent
+to ask. Ask for `fresh_session` there. Of your two doors, it is the one that brings back a dead
+role, a dead architect of your project included: it suspends the claim where your request arrives,
+leaves the session that claim recorded behind, and starts the claim again with the task its dead
+turn held. When a child's own architect's claim has failed, the daemon also starts it again at
+its child's next phase start. That start relaunches the session the claim recorded, or a new one
+once supervise's `forgetSession` has dropped it. Both doors read
+the claim's process at the moment you ask, not the daemon's memory of an older report, which a
+daemon restart forgets. A refusal of `CLAIM_IN_A_TURN`
+is a claim whose process that read found running, or one whose session is being compacted. A
+claim whose process the runtime would not answer for, one that records no process to read, and
+one that moved under your request and that a second read finds no longer working or gone once more
+are refused `CLAIM_UNSETTLED`, each left exactly as your request found it, so ask again once the
+runtime answers; a claim that moved is otherwise answered as that second read finds it. A claim
+under a relaunch the wake pacing parks is refused `CLAIM_UNSETTLED` too. A claim the operator's
+own suspension holds, landed or held for its turn, is refused `SUSPENDED_BY_OPERATOR` by
 `fresh_session` before any read of its process, and `compact` refuses it as above:
 `CLAIM_NOT_RUNNING` where that suspension landed, and `CLAIM_IN_A_TURN` or `CLAIM_UNSETTLED`
 where it is held (`skill://legion-controller/references/operations.md#a-claim-the-operator-holds`).

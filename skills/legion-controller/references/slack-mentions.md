@@ -151,14 +151,18 @@ these that fits.
   person's request says to wait or puts it out of scope. That request is the request itself, the
   deployment instructions, or a line of the weekly plan that names the person's request behind it.
 - **Something an issue's architect owns.** A question about a tree's design, a change of direction,
-  a decision only the tree's architect can make about an issue Legion runs. Find the tree: follow
-  `Links:` up through each `child_of` parent with `dispatch read` until you reach the issue
-  `read_state` records with an `architect`. Write the person's words, with the channel id and
-  `thread_ts` you reply on, as a Dispatch comment on the issue they are about, with
-  `--mention 'role:<token>'` and the token of `<ROOT>`'s architect, as the skill's Rules name it
-  (`skill://legion-controller/SKILL.md#rules`). Dispatch delivers the mention and retries it.
-  Reply in the thread with that comment's link, and say that the architect that owns `<ROOT>`
-  answers on the issue. Never invent a role token.
+  a decision only an architect of its tree can make about an issue Legion runs. Find the issue:
+  follow `Links:` up through each `child_of` parent with `dispatch read` until you reach an issue
+  `read_state` records, `<KEY>`. Its `issues.<KEY>.tree` is `<ROOT>`, the tree's root. It goes to
+  the nearest architect that runs on the chain from `<KEY>` up to `<ROOT>`: the first issue of
+  that chain, from `<KEY>` up, whose `issues.<ISSUE>.architect.locator.claim` is there. Write the
+  person's words, with the channel id and `thread_ts` you reply on, as a Dispatch comment on the
+  issue they are about, with `--mention 'role:<token>'` and that claim as the token; when no issue
+  of that chain has a locator, no architect of it is running, and the token is that of `<ROOT>`'s
+  architect as the skill's Rules build it (`skill://legion-controller/SKILL.md#rules`). Dispatch
+  delivers the mention and retries it. Reply in the thread with that comment's link, and say that
+  the architect it mentions answers on the issue, or, when none is running, that none is and what
+  `read_state` shows for the tree. Never invent a role token.
 - **Anything else** (a greeting, a question about Legion itself): answer it briefly in the thread.
 
 A request to approve a design is answered as `skill://legion-controller/references/wakes.md`

@@ -164,9 +164,10 @@ type workflowRuntime struct {
 	// under recoveringMu. silenced is, by the same repository, each issue whose apply said nothing
 	// because the repository was unread (noteUnread), which the repository's recovery takes into its
 	// scope whatever the issue resolves to by then; releaseWaits is, by repository, each child a
-	// release_children left unrecorded on it (awaitRecovery), whose tree's architect the recovery
-	// tells of each it did not record; recoveryHeldSince is when a recovery's listing was first
-	// found held with waits to tell (zero for none), so a hold past recoveryHoldBound tells them.
+	// release_children left unrecorded on it (awaitRecovery), whose architect the recovery tells
+	// of each it did not record (tellReleaseWaits); recoveryHeldSince is when a recovery's listing
+	// was first found held with waits to tell (zero for none), so a hold past recoveryHoldBound
+	// tells them.
 	// recheckAfter is refreshOnMappingChange's wait before a read of its own, time.After when nil;
 	// a test sees each wait through it.
 	repositories      *repositories
@@ -1382,7 +1383,7 @@ func (w *workflowRuntime) claimDurableState(c supervise.Claim, state supervise.C
 //
 // The ready carries the sentence the claim's untold record of what its last let-go ended is told
 // in (supervise.RelaunchSentence, intake.ClaimReady.Relaunch), read from the claim the ready
-// wrote, so a root architect's catch-up opens with it (workflow's QueueCatchUp). A record that
+// wrote, so an architect's catch-up opens with it (workflow's QueueCatchUp). A record that
 // still tells here beside an abandoned session still to tell is one of the fresh session's own
 // processes (supervise's forgetSession), and the catch-up opens with its sentence as it would for
 // any claim. The boot's replay of a ready reads the stored claim, whose record is persisted, and
@@ -1928,7 +1929,9 @@ func (w *workflowRuntime) applySessionFact(c supervise.Claim, id string, fact in
 // architect's. The controller is told in a row of its own, since compacting or refreshing the
 // claim's session is the controller's; admission's own check stops a second controller notice
 // while one still waits in the outbox (TellController). The two rows are one transaction. A run of
-// an architect's own claim writes the controller's row alone (tellsArchitect). The
+// the tree root's architect's own claim writes the controller's row alone (tellsArchitect), and a
+// run of a child's own architect's claim writes its notice row for the architect above that child
+// (record.NoticeStartsAtParent). The
 // machine calls it inside its own decision, so the notices are queued on a goroutine of their
 // own, bounded by readyReleaseTimeout; a failure is logged and is not the daemon's end, since the
 // run goes on and the task is sent again either way.
@@ -1937,12 +1940,14 @@ func (w *workflowRuntime) providerErrorRunReached(c supervise.Claim, reason stri
 		return
 	}
 	notice := record.Notice{Kind: record.ProviderErrorsNotice, Role: c.Role, Reason: reason}
-	// An architect's own run tells no architect. The architect copy would reach the failing claim
-	// itself: the notice executor routes a notice to the architect that owns the issue, and a
-	// running architect owns its own issue (owningArchitect). Waking a session whose provider keeps
-	// refusing it adds one more failing turn, and compacting or refreshing that session is the
-	// controller's work, which the controller's notice already carries.
-	tellsArchitect := c.Role != claim.RoleArchitect
+	// The tree root's architect's own run tells no architect. The architect copy would reach the
+	// failing claim itself, since no architect stands above the root (OwningIssue's walk from the
+	// root ends at the root). Waking a session whose provider keeps refusing it adds one more
+	// failing turn, and compacting or refreshing that session is the controller's work, which the
+	// controller's notice already carries. A child's own architect's run does tell an architect:
+	// the notice's walk starts at the child's parent (record.NoticeStartsAtParent), so the
+	// architect above the child hears it, which is who can narrow that child's work.
+	tellsArchitect := c.Role != claim.RoleArchitect || !claim.IsTreeRoot(c.Issue, c.Tree)
 	go func() {
 		// This goroutine runs beside the machine that started it and every other, so it takes a
 		// hold mark of its own (store.ForConcurrentWorker). The notices are their own transaction,
