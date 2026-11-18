@@ -81,12 +81,22 @@ func TestAPersonAndTheirProvedSessionAreOneNodeAndSeeOnlyTheirOwn(t *testing.T) 
 	proved := rig.created(t, "the proved session's comment", rig.serve(caller.presenting(t, http.MethodPost,
 		"/api/v1/issues/"+issue+"/comments", token, map[string]any{"body": "Written by the session the broker proved."})))
 	// The proved session's comment is the first write that names alice at all, and it makes her
-	// a person of the store beside the alias it ties her session to (graphstore.AuthorFacts): her
-	// page is a page another person can open before she has written anything herself, and not
-	// the 404 of a login the store holds no person for.
-	if early := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/people/"+brokerTestPerson+"/nodes", nil, identityTwin); early.Code != http.StatusOK {
-		t.Fatalf("%s reading %s's page once only %s's proved session has written: status=%d body=%s, want 200",
-			identityTwin, brokerTestPerson, brokerTestPerson, early.Code, early.Body.String())
+	// a person of the store beside the alias it ties her session to (graphstore.AuthorFacts). A
+	// thing a session wrote stays that session's, so the comment is on no person's page
+	// (personNodesTied), and alice holds no node another person may see yet. Her page then
+	// answers another person exactly what a login nobody holds answers, byte for byte, so it
+	// tells nobody that she exists or wrote anything (R15 of dispatch://INFRA-1149, which an
+	// earlier reading of this test answered 200); it answers alice herself 200.
+	early := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/people/"+brokerTestPerson+"/nodes", nil, identityTwin)
+	nobody := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/people/a-login-nobody-holds/nodes", nil, identityTwin)
+	if early.Code != nobody.Code || early.Body.String() != nobody.Body.String() ||
+		early.Header().Get("Content-Type") != nobody.Header().Get("Content-Type") {
+		t.Fatalf("%s reading %s's page once only %s's proved session has written: status=%d body=%s, want what a login nobody holds answers, status=%d body=%s",
+			identityTwin, brokerTestPerson, brokerTestPerson, early.Code, early.Body.String(), nobody.Code, nobody.Body.String())
+	}
+	if own := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/people/"+brokerTestPerson+"/nodes", nil, brokerTestPerson); own.Code != http.StatusOK {
+		t.Fatalf("%s reading her own page once only her proved session has written: status=%d body=%s, want 200",
+			brokerTestPerson, own.Code, own.Body.String())
 	}
 	byPerson := rig.created(t, "the person's comment", dispatchRequest(t, rig.handler, http.MethodPost,
 		"/api/v1/issues/"+issue+"/comments", map[string]any{"body": "Written by the person herself."}, brokerTestPerson))

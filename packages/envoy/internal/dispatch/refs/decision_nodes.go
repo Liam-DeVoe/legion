@@ -770,7 +770,7 @@ func IndexDecisionNodes(ctx context.Context, tx pgx.Tx, artifactID string, versi
 		return nil, graphstore.Uncaused{}, err
 	}
 	write.Tuples = append(write.Tuples, parents...)
-	moved, links, err := replaceBlockRefs(ctx, tx, artifactID, refKey, version, versionAt, writer, false, facts.typedPairs(), facts.typedScope())
+	moved, links, err := replaceBlockRefs(ctx, tx, artifactID, refKey, version, versionAt, writer, false, false, facts.typedPairs(), facts.typedScope())
 	if err != nil {
 		return nil, graphstore.Uncaused{}, err
 	}
@@ -902,7 +902,7 @@ func IndexOpenedAskTies(ctx context.Context, tx pgx.Tx, artifactID string, versi
 		}
 	}
 	scope := &pairScope{kinds: []string{TupleShaped}, blocks: slices.Sorted(maps.Keys(opened))}
-	moved, tuples, err := replaceBlockRefs(ctx, tx, artifactID, facts.document.refKey, version, at, facts.document.writer, false, pairs, scope)
+	moved, tuples, err := replaceBlockRefs(ctx, tx, artifactID, facts.document.refKey, version, at, facts.document.writer, false, false, pairs, scope)
 	if err != nil {
 		return nil, graphstore.Uncaused{}, err
 	}

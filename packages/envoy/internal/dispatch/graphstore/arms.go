@@ -262,13 +262,15 @@ const (
 	do nothing`
 )
 
-// nodeArrays are the eleven arrays a node write binds, in nodeColumns' order: one spelling of the
-// types, read by the arm the publisher's record splices in and by writeNodes alike. The project
-// and the parties are bound as text, null for a node that carries none, and the parties as the
-// one value their attribute carries (PartiesValue), which nodeBound splits into the column's
-// array.
+// nodeArrayTypes are the types of the eleven arrays a node write binds, in nodeColumns' order,
+// and nodeArrays their parameter list: one spelling of the types, read by the arm the
+// publisher's record splices in and by writeNodes alike. The project and the parties are bound
+// as text, null for a node that carries none, and the parties as the one value their attribute
+// carries (PartiesValue), which nodeBound splits into the column's array.
+var nodeArrayTypes = []string{"text", "text", "text", "text", "text", "jsonb", "timestamptz", "jsonb", "bigint", "text", "text"}
+
 func nodeArrays(first int) string {
-	return arrayList(first, "text", "text", "text", "text", "text", "jsonb", "timestamptz", "jsonb", "bigint", "text", "text")
+	return arrayList(first, nodeArrayTypes...)
 }
 
 // nodeBound is nodeColumns as a node write reads them off the arrays it binds (nodeArrays): each

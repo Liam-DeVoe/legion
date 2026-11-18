@@ -52,10 +52,11 @@ var eventRateQuery = fmt.Sprintf(`select type, count(*) / %d.0 as per_day
 	from events where created_at > %s group by type order by 2 desc`, sizingWindowDays, sizingWindow)
 
 // blockIndexBacklogQuery is what the block-index reconciliation still owes documents: how many
-// hold no indexed version (document_block_versions.version null) or hold the backfill's mark
-// (store_owed_at), and when the oldest of those debts was incurred. The server's own tick reads
-// the same two figures and logs them (docs.ReconcileBlockIndex); this is the read for somebody
-// holding the database and not the log.
+// hold no indexed version (document_block_versions.version null) or hold this build's own mark
+// (store_owed_at, which the backfill and every debt this build owes beside the null version set),
+// and when the oldest of those debts was incurred. The server's own tick reads the same two figures
+// and logs them (docs.ReconcileBlockIndex); this is the read for somebody holding the database and
+// not the log.
 //
 // Nothing dates a debt, so the rows are dated by the write that owed them, which is what
 // refs.OwedBlockIndexDebts derives; the tick's own read of the same backlog derives it from
