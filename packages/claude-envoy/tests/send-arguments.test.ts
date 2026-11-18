@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import { chmodSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { resendCommand } from "../src/send-arguments"
 
 test("parses a target session followed by the message words", async () => {
   const { parseSendArguments } = await import("../src/send-arguments")
@@ -28,6 +29,35 @@ test("takes the key an unconfirmed send named, ahead of the target", async () =>
     message: "--idempotency-key x",
   })
   expect(() => parseSendArguments(["--idempotency-key"])).toThrow()
+})
+
+// h2 (the review of 2fa6fbf7cf): a resend carries ENVOY_URL as it was set, and the scrub of held
+// secrets takes out only a held value of 10 characters or more, so a URL whose user info is
+// shorter printed whole. A URL setting prints only where it is a plain http(s) URL with no place
+// a credential can sit (`isCleanUrl`), as every client names a configured URL; otherwise no
+// command is printed, and no part of the URL.
+test("a resend whose URL setting carries user info of any length prints no command", () => {
+  const resend = {
+    script: "envoy-send.ts",
+    cwd: "/work",
+    idempotencyKey: "k-1",
+    targetSession: "ses_receiver",
+    message: "hello",
+  }
+  for (const url of [
+    "http://u:p@127.0.0.1:8080",
+    "http://u@127.0.0.1:8080",
+    "http://:p@127.0.0.1:8080",
+    "http://user:p@ssw0rd",
+    "http://127.0.0.1:8080/?token=x",
+  ]) {
+    const printed = resendCommand({ ...resend, settings: [["ENVOY_URL", url]] })
+    expect(printed, url).toEqual({ unprinted: "ENVOY_URL" })
+  }
+  expect(resendCommand({ ...resend, settings: [["ENVOY_URL", "http://127.0.0.1:8080"]] })).toEqual({
+    command:
+      "cd /work && ENVOY_URL=http://127.0.0.1:8080 bun envoy-send.ts --idempotency-key k-1 ses_receiver hello",
+  })
 })
 
 /** The zsh this row runs the resend command under: `LEGION_TEST_ZSH`, else the one on PATH.
@@ -65,10 +95,9 @@ const AWKWARD = [
 /** Runs the resend command each awkward word makes through `argv`'s shell, and checks the stand-in
  *  `bun` got exactly the words the send had. */
 async function sameWordsUnder(shell: string, argv: (command: string) => string[]): Promise<void> {
-  const { resendCommand } = await import("../src/send-arguments")
   const bin = standInBun()
   for (const word of AWKWARD) {
-    const command = resendCommand({
+    const printed = resendCommand({
       script: "=envoy-send.ts",
       cwd: bin,
       settings: [["ENVOY_CONFIG_FILE", `=${word}`]],
@@ -76,7 +105,8 @@ async function sameWordsUnder(shell: string, argv: (command: string) => string[]
       targetSession: word || "ses_receiver",
       message: word,
     })
-    const run = Bun.spawnSync(argv(command), {
+    if (!("command" in printed)) throw new Error(`no command was built for ${JSON.stringify(word)}`)
+    const run = Bun.spawnSync(argv(printed.command), {
       env: { PATH: `${bin}:${process.env["PATH"] ?? ""}` },
       stdout: "pipe",
       stderr: "pipe",

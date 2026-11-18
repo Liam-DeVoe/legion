@@ -15,7 +15,11 @@ body: |-
   and `ready({ waitForReady: true })` and a session switch's follow for 20 s, which ride out a
   first trade's 503 and then fail naming it. A session switch ends every wait for the session
   before. The loop logs as the Go client does: a pending
-  registration once, every 30 minutes and when it ends; any other failure at each wait.
+  registration once, every 30 minutes and when it ends; any other failure at each wait. Where no
+  caller gives it a `log`, its line goes to `console.warn` through the held-secret scrub. A closed
+  client answers `TokenClientClosedError`, and a NATS line prints it whole, as it does a machine
+  whose broker route went away between two trades; both printed as an error whose message is
+  withheld.
   A request's credential waits the request's deadline less a reserve of `min(1 s, half)`: 4 s of
   a listener call's 5 s attempt, and a Dispatch call's client deadline (`DispatchClient`'s new
   `deadlineMs` option, 60 s when absent) less 1 s. A wait that ends with a live token in hand

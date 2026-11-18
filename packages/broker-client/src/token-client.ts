@@ -16,12 +16,14 @@
 // while that token is live and the broker is merely unreachable, busy (its 429), refusing this
 // moment's proof (`invalid_dpop_proof`, `use_dpop_nonce`) or holding no registration for this
 // pod's session yet (`pod_session_not_registered:`), or the source of the identity could not be
-// read this once. With nothing live in hand it waits out a missing registration, trading again
-// until the registration lands or its caller stops waiting. It throws once the token in hand has
-// run out, or once the identity has been refused in a way no retry can cure (`isFinalRefusal`): by
-// the broker, or by the issuer that no longer honours a person's sign-in. So a caller that writes
-// only with what `token()` gave it never writes with no identity, nor with one that has been
-// ended.
+// read this once. With nothing live in hand, a caller that fails fast (the default) is told the
+// retry loop's last failure at once, and one that waits for ready, or for a missing registration,
+// waits until a token lands or its own signal ends; it is then told what the last trade came to,
+// or that the trade still out has not answered (`TradeUnansweredError`). It throws once the token
+// in hand has run out, once the client is closed (`TokenClientClosedError`), or once the identity
+// has been refused in a way no retry can cure (`isFinalRefusal`): by the broker, or by the issuer
+// that no longer honours a person's sign-in. So a caller that writes only with what `token()`
+// gave it never writes with no identity, nor with one that has been ended.
 
 import { holdSecret, holdUrlUserinfo, scrub } from "@legion/contracts/held-secrets";
 import { errorClass, isHttpUrl, urlForText } from "@legion/contracts/log-text";
@@ -44,6 +46,7 @@ import {
   BrokerTradeFailedError,
   isFinalRefusal,
   RegistrationPendingError,
+  TokenClientClosedError,
   TradeRetryingError,
   TradeUnansweredError,
 } from "./token-errors";
@@ -222,7 +225,8 @@ export interface BrokerTokenClientOptions {
   /** A number in [0, 1) for each wait's jitter; `Math.random` unless a test replaces it. */
   readonly random?: (() => number) | undefined;
   /** Where the retry loop says, at each wait, what its last trade came to and when it trades
-   *  again; `console.warn` unless a caller replaces it. */
+   *  again; `console.warn` of the line scrubbed of every held secret
+   *  (`@legion/contracts/held-secrets`) unless a caller replaces it. */
   readonly log?: ((line: string) => void) | undefined;
   /** The fetch every call goes through; the global one by default. The DPoP proof is signed
    *  around it, so a caller passing its own keeps whatever that one does. */
@@ -331,7 +335,7 @@ export class BrokerTokenClient {
     this.#now = options.now ?? Date.now;
     this.#attemptMs = options.attemptMs ?? TRADE_ATTEMPT_MS;
     this.#sleep = options.sleep ?? sleep;
-    this.#log = options.log ?? console.warn;
+    this.#log = options.log ?? ((line) => console.warn(scrub(line)));
     this.#fetch = options.fetch ?? fetch;
     this.#random = options.random ?? Math.random;
   }
@@ -363,11 +367,15 @@ export class BrokerTokenClient {
    * - A refusal no trade cures ({@link isFinalRefusal}) ends the loop: it drops the token in hand
    *   and answers every caller with the refusal, and a caller arriving before the schedule's next
    *   slot is answered the same, with no trade.
-   * - A caller whose `signal` ends first stops waiting, told {@link RegistrationPendingError}
-   *   where the last trade found the pod's session not registered yet, {@link TradeRetryingError}
-   *   where it failed otherwise, and the signal's own reason where no trade has ended yet. The
-   *   loop goes on. A caller that passes no signal waits until a token lands, a refusal ends the
-   *   loop or, failing fast, a trade fails.
+   * - A caller whose `signal` ends first takes the token in hand where it is still live, and is
+   *   otherwise told {@link RegistrationPendingError} where the last trade found the pod's session
+   *   not registered yet, {@link TradeRetryingError} where it failed otherwise,
+   *   {@link TradeUnansweredError} where no trade has ended yet but one is out, and the signal's
+   *   own reason where no trade is out at all (`#stopped`). The loop goes on. A caller that passes
+   *   no signal waits until a token lands, a refusal ends the loop or, failing fast, a trade
+   *   fails.
+   * - A closed client ({@link close}) answers a caller with nothing live in hand
+   *   {@link TokenClientClosedError}, and trades no more.
    */
   async token(signal?: AbortSignal, options: TokenCallOptions = {}): Promise<BrokerToken> {
     const waitForReady = options.waitForReady === true;
@@ -391,7 +399,6 @@ export class BrokerTokenClient {
     return await this.#joined(signal, waitForReady);
   }
 
-  /** Tells every caller waiting on the loop that `which` picks its answer, once. */
   #tell(answer: (waiter: Waiter) => void, which: (waiter: Waiter) => boolean = () => true): void {
     const waiters = [...this.#waiters].filter(which);
     for (const waiter of waiters) this.#waiters.delete(waiter);
@@ -449,7 +456,7 @@ export class BrokerTokenClient {
    *  any later caller with no live token in hand, is told the client is closed, and nothing is
    *  traded again. */
   close(): void {
-    this.#closed.abort(new Error("the secrets broker client was closed, and trades no more"));
+    this.#closed.abort(new TokenClientClosedError());
   }
 
   /**
@@ -551,9 +558,10 @@ export class BrokerTokenClient {
    * Reads a trade that failed, `timedOut` where its own time ran out, and says whether the loop
    * trades again. A refusal no trade cures does not: the token in hand is dropped, and the next
    * loop waits out the longer schedule's slot, answering a caller before it with the refusal.
-   * Any other failure is traded again at the next slot of its schedule, with a line saying so;
-   * callers keep waiting, except where a token in hand is still live, which they are answered
-   * with.
+   * Any other failure is traded again at the next slot of its schedule, with a line saying so: a
+   * live token in hand answers every waiting caller; otherwise a failure other than a pending
+   * registration answers a fail-fast caller `TradeRetryingError` at once, and a wait-for-ready
+   * caller waits on. Both kinds wait out a pending registration within their own signals.
    */
   #retried(error: unknown, timedOut: boolean): boolean {
     const now = this.#now();
@@ -660,8 +668,10 @@ export class BrokerTokenClient {
   async #trade(signal: AbortSignal | undefined): Promise<BrokerToken> {
     const subject = await this.#subject.read(signal);
     // Held, with the actor's and the minted token, so every line this process prints is scrubbed
-    // of them (`@legion/contracts/held-secrets`): a broker at the wrong URL can echo them.
-    holdSecret(subject.token);
+    // of them (`@legion/contracts/held-secrets`): a broker at the wrong URL can echo them. Each is
+    // held until an hour past its lapse (`heldUntil`), so a session that trades all its life holds
+    // the tokens of its last hours, not every one it ever traded.
+    holdSecret(subject.token, heldUntil(subject.token));
     const form: Record<string, string> = {
       subject_token: subject.token,
       subject_token_type: subject.tokenType,
@@ -684,7 +694,7 @@ export class BrokerTokenClient {
           cause: error,
         });
       }
-      form["actor_token"] = holdSecret(actor.token);
+      form["actor_token"] = holdSecret(actor.token, heldUntil(actor.token));
       // The same token under the type that says what it proves here: not who is asking, but which
       // box the person is asking from.
       form["actor_token_type"] =
@@ -834,11 +844,31 @@ export class BrokerTokenClient {
       }
     }
     return {
-      accessToken: holdSecret(answered.access_token),
+      // Lapsing on the real clock, which the held-secret registry forgets by.
+      accessToken: holdSecret(answered.access_token, Date.now() + seconds * 1000),
       tokenType,
       expiresAt: new Date(this.#now() + seconds * 1000),
       credentialId: typeof answered["credential_id"] === "string" ? answered["credential_id"] : "",
       credentialExpiresAt,
     };
+  }
+}
+
+/**
+ * When `token` lapses, as {@link holdSecret} holds it, on the real clock the registry forgets by:
+ * a JWT's `exp`, or now for a token whose lapse cannot be read, which is then held for the hour
+ * past the trade that sent it, the time a broker that echoes it answers within.
+ */
+function heldUntil(token: string): number {
+  const now = Date.now();
+  const payload = token.split(".")[1];
+  if (payload === undefined) return now;
+  try {
+    const { exp } = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as {
+      exp?: unknown;
+    };
+    return typeof exp === "number" && Number.isFinite(exp) ? Math.max(exp * 1000, now) : now;
+  } catch {
+    return now;
   }
 }

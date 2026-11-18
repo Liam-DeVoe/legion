@@ -566,11 +566,20 @@ fi
 # identity there; what keeps them apart is this row, which the deployment's daemon writes as it
 # starts a pod. Here the registrar account stands in for that daemon (BROKER_SERVICE_LOGINS), and
 # the body carries the pod's own broker-audience token, the one a daemon enrolls that pod with.
-# Without it the exchange below is refused invalid_grant, naming the session. ---
-if ! curl -sf -X POST "${PUBLIC_URL}/v1/oauth/exchange/pod-sessions" \
-  -H "Authorization: Bearer $(cat "$REGISTRAR_TOKEN_FILE")" \
-  -H 'Content-Type: application/json' \
-  -d "{\"pod_token\": \"$(cat "$POD_TOKEN_FILE")\", \"session\": \"$EXCHANGE_SESSION\"}" >/dev/null; then
+# Without it the exchange below is refused invalid_grant, naming the session. Both tokens reach
+# curl by file, never in an argv, which /proc shows every user: the registrar's bearer as a 0600
+# header file (`-H @file`), and the pod token read by jq itself (`--rawfile`) into a 0600 body
+# file (`--data-binary @file`), both in a directory of their own under the run's, removed after. ---
+registration="$(mktemp -d "$WORK_DIR/register.XXXXXX")"
+(umask 077 && printf 'Authorization: Bearer %s\n' "$(<"$REGISTRAR_TOKEN_FILE")" >"$registration/header")
+(umask 077 && jq -cn --rawfile p "$POD_TOKEN_FILE" --arg s "$EXCHANGE_SESSION" \
+  '{pod_token: ($p | sub("\n+$"; "")), session: $s}' >"$registration/body")
+registered=true
+curl -sf -X POST "${PUBLIC_URL}/v1/oauth/exchange/pod-sessions" \
+  -H "@$registration/header" -H 'Content-Type: application/json' \
+  --data-binary "@$registration/body" >/dev/null || registered=false
+rm -rf -- "$registration"
+if [ "$registered" != true ]; then
   echo "dev-broker: registering the exchange pod for $EXCHANGE_SESSION failed" >&2
   exit 1
 fi

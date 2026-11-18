@@ -75,9 +75,11 @@ function redactTokens(text: string, tokens: readonly string[]): string {
  * Text a gateway chose (a body, or the reason phrase) as one line of plain text safe to quote. A
  * misconfigured gateway echoes the request back, so two kinds of credential are redacted: first
  * every piece of each of the client's own `tokens`, trimmed as fetch sends them (`redactTokens`);
- * then, after scripts, styles and tags are dropped, the value after `Authorization:` (its scheme
- * kept), `Bearer` or `DPoP`. All of it runs before the cut to one line, so a cut never leaves a
- * credential's first characters behind. The text is the answerer's, and the excerpt is built on
+ * then, after scripts, styles and tags are dropped, the value of an `Authorization` or a `DPoP`
+ * header or JSON member, in any case (an `Authorization` value's scheme kept: the `DPoP` header
+ * is the proof the credential signed for that one request, which is none of `tokens`), and the
+ * value after `Bearer` or `DPoP`. All of it runs before the cut to one line, so a cut never leaves
+ * a credential's first characters behind. The text is the answerer's, and the excerpt is built on
  * the host's event loop, so only the first `EXCERPT_SCAN_LIMIT` characters are read and every
  * pattern runs in linear time: a tag holds no `<`, and a script or style block left open runs to
  * the end.
@@ -90,7 +92,7 @@ export function excerpt(text: string, tokens: Tokens): string {
   return textHead(
     plain
       .replace(
-        /(\bauthorization["']?\s*[:=]\s*["']?(?:(?:bearer|basic|digest|token|dpop)\s+)?)[^\s"'<>,;]+/gi,
+        /(\b(?:authorization|dpop)["']?\s*[:=]\s*["']?(?:(?:bearer|basic|digest|token|dpop)\s+)?)[^\s"'<>,;]+/gi,
         `$1${REDACTED}`
       )
       .replace(/(\b(?:bearer|dpop)\s+)[^\s"'<>,;]+/gi, `$1${REDACTED}`)
@@ -100,9 +102,9 @@ export function excerpt(text: string, tokens: Tokens): string {
 /**
  * `text`, an answer's body that is not what its server writes (`notWhat`, such as "Dispatch's
  * error JSON"), as an error names it: `a body that is not <notWhat> ("<excerpt>")`, one line with
- * `token` and any `Authorization` or `Bearer` value redacted (`excerpt`); `an empty body`; or,
- * where the excerpt reads no text, the body's size and that it holds none (within the first
- * `EXCERPT_SCAN_LIMIT` characters where it runs past them). Never the body whole.
+ * `tokens` and any `Authorization`, `DPoP` or `Bearer` value redacted (`excerpt`); `an empty
+ * body`; or, where the excerpt reads no text, the body's size and that it holds none (within the
+ * first `EXCERPT_SCAN_LIMIT` characters where it runs past them). Never the body whole.
  */
 export function bodyForText(text: string, tokens: Tokens, notWhat: string): string {
   const quoted = excerpt(text, tokens);

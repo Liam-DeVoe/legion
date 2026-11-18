@@ -1,3 +1,4 @@
+import { isCleanUrl } from "@legion/contracts/log-text"
 import { z } from "zod"
 
 const SendArgumentsSchema = z.tuple([z.string().min(1), z.string().min(1)]).rest(z.string().min(1))
@@ -62,11 +63,32 @@ export interface Resend {
 }
 
 /**
+ * What an unconfirmed send prints of its resend: the command, or, where a setting it carries is a
+ * URL no printed line may name, that setting's name and no command.
+ */
+export type ResendCommand = { readonly command: string } | { readonly unprinted: string }
+
+/** Whether `name` names a URL setting (`ENVOY_URL`), which prints only as `isCleanUrl` allows. */
+const URL_SETTING = /_URL$/
+
+/**
  * The command that sends the same message again under its key, to the same listener, as
  * `envoy-send` was run: `cd <cwd> && NAME=value … bun <script> --idempotency-key <key> <target>
  * <message>`. The listener drops it as a repeat if the first copy arrived.
+ *
+ * A URL setting is printed only where it is a plain http(s) URL with no place a credential can sit
+ * (`isCleanUrl`, `@legion/contracts/log-text`), the one rule every client names a configured URL
+ * by. Where one is not, such as a URL with user info of any length, no command is built, only the
+ * setting's name (`unprinted`): the scrub of held secrets takes out a held value of 10 characters
+ * or more, so a shorter user and password would print whole, and the URL with its user info taken
+ * out could still print part of it, since the parser can split such a URL otherwise than its
+ * writer meant (`https://user:p@ssw0rd` reads `ssw0rd` as the host).
  */
-export function resendCommand(resend: Resend): string {
+export function resendCommand(resend: Resend): ResendCommand {
+  const unclean = resend.settings.find(
+    ([name, value]) => URL_SETTING.test(name) && !isCleanUrl(value),
+  )
+  if (unclean !== undefined) return { unprinted: unclean[0] }
   const assignments = resend.settings.map(([name, value]) => `${name}=${shellWord(value)}`)
   const command = [
     "bun",
@@ -76,5 +98,5 @@ export function resendCommand(resend: Resend): string {
     resend.targetSession,
     resend.message,
   ].map(shellWord)
-  return `cd ${shellWord(resend.cwd)} && ${[...assignments, ...command].join(" ")}`
+  return { command: `cd ${shellWord(resend.cwd)} && ${[...assignments, ...command].join(" ")}` }
 }

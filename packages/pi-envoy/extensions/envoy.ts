@@ -219,7 +219,7 @@ import {
   withSessionAnswers,
 } from "../src/session-answers-context";
 import { sideTurn } from "../src/side-turn";
-import { startTradeBoundMs } from "../src/start-bound";
+import { followBoundMs, startTradeBoundMs } from "../src/start-bound";
 import { TypedPictures } from "../src/typed-pictures";
 import {
   MOVED_SESSION_REASON,
@@ -1186,8 +1186,8 @@ export default function envoyExtension(hostApi: PiApi): void {
     // A broker token is signed into the CONNECT itself, so a live one is taken before the dial.
     // The start has nothing to do until it holds one, so it waits for ready within its bound
     // (`TRADE_DEADLINE_MS`, or the pass deadline less the 10 s the rest of the pass needs where
-    // that is shorter, or half the pass where even that rest does not fit, `startTradeBoundMs`):
-    // a first trade's 503 is ridden out rather than costing the session its registration until
+    // that is shorter, or half a pass shorter than 20 s, `startTradeBoundMs`): a first trade's
+    // prompt 503 is traded again inside it rather than costing the session its registration until
     // the next heartbeat, and a broker that never grants fails the start naming the trade's cause.
     if (natsCredential.kind === "broker") {
       await natsCredential.broker.ready({
@@ -1237,7 +1237,13 @@ export default function envoyExtension(hostApi: PiApi): void {
     const broker = brokerNatsCredentialOf();
     if (broker !== undefined) {
       stopNatsKeeper();
-      stopNatsKeeper = keepNatsCredential(dialled, broker, (text) => logger.warn(`envoy: ${text}`));
+      // Told as every other inbound outage is, in the log and as a notice: a token that cannot be
+      // renewed, or that the server refuses, is a session that stops receiving. The keeper says
+      // each cause once and again every 30 minutes while it lasts, so the notice does too.
+      stopNatsKeeper = keepNatsCredential(dialled, broker, (text) => {
+        logger.warn(`envoy: ${text}`);
+        activeSessionContext?.ui.notify(`envoy: ${text}`, "warning");
+      });
     }
     return connection;
   };
@@ -3808,8 +3814,12 @@ export default function envoyExtension(hostApi: PiApi): void {
         // The auth service grants a session's token that session's subjects alone, so a session
         // the connection was not admitted as - one the host switched to - subscribes nothing
         // until the connection is back, admitted with its token (`followNatsCredential`).
+        // Bounded by the pass, as the start's trade is (`followBoundMs`): a follow that outlasted
+        // a short pass deadline would run on beside the pass after it.
         const broker = brokerNatsCredentialOf();
-        if (broker !== undefined) await followNatsCredential(connected, broker);
+        if (broker !== undefined) {
+          await followNatsCredential(connected, broker, followBoundMs(passDeadlineMs()));
+        }
         await handle.subscribe(legacyAgentSubject(host));
         // The relay subject opens before any registration asks for consumer delivery, so the
         // listener's first relayed frame has a subscriber.

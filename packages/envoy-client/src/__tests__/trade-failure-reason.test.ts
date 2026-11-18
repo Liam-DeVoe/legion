@@ -3,7 +3,8 @@ import { randomBytes } from "node:crypto";
 import { newDpopKey } from "@legion/broker-client/dpop";
 import { KNOWN_BROKER_REFUSALS } from "@legion/broker-client/refusal-text";
 import { BrokerTokenClient } from "@legion/broker-client/token-client";
-import { BrokerRefusedError } from "@legion/broker-client/token-errors";
+import { BrokerRefusedError, TokenClientClosedError } from "@legion/broker-client/token-errors";
+import { brokerTokenFor } from "../broker-credential";
 import { tradeFailureReason } from "../nats-credential";
 
 // What the NATS line prints of a failed trade for the session's token (`tradeFailureReason`). A
@@ -77,7 +78,8 @@ describe("tradeFailureReason", () => {
       },
       log: () => {},
     });
-    // The retry loop trades again on a refused connection, so the caller is told at its deadline.
+    // The refused connection fails this call at once, since it fails fast, while the retry loop
+    // trades again.
     const failure = await client.token(AbortSignal.timeout(1_000)).then(
       () => undefined,
       (error: unknown) => error
@@ -85,6 +87,36 @@ describe("tradeFailureReason", () => {
     client.close();
     expect(tradeFailureReason(failure)).toBe(
       "trade probe at http://127.0.0.1:1/v1/oauth/token: ECONNREFUSED, and the trade is being retried in the background"
+    );
+  });
+
+  test("this code's own failures print whole, not as an error whose message is withheld", async () => {
+    // The review of 2fa6fbf7cf, m8: a closed client, and a machine whose broker route went away
+    // between two trades, printed as "Error (message withheld)".
+    const client = new BrokerTokenClient({
+      brokerUrl: "http://127.0.0.1:1",
+      key: await newDpopKey(),
+      subject: {
+        read: async () => ({ token: token(), tokenType: "jwt" }),
+        describe: () => "probe",
+      },
+      log: () => {},
+    });
+    client.close();
+    const closed = await client.token().then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    expect(closed).toBeInstanceOf(TokenClientClosedError);
+    expect(tradeFailureReason(closed)).toBe(
+      "the secrets broker client was closed, and trades no more"
+    );
+    const gone = await brokerTokenFor({ HOME: "/nonexistent-home" }, "ses_a")().then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    expect(tradeFailureReason(gone)).toBe(
+      "AGENT_SECRETS_URL and AGENT_SECRETS_MACHINE_IDENTITY no longer name a broker and an identity to trade"
     );
   });
 });

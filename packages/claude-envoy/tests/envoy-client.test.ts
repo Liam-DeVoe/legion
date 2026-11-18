@@ -1,6 +1,9 @@
 import { afterAll, expect, test } from "bun:test"
 import { mkdirSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
+import { signedIn, stubIssuer, writeSignIn } from "@legion/broker-client/test/sign-ins"
+import { SignInEndedError } from "@legion/broker-client/token-errors"
+import type { RequestCredential } from "@legion/envoy-client/bearer"
 import { EnvoySendUnconfirmedError } from "@legion/envoy-client/transport"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
@@ -279,6 +282,186 @@ function mustResend(stderr: string): string {
   return resend
 }
 
+/** A credential whose every `headers` answers `answer`'s headers, or throws what it throws. */
+function credentialOf(answer: () => Readonly<Record<string, string>>): RequestCredential {
+  return { scheme: "DPoP", headers: answer, secret: () => "" }
+}
+
+// M3 (the review of 2fa6fbf7cf): a send its credential could not be presented for goes without
+// it, and a listener that asks for none stores it. The send says what it went without: the very
+// error the credential threw for the attempt the listener stored, and nothing where that attempt
+// carried the credential, a credential that failed an earlier attempt included.
+test("a send says what credential it went without, and nothing where it carried one", async () => {
+  const baseUrl = `http://127.0.0.1:${server.port}`
+  const base = { baseUrl, targetSession: "ses_receiver", message: "sent" }
+  const ended = new SignInEndedError("https://issuer.test", "person@example.test")
+  requests.length = 0
+  const without = await sendEnvoyMessage({
+    ...base,
+    credential: credentialOf(() => {
+      throw ended
+    }),
+  })
+  expect(without.withoutCredential).toBe(ended)
+  expect(requests.map((one) => one.authorization)).toEqual([null])
+
+  const token = fixtureSecret("token")
+  const carried = await sendEnvoyMessage({
+    ...base,
+    credential: credentialOf(() => ({ Authorization: `DPoP ${token}` })),
+  })
+  expect(carried.withoutCredential).toBeUndefined()
+
+  // The first attempt's credential rejects and the listener answers 503; the second carries it.
+  answers.push(() => Response.json({ error: "listener restarting" }, { status: 503 }))
+  let calls = 0
+  const later = await sendEnvoyMessage({
+    ...base,
+    credential: {
+      scheme: "DPoP",
+      headers: async () => {
+        calls += 1
+        if (calls === 1) throw ended
+        return { Authorization: `DPoP ${token}` }
+      },
+      secret: () => "",
+    },
+  })
+  expect(later.withoutCredential).toBeUndefined()
+  expect(requests.map((one) => one.authorization)).toEqual([
+    null,
+    `DPoP ${token}`,
+    null,
+    `DPoP ${token}`,
+  ])
+  expect(
+    (await sendEnvoyMessage({ ...base, credential: undefined })).withoutCredential,
+  ).toBeUndefined()
+})
+
+/** The person whose sign-in `signedInEnvironment` keeps, and the sign-in client it names. */
+const PERSON = "ada@example.com"
+const SIGNIN_CLIENT = "example-device-client"
+
+/**
+ * The environment of a machine `PERSON` signed in on, as `agent-secrets login` leaves it, whose
+ * envoy.json names the stand-in listener and no bearer, so the send's credential is the person's
+ * broker trade. The issuer at `issuerUrl` renews the sign-in; `brokerUrl` is the secrets broker.
+ */
+async function signedInEnvironment(
+  issuerUrl: string,
+  brokerUrl: string,
+): Promise<Record<string, string>> {
+  const home = join(scratch, `signed-in-${crypto.randomUUID()}`)
+  mkdirSync(home, { recursive: true })
+  const signins = join(home, "signins")
+  await writeSignIn(signins, await signedIn(PERSON, { client_id: SIGNIN_CLIENT }))
+  const clientSecret = join(home, "client-secret")
+  writeFileSync(clientSecret, `secret-${crypto.randomUUID()}\n`, { mode: 0o600 })
+  const projected = join(home, "token")
+  writeFileSync(projected, `${fixtureSecret("proj")}\n`, { mode: 0o600 })
+  const config = join(home, "envoy.json")
+  writeFileSync(
+    config,
+    JSON.stringify({ envoy: { enabled: true, url: `http://127.0.0.1:${server.port}` } }),
+  )
+  return {
+    PATH: process.env["PATH"] ?? "",
+    HOME: home,
+    ENVOY_CONFIG_FILE: config,
+    AGENT_SECRETS_URL: brokerUrl,
+    AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
+    AGENT_SECRETS_MACHINE_TOKEN_FILE: projected,
+    AGENT_SECRETS_SIGNIN_DIR: signins,
+    AGENT_SECRETS_SIGNIN_ISSUER: issuerUrl,
+    AGENT_SECRETS_SIGNIN_CLIENT_ID: SIGNIN_CLIENT,
+    AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE: clientSecret,
+  }
+}
+
+// M3 (the review of 2fa6fbf7cf): a revoked sign-in is a final refusal of the send's credential.
+// A listener that asks for no credential stores the send made without it, so envoy-send says it
+// sent and exits 0, and names on one stderr line that it went without the credential, why, that
+// the refusal is final, and its remedy as the refusal words it. Before, it said only that it sent.
+test("envoy-send whose sign-in the issuer ended says it sent, and on one stderr line why it went without the credential", async () => {
+  requests.length = 0
+  const issuer = await stubIssuer({
+    clientId: SIGNIN_CLIENT,
+    person: PERSON,
+    answer: () => ({
+      status: 400,
+      body: { error: "invalid_grant", error_description: "Token has been expired or revoked." },
+    }),
+  })
+  let traded = 0
+  const broker = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: () => {
+      traded += 1
+      return new Response("this row trades nothing", { status: 500 })
+    },
+  })
+  try {
+    const env = await signedInEnvironment(issuer.url, `http://127.0.0.1:${broker.port}`)
+    const sent = await runEnvoySend(["ses_receiver", "sent", "without"], { env })
+    expect(sent.stdout).toBe("Sent Envoy message to ses_receiver.\n")
+    expect(sent.stderr).toBe(
+      "Claude Envoy sent the message without this machine's Envoy credential, which this listener does not ask for; " +
+        "the credential was refused for good, so no retry mints it, and a listener that asks for it refuses every send from this machine until the refusal is cured: " +
+        `${issuer.url} no longer honours ${PERSON}'s sign-in on this machine; run: agent-secrets login\n`,
+    )
+    expect(sent.code).toBe(0)
+    expect(requests.map((one) => one.authorization)).toEqual([null])
+    expect(traded).toBe(0)
+  } finally {
+    issuer.stop()
+    broker.stop(true)
+  }
+}, 30_000)
+
+// A credential a later trade may still mint (the broker answers 503) is named as one that could
+// not be minted, and not as refused for good. The token client's retry loop logs its own line of
+// the trade it retries (`token-client.ts`), so this row reads the line envoy-send writes.
+test("envoy-send whose broker is down says it sent, and on one stderr line that the credential could not be minted", async () => {
+  requests.length = 0
+  const broker = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: () => new Response("the broker is away", { status: 503 }),
+  })
+  try {
+    const env = await signedInEnvironment("http://127.0.0.1:9", `http://127.0.0.1:${broker.port}`)
+    for (const name of Object.keys(env))
+      if (name.startsWith("AGENT_SECRETS_SIGNIN_")) delete env[name]
+    const sent = await runEnvoySend(["ses_receiver", "sent", "without"], { env })
+    expect(sent.code).toBe(0)
+    expect(sent.stdout).toBe("Sent Envoy message to ses_receiver.\n")
+    const said = sent.stderr.split("\n").filter((line) => line.startsWith("Claude Envoy"))
+    expect(said).toHaveLength(1)
+    expect(said[0]).toStartWith(
+      "Claude Envoy sent the message without this machine's Envoy credential, which this listener does not ask for; the credential could not be minted: ",
+    )
+    expect(said[0]).toContain("HTTP 503")
+    expect(said[0]).toEndWith("and the trade is being retried in the background")
+    expect(sent.stderr).not.toContain("refused for good")
+    expect(requests.map((one) => one.authorization)).toEqual([null])
+  } finally {
+    broker.stop(true)
+  }
+}, 30_000)
+
+// The control of the two rows above: a send that carried its credential prints only that it sent.
+test("envoy-send whose credential works prints only that it sent", async () => {
+  requests.length = 0
+  const token = fixtureSecret("listener")
+  const sent = await runEnvoySend(["ses_receiver", "sent", "with", "it"], { token })
+  expect(sent.code).toBe(0)
+  expect(sent.stdout).toBe("Sent Envoy message to ses_receiver.\n")
+  expect(sent.stderr).toBe("")
+  expect(requests.map((one) => one.authorization)).toEqual([`Bearer ${token}`])
+}, 30_000)
+
 // An unconfirmed send may have stored the message, so `envoy-send` neither calls it failed nor
 // exits with a refusal's 1: it exits 75, names the key, and prints the command that sends it again
 // under that key, which the listener drops as a repeat if the first copy arrived. Before, it
@@ -393,6 +576,34 @@ test("an unconfirmed send whose message holds a held secret prints the key and n
   )
   expect(first.stderr).toContain("a printed copy could not reproduce the message")
   expect(first.stderr).not.toContain(token)
+}, 30_000)
+
+// h2 (the review of 2fa6fbf7cf): an ENVOY_URL whose user info is shorter than a held secret's 10
+// characters passed the scrub, and the printed resend carried it whole. Now a URL setting with
+// user info of any length, or any other URL no line may name, leaves the resend unprinted.
+test("an unconfirmed send whose ENVOY_URL has short user info prints none of it", async () => {
+  requests.length = 0
+  for (let n = 0; n < 2; n++) {
+    answers.push(() => Response.json({ error: "listener restarting" }, { status: 503 }))
+  }
+  const file = envoyConfig(fixtureSecret("listener"))
+  const first = await runEnvoySend(["ses_receiver", "hello"], {
+    env: {
+      PATH: process.env["PATH"] ?? "",
+      HOME: scratch,
+      ENVOY_CONFIG_FILE: file,
+      // Built from parts: the push's leak check refuses a literal URL with user info.
+      ENVOY_URL: `http://${["ab", "x7q"].join(":")}@127.0.0.1:${server.port}`,
+    },
+  })
+  expect(first.code).toBe(75)
+  const key = String(requests[0]?.body["idempotency_key"])
+  expect(printedResend(first.stderr)).toBeUndefined()
+  expect(first.stderr).toContain(
+    `run envoy-send again from ${scratch} with --idempotency-key ${key}, the same target and the same message, with the settings this run had: the command is not printed, since it holds ENVOY_URL (not printed: it carries a credential or is not a plain http(s) URL).\n`,
+  )
+  expect(first.stderr).not.toContain("x7q")
+  expect(first.stderr).not.toContain("ab:")
 }, 30_000)
 
 test("a send whose only attempt was answered with an unreadable 2xx names that one attempt", async () => {

@@ -1,6 +1,6 @@
 // dialChannelNats: the channel server's NATS connection, opened with the session's credential and,
 // where that is the broker token, kept renewed for the connection's life and stopped on request.
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, expect, jest, spyOn, test } from "bun:test"
 import { writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { forgetBrokerClients } from "@legion/envoy-client/broker-credential"
@@ -58,12 +58,32 @@ function shortTokenBroker() {
   return { url: `http://127.0.0.1:${server.port}`, minted }
 }
 
+/** One turn of the real event loop, which the fake clock does not hold: every promise the code
+ *  has chained settles inside it. */
+function turn(): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>()
+  setImmediate(resolve)
+  return promise
+}
+
 /** A connection as the keeper sees it: each connect and reconnect asks the authenticator for the
- * CONNECT's credential, as nats.js does, and records the token it presented. */
+ * CONNECT's credential, as nats.js does, and records the token it presented; `reconnected`
+ * settles at the first reconnect. Its status reports nothing until the keeper stops reading it. */
 function fakeDial() {
   const presented: string[] = []
   let reconnects = 0
+  const reconnected = Promise.withResolvers<void>()
   const ended = Promise.withResolvers<void>()
+  const unread = Promise.withResolvers<void>()
+  const statuses = {
+    stop: () => unread.resolve(),
+    [Symbol.asyncIterator]: () => ({
+      next: async (): Promise<IteratorResult<never>> => {
+        await unread.promise
+        return { done: true, value: undefined }
+      },
+    }),
+  }
   const dial = async (options: ConnectionOptions): Promise<NatsConnection> => {
     const present = () => {
       const authenticator = options.authenticator as Authenticator | undefined
@@ -75,12 +95,14 @@ function fakeDial() {
       reconnect: async () => {
         reconnects += 1
         present()
+        reconnected.resolve()
       },
       isClosed: () => false,
       closed: () => ended.promise,
+      status: () => statuses,
     } as unknown as NatsConnection
   }
-  return { dial, presented, reconnects: () => reconnects }
+  return { dial, presented, reconnects: () => reconnects, reconnected: reconnected.promise }
 }
 
 test("dialChannelNats keeps the broker token renewed until it is stopped", async () => {
@@ -114,16 +136,19 @@ test("dialChannelNats keeps the broker token renewed until it is stopped", async
   if (first === undefined) throw new Error("the broker minted no token before the dial")
   expect(fake.presented).toEqual([first])
   expect(opened.followSession).toBeDefined()
-  const deadline = Date.now() + 5_000
-  while (fake.reconnects() === 0 && Date.now() < deadline) await Bun.sleep(50)
-  expect(fake.reconnects()).toBeGreaterThan(0)
+  // The keeper renews 1 s before the 2 s token lapses and reconnects with the next one. It is
+  // stopped the moment it does, so no renewal is in flight at the stop.
+  await fake.reconnected
+  opened.stop()
+  expect(fake.reconnects()).toBe(1)
   expect(fake.presented.at(-1)).not.toBe(first)
   expect(warnings).toEqual([])
-  opened.stop()
-  const reconnects = fake.reconnects()
   const minted = broker.minted.length
+  // A real 2.5 s, two renewals at this token's life: the row reads that nothing renews after the
+  // stop, and a renewal is a trade over a real socket, which a fake clock moved past it would not
+  // let land before the row looks.
   await Bun.sleep(2_500)
-  expect(fake.reconnects()).toBe(reconnects)
+  expect(fake.reconnects()).toBe(1)
   expect(broker.minted).toHaveLength(minted)
 }, 15_000)
 
@@ -132,13 +157,19 @@ test("a pod session registered past the trade deadline still comes up, admitted"
   // runs. Claude Code does not restart its channel server, so a start that failed at the trade's
   // deadline left the session with no delivery for its life, naming the wrong cause.
   const SESSION = "ses_channel_pending"
-  let registered = false
+  // The broker refuses the first trade, and the registration lands with that refusal: the trade
+  // it grants is the retry loop's next, at least 1 s on (half its 2 s first wait), well past the
+  // 300 ms deadline.
+  const started = Date.now()
+  let refusals = 0
+  let grantedAfter: number | undefined
   const minted: string[] = []
   const server = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
     fetch: () => {
-      if (!registered) {
+      if (refusals === 0) {
+        refusals += 1
         return Response.json(
           {
             error: "invalid_grant",
@@ -147,6 +178,7 @@ test("a pod session registered past the trade deadline still comes up, admitted"
           { status: 400 },
         )
       }
+      grantedAfter ??= Date.now() - started
       const token = fixtureSecret("channel")
       minted.push(token)
       return Response.json({
@@ -172,10 +204,6 @@ test("a pod session registered past the trade deadline still comes up, admitted"
     "NATS_AUTH",
     300,
   )
-  // The registration lands well past the 300 ms deadline.
-  setTimeout(() => {
-    registered = true
-  }, 1_000)
   const fake = fakeDial()
   const opened = await dialChannelNats(
     {
@@ -195,6 +223,8 @@ test("a pod session registered past the trade deadline still comes up, admitted"
   const [first] = minted
   if (first === undefined) throw new Error("the broker minted no token before the dial")
   expect(fake.presented).toEqual([first])
+  expect(refusals).toBe(1)
+  expect(grantedAfter).toBeGreaterThan(300)
   opened.stop()
 }, 90_000)
 
@@ -203,7 +233,7 @@ test("a channel server's start waits through a broker that refuses connections, 
   // Code does not restart a channel server that ended, so a start that failed fast on a broker
   // that is down would leave the session with no delivery for its life. Every other caller fails
   // fast. The broker's port is closed at the first trade, and a broker listens there once the
-  // retry loop has failed once.
+  // retry loop has failed once: once the token client says so, at the wait after that trade.
   const SESSION = "ses_channel_broker_down"
   const probe = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() })
   const port = probe.port as number
@@ -223,8 +253,11 @@ test("a channel server's start waits through a broker that refuses connections, 
     "NATS_AUTH",
     300,
   )
-  // The broker comes up 1 s on, past the first refused trade and inside the retry loop's wait.
-  setTimeout(() => {
+  let refused = 0
+  const warn = spyOn(console, "warn").mockImplementation((line: unknown) => {
+    if (!String(line).includes("trading again")) return
+    refused += 1
+    if (refused > 1) return
     servers.push(
       Bun.serve({
         port,
@@ -241,45 +274,58 @@ test("a channel server's start waits through a broker that refuses connections, 
         },
       }),
     )
-  }, 1_000)
-  const fake = fakeDial()
-  const opened = await dialChannelNats(
-    {
-      natsUrls: ["nats://nats.test:4222"],
-      natsServersSetting: "ENVOY_NATS_URL",
-      natsCredential: { kind: "broker", broker: credential },
-    },
-    `claude-envoy-channel-${SESSION}`,
-    () => {},
-    fake.dial,
-  ).then(
-    (dialled) => dialled,
-    (error: unknown) => (error instanceof Error ? error.message : String(error)),
-  )
-  if (typeof opened === "string") throw new Error(`the channel server's start failed: ${opened}`)
-  const [first] = minted
-  if (first === undefined) throw new Error("the broker minted no token before the dial")
-  expect(fake.presented).toEqual([first])
-  opened.stop()
+  })
+  try {
+    const fake = fakeDial()
+    const opened = await dialChannelNats(
+      {
+        natsUrls: ["nats://nats.test:4222"],
+        natsServersSetting: "ENVOY_NATS_URL",
+        natsCredential: { kind: "broker", broker: credential },
+      },
+      `claude-envoy-channel-${SESSION}`,
+      () => {},
+      fake.dial,
+    ).then(
+      (dialled) => dialled,
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    )
+    if (typeof opened === "string") throw new Error(`the channel server's start failed: ${opened}`)
+    const [first] = minted
+    if (first === undefined) throw new Error("the broker minted no token before the dial")
+    expect(fake.presented).toEqual([first])
+    expect(refused).toBe(1)
+    opened.stop()
+  } finally {
+    warn.mockRestore()
+  }
 }, 90_000)
 
 test("dialChannelNats runs no keeper and no follow for a connection with no broker token", async () => {
-  const fake = fakeDial()
-  const opened = await dialChannelNats(
-    {
-      natsUrls: ["nats://nats.test:4222"],
-      natsServersSetting: "ENVOY_NATS_URL",
-      natsCredential: { kind: "none" },
-    },
-    "claude-envoy-channel-ses_plain",
-    () => {},
-    fake.dial,
-  )
-  expect(opened.followSession).toBeUndefined()
-  expect(fake.presented).toEqual([])
-  await Bun.sleep(1_200)
-  expect(fake.reconnects()).toBe(0)
-  opened.stop()
+  // The clock is the row's: moved an hour on, every timer the start left behind has fired.
+  jest.useFakeTimers()
+  try {
+    const fake = fakeDial()
+    const opened = await dialChannelNats(
+      {
+        natsUrls: ["nats://nats.test:4222"],
+        natsServersSetting: "ENVOY_NATS_URL",
+        natsCredential: { kind: "none" },
+      },
+      "claude-envoy-channel-ses_plain",
+      () => {},
+      fake.dial,
+    )
+    expect(opened.followSession).toBeUndefined()
+    expect(fake.presented).toEqual([])
+    jest.advanceTimersByTime(60 * 60_000)
+    await turn()
+    expect(fake.reconnects()).toBe(0)
+    opened.stop()
+  } finally {
+    // A fake clock left behind stops the timers of every row after this one.
+    jest.useRealTimers()
+  }
 })
 
 test("a failed dial names its servers by their setting, never by any part of them", async () => {
@@ -399,14 +445,18 @@ test("a stop ends the wait for the token and for the dial, and closes a connecti
   )
   expect(await dialing).toBe(STOPPING)
   made.resolve(late)
-  await Bun.sleep(10)
+  await turn()
   expect(closed).toBe(1)
 
   // The token: a trade that never answers is waited for no longer than the stop.
   const waiting = new AbortController()
   // A broker credential whose trade never answers; nothing else of it is reached before the dial.
+  // The stop lands once the wait for the token has begun.
   const broker = {
-    ready: () => new Promise<void>(() => undefined),
+    ready: () => {
+      queueMicrotask(() => waiting.abort())
+      return new Promise<void>(() => undefined)
+    },
   } as unknown as BrokerNatsCredential
   const trading = dialChannelNats(
     {
@@ -424,6 +474,5 @@ test("a stop ends the wait for the token and for the dial, and closes a connecti
     () => "dialled",
     (error: unknown) => (error instanceof Error ? error.message : String(error)),
   )
-  setTimeout(() => waiting.abort(), 20)
   expect(await trading).toBe(STOPPING)
 })

@@ -17,12 +17,21 @@ export const SCRUB_RUN = 10;
  *  secrets held (tokens, keys, seeds) are far longer. */
 const SHORTEST_HELD = SCRUB_RUN;
 
+/** How long a value held with a lapse is held past it: a server that echoes a token it was sent
+ *  (a broker at the wrong URL, in a refusal printed as guidance) answers within this of the
+ *  token's lapse, and a process that trades a new token every few minutes holds each one this long
+ *  rather than for its whole life. */
+export const HELD_PAST_LAPSE_MS = 60 * 60_000;
+
 interface Held {
   /** Each held value. */
   readonly values: Set<string>;
   /** Every run of {@link SCRUB_RUN} characters of every held value: a run of 10 or more of a held
    *  value's characters stands in a line only where one of these does. */
   readonly windows: Set<string>;
+  /** When each value held with a lapse is forgotten: {@link HELD_PAST_LAPSE_MS} past its lapse,
+   *  in epoch milliseconds. A value not here is held for the process's life. */
+  readonly forgets: Map<string, number>;
 }
 
 /** One registry per process, whichever copy of this module a bundle carries. */
@@ -30,23 +39,59 @@ const KEY = Symbol.for("@legion/contracts/held-secrets");
 
 function held(): Held {
   const global = globalThis as { [KEY]?: Held };
-  global[KEY] ??= { values: new Set(), windows: new Set() };
+  global[KEY] ??= { values: new Set(), windows: new Set(), forgets: new Map() };
   return global[KEY];
+}
+
+/** Puts every run of {@link SCRUB_RUN} characters of `value` in `windows`. */
+function addWindows(windows: Set<string>, value: string): void {
+  for (let at = 0; at + SCRUB_RUN <= value.length; at += 1) {
+    windows.add(value.slice(at, at + SCRUB_RUN));
+  }
+}
+
+/** Forgets each value whose time `forgets` names has come, and builds the windows again from the
+ *  values left: two values can share a window, so one value's windows cannot be taken out alone. */
+function forgetLapsed(registry: Held, now: number): void {
+  let forgot = false;
+  for (const [value, at] of registry.forgets) {
+    if (at > now) continue;
+    registry.forgets.delete(value);
+    registry.values.delete(value);
+    forgot = true;
+  }
+  if (!forgot) return;
+  registry.windows.clear();
+  for (const value of registry.values) addWindows(registry.windows, value);
 }
 
 /**
  * Holds `value`, a secret this process read or was handed (a broker token, a Dispatch token, an
  * identity token, a session's JWT, the contents of a secret file), so the scrub takes it out of
- * every line printed from now on. A value shorter than 10 characters, or one held already, is
- * left as it is. Returns `value`, so a reader can hold what it answers in one step.
+ * every line printed from now on. A value shorter than 10 characters is left as it is. Returns
+ * `value`, so a reader can hold what it answers in one step.
+ *
+ * A value that stops being good at `lapsesAt` (a token's expiry, as a `Date` or epoch
+ * milliseconds) is held {@link HELD_PAST_LAPSE_MS} past it and then forgotten, so a process that
+ * trades for tokens all its life holds the few of the last hours, not every one. One held with no
+ * lapse is held for the process's life. Holding a value again holds it for the longer of the two:
+ * for life where either says so. Each call forgets what has lapsed by then.
  */
-export function holdSecret(value: string): string {
+export function holdSecret(value: string, lapsesAt?: Date | number): string {
+  if (value.length < SHORTEST_HELD) return value;
   const registry = held();
-  if (value.length < SHORTEST_HELD || registry.values.has(value)) return value;
-  registry.values.add(value);
-  for (let at = 0; at + SCRUB_RUN <= value.length; at += 1) {
-    registry.windows.add(value.slice(at, at + SCRUB_RUN));
+  forgetLapsed(registry, Date.now());
+  const forgetAt = lapsesAt === undefined ? undefined : Number(lapsesAt) + HELD_PAST_LAPSE_MS;
+  if (registry.values.has(value)) {
+    const was = registry.forgets.get(value);
+    if (was === undefined) return value;
+    if (forgetAt === undefined) registry.forgets.delete(value);
+    else if (forgetAt > was) registry.forgets.set(value, forgetAt);
+    return value;
   }
+  registry.values.add(value);
+  if (forgetAt !== undefined) registry.forgets.set(value, forgetAt);
+  addWindows(registry.windows, value);
   return value;
 }
 
@@ -88,6 +133,7 @@ export function forgetHeldSecrets(): void {
   const registry = held();
   registry.values.clear();
   registry.windows.clear();
+  registry.forgets.clear();
 }
 
 /**

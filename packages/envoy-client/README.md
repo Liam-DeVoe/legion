@@ -193,29 +193,33 @@ session alone. `brokerNatsCredential(env, session)` holds it: `ready()` takes a 
 dial in one of three modes, each one wait on the token client's retry loop. By default it fails
 fast: a failure the loop trades again on fails it at once, naming that failure, and a pod session
 not registered yet is waited out for 20 s (`TRADE_DEADLINE_MS`, nats.js's own dial timeout).
-`ready({ waitForReady: true })`, an Oh My Pi session's start, waits for ready for those 20 s,
-through every failure the loop trades again on, and then fails naming the last one: 20 s is the
-pass's deadline at its 30 s default (`ENVOY_PASS_DEADLINE_MS`; the heartbeat is its floor) less
-10 s for the rest of the pass, and a start bounds it by its own pass deadline less those 10 s
-where that is shorter; and it is longer than the loop's longest first
-wait, 15 s. `ready({ life })`, a Claude Code channel server's start, waits for ready until a token
-lands, a refusal no trade cures ends the loop, or `life` ends. `authenticator(nonce)` signs one
-snapshot of it per CONNECT and presents
-nothing, starting a trade, where it holds no live token, and `renew()` takes the token again, the
-next session's after a switch, failing fast unless asked to wait for ready, as a switch's follow
-(`followNatsCredential`) does for 20 s. A server that sends no nonce runs no auth service, so
-nothing there
-checks a broker token:
+`ready({ waitForReady: true })`, an Oh My Pi session's start, waits for ready for at most those
+20 s, through every failure the loop trades again on, and then fails naming the last one: in a
+pass of 30 s, the floor of the pass's deadline (`ENVOY_PASS_DEADLINE_MS`; by default it is the
+heartbeat, 90 s), 20 s leaves 10 s for the rest of the pass, and a start bounds it by its own
+pass deadline less those 10 s where that is shorter, or by half a pass shorter than 20 s; and it
+is longer than the loop's longest first wait, 15 s, so a first trade that fails at once is traded
+again inside it. `ready({ life })`, a Claude Code channel server's start, waits for ready until a
+token lands, a refusal no trade cures ends the loop, or `life` ends. `authenticator(nonce)` signs
+one snapshot of it per CONNECT and presents nothing, starting a trade, where it holds no live
+token, and `renew()` takes the token again, the next session's after a switch, failing fast
+unless asked to wait for ready, as a switch's follow (`followNatsCredential`) does. A server that
+sends no nonce runs no auth service, so nothing there checks a broker token:
 the CONNECT fails, naming that and the setting to undo for that hub (`unset NATS_AUTH`, or take
 `natsAuth` out of the file that set it; `noAuthService`), rather than going out with no credential.
 `keepNatsCredential(connection, credential, warn)` renews ahead of each token's expiry and
 reconnects the connection with each new token, before the server drops the user the old one was
 admitted as; a renewal that fails is retried at 2 s doubling to a minute and warned about once,
-then every 30 minutes, never naming the token. `followNatsCredential(connection, credential)` is a
-session switch's: it takes the token of the session the name reads now and, where that is not the
-token the connection presented, reconnects and returns only once the connection is back admitted
-with it, so a caller subscribes the new session's subjects after it, never before (the server
-refuses a subscribe the old session's user was not granted, and nats.js closes that subscription).
+then every 30 minutes, never naming the token. It reads the connection's status too: a server
+that refuses the live token in hand is warned of at once, and at the second refusal the keeper
+drops the token (`BrokerNatsCredential.drop`, here and in the token client) and trades for
+another, once until the connection is back. `followNatsCredential(connection, credential,
+boundMs?)` is a session switch's: it takes the token of the session the name reads now and, where
+that is not the token the connection presented, reconnects and returns only once the connection
+is back admitted with it, so a caller subscribes the new session's subjects after it, never
+before (the server refuses a subscribe the old session's user was not granted, and nats.js
+closes that subscription). It takes at most `boundMs`, `FOLLOW_DEADLINE_MS` (28 s) by default:
+the trade all of it but the connection's share, 8 s or half the bound.
 The module imports nats.js's types alone, since every bundle that reads `envoySettings` imports it.
 
 nats.js 2.29.3, the last 2.x release, leaves a redial's socket open when it gives up on that dial

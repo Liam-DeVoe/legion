@@ -6,13 +6,15 @@
 // the client logged at each wait. The clock and the waits are the test's own: a wait the client
 // asks for passes at once while the row's budget of waits lasts and then holds, so a schedule of
 // minutes runs at the test's speed and a loop that trades forever stops where the row reads it.
-// A trade's own timeout is real and short (`attemptMs`), since the client sets it on the fetch.
+// A trade's own timeout is real (`attemptMs`), since the client sets it on the fetch: short in the
+// rows whose broker leaves a trade unanswered, which wait it out, and the client's own 30 s in
+// every other row, so a slow machine never turns a trade the broker answered into one it did not.
 
 import { expect, test } from "bun:test";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { newDpopKey } from "../dpop";
 import type { SubjectToken, TokenSource } from "../source";
-import { type BrokerToken, BrokerTokenClient } from "../token-client";
+import { type BrokerToken, BrokerTokenClient, TRADE_ATTEMPT_MS } from "../token-client";
 import {
   BrokerRefusedError,
   RegistrationPendingError,
@@ -38,8 +40,10 @@ const POD: TokenSource = {
   describe: () => "a pod's projected service-account token",
 };
 
-/** How long one trade may take before the client reads it as unanswered. */
-const ATTEMPT_MS = 25;
+/** How long one trade may take before the client reads it as unanswered, in a row whose broker
+ *  leaves a trade unanswered (`Row.attemptMs`). Every other row gives a trade the client's own
+ *  `TRADE_ATTEMPT_MS`, which no row's test time reaches. */
+const SILENT_ATTEMPT_MS = 25;
 
 /** A caller that waits through the loop's retries, as the channel server's start does. */
 const READY = { waitForReady: true } as const;
@@ -82,9 +86,14 @@ interface Rig {
   advance(): void;
 }
 
-/** A pod's client against a broker answering `answer(n, now)` to its n-th trade; its first
- *  `budget` waits pass at once, and the rest hold until the row advances them. */
-async function rig(answer: (trade: number, now: number) => Answer, budget: number): Promise<Rig> {
+/** A pod's client against a broker answering `answer(n, now)` to its n-th trade, each trade given
+ *  `attemptMs`; its first `budget` waits pass at once, and the rest hold until the row advances
+ *  them. */
+async function rig(
+  answer: (trade: number, now: number) => Answer,
+  budget: number,
+  attemptMs: number
+): Promise<Rig> {
   const clock = { now: 1_700_000_000_000 };
   const waits: number[] = [];
   const lines: string[] = [];
@@ -99,7 +108,7 @@ async function rig(answer: (trade: number, now: number) => Answer, budget: numbe
     now: () => clock.now,
     // The worst case of the jitter: every wait its whole length.
     random: () => 1,
-    attemptMs: ATTEMPT_MS,
+    attemptMs,
     sleep: (ms: number, signal?: AbortSignal) => {
       waits.push(ms);
       if (left > 0) {
@@ -153,10 +162,14 @@ async function outcome(call: Promise<BrokerToken>): Promise<unknown> {
   ]);
 }
 
-/** A row of the table: what the broker answers, the waits that pass at once, and the drive. */
+/** A row of the table: what the broker answers, the waits that pass at once, and the drive. A row
+ *  whose broker leaves a trade unanswered gives each trade `SILENT_ATTEMPT_MS` and waits it out;
+ *  every other row leaves `attemptMs` out, so each of its trades is given the client's own
+ *  `TRADE_ATTEMPT_MS` and is read by what the broker answered, however slow the machine. */
 interface Row {
   readonly answer: (trade: number, now: number) => Answer;
   readonly budget: number;
+  readonly attemptMs?: number;
   readonly drive: (rig: Rig) => Promise<void>;
 }
 
@@ -184,6 +197,7 @@ const ROWS: [string, Row][] = [
     {
       answer: (n) => (n === 1 ? "pending" : "silent"),
       budget: 4,
+      attemptMs: SILENT_ATTEMPT_MS,
       drive: async ({ client, waits, lines, trades }) => {
         const life = new AbortController();
         const call = client.token(life.signal, READY);
@@ -196,7 +210,7 @@ const ROWS: [string, Row][] = [
         expect(lines).toHaveLength(5);
         for (const line of lines.slice(1)) {
           expect(line).toContain(
-            `did not answer the trade of a pod's projected service-account token within ${ATTEMPT_MS / 1000} s`
+            `did not answer the trade of a pod's projected service-account token within ${SILENT_ATTEMPT_MS / 1000} s`
           );
         }
         expect(await outcome(call)).toBe("pending");
@@ -268,6 +282,7 @@ const ROWS: [string, Row][] = [
     {
       answer: () => "silent",
       budget: 0,
+      attemptMs: SILENT_ATTEMPT_MS,
       drive: async ({ client, waits }) => {
         // A deadline before any trade has ended is told the trade still out has not been
         // answered, by the identity it trades: the caller's deadline is no answer about it.
@@ -349,6 +364,7 @@ const ROWS: [string, Row][] = [
     {
       answer: (n) => (n === 1 ? "granted" : "silent"),
       budget: 10,
+      attemptMs: SILENT_ATTEMPT_MS,
       drive: async ({ client, clock, trades }) => {
         const first = await client.token();
         // Inside the 5-minute window ahead of the token's 600 s: the loop trades, and the broker
@@ -449,7 +465,7 @@ const ROWS: [string, Row][] = [
 const LANDS_AT = { at: Number.POSITIVE_INFINITY };
 
 test.each(ROWS)("%s", async (_name, row) => {
-  const one = await rig(row.answer, row.budget);
+  const one = await rig(row.answer, row.budget, row.attemptMs ?? TRADE_ATTEMPT_MS);
   try {
     await row.drive(one);
   } finally {

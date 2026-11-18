@@ -19,7 +19,7 @@ import * as path from "node:path";
 import { thumbprintOf } from "@legion/broker-client/test/sign-ins";
 import { RETRY_FIRST_WAIT_MS, RETRY_MAX_WAIT_MS } from "@legion/broker-client/token-client";
 import type { Subprocess } from "bun";
-import { connect, Events, type NatsConnection } from "nats";
+import { connect, Events, type NatsConnection, type Status } from "nats";
 import {
   awaitReady,
   buildGoBinaries,
@@ -32,6 +32,7 @@ import { readEnvoyConfig } from "../envoy-config";
 import { type EnvoyEnvironment, envoySettings } from "../envoy-settings";
 import { natsConnectionOptions } from "../nats-connection";
 import {
+  type BrokerNatsCredential,
   brokerNatsCredential,
   followNatsCredential,
   keepNatsCredential,
@@ -225,6 +226,35 @@ describe("which credential a session connects to NATS with", () => {
       off: "this session opens no NATS connection",
     });
   });
+
+  test("NATS_AUTH=broker for a caller that names no session resolves inbound off naming it", () => {
+    // A trade under no session is answered the machine's token, under AGENT_SECRETS_SESSION, or
+    // the signed-in person's: neither is the session the connection delivers to (the review of
+    // 2fa6fbf7cf, h4).
+    const env = { ...podEnvironment("http://broker.test"), NATS_AUTH: "broker" };
+    const config = readEnvoyConfig(path.join(tempDir(), "envoy.json"), env, { cwd: tempDir() });
+    const settings = envoySettings(env, config, {});
+    expect(settings.enabled && settings.inbound).toEqual({
+      off: "NATS_AUTH is broker, but this process names no session for its NATS connection's token",
+    });
+  });
+
+  test("a broker token whose session name reads none trades nothing and says so", async () => {
+    const broker = stubBroker(600);
+    let session = "";
+    const credential = brokerNatsCredential(podEnvironment(broker.url), () => session);
+    const refusal =
+      "NATS_AUTH is broker, but this process names no session for its NATS connection's token";
+    await expect(credential.ready({ waitForReady: true })).rejects.toThrow(refusal);
+    await expect(credential.renew()).rejects.toThrow(refusal);
+    expect(credential.authenticator("nonce-1")).toBeUndefined();
+    await Bun.sleep(50);
+    expect(broker.state.trades).toBe(0);
+    // The control: once the name reads a session, its token is traded.
+    session = "ses_named";
+    await credential.ready();
+    expect(broker.state.minted.map((one) => one.session)).toEqual(["ses_named"]);
+  });
 });
 
 describe("the broker token's authenticator", () => {
@@ -289,13 +319,44 @@ describe("one token per session for HTTP and NATS", () => {
 });
 
 /** A connection as the keeper sees it: each reconnect is a new CONNECT, which asks the
- *  credential's authenticator again, as nats.js does. */
+ *  credential's authenticator again, as nats.js does, and its status is what a row pushes, read
+ *  until the reader is stopped. `closeQuietly` marks it closed without ending `closed()`: the
+ *  moment between the two in nats.js. */
 function fakeConnection(onConnect: () => void) {
   let closed = false;
   const ended = Promise.withResolvers<undefined>();
   const reconnects: number[] = [];
+  const queued: Status[] = [];
+  let wake: (() => void) | undefined;
+  let readerStopped = false;
+  const statuses = {
+    stop: () => {
+      readerStopped = true;
+      wake?.();
+    },
+    async *[Symbol.asyncIterator](): AsyncGenerator<Status> {
+      for (;;) {
+        const next = queued.shift();
+        if (next !== undefined) {
+          yield next;
+          continue;
+        }
+        if (readerStopped) return;
+        await new Promise<void>((resolve) => {
+          wake = resolve;
+        });
+        wake = undefined;
+      }
+    },
+  };
   return {
     reconnects,
+    readerStopped: () => readerStopped,
+    /** Pushes `type` with `data` onto the status the keeper reads. */
+    push: (type: string, data = "") => {
+      queued.push({ type, data } as Status);
+      wake?.();
+    },
     connection: {
       reconnect: async () => {
         reconnects.push(Date.now());
@@ -303,12 +364,41 @@ function fakeConnection(onConnect: () => void) {
       },
       isClosed: () => closed,
       closed: () => ended.promise,
+      status: () => statuses,
     },
     close: () => {
       closed = true;
       ended.resolve(undefined);
     },
+    closeQuietly: () => {
+      closed = true;
+    },
   };
+}
+
+/** `credential` with the time of each renewal the keeper asks of it kept in `asked`: what the
+ *  keeper decides, apart from how long the trade and the reconnect after it take. */
+function askedOf(credential: BrokerNatsCredential): {
+  readonly credential: BrokerNatsCredential;
+  readonly asked: number[];
+} {
+  const asked: number[] = [];
+  return {
+    asked,
+    credential: {
+      ...credential,
+      renew: (signal, waitForReady) => {
+        asked.push(Date.now());
+        return credential.renew(signal, waitForReady);
+      },
+    },
+  };
+}
+
+/** Waits until `done` holds, polling every 20 ms, for at most `withinMs`. */
+async function until(done: () => boolean, withinMs = 10_000): Promise<void> {
+  const deadline = Date.now() + withinMs;
+  while (!done() && Date.now() < deadline) await Bun.sleep(20);
 }
 
 describe("natsConnectionOptions with the broker token", () => {
@@ -346,11 +436,15 @@ describe("natsConnectionOptions with the broker token", () => {
 
 // These run on the wall clock, with two-second tokens: the keeper's timer and the token client's
 // expiry both read real time, and each renewal is a real HTTP trade at the stub broker, so a fake
-// clock would drive one half of the exchange and not the other.
+// clock would drive one half of the exchange and not the other. What a row holds to a token's
+// lapse is when the keeper asked for its renewal (`askedOf`), not when the trade and the
+// reconnect after it landed, which a loaded machine delays.
 describe("keepNatsCredential", () => {
   test("keepNatsCredential renews and reconnects before expiry", async () => {
     const broker = stubBroker(2);
-    const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_a");
+    const { credential, asked } = askedOf(
+      brokerNatsCredential(podEnvironment(broker.url), "ses_a")
+    );
     await credential.ready();
     const first = credential.authenticator("nonce-1") as { auth_token: string };
     const lapses = credential.expiresAt().getTime();
@@ -358,11 +452,10 @@ describe("keepNatsCredential", () => {
     const warnings: string[] = [];
     const stop = keepNatsCredential(fake.connection, credential, (text) => warnings.push(text));
     try {
-      const deadline = Date.now() + 5_000;
-      while (fake.reconnects.length === 0 && Date.now() < deadline) await Bun.sleep(50);
+      await until(() => fake.reconnects.length > 0);
       expect(fake.reconnects.length).toBeGreaterThan(0);
-      // Moved to the next token before the one the connection presented lapsed.
-      expect(fake.reconnects[0] ?? Number.POSITIVE_INFINITY).toBeLessThan(lapses);
+      // Asked for the next token before the one the connection presented lapsed.
+      expect(asked[0] ?? Number.POSITIVE_INFINITY).toBeLessThan(lapses);
       const next = credential.authenticator("nonce-3") as { auth_token: string };
       expect(next.auth_token).not.toBe(first.auth_token);
       expect(broker.state.minted.length).toBeGreaterThanOrEqual(2);
@@ -370,7 +463,8 @@ describe("keepNatsCredential", () => {
     } finally {
       stop();
     }
-    // Stopped, it trades and reconnects no more.
+    // Stopped, it trades and reconnects no more, and its status reader is stopped.
+    expect(fake.readerStopped()).toBe(true);
     const reconnected = fake.reconnects.length;
     const traded = broker.state.minted.length;
     await Bun.sleep(1_500);
@@ -382,16 +476,17 @@ describe("keepNatsCredential", () => {
     // The broker allows one-second tokens (BROKER_ACCESS_TOKEN_SECONDS=1): no floor on the wait
     // may push the renewal past the token's own expiry.
     const broker = stubBroker(1);
-    const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_a");
+    const { credential, asked } = askedOf(
+      brokerNatsCredential(podEnvironment(broker.url), "ses_a")
+    );
     await credential.ready();
     credential.authenticator("nonce-1");
     const lapses = credential.expiresAt().getTime();
     const fake = fakeConnection(() => credential.authenticator("nonce-again"));
     const stop = keepNatsCredential(fake.connection, credential, () => {});
     try {
-      const deadline = Date.now() + 3_000;
-      while (fake.reconnects.length === 0 && Date.now() < deadline) await Bun.sleep(10);
-      expect(fake.reconnects[0] ?? Number.POSITIVE_INFINITY).toBeLessThan(lapses);
+      await until(() => asked.length > 0, 3_000);
+      expect(asked[0] ?? Number.POSITIVE_INFINITY).toBeLessThan(lapses);
     } finally {
       stop();
     }
@@ -409,8 +504,7 @@ describe("keepNatsCredential", () => {
     const warnings: string[] = [];
     const stop = keepNatsCredential(fake.connection, credential, (text) => warnings.push(text));
     try {
-      const deadline = Date.now() + 5_000;
-      while (warnings.length === 0 && Date.now() < deadline) await Bun.sleep(50);
+      await until(() => warnings.length > 0);
       expect(warnings.length).toBeGreaterThan(0);
       expect(warnings.join("\n")).toContain("landed no new token");
       for (const one of broker.state.minted) expect(warnings.join("\n")).not.toContain(one.value);
@@ -420,7 +514,7 @@ describe("keepNatsCredential", () => {
     }
   }, 10_000);
 
-  test("a closed connection ends the keeper", async () => {
+  test("a closed connection ends the keeper, its status reader too", async () => {
     const broker = stubBroker(2);
     const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_a");
     await credential.ready();
@@ -428,9 +522,286 @@ describe("keepNatsCredential", () => {
     const fake = fakeConnection(() => credential.authenticator("nonce-again"));
     keepNatsCredential(fake.connection, credential, () => {});
     fake.close();
+    // Stopped by `closed()` alone: nothing else stops the status reader.
+    await until(() => fake.readerStopped(), 2_000);
+    expect(fake.readerStopped()).toBe(true);
     await Bun.sleep(1_500);
     expect(fake.reconnects).toEqual([]);
     expect(broker.state.minted.length).toBe(1);
+  }, 15_000);
+
+  test("a connection marked closed before closed() ends trades nothing at the renewal due", async () => {
+    // nats.js marks a connection closed before its closed() promise settles: a renewal falling
+    // due between the two would renew for, and reconnect, a connection that is gone.
+    const broker = stubBroker(2);
+    const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_a");
+    await credential.ready();
+    credential.authenticator("nonce-1");
+    const fake = fakeConnection(() => credential.authenticator("nonce-again"));
+    const stop = keepNatsCredential(fake.connection, credential, () => {});
+    try {
+      fake.closeQuietly();
+      // The renewal falls due at half the token's two-second life.
+      await Bun.sleep(2_000);
+      expect(broker.state.trades).toBe(1);
+      expect(fake.reconnects).toEqual([]);
+    } finally {
+      stop();
+    }
+  }, 15_000);
+});
+
+describe("keepNatsCredential with a refused live token", () => {
+  test("two refusals are warned of once, drop the token here and in the token client, and trade another", async () => {
+    // A token the broker revoked before it lapsed: the auth service refuses every CONNECT that
+    // presents it, and nats.js redials every 2 s. Tokens live ten minutes, so no renewal falls
+    // due inside the row.
+    const broker = stubBroker(600);
+    const env = podEnvironment(broker.url);
+    const credential = brokerNatsCredential(env, "ses_a");
+    await credential.ready();
+    const first = (credential.authenticator("nonce-1") as { auth_token: string }).auth_token;
+    const fake = fakeConnection(() => credential.authenticator("nonce-again"));
+    const warnings: string[] = [];
+    const stop = keepNatsCredential(fake.connection, credential, (text) => warnings.push(text));
+    try {
+      fake.push("error", "AUTHORIZATION_VIOLATION");
+      await until(() => warnings.length > 0, 2_000);
+      expect(warnings).toEqual([
+        "the NATS server refused the connection's live broker token (AUTHORIZATION_VIOLATION): the auth service is away, or the token was revoked; the connection keeps redialling, and at the second refusal the token is dropped and another traded",
+      ]);
+      // One refusal can be the auth service's own outage: nothing is dropped yet.
+      expect(broker.state.trades).toBe(1);
+
+      fake.push("error", "AUTHORIZATION_VIOLATION");
+      await until(() => fake.reconnects.length > 0);
+      expect(broker.state.trades).toBe(2);
+      const next = (credential.authenticator("nonce-3") as { auth_token: string }).auth_token;
+      expect(next).not.toBe(first);
+      // The token client dropped it too, so the session's HTTP calls present the new token.
+      const headers = await brokerCredential(env, "ses_a").headers("GET", "http://listener.test/");
+      expect(headers["Authorization"]).toBe(`DPoP ${next}`);
+      // Rate-limited: still the one warning, and it names no token.
+      expect(warnings.length).toBe(1);
+      for (const one of broker.state.minted) expect(warnings.join("\n")).not.toContain(one.value);
+
+      // Refused again before the connection is back: the new token does not cure an auth service
+      // that is away, so nothing more is dropped.
+      fake.push("error", "AUTHORIZATION_VIOLATION");
+      fake.push("error", "AUTHORIZATION_VIOLATION");
+      await Bun.sleep(200);
+      expect(broker.state.trades).toBe(2);
+
+      // Back, and then refused twice: a new outage, warned of and cured as the first was.
+      fake.push("reconnect");
+      fake.push("error", "AUTHENTICATION_EXPIRED");
+      fake.push("error", "AUTHENTICATION_EXPIRED");
+      await until(() => broker.state.trades === 3);
+      expect(broker.state.trades).toBe(3);
+      expect(warnings.length).toBe(2);
+      expect(warnings[1]).toContain("(AUTHENTICATION_EXPIRED)");
+    } finally {
+      stop();
+    }
+  }, 20_000);
+
+  test("a refusal of a lapsed token, of one the connection is moving off, or of another kind drops nothing", async () => {
+    // A stand-in credential, so each condition is set alone.
+    let expiresAt = Date.now() + 600_000;
+    let moving = false;
+    const drops: number[] = [];
+    const renewals: number[] = [];
+    const credential: BrokerNatsCredential = {
+      ready: async () => {},
+      renew: async () => {
+        renewals.push(Date.now());
+      },
+      authenticator: () => undefined,
+      expiresAt: () => new Date(expiresAt),
+      needsReconnect: () => moving,
+      drop: () => {
+        drops.push(Date.now());
+      },
+    };
+    const fake = fakeConnection(() => {});
+    const warnings: string[] = [];
+    const stop = keepNatsCredential(fake.connection, credential, (text) => warnings.push(text));
+    try {
+      // Not a refusal of the credential: a subscribe the server denied, an error with no code. Each
+      // condition is read once the reader has taken the statuses before it.
+      fake.push("error", "PERMISSIONS_VIOLATION");
+      fake.push("error", "PERMISSIONS_VIOLATION");
+      fake.push("error", "");
+      fake.push("disconnect", "AUTHORIZATION_VIOLATION");
+      await Bun.sleep(100);
+      // The connection is about to present the token in hand, not the one refused.
+      moving = true;
+      fake.push("error", "AUTHORIZATION_VIOLATION");
+      fake.push("error", "AUTHORIZATION_VIOLATION");
+      await Bun.sleep(100);
+      // A token that lapsed is the renewal's to replace.
+      moving = false;
+      expiresAt = Date.now() - 1;
+      fake.push("error", "AUTHENTICATION_EXPIRED");
+      fake.push("error", "AUTHENTICATION_EXPIRED");
+      await Bun.sleep(100);
+      expect(drops).toEqual([]);
+      expect(warnings).toEqual([]);
+      // The control: the same two refusals of a live token in hand drop it.
+      expiresAt = Date.now() + 600_000;
+      fake.push("error", "AUTHORIZATION_VIOLATION");
+      fake.push("error", "AUTHORIZATION_VIOLATION");
+      await until(() => drops.length > 0, 2_000);
+      expect(drops.length).toBe(1);
+      await until(() => renewals.length > 0, 2_000);
+      expect(renewals.length).toBeGreaterThan(0);
+    } finally {
+      stop();
+    }
+  }, 10_000);
+
+  /** A stand-in credential whose renewals the row lands by hand, each with a token that lives
+   *  ten minutes; `expiresAt` is when the token in hand lapses. */
+  function heldRenewals(expiresAt: number) {
+    const state = { expiresAt, renewals: 0, drops: 0 };
+    const pending: (() => void)[] = [];
+    const credential: BrokerNatsCredential = {
+      ready: async () => {},
+      renew: () => {
+        state.renewals += 1;
+        const landed = Promise.withResolvers<void>();
+        pending.push(() => {
+          state.expiresAt = Date.now() + 600_000;
+          landed.resolve();
+        });
+        return landed.promise;
+      },
+      authenticator: () => undefined,
+      expiresAt: () => new Date(state.expiresAt),
+      needsReconnect: () => false,
+      drop: () => {
+        state.drops += 1;
+      },
+    };
+    return { state, credential, land: () => pending.shift()?.() };
+  }
+
+  test("a drop while a renewal is in flight renews again the moment that one lands", async () => {
+    const { state, credential, land } = heldRenewals(Date.now() + 600_000);
+    const fake = fakeConnection(() => {});
+    const stop = keepNatsCredential(fake.connection, credential, () => {});
+    try {
+      fake.push("error", "AUTHORIZATION_VIOLATION");
+      fake.push("error", "AUTHORIZATION_VIOLATION");
+      await until(() => state.renewals === 1, 2_000);
+      // Back, and refused twice again while that renewal is still in flight.
+      fake.push("reconnect");
+      fake.push("error", "AUTHORIZATION_VIOLATION");
+      fake.push("error", "AUTHORIZATION_VIOLATION");
+      await until(() => state.drops === 2, 2_000);
+      expect(state.renewals).toBe(1);
+      // It lands a token that lives ten minutes, so only the drop's ask renews again now.
+      land();
+      await until(() => state.renewals === 2, 1_000);
+      expect(state.renewals).toBe(2);
+    } finally {
+      land();
+      stop();
+    }
+  }, 10_000);
+
+  test("a drop's renewal replaces the renewal that was due, rather than adding one", async () => {
+    // The token in hand lapses in 2 s, so a renewal is due at 1 s; the drop renews at once and
+    // lands a token that lives ten minutes, after which nothing is due for minutes.
+    const { state, credential, land } = heldRenewals(Date.now() + 2_000);
+    const fake = fakeConnection(() => {});
+    const stop = keepNatsCredential(fake.connection, credential, () => {});
+    try {
+      fake.push("error", "AUTHORIZATION_VIOLATION");
+      fake.push("error", "AUTHORIZATION_VIOLATION");
+      await until(() => state.renewals === 1, 900);
+      land();
+      await Bun.sleep(1_500);
+      expect(state.renewals).toBe(1);
+    } finally {
+      land();
+      stop();
+    }
+  }, 10_000);
+
+  test("a token dropped while the broker is away is presented no more", async () => {
+    // The renewal after the drop fails, so the connection holds no token: each CONNECT presents
+    // nothing and trades for one, rather than present the token the server refused.
+    const broker = stubBroker(600);
+    const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_a");
+    await credential.ready();
+    credential.authenticator("nonce-1");
+    const fake = fakeConnection(() => {});
+    const stop = keepNatsCredential(fake.connection, credential, () => {});
+    try {
+      broker.state.down = true;
+      fake.push("error", "AUTHORIZATION_VIOLATION");
+      fake.push("error", "AUTHORIZATION_VIOLATION");
+      await until(() => broker.state.trades > 1);
+      expect(broker.state.trades).toBeGreaterThan(1);
+      expect(credential.authenticator("nonce-2")).toBeUndefined();
+      expect(credential.expiresAt().getTime()).toBe(0);
+    } finally {
+      stop();
+    }
+  }, 15_000);
+});
+
+// The review of 2fa6fbf7cf, m3: a session switch's follow inside a pass whose deadline is shorter
+// than the default is bounded by that pass (`followNatsCredential`'s `boundMs`); at the default it
+// is the 20 s trade and the 8 s reconnect it always was (nats-credential-deadlines.test.ts).
+describe("followNatsCredential within a bound", () => {
+  test("a new session's token that never comes fails at the trade's share of the bound", async () => {
+    const broker = stubBroker(600);
+    let session = "ses_from";
+    const credential = brokerNatsCredential(podEnvironment(broker.url), () => session);
+    await credential.ready();
+    credential.authenticator("nonce-1");
+    broker.state.down = true;
+    session = "ses_to";
+    const fake = fakeConnection(() => credential.authenticator("nonce-again"));
+    const started = Date.now();
+    // 4 s: the connection's share is half of it, so the trade waits 2 s, then names what the
+    // last trade came to.
+    const failure = await followNatsCredential(fake.connection, credential, 4_000).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    const took = Date.now() - started;
+    expect(String(failure)).toContain(
+      "the NATS connection could not take the new session's token: "
+    );
+    expect(String(failure)).toContain("HTTP 503");
+    expect(took).toBeGreaterThanOrEqual(1_900);
+    expect(took).toBeLessThan(4_000);
+    expect(fake.reconnects).toEqual([]);
+  }, 15_000);
+
+  test("a connection that never comes back fails at what is left of the bound", async () => {
+    const broker = stubBroker(600);
+    let session = "ses_from";
+    const credential = brokerNatsCredential(podEnvironment(broker.url), () => session);
+    await credential.ready();
+    credential.authenticator("nonce-1");
+    session = "ses_to";
+    // The connection is asked to reconnect, and no status ever says it is back.
+    const fake = fakeConnection(() => {});
+    const started = Date.now();
+    const failure = await followNatsCredential(fake.connection, credential, 4_000).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    expect(String(failure)).toMatch(
+      /the NATS connection did not come back as the new session within (\d+(\.\d)?) s/
+    );
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(fake.reconnects.length).toBe(1);
+    expect(fake.readerStopped()).toBe(true);
   }, 15_000);
 });
 
@@ -656,6 +1027,75 @@ describe.skipIf(!envoyStackEnabled)(
         await hub.stop();
       }
     }, 180_000);
+
+    test("a token revoked before it lapses is dropped at the second refusal, and the connection comes back", async () => {
+      // The broker revokes the session's token: the auth service, which asks it about each
+      // token, refuses every CONNECT that presents it, and nats.js redials every 2 s. Tokens
+      // live ten minutes, so only the keeper's drop gets the connection a token it admits.
+      const broker = stubBroker(600);
+      const hub = await startCalloutHub("revoked", broker.url);
+      let connection: NatsConnection | undefined;
+      let stopKeeping = () => {};
+      const started = Date.now();
+      const trace: string[] = [];
+      const note = (what: string) => trace.push(`${Date.now() - started} ms: ${what}`);
+      try {
+        const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_revoked");
+        await credential.ready();
+        const opened = await connect(
+          natsConnectionOptions({
+            servers: [hub.natsUrl],
+            name: "nats-credential-revoked",
+            credential: { kind: "broker", broker: credential },
+          })
+        );
+        connection = opened;
+        const reconnected: number[] = [];
+        void (async () => {
+          for await (const status of opened.status()) {
+            note(`status ${status.type} ${JSON.stringify(status.data)}`);
+            if (status.type === Events.Reconnect) reconnected.push(Date.now());
+          }
+        })();
+        const warnings: string[] = [];
+        stopKeeping = keepNatsCredential(opened, credential, (text) => {
+          note(`keeper: ${text}`);
+          warnings.push(text);
+        });
+        await opened.flush();
+
+        note("the broker revokes the token, and the connection redials");
+        const revoked = broker.state.minted[0]?.value ?? "";
+        broker.state.revoked.add(revoked);
+        const at = Date.now();
+        await opened.reconnect();
+        // Two refusals 2 s apart, the trade, and the redial after it, with 10 s for the
+        // handshakes on a loaded machine.
+        const backBy = at + 3 * 2_000 + 10_000;
+        while (!reconnected.some((when) => when > at) && Date.now() < backBy) await Bun.sleep(100);
+        if (!reconnected.some((when) => when > at))
+          throw new Error(
+            [
+              `the connection did not come back within ${(backBy - at) / 1000} s of the revoke; natsd refused ${hub.refusals()} connection(s), and the broker minted ${broker.state.minted.length} token(s)`,
+              "the client, by milliseconds since the row began:",
+              ...trace,
+              hub.logs(),
+            ].join("\n")
+          );
+        expect(hub.refusals()).toBeGreaterThanOrEqual(2);
+        expect(broker.state.minted.length).toBe(2);
+        expect(warnings.join("\n")).toContain(
+          "refused the connection's live broker token (AUTHORIZATION_VIOLATION)"
+        );
+        for (const one of broker.state.minted) expect(warnings.join("\n")).not.toContain(one.value);
+        expect(opened.isClosed()).toBe(false);
+        expect(await opened.rtt()).toBeGreaterThanOrEqual(0);
+      } finally {
+        stopKeeping();
+        await connection?.close().catch(() => {});
+        await hub.stop();
+      }
+    }, 120_000);
 
     test("a session switch subscribes the new session only once the connection is admitted as it", async () => {
       const broker = stubBroker(600);

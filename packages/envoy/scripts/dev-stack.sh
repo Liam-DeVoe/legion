@@ -132,6 +132,19 @@
 # service.
 set -euo pipefail
 
+# refuse_old_bash MAJOR MINOR VERSION: exits 2, in one line naming the bash this script needs and
+# VERSION, where MAJOR.MINOR is older than 5.1. The wait at the end (`wait -n -p`, which names the
+# process that stopped) is bash 5.1's: an older bash refuses -p there, and the loop around it never
+# sees a process stop and spins at once forever. So the first command hands it this bash's own
+# version, before anything is created or started; scripts/dev-stack.test.sh runs it with others.
+refuse_old_bash() {
+  if (($1 < 5 || ($1 == 5 && $2 < 1))); then
+    echo "dev-stack: needs bash 5.1 or newer (for wait -n -p), and this is bash $3" >&2
+    exit 2
+  fi
+}
+refuse_old_bash "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}" "$BASH_VERSION"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENVOY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$ENVOY_DIR/../.." && pwd)"
@@ -692,11 +705,20 @@ callout_after_first_broker
 # session name to the listed account and never to a pod, so what keeps two pods of one account
 # apart is this row, which a deployment's daemon writes as it starts a pod; here the registrar
 # account stands in for that daemon, and the body carries the pod's own broker-audience token.
-# Without it the exchange is refused invalid_grant, naming the session. ---
-if ! curl -sf -X POST "$BROKER_URL/v1/oauth/exchange/pod-sessions" \
-  -H "Authorization: Bearer $(cat "$REGISTRAR_TOKEN_FILE")" \
-  -H 'Content-Type: application/json' \
-  -d "{\"pod_token\": \"$(cat "$POD_TOKEN_FILE")\", \"session\": \"$EXCHANGE_SESSION\"}" >/dev/null; then
+# Without it the exchange is refused invalid_grant, naming the session. Both tokens reach curl by
+# file, never in an argv, which /proc shows every user: the registrar's bearer as a 0600 header
+# file (`-H @file`), and the pod token read by jq itself (`--rawfile`) into a 0600 body file
+# (`--data-binary @file`), both in a directory of their own under the run's, removed after. ---
+registration="$(mktemp -d "$WORK_DIR/register.XXXXXX")"
+(umask 077 && printf 'Authorization: Bearer %s\n' "$(<"$REGISTRAR_TOKEN_FILE")" >"$registration/header")
+(umask 077 && jq -cn --rawfile p "$POD_TOKEN_FILE" --arg s "$EXCHANGE_SESSION" \
+  '{pod_token: ($p | sub("\n+$"; "")), session: $s}' >"$registration/body")
+registered=true
+curl -sf -X POST "$BROKER_URL/v1/oauth/exchange/pod-sessions" \
+  -H "@$registration/header" -H 'Content-Type: application/json' \
+  --data-binary "@$registration/body" >/dev/null || registered=false
+rm -rf -- "$registration"
+if [ "$registered" != true ]; then
   echo "dev-stack: registering the exchange pod for $EXCHANGE_SESSION failed" >&2
   exit 1
 fi

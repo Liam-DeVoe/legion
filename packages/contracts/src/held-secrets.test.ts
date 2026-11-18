@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import {
   forgetHeldSecrets,
+  HELD_PAST_LAPSE_MS,
   holdSecret,
   holdUrlUserinfo,
   scrub,
@@ -12,6 +13,63 @@ import {
 afterEach(forgetHeldSecrets);
 
 const secret = () => `dsp_${randomBytes(24).toString("base64url")}`;
+
+/** How many values and windows the process's one registry holds now. */
+function registrySize(): { readonly values: number; readonly windows: number } {
+  const registry = (globalThis as Record<symbol, unknown>)[
+    Symbol.for("@legion/contracts/held-secrets")
+  ] as { values: Set<string>; windows: Set<string> };
+  return { values: registry.values.size, windows: registry.windows.size };
+}
+
+describe("how long a secret is held", () => {
+  test("a process that trades all its life holds the tokens of the last hour, not every one", () => {
+    // A session renews a broker token every few minutes, and each trade holds its subject token,
+    // its actor token and the token it got: held for life, a week of trades is tens of MiB.
+    const life = holdSecret(secret());
+    const now = Date.now();
+    for (let trade = 0; trade < 5_000; trade += 1) {
+      holdSecret(secret(), now - HELD_PAST_LAPSE_MS - 1);
+    }
+    const lately = holdSecret(secret(), now);
+    // The lapsed trades are forgotten, and their windows with them; what is held for life, and
+    // what lapsed less than an hour ago, are held still.
+    expect(registrySize().values).toBe(2);
+    expect(registrySize().windows).toBe(2 * (life.length - 9));
+    expect(scrub(`${life} ${lately}`)).toBe(`${WITHHELD} ${WITHHELD}`);
+  });
+
+  test("a forgotten secret is printed as it is, and a window it shared with a held one is not", () => {
+    const lapsed = secret();
+    // Held for life, and shares its first ten characters with the one that lapses.
+    const kept = holdSecret(`${lapsed.slice(0, 10)}${secret()}`);
+    holdSecret(lapsed, Date.now() - HELD_PAST_LAPSE_MS - 1);
+    // Each hold forgets what has lapsed by then.
+    holdSecret(secret());
+    expect(scrub(`echo ${lapsed.slice(12)}`)).toBe(`echo ${lapsed.slice(12)}`);
+    expect(scrub(`echo ${kept.slice(0, 10)}`)).toBe(`echo ${WITHHELD}`);
+  });
+
+  test("held again, a secret is held for the longer of the two, and for life where either says so", async () => {
+    // Each is due to be forgotten a second from now, and held again before then.
+    const soon = () => Date.now() - HELD_PAST_LAPSE_MS + 1_000;
+    const renewed = holdSecret(secret(), soon());
+    holdSecret(renewed, Date.now());
+    const forLife = holdSecret(secret(), soon());
+    holdSecret(forLife);
+    // Held until an hour from now, then held again with a lapse long past: that shortens nothing.
+    const late = holdSecret(secret(), Date.now());
+    holdSecret(late, Date.now() - HELD_PAST_LAPSE_MS - 1);
+    const once = holdSecret(secret(), soon());
+    await Bun.sleep(1_100);
+    holdSecret(secret());
+    expect(scrub(renewed)).toBe(WITHHELD);
+    expect(scrub(forLife)).toBe(WITHHELD);
+    expect(scrub(late)).toBe(WITHHELD);
+    // The control: one held once, with the same lapse, is forgotten by now.
+    expect(scrub(once)).toBe(once);
+  });
+});
 
 describe("scrub", () => {
   test("a line with no held secret comes back as itself, with or without secrets held", () => {

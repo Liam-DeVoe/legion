@@ -2270,6 +2270,9 @@ export async function runEnvoyChannelServer(): Promise<void> {
   // at a time, and a restart is a new instance with a new id.
   const clientInstanceID = newClientInstanceID()
   let runtime: ChannelToolRuntime | undefined
+  // What the start waits on, for a tool call it answers before the session is up: a start under
+  // NATS_AUTH=broker waits for the session's token for as long as the server lives.
+  let starting = "it reads its settings"
   let claim: LegionClaim | undefined
   const daemon = pane === undefined ? undefined : createLegionDaemonClient(pane.daemonUrl)
   // INFRA-220: the phase reminder's Claude Code host (`./legion-phase-hook`), which Claude Code's
@@ -2347,7 +2350,8 @@ export async function runEnvoyChannelServer(): Promise<void> {
       else if (op === "ready_for_update") phaseHook?.updateAnswered()
       return mcpResult(answer)
     }
-    if (runtime === undefined) throw new Error("Envoy channel server is still starting")
+    if (runtime === undefined)
+      throw new Error(`Envoy channel server is still starting: ${starting}`)
     return mcpResult(await executeEnvoyTool(runtime, request.params.name, request.params.arguments))
   })
   // INFRA-1026: the link to this session's Claude Code mod, bound below once the MCP transport is
@@ -2505,6 +2509,10 @@ export async function runEnvoyChannelServer(): Promise<void> {
       stampOnce(() => identity.id)
       session = inboundOffChannelSession({ identity, stateDirectory, why: inbound.off })
     } else {
+      starting =
+        inbound.natsCredential.kind === "broker"
+          ? "it waits for this session's broker token, and its stderr says what each trade came to"
+          : "it connects to NATS"
       const dialled = await dialChannelNats(
         inbound,
         `claude-envoy-channel-${identity.id}`,
@@ -2519,6 +2527,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
       if (dialled === undefined) return
       connection = dialled.connection
       stopNatsKeeper = dialled.stop
+      starting = "it registers this session with Envoy"
       const started = await startChannelSession({
         identity,
         connection,

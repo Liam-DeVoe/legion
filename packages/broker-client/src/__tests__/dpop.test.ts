@@ -133,6 +133,33 @@ test("a box key that is not P-256 is refused, naming whose it is", async () => {
   );
 });
 
+// h5 (the review of 2fa6fbf7cf): a box key that does not parse is refused in this package's own
+// words, naming what was read, with no cause: the runtime's parse error can quote the bytes it
+// was handed, and a cause is printed with the error wherever the error is printed whole.
+test.each([
+  [
+    "a body that is no key",
+    // The armour is built from parts: the push's leak check refuses a whole PEM header literal.
+    (canary: string) =>
+      `${"-----BEGIN"} PRIVATE KEY-----\n${canary}\n${"-----END"} PRIVATE KEY-----\n`,
+  ],
+  ["no PEM at all", (canary: string) => `d=${canary}`],
+] as const)("a box key that does not parse, as %s, is refused naming none of it", async (_as, pem) => {
+  const canary = fixtureSecret("canary");
+  const refusal = await importDpopKey(pem(canary), "ada@example.com's box key").then(
+    () => null,
+    (error: unknown) => error as Error
+  );
+  expect(refusal).toBeInstanceOf(Error);
+  expect(refusal?.message).toBe(
+    "read ada@example.com's box key: it does not parse as a PKCS#8 PEM private key"
+  );
+  expect(refusal?.cause).toBeUndefined();
+  expect(String(refusal)).not.toContain(canary);
+  expect(String(refusal?.cause ?? "")).not.toContain(canary);
+  expect(JSON.stringify(Object.getOwnPropertyNames(refusal))).not.toContain("cause");
+});
+
 /** What a connection proof's checker holds it to, beside its signature: the header and claim
  *  names, the connection's method and target, the token's hash (`ath`, its SHA-256 in base64url)
  *  and the server's nonce. */

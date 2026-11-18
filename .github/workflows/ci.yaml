@@ -3500,7 +3500,7 @@ jobs:
               # which topics reach a private stream subject, the file
               # packages/envoy/internal/bus's TestReachesPrivateStreamSubjectBoundsInterests reads.
               - 'packages/envoy/internal/bus/testdata/private-stream-subjects.json'
-              # broker-client's dpop.test.ts:212-215 reads both connection proofs.
+              # broker-client's dpop.test.ts reads both connection proofs.
               - 'packages/envoy/internal/brokertoken/testdata/connection-proof-*.json'
               # broker-client's refusal-corpus.test.ts reads the broker's refusal texts as its
               # library writes them.
@@ -3517,7 +3517,7 @@ jobs:
               - 'packages/contracts/src/**'
               # src/__tests__ import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
-              # src/__tests__/dpop.test.ts:212-215 reads both signers' connection proofs.
+              # src/__tests__/dpop.test.ts reads both signers' connection proofs.
               - 'packages/envoy/internal/brokertoken/testdata/connection-proof-*.json'
               # src/__tests__/refusal-corpus.test.ts reads the broker's refusal texts as its
               # library writes them (internal/broker/oauth's refusal-corpus test writes them).

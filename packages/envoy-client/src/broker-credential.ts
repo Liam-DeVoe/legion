@@ -31,6 +31,7 @@ import { chooseSignIn, type SignInRecord } from "@legion/broker-client/signins";
 import type { BrokerToken, BrokerTokenClient } from "@legion/broker-client/token-client";
 import { isFinalRefusal } from "@legion/broker-client/token-errors";
 import type { RequestCredential } from "./bearer";
+import { LoggableError } from "./errors";
 
 /**
  * The session a trade writes under, which the broker records the minted token against and the
@@ -312,7 +313,7 @@ async function tradedToken(
   const { entry, made } = await untilAborted(clientFor(env, own), signal);
   const { client } = made;
   if (client === undefined) {
-    throw new Error(
+    throw new LoggableError(
       "AGENT_SECRETS_URL and AGENT_SECRETS_MACHINE_IDENTITY no longer name a broker and an identity to trade"
     );
   }
@@ -343,6 +344,22 @@ export function brokerTokenFor(
   session: BrokerSessionName | undefined
 ): (signal?: AbortSignal, waitForReady?: boolean) => Promise<TradedToken> {
   return (signal, waitForReady) => tradedToken(env, sessionName(session), signal, waitForReady);
+}
+
+/** Has the client at `key` drop `token`, or the token it holds where `token` is undefined. Looked
+ *  up, never made: a session this process never traded for is given no entry. */
+function dropHeld(key: ClientKey, token: string | undefined): void {
+  CLIENTS.get(key.session)?.get(key.variables)?.made?.client?.drop(token);
+}
+
+/**
+ * Has the client that traded `traded` for a NATS connection of `env`'s drop that token alone, as
+ * `brokerCredential`'s `stale` drops a token Dispatch said is not live: the NATS server refused it
+ * though it has not lapsed (`keepNatsCredential`). The client's next answer is a fresh trade, so
+ * the session's HTTP calls stop presenting it too; a fresher token the client holds is kept.
+ */
+export function dropTradedToken(env: BrokerEnvironment, traded: TradedToken): void {
+  dropHeld(keyOf(env, traded.session), traded.token.accessToken);
 }
 
 /**
@@ -422,11 +439,9 @@ export function brokerCredential(
     stale(acting?: string, headers?: Readonly<Record<string, string>>): void {
       // The presentation's own client, and its token alone, where the caller names it: the host
       // may have moved to another session since, and the client may hold a fresher token.
-      // Otherwise the session `acting` resolves to now. Looked up, never made: a session this
-      // process never traded for is given no entry.
+      // Otherwise the session `acting` resolves to now.
       const told = headers === undefined ? undefined : presentedAs.get(headers);
-      const key = told?.key ?? keyOf(env, own(acting));
-      CLIENTS.get(key.session)?.get(key.variables)?.made?.client?.drop(told?.token);
+      dropHeld(told?.key ?? keyOf(env, own(acting)), told?.token);
     },
     secret: () => presented,
   };

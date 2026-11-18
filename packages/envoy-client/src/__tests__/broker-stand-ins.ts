@@ -168,7 +168,8 @@ export function natsBrokerStandIns(prefix: string) {
    * pod session no registration names yet (`registeredPodSession`,
    * packages/envoy/internal/broker/oauth/exchange.go), in its own words. `state.seconds`, at first
    * `lifeSeconds`, is how long the next token lives: a row may change it, as a broker that is back mints tokens of their
-   * usual life. A trade whose DPoP proof is missing or whose header is no JSON is answered as the
+   * usual life. A token in `revoked` introspects as not active, as one a revoke ended before it
+   * lapsed. A trade whose DPoP proof is missing or whose header is no JSON is answered as the
    * broker answers it, `invalid_dpop_proof` (RFC 9449 Section 7.1), and counted in `badProofs`,
    * rather than thrown: a throw in the handler fails the row running and skips its cleanup.
    */
@@ -178,6 +179,7 @@ export function natsBrokerStandIns(prefix: string) {
       down: false,
       unregistered: false,
       minted,
+      revoked: new Set<string>(),
       trades: 0,
       seconds: lifeSeconds,
       badProofs: 0,
@@ -189,7 +191,7 @@ export function natsBrokerStandIns(prefix: string) {
         const form = new URLSearchParams(await request.text());
         if (new URL(request.url).pathname === "/v1/oauth/introspect") {
           const held = minted.find((one) => one.value === form.get("token"));
-          if (held === undefined || held.expiresAt <= Date.now())
+          if (held === undefined || held.expiresAt <= Date.now() || state.revoked.has(held.value))
             return Response.json({ active: false });
           return Response.json({
             active: true,

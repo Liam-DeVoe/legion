@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { mkdtemp, rm, stat } from "node:fs/promises"
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
@@ -217,6 +217,67 @@ test("the session advertises its delivery modes for a mod that polls and never s
     await client.close().catch(() => undefined)
     listener.stop(true)
     await broker.stop()
+    await rm(stateDirectory, { recursive: true, force: true })
+  }
+}, 20_000)
+
+// Under NATS_AUTH=broker the start waits for the session's token for as long as the server lives,
+// since Claude Code does not start a channel server again: a tool call meanwhile says what the start
+// waits on, where it said only that the server was starting (the review of 2fa6fbf7cf, m1).
+test("a tool call while the start waits for its broker token says what the start waits on", async () => {
+  const broker = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: async (request) => {
+      await request.text()
+      return new Response("the broker is away", { status: 503 })
+    },
+  })
+  const stateDirectory = await mkdtemp(join(tmpdir(), "claude-envoy-broker-wait-"))
+  const tokenFile = join(stateDirectory, "projected-token")
+  await writeFile(tokenFile, `${fixtureSecret("proj")}\n`)
+  const client = new Client({ name: "test", version: "0" })
+  const transport = new StdioClientTransport({
+    command: "bun",
+    args: [entry],
+    cwd: stateDirectory,
+    env: {
+      PATH: process.env["PATH"] ?? "",
+      HOME: stateDirectory,
+      ENVOY_NATS_URL: "nats://127.0.0.1:1",
+      ENVOY_URL: "http://127.0.0.1:1",
+      CLAUDE_CODE_SESSION_ID: "ses_broker_wait",
+      CLAUDE_PLUGIN_DATA: stateDirectory,
+      XDG_RUNTIME_DIR: stateDirectory,
+      NATS_AUTH: "broker",
+      AGENT_SECRETS_URL: `http://127.0.0.1:${broker.port}`,
+      AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
+      AGENT_SECRETS_MACHINE_TOKEN_FILE: tokenFile,
+    },
+    stderr: "pipe",
+  })
+  try {
+    await client.connect(transport)
+    let said = ""
+    await waitFor(
+      () =>
+        client.callTool({ name: "envoy_whoami", arguments: {} }).then(
+          () => {
+            throw new Error("the session started though its broker answers every trade 503")
+          },
+          (error: unknown) => {
+            said = String(error)
+            return !said.includes("it reads its settings")
+          },
+        ),
+      "the start to reach its wait for the token",
+    )
+    expect(said).toContain(
+      "Envoy channel server is still starting: it waits for this session's broker token, and its stderr says what each trade came to",
+    )
+  } finally {
+    await client.close().catch(() => undefined)
+    broker.stop(true)
     await rm(stateDirectory, { recursive: true, force: true })
   }
 }, 20_000)

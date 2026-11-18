@@ -19,7 +19,12 @@ import {
   type SectionOff,
 } from "./envoy-config";
 import { messageFor } from "./errors";
-import { brokerNatsCredential, NATS_AUTH_VAR, type NatsCredential } from "./nats-credential";
+import {
+  brokerNatsCredential,
+  NATS_AUTH_VAR,
+  type NatsCredential,
+  noSessionNamed,
+} from "./nats-credential";
 import { readSecretFile } from "./secret-file";
 
 /** The listener's address when neither `envoy.url` nor `ENVOY_URL` names one. */
@@ -276,9 +281,11 @@ function natsSeed(
  * use. A seed (`natsSeed`) is presented as it always was. Otherwise `NATS_AUTH`, else the
  * section's `natsAuth` (an empty variable counts as unset), says which: `broker` is the session's
  * broker token (`brokerNatsCredential`), refused naming the gap where this machine has no broker
- * route, and, as the file's, going only to the servers written beside it (`requireFileServers`):
- * the token and the proof it signs would otherwise go to any server `ENVOY_NATS_URL` names, which
- * could relay that proof to the hub it was meant for. `none` is no credential; any other value is
+ * route or where the caller names no session (`noSessionNamed`: a token traded under none is the
+ * machine's or the signed-in person's, not the session's), and, as the file's, going only to the
+ * servers written beside it (`requireFileServers`): the token and the proof it signs would
+ * otherwise go to any server `ENVOY_NATS_URL` names, which could relay that proof to the hub it
+ * was meant for. `none` is no credential; any other value is
  * refused, naming the setting and never its value, which may be a credential pasted into the wrong
  * place. Unset is none, whatever
  * the machine's broker route says: that route reads only `AGENT_SECRETS_URL` and the machine's
@@ -318,6 +325,9 @@ function natsCredential(
   const route = brokerRouteConfigured(env);
   if (!route.traded) throw new Error(`${auth.source} is broker, but ${route.gap}`);
   if (named === undefined) requireFileServers(section, namedNatsUrls, filePath, "NATS_AUTH=broker");
+  // No name at all refuses here; a name read from a function is read at each trade, which refuses
+  // a trade the moment it reads none (`noSessionNamed`).
+  if (session === undefined) throw new Error(noSessionNamed(auth.source));
   return { kind: "broker", broker: brokerNatsCredential(env, session, auth.source) };
 }
 

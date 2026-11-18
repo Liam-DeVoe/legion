@@ -141,10 +141,12 @@ export class RegistrationPendingError extends Error {
 }
 
 /**
- * A call that stopped waiting, its signal ended by its own deadline, while the client's retry
- * loop was trading again after a failure a later trade may cure, other than a pod session not
- * registered yet ({@link RegistrationPendingError}): no answer within the trade's own time (`TRADE_ATTEMPT_MS`),
- * no connection, a 5xx, the broker's 429 or a DPoP refusal, or a trade that could not be made.
+ * A trade failure a later trade may cure, told to a caller with no live token in hand while the
+ * client's retry loop trades again: at once to a caller that fails fast, and to one that waits for
+ * ready once its own signal ends. A pod session not registered yet is
+ * {@link RegistrationPendingError} instead. The failure is no answer within the trade's own time
+ * (`TRADE_ATTEMPT_MS`), no connection, a 5xx, the broker's 429 or a DPoP refusal, or a trade that
+ * could not be made.
  * The loop goes on, so it is not final ({@link isFinalRefusal}). Its message is the loop's own
  * line for that failure (`Retried.said`), which names nothing a peer wrote.
  */
@@ -181,6 +183,18 @@ export class BrokerTradeFailedError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "BrokerTradeFailedError";
+  }
+}
+
+/**
+ * A call to a client that was closed (`BrokerTokenClient.close`), whose retry loop trades no
+ * more: a sign-in this machine no longer chooses, a session the process left. Its message is the
+ * client's own and names nothing a peer wrote, so a caller prints it whole.
+ */
+export class TokenClientClosedError extends Error {
+  constructor() {
+    super("the secrets broker client was closed, and trades no more");
+    this.name = "TokenClientClosedError";
   }
 }
 

@@ -14,6 +14,58 @@ export type SendEnvoyMessageOptions = {
   readonly idempotencyKey?: string
 }
 
+/** What a stored send went without. */
+export type SentEnvoyMessage = {
+  /**
+   * Why the send went without its credential: the very error the credential's `headers` threw
+   * for the attempt the listener stored, which a listener that asks for no credential stores as
+   * it stores any. Undefined where that attempt carried the credential, an attempt before it that
+   * went without included, and where the send was handed none to carry.
+   */
+  readonly withoutCredential: unknown
+}
+
+/**
+ * `credential`, every member of it as it is, with the outcome of its last `headers` kept: the
+ * error it threw or rejected with, rethrown unchanged, or none where it answered headers. A
+ * bearer's headers still come at once, and a broker credential's as its promise settles.
+ */
+function recorded(credential: RequestCredential): {
+  readonly credential: RequestCredential
+  readonly lastFailure: () => unknown
+} {
+  let failure: unknown
+  const answered = (headers: Readonly<Record<string, string>>) => {
+    failure = undefined
+    return headers
+  }
+  const failed = (error: unknown): never => {
+    failure = error
+    throw error
+  }
+  return {
+    credential: {
+      scheme: credential.scheme,
+      headers: (method, url, session, signal) => {
+        try {
+          const ready = credential.headers(method, url, session, signal)
+          return ready instanceof Promise ? ready.then(answered, failed) : answered(ready)
+        } catch (error) {
+          return failed(error)
+        }
+      },
+      ...(credential.stale === undefined
+        ? {}
+        : { stale: (session, presented) => credential.stale?.(session, presented) }),
+      ...(credential.identity === undefined
+        ? {}
+        : { identity: (presented) => credential.identity?.(presented) }),
+      secret: () => credential.secret(),
+    },
+    lastFailure: () => failure,
+  }
+}
+
 /**
  * Sends one direct message through envoy-client's own send (`createEnvoyClient().send`), so the
  * `envoy-send` command keeps every rule a session's own send keeps:
@@ -27,12 +79,19 @@ export type SendEnvoyMessageOptions = {
  *   without it, which a listener that asks for no credential answers. A listener that wants one
  *   answers 401 at its auth gate, and the error names both halves and no resend, since nothing
  *   was stored.
+ *
+ * A stored send answers what it went without (`SentEnvoyMessage`), so the command can say so: a
+ * sign-in revoked for good is stored without the credential by a listener that asks for none, and
+ * nothing else would tell the person.
  */
-export async function sendEnvoyMessage(options: SendEnvoyMessageOptions): Promise<void> {
+export async function sendEnvoyMessage(
+  options: SendEnvoyMessageOptions,
+): Promise<SentEnvoyMessage> {
+  const kept = options.credential === undefined ? undefined : recorded(options.credential)
   const client = createEnvoyClient({
     baseUrl: options.baseUrl,
     fetch: globalThis.fetch,
-    credential: options.credential,
+    credential: kept?.credential,
   })
   // No source session: the body names none, as `envoy-send` never has. The listener records the
   // message as an agent's (`source` is `agent`) with no sending session, and stamps no sender.
@@ -42,4 +101,5 @@ export async function sendEnvoyMessage(options: SendEnvoyMessageOptions): Promis
     message: options.message,
     ...(options.idempotencyKey === undefined ? {} : { idempotencyKey: options.idempotencyKey }),
   })
+  return { withoutCredential: kept?.lastFailure() }
 }

@@ -13,6 +13,10 @@
       "types": "./src/environment.ts",
       "bun": "./src/environment.ts"
     },
+    "./error-text": {
+      "types": "./src/error-text.ts",
+      "bun": "./src/error-text.ts"
+    },
     "./metadata-identity": {
       "types": "./src/metadata-identity.ts",
       "bun": "./src/metadata-identity.ts"

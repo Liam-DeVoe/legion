@@ -5,7 +5,7 @@
 
 import { expect, test } from "bun:test";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
-import { excerpt, SentTokens } from "../excerpt";
+import { EXCERPT_SCAN_LIMIT, excerpt, SentTokens } from "../excerpt";
 
 // F2 (the review of be17859eca): the token the credential holds now is one of the tokens it
 // presented, so it is scanned once, not once as `secret()` and again as a kept token.
@@ -35,4 +35,32 @@ test("an excerpt redacts every token a client presented and the one it holds now
   sent.note({ Authorization: `DPoP ${old}` });
   const shown = excerpt(`echo ${old} and ${live}`, sent.with(live));
   expect(shown).toBe("echo [redacted] and [redacted]");
+});
+
+// h1 (the review of 2fa6fbf7cf): a gateway that echoes the request echoes its `DPoP` header too,
+// the proof the credential signed for that request, which is none of the tokens a client keeps.
+// It is redacted as an echoed `Authorization` header is: as a header line and as a JSON member,
+// in any case, the header's name kept.
+test.each([
+  ["a header line", (proof: string) => `DPoP: ${proof}`, "DPoP: [redacted]"],
+  ["a header line in lower case", (proof: string) => `dpop:${proof}`, "dpop:[redacted]"],
+  ["a JSON member", (proof: string) => `{"Dpop":"${proof}"}`, '{"Dpop":"[redacted]"}'],
+  [
+    "a spaced JSON member",
+    (proof: string) => `{ "DPOP" : "${proof}" }`,
+    '{ "DPOP" : "[redacted]" }',
+  ],
+] as const)("an excerpt redacts an echoed DPoP proof as %s", (_as, echo, shown) => {
+  const proof = `eyJ0eXAiOiJkcG9wK2p3dCJ9.${fixtureSecret("claims")}.${fixtureSecret("sig")}`;
+  const quoted = excerpt(`echo ${echo(proof)} Authorization: DPoP ${fixtureSecret("token")}`, []);
+  expect(quoted).toBe(`echo ${shown} Authorization: DPoP [redacted]`);
+  expect(quoted).not.toContain(proof.slice(0, 12));
+});
+
+// The same bound as every pattern of `excerpt`: a proof cut by the first `EXCERPT_SCAN_LIMIT`
+// characters is redacted whole, its piece inside the bound included, and nothing past it is read.
+test("an echoed DPoP proof cut by the excerpt's scan bound leaves none of it behind", () => {
+  const proof = fixtureSecret("proof");
+  const cut = `<style>${"s".repeat(EXCERPT_SCAN_LIMIT - 40)}</style>DPoP: ${proof} after the limit`;
+  expect(excerpt(cut, [])).toBe("DPoP: [redacted]");
 });
