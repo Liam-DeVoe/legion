@@ -200,8 +200,10 @@ cat >"$bin/ssh" <<'EOF'
 # The fake ssh: records the call and runs the command here, so a machine's file system is this
 # test's own directories. vm.sh runs `ssh <options> <user@host> <one word>` and the options
 # carry the run's own OS Login key and the run's own known_hosts file, so the target is the
-# first argument that is not an option or an option's value; the whole argv goes to ssh.log,
-# which is where the OS Login cases read the user, the key and the host-key options back from.
+# first argument that is not an option or an option's value; the whole argv goes to ssh.log, one
+# line a call with each newline of it written as \n, which is where the OS Login cases read the
+# user, the key and the host-key options back from, a call at a time: a remote sh script of
+# several lines is one call.
 #
 # What follows the target is one word, because ssh has no argument vector: it joins what it is
 # given with spaces and the machine's login shell splits the result again. This fake does both
@@ -226,7 +228,7 @@ cat >"$bin/ssh" <<'EOF'
 # command's own exit status as ssh keeps it. A driver that means to stop remote work has to say
 # so over a second connection, and the cases below hold it to that.
 set -u
-printf '%s\n' "$*" >>"$FAKE_DIR/ssh.log"
+printf '%s\n' "${*//$'\n'/\\n}" >>"$FAKE_DIR/ssh.log"
 target=""
 while [ $# -gt 0 ]; do
   case $1 in
@@ -2417,10 +2419,8 @@ expires_usec=$(sed -n 's/.*"expirationTimeUsec": *"\([0-9]*\)".*/\1/p' "$tmp/ren
 [ -n "$expires_usec" ] || fail "the renewal named no expiry: $(cat "$tmp/renew-import.log")"
 (( (expires_usec / 1000000) - $(date -u +%s) > 23 * 3600 )) ||
   fail "the renewal's key expires in $(( (expires_usec / 1000000) - $(date -u +%s) )) s, not the 24 hours an import gives"
-# ssh.log holds a line per line of the argv it was given, and a step's load is started through
-# an sh script of several lines, so the ssh calls themselves are the lines that carry ssh_cmd's
-# own -F /dev/null.
-keyless=$(grep -- '-F /dev/null' "$fake/ssh.log" | grep -v -- "-i $key " || true)
+# ssh.log holds a line a call, so every line is an ssh of the step.
+keyless=$(grep -v -- "-i $key " "$fake/ssh.log" || true)
 [ -z "$keyless" ] ||
   fail "an ssh of the step that renewed the key ran without the run's own key: ${keyless%%$'\n'*}"
 [ -f "$renew_dir/steps/stale-key/meta.json" ] ||
