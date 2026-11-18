@@ -184,7 +184,7 @@ export const realStackReasons: Record<string, string> = {
   "keyboard-agents.e2e.ts":
     "the upload's target is the server's record; upload and send against the server; the delivered mention is the assertion",
   "keyboard-complete.e2e.ts":
-    "the snooze, review, priority, status, assignee, repository, hand-on, answer and dismiss writes each key sends, counted at the server's routes and read back; writes held at the server while a control keeps the focus; the live document; the Inbox drawer over another page; two tabs of one browser",
+    "the snooze, review, priority, status, assignee, repository, hand-on, answer and dismiss writes each key sends, counted at the server's routes and read back; the assignee, question-back and read-mark writes the command bar's actions send; writes held at the server while a control keeps the focus; the live document; the Inbox drawer over another page; two tabs of one browser; every page of the review corpus walked by the keyboard",
   "keyboard-document.e2e.ts": "comments made from the live document editor",
   "keyboard-inbox.e2e.ts": "snooze write; server refusal; server refusals",
   "keyboard-issue.e2e.ts":

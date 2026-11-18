@@ -1430,20 +1430,29 @@ export function Inbox({
    *  Ask back with nothing typed - is no action to offer. */
   const pressable = (control: HTMLElement | null | undefined) =>
     control?.matches(":disabled") === false ? control : null;
+  /** The item the command bar's actions act on: the column while it is on, else the row around
+   *  the focus - the row itself, or a control of its card, where a press inside the card leaves
+   *  the focus (an option after a click, Ask back instead as it shows). The palette gives the
+   *  focus back before a chosen action runs, so its `when` and its `run` read the same row. */
+  const commandHand = () => (paneShown ? paneRef.current : rowAround(document.activeElement));
   /** A control of the item in hand: its row, or the column with its head. */
-  const itemControl = (selector: string) => pressable(inHand(selector));
+  const itemControl = (selector: string) =>
+    pressable(commandHand()?.querySelector<HTMLElement>(selector));
   /** A control of the item's own card (`answerHand`), never one of another card the column's
    *  document draws; where no open card of the item is drawn - a thread, an approval's document,
-   *  an answered question's record - one anywhere in the item in hand. */
-  const cardControl = (selector: string) =>
-    pressable(answerHand() === null ? inHand(selector) : inAnswerHand(selector));
+   *  an answered question's record - one anywhere in the item in hand. Below the column's width
+   *  the card is the row around the focus. */
+  const cardControl = (selector: string) => {
+    if (!paneShown) return pressable(commandHand()?.querySelector<HTMLElement>(selector));
+    return pressable(answerHand() === null ? inHand(selector) : inAnswerHand(selector));
+  };
   /** A control of the column's head alone. */
   const headControl = (selector: string) => pressable(inHand(`[data-inbox-pane-head] ${selector}`));
   /** The command bar's own actions for the item in hand and the bar of selected rows (R11), with
    *  no default key (a person can give one, R14): each presses the control the page draws for it,
    *  found by its mark. A chosen row runs once the palette has closed and given the focus back
    *  (`SearchPalette`), so the item in hand is the one the bar opened over - in card mode the row
-   *  the focus is back on. */
+   *  around the control the focus is back on (`commandHand`). */
   const commandBarActions: readonly (readonly [KeymapActionId, () => HTMLElement | null])[] = [
     ["inbox.assign-to-me", () => itemControl('[data-inbox-action="assign-to-me"]')],
     ["inbox.unsnooze", () => itemControl('[data-inbox-action="unsnooze"]')],

@@ -6154,6 +6154,38 @@ test("the command bar offers the card's own actions for the row in hand, and run
   }
 });
 
+test("below the column the command bar offers the card's own actions while the focus is on a control of the card, and runs them on that card", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?", {
+      options: [{ label: "Ship" }, { label: "Hold" }],
+    }),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const { unmount } = renderInbox();
+
+  try {
+    const card = await screen.findByTestId("ask-ask-a");
+    // A press inside a card leaves the focus on the control pressed, not on its row.
+    act(() => within(card).getByRole("button", { name: "Decline to answer" }).focus());
+    const offeredRows = barRows();
+    for (const label of ["Decline", "Hand on", "Show the asker's handles"]) {
+      expect(offeredRows.get(label)).toEqual([]);
+    }
+    const decline = appKeymap.actions().find((action) => action.label === "Decline");
+    act(() => decline?.run());
+    expect(await screen.findByRole("dialog", { name: "Decline to answer" })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Decline to answer" })).not.toBeInTheDocument();
+  } finally {
+    unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
 test("beside the column the command bar presses the column head's Open page", async () => {
   const narrow = widenToReadingPane();
   const rows = [inboxIssue("ask-a", "CORE-1", "Which approach?")];

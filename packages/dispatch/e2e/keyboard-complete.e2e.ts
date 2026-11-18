@@ -28,6 +28,7 @@ import {
   editArtifact,
   editAsk,
   getInbox,
+  getIssue,
   getIssueArtifactText,
   listIssueAsks,
   markThreadRead,
@@ -41,6 +42,7 @@ import {
 import { recordClipboard } from "./clipboard";
 import { seedDeliveryFixture, TIMELINE_FIXTURE_QUERY } from "./delivery-seed";
 import { barAction, documentEditor, openSpec, placeCaret, selectEditorText } from "./editor";
+import { expectTimeout } from "./expect-timeout";
 import { control, controlRow, displayChoice, listOf } from "./filters";
 import { drawer } from "./inbox-drawer";
 import { inboxPane, inboxRow, paneScroller, selectedRow, selectRow } from "./inbox-pane";
@@ -92,8 +94,15 @@ import {
   versionReviewWrites,
 } from "./keyboard-complete";
 import { openIssue } from "./keyboard-issue";
-import type { KeyedWrite } from "./keyed-writes";
+import { type KeyedWrite, watchWrites } from "./keyed-writes";
 import { commentWithBody } from "./margin-helpers";
+import {
+  type ReviewedRoute,
+  type ReviewSeed,
+  reviewRoutes,
+  waitForRouteSettled,
+} from "./review-routes";
+import { seedReviewRoutes } from "./review-seed";
 import { sessionIds } from "./session-ids";
 import { openIssuesTab } from "./table-controls";
 import { type BrowserContext, expect, type Locator, type Page, test } from "./test";
@@ -3960,7 +3969,10 @@ interface InboxAction {
 }
 
 /** The row's table: the name of each control the Inbox draws for an item, by a pattern, and the
- *  action it is. A key reads as `?` and ⌘K draw it: `b` or `h` as `borh`, Escape as `Esc`. */
+ *  action it is - an action of the spec's keys table, of its list of the command bar's actions,
+ *  or one of the four the plan's decision on R11 adds to that list (Change answer, Show previous
+ *  versions, Show earlier answers, and Dismiss, or Move to Inbox, the selected items). A key
+ *  reads as `?` and ⌘K draw it: `b` or `h` as `borh`, Escape as `Esc`. */
 const INBOX_ACTIONS: readonly (readonly [RegExp, InboxAction])[] = [
   [/^Approve( v\d+)?$/, { key: "a", label: "Approve" }],
   [/^Request changes$/, { key: "Shift+R", label: "Request changes" }],
@@ -3973,21 +3985,33 @@ const INBOX_ACTIONS: readonly (readonly [RegExp, InboxAction])[] = [
   [/^(Dismiss|Move to Inbox): /, { key: "e", label: "Dismiss, or Move to Inbox" }],
   [/^Mark read$/, { label: "Mark read" }],
   [/^Show (\d+ earlier|fewer) repl/, { label: "Show earlier replies" }],
-  // The asker's button, which names the session by the short form of its id.
+  // The asker's button, which names the session by the short form of its id, and the three
+  // copies its card of handles holds.
   [new RegExp(`^session:${asker.actor.id.slice(0, 8)}`), { label: "Show the asker's handles" }],
+  [/^Copy session ID$/, { label: "Copy session ID" }],
+  [/^Copy session title$/, { label: "Copy session title" }],
+  [/^Copy tmux target$/, { label: "Copy tmux target" }],
   // The hand-on list's trigger, named by its list and then by the card's badge: whom the ask is
   // asked of, nobody where the server names no person, or the hand-on while it is out.
   [/^Hand this question to (Asked of \S+|Handing on…)$/, { label: "Hand on" }],
   [/^Referenced by/, { label: "Referenced by" }],
   [/^(Show|Hide) diff$/, { label: "Show the earlier approval's diff" }],
   // Answer is Ctrl+Enter in the answer box, and the note's disclosure is Enter's: both are the
-  // answer box Enter puts the caret in.
+  // answer box Enter puts the caret in. Save answer is Answer while an answer is being changed.
   [
-    /^(Answer|Add a note or answer in your own words)$/,
+    /^(Answer|Save answer|Add a note or answer in your own words)$/,
     { key: "Enter", label: "Answer the ask in hand" },
   ],
   [/^Ask back$/, { label: "Ask back" }],
+  // An answer shaped as a question asks which it is: these two, in place of Answer and Ask back.
+  [/^Ask back instead$/, { label: "Ask back instead" }],
+  [/^Answer with it anyway$/, { label: "Answer with it anyway" }],
   [/^Decline to answer$/, { label: "Decline" }],
+  // An answered question's record: Change answer, and its two disclosures; Cancel ends a change.
+  [/^Change answer$/, { label: "Change answer" }],
+  [/^Cancel$/, { label: "Cancel" }],
+  [/^Show \d+ previous versions?$/, { label: "Show previous versions" }],
+  [/^Show \d+ earlier answers?$/, { label: "Show earlier answers" }],
   // Recipients names how many it reaches once the ask's thread is read.
   [/^(Recipients|Reaches \d+)$/, { label: "Recipients" }],
   [/^Skip to the answer$/, { label: "Skip to the answer" }],
@@ -4004,15 +4028,15 @@ const INBOX_ACTIONS: readonly (readonly [RegExp, InboxAction])[] = [
   [/^(Send|Cancel reply)$/, { key: "r", label: "Reply in the thread of the item in hand" }],
 ];
 
-/** The names of the buttons and menu triggers `scope` shows that take a press now, as assistive
- *  tech reads them: the elements its `aria-labelledby` names (a single pick's trigger, named by
- *  its list and then what it shows), else its `aria-label`, else its text - each text without
- *  what it hides from assistive tech (the key a control draws beside its label in the pane's
- *  head). A disabled one - Ask back with nothing typed, Answer with nothing picked - is no action
- *  of the item in hand until it takes a press; the question the reader asks back on reads Ask
- *  back once it does. */
+/** The names of the buttons, menu triggers and disclosures (`<summary>`) `scope` shows that take
+ *  a press now, as assistive tech reads them: the elements its `aria-labelledby` names (a single
+ *  pick's trigger, named by its list and then what it shows), else its `aria-label`, else its
+ *  text - each text without what it hides from assistive tech (the key a control draws beside
+ *  its label in the pane's head). A disabled one - Ask back with nothing typed, Answer with
+ *  nothing picked - is no action of the item in hand until it takes a press; the question the
+ *  reader asks back on reads Ask back once it does. */
 function controlNames(scope: Locator): Promise<string[]> {
-  return scope.locator('button, [role="button"]').evaluateAll((nodes) => {
+  return scope.locator('button, [role="button"], summary').evaluateAll((nodes) => {
     const shown = (element: Element) => {
       const named = element.cloneNode(true) as Element;
       for (const hidden of named.querySelectorAll('[aria-hidden="true"]')) hidden.remove();
@@ -4107,7 +4131,8 @@ async function expectEveryAction(
 }
 
 /** k-every-action's items: a question nobody holds, a question with options the reader can ask
- *  back on, an approval request, a snoozed question, a reply thread and an agent thread. */
+ *  back on, an approval request, a snoozed question, a reply thread and an agent thread; and the
+ *  issues of the first two, which Assign to me and Ask back write to. */
 interface EveryActionSeed {
   readonly unassigned: string;
   readonly askBack: string;
@@ -4115,28 +4140,23 @@ interface EveryActionSeed {
   readonly snoozed: string;
   readonly reply: string;
   readonly agent: string;
+  readonly issues: { readonly unassigned: string; readonly askBack: string };
 }
 
 async function seedEveryAction(): Promise<EveryActionSeed> {
   await setLiveSessions([THREAD_SESSION]);
   await createProject({ key: "CORE", name: "Core" });
-  const question = async (title: string, input: Parameters<typeof createAsk>[1]) =>
-    (
-      await createAsk(
-        (
-          await createIssue({ force: true, project: "CORE", title })
-        ).key,
-        input,
-        asker
-      )
-    ).id;
+  const question = async (title: string, input: Parameters<typeof createAsk>[1]) => {
+    const issue = await createIssue({ force: true, project: "CORE", title });
+    return { id: (await createAsk(issue.key, input, asker)).id, issue: issue.key };
+  };
   const unassigned = await question("Lease rollout", { question: "Who takes the lease rollout?" });
   const askBack = await question("Mirror replay", {
     options: SHIP_OR_HOLD,
     question: "Ship the mirror replay?",
   });
   const approval = (await seedApprovalAtVersionTwo("CORE", "Clock audit")).askId;
-  const snoozed = await question("Key rotation", { question: "Rotate the keys this week?" });
+  const snoozed = (await question("Key rotation", { question: "Rotate the keys this week?" })).id;
   await snoozeAsk(snoozed, new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString());
   const threadIssue = await createIssue({ force: true, project: "CORE", title: "Replay budget" });
   const reply = replyRowId(
@@ -4145,18 +4165,29 @@ async function seedEveryAction(): Promise<EveryActionSeed> {
   const agent = agentRowId(
     await seedAgentThread({ body: "Is the mirror caught up?", replies: ["It is, as of noon."] })
   );
-  return { agent, approval, askBack, reply, snoozed, unassigned };
+  return {
+    agent,
+    approval,
+    askBack: askBack.id,
+    issues: { askBack: askBack.issue, unassigned: unassigned.issue },
+    reply,
+    snoozed,
+    unassigned: unassigned.id,
+  };
 }
 
-/** Every step of k-every-action's first form where `place` draws the Inbox. */
-async function everyActionSteps(
+/** The two places k-every-action reads the Inbox in. */
+type EveryActionPlace = "the reading pane" | "card mode";
+
+/** Opens the Inbox where `place` draws it over k-every-action's items, with the Later band open
+ *  on the snoozed question. Every project names a default assignee, so no seed makes a question
+ *  nobody holds: the Inbox's reads answer as if the first one were. */
+async function openEveryActionInbox(
   page: Page,
-  place: "the reading pane" | "card mode"
+  place: EveryActionPlace,
+  seed: EveryActionSeed,
+  address = "/?assignee=everyone"
 ): Promise<void> {
-  const seed = await seedEveryAction();
-  const step = (text: string) => `k-every-action: ${place}: ${text}`;
-  // Every project names a default assignee, so no seed makes a question nobody holds: the Inbox's
-  // reads answer as if the first one were.
   await page.route("**/api/v1/inbox", async (route) => {
     const response = await route.fetch();
     const rows = (await response.json()) as { id: string }[];
@@ -4168,7 +4199,38 @@ async function everyActionSteps(
     });
   });
   await page.setViewportSize(place === "card mode" ? NARROW : WIDE);
-  await page.goto("/?assignee=everyone");
+  await page.goto(address);
+}
+
+/** The names of the controls the Inbox draws for the item `id`, which the reader is on: its row,
+ *  and beside the reading pane the pane's head, the item's card and its thread's body. */
+async function itemControlNames(
+  page: Page,
+  place: EveryActionPlace,
+  id: string,
+  step: string
+): Promise<string[]> {
+  const row = page.locator(`[data-inbox-row="${id}"]`);
+  const names = await controlNames(row);
+  if (place === "the reading pane") {
+    const pane = inboxPane(page);
+    await expect(pane.locator("header").first(), `${step}: its head is drawn`).toBeVisible();
+    names.push(...(await controlNames(pane.locator("header").first())));
+    const card = pane.getByTestId(`ask-${id}`);
+    // The pane draws its body in the render that drew its head, which was waited for above.
+    if ((await card.count()) > 0) names.push(...(await controlNames(card)));
+    const thread = pane.locator("[data-inbox-thread-body]");
+    // The same render drew any thread body of the item, so this count is the drawn one.
+    if ((await thread.count()) > 0) names.push(...(await controlNames(thread.first())));
+  }
+  return names;
+}
+
+/** Every step of k-every-action's first form where `place` draws the Inbox. */
+async function everyActionSteps(page: Page, place: EveryActionPlace): Promise<void> {
+  const seed = await seedEveryAction();
+  const step = (text: string) => `k-every-action: ${place}: ${text}`;
+  await openEveryActionInbox(page, place, seed);
   await expect(page.locator(`[data-inbox-row="${seed.unassigned}"]`)).toBeVisible();
   await page.getByRole("button", { name: /^Later \(1\)/ }).click();
   const pane = inboxPane(page);
@@ -4193,17 +4255,7 @@ async function everyActionSteps(
       await card.locator("[data-ask-answer]").fill("Which format does it ship in?");
     }
     await row(id).focus();
-    const names = await controlNames(row(id));
-    if (place === "the reading pane") {
-      await expect(pane.locator("header").first(), step(`${what}'s head is drawn`)).toBeVisible();
-      names.push(...(await controlNames(pane.locator("header").first())));
-      const card = pane.getByTestId(`ask-${id}`);
-      // The pane draws its body in the render that drew its head, which was waited for above.
-      if ((await card.count()) > 0) names.push(...(await controlNames(card)));
-      const thread = pane.locator("[data-inbox-thread-body]");
-      // The same render drew any thread body of the item, so this count is the drawn one.
-      if ((await thread.count()) > 0) names.push(...(await controlNames(thread.first())));
-    }
+    const names = await itemControlNames(page, place, id, step(what));
     await expectEveryAction(page, names, (text) => step(`${what}: ${text}`));
   }
 
@@ -4220,6 +4272,219 @@ async function everyActionSteps(
   );
 }
 
+/** The question the reader answered twice after its asker reworded it, and the asker's reply
+ *  under it, which the Inbox lists as a Reply row: its card draws the question's record, with
+ *  Change answer and the disclosures of its earlier wording and its earlier answer. Answers the
+ *  row's id. */
+async function seedAnsweredThread(): Promise<string> {
+  const issue = await createIssue({ force: true, project: "CORE", title: "Replay format" });
+  const ask = await createAsk(
+    issue.key,
+    { options: SHIP_OR_HOLD, question: "Ship the replay format?" },
+    asker
+  );
+  const edited = await editAsk(ask.id, { question: "Ship the replay format this week?" }, asker);
+  const first = await answerAsk(ask.id, {
+    expected_edited_at: edited.edited_at ?? null,
+    selected: ["Ship"],
+  });
+  // A second answer names the one it replaces, as Change answer does.
+  const replaced = first.answer?.at;
+  if (replaced === undefined) throw new Error("the first answer came back with no time");
+  await answerAsk(ask.id, {
+    expected_answer_at: replaced,
+    expected_edited_at: edited.edited_at ?? null,
+    selected: ["Hold"],
+  });
+  await createComment(issue.key, { ask_id: ask.id, body: "Holding it, then." }, asker);
+  return replyRowId(ask.id);
+}
+
+/** Runs the command bar's action `label` over the item in hand as the reader does: ⌘K, then its
+ *  row, which closes the bar and hands the focus back before the action runs. */
+async function runFromCommandBar(page: Page, label: string, step: string): Promise<void> {
+  await page.keyboard.press("Control+k");
+  const bar = page.getByRole("dialog", { name: "Search" });
+  const action = bar
+    .getByRole("group", { exact: true, name: "Actions" })
+    .getByRole("option", { exact: true, name: label });
+  await expect(action, `${step}: ⌘K lists ${label} with the item in hand`).toHaveCount(1);
+  await action.click();
+  await expect(bar, `${step}: the command bar closes`).toHaveCount(0);
+}
+
+/** Every read mark `page` writes from here on: a thread's (`PUT /api/v1/me/threads/{id}/read`)
+ *  and an Agent row's session state (`PUT /api/v1/me/agents/{id}/state`). */
+function readMarkWrites(page: Page): string[] {
+  const writes: string[] = [];
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (
+      request.method() === "PUT" &&
+      /^\/api\/v1\/me\/(threads\/[^/]+\/read|agents\/[^/]+\/state)$/.test(path)
+    ) {
+      writes.push(path);
+    }
+  });
+  return writes;
+}
+
+/** Every step of k-every-action that runs an action from ⌘K where `place` draws the Inbox -
+ *  Decline, Ask back instead, Assign to me and Un-snooze in both places, Mark read in card mode,
+ *  and Skip to the answer beside the reading pane, the places that draw each - and reads its
+ *  effect; and the controls of each state those runs reach, and of an answered question's record
+ *  and of the bar of selected rows in the Dismissed view, read through the table. */
+async function everyActionRunSteps(page: Page, place: EveryActionPlace): Promise<void> {
+  const seed = await seedEveryAction();
+  const answered = await seedAnsweredThread();
+  const deep = place === "the reading pane" ? await seedQuestionColumn("heading") : undefined;
+  const step = (text: string) => `k-every-action: ${place}: ${text}`;
+  await openEveryActionInbox(page, place, seed);
+  const pane = inboxPane(page);
+  const row = (id: string) => page.locator(`[data-inbox-row="${id}"]`);
+  const cardOf = (id: string) =>
+    place === "the reading pane" ? pane.getByTestId(`ask-${id}`) : row(id);
+  /** Puts the reader on the item `id`: beside the pane a click selects it, and every place then
+   *  has the focus on its row, where the command bar takes the item in hand from. */
+  const take = async (id: string) => {
+    await expect(row(id), step(`the item ${id} is listed`)).toBeVisible();
+    if (place === "the reading pane") await selectRow(page, id);
+    await row(id).focus();
+  };
+  const readThrough = async (id: string, what: string) =>
+    expectEveryAction(page, await itemControlNames(page, place, id, step(what)), (text) =>
+      step(`${what}: ${text}`)
+    );
+
+  // Decline opens the decline note, with the caret in it; Escape closes it and writes nothing.
+  await take(seed.unassigned);
+  await runFromCommandBar(page, "Decline", step("Decline"));
+  const decline = page.getByRole("dialog", { name: "Decline to answer" });
+  await expect(decline, step("Decline opens the decline note")).toBeVisible();
+  await expect(
+    decline.getByLabel("Note (optional)"),
+    step("Decline puts the caret in the note")
+  ).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(decline, step("Escape closes the decline note")).toHaveCount(0);
+
+  // Assign to me makes the reader the issue's assignee.
+  const assigns = issueWrites(page, seed.issues.unassigned);
+  await take(seed.unassigned);
+  await runFromCommandBar(page, "Assign to me", step("Assign to me"));
+  await expect
+    .poll(() => assigns.length, { message: step("Assign to me writes the issue's assignee") })
+    .toBe(1);
+  expect(assigns[0]?.input, step("Assign to me names the reader")).toEqual({ assignee: "alice" });
+  await expect
+    .poll(async () => (await getIssue(seed.issues.unassigned)).assignee, {
+      message: step("Assign to me: the issue's assignee is the reader"),
+    })
+    .toBe("alice");
+
+  // Un-snooze takes the snoozed question out of Later.
+  await page.getByRole("button", { name: /^Later \(1\)/ }).click();
+  const unsnoozes = unsnoozeWrites(page, seed.snoozed);
+  await take(seed.snoozed);
+  await runFromCommandBar(page, "Un-snooze", step("Un-snooze"));
+  await expect.poll(() => unsnoozes.length, { message: step("Un-snooze sends one write") }).toBe(1);
+  await expect(row(seed.snoozed), step("Un-snooze: the ask leaves Later")).not.toHaveAttribute(
+    "data-inbox-section",
+    "later"
+  );
+
+  // In card mode, Mark read marks the reply thread read: no message of its card reads unread.
+  // Beside the reading pane the column reads a thread as it opens it, so it draws no Mark read.
+  if (place === "card mode") {
+    const marks = readMarkWrites(page);
+    const unread = row(seed.reply).locator("[data-inbox-thread-unread]");
+    await take(seed.reply);
+    await expect(
+      unread.first(),
+      step("the reply thread's card shows its reply unread")
+    ).toBeVisible();
+    await runFromCommandBar(page, "Mark read", step("Mark read"));
+    await expect
+      .poll(() => marks.length, { message: step("Mark read writes a read mark") })
+      .toBe(1);
+    await expect(unread, step("Mark read: the thread reads as read")).toHaveCount(0);
+  }
+
+  // An answer shaped as a question asks which it is, and Ask back instead sends it back.
+  const backs = watchWrites(
+    page,
+    "POST",
+    `/api/v1/issues/${encodeURIComponent(seed.issues.askBack)}/comments`
+  );
+  await take(seed.askBack);
+  const question = "Which format does it ship in?";
+  const box = cardOf(seed.askBack).locator("[data-ask-answer]");
+  await box.fill(question);
+  await box.press("Control+Enter");
+  await expect(
+    cardOf(seed.askBack).getByRole("button", { exact: true, name: "Ask back instead" }),
+    step("an answer shaped as a question offers Ask back instead")
+  ).toBeVisible();
+  await readThrough(seed.askBack, "the question answered with a question");
+  await runFromCommandBar(page, "Ask back instead", step("Ask back instead"));
+  await expect
+    .poll(() => backs.length, { message: step("Ask back instead sends the question back") })
+    .toBe(1);
+  expect(backs[0]?.input, step("Ask back instead sends the question to its asker")).toEqual({
+    ask_id: seed.askBack,
+    body: question,
+  });
+
+  // The answered question's record, then a change of its answer, which Cancel ends.
+  await take(answered);
+  await readThrough(answered, "the answered question");
+  await runFromCommandBar(page, "Change answer", step("Change answer"));
+  await expect(
+    page.getByRole("button", { exact: true, name: "Cancel" }),
+    step("Change answer begins a change, which Cancel ends")
+  ).toBeVisible();
+  await readThrough(answered, "the answer being changed");
+  await runFromCommandBar(page, "Cancel", step("Cancel"));
+  await expect(
+    page.getByRole("button", { exact: true, name: "Cancel" }),
+    step("Cancel ends the change")
+  ).toHaveCount(0);
+
+  // Beside the reading pane, Skip to the answer puts the column back at the question's block.
+  if (deep !== undefined) {
+    await take(deep.item);
+    const skip = pane.getByRole("button", { name: "Skip to the answer" });
+    await expect(
+      skip,
+      step("the question far down a document offers Skip to the answer")
+    ).toBeVisible();
+    await waitOutPlacement(page);
+    const block = paneScroller(page).locator(`[data-dispatch-ask-block="${deep.blockId}"]`);
+    await page.keyboard.press("g");
+    await page.keyboard.press("g");
+    await expect(
+      block,
+      step("g g puts the column at its top, above the answer")
+    ).not.toBeInViewport();
+    await runFromCommandBar(page, "Skip to the answer", step("Skip to the answer"));
+    await expect(block, step("Skip to the answer moves the column to the answer")).toBeInViewport();
+  }
+
+  // The bar of selected rows in the Dismissed view, where it moves them back to the Inbox.
+  await dismissThread(seed.reply);
+  await dismissThread(seed.agent);
+  await page.goto("/?show=dismissed&assignee=everyone");
+  for (const id of [seed.reply, seed.agent]) {
+    await take(id);
+    await page.keyboard.press("x");
+  }
+  const bar = page.getByRole("toolbar", { name: "Selected rows" });
+  await expect(bar, step("x marks two dismissed threads")).toContainText("2 selected");
+  await expectEveryAction(page, await controlNames(bar), (text) =>
+    step(`the bar of selected rows in the Dismissed view: ${text}`)
+  );
+}
+
 // SLOW(>=2s): six items of four kinds seeded, each read with ? and ⌘K, then two marked.
 test("k-every-action: beside the reading pane every control of an item is a key or a command bar action of the item in hand", async ({
   page,
@@ -4232,6 +4497,22 @@ test("k-every-action: in card mode every control of an item is a key or a comman
   page,
 }) => {
   await everyActionSteps(page, "card mode");
+});
+
+// SLOW(>=2s): eight items seeded, five actions run from ⌘K with their effects read back, and the
+// Dismissed view loaded.
+test("k-every-action: beside the reading pane Decline, Ask back instead, Assign to me, Un-snooze and Skip to the answer run from the command bar on the item in hand", async ({
+  page,
+}) => {
+  await everyActionRunSteps(page, "the reading pane");
+});
+
+// SLOW(>=2s): seven items seeded, five actions run from ⌘K with their effects read back, and the
+// Dismissed view loaded.
+test("k-every-action: in card mode Decline, Ask back instead, Assign to me, Un-snooze and Mark read run from the command bar on the item in hand", async ({
+  page,
+}) => {
+  await everyActionRunSteps(page, "card mode");
 });
 
 // SLOW(>=2s): the command bar opened six times over a project page, each row followed.
@@ -5878,4 +6159,825 @@ test("k-comment-focus: at 1024x768, where the margin is a sheet, each new commen
   const sent = await commentWithBody(seed.key, seed.artifactId, body);
   expect(sent.anchor?.quote, step("the comment is sent on the third word")).toBe(THIRD_WORD);
   await expectCaretInDocument(page, THIRD_WORD, step("a sent comment"));
+});
+
+// ---------------------------------------------------------------------------
+// k-keyboard-reach (R12): on each page R12 names, every control the page shows takes the focus
+// from Tab - or, in a group whose members share one Tab stop by the WAI-ARIA Authoring Practices
+// (a group of radios, a tab strip, a menu), Tab reaches the group's stop and the group's arrow
+// keys the member (departure D3) - or is a row or a card the page's own keys reach. On the
+// Inbox, a control that shows while the pointer is over a row shows too while the row has the
+// focus.
+// ---------------------------------------------------------------------------
+
+/** A group of controls that share one Tab stop, and the arrow key that moves among them. */
+interface ReachGroup {
+  readonly id: number;
+  readonly arrow: "ArrowDown" | "ArrowRight";
+}
+
+/** A control a page shows: where it stands in the page's list, the name a failure gives it - its
+ *  role, its name and the test id of the part it is drawn in - and the group it shares one Tab
+ *  stop with, where it has one. */
+interface ShownControl {
+  readonly index: number;
+  readonly name: string;
+  readonly group: ReachGroup | null;
+}
+
+/** Where the focus is after a key: the listed control that holds it, or -1, and whether it is
+ *  back on the first element a Tab of the walk gave it to. */
+interface FocusAt {
+  readonly index: number;
+  readonly back: boolean;
+}
+
+/** What `installReach` leaves on the page's `window`. */
+interface KeyboardReach {
+  /** Lists the controls the page shows inside `root`. */
+  list(root: Element): ShownControl[];
+  /** The names of the controls `root` shows, by the same reading. */
+  shownIn(root: Element): string[];
+  at(): FocusAt;
+  focus(index: number): void;
+  /** Every listed control that took the focus since it was listed, for however short a time: a
+   *  radio the arrows check can hand the focus on at once, as Other hands it to its answer box. */
+  focused(): number[];
+  /** The listed controls a row key reached: the one with the focus, and the row or card the key
+   *  focused or selected, where it is one of them. */
+  rowsAt(rows: string): number[];
+}
+
+declare global {
+  interface Window {
+    __keyboardReach?: KeyboardReach;
+  }
+}
+
+/** Puts R12's reading of `page` on its `window`, so each key press reads where the focus went in
+ *  one call. What it puts there runs in the page, and reads nothing of this module's: what R12
+ *  counts as a control - a link, a button, a checkbox, a radio, a select, a menu trigger, a text
+ *  field and a tab, a disclosure's `<summary>` among the buttons - shown in the viewport, leaving
+ *  out a control that takes no press (`:disabled`) and a link inside a document the reader can
+ *  edit, which R2's Alt+Enter opens rather than Tab. */
+async function installReach(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    // Once for each document: a page the app moves to in place keeps what it put here.
+    if (window.__keyboardReach !== undefined) return;
+    const controls = [
+      "a[href]",
+      "button",
+      "summary",
+      "select",
+      "textarea",
+      'input:not([type="hidden"])',
+      '[contenteditable]:not([contenteditable="false"])',
+      '[role="button"]',
+      '[role="link"]',
+      '[role="checkbox"]',
+      '[role="switch"]',
+      '[role="radio"]',
+      '[role="tab"]',
+      '[role="combobox"]',
+      '[role="textbox"]',
+      '[role="searchbox"]',
+      '[role="menuitem"]',
+      '[role="menuitemradio"]',
+      '[role="menuitemcheckbox"]',
+      '[aria-haspopup]:not([aria-haspopup="false"])',
+    ].join(", ");
+    let listed: Element[] = [];
+    let first: Element | null = null;
+    const focused = new Set<number>();
+    const groups: { readonly name: string; readonly node: Node }[] = [];
+    document.addEventListener(
+      "focusin",
+      (event) => {
+        const index = event.target instanceof Element ? listed.indexOf(event.target) : -1;
+        if (index !== -1) focused.add(index);
+      },
+      true
+    );
+
+    /** Whether `element` shows in the viewport: drawn, not hidden, not see-through, and inside every
+     *  box that clips it. */
+    const shown = (element: Element): boolean => {
+      if (element.getClientRects().length === 0) return false;
+      if (getComputedStyle(element).visibility !== "visible") return false;
+      if (element.closest("[inert]") !== null) return false;
+      const box = element.getBoundingClientRect();
+      let left = Math.max(box.left, 0);
+      let top = Math.max(box.top, 0);
+      let right = Math.min(box.right, window.innerWidth);
+      let bottom = Math.min(box.bottom, window.innerHeight);
+      let clipped = true;
+      for (let node: Element | null = element; node !== null; node = node.parentElement) {
+        const style = getComputedStyle(node);
+        if (Number(style.opacity) === 0) return false;
+        const clips =
+          node !== element &&
+          clipped &&
+          style.display !== "contents" &&
+          (style.overflowX !== "visible" || style.overflowY !== "visible");
+        if (clips) {
+          const clip = node.getBoundingClientRect();
+          left = Math.max(left, clip.left);
+          top = Math.max(top, clip.top);
+          right = Math.min(right, clip.right);
+          bottom = Math.min(bottom, clip.bottom);
+        }
+        // A box the viewport places is clipped by none of the boxes around it.
+        if (style.position === "fixed") clipped = false;
+      }
+      return right - left >= 1 && bottom - top >= 1;
+    };
+
+    /** The text `node` shows assistive tech: its text without what it hides from it. */
+    const textOf = (node: Element): string => {
+      const copy = node.cloneNode(true) as Element;
+      for (const hidden of copy.querySelectorAll('[aria-hidden="true"]')) hidden.remove();
+      return copy.textContent ?? "";
+    };
+
+    const nameOf = (element: Element): string => {
+      const labelledBy = element.getAttribute("aria-labelledby");
+      const labels =
+        element instanceof HTMLInputElement ||
+        element instanceof HTMLTextAreaElement ||
+        element instanceof HTMLSelectElement
+          ? [...(element.labels ?? [])].map(textOf).join(" ")
+          : "";
+      const label =
+        labelledBy === null
+          ? (element.getAttribute("aria-label") ??
+            (labels ||
+              textOf(element) ||
+              element.getAttribute("title") ||
+              element.getAttribute("placeholder") ||
+              ""))
+          : labelledBy
+              .split(/\s+/)
+              .map((id) => {
+                const part = document.getElementById(id);
+                return part === null ? "" : textOf(part);
+              })
+              .join(" ");
+      const role =
+        element.getAttribute("role") ??
+        (element instanceof HTMLInputElement
+          ? `${element.type} input`
+          : element.tagName.toLowerCase());
+      const part = element.closest("[data-testid]")?.getAttribute("data-testid");
+      const shortLabel = label.replace(/\s+/g, " ").trim().slice(0, 80);
+      return `${role} "${shortLabel}"${part === undefined ? "" : ` in ${part}`}`;
+    };
+
+    /** The group `element` shares one Tab stop with: the radios of one name in one form, the radios
+     *  of a `radiogroup`, the tabs of a `tablist`, the items of a `menu` or a `menubar`. */
+    const groupOf = (element: Element): ReachGroup | null => {
+      const groupAt = (node: Node, name: string, arrow: ReachGroup["arrow"]): ReachGroup => {
+        const known = groups.findIndex((group) => group.node === node && group.name === name);
+        return { arrow, id: known === -1 ? groups.push({ name, node }) - 1 : known };
+      };
+      if (element instanceof HTMLInputElement && element.type === "radio") {
+        return element.name === ""
+          ? null
+          : groupAt(element.form ?? document, element.name, "ArrowDown");
+      }
+      const role = element.getAttribute("role") ?? "";
+      const owner =
+        role === "radio"
+          ? element.closest('[role="radiogroup"]')
+          : role === "tab"
+            ? element.closest('[role="tablist"]')
+            : role.startsWith("menuitem")
+              ? element.closest('[role="menu"], [role="menubar"]')
+              : null;
+      if (owner === null) return null;
+      const across =
+        owner.getAttribute("role") === "menubar" ||
+        (owner.getAttribute("role") === "tablist" &&
+          owner.getAttribute("aria-orientation") !== "vertical");
+      return groupAt(owner, "", across ? "ArrowRight" : "ArrowDown");
+    };
+
+    const controlsIn = (root: Element | Document): Element[] =>
+      [...root.querySelectorAll(controls)].filter(
+        (element) =>
+          shown(element) &&
+          !element.matches(":disabled") &&
+          // An editor's own nodes are part of its editing host, which is the one text field.
+          !(
+            element.matches("[contenteditable]") &&
+            element.parentElement instanceof HTMLElement &&
+            element.parentElement.isContentEditable
+          ) &&
+          // A document drawn read-only keeps its editor's textbox role but takes no typed text,
+          // so it is no text field; the links in it are listed on their own.
+          !(
+            element.matches('[role="textbox"]:not(input, textarea)') &&
+            element instanceof HTMLElement &&
+            !element.isContentEditable
+          ) &&
+          !(element.matches("a[href]") && element.closest('[contenteditable="true"]') !== null)
+      );
+
+    window.__keyboardReach = {
+      at: () => {
+        const active = document.activeElement;
+        const index = active === null ? -1 : listed.indexOf(active);
+        if (active === null || active === document.body || active === document.documentElement) {
+          return { back: false, index };
+        }
+        if (first === null) {
+          first = active;
+          return { back: false, index };
+        }
+        return { back: active === first, index };
+      },
+      focus: (index) => {
+        const element = listed[index];
+        if (element instanceof HTMLElement || element instanceof SVGElement) element.focus();
+      },
+      focused: () => [...focused],
+      list: (root) => {
+        listed = controlsIn(root);
+        first = null;
+        focused.clear();
+        groups.length = 0;
+        return listed.map((element, index) => ({
+          group: groupOf(element),
+          index,
+          name: nameOf(element),
+        }));
+      },
+      rowsAt: (rows) => {
+        const active = document.activeElement;
+        const reached = [
+          active,
+          active?.closest(rows) ?? null,
+          ...document.querySelectorAll(
+            `:is(${rows}):is([aria-current="true"], [aria-selected="true"], [data-inbox-selected="true"])`
+          ),
+        ];
+        return reached.flatMap((element) => {
+          const index = element === null ? -1 : listed.indexOf(element);
+          return index === -1 ? [] : [index];
+        });
+      },
+      shownIn: (root) => controlsIn(root).map(nameOf),
+    };
+  });
+}
+
+/** A point inside `row` that is on none of its controls and none of its references, whose card
+ *  a pointer over one opens; in the page's own px from the viewport's top left corner. */
+function pointOffReferences(row: Element): { x: number; y: number } {
+  const box = row.getBoundingClientRect();
+  const taken =
+    'a, button, input, select, textarea, summary, label, [role="button"], [role="link"], [aria-haspopup], [data-dispatch-ref], [data-dispatch-href]';
+  for (let y = Math.max(box.top, 0) + 3; y < Math.min(box.bottom, window.innerHeight) - 2; y += 5) {
+    for (let x = box.left + 3; x < box.right - 2; x += 5) {
+      const under = document.elementFromPoint(x, y);
+      if (under !== null && row.contains(under) && under.closest(taken) === null) return { x, y };
+    }
+  }
+  throw new Error("the row shows no place off its controls and its references");
+}
+
+/** The rows or the cards of a page and the key that walks them. */
+interface PageRows {
+  readonly selector: string;
+  readonly key: string;
+}
+
+/** A page k-keyboard-reach reads: its name in the row's messages, the dialog it is drawn in where
+ *  it is one (the drawer), whose controls alone are listed, and its rows or cards. */
+interface ReachPage {
+  readonly name: string;
+  readonly scope?: Locator;
+  readonly rows?: PageRows;
+}
+
+/** Turns off the page's eases of colour and opacity, so a control a pointer or the focus shows
+ *  is read shown, and one it hides read hidden, in the frame after it changed rather than part of
+ *  the way through, as `e2e/accessibility.e2e.ts` reads every colour. */
+async function withoutEases(page: Page): Promise<void> {
+  await page.addStyleTag({
+    content: "*, *::before, *::after { transition: none !important; animation: none !important; }",
+  });
+}
+
+/** Holds `page`, drawn as `at` names it, to R12: each control it shows takes the focus from Tab,
+ *  or from its group's arrow keys once Tab reached the group's stop, or is a row or a card the
+ *  page's own keys reach. The caller has waited for the page to draw what it shows. */
+async function expectKeyboardReach(page: Page, at: ReachPage): Promise<void> {
+  const step = (text: string) => `k-keyboard-reach: ${at.name}: ${text}`;
+  await installReach(page);
+  // The caller waited for the page to draw what it shows, so one reading lists all of it.
+  const controls = await (at.scope ?? page.locator("body")).evaluate(
+    (root) => window.__keyboardReach?.list(root) ?? []
+  );
+  expect(controls.length, step("the page shows controls")).toBeGreaterThan(0);
+  const reached = new Set<number>();
+  /** Adds every listed control that took the focus so far, however briefly. */
+  const addFocused = async () => {
+    // Each focus the page took was recorded as it landed, so one reading holds all of them.
+    for (const index of await page.evaluate(() => window.__keyboardReach?.focused() ?? [])) {
+      reached.add(index);
+    }
+  };
+
+  // Tab until the focus comes back to the first element it took, or at most twice as many presses
+  // as the page shows controls: on a page from its start, and in a dialog, which keeps the focus
+  // inside it, from the control the dialog put the focus on as it opened.
+  if (at.scope === undefined) {
+    await page.evaluate(() => {
+      const active = document.activeElement;
+      if (active instanceof HTMLElement) active.blur();
+    });
+  } else {
+    // The dialog put the focus on its control as it opened, which the caller waited for.
+    const start = await page.evaluate(
+      () => window.__keyboardReach?.at() ?? { back: false, index: -1 }
+    );
+    if (start.index >= 0) reached.add(start.index);
+  }
+  for (let press = 0; press < 2 * controls.length; press += 1) {
+    await page.keyboard.press("Tab");
+    // A Tab moves the focus inside its own key press, so this reads where it settled.
+    const focus = await page.evaluate(
+      () => window.__keyboardReach?.at() ?? { back: true, index: -1 }
+    );
+    if (focus.back) break;
+    if (focus.index >= 0) reached.add(focus.index);
+  }
+  await addFocused();
+
+  // A group's members from the stop Tab reached, by the group's arrow key.
+  const groups = new Map<number, ShownControl[]>();
+  for (const control of controls) {
+    if (control.group !== null) {
+      groups.set(control.group.id, [...(groups.get(control.group.id) ?? []), control]);
+    }
+  }
+  for (const members of groups.values()) {
+    const stop = members.find((member) => reached.has(member.index));
+    const arrow = members[0]?.group?.arrow;
+    if (
+      stop === undefined ||
+      arrow === undefined ||
+      members.every((member) => reached.has(member.index))
+    ) {
+      continue;
+    }
+    await page.evaluate((index) => window.__keyboardReach?.focus(index), stop.index);
+    for (let press = 0; press < members.length; press += 1) {
+      await page.keyboard.press(arrow);
+      // A group's arrow moves the focus inside its own key press, so this reads where it settled.
+      const focus = await page.evaluate(
+        () => window.__keyboardReach?.at() ?? { back: true, index: -1 }
+      );
+      if (focus.index >= 0) reached.add(focus.index);
+    }
+  }
+  await addFocused();
+
+  // The rows or the cards, by the page's own key, from the page body.
+  if (at.rows !== undefined) {
+    const rows = page.locator(at.rows.selector);
+    await expect(rows.first(), step("the page draws its rows")).toBeVisible();
+    // The first row was waited for above, and the page draws every row of its list with it.
+    const count = await rows.count();
+    await page.evaluate(() => {
+      const active = document.activeElement;
+      if (active instanceof HTMLElement) active.blur();
+    });
+    for (let press = 0; press < count; press += 1) {
+      await page.keyboard.press(at.rows.key);
+      // A row key moves the focus or the selection inside its own key press, so this reads it.
+      const hit = await page.evaluate(
+        (selector) => window.__keyboardReach?.rowsAt(selector) ?? [],
+        at.rows.selector
+      );
+      for (const index of hit) reached.add(index);
+    }
+  }
+  await addFocused();
+
+  expect(
+    controls.filter((control) => !reached.has(control.index)).map((control) => control.name),
+    step(
+      "each control the page shows takes the focus from Tab, or from its group's arrow keys once Tab reached the group, or is a row or a card its keys reach"
+    )
+  ).toEqual([]);
+}
+
+/** Holds each of the `count` rows of `rows` to R12's rule for a pointer: the controls that show
+ *  while the pointer is over the row - at a place off every control and every reference in it,
+ *  whose card a pointer over one opens - show too once the pointer has moved away, to `away`,
+ *  and the row has the focus. */
+async function expectFocusShowsWhatHoverShows(
+  page: Page,
+  rows: Locator,
+  count: number,
+  away: Locator,
+  step: (text: string) => string
+): Promise<void> {
+  await expect(rows, step("the Inbox lists its rows")).toHaveCount(count);
+  for (let index = 0; index < count; index += 1) {
+    const row = rows.nth(index);
+    await row.scrollIntoViewIfNeeded();
+    const point = await row.evaluate(pointOffReferences);
+    await page.mouse.move(point.x, point.y);
+    const hovered = await row.evaluate((node) => window.__keyboardReach?.shownIn(node) ?? []);
+    await away.hover();
+    await row.focus();
+    await expect
+      .poll(() => row.evaluate((node) => window.__keyboardReach?.shownIn(node) ?? []), {
+        message: step(
+          `row ${index + 1}: each control a pointer over it shows also shows while it has the focus: ${JSON.stringify(hovered)}`
+        ),
+      })
+      .toEqual(expect.arrayContaining(hovered));
+  }
+}
+
+/** k-keyboard-reach on the Inbox where `place` draws it, over k-every-action's items: a question,
+ *  a question with options, an approval request, a reply thread and an agent thread, and a
+ *  snoozed question folded in Later. */
+async function reachInboxSteps(page: Page, place: InboxPlace): Promise<void> {
+  await seedEveryAction();
+  const inbox = await openInboxAt(page, place, 5);
+  // Card mode is read at 1024x768, a laptop's window below the reading pane's width.
+  if (place === "card mode") await page.setViewportSize({ height: 768, width: 1024 });
+  await withoutEases(page);
+  if (place === "the reading pane") {
+    await expect(inboxPane(page).locator("header").first()).toBeVisible();
+  }
+  if (place === "the drawer") {
+    await expect(inbox.scope.getByRole("button", { exact: true, name: "Close" })).toBeFocused();
+  }
+  const step = (text: string) => `k-keyboard-reach: the Inbox in ${place}: ${text}`;
+  await expectKeyboardReach(page, {
+    name: `the Inbox in ${place}`,
+    rows: { key: "j", selector: "[data-inbox-row]" },
+    scope: place === "the drawer" ? inbox.scope : undefined,
+  });
+  await expectFocusShowsWhatHoverShows(
+    page,
+    inbox.scope.locator("[data-inbox-row]"),
+    5,
+    inbox.outside,
+    step
+  );
+}
+
+// SLOW(>=2s): five items seeded, the page walked by Tab and j, and each row hovered and focused.
+test("k-keyboard-reach: on the Inbox beside the reading pane, Tab reaches every control, and a row's focus shows each control a pointer over the row shows", async ({
+  page,
+}) => {
+  await reachInboxSteps(page, "the reading pane");
+});
+
+// SLOW(>=2s): five items seeded, the cards walked by Tab and j, and each card hovered and focused.
+test("k-keyboard-reach: on the Inbox in card mode at 1024x768, Tab reaches every control, and a card's focus shows each control a pointer over the card shows", async ({
+  page,
+}) => {
+  await reachInboxSteps(page, "card mode");
+});
+
+// SLOW(>=2s): five items seeded, the drawer opened over a project page, walked by Tab and j, and
+// each row hovered and focused.
+test("k-keyboard-reach: in the Inbox drawer, Tab reaches every control, and a row's focus shows each control a pointer over the row shows", async ({
+  page,
+}) => {
+  await reachInboxSteps(page, "the drawer");
+});
+
+/** Opens the review corpus's page `name` (`e2e/review-routes.ts`) and waits for it to draw what
+ *  it shows, by that page's own locators. */
+async function openReviewRoute(page: Page, seed: ReviewSeed, name: string): Promise<void> {
+  const route = reviewRoutes.find(
+    (entry): entry is ReviewedRoute => entry.kind === "reviewed" && entry.name === name
+  );
+  if (route === undefined) throw new Error(`e2e/review-routes.ts reviews no page named ${name}`);
+  await page.goto(route.path(seed));
+  await waitForRouteSettled(page, route);
+  await withoutEases(page);
+}
+
+for (const [tab] of ISSUE_TABS) {
+  // SLOW(>=2s): the review corpus seeded, and the issue page walked by Tab on one of its tabs.
+  test(`k-keyboard-reach: on today's issue page, its header and its ${tab} tab, Tab reaches every control`, async ({
+    page,
+  }) => {
+    const seed = await seedReviewRoutes({ boundMs: expectTimeout });
+    await page.setViewportSize(WIDE);
+    if (tab === "collaborators") {
+      await page.goto(`/issues/${seed.issue}/collaborators`);
+      await expect(
+        page
+          .locator("#issue-collaborators-panel")
+          .locator('section[aria-label], [aria-label="Collaborators empty state"]')
+          .first()
+      ).toBeVisible();
+      await withoutEases(page);
+    } else {
+      await openReviewRoute(page, seed, `issue-${tab}`);
+    }
+    await expectKeyboardReach(page, {
+      name: `today's issue page on its ${tab} tab`,
+      rows: tab === "conversation" ? { key: "j", selector: "[data-turn]" } : undefined,
+    });
+  });
+}
+
+// SLOW(>=2s): a spec at version 2 and a project document seeded, and both pages walked by Tab.
+test("k-keyboard-reach: on a project document page and on a past version of a spec, Tab reaches every control, the title drawn for a bare key included", async ({
+  page,
+}) => {
+  const seed = await seedLinkSpec();
+  const document = await createProjectDocument("CORE", {
+    content: `# Replay runbook\n\nRead [a page elsewhere](${AWAY}) and the handover in ${seed.other.key}.\n`,
+    name: "replay-runbook.md",
+  });
+  await page.setViewportSize(WIDE);
+
+  await page.goto(`/projects/CORE/documents/${document.artifact.slug}`);
+  await expect(page.getByRole("status", { name: "connected" })).toHaveText("connected");
+  await withoutEases(page);
+  await expectKeyboardReach(page, { name: "a project document page" });
+
+  const links = await openLinkView(page, seed, "the past version");
+  await withoutEases(page);
+  await expect(links.key, "k-keyboard-reach: the past version draws the key's title").toBeVisible();
+  await expectKeyboardReach(page, { name: "a past version of the spec" });
+});
+
+// SLOW(>=2s): the review corpus seeded, and the project's List and Board each walked by Tab and j.
+test("k-keyboard-reach: on a project's List and Board, Tab reaches every control, and j every row and card", async ({
+  page,
+}) => {
+  const seed = await seedReviewRoutes({ boundMs: expectTimeout });
+  await page.setViewportSize(WIDE);
+  await openIssuesTab(page, seed.project, "List");
+  await expect(page.locator("[data-issue-row]").first()).toBeVisible();
+  await withoutEases(page);
+  await expectKeyboardReach(page, {
+    name: "the project's List",
+    rows: { key: "j", selector: "[data-issue-row]" },
+  });
+  await openIssuesTab(page, seed.project, "Board");
+  await expect(page.locator("[data-board-card]").first()).toBeVisible();
+  await withoutEases(page);
+  await expectKeyboardReach(page, {
+    name: "the project's Board",
+    rows: { key: "j", selector: "[data-board-card]" },
+  });
+});
+
+/** The pages of the review corpus k-keyboard-reach reads on their own, with their rows. */
+const REVIEW_PAGES = [
+  { name: "agents", rows: { key: "j", selector: "[data-agent-row]" }, title: "the Agents page" },
+  {
+    name: "priorities",
+    rows: { key: "j", selector: "[data-priority-row]" },
+    title: "the Priorities page",
+  },
+  { name: "settings", rows: undefined, title: "the Settings page" },
+] as const;
+
+for (const reviewed of REVIEW_PAGES) {
+  // SLOW(>=2s): the review corpus seeded, and one page of it walked by Tab and its row key.
+  test(`k-keyboard-reach: on ${reviewed.title}, Tab reaches every control`, async ({ page }) => {
+    const seed = await seedReviewRoutes({ boundMs: expectTimeout });
+    await page.setViewportSize(WIDE);
+    await openReviewRoute(page, seed, reviewed.name);
+    await expectKeyboardReach(page, { name: reviewed.title, rows: reviewed.rows });
+  });
+}
+
+// SLOW(>=2s): the review corpus seeded, and both views of the Delivery page walked by Tab.
+test("k-keyboard-reach: on the Delivery page, on its timeline and on its list, Tab reaches every control, and ArrowDown every pull request", async ({
+  page,
+}) => {
+  const seed = await seedReviewRoutes({ boundMs: expectTimeout });
+  await page.setViewportSize(WIDE);
+  await openReviewRoute(page, seed, "delivery");
+  await expectKeyboardReach(page, { name: "the Delivery page's timeline" });
+  await page.goto(`/delivery?${seed.deliveryQuery}&mode=list`);
+  await expect(page.locator("[data-pr-row]").first()).toBeVisible();
+  await withoutEases(page);
+  await expectKeyboardReach(page, {
+    name: "the Delivery page's list",
+    rows: { key: "ArrowDown", selector: "[data-pr-row]" },
+  });
+});
+
+// ---------------------------------------------------------------------------
+// k-default-keys (R13): with no key changed, the `?` help lists the keys of the spec's table "The
+// keys" under their scopes, and a menu shows the keys of the table's menu rows.
+// ---------------------------------------------------------------------------
+
+/** The keys of each row of the spec's table "The keys" whose scope names the Inbox, as the spec
+ *  writes them (dispatch://INFRA-2160/spec, Design). Written out rather than read from the app,
+ *  so the row holds the help to the spec, and runs on a build that has no catalogue of keys. */
+const SPEC_INBOX_KEYS: readonly string[] = [
+  // Next item, previous item.
+  "j",
+  "ArrowDown",
+  "k",
+  "ArrowUp",
+  // Scroll the open document down and up, to its top and to its end.
+  "Space",
+  "Shift+Space",
+  "g g",
+  "Shift+G",
+  // Into the open document, back out of it, and the answer box.
+  "l",
+  "Escape",
+  "Enter",
+  // The options of a question, and Other's digit after them.
+  "1",
+  "2",
+  "3",
+  "4",
+  "5",
+  "6",
+  "7",
+  "8",
+  "9",
+  "0",
+  // Approve, Request changes, Reply, the snooze menu, the priority menu, Dismiss, select, open,
+  // copy the reference, search.
+  "a",
+  "Shift+R",
+  "r",
+  "b",
+  "h",
+  "p",
+  "e",
+  "x",
+  "o",
+  "y",
+  "f",
+  // Open in a new tab, the filter panel, the display menu.
+  "Shift+O",
+  "Shift+F",
+  "Shift+V",
+];
+
+/** The keys of the table's rows for today's issue page outside its Conversation tab, for the
+ *  document, and for the Conversation tab, as the spec writes them. */
+const SPEC_ISSUE_KEYS: readonly string[] = ["a", "Shift+R", "s", "p", "[", "]"];
+const SPEC_DOCUMENT_KEYS: readonly string[] = ["Alt+Enter", "Escape"];
+const SPEC_TURN_KEYS: readonly string[] = ["j", "k", "Enter", "o", "r", "y", "Shift+Y"];
+
+/** The keys of the table's menu rows that a menu shows in its foot line, as the spec names them,
+ *  each with the glyph the menu draws for it. */
+const SPEC_MENU_KEYS: readonly (readonly [string, string])[] = [
+  ["ArrowDown", "↓"],
+  ["ArrowUp", "↑"],
+  ["Home", "Home"],
+  ["End", "End"],
+  ["Enter", "Enter"],
+  ["Escape", "Esc"],
+];
+
+/** The keys the open `?` help lists under `scope`, each as the spec writes a key: the presses of
+ *  a chord joined by a space, a glyph by its key's name (↓ as ArrowDown, Esc as Escape), and a run
+ *  of digits (`1 – 9, 0`) as each of its digits. */
+async function helpKeys(page: Page, scope: string): Promise<string[]> {
+  const section = page
+    .getByRole("dialog", { name: "Keyboard shortcuts" })
+    .getByRole("region", { exact: true, name: scope });
+  await expect(section, `k-default-keys: ? lists a ${scope} section`).toBeVisible();
+  return section.getByRole("listitem").evaluateAll((items) => {
+    const names: Record<string, string> = {
+      "←": "ArrowLeft",
+      "↑": "ArrowUp",
+      "→": "ArrowRight",
+      "↓": "ArrowDown",
+      "⌥": "Alt",
+      Esc: "Escape",
+    };
+    const spelled = (token: string) =>
+      token
+        .split("+")
+        .map((part) => names[part] ?? part)
+        .join("+");
+    return items.flatMap((item) => {
+      const hints = item.lastElementChild;
+      if (hints === null) return [];
+      const run = [...hints.children]
+        .filter((child) => child.tagName === "KBD")
+        .map((kbd) => kbd.textContent?.trim() ?? "");
+      const [from, to, tenth] = run;
+      if (from !== undefined && to !== undefined) {
+        const digits: string[] = [];
+        for (let code = from.charCodeAt(0); code <= to.charCodeAt(0); code += 1) {
+          digits.push(String.fromCharCode(code));
+        }
+        return tenth === undefined ? digits : [...digits, tenth];
+      }
+      return [...hints.children].map((alternative) =>
+        [...alternative.querySelectorAll("kbd")]
+          .map((kbd) => spelled(kbd.textContent?.trim() ?? ""))
+          .join(" ")
+      );
+    });
+  });
+}
+
+/** Holds the open menu `menu` to the keys of the table's menu rows: its foot line shows the keys
+ *  that move the highlight, write it and close the menu, and its choices show `digits`. */
+async function expectMenuKeys(
+  menu: Locator,
+  digits: readonly string[],
+  what: string
+): Promise<void> {
+  await expect(menu, `k-default-keys: ${what} opens`).toBeVisible();
+  for (const [key, glyph] of SPEC_MENU_KEYS) {
+    await expect(menu, `k-default-keys: ${what} shows ${key}`).toContainText(glyph);
+  }
+  await expect(menu.locator("kbd"), `k-default-keys: ${what} shows its digits`).toHaveText([
+    ...digits,
+  ]);
+}
+
+// SLOW(>=2s): the Inbox read through ? and three menus, then the issue page's Spec and
+// Conversation tabs through ?.
+test("k-default-keys: with no key changed, ? lists the Inbox keys of the spec's table and no other, the link's y, and the issue page's and the document's keys, and the menus show the keys of the table's menu rows", async ({
+  page,
+}) => {
+  const step = (text: string) => `k-default-keys: ${text}`;
+  await createProject({ key: "CORE", name: "Core" });
+  const approval = await seedApprovalAtVersionTwo("CORE", "Clock audit");
+  const later = await createIssue({ force: true, project: "CORE", title: "Key rotation" });
+  const snoozed = await createAsk(later.key, { question: "Rotate the keys this week?" }, asker);
+  await snoozeAsk(snoozed.id, new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString());
+
+  // The Inbox, with the approval request selected and the focus on its row.
+  await page.setViewportSize(WIDE);
+  await page.goto("/");
+  await selectRow(page, approval.askId);
+  await page.keyboard.press("?");
+  // `helpKeys` waited for the section, which the help draws whole in the render that opened it.
+  const inboxKeys = await helpKeys(page, "Inbox");
+  for (const key of SPEC_INBOX_KEYS) {
+    expect.soft(inboxKeys, step(`? lists ${key} under Inbox`)).toContain(key);
+  }
+  for (const key of new Set(inboxKeys)) {
+    expect
+      .soft(SPEC_INBOX_KEYS, step(`? lists ${key} under Inbox: a key of the table`))
+      .toContain(key);
+  }
+  expect(
+    await helpKeys(page, "Global"),
+    step("? lists the focused link's y under Global")
+  ).toContain("y");
+  await page.keyboard.press("Escape");
+
+  // The menus of the approval request, and of the snoozed question, show the menu rows' keys.
+  const menu = page.getByRole("menu");
+  await expect(inboxPane(page).locator("header").first()).toBeVisible();
+  await page.keyboard.press("b");
+  await expectMenuKeys(menu, ["1", "2", "3", "4"], "the Snooze menu");
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("p");
+  await expectMenuKeys(menu, ["0", "1", "2", "3"], "the priority menu");
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: /^Later \(1\)/ }).click();
+  await selectRow(page, snoozed.id);
+  await page.keyboard.press("b");
+  await expectMenuKeys(menu, ["1", "2", "3", "4", "0"], "a snoozed question's Snooze menu");
+  await page.keyboard.press("Escape");
+
+  // Today's issue page, with the focus outside the document: the issue's keys and the document's.
+  await openSpec(page, approval.issueKey, "The revised plan.");
+  await page.evaluate(() => {
+    const active = document.activeElement;
+    if (active instanceof HTMLElement) active.blur();
+  });
+  await page.keyboard.press("?");
+  const issueKeys = await helpKeys(page, "Issue");
+  for (const key of SPEC_ISSUE_KEYS) {
+    expect.soft(issueKeys, step(`on the Spec tab ? lists ${key} under Issue`)).toContain(key);
+  }
+  const documentKeys = await helpKeys(page, "Document");
+  for (const key of SPEC_DOCUMENT_KEYS) {
+    expect.soft(documentKeys, step(`on the Spec tab ? lists ${key} under Document`)).toContain(key);
+  }
+  await page.keyboard.press("Escape");
+
+  await page.goto(`/issues/${approval.issueKey}/conversation`);
+  await expect(page.getByRole("list", { name: "Conversation turns" })).toBeVisible();
+  await page.keyboard.press("?");
+  const turnKeys = await helpKeys(page, "Issue");
+  for (const key of SPEC_TURN_KEYS) {
+    expect
+      .soft(turnKeys, step(`on the Conversation tab ? lists ${key} under Issue`))
+      .toContain(key);
+  }
 });

@@ -3151,13 +3151,13 @@ on each piece of the body, and a read whose headers never come, or whose body fa
 at the deadline, naming its route.
 
 The `webkit` Playwright project runs the rows tagged `@webkit` (`webkitTagged` in
-`e2e/playwright.config.ts`), 50 rows: three of `e2e/collab-cursor.e2e.ts`, seven of
+`e2e/playwright.config.ts`), 53 rows: three of `e2e/collab-cursor.e2e.ts`, seven of
 `e2e/deep-links.e2e.ts`, six of `e2e/download-names.e2e.ts`, one of
-`e2e/heavy-streamed-turn.e2e.ts`, six of `e2e/keyboard-agents-picker.e2e.ts`, five of
-`e2e/keyboard-session-pickers.e2e.ts`, two of `e2e/keyed-send.e2e.ts`, nine of
-`e2e/keyed-writes.e2e.ts`, one of `e2e/doc-reload-line.e2e.ts`, one of `e2e/live-socket.e2e.ts`,
-one of `e2e/mermaid.e2e.ts`, three of `e2e/offline-edits.e2e.ts` and five of
-`e2e/table-controls.e2e.ts`; the comment
+`e2e/heavy-streamed-turn.e2e.ts`, six of `e2e/keyboard-agents-picker.e2e.ts`, three of
+`e2e/keyboard-complete.e2e.ts`, five of `e2e/keyboard-session-pickers.e2e.ts`, two of
+`e2e/keyed-send.e2e.ts`, nine of `e2e/keyed-writes.e2e.ts`, one of `e2e/doc-reload-line.e2e.ts`,
+one of `e2e/live-socket.e2e.ts`, one of `e2e/mermaid.e2e.ts`, three of `e2e/offline-edits.e2e.ts`
+and five of `e2e/table-controls.e2e.ts`; the comment
 above the project names each engine behaviour and the rows that exercise it, and a comment above
 each tagged row names which. Every row of the live-socket spec runs in `chromium`, and its one-socket
 row also runs in `firefox`, `webkit` and `webkit-iphone`: a tab holds one live socket in every
@@ -3172,7 +3172,10 @@ composer's Issue list, the shared single-pick list (`components/MultiSelect.tsx`
 the keyboard through `page.keyboard` - the arrows move the active issue and Enter picks it, a typed word narrows the
 issues, and an arrow left by Tab or Shift+Tab, or from No issue by Tab, picks nothing while the toggle and the send
 still name one issue - run here and in `firefox` as well as in Chromium, since each engine delivers keys to a text
-box, and takes the focus out of one on Tab, its own way. Its row back after the reader left mid-send carries `@webkit` alone
+box, and takes the focus out of one on Tab, its own way. The three `k-choice-writes-on-enter` rows of
+`e2e/keyboard-complete.e2e.ts` drive the same list from the keyboard - the issue page's assignee and repository and a
+question's hand-on, on their closed triggers and in their open lists - and run here and in `firefox` for that reason.
+The picker spec's row back after the reader left mid-send carries `@webkit` alone
 under the second of the config's two reasons for an engine tag (`e2e/playwright.config.ts`, the
 comment above `tagged`): the send it holds across two in-app navigations is the same in every
 engine, so the row exercises no WebKit behaviour, but each of its six measured failures - one run
@@ -3242,19 +3245,19 @@ The `webkit-iphone` project runs, in WebKit with the iPhone 13 profile, four row
 No Playwright hook asserts what a project's title `grep` selected, so that guard is a one-time manual check: rename one selected test in a scratch copy and confirm `bunx playwright test --config e2e/playwright.config.ts --project=webkit-iphone --list` drops it (the count falls by one, with no error), then restore it. Repeat it whenever the `grep` or the titles change.
 
 The `firefox` Playwright project runs the rows tagged `@firefox` (`firefoxTagged` in
-`e2e/playwright.config.ts`), 49 rows: two of `e2e/code-line-replace.e2e.ts`, seven of
+`e2e/playwright.config.ts`), 52 rows: two of `e2e/code-line-replace.e2e.ts`, seven of
 `e2e/deep-links.e2e.ts`, six of `e2e/download-names.e2e.ts`, one of
-`e2e/heavy-streamed-turn.e2e.ts`, five of `e2e/keyboard-agents-picker.e2e.ts`, five of
-`e2e/keyboard-session-pickers.e2e.ts`, two of `e2e/keyed-send.e2e.ts`, eight of
-`e2e/keyed-writes.e2e.ts`, one of `e2e/doc-reload-line.e2e.ts`, two of `e2e/live-socket.e2e.ts`
-(its one-socket row and its rotation row), one of `e2e/mermaid.e2e.ts`, three of
-`e2e/offline-edits.e2e.ts`, one of `e2e/picture-link-click.e2e.ts` and five of
-`e2e/table-controls.e2e.ts`. These are the rows `webkit` runs but `e2e/collab-cursor.e2e.ts`'s and
+`e2e/heavy-streamed-turn.e2e.ts`, five of `e2e/keyboard-agents-picker.e2e.ts`, three of
+`e2e/keyboard-complete.e2e.ts`, five of `e2e/keyboard-session-pickers.e2e.ts`, two of
+`e2e/keyed-send.e2e.ts`, eight of `e2e/keyed-writes.e2e.ts`, one of `e2e/doc-reload-line.e2e.ts`,
+two of `e2e/live-socket.e2e.ts` (its one-socket row and its rotation row), one of
+`e2e/mermaid.e2e.ts`, three of `e2e/offline-edits.e2e.ts`, one of `e2e/picture-link-click.e2e.ts`
+and five of `e2e/table-controls.e2e.ts`. These are the rows `webkit` runs but `e2e/collab-cursor.e2e.ts`'s and
 the two `webkit` alone carries, with the live-socket rotation row, the row of
 `e2e/picture-link-click.e2e.ts` and the two of `e2e/code-line-replace.e2e.ts` added. Firefox's native editing puts text
 typed over a code block's last line before that line's newline, and deletes a paragraph's hard break
 along with the text after it, which Chromium and WebKit never do, so that spec is the one that needs
-a second engine; the picker, deep-link, download-name, keyed, live-socket, offline-edits, mermaid,
+a second engine; the picker, choice-control, deep-link, download-name, keyed, live-socket, offline-edits, mermaid,
 streamed-turn and table-controls rows run for the reasons given under `webkit` above and in the
 comment above the project; and a click on a link inside the editor meets the engine's focus rule — Firefox focuses
 the editing host, not the link — so the picture view's fallback link is clicked there too.
