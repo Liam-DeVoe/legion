@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -251,7 +252,9 @@ func TestVMSampleFileMergesIntoCgroupJSON(t *testing.T) {
 // TestVMSampleRunsTheEmbeddedScript: the collector sends vm/sample.sh itself on the shell's
 // standard input and reads back what that script prints. The ssh here is a shim that drops the
 // target and runs the shell it was given on this machine, so the script, the arguments the
-// collector gives it and the parser are proved together, against a prepared cgroup tree.
+// collector gives it and the parser are proved together, against a prepared cgroup tree. The
+// collector runs until the file holds two readings of each kind, not for a span: a loaded
+// machine can start the shim or the script later than any span, and that is slow, not wrong.
 func TestVMSampleRunsTheEmbeddedScript(t *testing.T) {
 	dir := t.TempDir()
 	cgroup := filepath.Join(dir, "dispatch")
@@ -273,10 +276,17 @@ func TestVMSampleRunsTheEmbeddedScript(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := filepath.Join(dir, "cgroup.jsonl")
-	if err := runVMSample([]string{
-		"-out", out, "-ssh", shim, "-interval", "200ms", "-until", "700ms",
+	err := vmSampleUntil(t, []string{
+		"-out", out, "-ssh", shim, "-interval", "200ms",
 		"-vm", "loadtest@app-vm:dispatch=" + cgroup,
-	}); err != nil {
+	}, "two container readings and two machine readings in "+out, func() bool {
+		roles := map[string]int{}
+		for _, s := range vmWholeSamples(out) {
+			roles[s.Role]++
+		}
+		return roles["dispatch"] >= 2 && roles["vm-app-vm"] >= 2
+	})
+	if err != nil {
 		t.Fatalf("vm-sample: %v", err)
 	}
 	b, err := os.ReadFile(out)
@@ -302,13 +312,62 @@ func TestVMSampleRunsTheEmbeddedScript(t *testing.T) {
 		}
 	}
 	if roles["dispatch"] < 2 || roles["vm-app-vm"] < 2 {
-		t.Errorf("700 ms at a 200 ms interval gave %d container readings and %d machine readings, want at least two of each", roles["dispatch"], roles["vm-app-vm"])
+		t.Errorf("the collector wrote %d container readings and %d machine readings, want at least two of each", roles["dispatch"], roles["vm-app-vm"])
 	}
+}
+
+// vmSampleUntil runs vm-sample with args until done holds, then stops it and returns its error.
+// The test waits on what the file holds, not on a span: a loaded machine can start the ssh later
+// than any span, and that makes the test slow, not wrong. The wait is the shared one, bounded by
+// the test binary's deadline alone: the embedded script counts this machine's processors one
+// /proc/cpuinfo line at a time, so on a machine of hundreds of them a starved test takes most of
+// a minute for two machine readings. A broken ssh does not wait the deadline out, since each ssh
+// that ends or stays silent for vmSampleSilence leaves a gap reading of every series.
+func vmSampleUntil(t *testing.T, args []string, what string, done func() bool) error {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	var sampled error
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		sampled = sampleVMs(ctx, args)
+	}()
+	t.Cleanup(func() { cancel(); <-stopped })
+	testwait.Eventually(t, what, func() bool {
+		select {
+		case <-stopped: // a collector that stops on its own fails the caller's checks of its file
+			return true
+		default:
+		}
+		return done()
+	})
+	cancel()
+	<-stopped
+	return sampled
+}
+
+// vmWholeSamples is the samples in the whole lines of the cgroup.jsonl at path, which the
+// collector may still be writing: a line it has not finished is not read.
+func vmWholeSamples(path string) []cgroupSample {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	lines := strings.Split(string(b), "\n")
+	var samples []cgroupSample
+	for _, line := range lines[:len(lines)-1] {
+		var s cgroupSample
+		if json.Unmarshal([]byte(line), &s) == nil {
+			samples = append(samples, s)
+		}
+	}
+	return samples
 }
 
 // TestVMSampleRestartsADeadSSH: an ssh that ends is started again, and the gap it left is an
 // error reading of every series on the VM, never a series that closes in silence. The fake ssh
-// prints one reading and exits, as a dropped connection does.
+// prints one reading and exits, as a dropped connection does. The collector runs until two ssh
+// runs have each left their reading and their gap.
 func TestVMSampleRestartsADeadSSH(t *testing.T) {
 	dir := t.TempDir()
 	calls := filepath.Join(dir, "ssh-calls")
@@ -319,10 +378,21 @@ func TestVMSampleRestartsADeadSSH(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := filepath.Join(dir, "cgroup.jsonl")
-	if err := runVMSample([]string{
-		"-out", out, "-ssh", fake, "-interval", "100ms", "-until", "1s",
+	err := vmSampleUntil(t, []string{
+		"-out", out, "-ssh", fake, "-interval", "100ms",
 		"-vm", "loadtest@app-vm:dispatch=/sys/fs/cgroup/dispatch",
-	}); err != nil {
+	}, "two good readings and two gaps of each series in "+out, func() bool {
+		good, gaps := 0, map[string]int{}
+		for _, s := range vmWholeSamples(out) {
+			if s.good() {
+				good++
+			} else {
+				gaps[s.Role+" "+s.Container]++
+			}
+		}
+		return good >= 2 && gaps["dispatch dispatch"] >= 2 && gaps["vm-app-vm vm"] >= 2
+	})
+	if err != nil {
 		t.Fatalf("vm-sample: %v", err)
 	}
 
@@ -332,7 +402,7 @@ func TestVMSampleRestartsADeadSSH(t *testing.T) {
 	}
 	ran := strings.Count(string(callLog), "\n")
 	if ran < 2 {
-		t.Fatalf("the ssh ran %d times in 1 s, so a dead one was not started again: %s", ran, callLog)
+		t.Fatalf("the ssh ran %d times, so a dead one was not started again: %s", ran, callLog)
 	}
 	wantArgs := "loadtest@app-vm sh -s -- -i 0.1 -m vm-app-vm dispatch=/sys/fs/cgroup/dispatch"
 	if first, _, _ := strings.Cut(string(callLog), "\n"); first != wantArgs {
@@ -379,7 +449,7 @@ func TestVMSampleTakesASilentSSHForDead(t *testing.T) {
 	// One reading, then silence: the sampler's idle timer is what ends this ssh. The sleep is
 	// exec'd, so the process the timer kills is the one holding the stream open.
 	script := "#!/bin/sh\ncat >/dev/null\ncat <<'EOF'\n" +
-		vmReadingText("dispatch", "dispatch", 7, 0, "1600000 100000", 11, 1) + "EOF\nexec sleep 30\n"
+		vmReadingText("dispatch", "dispatch", 7, 0, "1600000 100000", 11, 1) + "EOF\nexec sleep 3600\n"
 	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}

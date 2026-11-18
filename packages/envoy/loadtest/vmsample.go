@@ -415,7 +415,17 @@ func (s *vmSampler) run(ctx context.Context, targets []*vmTarget) {
 	wg.Wait()
 }
 
+// runVMSample is the vm-sample command: it samples until SIGINT or SIGTERM, or -until.
 func runVMSample(args []string) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return sampleVMs(ctx, args)
+}
+
+// sampleVMs is vm-sample under ctx: it samples until ctx ends or -until passes. A test ends it
+// by ending ctx once the file holds the readings it waits for, not after a span that a loaded
+// machine can use up before the first reading.
+func sampleVMs(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("vm-sample", flag.ExitOnError)
 	out := fs.String("out", "", "the cgroup.jsonl to append every sample to (required)")
 	var targets vmTargets
@@ -450,8 +460,6 @@ func runVMSample(args []string) error {
 		return err
 	}
 	defer f.Close()
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	if *until > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, *until)
