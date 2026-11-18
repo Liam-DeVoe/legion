@@ -171,10 +171,12 @@ func newVerifier(provider *gooidc.Provider, issuer, audience string) *Verifier {
 // issuer, Google's scheme-less spelling included when the verifier is Google's (namesIssuer). A
 // caller that trusts several issuers picks with it the one verifier a token is for, so a token of
 // one issuer never makes another's verifier fetch its keys; Verify still checks the issuer with
-// everything else. It reads unverified text, so it picks a verifier and decides nothing about a
-// caller: no claim anyone is admitted on comes from it.
+// everything else. raw is read with every space removed (stripSpaces), as Verify reads it, so a
+// token with a trailing line feed or a space inside a segment picks the verifier its compact form
+// picks. It reads unverified text, so it picks a verifier and decides nothing about a caller: no
+// claim anyone is admitted on comes from it.
 func (v *Verifier) Issues(raw string) bool {
-	claims, err := decodeUnverifiedClaims(raw)
+	claims, err := decodeUnverifiedClaims(stripSpaces(raw))
 	return err == nil && v.namesIssuer(claims.Issuer)
 }
 

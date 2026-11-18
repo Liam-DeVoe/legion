@@ -91,3 +91,33 @@ func TestGooglesSchemelessIssuerIsGooglesOwn(t *testing.T) {
 		t.Errorf("another issuer picks Google's verifier")
 	}
 }
+
+// Issues reads a token as Verify does, every space removed, so each white-spaced form of a
+// Google-issued token, in either spelling of Google's issuer, picks Google's verifier as its
+// compact form does, and no form of a token of another issuer picks it.
+func TestAWhiteSpacedTokenPicksTheVerifierItsCompactFormPicks(t *testing.T) {
+	issuer := oidctest.New(t)
+	signing := oidctest.NewKey(t, "google-signing-key")
+	issuer.Publish(signing)
+	keys, err := NewKeys(context.Background(), issuer.URL())
+	if err != nil {
+		t.Fatalf("NewKeys(%s): %v", issuer.URL(), err)
+	}
+	google := NewWithKeys(GoogleIssuer, googleTestAudience, keys)
+	for _, spelling := range []string{GoogleIssuer, "accounts.google.com"} {
+		claims := googleIdentityClaims(issuer, googleTestAudience)
+		claims["iss"] = spelling
+		for name, raw := range whiteSpaced(issuer.Mint(t, signing, claims)) {
+			if !google.Issues(raw) {
+				t.Errorf("iss %q with %s does not pick Google's verifier", spelling, name)
+			}
+		}
+	}
+	other := googleIdentityClaims(issuer, googleTestAudience)
+	other["iss"] = "https://accounts.google.com.example"
+	for name, raw := range whiteSpaced(issuer.Mint(t, signing, other)) {
+		if google.Issues(raw) {
+			t.Errorf("a token of another issuer with %s picks Google's verifier", name)
+		}
+	}
+}

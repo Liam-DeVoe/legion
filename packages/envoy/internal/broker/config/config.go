@@ -494,9 +494,8 @@ type Config struct {
 	// is listed.
 	VMServicesByAccount map[string]string
 	// BROKER_VM_EXCHANGE_ACCOUNTS: the person and the Dispatch project each fleet writes for,
-	// whitespace-separated <service account email>=<project>=<person>[=<session>] entries, the
-	// grammar of a BROKER_EXCHANGE_ACCOUNTS entry that names no issuer, such as
-	// example-fleet@example-project.iam.gserviceaccount.com=EXAMPLE=ada@example.com. A token the
+	// whitespace-separated <service account email>=<project>=<person>[=<session>] entries, such
+	// as example-fleet@example-project.iam.gserviceaccount.com=EXAMPLE=ada@example.com. A token the
 	// exchange mints for a machine of that account may write that one project, acts for that
 	// person, and writes under the session the entry fixes; an entry that fixes none requires the
 	// machine to name its own session. The session is everything after the third "=", so it alone

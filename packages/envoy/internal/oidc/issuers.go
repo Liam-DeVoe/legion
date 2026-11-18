@@ -45,22 +45,20 @@ func NewIssuerSet(issuers []NamedIssuer, audience string, keySpacing time.Durati
 	return set
 }
 
-// Verify checks raw against the issuer its iss names, and answers the claims and that issuer. A
+// VerifyClaims checks raw against the issuer its iss names, and answers the claims and that
+// issuer, unmarshalling the verified payload into each of into through that issuer's
+// LazyVerifier (Verifier.VerifyClaims): the one way a caller of the set reads a claim Claims does
+// not carry, such as a pod's private claims. The iss is read from raw with every space removed
+// (stripSpaces), as the verifier reads the token, so a token with a trailing line feed or a space
+// inside a segment goes to its issuer and verifies as it does through that issuer's Verifier. A
 // token that cannot be decoded is ErrMalformed, and one whose iss no issuer of the set names is
 // ErrIssuer, as Verifier.Verify classifies each; neither reads anything. Every other answer is
 // that issuer's LazyVerifier's, ErrIssuerUnavailable while its discovery document has not been
 // read or its key set cannot be, and it carries the issuer even when it is an error, so a caller
 // can say which issuer could not be read. The unverified iss only chooses the verifier: every
 // claim the answer carries is read from the payload that issuer's signature covers.
-func (s *IssuerSet) Verify(ctx context.Context, raw string) (Claims, NamedIssuer, error) {
-	return s.VerifyClaims(ctx, raw)
-}
-
-// VerifyClaims is Verify that also unmarshals the verified payload into each of into, through the
-// issuer's LazyVerifier (Verifier.VerifyClaims): the one way a caller of the set reads a claim
-// Claims does not carry, such as a pod's private claims.
 func (s *IssuerSet) VerifyClaims(ctx context.Context, raw string, into ...any) (Claims, NamedIssuer, error) {
-	claims, err := decodeUnverifiedClaims(raw)
+	claims, err := decodeUnverifiedClaims(stripSpaces(raw))
 	if err != nil {
 		return Claims{}, NamedIssuer{}, fmt.Errorf("%w: %v", ErrMalformed, err)
 	}
@@ -74,9 +72,9 @@ func (s *IssuerSet) VerifyClaims(ctx context.Context, raw string, into ...any) (
 
 // Key answers the key the issuer of the set whose URL is issuer publishes under kid for alg,
 // through that issuer's LazyVerifier (LazyVerifier.Key), so a caller that needs the key itself,
-// as the RFC 8693 token exchange does, reads the discovery document and the key set Verify reads,
-// with their background read, their spacing and their errors, ErrIssuerUnavailable among them.
-// An issuer the set does not name is ErrIssuer, and reads nothing.
+// as the RFC 8693 token exchange does, reads the discovery document and the key set VerifyClaims
+// reads, with their background read, their spacing and their errors, ErrIssuerUnavailable among
+// them. An issuer the set does not name is ErrIssuer, and reads nothing.
 func (s *IssuerSet) Key(ctx context.Context, issuer, kid, alg string) (crypto.PublicKey, error) {
 	entry, err := s.entry(issuer)
 	if err != nil {

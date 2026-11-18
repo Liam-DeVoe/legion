@@ -34,32 +34,32 @@ func TestAnIssuerSetChecksATokenByTheIssuerItNames(t *testing.T) {
 	set, first, second, firstKey, secondKey := twoIssuers(t)
 	ctx := context.Background()
 
-	claims, issuer, err := set.Verify(ctx, first.Mint(t, firstKey, first.Claims(testSubject, testAudience)))
+	claims, issuer, err := set.VerifyClaims(ctx, first.Mint(t, firstKey, first.Claims(testSubject, testAudience)))
 	if err != nil || claims.Subject != testSubject || issuer != (NamedIssuer{Name: "first", URL: first.URL()}) {
-		t.Fatalf("Verify(the first issuer's token) = %+v, %+v, %v; want %s from the first issuer", claims, issuer, err, testSubject)
+		t.Fatalf("VerifyClaims(the first issuer's token) = %+v, %+v, %v; want %s from the first issuer", claims, issuer, err, testSubject)
 	}
 	if got := reads(second); got != [2]int{} {
 		t.Fatalf("the first issuer's token read the second issuer's discovery document and key set %v times, want none", got)
 	}
 
-	claims, issuer, err = set.Verify(ctx, second.Mint(t, secondKey, second.Claims(testSubject, testAudience)))
+	claims, issuer, err = set.VerifyClaims(ctx, second.Mint(t, secondKey, second.Claims(testSubject, testAudience)))
 	if err != nil || claims.Subject != testSubject || issuer != (NamedIssuer{Name: "second", URL: second.URL()}) {
-		t.Fatalf("Verify(the second issuer's token) = %+v, %+v, %v; want %s from the second issuer", claims, issuer, err, testSubject)
+		t.Fatalf("VerifyClaims(the second issuer's token) = %+v, %+v, %v; want %s from the second issuer", claims, issuer, err, testSubject)
 	}
 
 	// The second issuer's key under the first issuer's iss: the token goes to the first issuer,
 	// whose keys do not verify it, and the second issuer's keys are not read for it.
 	before := reads(second)
-	_, issuer, err = set.Verify(ctx, second.Mint(t, secondKey, first.Claims(testSubject, testAudience)))
+	_, issuer, err = set.VerifyClaims(ctx, second.Mint(t, secondKey, first.Claims(testSubject, testAudience)))
 	if !errors.Is(err, ErrSignature) || issuer.Name != "first" {
-		t.Fatalf("Verify(a token naming the first issuer, signed by the second) = %+v, %v; want ErrSignature from the first issuer", issuer, err)
+		t.Fatalf("VerifyClaims(a token naming the first issuer, signed by the second) = %+v, %v; want ErrSignature from the first issuer", issuer, err)
 	}
 	if got := reads(second); got != before {
 		t.Fatalf("a token naming the first issuer read the second issuer: reads went from %v to %v", before, got)
 	}
 
-	if _, _, err := set.Verify(ctx, first.Mint(t, firstKey, first.Claims(testSubject, "another-audience"))); !errors.Is(err, ErrAudience) {
-		t.Fatalf("Verify(a token for another audience) = %v, want ErrAudience", err)
+	if _, _, err := set.VerifyClaims(ctx, first.Mint(t, firstKey, first.Claims(testSubject, "another-audience"))); !errors.Is(err, ErrAudience) {
+		t.Fatalf("VerifyClaims(a token for another audience) = %v, want ErrAudience", err)
 	}
 }
 
@@ -70,9 +70,9 @@ func TestAnIssuerSetRefusesATokenOfAnIssuerItDoesNotName(t *testing.T) {
 	third := oidctest.New(t)
 	thirdKey := third.PublishKey(t, "signing-key")
 
-	_, issuer, err := set.Verify(context.Background(), third.Mint(t, thirdKey, third.Claims(testSubject, testAudience)))
+	_, issuer, err := set.VerifyClaims(context.Background(), third.Mint(t, thirdKey, third.Claims(testSubject, testAudience)))
 	if !errors.Is(err, ErrIssuer) || issuer != (NamedIssuer{}) {
-		t.Fatalf("Verify(a token of an issuer the set does not name) = %+v, %v; want ErrIssuer and no issuer", issuer, err)
+		t.Fatalf("VerifyClaims(a token of an issuer the set does not name) = %+v, %v; want ErrIssuer and no issuer", issuer, err)
 	}
 	for name, issuer := range map[string]*oidctest.Issuer{"first": first, "second": second, "third": third} {
 		if got := reads(issuer); got != [2]int{} {
@@ -91,8 +91,8 @@ func TestAnIssuerSetRefusesAMalformedToken(t *testing.T) {
 		"a payload not JSON":      "e30.bm90IGpzb24.c2ln",
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, issuer, err := set.Verify(context.Background(), raw); !errors.Is(err, ErrMalformed) || issuer != (NamedIssuer{}) {
-				t.Fatalf("Verify(%q) = %+v, %v; want ErrMalformed and no issuer", raw, issuer, err)
+			if _, issuer, err := set.VerifyClaims(context.Background(), raw); !errors.Is(err, ErrMalformed) || issuer != (NamedIssuer{}) {
+				t.Fatalf("VerifyClaims(%q) = %+v, %v; want ErrMalformed and no issuer", raw, issuer, err)
 			}
 		})
 	}
@@ -108,12 +108,12 @@ func TestAnIssuerSetAnswersAnIssuerItCannotReadUnavailable(t *testing.T) {
 	first.FailDiscovery(http.StatusServiceUnavailable)
 	ctx := context.Background()
 
-	_, issuer, err := set.Verify(ctx, first.Mint(t, firstKey, first.Claims(testSubject, testAudience)))
+	_, issuer, err := set.VerifyClaims(ctx, first.Mint(t, firstKey, first.Claims(testSubject, testAudience)))
 	if !errors.Is(err, ErrIssuerUnavailable) || issuer.Name != "first" {
-		t.Fatalf("Verify(a token of an issuer that cannot be read) = %+v, %v; want ErrIssuerUnavailable from the first issuer", issuer, err)
+		t.Fatalf("VerifyClaims(a token of an issuer that cannot be read) = %+v, %v; want ErrIssuerUnavailable from the first issuer", issuer, err)
 	}
-	if _, issuer, err := set.Verify(ctx, second.Mint(t, secondKey, second.Claims(testSubject, testAudience))); err != nil || issuer.Name != "second" {
-		t.Fatalf("Verify(the other issuer's token) = %+v, %v; want it verified", issuer, err)
+	if _, issuer, err := set.VerifyClaims(ctx, second.Mint(t, secondKey, second.Claims(testSubject, testAudience))); err != nil || issuer.Name != "second" {
+		t.Fatalf("VerifyClaims(the other issuer's token) = %+v, %v; want it verified", issuer, err)
 	}
 }
 

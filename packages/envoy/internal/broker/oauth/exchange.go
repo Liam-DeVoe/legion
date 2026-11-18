@@ -169,10 +169,10 @@ type ExchangeConfig struct {
 	// each with its own name and keys and all of them for one audience. One token type takes
 	// them all: the exchange reads a token's `iss` without trusting it and checks the token
 	// against that issuer's keys alone (kubernetesKeyFunc), as the broker's other routes check a
-	// cluster's token (oidc.IssuerSet.Verify). A token whose `iss` names none of them is refused
-	// invalid_request, the answer the library gives a token of another issuer, and a token of an
-	// issuer whose keys cannot be read for want of a read of the issuer is answered 503
-	// OIDC_ISSUER_UNAVAILABLE (issuerUnavailableRefusal).
+	// cluster's token (oidc.IssuerSet.VerifyClaims). A token whose `iss` names none of them is
+	// refused invalid_request, the answer the library gives a token of another issuer, and a
+	// token of an issuer whose keys cannot be read for want of a read of the issuer is answered
+	// 503 OIDC_ISSUER_UNAVAILABLE (issuerUnavailableRefusal).
 	Kubernetes []IssuerConfig
 	// GitHub is the issuer a continuous-integration workflow run's token comes from.
 	GitHub IssuerConfig
