@@ -229,11 +229,10 @@ const STOPS_AT_MOST = 40;
 /** Presses `f` until `target` holds the focus, as a reader steps through the focused row's links
  *  and controls (`useTreeKeymap.ts`'s `rowStops`), and fails with `message` where none does. */
 async function pressFTo(page: Page, target: Locator, message: string): Promise<void> {
+  await expect(target.first(), message).toBeAttached();
   for (let pressed = 0; pressed < STOPS_AT_MOST; pressed += 1) {
-    const reached =
-      (await target.count()) > 0 &&
-      (await target.first().evaluate((element) => element === document.activeElement));
-    if (reached) return;
+    // `f` focuses the next stop inside its own keydown handler, so this read answers for it.
+    if (await target.first().evaluate((element) => element === document.activeElement)) return;
     await page.keyboard.press("f");
   }
   await expect(target.first(), message).toBeFocused();
@@ -317,11 +316,10 @@ async function expectNoLensAct(
   await expect
     .poll(() => nodeRows(page).count(), { message: `the ${view} view draws no row` })
     .toBeGreaterThan(0);
+  // A view's rows come from one read, merged whole before it draws, so none come later.
+  const drawn = await drawnRows(page);
   const focused =
-    ids ??
-    new Set(
-      (await drawnRows(page)).flatMap((row) => (row.visible && row.id !== null ? [row.id] : []))
-    );
+    ids ?? new Set(drawn.flatMap((row) => (row.visible && row.id !== null ? [row.id] : [])));
   for (const id of focused) {
     const row = nodeRow(page, id).first();
     await expect(row, `the ${view} view draws no row ${id}`).toHaveCount(1);
@@ -563,6 +561,7 @@ test("lenses are drawn under their node with the chain that triggered them @phon
       preMortemRow.locator("[data-lens-chain] ol"),
       "Show the whole chain draws more than one chain"
     ).toHaveCount(1);
+    // The chain's read is held for the load, so the poll above settled what this reads.
     for (const entry of await lensChainEntries(preMortemRow)) {
       expect(
         entry.line,
@@ -951,6 +950,7 @@ test("the first load adds no request for lenses and reads a chain only at a pres
 
     // `j` over every row focuses each lens in turn, which reads nothing.
     await unfoldEveryBranch(page);
+    // Every branch is open and the load has settled, so the rows drawn now are all of them.
     const count = await nodeRows(page).count();
     traffic.reset();
     await nodeRows(page).first().focus();
