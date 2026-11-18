@@ -5302,14 +5302,15 @@ test("a column filter is visible and removable from the row even while its colum
   await expect(chip).toHaveCount(0);
 });
 
-// SLOW(>=2s): 60 issues seeded, the List opened, a middle row focused and then closed by a second
-// person through the API.
+// SLOW(>=2s): 60 issues seeded, the List opened, a middle row marked and unmarked and then closed
+// by a second person through the API.
 // INFRA-3135's review round 1, follow-up F4 (thread PRRT_kwDORFy7ds63p6y_): a focused row a live
-// update removes, with no press of the reader's on it, hands the focus to no other row and scrolls
-// nothing. The reader's last press is on the page's heading, outside the row, so the press window
-// does not cover the removal. `@firefox` and `@webkit`: a focused row taken away fires no `focusout`
-// in these engines, so the rescue sees the loss only by watching the page, the clause of
-// `playwright.config.ts` on a focused control taken away.
+// update removes hands the focus to no other row and scrolls nothing, though the reader's last
+// press was on that row: a press is the cause only of the update that answers it, and the
+// reader's two clicks on the row's checkbox have been answered, the selection bar drawn and gone
+// again, before the second person's close arrives. `@firefox` and `@webkit`: a focused row taken
+// away fires no `focusout` in these engines, so the rescue sees the loss only by watching the
+// page, the clause of `playwright.config.ts` on a focused control taken away.
 test("a row a live update removes while it holds the focus hands the focus to no other row and scrolls nothing @firefox @webkit", async ({
   page,
 }) => {
@@ -5347,11 +5348,18 @@ test("a row a live update removes while it holds the focus hands the focus to no
   });
   if (picked === null) throw new Error("no row sits wholly in the middle of the box");
   const pickedBox = listBox.getByRole("checkbox", { exact: true, name: `Select ${picked}` });
-  // The reader's last press is on the page's heading, outside the row; the focus is then put on the
-  // row's checkbox with no press, so the removal that follows is a loss they did not cause.
-  await page.getByRole("heading", { exact: true, level: 1, name: "Core" }).click();
+  const bar = control(main, CONTROL.selectionBar);
+  // The reader presses in the row itself: a click on its checkbox marks it, and a second click
+  // unmarks it. WebKit leaves a clicked checkbox unfocused, so the focus is then put on it with no
+  // press, which leaves it there in every engine alike.
+  await pickedBox.click();
+  await expect(bar).toBeVisible();
+  await pickedBox.click();
   await pickedBox.evaluate((node) => (node as HTMLElement).focus({ preventScroll: true }));
   await expect(pickedBox).toBeFocused();
+  // The second click's update is drawn - the selection bar gone - before the close is sent, so
+  // that press has been answered by the time the live update takes the row away.
+  await expect(bar).toHaveCount(0);
   const beforeTop = await listBox.evaluate((node) => node.scrollTop);
   const beforeY = await page.evaluate(() => window.scrollY);
   // A second person closes the issue through the API; the live update takes its row off the view.
@@ -5368,7 +5376,7 @@ test("a row a live update removes while it holds the focus hands the focus to no
   expect(Math.abs(afterY - beforeY), "the window scrolled").toBeLessThanOrEqual(1);
   // `x` marks nothing: no row holds the focus for it to act on, so no bar appears.
   await page.keyboard.press("x");
-  await expect(control(main, CONTROL.selectionBar)).toHaveCount(0);
+  await expect(bar).toHaveCount(0);
 });
 
 // SLOW(>=2s): three priorities and two asks seeded, and two pages opened.

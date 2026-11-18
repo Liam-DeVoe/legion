@@ -1,6 +1,7 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { renderHook, waitFor } from "@testing-library/react";
 
+import { PANEL_ATTRIBUTE } from "../features/shell/keymap";
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
 import { CONTROL } from "./control-names";
 import { useFocusRescue } from "./focus-place";
@@ -219,6 +220,99 @@ test("a panel that is no modal, closed by a press outside the main content, hand
     panel.remove();
     await waitFor(() => expect(trigger).toHaveFocus());
   });
+});
+
+/** A `MultiSelect` list's panel, its text box and one of its options. */
+interface ListPanel {
+  box: HTMLInputElement;
+  option: HTMLButtonElement;
+  panel: HTMLElement;
+}
+
+/** A list's panel portalled to the end of the body as `AnchoredPanel` portals it: no role, the
+ *  keymap's panel attribute, its text box and one option. */
+function listPanel(): ListPanel {
+  const panel = document.createElement("div");
+  panel.setAttribute(PANEL_ATTRIBUTE, "");
+  panel.tabIndex = -1;
+  const box = document.createElement("input");
+  box.type = "search";
+  panel.append(box);
+  const option = buttonIn(panel, "Done");
+  option.setAttribute("role", "option");
+  document.body.append(panel);
+  return { box, option, panel };
+}
+
+/** A pointer pick on the list's option, which keeps the focus in its text box (the option's
+ *  `mousedown` is prevented), and the pick's commit taking the list's panel away, with the
+ *  `focusout` Chromium fires for the box or with none, as Firefox and WebKit do. */
+function pickAway(list: ListPanel, withFocusout: boolean): void {
+  list.option.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+  list.option.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+  if (withFocusout) lose(list.box, () => list.panel.remove());
+  else list.panel.remove();
+}
+
+// (at) A list's panel - an `AnchoredPanel` with no role, portalled outside the main content and
+// marked with the keymap's panel attribute - is a region of its own, opened from its trigger. A
+// pointer pick on one of its options keeps the focus in the list's text box, and the pick's
+// commit takes the panel away. The press was inside the panel, so the loss is the reader's, and
+// the focus goes back to the trigger in the main content, never to the sidebar's link before it.
+// The same with a `focusout` (Chromium) or none (Firefox and WebKit).
+test("a list's panel that a pointer pick takes away hands the focus back to its trigger", async () => {
+  const aside = document.createElement("aside");
+  const link = document.createElement("a");
+  link.href = "/";
+  link.textContent = "Inbox";
+  aside.append(link);
+  document.body.prepend(aside);
+  try {
+    for (const withFocusout of [true, false]) {
+      await withRescue(async () => {
+        const [trigger, after] = mainOf("Filter Status", "After").buttons;
+        const list = listPanel();
+        trigger?.focus();
+        list.box.focus();
+        pickAway(list, withFocusout);
+        await settled();
+        expect(trigger).toHaveFocus();
+        expect(link).not.toHaveFocus();
+        expect(after).not.toHaveFocus();
+      });
+    }
+  } finally {
+    aside.remove();
+  }
+});
+
+// (au) So for a list opened from inside a filter panel - a `PanelTrigger` panel, a dialog that
+// carries the panel attribute too - and portalled outside it: the pick that takes the list away
+// hands the focus back to the list's trigger inside the filter panel, which stays open, and to
+// none of that panel's other controls nor the page behind it.
+test("a list opened from inside a filter panel, taken away by a pick, hands the focus back to its trigger there", async () => {
+  for (const withFocusout of [true, false]) {
+    await withRescue(async () => {
+      const [filters] = mainOf("Filters", "After").buttons;
+      const filterPanel = document.createElement("div");
+      filterPanel.setAttribute("role", "dialog");
+      filterPanel.setAttribute(PANEL_ATTRIBUTE, "");
+      const [first, trigger, last] = ["Assignee", "Status", "Labels"].map((label) =>
+        buttonIn(filterPanel, label)
+      );
+      document.body.append(filterPanel);
+      filters?.focus();
+      trigger?.focus();
+      const list = listPanel();
+      list.box.focus();
+      pickAway(list, withFocusout);
+      await settled();
+      expect(trigger).toHaveFocus();
+      expect(first).not.toHaveFocus();
+      expect(last).not.toHaveFocus();
+      expect(filters).not.toHaveFocus();
+    });
+  }
 });
 
 // (r) WebKit can hold a page's animation frames back for seconds while nothing is drawn: the
@@ -943,6 +1037,91 @@ test("the same row removed right after the reader's press on it keeps today's ha
     second.row.remove();
     await waitFor(() => expect(third.mark).toHaveFocus());
   });
+});
+
+// (aq) A press is the cause only of the update that answers it. The same removal as (ah), once the
+// reader's press on that row has been answered - a frame and a task after it, its control held by
+// no write - is a live update's, not theirs: the focus goes into no other row and nothing scrolls,
+// as with no press at all (ag). The reader's next Space or `x` then marks no row they did not pick.
+test("a row removed by a live update after the reader's press on it was answered hands the focus to no row", async () => {
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    await withRescue(async () => {
+      const { box, rows } = rowBoxIn(mainOf("Before").main, "One", "Two", "Three");
+      const second = rows[1] as { mark: HTMLInputElement; row: HTMLElement };
+      second.mark.focus();
+      placeAt(second.mark, 200);
+      box.dispatchEvent(new Event("scroll"));
+      second.mark.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      second.mark.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+      await settled();
+      second.row.remove();
+      await settled();
+      expect(box).toHaveFocus();
+      expect(document.activeElement?.closest("[data-inbox-row]")).toBeNull();
+      expect(rows[2]?.mark).not.toHaveFocus();
+    });
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    scrolls.mockRestore();
+  }
+});
+
+/** A row's Dismiss, pressed by the pointer and then held while its write is out, as `heldPress`
+ *  holds it: the press on it, its release, and the click's commit setting `aria-disabled`, then
+ *  several frames of the write being out. */
+async function pressAndHold(dismiss: HTMLButtonElement): Promise<void> {
+  dismiss.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+  dismiss.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+  dismiss.setAttribute("aria-disabled", "true");
+  for (const _ of [0, 1, 2]) await settled();
+}
+
+// (ar) A press on a control its write holds (`aria-disabled`) is the cause of the update that
+// ends the hold, however many frames the write is out: the row taken away in the commit that ends
+// it - Dismiss answered - keeps the hand-off of (ah), to the control now at the row's place.
+test("a row removed in the commit that ends its pressed control's hold keeps today's hand-off", async () => {
+  await withRescue(async () => {
+    const { box, rows } = rowBoxIn(mainOf("Before").main, "One", "Two", "Three");
+    const second = rows[1] as { mark: HTMLInputElement; row: HTMLElement };
+    const third = rows[2] as { mark: HTMLInputElement; row: HTMLElement };
+    const dismiss = buttonIn(second.row, "Dismiss");
+    dismiss.focus();
+    placeAt(dismiss, 200);
+    box.dispatchEvent(new Event("scroll"));
+    await pressAndHold(dismiss);
+    expect(dismiss).toHaveFocus();
+    second.row.remove();
+    await waitFor(() => expect(third.mark).toHaveFocus());
+  });
+});
+
+// (as) Once that hold ends with the row still there - the write answered and the row kept - the
+// press has been answered a frame and a task later, and a live update taking the row away after
+// that is no doing of the reader's: the focus goes into no other row and nothing scrolls (ag).
+test("a row removed after its pressed control's hold ended hands the focus to no row", async () => {
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    await withRescue(async () => {
+      const { box, rows } = rowBoxIn(mainOf("Before").main, "One", "Two", "Three");
+      const second = rows[1] as { mark: HTMLInputElement; row: HTMLElement };
+      const dismiss = buttonIn(second.row, "Dismiss");
+      dismiss.focus();
+      placeAt(dismiss, 200);
+      box.dispatchEvent(new Event("scroll"));
+      await pressAndHold(dismiss);
+      dismiss.removeAttribute("aria-disabled");
+      await settled();
+      second.row.remove();
+      await settled();
+      expect(box).toHaveFocus();
+      expect(document.activeElement?.closest("[data-inbox-row]")).toBeNull();
+      expect(rows[2]?.mark).not.toHaveFocus();
+    });
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    scrolls.mockRestore();
+  }
 });
 
 // (ai) A control focused below the fold is one the engine is still to scroll into view - WebKit
