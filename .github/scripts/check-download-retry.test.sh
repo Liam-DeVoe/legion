@@ -12470,6 +12470,49 @@ check "exits 1" "$(is "$status" 1)"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 check "names the Python file or the script" "$(contains "$out" 'r38_run.py\|r38-fetch.sh')"
 
+# T1 and T3. A bracket expression whose range runs backwards, such as `[z-c]`, is a word bash
+# accepts and matches no file with. The gate turned it into a Python regular expression and
+# stopped with re.PatternError and a traceback at e6de07881cdf, in pattern_words, on an argument
+# of `ls` and on a command word (dispatch://INFRA-1545, the tester's round-38 battery). Each case
+# asks for a refusal by name with no traceback.
+echo "case: r38 T1 an argument holding a backwards bracket range is refused by name, not with a traceback"
+root=$(fixture r38-t1-backwards-range-argument)
+cp "$work/r38-x2-python-runs-script/.github/scripts/r38-fetch.sh" "$root/.github/scripts/r38-fetch.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: List the scripts a backwards range names
+        timeout-minutes: 1
+        run: ls .github/scripts/[z-c]*.sh || true
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "refuses by name" "$(contains "$out" '^::error file=.github/workflows/case.yaml,line=')"
+
+echo "case: r38 T3 a command word holding a backwards bracket range is refused by name, not with a traceback"
+root=$(fixture r38-t3-backwards-range-command)
+cp "$work/r38-x2-python-runs-script/.github/scripts/r38-fetch.sh" "$root/.github/scripts/r38-fetch.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run a script a backwards range names
+        timeout-minutes: 1
+        run: .github/scripts/r38-[z-c]etch.sh
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "refuses by name" "$(contains "$out" '^::error file=.github/workflows/case.yaml,line=')"
+
 # W10 and W11. The four cases above share one cure: the gate reads the `.sh` scripts directly in
 # .github/scripts/ and no other file there, so every other file under that directory, at any
 # depth, is refused by name at its line 1, whatever its name, its first line or its text, but a
