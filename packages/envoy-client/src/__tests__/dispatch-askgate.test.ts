@@ -576,6 +576,8 @@ describe("AskGate at the dispatch CLI", () => {
     expect(messagePosts()).toHaveLength(4);
   });
 
+  // Seven runs of the CLI, each its own process: the 30 s limit of this file's other rows that
+  // start several, since Bun's default 5 s is less than seven starts take on a loaded machine.
   test("help, a dry run and every ungated command need no marker under a live record", async () => {
     writeFileSync(join(stateDir, "shot.png"), "image bytes");
     writeRecord();
@@ -593,7 +595,7 @@ describe("AskGate at the dispatch CLI", () => {
       expect(stdout).not.toContain("AskGate");
       expect(posts.length).toBeGreaterThan(0);
     }
-  });
+  }, 30_000);
 
   test("an issue with a spec and a markdown upload are gated", async () => {
     writeRecord();
