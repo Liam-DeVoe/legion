@@ -278,7 +278,7 @@ func (s *Service) RejectSuggestion(ctx context.Context, artifactID, id string, a
 // RejectDeletedCommentSuggestion rejects the pending suggestion of a comment its author is
 // deleting: the mark goes and an insert suggestion's text goes with it, as RejectSuggestion
 // does. Its one caller is the comment delete (api/comment_delete.go, deleteComment), whose
-// transaction holds the document's owner row locked (api/comment_actions.go,
+// transaction holds the document owner's lock (api/comment_actions.go,
 // lockedCommentForCorrection through lockOwnerOfComment) and has decided under that lock that
 // the comment is its author's to delete - the same standing a comment's own anchor writes have,
 // and the delete marks the context it passes here as theirs (WithCommentMarks). So this reject

@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // deleteComment answers DELETE /api/v1/comments/{id}. Its prologue is the comment twin of the
@@ -72,13 +73,17 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	// so its document takes this reject too, where the accept and the reject routes are refused.
 	// An orphaned mark is already out of the document: the delete records that on the anchor and
 	// stands, where an accept and a reject answer 409.
+	//
+	// Everything up to Commit is the read phase (Docs.Join): this route and the document
+	// operations queue their writes on the ledger, in the order made, and Commit sends them as
+	// one batch.
 	if comment.Suggestion != nil && comment.Suggestion.Accepted == nil && comment.Anchor != nil {
 		if err := s.deps.Docs.RejectDeletedCommentSuggestion(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, actor); err != nil {
 			if !errors.Is(err, docs.ErrAnchorOrphaned) {
 				s.writeHandlerError(w, err)
 				return
 			}
-			if err := recordOrphanedCommentAnchor(r.Context(), tx, &comment); err != nil {
+			if err := recordOrphanedCommentAnchor(ledger, &comment); err != nil {
 				s.writeHandlerError(w, err)
 				return
 			}
@@ -89,14 +94,26 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	// serves that name, so the delete renames it here, beside the reject above, while the
 	// comment still holds the anchor and the suggestion the clear below takes off it.
 	if comment.Suggestion != nil && comment.Suggestion.Accepted != nil && *comment.Suggestion.Accepted && comment.Anchor != nil {
-		if err := renameAcceptedVersion(r.Context(), tx, comment); err != nil {
+		if err := renameAcceptedVersion(r.Context(), tx, ledger, comment); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
 	}
-	deletedAt, referenceChanges, err := s.clearDeletedPostBody(
-		r.Context(), tx, refs.ItemComment, comment.ID, comment.Body, actor)
+	// deleted_at is the transaction's now(), which the queued update writes, read here so the
+	// projection, the event and the answer carry it before that update runs.
+	deletedAt, err := ledger.Now(r.Context())
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	deletedAt = deletedAt.UTC()
+	referenceChanges, clear, err := s.clearDeletedPostBody(
+		ledger.ReadContext(r.Context()), tx, refs.ItemComment, comment.ID, comment.Body, actor, deletedAt)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := ledger.Queue(clear); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -104,64 +121,75 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	comment.Suggestion = nil
 	comment.DeletedAt = &deletedAt
 	comment.DeletedBy = &actor
-	if err := s.projectThreadMark(documentCtx, tx, comment, actor); err != nil {
+	if err := s.projectThreadMark(documentCtx, tx, ledger, comment, actor); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	events, err := s.settleDeletedPostDeliveries(
-		r.Context(), tx, "comment_deliveries", "comment_id", commentDeliveryColumns, comment.ID,
-		func(row pgx.CollectableRow) (model.Event, error) {
-			attempt, err := scanCommentDelivery(row)
-			if err != nil {
-				return model.Event{}, err
-			}
-			return commentDeliveryReceipt(comment, comment.Author, attempt), nil
-		})
+	// The answer is read here, in the read phase, with the attempts as they stand: the settle
+	// below is queued, so the attempts it settles are set in the answer as it leaves them, and
+	// each one's receipt is built from that.
+	answer, err := s.hydrateWrittenComment(r.Context(), tx, comment)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	var receipts []model.Event
+	for index := range answer.Deliveries {
+		attempt := &answer.Deliveries[index]
+		if attempt.State != "pending" {
+			continue
+		}
+		settleDeletedPostAttempt(&attempt.State, &attempt.Error)
+		receipts = append(receipts, commentDeliveryReceipt(comment, comment.Author, *attempt))
+	}
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		queueDeletedPostSettlement(b, "comment_deliveries", "comment_id", comment.ID, len(receipts))
+		return nil
+	}); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	events := make([]*model.Event, 0, len(receipts)+1)
+	for _, receipt := range receipts {
+		appended, err := s.queueEvent(ledger, receipt)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		events = append(events, appended)
 	}
 	// A copy of the comment the outbox held back for a mention it waited on is settled with
 	// nothing published: the text that copy carries is withdrawn, and the comment.deleted event
 	// below is what each subscriber is told instead (comment_fallback_copies, migration
 	// 20261101180039).
-	if _, err := tx.Exec(r.Context(), `
+	if err := queueExec(ledger, `
 		update comment_fallback_copies set settled_at = now(), published = false
 		where comment_id = $1 and settled_at is null
 	`, comment.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	payload, err := s.commentCorrectionPayload(r.Context(), tx, &comment, artifactName, referenceChanges)
+	payload, logins, err := s.commentCorrectionPayload(r.Context(), tx, &comment, artifactName, referenceChanges)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	event, err := s.appendEvent(r.Context(), tx, ownerOf(comment.IssueKey, comment.ArtifactID).event(
+	event, err := s.queueLoggedEvent(ledger, ownerOf(comment.IssueKey, comment.ArtifactID).event(
 		"comment.deleted",
 		actor,
 		payload,
-	))
+	), logins, "comment", comment.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	if err := refs.Stamp(r.Context(), tx, "comment", comment.ID, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	events = append(events, event)
-	comment, err = s.hydrateWrittenComment(r.Context(), tx, comment)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(r.Context(), events...)
-	WriteJSON(w, http.StatusOK, comment)
+	s.publish(r.Context(), appendedEvents(events...)...)
+	WriteJSON(w, http.StatusOK, answer)
 }
 
 // renameAcceptedVersion renames the document version comment's accepted suggestion made to the
@@ -170,25 +198,27 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 // version's name, and marks it renamed by this comment's delete in the same update
 // (artifact_versions.renamed_by_delete, which answerEndedByDelete reads). The artifact.version
 // event the accept appended keeps the name it carried: no delete rewrites a stored event, and
-// only the deleted comment's own events are read without its body (attachPostMarks).
+// only the deleted comment's own events are read without its body (attachPostMarks). The version
+// is found in the delete's read phase, under the comment's owner lock, and its update is queued
+// on ledger.
 //
 // The accept records the version it made by the comment's id (artifact_versions.accepted_from,
-// written in commentAction's transaction right after Docs.NamedVersion), so the version is the one
+// queued in commentAction's transaction right after Docs.NamedVersion), so the version is the one
 // of the anchor's document that link names, whatever other version carries its time. A suggestion
 // accepted before the accept recorded that link has no version naming it, and only for such a
 // comment is the version found by the time the accept wrote it. The accept writes the version
 // (Docs.NamedVersion), the version's artifact.version event and the comment's suggestion.accepted
-// event in one transaction, and the version's created_at and each event's take their column's
-// default, now(), the time that transaction began; nothing updates either afterwards. (The
-// comment's own resolved_at is no such mark: a later resolve moves it and a reopen clears it.) The
-// version is therefore the named version of the anchor's document whose created_at is the time of
+// event in one transaction, and the version's created_at and each event's are that transaction's
+// now(), the time it began; nothing updates either afterwards. (The comment's own resolved_at is
+// no such mark: a later resolve moves it and a reopen clears it.) The version is therefore the
+// named version of the anchor's document whose created_at is the time of
 // the comment's suggestion.accepted event, read within the comment's owner, as
 // loadCommentCreatedEvent reads its comment.created event. Another named version of that document
 // carries the same time only when a transaction that began in the same microsecond wrote it, and
 // the accept's own transaction writes no other: a lookup that finds more than one version renames
 // none, and one that finds none - an accept whose event or version is not where this reads them -
 // renames none either, each logged with the comment and the document.
-func renameAcceptedVersion(ctx context.Context, tx pgx.Tx, comment model.Comment) error {
+func renameAcceptedVersion(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, comment model.Comment) error {
 	artifactID := comment.Anchor.ArtifactID
 	rows, err := tx.Query(ctx, `
 		select number from artifact_versions where artifact_id = $1 and accepted_from = $2
@@ -221,8 +251,7 @@ func renameAcceptedVersion(ctx context.Context, tx pgx.Tx, comment model.Comment
 			"comment", comment.ID, "artifact", artifactID, "versions", numbers)
 		return nil
 	}
-	_, err = tx.Exec(ctx, `
+	return queueExec(ledger, `
 		update artifact_versions set summary = $3, renamed_by_delete = $4 where artifact_id = $1 and number = $2
 	`, artifactID, numbers[0], acceptedVersionName("", comment.Anchor.Quote, comment.Suggestion.ReplaceWith), comment.ID)
-	return err
 }

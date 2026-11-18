@@ -1,9 +1,14 @@
 // post_history.go is what a write of a comment's or an issue message's body does to the body it
-// replaces: the one write that keeps it (recordPostBodyHistory), the clear both deletes make of
-// it and of the sends still carrying it (clearDeletedPostBody, settleDeletedPostDeliveries), and
-// the two reads that serve the kept bodies, GET /api/v1/comments/{id}/history and GET
+// replaces: the one write that keeps it (postBodyHistoryStep), the clear both deletes make of it
+// and of the sends still carrying it (clearDeletedPostBody, queueDeletedPostSettlement), and the
+// two reads that serve the kept bodies, GET /api/v1/comments/{id}/history and GET
 // /api/v1/messages/{id}/history. One table holds the kept bodies of both kinds, keyed by the one
 // of comment_id and message_id its row carries (post_body_history, migration 20261110224508).
+//
+// Every write here is planned in the route's read phase and returned as a step of its write
+// phase (docs.WriteStep), which the route queues where it makes the write: on its ledger for a
+// comment, whose route joins a document ledger (Docs.Join), and on the one batch of a message's,
+// which runs its write phase itself as the message create does (createStoredMessage).
 package api
 
 import (
@@ -14,10 +19,14 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // postHistoryEntry is one body a write replaced, with the actor that replaced it and the time
@@ -53,26 +62,37 @@ func postHistoryOwner(kind refs.ItemKind) (items, column string, err error) {
 	return kind.ItemTable()
 }
 
-// recordPostBodyHistory keeps the body a write of comment or message itemID is about to
-// replace, in the caller's transaction and under the locks that caller already holds: one
-// post_body_history row with the actor making the write. An edit calls it with the body it
-// replaces and a delete with the body it clears; a create calls it never, so the history of a
-// post nobody edited or deleted is empty.
-func recordPostBodyHistory(ctx context.Context, tx pgx.Tx, kind refs.ItemKind, itemID, body string, actor model.Actor) error {
+// postBodyHistoryStep is the write that keeps the body a write of comment or message itemID is
+// about to replace, under the owner lock the caller already holds: one post_body_history row
+// with the actor making the write, as a step of the caller's write phase. An edit makes it with
+// the body it replaces and a delete with the body it clears; a create makes it never, so the
+// history of a post nobody edited or deleted is empty. The row's edited_at is its column's
+// clock_timestamp(), which the statement takes when the write phase runs it.
+func postBodyHistoryStep(kind refs.ItemKind, itemID, body string, actor model.Actor) (docs.WriteStep, error) {
 	_, column, err := postHistoryOwner(kind)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	editedBy, err := encodeJSON(actor)
 	if err != nil {
+		return nil, err
+	}
+	return func(b *store.WriteBatch) error {
+		b.Queue(fmt.Sprintf("keep the replaced body of %s %s", kind, itemID), `
+			insert into post_body_history (`+column+`, body, edited_by) values ($1, $2, $3)
+		`, itemID, body, editedBy)
+		return nil
+	}, nil
+}
+
+// queuePostBodyHistory queues postBodyHistoryStep on ledger, for a route whose write phase is its
+// ledger's (editComment).
+func queuePostBodyHistory(ledger *docs.Ledger, kind refs.ItemKind, itemID, body string, actor model.Actor) error {
+	step, err := postBodyHistoryStep(kind, itemID, body, actor)
+	if err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `
-		insert into post_body_history (`+column+`, body, edited_by) values ($1, $2, $3)
-	`, itemID, body, editedBy); err != nil {
-		return fmt.Errorf("keep the replaced body of %s %s: %w", kind, itemID, err)
-	}
-	return nil
+	return ledger.Queue(step)
 }
 
 // deletedPostDeliveryError is what a send of a deleted post still pending is settled with: the
@@ -80,103 +100,113 @@ func recordPostBodyHistory(ctx context.Context, tx pgx.Tx, kind refs.ItemKind, i
 // settleUndeliverableMention writes its two causes in (delivery_sweep.go).
 const deletedPostDeliveryError = "not sent: the post was deleted"
 
-// clearDeletedPostBody is the clear a delete of either kind makes, in the caller's transaction
-// and under the locks that caller already holds: the history row keeping the body about to go
-// (recordPostBodyHistory), the one update that empties the body and stamps the delete on the
-// row, and the copies of the body that do not follow the cleared column — the block index, each
-// block's stored excerpt and the text each revision recorded of a block — taken out of them
-// (refs.TombstoneItem). It returns the time the delete carries, in UTC as every time this API
-// answers one, and the reference changes the delete's event carries.
+// clearDeletedPostBody plans the clear a delete of either kind makes, under the owner lock the
+// caller already holds, and returns it as one step of the caller's write phase with the
+// reference changes the delete's event carries. The step writes, in order: the history row
+// keeping the body about to go (postBodyHistoryStep); the one update that empties the body and
+// stamps the delete on the row at deletedAt, the transaction's now() the caller read in its read
+// phase; the index of the empty body that update leaves, planned here (planItemWrite), which
+// takes every block out of the post's current revision and every reference out of its edges; and
+// the copies of the body that do not follow the cleared column - each block's stored excerpt,
+// the text each revision recorded of a block and the post's embedding windows - taken out of
+// them (refs.TombstoneItem).
 //
 // A comment clears its suggestion with its body, since the suggestion's replacement text is the
 // comment's text too, and a message carries no suggestion: the kind decides which, and the clear
 // rides the one update, so the kind's search trigger rewrites the row's vector once from the
 // cleared body and the deleted post stops matching a keyword search. The post's embedding
-// windows go in this transaction too (refs.WriteItemWindows): the cleared body splits into no
+// windows go in this transaction too (refs.TombstoneItem): the cleared body splits into no
 // block, so the write enqueues no window and deletes each window the post held, and no meaning
 // search finds the post once the delete commits. No path of this build leaves a window of a
 // deleted post behind; the mark is the backstop for a hit that reaches one all the same, which
 // search stamps with the post's delete mark (stampSearchPostMarks, search.go).
+//
+// ctx is what the plan's reads run under: the context a comment's route derives from the ledger
+// it queues on (docs.Ledger.ReadContext), as queueEditedItemReferences derives it, and the
+// request's for a message, whose route queues on no ledger. Only an issue message is deleted, so
+// both kinds cite what they mention and the index reconciles the post's own references.
 func (s *server) clearDeletedPostBody(
 	ctx context.Context,
 	tx pgx.Tx,
 	kind refs.ItemKind,
 	itemID, previousBody string,
 	actor model.Actor,
-) (time.Time, model.ReferenceChanges, error) {
+	deletedAt time.Time,
+) (model.ReferenceChanges, docs.WriteStep, error) {
 	items, _, err := postHistoryOwner(kind)
 	if err != nil {
-		return time.Time{}, model.ReferenceChanges{}, err
+		return model.ReferenceChanges{}, nil, err
 	}
 	alsoClears := ""
 	if kind == refs.ItemComment {
 		alsoClears = ", suggestion = null"
 	}
-	if err := recordPostBodyHistory(ctx, tx, kind, itemID, previousBody, actor); err != nil {
-		return time.Time{}, model.ReferenceChanges{}, err
+	history, err := postBodyHistoryStep(kind, itemID, previousBody, actor)
+	if err != nil {
+		return model.ReferenceChanges{}, nil, err
 	}
 	deletedBy, err := encodeJSON(actor)
 	if err != nil {
-		return time.Time{}, model.ReferenceChanges{}, err
+		return model.ReferenceChanges{}, nil, err
 	}
-	var deletedAt time.Time
-	if err := tx.QueryRow(ctx, `
-		update `+items+`
-		set body = ''`+alsoClears+`, deleted_at = now(), deleted_by = $2
-		where id = $1
-		returning deleted_at
-	`, itemID, deletedBy).Scan(&deletedAt); err != nil {
-		return time.Time{}, model.ReferenceChanges{}, err
-	}
-	deletedAt = deletedAt.UTC()
-	changes, err := refs.TombstoneItem(ctx, tx, kind, itemID, previousBody, s.deps.ServerURL, deletedAt)
+	// The update that clears the body is queued, so the index is planned from the empty body the
+	// write leaves rather than read back, as an edit's is (queueEditedItemReferences).
+	changes, index, err := s.planItemWrite(ctx, tx, kind, itemID, "", nil, deletedAt, true, nil,
+		func(found []text.Ref) []refs.Target { return refs.EditedTargets(previousBody, "", found) })
 	if err != nil {
-		return time.Time{}, model.ReferenceChanges{}, err
+		return model.ReferenceChanges{}, nil, err
 	}
-	if _, err := refs.WriteItemWindows(ctx, tx, kind, itemID); err != nil {
-		return time.Time{}, model.ReferenceChanges{}, err
-	}
-	return deletedAt, changes, nil
+	return changes, func(b *store.WriteBatch) error {
+		if err := history(b); err != nil {
+			return err
+		}
+		b.Queue("", `
+			update `+items+`
+			set body = ''`+alsoClears+`, deleted_at = $3, deleted_by = $2
+			where id = $1
+		`, itemID, deletedBy, deletedAt)
+		if err := index(b); err != nil {
+			return err
+		}
+		return refs.TombstoneItem(b, kind, itemID)
+	}, nil
 }
 
-// settleDeletedPostDeliveries fails every send of the deleted post still pending and returns the
-// delivery receipt each settle owes, appended but not yet published. A delivery Dispatch already
-// sent keeps what it carried; one still waiting would send the text after the delete, so it is
-// settled here rather than left to the delivery sweep. claimed_at moves with the settle, as
-// every other settle of an attempt moves it: it is how a sender still holding the old claim
-// learns the row is no longer its own.
+// settleDeletedPostAttempt sets one send attempt of a deleted post still pending as the delete's
+// settle leaves it (queueDeletedPostSettlement): failed, with deletedPostDeliveryError. state and
+// failure are the attempt's own fields, a comment's and a message's alike.
+func settleDeletedPostAttempt(state *string, failure **string) {
+	settled := deletedPostDeliveryError
+	*state, *failure = "failed", &settled
+}
+
+// queueDeletedPostSettlement queues the settle of every send of the deleted post still pending:
+// failed with deletedPostDeliveryError. A delivery Dispatch already sent keeps what it carried;
+// one still waiting would send the text after the delete, so it is settled here rather than left
+// to the delivery sweep. claimed_at moves with the settle, as every other settle of an attempt
+// moves it: it is how a sender still holding the old claim learns the row is no longer its own.
+//
+// The caller read the post's attempts in its read phase, under the post's owner lock, and builds
+// the receipt each settle owes from the pending ones (settleDeletedPostAttempt), queued after this
+// statement, since no statement's result is read in Go before the next is sent. pending is how
+// many those were. Every settle of an attempt takes that owner's lock first
+// (settleDeliveryAttempt, settleUndeliverableMention), so the statement finds them as the read
+// did; were it to settle another count, its callback refuses, Commit returns that refusal and the
+// receipts never land beside rows they do not describe.
 //
 // attempts is the table of the post's send attempts and owner the column naming the post in it,
-// both the caller's own constants, and columns is the select list receipt reads a settled row
-// by. Every settled row is read before the first receipt is appended, since that append is
-// another query of this transaction.
-func (s *server) settleDeletedPostDeliveries(
-	ctx context.Context,
-	tx pgx.Tx,
-	attempts, owner, columns, itemID string,
-	receipt func(row pgx.CollectableRow) (model.Event, error),
-) ([]model.Event, error) {
-	rows, err := tx.Query(ctx, `
+// both the caller's own constants.
+func queueDeletedPostSettlement(b *store.WriteBatch, attempts, owner, itemID string, pending int) {
+	b.Queue("", `
 		update `+attempts+` set state = 'failed', error = $2, claimed_at = now()
 		where `+owner+` = $1 and state = 'pending'
-		returning `+columns,
-		itemID, deletedPostDeliveryError)
-	if err != nil {
-		return nil, err
-	}
-	owed, err := pgx.CollectRows(rows, receipt)
-	if err != nil {
-		return nil, err
-	}
-	events := make([]model.Event, 0, len(owed))
-	for _, settled := range owed {
-		appended, err := s.appendEvent(ctx, tx, settled)
-		if err != nil {
-			return nil, err
+	`, itemID, deletedPostDeliveryError).Exec(func(tag pgconn.CommandTag) error {
+		if settled := tag.RowsAffected(); settled != int64(pending) {
+			return fmt.Errorf("settle the pending sends of %s %s: the settle met %d pending attempts, the read under its owner lock %d",
+				attempts, itemID, settled, pending)
 		}
-		events = append(events, appended)
-	}
-	return events, nil
+		return nil
+	})
 }
 
 // getCommentHistory answers GET /api/v1/comments/{id}/history, read by whoever GET

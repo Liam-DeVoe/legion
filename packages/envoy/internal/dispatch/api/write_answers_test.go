@@ -208,9 +208,9 @@ func TestMessageCorrectionAnswersListTheDeliveriesAReadLists(t *testing.T) {
 // the row's created_at to 'infinity', a timestamptz Postgres stores, compares and orders, which
 // pgx refuses to scan into the time.Time every read of an attempt decodes it into
 // (scanCommentDelivery, scanMessageDelivery: "cannot scan Infinity into *time.Time"). No write
-// below scans a settled attempt of its post but its answer's read - the delete's settle returns
-// the pending ones alone (settleDeletedPostDeliveries) - so that read is the one it fails,
-// wherever it runs: in the write's transaction, or on the pool after its commit.
+// below scans a settled attempt of its post but its answer's read - the delete settles the
+// pending ones alone, which it takes from that read (queueDeletedPostSettlement) - so that read is
+// the one it fails, wherever it runs: in the write's read phase, or on the pool after its commit.
 func (f writeAnswersFixture) unreadableAttempt(t *testing.T, attempts, owner, id string) {
 	t.Helper()
 	tag, err := f.database.Pool.Exec(context.Background(), `

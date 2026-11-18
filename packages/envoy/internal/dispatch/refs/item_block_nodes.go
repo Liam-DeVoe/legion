@@ -132,7 +132,7 @@ func itemBlockNodes(ctx context.Context, q Queryer, kind ItemKind, ids []string,
 // message was sent, and changed_at, the edit that last rewrote it or that same moment (as
 // loadMessageNodes reads the message's own edited_at). A message stored before blocks existed and
 // edited before its first index was never indexed at the moment it was sent, and the edit is what
-// indexes it (`ReplaceCountedItemEdit`, run by `editMessage` at `edited_at`), so every block of
+// indexes it (api's `planItemWrite`, run by `editMessage` at `edited_at`), so every block of
 // that first index is made at the edit, where a comment's are made at no time at all. A message
 // records no revisions, so a block has no changed revision; it belongs to its message, which has
 // no versions, and carries no Text (CurrentItemBlockText). It carries its message's EditedAt and
@@ -250,7 +250,7 @@ func itemBlockParent(issueKey *string, project, slug, nodeID string) *model.Node
 
 // ItemBlockRevision is what the index recorded of one block of an item at one revision: a
 // comment's block (IndexItem writes comment_block_state and comment_block_texts) or a part of an
-// ask (IndexAskParts writes ask_block_state and ask_block_texts).
+// ask (PlanAskParts and ItemIndexing.Queue write ask_block_state and ask_block_texts).
 type ItemBlockRevision struct {
 	// Current is the item's current revision, 0 while no block-aware build indexed it.
 	Current int

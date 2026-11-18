@@ -699,7 +699,7 @@ func TestARetryThatFailsDoesNotHoldTheCommentOfTheAttemptItOvertook(t *testing.T
 // kept to publish should that mention fail. The author's delete of the comment before the fallback
 // pass decides the copy settles it with nothing published: the text it carries is withdrawn, and
 // the session is told of the comment.deleted event instead. The delete also fails the mention it
-// waited on (settleDeletedPostDeliveries), which is the very state in which a pass publishes a
+// waited on (queueDeletedPostSettlement), which is the very state in which a pass publishes a
 // held copy (TestAMentionQueuedPastALeasePublishesItsCopyWhenTheSendFails), so a pass that runs
 // after the delete with the copy due publishes nothing of the comment to s1's own topic.
 func TestADeleteSettlesAHeldCopyOfTheCommentWithNothingPublished(t *testing.T) {

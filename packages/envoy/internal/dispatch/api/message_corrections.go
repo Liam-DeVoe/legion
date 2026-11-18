@@ -3,6 +3,11 @@
 // editComment (comment_actions.go) and deleteComment (comment_delete.go), with what a message
 // does not have left out: it carries no anchor and so no document margin mark, no suggestion and
 // no fallback copy, and its pending sends are rows of message_deliveries.
+//
+// Each runs in the two phases the message create does (createStoredMessage): a read phase that
+// takes the issue's owner lock and reads and plans everything the write decides on, holding no
+// transaction id, and one batch that sends every write and is committed (store.RunWrite). A
+// message does no document work, so neither joins a document ledger.
 package api
 
 import (
@@ -13,10 +18,13 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // editMessageInput is the body of PATCH /api/v1/messages/{id}.
@@ -31,41 +39,40 @@ type editMessageInput struct {
 	Actor *model.Actor `json:"actor"`
 }
 
-// lockedMessageForCorrection is the prologue both corrections take. It reads the message, locks
-// its issue without refusing a closed one (lockIssue) — a wrong post nobody can correct after
-// the issue closes is the defect these two routes exist for — re-reads the row under its own
-// lock, and applies the refusals in the order every write of this change takes them: the author
-// first, so a caller that is not the author learns nothing else about the post; then the kind,
-// since only a message on an issue is edited or deleted; then a post already deleted, since a
-// delete is final. verb names the write in the author's refusal, and past names it in the kind's:
-// "edit" and "edited", "delete" and "deleted". One word with a "d" after it reads as "editd".
+// lockedMessageForCorrection is the prologue both corrections take. It reads the message, takes
+// its issue's owner lock without refusing a closed issue (lockIssue) — a wrong post nobody can
+// correct after the issue closes is the defect these two routes exist for — reads the row again
+// in a statement after that lock, and applies the refusals in the order every write of this
+// change takes them: the author first, so a caller that is not the author learns nothing else
+// about the post; then the kind, since only a message on an issue is edited or deleted; then a
+// post already deleted, since a delete is final. verb names the write in the author's refusal,
+// and past names it in the kind's: "edit" and "edited", "delete" and "deleted". One word with a
+// "d" after it reads as "editd".
 //
-// The row lock is `for no key update`, the lock every other writer of a messages row takes
-// (lockReplyParentMessage): the body is no key column, and a reply's insert takes the row
-// `for key share` through its foreign key, which this lock does not block. Two corrections of
-// one message still serialise on it.
+// It takes no row lock, as lockedComment takes none: a row lock would give the transaction a
+// transaction id to hold through everything its read phase does, and every writer of an issue
+// message holds its issue's owner lock (refs.LockItemOwner), so the row holds still until this
+// transaction ends and two corrections of one message serialise on that lock. A message with no
+// issue takes no lock: it is refused below, before anything is written.
 //
 // ok is false once it has written the refusal.
 func (s *server) lockedMessageForCorrection(
 	w http.ResponseWriter, r *http.Request, tx pgx.Tx, actor model.Actor, verb, past string,
 ) (model.Message, bool) {
-	unlocked, err := s.loadMessage(r.Context(), tx, "", r.PathValue("id"))
+	message, err := s.loadMessage(r.Context(), tx, "", r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return model.Message{}, false
 	}
-	if unlocked.IssueKey != nil {
-		if _, err := s.lockIssue(r.Context(), tx, *unlocked.IssueKey); err != nil {
+	if message.IssueKey != nil {
+		if _, err := s.lockIssue(r.Context(), tx, *message.IssueKey); err != nil {
 			s.writeHandlerError(w, err)
 			return model.Message{}, false
 		}
-	}
-	message, err := scanMessage(tx.QueryRow(r.Context(), `
-		select `+messageColumns+` from messages where id = $1 for no key update
-	`, unlocked.ID))
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return model.Message{}, false
+		if message, err = s.loadMessage(r.Context(), tx, "", message.ID); err != nil {
+			s.writeHandlerError(w, err)
+			return model.Message{}, false
+		}
 	}
 	// The author is compared as a writer and not field by field, as the comment edit compares:
 	// a person's actor carries the credential that acted beside them (model.ActorAct).
@@ -83,6 +90,18 @@ func (s *server) lockedMessageForCorrection(
 		return model.Message{}, false
 	}
 	return message, true
+}
+
+// transactionNow is tx's now(), the time the transaction began, which Postgres holds fixed for
+// the whole of it: the edited_at or deleted_at a correction writes, read in its read phase so
+// its index, its event and its answer carry it before the queued update runs, as the message
+// create reads its created_at (createStoredMessage).
+func transactionNow(ctx context.Context, tx pgx.Tx) (time.Time, error) {
+	var now time.Time
+	if err := tx.QueryRow(ctx, `select now()`).Scan(&now); err != nil {
+		return time.Time{}, err
+	}
+	return now.UTC(), nil
 }
 
 // editMessage answers PATCH /api/v1/messages/{id}. It writes the body the edit replaces into
@@ -124,40 +143,60 @@ func (s *server) editMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	previousBody := message.Body
-	if err := recordPostBodyHistory(r.Context(), tx, refs.ItemMessage, message.ID, previousBody, actor); err != nil {
+	history, err := postBodyHistoryStep(refs.ItemMessage, message.ID, previousBody, actor)
+	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	var editedAt time.Time
-	if err := tx.QueryRow(r.Context(), `
-		update messages
-		set body = $2, edited_at = now()
-		where id = $1
-		returning edited_at
-	`, message.ID, input.Body).Scan(&editedAt); err != nil {
+	editedAt, err := transactionNow(r.Context(), tx)
+	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	editedAt = editedAt.UTC()
 	message.Body = input.Body
 	message.EditedAt = &editedAt
 	// The blocks of the new body are indexed at the time of the edit, as an edited comment's
 	// are, which settles the index messages_item_blocks_owed owes on this update (migration
 	// 20261110224508). A message keeps no per-revision block text, so the history row above is
 	// the one copy served as the body this edit replaced; the message's earlier events and the
-	// excerpt kept of a block this edit removed still hold parts of it.
-	referenceChanges, err := refs.ReplaceCountedItemEdit(
-		r.Context(), tx, refs.ItemMessage, message.ID, previousBody, message.Body, s.deps.ServerURL, editedAt, nil)
+	// excerpt kept of a block this edit removed still hold parts of it. The update is queued
+	// below, so the index is planned from the body it writes, as the comment edit's is
+	// (queueEditedItemReferences).
+	referenceChanges, index, err := s.planItemWrite(
+		r.Context(), tx, refs.ItemMessage, message.ID, message.Body, nil, editedAt, true, nil,
+		func(found []text.Ref) []refs.Target { return refs.EditedTargets(previousBody, message.Body, found) })
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	event, err := s.appendMessageCorrection(r.Context(), tx, &message, "message.edited", actor, referenceChanges)
+	correction, logins, err := s.messageCorrectionEvent(r.Context(), tx, &message, "message.edited", actor, referenceChanges)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The answer lists the attempts as a read of the message lists them: the edit writes none,
+	// so they are read here, in the read phase, and a read that fails writes nothing.
 	if err := s.hydrateWrittenMessage(r.Context(), tx, &message); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// The history row, the update, the index, the event and its stamp go in one batch: the
+	// event's id is the one the stamp names as the id sequence left it (refs.QueueStamp).
+	var event model.Event
+	if err := store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error {
+		if err := history(b); err != nil {
+			return err
+		}
+		b.Queue("", `
+			update messages
+			set body = $2, edited_at = $3
+			where id = $1
+		`, message.ID, message.Body, editedAt)
+		if err := index(b); err != nil {
+			return err
+		}
+		return s.queueMessageCorrection(b, message, correction, logins, func(appended model.Event) { event = appended })
+	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -197,8 +236,13 @@ func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	deletedAt, referenceChanges, err := s.clearDeletedPostBody(
-		r.Context(), tx, refs.ItemMessage, message.ID, message.Body, actor)
+	deletedAt, err := transactionNow(r.Context(), tx)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	referenceChanges, clear, err := s.clearDeletedPostBody(
+		r.Context(), tx, refs.ItemMessage, message.ID, message.Body, actor, deletedAt)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -206,26 +250,43 @@ func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
 	message.Body = ""
 	message.DeletedAt = &deletedAt
 	message.DeletedBy = &actor
-	events, err := s.settleDeletedPostDeliveries(
-		r.Context(), tx, "message_deliveries", "message_id", messageDeliveryColumns, message.ID,
-		func(row pgx.CollectableRow) (model.Event, error) {
-			attempt, err := scanMessageDelivery(row)
-			if err != nil {
-				return model.Event{}, err
-			}
-			return messageDeliveryReceipt(message, message.Author, attempt, ""), nil
-		})
+	correction, logins, err := s.messageCorrectionEvent(r.Context(), tx, &message, "message.deleted", actor, referenceChanges)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	event, err := s.appendMessageCorrection(r.Context(), tx, &message, "message.deleted", actor, referenceChanges)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	events = append(events, event)
+	// The answer is read here, in the read phase, with the attempts as they stand: the settle is
+	// queued below, so the attempts it settles are set in the answer as it leaves them, and each
+	// one's receipt is built from that.
 	if err := s.hydrateWrittenMessage(r.Context(), tx, &message); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	var receipts []model.Event
+	for index := range message.Deliveries {
+		attempt := &message.Deliveries[index]
+		if attempt.State != "pending" {
+			continue
+		}
+		settleDeletedPostAttempt(&attempt.State, &attempt.Error)
+		receipts = append(receipts, messageDeliveryReceipt(message, message.Author, *attempt, ""))
+	}
+	// The clear, the settle, its receipts, the event and its stamp go in one batch, in the order
+	// the delete makes them.
+	appended := make([]model.Event, 0, len(receipts)+1)
+	collect := func(event model.Event) { appended = append(appended, event) }
+	if err := store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error {
+		if err := clear(b); err != nil {
+			return err
+		}
+		queueDeletedPostSettlement(b, "message_deliveries", "message_id", message.ID, len(receipts))
+		for _, receipt := range receipts {
+			if err := s.deps.Events.QueueAppend(b, receipt, collect); err != nil {
+				return err
+			}
+		}
+		return s.queueMessageCorrection(b, message, correction, logins, collect)
+	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -233,41 +294,49 @@ func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(r.Context(), events...)
+	s.publish(r.Context(), appended...)
 	WriteJSON(w, http.StatusOK, message)
 }
 
-// appendMessageCorrection appends the event an edit or a delete of message owes, stamped on the
-// reference graph as the message's own create event is (refs.Stamp), and returns it unpublished.
-// The payload is the one every write of a message builds, so an edit's and a delete's say the
-// same thing about the thread as the create's did; the deleted message's body is already
-// cleared in the row this payload is built from, so the event carries none.
-func (s *server) appendMessageCorrection(
+// messageCorrectionEvent is the event an edit or a delete of message owes, built in the
+// correction's read phase: the payload every write of a message builds, so an edit's and a
+// delete's say the same thing about the thread as the create's did, and the thread_logins of the
+// message's thread root, which the event's insert reads (events.ThreadLoginsOf), as the message
+// create's does. The deleted message's body is already cleared in the message this payload is
+// built from, so the event carries none. The message is an issue message: a correction refuses
+// any other (lockedMessageForCorrection).
+func (s *server) messageCorrectionEvent(
 	ctx context.Context,
 	tx pgx.Tx,
 	message *model.Message,
 	eventType string,
 	actor model.Actor,
 	changes model.ReferenceChanges,
-) (model.Event, error) {
+) (model.Event, *events.Logins, error) {
 	if err := hydrateMessageReplyBlocks(ctx, tx, message); err != nil {
-		return model.Event{}, err
+		return model.Event{}, nil, err
 	}
 	thread, err := loadMessageReplyThread(ctx, tx, *message)
 	if err != nil {
-		return model.Event{}, err
+		return model.Event{}, nil, err
 	}
-	payload := thread.payload(*message, changes)
-	payload.ThreadLogins, err = messageThreadLogins(ctx, tx, *message)
+	root, err := messageThreadRoot(ctx, tx, message.ID, message.InReplyTo)
 	if err != nil {
-		return model.Event{}, err
+		return model.Event{}, nil, err
 	}
-	event, err := s.appendEvent(ctx, tx, messageEvent(*message, eventType, actor, payload))
-	if err != nil {
-		return model.Event{}, err
+	return messageEvent(*message, eventType, actor, thread.payload(*message, changes)), events.ThreadLoginsOf(root), nil
+}
+
+// queueMessageCorrection queues event, the correction's own (messageCorrectionEvent), on b with
+// the thread_logins its insert reads, and the stamp of the message's new reference edges with
+// its id, as the message's own create event is stamped (refs.QueueStamp). appended receives the
+// event once the batch has run it, for the route to publish after its commit.
+func (s *server) queueMessageCorrection(
+	b *store.WriteBatch, message model.Message, event model.Event, logins *events.Logins, appended func(model.Event),
+) error {
+	if err := s.deps.Events.QueueAppendWithLogins(b, event, logins, appended); err != nil {
+		return err
 	}
-	if err := refs.Stamp(ctx, tx, "message", message.ID, event.ID); err != nil {
-		return model.Event{}, err
-	}
-	return event, nil
+	refs.QueueStamp(b, "message", message.ID)
+	return nil
 }

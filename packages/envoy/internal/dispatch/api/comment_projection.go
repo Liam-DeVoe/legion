@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -29,10 +30,16 @@ func (s *server) commentProjectionKind(ctx context.Context, comment model.Commen
 // document context (Docs.Join), which is the request's context with the transaction joined to
 // it, so the reads below run inside that transaction as commentProjectionKind does.
 //
+// comment is the row as the route's queued write of it leaves it, which the table holds only
+// once Commit has run that write: an anchored one is registered on ledger as that write leaves
+// it (registerCommentAnchor), for the anchor refreshes ProjectMark runs, and a reply takes its
+// own place in the chain the table holds (withWrittenReply), so the record names the body the
+// write leaves rather than the one it replaces.
+//
 // A decided or orphaned suggestion's mark is gone, so it has no projection kind to carry; the
 // write still lands and ProjectMark writes only the marks map, as a reply, a reopen and a
 // resolve of that suggestion do.
-func (s *server) projectThreadMark(ctx context.Context, tx pgx.Tx, comment model.Comment, actor model.Actor) error {
+func (s *server) projectThreadMark(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, comment model.Comment, actor model.Actor) error {
 	marked := comment
 	if marked.Anchor == nil {
 		if comment.ReplyTo == nil {
@@ -46,11 +53,14 @@ func (s *server) projectThreadMark(ctx context.Context, tx pgx.Tx, comment model
 			return nil
 		}
 		marked = root
+	} else {
+		s.registerCommentAnchor(ledger, comment, actor, true)
 	}
 	replies, err := s.loadReplyChain(ctx, tx, "reply_to", marked.ID)
 	if err != nil {
 		return err
 	}
+	replies = withWrittenReply(replies, comment)
 	projectionKind := ""
 	kind, kindErr := s.commentProjectionKind(ctx, marked)
 	if kindErr != nil && !errors.Is(kindErr, docs.ErrAnchorMissing) {
@@ -61,6 +71,20 @@ func (s *server) projectThreadMark(ctx context.Context, tx pgx.Tx, comment model
 	}
 	return s.deps.Docs.ProjectMark(ctx, marked.Anchor.ArtifactID, marked.Anchor.MarkID,
 		commentMarkRecord(marked, replies, projectionKind), actor)
+}
+
+// withWrittenReply is replies, a chain loadReplyChain read, with written in place of the row of
+// the same id: a reply this transaction has queued an update of, which the table holds as it
+// stood before. A chain that does not hold it - the thread root's own write - is returned as
+// read.
+func withWrittenReply(replies []model.Comment, written model.Comment) []model.Comment {
+	for index := range replies {
+		if replies[index].ID == written.ID {
+			replies[index] = written
+			break
+		}
+	}
+	return replies
 }
 
 func commentMarkRecord(comment model.Comment, replies []model.Comment, suggestionKind string) docs.MarkRecord {
@@ -147,21 +171,20 @@ func (s *server) commentEventPayload(ctx context.Context, tx pgx.Tx, comment *mo
 // commentCorrectionPayload is the payload of comment.edited and comment.deleted: the event
 // carries the thread_root_id its comment's comment.created carried, and the thread_logins on
 // that thread as the correction is written, so a reader routes a correction as it routes a post -
-// an Inbox refreshes only for the logins with a Replies row on the thread. The ask's question, state and turn belong to the moment
-// the comment was posted and stay with that event.
-func (s *server) commentCorrectionPayload(ctx context.Context, tx pgx.Tx, comment *model.Comment, artifactName string, changes model.ReferenceChanges) (model.CommentEventPayload, error) {
+// an Inbox refreshes only for the logins with a Replies row on the thread. Those are read by the
+// event's insert (the logins this returns, for queueLoggedEvent), as the comment create's are,
+// so they are what the transaction's queued writes leave. The ask's question, state and turn
+// belong to the moment the comment was posted and stay with that event.
+func (s *server) commentCorrectionPayload(ctx context.Context, tx pgx.Tx, comment *model.Comment, artifactName string, changes model.ReferenceChanges) (model.CommentEventPayload, *events.Logins, error) {
 	var thread commentEventThread
 	if comment.ReplyTo != nil {
 		thread.ThreadRootID = *comment.ReplyTo
 	}
 	payload, err := s.commentEventPayload(ctx, tx, comment, artifactName, thread, changes)
 	if err != nil {
-		return model.CommentEventPayload{}, err
+		return model.CommentEventPayload{}, nil, err
 	}
-	if payload.ThreadLogins, err = commentThreadLogins(ctx, tx, *comment); err != nil {
-		return model.CommentEventPayload{}, fmt.Errorf("read the logins on comment %s's thread: %w", comment.ID, err)
-	}
-	return payload, nil
+	return payload, events.ThreadLoginsOf(commentThread(*comment)), nil
 }
 
 func (s *server) commentArtifactName(ctx context.Context, tx pgx.Tx, comment model.Comment) (string, error) {
@@ -173,4 +196,67 @@ func (s *server) commentArtifactName(ctx context.Context, tx pgx.Tx, comment mod
 		return "", err
 	}
 	return name, nil
+}
+
+// registerCommentAnchor records comment's anchored row on ledger as the route's queued write of it
+// leaves it (docs.Ledger.RegisterPendingAnchor): the anchor refreshes the transaction runs after
+// that write - ProjectMark's - read the open anchors from the table, which holds the write only
+// once Commit has run it, so they take this row from the ledger, as they would have read it after
+// the write. An unresolved row is refreshed, and a refresh that moves its anchor prepares its
+// event (commentAnchorRefreshEvent); a resolved one no longer is. A comment without an anchor has
+// nothing to register. stored says the table already holds the row (an update rather than a new
+// comment's insert).
+func (s *server) registerCommentAnchor(ledger *docs.Ledger, comment model.Comment, actor model.Actor, stored bool) {
+	if comment.Anchor == nil {
+		return
+	}
+	kind := docs.MarkComment
+	if comment.Suggestion != nil {
+		kind = docs.MarkSuggestion
+	}
+	row := docs.PendingAnchor{ID: comment.ID, Kind: kind, Anchor: *comment.Anchor, Open: !comment.Resolved}
+	if row.Open {
+		row.Event = func(ctx context.Context, tx pgx.Tx) (func(model.Anchor) (model.Event, error), error) {
+			return s.commentAnchorRefreshEvent(ctx, tx, comment, actor, stored)
+		}
+	}
+	ledger.RegisterPendingAnchor(row)
+}
+
+// commentAnchorRefreshEvent builds comment's comment.anchor_refreshed event for a refresh that
+// moves its anchor (docs.PendingAnchor.Event): the row as the route's write leaves it, with the
+// quote and orphaned flag the refresh writes, as the refresh reads a stored row back. What it
+// reads - the anchor document's name and key, and a stored row's mention and delivery rows - it
+// reads here, in the read phase, once the refresh has found the anchor moved; a new comment's
+// mention rows are inserted after its projection, so the refresh read none. The builder only
+// assembles the event.
+func (s *server) commentAnchorRefreshEvent(ctx context.Context, tx pgx.Tx, comment model.Comment, actor model.Actor, stored bool) (func(model.Anchor) (model.Event, error), error) {
+	row := comment
+	row.Mentions, row.Deliveries = []model.Mention{}, []model.CommentDelivery{}
+	if stored {
+		hydrated, err := s.hydrateCommentSideTables(ctx, tx, []model.Comment{row})
+		if err != nil {
+			return nil, fmt.Errorf("load refreshed comment %q: %w", comment.ID, err)
+		}
+		row = hydrated[0]
+	}
+	anchor := *comment.Anchor
+	var payload model.CommentEventPayload
+	if err := tx.QueryRow(ctx, `
+		select name, coalesce(project_key, ''), slug
+		from artifacts where id = $1
+	`, anchor.ArtifactID).Scan(&payload.ArtifactName, &payload.ProjectKey, &payload.ArtifactSlug); err != nil {
+		return nil, fmt.Errorf("load refreshed comment %q artifact: %w", comment.ID, err)
+	}
+	return func(refreshed model.Anchor) (model.Event, error) {
+		moved := anchor
+		moved.Quote, moved.Orphaned = refreshed.Quote, refreshed.Orphaned
+		payload := payload
+		payload.Comment = row
+		payload.Comment.Anchor = &moved
+		return model.Event{
+			IssueKey: row.IssueKey, ArtifactID: row.ArtifactID,
+			Type: "comment.anchor_refreshed", Actor: actor, Payload: payload,
+		}, nil
+	}, nil
 }

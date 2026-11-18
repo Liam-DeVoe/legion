@@ -41,16 +41,16 @@ type connectionContextKey struct{}
 type ownerVerifiedContextKey struct{}
 
 // ownerVerifiedToken is installed only on the server's own calls, by a caller that already
-// knows the document's owner state or has no use for it: a settlement, which holds the owner row
-// locked in its transaction, and its warm-up load, which applies nothing; the publish of a
-// committed live write, whose transaction held that row until it committed; the block-id
+// knows the document's owner state or has no use for it: a settlement, which holds the owner's
+// lock in its transaction, and its warm-up load, which applies nothing; the publish of a
+// committed live write, whose transaction held that lock until it committed; the block-id
 // backfill, which is a command run against a database nobody is serving from; or one of a
-// comment's anchor operations under WithCommentMarks, whose caller holds the owner row locked
-// and decided under it that the comment is written, or deleted. Their injections skip the issue read in
-// allowInject - for the settlement that read would be a second pooled connection taken while
-// its transaction is open (store.ErrNestedAcquire), for its warm-up a refusal its closed issue
-// does not make (a closed issue's document settles as an open one's does), for the publish a
-// read other writers' connections can starve (see publishLiveUpdate), for the backfill a
+// comment's anchor operations under WithCommentMarks, whose caller holds the owner's lock and
+// decided under it that the comment is written, or deleted. Their injections skip the issue
+// read in allowInject - for the settlement that read would be a second pooled connection taken
+// while its transaction is open (store.ErrNestedAcquire), for its warm-up a refusal its closed
+// issue does not make (a closed issue's document settles as an open one's does), for the publish
+// a read other writers' connections can starve (see publishLiveUpdate), for the backfill a
 // question already answered, and for a comment's anchor a refusal its closed issue does not make.
 type ownerVerifiedToken struct{ _ byte }
 
@@ -66,16 +66,16 @@ func isOwnerVerified(ctx context.Context) bool {
 type commentMarksContextKey struct{}
 
 // WithCommentMarks marks ctx as a comment's writes to the document its anchor is in, made by a
-// caller holding the document's owner row locked in its joined transaction that decided there
-// the comment is written, or that the body its author wrote there is that author's to replace
-// or to withdraw. A closed issue still takes a comment, and takes its author's correction of
-// it, so its document still takes that comment's anchor writes: the comment mark MarkQuote
-// places and VerifyMark reads, the version SnapshotVersion pins the anchor to, the margin
-// record ProjectMark writes, and the SuggestionKind read a projection makes - of the thread
-// root a reply projects, and of the comment's own mark where an edit projects it. Each of
-// those, and only those, runs owner-verified under this context (commentMarkOperation). Its
-// callers are the comment create (api/comment_create.go), the edit (api/comment_actions.go,
-// editComment) and the delete (api/comment_delete.go).
+// caller holding the document owner's lock in its joined transaction that decided there the
+// comment is written, or that the body its author wrote there is that author's to replace or to
+// withdraw. A closed issue still takes a comment, and takes its author's correction of it, so
+// its document still takes that comment's anchor writes: the comment mark MarkQuote places and
+// VerifyMark reads, the version SnapshotVersion pins the anchor to, the margin record
+// ProjectMark writes, and the SuggestionKind read a projection makes - of the thread root a
+// reply projects, and of the comment's own mark where an edit projects it. Each of those, and
+// only those, runs owner-verified under this context (commentMarkOperation). Its callers are the
+// comment create (api/comment_create.go), the edit (api/comment_actions.go, editComment) and the
+// delete (api/comment_delete.go).
 //
 // One operation more runs the same way, under the same context its caller marked: the reject of
 // the pending suggestion of a comment its author is deleting (RejectDeletedCommentSuggestion),
@@ -610,7 +610,7 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 		return err
 	}
 	// Everything this load needs comes from the pool that owns loads. A writer holding a
-	// pooled connection and the issue's row lock waits for this load, so a read of the shared
+	// pooled connection and the issue's owner lock waits for this load, so a read of the shared
 	// pool here waits for a connection only that writer can release: the wedge, arrived at
 	// without a transaction of its own and so invisible to the pool's guard.
 	rooms, err := s.store.Pool.Rooms()
