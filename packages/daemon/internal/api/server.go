@@ -822,10 +822,12 @@ func statementBound(bound time.Duration) int64 {
 // mergeWaitContract, the contract that added what a reviewing issue's round waits on from
 // GitHub, is served it without `mergeWait` (withoutMergeWait); a caller below
 // assignmentsContract, the contract that added the experiment answers each issue runs under, is
-// served every issue without `assignments` (withoutAssignments); and a caller below
+// served every issue without `assignments` (withoutAssignments); a caller below
 // entryTimesContract, the contract that added the two times of the task that entry was queued
 // as and the arms of the architect-stalled reading that hold for a root, is served it without
-// `entryQueuedAt`, `entryConfirmedAt` and `architectStalls` (withoutEntryTimes).
+// `entryQueuedAt`, `entryConfirmedAt` and `architectStalls` (withoutEntryTimes); and a caller
+// below stateSeqContract, the contract that added the sequence of the newest state event the
+// body's snapshot holds, is served the daemon block without `stateSeq` (withoutStateSeq).
 // The narrowings compose: each is applied when the state carries something of its own, so a
 // caller below all of them — a pod below supervise.PodUpdateContract — is served a body
 // carrying none of the keys they strip, the line's own fields being fields of a view such a
@@ -954,6 +956,7 @@ var stateNarrowings = []stateNarrowing{
 	{mergeWaitContract, carriesMergeWait, withoutMergeWait, "the issues' mergeWait"},
 	{assignmentsContract, carriesAssignments, withoutAssignments, "the issues' assignments"},
 	{entryTimesContract, carriesEntryTimes, withoutEntryTimes, "the issues' entryQueuedAt, entryConfirmedAt and architectStalls"},
+	{stateSeqContract, carriesStateSeq, withoutStateSeq, "daemon.stateSeq"},
 }
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
@@ -1089,10 +1092,10 @@ const phaseEntriesContract = 94
 // one measure: a caller served the movement without the quiet time beside it, or the other way
 // about, would hold half of what one read of the tree said. Every later row of stateNarrowings
 // stands above it — waitingOnIssueContract's, whose strip takes a word of the line's `kind` and
-// no key, then mergeWaitContract's, assignmentsContract's and entryTimesContract's, the last
-// this daemon's own contract — so a caller from it up is served the measure, and none of what a
-// later row adds until it reaches that row's contract (123, INFRA-3146's contract, moves no
-// shape of the state).
+// no key, then mergeWaitContract's, assignmentsContract's, entryTimesContract's and
+// stateSeqContract's, the last this daemon's own contract — so a caller from it up is served the
+// measure, and none of what a later row adds until it reaches that row's contract (123,
+// INFRA-3146's contract, moves no shape of the state).
 const quietTimeContract = 111
 
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
@@ -1136,6 +1139,17 @@ const assignmentsContract = 141
 // it with no row of stateNarrowings between the two, so a caller in a pod at or above
 // assignmentsContract and below this contract is served `assignments` and not these three keys.
 const entryTimesContract = 146
+
+// stateSeqContract is the daemon contract that added `daemon.stateSeq`, the sequence of the newest
+// state event the project's daemon committed, read in the body's own snapshot (version.go's
+// 166, DaemonInfo.StateSeq). A plugin before it is served the daemon block without the key: one
+// built before sjawhar/legion#2788 reads it with a strict schema and would refuse the whole body
+// for a key it does not name, and one built after strips the key instead, so the strip is what
+// keeps the sequence from a caller that did not ask for it rather than what keeps such a caller
+// reading at all. entryTimesContract stands below it with no row of stateNarrowings between the
+// two, so a caller in a pod at or above entryTimesContract and below this contract is served
+// those three keys and no `stateSeq`.
+const stateSeqContract = 166
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
@@ -1465,6 +1479,22 @@ func withoutEntryTimes(state State) State {
 		issues[key] = issue
 	}
 	state.Issues = issues
+	return state
+}
+
+// carriesStateSeq is whether state carries the key stateSeqContract added: `daemon.stateSeq`.
+// The daemon's own source sets it on every body it answers (DaemonInfo.StateSeq), 0 included; a
+// state built without it, a test's or another source's, carries nothing to strip, so this is
+// asked of the state rather than answered true.
+func carriesStateSeq(state State) bool { return state.Daemon.StateSeq != nil }
+
+// withoutStateSeq is state with no `daemon.stateSeq`, the one key stateSeqContract added to this
+// route; nothing else of that contract is on it. The key is left off rather than zeroed, because
+// the strict reader before the contract refuses it when it is 0 as surely as when it names a
+// sequence, and a 0 would tell a reader of this contract that the project has no state event. The
+// daemon block is a value of the state's own, so the state the source answered is left as it was.
+func withoutStateSeq(state State) State {
+	state.Daemon.StateSeq = nil
 	return state
 }
 

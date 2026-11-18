@@ -6,6 +6,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -24,6 +25,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/sync/errgroup"
 
@@ -268,6 +270,11 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	if log == nil {
 		log = slog.Default()
 	}
+	// The id of this daemon run, minted once at the process's start: every state event the run
+	// writes carries it (record.StateBoot, StateChange, StateAdmission), so a reader of the
+	// project's state events tells one run's events from another's. Only a daemon with a workflow
+	// writes any (the state events' switches, turned on below).
+	runID := uuid.NewString()
 	plan, err := prepare(cfg, log, o)
 	if err != nil {
 		return err
@@ -379,6 +386,29 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		plan.rootTask = workflow.rootTask
 		plan.taskConfirmed = workflow.taskConfirmed
 		plan.sessionLost, plan.sessionStoreFault = workflow.sessionLost, workflow.sessionStoreFault
+		// The run's boot event, and from it on the state event of every write the run makes. The
+		// boot row is queued in a transaction of its own, which commits before either switch below
+		// is on, so it takes the project's next state sequence before any state row this run
+		// writes: supervision's restore, the boot probes' reconcile pass and every later issue,
+		// slot, claim and admission write queue theirs after it, and openWorkflow above wrote none,
+		// since nothing was on while it ran. A row an earlier run left unpublished holds a lower
+		// sequence still, so the project's state lane publishes it first and the boot event
+		// follows it with no gap. Both switches carry this run's id and wake the project's state
+		// lane once a write that queued a row commits (projectRecords, publishClaimStates). Only a
+		// daemon with a workflow runs the outbox that sends and deletes the rows, so a daemon with
+		// none writes no boot row and turns nothing on.
+		if err := workflow.queueStateBoot(boot, runID, api.SettingsOf(cfg), applied > 0); err != nil {
+			workflow.stop()
+			st.Close()
+			return err
+		}
+		if err := publishRecordStates(workflow.records, runID); err != nil {
+			workflow.stop()
+			st.Close()
+			return err
+		}
+		publishClaimStates(st, workflow, runID)
+		log.Info("legion daemon state events on", "project", cfg.Project, "run", runID, "migrated", applied > 0)
 		// From here on, a claim write that changes a role holder queues its issue's publication in
 		// its own transaction, and the store tells the issue once that commits, so its lane is woken
 		// at once rather than at its next sweep. Only a daemon with a workflow runs an outbox to send
@@ -630,6 +660,51 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	log.Info("legion daemon stopped", "project", cfg.Project, "boot", bootID)
 
 	return errors.Join(liveErr, stopErr)
+}
+
+// queueStateBoot queues the boot event of run (record.StateBoot) in a transaction of its own: the
+// settings the state route serves (api.SettingsOf), and whether this boot applied a migration,
+// which can have rewritten what Dispatch observes outside every write that queues a state event.
+// The row carries the bare Dispatch project key in its issue column, as every state row does, so
+// it runs on the project's one state lane (record.LaneState), and it takes the lane's next
+// sequence when the transaction commits. run calls it before it turns the state events on, so
+// that sequence is below every one the run's other state rows take.
+func (w *workflowRuntime) queueStateBoot(ctx context.Context, run string, settings api.Settings, migrated bool) error {
+	encoded, err := json.Marshal(settings)
+	if err != nil {
+		return fmt.Errorf("encode the settings of the boot event of %s: %w", w.dispatchProject, err)
+	}
+	row, err := record.NewOutboxRow(w.dispatchProject, record.StateBoot{
+		Project: w.dispatchProject, Run: run, Settings: encoded, Migrated: migrated,
+	}, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("queue the boot event of %s: %w", w.dispatchProject, err)
+	}
+	scoped, committed := intake.WithCommitHooks(ctx)
+	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
+		return w.records.Enqueue(scoped, tx, row)
+	}); err != nil {
+		return fmt.Errorf("queue the boot event of %s: %w", w.dispatchProject, err)
+	}
+	committed()
+	return nil
+}
+
+// publishRecordStates turns the state events of the issue and slot writes and of the admission
+// block on (record.Postgres.PublishState) for run, the id of this daemon run, in the one record
+// store the workflow writes through, whose switch the admission pass reads as well
+// (record.Store.StateRun). record.Store names no such switch, so the store is reached through
+// the projectRecords openWorkflow builds over it; records of any other shape are refused, since
+// a daemon that went on with them would write its boot event and then no state event at all.
+// Each write that queues a row wakes the project's state lane once it commits (projectRecords).
+func publishRecordStates(records record.Store, run string) error {
+	if scoped, ok := records.(projectRecords); ok {
+		if postgres, ok := scoped.Store.(*record.Postgres); ok {
+			postgres.PublishState(run)
+			return nil
+		}
+	}
+	return fmt.Errorf("turn the state events on: the workflow's records are a %T, not the project's records over the Postgres store", records)
 }
 
 // publishClaimStates turns the state events of the claim writes on (store.Store.PublishState) for
@@ -2839,6 +2914,14 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	if err != nil {
 		return api.State{}, nil, err
 	}
+	// The sequence of the newest state event the project's daemon committed, read in this same
+	// snapshot as everything else the body holds, so every event at or below it is in the body
+	// and every event above it is not (api.DaemonInfo.StateSeq): a reader of the events starts
+	// after this body at the next one. A project with no state row reads 0, which is served too.
+	stateSeq, err := s.records.StateSeq(ctx, tx, s.project)
+	if err != nil {
+		return api.State{}, nil, err
+	}
 	claims, err := s.store.ClaimsTx(ctx, tx)
 	if err != nil {
 		return api.State{}, nil, err
@@ -2902,6 +2985,7 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 		Boots:         boots,
 		FirstBootAt:   firstBootAt,
 		StartedAt:     s.startedAt,
+		StateSeq:      &stateSeq,
 	}
 	state.Settings = s.settings
 	controller, _, err := s.store.ControllerTx(ctx, tx, s.projectToken)

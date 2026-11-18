@@ -2213,4 +2213,24 @@ package api
 // entry's own 152 were both outside it.
 // Read main's own number and every open pull request's again at the next forward merge rather
 // than from this line.)
-const DaemonAPIVersion = 152
+//
+// 166: dispatch://INFRA-3931 -- the daemon block of `GET /legion/v1/state` gains `stateSeq`
+// (api.DaemonInfo.StateSeq), the sequence of the newest state event the project's daemon
+// committed (state_publication.last_seq, record.Store.StateSeq), read in the route's own
+// repeatable-read snapshot: every state event at or below it is in the body and every one above
+// it is not, so a reader of the daemon's state events (`notifications.legion.<token>.state`)
+// starts after a whole read at `stateSeq + 1`, with nothing lost and nothing applied twice. The
+// route writes it on every body, 0 while the project has no state row, and a caller in a pod
+// whose claims record a contract below 166 is served the daemon block without it
+// (stateSeqContract, withoutStateSeq): one built before sjawhar/legion#2788 reads the state with
+// a strict schema and would refuse the whole body for a key it does not name, and one built
+// after strips the key instead. `packages/contracts/src/legion-api.ts` reads the key as optional,
+// so a reader of this contract served such a body, or the body of a daemon before 166, takes it
+// as absent rather than as 0.
+// (This change took 166, the lowest number above main's 152 that no open pull request declared,
+// as `.github/scripts/check-daemon-api-contract.sh` read it on 2026-11-18: 153 #4115, 154 #3659,
+// 155 #4273, 156 #4065, 157 #3993, 158 #4251, #4259, #4261, #4269 and #4290, 159 #4175, 160
+// #3519, 161 #4173, #4180 and #4193, 162 #2230 and #3712, 163 #4049, 164 #4017 and 165 #4392.
+// That is a reading and never the rule: read main's own number and every open head again at the
+// next forward merge rather than from this line.)
+const DaemonAPIVersion = 166

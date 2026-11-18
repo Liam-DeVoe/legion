@@ -276,6 +276,9 @@ func populatedState(t *testing.T) State {
 			Boots:         4,
 			FirstBootAt:   time.Date(2026, 9, 18, 14, 3, 27, 0, time.UTC),
 			StartedAt:     time.Date(2026, 9, 22, 9, 15, 2, 0, time.UTC),
+			// The daemon's source sets the sequence on every body it answers; 43 is the newest
+			// state event this snapshot holds, which the fixture names so the key is on the wire.
+			StateSeq: new(int64(43)),
 		},
 		Admission: Admission{
 			Cap:    5,

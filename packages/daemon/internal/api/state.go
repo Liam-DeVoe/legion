@@ -412,13 +412,22 @@ func (s State) MarshalJSON() ([]byte, error) {
 }
 
 // DaemonInfo is the running daemon itself: which project it coordinates, the schema its store is
-// migrated to, and its boot history.
+// migrated to, its boot history, and the state event its snapshot reflects.
 type DaemonInfo struct {
 	Project       string    `json:"project"`
 	SchemaVersion int       `json:"schemaVersion"`
 	Boots         int       `json:"boots"`
 	FirstBootAt   time.Time `json:"firstBootAt"`
 	StartedAt     time.Time `json:"startedAt"`
+	// StateSeq is the sequence of the newest state event the project's daemon committed
+	// (record.Store.StateSeq, state_publication.last_seq), read in the same repeatable-read
+	// snapshot as the rest of the body: every state event at or below it is in this body and
+	// every event above it is not, so a reader of the state events starts after this body at
+	// StateSeq + 1, with nothing lost and nothing applied twice. The route's source sets it on
+	// every body, 0 while the project has no state row; it is a pointer so that the one body
+	// without it is the one stateSeqContract's narrowing serves a caller below that contract
+	// (withoutStateSeq), not a 0 a reader would take for a sequence.
+	StateSeq *int64 `json:"stateSeq,omitempty"`
 }
 
 // ContractView is the mark of the narrowing: the contract this body was built at and the
