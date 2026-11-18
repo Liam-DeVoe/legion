@@ -113,18 +113,25 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 }
 
 // decisionSuperseded says whether the spec decision notice carries on issue is no longer the
-// person's word, by the one predicate (workflow.DecisionStands) over the gates of issue as the
-// record holds them now: the decision of the document notice.Ref names, at the version the notice
-// carries and at Dispatch's mark of the review (record.Notice.Review), which this release puts on
-// every design decision's notice. A notice an earlier release queued carries no mark, and is asked
-// at its version alone.
+// person's word, by the one predicate (workflow.DecisionStands) over the gate of issue as the
+// record holds it now: the gate of the step whose document notice.Ref names, resolved once here
+// (workflow.RefStep), at the version the notice carries and at Dispatch's mark of the review
+// (record.Notice.Review), which this release puts on every design decision's notice. A notice an
+// earlier release queued carries no mark, and is asked at its version alone.
 func (r *outbox) decisionSuperseded(ctx context.Context, tx pgx.Tx, issue string, notice record.Notice, decision record.DecisionKind) (bool, error) {
 	gates, err := r.records.GatesOf(ctx, tx, issue)
 	if err != nil {
 		return false, err
 	}
-	return !workflow.DecisionStands(gates, r.gatedSteps, workflow.Decision{Kind: decision, Issue: issue, Ref: notice.Ref,
-		Version: notice.Version, Mark: notice.Review}), nil
+	d := workflow.Decision{Kind: decision, Version: notice.Version, Mark: notice.Review}
+	var gate *record.DesignGate
+	if step, named := workflow.RefStep(issue, notice.Ref); named {
+		if held, ok := gates[step]; ok {
+			gate = &held
+		}
+		d.Step = step
+	}
+	return workflow.DecisionStands(gate, slices.Contains(r.gatedSteps, d.Step), d) != nil, nil
 }
 
 // settleKept settles what an architect start row's task named of what its tree is owed, once the

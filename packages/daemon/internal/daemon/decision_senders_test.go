@@ -125,8 +125,10 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 // into its architect's entry (workflow.Engine.ResumeAwaitedRoot), so a send of that stored text
 // again names the review whether or not the person's word has moved since, which is how the
 // sweep's send of a lost resume's start named a changes request the person's approval had
-// superseded. Such a function passes only where storedTaskSenders names it, with why the task it
-// sends names no person's review.
+// superseded. The resume still writes that text, which this release never sends, for the release
+// a rollback past contract 162 returns to (record.PhaseRow.EntryTask says so), so the text is
+// there for a new sender to read. Such a function passes only where storedTaskSenders names it,
+// with why the task it sends names no person's review.
 //
 // And the rule itself (classify.ReviewSuperseded) is asked by the predicate alone, and by the one
 // reading of an approval request (ruleAskers), so the guards that choose whether to ask it live in

@@ -75,13 +75,21 @@ func waitingNote(role string) string {
 		"Legion moves the issue at its next event or at Legion's next boot, once both Legion Apps are installed on " + unmappedRepo + "."
 }
 
-// changingGitHub is a GitHub that names the rig's two mapped repositories at main and unmappedRepo
-// as unmappedNamed at the default branch it holds now, which a test changes (rename), counting the
-// reads of unmappedRepo's name and default branch (reads).
+// changingGitHub is a GitHub that names the rig's two mapped repositories at main, answeredRepo as
+// answeredNamed at main, and unmappedRepo as unmappedNamed at the default branch it holds now,
+// which a test changes (rename), counting the reads of unmappedRepo's name and default branch
+// (reads).
 type changingGitHub struct {
 	branch atomic.Pointer[string]
 	reads  atomic.Int64
 }
+
+// answeredRepo is a second repository no mapping names, which GitHub names as answeredNamed and
+// both Apps are installed on unless a test says otherwise.
+const (
+	answeredRepo  = "kappa/gizmos"
+	answeredNamed = "Kappa/Gizmos"
+)
 
 func newChangingGitHub(t *testing.T, branch string) (*changingGitHub, string) {
 	t.Helper()
@@ -94,6 +102,8 @@ func newChangingGitHub(t *testing.T, branch string) (*changingGitHub, string) {
 			name, head = "acme/widgets", "main"
 		case "zeta/tools":
 			name, head = "zeta/tools", "main"
+		case answeredRepo:
+			name, head = answeredNamed, "main"
 		case unmappedRepo:
 			g.reads.Add(1)
 			name, head = unmappedNamed, *g.branch.Load()
@@ -459,5 +469,82 @@ func TestAFollowWhoseBoundEndsWhileItReadsARepositoryNoMappingNamesWritesNothing
 		if notes := repositoryNotes(t, w, key); len(notes) != 0 {
 			t.Fatalf("notes on %s = %q, want none", key, notes)
 		}
+	}
+}
+
+// A follow pass whose bound ends after it has read some repositories writes the corrections it
+// prepared before the bound ended: those reads were GitHub's answers, so the issues they move are
+// moved now, onto a mapped repository and onto one no mapping names alike, and a change GitHub
+// refused waits on its record with the issue told. The issue whose read the bound cut short, and
+// every issue after it, write nothing and say nothing, and the follow stays owed for them. The
+// passes after it read those issues alone: none of them reads a repository the cut pass already
+// read, not even the one whose change still waits, which a full pass would read again every time
+// and ahead of them. Once GitHub answers, the next pass completes the follow.
+func TestAFollowWhoseBoundEndsWritesWhatItPreparedAndLeavesTheRestOwed(t *testing.T) {
+	quickInstallReads(t)
+	attempt := appMintAttempt
+	appMintAttempt = 500 * time.Millisecond
+	t.Cleanup(func() { appMintAttempt = attempt })
+	const refusedRepo = "lambda/gadgets"
+	installs := &slowInstallations{installations: &installations{}}
+	installs.setMissing(true, "review "+refusedRepo)
+	installs.hang.Store(true)
+	w, client, _ := changingRig(t, installs.installations, func(w *workflowRuntime) { w.installs = installs })
+	const mapped, answered, refused, cut = "LEGION-1081", "LEGION-1082", "LEGION-1083", "LEGION-1084"
+	for i, key := range []string{mapped, answered, refused, cut} {
+		recordCorrectionRoot(t, w.pool, w.records, key, key, i)
+	}
+	client.show(issue(mapped, "zeta/tools", "in_progress", true, "", 1), issue(answered, answeredRepo, "in_progress", true, "", 1),
+		issue(refused, refusedRepo, "in_progress", true, "", 1), issue(cut, unmappedRepo, "in_progress", true, "", 1))
+
+	w.requestFollow()
+	follows, requested := w.followRequested.Load(), w.mappingRequested.Load()
+	testwait.Eventually(t, "the corrections the cut pass prepared written", func() bool {
+		got := recordedIssue(t, w, answered)
+		return got != nil && got.Repo == answeredNamed
+	})
+	if got := recordedIssue(t, w, mapped); got == nil || got.Repo != "zeta/tools" || got.DefaultBranch != "main" || got.RepoCorrection == nil {
+		t.Fatalf("%s = %+v, want it corrected onto zeta/tools at main with the pass that moved %s", mapped, got, answered)
+	}
+	if got := recordedIssue(t, w, answered); got.GitHubRepo != answeredNamed || got.DefaultBranch != "main" || got.RepoChange != nil {
+		t.Fatalf("%s = %+v, want it on %s at main, GitHub's answer, with nothing waiting", answered, got, answeredNamed)
+	}
+	want := record.RepositoryChange{Pending: refusedRepo, Reason: "the review App is not installed on " + refusedRepo}
+	if got := onWidgets(t, w, refused); got.RepoChange == nil || *got.RepoChange != want {
+		t.Fatalf("the waiting change of %s = %+v, want %+v", refused, got.RepoChange, want)
+	}
+	if notes := repositoryNotes(t, w, refused); len(notes) != 1 {
+		t.Fatalf("notes on %s = %q, want it told once that its change waits", refused, notes)
+	}
+	if got := onWidgets(t, w, cut); got.RepoChange != nil {
+		t.Fatalf("%s waits on %+v, want nothing waiting: a read its bound cut short is no refusal", cut, got.RepoChange)
+	}
+	if notes := repositoryNotes(t, w, cut); len(notes) != 0 {
+		t.Fatalf("notes on %s = %q, want none: a read its bound cut short says nothing", cut, notes)
+	}
+	if applied := w.followApplied.Load(); applied >= follows {
+		t.Fatalf("the follow is applied (%d of %d) with %s unread, want it owed for that issue", applied, follows, cut)
+	}
+	if waiting := w.unreadReasons(); len(waiting) != 0 {
+		t.Fatalf("the daemon leaves %q unread, want nothing: GitHub did not fail to answer, the pass's bound ended", waiting)
+	}
+
+	testwait.Eventually(t, "a second pass cut short by its bound", func() bool { return installs.cut.Load() >= 2 })
+	installs.hang.Store(false)
+	testwait.Eventually(t, "the follow applied once GitHub answers", func() bool { return w.followApplied.Load() >= follows })
+	onUnmapped(t, w, cut, "trunk")
+	if notes := repositoryNotes(t, w, cut); len(notes) != 0 {
+		t.Fatalf("notes on %s = %q, want none", cut, notes)
+	}
+	for _, role := range []string{"implement " + answeredRepo, "review " + refusedRepo} {
+		if reads := installs.reads(role); reads != 1 {
+			t.Errorf("the follow made %d reads of %q, want one, by the cut pass: every pass after it reads only the issue it left", reads, role)
+		}
+	}
+	if notes := repositoryNotes(t, w, refused); len(notes) != 1 {
+		t.Fatalf("notes on %s = %q, want it told once", refused, notes)
+	}
+	if asked := w.mappingRequested.Load(); asked != requested {
+		t.Fatalf("the passes asked for %d reads of the mapping, want none: they left no repository unread to recover", asked-requested)
 	}
 }

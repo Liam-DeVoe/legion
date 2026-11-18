@@ -239,20 +239,24 @@ func TestARecordedIssueResolvedToNoRepositoryIsToldAndLeavesNoChangeWaiting(t *t
 // on a repository, mapped or not, so the note asks for that or another repository, and ends with
 // the pass that applies the change: the follow after a read of the mapping for a mapped one, and
 // the issue's next event or the next boot for one no mapping names. A name that is no
-// <owner>/<name> (the preparation's parse refusal) is no repository any App can be installed on, so
-// the note asks only for a repository and ends as it does where the resolution names none: what
-// moves the issue is a person setting one Legion serves.
+// <owner>/<name> (the preparation's parse refusal, which it carries as intake.RefusedName beside
+// its reason) is no repository any App can be installed on, so the note asks only for a
+// repository and ends as it does where the resolution names none: what moves the issue is a
+// person setting one Legion serves.
 func TestARecordedIssueWhoseChangeWaitsIsToldWhatAPersonCanDo(t *testing.T) {
 	for _, tc := range []struct {
 		name, resolved, refusal, want string
+		kind                          intake.RepositoryRefusalKind
 	}{
 		{name: "a mapped repository an App is not installed on", resolved: "acme/gadgets",
 			want: "Legion did not move this issue off sjawhar/legion: the review App is not installed on acme/gadgets. Install it on acme/gadgets, or set another repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name). Legion moves the issue itself once it serves the repository that Dispatch resolves the issue to."},
 		{name: "a repository no mapping names, an App not installed on it", resolved: "other/outside",
 			refusal: "the implement App is not installed on other/outside",
+			kind:    intake.RefusedByGitHub,
 			want:    "Legion did not move this issue off sjawhar/legion: the implement App is not installed on other/outside. Install it on other/outside, or set another repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name). Legion moves the issue at its next event or at Legion's next boot, once both Legion Apps are installed on other/outside."},
 		{name: "a name that is no owner/name", resolved: "outside",
 			refusal: `the repository Dispatch resolves LEGION-209 to must be "owner/name" (got "outside")`,
+			kind:    intake.RefusedName,
 			want:    `Legion did not move this issue off sjawhar/legion: the repository Dispatch resolves LEGION-209 to must be "owner/name" (got "outside"). Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name). Legion moves the issue itself once it serves the repository that Dispatch resolves the issue to.`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -261,7 +265,7 @@ func TestARecordedIssueWhoseChangeWaitsIsToldWhatAPersonCanDo(t *testing.T) {
 			seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "child", Parent: new("LEGION-208"),
 				Phase: phase.Implementing, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress", Rank: "V", LastDispatchSeq: 2})
 			changed := childTodo(3, tc.resolved)
-			changed.Status, changed.RepositoryRefusal = "in_progress", tc.refusal
+			changed.Status, changed.RepositoryRefusal, changed.RepositoryRefusalKind = "in_progress", tc.refusal, tc.kind
 			applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))("changed", changed)
 			child := issueRecord(t, pool, "LEGION-209")
 			if child == nil || child.Repo != "sjawhar/legion" || child.RepoCorrection != nil {

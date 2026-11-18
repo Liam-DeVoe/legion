@@ -5,7 +5,7 @@
 -- record.Awaiting (the shape pending_task_deliveries.resume holds), on the root architect's entry
 -- that the resume of that answer raised (workflow's ResumeAwaitedRoot), and null on every entry
 -- anything else raised. Every other raise writes null over it (workflow's enter), and a
--- re-admission resets it with the task (workflow's ClearGeneration). It has two readers. The
+-- re-admission resets it with the task (record.Store.ClearGeneration). It has two readers. The
 -- sweep's send of such an entry again, for a claim the resume's own start never reached
 -- (workflow.Engine.SendArchitectStart), builds the start the resume queued from it: the wait and
 -- no text, which the send renders from the record as it stands then (workflow.ResumeTask, through

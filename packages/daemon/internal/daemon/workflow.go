@@ -171,7 +171,10 @@ type workflowRuntime struct {
 	// the reads asked for (requestMappingRead) and mappingApplied is the last request a finished
 	// read covers; followRequested counts the follows asked for (a mapping change Dispatch
 	// announced, mappingChange, or a read that served a repository the last did not), and followApplied is the last
-	// of them whose recorded issues followed the mapping read after it (followMapping); awaiting is
+	// of them whose recorded issues followed the mapping read after it (followMapping);
+	// followLeft is each recorded issue, by key, that a follow pass its bound cut short left
+	// unread, for the count of follows that pass was made for (followLeftFor), which the next pass
+	// for that same count reads alone, and only the refresher's goroutine touches either; awaiting is
 	// each held admission event's request (awaitMappingRead), by issue key
 	// and then the sequence it was delivered at, under awaitingMu. recovering is each repository,
 	// lowercased, GitHub answered for again whose issues are still to recover from Dispatch's
@@ -197,6 +200,8 @@ type workflowRuntime struct {
 	mappingApplied    atomic.Uint64
 	followRequested   atomic.Uint64
 	followApplied     atomic.Uint64
+	followLeft        map[string]bool
+	followLeftFor     uint64
 	awaitingMu        sync.Mutex
 	awaiting          map[string]map[int64]uint64
 	recoveringMu      sync.Mutex
@@ -1114,13 +1119,14 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 			}
 			// What the preparation read: the chain it walked, and what GitHub answered for a
 			// repository no mapping names, which this listing's own apply acts on: its refusal
-			// (intake.DispatchIssue.RepositoryRefusal), which refuses an unrecorded issue and
-			// leaves a recorded one's change onto that repository waiting on its record, and, for
-			// a recorded issue moved onto one, the read its correction writes
-			// (intake.DispatchIssue.RepositoryRead). The boot's own listing reads GitHub for no
-			// such repository, so a recorded issue's fact carries no read there and its change
-			// applies nothing.
-			fact.Ancestry, fact.RepositoryRefusal, fact.RepositoryRead = prepared.Ancestry, prepared.RepositoryRefusal, prepared.RepositoryRead
+			// and the refusal's kind (intake.DispatchIssue.RepositoryRefusal,
+			// RepositoryRefusalKind), which refuses an unrecorded issue and leaves a recorded
+			// one's change onto that repository waiting on its record, and, for a recorded issue
+			// moved onto one, the read its correction writes (intake.DispatchIssue.RepositoryRead).
+			// The boot's own listing reads GitHub for no such repository, so a recorded issue's
+			// fact carries no read there and its change applies nothing.
+			fact.Ancestry, fact.RepositoryRead = prepared.Ancestry, prepared.RepositoryRead
+			fact.RepositoryRefusal, fact.RepositoryRefusalKind = prepared.RepositoryRefusal, prepared.RepositoryRefusalKind
 		case labelledTriageRoot:
 			// A labelled triage root the workflow records nothing of, which the arm above takes
 			// every recorded one out of. The listing carries no actor, so the setter is read from

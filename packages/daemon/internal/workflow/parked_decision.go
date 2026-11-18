@@ -139,11 +139,11 @@ func ReadKeptGates(ctx context.Context, tx pgx.Tx, store record.Store, tree stri
 }
 
 // ForgetSuperseded reads the gates owed is asked of (ReadKeptGates) and deletes in tx the row of
-// every decision of owed that a later approval superseded (DecisionStands), and returns the gates
-// it read, for the caller to render the task from (KeptDecisionsTask). It is the write half of a
-// kept-decisions task, and every caller that renders one at a start, a ready or a send calls it
-// first; the delivery of a catch-up, whose read is read-only, renders from ReadKeptGates and
-// deletes nothing.
+// every decision of owed that a later approval superseded (keptSuperseded, DecisionStands), and
+// returns the gates it read, for the caller to render the task from (KeptDecisionsTask). It is the
+// write half of a kept-decisions task, and every caller that renders one at a start, a ready or a
+// send calls it first; the delivery of a catch-up, whose read is read-only, renders from
+// ReadKeptGates and deletes nothing.
 //
 // A decision a later approval superseded is forgotten: the approval is the person's word, the gate
 // records it, and nothing of the decision is left to tell. If the row stays KEPT, every later
@@ -153,7 +153,7 @@ func ReadKeptGates(ctx context.Context, tx pgx.Tx, store record.Store, tree stri
 // and it stays (Store.ForgetKeptDecisions). A superseded approval stays in its row as it always
 // has (Store.KeepReadmittedApproval replaces it at the next re-admission). The gates a decision is
 // asked of go when a generation is cleared, so each clear first forgets what they show was
-// superseded (Engine.ClearGeneration).
+// superseded, asking the same rule (Engine.ClearGeneration, record.Store.ClearGeneration).
 func ForgetSuperseded(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, tree string,
 	owed record.KeptDecisions) (KeptGates, error) {
 	gates, err := ReadKeptGates(ctx, tx, store, tree, owed)
@@ -162,7 +162,7 @@ func ForgetSuperseded(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 	}
 	var spent []record.DecisionMark
 	for _, d := range owed.Decisions {
-		if !DecisionStands(gates[d.Issue], steps, keptDecision(d)) {
+		if keptSuperseded(gates[d.Issue], steps, d) != nil {
 			spent = append(spent, d)
 		}
 	}
@@ -197,15 +197,16 @@ func KeptDecisionsTask(gates KeptGates, steps []record.DesignStep, tree string, 
 	var kept record.KeptDecisions
 	named := make([]string, 0, len(owed.Decisions))
 	for _, d := range owed.Decisions {
-		if !DecisionStands(gates[d.Issue], steps, keptDecision(d)) {
+		if keptSuperseded(gates[d.Issue], steps, d) != nil {
 			continue
 		}
 		kept.Decisions = append(kept.Decisions, d)
 		named = append(named, fmt.Sprintf("%s (%s by %s)", d.Ref, d.Decision, d.Actor))
 	}
 	step := owed.Step.OrSpec()
-	if owed.Approved > 0 && slices.Contains(steps, step) && DecisionStands(gates[tree], steps,
-		Decision{Kind: record.DecisionDesignApproved, Issue: tree, Ref: stepRef(tree, step), Version: owed.Approved}) {
+	gated := slices.Contains(steps, step)
+	if owed.Approved > 0 && gated && DecisionStands(gateOf(gates[tree], step), gated,
+		Decision{Kind: record.DecisionDesignApproved, Step: step, Version: owed.Approved}) == nil {
 		kept.KeptApproval = owed.KeptApproval
 	}
 	var parts []string
@@ -221,10 +222,18 @@ func KeptDecisionsTask(gates KeptGates, steps []record.DesignStep, tree string, 
 	return strings.Join(parts, " "), kept
 }
 
-// keptDecision is the decision mark names as DecisionStands asks it: at no version, since a kept
-// row records none, and at the review's place in Dispatch's log.
-func keptDecision(mark record.DecisionMark) Decision {
-	return Decision{Kind: mark.Decision, Issue: mark.Issue, Ref: mark.Ref, Mark: record.EventMark{Seq: mark.Seq, At: mark.At}}
+// keptSuperseded is the approval that superseded the kept decision mark (DecisionStands), nil
+// when it stands, asked of gates, the gates of the issue it was made on, under steps, the steps
+// the deployment gates. It is asked of the step whose document its reference names, resolved
+// once here (RefStep), at no version, since a kept row records none, and at the review's place
+// in Dispatch's log. A reference that names no step's document is asked of no gate, and stands.
+func keptSuperseded(gates map[record.DesignStep]record.DesignGate, steps []record.DesignStep, mark record.DecisionMark) *Approval {
+	d := Decision{Kind: mark.Decision, Mark: record.EventMark{Seq: mark.Seq, At: mark.At}}
+	var gate *record.DesignGate
+	if step, named := RefStep(mark.Issue, mark.Ref); named {
+		d.Step, gate = step, gateOf(gates, step)
+	}
+	return DecisionStands(gate, slices.Contains(steps, d.Step), d)
 }
 
 // ParkedDecisionTask is ParkedDecisionTask over the engine's store and gated steps.
@@ -373,6 +382,19 @@ func stepRef(key string, step record.DesignStep) string {
 		return "dispatch://" + key + "/artifact/" + dispatch.VerificationSlug
 	}
 	return "dispatch://" + key + "/spec"
+}
+
+// RefStep is the design-gate step whose document ref names on issue key, the one stepRef gives
+// it, and false for a reference that names no step's document (an ask's or a comment's). It is
+// how a sender that holds only a decision's reference (record.ParkedDecision.Ref,
+// record.Notice.Ref) finds the step DecisionStands asks of.
+func RefStep(key, ref string) (record.DesignStep, bool) {
+	for _, step := range record.DesignSteps {
+		if stepRef(key, step) == ref {
+			return step, true
+		}
+	}
+	return "", false
 }
 
 // itemRef is the Dispatch reference of an ask or comment of an issue.

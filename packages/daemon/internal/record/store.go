@@ -1476,6 +1476,134 @@ func (s *Postgres) ClaimSession(ctx context.Context, tx pgx.Tx, token claim.Toke
 	return session, nil
 }
 
+// ClearGeneration empties one issue's generation-scoped facts: a merged or closed pull request,
+// the counters of one still open, its design gates and its recorded handoffs, once the decisions
+// kept on it that do not stand are forgotten (forgetSuperseded), and answers the issues whose
+// gates it emptied (clearGates): issue itself where it held a gate, else none.
+func (s *Postgres) ClearGeneration(ctx context.Context, tx pgx.Tx, issue Issue, stands KeptStands) ([]string, error) {
+	describe := fmt.Sprintf("clear the generation of %s", issue.Key)
+	if err := s.forgetSuperseded(ctx, tx, issue.Tree, issue.Key, stands, describe); err != nil {
+		return nil, err
+	}
+	return s.clearGeneration(ctx, tx, "issue = $1", issue.Key, describe)
+}
+
+// ClearTreeGeneration empties them for every issue of the tree. A root set back to todo starts a
+// new generation of the whole tree, and its children carried the old one's pull request, gate and
+// handoffs into it — a child re-entered at the new generation read a handoff of the last.
+func (s *Postgres) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, stands KeptStands) ([]string, error) {
+	describe := fmt.Sprintf("clear the generation of tree %s", tree)
+	if err := s.forgetSuperseded(ctx, tx, tree, "", stands, describe); err != nil {
+		return nil, err
+	}
+	return s.clearGeneration(ctx, tx, "issue in (select key from issues where tree = $1)", tree, describe)
+}
+
+// forgetSuperseded deletes in tx each decision tree keeps on issue that does not stand, asked of
+// stands against the gates of the issue it was made on, or each one it keeps on any of its
+// issues when issue is "". Only the cleared issues' decisions are asked: a decision is asked of
+// the gates of the issue it was made on, and every other issue keeps its gates. Each issue's
+// gates are read once. A nil stands is refused before anything is read or written, so a clear
+// handed no rule clears nothing.
+func (s *Postgres) forgetSuperseded(ctx context.Context, tx pgx.Tx, tree, issue string, stands KeptStands, describe string) error {
+	if stands == nil {
+		return fmt.Errorf("%s: no rule to ask the decisions kept on it by, which the clear must ask before it deletes the gates the rule reads", describe)
+	}
+	decisions, err := s.ParkedDecisions(ctx, tx, tree)
+	if err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
+	gates := map[string]map[DesignStep]DesignGate{}
+	var spent []DecisionMark
+	for _, d := range decisions {
+		if issue != "" && d.Issue != issue {
+			continue
+		}
+		held, read := gates[d.Issue]
+		if !read {
+			if held, err = s.GatesOf(ctx, tx, d.Issue); err != nil {
+				return fmt.Errorf("%s: %w", describe, err)
+			}
+			gates[d.Issue] = held
+		}
+		mark := DecisionMark{Ref: d.Ref, At: d.At, Issue: d.Issue, Decision: d.Decision, Actor: d.Actor, Seq: d.Seq}
+		if !stands(held, mark) {
+			spent = append(spent, mark)
+		}
+	}
+	if len(spent) == 0 {
+		return nil
+	}
+	if err := s.ForgetKeptDecisions(ctx, tx, tree, KeptDecisions{Decisions: spent}, 0); err != nil {
+		return fmt.Errorf("%s: forget what a later approval superseded: %w", describe, err)
+	}
+	return nil
+}
+
+// clearGeneration runs each statement with key as $1, where selecting the cleared issues' rows by
+// their issue column. The design gates go with them, in a statement of their own (clearGates),
+// whose emptied issues it answers.
+func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, key, describe string) ([]string, error) {
+	for _, statement := range []string{
+		"delete from pull_requests where " + where + " and state <> 'open'",
+		// An open pull request is kept across a new generation, but the last one's reading of it is
+		// not: its checks settlement is of a head nobody has judged since, and the
+		// review round's decision goes with the phases below, and so does its head run, whose
+		// replay would put the old generation's judgement back. Its pushes stay, each a fact about
+		// two commits, and so does its newest review, which orders every review it will have, and
+		// the checks its base branch requires, which belong to the base, not the generation. So
+		// does conflicting_head, the head the daemon last judged conflicting with its base: like
+		// mergeability beside it, it is GitHub's answer about that head and that base, which a new
+		// generation of the issue's work does not make false. A head that still does not merge
+		// still does not merge, and the count it excuses starts again with the rounds below, so
+		// nothing of the old generation's counting survives it.
+		"update pull_requests set " +
+			"head_run = null, planned_red = false, checked_head = '', failing = '[]'::jsonb, cancelled = '[]'::jsonb, " +
+			"check_runs = '[]'::jsonb where " + where,
+		// The entry's task goes with the run, and the entry itself stays where it stands: the
+		// number is never reset, so a worker still holding the old entry's task is behind the row
+		// rather than level with it, and the re-admitted tree's promotion raises the entry again
+		// and writes the task of that entry beside it (admit's startMidPhaseMembers). The wait a
+		// resume kept on the entry goes with the task it was about. The time the entry was
+		// raised stays with the number it belongs to, and so does the move that raised it
+		// (entry_moved_back), which that same promotion writes again. The counts go with the
+		// rounds: the new generation counts its moves back from nothing, and the cap mark goes
+		// with them, so the architect is told again at the new generation's own first crossing of
+		// the cap.
+		"update phases set handoff_commit = '', handoff_record = '', handoff_version = 0, rounds = 0, conflict_rounds = 0, " +
+			"backward_moves = '{}'::jsonb, cap_told = 0, verdict = '', summary = '', decision = null, " +
+			"entry_task = '', entry_awaiting = null where " + where,
+	} {
+		if _, err := tx.Exec(ctx, statement, key); err != nil {
+			return nil, fmt.Errorf("%s: %w", describe, err)
+		}
+	}
+	return s.clearGates(ctx, tx, where, key, describe)
+}
+
+// clearGates deletes the design gates of every issue the clear covers and answers each issue it
+// emptied, once, in key order: those gates recorded a document until this statement, and
+// Dispatch holds the set they recorded until something tells it otherwise, so the clear's caller
+// queues a publication of the empty set for each (workflow's Engine.ClearGeneration). The
+// caller queues it, not this store, because the caller's store is the one that wakes the
+// issue's board lane when the clear commits (the daemon's projectRecords), which this store
+// knows nothing of. The delete names the issues it emptied rather than the clear naming every
+// issue it covers, so an issue that held no gate row — the ordinary child of a re-entry, and
+// every member of a re-admitted tree whose architect registered nothing — costs no Dispatch
+// write. A row comes back for each step, so an issue gated on several steps is answered once.
+func (s *Postgres) clearGates(ctx context.Context, tx pgx.Tx, where, key, describe string) ([]string, error) {
+	rows, err := tx.Query(ctx, "delete from design_gates where "+where+" returning issue", key)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", describe, err)
+	}
+	emptied, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", describe, err)
+	}
+	slices.Sort(emptied)
+	return slices.Compact(emptied), nil
+}
+
 func scanPullRequest(row scanner) (*PullRequest, error) {
 	var pr PullRequest
 	var failing, cancelled, checkRuns, pushes, moves, run []byte

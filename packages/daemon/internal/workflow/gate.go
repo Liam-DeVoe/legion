@@ -165,8 +165,8 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 		// approval of this document followed the review (DecisionStands): one did, and the
 		// person's word is that approval, so the request is recorded and told to nobody.
 		tell = !classify.DesignGateChangesTold(gate, gate.LatestVersion, fact.ChangesReason, fact.ChangesRequestedMark) &&
-			DecisionStands(gates, e.cfg.Steps, Decision{Kind: record.DecisionDesignChangesRequested, Issue: fact.Issue, Ref: stepRef(fact.Issue, step),
-				Artifact: fact.ArtifactID, Version: fact.ChangesRequestedVersion, Mark: fact.ChangesRequestedMark})
+			DecisionStands(gateOf(gates, step), e.gatesStep(step), Decision{Kind: record.DecisionDesignChangesRequested, Step: step,
+				Artifact: fact.ArtifactID, Version: fact.ChangesRequestedVersion, Mark: fact.ChangesRequestedMark}) == nil
 		gate = classify.RecordChangesTold(gate, gate.LatestVersion, fact.ChangesReason, fact.ChangesRequestedMark)
 	}
 	if err := e.putGateTold(ctx, tx, gate, gate.LatestVersion); err != nil {
@@ -264,10 +264,10 @@ func (e *Engine) tellChanges(ctx context.Context, tx pgx.Tx, key string, step re
 	if err != nil {
 		return err
 	}
-	if !DecisionStands(gates, e.cfg.Steps, Decision{Kind: record.DecisionDesignChangesRequested, Issue: key, Ref: stepRef(key, step),
-		Artifact: artifact, Version: version, Mark: mark}) {
+	if superseded := DecisionStands(gateOf(gates, step), e.gatesStep(step), Decision{Kind: record.DecisionDesignChangesRequested, Step: step,
+		Artifact: artifact, Version: version, Mark: mark}); superseded != nil {
 		e.logOnCommit(ctx, "workflow: a changes request an approval followed is not told", "issue", key, "version", version,
-			"approved", *gates[step].ApprovedVersion)
+			"approved", superseded.Version)
 		return nil
 	}
 	place := "none"
@@ -870,7 +870,7 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 		if fact.Kind != intake.DispatchArtifactChangesRequested {
 			return nil
 		}
-		if stale && !DecisionStands(map[record.DesignStep]record.DesignGate{gate.Step: gate}, e.cfg.Steps, artifactReview(key, gate.Step, fact)) {
+		if stale && DecisionStands(&gate, e.gatesStep(gate.Step), artifactReview(gate.Step, fact)) != nil {
 			return nil
 		}
 		if !ungated {
@@ -902,7 +902,7 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 	}
 	tell := fact.Kind == intake.DispatchArtifactChangesRequested && placeable &&
 		!classify.DesignGateChangesTold(gate, fact.Version, fact.Reason, fact.Mark) &&
-		DecisionStands(map[record.DesignStep]record.DesignGate{gate.Step: gate}, e.cfg.Steps, artifactReview(key, gate.Step, fact))
+		DecisionStands(&gate, e.gatesStep(gate.Step), artifactReview(gate.Step, fact)) == nil
 	if fact.Kind == intake.DispatchArtifactChangesRequested && placeable {
 		updated = classify.RecordChangesTold(updated, fact.Version, fact.Reason, fact.Mark)
 	}
@@ -965,11 +965,10 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 	return nil
 }
 
-// artifactReview is the changes request fact carries, on the document of step on key, as
-// DecisionStands asks it.
-func artifactReview(key string, step record.DesignStep, fact intake.DispatchArtifact) Decision {
-	return Decision{Kind: record.DecisionDesignChangesRequested, Issue: key, Ref: stepRef(key, step), Artifact: fact.ArtifactID,
-		Version: fact.Version, Mark: fact.Mark}
+// artifactReview is the changes request fact carries, on the document of step, as DecisionStands
+// asks it.
+func artifactReview(step record.DesignStep, fact intake.DispatchArtifact) Decision {
+	return Decision{Kind: record.DecisionDesignChangesRequested, Step: step, Artifact: fact.ArtifactID, Version: fact.Version, Mark: fact.Mark}
 }
 
 // tellGateMoved tells every worker holding a phase in the tree of key, and the tree's root

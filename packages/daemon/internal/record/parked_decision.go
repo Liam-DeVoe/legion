@@ -154,6 +154,12 @@ type DecisionMark struct {
 	Seq int64 `json:"seq,omitempty"`
 }
 
+// KeptStands says whether decision, a decision kept on an issue whose design gates are gates, is
+// still the person's word. The record holds no rule of its own for that: the workflow's is the one
+// rule (workflow.DecisionStands), and a clear of a generation is handed it (Store.ClearGeneration),
+// because the clear deletes the gates the rule reads.
+type KeptStands func(gates map[DesignStep]DesignGate, decision DecisionMark) bool
+
 // KeptApproval is the approval a root's re-admission kept for its next architect start
 // (Store.KeepReadmittedApproval): the design-gate step whose document a person approved, the
 // version they approved, and the version that document has reached since. The zero value is no

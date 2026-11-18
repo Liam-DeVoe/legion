@@ -66,6 +66,12 @@ type DispatchIssue struct {
 	// taken at that preparation with no wait, no restart and no mapping change. Empty for every
 	// other fact, the decode's own among them: only a preparation sets it.
 	RepositoryRefusal string
+	// RepositoryRefusalKind is what refused the repository RepositoryRefusal names a reason for,
+	// set beside it by the same preparation, so a reader that acts on the kind reads it here and
+	// never parses the name again: GitHub's answer for a repository name, or a name that is no
+	// <owner>/<name>, which asks GitHub nothing. RefusedNothing for every fact RepositoryRefusal is
+	// empty on.
+	RepositoryRefusalKind RepositoryRefusalKind
 	// RepositoryRead is what GitHub answered this event's preparation for a repository no
 	// repository mapping names that a recorded issue's resolution moves it onto: GitHub's own
 	// spelling of the repository and its default branch, read at that preparation, with both role
@@ -129,6 +135,22 @@ type DispatchIssue struct {
 	// value, "" included, keeps today's `triage` wake of the controller.
 	LabelSetter string
 }
+
+// RepositoryRefusalKind is what refused a repository (DispatchIssue.RepositoryRefusal), which is
+// what a person can do about it: install an App on the repository, or set another one.
+type RepositoryRefusalKind uint8
+
+const (
+	// RefusedNothing is no refusal.
+	RefusedNothing RepositoryRefusalKind = iota
+	// RefusedByGitHub is GitHub's answer for a repository name: a role App not installed on it,
+	// or no such repository, which one answer covers. Installing the App, or setting another
+	// repository, answers it.
+	RefusedByGitHub
+	// RefusedName is a name that is no <owner>/<name> at all, which asks GitHub nothing and which
+	// no App can be installed on: only setting a repository answers it.
+	RefusedName
+)
 
 // LabelledTriageRoot says whether the fact shows a root (no Dispatch parent) in triage that
 // carries the label: the one kind of issue whose label's setter the prepare stage and the boot

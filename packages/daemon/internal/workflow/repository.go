@@ -8,7 +8,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -24,11 +23,13 @@ type Repositories interface {
 
 // Resolution is the repository an issue is recorded on: Repo and DefaultBranch when Legion serves
 // it, with GitHubRepo, GitHub's spelling of Repo that Envoy's event subjects carry, or Refusal, why
-// it does not. LeftOut is a mapped repository Legion leaves out, for a GitHub App not installed on
-// it or, with Unread, for now, because GitHub did not answer its installation read, or its
-// default-branch read past GitHub's rate limit; Refusal names which. An Unread issue is not refused
-// but left: RefuseRecording says nothing on it, and the daemon takes it from Dispatch's listing
-// once GitHub answers for the repository (its recovery).
+// it does not, and RefusalKind, what refused it (intake.RepositoryRefusalKind): GitHub's answer
+// for a repository name, or a resolution that names no <owner>/<name>, none at all included,
+// which only setting a repository answers. LeftOut is a mapped repository Legion leaves out, for a
+// GitHub App not installed on it or, with Unread, for now, because GitHub did not answer its
+// installation read, or its default-branch read past GitHub's rate limit; Refusal names which.
+// An Unread issue is not refused but left: RefuseRecording says nothing on it, and the daemon
+// takes it from Dispatch's listing once GitHub answers for the repository (its recovery).
 //
 // Unmapped is a repository no repository mapping names: one the daemon answers from a read a
 // preparation kept (Repo set) or from none (Unread), or one a preparation's reads refused
@@ -40,6 +41,7 @@ type Resolution struct {
 	DefaultBranch string
 	GitHubRepo    string
 	Refusal       string
+	RefusalKind   intake.RepositoryRefusalKind
 	LeftOut       bool
 	Unread        bool
 	Unmapped      bool
@@ -53,7 +55,7 @@ const resolvesToNone = "its repository resolves to none"
 // not recorded. Admission records roots and orphans with it, as the engine records children.
 func (e *Engine) ResolveRepository(resolved string) (Resolution, error) {
 	if resolved == "" {
-		return Resolution{Refusal: resolvesToNone}, nil
+		return Resolution{Refusal: resolvesToNone, RefusalKind: intake.RefusedName}, nil
 	}
 	if e.cfg.Repositories == nil {
 		return Resolution{}, errors.New("the workflow holds no repository mapping to record an issue's repository from")
@@ -72,7 +74,7 @@ func (e *Engine) ResolveRepository(resolved string) (Resolution, error) {
 // following Dispatch onto another repository (ApplyRepositoryChange).
 func (e *Engine) ResolveIssueRepository(fact intake.DispatchIssue) (Resolution, error) {
 	if fact.RepositoryRefusal != "" {
-		return Resolution{Refusal: fact.RepositoryRefusal, LeftOut: true, Unmapped: true}, nil
+		return Resolution{Refusal: fact.RepositoryRefusal, RefusalKind: fact.RepositoryRefusalKind, LeftOut: true, Unmapped: true}, nil
 	}
 	return e.ResolveRepository(fact.ResolvedRepo)
 }
@@ -247,23 +249,24 @@ func (e *Engine) ApplyRepositoryChange(ctx context.Context, tx pgx.Tx, issue rec
 // to, resolved, is not written onto the record: the record keeps the repository it has, for the
 // reason refused gives. It says what a person can do, as RefuseRecording does for an issue it does
 // not record: set a repository where the resolution names none or a name that is no
-// <owner>/<name> (the preparation's parse refusal), since no App can be installed on either, and
-// otherwise install the App refused names on it or set another repository. Since INFRA-2543 a
-// named repository is refused for what GitHub answers of it alone — a role App not installed on
-// it, or no such repository — whether the mapping names it (the mapping's own installation reads)
-// or not (the preparation's, intake.DispatchIssue.RepositoryRefusal): mapping it admits nothing,
-// so the note never asks for that. It ends with when Legion moves the issue itself: a mapped
-// repository once Legion serves it, which the daemon's follow after the read of the mapping that
-// serves it applies; a repository no mapping names (refused.Unmapped) at the issue's next event or
-// at the next boot, since the served-set follow never fires for such a repository; and a
-// resolution that names no repository, or no <owner>/<name>, once Dispatch resolves the issue to
-// one Legion serves, which takes a person's change of its repository. ApplyRepositoryChange
-// reaches it for a refused or left-out resolution alone, and it says it once per resolution
-// (noteOnce), so a repeated event or listing of the issue says nothing again.
+// <owner>/<name> (refused.RefusalKind, intake.RefusedName, which the preparation's parse refusal
+// and the mapping's carry), since no App can be installed on either, and otherwise install the App
+// refused names on it or set another repository. Since INFRA-2543 a named repository is refused
+// for what GitHub answers of it alone — a role App not installed on it, or no such repository —
+// whether the mapping names it (the mapping's own installation reads) or not (the preparation's,
+// intake.DispatchIssue.RepositoryRefusal): mapping it admits nothing, so the note never asks for
+// that. It ends with when Legion moves the issue itself: a mapped repository once Legion serves
+// it, which the daemon's follow after the read of the mapping that serves it applies; a
+// repository no mapping names (refused.Unmapped) at the issue's next event or at the next boot,
+// since the served-set follow never fires for such a repository; and a resolution that names no
+// repository, or no <owner>/<name>, once Dispatch resolves the issue to one Legion serves, which
+// takes a person's change of its repository. ApplyRepositoryChange reaches it for a refused or
+// left-out resolution alone, and it says it once per resolution (noteOnce), so a repeated event or
+// listing of the issue says nothing again.
 func (e *Engine) noteRepositoryChangeWaits(ctx context.Context, tx pgx.Tx, issue record.Issue, resolved string, refused Resolution) error {
 	action := "Set its repository (" + setRepositoryHint + ")."
 	moves := " Legion moves the issue itself once it serves the repository that Dispatch resolves the issue to."
-	if _, err := ghrepo.Parse("the repository", resolved); err == nil {
+	if refused.RefusalKind != intake.RefusedName {
 		action = "Install it on " + resolved + ", or set another repository (" + setRepositoryHint + ")."
 		if refused.Unmapped {
 			moves = " Legion moves the issue at its next event or at Legion's next boot, once both Legion Apps are installed on " + resolved + "."

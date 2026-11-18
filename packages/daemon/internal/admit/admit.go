@@ -1433,7 +1433,7 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 	if orphan {
 		if pr != nil {
 			// The carried pull request starts the generation's fence; its head run goes, as with a
-			// new generation (workflow's ClearGeneration), since its replay would put the old fence
+			// new generation (record.Store.ClearGeneration), since its replay would put the old fence
 			// back.
 			pr.Generation, pr.Run = int64(stored.Generation), nil
 			if err := a.store.PutPullRequest(ctx, tx, *pr); err != nil {
@@ -2519,7 +2519,7 @@ func ownSlots(issues []record.Issue, slots []record.Slot) []record.Slot {
 // with nothing to do comes back and is told nothing.
 //
 // Such a role comes back only where it holds a claim row, which is the durable record that the
-// role has run: a re-admission clears the generation's facts — workflow's ClearTreeGeneration
+// role has run: a re-admission clears the generation's facts — record.Store.ClearTreeGeneration
 // touches pull_requests, phases and design_gates, never claims — and a claim's token carries no
 // generation (claim.NewToken), so the row outlives the generation that wrote it. A role that has
 // never run holds none and is started by nothing here: its session would come up with no
