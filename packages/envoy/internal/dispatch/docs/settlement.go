@@ -1026,6 +1026,9 @@ func (p *settlementPass) commitRepairs(ctx context.Context) (settleStep, settleO
 	}); err != nil {
 		return settleDone, p.commitFailed(advanced, fmt.Errorf("commit document settlement repairs: %w", err))
 	}
+	if s.afterSettleRepairCommit != nil {
+		s.afterSettleRepairCommit(room)
+	}
 	p.committed()
 	return settleAgain, settleOutcome{}
 }

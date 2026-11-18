@@ -302,6 +302,12 @@ type Service struct {
 	// appended them and its room's cursor holds them, before the pass commits. Nil outside tests;
 	// tests use it to act in the window in which the room stands one past the store's head.
 	afterSettleRepairAppend func(room string)
+	// afterSettleRepairCommit runs once a settlement pass that wrote repairs into the room has
+	// committed them and the commit has released the room's state, before the pass ends on its
+	// commit (committed). Nil outside tests; tests use it to read the room as a reader finds it
+	// once the repairs' ask rows are committed. No other hook runs between the commit's release of
+	// the room's state and committed, so without it a test could only race the pass for that read.
+	afterSettleRepairCommit func(room string)
 	// afterSettleVersionWrite runs once a settlement that is writing a version has written it
 	// (writeVersionTx) and deleted the pending authors it lists, and before the settlement appends
 	// that version's own event. Nil outside tests; tests return an error from it to force the
