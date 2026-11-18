@@ -1,20 +1,15 @@
-import { useQueries } from "@tanstack/react-query";
 import { type ReactNode, type RefObject, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { Link, Navigate, useLocation } from "react-router-dom";
 
-import { api } from "../../../api/client";
 import { primarySpec } from "../../../api/issue-cache";
-import { issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
 import {
   primaryButtonBg,
   primaryButtonHoverBg,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../../theme/classes";
-import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { ItemMatchList } from "../../issue/ItemMatchList";
 import type { ItemRoute } from "../../issue/useItemLanding";
-import { refetchFailedOnFocus } from "../../refs/reference-target";
 import { buildIssuePath } from "../../refs/routes";
 import {
   type AddressFallback,
@@ -28,25 +23,15 @@ import { IssueTree } from "../IssueTree";
 import { issueAddress } from "../issue-address";
 import { artifactsBySlug } from "../issue-artifacts";
 import { NoTooltips } from "../NoTooltips";
+import { useOutlineReads } from "../outline-reads";
 import { useOutlineRequest } from "../outline-request";
 import { KEY_REPORTS } from "../page-structure";
 import { EMPTY_STATE_LINES } from "../page-words";
 import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { specSummary } from "../spec-summary";
-import { useIssueTree } from "../useIssueTree";
 import { abortOnReaderAct } from "../useNodeEditing";
 import { FailedReadLine } from "./failed-read-line";
-
-/** What each read the outline waits on takes: a copy of the tree's own rule for its reads,
- *  `useIssueTree.ts`'s `EVENT_FRESH`, which this file is to import once that file exports it.
- *  Events keep a read fresh and its age never does, so the slot mounted again on a press of a
- *  view more than 30 s after the load reads none of them again, and window focus fetches again
- *  only a read in error. */
-const EVENT_FRESH = {
-  refetchOnWindowFocus: refetchFailedOnFocus,
-  staleTime: Number.POSITIVE_INFINITY,
-} as const;
 
 /** Filled by INFRA-1196 part G, "A node's row", then part I, "The outline". */
 export function BodySlot({ issue, route }: SlotProps): ReactNode {
@@ -56,41 +41,13 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
   const { hash, key: locationKey, search } = useLocation();
   const specSlug = primarySpec(issue)?.slug;
   const address = issueAddress(route, search, hash, specSlug);
-  const { blocksHeld, root } = useIssueTree(issue);
-  // Whether every read the tree's nodes come from holds its answer: the issue's children come
-  // with the issue, the documents' blocks are `blocksHeld`, and every other node comes from one
-  // of these, read under the keys `useIssueTree` reads them by, so they cost no request of their
-  // own. Until then a tree with no node is one whose nodes have not arrived, and the outline's
-  // line that the issue holds nothing would be false on every cold load, so the outline draws
-  // nothing in its place; so would `q` and `w` saying there is no question or decision to go to,
-  // so they say nothing. A read that failed holds nothing either: the page cannot say what it
-  // would have held. The conversation's reads are kept too, which tell a turn the outline leaves
-  // out (`useAddressFallback`).
+  // The tree, and whether every read its nodes come from holds its answer (`useOutlineReads`).
+  // Until then a tree with no node is one whose nodes have not arrived, and the outline's line
+  // that the issue holds nothing would be false on every cold load, so the outline draws nothing
+  // in its place; so would `q` and `w` saying there is no question or decision to go to, so they
+  // say nothing.
+  const { reads, readsHeld, root } = useOutlineReads(issue);
   const key = issue.key;
-  const nodeReads = useQueries({
-    combine: (answers) => {
-      const [, , , asks, comments, messages] = answers;
-      return {
-        asks: asks.data,
-        comments: comments.data,
-        held: answers.every((answer) => answer.data !== undefined),
-        messages: messages.data,
-      };
-    },
-    queries: [
-      { ...issueCoverageQuery(key), ...EVENT_FRESH },
-      { ...issueDecisionsQuery(key, true), ...EVENT_FRESH },
-      { ...issueResultsQuery(key), ...EVENT_FRESH },
-      { queryFn: () => api.listIssueAsks(key, "all"), queryKey: ["asks", key], ...EVENT_FRESH },
-      { queryFn: () => api.listComments(key), queryKey: ["comments", key], ...EVENT_FRESH },
-      {
-        queryFn: () => api.listIssueMessages(key),
-        queryKey: ["issue-messages", key],
-        ...EVENT_FRESH,
-      },
-    ],
-  });
-  const readsHeld = nodeReads.held && blocksHeld;
   // The address's own node is resolved against the whole tree and then kept by the view, so an
   // address that names a node the words filter would not have matched still draws it. An item
   // the tree holds no node of falls back to the item's own page once the reads are held
@@ -101,7 +58,7 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
   const fallback = useAddressFallback({
     address,
     issue,
-    reads: nodeReads,
+    reads,
     readsHeld,
     reveal: addressed.reveal,
     root,
