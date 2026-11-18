@@ -478,8 +478,8 @@ func TestRepairSweepsAClosedIssuesDocumentWrittenByAnotherProcess(t *testing.T) 
 	other := docs.New(docs.Deps{Store: f.database, Identity: headerIdentity(f.database), Settle: time.Hour})
 	t.Cleanup(func() { _ = other.Shutdown(context.Background()) })
 	peers := map[string]*syncedPeer{
-		swept.PrimaryArtifactID:     connectBrowserPeer(t, other, swept.PrimaryArtifactID),
-		untouched.PrimaryArtifactID: connectBrowserPeer(t, other, untouched.PrimaryArtifactID),
+		swept.PrimaryArtifactID:     connectBrowserPeer(t, f.handler, other, swept.PrimaryArtifactID),
+		untouched.PrimaryArtifactID: connectBrowserPeer(t, f.handler, other, untouched.PrimaryArtifactID),
 	}
 	for _, issue := range []string{swept.Key, untouched.Key} {
 		if closed := dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+issue, map[string]string{"status": "done"}, "alice"); closed.Code != http.StatusOK {
@@ -541,8 +541,8 @@ func TestAnIntervalRepairSweepsOnlyTheDocumentsMarkedSinceItsLastPass(t *testing
 	other := docs.New(docs.Deps{Store: f.database, Identity: headerIdentity(f.database), Settle: time.Hour})
 	t.Cleanup(func() { _ = other.Shutdown(context.Background()) })
 	peers := map[string]*syncedPeer{
-		stale.PrimaryArtifactID: connectBrowserPeer(t, other, stale.PrimaryArtifactID),
-		fresh.PrimaryArtifactID: connectBrowserPeer(t, other, fresh.PrimaryArtifactID),
+		stale.PrimaryArtifactID: connectBrowserPeer(t, f.handler, other, stale.PrimaryArtifactID),
+		fresh.PrimaryArtifactID: connectBrowserPeer(t, f.handler, other, fresh.PrimaryArtifactID),
 	}
 	for _, issue := range []string{stale.Key, fresh.Key} {
 		if closed := dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+issue, map[string]string{"status": "done"}, "alice"); closed.Code != http.StatusOK {
@@ -603,7 +603,7 @@ func TestARepairThatChangesNothingAppendsNoUpdateAndMarksNoDocument(t *testing.T
 	}
 	requireLiveText(t, f.handler, closed.PrimaryArtifactID, `#close-decision urgency="med" multiple="false" state="resolved"`)
 	plainAsk := createSessionAsk(t, f.handler, older.Key, "Which region?")
-	peer := connectBrowserPeer(t, f.documents, older.PrimaryArtifactID)
+	peer := connectBrowserPeer(t, f.handler, f.documents, older.PrimaryArtifactID)
 	stored := storedUpdateCount(t, f.database, older.PrimaryArtifactID)
 	peer.appendParagraph(t, `:::ask{#browser-decision urgency="low" multiple="false"}`+"\nWritten in a browser?\n:::\n")
 	peer.barrier(t)

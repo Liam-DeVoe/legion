@@ -209,13 +209,13 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 			return RebuildReport{}, VersionResult{}, err
 		}
 	}
-	asksOf, whole := artifactID, tree
+	asksOf, whole := documentAsksOf(artifactID), tree
 	var seeds, held []*pmdoc.Node
 	if len(layout) > 0 {
 		if seeds, held, err = rebuildRoomSeeds(ctx, tx, room, layout, artifactID, tree, stored); err != nil {
 			return RebuildReport{}, VersionResult{}, err
 		}
-		asksOf, whole = room, joinedSeeds(seeds)
+		asksOf, whole = roomAsksOf(room), joinedSeeds(seeds)
 	}
 	// A rebuild is a person's own write: its route needs the person scope (api's routeScopes).
 	if err := s.refuseDroppedAskBlocks(ctx, asksOf, whole, true); err != nil {
@@ -551,7 +551,7 @@ func ReadErasedLiveText(ctx context.Context, tx pgx.Tx, artifactID string, scope
 		return nil, fmt.Errorf("the redacted text of document %s: %w", artifactID, &ErrInvalidAskBlock{Reason: err})
 	}
 	// The erase is an operator's (envoy-dispatch erase), no agent's write.
-	if err := refuseDroppedAskBlocksIn(ctx, tx, artifactID, seeded, true); err != nil {
+	if err := refuseDroppedAskBlocksIn(ctx, tx, roomAsksOf(artifactID), seeded, true); err != nil {
 		return nil, fmt.Errorf("the redacted text of document %s: %w", artifactID, err)
 	}
 	margin, moved := keptMargin(marginOf(doc), scope)

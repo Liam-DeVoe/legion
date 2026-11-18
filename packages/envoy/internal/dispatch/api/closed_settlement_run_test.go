@@ -126,7 +126,7 @@ func TestACloseMadeForARunSettlesTheIssuesDocumentsForNoRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse the browser's paragraph: %v", err)
 	}
-	peer := connectBrowserPeer(t, documentService, spec.id)
+	peer := connectBrowserPeer(t, handler, documentService, spec.id)
 	t.Cleanup(peer.close)
 	stored := storedUpdateCount(t, database, spec.id)
 	peer.edit(t, func(tree *pmdoc.Node) error {

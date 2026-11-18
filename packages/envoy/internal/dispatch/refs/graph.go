@@ -175,8 +175,7 @@ func documentBlockIDs(param string) string {
 		  and not exists (select 1 from document_rooms moved where moved.artifact_id = a.id)
 		union all
 		select d.node_id from artifacts a
-		join issue_room_blocks r on r.tree_artifact_id = coalesce(
-			(select moved.room from document_rooms moved where moved.artifact_id = a.id), a.id) and r.document_id = a.id
+		join issue_room_blocks r on r.tree_artifact_id = ` + DocumentRoomSQL("a.id") + ` and r.document_id = a.id
 		join document_blocks d on d.artifact_id = r.tree_artifact_id and d.block_id = r.block_id
 		where a.ref_key = ` + param + `)`
 }

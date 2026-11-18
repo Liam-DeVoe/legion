@@ -591,7 +591,7 @@ func TestAForgedServerAttributeOnADecidedBlockCarriesNothing(t *testing.T) {
 			approveVersion(t, handler, issue.PrimaryArtifactID, "alice", 2)
 
 			answerDecisionBlock(t, handler, asks["wave"], "alice", []string{"Two"}, "", nil)
-			setLiveBlockAttributes(t, documents, issue.PrimaryArtifactID, "region", map[string]any{tc.attribute: tc.forged})
+			setLiveBlockAttributes(t, handler, documents, issue.PrimaryArtifactID, "region", map[string]any{tc.attribute: tc.forged})
 			whileTheReleaseBeforeServes(t, database, func() {
 				named := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/versions", map[string]any{"summary": "Name the forged " + tc.attribute, "actor": sessionActor()})
 				if named.Code != http.StatusCreated {
@@ -634,9 +634,9 @@ func TestAForgedServerAttributeOnADecidedBlockCarriesNothing(t *testing.T) {
 // server write puts a block's attributes on it alone any more: an answer is held on the ask's node
 // (dispatch://INFRA-1150 R3), and the roll window's copy is settlement's (docs'
 // rollWindowAskAttributes).
-func setLiveBlockAttributes(t *testing.T, documents *docs.Service, artifactID, blockID string, attributes map[string]any) {
+func setLiveBlockAttributes(t *testing.T, handler http.Handler, documents *docs.Service, artifactID, blockID string, attributes map[string]any) {
 	t.Helper()
-	peer := connectBrowserPeer(t, documents, artifactID)
+	peer := connectBrowserPeer(t, handler, documents, artifactID)
 	t.Cleanup(peer.close)
 	peer.edit(t, func(tree *pmdoc.Node) error {
 		var block *pmdoc.Node

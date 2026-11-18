@@ -781,7 +781,7 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 			if err := validateWrittenAskBlocks(target); err != nil {
 				return &ErrInvalidAskBlock{Reason: err}
 			}
-			if err := s.refuseDroppedAskBlocks(ctx, artifactID, target, person); err != nil {
+			if err := s.refuseDroppedAskBlocks(ctx, documentAsksOf(artifactID), target, person); err != nil {
 				return err
 			}
 		} else {
@@ -793,7 +793,7 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 			// drops are read for one, so an upload that keeps every ask block reads no ask.
 			if !person {
 				if dropped := droppedAskBlocks(current, target); len(dropped) > 0 {
-					if err := refuseDroppedAnsweredAsks(ctx, s.queryFrom(ctx), artifactID, target, droppedBlock(dropped)); err != nil {
+					if err := refuseDroppedAnsweredAsks(ctx, s.queryFrom(ctx), documentAsksOf(artifactID), target, droppedBlock(dropped)); err != nil {
 						return err
 					}
 				}
@@ -1054,14 +1054,14 @@ func writtenByPerson(ctx context.Context, actor model.Actor) bool {
 // for an answered ask too, whose block the written tree does not hold as an ask block
 // (refuseDroppedAnsweredAsks). The refusal is ErrInvalidAskBlock for an open ask, which comes
 // first, and ErrAnsweredAskKept for an answered one.
-func (s *Service) refuseDroppedAskBlocks(ctx context.Context, artifactID string, target *pmdoc.Node, person bool) error {
-	return refuseDroppedAskBlocksIn(ctx, s.queryFrom(ctx), artifactID, target, person)
+func (s *Service) refuseDroppedAskBlocks(ctx context.Context, holder askHolder, target *pmdoc.Node, person bool) error {
+	return refuseDroppedAskBlocksIn(ctx, s.queryFrom(ctx), holder, target, person)
 }
 
 // refuseDroppedAskBlocksIn is refuseDroppedAskBlocks reading the document's asks through q,
 // for a caller that holds a transaction and no Service: the erase's (ReadErasedLiveText).
-func refuseDroppedAskBlocksIn(ctx context.Context, q Queryer, artifactID string, target *pmdoc.Node, person bool) error {
-	open, err := openAskBlocksIn(ctx, q, artifactID)
+func refuseDroppedAskBlocksIn(ctx context.Context, q Queryer, holder askHolder, target *pmdoc.Node, person bool) error {
+	open, err := openAskBlocksIn(ctx, q, holder)
 	if err != nil {
 		return err
 	}
@@ -1075,7 +1075,7 @@ func refuseDroppedAskBlocksIn(ctx context.Context, q Queryer, artifactID string,
 	if person {
 		return nil
 	}
-	return refuseDroppedAnsweredAsks(ctx, q, artifactID, target, func(blockID string) bool {
+	return refuseDroppedAnsweredAsks(ctx, q, holder, target, func(blockID string) bool {
 		_, kept := held[blockID]
 		return !kept
 	})
@@ -1091,7 +1091,7 @@ func refuseDroppedAskBlocksIn(ctx context.Context, q Queryer, artifactID string,
 // from a removed one (refuseDroppedAnsweredAsks).
 func (s *Service) refuseBatchDroppedAskBlocks(ctx context.Context, artifactID string, dropped map[string]struct{}, after *pmdoc.Node, person bool) error {
 	q := s.queryFrom(ctx)
-	open, err := openAskBlocksIn(ctx, q, artifactID)
+	open, err := openAskBlocksIn(ctx, q, documentAsksOf(artifactID))
 	if err != nil {
 		return err
 	}
@@ -1106,7 +1106,7 @@ func (s *Service) refuseBatchDroppedAskBlocks(ctx context.Context, artifactID st
 	if person {
 		return nil
 	}
-	return refuseDroppedAnsweredAsks(ctx, q, artifactID, after, droppedBlock(dropped))
+	return refuseDroppedAnsweredAsks(ctx, q, documentAsksOf(artifactID), after, droppedBlock(dropped))
 }
 
 // droppedBlock answers whether a block is among dropped, the ask blocks a write dropped itself
@@ -1118,12 +1118,37 @@ func droppedBlock(dropped map[string]struct{}) func(blockID string) bool {
 	}
 }
 
-// openAskBlocksIn is the block id of each open ask of the document, read through q.
-func openAskBlocksIn(ctx context.Context, q Queryer, artifactID string) (map[string]struct{}, error) {
+// askHolder is whose asks a read of asks takes: each ask whose block the document id holds, in the
+// room that document is edited in (documentAsksOf, refs.AsksOfDocumentSQL), or every ask of the
+// room id, for a writer that reads and writes an issue room's whole tree at once, all of its
+// fragments' blocks (roomAsksOf): a rebuild and an erase. A document that is its own room has the
+// same asks either way.
+type askHolder struct {
+	id   string
+	room bool
+}
+
+// documentAsksOf is the asks of the blocks of the document artifactID.
+func documentAsksOf(artifactID string) askHolder { return askHolder{id: artifactID} }
+
+// roomAsksOf is every ask of room, each of its fragments'.
+func roomAsksOf(room string) askHolder { return askHolder{id: room, room: true} }
+
+// predicate is true of the holder's asks over the asks aliased alias, the holder's id bound as the
+// uuid parameter param.
+func (h askHolder) predicate(alias, param string) string {
+	if h.room {
+		return alias + `.block_artifact_id = ` + param
+	}
+	return refs.AsksOfDocumentSQL(alias, param)
+}
+
+// openAskBlocksIn is the block id of each open ask of holder, read through q.
+func openAskBlocksIn(ctx context.Context, q Queryer, holder askHolder) (map[string]struct{}, error) {
 	rows, err := q.Query(ctx, `
-		select block_id from asks
-		where block_artifact_id = $1 and state = 'open' and block_id is not null
-	`, artifactID)
+		select k.block_id from asks k
+		where `+holder.predicate("k", "$1::uuid")+` and k.state = 'open' and k.block_id is not null
+	`, holder.id)
 	if err != nil {
 		return nil, fmt.Errorf("read open ask blocks: %w", err)
 	}
@@ -1198,20 +1223,21 @@ func (e *ErrAnsweredAskKept) Error() string {
 }
 
 // refuseDroppedAnsweredAsks refuses a write that is not a person's own with ErrAnsweredAskKept for
-// each answered ask of the document whose block the write loses, or answers nil where it loses
-// none. lost answers whether the write loses the block of one id. after is the tree the write
-// leaves: one that still holds a block under that id, as another type, is a write that retyped the
-// block, and the refusal says so. The asks are read with their document's address, in the one
-// statement, so the refusal names each ask's node and its block's address and quotes its question.
-func refuseDroppedAnsweredAsks(ctx context.Context, q Queryer, artifactID string, after *pmdoc.Node, lost func(blockID string) bool) error {
+// each answered ask of holder whose block the write loses, or answers nil where it loses none.
+// lost answers whether the write loses the block of one id. after is the tree the write leaves:
+// one that still holds a block under that id, as another type, is a write that retyped the block,
+// and the refusal says so. The asks are read with the address of the document holding each block
+// (refs.AskBlockDocumentSQL), in the one statement, so the refusal names each ask's node and its
+// block's address and quotes its question.
+func refuseDroppedAnsweredAsks(ctx context.Context, q Queryer, holder askHolder, after *pmdoc.Node, lost func(blockID string) bool) error {
 	rows, err := q.Query(ctx, `
 		select k.id::text, k.block_id, k.question, k.issue_key,
 		       d.issue_key, coalesce(d.project_key, ''), d.session_id, d.slug, d.kind, d.is_primary
 		from asks k
-		join artifacts d on d.id = k.block_artifact_id
-		where k.block_artifact_id = $1 and k.state = 'answered' and k.block_id is not null
+		join artifacts d on d.id = `+refs.AskBlockDocumentSQL("k")+`
+		where `+holder.predicate("k", "$1::uuid")+` and k.state = 'answered' and k.block_id is not null
 		order by k.block_id
-	`, artifactID)
+	`, holder.id)
 	if err != nil {
 		return fmt.Errorf("read answered ask blocks: %w", err)
 	}
@@ -2758,8 +2784,7 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 	if err := tx.QueryRow(ctx, RenderStampHead+`
 		insert into artifact_versions as v (artifact_id, number, markdown, authors, named, summary, doc_update_version, `+RenderStampColumns+`)
 		select $1, coalesce(max(number), 0) + 1, $2, $3, $4, $5,
-			coalesce($6, (select max(version) from doc_updates
-				where artifact_id = coalesce((select moved.room from document_rooms moved where moved.artifact_id = $1), $1)), 0),
+			coalesce($6, (select max(version) from doc_updates where artifact_id = `+refs.DocumentRoomSQL("$1")+`), 0),
 			`+RenderStampValues+`, $7, $8
 		from artifact_versions where artifact_id = $1
 		returning number, named, summary, authors, created_at, `+model.VersionSize+`, `+graphstore.VersionOwnerColumns("v.artifact_id")+`

@@ -199,6 +199,48 @@ func BlockDocumentSQL(alias string) string {
 		alias + `.artifact_id)`
 }
 
+// AskBlockDocumentSQL is the document holding the block of the ask aliased alias, as SQL text
+// answering a uuid: an ask of an issue room is keyed by the room's tree artifact (its
+// block_artifact_id), and its block is in the document whose fragment the room's index records it
+// in (issue_room_blocks.document_id); every other ask's block is in its block_artifact_id. Every
+// reader that takes an ask's block document - to show it, to look a document's asks up, or to
+// write into the fragment holding the block - takes it from here, and looks a document's asks up
+// under that document's room (DocumentRoomSQL).
+func AskBlockDocumentSQL(alias string) string {
+	return `coalesce((select room_block.document_id from issue_room_blocks room_block
+		where room_block.tree_artifact_id = ` + alias + `.block_artifact_id and room_block.block_id = ` + alias + `.block_id), ` +
+		alias + `.block_artifact_id)`
+}
+
+// AsksOfDocumentSQL is true of the ask aliased alias while its block is in the document the uuid
+// SQL expression document names: an ask keyed by the room that document is edited in
+// (DocumentRoomSQL) whose block that document holds (AskBlockDocumentSQL). Every read of a
+// document's asks by the document's id reads them so, for a document of an issue room and for one
+// that is its own room alike; a room's settlement, which reconciles every fragment at once, reads
+// its room's asks by the room's key.
+func AsksOfDocumentSQL(alias, document string) string {
+	return `(` + alias + `.block_artifact_id = ` + DocumentRoomSQL(document) + ` and ` + AskBlockDocumentSQL(alias) + ` = ` + document + `)`
+}
+
+// AsksOfFragmentBlocksSQL is true of the ask aliased alias while it is the ask of one of the
+// blocks under the ids the text[] SQL expression blocks names, read off the document's own
+// fragment (its live tree or one of its versions), in the room the document the uuid SQL
+// expression document names is edited in (DocumentRoomSQL). Block ids are unique across a room,
+// so the room and the fragment's own ids name the document's asks whether or not the room's index
+// holds those blocks yet, which AsksOfDocumentSQL reads.
+func AsksOfFragmentBlocksSQL(alias, document, blocks string) string {
+	return `(` + alias + `.block_artifact_id = ` + DocumentRoomSQL(document) + ` and ` + alias + `.block_id = any(` + blocks + `))`
+}
+
+// DocumentRoomSQL is the room the document whose id the uuid SQL expression document names is
+// edited in, as SQL text answering a uuid: its document_rooms row's room, for a document converted
+// into its issue's room, else the document itself. It is the one SQL of that resolution: docs'
+// roomOf (DocumentRoomOfStatement) reads it, as every statement that needs a document's room
+// beside its other work does.
+func DocumentRoomSQL(document string) string {
+	return `coalesce((select moved.room from document_rooms moved where moved.artifact_id = ` + document + `), ` + document + `)`
+}
+
 // MovedRoomBlockSQL is true of the block block (SQL text) of the artifact artifact (SQL text
 // answering a uuid) while that artifact is an issue's tree and the block's node has stood in more
 // than one document of its room: its in_document tuples, asserted at any time, name more than one

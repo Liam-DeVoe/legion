@@ -163,7 +163,7 @@ func TestAReopenedApprovalRequestNamesTheVersionAClosedSettlementWrote(t *testin
 		t.Fatalf("approval request before the close = %s waiting on %q, want open waiting on human", before.State, before.WaitingOn)
 	}
 
-	f.peer = connectBrowserPeer(t, documentService, f.spec)
+	f.peer = connectBrowserPeer(t, handler, documentService, f.spec)
 	closeIssueThroughPatch(t, handler, database, issue.Key)
 	awaitSettled(t, database, f.spec)
 	closed := settleClosedEdit(t, f, replaceFirstParagraph("Context", "Context, edited in the margin"))
@@ -214,7 +214,7 @@ func TestAReopenCarriesAnApprovalToTheApprovedTextAClosedSettlementWroteBack(t *
 	approved := reviewDocument(t, handler, f.spec, "alice", "approved", "")
 	_, approvedText := documentTexts(t, handler, f.spec)
 
-	f.peer = connectBrowserPeer(t, documentService, f.spec)
+	f.peer = connectBrowserPeer(t, handler, documentService, f.spec)
 	stored := storedUpdateCount(t, database, f.spec)
 	f.peer.edit(t, replaceFirstParagraph("Context", "Context, changed while open"))
 	f.peer.barrier(t)
@@ -322,7 +322,7 @@ func TestAReopenKeepsTheRequestWithThePersonWhenAClosedSettlementWroteBackItsTex
 	named := request.Approval.Version
 	_, namedText := documentTexts(t, handler, f.spec)
 
-	f.peer = connectBrowserPeer(t, documentService, f.spec)
+	f.peer = connectBrowserPeer(t, handler, documentService, f.spec)
 	closeIssueThroughPatch(t, handler, database, issue.Key)
 	awaitSettled(t, database, f.spec)
 	if edited := settleClosedEdit(t, f, replaceFirstParagraph("Context", "Context, edited in the margin")); edited != named+1 {
@@ -481,7 +481,7 @@ func TestAReopenWithNoClosedVersionMovesAndCarriesNothing(t *testing.T) {
 	awaitSettled(t, database, spec)
 	request := requestApproval(t, handler, spec)
 	named := request.Approval.Version
-	peer := connectBrowserPeer(t, documentService, spec)
+	peer := connectBrowserPeer(t, handler, documentService, spec)
 	stored := storedUpdateCount(t, database, spec)
 	peer.edit(t, replaceFirstParagraph("Context", "Context, changed while open"))
 	peer.barrier(t)
@@ -525,7 +525,7 @@ func TestAReopenWritesNoSecondReviewForAnApprovalAlreadyCarriedToTheLatestVersio
 	spec := issue.PrimaryArtifactID
 	awaitSettled(t, database, spec)
 	approved := reviewDocument(t, handler, spec, "alice", "approved", "")
-	peer := connectBrowserPeer(t, documentService, spec)
+	peer := connectBrowserPeer(t, handler, documentService, spec)
 	for _, edit := range []struct{ from, to, settled string }{
 		{"Context", "Context, changed while open", "changed while open"},
 		{"Context, changed while open", "Context", "Context"},

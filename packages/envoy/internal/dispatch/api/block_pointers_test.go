@@ -256,7 +256,7 @@ func TestABrowserWritePointingAtAMissingBlockIsSavedAndUnresolved(t *testing.T) 
 	checks := readChecks(t, database, issue.Key)
 	missing := "dispatch://" + issue.Key + "/spec#b-nowhere"
 
-	writeBrowserDocument(t, documents, checks.ID, claimMarkdown("c1", missing))
+	writeBrowserDocument(t, handler, documents, checks.ID, claimMarkdown("c1", missing))
 	// Settled on this goroutine, not through SettleNow's timer, which the browser's update can
 	// outrun: the room arms the settlement that update owes, at the hour-long settle window, as it
 	// drains the update, which can come after the text is live. That arming replaces SettleNow's

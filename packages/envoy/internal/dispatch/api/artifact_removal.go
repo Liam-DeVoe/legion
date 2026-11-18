@@ -351,11 +351,11 @@ func artifactIsUntouched(ctx context.Context, tx pgx.Tx, artifact model.Artifact
 		return nil, artifactNotUntouched(artifact, "an edit of it has not settled")
 	}
 	// What points at the document. An ask or a comment of an issue names one of its documents
-	// through its anchor or, for an ask written back as a question block, through
-	// block_artifact_id: asks_one_owner and comments_one_owner keep artifact_id for a project's
-	// documents, which this route does not remove. An approval request names every document it
-	// asks about in approval.documents, the spec and the issue's Verification document together
-	// among them.
+	// through its anchor or, for an ask written back as a question block, through the document
+	// holding that block in the room it is edited in (refs.AsksOfDocumentSQL): asks_one_owner and
+	// comments_one_owner keep artifact_id for a project's documents, which this route does not
+	// remove. An approval request names every document it asks about in approval.documents, the
+	// spec and the issue's Verification document together among them.
 	var points struct {
 		comment, ask, approval, review, result, read bool
 	}
@@ -363,9 +363,9 @@ func artifactIsUntouched(ctx context.Context, tx pgx.Tx, artifact model.Artifact
 		select exists(select 1 from comments c
 		              where c.artifact_id = $1 or c.anchor->>'artifact_id' = $2),
 		       exists(select 1 from asks k where k.kind <> 'approval'
-		              and (k.artifact_id = $1 or k.block_artifact_id = $1 or k.anchor->>'artifact_id' = $2)),
+		              and (k.artifact_id = $1 or `+refs.AsksOfDocumentSQL("k", "$1")+` or k.anchor->>'artifact_id' = $2)),
 		       exists(select 1 from asks k where k.kind = 'approval'
-		              and (k.artifact_id = $1 or k.block_artifact_id = $1
+		              and (k.artifact_id = $1 or `+refs.AsksOfDocumentSQL("k", "$1")+`
 		                   or jsonb_path_query_array(k.approval, '$."documents"[*]."artifact_id"') @> to_jsonb($2::text))),
 		       exists(select 1 from artifact_reviews w where w.artifact_id = $1),
 		       exists(select 1 from check_results c where c.check_artifact_id = $1),

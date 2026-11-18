@@ -39,7 +39,7 @@ func TestAWithdrawnAskWhoseBlockLeftWhileClosedIsRestoredAtTheReopen(t *testing.
 	awaitIndexedAskBlock(t, handler, spec, "leaving-decision", "Will it stay?")
 	ask := requireBlockAsk(t, handler, issue.Key, spec, "leaving-decision")
 	awaitSettled(t, database, spec)
-	peer := connectBrowserPeer(t, documentService, spec)
+	peer := connectBrowserPeer(t, handler, documentService, spec)
 	closeIssueThroughPatch(t, handler, database, issue.Key)
 	alice := model.Actor{Kind: "user", ID: "alice", Proven: true}
 	requireWithdrawn(t, handler, issue.Key, ask, alice)
@@ -223,7 +223,7 @@ func rewordWithdrawnDecisionWhileClosed(t *testing.T) rewordedWhileClosed {
 	awaitIndexedAskBlock(t, handler, spec, "rewording-decision", askedQuestion)
 	ask := requireBlockAsk(t, handler, issue.Key, spec, "rewording-decision")
 	awaitSettled(t, database, spec)
-	peer := connectBrowserPeer(t, documentService, spec)
+	peer := connectBrowserPeer(t, handler, documentService, spec)
 	closeIssueThroughPatch(t, handler, database, issue.Key)
 	alice := model.Actor{Kind: "user", ID: "alice", Proven: true}
 	requireWithdrawn(t, handler, issue.Key, ask, alice)

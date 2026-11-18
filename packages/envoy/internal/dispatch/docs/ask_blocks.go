@@ -772,7 +772,7 @@ func (s *Service) reconcileAskBlocks(
 		readable = append(readable, block)
 	}
 	blocks = readable
-	rows, err := loadAskBlocks(ctx, tx, artifactID)
+	rows, err := loadAskBlocks(ctx, tx, roomAsksOf(artifactID))
 	if err != nil {
 		return settlementReconciliation{}, err
 	}
@@ -1402,16 +1402,17 @@ func parseAskBlockLeniently(node *pmdoc.Node) (askBlock, error) {
 	return askBlock{node: node, id: blockID, question: question, options: options, multiple: multiple, urgency: urgency}, nil
 }
 
-// loadAskBlocks reads and locks every ask anchored to a block of this document. `for no key
-// update` by the rule at lockDocumentRoom: settlement holds these rows across the room lock, and
-// nothing deletes an ask or writes a key column - reconciliation here and the ask routes update
-// question, options, multiple, urgency, edited_at, state, answer and resolution, and `asks.id` is
-// the key.
-func loadAskBlocks(ctx context.Context, tx pgx.Tx, artifactID string) (map[string]model.Ask, error) {
+// loadAskBlocks reads and locks every ask of holder (askHolder): a room's settlement reconciles
+// every ask of its room over all of its fragments (reconcileAskBlocks), and a document's write
+// takes those of its own blocks. `for no key update` by the rule at lockDocumentRoom: settlement
+// holds these rows across the room lock, and nothing deletes an ask or writes a key column -
+// reconciliation here and the ask routes update question, options, multiple, urgency, edited_at,
+// state, answer and resolution, and `asks.id` is the key.
+func loadAskBlocks(ctx context.Context, tx pgx.Tx, holder askHolder) (map[string]model.Ask, error) {
 	rows, err := tx.Query(ctx, `
 		select `+AskColumns+`
-		from asks a where a.block_artifact_id = $1 and a.block_id is not null for no key update
-	`, artifactID)
+		from asks a where `+holder.predicate("a", "$1::uuid")+` and a.block_id is not null for no key update of a
+	`, holder.id)
 	if err != nil {
 		return nil, fmt.Errorf("load ask blocks: %w", err)
 	}

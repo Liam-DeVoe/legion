@@ -137,7 +137,7 @@ func TestADocumentHoldingABlockIDPastTheBoundTakesUnrelatedWrites(t *testing.T) 
 	documentService, handler, database := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Held long block id", "Context paragraph.\n")
 	long := randomBlockID(t, 3200)
-	writeBrowserDocument(t, documentService, issue.PrimaryArtifactID, boundCallout(long)+"\nContext paragraph.\n")
+	writeBrowserDocument(t, handler, documentService, issue.PrimaryArtifactID, boundCallout(long)+"\nContext paragraph.\n")
 	versions := func() int {
 		var count int
 		if err := database.Pool.QueryRow(context.Background(),
@@ -446,7 +446,7 @@ func TestAnAnchorInsideABlockWhoseIDIsPastTheBoundIsWritten(t *testing.T) {
 	long := randomBlockID(t, 3200)
 	// A quote across the callout's two paragraphs lies in no block below the callout, so its
 	// anchor's block is the callout and its long id.
-	writeBrowserDocument(t, documentService, issue.PrimaryArtifactID,
+	writeBrowserDocument(t, handler, documentService, issue.PrimaryArtifactID,
 		":::callout{#"+long+" kind=\"note\" title=\"\"}\nOne line.\n\nTwo line.\n:::\n\nContext paragraph.\n")
 
 	for _, write := range []struct{ name, path, field, text, quote string }{

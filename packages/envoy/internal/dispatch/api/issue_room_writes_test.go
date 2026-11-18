@@ -10,22 +10,27 @@ import (
 
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// holdIssuesUnconverted makes a process of the release before live beside the test's server for
-// the rest of the test - a server_processes row whose capabilities list no issue_room, as a build
-// before the column registers none - so every issue the test creates is created as before the
-// issue room, one room per document (decision 7 of dispatch://INFRA-1253's plan), as the needs-issue
-// fleet test seeds its process of version 5.
+// holdIssuesUnconverted makes a process that lists no issue_room live beside the test's server for
+// the rest of the test - a server_processes row with no capabilities, as a build before the column
+// registers none - so every issue the test creates is created as before the issue room, one room
+// per document (decision 7 of dispatch://INFRA-1253's plan). The process registers this build's
+// schema, so it moves no other rule the fleet decides: the ask roll window, which a process of an
+// older schema opens (docs' anotherBuildServes), stays shut as with this server alone.
 func holdIssuesUnconverted(t *testing.T, database *store.Store) {
 	t.Helper()
 	if _, err := database.Pool.Exec(context.Background(), `
 		insert into server_processes (instance, signing_keys, schema_version, schema_creatable, heartbeat_at)
-		values (gen_random_uuid(), '{fingerprint}', 1, 1, now() + interval '1 day')`); err != nil {
-		t.Fatalf("add a live server process of the release before the issue room: %v", err)
+		values (gen_random_uuid(), '{fingerprint}', $1, $2, now() + interval '1 day')`,
+		pmdoc.SchemaVersion(), pmdoc.SchemaCreatable()); err != nil {
+		t.Fatalf("add a live server process that lists no issue room: %v", err)
 	}
 }
 
@@ -65,6 +70,21 @@ func artifactTextOf(t *testing.T, handler http.Handler, id string) string {
 		t.Fatalf("read the text of %s: status=%d body=%s", id, response.Code, response.Body.String())
 	}
 	return decodeBody[artifactText](t, response).Markdown
+}
+
+// documentRoomOf is the room artifactID's document is edited in (docs.DocumentRoomOfStatement) and
+// the document's fragment of that room, the room and fragment the artifact read answers
+// (model.Artifact.Room, Fragment): a test that reads a document's stored history reads its room's,
+// and renders the document through its own fragment.
+func documentRoomOf(t *testing.T, q queryer, artifactID string) (room, fragment string) {
+	t.Helper()
+	if err := q.QueryRow(context.Background(), docs.DocumentRoomOfStatement, artifactID).Scan(&room); err != nil {
+		t.Fatalf("read the room of %s: %v", artifactID, err)
+	}
+	if room == artifactID {
+		return room, model.ArtifactFragmentOwn
+	}
+	return room, artifactID
 }
 
 // A criterion written through POST /api/v1/artifacts/{tree}/edits on a converted issue's tree
@@ -131,6 +151,14 @@ func TestAnIssueIsBornConvertedOnlyWhileEveryLiveProcessListsTheIssueRoom(t *tes
 	ctx := context.Background()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	createRoomProject(t, handler, "BORN")
+	// A live process of this build, which lists the issue room as a server registers it
+	// (processes.Register), so the create reads a fleet that serves the room rather than an empty one.
+	if _, err := database.Pool.Exec(ctx, `
+		insert into server_processes (instance, signing_keys, schema_version, schema_creatable, heartbeat_at, capabilities)
+		values (gen_random_uuid(), '{fingerprint}', $1, $2, now() + interval '1 day', $3::text[])`,
+		pmdoc.SchemaVersion(), pmdoc.SchemaCreatable(), processes.Capabilities); err != nil {
+		t.Fatalf("add a live server process that lists the issue room: %v", err)
+	}
 	converted, tree := createRoomIssue(t, handler, database, "BORN", "Born converted", "The first spec.\n", "")
 	if tree == "" {
 		t.Fatalf("issue %s holds no tree", converted.Key)
@@ -440,4 +468,107 @@ func TestARemovalOfADocumentAnOwedRoomIndexMayCiteIsRefusedUntilTheRoomSettles(t
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "Citing notes", "See dispatch://"+issue.Key+"/artifact/"+cited.Slug+" for the rest.\n")
 	assertRemovalRefused(t, handler, "a document an upload cites while the room's index is owed", cited,
 		http.StatusConflict, "ARTIFACT_NOT_UNTOUCHED", notUntouchedSentence(cited, roomIndexOwedReason))
+}
+
+// An ask block of a converted document is that document's own ask (the T12b fixes of
+// dispatch://INFRA-1253's plan): settlement indexes it keyed by the issue's tree, whose room holds
+// the block, and every read of it names the document whose fragment holds the block. The ask read
+// names the spec as its block's document; the spec's text read shows the block as the spec's own
+// ask, as no copy of another document's; and an answer to it leaves no settlement owed under any
+// document of the room, whose settlement is keyed by, and clears, the room's own row.
+func TestAConvertedDocumentsAskIsItsOwnAndItsAnswerOwesNoCopy(t *testing.T) {
+	ctx := context.Background()
+	handler, database := blockAskHandler(t)
+	issue := createInteractionIssue(t, handler, "OWN", "A converted ask",
+		"Context\n\n:::ask{#ship-it urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n")
+	tree, err := issueTreeOf(ctx, database.Pool, issue.Key)
+	if err != nil || tree == "" {
+		t.Fatalf("the tree of %s is %q (%v), want the issue born converted", issue.Key, tree, err)
+	}
+	awaitIndexedAskBlock(t, handler, issue.PrimaryArtifactID, "ship-it", "Ship it?")
+	askID := blockAskID(t, handler, issue.Key, "ship-it")
+	var key string
+	if err := database.Pool.QueryRow(ctx, `select block_artifact_id::text from asks where id = $1`, askID).Scan(&key); err != nil || key != tree {
+		t.Fatalf("the ask's row is keyed by %q (%v), want the issue's tree %s", key, err, tree)
+	}
+	if ask := readBlockAsk(t, handler, askID); ask.BlockArtifact == nil || ask.BlockArtifact.ID != issue.PrimaryArtifactID {
+		t.Fatalf("the ask read names %#v as its block's document, want the spec %s", ask.BlockArtifact, issue.PrimaryArtifactID)
+	}
+	if text := artifactTextOf(t, handler, issue.PrimaryArtifactID); !strings.Contains(text, ":::ask{#ship-it") || strings.Contains(text, "copied_from") {
+		t.Fatalf("the spec's text read shows its own ask as a copy, or not at all:\n%s", text)
+	}
+	answered := dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+askID+"/answer", map[string]any{"selected": []string{"Yes"}}, "alice")
+	if answered.Code != http.StatusOK {
+		t.Fatalf("answer the ask: status=%d body=%s", answered.Code, answered.Body.String())
+	}
+	var owed []string
+	if err := database.Pool.QueryRow(ctx, `
+		select coalesce(array_agg(p.artifact_id::text order by p.artifact_id), '{}')
+		from doc_settlements_pending p join artifacts a on a.id = p.artifact_id
+		where a.issue_key = $1 and a.kind <> 'tree'`, issue.Key).Scan(&owed); err != nil {
+		t.Fatalf("read the issue's pending settlements: %v", err)
+	}
+	if len(owed) != 0 {
+		t.Fatalf("the answer left settlements owed under the documents %v, which the room's settlement never clears", owed)
+	}
+	if text := artifactTextOf(t, handler, issue.PrimaryArtifactID); !strings.Contains(text, `state="answered"`) || strings.Contains(text, "copied_from") {
+		t.Fatalf("the spec's text read after the answer shows no answered ask of its own:\n%s", text)
+	}
+}
+
+// Block ids are unique within an issue room, so a copy of the spec uploaded into its own converted
+// issue is no copy of the spec's asks: its ask blocks take ids of their own when its fragment
+// settles, and each opens an ask of its own on the copy, beside the spec's, which keeps its block
+// (the T12b fixes of dispatch://INFRA-1253's plan). The copy rule between an owner's documents
+// (TestAnUploadedCopyOfASpecOpensNoAskForItsCopiedBlocks) is that of documents that are each their
+// own room.
+func TestACopyOfASpecUploadedIntoItsConvertedIssueOpensItsOwnAsks(t *testing.T) {
+	ctx := context.Background()
+	handler, database := blockAskHandler(t)
+	spec := "Context\n\n:::ask{#rec-open urgency=\"med\" multiple=\"false\"}\nWhich region?\n:::\n"
+	issue := createInteractionIssue(t, handler, "COPY", "A copy in its own room", spec)
+	if tree, err := issueTreeOf(ctx, database.Pool, issue.Key); err != nil || tree == "" {
+		t.Fatalf("the tree of %s is %q (%v), want the issue born converted", issue.Key, tree, err)
+	}
+	awaitIndexedAskBlock(t, handler, issue.PrimaryArtifactID, "rec-open", "Which region?")
+	source := blockAskID(t, handler, issue.Key, "rec-open")
+	uploaded := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
+		"actor": sessionActor(), "name": "spec-record.md", "content": artifactTextOf(t, handler, issue.PrimaryArtifactID),
+	})
+	if uploaded.Code != http.StatusCreated {
+		t.Fatalf("upload the copy: status=%d body=%s", uploaded.Code, uploaded.Body.String())
+	}
+	copied := decodeBody[struct {
+		Artifact model.Artifact `json:"artifact"`
+	}](t, uploaded).Artifact.ID
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var own *model.Ask
+		listed := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/asks?state=all", nil, "alice")
+		asks := decodeBody[[]model.Ask](t, listed)
+		for index, ask := range asks {
+			if ask.BlockArtifact != nil && ask.BlockArtifact.ID == copied {
+				own = &asks[index]
+			}
+		}
+		if own != nil {
+			if own.ID == source || own.BlockID == nil || *own.BlockID == "rec-open" || own.State != "open" || own.Question != "Which region?" {
+				t.Fatalf("the copy's ask = %#v, want an open ask of its own under an id of its own", own)
+			}
+			if len(asks) != 2 {
+				t.Fatalf("the issue holds %d asks, want the spec's and the copy's: %#v", len(asks), asks)
+			}
+			if again := blockAskID(t, handler, issue.Key, "rec-open"); again != source {
+				t.Fatalf("the spec's block rec-open indexes %s, was %s", again, source)
+			}
+			if text := artifactTextOf(t, handler, copied); strings.Contains(text, "copied_from") || strings.Contains(text, "#rec-open") {
+				t.Fatalf("the copy's text still reads as a copy of the spec's ask:\n%s", text)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the copy never opened an ask of its own: %#v", asks)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }

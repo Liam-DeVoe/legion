@@ -197,7 +197,10 @@ type marginDocument struct {
 // author (docs.ActorRef) and the time it was made (docs.MarkTime), by which the erase takes it
 // out (docs.ErasedReply). So the two documents a comment's body can be in are the one its own
 // anchor names and the one its root's anchor names, which is one document for a reply to an
-// anchored comment and none for a comment on an issue.
+// anchored comment and none for a comment on an issue. A document converted into its issue's room
+// holds no history of its own: its margin is the room's, whose history holds every fragment's and
+// is the one the run replaces, so an anchor naming such a document is read as its room
+// (refs.DocumentRoomSQL), the issue's tree, as a block of the room is (ownDocument).
 //
 // The run replaces the editing state of each of them, as it replaces a block's own document's:
 // a record is stored in the same updates the text is, so no search of those bytes can say which
@@ -225,7 +228,7 @@ func (e *Erasure) marginDocuments(ctx context.Context, tx pgx.Tx) ([]marginDocum
 		       (select erased.created_at from comments erased where erased.id = $1::uuid)
 		from thread
 		join comments c on c.id = thread.id
-		join artifacts a on a.id = (c.anchor->>'artifact_id')::uuid and a.kind = 'doc'
+		join artifacts a on a.id = `+refs.DocumentRoomSQL(`(c.anchor->>'artifact_id')::uuid`)+` and a.kind in ('doc', 'tree')
 		where c.anchor is not null
 		order by 1, thread.depth`, e.ID)
 	if err != nil {

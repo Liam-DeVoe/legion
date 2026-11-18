@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // TextWithAnswers is the document an agent reads through the text routes (GET
@@ -201,10 +202,14 @@ func (s *Service) askAnswersShown(ctx context.Context, artifactID string, tree *
 	var shown *pmdoc.Node
 	var answered []*pmdoc.Node
 	err := pgx.BeginTxFunc(ctx, s.store.Pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		held := make([]string, 0, len(nodes))
+		for id := range nodes {
+			held = append(held, id)
+		}
 		rows, err := tx.Query(ctx, `
 			select `+AskColumns+`
-			from asks a where a.block_artifact_id = $1 and a.block_id is not null
-		`, artifactID)
+			from asks a where `+refs.AsksOfFragmentBlocksSQL("a", "$1::uuid", "$2::text[]")+`
+		`, artifactID, held)
 		if err != nil {
 			return fmt.Errorf("read the asks of the document's blocks: %w", err)
 		}

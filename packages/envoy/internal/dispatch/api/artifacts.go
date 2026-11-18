@@ -58,10 +58,10 @@ const (
 // its row, from its node's query value (graphstore.ArtifactQueryRoleSQL: decision 2 of
 // dispatch://INFRA-1253's plan, such a document writes no role; R8 keeps the read's role);
 // retired_at as whether it is set (model.Artifact.Retired); and last the room the document is
-// edited in, its document_rooms row's room or its own id (model.Artifact.Room).
-const artifactColumns = `id::text, issue_key, project_key, session_id, ref_key, slug, name, kind, is_primary, coalesce(role, ` +
+// edited in, its document_rooms row's room or its own id (model.Artifact.Room, refs.DocumentRoomSQL).
+var artifactColumns = `id::text, issue_key, project_key, session_id, ref_key, slug, name, kind, is_primary, coalesce(role, ` +
 	graphstore.ArtifactQueryRoleSQL + `, ''), created_by, created_at, retired_at is not null, ` +
-	`coalesce((select moved.room::text from document_rooms moved where moved.artifact_id = artifacts.id), artifacts.id::text)`
+	`(` + refs.DocumentRoomSQL("artifacts.id") + `)::text`
 
 func (s *server) listArtifacts(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
@@ -424,8 +424,7 @@ func writeDocumentVersion(ctx context.Context, tx pgx.Tx, artifactID string, num
 	var owner graphstore.VersionOwner
 	if err := tx.QueryRow(ctx, docs.RenderStampHead+`
 		insert into artifact_versions as v (artifact_id, number, markdown, authors, named, summary, doc_update_version, `+docs.RenderStampColumns+`)
-		values ($1, $2, $3, $4, $5, $6, coalesce((select max(version) from doc_updates
-				where artifact_id = coalesce((select moved.room from document_rooms moved where moved.artifact_id = $1), $1)), 0),
+		values ($1, $2, $3, $4, $5, $6, coalesce((select max(version) from doc_updates where artifact_id = `+refs.DocumentRoomSQL("$1")+`), 0),
 			`+docs.RenderStampValues+`, $7, $8)
 		returning number, named, summary, authors, created_at, `+model.VersionSize+`, `+graphstore.VersionOwnerColumns("v.artifact_id")+`
 	`, artifactID, number, markdown, encodedAuthors, summary != nil, summary, stamp.Token, stamp.Renderer).Scan(
@@ -1292,9 +1291,7 @@ func (s *server) commitArtifactVersionEvent(
 	// A document of an issue room is indexed by the room's pass, whose references and block
 	// mentions are keyed by the room's tree artifact (docs' indexDocumentInRoom).
 	var room string
-	if err := tx.QueryRow(ctx, `
-		select coalesce((select moved.room::text from document_rooms moved where moved.artifact_id = $1::uuid), $1::text)
-	`, artifactID).Scan(&room); err != nil {
+	if err := tx.QueryRow(ctx, docs.DocumentRoomOfStatement, artifactID).Scan(&room); err != nil {
 		return model.Event{}, fmt.Errorf("read the document's room: %w", err)
 	}
 	if room != artifactID {
@@ -1636,7 +1633,7 @@ func readsAsDocument(artifact model.Artifact) bool {
 // the issue's tree artifact (createIssueTree): it is the issue's room, whose own fragment holds the
 // nodes written into the issue rather than into a document, and the tree read names it
 // (dispatch://INFRA-1253 R8).
-const issueArtifactsStatement = `
+var issueArtifactsStatement = `
 		select ` + artifactColumns + `
 		from artifacts where issue_key = $1 and retired_at is null and kind <> 'tree' order by created_at, id
 	`
@@ -2107,7 +2104,7 @@ const artifactOwnerKey = `coalesce(issue_key, project_key, 'agent/' || session_i
 // the same reference would also name. An owner that already holds two such artifacts (one whose
 // slug and another whose name it is, which uploads stored before this lookup read slugs) gets the
 // one whose slug it is, the one a read by that reference resolves to (resolveDocumentReference).
-const (
+var (
 	artifactByNameOrSlugSQL = `select ` + artifactColumns + ` from artifacts where ` + artifactOwnerKey +
 		` = $1 and $2 in (name, slug) order by slug = $2 desc limit 1`
 	artifactSlugTakenSQL = `select exists(select 1 from artifacts where ` + artifactOwnerKey + ` = $1 and slug = $2)`

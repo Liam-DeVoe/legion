@@ -1029,8 +1029,8 @@ func documentTexts(texts, document string, rooms bool) string {
 	if !rooms {
 		return texts + `.artifact_id = ` + document
 	}
-	return `(` + texts + `.artifact_id = any(array[` + document + `, coalesce((select moved.room from document_rooms moved
-		where moved.artifact_id = ` + document + `), ` + document + `)]) and ` + refs.BlockDocumentSQL(texts) + ` = ` + document + `)`
+	return `(` + texts + `.artifact_id = any(array[` + document + `, ` + refs.DocumentRoomSQL(document) + `]) and ` +
+		refs.BlockDocumentSQL(texts) + ` = ` + document + `)`
 }
 
 // replayedParents is what replayParents read: how many blocks the windowed versions moved to

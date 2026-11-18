@@ -312,12 +312,10 @@ func lockDocumentRoom(ctx context.Context, tx pgx.Tx, room string) error {
 }
 
 // lockArtifactRoomStatement resolves the room the document $1 (text) is edited in, as
-// documentRoomOfStatement does, and takes that room's lock, in one statement.
-const lockArtifactRoomStatement = `
+// DocumentRoomOfStatement does, and takes that room's lock, in one statement.
+var lockArtifactRoomStatement = `
 	select resolved.room
-	from (select coalesce(moved.room::text, asked.id) as room
-		from (select $1::text as id) asked
-		left join document_rooms moved on moved.artifact_id = asked.id::uuid) resolved
+	from (` + DocumentRoomOfStatement + `) resolved
 	cross join lateral (select pg_advisory_xact_lock(hashtext(resolved.room))) locked`
 
 // lockArtifactRoom is lockDocumentRoom for an entry point that takes a document's id: it locks the

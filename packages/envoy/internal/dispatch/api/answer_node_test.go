@@ -81,7 +81,7 @@ func TestEveryWriterOfAnAnswerWritesItOnTheNode(t *testing.T) {
 		// artifact and the spec in a fragment of its own.
 		holdIssuesUnconverted(t, database)
 		issue, askID := seedBlockAsk(t, handler, "A block ask retracted and restored", "decision", transportAsk, "Which transport?")
-		removeBlockAsABrowserDoes(t, documentService, issue.PrimaryArtifactID, "decision")
+		removeBlockAsABrowserDoes(t, handler, documentService, issue.PrimaryArtifactID, "decision")
 		settleDocument(t, handler, issue.PrimaryArtifactID, issue.Key, "after-delete")
 		requireTheAnswerOnTheNode(t, database, "settlement's retraction", askID, "ask.resolved")
 		if restored := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{

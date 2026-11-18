@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -33,8 +34,10 @@ func TestAnswerBlockAskWritesItsServerStateIntoTheDocument(t *testing.T) {
 		t.Fatalf("create indexed ask: status=%d body=%s", created.Code, created.Body.String())
 	}
 	askID := decodeBody[model.Ask](t, created).ID
+	// An indexed ask is keyed by the room its block's document is edited in: the issue's tree for a
+	// converted spec (refs.DocumentRoomSQL).
 	if _, err := database.Pool.Exec(context.Background(), `
-		update asks set block_id = 'ask-1', block_artifact_id = $2 where id = $1
+		update asks set block_id = 'ask-1', block_artifact_id = `+refs.DocumentRoomSQL("$2::uuid")+` where id = $1
 	`, askID, issue.PrimaryArtifactID); err != nil {
 		t.Fatalf("attach indexed ask to block: %v", err)
 	}
@@ -256,7 +259,7 @@ func TestDocumentEditRejectsInvalidAskBlockAtomically(t *testing.T) {
 	for time.Now().Before(deadline) {
 		err := database.Pool.QueryRow(context.Background(), `
 			select id::text, question, options from asks
-			where block_artifact_id = $1 and block_id = 'agent-ask'
+			where `+refs.AsksOfDocumentSQL("asks", "$1::uuid")+` and block_id = 'agent-ask'
 		`, issue.PrimaryArtifactID).Scan(&askID, &question, &optionsJSON)
 		if err == nil {
 			break
@@ -401,11 +404,17 @@ func TestAskBlocksInUploadedSpecVersionAreIndexed(t *testing.T) {
 // answer of the ask it was copied from (LEGION-651).
 func TestAnUploadedCopyOfASpecOpensNoAskForItsCopiedBlocks(t *testing.T) {
 	var documentService *docs.Service
-	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
+	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
 		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
 		return documentService
 	})
+	// Held unconverted: block ids are unique within an issue room, so a copy uploaded into its own
+	// converted issue takes fresh ids and opens asks of its own
+	// (TestACopyOfASpecUploadedIntoItsConvertedIssueOpensItsOwnAsks); the copy rule this test holds,
+	// a copy of an ask on another document of the same owner, is that of documents that are each
+	// their own room (the T12b fixes of dispatch://INFRA-1253's plan).
+	holdIssuesUnconverted(t, database)
 	spec := "Context\n\n" +
 		":::ask{#rec-answered urgency=\"med\" multiple=\"false\"}\nShip on Monday?\n\n- Yes: Monday.\n- No: Later.\n:::\n\n" +
 		":::ask{#rec-resolved urgency=\"med\" multiple=\"false\"}\nWrite the changelog?\n:::\n\n" +
@@ -559,6 +568,9 @@ func TestAnsweringOrResolvingACopysSourceSettlesTheCopy(t *testing.T) {
 		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
 		return documentService
 	})
+	// Held unconverted: a same-issue copy on a converted issue takes fresh ids (see
+	// TestAnUploadedCopyOfASpecOpensNoAskForItsCopiedBlocks).
+	holdIssuesUnconverted(t, database)
 	spec := "Context\n\n" +
 		":::ask{#later-answered urgency=\"med\" multiple=\"false\"}\nShip on Monday?\n\n- Yes: Monday.\n- No: Later.\n:::\n\n" +
 		":::ask{#later-resolved urgency=\"med\" multiple=\"false\"}\nWrite the changelog?\n:::\n"
@@ -626,6 +638,9 @@ func TestAnAnswerToACopysSourceAfterItsRewordingOpensTheCopysOwnAsk(t *testing.T
 		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
 		return documentService
 	})
+	// Held unconverted: a same-issue copy on a converted issue takes fresh ids (see
+	// TestAnUploadedCopyOfASpecOpensNoAskForItsCopiedBlocks).
+	holdIssuesUnconverted(t, database)
 	spec := "Context\n\n:::ask{#ship urgency=\"med\" multiple=\"false\"}\nShip on Monday?\n\n- Yes: Monday.\n- No: Later.\n:::\n"
 	issue := createInteractionIssue(t, handler, "TEST", "Source reworded after its copy", spec)
 	awaitIndexedAskBlock(t, handler, issue.PrimaryArtifactID, "ship", "Ship on Monday?")
@@ -686,11 +701,14 @@ func TestAnAnswerToACopysSourceAfterItsRewordingOpensTheCopysOwnAsk(t *testing.T
 // a question no decision answered and opens its own ask.
 func TestAnUploadRewordingAnAnsweredAskLeavesItDecidedAndItsCopyOpensItsOwnAsk(t *testing.T) {
 	var documentService *docs.Service
-	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
+	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
 		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
 		return documentService
 	})
+	// Held unconverted: a same-issue copy on a converted issue takes fresh ids (see
+	// TestAnUploadedCopyOfASpecOpensNoAskForItsCopiedBlocks).
+	holdIssuesUnconverted(t, database)
 	monday := "Context\n\n:::ask{#ship urgency=\"med\" multiple=\"false\"}\nShip on Monday?\n\n- Yes: Monday.\n- No: Later.\n:::\n"
 	tuesday := "Context\n\n:::ask{#ship urgency=\"med\" multiple=\"false\"}\nShip on Tuesday?\n\n- Tuesday: Ship it.\n- No: Later.\n:::\n"
 	issue := createInteractionIssue(t, handler, "TEST", "Answered ask reworded by upload", monday)

@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -279,7 +280,7 @@ func loadAnchorRefreshedAsks(ctx context.Context, tx pgx.Tx, ids []string) (map[
 		select `+AskColumns+`, ba.id::text, ba.slug, ba.is_primary,
 			aa.project_key, aa.slug, aa.name, aa.is_primary
 		from asks a
-		left join artifacts ba on ba.id = a.block_artifact_id
+		left join artifacts ba on ba.id = `+refs.AskBlockDocumentSQL("a")+`
 		left join artifacts aa on aa.id = `+store.CastableUUID(`a.anchor->>'artifact_id'`)+`
 		where a.id = any($1::uuid[])
 	`, ids)

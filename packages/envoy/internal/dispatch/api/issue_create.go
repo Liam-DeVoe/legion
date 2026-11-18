@@ -555,8 +555,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	var specCreated time.Time
 	if err := tx.QueryRow(r.Context(), docs.RenderStampHead+`
 		insert into artifact_versions (artifact_id, number, markdown, authors, doc_update_version, `+docs.RenderStampColumns+`)
-		values ($1, 1, $2, $3, coalesce((select max(version) from doc_updates
-				where artifact_id = coalesce((select moved.room from document_rooms moved where moved.artifact_id = $1), $1)), 0),
+		values ($1, 1, $2, $3, coalesce((select max(version) from doc_updates where artifact_id = `+refs.DocumentRoomSQL("$1")+`), 0),
 			`+docs.RenderStampValues+`, $4, $5)
 		returning created_at
 	`, artifactID, markdown, authors, stamp.Token, stamp.Renderer).Scan(&specCreated); err != nil {

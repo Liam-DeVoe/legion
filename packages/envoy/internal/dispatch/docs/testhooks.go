@@ -133,12 +133,17 @@ var OutsideSchemaCorruptionsForTest = []OutsideSchemaCorruptionForTest{
 		Refusal: `mark "strong" attributes: want object, got bool`},
 }
 
-// AppendStoredChangeForTest appends to artifactID's stored history the update change makes to
-// its stored document: the update a crafted document websocket client can send, written below
-// pmdoc.Update's validation while no room holds the document.
+// AppendStoredChangeForTest appends to the stored history of the room artifactID's document is
+// edited in (roomOf) the update change makes to the document's own fragment of it (fragmentOf):
+// the update a crafted document websocket client can send, written below pmdoc.Update's
+// validation while no room holds the document.
 func AppendStoredChangeForTest(ctx context.Context, database *store.Store, artifactID string, change func(*crdt.Transaction, *crdt.YXmlFragment) error) error {
+	room, err := roomOf(ctx, database.Pool, artifactID)
+	if err != nil {
+		return err
+	}
 	versioned := NewPgVersioned(database)
-	loaded, err := versioned.Load(ctx, artifactID)
+	loaded, err := versioned.Load(ctx, room)
 	if err != nil {
 		return fmt.Errorf("load document before crafted update: %w", err)
 	}
@@ -147,21 +152,26 @@ func AppendStoredChangeForTest(ctx context.Context, database *store.Store, artif
 		return fmt.Errorf("decode document before crafted update: %w", err)
 	}
 	before := doc.StateVector()
-	fragment := doc.GetXmlFragment(fragmentName)
+	fragment := doc.GetXmlFragment(fragmentOf(room, artifactID))
 	if err := doc.TransactE(func(transaction *crdt.Transaction) error { return change(transaction, fragment) }); err != nil {
 		return err
 	}
-	if _, err := versioned.AppendUpdate(ctx, artifactID, crdt.EncodeStateAsUpdateV1(doc, before)); err != nil {
+	if _, err := versioned.AppendUpdate(ctx, room, crdt.EncodeStateAsUpdateV1(doc, before)); err != nil {
 		return fmt.Errorf("append crafted update: %w", err)
 	}
 	return nil
 }
 
-// StoredTreeForTest is artifactID's document tree as its stored history holds it now: the state a
-// room loads, which every update a settlement wrote into the live document is part of once it
-// commits. Tests in package api read a settlement's repairs of the live tree through it.
+// StoredTreeForTest is artifactID's document tree as its stored history holds it now: its own
+// fragment (fragmentOf) of the room it is edited in (roomOf), the state a room loads, which every
+// update a settlement wrote into the live document is part of once it commits. Tests in package
+// api read a settlement's repairs of the live tree through it.
 func StoredTreeForTest(ctx context.Context, database *store.Store, artifactID string) (*pmdoc.Node, error) {
-	loaded, err := NewPgVersioned(database).Load(ctx, artifactID)
+	room, err := roomOf(ctx, database.Pool, artifactID)
+	if err != nil {
+		return nil, err
+	}
+	loaded, err := NewPgVersioned(database).Load(ctx, room)
 	if err != nil {
 		return nil, fmt.Errorf("load the stored document: %w", err)
 	}
@@ -169,7 +179,7 @@ func StoredTreeForTest(ctx context.Context, database *store.Store, artifactID st
 	if err := decodeStoredState(doc, loaded.Update); err != nil {
 		return nil, fmt.Errorf("decode the stored document: %w", err)
 	}
-	return pmdoc.Read(doc.GetXmlFragment(fragmentName))
+	return pmdoc.Read(doc.GetXmlFragment(fragmentOf(room, artifactID)))
 }
 
 // appendTextMark persists attrs, one mark, over the whole of the document's first text, so that

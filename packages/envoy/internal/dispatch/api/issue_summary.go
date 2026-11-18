@@ -64,9 +64,11 @@ func (s *server) getIssueSummary(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The documents the full issue read lists (issueArtifactsStatement): never the issue's tree
+	// artifact, its room, which the tree read names (dispatch://INFRA-1253 R8).
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select a.id::text, a.slug, a.name, a.kind, `+summaryLatestVersion+`, a.is_primary
-		from artifacts a where a.issue_key = $1 and a.retired_at is null order by a.created_at, a.id
+		from artifacts a where a.issue_key = $1 and a.retired_at is null and a.kind <> 'tree' order by a.created_at, a.id
 	`, summary.Key)
 	if err != nil {
 		s.writeHandlerError(w, err)

@@ -128,17 +128,17 @@ func artifactMissing(err error) bool {
 	return apiErr.code == "ARTIFACT_NOT_FOUND" || apiErr.code == "ARTIFACT_REFERENCE_AMBIGUOUS"
 }
 
-// specOpenQuestions are the issue's open asks whose block is in its spec, oldest first, in the
-// shape every ask read has (askReadColumns, with the newest reply beside the row). reader is the
-// answer's own, and each row registers its texts with it once the slice has stopped growing: a
-// shaping registers a pointer into the row, and an append that moved the backing array would
-// leave the reader filling trees into memory the answer no longer holds.
+// specOpenQuestions are the issue's open asks whose block is in its spec (refs.AsksOfDocumentSQL),
+// oldest first, in the shape every ask read has (askReadColumns, with the newest reply beside the
+// row). reader is the answer's own, and each row registers its texts with it once the slice has
+// stopped growing: a shaping registers a pointer into the row, and an append that moved the
+// backing array would leave the reader filling trees into memory the answer no longer holds.
 func (s *server) specOpenQuestions(
 	ctx context.Context, who model.Actor, key, specID string, reader *displayTreeReader,
 ) ([]issueAskRow, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select `+askReadColumns+` `+askReadFrom+`
-		where a.issue_key = $1 and a.state = 'open' and a.block_artifact_id = $2::uuid
+		where a.issue_key = $1 and a.state = 'open' and `+refs.AsksOfDocumentSQL("a", "$2::uuid")+`
 		order by a.created_at, a.id
 	`, key, specID)
 	if err != nil {

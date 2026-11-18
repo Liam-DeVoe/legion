@@ -189,14 +189,14 @@ func searchKeywordLegs(rank func(searchColumn string) string) string {
    where c.search @@ q.tsq and ($2 = '' or coalesce(i.project_key, p.key) = $2)` +
 		searchRowFilters("i.status", "c.author", "c.created_at") + `
   union all
-  select 'ask' as kind, 'keyword', k.issue_key, case when k.issue_key is null then coalesce(k.artifact_id, k.block_artifact_id) else null::uuid end,
-         coalesce(k.artifact_id, k.block_artifact_id, ` + store.CastableUUID(`k.anchor->>'artifact_id'`) + `), k.id::text, ` + askBlockNodeSQL + `,
+  select 'ask' as kind, 'keyword', k.issue_key, case when k.issue_key is null then coalesce(k.artifact_id, ` + refs.AskBlockDocumentSQL("k") + `) else null::uuid end,
+         coalesce(k.artifact_id, ` + refs.AskBlockDocumentSQL("k") + `, ` + store.CastableUUID(`k.anchor->>'artifact_id'`) + `), k.id::text, ` + askBlockNodeSQL + `,
          null::text, null::text[],
          i.title, i.status, p.key, a.slug, a.name, coalesce(i.updated_at, k.created_at),
          false, ` + rank("k.search") + `
     from asks k
     left join issues i on i.key = k.issue_key
-    left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
+    left join artifacts a on a.id = coalesce(k.artifact_id, ` + refs.AskBlockDocumentSQL("k") + `)
     left join projects p on p.key = a.project_key, q
    where k.search @@ q.tsq and ($2 = '' or coalesce(i.project_key, p.key) = $2)` +
 		searchRowFilters("i.status", "k.author", "k.created_at") + `
@@ -835,14 +835,14 @@ meaning_document as (
 ),
 ` + searchMeaningCommentArm(scope, seen) + `,
 meaning_ask_candidates as (
-  select k.issue_key, k.artifact_id, k.block_artifact_id, k.anchor, k.id, ` + askBlockNodeSQL + ` as block_id, e.id as window_id, e.covers,
+  select k.issue_key, k.artifact_id, ` + refs.AskBlockDocumentSQL("k") + ` as block_artifact_id, k.anchor, k.id, ` + askBlockNodeSQL + ` as block_id, e.id as window_id, e.covers,
          i.title as issue_title, i.status as issue_status,
          p.key as owner_project, a.slug as owner_slug, a.name as owner_name, coalesce(i.updated_at, k.created_at) as updated_at,
          1 - (e.embedding <=> $9::vector) as r
     from embeddings e
     join asks k on k.id = ` + windowItemUUID + `
     left join issues i on i.key = k.issue_key
-    left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
+    left join artifacts a on a.id = coalesce(k.artifact_id, ` + refs.AskBlockDocumentSQL("k") + `)
     left join projects p on p.key = a.project_key, q
    where e.kind = 'ask_part' and e.embedding is not null and e.model = $11` + scope.candidateProject("coalesce(i.project_key, p.key)") + `
      and ` + refs.VisibleKind("ask", "k.id::text", searchParam(seen)) +

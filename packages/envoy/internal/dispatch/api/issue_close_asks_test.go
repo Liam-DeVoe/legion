@@ -562,7 +562,7 @@ func TestClosingAnIssueWithdrawsADecisionBlockPastedUnderARepeatedID(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			peer := connectBrowserPeer(t, documentService, issue.PrimaryArtifactID)
+			peer := connectBrowserPeer(t, handler, documentService, issue.PrimaryArtifactID)
 			peer.edit(t, func(tree *pmdoc.Node) error {
 				tree.Children = append(tree.Children, pasted.Children...)
 				return nil
@@ -768,7 +768,7 @@ func TestABrowsersDecisionBlockWrittenDuringTheCloseReadsResolved(t *testing.T) 
 	issue := createInteractionIssue(t, handler, "TEST", "A browser writes during the close", closeDecision)
 	awaitIndexedAskBlock(t, handler, issue.PrimaryArtifactID, "close-decision", "Ship it?")
 	awaitSettled(t, database, issue.PrimaryArtifactID)
-	peer := connectBrowserPeer(t, documentService, issue.PrimaryArtifactID)
+	peer := connectBrowserPeer(t, handler, documentService, issue.PrimaryArtifactID)
 	wrapper.insert = func() {
 		peer.appendParagraph(t, ":::ask{#peer-decision urgency=\"low\" multiple=\"false\"}\nWritten during the close?\n:::\n")
 		peer.barrier(t)

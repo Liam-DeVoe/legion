@@ -298,10 +298,11 @@ func questionMap(ctx context.Context, q Queryer, who *model.Actor, doc string) (
 		ids[index] = block.id
 	}
 	var settled queryArgs
+	document := settled.param(doc) + `::uuid`
 	query := `
 		select k.block_id, k.id::text, k.issue_key, a.project_key, a.slug
-		from asks k join artifacts a on a.id = k.block_artifact_id
-		where k.block_artifact_id = ` + settled.param(doc) + ` and k.block_id = any(` + settled.param(ids) + `::text[])` +
+		from asks k join artifacts a on a.id = ` + AskBlockDocumentSQL("k") + `
+		where ` + AsksOfDocumentSQL("k", document) + ` and k.block_id = any(` + settled.param(ids) + `::text[])` +
 		settled.andVisible(who, "ask", `k.id::text`)
 	questions, err := scanQuestions(q.Query(ctx, query, settled.values...))
 	if err != nil {
@@ -325,7 +326,7 @@ func questionMap(ctx context.Context, q Queryer, who *model.Actor, doc string) (
 	query = `
 		select k.id::text, k.id::text, k.issue_key, a.project_key, coalesce(a.slug, '')
 		from asks k
-		left join artifacts a on a.id = coalesce(k.block_artifact_id, (k.anchor->>'artifact_id')::uuid, k.artifact_id)
+		left join artifacts a on a.id = coalesce(` + AskBlockDocumentSQL("k") + `, (k.anchor->>'artifact_id')::uuid, k.artifact_id)
 		where k.id = any(` + copiedArgs.param(sources) + `::uuid[])` +
 		copiedArgs.andVisible(who, "ask", `k.id::text`) + copiedArgs.andVisible(who, "artifact", `a.ref_key`)
 	copied, err := scanQuestions(q.Query(ctx, query, copiedArgs.values...))

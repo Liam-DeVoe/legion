@@ -454,7 +454,7 @@ func TestDecisionNodeCarriesItsTuplesAndItsCertainty(t *testing.T) {
 	// editor reads a value the store does not hold.
 	uploadAs(t, handler, issue.Key, "browser.md", "Before.\n", "alice")
 	browser := readDecisionDocument(t, database, issue.Key, "browser-md")
-	peer := connectBrowserPeer(t, documents, browser.id)
+	peer := connectBrowserPeer(t, handler, documents, browser.id)
 	t.Cleanup(peer.close)
 	peer.edit(t, func(tree *pmdoc.Node) error {
 		tree.Children = append(tree.Children, decisionNode("b1", "The browser decides.", pmdoc.Attrs{
@@ -502,7 +502,7 @@ func requireLiveDecision(t *testing.T, database *store.Store, peer *syncedPeer, 
 		t.Fatalf("read the stored tree of %s: %v", artifactID, err)
 	}
 	peer.barrier(t)
-	editor, err := pmdoc.Read(peer.doc.GetXmlFragment("prosemirror"))
+	editor, err := pmdoc.Read(peer.doc.GetXmlFragment(peer.fragment))
 	if err != nil {
 		t.Fatalf("read the browser editor's tree: %v", err)
 	}
@@ -576,7 +576,7 @@ func TestATieToAnotherIssueIsRefusedOnEveryWritePath(t *testing.T) {
 	uploadAs(t, handler, issue.Key, "browser.md", "Before.\n", "alice")
 	browser := readDecisionDocument(t, database, issue.Key, "browser-md")
 	own := "dispatch://" + issue.Key + "/spec#b-r1"
-	peer := connectBrowserPeer(t, documents, browser.id)
+	peer := connectBrowserPeer(t, handler, documents, browser.id)
 	t.Cleanup(peer.close)
 	peer.edit(t, func(tree *pmdoc.Node) error {
 		tree.Children = append(tree.Children, decisionNode("b1", "The browser ties elsewhere.", pmdoc.Attrs{
@@ -725,8 +725,9 @@ func TestAReadingInAnAskBlockStandsUnderTheAskTheBlockShows(t *testing.T) {
 	t.Run("a browser's new ask block", func(t *testing.T) {
 		uploadAs(t, handler, issue.Key, "browser.md", "Before.\n", "alice")
 		browser := readDecisionDocument(t, database, issue.Key, "browser-md")
-		writeBrowserDocument(t, documents, browser.id, "Before.\n\n::::ask{#a9 urgency=\"med\" multiple=\"false\"}\nShould we ship?\n\n- Ship: Release it\n- Hold: Wait\n\n"+
+		writeBrowserDocument(t, handler, documents, browser.id, "Before.\n\n::::ask{#a9 urgency=\"med\" multiple=\"false\"}\nShould we ship?\n\n- Ship: Release it\n- Hold: Wait\n\n"+
 			":::reading{#g9}\nThe agent reads it as shipping.\n:::\n::::\n")
+
 		settleIssue(t, documents, issue.Key)
 		if latestVersion(t, database, browser.id).Number < 2 {
 			t.Fatalf("settlement wrote no version of the browser's ask block")

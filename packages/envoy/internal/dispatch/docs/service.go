@@ -3593,20 +3593,20 @@ func readRoomLayout(ctx context.Context, q Queryer, room string) (roomLayout, er
 	return roomLayout(layout), nil
 }
 
-// documentRoomOfStatement is the room the document $1 (text) is edited in: its document_rooms
-// row's room, else the document itself, as documentRoomStatement reads it, for an entry point that
-// reads nothing else of the document first.
-const documentRoomOfStatement = `
-	select coalesce(moved.room::text, asked.id)
-	from (select $1::text as id) asked
-	left join document_rooms moved on moved.artifact_id = asked.id::uuid`
+// DocumentRoomOfStatement is the room the document $1 (text) is edited in (refs.DocumentRoomSQL):
+// its document_rooms row's room, else the document itself spelled as the caller spelled it, for an
+// entry point that reads nothing else of the document first, in this package or another. Its one
+// column is room.
+var DocumentRoomOfStatement = `
+	select coalesce(nullif(` + refs.DocumentRoomSQL("asked.id::uuid") + `, asked.id::uuid)::text, asked.id) as room
+	from (select $1::text as id) asked`
 
-// roomOf is the room artifactID's document is edited in (documentRoomOfStatement), read from q:
+// roomOf is the room artifactID's document is edited in (DocumentRoomOfStatement), read from q:
 // the issue room it was converted into, else the document itself. Every room entry point that
 // takes an artifact id resolves it here first.
 func roomOf(ctx context.Context, q Queryer, artifactID string) (string, error) {
 	var room string
-	if err := q.QueryRow(ctx, documentRoomOfStatement, artifactID).Scan(&room); err != nil {
+	if err := q.QueryRow(ctx, DocumentRoomOfStatement, artifactID).Scan(&room); err != nil {
 		return "", fmt.Errorf("read the document's room: %w", err)
 	}
 	return room, nil

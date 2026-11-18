@@ -1362,7 +1362,7 @@ func TestAnUploadKeepsTheCreditOfAnEditItsUploaderMakesWhileItWrites(t *testing.
 	holdIssuesUnconverted(t, database)
 	issue := createInteractionIssue(t, handler, "TEST", "Upload timing", "First.\n\nSecond.\n")
 	alice := model.Actor{Kind: "user", ID: "alice", Proven: true}
-	peer := connectBrowserPeer(t, documentService, issue.PrimaryArtifactID)
+	peer := connectBrowserPeer(t, handler, documentService, issue.PrimaryArtifactID)
 	t.Cleanup(peer.close)
 
 	ctx := context.Background()
@@ -1446,7 +1446,7 @@ func TestAnUploadClearsPendingCreditOnlyWhenItChangesTheDocument(t *testing.T) {
 			if notes.ID == "" {
 				t.Fatal("uploaded document is missing")
 			}
-			browser := connectBrowserPeer(t, documentService, notes.ID)
+			browser := connectBrowserPeer(t, handler, documentService, notes.ID)
 			t.Cleanup(browser.close)
 			browser.appendParagraph(t, "Alice wrote this.")
 			browser.barrier(t)
@@ -1497,7 +1497,7 @@ func TestUploadClearsItsUploaderBeforeNextVersion(t *testing.T) {
 		t.Fatalf("uploaded document missing from %s", listed.Body.String())
 	}
 	// alice types in her browser before she uploads again: the room credits her with it.
-	browser := connectBrowserPeer(t, documentService, notes.ID)
+	browser := connectBrowserPeer(t, handler, documentService, notes.ID)
 	t.Cleanup(browser.close)
 	browser.appendParagraph(t, "Typed in the browser.")
 	browser.barrier(t)
@@ -2441,9 +2441,12 @@ func awaitMarkProjection(t *testing.T, database *store.Store, artifactID, markID
 	}
 }
 
+// findMarkProjection reads markID's record in the stored history of the room artifactID's
+// document is edited in (documentRoomOf), whose margin holds every fragment's records.
 func findMarkProjection(t *testing.T, database *store.Store, artifactID, markID string) (map[string]any, bool) {
 	t.Helper()
-	loaded, err := docs.NewPgVersioned(database).Load(context.Background(), artifactID)
+	room, _ := documentRoomOf(t, database.Pool, artifactID)
+	loaded, err := docs.NewPgVersioned(database).Load(context.Background(), room)
 	if err != nil {
 		t.Fatalf("load persisted document: %v", err)
 	}

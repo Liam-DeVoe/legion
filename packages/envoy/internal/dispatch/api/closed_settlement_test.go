@@ -154,7 +154,7 @@ func TestASettlementAfterACloseChangesNoAsk(t *testing.T) {
 		t.Fatalf("answer the decision: status=%d body=%s", reply.Code, reply.Body.String())
 	}
 	awaitSettled(t, database, spec)
-	peer := connectBrowserPeer(t, documentService, spec)
+	peer := connectBrowserPeer(t, handler, documentService, spec)
 
 	closeIssueThroughPatch(t, handler, database, issue.Key)
 	alice := model.Actor{Kind: "user", ID: "alice", Proven: true}
@@ -226,7 +226,7 @@ func TestAnAskBlockWithNoRowIsResolvedWhileClosedAndOpensAtTheReopen(t *testing.
 	issue := createInteractionIssue(t, handler, "TEST", "An ask block across a close", "Context\n")
 	spec := issue.PrimaryArtifactID
 	awaitSettled(t, database, spec)
-	peer := connectBrowserPeer(t, documentService, spec)
+	peer := connectBrowserPeer(t, handler, documentService, spec)
 	closeIssueThroughPatch(t, handler, database, issue.Key)
 
 	awaitSettled(t, database, spec)
