@@ -5516,14 +5516,22 @@ function expectOneMoveToRow(focus: FocusMoves, row: HTMLElement, surface: Surfac
   if (surface === "inside") expect(focus.moved[0]).toBe(row);
 }
 
+/** Inside `NoTooltips`, while the card refuses, its answer box is `readOnly` and not `disabled`,
+ *  which would drop the focus in a browser. */
+function expectAnswerBoxReadOnly(scope: CardScope): void {
+  const box = answerBoxOf(scope);
+  expect(box.hasAttribute("readonly")).toBe(true);
+  expect(box.hasAttribute("disabled")).toBe(false);
+}
+
 // An answer Dispatch made and lost its answer to (`409 KEY_COMMITTED`) lands with no body: the
 // card has no record to draw, so it reads the ask again, and until that read is drawn the form
 // stays on the page with its option still picked. Inside `NoTooltips` the card stays refused until
-// then: Answer keeps the focus and is `aria-disabled`, and a press of it sends no second answer,
-// which Dispatch would refuse, the ask being closed. Once the read draws the recorded answer, the
-// form leaves the page and hands the focus to the row, the one move of the focus. Outside
-// `NoTooltips` Answer is `disabled` while the write is out, and the focus goes to the row then,
-// as on `main`.
+// then: Answer keeps the focus and is `aria-disabled`, the box is read-only, and a press of Answer
+// sends no second answer, which Dispatch would refuse, the ask being closed. Once the read draws
+// the recorded answer, the form leaves the page and hands the focus to the row, the one move of
+// the focus. Outside `NoTooltips` Answer is `disabled` while the write is out, and the focus goes
+// to the row then, as on `main`.
 test("inside NoTooltips an answer that lands with no answer body keeps the ask card refused until the ask is read again", async () => {
   const user = userEvent.setup();
   for (const surface of ["inside", "outside"] as const) {
@@ -5559,11 +5567,13 @@ test("inside NoTooltips an answer that lands with no answer body keeps the ask c
       expect(answer.isConnected).toBe(true);
       expect(radioOf(scope, "Ship").checked).toBe(true);
       if (surface === "inside") {
-        // A press while the read is out sends no second answer, and Answer is still refused.
+        // A press while the read is out sends no second answer, and Answer is still refused, the
+        // box with it.
         await user.keyboard("{Enter}");
         await settleReads();
         expect(answerAsk).toHaveBeenCalledTimes(1);
         expectRefusedHoldingFocus(answer);
+        expectAnswerBoxReadOnly(scope);
       } else {
         // The write stopped pending as it landed, before its read.
         expect(answer.hasAttribute("disabled")).toBe(false);
@@ -5590,10 +5600,10 @@ test("inside NoTooltips an answer that lands with no answer body keeps the ask c
 // A clarification empties the box as it lands and reads the ask again. Inside `NoTooltips`, until
 // that read is drawn, Ask back is drawn as it stood at the press: refused with `aria-disabled`, and
 // not `disabled` for the text the landing took, which would drop the focus in a browser; it keeps
-// the focus, and a press of it sends nothing. Once the read is drawn Ask back, with no text to
-// send, is `disabled`, and the card hands the focus to the row, the one move of the focus. Outside
-// `NoTooltips` Ask back is `disabled` while the write is out, and the focus goes to the row then,
-// as on `main`.
+// the focus, and a press of it sends nothing; the box stays read-only. Once the read is drawn Ask
+// back, with no text to send, is `disabled`, and the card hands the focus to the row, the one move
+// of the focus. Outside `NoTooltips` Ask back is `disabled` while the write is out, and the focus
+// goes to the row then, as on `main`.
 test("inside NoTooltips Ask back keeps the focus until the ask is read again", async () => {
   const user = userEvent.setup();
   for (const surface of ["inside", "outside"] as const) {
@@ -5631,6 +5641,7 @@ test("inside NoTooltips Ask back keeps the focus until the ask is read again", a
         await settleReads();
         expect(createComment).toHaveBeenCalledTimes(1);
         expectRefusedHoldingFocus(askBack);
+        expectAnswerBoxReadOnly(scope);
       } else {
         expectAskControlDisabledAsOnMain(askBack);
         expect(document.activeElement).toBe(row);
@@ -5654,11 +5665,11 @@ test("inside NoTooltips Ask back keeps the focus until the ask is read again", a
 
 // A clarification sent by Ask back instead closes the choice a question-shaped answer offers as
 // it lands, and reads the ask again. Inside `NoTooltips`, until that read is drawn, the choice
-// stays on the page with both its actions refused: Ask back instead keeps the focus and a press of
-// it sends nothing. Once the read is drawn the choice leaves the page and the card hands the focus
-// to the row, the one move of the focus. Outside `NoTooltips` Ask back instead is `disabled` while
-// the write is out, and the focus goes to the row then; the choice leaves as the clarification
-// lands, as on `main`.
+// stays on the page with both its actions refused and the box read-only: Ask back instead keeps
+// the focus and a press of it sends nothing. Once the read is drawn the choice leaves the page and
+// the card hands the focus to the row, the one move of the focus. Outside `NoTooltips` Ask back
+// instead is `disabled` while the write is out, and the focus goes to the row then; the choice
+// leaves as the clarification lands, as on `main`.
 test("inside NoTooltips Ask back instead keeps the focus until the ask is read again", async () => {
   const user = userEvent.setup();
   for (const surface of ["inside", "outside"] as const) {
@@ -5697,6 +5708,7 @@ test("inside NoTooltips Ask back instead keeps the focus until the ask is read a
         await settleReads();
         expect(createComment).toHaveBeenCalledTimes(1);
         expectRefusedHoldingFocus(instead);
+        expectAnswerBoxReadOnly(scope);
       } else {
         expect(instead.isConnected).toBe(false);
         expect(document.activeElement).toBe(row);
@@ -5714,6 +5726,72 @@ test("inside NoTooltips Ask back instead keeps the focus until the ask is read a
       focus.stop();
       undraw(view);
       unemulate();
+    }
+  }
+});
+
+// Outside `NoTooltips` the card never waits for a read of the ask. A question back empties the
+// box as it lands, leaves the option the reader picked still picked, and reads the ask again:
+// while that read is out nothing of the form is refused, and Answer pressed then sends the answer
+// at once, as on `main`. Inside, the same press sends nothing while the read is out, and Answer
+// pressed once the read is drawn sends the answer: on both sides the first press comes while the
+// read is out.
+test("outside NoTooltips AskCard sends an answer pressed while the ask is read again after a question back", async () => {
+  const user = userEvent.setup();
+  for (const surface of ["inside", "outside"] as const) {
+    const ask = openAsk({ id: `ask-${surface}` });
+    const reads = askReads(ask);
+    const said = Promise.withResolvers<Comment>();
+    const createComment = spyOn(api, "createComment").mockImplementation(() => said.promise);
+    const answered = Promise.withResolvers<Ask>();
+    const answerAsk = spyOn(api, "answerAsk").mockImplementation(() => answered.promise);
+    const view = draw(<AskRow ask={ask} getAskThread={reads.read} />, surface);
+    try {
+      const scope = within(view.container);
+      await settleReads();
+      await user.click(radioOf(scope, "Ship"));
+      await user.type(answerBoxOf(scope), "Stage it before the release");
+      await user.click(scope.getByRole("button", { name: "Ask back" }));
+      await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+      await settleReads();
+
+      // The question back lands and empties the box, and the read of the ask after it is held.
+      const answerReread = await landHeld(reads.read, () => said.resolve({} as Comment));
+      expect(answerBoxOf(scope).value).toBe("");
+      expect(radioOf(scope, "Ship").checked).toBe(true);
+      const answer = scope.getByRole("button", { name: "Answer" });
+      if (surface === "inside") {
+        // A press while the read is out sends nothing; once the read is drawn, a press sends.
+        await user.click(answer);
+        await settleReads();
+        expect(answerAsk).not.toHaveBeenCalled();
+        expect(answer.getAttribute("aria-disabled")).toBe("true");
+        answerReread(threadOf(ask));
+        await waitFor(() => expect(answer.hasAttribute("aria-disabled")).toBe(false));
+        await settleReads();
+        await user.click(answer);
+        await waitFor(() => expect(answerAsk).toHaveBeenCalledTimes(1));
+      } else {
+        // Nothing refuses while the read is out, and a press sends the answer then.
+        expect(answer.hasAttribute("disabled")).toBe(false);
+        expect(answer.hasAttribute("aria-disabled")).toBe(false);
+        expect(answerBoxOf(scope).hasAttribute("readonly")).toBe(false);
+        await user.click(answer);
+        await waitFor(() => expect(answerAsk).toHaveBeenCalledTimes(1));
+        answerReread(threadOf(ask));
+        await settleReads();
+      }
+      expect(answerAsk.mock.calls[0]?.[1]).toMatchObject({ selected: ["Ship"] });
+
+      answered.resolve(answeredWith(ask, answerAsk.mock.calls[0]?.[1]));
+      await scope.findByText(/Answered by/);
+      await settleReads();
+      expect(answerAsk).toHaveBeenCalledTimes(1);
+      expect(createComment).toHaveBeenCalledTimes(1);
+    } finally {
+      answerAsk.mockRestore();
+      createComment.mockRestore();
+      undraw(view);
     }
   }
 });
