@@ -999,7 +999,7 @@ RACE_DOCS_SCRIPT = ('mkdir -p "$RUNNER_TEMP/go-test-json"\n'
 # The same package under Go's cleanup detector. GODEBUG is a GO* name, which is outside
 # ENV_ALLOWED wherever it is set, so this step too is pinned whole rather than reduced.
 FINALIZERS_STEP = "Test the document service under the cleanup detector"
-FINALIZERS_SCRIPT = "GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 34m ./internal/dispatch/docs/"
+FINALIZERS_SCRIPT = "GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 37m ./internal/dispatch/docs/"
 # Every lane whose tests start a Dispatch process sizes its Postgres service in its CEILING_STEP,
 # which runs .github/scripts/pg-connection-ceiling.sh. The check reads the step's run: line, not
 # what the script runs, so each such gate declares the script, and the go run on the script's line
@@ -1433,11 +1433,11 @@ class RaceJob(NamedTuple):
 # reading of the branch rather than of one pair is the same rule applied to every measurement
 # taken, and it is what makes the number settle, since a later pair moves it only by reading
 # higher than every pair before it. Each -timeout is the smallest whole minute at which that
-# call's slowest package takes at most half of it: cmd/listener 585.3 s -> 20m (run
-# 44175873364, job 134367427656), internal/dispatch/api 959.308 s -> 32m (run 44175873364, job
-# 134367428185), and internal/dispatch/docs 1795.4 s -> 60m (run 43810293311,
-# job 133110320511), where every earlier reading was less, 1746.1 s at most (run 43737129665,
-# job 132882140098). Each figure is read from that job's own `go test -json` artifact, the
+# call's slowest package takes at most half of it: cmd/listener 590.141 s -> 20m (run
+# 44008699559, job 133793462730), internal/dispatch/api 972.742 s -> 33m (run 44145475728, job
+# 134259638461), and internal/dispatch/docs 1795.4 s -> 60m (run 43810293311,
+# job 133110320511), where every other reading was less, 1753.506 s at most (run 43994173269,
+# job 133746719706). Each figure is read from that job's own `go test -json` artifact, the
 # largest of every workflow_dispatch run of ci.yaml on this branch (dispatch://INFRA-1075, check
 # 6224bb0e).
 ENVOY_RACE_LANE = (
@@ -1446,7 +1446,7 @@ ENVOY_RACE_LANE = (
             "20m", (RacePackage("internal/dispatch/delivery", tree=True), RacePackage("internal/dispatch/store", tree=True),
                     RacePackage("internal/bus"), RacePackage("cmd/listener"), RacePackage("internal/store"),
                     RacePackage("internal/session"), RacePackage("internal/kvwatch", tree=True))),
-    RaceJob("envoy-go-race-api", "Race-test the Dispatch API", "32m", (RacePackage("internal/dispatch/api"),)),
+    RaceJob("envoy-go-race-api", "Race-test the Dispatch API", "33m", (RacePackage("internal/dispatch/api"),)),
     RaceJob("envoy-go-race-docs", "Race-test the document service", "60m", (RacePackage("internal/dispatch/docs"),)),
 )
 RACE_JOBS = {job.job: job for job in ENVOY_RACE_LANE}
@@ -1874,7 +1874,7 @@ def race_impossible_tests(root) -> dict:
 # derives and check-ci-filters.test.sh's expected text of that call cannot disagree (the test
 # reads it from here). The reading it is sized from, and every other call's, is the table in the
 # comment on the envoy-go job (dispatch://INFRA-1075).
-RACE_IMPOSSIBLE_TIMEOUT = "16m"
+RACE_IMPOSSIBLE_TIMEOUT = "18m"
 
 
 def race_impossible_script(packages) -> str:
@@ -1941,20 +1941,22 @@ mkdir -p "$RUNNER_TEMP/go-test-json" "$RUNNER_TEMP/go-test-logs"
 # to the last. The short calls follow it: the longest of them, natslive, took 73.0 s
 # and 65.6 s in that pair.
 #
-# -timeout 26m. A call's limit is the smallest whole minute at which its slowest
+# -timeout 32m. A call's limit is the smallest whole minute at which its slowest
 # package takes at most half of it, measured on the largest reading this branch
 # has of that package (dispatch://INFRA-1075). This call's slowest package is
-# internal/dispatch/pmdoc at 766.2 s (run 44195030350, job 134434361048), which is
-# 49.1 per cent of 26m and would be 51.1 per cent of 25m, the whole minute below it;
-# the readings before it asked 23m (686.5 s, run 43823941384, the first run of this
-# list after main's forward merge brought main's own tests into it), 19m (567.3 s,
-# run 43797411630) and 18m (cmd/dispatch 525.9 s, run 43691345741).
-# The limit leaves 793.8 s above the slowest package's own time, far over the 60 s of
+# internal/dispatch/pmdoc at 942.9 s (run 44097184245, job 134098415747, an attempt
+# that missed the Go build cache), which is 49.1 per cent of 32m and would be 50.7
+# per cent of 31m, the whole minute below it; every other run asked less, the largest
+# of them 26m (766.2 s, run 44195030350), and before it 23m (686.5 s, run
+# 43823941384, the first run of this list after main's forward merge brought main's
+# own tests into it), 19m (567.3 s, run 43797411630) and 18m (cmd/dispatch 525.9 s,
+# run 43691345741).
+# The limit leaves 977.1 s above the slowest package's own time, far over the 60 s of
 # pmdoc's perCallReportMargin, which is the floor a package that reads the test
 # binary's deadline sets for itself.
 lead="{UNIT_TEST_LEAD_TEXT}"
 rest=$(go list ./... | grep -Ev '{UNIT_TEST_PATTERN}' | grep -vxF "$lead")
-printf '%s\\n%s\\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '{UNIT_TEST_SKIP}' -timeout 26m > "$RUNNER_TEMP/go-test-json/unit.json" &
+printf '%s\\n%s\\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '{UNIT_TEST_SKIP}' -timeout 32m > "$RUNNER_TEMP/go-test-json/unit.json" &
 unit=$!
 # The tests the race detector makes impossible, which the race job of each of these
 # packages therefore cannot make, so envoy-go keeps a plain run of exactly them:
@@ -1981,9 +1983,9 @@ unit=$!
 # envoy-go-race-api now. The one -run list is derived in
 # .github/scripts/ci_job_reads.py from the race lane's own packages and those files'
 # //go:build !race and raceEnabled, so a test added to either and missing here fails
-# the ci-filters job naming this step. -timeout 16m: this call's slowest package is
+# the ci-filters job naming this step. -timeout 18m: this call's slowest package is
 # internal/dispatch/docs, whose largest reading and the run it came from are in the
-# table on this job, and the limit leaves 492.4 s above that reading, over the 30 s of
+# table on this job, and the limit leaves 542.7 s above that reading, over the 30 s of
 # the documents package's roomWaitMargin.
 #
 # One go test over both packages rather than one per package: go builds the test
@@ -2007,29 +2009,29 @@ impossible=$!
 # DISPATCH_TEST_DATABASE_URL names 5435 on this call and nowhere else, as the three
 # calls below name 5433, 5436 and 5434. The package list above leaves the package out.
 #
-# -timeout 14m, from the call's own measured times rather than from its CPU. The
+# -timeout 17m, from the call's own measured times rather than from its CPU. The
 # first arithmetic took the half rule on 120 s - 63.8 s of CPU at about half a core -
 # and 4m was too small: the call measured 159.7 s and 183.2 s on two runs and then
 # ran past 240 s on a slower one, where go killed it mid-test ("panic: test timed out
 # after 4m0s, running tests: TestRedactionAgainstServerOutcomes (3m20s)", run
 # 42856652273). A call's limit is the smallest whole minute at which its slowest
 # package takes at most half of it, and this package's largest reading and the run it
-# came from are in the table on this job: 14m, from the 393.3 s this package read
-# in run 44195030350 (job 134434361048), in this call of its own; the 386.1 s it read
-# in run 42779139068, inside the package list rather than in a call of its own, asked
-# 13m. No floor stands above that rule here: no test of internal/pgmigrate reads
-# the test binary's deadline, so it declares no margin of its own the way the
-# documents package's roomWaitMargin (30 s) and pmdoc's perCallReportMargin (60 s)
-# are theirs.
-DISPATCH_TEST_DATABASE_URL={PGMIGRATE_DSN} go test -json -count=1 -timeout 14m ./{PGMIGRATE_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/pgmigrate.json" 2> "$RUNNER_TEMP/go-test-logs/pgmigrate.log" &
+# came from are in the table on this job: 17m, from the 505.7 s this package read
+# in run 44097184245 (job 134098415747), in this call of its own; the 393.3 s of run
+# 44195030350 asked 14m, and the 386.1 s it read in run 42779139068, inside the
+# package list rather than in a call of its own, 13m. No floor stands above that rule
+# here: no test of internal/pgmigrate reads the test binary's deadline, so it declares
+# no margin of its own the way the documents package's roomWaitMargin (30 s) and
+# pmdoc's perCallReportMargin (60 s) are theirs.
+DISPATCH_TEST_DATABASE_URL={PGMIGRATE_DSN} go test -json -count=1 -timeout 17m ./{PGMIGRATE_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/pgmigrate.json" 2> "$RUNNER_TEMP/go-test-logs/pgmigrate.log" &
 pgmigrate=$!
 # The routes package, on the second Postgres service: DISPATCH_TEST_DATABASE_URL names
 # 5433 on this call and nowhere else, so the only transactions its horizon waits on are
 # its own tests'. It is on the call rather than in the step's env:, which would reach
 # every call; the calls that name no server of their own run against 5432. -timeout
-# 2m, from this package's largest reading and the run it came from, which are in the
+# 3m, from this package's largest reading and the run it came from, which are in the
 # table on this job.
-DISPATCH_TEST_DATABASE_URL={ROUTES_DSN} go test -json -count=1 -timeout 2m ./{ROUTES_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/routes.json" 2> "$RUNNER_TEMP/go-test-logs/routes.log" &
+DISPATCH_TEST_DATABASE_URL={ROUTES_DSN} go test -json -count=1 -timeout 3m ./{ROUTES_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/routes.json" 2> "$RUNNER_TEMP/go-test-logs/routes.log" &
 routes=$!
 # internal/dispatch/events, on the fifth Postgres service, for the reason the routes
 # call gives: its horizon tests wait for the event log's safe horizon, which any
@@ -2048,12 +2050,12 @@ events=$!
 # direction - routes' own tests hold transaction ids on purpose, and its horizon loop
 # has been blown by a sibling's clone before - so 5434 is named on this call and
 # nowhere else. The package list above skips this test by name, which is unique in the
-# module (dispatch://INFRA-1075). -timeout 3m, from this package's largest reading and
-# the run it came from, which are in the table on this job. 2m would hold the 58.3 s
-# an earlier pair read, but not the 63.0 s of another or the 61.7 s of the pair at
-# 84ca8f33, each over half of it, so the limit follows the largest reading rather
+# module (dispatch://INFRA-1075). -timeout 4m, from this package's largest reading and
+# the run it came from, which are in the table on this job. 3m would hold every other
+# reading, the largest of them the 78.8 s of run 44195030350, but not the 92.4 s of
+# run 44097184245, over half of it, so the limit follows the largest reading rather
 # than the smallest.
-DISPATCH_TEST_DATABASE_URL={SHUTDOWN_DSN} go test -json -count=1 -timeout 3m -run '{SHUTDOWN_PATTERN}' ./{SHUTDOWN_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/shutdown.json" 2> "$RUNNER_TEMP/go-test-logs/shutdown.log" &
+DISPATCH_TEST_DATABASE_URL={SHUTDOWN_DSN} go test -json -count=1 -timeout 4m -run '{SHUTDOWN_PATTERN}' ./{SHUTDOWN_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/shutdown.json" 2> "$RUNNER_TEMP/go-test-logs/shutdown.log" &
 shutdown=$!
 # internal/testnats runs its server in the test process, so the package list above
 # starts no container. The real-server tests, a rendered authorization on the image the
@@ -3332,7 +3334,7 @@ GATES = [
     # claim different steps and do not collide.
     gate("envoy_go_race_docs", "envoy-go-docs-finalizers", runs=[ceiling_run("envoy-go-docs-finalizers")], exact=[
         pinned_step("envoy-go-docs-finalizers", FINALIZERS_STEP, ENVOY, FINALIZERS_SCRIPT, [
-            (ENVOY, ["./internal/dispatch/docs/"], "go test -v -count=1 -timeout 34m ./internal/dispatch/docs/", {}),
+            (ENVOY, ["./internal/dispatch/docs/"], "go test -v -count=1 -timeout 37m ./internal/dispatch/docs/", {}),
         ]),
     ], reads=ceiling_reads("envoy-go-docs-finalizers") + setup_go("envoy-go-docs-finalizers", f"{ENVOY}/go.mod")
        + service_settings("envoy-go-docs-finalizers")),

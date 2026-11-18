@@ -5332,7 +5332,7 @@ jobs:
   # stream reads. They build only under the `multiprocess` tag, so envoy-go's unit run leaves
   # them out, and they are a job of their own for the reason dispatch-memory is: each `go test`
   # call of envoy-go's unit step is held to a -timeout sized from its slowest package's measured
-  # time (26m for the package list, which runs cmd/dispatch), which rows of tens of seconds each
+  # time (32m for the package list, which runs cmd/dispatch), which rows of tens of seconds each
   # would move - one here waits out a durable hand-over or a maintenance loop's tick - and the
   # memory tests already took that step red at 600 s when it ran under go test's default
   # ten-minute deadline (run 37116639565). Each row's NATS runs in its own test process
@@ -5427,7 +5427,7 @@ jobs:
   #
   # They build only under the `multiprocess` tag, so envoy-go's unit run leaves them out, and
   # they are kept out of it: each `go test` call of that step is held to a -timeout sized from
-  # its slowest package's measured time (26m for the package list, which runs cmd/broker), which
+  # its slowest package's measured time (32m for the package list, which runs cmd/broker), which
   # rows of tens of seconds each would move - these wait out a migration race, a ten-second
   # fan-out window and a twelve-second drain - and the memory tests already took that step red
   # at 600 s when it ran under go test's default ten-minute deadline (run 37116639565). A job of
