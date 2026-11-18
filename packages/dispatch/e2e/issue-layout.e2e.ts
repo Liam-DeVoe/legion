@@ -293,11 +293,11 @@ async function phase<T>(
 async function expectIssuePageDrawn(page: Page): Promise<void> {
   await expect(
     issuePage(page),
-    "the page draws no [data-issue-page] root, so this is not the redesigned issue page"
+    "the page draws no [data-issue-frame] root, so this is not the redesigned issue page"
   ).toHaveCount(1);
   await expect(
     tree(page),
-    'the page draws no role="tree" named "Issue tree" inside [data-issue-page]'
+    'the page draws no role="tree" named "Issue tree" inside [data-issue-frame]'
   ).toHaveCount(1);
 }
 

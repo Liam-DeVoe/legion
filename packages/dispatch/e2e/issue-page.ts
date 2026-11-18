@@ -22,8 +22,9 @@ import { navigateInApp } from "./sends";
  *
  * ## What the page draws
  *
- * - **The page root** `[data-issue-page]`. Every check reads it, because every test asserts the
- *   page drew at all before it reads anything inside it.
+ * - **The page root** `[data-issue-frame]`, the shell's frame the page registers
+ *   (`web/src/features/shell/page-frame.tsx`, `ISSUE_FRAME`). Every check reads it, because
+ *   every test asserts the page drew at all before it reads anything inside it.
  * - **The identity block** `header[data-issue-header]`: today's attribute, kept, because the
  *   keyboard scope finds the Status, priority, labels, title and pin controls through it, which
  *   `web/src/features/issue/IssueHeader.tsx` says of the attribute in its own doc comment.
@@ -198,7 +199,7 @@ const SELECTORS = {
    *  key's row and the title (`IssueHeader.tsx`). */
   identityBand: "[data-identity-block]",
   identityBlock: "header[data-issue-header]",
-  issuePage: "[data-issue-page]",
+  issuePage: "[data-issue-frame]",
   marginSlot: '[data-testid="issue-margin"]',
   nodeAuthor: "[data-node-author]",
   nodeBody: "[data-node-body]",

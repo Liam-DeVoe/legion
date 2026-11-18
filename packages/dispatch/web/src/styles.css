@@ -324,7 +324,7 @@ html:has([data-issue-page]) {
      the screen. The issue page has no such sheet: its panel is Details, which opens over the
      whole page from the header (dispatch://INFRA-1196 R14), so nothing covers the foot there,
      and a landing centred on a passage is centred on the screen rather than 40 px above it. */
-  html:has([data-issue-page]) {
+  html:has([data-issue-frame]) {
     scroll-padding-bottom: 0;
   }
   /* `:not(.sr-only:not(:focus))`: a control the page hides from sight and keeps for the

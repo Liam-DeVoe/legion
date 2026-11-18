@@ -9,11 +9,17 @@ import { parseIssuePath } from "../refs/routes";
  * margin beside it, which is one page as a reader reads it even though the shell mounts the
  * margin once for every route (`app.tsx`, `features/margin/margin-slot.tsx`).
  *
- * The issue page is the one page that needs it: its root is `[data-issue-page]`, and everything
- * the check reads inside that root - its identity block, its body and the panel's properties -
- * has to be inside one element (dispatch://INFRA-1196, `e2e/issue-page.ts`). The shell spreads
- * whatever the page registers and reads none of it, so it still knows nothing about which page
- * is showing.
+ * The issue page is the one page that needs it: its frame is `[data-issue-frame]`, and
+ * everything the check reads inside that frame - its identity block, its body and the panel's
+ * properties - has to be inside one element (dispatch://INFRA-1196, `e2e/issue-page.ts`). The
+ * shell spreads whatever the page registers and reads none of it, so it still knows nothing
+ * about which page is showing.
+ *
+ * The mark is not `data-issue-page`: that attribute is the new issue page's own outermost
+ * element (`features/issue-page/IssueOutlinePage.tsx`), and `styles.css` gives the whole
+ * document that page's typeface while it is drawn (`html:has([data-issue-page])`). A frame the
+ * shell marks at every issue address carrying it would give every issue page that typeface,
+ * and draw it twice around the new one.
  */
 export type FrameAttributes = Readonly<Record<`data-${string}`, string>>;
 
@@ -50,7 +56,7 @@ export function PageFrameProvider({
  *  page from the keyboard, where a focused reference still opens one (dispatch://INFRA-1196
  *  R6, `features/refs/RefPreview.tsx`). */
 export const ISSUE_FRAME: FrameAttributes = {
-  "data-issue-page": "",
+  "data-issue-frame": "",
   [NO_HOVER_PREVIEW_ATTRIBUTE]: "",
 };
 

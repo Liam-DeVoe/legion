@@ -545,7 +545,7 @@ async function openTree(browser: Browser): Promise<OpenedTree> {
 async function expectTreeDrawn(page: Page): Promise<void> {
   expect(
     await issuePage(page).count(),
-    "the page draws no [data-issue-page] root, so this is not the redesigned issue page"
+    "the page draws no [data-issue-frame] root, so this is not the redesigned issue page"
   ).toBe(1);
   expect(await tree(page).count(), 'the page draws no role="tree" named "Issue tree"').toBe(1);
 }

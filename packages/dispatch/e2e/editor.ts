@@ -270,7 +270,7 @@ export function openedThreadCard(page: Page, project: string, rootId: string): L
 // read the same way: once the page has drawn one of the states, never at one instant.
 export async function setSheet(page: Page, project: string, open: boolean): Promise<void> {
   const shownPage = await settledState("the page holding the margin", [
-    ["issue", page.locator("[data-issue-page]")],
+    ["issue", page.locator("[data-issue-frame]")],
     ["document", documentEditor(page)],
   ]);
   const issuePage = shownPage === "issue";
