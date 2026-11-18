@@ -4,8 +4,14 @@ custom:
 body: |-
   A new subpath, `@legion/contracts/setting-url`, exports `shownSettingUrl`, what a line may show
   of a setting whose value names an http or https URL: the value with no user and no password when
-  the URL parser reads it as an http or https URL with a host, and nothing for any other value, of
-  which a line names the length alone. It takes the place of `withoutUserinfo`, which
+  the URL parser reads it as an http or https URL with a host and no raw `@` is left once the user
+  part it found is taken out, and nothing for any other value. The parser ends a user part at the
+  first `/`, `?`, `#` or `\`, so a token that holds one reads as a host taken from the token; such a
+  value is shown not at all, and a caller that admits a setting by this function refuses it before
+  any request, where it was admitted before. A caller whose setting is of another scheme passes the
+  schemes it takes, and such a value is shown without its query and fragment too. The subpath also
+  exports `unshownSettingUrl`, the words a refusal names such a value by: its length, and, when it
+  holds an `@`, how to write a user part. It takes the place of `withoutUserinfo`, which
   `@legion/envoy-client/errors` exported: that function took out a user part wherever the parser
   found one, so a value the parser read with no user part, as it reads `user:password@host`, came
   back whole.

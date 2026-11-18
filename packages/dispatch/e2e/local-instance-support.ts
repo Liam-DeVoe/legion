@@ -6,6 +6,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import type { Readable } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
+import { shownSettingUrl } from "@legion/contracts/setting-url";
 import type { InboxRow } from "../web/src/api/types";
 
 export class Interrupted extends Error {}
@@ -199,6 +200,75 @@ export function databaseUrlRefusal(raw: string): string | undefined {
  *  packages/envoy/scripts/fixtures/shell-quote.json. */
 export function shellQuote(value: string): string {
   return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) ? value : `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+/** What the banner of `bun run dispatch:local` names, once its instance is up. */
+export interface InstanceBanner {
+  readonly baseUrl: string;
+  readonly broadcastId: string;
+  readonly plannerSession: string;
+  /** The fake Envoy's origin. */
+  readonly fakeEnvoy: string;
+  /** The database the instance truncates and seeds. */
+  readonly databaseUrl: string;
+  /** Whether DATABASE_URL named it, a setting of the person's; else it is the repository's dev
+   *  container's URL, which the source holds. */
+  readonly databaseGiven: boolean;
+  /** Each port the harness reported, by its variable. */
+  readonly ports: Readonly<Record<string, string>>;
+  /** The environment this command runs in, for the broker switch it hands on. */
+  readonly env: Readonly<Record<string, string | undefined>>;
+}
+
+/** The harness inputs a command needs to reach this instance, as a shell prefix: the database,
+ *  each port the harness reported, and the broker switch (e2e/harness-broker.ts) this shell set.
+ *  A DATABASE_URL the person set is read from the shell that runs the command, never written in
+ *  it: it may carry a password. */
+function harnessEnvironment(banner: InstanceBanner): string {
+  const switches = [
+    "DISPATCH_E2E_AGENT_SECRETS_URL",
+    "DISPATCH_E2E_AGENT_SECRETS_ACCOUNT_TOKEN_FILE",
+  ].filter((variable) => banner.env[variable] !== undefined);
+  return [
+    banner.databaseGiven
+      ? 'DATABASE_URL="$DATABASE_URL"'
+      : `DATABASE_URL=${shellQuote(banner.databaseUrl)}`,
+    ...Object.entries(banner.ports).map(([variable, port]) => `${variable}=${port}`),
+    ...switches.map((variable) => `${variable}=${shellQuote(banner.env[variable] ?? "")}`),
+  ].join(" ");
+}
+
+/** The banner `bun run dispatch:local` prints once its instance is up: where to open it, the
+ *  seeded rows, the database, the fake Envoy, and a command that runs a spec against it. A
+ *  DATABASE_URL the person set is named with no user part and no query (`shownSettingUrl`, of the
+ *  Postgres schemes), or by its length; the dev container's URL is named as the source holds it. */
+export function instanceBanner(banner: InstanceBanner): string {
+  const { baseUrl, databaseUrl, fakeEnvoy } = banner;
+  const database = banner.databaseGiven
+    ? (shownSettingUrl(databaseUrl, ["postgres:", "postgresql:"]) ??
+      `the DATABASE_URL of ${databaseUrl.length} characters`)
+    : databaseUrl;
+  return (
+    "\nDispatch local instance is up.\n" +
+    `  Open (signed in as alice): ${baseUrl}/auth/_dev/signin?login=alice&next=/\n` +
+    `  Sign in as bob:            ${baseUrl}/auth/_dev/signin?login=bob&next=/\n` +
+    `  Seeded broadcast:          ${baseUrl}/agents/broadcasts/${banner.broadcastId}\n` +
+    `  Planner's live view:       ${baseUrl}/agents/${banner.plannerSession}/live\n` +
+    `  Agent bearer:              e2e-token (for a local Oh My Pi session: DISPATCH_URL=${baseUrl} ` +
+    "DISPATCH_TOKEN=e2e-token, with DISPATCH_TOKEN_FILE unset since it wins)\n" +
+    `  Database (truncated and reseeded on every start): ${database}\n` +
+    `  Fake Envoy: live sessions GET ${fakeEnvoy}/v1/sessions; ` +
+    `reseed them with PUT ${fakeEnvoy}/__fixture/sessions\n` +
+    "  Run a spec against it from packages/dispatch (this empties the instance; restart it to " +
+    "reseed):\n" +
+    `    DISPATCH_E2E_REUSE_SERVERS=1 ${harnessEnvironment(banner)} bunx ` +
+    "playwright test --config e2e/playwright.config.ts --project=chromium e2e/broadcast.e2e.ts\n" +
+    (banner.databaseGiven
+      ? "  The command reads DATABASE_URL as the shell that runs it sets it: set it there as you set it here.\n"
+      : "") +
+    "Open exactly that origin: 'localhost' is another Host and the server refuses it (421).\n" +
+    "Press Ctrl-C to stop."
+  );
 }
 
 /** How long the live view's answer may take in `bun run dispatch:local`: Dispatch answers a

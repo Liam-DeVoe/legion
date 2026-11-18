@@ -8,23 +8,59 @@
  * `user:password@host` and `mailto:user:password@host` with no user part at all, the password in
  * the path, and its error for a value it refuses holds the value whole.
  *
+ * Nor is the parser trusted to have found the whole user part. It ends one at the first `/`, `?`,
+ * `#` or `\`, so a token that holds one (base64 does) reads as a host taken from the token and a
+ * path, query or fragment that holds the rest. The user part the parser found is taken out, and a
+ * value in which a raw `@` is still left is shown not at all, since even its host can be a part
+ * of the token. Each caller that admits a setting's URL asks this first and refuses such a value
+ * before any request, so no lookup of a host taken from a token goes out either.
+ *
  * A URL that carries neither user nor password comes back as written. One that carries them comes
  * back as the URL parser writes it: its scheme and host lower-cased and a default port dropped,
  * still naming the same server, and no `/` added after a bare origin. Each line that names such a
  * setting's value, or a URL made from it, asks this first; it is the one function that decides.
+ *
+ * A caller whose setting names a URL of another scheme (a NATS server, a Postgres database) passes
+ * the `schemes` it takes, as the parser writes them (`nats:`), and the same rule holds for each.
+ * Such a value comes back as the parser writes it and without its query and fragment: this
+ * function cannot tell which parameters of another protocol hold a secret, and libpq reads a
+ * password from `?password=`.
  */
-export function shownSettingUrl(value: string): string | undefined {
+export function shownSettingUrl(
+  value: string,
+  schemes: readonly string[] = ["http:", "https:"]
+): string | undefined {
   let parsed: URL;
   try {
     parsed = new URL(value);
   } catch {
     return undefined;
   }
-  const http = parsed.protocol === "http:" || parsed.protocol === "https:";
-  if (!http || parsed.host === "") return undefined;
-  if (parsed.username === "" && parsed.password === "") return value;
-  parsed.username = "";
-  parsed.password = "";
-  const shown = parsed.toString();
-  return shown.endsWith("/") && !value.endsWith("/") ? shown.slice(0, -1) : shown;
+  if (!schemes.includes(parsed.protocol) || parsed.host === "") return undefined;
+  // What is left once the user part the parser found is taken out: the value as written when it
+  // has none, else as the parser writes it, with no `/` after a bare origin the value did not have.
+  let left = value;
+  if (parsed.username !== "" || parsed.password !== "") {
+    parsed.username = "";
+    parsed.password = "";
+    const written = parsed.toString();
+    left = written.endsWith("/") && !value.endsWith("/") ? written.slice(0, -1) : written;
+  }
+  if (left.includes("@")) return undefined;
+  if (parsed.protocol === "http:" || parsed.protocol === "https:") return left;
+  parsed.search = "";
+  parsed.hash = "";
+  return parsed.toString();
+}
+
+/**
+ * The words a refusal names a setting's value by when `shownSettingUrl` shows none of it: its
+ * length, and, when the value holds an `@`, what to correct, since a user part that the URL parser
+ * could not read whole is one cause. They hold no part of the value.
+ */
+export function unshownSettingUrl(value: string): string {
+  const length = `its value is ${value.length} characters long`;
+  return value.includes("@")
+    ? `${length}; if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part`
+    : length;
 }

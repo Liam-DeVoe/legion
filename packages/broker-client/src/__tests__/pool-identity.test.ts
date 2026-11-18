@@ -232,9 +232,9 @@ test("an answer that is not JSON is named without its text, which could be a tok
 });
 
 // The two services' URLs may carry a user and a password: an error names each with neither, and
-// one that is no http or https URL with a host is refused naming its length alone, before it is
-// asked anything. No member of the error, nor of a cause under it, holds the password. The
-// password is made for this run.
+// one that is no http or https URL with a host is refused naming its length alone, and how to write
+// a user part since it holds an `@`, before it is asked anything. No member of the error, nor of a
+// cause under it, holds the password. The password is made for this run.
 test("a pool URL with a user part is named without it, and one that is no http or https URL with a host by its length alone", async () => {
   const password = crypto.randomUUID();
   const withUser = (url: string) => url.replace("http://", `http://made-up-user:${password}@`);
@@ -258,6 +258,8 @@ test("a pool URL with a user part is named without it, and one that is no http o
       ),
     });
   }
+  const userPart =
+    "; if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part";
   expect(said).toEqual([
     {
       message: `trade this machine's credential at the security token service ${refusing.url}/v1/token: HTTP 400: {"error":"invalid_grant"}`,
@@ -268,11 +270,11 @@ test("a pool URL with a user part is named without it, and one that is no http o
       holds: false,
     },
     {
-      message: `the security token service URL must be an http or https URL: its value is ${`${unreadable}/v1/token`.length} characters long`,
+      message: `the security token service URL must be an http or https URL: its value is ${`${unreadable}/v1/token`.length} characters long${userPart}`,
       holds: false,
     },
     {
-      message: `the IAM Credentials URL must be an http or https URL: its value is ${unreadable.length} characters long`,
+      message: `the IAM Credentials URL must be an http or https URL: its value is ${unreadable.length} characters long${userPart}`,
       holds: false,
     },
   ]);

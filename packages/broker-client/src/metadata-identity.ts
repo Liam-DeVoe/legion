@@ -1,7 +1,6 @@
 // packages/broker-client/src/metadata-identity.ts
 
 import { Agent, request } from "node:http";
-import { shownSettingUrl } from "@legion/contracts/setting-url";
 import type { SubjectToken, TokenSource } from "./source";
 import { SUBJECT_TOKEN_TYPE_GOOGLE } from "./wire";
 
@@ -38,9 +37,22 @@ const MAX_ANSWER_BYTES = 1 << 20;
  */
 const agent = new Agent({ keepAlive: false });
 
-/** The identity-token URL for `audience`, honouring {@link METADATA_HOST_VAR}. */
-function tokenUrl(audience: string, env: NodeJS.ProcessEnv): string {
+/** A host name, an IPv4 address or a bracketed IPv6 address, with an optional port, and nothing
+ *  else: no scheme, user part, path, query or space. */
+const HOST_AND_PORT =
+  /^(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*|\[[0-9A-Fa-f:.]+\])(?::(\d{1,5}))?$/;
+
+/** The identity-token URL for `audience`, honouring {@link METADATA_HOST_VAR}; undefined when
+ *  its value is no host and port alone, which a line names by its length only: a URL made from a
+ *  value written as a URL, `http://http://user:password@host/…`, would read with the host `http`
+ *  and the password in its path. */
+function tokenUrl(audience: string, env: NodeJS.ProcessEnv): string | undefined {
   const host = (env[METADATA_HOST_VAR] ?? "").trim() || DEFAULT_METADATA_HOST;
+  const matched = HOST_AND_PORT.exec(host);
+  const port = matched?.[1];
+  if (matched === null || (port !== undefined && (Number(port) < 1 || Number(port) > 65535))) {
+    return undefined;
+  }
   return `http://${host}${IDENTITY_PATH}?audience=${encodeURIComponent(audience)}&format=full`;
 }
 
@@ -97,30 +109,29 @@ export function metadataIdentity(
   return {
     async read(signal?: AbortSignal): Promise<SubjectToken> {
       const url = tokenUrl(audience, env);
-      // The host may carry a user and a password: each line names the URL with neither, and a host
-      // that makes no http URL with a host fails the read naming its length alone, before anything
-      // is asked (`shownSettingUrl`).
-      const shown = shownSettingUrl(url);
-      if (shown === undefined) {
+      // The host is judged as a host before anything is asked: any other value fails the read
+      // naming its length alone.
+      if (url === undefined) {
         const host = (env[METADATA_HOST_VAR] ?? "").trim();
         throw new Error(
-          `${METADATA_HOST_VAR} must name the metadata server's host: its value is ${host.length} characters long`
+          `${METADATA_HOST_VAR} must name the metadata server's host, with an optional port and nothing else: its value is ${host.length} characters long`
         );
       }
+      // The URL is made from a judged host and this module's own path, so a line may name it.
       let answer: { status: number; body: string };
       try {
         answer = await get(url, signal);
       } catch (error) {
         throw new Error(
-          `the metadata server at ${shown} could not be reached (${METADATA_HOST_VAR} names its host): ${(error as Error).message}`
+          `the metadata server at ${url} could not be reached (${METADATA_HOST_VAR} names its host): ${(error as Error).message}`
         );
       }
       if (answer.status < 200 || answer.status > 299) {
-        throw new Error(`the metadata server at ${shown} answered HTTP ${answer.status}`);
+        throw new Error(`the metadata server at ${url} answered HTTP ${answer.status}`);
       }
       const token = answer.body.trim();
       if (token === "") {
-        throw new Error(`the metadata server at ${shown} answered an empty identity token`);
+        throw new Error(`the metadata server at ${url} answered an empty identity token`);
       }
       return { token, tokenType: SUBJECT_TOKEN_TYPE_GOOGLE };
     },

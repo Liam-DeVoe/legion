@@ -9,7 +9,7 @@ import type {
   IssuePriority,
   Sleep,
 } from "@legion/contracts";
-import { shownSettingUrl } from "@legion/contracts/setting-url";
+import { shownSettingUrl, unshownSettingUrl } from "@legion/contracts/setting-url";
 import type { ActiveDispatchConfig } from "../dispatch-config";
 import type { DispatchHost, ExecFn } from "../dispatch-cwd";
 import { DispatchClient, type DispatchWriteRetry } from "../dispatch-http";
@@ -290,8 +290,8 @@ export type DispatchCommand = (context: CommandContext) => Promise<DispatchToolR
  * client names the configured server in a transport error, since a session whose Dispatch moved
  * reads that message and nothing else. That message and every link name the server without the
  * user and password its URL may carry (`shownSettingUrl`); the client's requests go to the URL as
- * configured. The config admits only an http or https URL, which that function always shows; a
- * link base it would not show is refused naming its length alone.
+ * configured. The config admits only a URL that function shows; a link base it would not show is
+ * refused, named by its length and what to correct (`unshownSettingUrl`).
  */
 export function sessionContext(
   input: ExecuteDispatchToolInput,
@@ -303,7 +303,7 @@ export function sessionContext(
   const linkBase = shownSettingUrl(linkUrl);
   if (linkBase === undefined) {
     throw new Error(
-      `the Dispatch URL that links name must be an http or https URL: its value is ${linkUrl.length} characters long`
+      `the Dispatch URL that links name must be an http or https URL: ${unshownSettingUrl(linkUrl)}`
     );
   }
   const baseFetch = input.fetchImpl ?? fetch;

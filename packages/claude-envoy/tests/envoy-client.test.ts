@@ -513,7 +513,8 @@ test("a send refused by its listener holds the password of its URL in no member 
 
 // The Envoy URL may carry a user and a password. One the URL parser does not read as an http or
 // https URL with a host fails the send naming its length alone, before anything is asked: the
-// parser's own error would hold the value whole. The password is made for this run.
+// parser's own error would hold the value whole. One that holds an `@` is also told how to write
+// a user part. The password is made for this run.
 test("a send whose Envoy URL is no http or https URL with a host fails naming its length alone", async () => {
   const password = crypto.randomUUID()
   const values = [
@@ -541,10 +542,63 @@ test("a send whose Envoy URL is no http or https URL with a host fails naming it
       ),
     })
   }
+  const userPart =
+    "; if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part"
   expect(said).toEqual(
     values.map((baseUrl) => ({
-      message: `the Envoy URL (ENVOY_URL, or envoy.json's envoy.url) must be an http or https URL: its value is ${baseUrl.length} characters long`,
+      message: `the Envoy URL (ENVOY_URL, or envoy.json's envoy.url) must be an http or https URL: its value is ${baseUrl.length} characters long${baseUrl.includes("@") ? userPart : ""}`,
       holds: false,
     })),
   )
+})
+
+// A user part that holds a `/` or a `#` (a base64 token can) makes the URL parser read a host taken
+// from it and the rest of it as the path or the fragment, so a raw `@` is still left once the user
+// part it found is taken out. Such an Envoy URL fails the send before anything is asked, named by
+// its length with what to correct: here the host the parser reads is a listener of the test's
+// own, which gets no request. The password is made for this run.
+test("a send whose Envoy URL holds an @ that no user part ends with asks nothing and says what to correct", async () => {
+  const password = crypto.randomUUID()
+  let asked = 0
+  const listener = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: () => {
+      asked += 1
+      return Response.json({ ok: true })
+    },
+  })
+  try {
+    const values = [
+      `http://127.0.0.1:${listener.port}/${password}@envoy.example`,
+      `http://127.0.0.1:${listener.port}#${password}@envoy.example`,
+    ]
+    const said: { readonly message: string; readonly holds: boolean }[] = []
+    for (const baseUrl of values) {
+      const error = await sendEnvoyMessage({
+        baseUrl,
+        credential: undefined,
+        targetSession: "ses_receiver",
+        message: "never sent",
+      }).then(
+        () => undefined,
+        (thrown: unknown) => thrown,
+      )
+      said.push({
+        message: error instanceof Error ? error.message : String(error),
+        holds: inspect(error, { depth: Number.POSITIVE_INFINITY, showHidden: true }).includes(
+          password,
+        ),
+      })
+    }
+    expect({ said, asked }).toEqual({
+      said: values.map((baseUrl) => ({
+        message: `the Envoy URL (ENVOY_URL, or envoy.json's envoy.url) must be an http or https URL: its value is ${baseUrl.length} characters long; if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part`,
+        holds: false,
+      })),
+      asked: 0,
+    })
+  } finally {
+    listener.stop(true)
+  }
 })

@@ -1,6 +1,6 @@
 import { parseArgs } from "node:util";
 import { LIVE_SOCKET_MAX_AGE_CLOSE } from "../../../packages/contracts/src/dispatch-api";
-import { shownSettingUrl } from "../../../packages/contracts/src/setting-url";
+import { shownSettingUrl, unshownSettingUrl } from "../../../packages/contracts/src/setting-url";
 
 const USAGE =
   "usage: bun scripts/e2e/lib/dispatch-live-events.ts --url <dispatch> [--bearer-file <file> | --cookie-file <file> | --user <email>] [--since <id> | --from-whoami [--subscribe-after <s>]] [--until <substring>] [--timeout <s>]";
@@ -118,11 +118,11 @@ async function optionsFrom(argv: readonly string[]): Promise<Options> {
   }
 
   const rawURL = required(values.url, "--url");
-  // --url may carry a user and a password: one that is no http or https URL with a host is named
-  // by its length alone (`shownSettingUrl`).
+  // --url may carry a user and a password: one that `shownSettingUrl` would not show is named by
+  // its length and what to correct (`unshownSettingUrl`).
   if (shownSettingUrl(rawURL) === undefined) {
     throw new UsageError(
-      `--url must be Dispatch's http or https address: its value is ${rawURL.length} characters long`
+      `--url must be Dispatch's http or https address: ${unshownSettingUrl(rawURL)}`
     );
   }
   const url = new URL(rawURL);

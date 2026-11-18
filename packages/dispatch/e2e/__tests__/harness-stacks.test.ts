@@ -196,7 +196,7 @@ test("a file store endpoint that is no http or https URL with a host, or that ca
     said.push(error instanceof Error ? error.message : String(error));
   }
   expect(said).toEqual([
-    `DISPATCH_E2E_FILE_STORE_ENDPOINT must be an http or https URL: its value is ${unreadable.length} characters long`,
+    `DISPATCH_E2E_FILE_STORE_ENDPOINT must be an http or https URL: its value is ${unreadable.length} characters long; if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part`,
     "DISPATCH_E2E_FILE_STORE_ENDPOINT http://127.0.0.1:1 must carry no user and no password: the fetch of Playwright's Node refuses a URL that carries them, printing it whole",
   ]);
 });

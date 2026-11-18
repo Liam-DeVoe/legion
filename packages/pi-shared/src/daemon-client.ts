@@ -32,7 +32,7 @@ import {
   LegionWaveReleaseRequest,
   LegionWaveReleaseResponse,
 } from "@legion/contracts/legion-api";
-import { shownSettingUrl } from "@legion/contracts/setting-url";
+import { shownSettingUrl, unshownSettingUrl } from "@legion/contracts/setting-url";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { messageFor } from "@legion/envoy-client/errors";
 import { redirectedTo, redirectTarget, SAME_ADDRESS_CAUSE } from "@legion/envoy-client/redirect";
@@ -417,12 +417,13 @@ export function createLegionDaemonClient(
   fetchFn: typeof fetch = fetch
 ): LegionDaemonClient {
   const endpoint = withoutTrailingSlashes(baseUrl);
-  // The daemon's URL may carry a user and a password. One that is no http or https URL with a host
-  // fails every call naming its length alone (`shownSettingUrl`), and sends nothing: fetch would
-  // try a host it reads out of the value, and its error would hold the value whole.
+  // The daemon's URL may carry a user and a password. One that `shownSettingUrl` would not show
+  // fails every call, named by its length and what to correct (`unshownSettingUrl`), and sends
+  // nothing: fetch would try a host it reads out of the value, and its error would hold the value
+  // whole.
   const unusable =
     shownSettingUrl(baseUrl) === undefined
-      ? `LEGION_DAEMON_URL must be an http or https URL: its value is ${baseUrl.length} characters long`
+      ? `LEGION_DAEMON_URL must be an http or https URL: ${unshownSettingUrl(baseUrl)}`
       : undefined;
 
   /** The response's status and body once the daemon answered success; a refusal throws. */

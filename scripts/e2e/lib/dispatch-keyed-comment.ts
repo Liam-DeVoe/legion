@@ -21,7 +21,7 @@ import {
   IDEMPOTENCY_KEY_HEADER,
   IDEMPOTENCY_REPLAYED_HEADER,
 } from "../../../packages/contracts/src/dispatch-api";
-import { shownSettingUrl } from "../../../packages/contracts/src/setting-url";
+import { shownSettingUrl, unshownSettingUrl } from "../../../packages/contracts/src/setting-url";
 
 const USAGE =
   "usage: bun scripts/e2e/lib/dispatch-keyed-comment.ts --url <dispatch> --bearer-file <file> --issue <KEY> [--session <id>] [--cli]";
@@ -80,11 +80,11 @@ async function optionsFrom(argv: readonly string[]): Promise<Options> {
   if (bearerFile === undefined || bearerFile === "") {
     throw new UsageError("--bearer-file is required");
   }
-  // --url may carry a user and a password: one that is no http or https URL with a host is named
-  // by its length alone (`shownSettingUrl`).
+  // --url may carry a user and a password: one that `shownSettingUrl` would not show is named by
+  // its length and what to correct (`unshownSettingUrl`).
   if (shownSettingUrl(rawURL) === undefined) {
     throw new UsageError(
-      `--url must be Dispatch's http or https address: its value is ${rawURL.length} characters long`
+      `--url must be Dispatch's http or https address: ${unshownSettingUrl(rawURL)}`
     );
   }
   const url = new URL(rawURL);

@@ -1,4 +1,4 @@
-import { shownSettingUrl } from "@legion/contracts/setting-url"
+import { shownSettingUrl, unshownSettingUrl } from "@legion/contracts/setting-url"
 import type { RequestCredential } from "@legion/envoy-client/bearer"
 import { OWN_PATH_CHECK, redirectedTo, redirectTarget } from "@legion/envoy-client/redirect"
 import ky from "ky"
@@ -25,14 +25,15 @@ export type SendEnvoyMessageOptions = {
  * redirect, since fetch would send the broker's DPoP proof and the message on to the origin it
  * names (`@legion/envoy-client/redirect`): a 3xx fails the send, naming where it points. The
  * Envoy URL may carry a user and a password, which the send keeps; each line it fails with names
- * the URL with neither, and an Envoy URL that is no http or https URL with a host fails it before
- * anything is asked, naming its length alone (`shownSettingUrl` decides both): the URL parser's
- * error for it would hold the value whole.
+ * the URL with neither, and an Envoy URL that `shownSettingUrl` would not show (no http or https
+ * URL with a host, or one that still holds an `@` once its user part is taken out) fails it before
+ * anything is asked, named by its length and what to correct (`unshownSettingUrl`): the URL
+ * parser's error for it would hold the value whole, and its host can be a part of a token.
  */
 export async function sendEnvoyMessage(options: SendEnvoyMessageOptions): Promise<void> {
   if (shownSettingUrl(options.baseUrl) === undefined) {
     throw new Error(
-      `the Envoy URL (ENVOY_URL, or envoy.json's envoy.url) must be an http or https URL: its value is ${options.baseUrl.length} characters long`,
+      `the Envoy URL (ENVOY_URL, or envoy.json's envoy.url) must be an http or https URL: ${unshownSettingUrl(options.baseUrl)}`,
     )
   }
   const url = new URL("/v1/messages/send", options.baseUrl)

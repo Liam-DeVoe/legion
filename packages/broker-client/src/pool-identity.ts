@@ -5,7 +5,7 @@
 // (`packages/envoy/internal/brokerclient/pool.go`), and asks the two services Go asks with the
 // bodies Go sends, so a deployment that names a pool gets one identity from either client.
 
-import { shownSettingUrl } from "@legion/contracts/setting-url";
+import { shownSettingUrl, unshownSettingUrl } from "@legion/contracts/setting-url";
 import { messageOf } from "./error-text";
 import type { SubjectToken, TokenSource } from "./source";
 import {
@@ -123,12 +123,16 @@ export function poolIdentity(options: PoolIdentityOptions): TokenSource {
     ""
   );
   const account = pathEscape(options.serviceAccount);
-  const mintEndpoint = `${iamCredentials}/v1/projects/-/serviceAccounts/${account}:generateIdToken`;
-  // Either URL may carry a user and a password: each line names it with neither, and one that is
-  // no http or https URL with a host fails the call naming its length alone, before it is asked
-  // anything (`shownSettingUrl`).
+  const mintPath = `/v1/projects/-/serviceAccounts/${account}:generateIdToken`;
+  const mintEndpoint = `${iamCredentials}${mintPath}`;
+  // Either URL may carry a user and a password: each line names it with neither, and one that
+  // `shownSettingUrl` would not show fails the call before it is asked anything, named by its
+  // length and what to correct (`unshownSettingUrl`). The setting is judged, not the URL made
+  // from it: the account in the mint's path is an email address, whose `@` is no user part.
   const shownService = shownSettingUrl(securityTokenService);
-  const shownMint = shownSettingUrl(mintEndpoint);
+  const shownIamCredentials = shownSettingUrl(iamCredentials);
+  const shownMint =
+    shownIamCredentials === undefined ? undefined : `${shownIamCredentials}${mintPath}`;
 
   /**
    * Posts `body` to `endpoint` as JSON, with `bearer` on the `Authorization` header where it is
@@ -178,7 +182,7 @@ export function poolIdentity(options: PoolIdentityOptions): TokenSource {
   const federate = async (subject: SubjectToken, signal: AbortSignal | undefined) => {
     if (shownService === undefined) {
       throw new Error(
-        `the security token service URL must be an http or https URL: its value is ${securityTokenService.length} characters long`
+        `the security token service URL must be an http or https URL: ${unshownSettingUrl(securityTokenService)}`
       );
     }
     let federated: string;
@@ -214,7 +218,7 @@ export function poolIdentity(options: PoolIdentityOptions): TokenSource {
   const generateIdToken = async (federated: string, signal: AbortSignal | undefined) => {
     if (shownMint === undefined) {
       throw new Error(
-        `the IAM Credentials URL must be an http or https URL: its value is ${iamCredentials.length} characters long`
+        `the IAM Credentials URL must be an http or https URL: ${unshownSettingUrl(iamCredentials)}`
       );
     }
     let token: string;

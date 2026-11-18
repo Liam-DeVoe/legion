@@ -355,13 +355,22 @@ describe("envoySettings", () => {
     });
   });
 
+  // A refused ENVOY_URL is named by its length, and one that holds an `@` is also told how to write
+  // a user part (a token with a `/` in it reads as a host taken from the token).
   test("an ENVOY_URL that is not an http or https URL is refused", () => {
     const config = configFrom({ envoy: { enabled: true } });
-    for (const url of ["listener:9020", "nats://listener.internal.example:4222", "not a url"]) {
+    const userPart =
+      "; if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part";
+    for (const url of [
+      "listener:9020",
+      "nats://listener.internal.example:4222",
+      "not a url",
+      "http://MadeUpTok3n/Zx9@127.0.0.1:9020",
+    ]) {
       expect(envoySettings({ ENVOY_URL: url }, config)).toEqual({
         enabled: false,
         notice: null,
-        error: "ENVOY_URL must be an http or https URL",
+        error: `ENVOY_URL must be an http or https URL: its value is ${url.length} characters long${url.includes("@") ? userPart : ""}`,
       });
     }
   });

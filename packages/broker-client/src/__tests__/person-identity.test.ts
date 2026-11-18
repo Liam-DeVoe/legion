@@ -147,11 +147,12 @@ test("a record made with another sign-in client is refused before any request", 
   expect((await unnamed.read()).tokenType).toBe(SUBJECT_TOKEN_TYPE_PERSON);
 });
 
-// AGENT_SECRETS_SIGNIN_ISSUER may carry a user and a password: an error names the issuer with
-// neither, and an issuer that is no http or https URL with a host is refused naming its length
-// alone, before anything is asked. No member of the error, nor of a cause under it, holds the
-// password. The password is made for this run.
-test("an issuer with a user part is named without it, and one that is no http or https URL with a host by its length alone", async () => {
+// AGENT_SECRETS_SIGNIN_ISSUER may carry a user and a password, which an issuer's identifier never
+// holds, so its discovery cannot pass with one: the read refuses such an issuer before anything is
+// asked, naming it with neither. An issuer that is no http or https URL with a host is refused
+// naming its length alone, and how to write a user part since it holds an `@`. No member of the
+// error, nor of a cause under it, holds the password. The password is made for this run.
+test("an issuer with a user part is refused named without it, and one that is no http or https URL with a host by its length alone", async () => {
   const password = crypto.randomUUID();
   const issuer = await issuerFor();
   const withUser = issuer.url.replace("http://", `http://made-up-user:${password}@`);
@@ -179,18 +180,43 @@ test("an issuer with a user part is named without it, and one that is no http or
   }
   expect(said).toEqual([
     {
-      message: expect.stringMatching(
-        new RegExp(
-          `^read the sign-in issuer ${issuer.url.replaceAll(".", "\\.")}: .*connection refused`
-        )
-      ),
+      message: `AGENT_SECRETS_SIGNIN_ISSUER ${issuer.url} must carry no user and no password: an issuer's identifier holds neither, so its discovery cannot pass with them`,
       holds: false,
     },
     ...unreadable.map((value) => ({
-      message: `AGENT_SECRETS_SIGNIN_ISSUER must name an http or https URL: its value is ${value.length} characters long`,
+      message: `AGENT_SECRETS_SIGNIN_ISSUER must name an http or https URL: its value is ${value.length} characters long; if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part`,
       holds: false,
     })),
   ]);
-  // The first issuer was asked once; the two refused were asked nothing.
-  expect(calls).toBe(1);
+  // None of the three was asked anything.
+  expect(calls).toBe(0);
+});
+
+// With a real fetch against a stub issuer, an issuer with a user part would reach discovery, and
+// the library's error for the issuer its metadata names keeps the expected issuer, password
+// included, deep in its cause chain. The read refuses it before discovery: the issuer is asked
+// nothing, and no member of the error, nor of any cause under it, nor `inspect` of the whole
+// error, holds the password. The password is made for this run.
+test("an issuer with a user part asks the real issuer nothing and holds its password nowhere in the error", async () => {
+  const password = crypto.randomUUID();
+  const issuer = await issuerFor();
+  const withUser = issuer.url.replace("http://", `http://made-up-user:${password}@`);
+  const record = await signedIn(PERSON);
+  const error = await refusalOf(() => personIdentity(record, flowAt(withUser)).read());
+  const holding: string[] = [];
+  let depth = 0;
+  for (let at: unknown = error; at instanceof Error; at = at.cause, depth += 1) {
+    for (const key of Object.getOwnPropertyNames(at)) {
+      if (inspect(Reflect.get(at, key), { depth: Number.POSITIVE_INFINITY }).includes(password)) {
+        holding.push(`${"cause.".repeat(depth)}${key}`);
+      }
+    }
+  }
+  expect({
+    holding,
+    inspected: inspect(error, { depth: Number.POSITIVE_INFINITY, showHidden: true }).includes(
+      password
+    ),
+    asked: issuer.requests.map((request) => request.path),
+  }).toEqual({ holding: [], inspected: false, asked: [] });
 });

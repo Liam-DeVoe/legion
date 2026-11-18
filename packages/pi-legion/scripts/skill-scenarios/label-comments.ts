@@ -38,7 +38,7 @@
 import { mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Comment } from "@legion/contracts";
-import { shownSettingUrl } from "@legion/contracts/setting-url";
+import { shownSettingUrl, unshownSettingUrl } from "@legion/contracts/setting-url";
 import { messageFor } from "@legion/envoy-client/errors";
 import { redirectedTo, redirectTarget, SAME_ADDRESS_CAUSE } from "@legion/envoy-client/redirect";
 import {
@@ -503,11 +503,11 @@ function modelRoute(args: Arguments): ModelRoute | string {
     };
   }
   if (gateway === undefined || keyCommand === undefined) return refusal;
-  // The URL may carry a user and a password: a line names it with neither, and one that is no
-  // http or https URL with a host by its length alone (`shownSettingUrl`).
+  // The URL may carry a user and a password: a line names it with neither, and one that
+  // `shownSettingUrl` would not show by its length and what to correct (`unshownSettingUrl`).
   const shown = shownSettingUrl(gateway);
   if (shown === undefined) {
-    return `--gateway must be an http or https URL: its value is ${gateway.length} characters long`;
+    return `--gateway must be an http or https URL: ${unshownSettingUrl(gateway)}`;
   }
   return {
     url: gateway.replace(/\/+$/, ""),

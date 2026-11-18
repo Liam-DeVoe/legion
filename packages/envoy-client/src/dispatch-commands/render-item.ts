@@ -11,7 +11,7 @@ import type {
   OpenAsksResponse,
 } from "@legion/contracts";
 import { actorActText, encodeBlockId } from "@legion/contracts";
-import { shownSettingUrl } from "@legion/contracts/setting-url";
+import { shownSettingUrl, unshownSettingUrl } from "@legion/contracts/setting-url";
 import { actorText } from "../actor-text";
 import { askAnswerText, dispatchWordsText, textHead } from "../ask-answer";
 import type { DispatchClient } from "../dispatch-http";
@@ -181,13 +181,14 @@ function openAskLine(ask: OpenAsk, baseUrl: string): string {
 
 /** `dispatch open-asks` as text, each ask linked against `baseUrl`, which a caller outside the
  *  command (the Claude Code session hook) may give as the configured Dispatch URL: the links
- *  name it without the user and password that URL may carry, and a `baseUrl` that is no http or
- *  https URL with a host is refused naming its length alone (`shownSettingUrl`). */
+ *  name it without the user and password that URL may carry, and a `baseUrl` that
+ *  `shownSettingUrl` would not show is refused, named by its length and what to correct
+ *  (`unshownSettingUrl`). */
 export function formatOpenAsksSummary(response: OpenAsksResponse, baseUrl: string): string {
   const linkBase = shownSettingUrl(baseUrl);
   if (linkBase === undefined) {
     throw new Error(
-      `the Dispatch URL the asks are linked against must be an http or https URL: its value is ${baseUrl.length} characters long`
+      `the Dispatch URL the asks are linked against must be an http or https URL: ${unshownSettingUrl(baseUrl)}`
     );
   }
   const scope = "active open asks you authored on open issues and project documents";

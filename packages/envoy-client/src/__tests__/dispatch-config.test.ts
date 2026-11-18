@@ -258,8 +258,20 @@ describe("Dispatch from a harness's envoy.json", () => {
     });
   });
 
+  // A refused DISPATCH_URL is named by its length, and one that holds an `@` is also told how to
+  // write a user part: a token with a `/` in it reads as a host taken from the token, so a raw `@`
+  // is still left once the user part the URL parser found is taken out, and no request may go to
+  // that host.
   test("refuses a DISPATCH_URL that is not an http or https URL, and a DISPATCH_TOKEN that cannot be sent", () => {
-    for (const url of ["not-a-url", "localhost:8766", "ftp://dispatch.test"]) {
+    const userPart =
+      "; if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part";
+    for (const url of [
+      "not-a-url",
+      "localhost:8766",
+      "ftp://dispatch.test",
+      "https://MadeUpTok3n/Zx9+Qw==@dispatch.example",
+      "https://made-up-user:4821#Zx9-not-a-secret@dispatch.example",
+    ]) {
       expect(
         dispatchFor(
           { HOME: tempDir(), DISPATCH_URL: url, DISPATCH_TOKEN: "token" },
@@ -268,7 +280,7 @@ describe("Dispatch from a harness's envoy.json", () => {
       ).toEqual({
         enabled: false,
         notice: null,
-        error: "DISPATCH_URL must be an http or https URL",
+        error: `DISPATCH_URL must be an http or https URL: its value is ${url.length} characters long${url.includes("@") ? userPart : ""}`,
       });
     }
     expect(
@@ -307,13 +319,15 @@ describe("Dispatch from a harness's envoy.json", () => {
     // The shared fixture (fixtures/dispatch-public-url.json): every value the daemon's CheckPod
     // accepts at load (`valid`) is accepted here too, so no value boot lets through turns Dispatch
     // off in an agent. Boot holds to a narrower rule, so `agentsOnly` is accepted here alone.
-    for (const url of publicUrlFixture.invalid) {
+    const userPart =
+      "; if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part";
+    for (const url of [...publicUrlFixture.invalid, "https://MadeUpTok3n/Zx9@dispatch.example"]) {
       expect(
         dispatchFor({ ...env, DISPATCH_PUBLIC_URL: url }, { ...command, cwd: tempDir() })
       ).toEqual({
         enabled: false,
         notice: null,
-        error: "DISPATCH_PUBLIC_URL must be an http or https URL",
+        error: `DISPATCH_PUBLIC_URL must be an http or https URL: its value is ${url.length} characters long${url.includes("@") ? userPart : ""}`,
       });
     }
     for (const url of [...publicUrlFixture.valid, ...publicUrlFixture.agentsOnly]) {

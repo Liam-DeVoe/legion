@@ -108,21 +108,35 @@ test("a metadata server that refuses is an error naming the URL it was asked", a
   expect(source.read()).rejects.toThrow("HTTP 403");
 });
 
-// GCE_METADATA_HOST may carry a user and a password before the host: an error names the metadata
-// server's URL with neither, and a host the URL parser cannot read is named by its length alone,
-// with nothing asked. No member of the error, nor of a cause under it, holds the password. The
-// password is made for this run.
-test("a metadata host with a user part is named without it, and one that is no host by its length alone", async () => {
+// GCE_METADATA_HOST names a host: a host name or an IP address, with an optional port, and nothing
+// else. Any other value is refused naming its length alone, with nothing asked: a user part, a
+// URL written in its place (the source builds `http://<host>/computeMetadata/…`, and the URL
+// parser would read `http://http://user:password@host/…` with the host `http` and the password in
+// the path), a path, or a space. No member of the error, nor of a cause under it, holds the
+// password. The password is made for this run.
+test("a metadata host is a host and a port alone, and any other value is refused by its length", async () => {
   const password = crypto.randomUUID();
+  let asked = 0;
   const server = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
-    fetch: () => new Response("no identity here", { status: 403 }),
+    fetch: () => {
+      asked += 1;
+      return new Response("no identity here", { status: 403 });
+    },
   });
   servers.push(server);
-  const unreadable = `made-up-user:${password}@bad host`;
+  const refused = [
+    `made-up-user:${password}@127.0.0.1:${server.port}`,
+    `http://made-up-user:${password}@127.0.0.1:${server.port}`,
+    `http://127.0.0.1:${server.port}`,
+    `127.0.0.1:${server.port}/elsewhere`,
+    `made-up-user:${password}@bad host`,
+    `127.0.0.1:${server.port}?x=${password}`,
+    "127.0.0.1:99999",
+  ];
   const said: { readonly message: string; readonly holds: boolean }[] = [];
-  for (const host of [`made-up-user:${password}@127.0.0.1:${server.port}`, unreadable]) {
+  for (const host of [`127.0.0.1:${server.port}`, `LOCALHOST:${server.port}`, ...refused]) {
     const error = await metadataIdentity("example-audience", {
       [METADATA_HOST_VAR]: host,
     } as NodeJS.ProcessEnv)
@@ -138,16 +152,24 @@ test("a metadata host with a user part is named without it, and one that is no h
       ),
     });
   }
-  expect(said).toEqual([
-    {
-      message: `the metadata server at http://127.0.0.1:${server.port}/computeMetadata/v1/instance/service-accounts/default/identity?audience=example-audience&format=full answered HTTP 403`,
-      holds: false,
-    },
-    {
-      message: `${METADATA_HOST_VAR} must name the metadata server's host: its value is ${unreadable.length} characters long`,
-      holds: false,
-    },
-  ]);
+  expect({ said, asked }).toEqual({
+    said: [
+      {
+        message: `the metadata server at http://127.0.0.1:${server.port}/computeMetadata/v1/instance/service-accounts/default/identity?audience=example-audience&format=full answered HTTP 403`,
+        holds: false,
+      },
+      {
+        message: `the metadata server at http://LOCALHOST:${server.port}/computeMetadata/v1/instance/service-accounts/default/identity?audience=example-audience&format=full answered HTTP 403`,
+        holds: false,
+      },
+      ...refused.map((host) => ({
+        message: `${METADATA_HOST_VAR} must name the metadata server's host, with an optional port and nothing else: its value is ${host.length} characters long`,
+        holds: false,
+      })),
+    ],
+    // The two hosts were asked; no refused value was.
+    asked: 2,
+  });
 });
 
 test("no proxy variable can take the identity token", async () => {

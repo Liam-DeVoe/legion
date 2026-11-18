@@ -27,7 +27,7 @@ import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { shownSettingUrl } from "@legion/contracts/setting-url";
+import { shownSettingUrl, unshownSettingUrl } from "@legion/contracts/setting-url";
 
 import {
   pgBinVariable,
@@ -252,15 +252,15 @@ async function startPool(count: number, options: StackPoolOptions): Promise<read
   const env = options.env ?? process.env;
   watchSignals();
   try {
-    // The file store's endpoint may carry a user and a password. One that is no http or https URL
-    // with a host is refused naming its length alone (`shownSettingUrl`), and one that carries a
-    // user part named without it, since the fetch of Playwright's Node refuses such a URL printing
-    // it whole; both before a Postgres or a server starts.
+    // The file store's endpoint may carry a user and a password. One that `shownSettingUrl` would
+    // not show is refused, named by its length and what to correct (`unshownSettingUrl`), and one
+    // that carries a user part named without it, since the fetch of Playwright's Node refuses such
+    // a URL printing it whole; both before a Postgres or a server starts.
     const endpoint = (env.DISPATCH_E2E_FILE_STORE_ENDPOINT ?? "").trim();
     const shownEndpoint = endpoint === "" ? "" : shownSettingUrl(endpoint);
     if (shownEndpoint === undefined) {
       throw new Error(
-        `DISPATCH_E2E_FILE_STORE_ENDPOINT must be an http or https URL: its value is ${endpoint.length} characters long`
+        `DISPATCH_E2E_FILE_STORE_ENDPOINT must be an http or https URL: ${unshownSettingUrl(endpoint)}`
       );
     }
     if (shownEndpoint !== endpoint) {

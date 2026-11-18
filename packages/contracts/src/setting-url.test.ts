@@ -1,12 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import * as settingUrl from "./setting-url";
-import { shownSettingUrl } from "./setting-url";
+import { shownSettingUrl, unshownSettingUrl } from "./setting-url";
 
 // One function decides what a line may show of a setting's URL. A second export that strips a
 // user part without that judgement is how a value the parser misread (`user:password@host`) was
-// printed whole, so the module exports the one function and nothing else.
-test("the module exports shownSettingUrl alone", () => {
-  expect(Object.keys(settingUrl)).toEqual(["shownSettingUrl"]);
+// printed whole, so the module exports that function, and beside it only the words a refusal
+// names a value by when the function shows none of it, which hold no part of the value.
+test("the module exports shownSettingUrl and unshownSettingUrl alone", () => {
+  expect(Object.keys(settingUrl)).toEqual(["shownSettingUrl", "unshownSettingUrl"]);
 });
 
 // A setting's value is shown only when the URL parser reads it as an http or https URL with a
@@ -32,14 +33,40 @@ describe("shownSettingUrl", () => {
     ],
     [`https://${user}@host.example/dispatch`, "https://host.example/dispatch"],
     [`https://:${secret}@host.example`, "https://host.example"],
+    // An `@` that the user part holds percent-encoded is part of that user part.
+    [`https://${user}%40corp.example:${secret}@host.example/a`, "https://host.example/a"],
   ])("%p is shown as %p", (value, shown) => {
     expect(shownSettingUrl(value)).toBe(shown);
   });
 
   test("a URL with no user or password comes back as written", () => {
-    for (const url of ["http://dispatch.test", "https://host.example/a@b", "HTTP://Host.Example"]) {
+    for (const url of ["http://dispatch.test", "HTTP://Host.Example"]) {
       expect(shownSettingUrl(url)).toBe(url);
     }
+  });
+
+  // The parser ends a user part at the first `/`, `?`, `#` or `\` before it: a token that holds
+  // one (base64 does) reads as a host taken from the token, and the rest of it as the path, the
+  // query or the fragment. So no reading of the parser is trusted to have found the user part:
+  // a value that still holds a raw `@` once the user part the parser found is taken out is shown
+  // not at all, since even its host can be a part of the token. That holds for an `@` in a path,
+  // a query or a fragment too (`https://host.example/a@b`), which a setting's URL has no need of.
+  test.each([
+    [`https://MadeUpTok3n/${secret}+Qw==@host.example`],
+    [`https://MadeUpTok3n#${secret}@host.example`],
+    [`https://MadeUpTok3n?${secret}@host.example`],
+    [`https://MadeUpTok3n\\${secret}@host.example`],
+    [`https://${user}:4821/${secret}@host.example`],
+    [`https://${user}:4821#${secret}@host.example`],
+    [`https://${user}@MadeUpTok3n/${secret}@host.example`],
+    ["https://host.example/a@b"],
+    ["https://host.example/?to=a@b"],
+    ["https://host.example/#a@b"],
+    [`https://${user}:${secret}@host.example/?to=a@b`],
+    // A scheme written twice: the parser reads the host `http`, and the rest as the path.
+    [`http://http://${user}:${secret}@host.example`],
+  ])("%p, which holds an @ that no user part ends with, is shown not at all", (value) => {
+    expect(shownSettingUrl(value)).toBeUndefined();
   });
 
   test.each([
@@ -57,5 +84,69 @@ describe("shownSettingUrl", () => {
     [`https://${user}:${secret}@host.example:99999`],
   ])("%p is shown not at all", (value) => {
     expect(shownSettingUrl(value)).toBeUndefined();
+  });
+
+  // A caller whose setting names a URL of another scheme (a NATS server, a Postgres database)
+  // says which schemes it takes, and the same rule holds for each: no user and no password, and
+  // a value that still holds a raw `@` once its user part is taken out is shown not at all. Such
+  // a value is shown without its query and fragment too, since this function cannot tell which
+  // parameters of another protocol are secrets (libpq reads a password from `?password=`).
+  test.each([
+    [`nats://${user}:${secret}@127.0.0.1:4222`, ["nats:"], "nats://127.0.0.1:4222"],
+    [`nats://${secret}@nats.example:4222`, ["nats:"], "nats://nats.example:4222"],
+    [
+      `postgres://${user}:${secret}@127.0.0.1:5432/db?sslmode=disable&password=${secret}`,
+      ["postgres:", "postgresql:"],
+      "postgres://127.0.0.1:5432/db",
+    ],
+    ["postgres://127.0.0.1:5432/db#frag", ["postgres:"], "postgres://127.0.0.1:5432/db"],
+    [
+      `https://${user}:${secret}@host.example/a?b=c`,
+      ["http:", "https:"],
+      "https://host.example/a?b=c",
+    ],
+  ] as const)("%p, of the schemes %p, is shown as %p", (value, schemes, shown) => {
+    expect(shownSettingUrl(value, schemes)).toBe(shown);
+  });
+
+  test.each([
+    [`nats://${user}:${secret}@127.0.0.1:4222`, undefined],
+    [`https://${user}:${secret}@host.example`, ["nats:"]],
+    [`nats://MadeUpTok3n/${secret}@nats.example:4222`, ["nats:"]],
+    [`postgres://${user}:4821/${secret}@127.0.0.1/db`, ["postgres:"]],
+    [`postgres:///db?host=/run/postgresql`, ["postgres:"]],
+  ] as const)("%p, of the schemes %p, is shown not at all", (value, schemes) => {
+    expect(shownSettingUrl(value, schemes)).toBeUndefined();
+  });
+});
+
+// A refusal names a value that shownSettingUrl shows none of by its length alone. When the value
+// holds an `@`, a user part the URL parser could not read whole is one cause, so the words also
+// say what to correct; they never hold a part of the value.
+describe("unshownSettingUrl", () => {
+  const secret = "pw-4c7e19";
+  const correct =
+    "; if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part";
+
+  test.each([
+    ["not a url"],
+    ["   "],
+    [""],
+    ["ftp://host.example/a"],
+  ])("%p is named by its length alone", (value) => {
+    expect(unshownSettingUrl(value)).toBe(`its value is ${value.length} characters long`);
+  });
+
+  test.each([
+    [`https://MadeUpTok3n/${secret}@host.example`],
+    [`https://made-up-user:4821#${secret}@host.example`],
+    [`made-up-user:${secret}@host.example`],
+    [`https://made-up-user:pa/${secret}@host.example`],
+  ])("%p is named by its length, with what to correct, and no part of it", (value) => {
+    const words = unshownSettingUrl(value);
+    expect(words).toBe(`its value is ${value.length} characters long${correct}`);
+    expect(words).not.toContain(secret);
+    expect(words).not.toContain("MadeUpTok3n");
+    expect(words).not.toContain("made-up-user");
   });
 });

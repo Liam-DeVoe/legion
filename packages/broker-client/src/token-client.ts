@@ -23,7 +23,7 @@
 // only with what `token()` gave it never writes with no identity, nor with one that has been
 // ended.
 
-import { shownSettingUrl } from "@legion/contracts/setting-url";
+import { shownSettingUrl, unshownSettingUrl } from "@legion/contracts/setting-url";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import {
   allowInsecureRequests,
@@ -558,12 +558,12 @@ export class BrokerTokenClient {
   async #trade(signal: AbortSignal | undefined): Promise<BrokerToken> {
     const endpoint = this.#brokerUrl + TOKEN_PATH;
     // The broker's URL may carry a user and a password: each line names it with neither, and one
-    // that is no http or https URL with a host fails the trade naming its length alone, before
-    // the identity is read (`shownSettingUrl`).
+    // that `shownSettingUrl` would not show fails the trade before the identity is read, named by
+    // its length and what to correct (`unshownSettingUrl`).
     const shown = shownSettingUrl(endpoint);
     if (shown === undefined) {
       throw new Error(
-        `the broker URL must be an http or https URL: its value is ${this.#brokerUrl.length} characters long`
+        `the broker URL must be an http or https URL: ${unshownSettingUrl(this.#brokerUrl)}`
       );
     }
     const subject = await this.#subject.read(signal);

@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { bridgeConfigFromEnvironment, envelopeValidation, redactUpstream } from "./envoy-bridge";
+import {
+  bridgeConfigFromEnvironment,
+  bridgeReadyLine,
+  envelopeValidation,
+  redactUpstream,
+} from "./envoy-bridge";
 
 const currentEnvelope = (overrides: Record<string, unknown> = {}) => ({
   event_id: "evt-1",
@@ -64,6 +69,55 @@ describe("bridgeConfigFromEnvironment", () => {
     expect(() =>
       bridgeConfigFromEnvironment({ SMOKE_REPO: "a/b", SMOKE_UPSTREAM_NATS: "nats://y.example:1" })
     ).toThrow(/SMOKE_RIG_NATS/);
+  });
+
+  // SMOKE_RIG_NATS may carry a user and a password, or a token as its user: the ready line names
+  // the rig's NATS with neither. One that the one function would not show, since it still holds a
+  // raw `@` once its user part is taken out or is no nats:// or tls:// URL with a host, is refused
+  // before anything is dialed, named by its length. The password is made for this run.
+  test("names the rig's NATS with no user part, and refuses one it cannot show", () => {
+    const password = crypto.randomUUID();
+    const said: string[] = [];
+    for (const rig of [
+      `nats://made-up-user:${password}@127.0.0.1:4222`,
+      `nats://${password}@127.0.0.1:4222`,
+    ]) {
+      said.push(
+        bridgeReadyLine(
+          bridgeConfigFromEnvironment({
+            SMOKE_REPO: "a/b",
+            SMOKE_RIG_NATS: rig,
+            SMOKE_UPSTREAM_NATS: "nats://y.example:1",
+          })
+        )
+      );
+    }
+    const refused = [
+      `nats://MadeUpTok3n/${password}@127.0.0.1:4222`,
+      `made-up-user:${password}@x:1`,
+    ];
+    for (const rig of refused) {
+      try {
+        bridgeConfigFromEnvironment({
+          SMOKE_REPO: "a/b",
+          SMOKE_RIG_NATS: rig,
+          SMOKE_UPSTREAM_NATS: "nats://y.example:1",
+        });
+        said.push("accepted");
+      } catch (error) {
+        said.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+    const ready =
+      "BRIDGE READY subjects=notifications.github.a.b.> upstream=SMOKE_UPSTREAM_NATS downstream=nats://127.0.0.1:4222";
+    expect(said).toEqual([
+      ready,
+      ready,
+      ...refused.map(
+        (rig) =>
+          `SMOKE_RIG_NATS must be a nats:// or tls:// URL with a host: its value is ${rig.length} characters long; if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part`
+      ),
+    ]);
   });
 
   test("requires SMOKE_UPSTREAM_NATS: the operator names the production NATS, it has no default", () => {

@@ -7,9 +7,13 @@
 // (docs/solutions/legion).
 import { connect, type NatsConnection, type Subscription } from "nats";
 import { EnvelopeSchema } from "../../../packages/contracts/src/envelope";
+import { shownSettingUrl, unshownSettingUrl } from "../../../packages/contracts/src/setting-url";
 import { githubSubject } from "../../../packages/contracts/src/subject";
 import { natsAuthOptions } from "../../../packages/envoy-client/src/nats-auth";
 import { operatorNatsSeed } from "./operator-nats-seed";
+
+/** The schemes of a NATS server's URL that the rig's NATS may be named by. */
+const NATS_SCHEMES = ["nats:", "tls:"];
 
 const requiredEnvelopeFields = [
   "event_id",
@@ -62,6 +66,13 @@ export function bridgeConfigFromEnvironment(
   }
   const downstreamUrl = environment.SMOKE_RIG_NATS?.trim() ?? "";
   if (!downstreamUrl) throw new Error("SMOKE_RIG_NATS is required");
+  // It may carry a user and a password, or a token as its user: one that the one function would
+  // not show is refused before anything is dialed, named by its length and what to correct.
+  if (shownSettingUrl(downstreamUrl, NATS_SCHEMES) === undefined) {
+    throw new Error(
+      `SMOKE_RIG_NATS must be a nats:// or tls:// URL with a host: ${unshownSettingUrl(downstreamUrl)}`
+    );
+  }
   const upstreamUrl = environment.SMOKE_UPSTREAM_NATS?.trim() ?? "";
   if (!upstreamUrl) throw new Error("SMOKE_UPSTREAM_NATS is required");
   if (!upstreamNatsUrl.test(upstreamUrl)) {
@@ -166,6 +177,15 @@ async function forwardMessages(
   }
 }
 
+/** The line the rig scripts wait for once both connections are up. It names the upstream by its
+ * variable, and the rig's NATS with no user part (`shownSettingUrl`). */
+export function bridgeReadyLine(config: BridgeConfig): string {
+  const downstream =
+    shownSettingUrl(config.downstreamUrl, NATS_SCHEMES) ??
+    `a URL ${config.downstreamUrl.length} characters long`;
+  return `BRIDGE READY subjects=${config.subjects.join(",")} upstream=SMOKE_UPSTREAM_NATS downstream=${downstream}`;
+}
+
 export async function runBridge(config: BridgeConfig): Promise<void> {
   const upstream = await connect({
     servers: config.upstreamUrl,
@@ -198,9 +218,7 @@ export async function runBridge(config: BridgeConfig): Promise<void> {
     try {
       await upstream.flush();
       await downstream.flush();
-      console.log(
-        `BRIDGE READY subjects=${config.subjects.join(",")} upstream=SMOKE_UPSTREAM_NATS downstream=${config.downstreamUrl}`
-      );
+      console.log(bridgeReadyLine(config));
       await Promise.all(
         subscriptions.map((subscription, index) =>
           forwardMessages(subscription, config.subjects[index] as string, activeDownstream)

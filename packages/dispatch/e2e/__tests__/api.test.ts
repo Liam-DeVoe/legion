@@ -280,10 +280,12 @@ test(
         holds: `${stdout}${stderr}`.includes(password),
       });
     }
+    const userPart =
+      "; if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part";
     expect(said).toEqual([
       ...unparsed.map((base) => ({
         exit: 1,
-        died: `PLAYWRIGHT_BASE_URL must be an http or https URL: its value is ${base.length} characters long`,
+        died: `PLAYWRIGHT_BASE_URL must be an http or https URL: its value is ${base.length} characters long${base.includes("@") ? userPart : ""}`,
         holds: false,
       })),
       {

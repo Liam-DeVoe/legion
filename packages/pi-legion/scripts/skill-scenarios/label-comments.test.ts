@@ -729,9 +729,11 @@ test("a --gateway that is no http or https URL with a host is refused naming its
     expect(sent).toEqual([]);
     said.push(run.stderr);
   }
+  const userPart =
+    "; if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part";
   expect(said).toEqual(
     refused.map((gateway) => [
-      `label-comments: --gateway must be an http or https URL: its value is ${gateway.length} characters long`,
+      `label-comments: --gateway must be an http or https URL: its value is ${gateway.length} characters long${gateway.includes("@") ? userPart : ""}`,
     ])
   );
 });

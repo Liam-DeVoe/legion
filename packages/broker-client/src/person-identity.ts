@@ -5,7 +5,7 @@
 // and `DeviceFlow.Refresh` (`packages/envoy/internal/brokerclient/device.go`), with
 // `openid-client` in the place of x/oauth2.
 
-import { shownSettingUrl } from "@legion/contracts/setting-url";
+import { shownSettingUrl, unshownSettingUrl } from "@legion/contracts/setting-url";
 import {
   allowInsecureRequests,
   ClientSecretPost,
@@ -97,9 +97,11 @@ export function personIdentity(
     (url, init) =>
       send(url, requestInit(init, signal, init.headers));
 
-  // The issuer may carry a user and a password: each line names it with neither, and one that is
-  // no http or https URL with a host fails the read naming its length alone, before anything is
-  // asked (`shownSettingUrl`).
+  // The issuer may carry a user and a password: each line names it with neither, and one that
+  // `shownSettingUrl` would not show fails the read before anything is asked, named by its length
+  // and what to correct (`unshownSettingUrl`). One with a user part fails it too, named without
+  // it: an issuer's identifier holds no user part, so discovery cannot pass with one, and the
+  // library's error for the issuer it then reads would keep the password in its cause chain.
   const shownIssuer = shownSettingUrl(flow.issuer);
 
   /** The issuer's metadata, as one discovery request reads it. */
@@ -125,7 +127,13 @@ export function personIdentity(
     async read(signal?: AbortSignal): Promise<SubjectToken> {
       if (shownIssuer === undefined) {
         throw new Error(
-          `${SIGNIN_ISSUER_VAR} must name an http or https URL: its value is ${flow.issuer.length} characters long`
+          `${SIGNIN_ISSUER_VAR} must name an http or https URL: ${unshownSettingUrl(flow.issuer)}`
+        );
+      }
+      const { username, password } = new URL(flow.issuer);
+      if (username !== "" || password !== "") {
+        throw new Error(
+          `${SIGNIN_ISSUER_VAR} ${shownIssuer} must carry no user and no password: an issuer's identifier holds neither, so its discovery cannot pass with them`
         );
       }
       discovered ??= discover(signal, shownIssuer);

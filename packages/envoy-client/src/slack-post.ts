@@ -9,7 +9,7 @@
  */
 
 import { BlockList, isIP } from "node:net";
-import { shownSettingUrl } from "@legion/contracts/setting-url";
+import { shownSettingUrl, unshownSettingUrl } from "@legion/contracts/setting-url";
 import { type RedirectTarget, redirectedTo, redirectTarget, SAME_ADDRESS_CAUSE } from "./redirect";
 
 /** The broker's agent secret holding the Legion Slack app's bot token (`xoxb-…`). */
@@ -335,10 +335,10 @@ export async function postSlackReply(
   const override = env[SLACK_POST_API_URL_VARIABLE];
   if (override !== undefined && override !== "" && !allowedAPIURL(override)) {
     // The override may carry a user and a password: the refusal names it with neither, and one
-    // that is no http or https URL with a host by its length alone (`shownSettingUrl`).
+    // that `shownSettingUrl` would not show by its length and what to correct (`unshownSettingUrl`).
     const shown = shownSettingUrl(override);
     throw new Error(
-      `${SLACK_POST_API_URL_VARIABLE} must be an https URL, or http on a loopback host${shown === undefined ? `: its value is ${override.length} characters long` : ` (got ${shown})`}; nothing was posted`
+      `${SLACK_POST_API_URL_VARIABLE} must be an https URL, or http on a loopback host${shown === undefined ? `: ${unshownSettingUrl(override)}` : ` (got ${shown})`}; nothing was posted`
     );
   }
   const { PATH: searchPath = "" } = env;
@@ -460,14 +460,12 @@ function posterTarget(value: unknown): RedirectTarget | { readonly kind: "anothe
   return { kind: "no target" };
 }
 
-/** https anywhere, or http on a loopback host, which a stand-in on this machine is. */
+/** https anywhere, or http on a loopback host, which a stand-in on this machine is; and in both a
+ * URL `shownSettingUrl` shows, since one that still holds a raw `@` once its user part is taken
+ * out can name a host taken from a token. */
 function allowedAPIURL(value: string): boolean {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    return false;
-  }
+  if (shownSettingUrl(value) === undefined) return false;
+  const url = new URL(value);
   if (url.protocol === "https:") return true;
   return url.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
 }

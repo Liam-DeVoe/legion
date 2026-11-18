@@ -51,7 +51,7 @@
 import { writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { LIVE_SOCKET_MAX_AGE_CLOSE } from "@legion/contracts";
-import { shownSettingUrl } from "@legion/contracts/setting-url";
+import { shownSettingUrl, unshownSettingUrl } from "@legion/contracts/setting-url";
 
 import { REQUEST_DEADLINE_MS } from "../web/src/api/client";
 import {
@@ -396,11 +396,12 @@ function parseView(text: string): DeliveryLiveView {
 function parseOptions(argv: readonly string[]): Options {
   const values = readArgs(argv);
   const rawUrl = required(values.url, "--url");
-  // --url may carry a user and a password: one that is no http or https URL with a host is named
-  // by its length alone (`shownSettingUrl`), and every later line names it with neither.
+  // --url may carry a user and a password: one that `shownSettingUrl` would not show is named by
+  // its length and what to correct (`unshownSettingUrl`), and every later line names it with
+  // neither.
   if (shownSettingUrl(rawUrl) === undefined) {
     throw new UsageError(
-      `--url must be Dispatch's http or https address: its value is ${rawUrl.length} characters long`
+      `--url must be Dispatch's http or https address: ${unshownSettingUrl(rawUrl)}`
     );
   }
   const url = new URL(rawUrl);
