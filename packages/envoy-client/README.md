@@ -665,8 +665,10 @@ attempt. The client tells the command's `CommandKey` (`markUnsettled`, per write
 command exits 75 (sysexits' `EX_TEMPFAIL`, as `envoy-send` exits for a send it cannot confirm)
 rather than 1, which a caller reads as a refusal and runs again under a new key, a second write.
 
-The session keeps every request such a call sent at `resend/<key>.json`, never changing one it
-holds (`writeResendRecord`), and a call under that key sends each write it sends to the same route
+The session keeps every request such a call sent, one file per write at
+`resend/<key>.writes/<write key>.json`, each made only where none is, by a hard link that fails if
+another call made it first, so two calls under the key at once never replace each other's
+(`writeResendRecord`); and a call under that key sends each write it sends to the same route
 under the same key as its first call sent it, whatever it built this time (a body edited since, a
 revision read afresh, a picture changed, a different working directory), saying so where the two
 differ (`dispatch: warning: this call sent … as its first call sent it, not as this call built it`): Dispatch answers each write it

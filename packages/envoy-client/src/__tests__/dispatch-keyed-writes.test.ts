@@ -1173,7 +1173,7 @@ describe("DispatchClient's writes", () => {
       "NOT_FOUND",
       `${NO_ROUTE_MESSAGE_PREFIX} POST /api/v1/issues/DSP-1/comments`
     );
-    const { fetchImpl, sent } = scripted([noRoute, json(posted, 201), json({}, 201)]);
+    const { fetchImpl, sent } = scripted([noRoute, json(posted, 201), json(posted, 201)]);
     const { dispatch } = commandClient(fetchImpl, pacing().retry);
 
     await dispatch.comment("DSP-1", comment);
@@ -1443,12 +1443,13 @@ describe("DispatchClient's writes", () => {
     }
   });
 
-  // A 2xx whose body is no JSON object this client reads (`null`, JSON cut short) answers a write
-  // Dispatch made with nothing the command can use: the answer is lost, as a cut body's is, and
-  // the command says the write may have landed rather than failing as a refusal or printing an
-  // empty success.
+  // A 2xx whose body is no JSON object or list with something in it (`null`, JSON cut short, a
+  // page, nothing, `{}`, `[]`) answers a write Dispatch made with nothing the command can use:
+  // Dispatch answers every write it makes with what it made. The answer is lost, as a cut body's
+  // is, and the command says the write may have landed rather than failing as a refusal or
+  // printing an empty success.
   test("a command's write answered 2xx with no JSON object may have landed unanswered", async () => {
-    for (const text of ["null", '{"id":', "<html>OK</html>"]) {
+    for (const text of ["null", '{"id":', "<html>OK</html>", "", "{}", "[]"]) {
       const answer = new Response(text, {
         status: 201,
         headers: { "Content-Type": text.startsWith("<") ? "text/html" : "application/json" },
@@ -1459,6 +1460,21 @@ describe("DispatchClient's writes", () => {
       expect({ text, failed: failed instanceof Error }).toEqual({ text, failed: true });
       expect({ text, unsettled: commandKey.unsettled }).toEqual({ text, unsettled: true });
     }
+  });
+
+  // What such an answer says is quoted in the error, which the CLI prints and keeps in the
+  // session's ledger: a page that echoes the request's credential has it taken out, as a refusal's
+  // page has.
+  test("an unusable 2xx's excerpt names no credential", async () => {
+    const page = new Response("<html>Authorization: Bearer secret</html>", {
+      status: 201,
+      headers: { "Content-Type": "text/html" },
+    });
+    const { fetchImpl } = scripted([page]);
+    const { dispatch } = commandClient(fetchImpl, pacing().retry);
+    const failed = await failure(dispatch.comment("DSP-1", comment));
+    expect((failed as Error).message).not.toContain("secret");
+    expect((failed as Error).message).toContain("Authorization");
   });
 
   // A Dispatch whose /healthz answers its health (`healthzHandler`: `ok` and `db` on every build)

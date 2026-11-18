@@ -2102,12 +2102,13 @@ export class DispatchClient {
   /**
    * `#response` for the answer to a call sent under `key`. A write's 2xx is handed on before its
    * body is read (`writeAnswer`), so the body can still be lost on the way: the connection breaks,
-   * or the deadline ends the read. A write's 2xx whose body is no JSON object or list (`null`, JSON
-   * cut short, a page) is lost the same way: the write ran, and nothing the command can use came
+   * or the deadline ends the read. A write's 2xx (but a 204) whose body is no JSON object or list
+   * with something in it (`null`, JSON cut short, a page, nothing, `{}`, `[]`) is lost the same way:
+   * Dispatch answers every write it makes with what it made, so nothing the command can use came
    * back. Either way a write of a `dispatch` command tells `commandKey` (`#unsettle`) before the
-   * failure is thrown on. A confirmed answer or landing resolves that key alone: an earlier
-   * no-route attempt may have left it uncertain, while another write of the command may still be
-   * so.
+   * failure is thrown on, and what the answer said is quoted with the credential taken out
+   * (`excerpt`). A confirmed answer or landing resolves that key alone: an earlier no-route
+   * attempt may have left it uncertain, while another write of the command may still be so.
    */
   async #answer<T>(
     method: string,
@@ -2118,15 +2119,15 @@ export class DispatchClient {
     try {
       const answer = await this.#response<T>(method, url, response);
       const read: unknown = answer;
-      if (
-        key !== undefined &&
-        response.status !== 204 &&
-        read !== "" &&
-        (typeof read !== "object" || read === null)
-      ) {
+      const holds =
+        typeof read === "object" &&
+        read !== null &&
+        (Array.isArray(read) ? read.length > 0 : Object.keys(read).length > 0);
+      if (key !== undefined && response.status !== 204 && !holds) {
         const said = typeof read === "string" ? read : JSON.stringify(read);
+        const quoted = excerpt(said, this.token);
         throw new Error(
-          `${method} ${withoutUserinfo(url)} was answered ${response.status}, but with no JSON object this client reads (${textHead(said)}), so the write may have landed with its answer lost`
+          `${method} ${withoutUserinfo(url)} was answered ${response.status}, but with no JSON object this client reads (${quoted === "" ? "an empty body" : quoted}), so the write may have landed with its answer lost`
         );
       }
       if (key !== undefined) this.#commandKey?.markAnswered(key);
