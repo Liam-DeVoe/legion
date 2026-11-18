@@ -33,9 +33,10 @@ func laneOnHarness(t *testing.T, harness listenerDeliveryHarness, handler natsgo
 // forwarder before it drains the lane, and releases the held messages to keep only once the lane's
 // client has drained: the handler's wait ends, it keeps each message it takes, the drain takes
 // every message the subscription held, and every message, held or not, is kept on the role's kept
-// lane under held_at_shutdown. No held message's keep goes out before the handler's last take, so
-// the keeps of a listener holding its bound cannot spend the window the handler's keeps need
-// (TestAHeldRoleMessageIsKeptOnlyOnceTheLaneHasDrained holds that order on its own).
+// lane under held_at_shutdown. No held message's keep goes out before the handler's last keep: the
+// stream's own sequence on the kept lane orders the keeps, so the order is read off the store and
+// not off a clock (TestAHeldRoleMessageIsKeptOnlyOnceTheLaneHasDrained holds that order on its
+// own).
 func TestRoleLaneDrainKeepsEveryMessageWhileEverySlotIsHeld(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	const (
@@ -80,16 +81,28 @@ func TestRoleLaneDrainKeepsEveryMessageWhileEverySlotIsHeld(t *testing.T) {
 	if strings.Contains(logs, roleLaneUndrainedLine) || strings.Contains(logs, roleHeldUnkeptLine) {
 		t.Fatalf("the drain lost role messages:\n%s", logs)
 	}
-	// Every message the handler took is kept, and the held messages' keeps come after the last of
-	// those takes: the handler's own keeps go first.
-	lastTake := ""
-	for _, record := range linesIn(logs, "listener received", nil) {
-		lastTake = fmt.Sprint(record["time"])
+	// The handler keeps every message it takes after the stop - the one it was waiting for a slot
+	// for, and each the drain hands it - and the held ones are kept after the last of those: the
+	// stream stores the keeps on the kept lane in the order they were made, and its sequence says
+	// so to the message.
+	keptAt := func(item contracts.Envelope) uint64 {
+		kept := linesIn(logs, "listener kept role message for the role's next holder", map[string]any{"event_id": item.EventID})
+		if len(kept) != 1 {
+			t.Fatalf("message %s has kept lines %v, want one:\n%s", item.EventID, kept, logs)
+		}
+		sequence, ok := kept[0]["sequence"].(float64)
+		if !ok {
+			t.Fatalf("message %s's kept line names no sequence: %v", item.EventID, kept[0])
+		}
+		return uint64(sequence)
+	}
+	var lastHandlerKeep uint64
+	for _, item := range published[limit:] {
+		lastHandlerKeep = max(lastHandlerKeep, keptAt(item))
 	}
 	for i, item := range published[:limit] {
-		kept := linesIn(logs, "listener kept role message for the role's next holder", map[string]any{"event_id": item.EventID})
-		if len(kept) != 1 || fmt.Sprint(kept[0]["time"]) < lastTake {
-			t.Fatalf("held message %d %s was kept at %v, before the handler's last take at %s:\n%s", i, item.EventID, kept, lastTake, logs)
+		if sequence := keptAt(item); sequence < lastHandlerKeep {
+			t.Fatalf("held message %d %s was kept at sequence %d, before the handler's last keep at %d:\n%s", i, item.EventID, sequence, lastHandlerKeep, logs)
 		}
 	}
 	for i, item := range published {
@@ -166,10 +179,10 @@ func TestAHeldRoleMessageIsKeptOnlyOnceTheLaneHasDrained(t *testing.T) {
 	})
 	forwarder.stopHolding()
 
-	// The stop alone keeps nothing: the message parks with its slot, and the kept lane stays empty
-	// while the lane's handler would be keeping what its subscription holds.
-	waitFor(t, 20*time.Second, "the held message to stop being tried again", func() bool {
-		return countLogged(harness.logs.String(), roleHeldLine, item.EventID) >= 1
+	// The stop alone keeps nothing: the message parks with its slot, and says so, and the kept lane
+	// stays empty while the lane's handler would be keeping what its subscription holds.
+	waitFor(t, 20*time.Second, "the held message to park", func() bool {
+		return countLogged(harness.logs.String(), roleParkedLine, item.EventID) == 1
 	})
 	for i := range 20 {
 		if kept := countLogged(harness.logs.String(), "listener kept role message for the role's next holder", item.EventID); kept != 0 {

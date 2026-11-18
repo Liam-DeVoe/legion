@@ -198,11 +198,13 @@ a holder it finds past the live window keeps its claim) runs
 inside the same 3.5 s budget, and one the budget runs out on is that 503 too, naming the call that
 did not answer. Its 413, its 400s and its 403 for a denied publish are unchanged. Its role 404s
 (`unclaimed`, `holder_lapsed`) keep their bodies, and a role send gives one only when the listener
-kept nothing: the request sent `keep: false`; the role's token is one `roles.Valid` refuses, which
-no claim can ever name; or the keep itself failed. A role send whose message the listener kept
-answers `202` instead, both for a role nobody claims and for a claim whose holder is not live. A
-role topic's send then runs on
-within its own 4 s and answers its 200, 202, 403 `capability` or 504 as "Role delivery and
+kept nothing under a rule: the request sent `keep: false`; the role's token is one `roles.Valid`
+refuses, which no claim can ever name; or the bus refuses the keep however often it is sent. A
+keep that failed on NATS (a full stream, a publish not answered in its window, a connection down)
+is answered the bus-unavailable `503` with `Retry-After: 1`, and the sender sends again. A role
+send whose message the listener kept answers `202` instead, both for a role nobody claims and for
+a claim whose holder is not live. A role topic's send then runs on
+within its own 4 s and answers its 200, 202, 403 `capability`, 409 or 504 as "Role delivery and
 exceptions" says.
 
 A publish the server denies under this listener's own grant (`bus.ErrPublishDenied`) is the
@@ -290,10 +292,13 @@ each for the 10 s JetStream wait: nats.go's KV reads, writes and deletes take no
 bucket call waits through `bus.Bounded` (`internal/bus/kv.go`), which stops waiting when the
 context ends. Store work that did not answer, whatever it names, is
 `503 {"error":"envoy: the message bus did not answer: <reason>"}` with `Retry-After: 1`
-(`writeStoreError`, `cmd/listener/api.go`). The store's own answers keep the answers they had: a
-refused key its 413 or 400, a held role its 409, and no key, an undecodable record or a lost
-compare-and-swap the status the route always gave it; an error a claim joins from several is one
-only when every part of it is. A write the budget abandoned may still land
+(`writeStoreError`, `cmd/listener/api.go`). A write the stream refuses for the message itself
+(`bus.StreamRefusesMessage`) is the send table's `409` with no `Retry-After`: envoy-client throws
+it at once, and a session's registration meets it again only at its next heartbeat. The store's
+own answers keep the answers they had: a refused key its 413 or 400, a held role its 409, and no
+key, an undecodable record or a lost compare-and-swap the status the route always gave it; an
+error a claim joins from several is one only when every part of it is. A write the budget
+abandoned may still land
 after the 503: a put rewrites the record the caller's retry writes again, and a delete or a claim
 is conditional on the revision it read (`store.Registry.UpsertWithin`, `Remove`,
 `SetRoleWithPrevious`, `session.SessionRegistry.PutWithin` and `Delete` say why each is safe).
@@ -357,13 +362,16 @@ holder is not live, which also names that holder, its `holder_state` (`unrespons
 gone horizon, `gone` past it) and its `last_seen`. Such a claim stands: the publish is not
 forwarded to its holder, nothing releases the claim, and an `unresponsive` holder is not dead, so
 the sender starts no replacement for it. It answers `404` with `reason` `unclaimed` or
-`holder_lapsed` when no live session holds the role and nothing was kept: the sender asked for
-that with `keep: false`, or the keep was refused or failed. A `holder_lapsed` 404 names the same
+`holder_lapsed` when no live session holds the role and a rule kept nothing: the sender asked for
+that with `keep: false`, or the role's token is one no claim can name, or the bus refuses the keep
+however often it is sent. A keep that failed on NATS is the bus-unavailable `503` with
+`Retry-After: 1` instead, and the sender sends again. A `holder_lapsed` 404 names the same
 holder fields and `claim_released: false`. Also the 503 or 500 `GET /v1/roles/<role>` gives when
 its first resolution of
 the holder, within 3.5 s of the request's arrival, fails (see "Send and publish answers"); `403`
 with `reason: "capability"` when the holder does not take the
-payload's delivery mode; and `504` with `reason`, `event_id`, `dedupe_key`, `holder` and
+payload's delivery mode; `409` after one forward when the stream refuses the forward for the
+message itself; and `504` with `reason`, `event_id`, `dedupe_key`, `holder` and
 `attempts` once the four seconds passed, which keeps nothing, since keeping is the 202 answer
 above. That reason is always `delivery_failed`, the one 504 reason the route gives: the message
 is not known to have been stored for its holder (no live holder to forward to, a holder lookup
@@ -456,9 +464,12 @@ flush failed, or whose acknowledgement did not come for a subject the stream cap
 responders answer, or a stream answer that can change with the stream's state, such as a full
 stream - ends nothing: the lane holds the message, counted in `envoy_role_forwards_outstanding`,
 and runs its delivery again, under the same `Nats-Msg-Id`, for 71 hours at most, after which it
-keeps it on the kept lane. At shutdown the lane stops its forwarder, drains its connection, and
-only then keeps every message it holds, so the handler's keeps of the messages its subscription
-still holds go over the main connection first. The lane's outcome is one
+keeps it on the kept lane. Once a forward of a message has been made, every later attempt is that
+forward again, to the same holder, so the stream stores the message once even when the role moves
+meanwhile. At shutdown the lane stops its forwarder, drains its connection, and only then keeps
+every message it holds, those still queued behind a holder's worker among them, so the handler's
+keeps of the messages its subscription still holds go over the main connection first. The lane's
+outcome is one
 of two exception reasons only under a rule: `no_holder` when no session claims the role and a
 rule refused its keep, and `delivery_failed` when the holder is not live and a rule refused its
 keep (an `unresponsive` holder among them, whose claim the lane leaves alone), when a claim read

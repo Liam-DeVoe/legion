@@ -3129,8 +3129,9 @@ func TestListenerDeliveryHandler_RoleLaneForwardsToAHolderItsSessionCacheHasNotS
 // A forward that fails on the connection leaves the listener not knowing whether the stream holds
 // a copy, so the role lane holds the message and forwards it again (roleForwarder.hold), under the
 // same Nats-Msg-Id, until the stream stores it: two failed forwards and a third that the stream
-// acknowledges deliver the message once, log two held lines, and publish no delivery exception.
-// While the message is held it keeps its slot, so envoy_role_forwards_outstanding counts it.
+// acknowledges deliver the message once, log one held line at ERROR for the message (its later
+// attempts are DEBUG, under the logger's INFO level), and publish no delivery exception. While the
+// message is held it keeps its slot, so envoy_role_forwards_outstanding counts it.
 func TestListenerDeliveryHandler_RoleForwardPublishErrorIsHeldAndForwardedAgain(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	const role = "forward-publish-error"
@@ -3186,8 +3187,9 @@ func TestListenerDeliveryHandler_RoleForwardPublishErrorIsHeldAndForwardedAgain(
 		t.Fatalf("a held message published an exception (or the probe failed): %v %v", message, err)
 	}
 	logs := harness.logs.String()
-	if got := strings.Count(logs, `"msg":"`+roleHeldLine+`"`); got != failures {
-		t.Fatalf("%d held lines, want %d:\n%s", got, failures, logs)
+	heldLines := linesIn(logs, roleHeldLine, nil)
+	if len(heldLines) != 1 || heldLines[0]["level"] != "ERROR" || heldLines[0]["attempt"] != float64(1) {
+		t.Fatalf("held lines %v, want one at ERROR for the first attempt and none for the %d after it:\n%s", heldLines, failures-1, logs)
 	}
 	if strings.Count(logs, `"msg":"listener role forwarded"`) != 1 || strings.Contains(logs, `"msg":"listener role forward failed"`) {
 		t.Fatalf("want one forwarded line and no failed line:\n%s", logs)
@@ -3243,12 +3245,14 @@ func TestListenerDeliveryHandler_RoleMessageHeldAtShutdownIsKept(t *testing.T) {
 	}
 }
 
-// A message the lane has held up to roleHoldBound is not forwarded again: an attempt after the
-// stream's duplicate window could store a second copy of a forward an earlier attempt stored while
-// its answer was lost. Its next hold keeps it on its role's kept lane instead, under the reason
-// held_past_bound, and frees its slot. The lane dates the message by the listener's clock when it
-// takes it; the second forward moves that clock to the bound before it fails, so the hold after it
-// is past the bound and the hold after the first is not, whatever the scheduler does in between.
+// A message the lane has held up to roleHoldBound is not held again: an attempt after the stream's
+// duplicate window could store a second copy of a forward an earlier attempt stored while its
+// answer was lost. Its next hold makes the pinned forward once more, at once and so still inside
+// the window, and when that forward's outcome is again unknown it keeps the message on its role's
+// kept lane under the reason held_past_bound, with the WARN that a second holder may get a copy,
+// and frees its slot. The lane dates the message by the listener's clock when it takes it; the
+// second forward moves that clock to the bound before it fails, so the hold after it is past the
+// bound and the hold after the first is not, whatever the scheduler does in between.
 func TestListenerDeliveryHandler_RoleMessageHeldToItsBoundIsKept(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	const role = "held-to-bound"
@@ -3285,8 +3289,11 @@ func TestListenerDeliveryHandler_RoleMessageHeldToItsBoundIsKept(t *testing.T) {
 	if held := strings.Count(logs, `"msg":"`+roleHeldLine+`"`); held != 1 {
 		t.Fatalf("%d held lines, want 1: the hold past the bound keeps the message instead:\n%s", held, logs)
 	}
-	if got := forwards.Load(); got != 2 {
-		t.Fatalf("the lane forwarded %d times, want 2: none after the bound", got)
+	if got := forwards.Load(); got != 3 {
+		t.Fatalf("the lane forwarded %d times, want 3: two attempts, and the pinned forward once more before the keep", got)
+	}
+	if warned := linesIn(logs, roleKeptAfterUnknownForwardLine, nil); len(warned) != 1 || warned[0]["reason"] != string(roleKeptPastHoldBound) {
+		t.Fatalf("lines %v, want one WARN that the message whose forward may be stored was kept at its bound:\n%s", warned, logs)
 	}
 	if strings.Contains(logs, `"msg":"listener role forward failed"`) || strings.Contains(logs, roleHeldUnkeptLine) {
 		t.Fatalf("a message kept at its bound must log neither a failed forward nor the unkept line:\n%s", logs)

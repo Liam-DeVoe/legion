@@ -67,9 +67,10 @@ const (
 	sendDedupe sendOutcome = "dedupe"
 	// sendSkipped is a role send from the role's own holder, the role lane's echo skip.
 	sendSkipped sendOutcome = "skipped"
-	// sendUnclaimed and sendHolderLapsed are a role send with no live holder that kept nothing -
-	// keep: false, a role token no claim can name, or a keep that failed - answered 404
-	// (roleSend.noHolder).
+	// sendUnclaimed and sendHolderLapsed are a role send with no live holder that kept nothing
+	// under a rule - keep: false, a role token no claim can name, or a keep NATS refuses however
+	// often it is sent (busRefusesForGood) - answered 404 (roleSend.noHolder). A keep that failed
+	// on NATS is sendFailed, answered the bus-unavailable 503 its error maps to.
 	sendUnclaimed    sendOutcome = sendOutcome(roles.Unclaimed)
 	sendHolderLapsed sendOutcome = sendOutcome(roles.Lapsed)
 	// sendDeliveryFailed is a recipient the stream stored no forward for: none live to forward to,

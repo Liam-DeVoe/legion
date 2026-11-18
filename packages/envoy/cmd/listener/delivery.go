@@ -651,13 +651,29 @@ func roleTopicDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessag
 // forwarding needs that guard of its own because it never goes through /v1/messages/send. The
 // forward itself is handed to the role forwarder (roleForwarder.enqueue) and its outcome reported
 // when it ends (roleForwarder.finish), so the role lane's handler returns without waiting for the
-// stream. A resolution that failed on NATS holds the message instead (roleForwarder.hold). Once
-// the listener is stopping (roleForwarder.stopHolding), the message is kept on its role's kept
-// lane at once, with no resolution and no slot to wait for (roleForwarder.keepHeld), so the lane's
-// drain takes every message its subscription holds within its window.
+// stream. A resolution that failed on NATS holds the message instead (roleForwarder.hold).
+//
+// A held message a forward of which has been made (roleHeld.pinned) resolves nothing and passes no
+// guard again: it is that forward once more, to the same holder under the same Nats-Msg-Id, so
+// the stream drops it when the first was stored, whoever holds the role now.
+//
+// Once the listener is stopping (roleForwarder.stopHolding), a message the lane just took is kept
+// on its role's kept lane at once, with no resolution and no slot to wait for
+// (roleForwarder.keepHeld), so the lane's drain takes every message its subscription holds within
+// its window; a held message parks, as every held message does at the stop, and is kept once the
+// lane has drained (roleForwarder.keepWhenTheLaneHasDrained).
 func deliverRoleMessage(cfg listenerDeliveryHandlerConfig, item contracts.Envelope, held roleHeld) {
 	if cfg.roleForwards.stopped() {
+		if held.attempts > 0 {
+			cfg.roleForwards.keepWhenTheLaneHasDrained(item, held.pinned, held, nil)
+			return
+		}
 		cfg.roleForwards.keepHeld(item, held, roleKeptAtShutdown, nil)
+		return
+	}
+	if held.pinned != "" {
+		cfg.attemptCache.Record(item.DedupeKey, held.pinned)
+		cfg.roleForwards.enqueue(roleForward{item: item, sessionID: held.pinned, held: held})
 		return
 	}
 	// The lane names its role in either form (contracts.CanonicalRole); the claim it resolves is
@@ -737,12 +753,16 @@ func refusedRoleForwardOutcome(verdict forwardVerdict, item contracts.Envelope, 
 // role lane's own forward adds nothing. A forward the stream acknowledged storing inside
 // roleForwardTimeout is delivered, which is the whole of a forward's outcome: no holder answers a
 // receipt (startRoleForward). The role lane hands it only a forward that ended: one the stream
-// acknowledged, or one an error ends for good (roleForwardEnded) - a refused or denied envelope,
-// the server's no-responders or error answer, or a subject the deployed stream does not capture -
-// which is delivery_failed like a stale holder or an unadvertised/unreadable delivery mode; no
-// claim is no_holder. Any other failure leaves the stream's copy unknown, and the lane's forwarder
-// holds the message for another attempt instead (roleForwarder.finish). A failure clears the
-// attempt, so a re-send is forwarded again; a delivered forward records the dedupe entry.
+// acknowledged, or one an error ends for good (roleForwardEnded) - NATS's refusal of the publish
+// under a rule every attempt meets (busRefusesForGood: a refused envelope or subject, a denied
+// subject, or the stream's refusal of the message itself), or no acknowledgement, or no
+// responders, for a subject a read of the deployed stream says it does not capture - which is
+// delivery_failed like a stale holder or an unadvertised/unreadable delivery mode; no claim is
+// no_holder. Every other failure leaves the stream's copy unknown - any other answer of the
+// stream, a no-responders answer for a subject it captures, a lost acknowledgement, a spent window
+// - and the lane's forwarder holds the message for another attempt instead (roleForwarder.finish).
+// A failure clears the attempt, so a re-send is forwarded again; a delivered forward records the
+// dedupe entry.
 func finishRoleForward(cfg listenerDeliveryHandlerConfig, forward roleForward, err error, attrs ...slog.Attr) {
 	item, sessionID := forward.item, forward.sessionID
 	switch {

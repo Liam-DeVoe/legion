@@ -338,7 +338,8 @@ func TestAKeepASealedStreamRefusesEndsTheMessage(t *testing.T) {
 // publish route makes one forward and answers 409 under streamRefusedPrefix, recorded
 // stream_refused, with no Retry-After. Retried to the send's window it would answer the 504 that
 // a sender re-sends on, so a sealed stream would have every sender re-sending for as long as the
-// stream stands.
+// stream stands. The count of forwards is what holds that: a route that retried the refusal makes
+// more than one inside its window, whatever the box's load.
 func TestAForwardASealedStreamRefusesIsAnsweredAtOnce(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	const (
@@ -356,7 +357,6 @@ func TestAForwardASealedStreamRefusesIsAnsweredAtOnce(t *testing.T) {
 	})
 	deps.delivery = &delivery
 
-	started := time.Now()
 	recorder, _ := publishThrough(deps,
 		`{"topic":"`+contracts.RoleTopicPrefix+role+`","source":"agent","message":"a sealed stream stores nothing"}`)
 
@@ -369,9 +369,6 @@ func TestAForwardASealedStreamRefusesIsAnsweredAtOnce(t *testing.T) {
 	}
 	if got := forwards.Load(); got != 1 {
 		t.Fatalf("the route made %d forwards, want 1: a refusal is not retried", got)
-	}
-	if elapsed := time.Since(started); elapsed > publishDeliveryWindow/2 {
-		t.Fatalf("the route answered after %s, which is most of its %s window: it retried the refusal", elapsed, publishDeliveryWindow)
 	}
 }
 

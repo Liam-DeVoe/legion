@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -31,13 +32,37 @@ const (
 	roleHoldMax   = 5 * time.Second
 )
 
-// roleHeldLine is the WARN line of a role message the lane holds for another delivery attempt,
-// and roleHeldDeliveryStatus its delivery_status: a NATS step of its delivery failed and the
-// listener does not know that the stream holds a copy (roleForwarder.hold).
+// roleHeldLine is the line of a role message the lane holds for another delivery attempt, and
+// roleHeldDeliveryStatus its delivery_status: a NATS step of its delivery failed and the listener
+// does not know that the stream holds a copy (roleForwarder.hold). A message's first hold logs it
+// at ERROR, once, since the lane could not store the message when it took it; every later attempt
+// logs it at DEBUG, so a message held for hours is one ERROR line and not one line per attempt.
+// The message's end is its own line: forwarded, kept, or a refusal with its exception.
 const (
 	roleHeldLine           = "listener role message held for another delivery attempt"
 	roleHeldDeliveryStatus = "held"
 )
+
+// roleLaneFullLine and roleLaneRoomLine are the two ERROR lines of a role lane whose forward slots
+// are all held (roleForwarder.acquire): the first when the handler first has to wait for a slot,
+// the second when at most half the slots are held again (roleForwarder.release), with how long the
+// lane was full. While the slots are full the handler takes nothing from the lane's subscription,
+// and its role messages wait there. The gauge envoy_role_forwards_outstanding reads the slots held,
+// so an alert reads it at the limit (roleForwardWaitLimit, 4,096) as these lines do.
+const (
+	roleLaneFullLine = "role lane forward slots are all held; the role lane takes no more role messages until one ends"
+	roleLaneRoomLine = "role lane forward slots have room again"
+)
+
+// roleParkedLine is the line of a held message the listener's stop parked: it makes no further
+// attempt, and is kept once the lane's own client has drained (roleForwarder.keepWhenTheLaneHasDrained).
+const roleParkedLine = "listener role message parked until the role lane drains"
+
+// roleKeptAfterUnknownForwardLine is the WARN line of a message the lane keeps on its role's kept
+// lane after a forward of it to its holder had an outcome the listener never learned
+// (roleForwarder.keepHeld): if that forward was stored and the role then moves, the kept copy's
+// handover gives the new holder a second copy.
+const roleKeptAfterUnknownForwardLine = "listener kept a role message whose forward to its holder may already be stored"
 
 // roleHoldBound is how long the lane holds one message for further attempts, counted from when the
 // lane took it (roleHeld.since) by the listener's clock: the stream's duplicate window
@@ -75,10 +100,19 @@ type roleForward struct {
 // is a message the lane just took: it takes a slot when it is queued (roleForwarder.enqueue) or
 // when a failed resolution holds it (roleForwarder.hold), and keeps that slot through every
 // attempt until its delivery ends, when the slot is freed exactly once (releaseHeld).
+//
+// pinned is the holder a forward of the message was made to whose outcome the listener did not
+// learn: the stream may hold that forward's copy. Every later attempt is that same forward again -
+// the same holder, its agent subject and the same Nats-Msg-Id (roleForward.msgID) - with no new
+// resolution of the role's holder, so the stream drops the repeat when the first was stored and
+// the message is stored once, for that holder, as it would have been had the acknowledgement come.
+// A resolution that picked another holder after a move of the role would forward under another
+// subject and another id, which the stream stores beside the first.
 type roleHeld struct {
 	attempts int
 	since    time.Time
 	slot     bool
+	pinned   string
 }
 
 // roleForwarder runs the role lane's forwards off its NATS handler, so a forward the stream is slow
@@ -111,6 +145,11 @@ type roleForwarder struct {
 	// to be kept at all.
 	keepNow     chan struct{}
 	keepNowOnce sync.Once
+	// full is set while the handler has had to wait for a slot and the slots have not fallen to
+	// half since, fullSince when it was set (acquire, release): the pair of ERROR lines that report
+	// a full lane are written once each per spell.
+	full      atomic.Bool
+	fullSince atomic.Int64
 
 	mu sync.Mutex
 	// queues holds each holder's forwards not yet published, in arrival order. A holder has a key
@@ -196,7 +235,8 @@ func (f *roleForwarder) enqueue(forward roleForward) {
 // it took one; its caller records that on the message (roleHeld.slot). It takes none once the
 // listener stops (stopHolding): the role lane's handler, blocked here with every slot held, must go
 // on taking the messages its subscription holds, or the lane's drain runs out and closes the
-// connection under them.
+// connection under them. The first wait of a spell in which every slot is held logs
+// roleLaneFullLine at ERROR (laneFull).
 func (f *roleForwarder) acquire() bool {
 	if f.stopped() {
 		return false
@@ -205,9 +245,28 @@ func (f *roleForwarder) acquire() bool {
 	case f.slots <- struct{}{}:
 		f.pending.Add(1)
 		return true
+	default:
+	}
+	f.laneFull()
+	select {
+	case f.slots <- struct{}{}:
+		f.pending.Add(1)
+		return true
 	case <-f.stop:
 		return false
 	}
+}
+
+// laneFull logs roleLaneFullLine at ERROR when a spell of full slots begins: once, until release
+// logs the lane has room again.
+func (f *roleForwarder) laneFull() {
+	if !f.full.CompareAndSwap(false, true) {
+		return
+	}
+	f.fullSince.Store(f.cfg.now().UnixNano())
+	f.cfg.logger.Error(roleLaneFullLine,
+		slog.Int("slots", cap(f.slots)),
+		slog.Int("outstanding", f.outstanding()))
 }
 
 // stopped reports whether the listener has stopped the forwarder's attempts (stopHolding).
@@ -220,10 +279,19 @@ func (f *roleForwarder) stopped() bool {
 	}
 }
 
-// release frees the slot of one role message that has ended.
+// release frees the slot of one role message that has ended. A lane whose slots were full logs
+// roleLaneRoomLine at ERROR once at most half its slots are held again, with how long it was full:
+// half, rather than the first free slot, so a lane that stays at its bound logs one pair of lines
+// for the spell and not one for each slot that frees and is taken again at once.
 func (f *roleForwarder) release() {
 	<-f.slots
 	f.pending.Done()
+	if f.full.Load() && f.outstanding() <= cap(f.slots)/2 && f.full.CompareAndSwap(true, false) {
+		f.cfg.logger.Error(roleLaneRoomLine,
+			slog.Int("slots", cap(f.slots)),
+			slog.Int("outstanding", f.outstanding()),
+			slog.Duration("full_for", f.cfg.now().Sub(time.Unix(0, f.fullSince.Load()))))
+	}
 }
 
 // releaseHeld frees the slot a message's delivery holds, when it holds one (roleHeld.slot).
@@ -234,7 +302,12 @@ func (f *roleForwarder) releaseHeld(held roleHeld) {
 }
 
 // publish is sessionID's worker: it publishes the holder's queued forwards in order, hands each
-// one's wait to a goroutine of its own, and ends once the queue is empty.
+// one's wait to a goroutine of its own, and ends once the queue is empty. A forward it takes from
+// the queue once the listener has stopped (stopHolding) is not made: it parks with its slot, as a
+// held message does, and is kept once the lane's own client has drained
+// (keepWhenTheLaneHasDrained), its attempt record cleared since no forward goes out. So every
+// message the lane took ends forwarded, kept, or refused under a rule, and none is left queued
+// behind a worker when the forwarder's wait runs out.
 func (f *roleForwarder) publish(sessionID string) {
 	subject := contracts.LegacyAgentSubject(sessionID)
 	for {
@@ -250,6 +323,11 @@ func (f *roleForwarder) publish(sessionID string) {
 		f.queues[sessionID] = queue[1:]
 		f.mu.Unlock()
 
+		if f.stopped() {
+			f.cfg.attemptCache.Clear(forward.item.DedupeKey, forward.sessionID)
+			f.keepWhenTheLaneHasDrained(forward.item, forward.sessionID, forward.held, nil)
+			continue
+		}
 		wait, err := f.cfg.forwardRole(subject, forward.forwarded(), forward.msgID(subject), roleForwardTimeout)
 		if err != nil {
 			f.finish(forward, err)
@@ -262,12 +340,14 @@ func (f *roleForwarder) publish(sessionID string) {
 // finish ends forward with its outcome: a forward the stream acknowledged, or one an error ends
 // for good (roleForwardEnded), is reported and frees its slot (finishRoleForward). Any other error
 // leaves the listener not knowing whether the stream holds a copy, so the message is held for
-// another delivery attempt with its slot, and its attempt record is cleared so that attempt is not
-// taken for a repeat of it.
+// another delivery attempt with its slot, pinned to this holder (roleHeld.pinned), and its attempt
+// record is cleared so that attempt is not taken for a repeat of it.
 func (f *roleForwarder) finish(forward roleForward, err error) {
 	if err != nil && !roleForwardEnded(f.cfg.client, contracts.LegacyAgentSubject(forward.sessionID), err) {
 		f.cfg.attemptCache.Clear(forward.item.DedupeKey, forward.sessionID)
-		f.hold(forward.item, forward.sessionID, forward.held, err)
+		held := forward.held
+		held.pinned = forward.sessionID
+		f.hold(forward.item, forward.sessionID, held, err)
 		return
 	}
 	finishRoleForward(f.cfg, forward, err)
@@ -316,12 +396,14 @@ func roleForwardEnded(client *bus.Client, subject string, err error) bool {
 // the role's claim or of its holder's session, or a keep (deliverRoleMessage). The message takes a
 // slot if it holds none (roleHeld.slot) and keeps it until its delivery ends, so
 // envoy_role_forwards_outstanding counts it while it waits. It publishes no delivery exception,
-// since the message is not given up, and logs roleHeldLine at WARN, naming holder when one was
-// resolved. After a wait that starts at roleHoldFirst and doubles to roleHoldMax, the whole
-// delivery runs again (deliverRoleMessage): the holder is resolved again, so a holder that changed
-// gets the message and a role that lost its holder keeps it on its kept lane, and a forward goes
-// out under the same Nats-Msg-Id. A message whose next attempt would start past roleHoldBound,
-// counted from when the lane took it (roleHeld.since), is kept now instead (keepHeld).
+// since the message is not given up, and logs roleHeldLine, naming holder when one was resolved:
+// at ERROR on the message's first hold and at DEBUG on every later one. After a wait that starts
+// at roleHoldFirst and doubles to roleHoldMax, the delivery runs again (deliverRoleMessage). A
+// message no forward of which has been made resolves its holder again, so a holder that changed
+// gets it and a role that lost its holder keeps it on its kept lane. A message a forward of which
+// has been made (roleHeld.pinned) is forwarded again to that holder under the same Nats-Msg-Id, so
+// the stream stores it once. A message whose next attempt would start past roleHoldBound, counted
+// from when the lane took it (roleHeld.since), is kept now instead (keepHeld).
 //
 // A listener that stops makes no further attempt: the message parks, and keeps once the lane's own
 // client has drained (keepHeldNow), so the handler's keeps of the messages the subscription still
@@ -340,7 +422,7 @@ func (f *roleForwarder) hold(item contracts.Envelope, holder string, held roleHe
 	}
 	held.attempts++
 	if f.stopped() {
-		f.keepWhenTheLaneHasDrained(item, held, cause)
+		f.keepWhenTheLaneHasDrained(item, holder, held, cause)
 		return
 	}
 	delay := roleHoldDelay(held.attempts)
@@ -348,7 +430,11 @@ func (f *roleForwarder) hold(item contracts.Envelope, holder string, held roleHe
 		f.keepHeld(item, held, roleKeptPastHoldBound, cause)
 		return
 	}
-	f.cfg.logger.DeliveryLog(slog.LevelWarn, roleHeldLine, holder, item.Topic, item.EventID, roleHeldDeliveryStatus,
+	level := slog.LevelDebug
+	if held.attempts == 1 {
+		level = slog.LevelError
+	}
+	f.cfg.logger.DeliveryLog(level, roleHeldLine, holder, item.Topic, item.EventID, roleHeldDeliveryStatus,
 		slog.Int("attempt", held.attempts),
 		slog.Duration("next_attempt_in", delay),
 		slog.String("error", cause.Error()))
@@ -363,7 +449,7 @@ func (f *roleForwarder) hold(item contracts.Envelope, holder string, held roleHe
 		// kept rather than tried once more.
 		select {
 		case <-f.stop:
-			f.keepWhenTheLaneHasDrained(item, held, cause)
+			f.keepWhenTheLaneHasDrained(item, holder, held, cause)
 		default:
 			deliverRoleMessage(f.cfg, item, held)
 		}
@@ -371,11 +457,14 @@ func (f *roleForwarder) hold(item contracts.Envelope, holder string, held roleHe
 }
 
 // keepWhenTheLaneHasDrained parks a held message until the lane's own client has drained
-// (keepHeldNow) and then keeps it on its role's kept lane under roleKeptAtShutdown. The handler
-// keeps each message the subscription still holds while the drain runs, on the same main
-// connection: a held message that kept at the stop instead would spend the window those need, and
-// a listener holding its bound would lose them.
-func (f *roleForwarder) keepWhenTheLaneHasDrained(item contracts.Envelope, held roleHeld, cause error) {
+// (keepHeldNow) and then keeps it on its role's kept lane under roleKeptAtShutdown, logging
+// roleParkedLine, naming holder when one was resolved, when it parks. The handler keeps each
+// message the subscription still holds while the drain runs, on the same main connection: a held
+// message that kept at the stop instead would spend the window those need, and a listener holding
+// its bound would lose them.
+func (f *roleForwarder) keepWhenTheLaneHasDrained(item contracts.Envelope, holder string, held roleHeld, cause error) {
+	f.cfg.logger.DeliveryLog(slog.LevelInfo, roleParkedLine, holder, item.Topic, item.EventID, roleHeldDeliveryStatus,
+		slog.Int("attempts", held.attempts))
 	go func() {
 		<-f.keepNow
 		f.keepHeld(item, held, roleKeptAtShutdown, cause)
@@ -403,15 +492,37 @@ const roleKeepRefusedLine = "listener role message refused by its keep"
 // keepHeld is a held message's end when the lane stops holding it - the listener stops
 // (roleKeptAtShutdown), or its next attempt would start past roleHoldBound (roleKeptPastHoldBound,
 // with cause, the failure that would have held it once more) - and the end of a message the lane
-// takes once the listener stopped: one keep on its role's kept lane (keepRoleLaneMessage), which
-// the role's next live holder is handed by a handover of any listener, and the message's slot
-// freed when it holds one. A keep a rule refuses (keepFailureHolds: a role token no claim can name,
-// a refused envelope, a denied subject, a stream that refuses the message itself) gives the message
-// up as delivery_failed, with its exception, as the lane gives up a message a rule refuses
-// anywhere. A keep that fails on NATS leaves no copy anywhere and no rule to tell the sender by,
-// which roleHeldUnkeptLine reports at ERROR with the event id and the reason.
+// takes once the listener stopped. Its slot is freed when it holds one.
+//
+// A message a forward of which may already be stored (roleHeld.pinned) makes that forward once
+// more first, to the same holder under the same Nats-Msg-Id: an acknowledgement, a duplicate's
+// included, ends it forwarded, and a refusal under a rule ends it as a forward's refusal does. Only
+// a forward whose outcome is again unknown leaves it to the keep, with roleKeptAfterUnknownForwardLine
+// at WARN: the kept copy's handover reaches whoever holds the role then, and a holder other than
+// the pinned one gets a second copy if the first forward was stored.
+//
+// Every other message is kept once on its role's kept lane (keepRoleLaneMessage), which the role's
+// next live holder is handed by a handover of any listener. A keep a rule refuses
+// (keepFailureHolds: a role token no claim can name, a refused envelope, a denied subject, a stream
+// that refuses the message itself) gives the message up as delivery_failed, with its exception, as
+// the lane gives up a message a rule refuses anywhere. A keep that fails on NATS leaves no copy
+// anywhere and no rule to tell the sender by, which roleHeldUnkeptLine reports at ERROR with the
+// event id and the reason.
 func (f *roleForwarder) keepHeld(item contracts.Envelope, held roleHeld, reason roleKeepReason, cause error) {
 	defer f.releaseHeld(held)
+	if held.pinned != "" {
+		forward := roleForward{item: item, sessionID: held.pinned, held: held}
+		subject := contracts.LegacyAgentSubject(held.pinned)
+		err := f.cfg.forwardAndWait(subject, forward.forwarded(), forward.msgID(subject), roleForwardTimeout)
+		if err == nil || roleForwardEnded(f.cfg.client, subject, err) {
+			finishRoleForward(f.cfg, forward, err)
+			return
+		}
+		f.cfg.logger.DeliveryLog(slog.LevelWarn, roleKeptAfterUnknownForwardLine, held.pinned, item.Topic, item.EventID, roleHeldDeliveryStatus,
+			slog.String("reason", string(reason)),
+			slog.Int("attempts", held.attempts),
+			slog.String("error", err.Error()))
+	}
 	_, role, _ := contracts.CanonicalRole(strings.TrimPrefix(item.Topic, contracts.RoleTopicPrefix))
 	err := keepRoleLaneMessage(f.cfg, role, item, reason, "")
 	if err == nil {
