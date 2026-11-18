@@ -181,6 +181,10 @@ type LauncherHello struct {
 	LauncherID         string `json:"launcherId"`
 	LeakCheckTag       string `json:"leakCheckTag,omitempty"`
 	LeakCheckInstalled bool   `json:"leakCheckInstalled,omitempty"`
+	// CredentialWait says this launcher starts a child only once its slot's gh files hold the
+	// credential its start names (LauncherStart.GitHubCredential). A launcher of an image before
+	// that wait sends no member.
+	CredentialWait bool `json:"credentialWait,omitempty"`
 }
 
 // LauncherHelloAck admits a launcher to receive child process commands, and hands it the

@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -25,6 +26,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/memoryguard"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
@@ -257,7 +259,7 @@ func (m *manager) serve(ctx context.Context, address string) error {
 	defer stopClose()
 	writer := shimwire.NewWriter(conn)
 	hello := shimwire.LauncherHello{
-		Token: m.token, Sandbox: m.cfg.Sandbox, Role: m.role, PodUID: m.cfg.PodUID, LauncherID: m.launcherID,
+		Token: m.token, Sandbox: m.cfg.Sandbox, Role: m.role, PodUID: m.cfg.PodUID, LauncherID: m.launcherID, CredentialWait: true,
 	}
 	hello.LeakCheckTag, hello.LeakCheckInstalled = m.check.hello()
 	if err := writer.WriteFrame(hello); err != nil {
@@ -650,6 +652,14 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 	// The pod's own test database: the DSN this launcher serves, over whatever the daemon's start
 	// command carried, and no such variable at all when this launcher serves none (testPGEnv).
 	env = testPGEnv(env, m.cfg.TestPostgres)
+	// A start into a pod the daemon kept names the credential its slot's gh files must hold, which
+	// the daemon wrote into the slot's Secret just before: the child starts only once the kubelet's
+	// projection holds it, so its first push or comment is never made as the App the files held.
+	if command.GitHubCredential != nil {
+		if err := m.awaitGitHubCredential(ctx, env, *command.GitHubCredential); err != nil {
+			return abandon(err)
+		}
+	}
 	process, err := m.command(command, env)
 	if err != nil {
 		return abandon(err)
@@ -679,6 +689,44 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 	go m.wait(process.cmd, active)
 	_ = m.state()
 	return result
+}
+
+// ghRoot is the directory of the slot's gh files as this launcher sees them: the role's own gh
+// directory of the roles directory for a role of an issue pod (RoleGHDir), and the gh bundle root
+// its start names (LEGION_GH_OWNERS_DIR) for the controller's launcher, whose container mounts it
+// there.
+func (m *manager) ghRoot(env []string) string {
+	if m.namespaced {
+		return filepath.Join(m.cfg.RolesDir, m.role, RoleGHDir)
+	}
+	return envValue(env, "LEGION_GH_OWNERS_DIR")
+}
+
+// awaitGitHubCredential waits, reading once a second, until the slot's hosts.yml that want names
+// holds a token whose SHA-256 is want's digest, and answers why it stopped waiting when ctx ends
+// first.
+func (m *manager) awaitGitHubCredential(ctx context.Context, env []string, want shimwire.LauncherGitHubCredential) error {
+	if !filepath.IsLocal(want.HostsFile) {
+		return fmt.Errorf("the start names the gh file %q, which is not under the slot's gh directory", want.HostsFile)
+	}
+	path := filepath.Join(m.ghRoot(env), filepath.FromSlash(want.HostsFile))
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	for {
+		if data, err := os.ReadFile(path); err == nil {
+			if token, err := ghconfig.TokenFromHosts(data); err == nil {
+				sum := sha256.Sum256([]byte(token))
+				if hex.EncodeToString(sum[:]) == want.TokenDigest {
+					return nil
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return errors.New("the slot's gh files do not hold the credential of this start yet")
+		case <-tick.C:
+		}
+	}
 }
 
 func (m *manager) remember(id string, body []byte, result shimwire.Frame) {
