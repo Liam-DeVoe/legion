@@ -41,6 +41,13 @@
  * that the two cannot drift apart: a locator that stopped meaning "this page is drawn" would
  * otherwise leave this row measuring a window that ends somewhere else.
  *
+ * What the row holds besides the waves. Each page's own route chunk is asked for before the
+ * landing read answers. The entry starts it beside that read, before React renders anything
+ * (`web/src/app.tsx`, `preloadRouteChunk`, called from `web/src/main.tsx`); without that start,
+ * `AuthGate` draws its skeleton until the landing read answers and the router asks for the chunk
+ * only then, so the page's own reads wait on a chunk as well as on the landing. A chunk is no
+ * read, so the waves alone would not see that start go.
+ *
  * Everything here is made up: this repository is public, so nothing names a real person, host or
  * project.
  */
@@ -100,6 +107,9 @@ interface Measurement {
   readonly landing: Landing;
   readonly reads: readonly Read[];
   readonly waves: readonly (readonly Read[])[];
+  /** When the page's own route chunk was first asked for, in milliseconds from the navigation;
+   *  undefined when it never was before the landing ended. */
+  readonly routeChunkAt: number | undefined;
 }
 
 /** One page this row lands on cold. */
@@ -113,6 +123,9 @@ interface Landing {
   /** Whether `read` is this page's own data, as against the shell's. The reads before the first
    *  such read are the ones the shell makes before the page can even ask for what it shows. */
   readonly ownData: (read: Read) => boolean;
+  /** The page's own route chunk, which the entry starts beside the landing read
+   *  (`web/src/app.tsx`, `preloadRouteChunk`). */
+  readonly routeChunk: RegExp;
   /** R3's bound on the whole landing, where it sets one. It sets one for the issue page alone. */
   readonly bounds?: { readonly reads: number; readonly waves: number };
 }
@@ -227,8 +240,9 @@ function stamp(ms: number): string {
   return Number.isFinite(ms) ? `${ms.toFixed(1).padStart(7)} ms` : "     no answer";
 }
 
-/** One landing's whole waterfall: a heading, then every read in start order with its wave. */
-function waterfallOf({ landing, reads, waves }: Measurement): string {
+/** One landing's whole waterfall: a heading, then every read in start order with its wave, then
+ *  when the page's route chunk was asked for. */
+function waterfallOf({ landing, reads, routeChunkAt, waves }: Measurement): string {
   const lines = [
     `${landing.name} (${landing.address}): ${reads.length} reads in ${waves.length} wave(s)`,
   ];
@@ -241,6 +255,9 @@ function waterfallOf({ landing, reads, waves }: Measurement): string {
       );
     }
   }
+  lines.push(
+    `  route chunk  asked ${routeChunkAt === undefined ? "    never" : stamp(routeChunkAt)}`
+  );
   return lines.join("\n");
 }
 
@@ -258,6 +275,12 @@ async function land(browser: Browser, landing: Landing): Promise<Measurement> {
     const tab = await context.newPage();
     const from = performance.now();
     const { ended, reads } = recordReads(tab, from);
+    let routeChunkAt: number | undefined;
+    tab.on("request", (request) => {
+      if (routeChunkAt === undefined && landing.routeChunk.test(new URL(request.url()).pathname)) {
+        routeChunkAt = performance.now() - from;
+      }
+    });
     await tab.goto(landing.address);
     await expect(landing.content(tab), `${landing.name} never drew its own content`).toBeVisible();
     const until = performance.now() - from;
@@ -275,7 +298,7 @@ async function land(browser: Browser, landing: Landing): Promise<Measurement> {
       Promise.all(measured.map((read) => ended.get(read))),
       once(AbortSignal.timeout(ANSWER_SETTLE_MS), "abort"),
     ]);
-    return { landing, reads: measured, waves: wavesOf(measured) };
+    return { landing, reads: measured, routeChunkAt, waves: wavesOf(measured) };
   } finally {
     await context.close();
   }
@@ -329,6 +352,7 @@ function landingsOf(world: World): Landing[] {
       content: (page) => documentEditor(page).locator("[data-block-id]").first(),
       bounds: { reads: ISSUE_READ_BOUND, waves: WAVE_BOUND },
       name: "issue page",
+      routeChunk: /\/assets\/IssuePage-[\w-]{8}\.js$/u,
       ownData: (read) =>
         read.pathname === `/api/v1/issues/${world.issue}` || landingFor(read, "issue"),
     },
@@ -340,6 +364,7 @@ function landingsOf(world: World): Landing[] {
       content: (page) =>
         page.getByTestId("issues-table-scroll").locator("[data-issue-row]").first(),
       name: "board",
+      routeChunk: /\/assets\/ProjectPage-[\w-]{8}\.js$/u,
       ownData: (read) =>
         (read.pathname === "/api/v1/issues" &&
           new URLSearchParams(read.search).get("project") === "CORE") ||
@@ -354,6 +379,7 @@ function landingsOf(world: World): Landing[] {
       // it opens, so the card is drawn by the landing itself and by no click of this row's.
       content: (page) => inboxPane(page).locator("[data-inbox-thread-body]").first(),
       name: "inbox",
+      routeChunk: /\/assets\/inbox-chunk-[\w-]{8}\.js$/u,
       ownData: (read) => read.pathname === "/api/v1/inbox" || landingFor(read, "inbox"),
     },
     {
@@ -366,6 +392,7 @@ function landingsOf(world: World): Landing[] {
       // on the issue page above.
       content: (page) => documentEditor(page).locator("[data-block-id]").first(),
       name: "document page",
+      routeChunk: /\/assets\/DocumentPage-[\w-]{8}\.js$/u,
       // The read this page gates on: `DocumentPage` holds everything else until
       // `["artifact-ref", "CORE/<slug>"]` answers with the document's id
       // (`web/src/features/document/DocumentPage.tsx`, `web/src/api/useProjectArtifact.ts`), and
@@ -426,6 +453,20 @@ test("a cold landing draws each page from at most two waves of reads", async ({ 
       faults.push(
         `the ${landing.name} spent ${shell} waves on shell reads before its own data could ` +
           `start, over the ${SHELL_WAVE_BOUND} R3 allows`
+      );
+    }
+    // The landing read is `AuthGate`'s `whoAmI` (`web/src/api/queries.ts`), which every cold
+    // landing sends whatever its page.
+    const landingRead = reads.find((read) => read.pathname === LANDING_PATH);
+    if (landingRead === undefined) {
+      faults.push(`the ${landing.name} sent no landing read to time its route chunk against`);
+    } else if (measurement.routeChunkAt === undefined) {
+      faults.push(`the ${landing.name} never asked for its route chunk`);
+    } else if (measurement.routeChunkAt >= landingRead.respondedAt) {
+      faults.push(
+        `the ${landing.name} asked for its route chunk at ${stamp(measurement.routeChunkAt)}, ` +
+          `after the landing read answered at ${stamp(landingRead.respondedAt)}: the entry no ` +
+          "longer starts it beside that read (web/src/app.tsx, preloadRouteChunk)"
       );
     }
   }
