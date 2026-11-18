@@ -10,6 +10,7 @@ import { legionItemsQuery } from "../../api/queries";
 import { queryRetry, queryRetryDelay } from "../../api/query-client";
 import type { EvalItemRow, LegionBoardFacts, LegionBoardResponse } from "../../api/types";
 import {
+  boardFactsAt,
   closedDaysWindows,
   formatPhaseTime,
   formatWorkTime,
@@ -47,7 +48,9 @@ function board(issues: LegionBoardResponse["issues"]): LegionBoardResponse {
 
 function boardFacts(rootKey: string, workHours: number): LegionBoardFacts {
   return {
+    as_of: "2026-11-17T08:00:00Z",
     closed_at: null,
+    growth: { hours_by_phase: {}, slot_hours: 0, work_hours: 0, work_last_at: 0 },
     hours_by_phase: { implementing: workHours },
     opened_at: "2026-11-01T00:00:00Z",
     review_rounds: 1,
@@ -160,21 +163,84 @@ test("the time in a phase and the work time read in minutes, hours and minutes, 
 });
 
 test("a row takes the board's facts first, then its items row, then no Legion work", () => {
+  const now = Date.parse("2026-11-17T12:00:00Z");
   const held = boardFacts("ACME-1", 5);
   const items: Record<string, LegionFacts> = {
     "ACME-1": { ...boardFacts("ACME-1", 1), closed_at: "2026-11-01T10:00:00Z" },
     "ACME-2": { ...boardFacts("ACME-2", 2), closed_at: "2026-11-02T10:00:00Z" },
   };
   const answered = board({ "ACME-1": held });
-  expect(legionFactsOf("ACME-1", answered, items)).toBe(held);
-  expect(legionFactsOf("ACME-2", answered, items)).toBe(items["ACME-2"]);
-  expect(legionFactsOf("ACME-3", answered, items)).toBeUndefined();
+  expect(legionFactsOf("ACME-1", answered, items, now)).toBe(held);
+  expect(legionFactsOf("ACME-2", answered, items, now)).toBe(items["ACME-2"]);
+  expect(legionFactsOf("ACME-3", answered, items, now)).toBeUndefined();
   // A map the board answered as null, or no board yet, leaves the items row.
-  expect(legionFactsOf("ACME-1", board(null), items)).toBe(items["ACME-1"]);
-  expect(legionFactsOf("ACME-1", undefined, items)).toBe(items["ACME-1"]);
-  expect(legionFactsOf("ACME-1", undefined, undefined)).toBeUndefined();
+  expect(legionFactsOf("ACME-1", board(null), items, now)).toBe(items["ACME-1"]);
+  expect(legionFactsOf("ACME-1", undefined, items, now)).toBe(items["ACME-1"]);
+  expect(legionFactsOf("ACME-1", undefined, undefined, now)).toBeUndefined();
   // A name every object answers through its prototype is no key of either.
-  expect(legionFactsOf("constructor", answered, items)).toBeUndefined();
+  expect(legionFactsOf("constructor", answered, items, now)).toBeUndefined();
+});
+
+/** `boardFacts("ACME-1", 3)`, of 08:00, with the rates `rates` gives and every other rate 0. */
+const growing = (rates: Partial<LegionBoardFacts["growth"]>): LegionBoardFacts => ({
+  ...boardFacts("ACME-1", 3),
+  growth: { hours_by_phase: {}, slot_hours: 0, work_hours: 0, work_last_at: 0, ...rates },
+});
+/** Two hours after the `as_of` of `boardFacts`. */
+const TWO_HOURS_ON = Date.parse("2026-11-17T10:00:00Z");
+
+test("an open board entry two hours after its as_of gains two hours on each value at rate 1", () => {
+  const entry = growing({ work_hours: 1, hours_by_phase: { implementing: 1 } });
+  expect(boardFactsAt(entry, TWO_HOURS_ON)).toEqual({
+    closed_at: null,
+    hours_by_phase: { implementing: 5 },
+    review_rounds: 1,
+    root_key: "ACME-1",
+    tree_depth: 0,
+    work_first_at: "2026-11-02T00:00:00Z",
+    work_hours: 5,
+  });
+  // The entry the board sent keeps its own values.
+  expect(entry.work_hours).toBe(3);
+  expect(entry.hours_by_phase).toEqual({ implementing: 3 });
+});
+
+test("a phase that only the growth names starts from 0 hours", () => {
+  const entry = growing({ hours_by_phase: { reviewing: 0.5 } });
+  const closed = boardFactsAt(entry, TWO_HOURS_ON);
+  expect(closed.hours_by_phase).toEqual({ implementing: 3, reviewing: 1 });
+  expect(closed.work_hours).toBe(3);
+  // An entry with no hours by phase at all.
+  expect(boardFactsAt({ ...entry, hours_by_phase: null }, TWO_HOURS_ON).hours_by_phase).toEqual({
+    reviewing: 1,
+  });
+});
+
+test("rates of 0, a clock before as_of and an as_of this cannot read leave the values as sent", () => {
+  const still = growing({ hours_by_phase: { implementing: 0 } });
+  expect(boardFactsAt(still, TWO_HOURS_ON)).toBe(still);
+  const empty = growing({ hours_by_phase: null });
+  expect(boardFactsAt(empty, TWO_HOURS_ON)).toBe(empty);
+  const entry = growing({ work_hours: 1, hours_by_phase: { implementing: 1 } });
+  expect(boardFactsAt(entry, Date.parse("2026-11-17T07:00:00Z"))).toBe(entry);
+  expect(boardFactsAt(entry, Date.parse("2026-11-17T08:00:00Z"))).toBe(entry);
+  const unread = { ...entry, as_of: "yesterday" };
+  expect(boardFactsAt(unread, TWO_HOURS_ON)).toBe(unread);
+});
+
+test("a row's board entry is closed at the clock, and its items row stays as it is", () => {
+  const entry = growing({ work_hours: 1, hours_by_phase: { implementing: 1 } });
+  // An items row is a closed issue's: a growth it carries is no rate it grows by.
+  const items: Record<string, LegionFacts> = {
+    "ACME-2": { ...entry, closed_at: "2026-11-17T08:00:00Z", root_key: "ACME-2" },
+  };
+  const answered = board({ "ACME-1": entry });
+  const held = legionFactsOf("ACME-1", answered, items, TWO_HOURS_ON);
+  expect(held).toEqual(boardFactsAt(entry, TWO_HOURS_ON));
+  expect(held?.work_hours).toBe(5);
+  expect(held?.hours_by_phase).toEqual({ implementing: 5 });
+  expect(legionFactsOf("ACME-2", answered, items, TWO_HOURS_ON)).toBe(items["ACME-2"]);
+  expect(items["ACME-2"]?.work_hours).toBe(3);
 });
 
 test("an items row reads as the facts the board's map holds for an issue", () => {

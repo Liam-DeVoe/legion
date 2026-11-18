@@ -243,7 +243,9 @@ function legionCard(key: string, overrides: Partial<LegionBoardCard> = {}): Legi
 /** The facts the board's map holds for an issue with `workHours` of work. */
 function boardFacts(workHours: number): LegionBoardFacts {
   return {
+    as_of: "2026-11-17T08:00:00Z",
     closed_at: null,
+    growth: { hours_by_phase: {}, slot_hours: 0, work_hours: 0, work_last_at: 0 },
     hours_by_phase: { implementing: workHours },
     opened_at: "2026-11-01T00:00:00Z",
     review_rounds: 0,

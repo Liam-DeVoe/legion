@@ -232,6 +232,9 @@ export function useIssueTableItems(
     items: itemsRead ? items : undefined,
   });
 
+  // Each build is of its own moment (`Item.at`): the board's facts that grow are closed at it,
+  // and the rows' times count to it. A board frame builds the rows again, and the board's header
+  // moves with each read of the daemon, once a minute (`legionBoardView` in `api/live_frames.go`).
   const allItems = useMemo(
     () =>
       buildItems(

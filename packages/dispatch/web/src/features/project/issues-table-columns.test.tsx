@@ -98,7 +98,9 @@ function card(key: string, overrides: Partial<LegionBoardCard> = {}): LegionBoar
 
 function facts(overrides: Partial<LegionBoardFacts> = {}): LegionBoardFacts {
   return {
+    as_of: "2026-11-17T00:00:00Z",
     closed_at: null,
+    growth: { hours_by_phase: {}, slot_hours: 0, work_hours: 0, work_last_at: 0 },
     hours_by_phase: null,
     opened_at: "2026-11-01T00:00:00Z",
     review_rounds: 0,

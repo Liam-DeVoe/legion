@@ -141,11 +141,18 @@ function factsCell(item: Item, draw: (facts: LegionFacts) => ReactNode): ReactNo
   return item.facts === undefined ? null : draw(item.facts);
 }
 
-/** A card's time, from `since` to now, in the words of the Board's card; nothing with no time. */
-function CardTime({ since }: { since: string | null | undefined }): ReactNode {
+/** A card's time, from `since` to the row's clock (`Item.at`), in the words of the Board's card;
+ *  nothing with no time. */
+function CardTime({
+  since,
+  nowMs,
+}: {
+  since: string | null | undefined;
+  nowMs: number;
+}): ReactNode {
   return since === null || since === undefined ? null : (
     <span className={`text-xs tabular-nums ${textSecondaryOnCanvas}`}>
-      {formatPhaseTime(since, Date.now())}
+      {formatPhaseTime(since, nowMs)}
     </span>
   );
 }
@@ -492,7 +499,9 @@ const renderings = (
     sortUndefined: "last",
     sortingFn: shortestFirst,
     sortDescFirst: true,
-    cell: ({ row }) => <CardTime since={row.original.card?.card.waiting?.since} />,
+    cell: ({ row }) => (
+      <CardTime nowMs={row.original.at} since={row.original.card?.card.waiting?.since} />
+    ),
   },
   waiting_reason: {
     header: "Why it waits",
@@ -528,7 +537,9 @@ const renderings = (
     sortUndefined: "last",
     sortingFn: shortestFirst,
     sortDescFirst: true,
-    cell: ({ row }) => <CardTime since={row.original.card?.card.phase_since} />,
+    cell: ({ row }) => (
+      <CardTime nowMs={row.original.at} since={row.original.card?.card.phase_since} />
+    ),
   },
   work_hours: {
     header: "Work time",

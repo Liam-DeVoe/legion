@@ -470,7 +470,9 @@ function card(key: string, overrides: Partial<LegionBoardCard> = {}): LegionBoar
 
 function facts(overrides: Partial<LegionBoardFacts> = {}): LegionBoardFacts {
   return {
+    as_of: "2026-11-17T12:00:00Z",
     closed_at: null,
+    growth: { hours_by_phase: {}, slot_hours: 0, work_hours: 0, work_last_at: 0 },
     hours_by_phase: null,
     opened_at: "2026-11-01T00:00:00Z",
     review_rounds: 0,
@@ -591,8 +593,9 @@ const ANSWERED: ItemContext = {
   },
   viewer: "alice",
 };
+/** The rows of `context`, built at NOW: each length of time a row files under counts to it. */
 const legionRows = (context: ItemContext = ANSWERED) =>
-  buildItems(LEGION_ISSUES, (actor) => actor.id, undefined, context);
+  buildItems(LEGION_ISSUES, (actor) => actor.id, undefined, { nowMs: NOW, ...context });
 /** Each value of column `id` and how many rows it would list, with no other filter. */
 const countsOf = (id: string, context?: ItemContext) =>
   Object.fromEntries(facetCounts(legionRows(context), id, [], "", NOW));

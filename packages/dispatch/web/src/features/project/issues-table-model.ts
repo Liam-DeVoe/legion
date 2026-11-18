@@ -68,9 +68,12 @@ export interface LegionReads {
 
 /** What the rows read beyond the listing: the Legion reads of a project with a Legion daemon
  *  (`undefined` for a project with none, for one whose daemon setting has not answered, and for
- *  a listing of no project), and the signed-in login, which `f.author=@me` names. */
+ *  a listing of no project), the signed-in login, which `f.author=@me` names, and the clock the
+ *  rows are built at (`Item.at`), in milliseconds since the epoch. The clock is now where the
+ *  caller gives none. */
 export interface ItemContext {
   readonly legion?: LegionReads;
+  readonly nowMs?: number;
   readonly viewer?: string;
 }
 
@@ -93,6 +96,11 @@ export interface Item {
   /** How far the read of its facts is. Only `success` tells that an issue with no `facts` has no
    *  Legion work: a pending or failed read is not missing facts. */
   readonly factsRead: ReadStatus;
+  /** The clock its row was built at, in milliseconds since the epoch. Facts from a board entry
+   *  are closed at this clock (`boardFactsAt`). Its Time waiting and Time in Legion phase count
+   *  to it, in a cell, on a card and in a filter. One build gives every row one clock, so all
+   *  the times of a row are of one moment. */
+  readonly at: number;
   /** The Queue column's number: the card's `waiting_place` in a project with a Legion daemon,
    *  else Start next's number (`queue`). */
   readonly place?: number;
@@ -143,8 +151,8 @@ export type ColumnFilterSpec =
   | {
       readonly kind: "picks";
       /** Every value this row files under here: its filter options and its facet counts. A
-       *  length of time is counted to `nowMs`. */
-      readonly values: (item: Item, nowMs: number) => readonly string[];
+       *  length of time is counted to the row's clock (`Item.at`). */
+      readonly values: (item: Item) => readonly string[];
       /** The heading this row groups under; absent when the column cannot group. */
       readonly group?: (item: Item) => string;
       /** The order the filter lists its values in; by count when absent. */
@@ -346,7 +354,7 @@ export function sinceMs(since: string | null | undefined): number | undefined {
 }
 
 /** The filter of a column that holds a length of time: every duration pick, in its order. */
-const duration = (pick: (item: Item, nowMs: number) => readonly string[]): ColumnFilterSpec => ({
+const duration = (pick: (item: Item) => readonly string[]): ColumnFilterSpec => ({
   kind: "picks",
   values: pick,
   order: DURATION_PICKS,
@@ -591,7 +599,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
     id: "waited",
     size: 176,
     min: 176,
-    filter: duration((item, nowMs) => [sinceDurationPick(item.card?.card.waiting?.since, nowMs)]),
+    filter: duration((item) => [sinceDurationPick(item.card?.card.waiting?.since, item.at)]),
   },
   {
     // What holds the card up (`waiting.reason`): set for a card in the queue, and for a root
@@ -609,7 +617,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
     id: "time_in_phase",
     size: 224,
     min: 224,
-    filter: duration((item, nowMs) => [sinceDurationPick(item.card?.card.phase_since, nowMs)]),
+    filter: duration((item) => [sinceDurationPick(item.card?.card.phase_since, item.at)]),
   },
   {
     id: "work_hours",
@@ -932,35 +940,38 @@ export function cardsByKey(board: LegionBoardResponse | undefined): Map<string, 
 const NO_CARDS: ReadonlyMap<string, BoardCardRow> = new Map();
 
 /**
- * A row's facts and how far their read is. The board's `issues` map holds the facts of every open
- * issue with Legion phase work and of every issue the board shows, so once the board has answered
- * an open row it does not hold has no Legion work. A closed row it does not hold takes its facts
- * from the items read (`legionFactsOf`), and has none once that read answered without it.
+ * A row's facts at `nowMs` and how far their read is. The board's `issues` map holds the facts of
+ * every open issue with Legion phase work and of every issue the board shows, so once the board
+ * has answered an open row it does not hold has no Legion work. A closed row it does not hold
+ * takes its facts from the items read (`legionFactsOf`), and has none once that read answered
+ * without it.
  */
 function factsOf(
   issue: Pick<IssueSummary, "key" | "status">,
-  legion: LegionReads | undefined
+  legion: LegionReads | undefined,
+  nowMs: number
 ): Pick<Item, "facts" | "factsRead"> {
   if (legion === undefined) return { factsRead: "success" };
   const { board, boardStatus, items, itemsStatus } = legion;
   if (board === undefined) return { factsRead: boardStatus === "error" ? "error" : "pending" };
-  const facts = legionFactsOf(issue.key, board, items);
+  const facts = legionFactsOf(issue.key, board, items, nowMs);
   if (facts !== undefined) return { facts, factsRead: "success" };
   return { factsRead: issue.status === "done" ? itemsStatus : "success" };
 }
 
 /**
  * The table's rows: each issue with the names the table reads it by and, in a project with a
- * Legion daemon (`context.legion`), its card, its place in the Legion queue and its facts. The
- * rows keep the order of `issues`, which is the listing's own (status, rank, created, key), and
- * every sort ends with it, since TanStack's last tie-break is a row's index; a caller that joins
- * the open listing and the done one lists the open rows first, as the listing's order does.
+ * Legion daemon (`context.legion`), its card, its place in the Legion queue and its facts. Every
+ * row is of one clock (`Item.at`): `context.nowMs`, else the moment of the build. The rows keep
+ * the order of `issues`, which is the listing's own (status, rank, created, key), and every sort
+ * ends with it, since TanStack's last tie-break is a row's index; a caller that joins the open
+ * listing and the done one lists the open rows first, as the listing's order does.
  */
 export function buildItems(
   issues: readonly IssueSummary[],
   label: (actor: Actor) => string,
   isFree: (issue: IssueSummary) => boolean = (issue) => issue.claim === null,
-  { legion, viewer }: ItemContext = {}
+  { legion, nowMs = Date.now(), viewer }: ItemContext = {}
 ): Item[] {
   // Rank's alphabet is byte-ordered, not locale-ordered. Two issues of one rank break the tie
   // by `compareCreated`, not `compareTimestamps`: a server of the release before the one that
@@ -1000,7 +1011,8 @@ export function buildItems(
         ...(issue.labels ?? []),
       ].join(" "),
       ...(card === undefined ? {} : { card }),
-      ...factsOf(issue, legion),
+      ...factsOf(issue, legion, nowMs),
+      at: nowMs,
       ...(place === undefined ? {} : { place }),
       queued: place !== undefined || card?.column === "queue",
       mine: createdByReader(createdBy(issue), viewer),
@@ -1048,13 +1060,14 @@ export function matchesSearch(item: Item, query: string): boolean {
         (word.length >= 5 && searchWords().some((candidate) => withinOneEdit(candidate, word)))
     );
 }
-/** The values `item` files under in column `id`'s filter, a length of time counted to `nowMs`. */
-export function facets(item: Item, id: string, nowMs = Date.now()): readonly string[] {
+/** The values `item` files under in column `id`'s filter, a length of time counted to the row's
+ *  clock (`Item.at`). */
+export function facets(item: Item, id: string): readonly string[] {
   const filter = columnFilterSpec(id);
-  return filter?.kind === "picks" ? filter.values(item, nowMs) : [];
+  return filter?.kind === "picks" ? filter.values(item) : [];
 }
-/** Whether `item` passes every filter but `except`'s, a window or a length of time counted to
- *  `nowMs`. */
+/** Whether `item` passes every filter but `except`'s, a window counted to `nowMs` and a length
+ *  of time to the row's clock (`Item.at`). */
 export function matchesFilters(
   item: Item,
   filters: ColumnFiltersState,
@@ -1071,7 +1084,7 @@ export function matchesFilters(
     if (!Array.isArray(value) || value.length === 0) return true;
     // A pick matches a value by its `fold`, as the filter ticks it (`MultiSelect`): a link that
     // spells a label or a name in another case picks the same rows.
-    const folded = facets(item, id, nowMs).map(fold);
+    const folded = facets(item, id).map(fold);
     const carries = (picked: string) => folded.includes(fold(String(picked)));
     return filter?.kind === "picks" && filter.match === "all"
       ? value.every(carries)
@@ -1105,7 +1118,7 @@ export function groupValue(id: string, item: Item): string {
   return filter?.kind === "picks" && filter.group !== undefined ? filter.group(item) : "";
 }
 /** How many of `items` each value of column `id` would list, under the search and every other
- *  filter, a window or a length of time counted to `nowMs`. */
+ *  filter, a window counted to `nowMs` and a length of time to each row's clock (`Item.at`). */
 export function facetCounts(
   items: readonly Item[],
   id: string,
@@ -1116,7 +1129,7 @@ export function facetCounts(
   const counts = new Map<string, number>();
   for (const item of items)
     if (matchesFilters(item, filters, id, nowMs) && matchesSearch(item, search)) {
-      for (const value of new Set(facets(item, id, nowMs)))
+      for (const value of new Set(facets(item, id)))
         counts.set(value, (counts.get(value) ?? 0) + 1);
     }
   return counts;

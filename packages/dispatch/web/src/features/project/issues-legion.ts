@@ -1,9 +1,10 @@
 // The Legion parts of the Issues tab that hold no React and no cache: the board's phase order,
 // the time formats a cell and a card write, where each listed row takes its Legion facts from
-// (the board's `issues` map, else the items route of `legion-work-time`), the windows and pages
-// that items read spans, the Closed window the Done reads take, and the rule that keeps an older
-// server's Done answer off the page. The page reads what these name (`api/queries.ts`); the
-// tests read the rules here rather than through the markup.
+// (the board's `issues` map, grown to the page's clock, else the items route of
+// `legion-work-time`), the windows and pages that items read spans, the Closed window the Done
+// reads take, and the rule that keeps an older server's Done answer off the page. The page reads
+// what these name (`api/queries.ts`); the tests read the rules here rather than through the
+// markup.
 import type {
   EvalItemRow,
   EvalItemsResponse,
@@ -59,8 +60,9 @@ export function formatPhaseTime(since: string | null, nowMs: number): string {
   return formatSpan(Math.floor(Math.max(0, nowMs - sinceMs) / 60_000));
 }
 
-/** The work time the server stored for the issue, in the same words as the time in its phase.
- *  The hours are the stored row's `work_hours`: the page computes none of them. */
+/** The work time of the issue's facts, in the same words as the time in its phase. The hours are
+ *  the `work_hours` of the stored row. A board entry that grows adds its growth from `as_of` to
+ *  the page's clock (`boardFactsAt`). */
 export function formatWorkTime(hours: number): string {
   return formatSpan(Math.floor(Math.max(0, hours) * 60));
 }
@@ -89,17 +91,53 @@ export type LegionFacts = Pick<
   | "work_hours"
 >;
 
-/** A listed row's facts: the board's `issues[key]` where the map holds the key, else its items
- *  row (`items`, by `row_key`), else none, the facts of an issue with no Legion work. A row both
+const HOUR_MS = 3_600_000;
+
+/**
+ * A board entry's facts closed at `nowMs`, as the board route closes a stored row at its read
+ * (`legionfacts.Row.At`). The live view sends an entry again only when its stored row moves, so
+ * the page grows the values itself. `work_hours` and each phase of `hours_by_phase` gain their
+ * rate (`growth`) times the hours from `as_of` to `nowMs`. A phase that only the growth names
+ * starts at 0. A clock before `as_of` adds nothing. An entry with no growth, every rate 0, or an
+ * `as_of` this cannot read keeps the values it was sent with, in the same object.
+ */
+export function boardFactsAt(entry: LegionBoardFacts, nowMs: number): LegionFacts {
+  const hours = Math.max(0, nowMs - Date.parse(entry.as_of)) / HOUR_MS;
+  const workRate = entry.growth?.work_hours ?? 0;
+  const phaseRates = Object.entries(entry.growth?.hours_by_phase ?? {}).filter(
+    ([, rate]) => rate !== 0
+  );
+  if (Number.isNaN(hours) || hours === 0 || (workRate === 0 && phaseRates.length === 0))
+    return entry;
+  const hoursByPhase: Record<string, number> = { ...entry.hours_by_phase };
+  for (const [phase, rate] of phaseRates) {
+    const sent = Object.hasOwn(hoursByPhase, phase) ? hoursByPhase[phase] : 0;
+    hoursByPhase[phase] = sent + rate * hours;
+  }
+  return {
+    closed_at: entry.closed_at,
+    hours_by_phase: hoursByPhase,
+    review_rounds: entry.review_rounds,
+    root_key: entry.root_key,
+    tree_depth: entry.tree_depth,
+    work_first_at: entry.work_first_at,
+    work_hours: entry.work_hours + workRate * hours,
+  };
+}
+
+/** A listed row's facts: the board's `issues[key]` where the map holds the key, closed at
+ *  `nowMs` (`boardFactsAt`), else its items row (`items`, by `row_key`), else none, the facts of
+ *  an issue with no Legion work. An items row is a closed issue's, and does not grow. A row both
  *  hold keeps the map's facts. Whether the items read is still out, or failed, is the caller's to
  *  tell apart from no Legion work: this reads only what has answered. */
 export function legionFactsOf(
   key: string,
   board: LegionBoardResponse | undefined,
-  items: Readonly<Record<string, LegionFacts>> | undefined
+  items: Readonly<Record<string, LegionFacts>> | undefined,
+  nowMs: number
 ): LegionFacts | undefined {
   const held = board?.issues;
-  if (held && Object.hasOwn(held, key)) return held[key];
+  if (held && Object.hasOwn(held, key)) return boardFactsAt(held[key], nowMs);
   return items && Object.hasOwn(items, key) ? items[key] : undefined;
 }
 

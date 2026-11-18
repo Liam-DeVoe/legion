@@ -2339,7 +2339,9 @@ function legionBoard(
 /** The facts the board's map holds for an issue. */
 function boardFacts(workHours: number): LegionBoardFacts {
   return {
+    as_of: "2026-11-17T08:00:00Z",
     closed_at: "2026-11-10T10:00:00Z",
+    growth: { hours_by_phase: {}, slot_hours: 0, work_hours: 0, work_last_at: 0 },
     hours_by_phase: { implementing: workHours },
     opened_at: "2026-11-01T00:00:00Z",
     review_rounds: 1,
@@ -2351,6 +2353,18 @@ function boardFacts(workHours: number): LegionBoardFacts {
     work_first_at: "2026-11-02T00:00:00Z",
     work_hours: workHours,
     work_last_at: "2026-11-10T00:00:00Z",
+  };
+}
+
+/** The facts the board's map holds for an open issue at work: 1 hour of work and 1 hour in
+ *  Implementing at `asOf`, each of which grows an hour an hour from then. */
+function openFacts(asOf: string): LegionBoardFacts {
+  return {
+    ...boardFacts(1),
+    as_of: asOf,
+    closed_at: null,
+    growth: { hours_by_phase: { implementing: 1 }, slot_hours: 1, work_hours: 1, work_last_at: 1 },
+    work_last_at: asOf,
   };
 }
 
@@ -3266,3 +3280,71 @@ test("a live read that moves one card of 600 draws at most 5 card bodies and 5 c
     expect(others.length).toBeLessThanOrEqual(5);
   }
 }, 120_000);
+
+// The live view sends a board entry again only when its stored row moves, so the page grows an
+// open issue's values itself: the value plus its rate times the hours from as_of to its clock.
+test("an open row's Work time is its board entry grown from its as_of to the page's clock", async () => {
+  const now = new Date("2026-11-17T12:00:00Z");
+  setSystemTime(now);
+  restores.push(() => setSystemTime());
+  const sockets = liveSockets();
+  table(
+    [issue("CORE-1", { status: "in_progress" })],
+    "?cols=key,title,work_hours",
+    {},
+    {},
+    Promise.resolve(DAEMON)
+  );
+  // 1 hour of work 90 minutes before the clock, at 1 hour an hour.
+  const asOf = new Date(now.getTime() - 90 * 60_000).toISOString();
+  await answerBoard(sockets, legionBoard({ "CORE-1": openFacts(asOf) }));
+  await waitFor(() =>
+    expect(
+      within(screen.getByRole("row", { name: "CORE-1 Work CORE-1" })).getByText("2 h 30 m")
+    ).toBeDefined()
+  );
+});
+
+// One build of the rows gives them one clock (`Item.at`): a row's Time in Legion phase and Work
+// time, and those of its card on the Board, are of that moment. A clock that moves on with no new
+// build draws them as they were: on the Board, and in the table drawn again.
+test("a row's and its card's Time in Legion phase and Work time are of the clock the rows were built at", async () => {
+  const user = userEvent.setup();
+  const start = new Date("2026-11-17T12:00:00Z");
+  setSystemTime(start);
+  restores.push(() => setSystemTime());
+  const sockets = liveSockets();
+  const ago = (minutes: number) => new Date(start.getTime() - minutes * 60_000).toISOString();
+  table(
+    [issue("CORE-1", { status: "in_progress" })],
+    "?cols=key,title,time_in_phase,work_hours",
+    {},
+    {},
+    Promise.resolve(DAEMON)
+  );
+  await answerBoard(sockets, {
+    ...legionBoard({ "CORE-1": openFacts(ago(90)) }),
+    columns: [{ id: "implementing", label: "Implementing", cards: [phaseCard("CORE-1", ago(30))] }],
+  });
+  /** The row's Time in Legion phase and Work time cells, found by their column's header. */
+  const cellTimes = () => {
+    const headers = screen.getAllByRole("columnheader").map((header) => header.textContent ?? "");
+    const row = screen.getByRole("row", { name: "CORE-1 Work CORE-1" });
+    const cells = within(row).getAllByRole("cell");
+    return ["Time in Legion phase", "Work time"].map(
+      (name) => cells[headers.findIndex((text) => text.startsWith(name))]?.textContent
+    );
+  };
+  await waitFor(() => expect(cellTimes()).toEqual(["30 m", "2 h 30 m"]));
+
+  setSystemTime(new Date(start.getTime() + 10 * 60_000));
+  await user.click(screen.getByRole("button", { name: "Board" }));
+  const region = await screen.findByRole("region", { name: "Project board" });
+  const fact = (hook: string) =>
+    region.querySelector(`[data-board-card="CORE-1"] [data-legion-fact=${hook}]`)?.textContent;
+  await waitFor(() => expect(fact("phase-time")).toBe("Time in Legion phase30 m"));
+  expect(fact("work-time")).toBe("Work time2 h 30 m");
+
+  await user.click(screen.getByRole("button", { name: "Table" }));
+  await waitFor(() => expect(cellTimes()).toEqual(["30 m", "2 h 30 m"]));
+});

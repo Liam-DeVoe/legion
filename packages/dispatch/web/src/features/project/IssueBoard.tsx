@@ -188,12 +188,13 @@ function OpenAsks({ count }: { count: number }): ReactNode {
   );
 }
 
-/** The Time in Legion phase a card draws at `nowMs`, or undefined for a card with none: the one
- *  text on a card that counts from the Board's clock. A claim's age keeps itself current through
- *  `Timestamp`'s own tick, and a wait's since is a date. */
-function phaseTimeOf(item: Item, nowMs: number): string | undefined {
+/** The Time in Legion phase a card draws at its row's clock (`Item.at`), the clock its Work time
+ *  is closed at, or undefined for a card with none: the one text on a card that counts from that
+ *  clock. A claim's age keeps itself current through `Timestamp`'s own tick, and a wait's since
+ *  is a date. */
+function phaseTimeOf(item: Item): string | undefined {
   const since = item.card?.card.phase_since ?? null;
-  return sinceMs(since) === undefined ? undefined : formatPhaseTime(since, nowMs);
+  return sinceMs(since) === undefined ? undefined : formatPhaseTime(since, item.at);
 }
 
 /** What a card on the Legion board shows beside today's card, from the board route, each fact
@@ -263,9 +264,9 @@ function LegionFacts({ item, phaseTime }: { item: Item; phaseTime?: string }): R
 /** What a card is drawn from. A card draws again only when one of these changes (`sameCard`):
  *  the issue, its Legion card, its facts and its Place keep their objects or values across reads
  *  that did not change them (the listings pair a read's issues with the cached ones by key,
- *  `api/queries.ts`), and its time is the text it draws, so a live change to one issue draws
- *  that issue's card, not every card of the Board, and a new minute draws only the cards whose
- *  time reads differently. */
+ *  `api/queries.ts`), and its time is the text it draws. So a build of the rows draws again only
+ *  the card of an issue a live change moved, a card whose time reads differently in a new minute,
+ *  and a card whose facts grow, which each build closes at its own clock (`boardFactsAt`). */
 interface CardProps {
   readonly item: Item;
   /** The Time in Legion phase the card draws (`phaseTimeOf`); undefined where it draws none. */
@@ -397,12 +398,10 @@ const CardBody = memo(function CardBody({ item, phaseTime, unread }: CardProps):
 function BoardColumnView({
   by,
   cell,
-  nowMs,
   userState,
 }: {
   by: BoardBy;
   cell: BoardCell;
-  nowMs: number;
   userState: UserState | undefined;
 }): ReactNode {
   const place = cellId(cell.column.id, cell.lane);
@@ -445,7 +444,7 @@ function BoardColumnView({
             <BoardCard
               item={item}
               key={item.issue.key}
-              phaseTime={phaseTimeOf(item, nowMs)}
+              phaseTime={phaseTimeOf(item)}
               place={place}
               unread={issueIsUnread(item.issue, userState?.[item.issue.key]?.last_read_seq ?? 0)}
             />
@@ -504,14 +503,12 @@ function BoardLineView({
   by,
   dragging,
   line,
-  nowMs,
   testId,
   userState,
 }: {
   by: BoardBy;
   dragging: boolean;
   line: BoardLine;
-  nowMs: number;
   testId: string;
   userState: UserState | undefined;
 }): ReactNode {
@@ -525,13 +522,7 @@ function BoardLineView({
           cell.column.rail ? (
             <Rail by={by} cell={cell} key={cell.column.id} />
           ) : (
-            <BoardColumnView
-              by={by}
-              cell={cell}
-              key={cell.column.id}
-              nowMs={nowMs}
-              userState={userState}
-            />
+            <BoardColumnView by={by} cell={cell} key={cell.column.id} userState={userState} />
           )
         )}
       </div>
@@ -777,9 +768,6 @@ export function IssueBoard({
     useSensor(MouseSensor, MOUSE_OPTIONS),
     useSensor(TouchSensor, TOUCH_OPTIONS)
   );
-  // The time each card's Time in Legion phase counts to. A card compares the text it draws, not
-  // this, so a render draws again only the cards whose time reads differently.
-  const nowMs = Date.now();
   const lines = boardLines(
     rows,
     boardColumns({ by, listsDone, phaseFilterPicks, rows, showIcebox, statusPicks }),
@@ -1226,7 +1214,6 @@ export function IssueBoard({
                       by={by}
                       dragging={dragging}
                       line={line}
-                      nowMs={nowMs}
                       testId="board-lane-scroll-container"
                       userState={userState}
                     />
@@ -1239,7 +1226,6 @@ export function IssueBoard({
               by={by}
               dragging={dragging}
               line={lines[0]}
-              nowMs={nowMs}
               testId="board-scroll-container"
               userState={userState}
             />
