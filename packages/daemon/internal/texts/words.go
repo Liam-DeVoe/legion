@@ -1,6 +1,7 @@
 package texts
 
 import (
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -41,6 +42,88 @@ type WordsMeta struct {
 	At   time.Time `json:"at,omitzero"`
 	Rest int       `json:"rest,omitempty"`
 	More bool      `json:"more,omitempty"`
+}
+
+// wordsTag is the struct tag of a string field of a notice or a role-message record that holds
+// another author's words: texts:"words".
+const wordsTag = "words"
+
+// WordsPaths lists the path of each field of record that holds another author's words and is
+// set: a string field tagged texts:"words" that is not empty, and a Words or *Words field that
+// carries words, a cut or a mark that more follows. A path is the field's json name after the json
+// names of the objects that hold it, joined by dots, with the index of a record in a list after the
+// list's name, counted from 0: summary, kept[1].answer, catch_up.kept.decisions[1].answer. An
+// embedded struct with no json tag gives its fields in its place, as encoding/json reads it. The
+// paths come in the order of the fields' declaration.
+//
+// The words object of a notice's or a role message's payload is keyed by these paths, with a
+// WordsMeta for each.
+func WordsPaths(record any) []string {
+	return wordsPathsIn(nil, reflect.ValueOf(record), "")
+}
+
+// wordsPathsIn appends the paths of the words fields that v holds at path: v's own fields for a
+// struct, the fields of each record for a list, and nothing for any other value.
+func wordsPathsIn(paths []string, v reflect.Value, path string) []string {
+	for v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface {
+		if v.IsNil() {
+			return paths
+		}
+		v = v.Elem()
+	}
+	switch v.Kind() {
+	case reflect.Struct:
+		if v.Type() == timeType {
+			return paths
+		}
+		return wordsPathsOf(paths, v, path)
+	case reflect.Slice, reflect.Array:
+		for i := range v.Len() {
+			paths = wordsPathsIn(paths, v.Index(i), path+"["+strconv.Itoa(i)+"]")
+		}
+	}
+	return paths
+}
+
+// wordsPathsOf appends the paths of the words fields of the struct v, whose own path is path
+// (empty for the record itself).
+func wordsPathsOf(paths []string, v reflect.Value, path string) []string {
+	for i := range v.NumField() {
+		field := v.Type().Field(i)
+		tag, tagged := field.Tag.Lookup("json")
+		if tag == "-" || !field.IsExported() {
+			continue
+		}
+		value := v.Field(i)
+		if field.Anonymous && !tagged {
+			paths = wordsPathsIn(paths, value, path)
+			continue
+		}
+		name, _, _ := strings.Cut(tag, ",")
+		if name == "" {
+			name = field.Name
+		}
+		if path != "" {
+			name = path + "." + name
+		}
+		switch {
+		case field.Type == wordsType:
+			if !value.Interface().(Words).empty() {
+				paths = append(paths, name)
+			}
+		case field.Type == wordsPtrType:
+			if !value.IsNil() && !value.Elem().Interface().(Words).empty() {
+				paths = append(paths, name)
+			}
+		case field.Tag.Get("texts") == wordsTag:
+			if value.Kind() == reflect.String && value.Len() > 0 {
+				paths = append(paths, name)
+			}
+		default:
+			paths = wordsPathsIn(paths, value, name)
+		}
+	}
+	return paths
 }
 
 // Bound cuts text to its first limit UTF-16 units. It returns that head and the count of

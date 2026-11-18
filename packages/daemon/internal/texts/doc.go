@@ -5,8 +5,8 @@
 // # The list
 //
 // Each text has a kind. The file kinds.go holds every kind constant and the one list of
-// entries. An entry names the kind, its form, the zero value of its record type and its
-// urgency rule. The form is one of these:
+// entries. An entry names the kind, its form, the zero value of its record type, its readers and
+// its urgency rule. The form is one of these:
 //
 //   - Task: a text that the daemon sends as a prompt. The parts that a start puts before a task
 //     are tasks too.
@@ -14,19 +14,44 @@
 //   - ControllerNotice: a notice to the controller.
 //   - RoleMessage: a message that the daemon publishes to a role.
 //
+// Readers are the roles that read the kind's text: the architect that owns the issue, the
+// controller, or the phase roles that the kind reaches. The slice is shared, so a caller does not
+// change it.
+//
 // A script reads each quoted lower-case word of kinds.go as a kind. So kinds.go has no import,
 // no struct tag and no quoted word that is not a kind name. A test of this package holds these
 // rules.
 //
 // # Records
 //
-// A record is a struct that declares the fields of one kind. Each field with a json tag is a
-// field of the kind, and its json name is the key. A field with no json tag, or with the tag
-// "-", is not a field of the kind. An embedded struct with no json tag gives its fields in its
-// place, as encoding/json reads it. A notice's record declares the keys of the notice's
-// payload, so its json names are keys of record.Notice.
+// A record is a struct that declares the fields of one kind. Each kind has a record type of its
+// own, named for its constant: PhaseFinishedRecord for PhaseFinished. The record types are in
+// these files:
 //
-// A field holds one of these values:
+//   - records_task.go: the tasks;
+//   - records_start.go: the parts that a start puts before a task;
+//   - records_notice.go: the notices to the architect that owns an issue;
+//   - records_controller.go: the notices to the controller;
+//   - records_role.go: the role messages;
+//   - records.go: the parts that several records share, and the helpers that write a pull request,
+//     the command that lists its checks, the review that ends a stuck round and the short digest of
+//     an image the same way in every text.
+//
+// Each field with a json tag is a field of the kind, and its json name is the key. A field with no
+// json tag, or with the tag "-", is not a field of the kind. An embedded struct with no json tag
+// gives its fields in its place, as encoding/json reads it. A record opens with its kind and its
+// issue (TaskHead, NoticeHead, RoleHead). Three records do not: the look task, whose lead line
+// names the issue; the controller's start message, which has no field; and the hook prompt, whose
+// first line names the hook and the issue.
+//
+// A notice stays one record.Notice on the wire. So the json name of each field of a notice's
+// record is a key of record.Notice, a key has one Go type in every notice record, and a key that
+// record.Notice had before these records keeps the JSON shape it had. A nested shape of a notice,
+// such as the failure or the catch-up, is declared here, so that record can name it as an alias.
+// A role message is published as an object of its record's fields, apart from the hook prompt,
+// which is published as its text (HookPromptRecord.Text).
+//
+// A field of a task record holds one of these values:
 //
 //   - a primitive: a string, a bool, an integer, a time, or a pointer to one of them;
 //   - a list of primitives;
@@ -59,12 +84,21 @@
 //
 // # Words
 //
-// A field of type Words or *Words holds the words of another author. It is not a key: value
-// line. Render draws it as a block after the fields, and the field's json name is the name of
-// the block. A Words field of a record in a list draws its block too. That block has the
-// attribute field, which gives the path of the words, such as kept[1].answer. The index of the
-// path counts from 0, as a JSON path does, so kept[1] is the second record of kept. A nil
+// A task record holds the words of another author in a field of type Words or *Words. It is not
+// a key: value line. Render draws it as a block after the fields, and the field's json name is
+// the name of the block. A Words field of a record in a list draws its block too. That block has
+// the attribute field, which gives the path of the words, such as kept[1].answer. The index of
+// the path counts from 0, as a JSON path does, so kept[1] is the second record of kept. A nil
 // *Words, and Words with no text and no mark, draw no block.
+//
+// A notice or role-message record holds the words of another author in a string field with the
+// struct tag texts:"words", since its payload is an object and not a text. Such a record also
+// declares the field Words, of type map[string]WordsMeta with the json name words: the payload's
+// words object. It names each words field that is set by the field's path, with the author, the
+// time, and the rest or the mark that more follows. A record with no words field declares no words
+// object. WordsPaths lists the paths of the words fields of a record that are set, in the order
+// of their declaration, such as summary or catch_up.kept.decisions[1].answer, for the words object
+// of a notice and for the blocks of a task alike.
 //
 // Block draws a block. The tag is the block's name. Where the words hold the closing tag of
 // that name, the tag is the first of name-1, name-2 and on whose closing tag the words do not
