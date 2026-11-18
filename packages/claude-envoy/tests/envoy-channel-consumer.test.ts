@@ -567,3 +567,63 @@ test("a gap the registration reports is told once, through the notice path", asy
     await session.shutdown()
   }
 })
+
+// R24 (INFRA-3589): a session is told it receives nothing only when that is so. A session that
+// closes its own relay on purpose - its shutdown closes the relay before the registration chain
+// is drained - has lost nothing, and a heartbeat that was waiting on that chain and runs after
+// the close is no outage. The tester found the race as the probe test above failing 15 of 20
+// runs on a loaded pod; this test holds it open on purpose.
+test("a heartbeat that runs after the session's shutdown closed its relay tells the session nothing", async () => {
+  const directory = scratchState()
+  const nats = new FakeNats()
+  const notifier = heldNotifier()
+  let hold: PromiseWithResolvers<void> | undefined
+  const registrations: SubscribeInput[] = []
+  const client = recordingClient([], {
+    subscribe: async (input) => {
+      registrations.push(input)
+      const gate = hold
+      if (gate !== undefined) await gate.promise
+      return noInterest(input.sessionID)
+    },
+  })
+  const session = await startChannelSession(
+    sessionOptions(new SessionIdentity(SESSION, "/tmp"), directory, {
+      connection: nats,
+      notifier: notifier.notifier,
+      client,
+      heartbeatMs: 10,
+    }),
+  )
+  // A notice this server writes for itself is the one write that names no Envoy event.
+  const notices = () => notifier.written.filter((written) => written.eventId === undefined)
+  try {
+    // The session is registered and receiving: a later relay-less registration is no start race.
+    await waitFor(async () => registrations.length >= 2, "two accepted registrations")
+    expect(notices()).toEqual([])
+
+    // A follow's registration is held on the wire, so the next heartbeat waits behind it on
+    // the registration chain.
+    hold = Promise.withResolvers<void>()
+    const asked = registrations.length
+    const following = session.follow(["notifications.team.r24-shutdown"])
+    await waitFor(async () => registrations.length > asked, "the held registration")
+    // The heartbeat's own interval timer is what puts its write on the chain, and nothing
+    // marks a write queued there, so the test lets several intervals pass.
+    await Bun.sleep(60)
+
+    // The session shuts down: it closes its relay, then waits out the chain, and the held
+    // registration is answered meanwhile.
+    const stopping = session.shutdown()
+    hold.resolve()
+    await following.catch(() => [])
+    await stopping
+    for (const write of notifier.pending) write.resolve()
+
+    expect(notices().map((written) => written.content)).toEqual([])
+  } finally {
+    hold?.resolve()
+    for (const write of notifier.pending) write.resolve()
+    await session.shutdown()
+  }
+})
