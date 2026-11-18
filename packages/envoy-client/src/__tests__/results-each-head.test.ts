@@ -290,4 +290,63 @@ describe("dispatch results: the state at each head", () => {
       "- c9 (after_merge). Compared with branch main. A pass stands: not known, as Dispatch could not place fail f1c12f1a-0383-4788-9a5e-5772dc06126d at 1d0adea3bdada61b2c393bfd3bff5888093cbe8d on a branch."
     );
   });
+
+  // A check CI proves, read at two open heads: CI's run passed at #702 and is absent at #703, the
+  // open pull request of the highest number, whose read is the check's own `ci`. The head line says
+  // that read derives no result, and no CI job's result: the result derived at #702 is no result of
+  // the job, and #702's own line says it decides that head.
+  test("names the head CI's run passed at, under a check whose newest head has no run", () => {
+    const [h702, h703] = [hex("2"), hex("3")];
+    const ciAt = (head: string, number: number) => ({
+      answer: "at_basis",
+      basis: openHead(number, head),
+    });
+    const absent = {
+      run: "docs",
+      state: "no_result",
+      case: "absent",
+      detail: `No CI run named docs is on ${h703}, the head of example/widgets#703.`,
+      line: "- Check c1 (before_merge): CI run docs has no result (absent)",
+    };
+    const passed = {
+      run: "docs",
+      state: "pass",
+      case: "success",
+      detail: `CI run docs concluded success at ${h702}, the head of example/widgets#702.`,
+      line: `- Check c1 (before_merge): pass at ${h702}, from CI run docs. The words of c1.`,
+    };
+    const lines = printed(
+      answer(
+        check("c1", "before_merge", {
+          ci_check: "docs",
+          ci: absent,
+          compared_with: [openHead(703, h703), openHead(702, h702)],
+          results: [
+            result("ci-run:9001", "ci", "pass", h702, ciAt(h702, 702), "2026-11-18T04:53:16Z"),
+          ],
+          pass_stands: {
+            answer: "no",
+            subjects: [
+              { basis: openHead(703, h703), answer: "no", reason: "no_result", ci: absent },
+              {
+                basis: openHead(702, h702),
+                answer: "yes",
+                roles: ["ci"],
+                results: ["ci-run:9001"],
+                ci: passed,
+              },
+            ],
+          },
+        })
+      )
+    );
+    expect(checkBlock(lines, "c1").slice(0, 6)).toEqual([
+      `- c1 (before_merge): no result: No CI run named docs is on ${h703}, the head of example/widgets#703. The words of c1.`,
+      "  A pass stands: no, as 1 of 2 heads read yes.",
+      `  - #703 at ${h703}: no, as it holds no result.`,
+      "    Pull request line: - Check c1 (before_merge): CI run docs has no result (absent)",
+      `  - #702 at ${h702}: yes, from ci. Pass ci-run:9001 decides it.`,
+      `    Pull request line: - Check c1 (before_merge): pass at ${h702}, from CI run docs. The words of c1.`,
+    ]);
+  });
 });

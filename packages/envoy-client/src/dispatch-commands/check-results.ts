@@ -218,9 +218,8 @@ function ciCheckLines(check: CheckBlock, ci: CheckCI, brief: boolean): string[] 
       result.id.startsWith(CI_RESULT_ID_PREFIX) &&
       (ciHeads.length === 0 || ciHeads.includes(result.commit_sha))
   );
-  const recorded = results
-    .filter((result) => result !== derived)
-    .flatMap((result) => resultLines(check, result, brief));
+  const others = results.filter((result) => result !== derived);
+  const recorded = others.flatMap((result) => resultLines(check, result, brief));
   const passStandsLine = `  ${passStandsText(check)}.`;
   const perHead = subjects.some((subject) => subject.ci !== undefined);
   const pullRequestLine =
@@ -228,11 +227,12 @@ function ciCheckLines(check: CheckBlock, ci: CheckCI, brief: boolean): string[] 
   const heads = subjectLines(check);
   if (derived === undefined) {
     // A pass the CI job recorded may stand where the run derives nothing, so the head line says
-    // so rather than "no result" above a line that says a pass stands.
-    const head =
-      recorded.length === 0
-        ? "no result"
-        : `its CI job's results below, and CI run ${ci.run} derives none`;
+    // so rather than "no result" above a line that says a pass stands. A result derived at
+    // another head is no result of the job: its head's line says what it decides.
+    const jobResults = others.some((result) => !result.id.startsWith(CI_RESULT_ID_PREFIX));
+    const head = jobResults
+      ? `its CI job's results below, and CI run ${ci.run} derives none`
+      : "no result";
     return [
       `- ${check.block_id} (${check.when}): ${head}: ${ci.detail} ${check.text}`,
       passStandsLine,
