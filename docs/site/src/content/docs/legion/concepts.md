@@ -516,8 +516,8 @@ requirement of the issue only the deploy can show as the requirement names it, a
 result of the issue's `after_merge` check, naming the merge commit and what woke the look, with
 that result's line on the pull request; `pending`,
 when production does not carry the merge yet, or an observation a requirement names has not
-happened yet and a look is still to follow; or `fail`, a requirement observed as not met, one
-still unobserved at the last look when production carries the merge, or a defect, naming the
+happened yet and a look is still to follow; or `fail`, a requirement observed as not met, one still
+unobserved at the last look whether or not production carries the merge, or a defect, naming the
 issue, the pull request, the merge commit, what it drove and what failed.
 A defect with a clear fix goes to the
 controller, which gives it to the tree that owns that code and files an issue only when none does.
@@ -537,9 +537,7 @@ daemon boot, and the daemon reads no deployment's production workflows at all.
 A look is bounded at two hours, and a look nobody reported — its two hours, an operator's hold,
 or a claim that failed to start — starts the next look two hours later.
 The whole check is bounded at `production_check_hours` (336, fourteen
-days, by default): the look at that bound is the last, and a `pending` there, given only where
-production does not carry the merge, closes the check as not run, which the agent writes on the
-pull request.
+days, by default): the look at that bound is the last.
 `legion state` prints how many checks are open and the oldest of them, with when its next look is due.
 
 A child's close deletes its pod, and the disk goes with it; a root's close releases any admission

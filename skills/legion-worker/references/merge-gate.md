@@ -347,8 +347,8 @@ that answer comes clean.
     summary names what is missing and what you will look for next, `wake_at` names your next look
     (below), nothing is recorded, and the check's line in the body stays at
     `- Check <block id> (after_merge): not yet run`.
-  - `fail`, for a requirement observed as not met, one still unobserved at the last look where
-    production carries the merge, or a
+  - `fail`, for a requirement observed as not met, one still unobserved at the last look whether
+    or not production carries the merge, or a
     defect: record the failing result with `dispatch result --verdict fail`, file no issue, and
     take the path `skill://legion-worker/references/findings.md` gives it — a clear fix to the
     controller topic, with its evidence comment on the controller's report issue; one needing a
@@ -388,11 +388,10 @@ that answer comes clean.
   (`the bound: <N days> since the issue closed`, the check's own bound counted from the close
   that opened it).
   A `pass` or `fail` there
-  closes the check as any look's would, and a requirement still unobserved there is that `fail`
-  where production carries the merge;
-  only production not carrying the merge ends it `pending`, which carries no `wake_at` and
-  closes the check as not run, written first on the pull request — its check line and a comment
-  — because production did not carry the merge within the bound.
+  closes the check as any look's would, and a requirement still unobserved there is that `fail`,
+  whether or not production carries the merge. Only an issue with no such requirement ends it
+  `pending` where production does not carry the merge, which carries no `wake_at` and closes the
+  check as not run, its reason written first on the pull request, in its check line and a comment.
 - **The record lives on the pull request and in the result.** Dispatch takes a comment, a message
   and a result for an `after_merge` or `default_branch` check on a closed issue, and refuses an
   ask there (`ISSUE_CLOSED`), so the deployment instructions' "on the pull request and the issue"
