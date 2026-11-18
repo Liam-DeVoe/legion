@@ -61,6 +61,7 @@ import { BodySlot } from "./slots/body";
 import { ProvidersSlot } from "./slots/providers";
 import { nodesInOrder } from "./tree-keys";
 import {
+  dropViews,
   issueTreeKey,
   subscribeTreeFreshness,
   type TreeAnswer,
@@ -5333,6 +5334,114 @@ const EVENT_DURING_OTHER_WRITE_UNDER_OWN_KEY: RuleWay = {
   },
 };
 
+/** A write pressed on another page while the reader is away, under `away`, with, where `onPage` is
+ *  given, a write under `onPage` pressed on the page before the reader left and settling once the
+ *  second is out; the reader back; an event of the issue while the second is out, read at once
+ *  where the second is no write of this issue; the second then settling. */
+function eventDuringWriteAway(
+  words: string,
+  onPage: readonly string[] | undefined,
+  away: readonly string[]
+): RuleWay {
+  return {
+    words,
+    does: async (rig) => {
+      const settleFirst = onPage === undefined ? undefined : holdKeyedWrite(rig, onPage);
+      await tick(500, 10);
+      leave(rig);
+      await tick(500, 10);
+      const settleSecond = holdKeyedWrite(rig, away);
+      await tick(500, 10);
+      if (settleFirst !== undefined) act(() => settleFirst());
+      await tick(500, 10);
+      comeBack(rig);
+      await quiet(rig);
+      const before = ruleReads(rig);
+      await commentsEvent(rig);
+      await tick(1_500, 10);
+      expect(ruleReads(rig) - before, "the reads while the second write is out").toBe(1);
+      act(() => settleSecond());
+      await tick(50, 10);
+    },
+  };
+}
+
+/** An event of the issue that marks the decisions read stale 200 ms into a read of it again,
+ *  which Dispatch answers `latency` ms after it was sent, with the decisions it holds as it
+ *  answers - kept by the event. The scheduler owes the decisions one more read once the one out
+ *  lands. One event, read once. */
+function eventWhileDecisionsOut(latency: number): RuleWay {
+  return {
+    words: `an event of the issue that keeps a decision 200 ms into a read of the decisions again, which Dispatch answers ${latency} ms after it was sent`,
+    does: async (rig) => {
+      let kept = false;
+      (api.getIssueDecisions as Mock<typeof api.getIssueDecisions>).mockImplementation(async () => {
+        const answered = Promise.withResolvers<void>();
+        setTimeout(answered.resolve, latency);
+        await answered.promise;
+        return { decisions: [], document: kept ? "kept" : null, entries: [], open_questions: [] };
+      });
+      await act(async () => {
+        void rig.client.refetchQueries({ queryKey: ["decisions", KEY] });
+      });
+      await tick(200, 10);
+      kept = true;
+      await act(async () => {
+        refreshQueries(rig.client, [{ queryKey: ["decisions", KEY] }]);
+      });
+    },
+  };
+}
+
+/** A write of the issue whose own callback, as Dispatch answers it 200 ms on, does what a Settle,
+ *  a Keep's reading of the decisions again and a Change do: invalidates the coverage, refreshes
+ *  the tree and drops the views (`dropViews`). TanStack runs the callback before the write leaves
+ *  `pending`, so the drop is a refresh the write holds: nothing of the tree or its views is read
+ *  while the write is out, and the tree and the open view are read once as it settles. With
+ *  `press`, the reader presses the row's filter on, its view never read, halfway through the
+ *  write: that first read is sent at once, and the view is read once more as the write settles.
+ *  With `dropOnly`, the callback drops the views and nothing else, so no change of the issue asks
+ *  for the view at the settle: the drop alone is owed there, and the tree is not read. */
+function writeDroppingViews({
+  dropOnly = false,
+  press = false,
+}: {
+  dropOnly?: boolean;
+  press?: boolean;
+}): RuleWay {
+  return {
+    words: `a write of the issue whose callback, as Dispatch answers it in 200 ms, ${dropOnly ? "drops the views and nothing else" : "invalidates the coverage, refreshes the tree and drops the views"}${press ? ", the reader pressing the filter on while it is out" : ""}`,
+    does: async (rig) => {
+      const before = treeAndViewReads();
+      const trees = treeReadsOf();
+      let whileOut: number | undefined;
+      const write = new MutationObserver<void, Error, void, void>(rig.client, {
+        mutationKey: writeKeyOf(KEY),
+        mutationFn: async () => {
+          await Bun.sleep(200);
+        },
+        onSuccess: () => {
+          if (!dropOnly) {
+            void rig.client.invalidateQueries({ queryKey: issueCoverageQuery(KEY).queryKey });
+            refreshQueries(rig.client, [{ queryKey: issueTreeKey(KEY) }]);
+          }
+          dropViews(rig.client, KEY);
+        },
+        // TanStack runs it after the callback, before the write leaves `pending`.
+        onSettled: () => {
+          whileOut = treeAndViewReads() - before;
+        },
+      });
+      await writeSettles(() => write.mutate(), 200, press ? async () => comeBack(rig) : undefined);
+      expect(whileOut, "the reads of the tree and its views while the write is out").toBe(
+        press ? 1 : 0
+      );
+      await quiet(rig);
+      expect(treeReadsOf() - trees, "the reads of the tree").toBe(dropOnly ? 0 : 1);
+    },
+  };
+}
+
 const WAYS = {
   mount: {
     words: "a new surface mounting",
@@ -5535,6 +5644,26 @@ const WAYS = {
   eventWhileCommentsOut600: eventWhileCommentsOut(600),
   eventWhileCommentsOut1500: eventWhileCommentsOut(1_500),
   eventDuringOtherWriteUnderOwnKey: EVENT_DURING_OTHER_WRITE_UNDER_OWN_KEY,
+  eventDuringOtherWriteExtendingOwnKey: eventDuringWriteAway(
+    "a write naming another issue pressed on the page, a second under its key and one more part pressed on another page while it is out, the first settling, the reader back and an event of the issue while the second is out",
+    writeKeyOf(OTHER_KEY),
+    [...writeKeyOf(OTHER_KEY), "x"]
+  ),
+  eventDuringWriteOfLongerKeyAway: eventDuringWriteAway(
+    "a write naming an issue whose key begins with this issue's, pressed on another page, the reader back and an event of the issue while it is out",
+    undefined,
+    writeKeyOf(`${KEY}0`)
+  ),
+  eventDuringIssuelessWriteAway: eventDuringWriteAway(
+    "a write whose key names no issue, pressed on another page, the reader back and an event of the issue while it is out",
+    undefined,
+    ["pin"]
+  ),
+  eventWhileDecisionsOut600: eventWhileDecisionsOut(600),
+  eventWhileDecisionsOut1500: eventWhileDecisionsOut(1_500),
+  writeDroppingViews: writeDroppingViews({}),
+  firstPressDuringWriteDroppingViews: writeDroppingViews({ press: true }),
+  writeDroppingViewsOnly: writeDroppingViews({ dropOnly: true }),
 } satisfies Record<string, RuleWay>;
 
 /** How many reads of a query a way starts: a count, or the least and the most. */
@@ -6318,6 +6447,45 @@ const READ_RULES: readonly ReadRule[] = [
     observed: true,
     way: "eventDuringOtherWriteUnderOwnKey",
     now: 1,
+  },
+  // Only a send's past-deadline key is the same write: an extension of a key, a key that begins
+  // with this issue's, or one that names no issue, pressed on another page, holds nothing.
+  {
+    read: "tree",
+    state: "answered",
+    observed: true,
+    way: "eventDuringOtherWriteExtendingOwnKey",
+    now: 1,
+  },
+  {
+    read: "tree",
+    state: "answered",
+    observed: true,
+    way: "eventDuringWriteOfLongerKeyAway",
+    now: 1,
+  },
+  { read: "tree", state: "answered", observed: true, way: "eventDuringIssuelessWriteAway", now: 1 },
+  // One event, read once, while a read of the decisions is out as it lands.
+  { read: "tree", state: "answered", observed: true, way: "eventWhileDecisionsOut600", now: 1 },
+  { read: "tree", state: "answered", observed: true, way: "eventWhileDecisionsOut1500", now: 1 },
+  // A drop of the views by a write's own callback while the write is out is a refresh: the open
+  // view is read once as the write settles, with the tree; a first press of a view never read
+  // meanwhile is sent at once, and read once more as the write settles.
+  { read: "verification", state: "answered", observed: true, way: "writeDroppingViews", now: 1 },
+  {
+    read: "verification",
+    state: "answered",
+    observed: true,
+    way: "writeDroppingViewsOnly",
+    now: 1,
+  },
+  {
+    read: "verification",
+    state: "never",
+    observed: false,
+    way: "firstPressDuringWriteDroppingViews",
+    now: 2,
+    back: 0,
   },
 ];
 

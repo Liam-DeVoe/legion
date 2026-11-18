@@ -25,6 +25,7 @@ import {
   refreshQueries,
 } from "../../../api/query-refresh";
 import type { IssueDetails } from "../../../api/types";
+import { pastDeadlineKey } from "../../../hooks/useSending";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { refetchFailedOnFocus } from "../../refs/reference-target";
 import { blocksOfRole, mergeTreePages, type TreeBlock } from "./tree-nodes";
@@ -65,12 +66,20 @@ export function viewKey(
 
 /** Drops every view of issue `key` the cache holds (`resetQueries`), so a held one is gone and
  *  the one a filter watches is read again. It is for any caller after which a held view could be
- *  older than the tree the page draws, so that no view is drawn older than its tree.
- *  `subscribeTreeFreshness` drops none: it refreshes each held view through `refreshQueries`,
- *  and the view keeps what it draws until its new answer lands. */
+ *  older than the tree the page draws, so that no view is drawn older than its tree. A view it
+ *  drops while a write of the issue holds it - a write's own callback dropping the views as
+ *  Dispatch answers it - is a refresh: read once as the last write settles, not at once
+ *  (`mayReadNow`). `subscribeTreeFreshness` drops none: it refreshes each held view through
+ *  `refreshQueries`, and the view keeps what it draws until its new answer lands. */
 export function dropViews(queryClient: QueryClient, key: string): void {
   for (const filter of TREE_FILTERS) {
-    void queryClient.resetQueries({ exact: true, queryKey: viewKey(key, filter) });
+    const queryKey = viewKey(key, filter);
+    const view = queryClient.getQueryCache().find({ exact: true, queryKey });
+    if (view !== undefined && heldByWrites.has(view)) {
+      const { fetchStatus, status } = view.state;
+      if (status !== "pending" || fetchStatus !== "idle") droppedWhileHeld.add(view);
+    }
+    void queryClient.resetQueries({ exact: true, queryKey });
   }
 }
 
@@ -141,17 +150,28 @@ function mayReadOnMount(query: Pick<Query, "state">): boolean {
  *  as plain objects, as `askedAgain` is. */
 const heldByWrites = new WeakSet<object>();
 
+/** The views a drop (`dropViews`) reset while a write of their issue held them, after a read of
+ *  them - answered, refused or still out - until the last write settles, as the page's
+ *  subscription records it: a write's own callback drops the views as Dispatch answers it, which
+ *  TanStack runs before the write leaves `pending`. A view never read that a drop resets holds
+ *  nothing either way, and its first read is still sent at once. Held as plain objects, as
+ *  `askedAgain` is. */
+const droppedWhileHeld = new WeakSet<object>();
+
 /** Whether TanStack may read the tree or a view of its own accord or for a refresh (`TREE_FRESH`'s
  *  `enabled`): always for a read that holds neither an answer nor a refusal yet - a first load, a
  *  view's first filter press, one a load dropped (`dropViews`) - and for any other only while no
  *  write of its issue holds it (`heldByWrites`), since a read sent then reads a tree Dispatch may
- *  not have changed yet. A disabled query is no query of a refresh: the app's client refetches
- *  none (`api/query-client.ts`), the refresh scheduler only marks it stale (`api/query-refresh.ts`)
+ *  not have changed yet. A view dropped after a read of it while a write holds it
+ *  (`droppedWhileHeld`) holds nothing either, but is a refresh, held as an answered one. A
+ *  disabled query is no query of a refresh: the app's client refetches none
+ *  (`api/query-client.ts`), the refresh scheduler only marks it stale (`api/query-refresh.ts`)
  *  and a new observer reads none of it, so nothing is sent while the write is out, and the
  *  subscription reads what was asked for once the last write settles. The reader's Retry is an
  *  observer's `refetch`, which TanStack sends whatever `enabled` says. */
 function mayReadNow(query: Pick<Query, "state">): boolean {
-  return query.state.status === "pending" || !heldByWrites.has(query);
+  if (!heldByWrites.has(query)) return true;
+  return query.state.status === "pending" && !droppedWhileHeld.has(query);
 }
 
 /** How the tree read and its views are kept fresh: as `REFRESHED_BY_EVENTS`, except that none of
@@ -337,33 +357,38 @@ function byRole<Value>(make: (role: TreeFilter) => Value): (role: TreeFilter) =>
  * No refresh reads the tree or a view while a write of the issue is out, with the live feed up
  * or down: no event says when a write has reached Dispatch, and a tree read made then reads a
  * tree Dispatch may not have changed yet. A write is the issue's where its mutation key names the
- * issue, where it began while the issue's page drew its tree, or where its key extends the key of
- * a write of the issue still out, as a composer's send held past its deadline does; a write begun
- * on another page that names no issue holds nothing here. While one is out the tree and each view
- * that holds an answer or a refusal is disabled (`mayReadNow`), so the app's client, the refresh
- * scheduler and a new observer send none of it, and nothing waits in a query function; a first
- * load, a view's first filter press and the reader's Retry are sent at once, and each is owed one
- * more read once the last write settles, which answers the write. The asks of a held read the
- * subscription hears are owed at that settle too (`owedReads`): a stale mark put on it - by a
- * refresh of every query, the write store's for a write that lands with no answer or the event
- * feed's after an incomplete replay, and by the subscription's own asks - which a held refused
- * read hears as well, since it is marked valid while held (`hearAsks`); a focus's ask while the
- * live feed is down and the feed's return; and a new observer, whose read the hold holds, where
- * the read is marked stale and the observer may read it (`mayReadOnMount`). A `refetchQueries` of
- * a held read is not heard: TanStack's client skips a disabled query and tells nothing of it, and
- * nothing in the page asks for the tree or a view that way. While the writes are out an
- * invalidation of a query of the issue is a change, as it is with none out: an event may refresh
- * reads that answer what they held, and the trigger is what the tree owes, not its answer. So a
- * write Dispatch refuses, whose rollback puts the comments back and reads them again, reads the
- * tree once as it settles, and an event landing meanwhile is read in that one read. A query's
- * answer is a change besides where it differs from the data the query held when the first of the
- * writes went out. Every change heard while the writes are out is the one refresh, run a
- * microtask after the last of them settles, answered or refused, so a write pressed as it settles
- * keeps the hold (`settle`): the refresh held back asks for the tree and every view, the owed ones
- * among them, and with none held back each owed read is asked for, so each is read once. So the
- * margin's resolve with the feed down reads the tree once, after Dispatch answered, and a write
- * that lands with no answer, whose write store refreshes every query while it is still out
- * (`write-store.ts`), reads the tree and the open view once, as the last write out settles.
+ * issue (an element equal to its key), where it began while the issue's page drew its tree, or
+ * where its key is exactly the past-deadline key of a write of the issue still out, as a
+ * composer's send held past its deadline is. A write begun on another page that is none of these
+ * holds nothing here, though its key equals or extends the key of one of them, or names no issue.
+ * While one is out the tree and each view that holds an answer or a refusal is disabled
+ * (`mayReadNow`), so the app's client, the refresh scheduler and a new observer send none of it,
+ * and nothing waits in a query function; a first load, a view's first filter press and the
+ * reader's Retry are sent at once, and each is owed one more read once the last write settles,
+ * which answers the write. A view dropped meanwhile (`dropViews`) - as a write's own callback
+ * drops the views when Dispatch answers it, before TanStack lets the write go - is no first
+ * read but a refresh: held as an answered one, and read once at that settle. The asks of a held
+ * read the subscription hears are owed at that settle too (`owedReads`): a stale mark put on it -
+ * by a refresh of every query, the write store's for a write that lands with no answer or the
+ * event feed's after an incomplete replay, and by the subscription's own asks - which a held
+ * refused read hears as well, since it is marked valid while held (`hearAsks`); a focus's ask
+ * while the live feed is down and the feed's return; and a new observer, whose read the hold
+ * holds, where the read is marked stale and the observer may read it (`mayReadOnMount`). A
+ * `refetchQueries` of a held read is not heard: TanStack's client skips a disabled query and
+ * tells nothing of it, and nothing in the page asks for the tree or a view that way. While the
+ * writes are out an invalidation of a query of the issue is a change, as it is with none out: an
+ * event may refresh reads that answer what they held, and the trigger is what the tree owes, not
+ * its answer. So a write Dispatch refuses, whose rollback puts the comments back and reads them
+ * again, reads the tree once as it settles, and an event landing meanwhile is read in that one
+ * read. A query's answer is a change besides where it differs from the data the query held when
+ * the first of the writes went out. Every change heard while the writes are out is the one
+ * refresh, run a microtask after the last of them settles, answered or refused, so a write
+ * pressed as it settles keeps the hold (`settle`): the refresh held back asks for the tree and
+ * every view, the owed ones among them, and with none held back each owed read is asked for, so
+ * each is read once. So the margin's resolve with the feed down reads the tree once, after
+ * Dispatch answered, and a write that lands with no answer, whose write store refreshes every
+ * query while it is still out (`write-store.ts`), reads the tree and the open view once, as the
+ * last write out settles.
  *
  * Two kinds of write hold nothing, and the event that follows each is read at once: a write of
  * the issue made on another page - the inbox's drawer, a list - which names no issue and begins
@@ -410,15 +435,18 @@ function byRole<Value>(make: (role: TreeFilter) => Value): (role: TreeFilter) =>
  * last read began under a second ago, or one is out: the refresh marks it stale at once and asks
  * for it once the scheduler begins it at once, so it begins inside the refresh's own call, and a
  * change heard meanwhile joins that one held ask. The tree read is held so wherever a read of the
- * issue the scheduler owes and holds back is still to begin - observed, marked invalid, answered
- * and none out, due a second after its last read began - as the comments read an event marked
- * invalid is when its last read began under a second ago, whether or not the scheduler would hold
- * the tree itself; and it waits until every such read has begun. Such a read pays the change the
- * tree read pays, and begun after the tree's, while still marked invalid, it would count as newer
- * and read the tree once more for one event. A read of the tree or of the decisions anyone else
- * begins first - a Keep's, a stage's as the reader comes back - answers that ask, as it pays a
- * refresh the scheduler owes, and is no read of the refresh's own; and the ask goes to the
- * scheduler, which marks the read stale where nothing draws it, as the reader leaves.
+ * issue the scheduler owes is still to begin, whether or not the scheduler would hold the tree
+ * itself: one observed, marked invalid, answered and none out, due a second after its last read
+ * began - as the comments read an event marked invalid is when its last read began under a second
+ * ago - or one the event marked invalid while its read was out, so owed once more as that read
+ * lands, as the scheduler reads it then: the comments, asks, issue, messages or decisions read
+ * alike. It waits until every such read has begun, an owed read out until it lands. Such a read
+ * pays the change the tree read pays, and begun after the tree's, while still marked invalid or
+ * answering other than the tree's read saw, it would count as newer and read the tree once more
+ * for one event. A read of the tree or of the decisions anyone else begins first - a Keep's, a
+ * stage's as the reader comes back - answers that ask, as it pays a refresh the scheduler owes,
+ * and is no read of the refresh's own; and the ask goes to the scheduler, which marks the read
+ * stale where nothing draws it, as the reader leaves.
  *
  * It is one subscription for each client and issue, which outlives the stage that asks for it:
  * kept while a stage holds it, and after, for as long as the cache holds the issue's tree. A
@@ -552,15 +580,16 @@ function watchTree(
   // a read begun before the next task is the focus's.
   let focusing = false;
   // The writes of this issue not settled yet: each that names the issue in its mutation key (an
-  // element equal to `key`, as the issue's own update does), or that began while this issue's
-  // page drew its tree (the tree observed as the mutation cache told of the write), or whose key
-  // extends the key of such a write still out - a composer's send held past its deadline under
-  // its name and one more part (`pastDeadlineKey`, `hooks/useSending.ts`), as
+  // element equal to `key`, as the issue's own update does, never a key that merely begins with
+  // it), or that began while this issue's page drew its tree (the tree observed as the mutation
+  // cache told of the write), or whose key is exactly the past-deadline key of such a write still
+  // out (`pastDeadlineKey`, `hooks/useSending.ts`): a composer's send held past its deadline, as
   // `features/conversation/held-sends.ts` holds a late send, made before the name lets go, is the
-  // same send, whatever page the reader is on by then. A write the client holds names no issue
-  // otherwise, so one begun on another page holds nothing here. And whether one of them is out
-  // (`unmutate`): the hold, from the first going out to the last settling, which `settling` keeps
-  // until the settle's reads run, a microtask on.
+  // same send, whatever page the reader is on by then. Any other write is a write of its own,
+  // judged as any: one under an equal key or another extension of it, begun on another page and
+  // naming no issue, holds nothing here. And whether one of them is out (`unmutate`): the hold,
+  // from the first going out to the last settling, which `settling` keeps until the settle's
+  // reads run, a microtask on.
   const names = (mutation: Mutation): boolean =>
     mutation.options.mutationKey?.includes(key) === true;
   const ownWrites = new Set<Mutation>(
@@ -572,13 +601,14 @@ function watchTree(
     }
     return false;
   };
-  // Whether `mutation`'s key extends (TanStack's prefix match) the key of a write of this issue
-  // still out.
-  const extendsOwnWrite = (mutation: Mutation): boolean => {
+  // Whether `mutation`'s key is exactly the past-deadline key of a write of this issue still out.
+  const lateOwnSend = (mutation: Mutation): boolean => {
     for (const one of ownWrites) {
       const { mutationKey } = one.options;
       if (mutationKey === undefined || one.state.status !== "pending") continue;
-      if (matchMutation({ mutationKey }, mutation)) return true;
+      if (matchMutation({ exact: true, mutationKey: pastDeadlineKey(mutationKey) }, mutation)) {
+        return true;
+      }
     }
     return false;
   };
@@ -681,22 +711,40 @@ function watchTree(
   const dueOf = (query: Query): number =>
     (startedAt.get(query.queryHash) ??
       Math.max(query.state.dataUpdatedAt, query.state.errorUpdatedAt)) + MIN_REFETCH_INTERVAL_MS;
+  // The reads of the issue an invalidation reached while their read was out: the scheduler, or
+  // the app's client, reads each once more as that read lands, until a read of it begins.
+  const owedAfterOut = new Set<string>();
+  // Whether a read of the issue owed so is still out, which the tree's held ask waits for until it
+  // lands (`arm`). The decisions read this subscription holds itself is none.
+  const owedOut = (): boolean =>
+    issueQueries.some((filters) =>
+      cache
+        .findAll(filters)
+        .some(
+          (one) =>
+            owedAfterOut.has(one.queryHash) &&
+            one.isActive() &&
+            one.state.fetchStatus !== "idle" &&
+            !(heldAsks.has(decisions) && matchQuery(decisions, one))
+        )
+    );
   // The moments the reads of the issue the scheduler owes are due at, each at or after `since`: a
-  // query of the issue something observes, marked invalid, answered, with no read out, which the
-  // scheduler holds back until a second after its last read began. A query in error is owed
-  // nothing: nothing reads it until what reads it again comes. One due before `since` and not
-  // begun is no read the scheduler holds back, since it begins at once a read that is due. The
-  // decisions read this subscription holds itself is none either: asked for inside its own call,
-  // it never counts as newer.
+  // query of the issue something observes, with no read out, which the scheduler holds back until
+  // a second after its last read began - one marked invalid and answered, or one owed once more
+  // as its read out landed (`owedAfterOut`). A query in error is owed nothing: nothing reads it
+  // until what reads it again comes. One due before `since` and not begun is no read the
+  // scheduler holds back, since it begins at once a read that is due. The decisions read this
+  // subscription holds itself is none either: asked for inside its own call, it never counts as
+  // newer.
   const owedDues = (since: number): number[] =>
     issueQueries.flatMap((filters) =>
       cache.findAll(filters).flatMap((one) => {
         const { fetchStatus, isInvalidated, status } = one.state;
         const owed =
           one.isActive() &&
-          isInvalidated &&
           fetchStatus === "idle" &&
           status === "success" &&
+          (isInvalidated || owedAfterOut.has(one.queryHash)) &&
           !(heldAsks.has(decisions) && matchQuery(decisions, one));
         const due = dueOf(one);
         return owed && due >= since ? [due] : [];
@@ -704,15 +752,18 @@ function watchTree(
     );
   // Asks for a held read once the scheduler begins it at once, so the read begins inside this
   // subscription's own call; never while a read of it is out. The tree's waits besides until
-  // every read of the issue the scheduler owes has begun: one that began after the tree's would
-  // count as newer (`answeredNewer`), though the tree read answers the change it pays. Where one
-  // due by the moment the timer fires has not begun yet - its timer is due in the same
-  // millisecond - the ask waits once more, now counting only what is due from then.
+  // every read of the issue the scheduler owes has begun - an owed one still out until it lands,
+  // when it waits again (the subscription's own re-arm on each answer of the issue): one that
+  // began after the tree's would count as newer (`answeredNewer`), though the tree read answers
+  // the change it pays. Where one due by the moment the timer fires has not begun yet - its timer
+  // is due in the same millisecond - the ask waits once more, now counting only what is due from
+  // then.
   const arm = (target: RefreshTarget): void => {
     const heldAsk = heldAsks.get(target);
     if (heldAsk === undefined || heldAsk.timer !== undefined) return;
     const query = cache.find(target);
     if (query?.state.fetchStatus !== "idle") return;
+    if (target === tree && owedOut()) return;
     const owed = target === tree ? owedDues(heldAsk.since) : [];
     heldAsk.timer = window.setTimeout(
       () => {
@@ -721,7 +772,8 @@ function watchTree(
         const read = cache.find(target);
         if (
           read !== undefined &&
-          (Date.now() < dueOf(read) || (target === tree && owedDues(heldAsk.since).length > 0))
+          (Date.now() < dueOf(read) ||
+            (target === tree && (owedOut() || owedDues(heldAsk.since).length > 0)))
         ) {
           heldAsk.since = Date.now();
           arm(target);
@@ -766,16 +818,19 @@ function watchTree(
     // The decisions read the scheduler would hold back - the last read began under a second ago,
     // or one is out - is held here instead: marked stale now, as the scheduler marks a read it
     // owes, and asked for once the scheduler begins it at once (`arm`). The tree read is held so
-    // wherever a read of the issue the scheduler owes is still to begin, whether or not the
-    // scheduler would hold the tree itself: a read of the issue begun after the tree's, still
-    // marked invalid, counts as newer (`answeredNewer`), so one event would read the tree twice.
-    // Elsewhere the scheduler holds the tree as it would. A change heard while one is held joins
-    // that one held ask.
+    // wherever a read of the issue the scheduler owes is still to begin - the comments, asks,
+    // issue, messages or decisions read an event marked stale, idle and held back a second after
+    // its last read began, or out as the event landed and so owed once more as it lands
+    // (`owedOut`) - whether or not the scheduler would hold the tree itself: a read of the issue
+    // begun after the tree's, still marked invalid or answering other than the tree's read saw,
+    // counts as newer (`answeredNewer`), so one event would read the tree twice. Elsewhere the
+    // scheduler holds the tree as it would. A change heard while one is held joins that one held
+    // ask.
     const holds = [tree, decisions].filter((target) => {
       const read = targets.includes(target) ? cache.find(target) : undefined;
       if (read === undefined || !read.isActive()) return false;
       if (heldAsks.has(target)) return true;
-      if (target === tree) return owedDues(Date.now()).length > 0;
+      if (target === tree) return owedOut() || owedDues(Date.now()).length > 0;
       return read.state.fetchStatus !== "idle" || Date.now() < dueOf(read);
     });
     ask(targets.filter((target) => !holds.includes(target)));
@@ -815,6 +870,7 @@ function watchTree(
       heldData.delete(hash);
       owedReads.delete(hash);
       owedOnRefusal.delete(hash);
+      owedAfterOut.delete(hash);
       if (matchQuery(tree, query)) watcher.release();
       return;
     }
@@ -825,6 +881,11 @@ function watchTree(
         // A refresh asked for while a write holds the read sends nothing (`mayReadNow`): the
         // stale mark it puts on the query is the ask, owed until the last write settles.
         if (action.type === "invalidate" && holding()) owedReads.add(hash);
+        // A view a drop reset (`dropViews`) while the writes hold it, after a read of it, is a
+        // refresh: held as an answered one (`droppedWhileHeld`, `mayReadNow`) and owed until the
+        // last write settles. The drop marks it before the reset, which TanStack tells of before
+        // it asks for the reads it reset, so none is sent.
+        if (action.type === "setState" && droppedWhileHeld.has(query)) owedReads.add(hash);
         // A read a focus or the feed's return found out has ended: where it ended refused it is
         // asked for once more, outside this notification, since the cache is still dispatching
         // the action that ended it.
@@ -881,6 +942,8 @@ function watchTree(
     const isDecisions = matchQuery(decisions, query);
     if (action.type === "fetch") {
       recordStart(hash);
+      // A read begins, which pays a read owed once its last landed.
+      owedAfterOut.delete(hash);
       // A read of the decisions begun since a refresh asked for it answers that ask, whoever
       // began it, as it pays a refresh the scheduler owes; it is no read of the refresh's own.
       if (isDecisions && !calling) drop(decisions, false);
@@ -894,8 +957,10 @@ function watchTree(
       if (holding()) judged.add(hash);
       return;
     }
-    // The held decisions read is asked for once no read of it is out.
+    // The held decisions read is asked for once no read of it is out, and the held tree read
+    // waits again once a read of the issue lands (`arm`).
     if (isDecisions) arm(decisions);
+    if (heldAsks.has(tree)) arm(tree);
     if (calling || (action.type !== "invalidate" && action.type !== "success")) return;
     if (action.type === "invalidate") {
       // An invalidation is a change, while a write of the issue is out too: an event of the issue
@@ -907,6 +972,8 @@ function watchTree(
       // that settle, reads the tree no second time. The decisions read's own invalidation leaves
       // its read out or owed, with a write out or none.
       if (isDecisions) decisionsInvalidated = true;
+      // Marked stale while its read is out, the read is owed once more as that one lands.
+      if (query.state.fetchStatus !== "idle") owedAfterOut.add(hash);
       if (holding()) judged.add(hash);
       queue();
       return;
@@ -1001,6 +1068,7 @@ function watchTree(
   const releaseReads = (): void => {
     for (const query of cache.findAll(treeQueries)) {
       heldByWrites.delete(query);
+      droppedWhileHeld.delete(query);
     }
     for (const query of markedValid) {
       const { isInvalidated, status } = query.state;
@@ -1051,7 +1119,7 @@ function watchTree(
   // query of the issue then holds (`heldData`), and holds the tree and its views
   // (`heldByWrites`); the last settling, answered or refused, ends it (`settle`). A write is the
   // issue's as the mutation cache tells of it (`names`, the tree observed then, or
-  // `extendsOwnWrite`).
+  // `lateOwnSend`).
   const unmutate = queryClient.getMutationCache().subscribe((event) => {
     // Only a mutation added, removed or updated changes which are pending.
     if (event.type !== "added" && event.type !== "removed" && event.type !== "updated") return;
@@ -1059,7 +1127,7 @@ function watchTree(
     if (event.type === "added") {
       if (
         !names(mutation) &&
-        !extendsOwnWrite(mutation) &&
+        !lateOwnSend(mutation) &&
         (cache.find(tree)?.getObserversCount() ?? 0) === 0
       ) {
         return;
