@@ -1309,7 +1309,10 @@ export interface WideNoteSeed {
  * One issue whose spec holds one note - a `callout` block, which the page names "note" - whose
  * body is a table of `WIDE_NOTE_COLUMNS` columns: a line of heads and a line of values. The note
  * is in the spec because the page draws no block of a `notes.md`: written there, the note is
- * drawn nowhere and the row has no table to read.
+ * drawn nowhere and the row has no table to read. A summary callout stands before it: the
+ * outline takes the spec's first callout for the issue's summary and draws no row of it
+ * (`spec-summary.ts`), so a note that stood first would have no row, and its table would be
+ * drawn nowhere on the Conversation view.
  * A row cuts words taller than six lines (ruling 1), and the table is two lines tall, so its row
  * draws it whole. It is an issue of its own, so no seed another row reads changes,
  * and no row that reads every row of `seedRows` - c-row-layout reads where each typed row's first
@@ -1329,10 +1332,11 @@ export async function seedWideNote(): Promise<WideNoteSeed> {
     line(columns.map(() => "---")),
     line(columns.map((column) => `value${column}`)),
   ].join("\n");
+  const summary =
+    ':::callout{#summary kind="note"}\nWhat the issue is about, in a sentence.\n:::\n';
+  const note = `:::callout{#n-wide kind="note"}\n${table}\n:::\n`;
   await editArtifact(issue.primary_artifact_id, {
-    ops: [
-      { after: "end", markdown: `:::callout{#n-wide kind="note"}\n${table}\n:::\n`, op: "insert" },
-    ],
+    ops: [{ after: "end", markdown: `${summary}\n${note}`, op: "insert" }],
   });
   const specSlug =
     ((await getIssue(issue.key)).artifacts ?? []).find((artifact) => artifact.primary)?.slug ?? "";
