@@ -1647,6 +1647,20 @@ const legionPlanReason = legionPlanReasonRules(z.string(), {
   long: `planReason holds at most ${LEGION_PLAN_REASON_MAX} characters`,
 });
 
+/** Which field of a plan's rating came alone: `"rating"` for a rating with no reason, `"reason"`
+ * for a reason with no rating, and `undefined` for both or neither. The daemon takes the two only
+ * together (`PLAN_RATING_INPUT`). The request schema below refuses either lone field, and the
+ * `legion` tool's `handoff_complete` refuses each by its name, both by this, so the pair rule is
+ * written once. */
+export function legionPlanRatingLoneField(
+  rating: number | undefined,
+  reason: string | undefined
+): "rating" | "reason" | undefined {
+  if (rating !== undefined && reason === undefined) return "rating";
+  if (reason !== undefined && rating === undefined) return "reason";
+  return undefined;
+}
+
 /** `api.HandoffCompleteRequest`, the observation one worker reports to the workflow: a phase
  * completion, or the checking role's report on a look of its closed issue's production check.
  * A file-backed phase (planning, implementing, testing, reviewing) ends with a handoff record on
@@ -1690,9 +1704,10 @@ export const LegionHandoffCompleteRequest = z
     planRating: legionPlanRatingScale(z.number()).optional(),
     planReason: legionPlanReason.optional(),
   })
-  .refine((request) => (request.planRating === undefined) === (request.planReason === undefined), {
-    message: "planRating and planReason appear together",
-  });
+  .refine(
+    (request) => legionPlanRatingLoneField(request.planRating, request.planReason) === undefined,
+    { message: "planRating and planReason appear together" }
+  );
 
 /** `api.IssueStatusRequest`, the controller's explicit board-status write. */
 export const LegionIssueStatusRequest = z.strictObject({
