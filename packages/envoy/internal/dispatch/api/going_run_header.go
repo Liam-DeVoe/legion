@@ -41,7 +41,21 @@ import (
 // the same intent sent again with the header mended, or without it, runs. The caller it resolves
 // is put on the context for the key layer and the handler, as refuseChangedLogin does, so it is
 // resolved once a request.
-func (s *server) withinGoingRun(handler http.HandlerFunc) http.HandlerFunc {
+//
+// The refusal stands in for the handler, so a request whose handler would not run is not refused
+// here: a write sent again under the Idempotency-Key of one the key layer already answered is
+// answered that answer before its run is checked, so a retry after the run has ended reads the
+// write it made rather than this refusal (spec R4). On a route behind the key layer (keyed:
+// keyedMethod), a refused request whose key holds a row that layer answers itself
+// (requestKeyAnswersItself, the look refuseUploadToAClosedIssue takes for its refusal too) goes on
+// with no run on its context and a goingRunRefused there instead, and the layer answers it from
+// that key alone and never runs its handler (answerRefusedRun): with what the key holds when the
+// layer reads it, or with this refusal where it no longer holds an answer. So every handler that
+// runs for a request naming a run runs with that run admitted, a key that stops answering between
+// the two looks is answered this refusal, and a refused request whose key holds nothing claims
+// none. The key's digest holds the header (writeRequestFields), so a repeat names the same run:
+// one that names another run, or none, is the key reused.
+func (s *server) withinGoingRun(handler http.HandlerFunc, keyed bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		named := r.Header.Values(contracts.GoingRunHeader)
 		if len(named) == 0 {
@@ -53,6 +67,27 @@ func (s *server) withinGoingRun(handler http.HandlerFunc) http.HandlerFunc {
 			s.writeAuthenticationError(w, err)
 			return
 		}
+		r = r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{actor: actor, human: human}))
+		refuse := func() {
+			if keyed {
+				if key, present, err := requestKeyHeader(r); present && err == nil {
+					login := requestKeyLogin(actor, human)
+					answers, err := s.requestKeyAnswersItself(r.Context(), login, key)
+					if err != nil {
+						// As the key layer answers its own failed lookup: under the key, which
+						// nothing has claimed, so the client asks again under it.
+						w.Header().Set(contracts.IdempotencyKeyHeader, key)
+						s.writeHandlerError(w, err)
+						return
+					}
+					if answers {
+						handler(w, r.WithContext(context.WithValue(r.Context(), goingRunRefusedKey{}, goingRunRefused{login: login, key: key})))
+						return
+					}
+				}
+			}
+			writeGoingRequestNotFound(w)
+		}
 		// Decided before the read, as the stream decides it: readLiveGoingRun casts $1::uuid, so
 		// an id that is not a uuid would come back as a Postgres error rather than pgx.ErrNoRows.
 		// What goes on is the parsed uuid's own spelling and never the header's: uuid.Parse also
@@ -61,13 +96,13 @@ func (s *server) withinGoingRun(handler http.HandlerFunc) http.HandlerFunc {
 		// tuple points at, the lowercase text the interaction node is keyed by.
 		parsed, err := uuid.Parse(named[0])
 		if len(named) != 1 || err != nil {
-			writeGoingRequestNotFound(w)
+			refuse()
 			return
 		}
 		run := parsed.String()
 		author, live, err := s.readLiveGoingRun(r.Context(), run)
 		if errors.Is(err, pgx.ErrNoRows) {
-			writeGoingRequestNotFound(w)
+			refuse()
 			return
 		}
 		if err != nil {
@@ -75,10 +110,17 @@ func (s *server) withinGoingRun(handler http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		if !live || !goingRunIsTheCallers(author, actor) {
-			writeGoingRequestNotFound(w)
+			refuse()
 			return
 		}
-		ctx := context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{actor: actor, human: human})
-		handler(w, r.WithContext(graphstore.WithRun(ctx, run)))
+		handler(w, r.WithContext(graphstore.WithRun(r.Context(), run)))
 	}
 }
+
+// goingRunRefused is a request whose run withinGoingRun refused and left to its Idempotency-Key,
+// key, which login's key row held an answer for when withinGoingRun looked: the key layer answers
+// it from that key or with the refusal, and never runs its handler (answerRefusedRun).
+type goingRunRefused struct{ login, key string }
+
+// goingRunRefusedKey carries a goingRunRefused to the key layer on the request's context.
+type goingRunRefusedKey struct{}

@@ -798,7 +798,8 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 // (keyedReplays), nil for a row that has none.
 func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFunc {
 	handler := route.Handler
-	if keyedMethod(route.Method) {
+	keyed := keyedMethod(route.Method)
+	if keyed {
 		handler = s.keyedWrites(route.Method, route.Pattern, handler, replay)
 	}
 	if route.Method+" "+route.Pattern == issueUploadRoute {
@@ -808,8 +809,13 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 		// A write made for a run of the command bar: the one reader of its header, inside the
 		// checks below, so a caller they refuse is told that first, and outside the keyed
 		// layer and the upload's spool, so a run it refuses claims no key and costs no body
-		// (withinGoingRun).
-		handler = s.withinGoingRun(handler)
+		// (withinGoingRun). A refused request whose key already holds an answer still reaches
+		// the keyed layer, which answers it from that key alone and never runs its handler
+		// (answerRefusedRun): so a retry after its run ended reads the write it made, and no
+		// handler runs a write for a run this check did not admit. Inside the keyed layer the
+		// replay would come first by itself, but a refused run would then claim its key, and
+		// the same intent sent again without the header would be answered the key reused.
+		handler = s.withinGoingRun(handler, keyed)
 		// Outside the keyed layer and the upload's spool, so a write to another project's
 		// object, into another session's own rows, or by a credential that names no person
 		// claims no idempotency key and costs no body (withinProjectScope,
