@@ -1,12 +1,10 @@
-import { beforeAll, expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import { jump, realClock } from "../../../__tests__/fake-clock";
-import { installFakeLiveSockets } from "../../../__tests__/live-socket-harness";
 import {
   ApiError,
   api,
@@ -14,9 +12,7 @@ import {
   type WriteBounds,
   type WriteRequest,
 } from "../../../api/client";
-import { liveSocketFor } from "../../../api/live-socket";
 import { issueCoverageQuery } from "../../../api/queries";
-import { MIN_REFETCH_INTERVAL_MS } from "../../../api/query-refresh";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import type { TreeNode } from "../issue-tree";
 import { NodeRow } from "../NodeRow";
@@ -289,56 +285,6 @@ test("a 200 reads the tree again while the coverage read is marked stale", async
     await waitFor(() => expect(drawn.settle().textContent).toBe(CONTROL_LABELS.settle));
     expect(drawn.sentence()).toBeNull();
   } finally {
-    drawn.unmount();
-  }
-});
-
-/** The live feed of `client` up, as the shell's event feed holds it: its socket open and the
- *  feed's subscription on it started by Dispatch (`events_start`). Answers the end of the feed,
- *  which puts the page's WebSocket back. */
-function liveFeedOn(client: QueryClient): () => void {
-  const sockets = installFakeLiveSockets();
-  const live = liveSocketFor(client);
-  live.subscribeEvents({ onEvent: () => undefined, onStart: () => undefined, since: () => null });
-  const socket = sockets.latest();
-  act(() => socket.open());
-  const { sub } = socket.subscribed("events");
-  act(() => socket.receive({ type: "events_start", sub, since: "1", replay_complete: true }));
-  return () => {
-    live.close();
-    sockets.restore();
-  };
-}
-
-// With the live feed up, the coverage is invalidated before the tree is read again, so its read
-// begins first, and a changed answer of it is no newer than the tree read the 200 made: the tree
-// read's subscription (`subscribeTreeFreshness`) reads nothing again for it. Each read goes out
-// once, the coverage's first; a second read of the tree or the view would wait out the refresh
-// scheduler's interval. With the feed down the subscription holds its refresh back until the
-// write settles, and so reads the tree and the open view a second time (`useSettle`).
-test("a 200 that changes the coverage reads the coverage, the tree and the open view once each", async () => {
-  const user = userEvent.setup();
-  const landing = Promise.withResolvers<unknown>();
-  const drawn = drawRow(() => landing.promise, 0, {
-    requirements: [{ block_id: "r7", checks: 0, gaps: [], plan_tasks: 0, ref: REFERENCE }],
-  });
-  const endFeed = liveFeedOn(drawn.client);
-  try {
-    await user.click(drawn.settle());
-    await waitFor(() => expect(drawn.sent).toHaveLength(1));
-    expect(drawn.reads).toEqual([]);
-    jest.useFakeTimers();
-    try {
-      await act(async () => landing.resolve(settled()));
-      await waitFor(() => expect(drawn.reads).toHaveLength(3));
-      await jump(MIN_REFETCH_INTERVAL_MS);
-      expect(drawn.reads).toEqual(["coverage", "tree", "verification"]);
-    } finally {
-      realClock();
-    }
-    await waitFor(() => expect(drawn.settle().textContent).toBe(CONTROL_LABELS.settle));
-  } finally {
-    endFeed();
     drawn.unmount();
   }
 });

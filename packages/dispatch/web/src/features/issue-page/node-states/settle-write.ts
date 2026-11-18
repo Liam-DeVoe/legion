@@ -88,12 +88,13 @@ export function useSettleIssue(): string | undefined {
  * (`dropViews`), so the open view is read again; the write stays out until the coverage's read
  * is answered. The tree and the views are those of the issue the tree is drawn for
  * (`SettleIssueProvider`), else of `key`: a node whose own address names another issue settles
- * under that issue, whose coverage is the one read again. The coverage's read is begun first,
- * then the tree's. The tree is read here, not left to the tree read's subscription, which hears
- * an invalidation of the coverage: a coverage read already marked stale - a read of it failed,
- * or a refresh still owes one - raises none, and another issue's coverage is no query of the
- * page's. Whether the subscription reads the tree and the open view again after these reads,
- * and when, is its own to decide (`subscribeTreeFreshness` in `tree-read/tree-read.ts`).
+ * under that issue, whose coverage is the one read again. The coverage is invalidated first and
+ * the tree asked for after it, so the coverage's read begins first. The tree is asked for here,
+ * not left to the tree read's subscription, which hears an invalidation of the coverage: a
+ * coverage read already marked stale - a read of it failed, or a refresh still owes one - raises
+ * none, and another issue's coverage is no query of the page's. When the tree and the open view
+ * are read, and how often - this write holds them while it is out - is the subscription's own to
+ * decide (`subscribeTreeFreshness` in `tree-read/tree-read.ts`).
  * A refusal reads nothing again.
  */
 export function useSettle(key: string, reference: string, landed: () => void) {
