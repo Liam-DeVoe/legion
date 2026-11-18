@@ -655,10 +655,13 @@ func (idleRigTokens) Token(context.Context, ghrepo.Repository) (string, error) {
 }
 
 // launch waits until the issue's pod runs its role, registered, ready and having told the daemon
-// it runs no background work: the state the idle rule releases. The daemon starts the implementer
-// of an admitted issue whose phase is its own, so nothing here asks for the launch; a claim still
-// suspended is nudged with the operator's resume, which is what a boot that left it suspended
-// needs.
+// it runs no background work (its claim's activity report, reported): the state the idle rule
+// releases. The rig's quiet back-dates only a claim that has reported, so a claim stopped or
+// suspended before its first report would keep that write as its pod's last and hold the pod for
+// the whole idle period, which a loaded run of the whole package met. The daemon starts the
+// implementer of an admitted issue whose phase is its own, so nothing here asks for the launch; a
+// claim still suspended is nudged with the operator's resume, which is what a boot that left it
+// suspended needs.
 func (r *idleWakeRig) launch(issue idleRigIssue) {
 	r.t.Helper()
 	defer func() {
@@ -668,9 +671,9 @@ func (r *idleWakeRig) launch(issue idleRigIssue) {
 	}()
 	token := r.token(issue)
 	var nudged time.Time
-	idleRigEventually(r.t, idleRigPodWait, "the pod of "+issue.key+" running its role, registered and ready", func() bool {
+	idleRigEventually(r.t, idleRigPodWait, "the pod of "+issue.key+" running its role, registered, ready and reported", func() bool {
 		state := r.api.claim(token)
-		if idleRigWorking(state.State) && r.agents.role(issue.key, string(issue.role)).Registered > 0 {
+		if idleRigWorking(state.State) && r.agents.role(issue.key, string(issue.role)).Registered > 0 && r.reported(token) {
 			return true
 		}
 		if state.State == string(supervise.StateSuspended) && time.Since(nudged) > 3*time.Second {
@@ -679,6 +682,17 @@ func (r *idleWakeRig) launch(issue idleRigIssue) {
 		}
 		return false
 	})
+}
+
+// reported is whether the claim token has an activity report (activity_at), which its role
+// process sends once it is ready (idleRigRoleProcess.reportActivity).
+func (r *idleWakeRig) reported(token claim.Token) bool {
+	r.t.Helper()
+	var reported bool
+	if err := r.pool.QueryRow(context.Background(), `select activity_at is not null from claims where token = $1`, string(token)).Scan(&reported); err != nil {
+		r.t.Fatalf("read whether %s has reported its activity: %v", token, err)
+	}
+	return reported
 }
 
 // diagnose is what a failure of the rig prints: the launchers' own log and the last of the
