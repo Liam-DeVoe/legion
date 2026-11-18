@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
@@ -176,26 +175,22 @@ func TestARunResultOfNoMatrixAnswersNoRunWhereItsJobHadLegs(t *testing.T) {
 }
 
 // R48: "At that commit, such a check reads unknown, and no earlier result of it counts"; R7: "Of
-// several results that count, the latest counts", "A pass and a failure on one such subject and one
-// procedure make the state unknown. The failing run is a report (R11), and a later pass does not end
-// the report"; R9: "The check reads true only when its test, as it is now, failed on that fault",
-// and "a check whose current text has no failing example that failed when it should" reads
-// unknown. A refusal of CI at c1 takes out the passing evidence of c1 and of each other commit
-// recorded no later than c1's newest record, the passes and the failing examples that failed on
-// their fault, and no newer one. The refusal carries no time, and the history gives no order of
-// commits, so "earlier" is the order of record. It takes out no failure, no run that could not run
-// and no failing example that missed its fault, of any commit, c1's among them. The state is what
-// the evidence that remains gives, so a refusal moves no state toward true: where a row gives the
-// line with no refusal too, the line with the refusal is not true unless that one is. It can move
-// a check from false to unknown, when it takes out the only caught failing example, and from
-// unknown to false, when it takes out a pass beside a failure that stands (a row of each). A
-// refusal at a commit that holds no result of the check counts at that commit alone, as the
-// subject. Each row: carry, with the row's records, and c0 as c1's parent with c1's tree and ties
-// where the row says so; the check reads the row's line at c2, where the results of c0, c1 and m2
-// carry (R8), and at m2, the head of main. m2's pass and the run of the job that ended at m2 are
-// the reviewer's case; c1's results are recorded on 12 November, its pass at 10:00 and its caught
-// failing example at 10:05.
-func TestARefusalOfCITakesOutOnlyThePassingEvidenceOfItsCommitAndOlder(t *testing.T) {
+// several results that count, the latest counts"; R9: "The check reads true only when its test, as
+// it is now, failed on that fault", and "a check whose current text has no failing example that
+// failed when it should" reads unknown; R48: "At that commit, such a check reads unknown, and no
+// earlier result of it counts". A refusal of CI at c1 cancels each result of the check that counts
+// at the subject and is recorded no later than c1's newest record: the passes, the failures, the
+// runs that could not run and the failing examples, of c1 and of each other commit, and no newer
+// one. The refusal carries no time, and the history gives no order of commits, so "earlier" is the
+// order of record. The state is what the newer evidence gives: a refusal can move a check from
+// false to unknown, from unknown to false, and from unknown to true, when it cancels an earlier
+// failure and the newer evidence passes (a row of each). A refusal at a commit that holds no result
+// of the check counts at that commit alone, as the subject. Each row: carry, with the row's
+// records, and c0 as c1's parent with c1's tree and ties where the row says so; the check reads the
+// row's line at c2, where the results of c0, c1 and m2 carry (R8), and at m2, the head of main.
+// m2's pass and the run of the job that ended at m2 are the reviewer's case; c1's results are
+// recorded on 12 November, its pass at 10:00 and its caught failing example at 10:05.
+func TestARefusalOfCICancelsEachResultOfItsCommitAndOlder(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "spec-check")
 	const check = "a-restart-loses-no-message"
@@ -245,48 +240,67 @@ func TestARefusalOfCITakesOutOnlyThePassingEvidenceOfItsCommitAndOlder(t *testin
 			changes: []change{at("2026-11-12T10:02:00Z"), fault("m2", "2026-11-13T12:05:00Z", 7)}, uncited: refused, c2: "unknown (uncited)", m2: "unknown (uncited)"},
 		{name: "CI refused the check at c2, which holds no result and no run", why: "the refusal counts at c2 alone", noM2JobRun: true,
 			uncited: map[string]any{"c2": map[string]any{check: "test-not-in-code"}}, c2: "unknown (uncited)", m2: "true (passed, counted from c1)"},
-		// Each row below holds a failure. A failure is a report, and no refusal takes it out, so
-		// each reads as with no refusal, or reads the state that the evidence that remains gives.
-		{name: "c2 fails at 10:03, between c1's pass and c1's failing example, then passes at 12:00",
-			why:     "the refusal takes out c1's pass and failing example and keeps c2's failure, so c2 holds a pass and a failure (R7)",
+		// Each row below holds a failure, a run that could not run or a failing example that missed
+		// its fault. A refusal cancels each one recorded no later than c1's newest record, and keeps
+		// each newer one (R48: "no earlier result of it counts").
+		{name: "unknown to true: c2 fails at 10:03, between c1's pass and c1's failing example, then passes at 12:00",
+			why:     "the refusal cancels c2's failure with c1's pass and failing example, each recorded no later than c1's newest record, and c2's newer pass and caught failing example decide (R48)",
 			changes: []change{run("c2", "fail", "2026-11-12T10:03:00Z", 5), run("c2", "pass", "2026-11-12T12:00:00Z", 6), fault("c2", "2026-11-12T12:05:00Z", 7)},
-			uncited: refused, c2: "unknown (disagree)", m2: "unknown (disagree)", none: "unknown (disagree)"},
+			uncited: refused, c2: "true (passed, counted from c2)", m2: "true (passed, counted from c2)", none: "unknown (disagree)"},
 		{name: "c2 fails at 10:03, and m2 passes on 13 November",
-			why:     "the refusal keeps c2's failure, so m2's later pass does not end the report (R7)",
+			why:     "the refusal cancels c2's failure, recorded before c1's newest record, and m2's newer pass and caught failing example decide (R48)",
 			changes: []change{run("c2", "fail", "2026-11-12T10:03:00Z", 5), at("2026-11-13T12:00:00Z"), fault("m2", "2026-11-13T12:05:00Z", 7)},
-			uncited: refused, c2: "unknown (disagree)", m2: "unknown (disagree)", none: "unknown (disagree)"},
+			uncited: refused, c2: "true (passed, counted from m2)", m2: "true (passed, counted from m2)", none: "unknown (disagree)"},
 		{name: "c1 fails at 10:00, and c0, c1's parent, passes at 11:00",
-			why: "the refusal takes out c1's caught failing example and keeps c1's failure, so c0's later pass does not end the report (R7)",
+			why: "the refusal cancels c1's failure and c1's caught failing example, and c0's newer pass and caught failing example decide (R48)",
 			c0:  true, changes: []change{failsAtC1, run("c0", "pass", "2026-11-12T11:00:00Z", 5), fault("c0", "2026-11-12T11:05:00Z", 6)},
-			uncited: refused, c2: "unknown (disagree)", m2: "unknown (disagree)", none: "unknown (disagree)"},
+			uncited: refused, c2: "true (passed, counted from c0)", m2: "true (passed, counted from c0)", none: "unknown (disagree)"},
 		{name: "false to unknown: c0, c1's parent, passes at 09:00, and c1 fails at 10:00",
-			why: "the refusal takes out c0's pass and the caught failing examples of c0 and c1, each recorded no later than c1's newest record, and keeps c1's failure, " +
-				"so no caught failing example counts (R9): from the false that reads with no refusal to unknown",
+			why: "the refusal cancels c0's pass, c1's failure and the caught failing examples of c0 and c1, each recorded no later than c1's newest record, " +
+				"so no run that counts is left: from the false that reads with no refusal to unknown",
 			c0: true, changes: []change{failsAtC1, run("c0", "pass", "2026-11-12T09:00:00Z", 5), fault("c0", "2026-11-12T09:05:00Z", 6)},
-			uncited: refused, c2: "unknown (no_failing_example)", m2: "unknown (no_failing_example)", none: "false (failed, counted from c1)"},
-		{name: "unknown to false: c2 fails at 10:03 and passes at 10:04, before c1's failing example, and catches its fault at 12:05",
-			why: "the refusal takes out c1's pass and failing example and c2's pass, each recorded no later than c1's newest record, and keeps c2's failure and c2's newer caught " +
-				"failing example, the evidence that remains: from the unknown of a pass and a failure at c2 (R7) that reads with no refusal to false",
+			uncited: refused, c2: "unknown (uncited)", m2: "unknown (uncited)", none: "false (failed, counted from c1)"},
+		{name: "c2 fails at 10:03 and passes at 10:04, before c1's failing example, and catches its fault at 12:05",
+			why: "the refusal cancels c1's pass and failing example and c2's failure and pass, each recorded no later than c1's newest record, " +
+				"so only c2's newer caught failing example is left, and no run that counts: from the unknown of a pass and a failure at c2 (R7) to unknown, not to false (R48)",
 			changes: []change{run("c2", "fail", "2026-11-12T10:03:00Z", 5), run("c2", "pass", "2026-11-12T10:04:00Z", 6), fault("c2", "2026-11-12T12:05:00Z", 7)},
+			uncited: refused, c2: "unknown (uncited)", m2: "unknown (uncited)", none: "unknown (disagree)"},
+		{name: "false to unknown: c0, c1's parent, fails at 09:00, and c1 holds only its caught failing example",
+			why: "the refusal at c1, a later commit, cancels c0's failure, recorded before c1's newest record, and no run that counts is left " +
+				"(R48: \"no earlier result of it counts\"): from the false that reads with no refusal to unknown",
+			c0: true, changes: []change{func(r []map[string]any) []map[string]any {
+				r[0] = withMembers(r[0], map[string]any{"commit": "c0", "outcome": "fail", "at": "2026-11-12T09:00:00Z"})
+				return r
+			}, fault("m2", "2026-11-13T12:05:00Z", 6)},
+			uncited: refused, c2: "unknown (uncited)", m2: "unknown (uncited)", none: "false (failed, counted from c0)"},
+		{name: "control: a failure at c2 at 11:00, newer than c1's results, with c2's caught failing example",
+			why:     "the refusal cancels c1's pass and failing example, and keeps c2's newer failure and failing example, which decide (R48)",
+			changes: []change{run("c2", "fail", "2026-11-12T11:00:00Z", 5), fault("c2", "2026-11-12T11:05:00Z", 6)},
+			uncited: refused, c2: "false (failed, counted from c2)", m2: "false (failed, counted from c2)", none: "false (failed, counted from c2)"},
+		{name: "unknown to false: c2 passes at 10:02, before c1's failing example, fails at 11:00 and catches its fault at 11:05",
+			why:     "the refusal cancels c2's pass, recorded no later than c1's newest record, and c2's newer failure and caught failing example decide (R48): from the unknown of a pass and a failure at c2 (R7) to false",
+			changes: []change{run("c2", "pass", "2026-11-12T10:02:00Z", 5), run("c2", "fail", "2026-11-12T11:00:00Z", 6), fault("c2", "2026-11-12T11:05:00Z", 7)},
 			uncited: refused, c2: "false (failed, counted from c2)", m2: "false (failed, counted from c2)", none: "unknown (disagree)"},
-		{name: "c0, c1's parent, fails at 09:00, and c2 passes at 12:00",
-			why: "the refusal takes out c1's pass and failing example and keeps c0's failure, so c2's later pass does not end the report (R7)",
-			c0:  true, changes: []change{run("c0", "fail", "2026-11-12T09:00:00Z", 5), run("c2", "pass", "2026-11-12T12:00:00Z", 6), fault("c2", "2026-11-12T12:05:00Z", 7)},
-			uncited: refused, c2: "unknown (disagree)", m2: "unknown (disagree)", none: "unknown (disagree)"},
 		{name: "c1 fails at 10:00, and m2 passes on 13 November",
-			why:     "the refusal at c1 keeps c1's own failure, so m2's later pass does not end the report (R7)",
+			why:     "the refusal cancels c1's failure and failing example, and m2's newer pass and caught failing example decide (R48)",
 			changes: []change{failsAtC1, at("2026-11-13T12:00:00Z"), fault("m2", "2026-11-13T12:05:00Z", 7)},
-			uncited: refused, c2: "unknown (disagree)", m2: "unknown (disagree)", none: "unknown (disagree)"},
+			uncited: refused, c2: "true (passed, counted from m2)", m2: "true (passed, counted from m2)", none: "unknown (disagree)"},
 		{name: "a run at c2 at 10:03 that could not run, between c1's pass and c1's failing example",
-			why:     "a run that could not run is no passing evidence, so the refusal keeps it, and it is the newest run (R9: \"A check that could not run\" reads unknown)",
+			why:     "the refusal cancels it with c1's results, and no run that counts is left (R48)",
 			changes: []change{run("c2", "could_not_run", "2026-11-12T10:03:00Z", 5)},
-			uncited: refused, c2: "unknown (could_not_run)", m2: "unknown (could_not_run)", none: "unknown (could_not_run)"},
+			uncited: refused, c2: "unknown (uncited)", m2: "unknown (uncited)", none: "unknown (could_not_run)"},
 		{name: "a failing example at c1 at 10:06 that missed its fault, and m2's later pass",
-			why: "a failing example that missed its fault is no passing evidence, so the refusal keeps it, and it is the newest failing example " +
+			why: "the failing example that missed is c1's newest record, so the refusal cancels it with c1's other results, and m2's newer pass has no caught failing example " +
 				"(R9: \"a check whose current text has no failing example that failed when it should\")",
 			changes: []change{func(r []map[string]any) []map[string]any {
 				return append(r, withMembers(r[1], map[string]any{"outcome": "pass", "at": "2026-11-12T10:06:00Z", "seq": 5}))
 			}, at("2026-11-13T12:00:00Z")},
+			uncited: refused, c2: "unknown (no_failing_example)", m2: "unknown (no_failing_example)", none: "unknown (failing_example_missed)"},
+		{name: "control: a failing example at m2 on 13 November that missed its fault, and m2's pass",
+			why: "the failing example that missed is newer than c1's results, so the refusal keeps it, and it is the newest failing example (R9)",
+			changes: []change{at("2026-11-13T12:00:00Z"), fault("m2", "2026-11-13T12:05:00Z", 7), func(r []map[string]any) []map[string]any {
+				return append(r, withMembers(r[1], map[string]any{"commit": "m2", "outcome": "pass", "at": "2026-11-13T12:06:00Z", "seq": 8}))
+			}},
 			uncited: refused, c2: "unknown (failing_example_missed)", m2: "unknown (failing_example_missed)", none: "unknown (failing_example_missed)"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -319,9 +333,6 @@ func TestARefusalOfCITakesOutOnlyThePassingEvidenceOfItsCommitAndOlder(t *testin
 			for subject, want := range map[string]string{"c2": row.c2, "m2": row.m2} {
 				if !slices.Contains(got[subject], "  check "+check+": "+want) {
 					t.Errorf("at subject %s: %q, want the line %q (%s)", subject, got[subject], "  check "+check+": "+want, row.why)
-				}
-				if row.none != "" && strings.HasPrefix(want, "true") && !strings.HasPrefix(row.none, "true") {
-					t.Errorf("at subject %s the row's refusal moves the check toward true: %q, and %q with no refusal", subject, want, row.none)
 				}
 			}
 			if row.none == "" {

@@ -38,10 +38,7 @@ type State struct {
 //     A supporter that is not built does not make S not built; it makes S unknown (rule 3).
 //  2. An own check is false, or a statement under S or a supporter is not met: not_met,
 //     check_false or supporter_not_met (R10: "Not met: one of them is false"), also when the tree
-//     rules refuse S, since a refusal never hides a failure. In a loop, a statement under S or a
-//     supporter that is in the same loop does not count for that: it counts as unknown
-//     (statement_refused or supporter_unknown, rule 3), so no state depends on the order of the
-//     ids.
+//     rules refuse S, since a refusal never hides a failure.
 //  3. An own check is unknown, S has no check where the tree rules ask for one (a leaf, or a
 //     statement that other statements serve), the tree rules refuse S, or a statement under S or a
 //     supporter is unknown or not built: unknown, check_unknown, no_check, refused,
@@ -102,9 +99,11 @@ func Derive(in Input) (State, error) {
 //   - the approved spec, as ReadApproved refuses it (approvedFault), Removed and PartlyChecked of
 //     each node set among it, and each node under its own id, as WriteApproved refuses it: a node
 //     with no version, a block that is not its one block, a relation that names no node of the
-//     approved spec of its kind, or a key that is not its id would leave the node or the relation
-//     out, and a version with no time would make no result suspect (R7: "A change to the text of a
-//     statement makes every result under it suspect");
+//     approved spec of its kind, a check whose block leaves out serves, or a key that is not its id
+//     would leave the node or the relation out, a loop of parent and support relations would leave
+//     each statement of the loop out of the tree of the statement above it (R5), and a version with
+//     no time would make no result suspect (R7: "A change to the text of a statement makes every
+//     result under it suspect");
 //   - each result (Result.fault), its Leg set among it, with the current text of its check when it
 //     carries that text's digest, so it is judged by what the judge reads of it, and no two results
 //     of one check at one At and one Seq (sameRecordFault);
@@ -121,10 +120,11 @@ func Derive(in Input) (State, error) {
 //     same reason: each commit and check of it a name, the map of each commit that it names set (a
 //     commit where no tie is known has {} or no key), each known tie as NewTie refuses it, since a
 //     known tie with no path covers no change, and no tie that is not known and holds a path;
-//   - JobRuns and Uncited set, empty for none, since neither moves a state toward true: with no job
-//     run a leg that ended with no result would be hidden (R9), and with no map of the checks that
-//     CI refused, a refused check would be judged (R48); and Uncited as the reader of uncited.json
-//     refuses it (uncitedFault);
+//   - JobRuns and Uncited set, empty for none: with no job run a leg that ended with no result
+//     would be hidden (R9), and with no map of the checks that CI refused, a refused check would be
+//     judged by results that R48 cancels ("At that commit, such a check reads unknown, and no
+//     earlier result of it counts"); and Uncited as the reader of uncited.json refuses it
+//     (uncitedFault);
 //   - each job run (JobRun.fault), its Leg and Ended set among it.
 //
 // A History that could not answer is refused later, where the judge first asks it (checkJudge).

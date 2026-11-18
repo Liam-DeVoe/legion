@@ -325,9 +325,12 @@ func TestReadApprovedRefusesAMalformedFixture(t *testing.T) {
 // derivation (approvedFault), and Current for a caller that builds an Approved itself, refuse a
 // relation that names no node of the approved spec of a kind that relationKinds gives it, the rule
 // that Validate reads in the files, naming the member and the value. A node that the approved spec
-// removed is one that it holds, so a relation to it is taken. Each row sets one relation of one
-// node beside an approved spec of each kind, a node of each kept and removed: each value of the
-// row with no want is taken (the controls), and each other is refused with its line.
+// removed is one that it holds, so a relation to it is taken where its kind is right, and refused
+// where it is not. A check serves one statement (R6: "narrower than its statement"), so a check
+// whose block leaves out serves names none, while a statement or a component that leaves out its
+// parent is at the top (R1, R15). Each row sets one relation of one node beside an approved spec of
+// each kind, a node of each kind kept and removed: each value of the row with no want is taken (the
+// controls), and each other is refused with its line.
 func TestAnApprovedRelationNamesANodeOfTheApprovedSpecOfItsKind(t *testing.T) {
 	t.Parallel()
 	type node interface{ Print() (string, error) }
@@ -352,18 +355,23 @@ func TestAnApprovedRelationNamesANodeOfTheApprovedSpecOfItsKind(t *testing.T) {
 	}
 	envoyToDispatch := component("envoy-to-dispatch")
 	envoyToDispatch.Interface, envoyToDispatch.Joins = true, []string{"dispatch", "envoy"}
-	// others is the approved spec beside the row's node: a node of each kind, kept, and a statement
-	// and a component that it removed.
+	oldEnvoyToDispatch := envoyToDispatch
+	oldEnvoyToDispatch.ID = "old-envoy-to-dispatch"
+	// others is the approved spec beside the row's node: a node of each kind kept, and a node of each
+	// kind that it removed.
 	others := func(t *testing.T) []ApprovedNode {
 		return []ApprovedNode{
 			approvedNode(t, "pages", statement("pages"), false),
 			approvedNode(t, "old-pages", statement("old-pages"), true),
 			approvedNode(t, "pages-load", check("pages-load", "pages"), false),
+			approvedNode(t, "old-pages-load", check("old-pages-load", "pages"), true),
 			approvedNode(t, "dispatch", component("dispatch"), false),
 			approvedNode(t, "envoy", component("envoy"), false),
 			approvedNode(t, "old-envoy", component("old-envoy"), true),
 			approvedNode(t, "envoy-to-dispatch", envoyToDispatch, false),
+			approvedNode(t, "old-envoy-to-dispatch", oldEnvoyToDispatch, true),
 			approvedNode(t, "work-unit", Term{ID: "work-unit", Name: "work unit", Definition: "A work unit is work that makes one or more statements true."}, false),
+			approvedNode(t, "old-work-unit", Term{ID: "old-work-unit", Name: "old work unit", Definition: "An old work unit is work that made a statement true."}, true),
 		}
 	}
 	noNode := func(member, v string) string {
@@ -379,11 +387,15 @@ func TestAnApprovedRelationNamesANodeOfTheApprovedSpecOfItsKind(t *testing.T) {
 		values []value
 	}{
 		{"a statement's parent", func(v string) (string, node) { s := statement("a-page-shows-it"); s.Parent = v; return s.ID, s }, []value{
-			{"pages", ""}, {"old-pages", ""},
+			{"pages", ""}, {"old-pages", ""}, {"", ""},
 			{"no-such-statement", noNode("parent", "no-such-statement")}, {" ", noNode("parent", " ")}, {"Pages", noNode("parent", "Pages")},
 			{"pages-load", wrongKind("parent", "pages-load", "a check", "a statement")},
 			{"envoy", wrongKind("parent", "envoy", "a component", "a statement")},
 			{"work-unit", wrongKind("parent", "work-unit", "a term", "a statement")},
+			{"old-pages-load", wrongKind("parent", "old-pages-load", "a check", "a statement")},
+			{"old-envoy", wrongKind("parent", "old-envoy", "a component", "a statement")},
+			{"old-envoy-to-dispatch", wrongKind("parent", "old-envoy-to-dispatch", "an interface", "a statement")},
+			{"old-work-unit", wrongKind("parent", "old-work-unit", "a term", "a statement")},
 		}},
 		{"a statement that a statement serves", func(v string) (string, node) {
 			s := statement("a-page-shows-it")
@@ -394,28 +406,39 @@ func TestAnApprovedRelationNamesANodeOfTheApprovedSpecOfItsKind(t *testing.T) {
 			{"no-such-statement", noNode("serves", "no-such-statement")}, {"Pages", noNode("serves", "Pages")},
 			{"pages-load", wrongKind("serves", "pages-load", "a check", "a statement")},
 			{"envoy-to-dispatch", wrongKind("serves", "envoy-to-dispatch", "an interface", "a statement")},
+			{"old-pages-load", wrongKind("serves", "old-pages-load", "a check", "a statement")},
+			{"old-envoy", wrongKind("serves", "old-envoy", "a component", "a statement")},
 		}},
 		{"a component or an interface that a statement is about", func(v string) (string, node) {
 			s := statement("a-page-shows-it")
 			s.About = []string{v}
 			return s.ID, s
 		}, []value{
-			{"envoy", ""}, {"envoy-to-dispatch", ""}, {"old-envoy", ""},
+			{"envoy", ""}, {"envoy-to-dispatch", ""}, {"old-envoy", ""}, {"old-envoy-to-dispatch", ""},
 			{"no-such-component", noNode("about", "no-such-component")}, {"Envoy", noNode("about", "Envoy")},
 			{"pages", wrongKind("about", "pages", "a statement", "a component or an interface")},
+			{"old-pages", wrongKind("about", "old-pages", "a statement", "a component or an interface")},
+			{"old-pages-load", wrongKind("about", "old-pages-load", "a check", "a component or an interface")},
+			{"old-work-unit", wrongKind("about", "old-work-unit", "a term", "a component or an interface")},
 		}},
 		{"the statement that a check serves", func(v string) (string, node) { return "a-page-shows-each-order", check("a-page-shows-each-order", v) }, []value{
 			{"pages", ""}, {"old-pages", ""},
 			{"no-such-statement", noNode("serves", "no-such-statement")}, {"Pages", noNode("serves", "Pages")},
-			{"old-pages pages", noNode("serves", "old-pages pages")},
+			{"old-pages pages", noNode("serves", "old-pages pages")}, {"", noNode("serves", "")},
 			{"pages-load", wrongKind("serves", "pages-load", "a check", "a statement")},
 			{"envoy", wrongKind("serves", "envoy", "a component", "a statement")},
+			{"old-pages-load", wrongKind("serves", "old-pages-load", "a check", "a statement")},
+			{"old-envoy", wrongKind("serves", "old-envoy", "a component", "a statement")},
+			{"old-envoy-to-dispatch", wrongKind("serves", "old-envoy-to-dispatch", "an interface", "a statement")},
 		}},
 		{"a component's parent", func(v string) (string, node) { c := component("envoy-delivery"); c.Parent = v; return c.ID, c }, []value{
-			{"envoy", ""}, {"old-envoy", ""},
+			{"envoy", ""}, {"old-envoy", ""}, {"", ""},
 			{"no-such-component", noNode("parent", "no-such-component")}, {" ", noNode("parent", " ")},
 			{"envoy-to-dispatch", wrongKind("parent", "envoy-to-dispatch", "an interface", "a component")},
 			{"pages", wrongKind("parent", "pages", "a statement", "a component")},
+			{"old-envoy-to-dispatch", wrongKind("parent", "old-envoy-to-dispatch", "an interface", "a component")},
+			{"old-pages", wrongKind("parent", "old-pages", "a statement", "a component")},
+			{"old-work-unit", wrongKind("parent", "old-work-unit", "a term", "a component")},
 		}},
 		{"a component that an interface joins", func(v string) (string, node) {
 			c := component("envoy-to-legion")
@@ -426,6 +449,8 @@ func TestAnApprovedRelationNamesANodeOfTheApprovedSpecOfItsKind(t *testing.T) {
 			{"legion", noNode("joins", "legion")}, {"Legion", noNode("joins", "Legion")},
 			{"envoy-to-dispatch", wrongKind("joins", "envoy-to-dispatch", "an interface", "a component")},
 			{"pages", wrongKind("joins", "pages", "a statement", "a component")},
+			{"old-envoy-to-dispatch", wrongKind("joins", "old-envoy-to-dispatch", "an interface", "a component")},
+			{"old-pages-load", wrongKind("joins", "old-pages-load", "a check", "a component")},
 		}},
 		{"the id of a term", func(v string) (string, node) {
 			return v, Term{ID: v, Name: "work item", Definition: "A work item is one unit of work."}
@@ -459,6 +484,80 @@ func TestAnApprovedRelationNamesANodeOfTheApprovedSpecOfItsKind(t *testing.T) {
 			}
 		})
 	}
+}
+
+// approvedFault judges the relations of each version of a node, the older ones too, though no state
+// reads an older version (the derivation reads Current), and it judges each by the kind of the
+// newest text of the node that it names, the kind that Current gives that node. R15: "An interface
+// is a component marked as an interface", so a component of one version can be an interface of the
+// next under the same id. Each row is an approved spec of pages, a statement, and dispatch and
+// envoy, two components, with the row's nodes, each version approved a day after the one before:
+// the controls are taken, and each other row is refused with its line.
+func TestEachVersionOfANodeIsJudgedByTheNewestKindOfTheNodesThatItNames(t *testing.T) {
+	t.Parallel()
+	statement := func(parent string) Statement {
+		return Statement{ID: "a-page-shows-it", Text: "The pages show each order.", Kind: KindBehavior, Parent: parent}
+	}
+	component := func(id, parent string, joins ...string) Component {
+		return Component{ID: id, Name: "Envoy", Purpose: "It delivers each stored message.", Parent: parent, Interface: len(joins) > 0, Joins: joins}
+	}
+	// versions is the approved node of the texts of one node, oldest first.
+	versions := func(t *testing.T, texts ...interface{ Print() (string, error) }) ApprovedNode {
+		t.Helper()
+		n := ApprovedNode{Removed: new(false), PartlyChecked: new(false)}
+		for i, text := range texts {
+			block, err := text.Print()
+			if err != nil {
+				t.Fatal(err)
+			}
+			n.ID = nodesOf(mustParse(t, block))[0].id
+			n.Versions = append(n.Versions, ApprovedVersion{Version: i + 1, At: time.Date(2026, 11, 10+i, 0, 0, 0, 0, time.UTC), Block: block})
+		}
+		return n
+	}
+	interfaceOfTheNewestText := func(t *testing.T) ApprovedNode {
+		return versions(t, component("envoy-to-dispatch", ""), component("envoy-to-dispatch", "", "dispatch", "envoy"))
+	}
+	for _, row := range []struct {
+		name  string
+		nodes func(t *testing.T) []ApprovedNode
+		want  string // the refusal; "" for a control
+	}{
+		{"control: each version names pages", func(t *testing.T) []ApprovedNode {
+			return []ApprovedNode{versions(t, statement("pages"), statement("pages"))}
+		}, ""},
+		{"version 1 names no node, and version 2 names pages", func(t *testing.T) []ApprovedNode {
+			return []ApprovedNode{versions(t, statement("no-such-statement"), statement("pages"))}
+		}, `specgraph: approved node "a-page-shows-it" version 1: bad-approved-block: parent "no-such-statement" names no node of the approved spec (line 1 of its block)`},
+		{"control: the current text of a component is under a component that no version marks as an interface", func(t *testing.T) []ApprovedNode {
+			return []ApprovedNode{versions(t, component("envoy-delivery", "envoy"))}
+		}, ""},
+		{"the current text of a component is under a component that its newest text marks as an interface", func(t *testing.T) []ApprovedNode {
+			return []ApprovedNode{interfaceOfTheNewestText(t), versions(t, component("envoy-delivery", "envoy-to-dispatch"))}
+		}, `specgraph: approved node "envoy-delivery" version 1: bad-approved-block: parent "envoy-to-dispatch" names an interface, not a component (line 1 of its block)`},
+		{"version 1 of a component is under a component that the newest text of that one marks as an interface", func(t *testing.T) []ApprovedNode {
+			return []ApprovedNode{interfaceOfTheNewestText(t), versions(t, component("envoy-delivery", "envoy-to-dispatch"), component("envoy-delivery", "envoy"))}
+		}, `specgraph: approved node "envoy-delivery" version 1: bad-approved-block: parent "envoy-to-dispatch" names an interface, not a component (line 1 of its block)`},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			nodes := append([]ApprovedNode{versions(t, Statement{ID: "pages", Text: "The pages show each order.", Kind: KindBehavior}),
+				versions(t, component("dispatch", "")), versions(t, component("envoy", ""))}, row.nodes(t)...)
+			if err := approvedFault(nodes); err == nil && row.want != "" || err != nil && err.Error() != row.want {
+				t.Errorf("the approved spec gives %v; want %q", err, row.want)
+			}
+		})
+	}
+}
+
+// mustParse is the tree of the one file text, and fails the test when Parse finds a problem.
+func mustParse(t *testing.T, text string) Tree {
+	t.Helper()
+	tree, problems := Parse(map[string][]byte{"x.md": []byte(text)})
+	if len(problems) != 0 {
+		t.Fatalf("Parse: %+v", problems)
+	}
+	return tree
 }
 
 // idsOf is the set of the ids of the nodes of tree.

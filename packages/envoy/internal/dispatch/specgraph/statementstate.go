@@ -86,8 +86,8 @@ func newStatementJudge(current Tree, approved Approved, holds map[string]Holding
 
 // inPreorder is the id of each current statement in preorder: the top statements by id, then the
 // statements under each one by id, depth first. A statement whose parent is no current statement is
-// a top statement, and a statement in a loop of parents, which Validate refuses, comes after them,
-// each statement once.
+// a top statement. The entry of the derivation refuses a loop of parents (approvedFault), so each
+// statement is under one top statement and is listed once.
 func (j *statementJudge) inPreorder(current Tree) []string {
 	seen := make(map[string]bool, len(current.Statements))
 	order := make([]string, 0, len(current.Statements))
@@ -95,9 +95,6 @@ func (j *statementJudge) inPreorder(current Tree) []string {
 		if !j.statements[s.Parent] {
 			order = j.preorder(s.ID, seen, order)
 		}
-	}
-	for _, s := range current.Statements {
-		order = j.preorder(s.ID, seen, order)
 	}
 	return order
 }
@@ -152,9 +149,8 @@ func (j *statementJudge) state(id string) StatementState {
 //     statement_refused, detail that statement;
 //   - a supporter: supporter_not_met, supporter_unknown or supporter_not_built, detail it.
 //
-// A statement under id or a supporter of id that reaches id in its turn is in a loop of parent and
-// support relations, which Validate refuses: it reads unknown, statement_refused or
-// supporter_unknown, so that no state depends on the order of the derivation.
+// The entry of the derivation refuses a loop of parent and support relations among the current
+// statements (approvedFault), so no statement reaches itself and the search ends.
 func (j *statementJudge) byChecks(id string) (state, reason, detail string) {
 	var notMet, unknown finding
 	rule, refused := j.refused[id]
@@ -174,10 +170,6 @@ func (j *statementJudge) byChecks(id string) (state, reason, detail string) {
 		}
 	}
 	for _, s := range j.children[id] {
-		if j.reaches(s, id) {
-			unknown.keep(reasonStatementRefused, s)
-			continue
-		}
 		under := j.state(s)
 		reason, detail := under.Reason, under.Detail
 		if reason == reasonRefused {
@@ -191,11 +183,7 @@ func (j *statementJudge) byChecks(id string) (state, reason, detail string) {
 		}
 	}
 	for _, p := range j.supporters[id] {
-		supporter := statementUnknown
-		if !j.reaches(p, id) {
-			supporter = j.state(p).State
-		}
-		switch supporter {
+		switch j.state(p).State {
 		case statementNotMet:
 			notMet.keep(reasonSupporterNotMet, p)
 		case statementUnknown:
@@ -225,34 +213,11 @@ func (f *finding) keep(reason, detail string) {
 	}
 }
 
-// reaches is whether the state of statement follows the state of target: target is under it or
-// supports it, directly or through other statements that are under or support those in their turn.
-func (j *statementJudge) reaches(statement, target string) bool {
-	seen := map[string]bool{statement: true}
-	for next := []string{statement}; len(next) > 0; {
-		s := next[len(next)-1]
-		next = next[:len(next)-1]
-		for _, deps := range [2][]string{j.children[s], j.supporters[s]} {
-			for _, d := range deps {
-				if d == target {
-					return true
-				}
-				if !seen[d] {
-					seen[d] = true
-					next = append(next, d)
-				}
-			}
-		}
-	}
-	return false
-}
-
 // lacksCheck is whether the approved spec gives the statement id no check where the tree rules ask
 // for one, by the pair of rules of Validate: a leaf (leaf-without-check, R6: "Each leaf statement
 // has one or more checks"), or a statement that other statements serve (supported-without-check,
 // R5: "A statement that other statements support still has checks of its own"). A statement with
-// statements under it, no supporter and no check of its own is neither: the rules take it. A
-// statement that serves itself is in a loop, which Validate refuses too, and lacks a check here.
+// statements under it, no supporter and no check of its own is neither: the rules take it.
 func (j *statementJudge) lacksCheck(id string) bool {
 	return len(j.own[id]) == 0 && (len(j.children[id]) == 0 || len(j.supporters[id]) > 0)
 }

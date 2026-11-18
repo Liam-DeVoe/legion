@@ -100,10 +100,11 @@ const (
 // as a value or as a key, has a letter or a digit (nameFault), and each path of the repository is a
 // repository path (isRepoPath):
 //
-//   - approved.json, as ReadApproved reads it, and with no cycle of parent and support relations
-//     among the current statements (R5: "Dispatch refuses a change that makes one"). The rules of
-//     the files are not run on it: the person approves a level before the checks of its
-//     statements exist, so an approved leaf can have no check, and the files then do not hold it;
+//   - approved.json, as ReadApproved reads it, a cycle of parent and support relations among the
+//     current statements among what it refuses (R5: "Dispatch refuses a change that makes one").
+//     The rules of the files are not run on it: the person approves a level before the checks of
+//     its statements exist, so an approved leaf can have no check, and the files then do not hold
+//     it;
 //   - subjects.json, [{"commit","branch","deploy","graph_tx","now"}]: at least one subject, each
 //     with a commit, a now, and exactly one of branch and deploy; graph_tx, the transaction of the
 //     graph that the subject reads, only with a deploy; and each of commit, branch, deploy and
@@ -164,9 +165,6 @@ func ReadScenario(fsys fs.FS) (Scenario, error) {
 
 	if s.Approved, err = readWith(fsys, "approved.json", ReadApproved); err != nil {
 		return s, err
-	}
-	if cycle := approvedLoop(s.Approved); cycle != nil {
-		return s, scenarioFault("approved.json", "loop: %s", loopDetail(cycle))
 	}
 	if s.Subjects, err = readSubjects(fsys); err != nil {
 		return s, err
@@ -292,16 +290,6 @@ func readScenarioFiles(fsys fs.FS, subjects []ScenarioSubject) (map[string]Tree,
 		}
 	}
 	return trees, nil
-}
-
-// approvedLoop is a cycle of parent and serves relations among the current statements of a, as
-// Validate's loop rule writes it, or nil when there is none.
-func approvedLoop(a Approved) []string {
-	current, _ := a.Current() // ReadApproved refused every block that would be a problem here
-	if loops := findLoops(statementEdges(current.Statements)); len(loops) > 0 {
-		return loops[0]
-	}
-	return nil
 }
 
 // readWith reads the file name with read, and names the file in its fault.

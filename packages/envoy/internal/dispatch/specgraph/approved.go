@@ -70,9 +70,10 @@ const approvedForm = `{"nodes":[{"id":"<id>","removed":<true or false>,"partly_c
 // removed or partly_checked, since false is a value of each, a node with no version, version
 // numbers that do not go up from 1, a version with no time or with one older than the one before
 // it, a block that is not its node's one block as Print writes it or whose id is no id
-// (versionText), and a block that names at a relation no node of the approved spec of the kind
-// that the relation needs (relationFault), naming the version. It reads the whole file, with no
-// bound on its size.
+// (versionText), a block that names at a relation no node of the approved spec of the kind that
+// the relation needs (relationFault), naming the version, and a loop of parent and serves
+// relations among the current statements, as Validate's loop rule writes it. It reads the whole
+// file, with no bound on its size.
 func ReadApproved(r io.Reader) (Approved, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
@@ -131,7 +132,11 @@ func (f ApprovedFile) approved() (Approved, error) {
 // (ApprovedNode.texts), then of each node a member that it does not set
 // (ApprovedNode.unsetMemberFault); then a fault between two nodes, of each node a relation of one
 // of its texts that names no node of the approved spec of a kind that it may name (relationFault),
-// kept or removed. The kind of a node is the kind of its newest text.
+// kept or removed; and last a loop of parent and serves relations among the current statements
+// (R5: "The parent and support relations taken together form no cycle, and Dispatch refuses a
+// change that makes one"), the first that findLoops gives. The kind of a node is the kind of its
+// newest text. The derivation reads the tree of each statement down its relations, so a statement
+// of a loop would read as under no statement, and the statement above it as met without it.
 func approvedFault(nodes []ApprovedNode) error {
 	texts := make([][]anyNode, len(nodes))
 	kinds := make(map[string]string, len(nodes))
@@ -150,12 +155,19 @@ func approvedFault(nodes []ApprovedNode) error {
 			return err
 		}
 	}
+	var current []Statement
 	for i, n := range nodes {
 		for j, text := range texts[i] {
 			if detail := relationFault(text.node, kinds); detail != "" {
 				return fmt.Errorf("specgraph: approved node %s version %d: %s (line %d of its block)", quoted(n.ID), n.Versions[j].Version, detail, text.pos.Line)
 			}
 		}
+		if s, isStatement := texts[i][len(texts[i])-1].node.(Statement); isStatement && !n.removed() {
+			current = append(current, s)
+		}
+	}
+	if loops := findLoops(statementEdges(current)); len(loops) > 0 {
+		return fmt.Errorf("specgraph: approved spec: loop: %s", loopDetail(loops[0]))
 	}
 	return nil
 }
@@ -350,27 +362,31 @@ type relation struct {
 }
 
 // relationsOf is each relation that node, one node of a tree, sets: its parent, and each node that
-// it serves, is about or joins. A "" at a place that is not an entry of a list, such as a parent,
-// is one that the node does not set, as a statement at the top of the tree has none (R1: "Each
-// statement has one parent, except at the top level"), and Parse drops an empty entry of a list.
+// it serves, is about or joins. A check serves one statement (R6: its claim is "narrower than its
+// statement"), so its serves is a relation also when its block leaves it out, and "" names no node.
+// A parent left out is one that the node does not set, as a statement or a component at the top
+// of the tree has none (R1: "Each statement has one parent, except at the top level"), and Parse
+// drops an empty entry of a list.
 func relationsOf(node any) []relation {
 	var relations []relation
 	add := func(holder, member string, ids ...string) {
 		for _, id := range ids {
-			if id != "" {
-				relations = append(relations, relation{member, id, relationKinds[holder+" "+member]})
-			}
+			relations = append(relations, relation{member, id, relationKinds[holder+" "+member]})
 		}
 	}
 	switch n := node.(type) {
 	case Statement:
-		add("statement", "parent", n.Parent)
+		if n.Parent != "" {
+			add("statement", "parent", n.Parent)
+		}
 		add("statement", "serves", n.Serves...)
 		add("statement", "about", n.About...)
 	case Check:
 		add("check", "serves", n.Serves)
 	case Component:
-		add("component", "parent", n.Parent)
+		if n.Parent != "" {
+			add("component", "parent", n.Parent)
+		}
 		add("component", "joins", n.Joins...)
 	}
 	return relations

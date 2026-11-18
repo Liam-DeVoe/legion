@@ -1,7 +1,9 @@
 package specgraph
 
 import (
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -132,6 +134,30 @@ func TestTheDerivationRefusesAnInputThatIsNotWhole(t *testing.T) {
 			in.Approved.Nodes["x-"+checkStateCheck.ID] = in.Approved.Nodes[checkStateCheck.ID]
 			delete(in.Approved.Nodes, checkStateCheck.ID)
 		}, want: `specgraph: approved spec: node "a-restart-loses-no-message" is under the id "x-a-restart-loses-no-message"`},
+		// R22: "Dispatch refuses the approval of a change request that puts a statement under a parent
+		// that the approved spec does not hold." The derivation reads a relation only to a node of its
+		// kind, so the entry refuses, as the reader does, a relation of an approved block that names no
+		// node of the approved spec of its kind (approvedFault), and a check whose block leaves out
+		// serves, which names no statement (R6).
+		{name: "an approved parent that names no node", change: func(in *Input) {
+			approveText(in, func(s *Statement) { s.Parent = "no-such-statement" })
+		}, want: `specgraph: approved node "a-stored-message-survives-a-restart" version 1: bad-approved-block: parent "no-such-statement" names no node of the approved spec (line 1 of its block)`},
+		{name: "an approved parent that names a check", change: func(in *Input) {
+			approveText(in, func(s *Statement) { s.Parent = checkStateCheck.ID })
+		}, want: `specgraph: approved node "a-stored-message-survives-a-restart" version 1: bad-approved-block: parent "a-restart-loses-no-message" names a check, not a statement (line 1 of its block)`},
+		// R5: "The parent and support relations taken together form no cycle, and Dispatch refuses a
+		// change that makes one."
+		{name: "a loop of parents in the approved spec", change: func(in *Input) {
+			top := checkStateTop
+			top.Parent = checkStateLeaf.ID
+			block, err := top.Print()
+			if err != nil {
+				panic(err)
+			}
+			n := in.Approved.Nodes[top.ID]
+			n.Versions = []ApprovedVersion{{Version: 1, At: checkStateApproved, Block: block}}
+			in.Approved.Nodes[top.ID] = n
+		}, want: "specgraph: approved spec: loop: a-stored-message-survives-a-restart -[parent]-> messages-reach-sessions -[parent]-> a-stored-message-survives-a-restart"},
 		{name: "an approved node with no id", change: func(in *Input) {
 			n := in.Approved.Nodes[checkStateCheck.ID]
 			n.ID = ""
@@ -409,6 +435,109 @@ func TestTheDerivationRefusesAnInputThatIsNotWhole(t *testing.T) {
 			}
 			if state.Checks != nil || state.Statements != nil || checks != nil {
 				t.Errorf("with the error, Derive gave %+v and CheckStates %+v; want no state", state, checks)
+			}
+		})
+	}
+}
+
+// approveText makes the leaf of TestCheckState, with change, the one approved text of its node in
+// in, as the approval of its base wrote it.
+func approveText(in *Input, change func(s *Statement)) {
+	leaf := checkStateLeaf
+	change(&leaf)
+	block, err := leaf.Print()
+	if err != nil {
+		panic(err)
+	}
+	n := in.Approved.Nodes[leaf.ID]
+	n.Versions = []ApprovedVersion{{Version: 1, At: checkStateApproved, Block: block}}
+	in.Approved.Nodes[leaf.ID] = n
+}
+
+// The entry of the derivation is the one guard of a caller that builds an Approved itself, as the
+// pilot does from the store (Current's doc): no reader is on that path. It refuses, in the words of
+// the reader, each approved spec that no approval writes, which would make a statement read met
+// where the approved text holds a check that is false. Each row: wait-cycle's Input at m1, where
+// envoy-delivers-messages reads not met, with the approved blocks that the row changes; the
+// controls read a state, and each other row gives the error and no state, from Derive and from
+// CheckStates alike. R22: "Dispatch refuses the approval of a change request that puts a statement
+// under a parent that the approved spec does not hold"; R6: a check's claim is "narrower than its
+// statement", so a check serves one statement; R5: "The parent and support relations taken
+// together form no cycle, and Dispatch refuses a change that makes one."
+func TestTheEntryRefusesARelationOfNoNodeOfItsKindAndALoopOfTheApprovedSpec(t *testing.T) {
+	t.Parallel()
+	const survives, late = "a-message-survives-a-restart", "a-message-reaches-a-late-session"
+	parentOf := func(id, parent string) func(nodes map[string]ApprovedNode) {
+		return func(nodes map[string]ApprovedNode) {
+			n := nodes[id]
+			v := n.Versions[0]
+			v.Block = strings.Replace(v.Block, `parent="envoy-delivers-messages"`, `parent="`+parent+`"`, 1)
+			n.Versions = []ApprovedVersion{v}
+			nodes[id] = n
+		}
+	}
+	for _, row := range []struct {
+		name    string
+		changes []func(nodes map[string]ApprovedNode)
+		want    string // the error; "" for a control
+	}{
+		{name: "control: wait-cycle as written"},
+		{name: "control: the parent a statement that the approved spec removed", changes: []func(map[string]ApprovedNode){parentOf(survives, "old-parent")}},
+		{name: "the parent no node", changes: []func(map[string]ApprovedNode){parentOf(survives, "no-such-statement")},
+			want: `specgraph: approved node "a-message-survives-a-restart" version 1: bad-approved-block: parent "no-such-statement" names no node of the approved spec (line 1 of its block)`},
+		{name: "the parent the check of the statement", changes: []func(map[string]ApprovedNode){parentOf(survives, "a-restart-keeps-the-message")},
+			want: `specgraph: approved node "a-message-survives-a-restart" version 1: bad-approved-block: parent "a-restart-keeps-the-message" names a check, not a statement (line 1 of its block)`},
+		{name: "the parent a check of another statement", changes: []func(map[string]ApprovedNode){parentOf(survives, "a-late-session-gets-the-message")},
+			want: `specgraph: approved node "a-message-survives-a-restart" version 1: bad-approved-block: parent "a-late-session-gets-the-message" names a check, not a statement (line 1 of its block)`},
+		{name: "the failing check with its serves left out", changes: []func(map[string]ApprovedNode){func(nodes map[string]ApprovedNode) {
+			n := nodes["a-restart-keeps-the-message"]
+			v := n.Versions[0]
+			v.Block = strings.Replace(v.Block, ` serves="a-message-survives-a-restart"`, "", 1)
+			n.Versions = []ApprovedVersion{v}
+			nodes[n.ID] = n
+		}}, want: `specgraph: approved node "a-restart-keeps-the-message" version 1: bad-approved-block: serves "" names no node of the approved spec (line 1 of its block)`},
+		{name: "a statement its own parent", changes: []func(map[string]ApprovedNode){parentOf(survives, survives)},
+			want: "specgraph: approved spec: loop: a-message-survives-a-restart -[parent]-> a-message-survives-a-restart"},
+		{name: "two statements each the parent of the other", changes: []func(map[string]ApprovedNode){parentOf(survives, late), parentOf(late, survives)},
+			want: "specgraph: approved spec: loop: a-message-reaches-a-late-session -[parent]-> a-message-survives-a-restart -[parent]-> a-message-reaches-a-late-session"},
+		{name: "a statement that serves the statement under it", changes: []func(map[string]ApprovedNode){func(nodes map[string]ApprovedNode) {
+			n := nodes["envoy-delivers-messages"]
+			v := n.Versions[0]
+			v.Block = strings.Replace(v.Block, `kind="behavior"}`, `kind="behavior" serves="`+survives+`"}`, 1)
+			n.Versions = []ApprovedVersion{v}
+			nodes[n.ID] = n
+		}}, want: "specgraph: approved spec: loop: a-message-survives-a-restart -[parent]-> envoy-delivers-messages -[serves]-> a-message-survives-a-restart"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			s, err := ReadScenario(scenarioFS(t, filepath.Join("testdata", "scenarios", "wait-cycle")))
+			if err != nil {
+				t.Fatal(err)
+			}
+			in := s.Input(0)
+			nodes := map[string]ApprovedNode{"old-parent": {ID: "old-parent", Removed: new(true), PartlyChecked: new(false), Versions: []ApprovedVersion{{
+				Version: 1, At: in.Approved.Nodes["envoy-delivers-messages"].Versions[0].At,
+				Block: ":::requirement{#old-parent kind=\"behavior\"}\nEnvoy keeps each message.\n:::\n"}}}}
+			for id, n := range in.Approved.Nodes {
+				nodes[id] = n
+			}
+			for _, change := range row.changes {
+				change(nodes)
+			}
+			in.Approved = Approved{Nodes: nodes}
+			state, err := Derive(in)
+			checks, checksErr := CheckStates(in)
+			above := ""
+			for _, st := range state.Statements {
+				if st.ID == "envoy-delivers-messages" {
+					above = st.State
+				}
+			}
+			switch {
+			case row.want == "" && (err != nil || checksErr != nil || above == ""):
+				t.Errorf("Derive: error %v, envoy-delivers-messages %q; CheckStates: error %v; want a state", err, above, checksErr)
+			case row.want != "" && (fmt.Sprint(err) != row.want || fmt.Sprint(checksErr) != row.want || state.Statements != nil || checks != nil):
+				t.Errorf("Derive: error %v, envoy-delivers-messages %q; CheckStates: error %v, %d checks\nwant the error %q and no state", err, above, checksErr, len(checks), row.want)
 			}
 		})
 	}

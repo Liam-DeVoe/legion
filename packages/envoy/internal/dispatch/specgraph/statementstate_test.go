@@ -1,7 +1,6 @@
 package specgraph
 
 import (
-	"runtime/debug"
 	"slices"
 	"strings"
 	"testing"
@@ -230,33 +229,41 @@ func TestStatementState(t *testing.T) {
 			held(L1, "unknown", "supporter_not_built", statementLeafSupporter.ID, "met"),
 			held(T, "unknown", "supporter_not_built", statementLeafSupporter.ID, "met"),
 		}},
-		// Validate refuses the loop of Q and T, and the loop refuses each of its statements. Q reads
-		// refused (the derivation gives no clean state for a tree that the rules refuse). T is
-		// refused too, and its own check is false: a refusal never hides a failure, so T reads not met.
-		{name: "a loop of supporters: Q reads refused (loop), and T, refused too, reads not met by its own check", change: func(s *checkCase) {
-			loop := checkStateTop
-			loop.Serves = []string{Q}
-			s.replace(loop)
+		// The entry refuses a loop of parent and support relations in the approved spec (R5), so each
+		// loop below is in the files alone: one statement of it holds there a text that the approved
+		// spec does not, and reads not built. Validate refuses the loop, and the loop refuses each of
+		// its statements in the files. T's approved text serves Q, and Q's text in the files serves T:
+		// T is refused, and its own check is false, so T reads not met, since a refusal never hides a
+		// failure.
+		{name: "a loop of supporters in the files: Q is not built, and T, refused, reads not met by its own check", change: func(s *checkCase) {
+			s.addNodes(statementFast, statementFastCheck)
+			top := checkStateTop
+			top.Serves = []string{Q}
+			s.replace(top)
 			fast := statementFast
 			fast.Serves = []string{T}
-			s.addNodes(fast, statementFastCheck)
+			s.swap(fast)
 			s.runOutcome(CT, OutcomeFail)
-		}, want: []StatementState{held(Q, "unknown", "refused", "loop", "unknown"), held(T, "not_met", "check_false", CT, "not_met")}},
+		}, want: []StatementState{missing(Q), held(T, "not_met", "check_false", CT, "not_met")}},
 		// Each statement of a loop that the tree rules refuse is refused, whichever id the loop rule
 		// names first, so a wait on each holds (R29), and no answer depends on the order of the ids.
-		{name: "a loop of T and L1 under it (T serves L1): Validate names L1, and each of the two reads refused; subject the head of main", change: func(s *checkCase) {
-			loop := checkStateTop
-			loop.Serves = []string{L1}
-			s.replace(loop)
+		{name: "a loop of T and L1 under it in the files (T serves L1, which the approved spec puts at the top): Validate names L1, and T reads refused; subject the head of main", change: func(s *checkCase) {
+			top := checkStateTop
+			top.Serves = []string{L1}
+			s.replace(top)
+			leaf := checkStateLeaf
+			leaf.Parent = ""
+			delete(s.Approved.Nodes, L1)
+			s.approve(checkStateApproved, leaf)
 			s.Subject.Branch = "main"
-		}, want: []StatementState{held(T, "unknown", "refused", "loop", "unknown"), held(L1, "unknown", "refused", "loop", "unknown")},
+		}, want: []StatementState{held(T, "unknown", "refused", "loop", "unknown"), missing(L1)},
 			waits: map[string]bool{T: false, L1: false}},
-		{name: "a loop of T and P (T serves P): Validate names T, and P, whose id sorts last, reads refused too; subject the head of main", change: func(s *checkCase) {
-			loop := checkStateTop
-			loop.Serves = []string{P}
-			s.replace(loop)
+		{name: "a loop of T and P in the files (T serves P there): Validate names T, and P, whose id sorts last, reads refused; subject the head of main", change: func(s *checkCase) {
+			top := checkStateTop
+			top.Serves = []string{P}
+			s.swap(top)
 			s.Subject.Branch = "main"
-		}, want: []StatementState{held(T, "unknown", "refused", "loop", "unknown"), held(P, "unknown", "refused", "loop", "unknown")},
+		}, want: []StatementState{missing(T), held(P, "unknown", "refused", "loop", "unknown")},
 			waits: map[string]bool{T: false, P: false}},
 		// R6: "Each leaf statement has one or more checks." R7: "silence is not a pass." A leaf that
 		// the approved spec gives no check reads unknown when the files hold its text, and so does
@@ -440,15 +447,16 @@ func TestNoTreeThatTheRulesRefuseReadsTrueOrMet(t *testing.T) {
 		{"a component with no purpose in a file of its own", func(s *checkCase) {
 			s.files["components.md"] = []specNode{Component{ID: "listener", Name: "the listener", Purpose: "-"}}
 		}},
-		{"a loop of a statement and the statement under it", func(s *checkCase) {
+		// The entry refuses a loop of the approved spec (R5), so each loop is in the files alone.
+		{"a loop of a statement and the statement under it in the files", func(s *checkCase) {
 			loop := checkStateTop
 			loop.Serves = []string{checkStateLeaf.ID}
-			s.replace(loop)
+			s.swap(loop)
 		}},
-		{"a loop of supporters whose other member's id sorts after the one the rule names", func(s *checkCase) {
+		{"a loop of supporters in the files whose other member's id sorts after the one the rule names", func(s *checkCase) {
 			loop := checkStateTop
 			loop.Serves = []string{statementSupporter.ID}
-			s.replace(loop)
+			s.swap(loop)
 		}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -527,8 +535,7 @@ func withParents(files Tree, ids []string) []string {
 
 // Derive gives the subject, the state of each check that CheckStates judges, and the state of each
 // current approved statement in preorder: top statements by id, then the statements under each
-// one by id, depth first. A statement in a loop of parents, which Validate refuses, is still listed
-// once.
+// one by id, depth first.
 func TestDeriveListsEachStatementInPreorder(t *testing.T) {
 	t.Parallel()
 	s := newStatementCase(t)
@@ -544,67 +551,6 @@ func TestDeriveListsEachStatementInPreorder(t *testing.T) {
 	want := []string{statementFast.ID, checkStateTop.ID, statementLeafTwo.ID, checkStateLeaf.ID, statementSupporter.ID}
 	if got := statementIDs(state); !slices.Equal(got, want) {
 		t.Errorf("the statements of Derive: %q, want %q", got, want)
-	}
-
-	loop := checkStateTop
-	loop.Parent = checkStateLeaf.ID
-	s.replace(loop)
-	got := statementIDs(derive(t, s.input()))
-	if sorted := slices.Sorted(slices.Values(got)); !slices.Equal(sorted, slices.Sorted(slices.Values(want))) {
-		t.Errorf("with a loop of parents, the statements of Derive: %q, want each of %q once", got, want)
-	}
-}
-
-// The derivation of a statement recurses into the statements under it and its supporters, and its
-// loop guard (reaches) is what ends a loop of parent and support relations. This test derives each
-// loop of the rows of TestStatementState, TestNoTreeThatTheRulesRefuseReadsTrueOrMet and
-// TestDeriveListsEachStatementInPreorder under a stack cap of 16 MiB, so that a derivation with no
-// guard fails in a fraction of a second, where Go's own limit of 1 GB would take far longer and that
-// much memory. Exceeding the cap ends the whole test binary (runtime/debug.SetMaxStack). The test
-// does not run in parallel, so no other test runs under the cap: each test that calls t.Parallel
-// waits until the tests that do not have ended. It sets the previous limit back when it ends.
-func TestTheDerivationEndsOnEachLoop(t *testing.T) {
-	previous := debug.SetMaxStack(16 << 20)
-	t.Cleanup(func() { debug.SetMaxStack(previous) })
-	T, L1, P, Q := checkStateTop.ID, checkStateLeaf.ID, statementSupporter.ID, statementFast.ID
-	serves := func(ids ...string) func(s *checkCase) {
-		return func(s *checkCase) {
-			loop := checkStateTop
-			loop.Serves = ids
-			s.replace(loop)
-		}
-	}
-	for _, row := range []struct {
-		name   string
-		change func(s *checkCase)
-	}{
-		{"a loop of supporters: T serves Q, and Q serves T", func(s *checkCase) {
-			serves(Q)(s)
-			fast := statementFast
-			fast.Serves = []string{T}
-			s.addNodes(fast, statementFastCheck)
-		}},
-		{"T serves L1 under it", serves(L1)},
-		{"T serves P, which serves T", serves(P)},
-		{"a loop of parents: T under L1, which is under T", func(s *checkCase) {
-			loop := checkStateTop
-			loop.Parent = L1
-			s.replace(loop)
-		}},
-	} {
-		t.Run(row.name, func(t *testing.T) {
-			s := newStatementCase(t)
-			row.change(s)
-			in := s.input()
-			var want []string
-			for _, st := range in.Files.Statements {
-				want = append(want, st.ID)
-			}
-			slices.Sort(want)
-			if got := slices.Sorted(slices.Values(statementIDs(derive(t, in)))); !slices.Equal(got, want) {
-				t.Errorf("the statements of Derive: %q, want each of %q once", got, want)
-			}
-		})
 	}
 }
 

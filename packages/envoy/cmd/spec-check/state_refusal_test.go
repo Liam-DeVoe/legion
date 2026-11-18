@@ -82,7 +82,9 @@ func TestScenarioRefusals(t *testing.T) {
 				approvedNode(t, nodes, "messages-reach-sessions").Versions[0].Block = block
 				return nodes
 			})
-		}, "approved.json", loopDetail},
+		}, "approved.json", "specgraph: approved spec: " + loopDetail},
+		{"a statement of the approved spec that is its own parent", "wait-cycle", approvedParent("a-message-survives-a-restart"),
+			"approved.json", "specgraph: approved spec: loop: a-message-survives-a-restart -[parent]-> a-message-survives-a-restart"},
 		// The one strict JSON reader: RFC 8259 "JSON text … MUST be encoded using UTF-8", and a member
 		// is the format's, in its own letters, one time in its object.
 		{"a field name in capitals", "carry", replace("results.json", firstOutcome, `"OUTCOME": "pass",`),
@@ -233,6 +235,29 @@ func TestScenarioRefusals(t *testing.T) {
 			"approved.json", `specgraph: approved node "a-message-survives-a-restart" version 1: bad-approved-block: parent "no-such-statement" names no node of the approved spec (line 1 of its block)`},
 		{"an approved block whose parent is a check", "wait-cycle", approvedParent("a-restart-keeps-the-message"),
 			"approved.json", `specgraph: approved node "a-message-survives-a-restart" version 1: bad-approved-block: parent "a-restart-keeps-the-message" names a check, not a statement (line 1 of its block)`},
+		// A node that the approved spec removed is one that it holds, and a relation to it is taken
+		// only where its kind is right: a removed check is no parent.
+		{"an approved block whose parent is a check that the approved spec removed", "wait-cycle", func(t *testing.T, dir string) {
+			editApproved(t, filepath.Join(dir, "approved.json"), func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode {
+				removed := *approvedNode(t, nodes, "a-late-session-gets-the-message")
+				removed.ID, removed.Removed = "an-old-check", new(true)
+				removed.Versions = []specgraph.ApprovedVersion{removed.Versions[0]}
+				removed.Versions[0].Block = strings.Replace(removed.Versions[0].Block, "#a-late-session-gets-the-message", "#an-old-check", 1)
+				return append(nodes, removed)
+			})
+			approvedParent("an-old-check")(t, dir)
+		}, "approved.json", `specgraph: approved node "a-message-survives-a-restart" version 1: bad-approved-block: parent "an-old-check" names a check, not a statement (line 1 of its block)`},
+		// R6: a check's claim is "narrower than its statement", so a check serves one statement: one
+		// whose approved block leaves out serves names none, and its failure would count under no
+		// statement, so envoy-delivers-messages would read met (with a second, passing check beside
+		// it) where the files hold the failing check under it.
+		{"an approved check block that leaves out serves", "wait-cycle", func(t *testing.T, dir string) {
+			editApproved(t, filepath.Join(dir, "approved.json"), func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode {
+				v := &approvedNode(t, nodes, "a-restart-keeps-the-message").Versions[0]
+				v.Block = strings.Replace(v.Block, ` serves="a-message-survives-a-restart"`, "", 1)
+				return nodes
+			})
+		}, "approved.json", `specgraph: approved node "a-restart-keeps-the-message" version 1: bad-approved-block: serves "" names no node of the approved spec (line 1 of its block)`},
 		{"a run of a program check with no job", "carry",
 			write("results.json", `[{"check":"a-restart-loses-no-message","check_version":1,"kind":"run","outcome":"fail","commit":"c1","leg":"","at":"2026-11-12T11:00:00Z","seq":5}]`),
 			"results.json", "result 1: it sets no job, and only the reports of the job of its check count"},

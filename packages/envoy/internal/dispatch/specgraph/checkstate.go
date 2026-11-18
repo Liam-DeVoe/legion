@@ -48,12 +48,13 @@ func subjectFault(p Point, now time.Time) string {
 // approved spec, every stored result, the runs of CI jobs, the tie of each check at each commit, the
 // history of the repository, the time of the derivation, and the checks that CI refused at each
 // commit (R48), by commit and then by check id, each with the rule that refused it. Its tag input
-// marks how each member reads when the caller does not set it (memberMark): a run of a job and a
-// refusal by CI never move a state toward true, and each can move one away from what the evidence
-// without it gives (a refusal: R48, CheckStates step 2), so the caller gives JobRuns and Uncited,
-// empty for none, and Input.check refuses nil. With no tie, or no history, no result carries: a
-// result counts only at its own commit, so a failure at another commit then says nothing about this
-// one. So a caller that gives no Ties or no History is refused too, and one that states that it has
+// marks how each member reads when the caller does not set it (memberMark): a run of a job never
+// moves a state toward true, and a refusal by CI makes its check read unknown at its commit and
+// cancels each earlier result of it (R48, CheckStates step 2), so each can move a state away from
+// what the evidence without it gives, and the caller gives JobRuns and Uncited, empty for none, and
+// Input.check refuses nil. With no tie, or no history, no result carries: a result counts only at
+// its own commit, so a failure at another commit then says nothing about this one. So a caller that
+// gives no Ties or no History is refused too, and one that states that it has
 // none gives CommitTies{} or FixtureHistory{Commits: []FixtureCommit{}}, the empty values that are
 // not nil, and gets no carry, as R8 reads a tie that is not known ("A check whose tie to its code
 // is unknown runs on each push to the branch"). The command gives the ties and the history of its
@@ -132,30 +133,23 @@ const (
 //     derivation gives no clean state for a tree that the rules refuse.
 //  2. CI refused C at S.Commit (R48: "At that commit, such a check reads unknown, and no earlier
 //     result of it counts"): unknown, uncited. CI refused C at another commit A that holds a
-//     candidate of step 3 and whose results count at S by step 4's rule: the refusal takes out the
-//     passing candidates of A and each passing candidate recorded no later than the newest
-//     candidate of A, by the order of record (At, then Seq), which is the refusal's place in that
-//     order, since the refusal itself carries no time and the history gives no order of commits. A
-//     passing candidate is a run that passed, or a failing example that failed on its fault, which
-//     is what makes a pass credible (R9: "The check reads true only when its test, as it is now,
-//     failed on that fault"). The refusal takes out no failing run, no run that could not run and
-//     no failing example that missed its fault, of A or of any other commit (R7: "The failing run
-//     is a report (R11), and a later pass does not end the report"), and no newer candidate (R7:
-//     "Of several results that count, the latest counts"). The state is what the candidates that
-//     remain give, so a refusal moves no check toward true, and it can move one from false to
-//     unknown, when it takes out the only caught failing example (R9: "a check whose current text
-//     has no failing example that failed when it should" reads unknown), or from unknown to false,
-//     when it takes out a pass beside a failure that stands; with no run that counts at S left:
-//     unknown, uncited. Detail is the least rule by its name of the refusals that count, so that
-//     the order of the results does not choose it. The commit of a candidate is the commit where its
-//     job ran (resultCommit); a query or an agent of production or of the graph has no candidate of
-//     a commit, and only a refusal at S.Commit counts for it. A refusal at a commit that holds no
-//     candidate counts at that commit as the subject alone: no
-//     order of record places it, a refusal about the tree shows in C's text or in its tied files,
-//     which stop the carry by their own rules, and a refusal about one run says nothing about
-//     another commit. A run of the job is no candidate, and no refusal takes one out: it has no
-//     time, and it moves no check toward true. The steps below read the candidates that no refusal
-//     took out.
+//     candidate of step 3 and whose results count at S by step 4's rule: the refusal cancels each
+//     candidate recorded no later than the newest candidate of A, by the order of record (At, then
+//     Seq), which is the refusal's place in that order, since the refusal itself carries no time and
+//     the history gives no order of commits: the runs that passed, failed or could not run, and the
+//     failing examples, of A and of each other commit. "Earlier" is the order in which R7 reads
+//     "latest" ("Of several results that count, the latest counts"). Each newer candidate stays, and
+//     the state is what the candidates that remain give: a refusal can move a check from false to
+//     unknown, from unknown to false, or from unknown to true, when it cancels an earlier failure
+//     and the newer evidence passes. With no run that counts at S left: unknown, uncited. Detail is
+//     the least rule by its name of the refusals that count, so that the order of the results does
+//     not choose it. The commit of a candidate is the commit where its job ran (resultCommit); a
+//     query or an agent of production or of the graph has no candidate of a commit, and only a
+//     refusal at S.Commit counts for it. A refusal at a commit that holds no candidate counts at
+//     that commit as the subject alone: no order of record places it, a refusal about the tree shows
+//     in C's text or in its tied files, which stop the carry by their own rules, and a refusal about
+//     one run says nothing about another commit. A run of the job is no candidate, and no refusal
+//     cancels one: it has no time. The steps below read the candidates that no refusal cancelled.
 //  3. The candidates are C's results of kind run or failing_example that carry the digest of C's
 //     current text (R7: a result counts "only for the procedure that ran it"), a run of a program
 //     check only when the check's job reported it (R6: "only the reports of that job count"), and
@@ -571,12 +565,12 @@ func (j *checkJudge) carries(check, commit string) bool {
 // candidates of c (step 2). It gives the least rule, by its name, of those refusals, so that the
 // order of the results, which says nothing, does not choose the rule that the state names; whether
 // there is one; whether one is at S.Commit, where c reads unknown whatever its results; and the
-// candidates that no refusal takes out. A refusal at another commit A counts for a check whose
+// candidates that no refusal cancels. A refusal at another commit A counts for a check whose
 // results count at a commit (countsAtACommit) when a candidate's commit (resultCommit) is A and the
 // results of A count at the subject. A refusal carries no time, so its place in the order of record
 // is the newest candidate of A (byRecord), and of the refusals that count, the newest place, the
-// cutoff, decides: each passing candidate (passing) recorded no later than the cutoff is taken
-// out, and each other candidate is kept, so no refusal moves c toward true.
+// cutoff, decides: each candidate recorded no later than the cutoff is cancelled, whatever its
+// kind and outcome (R48: "no earlier result of it counts"), and each newer candidate is kept.
 func (j *checkJudge) withoutRefused(c Check, runs, faults []Result) (rule string, refused, atSubject bool, keptRuns, keptFaults []Result) {
 	rule, atSubject = j.in.Uncited[j.in.Subject.Commit][c.ID]
 	if !countsAtACommit(c) {
@@ -603,16 +597,8 @@ func (j *checkJudge) withoutRefused(c Check, runs, faults []Result) (rule string
 	if !cut {
 		return rule, refused, atSubject, runs, faults
 	}
-	kept := func(r Result) bool { return !passing(r) || byRecord(r, cutoff) > 0 }
-	return rule, refused, atSubject, resultsWhere(runs, kept), resultsWhere(faults, kept)
-}
-
-// passing is whether r, a candidate, is passing evidence, which a refusal of CI takes out (step
-// 2): a run that passed, or a failing example that failed on its fault, as it must (R9). A failing
-// run, a run that could not run and a failing example that missed its fault say that the check is
-// not shown true, so no refusal takes them out.
-func passing(r Result) bool {
-	return r.Kind == ResultRun && r.Outcome == OutcomePass || r.Kind == ResultFailingExample && r.Outcome == OutcomeFail
+	newer := func(r Result) bool { return byRecord(r, cutoff) > 0 }
+	return rule, refused, atSubject, resultsWhere(runs, newer), resultsWhere(faults, newer)
 }
 
 // jobEnded is whether a run of job, in any leg, ended at a commit whose results of c count at the
