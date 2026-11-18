@@ -840,7 +840,7 @@ func launcherCommand(l launch, r *Runtime) shimwire.LauncherStart {
 	return shimwire.LauncherStart{
 		ID: "start-" + fmt.Sprint(l.spec.Generation), Generation: l.spec.Generation,
 		Argv: append(shim, append([]string{"--"}, agentArgv...)...), Env: values, Files: files,
-		ResumeFile: l.spec.ResumeSessionFile,
+		ResumeFile: l.spec.ResumeSessionFile, GitHubCredential: l.gitHubCredential,
 	}
 }
 

@@ -116,14 +116,20 @@ type Runtime struct {
 	tokens                  ProvisionTokens
 	gitHubCredential        runtime.GitHubCredential
 	actsAs                  runtime.ActsAs
-	controllerCredential    runtime.ControllerCredential
-	gitHubDirs              func(repo ghrepo.Repository, roles []appauth.AppRole) []string
-	store                   Store
-	conns                   runtime.Conns
-	launchers               *launchers
-	launcherAuth            launcherCredentials
-	now                     func() time.Time
-	log                     *slog.Logger
+	// launchedApp is, for each slot of each pod (by its Sandbox's name), the App of the last
+	// start this runtime made in it (writeLaunchCredential), which says whether a start's slot gh
+	// files may not hold its credential yet. A runtime that restarted holds it empty. Guarded by
+	// launchedMu.
+	launchedApp          map[slotKey]string
+	launchedMu           sync.Mutex
+	controllerCredential runtime.ControllerCredential
+	gitHubDirs           func(repo ghrepo.Repository, roles []appauth.AppRole) []string
+	store                Store
+	conns                runtime.Conns
+	launchers            *launchers
+	launcherAuth         launcherCredentials
+	now                  func() time.Time
+	log                  *slog.Logger
 	// memoryGuard is Options.MemoryGuard: the memory guard settings an issue pod's launcher is
 	// handed on the answer to each hello (LauncherResolver), nil for a deployment that turned the
 	// guard off.
@@ -384,6 +390,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		gitHubDirs: opts.GitHubDirs,
 		store:      opts.Store, conns: opts.Conns, now: opts.Now, log: opts.Log,
 		changed: make(chan struct{}), watch: map[claim.Token]runtime.Locator{}, podTurns: map[string]chan struct{}{}, stranded: map[string]string{},
+		launchedApp: map[slotKey]string{},
 		cacheConfig: opts.RepositoryCache, mapped: opts.Mapped,
 		cacheDial: (&net.Dialer{}).DialContext, occupiedCaches: map[string]bool{}, cacheBearers: map[string]string{},
 	}

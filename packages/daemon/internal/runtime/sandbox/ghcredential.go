@@ -2,6 +2,9 @@ package sandbox
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -15,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
 // gitHubRefreshInterval is how often refreshGitHubCredentials walks the pod store. The daemon's
@@ -213,31 +217,48 @@ func (r *Runtime) refreshProvisioningToken(ctx context.Context, pod *corev1.Pod,
 // is another owner is refused rather than written, since the pod's GH_CONFIG_DIR was fixed at
 // that directory.
 func (r *Runtime) refreshGitHubCredential(ctx context.Context, pod *corev1.Pod, uid types.UID, slot, role claim.Role, repo ghrepo.Repository) {
+	if _, err := r.writeSlotCredential(ctx, pod, uid, slot, role, repo); err != nil && !errors.Is(err, errSecretNotOwned) {
+		r.log.Warn("sandbox runtime: github credential refresh failed", "sandbox", pod.Name, "slot", slot, "role", role, "err", err)
+	}
+}
+
+// errSecretNotOwned is a slot Secret another Sandbox owns: the pod's Sandbox was replaced since the
+// pod was read, so the write is the new Sandbox's to make.
+var errSecretNotOwned = errors.New("the slot's Secret is another Sandbox's")
+
+// slotCredential is what a slot's Secret holds after its write (writeSlotCredential): its default
+// owner, the token that owner's hosts.yml holds, and the App that minted it. An empty owner is a
+// slot whose gh acts as nobody, which holds no token.
+type slotCredential struct {
+	owner, token, app string
+}
+
+// writeSlotCredential is the one-slot write, shared by the refresher (refreshGitHubCredential) and
+// a launch into a pod it keeps (writeLaunchCredential): slot's Secret in pod, owned by the Sandbox
+// with uid, minted for role and rendered for repo, rewritten only in the directories whose
+// hosts.yml is not the render. It answers what the Secret holds then, whether this call wrote it
+// or found it already so, as its doc above (refreshGitHubCredential) says of each step.
+func (r *Runtime) writeSlotCredential(ctx context.Context, pod *corev1.Pod, uid types.UID, slot, role claim.Role, repo ghrepo.Repository) (slotCredential, error) {
 	sandbox := pod.Name
 	name := roleSecretName(sandbox, slot)
 	secrets := r.kube.CoreV1().Secrets(r.namespace)
-	failed := func(err error) {
-		r.log.Warn("sandbox runtime: github credential refresh failed", "sandbox", sandbox, "slot", slot, "role", role, "err", err)
-	}
 	read := func() (*corev1.Secret, error) {
 		return secrets.Get(ctx, name, metav1.GetOptions{})
 	}
 	secret, err := read()
 	if err != nil {
-		failed(err)
-		return
+		return slotCredential{}, err
 	}
 	if !ownedBySandbox(secret.OwnerReferences, uid) {
-		return
+		return slotCredential{}, errSecretNotOwned
 	}
 	recorded, ok := secret.Data[GitHubDefaultKey]
 	if !ok {
-		failed(fmt.Errorf("Secret %s records no %s", name, GitHubDefaultKey))
-		return
+		return slotCredential{}, fmt.Errorf("Secret %s records no %s", name, GitHubDefaultKey)
 	}
 	owner := string(recorded)
 	if owner == "" {
-		return
+		return slotCredential{}, nil
 	}
 	minting, cancel := call(ctx)
 	var bundle ghconfig.Bundle
@@ -248,13 +269,17 @@ func (r *Runtime) refreshGitHubCredential(ctx context.Context, pod *corev1.Pod, 
 	}
 	cancel()
 	if err != nil {
-		failed(err)
-		return
+		return slotCredential{}, err
 	}
 	if bundle.Default != owner {
-		failed(fmt.Errorf("the credential's default owner %s is not the Secret's %s", bundle.Default, owner))
-		return
+		return slotCredential{}, fmt.Errorf("the credential's default owner %s is not the Secret's %s", bundle.Default, owner)
 	}
+	written := bundle.Dirs[owner]
+	token, err := ghconfig.TokenFromHosts([]byte(written.Hosts))
+	if err != nil {
+		return slotCredential{}, fmt.Errorf("the credential's %s: %w", owner, err)
+	}
+	held := slotCredential{owner: owner, token: token, app: written.App}
 	var changed []string
 	for _, dir := range bundle.DirNames() {
 		if string(secret.Data[GitHubHostsKey(dir)]) != bundle.Dirs[dir].Hosts {
@@ -262,7 +287,7 @@ func (r *Runtime) refreshGitHubCredential(ctx context.Context, pod *corev1.Pod, 
 		}
 	}
 	if len(changed) == 0 {
-		return
+		return held, nil
 	}
 	for retried := false; ; retried = true {
 		if secret.Data == nil {
@@ -277,23 +302,60 @@ func (r *Runtime) refreshGitHubCredential(ctx context.Context, pod *corev1.Pod, 
 			break
 		}
 		if !apierrors.IsConflict(err) || retried {
-			failed(err)
-			return
+			return slotCredential{}, err
 		}
 		// Something else wrote the Secret since it was read — a launch binding it to its new pod
 		// (bindLauncherSecrets) — so its write is kept and the changed directories' keys set over
 		// a fresh read.
 		if secret, err = read(); err != nil {
-			failed(err)
-			return
+			return slotCredential{}, err
 		}
 		if !ownedBySandbox(secret.OwnerReferences, uid) {
-			return
+			return slotCredential{}, errSecretNotOwned
 		}
 	}
-	written := bundle.Dirs[owner]
 	r.log.Info("sandbox runtime: github credential refreshed", "sandbox", sandbox, "slot", slot, "role", role, "app", written.App,
 		"expiresAt", written.ExpiresAt, "dirs", changed)
+	return held, nil
+}
+
+// writeLaunchCredential writes the slot of spec's claim in pod, a pod the launch keeps, for the App
+// of the step the claim does now (runtime.SlotRole), at once and with the one-slot write
+// (writeSlotCredential), and answers what the slot's gh files must hold before the child starts:
+// the default owner's hosts.yml and the digest of its token. A slot whose gh acts as nobody needs
+// nothing. The kubelet projects the Secret anew within its sync period, and the launcher waits for
+// it; so that no wait is silent, the start logs the wait whenever the slot's files may not hold its
+// credential yet: at the first start this runtime makes in the slot, and at each start of another
+// App than the slot's last, whether this write or the refresher's changed the Secret.
+func (r *Runtime) writeLaunchCredential(ctx context.Context, pod *corev1.Pod, spec runtime.SpawnSpec) (*shimwire.LauncherGitHubCredential, error) {
+	owner := metav1.GetControllerOf(pod)
+	if owner == nil {
+		return nil, fmt.Errorf("pod %s names no Sandbox that owns it", pod.Name)
+	}
+	slot := slotOf(spec.Claim)
+	role, err := runtime.SlotRole(ctx, r.actsAs, spec.Claim, spec.Role)
+	if err != nil {
+		return nil, err
+	}
+	repo, _ := fetchRepository(pod)
+	held, err := r.writeSlotCredential(ctx, pod, owner.UID, slot, role, repo)
+	if err != nil {
+		return nil, err
+	}
+	if held.owner == "" {
+		return nil, nil
+	}
+	key := slotKey{sandbox: pod.Name, slot: slot}
+	r.launchedMu.Lock()
+	last, started := r.launchedApp[key]
+	r.launchedApp[key] = held.app
+	r.launchedMu.Unlock()
+	if !started || last != held.app {
+		r.log.Info("sandbox runtime: the start waits for its slot's gh files to hold its credential",
+			"claim", spec.Claim, "slot", slot, "app", held.app, "generation", spec.Generation)
+	}
+	sum := sha256.Sum256([]byte(held.token))
+	return &shimwire.LauncherGitHubCredential{HostsFile: held.owner + "/" + ghconfig.HostsFile, TokenDigest: hex.EncodeToString(sum[:])}, nil
 }
 
 // slotKey names one slot of one pod: the Sandbox the pod is named for, and the slot.

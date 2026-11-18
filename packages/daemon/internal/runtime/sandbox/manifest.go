@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/repocache"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -292,6 +293,10 @@ type launch struct {
 	// role Secret records (GitHubDefaultKey, launcherBound), the projection being the pod's own.
 	gitHubDirs    []string
 	gitHubDefault string
+	// gitHubCredential is what the slot's gh files must hold before the child starts, which a
+	// launch into a pod it keeps writes just before its start (writeLaunchCredential); nil for a
+	// launch that builds its pod, whose Secret is written before the pod starts.
+	gitHubCredential *shimwire.LauncherGitHubCredential
 	// gh is the image's real gh (Tools.GH), every agent's LEGION_GH_PATH.
 	gh string
 	// claude is what a Claude Code launch needs beyond an Oh My Pi one, resolved once in prepare

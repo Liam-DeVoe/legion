@@ -312,6 +312,20 @@ type LauncherStart struct {
 	Env        []string          `json:"env"`
 	Files      map[string]string `json:"files,omitempty"`
 	ResumeFile string            `json:"resumeFile,omitempty"`
+	// GitHubCredential is what the slot's gh files must hold before the child starts, set by a
+	// launch into a pod it keeps, which wrote the slot's credential just before: the kubelet then
+	// projects the slot's Secret anew within its sync period, and a child started before that
+	// would act as the App the files held. Absent for a launch that built its pod, whose Secret was
+	// written before the pod started.
+	GitHubCredential *LauncherGitHubCredential `json:"gitHubCredential,omitempty"`
+}
+
+// LauncherGitHubCredential names the credential a start's slot gh files must hold: HostsFile is
+// the default owner's hosts.yml, relative to the slot's gh directory, and TokenDigest the hex
+// SHA-256 of the token the daemon wrote into it.
+type LauncherGitHubCredential struct {
+	HostsFile   string `json:"hostsFile"`
+	TokenDigest string `json:"tokenDigest"`
 }
 
 // GenerationDir is the directory under a launcher's private directory that holds one generation's

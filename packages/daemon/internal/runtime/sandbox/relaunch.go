@@ -286,7 +286,17 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	}
 	// The start sent carries what this launch learned from the cluster since prepare measured it,
 	// so it is measured again here: a frame no launcher reads is refused as the prompt it is, which
-	// supervise charges nothing, rather than failing in the writer as a charged launch failure.
+	// supervise charges nothing, rather than failing in the writer as a charged launch failure. A
+	// launch into a pod it keeps writes its slot's credential first, for the App of the step its
+	// claim does now, and its start names it, which the launcher waits for: no Secret is written
+	// for such a launch otherwise (writeLauncherSecrets runs for a pod a launch builds).
+	if !replace {
+		credential, err := r.writeLaunchCredential(starting, pod, spec)
+		if err != nil {
+			return fail("write its slot's github credential", err)
+		}
+		l.gitHubCredential = credential
+	}
 	command := launcherCommand(l, r)
 	if err := l.checkStartFrame(command); err != nil {
 		return fail("measure its start frame", err)
