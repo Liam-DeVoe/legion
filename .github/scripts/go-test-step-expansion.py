@@ -294,6 +294,24 @@ EXCEPTIONS = (
             "records, so the corpus runs only in airlock-lean."
         ),
     ),
+    Exception_(
+        steps=frozenset({
+            (".github/workflows/ci-job-airlock-lean.yaml", "Compare the Go airlock with the model over the seed corpus"),
+            (".github/workflows/ci-job-envoy-go.yaml", "Count the database broker suites' skips"),
+        }),
+        package="github.com/sjawhar/envoy/internal/broker/airlock",
+        functions=("TestModelAgreesOnHostShapes",),
+        requirement=(
+            "The same reason as FuzzAirlock above: airlock-lean's corpus comparison runs the host "
+            "shapes a rules file may hold through both the Go validation and the Lean model's, "
+            "with AIRLOCK_MODEL set, and runs on changes that do not start envoy-go. envoy-go's "
+            "step \"Count the database broker suites' skips\" runs ./internal/broker/... whole "
+            "through packages/envoy/scripts/database-skips.sh, so a listing counts the function "
+            "run there too, but it skips there for want of AIRLOCK_MODEL, as that script's "
+            "EXPECTED_SKIPS records, so the comparison runs only in airlock-lean. The fuzz step "
+            "runs FuzzAirlock alone and does not name it."
+        ),
+    ),
 )
 
 # `go test -list` prints one name per line, then a status line per package.
