@@ -438,11 +438,12 @@ func TestAProjectCredentialWritesNoPlanOrRatingOfAnotherProject(t *testing.T) {
 // and writes nothing: the rating 1 to 5 and the reason not blank and at most 2,000 code points,
 // each the store's refusal. A body naming no rating is the rating route's own refusal, since the
 // store takes a step write with no rating; the same body on the step route lands, which is its
-// control. Every row names its refusal's words, since the route's own refusal names both rating
-// and rating_reason, so a value the route dropped on its way to the store is seen. A rating with no
-// reason reaches the store only after the issue's lookup: the same body for an issue Dispatch does
-// not hold is 404 ISSUE_NOT_FOUND. A reason of exactly 2,000 code points is taken, which is the
-// control of the bound.
+// control. That refusal is of the body's shape, so it comes before the writer is read: the same
+// body from an agent's session is refused it, not 403 STEP_WRITER. Every row names its refusal's
+// words, since the route's own refusal names both rating and rating_reason, so a value the route
+// dropped on its way to the store is seen. A rating with no reason reaches the store only after
+// the issue's lookup: the same body for an issue Dispatch does not hold is 404 ISSUE_NOT_FOUND. A
+// reason of exactly 2,000 code points is taken, which is the control of the bound.
 func TestARatingWriteRefusesItsBadValues(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
@@ -459,6 +460,7 @@ func TestARatingWriteRefusesItsBadValues(t *testing.T) {
 		{"a rating of 0", withFields(retro, map[string]any{"rating": 0, "rating_reason": "Why."}), "rating 0 is no rating"},
 		{"a rating of 6", withFields(retro, map[string]any{"rating": 6, "rating_reason": "Why."}), "rating 6 is no rating"},
 		{"no rating", noRating, routesOwn},
+		{"no rating from an agent's session", withFields(retroIdentity(map[string]any{"kind": "session", "id": "ses_agent"}, 1), map[string]any{"rating_reason": "Why."}), routesOwn},
 		{"neither a rating nor a reason", retro, routesOwn},
 		{"no reason", noReason, "rating_reason is left out or blank: a rating carries one sentence of why"},
 		{"a blank reason", withFields(retro, map[string]any{"rating": 3, "rating_reason": " \n "}), "rating_reason is left out or blank: a rating carries one sentence of why"},

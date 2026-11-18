@@ -97,52 +97,41 @@ func (s *server) putIssueStep(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.writeIssueStep(w, r, input.write(), input.Actor, false)
+	s.writeIssueStep(w, r, input.write(), input.Actor)
 }
 
 // putIssueStepRating writes the rating of a retro's run, with every field of the run the body
 // states, as putIssueStep writes them: the rating and its reason are set once, and the record is
-// made where the retro's start and end have not landed yet. The record must be a retro's.
+// made where the retro's start and end have not landed yet. The record must be a retro's. A body
+// that names no rating is refused for its shape, before its writer is read, as the decoder refuses
+// a body it cannot read: the store takes a step write with no rating, so this route alone holds
+// one required. A reason the body leaves out is "", which the store refuses as a rating_reason
+// left out, after it has checked the write's other fields and the rating.
 func (s *server) putIssueStepRating(w http.ResponseWriter, r *http.Request) {
 	var input stepRatingInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	write := input.write()
-	write.Rating = input.rating()
-	s.writeIssueStep(w, r, write, input.Actor, true)
-}
-
-// rating is the rating input states as the store's one value: nil where the body names no rating,
-// which the rating route refuses, and else the rating with the reason, "" where the body names
-// none, which the store refuses as a rating_reason left out, after it has checked the write's other
-// fields and the rating.
-func (input stepRatingInput) rating() *workflowstore.StepRating {
 	if input.Rating == nil {
-		return nil
+		writeError(w, codeStepInput, http.StatusBadRequest, fmt.Sprintf(
+			"rating is required: the rating route writes a retro's rating, %d to %d, with its rating_reason", contracts.PlanRatingLeast, contracts.PlanRatingMost))
+		return
 	}
-	rating := &workflowstore.StepRating{Rating: *input.Rating}
+	write := input.write()
+	write.Rating = &workflowstore.StepRating{Rating: *input.Rating}
 	if input.RatingReason != nil {
-		rating.Reason = *input.RatingReason
+		write.Rating.Reason = *input.RatingReason
 	}
-	return rating
+	s.writeIssueStep(w, r, write, input.Actor)
 }
 
 // writeIssueStep is the one write of a step record behind both routes: the writer and the issue
 // are checked, write (its ID, Issue and Project filled here from the path and the issue row) is
-// written, and the record is answered as the read lists it. rates is the rating route, which
-// refuses a write that names no rating.
-func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write workflowstore.StepWrite, supplied *model.Actor, rates bool) {
+// written, and the record is answered as the read lists it.
+func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write workflowstore.StepWrite, supplied *model.Actor) {
 	actor, key, ok := s.requireIssueDaemon(w, r, supplied, "a step record")
 	if !ok {
-		return
-	}
-	// A body refused for its shape is refused before the transaction and the issue's lock, as the
-	// package refuses a required field it lacks.
-	if rates && write.Rating == nil {
-		writeError(w, codeStepInput, http.StatusBadRequest, fmt.Sprintf(
-			"rating is required: the rating route writes a retro's rating, %d to %d, with its rating_reason", contracts.PlanRatingLeast, contracts.PlanRatingMost))
 		return
 	}
 
