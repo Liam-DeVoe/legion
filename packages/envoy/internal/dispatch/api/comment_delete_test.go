@@ -614,3 +614,29 @@ func TestAKeyedDocumentRenameRepeatedAfterTheDeleteGivesNoVersionNamedAfterTheBo
 			again.Code, phrase, again.Body.String())
 	}
 }
+
+// A refusal kept under a key holds no part of any post's body, only the id of the post it names,
+// so a delete of that post gives the repeat of the key nothing to withhold. A reply naming a
+// block its parent does not have is refused 400 INVALID_COMMENT, naming the parent; after the
+// parent is deleted, the head's repeat answers 400 ANSWER_NOT_KEPT, "Dispatch ran this request
+// ... read what the request wrote to see it", for a request that wrote nothing, and the refusal's
+// own code is lost (test round at 5bd5c11d). The repeat keeps the refusal it was given.
+func TestAKeptRefusalRepeatedAfterTheDeleteOfThePostItNamesIsTheSameRefusal(t *testing.T) {
+	handler, _ := newTestHandlerWithStore(t)
+	issue := createInteractionIssue(t, handler, "TEST", "A refusal naming a parent that is then deleted", "before")
+	parent := createThreadComment(t, handler, issue.Key, map[string]any{"body": "A parent of one paragraph."}, "alice")
+	target := "/api/v1/issues/" + issue.Key + "/comments"
+	reply := map[string]any{"body": "A reply to a block the parent lacks.", "reply_to": parent.ID, "reply_to_block": "b9"}
+	first := keyedRequest(t, handler, http.MethodPost, target, reply, "alice", "refusal-then-delete")
+	if first.Code != http.StatusBadRequest || !strings.Contains(first.Body.String(), "INVALID_COMMENT") {
+		t.Fatalf("the first reply: status=%d body=%s, want 400 INVALID_COMMENT, so this row can fail", first.Code, first.Body.String())
+	}
+
+	deleteThreadComment(t, handler, parent.ID, "alice")
+
+	again := keyedRequest(t, handler, http.MethodPost, target, reply, "alice", "refusal-then-delete")
+	if again.Code != first.Code || again.Body.String() != first.Body.String() {
+		t.Fatalf("the repeat of the refused reply's key after the parent's delete answered %d %s, want the refusal it was given, %d %s",
+			again.Code, again.Body.String(), first.Code, first.Body.String())
+	}
+}
