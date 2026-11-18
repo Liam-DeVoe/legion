@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 type fakeStreamInfo struct {
@@ -1465,11 +1466,11 @@ func TestRoleClaimRestoresWhileHolderIsLiveAndDropsAfterTTL(t *testing.T) {
 	const (
 		sessionID = "ses_role_restart"
 		role      = "restart-survivor"
-		// The bucket keeps the holder's record past any run of the test binary (its -timeout ends
-		// a run first), so the record written below still stands when the restored listener reads
-		// it, however long the steps between take. The claim's grace is the registry's live
-		// window on its own clock (below), not this age.
-		sessionTTL = 24 * time.Hour
+		// The bucket keeps the holder's record past any run of the test binary, so the record
+		// written below still stands when the restored listener reads it, however long the steps
+		// between take. The claim's grace is the registry's live window on its own clock (below),
+		// not this age.
+		sessionTTL = testwait.PastTheRun
 	)
 	// Every registry here stamps and judges on this clock, which only the test moves: the
 	// holder's record reads live at the first lookup however long the steps before it take, and

@@ -805,15 +805,13 @@ func TestAnUploadsFullReleaseKeepsABrowserEditCreditedWhileItsTransactionWasOpen
 // rolling deploy's overlap.
 func newTestServiceInstance(t *testing.T, database *store.Store) (*Service, *httptest.Server) {
 	t.Helper()
-	service := New(Deps{
+	service := newTestServiceWith(t, Deps{
 		Store:     database,
 		Events:    events.NewBroker(),
 		Identity:  headerIdentity(database),
 		ServerURL: "https://dispatch.example",
 		Settle:    time.Hour,
 	})
-	service.srv.RoomIdleTimeout = testRoomIdleTimeout
-	cleanupAndRelease(t, func() { shutdownTestService(t, service) })
 	return service, newTestServer(t, service)
 }
 

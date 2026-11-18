@@ -346,6 +346,10 @@ func TestDocumentEditExplainsRenderedQuoteMiss(t *testing.T) {
 	}
 }
 
+// askIndexWait is how long a test waits for settlement to index an ask block, for the reason
+// awaitIndexedAskBlock gives.
+const askIndexWait = time.Minute
+
 // awaitIndexedAskBlock polls the inbox until the ask block with blockID on artifactID is
 // indexed, failing the test when settlement never reaches it.
 //
@@ -355,7 +359,7 @@ func TestDocumentEditExplainsRenderedQuoteMiss(t *testing.T) {
 // costs a healthy run nothing - it returns in milliseconds when the settlement is quick.
 func awaitIndexedAskBlock(t *testing.T, handler http.Handler, artifactID, blockID, question string) {
 	t.Helper()
-	deadline := time.Now().Add(time.Minute)
+	deadline := time.Now().Add(askIndexWait)
 	for time.Now().Before(deadline) {
 		inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "alice")
 		if inbox.Code != http.StatusOK {

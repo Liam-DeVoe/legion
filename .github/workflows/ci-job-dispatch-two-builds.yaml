@@ -53,14 +53,14 @@ jobs:
     # which its one package takes at most half of it: cmd/dispatch under the twobuild tag,
     # 526.292 s (merge-group run 43679411000, job 132706600704, at d7dce730; run 43677717022, job
     # 132701468085, at 76bff46e, read 489.363 s), 526.292 / 30 = 17.54, so 18m, which it fills to
-    # 48.7 per cent (17m it would fill to 51.6), where main had 30m from no measurement. The floor
+    # 48.7 per cent (17m it would fill to 51.6). The floor
     # above that rule is horizontest.Drain, 30 s (internal/dispatch/horizontest/horizontest.go, Drain),
     # which cmd/dispatch's event-feed waits (waitEventsStart, live_events_wait_test.go) leave of
     # the test binary's deadline, and 18m leaves 553.7 s above that reading. The job's own bound
     # follows its largest measured time of a green run, 878 s in that same job, 14.63 minutes,
-    # plus that -timeout plus 6: 14.63 + 18 + 6 = 38.63, so 39, where main had 45 from no
-    # measurement; the other run took 781 s. The limit must fire before the runner cancels the
-    # job, so a hung test prints the dump that names it.
+    # plus that -timeout plus 6: 14.63 + 18 + 6 = 38.63, so 39; the other run took 781 s. The
+    # limit must fire before the runner cancels the job, so a hung test prints the dump that
+    # names it.
     timeout-minutes: 39
     services:
       postgres:

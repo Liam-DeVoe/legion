@@ -500,9 +500,9 @@ func TestRenewRunsAndARefusedRenewReenrolls(t *testing.T) {
 	// A 150 ms lease: the helper renews at a third of it (floored by MinRenew = 50 ms), so each
 	// renew comes at once. Production leases are 900 s → one renew per 300 s. Nothing here races
 	// that lease: the fake holds the first renew at its renew gate until the test has moved the
-	// enrollment's stored expiry a day out, past any run of the test binary, so that renew is
-	// judged on its proof alone, and holds the next one at a second gate until the broker has
-	// forgotten the enrollment, so that renew is refused for that alone.
+	// enrollment's stored expiry past any run of the test binary (testwait.PastTheRun), so that
+	// renew is judged on its proof alone, and holds the next one at a second gate until the broker
+	// has forgotten the enrollment, so that renew is refused for that alone.
 	first, releaseFirst := testGate(t)
 	r.fake.mu.Lock()
 	r.fake.lease = 150 * time.Millisecond
@@ -512,12 +512,6 @@ func TestRenewRunsAndARefusedRenewReenrolls(t *testing.T) {
 	if !reg.OK || reg.State != "enrolled" {
 		t.Fatalf("register: %+v", reg)
 	}
-	await := func(what string, cond func() bool) {
-		t.Helper()
-		if !testwait.Holds(eventWait, 5*time.Millisecond, cond) {
-			t.Fatal(what)
-		}
-	}
 	fake := func(read func(f *fakeBroker) bool) func() bool {
 		return func() bool {
 			r.fake.mu.Lock()
@@ -525,23 +519,23 @@ func TestRenewRunsAndARefusedRenewReenrolls(t *testing.T) {
 			return read(r.fake)
 		}
 	}
-	await("the helper never sent its first renew", fake(func(f *fakeBroker) bool { return f.renewAttempts >= 1 }))
+	testwait.WithinPolling(t, eventWait, 5*time.Millisecond, "the helper's first renew", fake(func(f *fakeBroker) bool { return f.renewAttempts >= 1 }))
 	next, releaseNext := testGate(t)
 	r.fake.mu.Lock()
-	r.fake.leaseExpiry[reg.EnrollmentID] = time.Now().Add(24 * time.Hour)
+	r.fake.leaseExpiry[reg.EnrollmentID] = time.Now().Add(testwait.PastTheRun)
 	r.fake.renewGate = next
 	r.fake.mu.Unlock()
 	releaseFirst()
-	await("the helper renews the lease", fake(func(f *fakeBroker) bool { return f.renews == 1 }))
+	testwait.WithinPolling(t, eventWait, 5*time.Millisecond, "the helper renewing the lease", fake(func(f *fakeBroker) bool { return f.renews == 1 }))
 	// The broker forgets the enrollment (lease lapsed during an outage): renew is 401, the
 	// helper enrolls again and gets a new enrollment for the same runtime_id.
-	await("the helper never sent its next renew", fake(func(f *fakeBroker) bool { return f.renewAttempts >= 2 }))
+	testwait.WithinPolling(t, eventWait, 5*time.Millisecond, "the helper's next renew", fake(func(f *fakeBroker) bool { return f.renewAttempts >= 2 }))
 	r.fake.mu.Lock()
 	delete(r.fake.enrolled, reg.EnrollmentID)
 	delete(r.fake.byTP, r.srv.Registry.Get(os.Getpid()).identity().Thumbprint)
 	r.fake.mu.Unlock()
 	releaseNext()
-	await("a refused renew must re-enroll", func() bool {
+	testwait.WithinPolling(t, eventWait, 5*time.Millisecond, "a refused renew's re-enrollment", func() bool {
 		id := r.srv.Registry.Get(os.Getpid()).identity().EnrollmentID
 		return id != "" && id != reg.EnrollmentID
 	})

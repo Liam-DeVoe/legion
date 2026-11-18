@@ -74,7 +74,15 @@ const testRoomIdleTimeout = time.Hour
 // Cleanups run last in first out, so such a test registers its restore before it calls this.
 func newTestServiceOn(t *testing.T, database *store.Store) *Service {
 	t.Helper()
-	service := New(testServiceDeps(database))
+	return newTestServiceWith(t, testServiceDeps(database))
+}
+
+// newTestServiceWith builds a document service from deps, sets its rooms' idle timeout to
+// testRoomIdleTimeout before any room starts, and shuts it down when the test ends (newTestServiceOn
+// says where that shutdown runs among the test's cleanups).
+func newTestServiceWith(t *testing.T, deps Deps) *Service {
+	t.Helper()
+	service := New(deps)
 	service.srv.RoomIdleTimeout = testRoomIdleTimeout
 	cleanupAndRelease(t, func() { shutdownTestService(t, service) })
 	return service
@@ -97,10 +105,7 @@ func newTestServiceSettlingAfter(t *testing.T, settle time.Duration) (*Service, 
 	artifactID := createDocument(t, database, "# First")
 	deps := testServiceDeps(database)
 	deps.Settle = settle
-	service := New(deps)
-	service.srv.RoomIdleTimeout = testRoomIdleTimeout
-	cleanupAndRelease(t, func() { shutdownTestService(t, service) })
-	return service, artifactID
+	return newTestServiceWith(t, deps), artifactID
 }
 
 // shutdownTestService shuts service down as a test's teardown does: with the package's own drain
@@ -4363,16 +4368,14 @@ func TestSettleCapturesOnlyItsOwnIdentityUpdate(t *testing.T) {
 		t.Fatalf("load legacy document: %v", err)
 	}
 	captured := make(chan []byte, 1)
-	service := New(Deps{
+	// The room the Apply below observes must still be the one settleRoom settles, so it stays
+	// resident for the whole run rather than production's idle minute (testRoomIdleTimeout).
+	service := newTestServiceWith(t, Deps{
 		Store:       database,
 		Persistence: captureAppendUpdateTxStore{VersionedStore: NewPgVersioned(database), captured: captured},
 		Events:      events.NewBroker(),
 		Settle:      time.Hour,
 	})
-	// The room the Apply below observes must still be the one settleRoom settles, so it stays
-	// resident for the whole run rather than production's idle minute (testRoomIdleTimeout).
-	service.srv.RoomIdleTimeout = testRoomIdleTimeout
-	cleanupAndRelease(t, func() { shutdownTestService(t, service) })
 
 	var injected atomic.Bool
 	foreignApplied := make(chan struct{})

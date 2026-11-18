@@ -1,6 +1,7 @@
 package outbox
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1931,8 +1932,8 @@ func runDeps(t *testing.T, deps Deps) func() {
 }
 
 // rigHoldOptions are the publisher hold's options for an outbox the rig starts (started) whose
-// Deps set none (holdOptions): a TTL of a day, past the -timeout of every go test call that runs
-// this package, with the Renew and Margin of the hold lease_test.go takes for the same reason
+// Deps set none (holdOptions): a TTL past any run of the test binary, with the Renew and Margin
+// of the hold lease_test.go takes for the same reason
 // (TestAHolderConnectedAgainWhenTheGraceEndsKeepsTheHold). Under production's,
 // publisherHoldOptions, a turn ends lost 4 s after its last confirmed renewal, and a parallel
 // batch that starves the renewals that long has the next turn send again what the lost one had
@@ -1942,7 +1943,7 @@ func runDeps(t *testing.T, deps Deps) func() {
 // outbox takes back at once (duty.TryHold), and the test's database is dropped when it ends. A
 // row whose subject is the hold's loss, lapse or release, and one that starts a second outbox on
 // its database, runs production's instead (runOutboxUnderProductionsHold).
-var rigHoldOptions = duty.HoldOptions{TTL: 24 * time.Hour, Renew: 5 * time.Second, Margin: time.Minute}
+var rigHoldOptions = duty.HoldOptions{TTL: testwait.PastTheRun, Renew: 5 * time.Second, Margin: time.Minute}
 
 // started runs outbox until the returned func stops it, which fails t unless Run returns. A test
 // that must arm the outbox's hooks, which are read as Run starts, builds the outbox itself, arms
@@ -1963,9 +1964,7 @@ var rigHoldOptions = duty.HoldOptions{TTL: 24 * time.Hour, Renew: 5 * time.Secon
 // fails the row.
 func started(t *testing.T, outbox *Outbox) func() {
 	t.Helper()
-	if outbox.deps.holdOptions == (duty.HoldOptions{}) {
-		outbox.deps.holdOptions = rigHoldOptions
-	}
+	outbox.deps.holdOptions = cmp.Or(outbox.deps.holdOptions, rigHoldOptions)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { outbox.Run(ctx); close(done) }()

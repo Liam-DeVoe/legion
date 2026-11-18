@@ -39,13 +39,9 @@ jobs:
     # at most 60 % of it, and the job's bound is six minutes above that. The package's `ok` line
     # read 1,101.9 s in run 44175873364 (job 134367427936) and 1,172.6 s in run 44195030350 (job
     # 134434361593), whose job took 1,240 s; 1,172.6 / 36 = 32.57, so 33m (1,172.6 s is 59.2 %
-    # of 33m and would be 61.1 % of 32m), and 33 + 6 = 39. The package has grown three times
-    # under this pull request, first when main took in #2414's tests (953 services built to
-    # 1068), again on the merge of #2870, which moved work into this lane, and then with #2960's
-    # wedged-commit row, measured at 56 s in series in an issue pod (the row's own 47.69 s, and
-    # 8.29 s more in the residency case, which gives each of its trials a connection of its own).
-    # Measure again before changing either: a package that has grown past 60 % of its deadline
-    # is a deadline to raise, not a flake to re-run.
+    # of 33m and would be 61.1 % of 32m), and 33 + 6 = 39. Measure again before changing either:
+    # a package that has grown past 60 % of its deadline is a deadline to raise, not a flake to
+    # re-run.
     timeout-minutes: 39
     services:
       postgres:

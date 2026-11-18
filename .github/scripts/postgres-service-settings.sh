@@ -6,9 +6,8 @@
 # in its own .github/workflows/ci-job-<job>.yaml - daemon-go, envoy-go (one step for each of its
 # five services), envoy-go-race, envoy-go-race-api, envoy-go-race-docs, envoy-go-docs-finalizers,
 # dispatch-memory, dispatch-multiprocess, dispatch-two-builds, dispatch-two-builds-same,
-# broker-multiprocess, envoy-session-stall and sessions-script: seventeen steps of one body
-# across thirteen jobs. One of the thirteen, dispatch-two-builds-same, runs in a merge group
-# only.
+# broker-multiprocess, envoy-session-stall and sessions-script: every step of one body across
+# those jobs. One of them, dispatch-two-builds-same, runs in a merge group only.
 # dispatch-browser-postgres.sh's head records this repository's rule for a step body repeated
 # across jobs, and this follows it: the five settings are written once, here, and each step is one
 # line calling this.
@@ -28,7 +27,7 @@
 # synchronous_commit make cheap, with nothing saying so. max_prepared_transactions is the fifth:
 # envoy-go-race-api's event log floor test prepares a transaction, and in CI it fails on a server
 # that can prepare none. No test of the other jobs prepares one. Every service carries the setting
-# all the same, because this one list of five is what each of the seventeen steps reads back. A
+# all the same, because this one list of five is what each of those steps reads back. A
 # setting the server itself refuses never reaches this script: postgres exits, and the service's
 # health check fails the job before its first step.
 # The envoy-go job's postgres service (.github/workflows/ci-job-envoy-go.yaml) says what each

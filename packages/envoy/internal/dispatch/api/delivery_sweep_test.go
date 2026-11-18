@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // holdingListener is a fake Envoy listener that holds the first send of every idempotency key
@@ -153,7 +154,7 @@ func TestTheDeliverySweepFinishesEveryDeliveringRouteOnce(t *testing.T) {
 			// itself, and the sweep below would have nothing to resend, however slow the steps
 			// between the send and the lapse of its claim.
 			handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
-				envoyURL: listener.url, envoyTimeout: 24 * time.Hour,
+				envoyURL: listener.url, envoyTimeout: testwait.PastTheRun,
 			})
 			// The lease of a run that died is not renewed again; this test ages it itself.
 			served.requestKeyRenewal = time.Hour

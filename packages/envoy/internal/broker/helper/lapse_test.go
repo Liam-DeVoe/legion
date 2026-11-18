@@ -122,10 +122,10 @@ const lapseReason = "the broker refused this session's renew (ENROLLMENT_NOT_LIV
 // explicit "not live" message) lapses and re-enrolls a helper session. PROOF_INVALID may be an
 // iat-skew error; its next proof can succeed after the clock is corrected, so the helper retains
 // the enrollment and retries it. The fake holds the refused renew at its renew gate until the test
-// has moved the enrollment's stored expiry a day out, past any run of the test binary (its
-// -timeout ends a run first), so the retry is judged on its proof alone and never meets a lease
-// that has passed, however slow the host is. The session is checked at every poll until the retry
-// has renewed, so a lapse fails the test as soon as it shows rather than when the wait runs out.
+// has moved the enrollment's stored expiry past any run of the test binary (testwait.PastTheRun),
+// so the retry is judged on its proof alone and never meets a lease that has passed, however slow
+// the host is. The session is checked at every poll until the retry has renewed, so a lapse fails
+// the test as soon as it shows rather than when the wait runs out.
 func TestAProofInvalidRenewKeepsTheEnrollment(t *testing.T) {
 	t.Parallel()
 	r := startRig(t, filepath.Join(t.TempDir(), "sessions.json"))
@@ -147,7 +147,7 @@ func TestAProofInvalidRenewKeepsTheEnrollment(t *testing.T) {
 		return r.fake.renewAttempts == 1
 	})
 	r.fake.mu.Lock()
-	r.fake.leaseExpiry[id] = time.Now().Add(24 * time.Hour)
+	r.fake.leaseExpiry[id] = time.Now().Add(testwait.PastTheRun)
 	r.fake.mu.Unlock()
 	release() // answered 401 PROOF_INVALID; the gate stays open for the retry
 
@@ -323,11 +323,11 @@ func TestASecondLapseWaitsAgainAndRevokesBothLapsedIDs(t *testing.T) {
 // TestARenewThatFailsTransientlyKeepsTheLease: a renew the broker cannot answer (503) is an outage,
 // not a refusal, so the session keeps its enrollment and its lease and renews again: it never
 // lapses, revokes or enrolls afresh. The fake holds the first renew at one gate until the test has
-// moved the enrollment's stored expiry a day out, past any run of the test binary (its -timeout
-// ends a run first), so no lease passes under the test however slow the host is, and holds the
-// retry at a second gate, so the session is read after it has handled the 503 and before the
-// retry succeeds. The retry's renew is read from the expiry the fake writes for it, which is no
-// longer the one the test stored.
+// moved the enrollment's stored expiry past any run of the test binary (testwait.PastTheRun), so
+// no lease passes under the test however slow the host is, and holds the retry at a second gate,
+// so the session is read after it has handled the 503 and before the retry succeeds. The retry's
+// renew is read from the expiry the fake writes for it, which is no longer the one the test
+// stored.
 func TestARenewThatFailsTransientlyKeepsTheLease(t *testing.T) {
 	t.Parallel()
 	r := startRig(t, "")
@@ -350,7 +350,7 @@ func TestARenewThatFailsTransientlyKeepsTheLease(t *testing.T) {
 	waitFor(t, func() bool { return renews() == 1 }) // the first renew is waiting at its gate
 	retry, releaseRetry := testGate(t)
 	r.fake.mu.Lock()
-	stored := time.Now().Add(24 * time.Hour)
+	stored := time.Now().Add(testwait.PastTheRun)
 	r.fake.leaseExpiry[id] = stored
 	r.fake.renewGate = retry
 	r.fake.mu.Unlock()

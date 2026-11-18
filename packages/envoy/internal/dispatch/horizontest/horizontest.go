@@ -364,12 +364,13 @@ func (s *listenerSet) leave(kept *keptWarnings) {
 	}
 }
 
-// keep gives record to every live listener.
+// keep gives record to every live listener, read as a warning once for all of them.
 func (s *listenerSet) keep(record slog.Record) {
+	warning := FromRecord(record)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, kept := range s.live {
-		kept.add(record)
+		kept.add(warning)
 	}
 }
 
@@ -443,25 +444,20 @@ func (h slogWrites) WithGroup(name string) slog.Handler {
 // keptWarnings is the stall warnings one listener kept; the goroutines a test's server logs from
 // share it.
 type keptWarnings struct {
-	mu      sync.Mutex
-	records []slog.Record
+	mu       sync.Mutex
+	warnings []Warning
 }
 
-func (k *keptWarnings) add(record slog.Record) {
+func (k *keptWarnings) add(warning Warning) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	k.records = append(k.records, record.Clone())
+	k.warnings = append(k.warnings, warning)
 }
 
 func (k *keptWarnings) read() []Warning {
 	k.mu.Lock()
-	records := append([]slog.Record(nil), k.records...)
-	k.mu.Unlock()
-	warnings := make([]Warning, 0, len(records))
-	for _, record := range records {
-		warnings = append(warnings, FromRecord(record))
-	}
-	return warnings
+	defer k.mu.Unlock()
+	return slices.Clone(k.warnings)
 }
 
 // fanOut is the handler the first live listener makes the default: it keeps each stall warning
@@ -559,6 +555,9 @@ type Watch struct {
 	before int
 	// seen is how many of the warnings since the watch began it has counted.
 	seen int
+	// probedAt is the warning count at the watch's last read of the holder behind a warning that
+	// names none: it reads that holder once for each such warning, not at every poll.
+	probedAt int
 	// rose is when the watch last counted a warning or a holder it read itself, or began while it
 	// has counted neither.
 	rose time.Time
@@ -618,7 +617,8 @@ func (w *Watch) Failure(what string) string {
 	switch {
 	case verdict == noSignal || verdict == signalStopped:
 		why = "the horizon's warning not yet logged"
-	case verdict == waitOn && w.current.warnings > 0 && !w.current.last.Named:
+	case verdict == waitOn && w.current.warnings > 0 && !w.current.last.Named && w.current.warnings != w.probedAt:
+		w.probedAt = w.current.warnings
 		why = "the horizon's newest warning named no holder: " + w.current.last.Text
 	}
 	var probed string
@@ -746,7 +746,8 @@ func (r closingRow) Scan(dest ...any) error {
 
 // WaitInProcess is Wait on a horizon of the test's own process, on own's server: it listens for
 // the horizon's warnings for as long as it waits (Listen), and reads the holder through own's pool
-// once they fall silent. The horizon must warn at StallWarning.
+// once they fall silent or the newest of them names no holder. The horizon must warn at
+// StallWarning.
 func WaitInProcess[T any](t *testing.T, what string, arrived <-chan T, own *store.Store) T {
 	t.Helper()
 	warnings, stop := Listen(t)

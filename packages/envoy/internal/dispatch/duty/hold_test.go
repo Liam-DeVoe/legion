@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // holdName is the name every hold test takes; each test runs on a database of its own.
@@ -66,7 +67,7 @@ func TestHoldRefusesASecondHolderWhileTheFirstHoldsItLive(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
-	opts := duty.HoldOptions{TTL: 24 * time.Hour, Renew: 500 * time.Millisecond, Margin: time.Second}
+	opts := duty.HoldOptions{TTL: testwait.PastTheRun, Renew: 500 * time.Millisecond, Margin: time.Second}
 	first := uuid.New()
 	mustTakeHold(t, database.Pool, first, opts)
 
@@ -245,7 +246,7 @@ func TestHoldReleaseFreesAtOnceAndNotifiesTheName(t *testing.T) {
 	// A TTL that outlasts any run of the test binary: the hold stays live until Release however
 	// long a parallel batch starves its renewals, and the second process's one try at the end
 	// takes only a row Release deleted.
-	opts := duty.HoldOptions{TTL: 24 * time.Hour, Renew: 500 * time.Millisecond, Margin: time.Second}
+	opts := duty.HoldOptions{TTL: testwait.PastTheRun, Renew: 500 * time.Millisecond, Margin: time.Second}
 	ctx := context.Background()
 
 	listener, err := pgx.ConnectConfig(ctx, database.Pool.Config().ConnConfig.Copy())

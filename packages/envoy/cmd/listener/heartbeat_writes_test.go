@@ -46,11 +46,7 @@ func TestHeartbeatKVWritesPerHeartbeat(t *testing.T) {
 	)
 	sessionOf := func(index int) string { return fmt.Sprintf("ses_heartbeat_%02d", index) }
 	roleOf := func(index int) string { return fmt.Sprintf("heartbeat-role-%02d", index) }
-	client, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithReplicas(1))
-	if err != nil {
-		t.Fatalf("connect bus: %v", err)
-	}
-	t.Cleanup(client.Close)
+	client := setupPublishTestClient(t)
 	stamped := time.Now()
 	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1), store.WithClock(func() time.Time { return stamped }))
 	if err != nil {
@@ -60,17 +56,8 @@ func TestHeartbeatKVWritesPerHeartbeat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
-	// Each wait below is bounded on its own at listenerWait, so a slow one leaves the next no less.
-	ready := func(what string, cache interface{ WaitForCacheReady(context.Context) error }) {
-		t.Helper()
-		ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
-		defer cancel()
-		if err := cache.WaitForCacheReady(ctx); err != nil {
-			t.Fatalf("%s cache not ready: %v", what, err)
-		}
-	}
-	ready("interest", registry)
-	ready("session", sessions)
+	waitForRegistry(t, registry)
+	waitForSessions(t, sessions)
 	routes := http.NewServeMux()
 	// withRoleClaimDrain, because each session's first registration here makes it live and so
 	// hands it the kept lane of the role whose claim record it read (runKeptRoleDrain). That

@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // holdIt is the spec's second callout, written with its id, hold-it.
@@ -591,23 +592,23 @@ func TestIssueDecisionsListTheSpecsOpenQuestions(t *testing.T) {
 }
 
 // waitForOpenQuestions reads the view until it holds want open questions: settlement indexes a
-// spec's ask blocks, and until it has the issue holds none. It waits a minute, as
+// spec's ask blocks, and until it has the issue holds none. It waits askIndexWait, as
 // awaitIndexedAskBlock waits for the same indexing.
 func waitForOpenQuestions(t *testing.T, handler http.Handler, key string, want int) (issueDecisions, []string) {
 	t.Helper()
 	var view issueDecisions
 	questions := []string{}
-	for deadline := time.Now().Add(time.Minute); time.Now().Before(deadline); time.Sleep(25 * time.Millisecond) {
+	if testwait.Holds(askIndexWait, 25*time.Millisecond, func() bool {
 		view = readIssueDecisions(t, handler, key)
 		questions = questions[:0]
 		for _, question := range view.OpenQuestions {
 			questions = append(questions, question.Question)
 		}
-		if len(questions) == want {
-			return view, questions
-		}
+		return len(questions) == want
+	}) {
+		return view, questions
 	}
-	t.Fatalf("open_questions = %v, want %d of them within a minute", questions, want)
+	t.Fatalf("open_questions = %v, want %d of them within %v", questions, want, askIndexWait)
 	return view, questions
 }
 func mustJSON(t *testing.T, value any) string {

@@ -6,6 +6,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A role forward the stream never acknowledges holds back only its own chain: another issue's
@@ -35,11 +36,11 @@ func TestAForwardTheStreamDoesNotAcknowledgeDoesNotDelayAnotherIssuesEvents(t *t
 		stalledRole, stalledHolder = "stalled-reviewer", "ses_never_acknowledged"
 		liveRole, liveHolder       = "live-reviewer", "ses_acknowledged"
 		// What the outbox waits for the stalled forward's acknowledgement (Deps.forwardAckWait).
-		// It outlasts the whole test - a day, past any run of the test binary - so the wait the
+		// It outlasts the whole test - past any run of the test binary - so the wait the
 		// live holder's send must not queue behind is still running when the verdict below is
 		// read, however slow the machine is. Nothing here waits for it to run out: the stop
 		// cancels the batch's wait (sendChains) and the rig's cleanup closes the client it waits on.
-		stalledForwardWait = 24 * time.Hour
+		stalledForwardWait = testwait.PastTheRun
 		// A hang guard on each wait for a forward, not a bound this row measures anything
 		// against: a healthy run reaches both of them in milliseconds, and a send queued behind
 		// the stalled forward's wait arrives only after stalledForwardWait.

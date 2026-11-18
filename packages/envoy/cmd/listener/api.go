@@ -627,9 +627,9 @@ func expectsReplyAnswer(requested json.RawMessage) json.RawMessage {
 // A read-through that answers neither the row nor the bucket's word that it holds none - one the
 // window ended, or one the bus failed - is logged at WARN through the registry's logger, with the
 // window and its error: the stamp it left short says nothing of why. A cache hit makes no read, a
-// sender with no row is answered nats.ErrKeyNotFound and a key the bucket cannot hold
-// bus.ErrRefused, so the line is never one a healthy bus writes per message; a record that does
-// not decode is left to the registry's own line.
+// sender with no row is answered nats.ErrKeyNotFound, and an interest read's answer about the
+// record (interestReadAnswered) is no failed read either, so the line is never one a healthy bus
+// writes per message; a record that does not decode is left to the registry's own line.
 func senderStamp(ctx context.Context, registry *store.Registry, sessions *session.SessionRegistry, sourceSession string) *contracts.EnvelopeSender {
 	if sourceSession == "" {
 		return nil
@@ -641,7 +641,7 @@ func senderStamp(ctx context.Context, registry *store.Registry, sessions *sessio
 	if interest, err := registry.Get(readCtx, sourceSession); err == nil {
 		sender.Machine = interest.MachineID
 		sender.Cwd = interest.Dir
-	} else if !errors.Is(err, nats.ErrKeyNotFound) && !errors.Is(err, bus.ErrRefused) && !errors.Is(err, store.ErrMalformedInterest) {
+	} else if !errors.Is(err, nats.ErrKeyNotFound) && !interestReadAnswered(err) {
 		interestErr = err
 	}
 	if held, err := registry.RolesHeldBy(sourceSession); err == nil {

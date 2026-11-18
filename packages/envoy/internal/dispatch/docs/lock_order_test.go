@@ -61,11 +61,9 @@ func lockWaits(t *testing.T, ctx context.Context, database *store.Store, like st
 
 func TestConditionalEditDoesNotInvertTheRoomLockOrder(t *testing.T) {
 	t.Parallel()
-	// Each wait below has roomWait of its own (the lock wait and the two selects), so ctx only
-	// ends with the test: one 120 s context over all three left the later waits what the earlier
-	// ones had not spent.
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	// Each wait below has roomWait of its own (the lock wait and the two selects): one 120 s
+	// context over all three left the later waits what the earlier ones had not spent.
+	ctx := t.Context()
 	database, service, id := lockOrderService(t)
 	seedServiceText(t, service, id, "first\n\nsecond")
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -191,9 +189,8 @@ func awaitUnblocked(t *testing.T, subject string, op func() error) {
 func TestDurableAppendIsNotBlockedByTheOwnerLock(t *testing.T) {
 	t.Parallel()
 	// Each wait has roomWait of its own - the writer unblocked (awaitUnblocked) and the room lock
-	// taken behind it - so ctx only ends with the test.
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	// taken behind it.
+	ctx := t.Context()
 	database, service, id := lockOrderDocument(t)
 	settling := ownerLockedTransaction(t, ctx, database, id)
 
@@ -224,9 +221,8 @@ func TestDurableAppendIsNotBlockedByTheOwnerLock(t *testing.T) {
 func TestSnapshotIsNotBlockedByTheOwnerLock(t *testing.T) {
 	t.Parallel()
 	// Each wait has roomWait of its own - the snapshot unblocked (awaitUnblocked) and the room lock
-	// taken behind it - so ctx only ends with the test.
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	// taken behind it.
+	ctx := t.Context()
 	database, service, id := lockOrderDocument(t)
 	settling := ownerLockedTransaction(t, ctx, database, id)
 
@@ -254,9 +250,8 @@ func TestSnapshotIsNotBlockedByTheOwnerLock(t *testing.T) {
 func TestLiveUpdateIsNotBlockedByTheOwnerLock(t *testing.T) {
 	t.Parallel()
 	// Each wait has roomWait of its own - the update unblocked (awaitUnblocked) and the room lock
-	// taken behind it - so ctx only ends with the test.
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	// taken behind it.
+	ctx := t.Context()
 	database, service, id := lockOrderDocument(t)
 	settling := ownerLockedTransaction(t, ctx, database, id)
 

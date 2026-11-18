@@ -66,6 +66,12 @@ func steppedWaits(capacity int) (chan chan time.Time, func(time.Duration) <-chan
 	}
 }
 
+// renewalSession is a client of broker, its signer, its enrollment id and its key dir, as
+// sessionContext (main.go) reads them. It sets process-wide variables with t.Setenv, which panics
+// under t.Parallel, so a test that calls it is serial: AGENT_SECRETS_URL and
+// AGENT_SECRETS_KEY_DIR, which sessionContext reads the broker's address and the signer from, and
+// AGENT_SECRETS_HELPER_SOCK, which it clears and sessionContext never reads here, since the key
+// dir's key.pem answers before the helper is asked (signerChain).
 func renewalSession(t *testing.T, broker string) (*client, Signer, string, string) {
 	t.Helper()
 	dir := newKeyDir(t)
@@ -83,11 +89,7 @@ func renewalSession(t *testing.T, broker string) (*client, Signer, string, strin
 // request. The test advances the loop through a channel, so the rotation and the terminal broker
 // refusal are steps, not wall-clock delays. ENROLLMENT_NOT_LIVE exits exitRenewRefused so the
 // worker shim can stop instead of restarting a renewer whose enrollment has ended.
-// Serial: renewalSession sets process-wide variables - AGENT_SECRETS_URL and
-// AGENT_SECRETS_KEY_DIR, which sessionContext (main.go) reads the broker's address and the signer
-// from, and AGENT_SECRETS_HELPER_SOCK, which it clears and sessionContext never reads here, since
-// the key dir's key.pem answers before the helper is asked (signerChain); t.Setenv panics under
-// t.Parallel.
+// Serial: renewalSession sets AGENT_SECRETS_URL and AGENT_SECRETS_KEY_DIR with t.Setenv (see renewalSession).
 func TestRenewSendsThePodsCurrentToken(t *testing.T) {
 	tokenFile := filepath.Join(t.TempDir(), "token")
 	if err := os.WriteFile(tokenFile, []byte("first-token\n"), 0o600); err != nil {
@@ -151,11 +153,7 @@ func TestRenewSendsThePodsCurrentToken(t *testing.T) {
 
 // TestRenewWithoutAPodTokenFileSendsNoBody: a box renewal posts no body, and a refusal outside the
 // terminal set (here an iat-skewed PROOF_INVALID) reaches the retry wait rather than exit 76.
-// Serial: renewalSession sets process-wide variables - AGENT_SECRETS_URL and
-// AGENT_SECRETS_KEY_DIR, which sessionContext (main.go) reads the broker's address and the signer
-// from, and AGENT_SECRETS_HELPER_SOCK, which it clears and sessionContext never reads here, since
-// the key dir's key.pem answers before the helper is asked (signerChain); t.Setenv panics under
-// t.Parallel.
+// Serial: renewalSession sets AGENT_SECRETS_URL and AGENT_SECRETS_KEY_DIR with t.Setenv (see renewalSession).
 func TestRenewWithoutAPodTokenFileSendsNoBody(t *testing.T) {
 	var mu sync.Mutex
 	var bodies [][]byte
@@ -197,11 +195,7 @@ func TestRenewWithoutAPodTokenFileSendsNoBody(t *testing.T) {
 // and so does an older broker's PROOF_INVALID that says the enrollment is not live (its renew
 // handler's and its proof check's wording), since that broker has no ENROLLMENT_NOT_LIVE to send.
 // The injected wait fails the test, so a terminal code that regresses to a retry fails at once.
-// Serial: renewalSession sets process-wide variables - AGENT_SECRETS_URL and
-// AGENT_SECRETS_KEY_DIR, which sessionContext (main.go) reads the broker's address and the signer
-// from, and AGENT_SECRETS_HELPER_SOCK, which it clears and sessionContext never reads here, since
-// the key dir's key.pem answers before the helper is asked (signerChain); t.Setenv panics under
-// t.Parallel.
+// Serial: renewalSession sets AGENT_SECRETS_URL and AGENT_SECRETS_KEY_DIR with t.Setenv (see renewalSession).
 func TestRenewStopsOnlyForTerminalBrokerCodes(t *testing.T) {
 	for _, tc := range []struct {
 		code, message string
@@ -240,11 +234,7 @@ func TestRenewStopsOnlyForTerminalBrokerCodes(t *testing.T) {
 // after which the next renewal is ENROLLMENT_NOT_LIVE. POD_TOKEN_EXPIRED is retried with the token
 // the file holds next, and PROOF_INVALID that does not say "not live" (clock skew, key, URL) can
 // clear on its own.
-// Serial: renewalSession sets process-wide variables - AGENT_SECRETS_URL and
-// AGENT_SECRETS_KEY_DIR, which sessionContext (main.go) reads the broker's address and the signer
-// from, and AGENT_SECRETS_HELPER_SOCK, which it clears and sessionContext never reads here, since
-// the key dir's key.pem answers before the helper is asked (signerChain); t.Setenv panics under
-// t.Parallel.
+// Serial: renewalSession sets AGENT_SECRETS_URL and AGENT_SECRETS_KEY_DIR with t.Setenv (see renewalSession).
 func TestRenewRetriesEveryOtherRefusal(t *testing.T) {
 	for _, tc := range []struct {
 		code, message string
@@ -345,11 +335,7 @@ func TestRenewRefusesAnUnreadableOrBlankPodTokenFile(t *testing.T) {
 // TestRenewNeverSendsABlankLaterToken: after one successful renewal, a token file that turns blank
 // is a local transient error and starts the retry wait, printed as an ERROR naming the enrollment;
 // it never makes a second, bodyless request.
-// Serial: renewalSession sets process-wide variables - AGENT_SECRETS_URL and
-// AGENT_SECRETS_KEY_DIR, which sessionContext (main.go) reads the broker's address and the signer
-// from, and AGENT_SECRETS_HELPER_SOCK, which it clears and sessionContext never reads here, since
-// the key dir's key.pem answers before the helper is asked (signerChain); t.Setenv panics under
-// t.Parallel.
+// Serial: renewalSession sets AGENT_SECRETS_URL and AGENT_SECRETS_KEY_DIR with t.Setenv (see renewalSession).
 func TestRenewNeverSendsABlankLaterToken(t *testing.T) {
 	tokenFile := filepath.Join(t.TempDir(), "token")
 	if err := os.WriteFile(tokenFile, []byte("first-token\n"), 0o600); err != nil {

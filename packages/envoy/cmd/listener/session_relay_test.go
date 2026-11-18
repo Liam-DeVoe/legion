@@ -737,10 +737,10 @@ func TestSessionConsumerRelayLosingItsSessionReturnsTheMessageItHolds(t *testing
 	// again once bus.SessionConsumerAckWait (60 s) passes, which makes the next owner's copy (Next
 	// below) a third delivery; every step between must land inside those 60 s.
 
-	// The receipt wait outlasts any run of the test binary (its -timeout ends a run first), so the
-	// relay cannot pause, and so forget the frame it holds, before the row takes the session away,
-	// however long the row's steps take.
-	rig := newRelayRigReceipt(t, relayPauseFirst, relayPauseMax, 24*time.Hour)
+	// The receipt wait outlasts any run of the test binary, so the relay cannot pause, and so
+	// forget the frame it holds, before the row takes the session away, however long the row's
+	// steps take.
+	rig := newRelayRigReceipt(t, relayPauseFirst, relayPauseMax, testwait.PastTheRun)
 	sessionID := "ses_relay_lost_" + id.New()
 	// A nil answer leaves the stand-in silent, so the frame stays outstanding and its message
 	// stays delivered and unacked.
@@ -761,13 +761,7 @@ func TestSessionConsumerRelayLosingItsSessionReturnsTheMessageItHolds(t *testing
 	// handed below comes from that nak, not from the server's ack wait.
 	const whole = "session relay stopped; it gave the server back the messages it held, so they are delivered again at once rather than after the consumer's ack wait"
 	awaitLogLine(t, rig, whole, listenerWait)
-	var handOvers []map[string]any
-	for _, line := range strings.Split(strings.TrimSpace(rig.harness.logs.String()), "\n") {
-		var record map[string]any
-		if json.Unmarshal([]byte(line), &record) == nil && record["msg"] == whole && record["session_id"] == sessionID {
-			handOvers = append(handOvers, record)
-		}
-	}
+	handOvers := linesIn(rig.harness.logs.String(), whole, map[string]any{"session_id": sessionID})
 	if len(handOvers) != 1 || handOvers[0]["returned"] != float64(1) {
 		t.Fatalf("the hand-over lines of session %s are %v, want one counting returned 1, the frame the run held:\n%s", sessionID, handOvers, rig.harness.logs.String())
 	}

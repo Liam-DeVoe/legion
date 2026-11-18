@@ -380,6 +380,43 @@ func (r holderRow) Scan(dest ...any) error {
 	return nil
 }
 
+// TestAWatchReadsTheHolderOnceForEachWarningThatNamesNone: a read of the holder behind a warning
+// that names none, which found none open, is not made again until the horizon warns again, so a
+// wait that polls every few milliseconds behind failed diagnoses does not query the instance at
+// each poll. It needs no server and no Postgres: the probe is a fake.
+func TestAWatchReadsTheHolderOnceForEachWarningThatNamesNone(t *testing.T) {
+	t.Parallel()
+	diagnosisFailed := FromLine(stallWarningHead(2*OwnHoldBound) + ` diagnosis_error="timeout: context deadline exceeded"`)
+	var warnings []Warning
+	probe := &noHolderProbe{}
+	watch := NewWatch(t, func() []Warning { return warnings }, "dispatch_test_ab", probe)
+	warnings = append(warnings, diagnosisFailed)
+	for range 2 {
+		if failure := watch.Failure("the event feed's events_start"); failure != "" {
+			t.Fatalf("Failure = %q, want the wait to go on behind a warning inside Extension", failure)
+		}
+	}
+	if probe.reads != 1 {
+		t.Errorf("the watch read the holder %d times in two polls behind one warning that named none, the first read finding none; want once", probe.reads)
+	}
+	warnings = append(warnings, diagnosisFailed)
+	if failure := watch.Failure("the event feed's events_start"); failure != "" {
+		t.Fatalf("Failure = %q, want the wait to go on behind a warning inside Extension", failure)
+	}
+	if probe.reads != 2 {
+		t.Errorf("the watch read the holder %d times after a second warning that named none, want twice: once behind each", probe.reads)
+	}
+}
+
+// noHolderProbe is a Querier whose every read of the holder (readHolder) finds none open, and
+// counts the reads.
+type noHolderProbe struct{ reads int }
+
+func (p *noHolderProbe) QueryRow(context.Context, string, ...any) pgx.Row {
+	p.reads++
+	return failedRow{pgx.ErrNoRows}
+}
+
 // TestFromLineMatchesTheWholeDatabaseField holds the trap a field read exists to avoid: a prefix
 // match would read a foreign hold as the test's own and fail the wait at once on a database the
 // test does not own.

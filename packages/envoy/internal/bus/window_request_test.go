@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // requestClient starts a NATS server of the test's own and connects a client that owns the
@@ -210,7 +211,7 @@ func TestARequestWhoseConnectionIsLostAnswersUnavailable(t *testing.T) {
 	}))
 	window := client.WindowUntil(nil)
 
-	pending := window.Request("notifications.role.request-lost", forwardEnvelope("lost"), bus.RequestOptions{MsgID: bus.ForwardMsgID("lost", "notifications.role.request-lost"), Timeout: 24 * time.Hour})
+	pending := window.Request("notifications.role.request-lost", forwardEnvelope("lost"), bus.RequestOptions{MsgID: bus.ForwardMsgID("lost", "notifications.role.request-lost"), Timeout: testwait.PastTheRun})
 	server.Stop(t)
 	if err := answerOf(t, pending, busWait); !errors.Is(err, bus.ErrUnavailable) || errors.Is(err, bus.ErrNotAcknowledged) {
 		t.Fatalf("a Request whose connection was lost returned %v, want ErrUnavailable", err)

@@ -1305,9 +1305,9 @@ func TestIsValidRole(t *testing.T) {
 func TestSessionHealthFields_PopulatedAfterReady(t *testing.T) {
 	t.Parallel()
 	client := setupPublishTestClient(t)
-	// The bucket keeps the row past any run of the test binary (its -timeout ends a run first), so
-	// the row Put below is still cached when the fields count it, however long the steps take.
-	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1), session.WithSessionTTL(24*time.Hour))
+	// The bucket keeps the row past any run of the test binary, so the row Put below is still
+	// cached when the fields count it, however long the steps take.
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1), session.WithSessionTTL(testwait.PastTheRun))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}

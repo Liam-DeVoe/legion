@@ -5161,7 +5161,7 @@ jobs:
   # holds: the binaries job that builds the Go commands the lanes run, the shard legs, the three
   # `-alone` projects a machine each, the two-process job, the fake-embedder job that runs on both
   # lanes, the containerised visual review, and the merge job that joins the shard and alone
-  # reports into one and posts this job's ci-ok report.
+  # reports into one. Each of those jobs ends with this job's ci-ok report.
   #
   # Two lanes, and which run pays for which. A pull request without the label `full-ci` runs
   # `pull-request`, the two projects a change is held to (chromium and iphone), so such a run
@@ -5182,8 +5182,8 @@ jobs:
   # the job whose own result decides that run, as that job's last step: legs written here would
   # each be `dispatch-browser`, so a decided group would take one such post per leg that failed,
   # each posting under a job id several legs answer to. A called workflow's legs are jobs of
-  # that workflow, and one job of it - the merge job, which needs every other - posts the single
-  # report this job id gets.
+  # that workflow, and each of its jobs, the shard legs among them, ends with that report, so a
+  # job that fails posts as it fails rather than when the merge job, which needs every other, ends.
   #
   # No timeout-minutes: GitHub's keywords for a job that calls a reusable workflow leave it out.
   # Each job of dispatch-browser.yaml carries its own limit.
@@ -5193,8 +5193,9 @@ jobs:
     # The same rule as the docs job above: a caller that declares no `permissions:` hands the
     # called workflow the default GITHUB_TOKEN permissions rather than this file's block.
     # `contents: read` is every job of dispatch-browser.yaml's checkout; `actions: read` is the
-    # merge job's `gh api .../actions/runs/<id>/jobs` read of this run's jobs, and `checks: write`
-    # that job's last step, the ci-ok report.
+    # merge job's `gh api .../actions/runs/<id>/jobs` read of this run's jobs and the ci-ok
+    # report's read of them, and `checks: write` that report's post, the last step of every job
+    # of that workflow.
     permissions:
       contents: read
       actions: read
@@ -5455,7 +5456,8 @@ jobs:
   # stream reads. They build only under the `multiprocess` tag, so envoy-go's unit run leaves
   # them out, and they are a job of their own for the reason dispatch-memory is: each `go test`
   # call of envoy-go's unit step is held to a -timeout sized from its slowest package's measured
-  # time (26m for the package list, which runs cmd/dispatch), which rows of tens of seconds each
+  # time (for the package list, which runs cmd/dispatch, the -timeout
+  # .github/workflows/ci-job-envoy-go.yaml sizes), which rows of tens of seconds each
   # would move - one here waits out a durable hand-over or a maintenance loop's tick - and the
   # memory tests already took that step red at 600 s when it ran under go test's default
   # ten-minute deadline (run 37116639565). Each row's NATS runs in its own test process
@@ -5550,8 +5552,9 @@ jobs:
   #
   # They build only under the `multiprocess` tag, so envoy-go's unit run leaves them out, and
   # they are kept out of it: each `go test` call of that step is held to a -timeout sized from
-  # its slowest package's measured time (26m for the package list, which runs cmd/broker), which
-  # rows of tens of seconds each would move - these wait out a migration race, a ten-second
+  # its slowest package's measured time (for the package list, which runs cmd/broker, the
+  # -timeout .github/workflows/ci-job-envoy-go.yaml sizes), which rows of tens of seconds each
+  # would move - these wait out a migration race, a ten-second
   # fan-out window and a twelve-second drain - and the memory tests already took that step red
   # at 600 s when it ran under go test's default ten-minute deadline (run 37116639565). A job of
   # their own rather than a step in dispatch-multiprocess, whose Postgres service and shape this

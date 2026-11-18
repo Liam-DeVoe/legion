@@ -2,6 +2,7 @@
 package outbox
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -144,13 +145,10 @@ func (d Deps) forwardAckTimeout() time.Duration {
 	return roleForwardAckTimeout
 }
 
-// publisherHoldOptions are the options this outbox takes the publisher hold under (tryHold), from
-// holdOptions.
-func (d Deps) publisherHoldOptions() duty.HoldOptions {
-	if d.holdOptions == (duty.HoldOptions{}) {
-		return publisherHoldOptions
-	}
-	return d.holdOptions
+// holdOptionsOrProduction is the options this outbox takes the publisher hold under (tryHold):
+// holdOptions, or publisherHoldOptions when that is zero.
+func (d Deps) holdOptionsOrProduction() duty.HoldOptions {
+	return cmp.Or(d.holdOptions, publisherHoldOptions)
 }
 
 // countPublishFailure counts one destination of a publish attempt that did not reach it, under

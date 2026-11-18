@@ -623,6 +623,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 	// Serial: its assertion is a quiet window, in each row but a and f: nothing more happens in
 	// letSweepsRun's 2.5 s, or no frame past the ones a holder is sent comes within 2.5 s.
 	t.Run("a a publish to a role with no claim is answered 202 with kept_until one hour after the keep", func(t *testing.T) {
+		t.Parallel()
 		rig := newHourRig(t)
 		const role = "hour-unclaimed"
 		answer := rig.kept(rig.listeners[0], roleMessage(role, "ses_hour_unclaimed_sender", "nobody holds this role yet"))
@@ -799,6 +800,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 	})
 
 	t.Run("f a claim made after the hour before any sweep stores the copy's dead letter and does not forward it", func(t *testing.T) {
+		t.Parallel()
 		rig := newHourRig(t)
 		const (
 			role   = "hour-claimed-after"
@@ -1491,6 +1493,7 @@ func TestARepeatedKeepIsOneCopyUntilItEnds(t *testing.T) {
 	// Serial: its assertion is a quiet window, in its row l: no frame past its copy reaches the
 	// first holder within 500 ms, nor the next holder or the second lane's within 2.5 s.
 	t.Run("k a repeat inside the copy's hour is answered with the first copy and the lane holds one copy", func(t *testing.T) {
+		t.Parallel()
 		rig := newHourRig(t)
 		const (
 			role   = "hour-repeat-inside"
@@ -1675,6 +1678,7 @@ func TestALapsedHolderIsKeptFor(t *testing.T) {
 	})
 
 	t.Run("c a publish with keep false to a gone holder is refused 404 holder_lapsed and keeps nothing", func(t *testing.T) {
+		t.Parallel()
 		rig := newHourRig(t)
 		const (
 			role   = "hour-lapsed-opted-out"

@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // laterEvent appends another human message on an issue routedEvent already seeded, so that an
@@ -53,12 +54,12 @@ func TestAnOwnerOfTheStalledHoldersBatchIsReleasedBeforeTheBatchEnds(t *testing.
 		stalledRole, stalledHolder = "stalled-reviewer", "ses_never_acknowledged"
 		liveRole, liveHolder       = "live-reviewer", "ses_acknowledged"
 		// What the outbox waits for the stalled forward's acknowledgement (Deps.forwardAckWait).
-		// It outlasts the whole test - a day, past any run of the test binary - so the wait is
+		// It outlasts the whole test - past any run of the test binary - so the wait is
 		// still running when the verdict below is read and a batch that held its owners until it
 		// ended could not end during this test at all, however slow the machine is. Nothing here
 		// waits for it to run out: the stop cancels the batch's wait (sendChains) and the rig's
 		// cleanup closes the client the forward is waiting on.
-		stalledForwardWait = 24 * time.Hour
+		stalledForwardWait = testwait.PastTheRun
 		// A hang guard on each wait for a forward, not a bound this row measures anything
 		// against: a healthy run reaches every one of them in milliseconds, and a batch that
 		// holds its owners until it ends forwards the later event only after stalledForwardWait.

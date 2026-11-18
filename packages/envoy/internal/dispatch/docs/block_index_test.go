@@ -746,9 +746,8 @@ func TestADrainedItemKeepsAConcurrentEdit(t *testing.T) {
 	database, service := blockIndexService(t)
 	// Each wait below has roomWait of its own - the tick queueing on the edit's row lock, the tick
 	// finishing once the edit commits, the second tick - so none gets only what an earlier one
-	// left; ctx ends with the test and stops a tick still running then.
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	// left; ctx stops a tick still running when the test ends.
+	ctx := t.Context()
 	var comment string
 	if err := database.Pool.QueryRow(ctx, `
 		insert into comments (issue_key, author, body)

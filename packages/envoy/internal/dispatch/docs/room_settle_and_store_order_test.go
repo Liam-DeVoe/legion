@@ -206,7 +206,7 @@ func (g *gatedAppends) release() {
 func newGatedServiceInstance(t *testing.T, database *store.Store) (*Service, *gatedAppends) {
 	t.Helper()
 	gated := newGatedAppends(database)
-	service := New(Deps{
+	service := newTestServiceWith(t, Deps{
 		Store:       database,
 		Persistence: gated,
 		Events:      events.NewBroker(),
@@ -214,8 +214,6 @@ func newGatedServiceInstance(t *testing.T, database *store.Store) (*Service, *ga
 		ServerURL:   "https://dispatch.example",
 		Settle:      time.Hour,
 	})
-	service.srv.RoomIdleTimeout = testRoomIdleTimeout
-	cleanupAndRelease(t, func() { shutdownTestService(t, service) })
 	// Registered after the shutdown, so it runs first: a test that fails with the gate held does
 	// not leave the shutdown waiting on an append that never comes.
 	cleanupAndRelease(t, gated.release)

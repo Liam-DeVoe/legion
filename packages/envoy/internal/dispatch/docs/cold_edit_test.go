@@ -159,7 +159,7 @@ func TestABrowserOpeningADocumentMidColdWriteKeepsBothEdits(t *testing.T) {
 			database := storetest.Open(t)
 			artifactID := createDocument(t, database, "# First")
 			store := &insideFirstLoadStore{VersionedStore: NewPgVersioned(database), room: artifactID}
-			service := New(Deps{
+			service := newTestServiceWith(t, Deps{
 				Store:       database,
 				Persistence: store,
 				Events:      events.NewBroker(),
@@ -167,8 +167,6 @@ func TestABrowserOpeningADocumentMidColdWriteKeepsBothEdits(t *testing.T) {
 				ServerURL:   "https://dispatch.example",
 				Settle:      time.Hour,
 			})
-			service.srv.RoomIdleTimeout = testRoomIdleTimeout
-			cleanupAndRelease(t, func() { shutdownTestService(t, service) })
 			seedServiceText(t, service, artifactID, "Alpha paragraph.\n\nBravo paragraph.\n")
 			closeDocumentRoom(t, service, artifactID)
 

@@ -99,7 +99,7 @@ type roleRig struct {
 // would read the holder unresponsive, and past session.BucketMaxAge read it gone, and fail as a
 // product that held a live holder's forward. A row about a holder that stopped registering stages
 // that record itself (claimRegisteredAt), which judges by the compiled windows again.
-const rigRegistrationAge = 24 * time.Hour
+const rigRegistrationAge = testwait.PastTheRun
 
 // newRoleRig is a roleRig on the package's shared NATS server, in a JetStream account of this
 // test's own (testnats.URL): the stream, the role bucket and the session bucket this rig owns are

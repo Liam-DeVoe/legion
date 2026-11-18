@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // fakeRoster is the live-session list a route-status test's listener answers: session id to
@@ -742,12 +743,12 @@ func TestAnOlderListenerAnswerNeverReplacesANewerOne(t *testing.T) {
 	// Release before the close, which waits for every request in flight to finish.
 	t.Cleanup(listener.Close)
 	t.Cleanup(release)
-	// The client's window, the fetch's bound and the TTL outlast any run of the test binary (its
-	// -timeout ends a run first), so only release() ends the held fetch and no stored answer
-	// expires before the reads below, however long the steps between take; each wait for an
-	// answer still gives up at concurrentWait.
-	_, _, _, first := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL, envoyTimeout: 24 * time.Hour})
-	first.rosters.ttl, first.rosters.timeout = 24*time.Hour, 24*time.Hour
+	// The client's window, the fetch's bound and the TTL outlast any run of the test binary, so
+	// only release() ends the held fetch and no stored answer expires before the reads below,
+	// however long the steps between take; each wait for an answer still gives up at
+	// concurrentWait.
+	_, _, _, first := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL, envoyTimeout: testwait.PastTheRun})
+	first.rosters.ttl, first.rosters.timeout = testwait.PastTheRun, testwait.PastTheRun
 	_, second := secondRouteStatusServer(t, first)
 	// A read the test waits on itself gives up at concurrentWait, as the held read's wait does.
 	boundedRead := func(served *server) routeRoster {

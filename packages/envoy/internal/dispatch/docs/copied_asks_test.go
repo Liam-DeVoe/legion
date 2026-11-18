@@ -1174,9 +1174,8 @@ func TestACopySettlingWhileItsSourceIsAnsweredWaitsForTheAnswerAndNeitherFails(t
 	service.settle = time.Hour
 	// The answer's context spans two waits - the settlement queueing on the pending row (between)
 	// and the answer finishing after it - so it gets roomWait for each, and the settlement's own
-	// finish below has roomWait of its own; ctx ends with the test.
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	// finish below has roomWait of its own.
+	ctx := t.Context()
 	shared := ":::ask{#shared urgency=\"med\" multiple=\"false\"}\nWhich region?\n:::\n"
 	original := createProjectDocument(t, service.store, "# Original")
 	seedServiceText(t, service, original, "Context\n\n"+shared)
@@ -1313,14 +1312,13 @@ func TestACopyAndItsSourcesAnswerTakingTheCopyLockInEitherOrderBothFinish(t *tes
 		t.Run(order, func(t *testing.T) {
 			service, _ := newTestService(t)
 			service.settle = time.Hour
-			// Each wait has roomWait of its own, and ctx ends with the test. With the answer first,
-			// the answer runs on this goroutine across two waits - the settlement queueing on the
-			// copy lock and the answer finishing - so its context gets twice roomWait. With the
-			// settlement first, the answer runs on a goroutine of its own under ctx, and its three
-			// waits - its queueing on the copy lock, the settlement's finish and its own finish -
-			// are each bounded by themselves.
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
+			// Each wait has roomWait of its own. With the answer first, the answer runs on this
+			// goroutine across two waits - the settlement queueing on the copy lock and the answer
+			// finishing - so its context gets twice roomWait. With the settlement first, the
+			// answer runs on a goroutine of its own under ctx, and its three waits - its queueing
+			// on the copy lock, the settlement's finish and its own finish - are each bounded by
+			// themselves.
+			ctx := t.Context()
 			shared := ":::ask{#shared urgency=\"med\" multiple=\"false\"}\nWhich region?\n:::\n"
 			original := createProjectDocument(t, service.store, "# Original")
 			seedServiceText(t, service, original, "Context\n\n"+shared)

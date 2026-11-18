@@ -222,9 +222,17 @@ func TestDecisionBlockChecksPastFiveAreNotMade(t *testing.T) {
 // A conditional edit's gate is released at its commit: a second conditional edit of the same
 // document completes while the first is still waiting on its decision block's check, here held
 // behind a lock on the term statistics every check reads.
+//
+// The first edit's check gives up at the server's related-item allowance, five seconds in
+// production (relatedCheckAllowance), and then answers: under load the second edit can take
+// longer than that to land, and the first would answer before it for the allowance's end rather
+// than for a gate. So this server's allowance is the package's guard (concurrentWait): the lock,
+// not the allowance, is what holds the first edit, and the allowance only ends a check whose
+// lock never comes, which also bounds the last wait for the first edit's answer.
 func TestDecisionBlockCheckDoesNotHoldTheConditionalEditGate(t *testing.T) {
 	t.Parallel()
-	handler, database, _ := newTestServer(t, testServerOptions{})
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
+	served.suggestionTimeout = concurrentWait
 	createSuggestionProject(t, handler, "GATE")
 	spec := "# Spec\n\nPlanning notes.\n"
 	issue := createAdviceIssue(t, handler, "GATE", "Gated edits", &spec)
@@ -392,7 +400,7 @@ func TestDecisionBlockChecksEachReadTheirAskStatesAndRecord(t *testing.T) {
 			}
 		}
 		if !listed {
-			t.Fatalf("block %s: suggestions = %s, want the ask %s listed with its answered state", block.id, wholeSuggestions(check.Suggestions), asks[block.id])
+			t.Fatalf("block %s: suggestions = %s, want the ask %s listed with its answered state", block.id, mustJSON(t, check.Suggestions), asks[block.id])
 		}
 	}
 	rows := readDecisionBlockRows(t, database)

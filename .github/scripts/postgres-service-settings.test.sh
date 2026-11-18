@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tests for `postgres-service-settings.sh`: the read-back of a job's Postgres service settings
-# that seventeen steps of ci.yaml's jobs call, one of them in dispatch-two-builds-same, which
+# that the read-back steps of ci.yaml's jobs call, one of them in dispatch-two-builds-same, which
 # runs in a merge group only. A server on all five settings passes and prints them; a server off
 # any of them fails the step, naming the service and every setting that is off; a setting docker
 # cannot read, an empty container id and a wrong call each fail it by name.

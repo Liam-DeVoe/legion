@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
@@ -373,7 +374,7 @@ func TestAPublishThatOutlivesItsBoundIsAbandoned(t *testing.T) {
 	// would find the publish's context ended as well, and the publisher's select takes either. Its
 	// bound outlasts any run of the test binary, so the pass is judged on the answer alone.
 	publisher.hang(false)
-	announcer.publishTimeout = 24 * time.Hour
+	announcer.publishTimeout = testwait.PastTheRun
 	announcer.pass(ctx)
 	requireEnvelopes(t, database, publisher, c1)
 }

@@ -16,9 +16,11 @@ package helper
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"sync"
 	"testing"
@@ -61,7 +63,7 @@ func serveTimedTokenExchange(t *testing.T, f *enrolBroker, mux *http.ServeMux, t
 	return func() []time.Time {
 		mu.Lock()
 		defer mu.Unlock()
-		return append([]time.Time(nil), answered...)
+		return slices.Clone(answered)
 	}
 }
 
@@ -126,13 +128,9 @@ func TestADroppedCredentialInIdentityModeIsTradedAgainAtOnce(t *testing.T) {
 		t.Fatal("the refused enrolment answered no error")
 	}
 
-	deadline := time.Now().Add(eventWait)
-	for !b.HasCredential() {
-		if time.Now().After(deadline) {
-			t.Fatalf("the helper held no credential %v after the drop; it traded %d times, want the drop to wake the trade loop rather than leave every register answering NO_CREDENTIAL until the token's own renewal", eventWait, len(trades())-first)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitForAccounted(t, "the helper holding a credential again after the drop", b.HasCredential, func() string {
+		return fmt.Sprintf("it traded %d times, want the drop to wake the trade loop rather than leave every register answering NO_CREDENTIAL until the token's own renewal", len(trades())-first)
+	})
 	if again := len(trades()) - first; again != 1 {
 		t.Fatalf("the trade loop traded %d times after the drop, want exactly one", again)
 	}

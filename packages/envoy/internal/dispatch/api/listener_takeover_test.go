@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // takeOverRoute is a listener route a take-over listener's script names: the registry read, the
@@ -366,15 +367,15 @@ func TestASenderWaitingOutAListenerTakeOverRenewsItsClaimBeforeEachTry(t *testin
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			listener := startTakeOverListener(t)
-			// The take-over window outlasts any run of the test binary (its -timeout ends a run
-			// first): what ends the sender's wait is the listener answering after refuse(false),
-			// and the test's own waits for the tries and the answer give up at concurrentWait.
+			// The take-over window outlasts any run of the test binary: what ends the sender's
+			// wait is the listener answering after refuse(false), and the test's own waits for the
+			// tries and the answer give up at concurrentWait.
 			// Each call to the listener gets concurrentWait too, in place of the client's 5 s:
 			// every one runs this test's observe read of the attempt row before it is answered,
 			// and a call cut short is a try the sender makes again - after a send that landed, a
 			// second send to s1, which the one-send check below fails.
 			handler, database, deps := newTestServer(t, testServerOptions{
-				envoyURL: listener.server.URL, envoyTimeout: concurrentWait, takeoverWindow: 24 * time.Hour,
+				envoyURL: listener.server.URL, envoyTimeout: concurrentWait, takeoverWindow: testwait.PastTheRun,
 			})
 			path := tc.path
 			if path == "" {

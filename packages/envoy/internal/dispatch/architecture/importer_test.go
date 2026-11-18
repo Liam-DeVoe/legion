@@ -141,14 +141,17 @@ func (h *releasableHold) channels(t *testing.T) (held, release chan struct{}) {
 	return h.held, h.release
 }
 
+// heldReadWait is how long waitHeld waits for a held read to arrive.
+const heldReadWait = 30 * time.Second
+
 // waitHeld returns once a held read has arrived.
 func (h *releasableHold) waitHeld(t *testing.T) {
 	t.Helper()
 	held, _ := h.channels(t)
 	select {
 	case <-held:
-	case <-time.After(30 * time.Second):
-		t.Fatal("no read reached the hold within 30s")
+	case <-time.After(heldReadWait):
+		t.Fatalf("no read reached the hold within %v", heldReadWait)
 	}
 }
 

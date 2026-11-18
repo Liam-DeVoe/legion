@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/internal/pgmigrate/pgmigratetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // censusTestLockTimeout is how long a census these tests take waits for a touched table's lock
@@ -1384,7 +1385,7 @@ func TestCensusReadsTheAgeOfAHolderOfItsOwnRoleWhoseTransactionBeganDuringTheCen
 	// rollback under it, and a zero StatementTimeout leaves it at CensusStatementTimeout, a minute,
 	// which a test slowed past it would read as a census that timed out.
 	go func() {
-		report, err := census(ctx, url, set, pgmigrate.CensusOptions{Locking: pgmigrate.Locking{Timeout: 24 * time.Hour}, LongTransaction: 24 * time.Hour, StatementTimeout: 24 * time.Hour})
+		report, err := census(ctx, url, set, pgmigrate.CensusOptions{Locking: pgmigrate.Locking{Timeout: testwait.PastTheRun}, LongTransaction: testwait.PastTheRun, StatementTimeout: testwait.PastTheRun})
 		done <- result{report, err}
 	}()
 	// Wait until the census is queued on blocker, which it reaches only after reading others' holders.
@@ -1903,7 +1904,7 @@ func TestCensusChecksTheTablesAForeignKeyReachesFromARowTheMigrationWrites(t *te
 	// CensusLongTransaction), and this holder's transaction began just above, so a test slowed past
 	// that minute would read a second refusal. The bound outlasts any run of the test binary, and
 	// the one refusal left is the lock wait this census is about, as the first census's is its age.
-	report, err = census(ctx, url, set, pgmigrate.CensusOptions{Locking: pgmigrate.Locking{Timeout: censusTestLockTimeout}, LongTransaction: 24 * time.Hour})
+	report, err = census(ctx, url, set, pgmigrate.CensusOptions{Locking: pgmigrate.Locking{Timeout: censusTestLockTimeout}, LongTransaction: testwait.PastTheRun})
 	if err != nil {
 		t.Fatalf("census: %v", err)
 	}

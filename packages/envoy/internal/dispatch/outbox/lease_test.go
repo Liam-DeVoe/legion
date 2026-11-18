@@ -606,9 +606,9 @@ func TestAnOutboxThatLosesNATSReleasesThePublisher(t *testing.T) {
 	proxy.Cut()
 	var released map[string]string
 	// Until what the test binary's deadline leaves, less the thirty seconds horizontest.Drain
-	// leaves a failure to print in (testwait.Bounded), and a day where the run has no deadline: no
-	// span past the grace is this row's (above).
-	waitFor(t, testwait.Bounded(t, 24*time.Hour, 30*time.Second), "the cut process's line releasing the publisher hold", func() bool {
+	// leaves a failure to print in (testwait.Bounded), and testwait.PastTheRun where the run has
+	// no deadline: no span past the grace is this row's (above).
+	waitFor(t, testwait.Bounded(t, testwait.PastTheRun, 30*time.Second), "the cut process's line releasing the publisher hold", func() bool {
 		var found bool
 		released, found = releaseLine(recorder, cut.outbox.instance)
 		return found
@@ -836,15 +836,16 @@ func TestAHolderConnectedAgainWhenTheGraceEndsKeepsTheHold(t *testing.T) {
 	outbox := New(Deps{Store: database, Publisher: publisher})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	// The hold is taken under options of the row's own, as the record path's row takes it
-	// (TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal): under publisherHoldOptions, a
-	// renewal a parallel batch starved for the 4 s from a confirmed renewal to the loss deadline
-	// would end the turn as lost while serve waits out the grace, and the row would read that load
-	// rather than the product. These leave the deadline a day ahead, past any run of the test
-	// binary, for the whole row: nothing here waits for the hold to lapse, and the cleanup
-	// releases it.
-	hold, err := duty.TryHold(ctx, database.Pool, publisherHold, outbox.instance,
-		duty.HoldOptions{TTL: 24 * time.Hour, Renew: 5 * time.Second, Margin: time.Minute, Token: outbox.token})
+	// The hold is taken under rigHoldOptions, not through outbox.tryHold, as the record path's row
+	// takes it under options of its own (TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal):
+	// under publisherHoldOptions, a renewal a parallel batch starved for the 4 s from a confirmed
+	// renewal to the loss deadline would end the turn as lost while serve waits out the grace, and
+	// the row would read that load rather than the product. rigHoldOptions leave the deadline past
+	// any run of the test binary, for the whole row: nothing here waits for the hold to lapse, and
+	// the cleanup releases it.
+	options := rigHoldOptions
+	options.Token = outbox.token
+	hold, err := duty.TryHold(ctx, database.Pool, publisherHold, outbox.instance, options)
 	if err != nil || hold == nil {
 		t.Fatalf("the outbox did not take the publisher hold: %v", err)
 	}
@@ -1362,13 +1363,13 @@ func TestAFallbackPassWhoseClaimFailedHasTheHolderPassAgain(t *testing.T) {
 
 // A Deps that sets no publisher hold options, as cmd/dispatch's does, takes the hold under
 // production's, publisherHoldOptions, and one that sets them takes it under those as set: tryHold
-// reads the hold's options from Deps alone (Deps.publisherHoldOptions).
+// reads the hold's options from Deps alone (Deps.holdOptionsOrProduction).
 func TestAZeroDepsTakesThePublisherHoldUnderProductionsOptions(t *testing.T) {
 	t.Parallel()
-	if got := (Deps{}).publisherHoldOptions(); got != publisherHoldOptions {
+	if got := (Deps{}).holdOptionsOrProduction(); got != publisherHoldOptions {
 		t.Fatalf("a zero Deps takes the publisher hold under %+v, want publisherHoldOptions %+v", got, publisherHoldOptions)
 	}
-	if got := (Deps{holdOptions: rigHoldOptions}).publisherHoldOptions(); got != rigHoldOptions {
+	if got := (Deps{holdOptions: rigHoldOptions}).holdOptionsOrProduction(); got != rigHoldOptions {
 		t.Fatalf("a Deps holding %+v takes the publisher hold under %+v, want those as set", rigHoldOptions, got)
 	}
 }

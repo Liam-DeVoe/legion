@@ -345,7 +345,7 @@ func (s *timeoutLoadStore) LoadDocument(ctx context.Context, room string) (Loade
 
 func newReadCacheService(t *testing.T, database *store.Store, persistence VersionedStore) *Service {
 	t.Helper()
-	service := New(Deps{
+	return newTestServiceWith(t, Deps{
 		Store:       database,
 		Persistence: persistence,
 		Events:      events.NewBroker(),
@@ -353,9 +353,6 @@ func newReadCacheService(t *testing.T, database *store.Store, persistence Versio
 		ServerURL:   "https://dispatch.example",
 		Settle:      time.Hour,
 	})
-	service.srv.RoomIdleTimeout = testRoomIdleTimeout
-	cleanupAndRelease(t, func() { shutdownTestService(t, service) })
-	return service
 }
 
 type coldReading struct {

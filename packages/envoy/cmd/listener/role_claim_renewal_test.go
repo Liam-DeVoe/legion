@@ -20,6 +20,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/store"
 )
 
@@ -30,14 +31,14 @@ type roleClaimRenewalRig struct {
 	t         *testing.T
 	registry  *store.Registry
 	roleKV    natsgo.KeyValue
-	logs      *bytes.Buffer
+	logs      *logtest.Buffer
 	subscribe http.Handler
 }
 
 func newRoleClaimRenewalRig(t *testing.T) *roleClaimRenewalRig {
 	t.Helper()
 	registry, sessions := setupSessionsTest(t, nil, nil)
-	logs := &bytes.Buffer{}
+	logs := &logtest.Buffer{}
 	// withRoleClaimDrain, because a registration that makes its session live again hands that
 	// session the kept lane of each role whose claim record it read for it (runKeptRoleDrain),
 	// and the first registration of every holder here is one: the rig's session cache has never
@@ -95,14 +96,8 @@ func (r *roleClaimRenewalRig) register(sessionID, instance string) {
 // unrenewed is every "left a role claim unrenewed" line the rig's route logged, each carrying the
 // renewal's error: a registration whose renewal ran out of the request's budget is answered 200
 // all the same, so these lines are the only cause a case can print of a claim left unrenewed.
-func (r *roleClaimRenewalRig) unrenewed() []string {
-	var lines []string
-	for line := range strings.Lines(r.logs.String()) {
-		if strings.Contains(line, "left a role claim unrenewed") {
-			lines = append(lines, strings.TrimSpace(line))
-		}
-	}
-	return lines
+func (r *roleClaimRenewalRig) unrenewed() string {
+	return r.logs.Lines("left a role claim unrenewed")
 }
 
 // lapsedClaim is the claim a session took an hour ago and has not answered for since, the record

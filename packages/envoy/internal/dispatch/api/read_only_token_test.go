@@ -220,8 +220,7 @@ func registerRefusal(t *testing.T) (refusal string) {
 
 // TestRegisterRefusesAReadOnlyListOfNoMountedGETRow: a read list naming a write would open that
 // write to a token minted only to read, and one naming no row reads as though it opened a route
-// that is not there, so Register refuses either and names the route. It replaces the package's
-// list for its length, so it is not parallel.
+// that is not there, so Register refuses either and names the route.
 func TestRegisterRefusesAReadOnlyListOfNoMountedGETRow(t *testing.T) {
 	// Serial: this test swaps process-wide state. It replaces readScopeRoutes, a package
 	// variable every route table and every Register in the process reads.
