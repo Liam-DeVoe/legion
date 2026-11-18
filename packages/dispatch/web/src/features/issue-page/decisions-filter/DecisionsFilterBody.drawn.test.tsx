@@ -366,6 +366,15 @@ function focusedRow(view: RenderResult): string | undefined {
     ?.getAttribute("data-node-id") as string | undefined;
 }
 
+/** Focuses the view's `tree` as the page's chord does where the tree holds no tab-stop row
+ *  (`reachPart`, `useIssueKeymap.ts`): from outside the view, so the focus is moved off the view
+ *  first. The stage leaves on the tree a focus moved onto it from inside the view, from a Retry
+ *  the stage focused say, as the reader's own (`slots/stage.tsx`). */
+function chordFocus(tree: HTMLElement): void {
+  (document.activeElement as HTMLElement | null)?.blur();
+  tree.focus();
+}
+
 /** What the page writes of its own inside `scope`, each run with the author's text taken out,
  *  as the browser suite's c-plain-words reads the page's chrome. */
 function chromeOf(scope: Element): string[] {
@@ -567,9 +576,9 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
   // The decisions read is refused before it first answers. In place of the decisions it would
   // give, its line says so over the list with a Retry that asks that read alone again, and no
   // line says the issue holds nothing. The body is drawn in the stage, as the page draws a
-  // view: the tree's own focus, which `t d` gives it, goes to that Retry. Enter on it asks
-  // again; the read answers this time, and its decision is drawn with the focus on its row: at
-  // no point is the focus left on the page's body.
+  // view: the tree's own focus, which `t d` gives it from outside the view, goes to that Retry.
+  // Enter on it asks again; the read answers this time, and its decision is drawn with the
+  // focus on its row: at no point is the focus left on the page's body.
   const made = [decision("first", { links: [shaped(specRef("s1"))] })];
   const refused = spyOn(api, "getIssueDecisions").mockRejectedValue(
     new ApiError(503, { code: "UNAVAILABLE", error: "the store is not reachable" })
@@ -583,7 +592,7 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
     expect(failed.queryByText(EMPTY_LINE)).toBeNull();
     const tree = failed.getByRole("tree", { name: CONTROL_LABELS.tree });
     expect(tree.contains(retryOf(failed, "decisions"))).toBe(false);
-    await act(async () => tree.focus());
+    await act(async () => chordFocus(tree));
     expect(document.activeElement).toBe(retryOf(failed, "decisions"));
 
     refused.mockResolvedValue(decisionsRead(made));
@@ -603,8 +612,8 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
   }
 
   // The asks read is refused the same way: its line in place of the questions it would give,
-  // no line that the issue holds nothing, and the tree's focus on its Retry where no row is
-  // drawn.
+  // no line that the issue holds nothing, and the tree's focus, which `t d` gives it from
+  // outside the view, on its Retry where no row is drawn.
   const refusedAsks = spyOn(api, "listIssueAsks").mockRejectedValue(new Error("refused"));
   try {
     const failed = renderBody({ asks: null, children: [statement("s1")] }, {}, { stage: true });
@@ -613,22 +622,22 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
     expect(failedLine(failed, "decisions")).toBeNull();
     expect(failed.container.querySelectorAll("[data-decisions-part]").length).toBe(0);
     expect(failed.queryByText(EMPTY_LINE)).toBeNull();
-    await act(async () => failed.getByRole("tree", { name: CONTROL_LABELS.tree }).focus());
+    await act(async () => chordFocus(failed.getByRole("tree", { name: CONTROL_LABELS.tree })));
     expect(document.activeElement).toBe(retryOf(failed, "asks"));
     failed.unmount();
 
     // With the decisions read drawn, its rows take the focus and the Retry does not: a focus on
-    // the tree, as the page's chord gives one where it finds no tab-stop row, or on the tab-stop
-    // row itself goes to a decision. Shift+Tab from that row takes the focus up to the Retry
-    // over the list, which is off every row, as the foot's control is, so the row the reader
-    // left is drawn as one they are not on.
+    // the tree from outside the view, as the page's chord gives one where it finds no tab-stop
+    // row, or on the tab-stop row itself goes to a decision. Shift+Tab from that row takes the
+    // focus up to the Retry over the list, which is off every row, as the foot's control is, so
+    // the row the reader left is drawn as one they are not on.
     const partial = renderBody({
       asks: null,
       children: [statement("s1"), decisionNode("first")],
       made,
     });
     await waitFor(() => expect(retryOf(partial, "asks")).not.toBeNull());
-    await act(async () => partial.getByRole("tree", { name: CONTROL_LABELS.tree }).focus());
+    await act(async () => chordFocus(partial.getByRole("tree", { name: CONTROL_LABELS.tree })));
     expect(focusedRow(partial)).toBe(D("first"));
     await act(async () => (document.activeElement as HTMLElement).blur());
     const row = rowOf(partial, D("first"));
@@ -648,15 +657,15 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
 
   // A list that holds only the foot, with the asks read refused before it first answers. A
   // question or the asks' Retry may yet come, so the foot's control takes no focus until that
-  // read has answered: the tree's focus, given before the refusal comes back, goes to the
-  // Retry once its line is drawn, and a page opened on the list puts it there too. Enter on
-  // the Retry with the read refused again leaves the focus on the tree while the read runs,
-  // then on the Retry that comes back. Enter with the read answering no question leaves a list
-  // that holds only the foot with both reads held, so the focus goes on from the tree to the
-  // foot's control; a later read that adds a question takes it from there to the question's
-  // row, as the foot hands it on. Where the read's answer brings the question with it, drawn
-  // in the one render, the focus goes to the question's row, and the foot's control takes it at
-  // no point on the way.
+  // read has answered: the tree's focus, which `t d` gives it from outside the view before the
+  // refusal comes back, goes to the Retry once its line is drawn, and a page opened on the list
+  // puts it there too. Enter on the Retry with the read refused again leaves the focus on the
+  // tree while the read runs, then on the Retry that comes back. Enter with the read answering
+  // no question leaves a list that holds only the foot with both reads held, so the focus goes
+  // on from the tree to the foot's control; a later read that adds a question takes it from
+  // there to the question's row, as the foot hands it on. Where the read's answer brings the
+  // question with it, drawn in the one render, the focus goes to the question's row, and the
+  // foot's control takes it at no point on the way.
   const footOnly = { asks: null, children: [decisionNode("minor")], made: [decision("minor")] };
   const footControl = (drawn: RenderResult) =>
     drawn.container.querySelector('[data-decisions-part="agents"] button');
@@ -666,7 +675,7 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
     const early = renderBody(footOnly, {}, { stage: true });
     expect(footControl(early)).not.toBeNull();
     const tree = early.getByRole("tree", { name: CONTROL_LABELS.tree });
-    await act(async () => tree.focus());
+    await act(async () => chordFocus(tree));
     expect(document.activeElement).toBe(tree);
     await act(async () => {
       asksOut.reject(new Error("refused"));
