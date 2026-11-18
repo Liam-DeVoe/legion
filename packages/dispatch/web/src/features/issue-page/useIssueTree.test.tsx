@@ -4907,6 +4907,32 @@ const RETRY_GONE_WHILE_WAITING: RuleWay = {
   },
 };
 
+/** Two writes out together, each landing with no answer (`answerlessWrite`), the second 200 ms
+ *  after the first: each makes the write store refresh every query the app holds while the
+ *  other, or itself, is still out. */
+function twoAnswerlessWrites(feed: "down" | "up"): RuleWay {
+  return {
+    words: `two writes out together that each land with no answer, 200 ms apart, with the live feed ${feed} and no event`,
+    does: async (rig) => {
+      if (feed === "down") await feedDown(rig);
+      const second = Promise.withResolvers<void>();
+      const write = new MutationObserver<void, Error, void, void>(rig.client, {
+        mutationFn: async () => {
+          await second.promise;
+          void rig.client.invalidateQueries();
+        },
+      });
+      void write.mutate();
+      await tick(10, 10);
+      await writeSettles(() => answerlessWrite(rig).mutate(), 200);
+      await tick(200, 10);
+      act(() => second.resolve());
+      await tick(50, 10);
+    },
+    ends: treeHoldsComment("settled"),
+  };
+}
+
 /** The margin's resolve of the comment (`useMarginItems.ts`), answered by Dispatch in `latency`:
  *  its `onMutate` writes the resolve into the comments read before Dispatch holds it, its
  *  `onSuccess` invalidates the comments and the issue once Dispatch answers, and the resolve's
@@ -5063,6 +5089,8 @@ const WAYS = {
   },
   backAndGoneWhileWaiting: BACK_AND_GONE_WHILE_WAITING,
   retryGoneWhileWaiting: RETRY_GONE_WHILE_WAITING,
+  twoAnswerlessUp: twoAnswerlessWrites("up"),
+  twoAnswerlessDown: twoAnswerlessWrites("down"),
 } satisfies Record<string, RuleWay>;
 
 /** How many reads of a query a way starts: a count, or the least and the most. */
@@ -5676,6 +5704,11 @@ const READ_RULES: readonly ReadRule[] = [
     now: 0,
     back: 1,
   },
+  // Two writes out together, each landing with no answer: read once, as the last settles.
+  { read: "tree", state: "answered", observed: true, way: "twoAnswerlessUp", now: 1 },
+  { read: "tree", state: "answered", observed: true, way: "twoAnswerlessDown", now: 1 },
+  { read: "spec", state: "answered", observed: true, way: "twoAnswerlessUp", now: 1 },
+  { read: "spec", state: "answered", observed: true, way: "twoAnswerlessDown", now: 1 },
 ];
 
 describe("the rule for when a read of the tree or of a view starts", () => {
