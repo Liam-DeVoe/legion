@@ -159,6 +159,37 @@ func TestAPushsRecordsAreReadFromItsCommits(t *testing.T) {
 			},
 		},
 		{
+			name: "an author line of the read identity whose date is followed by a host",
+			build: func(t *testing.T) string {
+				// git show formats the last author line's name and email alone, so only the
+				// header's own read holds what follows its date.
+				return crafted(t, authorLine+committerLine+"author builder <builder@example.invalid> 1700000000 +0000 "+theHost+"\n")
+			},
+			want: func(head string) []string {
+				return []string{"commit " + short(head) + " author: " + theClass}
+			},
+		},
+		{
+			name: "a tree line after the committer names a host",
+			build: func(t *testing.T) string {
+				// git reads a commit's tree from its first line alone, and its own check of a
+				// commit reads no line after the committer, so a later tree line is a header.
+				return crafted(t, authorLine+committerLine+"tree "+theHost+"\n")
+			},
+			want: func(head string) []string {
+				return []string{"commit " + short(head) + " tree: " + theClass}
+			},
+		},
+		{
+			name: "a parent line after the committer names a host",
+			build: func(t *testing.T) string {
+				return crafted(t, authorLine+committerLine+"parent "+theHost+"\n")
+			},
+			want: func(head string) []string {
+				return []string{"commit " + short(head) + " parent: " + theClass}
+			},
+		},
+		{
 			name: "a commit that names nothing",
 			build: func(t *testing.T) string {
 				branch(t, "clean")
