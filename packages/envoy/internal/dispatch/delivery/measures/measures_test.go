@@ -5,6 +5,7 @@ import (
 	"math"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -204,14 +205,14 @@ func TestComputeMatchesThePrototypeOnItsFixture(t *testing.T) {
 	if perPR.Confirmed != 2 || perPR.Pending != 1 || perPR.Rejected != 1 || perPR.Reverts != 1 || perPR.Total != 14 {
 		t.Errorf("per_pr = %+v, want {confirmed 2, pending 1, rejected 1, reverts 1, total 14}", perPR)
 	}
-	assertFloat(t, "per_pr.rate", perPR.Rate, 2.0/14)
+	assertOptional(t, "per_pr.rate", perPR.Rate, new(2.0/14))
 	perDeploy := result.ChangeFailureRate.PerDeploy
 	if perDeploy.Confirmed != 2 || perDeploy.Pending != 0 || perDeploy.Rejected != 1 || perDeploy.Reverts != 1 ||
 		perDeploy.Total != 5 || perDeploy.ConfirmedOrPending != 2 {
 		t.Errorf("per_deploy = %+v, want {confirmed 2, pending 0, rejected 1, reverts 1, total 5, confirmed_or_pending 2}", perDeploy)
 	}
-	assertFloat(t, "per_deploy.rate", perDeploy.Rate, 0.4)
-	assertFloat(t, "per_deploy.upper_bound_rate", perDeploy.UpperBoundRate, 0.4)
+	assertOptional(t, "per_deploy.rate", perDeploy.Rate, new(0.4))
+	assertOptional(t, "per_deploy.upper_bound_rate", perDeploy.UpperBoundRate, new(0.4))
 
 	assertOptional(t, "time_to_restore.median_minutes", result.TimeToRestore.MedianMinutes, new(750.0))
 	assertFloat(t, "rework_share", result.ReworkShare, 4.0/14)
@@ -269,28 +270,49 @@ func TestComputeOnStoredContainment(t *testing.T) {
 }
 
 // TestComputeWithNoFailureSourceReadsNoFailureRateAndNoRestoreTime: with no failure source (nil
-// flags) the change failure rate is no value and time to restore holds no median, which no target
-// can judge; with a source that holds no flag (an empty list) the rate is a measured 0 over the
-// window's pull requests and deploys.
+// flags) the change failure rate is still the object a page of an earlier build reads, every
+// count 0 and every rate nil, which no target can judge, and time to restore holds no median;
+// with a source that holds no flag (an empty list) the rate is a measured 0 over the window's pull
+// requests and deploys, and over a window with neither, where each denominator is 0, still a
+// measured 0 rather than no value.
 func TestComputeWithNoFailureSourceReadsNoFailureRateAndNoRestoreTime(t *testing.T) {
 	prs, runs, window := loadFixture(t)
 	result := Compute(prs, runs, nil, window)
-	if result.ChangeFailureRate != nil {
-		t.Errorf("change_failure_rate = %+v with no failure source, want no value", *result.ChangeFailureRate)
+	if result.ChangeFailureRate != (ChangeFailureRate{}) {
+		t.Errorf("change_failure_rate = %+v with no failure source, want every count 0 and every rate nil", result.ChangeFailureRate)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const unmeasured = `"change_failure_rate":{"per_pr":{"confirmed":0,"pending":0,"rejected":0,"reverts":0,"total":0,"rate":null},` +
+		`"per_deploy":{"confirmed":0,"pending":0,"rejected":0,"reverts":0,"total":0,"rate":null,"confirmed_or_pending":0,"upper_bound_rate":null}}`
+	if !strings.Contains(string(encoded), unmeasured) {
+		t.Errorf("the result encodes no %s with no failure source: %s", unmeasured, encoded)
 	}
 	if result.TimeToRestore.MedianMinutes != nil {
 		t.Errorf("time_to_restore.median_minutes = %v, want nil", *result.TimeToRestore.MedianMinutes)
 	}
 
-	sourced := Compute(prs, runs, []Flag{}, window)
-	if sourced.ChangeFailureRate == nil {
-		t.Fatal("change_failure_rate = nil from a failure source with no flag, want a rate of 0")
-	}
-	if got, want := sourced.ChangeFailureRate.PerPR, (FlagCounts{Total: 14}); got != want {
-		t.Errorf("per_pr = %+v, want %+v", got, want)
-	}
-	if got, want := sourced.ChangeFailureRate.PerDeploy, (DeployFlagCounts{FlagCounts: FlagCounts{Total: 5}}); got != want {
-		t.Errorf("per_deploy = %+v, want %+v", got, want)
+	for _, measured := range []struct {
+		name       string
+		got        ChangeFailureRate
+		wantCounts ChangeFailureRate
+	}{
+		{"a source with no flag", Compute(prs, runs, []Flag{}, window).ChangeFailureRate,
+			ChangeFailureRate{PerPR: FlagCounts{Total: 14}, PerDeploy: DeployFlagCounts{FlagCounts: FlagCounts{Total: 5}}}},
+		// Neither a pull request nor a run: every day's parts hold a zero denominator, which the
+		// source measured, so each rate is 0.
+		{"a source with no flag, pull request or run", Compute(nil, nil, []Flag{}, window).ChangeFailureRate, ChangeFailureRate{}},
+	} {
+		counts := measured.got
+		counts.PerPR.Rate, counts.PerDeploy.Rate, counts.PerDeploy.UpperBoundRate = nil, nil, nil
+		if counts != measured.wantCounts {
+			t.Errorf("%s: counts = %+v, want %+v", measured.name, counts, measured.wantCounts)
+		}
+		assertOptional(t, measured.name+": per_pr.rate", measured.got.PerPR.Rate, new(0.0))
+		assertOptional(t, measured.name+": per_deploy.rate", measured.got.PerDeploy.Rate, new(0.0))
+		assertOptional(t, measured.name+": per_deploy.upper_bound_rate", measured.got.PerDeploy.UpperBoundRate, new(0.0))
 	}
 }
 
@@ -304,11 +326,11 @@ func TestUpperBoundCountsEachDeployOnce(t *testing.T) {
 		Flag{Broken: "acme/widgets#105", Fix: "acme/widgets#107", Kind: "fix", State: "pending"},
 	)
 	perDeploy := Compute(prs, runs, flags, window).ChangeFailureRate.PerDeploy
-	assertFloat(t, "per_deploy.rate", perDeploy.Rate, 0.4)
+	assertOptional(t, "per_deploy.rate", perDeploy.Rate, new(0.4))
 	if perDeploy.Pending != 2 || perDeploy.ConfirmedOrPending != 3 {
 		t.Errorf("per_deploy = {pending %d, confirmed_or_pending %d}, want {2, 3}", perDeploy.Pending, perDeploy.ConfirmedOrPending)
 	}
-	assertFloat(t, "per_deploy.upper_bound_rate", perDeploy.UpperBoundRate, 0.6)
+	assertOptional(t, "per_deploy.upper_bound_rate", perDeploy.UpperBoundRate, new(0.6))
 }
 
 // TestACancelledRunWhoseProductionJobSucceededIsADeployButNotARunSuccess is dora.test.ts:122-137.

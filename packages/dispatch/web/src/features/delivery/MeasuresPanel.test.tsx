@@ -79,7 +79,8 @@ const catalogueTargets: { [K in keyof Targets]: NonNullable<Targets[K]> } = {
 
 /** GET /api/v1/delivery/measures for the fixture window, as the server answers it with no flags
  *  stored (the reference request recorded on the slice 2 pull request): no failure source exists,
- *  so the change failure rate is null and neither of its verdicts is reached. */
+ *  so the change failure rate's counts are 0 and its rates null, and neither of its verdicts is
+ *  reached. */
 const fixtureMeasures: DeliveryMeasuresResponse = {
   window: { from: "2026-08-30T00:00:00Z", to: "2026-09-27T20:00:00Z" },
   computed_at: "2026-10-09T04:33:22Z",
@@ -96,7 +97,19 @@ const fixtureMeasures: DeliveryMeasuresResponse = {
       opened_to_production: { median_minutes: 1260, p90_minutes: 2874, max_minutes: 4320 },
       opened_to_merge: { median_minutes: 330, p90_minutes: 462.00000000000006, max_minutes: 1080 },
     },
-    change_failure_rate: null,
+    change_failure_rate: {
+      per_pr: { confirmed: 0, pending: 0, rejected: 0, reverts: 0, total: 0, rate: null },
+      per_deploy: {
+        confirmed: 0,
+        pending: 0,
+        rejected: 0,
+        reverts: 0,
+        total: 0,
+        rate: null,
+        confirmed_or_pending: 0,
+        upper_bound_rate: null,
+      },
+    },
     time_to_restore: { median_minutes: null },
     rework_share: 0.2857142857142857,
     deploy_run_success: {

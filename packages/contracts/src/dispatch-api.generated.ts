@@ -1074,7 +1074,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The four delivery measures and Sami's KPI targets for [from, to) (default the last 7 days) and the same facets the timeline takes: deploys a day, lead time (merge, first commit and open to production; open to merge), change failure rate per PR and per deploy, time to restore, rework share, deploy-run success, a per-UTC-day series, the open P0 issues with no owner, and whether each target is met. flags_source says whether a failure source fed the change failure rate and time to restore: with none (none) change_failure_rate is null, time_to_restore has no median, and both verdicts are null, since a rate nothing measured is no 0. 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. */
+    /** @description The four delivery measures and Sami's KPI targets for [from, to) (default the last 7 days) and the same facets the timeline takes: deploys a day, lead time (merge, first commit and open to production; open to merge), change failure rate per PR and per deploy, time to restore, rework share, deploy-run success, a per-UTC-day series, the open P0 issues with no owner, and whether each target is met. flags_source says whether a failure source fed the change failure rate and time to restore: with none (none) every change_failure_rate count is 0 and every rate null, time_to_restore has no median, and both verdicts are null, since a rate nothing measured is no 0; change_failure_rate itself is never null, so a page of an earlier build still reads it. 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. */
     get: operations["getApiV1DeliveryMeasures"];
     put?: never;
     post?: never;
@@ -4395,13 +4395,11 @@ export interface components {
       confirmed: number;
       confirmed_or_pending: number;
       pending: number;
-      /** Format: double */
-      rate: number;
+      rate: null | number;
       rejected: number;
       reverts: number;
       total: number;
-      /** Format: double */
-      upper_bound_rate: number;
+      upper_bound_rate: null | number;
     };
     DeliveryDeployJobTiming: {
       days: components["schemas"]["DeliveryTimingDay"][] | null;
@@ -4419,8 +4417,7 @@ export interface components {
     DeliveryFlagCounts: {
       confirmed: number;
       pending: number;
-      /** Format: double */
-      rate: number;
+      rate: null | number;
       rejected: number;
       reverts: number;
       total: number;
@@ -4467,7 +4464,7 @@ export interface components {
       total: components["schemas"]["DeliveryLeadTimeCell"];
     };
     DeliveryMeasures: {
-      change_failure_rate: components["schemas"]["ChangeFailureRate"] | null;
+      change_failure_rate: components["schemas"]["ChangeFailureRate"];
       daily: components["schemas"]["DeliveryDailyPoint"][] | null;
       deploy_frequency: components["schemas"]["DeployFrequency"];
       deploy_run_success: components["schemas"]["DeployRunSuccess"];

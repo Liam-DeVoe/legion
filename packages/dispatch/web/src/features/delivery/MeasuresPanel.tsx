@@ -138,6 +138,9 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
   const targets = data?.targets;
   const status = data?.status;
   const measures = data?.measures;
+  // Every change failure rate is null while no failure source exists (flags_source `none`): a rate
+  // nothing measured is no 0, so the card reads no value from it.
+  const perDeploy = measures?.change_failure_rate.per_deploy;
 
   const strip = [
     {
@@ -151,7 +154,7 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
     {
       label: "CFR (per PR)",
       value: show((d) =>
-        d.measures.change_failure_rate === null
+        d.measures.change_failure_rate.per_pr.rate === null
           ? NO_VALUE
           : pct(d.measures.change_failure_rate.per_pr.rate)
       ),
@@ -215,16 +218,17 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
             {/* Two decimals: 4.96% meets the target, 5.00% does not. */}
             <BigNumber className={toneOf((d) => d.status.change_failure_rate)}>
               {show((d) =>
-                d.measures.change_failure_rate === null
+                d.measures.change_failure_rate.per_deploy.rate === null
                   ? NO_VALUE
                   : pct(d.measures.change_failure_rate.per_deploy.rate, 2)
               )}
             </BigNumber>
-            {measures?.change_failure_rate === null ? null : (
+            {perDeploy?.rate === null ? null : (
               <span className={`text-xs ${textMutedOnSurface}`}>confirmed</span>
             )}
           </div>
-          {data === undefined ? null : data.measures.change_failure_rate === null ? (
+          {status === undefined || perDeploy === undefined ? null : perDeploy.rate === null ||
+            perDeploy.upper_bound_rate === null ? (
             <div className={`text-xs ${textMutedOnCanvas}`}>
               Flags arrive with flag confirmation
             </div>
@@ -232,18 +236,13 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
             <>
               <div className={`text-xs ${textMutedOnSurface}`}>
                 up to{" "}
-                <span
-                  className={`font-semibold ${tone(data.status.change_failure_rate_upper_bound)}`}
-                >
-                  {pct(data.measures.change_failure_rate.per_deploy.upper_bound_rate, 2)}
+                <span className={`font-semibold ${tone(status.change_failure_rate_upper_bound)}`}>
+                  {pct(perDeploy.upper_bound_rate, 2)}
                 </span>{" "}
                 if every pending flag is confirmed
               </div>
               <div className={`text-[11px] ${textMutedOnSurface}`}>
-                {failureRateBreakdown(
-                  data.measures.change_failure_rate.per_deploy.confirmed,
-                  data.measures.change_failure_rate.per_deploy.confirmed_or_pending
-                )}
+                {failureRateBreakdown(perDeploy.confirmed, perDeploy.confirmed_or_pending)}
               </div>
             </>
           )}
@@ -452,7 +451,8 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
   };
   const frequency = measures.deploy_frequency;
   const lead = measures.lead_time;
-  // Null while no failure source exists (flags_source `none`): a rate nothing measured is no 0.
+  // Every rate is null while no failure source exists (flags_source `none`): a rate nothing
+  // measured is no 0.
   const failures = measures.change_failure_rate;
   return (
     <>
@@ -486,7 +486,9 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
           p90 {formatMinutes(lead.opened_to_production.p90_minutes)}
         </DefinitionCard>
 
-        {failures === null ? (
+        {failures.per_pr.rate === null ||
+        failures.per_deploy.rate === null ||
+        failures.per_deploy.upper_bound_rate === null ? (
           <>
             <DefinitionCard title="Change failure rate (per PR)" value={NO_VALUE}>
               No failure source yet: flags arrive with flag confirmation. Incidents: no source yet.

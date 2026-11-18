@@ -16,8 +16,9 @@ type deliveryFlagsSource string
 
 // deliveryFlagsSourceNone is every answer while Dispatch stores no failed-change flags: no failure
 // source exists (a flag counts only once the dora role holder confirms it, LEGION-294), so
-// measures.Compute is handed none and the change failure rate is null and time to restore holds
-// no median, each with no verdict, as their evals read "no data" (root R11: 0 is a value).
+// measures.Compute is handed none, the change failure rate's rates are null and its counts 0, and
+// time to restore holds no median, each with no verdict, as their evals read "no data" (root R11:
+// 0 is a value).
 const deliveryFlagsSourceNone deliveryFlagsSource = "none"
 
 // deliveryMeasuresResponse is GET /api/v1/delivery/measures, and the timeline's `measures`: the

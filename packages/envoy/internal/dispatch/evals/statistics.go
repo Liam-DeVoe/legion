@@ -407,20 +407,26 @@ func changeFailureRateStatistics(parts []measures.DayPart, _ Range, names []stri
 }
 
 // changeFailureRateOf is change-fail-rate's three shares' statistics of a folded failure rate, by
-// series, every figure nil where folded is (no part: no failure source).
-func changeFailureRateOf(folded *measures.ChangeFailureRate) map[string]Statistics {
+// series, each series' figures nil where its rate is: no part was folded (no failure source), so
+// its counts of 0 counted nothing.
+func changeFailureRateOf(folded measures.ChangeFailureRate) map[string]Statistics {
 	perDeploy := blank("rate", "confirmed", "pending", "rejected", "total")
 	perPR := blank("rate", "confirmed", "pending", "rejected", "reverts", "total")
 	upperBound := blank("rate", "confirmed_or_pending")
-	if folded != nil {
-		flagged := func(stats Statistics, flags measures.FlagCounts) {
-			stats["rate"], stats["confirmed"], stats["pending"] = new(flags.Rate), new(float64(flags.Confirmed)), new(float64(flags.Pending))
-			stats["rejected"], stats["total"] = new(float64(flags.Rejected)), new(float64(flags.Total))
+	flagged := func(stats Statistics, flags measures.FlagCounts) {
+		if flags.Rate == nil {
+			return
 		}
-		flagged(perDeploy, folded.PerDeploy.FlagCounts)
-		flagged(perPR, folded.PerPR)
+		stats["rate"], stats["confirmed"], stats["pending"] = flags.Rate, new(float64(flags.Confirmed)), new(float64(flags.Pending))
+		stats["rejected"], stats["total"] = new(float64(flags.Rejected)), new(float64(flags.Total))
+	}
+	flagged(perDeploy, folded.PerDeploy.FlagCounts)
+	flagged(perPR, folded.PerPR)
+	if folded.PerPR.Rate != nil {
 		perPR["reverts"] = new(float64(folded.PerPR.Reverts))
-		upperBound["rate"], upperBound["confirmed_or_pending"] = new(folded.PerDeploy.UpperBoundRate), new(float64(folded.PerDeploy.ConfirmedOrPending))
+	}
+	if folded.PerDeploy.UpperBoundRate != nil {
+		upperBound["rate"], upperBound["confirmed_or_pending"] = folded.PerDeploy.UpperBoundRate, new(float64(folded.PerDeploy.ConfirmedOrPending))
 	}
 	return map[string]Statistics{measures.SeriesPerDeploy: perDeploy, measures.SeriesPerPR: perPR, measures.SeriesUpperBound: upperBound}
 }
