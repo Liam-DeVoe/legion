@@ -364,24 +364,34 @@ export function presentedSecrets(presented: Readonly<Record<string, string>>): r
   return [(presented.Authorization ?? "").replace(/^\S+\s+/, ""), presented.DPoP ?? ""];
 }
 
-/**
- * A refused answer's body as the seed's error names it. Dispatch's error JSON, an object whose
- * `error` is a string, is named as Dispatch wrote it. Any other body was written by something in
- * Dispatch's place, a gateway or a proxy, which can echo the request back, the credential with it:
- * it is named in one line with the secret the request presented redacted (`bodyForText`), never
- * whole.
- */
-async function refusal({ response, sent }: Answered): Promise<string> {
-  const text = await response.text();
+/** Whether `text` is Dispatch's error JSON: an object whose `error` is a string, the shape every
+ *  refusal the server writes takes (`writeError`). */
+function isDispatchError(text: string): boolean {
   try {
     const parsed: unknown = JSON.parse(text);
-    if (typeof parsed === "object" && parsed !== null && "error" in parsed) {
-      if (typeof parsed.error === "string") return text;
-    }
+    return (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "error" in parsed &&
+      typeof parsed.error === "string"
+    );
   } catch {
-    // Not JSON, so not Dispatch's: named below.
+    return false;
   }
-  return bodyForText(text, sent, "Dispatch's error JSON");
+}
+
+/**
+ * A refused answer's body, `text`, as the seed's error names it. Dispatch's error JSON is named as
+ * Dispatch wrote it. Any other body was written by something in Dispatch's place, a gateway or a
+ * proxy, which can echo the request back, the credential with it: it is named in one line with
+ * `sent`, the secrets the request presented, redacted (`bodyForText`), never whole.
+ */
+function refusalText(text: string, sent: readonly string[]): string {
+  return isDispatchError(text) ? text : bodyForText(text, sent, "Dispatch's error JSON");
+}
+
+async function refusal({ response, sent }: Answered): Promise<string> {
+  return refusalText(await response.text(), sent);
 }
 
 async function send<T>(
@@ -397,14 +407,17 @@ async function send<T>(
   return (await answered.response.json()) as T;
 }
 
-/** The issue `key`, or undefined where no issue carries that key. */
+/** The issue `key`, or undefined where no issue carries that key: Dispatch's own 404, its error
+ *  JSON, says so. A 404 page something else wrote in Dispatch's place is that page's error, not a
+ *  missing issue, which would leave the row's issue unrelated and recorded as missing. */
 async function readIssue(config: DispatchConfig, key: string): Promise<SeedIssue | undefined> {
   const path = `/api/v1/issues/${encodeURIComponent(key)}`;
   const answered = await request(config, "GET", path);
   const { response } = answered;
   if (response.status === 404) {
-    await response.text();
-    return undefined;
+    const text = await response.text();
+    if (isDispatchError(text)) return undefined;
+    throw new Error(`GET ${path}: 404 ${refusalText(text, answered.sent)}`);
   }
   if (!response.ok) {
     throw new Error(`GET ${path}: ${response.status} ${await refusal(answered)}`);

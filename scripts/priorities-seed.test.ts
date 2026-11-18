@@ -89,6 +89,8 @@ let requireActor = false;
 /** The requests a gateway in Dispatch's place answers instead of the fake, with a page of its own
  *  (`echoPage`); none while it is undefined. */
 let proxied: ((method: string, path: string) => boolean) | undefined;
+/** The status `echoPage` answers with. */
+let proxiedStatus = 502;
 
 /** The page a gateway answers in Dispatch's place, echoing the request: the bearer it carried
  *  bare on a line of its own, first, so only the redaction of that very bearer can hide it, then
@@ -99,7 +101,7 @@ function echoPage(request: Request): Response {
   return new Response(
     `<html><body>\n${authorization.replace(/^\S+ /, "")}\n${proof}\n<pre>${request.method} ` +
       `${new URL(request.url).pathname}\nauthorization: ${authorization}</pre></body></html>\n`,
-    { headers: { "Content-Type": "text/html" }, status: 502 }
+    { headers: { "Content-Type": "text/html" }, status: proxiedStatus }
   );
 }
 
@@ -213,6 +215,7 @@ beforeEach(() => {
   document = { markdown: TABLE, version: 1 };
   requireActor = false;
   proxied = undefined;
+  proxiedStatus = 502;
   issues.clear();
   for (const [key, status] of [
     ["TEST-1", "in_progress"],
@@ -491,6 +494,29 @@ test("a read refused with a proxy's page names it without the DPoP proof the rea
   );
   expect(message).not.toContain(token);
   expect(message).not.toContain(proof.slice(0, 12));
+});
+
+// Only Dispatch's own 404, its error JSON, says no issue carries a key. A page in its place that
+// answers 404 is that page's error: read as "no issue", it would leave the row's issue unrelated
+// and record it as missing, and a later run would act on what already exists.
+test("an issue read a proxy's page answers 404 is that page's error, never a missing issue", async () => {
+  const token = fixtureSecret("seed");
+  proxied = (method, path) => method === "GET" && path === "/api/v1/issues/TEST-1";
+  proxiedStatus = 404;
+  const error = await seedPriorities(
+    { ...config, credential: bearerCredential(token) },
+    DOCUMENT
+  ).then(
+    () => undefined,
+    (refused: unknown) => refused
+  );
+  expect(error).toBeInstanceOf(Error);
+  const message = (error as Error).message;
+  expect(message).toStartWith(
+    "GET /api/v1/issues/TEST-1: 404 a body that is not Dispatch's error JSON ("
+  );
+  expect(message).not.toContain(token);
+  expect(priorities).toEqual([]);
 });
 
 test("a refusal in Dispatch's own error JSON prints as Dispatch wrote it", async () => {
