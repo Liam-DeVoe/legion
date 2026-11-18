@@ -92,19 +92,26 @@ func CanonicalRepo(ctx context.Context, q Queryer, repo string) (string, error) 
 // still serves a login with a doubled hyphen (`hello--world`, the organisation `foo--bar`), one
 // ending in a hyphen (`ArtOfCode-`) and a managed user's `_<shortcode>` (`mona-cat_octo`), whose
 // repositories an issue has to be able to name. A repository's own name is 1 to 100 letters,
-// digits, `.`, `-` and `_`, the most GitHub allows. The rule differs from the daemon's in two
-// places, both because a name here is often written with the trailing `.git` a clone URL carries,
-// which api's canonicalRepo trims before the name is stored. The pattern holds the characters
-// alone and GitHubName the 100, where the daemon's pattern holds both, so the bound is put to the
-// name a GitHub path is built from, the stored one: `acme/<100 characters>.git` is written for
-// that repository and stored as its 100 characters. And the daemon's ghrepo.Parse refuses a name
-// ending in `.git`, which GitHub strips from a name at creation, where this rule takes one: a
-// route trims one `.git` before it stores a name, and a name stored still ending in `.git` is
-// taken where it passes the rule as it is and once that `.git` is trimmed (SplitGitHubRepo).
-// Both cases are written out because the grammar is the grammar whatever the case, so a name
-// GitHub holds is taken however it was typed. The two names `.` and `..`, which no working copy
-// could hold and which a GitHub path reads as a dot segment, are refused beside the patterns,
-// where a pattern would state them worse.
+// digits, `.`, `-` and `_`, the most GitHub allows. The pattern holds the characters alone and
+// GitHubName the 100, where the daemon's pattern holds both: that is where the bound is written,
+// not a difference in the names either rule takes, since each puts the bound to the name as it is
+// given. A route bounds the name it stores because it lower-cases the name and trims one `.git`
+// off it (api's canonicalRepo) before it puts the name to this rule: `acme/<100 characters>.git`
+// is written for that repository and stored as its 100 characters. The names the two rules take
+// differ in two places, both in a trailing `.git`, which a clone URL carries and GitHub strips
+// from a name at creation, and in nothing else. The daemon's ghrepo.Parse refuses every name
+// that ends in a lower-case `.git`, where this rule takes one that passes it as it is and once
+// that `.git` is trimmed (SplitGitHubRepo), since a name stored can still end in one: a route
+// trims one `.git` and no more, so `acme/x.git.git` written is `acme/x.git` stored, which this
+// rule takes and Parse refuses. And this rule finds that suffix in any letter case, lower-casing
+// the name before it trims (`strings.ToLower` before `strings.TrimSuffix`), where Parse finds a
+// lower-case `.git` alone (`strings.CutSuffix`): `acme/x.GIT` is taken by both, here once `x`
+// passes the rule too, and `acme/.GIT`, `acme/..GIT` and `acme/...GIT`, which are empty, `.` and
+// `..` once that suffix is trimmed, are refused here and taken by Parse as they are. Both letter
+// cases are written out in the patterns because the grammar is the grammar whatever the case, so
+// a name GitHub holds is taken however it was typed. The two names `.` and `..`, which no working
+// copy could hold and which a GitHub path reads as a dot segment, are refused beside the
+// patterns, where a pattern would state them worse.
 var (
 	repoOwnerPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,38}$`)
 	repoNamePattern  = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)

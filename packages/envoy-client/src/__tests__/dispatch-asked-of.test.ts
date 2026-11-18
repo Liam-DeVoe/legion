@@ -201,19 +201,32 @@ test("the two shared sentences stand in both ask descriptions and in the dispatc
 // "the ask ... hand it to". The scan reads every file under skills/, every packages/*/AGENTS.md
 // and every dispatch_* tool description, which is every text that tells an agent how asks work.
 //
-// A hit is not a defect by itself: a line can say "by hand", hand a turn back inside one ask's
-// thread, or state for whoever edits the code who an ask waits on. So the scan fails on a hit the
-// allowlist below does not hold, each entry its source and the half-line that matched, so a later
-// reader judges the line rather than a count. An entry that matches nothing fails too: a line that
-// moved or changed its wording is re-read rather than left allowed. The shape follows the
-// retired-phrase scan in `packages/pi-legion/src/skills-guard.test.ts`.
+// A hit is not a defect by itself: most of these lines say "hand the work over" or name an anchor
+// called `finding-asks.md#hand-over-a-clear-defect`. So the scan fails on a hit the allowlist
+// below does not hold, each entry its source and the half-line that matched, so a later reader
+// judges the line rather than a count. An entry that matches nothing fails too: a line that moved
+// or changed its wording is re-read rather than left allowed. The shape follows the retired-phrase
+// scan in `packages/pi-legion/src/skills-guard.test.ts`.
 const NEAR = 40;
 const MOVING_WORDS = /\b(?:hand|handed|hands|address|addressed|redirect|redirects)\b/gi;
 const AN_ASK = /\basks?\b/gi;
 
 /** Every `[source, excerpt]` the scan may see, with why the line says nothing about who an ask
- *  goes to. The comment above each group of entries gives that group's reason. */
+ *  goes to. The last two are this change's own sentences, which say it and say it right. */
 const ALLOWED: readonly (readonly [string, string])[] = [
+  // Handing over the *work*, never the ask.
+  [
+    "skills/legion-worker/references/findings.md",
+    "## Fix it where you are, else hand it over, and ask only for a",
+  ],
+  [
+    "skills/legion-worker/references/findings.md",
+    "not sure of is not step 1: hand it over, or ask when a person must",
+  ],
+  [
+    "skills/legion-worker/references/findings.md",
+    "options ask where the work goes, with `Hand it to the owning tree` first",
+  ],
   // "by hand", the adverb: a human resolving a review thread themselves.
   [
     "skills/legion-worker/references/review-threads.md",
@@ -237,6 +250,12 @@ const ALLOWED: readonly (readonly [string, string])[] = [
     "version moved, which no reply hands back: the client then reads the ask and adds a line naming the",
   ],
   ["packages/envoy/AGENTS.md", "agent replying to a deferred ask hands the turn back without"],
+  // A link to a section of a reference file, whose anchor holds the word.
+  ["skills/legion-controller/SKILL.md", "finding-asks.md#hand-over-a-clear-defect`"],
+  [
+    "skills/legion-controller/references/consolidation.md",
+    "finding-asks.md#hand-over-a-clear-defect`",
+  ],
   // The web app's own behaviour, written for whoever edits it, never for an agent.
   [
     "packages/dispatch/AGENTS.md",

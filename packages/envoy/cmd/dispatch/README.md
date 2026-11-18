@@ -3844,8 +3844,10 @@ Each item below names a path with its method and identity, then its purpose.
   Create or replace, or remove, a repository mapping; PUT takes `{project, default?, renamed_to?}`, and `default: true` moves the project's one default to it.
   PUT holds the path's owner and name to the characters GitHub allows, and refuses a name that is `.`, `..`, empty or longer than 100 characters once a trailing `.git` is trimmed (`acme/...git`, `acme/.git`), with `400 INVALID_REPO_PROJECT`, as it holds `renamed_to`; the stored name becomes the repository of the project's issues that name none, which delivery puts into GitHub paths.
   DELETE reads its path as every mapping's path was read before that rule, so a mapping stored under such a name can still be removed.
-  A browser, and with it the dashboard's delete, resolves a `..` segment away before it sends the request, so a mapping stored under `acme/..` is removed by a request that writes the dots percent-encoded, `DELETE /api/v1/settings/repo-projects/acme/%2E%2E`, which the CI reconcile's warning about such a mapping names (`removed_by`).
-  A `renamed_to` stored under such a name is no mapping's own name, so a removal of that name removes nothing: the warning names the PUT of the mapping it belongs to instead (`mended_by`), which mends it with a `renamed_to` GitHub allows, or `""` to clear it.
+  A browser, and with it the dashboard's delete, resolves a `..` segment away before it sends the request, so a mapping stored under `acme/..` is removed by a request that writes the dots percent-encoded, `DELETE /api/v1/settings/repo-projects/acme/%2E%2E`.
+  DELETE trims one trailing `.git` off the name it reads, as every reading of a mapping's path does, so a mapping stored under a name that ends in `.git`, or under an empty name, is removed by a request that writes one `.git` more: `DELETE /api/v1/settings/repo-projects/acme/.git.git` removes `acme/.git`, and `DELETE /api/v1/settings/repo-projects/acme/.git` removes `acme/`.
+  The CI reconcile's warning about such a mapping names the request that removes it (`removed_by`), and for a mapping no path reads as — a name with an upper-case letter, which DELETE lower-cases, or with a space, a `/` or a `#` in its name — it names no request and says the mapping is removed by SQL.
+  A `renamed_to` stored under such a name is no mapping's own name, so a removal of that name removes nothing: the warning names the PUT of the mapping it belongs to instead (`mended_by`), which mends it with a `renamed_to` GitHub allows, or `""` to clear it, and where that mapping's own name is one the PUT refuses or reads as another mapping's, it names that mapping's removal in the PUT's place (`removed_by`).
   `renamed_to` is the full `owner/name` the repository is called today, which every comparison Dispatch makes of a repository canonicalises through (`refs.CanonicalRepo`):
   absent or null leaves the stored pair as it is, `""` clears it, and a pair naming this repository itself, one naming a repository that is itself renamed, or one on a repository another mapping is already renamed to is `400 INVALID_REPO_PROJECT`.
   A mapping an issue names as its `repo` is deleted and moved like any other: an issue's own repository needs no mapping.
@@ -3869,7 +3871,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   Whether Dispatch's GitHub App, which GitHub sends the repository's webhook events through, is installed on the repository:
   `200 {installed}`, `false` when GitHub answers 404.
-  A path whose owner or name has a character GitHub does not allow, or whose name is `.`, `..` or empty once a trailing `.git` is trimmed, is `400 INVALID_REPO_PROJECT`, and GitHub is asked nothing.
+  A path whose owner or name has a character GitHub does not allow, or whose name is `.`, `..`, empty or longer than 100 characters once a trailing `.git` is trimmed, is `400 INVALID_REPO_PROJECT`, and GitHub is asked nothing.
   `503 GITHUB_APP_UNCONFIGURED` when Dispatch holds no App key, `502 GITHUB_UNREADABLE` naming the repository and GitHub's error on any other failure.
   The Legion daemon asks it for every repository it serves, for `legion state`.
 
