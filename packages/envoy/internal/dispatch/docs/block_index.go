@@ -84,14 +84,15 @@ type BlockIndexTick struct {
 	// latest version and differs from it, whatever their issue's status: owed a settlement that
 	// has not run.
 	LiveAhead int
-	// Events is how many events of the log after this build's cursor the tick read, Marked how
-	// many documents an artifact.version, artifact.created or issue.created event among them
-	// named that it marked owed a block index, and AnotherBuild whether a live server process of
-	// another build served (markVersionsAnotherBuildWrote). A tick that finds this build serving
-	// alone, after a tick that did too and once the cursor has passed every event another build
-	// can have written, reads no event.
+	// Events is how many events of the log after this build's cursor the tick read, which every
+	// tick reads, Marked how many documents an artifact.version, artifact.created or issue.created
+	// event among them named that it marked owed a block index, Comments how many comments a
+	// comment.created or comment.answered event among them named whose rows it gave their nodes,
+	// and AnotherBuild whether a live server process of another build served, which the tick
+	// reports and which decides nothing (readEventsAfterCursor).
 	Events       int
 	Marked       int
+	Comments     int
 	AnotherBuild bool
 	// OwedDocuments, OwedTexts, OwedItems and OwedItemBlocks are what is still owed after the tick.
 	OwedDocuments  int
@@ -194,7 +195,7 @@ func (s *Service) blockIndexTick(ctx context.Context, cursors BlockIndexCursors,
 		slog.Error("dispatch: block index reconciliation", "error", err)
 	}
 	if tick.Documents > 0 || tick.Items > 0 || tick.ItemBlocks > 0 || tick.Texts > 0 ||
-		tick.Windows > 0 || tick.Retired > 0 || tick.Events > 0 || tick.Marked > 0 ||
+		tick.Windows > 0 || tick.Retired > 0 || tick.Events > 0 || tick.Marked > 0 || tick.Comments > 0 ||
 		tick.AnotherBuild != logged.AnotherBuild || tick.LiveAhead != logged.LiveAhead ||
 		tick.OwedDocuments != logged.OwedDocuments || tick.OwedItems != logged.OwedItems ||
 		tick.OwedItemBlocks != logged.OwedItemBlocks || tick.OwedTexts != logged.OwedTexts ||
@@ -204,10 +205,15 @@ func (s *Service) blockIndexTick(ctx context.Context, cursors BlockIndexCursors,
 		// The age moves every tick while a document stays owed, and logging on that alone would
 		// write a line every interval for ever, so the line is written when the oldest debt
 		// changes - the drain reaching it, or a new backlog starting - and not as it ages.
+		// events= is how many events the tick read after its build's event cursor, marked= and
+		// comments= the documents it marked owed and the comments it gave their nodes from those
+		// events, and another_build= whether a live server process of another build served,
+		// which the tick reports and which decides nothing (readEventsAfterCursor).
 		slog.Info("dispatch: block index", "documents", tick.Documents, "items", tick.Items,
 			"item_blocks", tick.ItemBlocks, "texts", tick.Texts, "windows", tick.Windows,
 			"retired", tick.Retired, "events", tick.Events, "marked", tick.Marked,
-			"another_build", tick.AnotherBuild, "owed_documents", tick.OwedDocuments,
+			"comments", tick.Comments, "another_build", tick.AnotherBuild,
+			"owed_documents", tick.OwedDocuments,
 			"owed_items", tick.OwedItems, "owed_item_blocks", tick.OwedItemBlocks,
 			"owed_texts", tick.OwedTexts, "live_ahead", tick.LiveAhead,
 			"oldest_owed_at", refs.OwedTimeText(tick.OldestOwedDocumentAt),
@@ -240,9 +246,10 @@ type owedDocument struct {
 // for), so a document is neither remembered nor taken from here while one is resident.
 type liveAheadDocuments map[string]owedDocument
 
-// ReconcileBlockIndex runs one tick: first the marking of every document another build may have
-// versioned since the tick before it (markVersionsAnotherBuildWrote), then one batch of the
-// documents owed a block index past
+// ReconcileBlockIndex runs one tick: first the read of the events after its build's cursor, which
+// marks owed every document they name that this build's store has not stated at its version and
+// gives every comment they name whose row names no node its node (readEventsAfterCursor), then one
+// batch of the documents owed a block index past
 // cursors.Documents (a document id; empty is the start), one batch of the items owed an index
 // with the block grammar, oldest first (refs.ReindexOwed), one batch of the comments, messages
 // and asks owed a block index of their own blocks, oldest owed_at first
@@ -275,16 +282,16 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 	}
 	after := cursors.Documents
 	tick := BlockIndexTick{Cursor: BlockIndexCursors{Documents: after}}
-	// The marking runs first, so a document it marks is listed by this tick's batch below and
-	// drained by it when the batch has room. A marking that fails is logged and holds back
+	// The read of the events runs first, so a document it marks is listed by this tick's batch
+	// below and drained by it when the batch has room. A read that fails is logged and holds back
 	// nothing else of the tick: the cursor stays where it was, and the next tick reads the same
 	// events again.
-	eventsFull, err := s.markVersionsAnotherBuildWrote(ctx, &tick)
+	eventsFull, err := s.readEventsAfterCursor(ctx, &tick)
 	switch {
 	case ctx.Err() != nil:
 		return tick, ctx.Err()
 	case err != nil:
-		slog.Error("dispatch: block index could not mark the documents another build's versions name", "error", err)
+		slog.Error("dispatch: block index could not read the events after its build's cursor", "error", err)
 	}
 	owed, err := s.owedDocuments(ctx, after)
 	if err != nil {
@@ -829,8 +836,8 @@ func (liveAhead liveAheadDocuments) forgetUnlisted(after string, owed []owedDocu
 // release reads and sets; or it holds this build's own mark, store_owed_at
 // (document_block_versions_store_owed, migration 20261116221539), which the backfill sets and every
 // debt this build owes beside the null version (oweDocumentIndex, refs.RebuildAll), and which each
-// tick sets on a document another build versioned or created while it served
-// (markVersionsAnotherBuildWrote).
+// tick sets on a document an event after its build's cursor names whose blocks this build's store
+// has not stated at its version (readEventsAfterCursor).
 // The second is the one the release before this one cannot clear: it neither reads nor writes that
 // column, so a document it indexes after either was set stays listed here until a pass of this
 // release states its blocks and clears the mark (refs.IndexBlocks). A document holding both is

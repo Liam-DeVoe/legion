@@ -112,6 +112,14 @@ type BackfillReport struct {
 // as the writer whose row it is would bring it back. The roles and the sessions go through
 // graphstore.WriteArms, whose upsert moves nothing on a node already there.
 //
+// Before it reads any row it records where it began reading the event log (recordBackfillHorizon):
+// an id at or below which every event was final by then, so every event the run cannot have seen
+// is above it. A process of the release before this one goes on writing rows that name no node,
+// and versions of documents this build's store has stated, after the run, and a build of this code
+// with no event cursor of its own starts reading the log no later than that id (docs'
+// readEventsAfterCursor), so nothing that release writes between the run and that build's first
+// block-index tick is passed over.
+//
 // It is no repair. Its input is each row's own content: it never reads one side of a
 // projection to write the other, so a row whose node is already written is left alone and a
 // kind whose rows disagree with the store is for the census to report, not for this to paper
@@ -130,6 +138,11 @@ func Backfill(ctx context.Context, database *store.Store, out io.Writer) (Backfi
 	// repeat keys skip the sentinel, and nothing reads wrong for it: a current read takes the
 	// newest asserting tuple and the census counts nodes and projection rows rather than tuples.
 	fmt.Fprintf(out, "backfill-graph-store: event=%d\n", graphstore.NoEvent)
+	horizon, err := recordBackfillHorizon(ctx, database)
+	if err != nil {
+		return report, err
+	}
+	fmt.Fprintf(out, "backfill-graph-store: horizon=%d\n", horizon)
 	for _, write := range []func(context.Context, *store.Store) (KindBackfill, error){
 		backfillBlocks, backfillBlockRefs, backfillComments, backfillRoles, backfillSessions,
 	} {
@@ -146,6 +159,56 @@ func Backfill(ctx context.Context, database *store.Store, out io.Writer) (Backfi
 func writeKindBackfill(out io.Writer, done KindBackfill) {
 	fmt.Fprintf(out, "backfill-graph-store: kind=%s rows=%d nodes=%d tuples=%d skipped=%d owed=%d remaining=%d complete=%t\n",
 		done.Kind, done.Rows, done.Nodes, done.Tuples, done.Skipped, done.Owed, done.Remaining, done.Complete)
+}
+
+// The waits between two readings of the event log's writers (recordBackfillHorizon): 10 ms,
+// doubling to 250 ms, the steps events.Horizon.Await re-observes at.
+const (
+	backfillHorizonWaitMin = 10 * time.Millisecond
+	backfillHorizonWaitMax = 250 * time.Millisecond
+)
+
+// recordBackfillHorizon records in graph_backfill_horizon (migration 20261118115645), before the
+// run reads any row, an id of the event log at or below which every event is final, and answers
+// it. It takes a mark of the log (events.Horizon.Mark) and waits until no transaction that can
+// still write an event took its transaction id before the mark (events.Horizon.WriterFloor): from
+// then every event at or below the newest one the mark saw has committed or rolled back for good,
+// and an event that commits after the run's first read is above it. That is a proven safe horizon
+// of the log. The Horizon's own proof (Safe, Await) is not taken: a fresh Horizon proves nothing
+// from its first observation, and Await waits on every transaction id on the Postgres instance,
+// an operator's open session and any transaction holding a row lock included, where WriterFloor
+// waits only on the writers of the event log, which hold their transactions for one request.
+//
+// Each run replaces the row. Whatever the release before this one wrote before the newest run
+// began, that run reads as it reads every other row: a row that names no node, and a document
+// indexed past the version the store last stated it at (markStaleDocuments). So a build need start
+// reading the log no earlier than the newest run's horizon.
+func recordBackfillHorizon(ctx context.Context, database *store.Store) (int64, error) {
+	horizon := events.NewHorizon(database.Pool)
+	mark, err := horizon.Mark(ctx)
+	if err != nil {
+		return 0, err
+	}
+	for wait := backfillHorizonWaitMin; ; wait = min(2*wait, backfillHorizonWaitMax) {
+		floor, final, err := horizon.WriterFloor(ctx, mark)
+		if err != nil {
+			return 0, err
+		}
+		if final {
+			if _, err := database.Pool.Exec(ctx, `
+				insert into graph_backfill_horizon (id, event_id) values (1, $1)
+				on conflict (id) do update set event_id = excluded.event_id, recorded_at = now()
+			`, floor); err != nil {
+				return 0, fmt.Errorf("record the event log's horizon the backfill began at: %w", err)
+			}
+			return floor, nil
+		}
+		select {
+		case <-ctx.Done():
+			return 0, fmt.Errorf("wait for the event log's writers open when the backfill began: %w", ctx.Err())
+		case <-time.After(wait):
+		}
+	}
 }
 
 // blockRow is one document_blocks row the backfill reads: its node's address, the document's
@@ -871,6 +934,39 @@ func readCommentRows(ctx context.Context, database *store.Store, after string) (
 	if err != nil {
 		return nil, fmt.Errorf("read the comments naming no node: %w", err)
 	}
+	return scanCommentRows(rows)
+}
+
+// CommentsNamingNoNode is the backfill's write (CommentWrite) of each comment of ids whose row
+// names no node, read in tx, for the block-index tick's write of the comments the events after
+// its cursor name (docs' writeCommentsTheEventsName). Beside each id, causes holds the event that
+// stored the comment, the comment.created or comment.answered the tick read, which is the cause of
+// what the write states, as readCommentRows reads it for the backfill's own pass: the tick has it
+// in hand, so it reads no event of the log to find it. A row that names its node already is left
+// alone, as the backfill leaves it, and so is a comment one of whose relations is past the store's
+// address bound (commentInTheStore), which no writer gives a node.
+func CommentsNamingNoNode(ctx context.Context, tx pgx.Tx, ids []string, causes []int64) (CommentWrite, error) {
+	rows, err := tx.Query(ctx, `
+		select c.id::text, c.author, c.created_at,
+		       coalesce(anchor.ref_key, ''), coalesce(owner.ref_key, ''), named.cause
+		from unnest($1::uuid[], $2::bigint[]) as named (id, cause)
+		join comments c on c.id = named.id`+commentStoreJoins+`
+		where c.node_kind is null and `+commentInTheStore+`
+		order by c.id
+	`, ids, causes)
+	if err != nil {
+		return CommentWrite{}, fmt.Errorf("read the comments the events name that name no node: %w", err)
+	}
+	batch, err := scanCommentRows(rows)
+	if err != nil {
+		return CommentWrite{}, err
+	}
+	return commentWriteOf(batch), nil
+}
+
+// scanCommentRows reads every row of rows, a read of commentRow's columns in its order, and
+// closes it.
+func scanCommentRows(rows pgx.Rows) ([]commentRow, error) {
 	defer rows.Close()
 	var batch []commentRow
 	for rows.Next() {
@@ -885,6 +981,67 @@ func readCommentRows(ctx context.Context, database *store.Store, after string) (
 		batch = append(batch, row)
 	}
 	return batch, rows.Err()
+}
+
+// CommentWrite is the backfill's write of a batch of comments rows that name no node, built once
+// (commentWriteOf) for both of its writers: the backfill's own pass (writeCommentBatch) and the
+// block-index tick's write of the comments the events after its cursor name (docs'
+// writeCommentsTheEventsName). Nodes and Tuples are what the writer states in its one store write
+// (graphstore.Write): each comment's node and the facts its row projects (graphstore.CommentFacts),
+// and who wrote it (graphstore.AuthorFacts). NameNodes then names each comment's node on its row.
+type CommentWrite struct {
+	Nodes  []graphstore.Node
+	Tuples []graphstore.Tuple
+	// ids are the comments the write names the nodes of. A comment's node address is its own id.
+	ids []string
+}
+
+// Comments is how many comments rows the write names the nodes of.
+func (w CommentWrite) Comments() int { return len(w.ids) }
+
+// NameNodes names each comment's node on its comments row, in tx, which has to follow the store
+// write of the nodes (graphstore.Write): the row's foreign key names the node.
+func (w CommentWrite) NameNodes(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx, `
+		update comments c
+		set node_kind = $3, node_address = p.address
+		from unnest($1::text[], $2::text[]) as p (id, address)
+		where c.id = p.id::uuid
+	`, w.ids, w.ids, graphstore.KindComment); err != nil {
+		return fmt.Errorf("name the nodes of a comment batch on their rows: %w", err)
+	}
+	return nil
+}
+
+// commentWriteOf builds the write of one batch of comments rows (CommentWrite). One write writes
+// a node once, so an author several comments of the batch name is made by the first of them.
+func commentWriteOf(batch []commentRow) CommentWrite {
+	write := CommentWrite{Nodes: make([]graphstore.Node, 0, 2*len(batch)), ids: make([]string, 0, len(batch))}
+	written := map[[2]string]struct{}{}
+	for _, row := range batch {
+		// A comment any of whose relation ends is past the store's address bound is left whole
+		// out of the store, so neither reader reads it and no batch writes one: a far end past
+		// the bound does not reach here (api's commentStored, outbox's rule).
+		var node graphstore.Node
+		node, write.Tuples = graphstore.CommentFacts(write.Tuples, row.id, row.author, row.createdAt, row.event, row.anchor, row.owner)
+		write.Nodes = append(write.Nodes, node)
+		// The owner a proved session names is made once too; each comment still states its own
+		// authored_by and aliases.
+		if authors, facts, named := graphstore.AuthorFacts(graphstore.KindComment, row.id, row.author, row.createdAt, row.event); named {
+			for _, author := range authors {
+				if _, made := written[[2]string{author.Kind, author.ID}]; !made {
+					written[[2]string{author.Kind, author.ID}] = struct{}{}
+					// The author's node is the person's or the session's, whose state and
+					// visibility no comment of theirs owns.
+					author.Restates = true
+					write.Nodes = append(write.Nodes, author)
+				}
+			}
+			write.Tuples = append(write.Tuples, facts...)
+		}
+		write.ids = append(write.ids, row.id)
+	}
+	return write
 }
 
 // writeCommentBatch writes one batch's comment nodes, the facts each row projects and who wrote
@@ -915,51 +1072,17 @@ func writeCommentBatch(ctx context.Context, database *store.Store, batch []comme
 		return 0, 0, fmt.Errorf("begin the comment batch: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	nodes := make([]graphstore.Node, 0, 2*len(batch))
-	var tuples []graphstore.Tuple
-	ids := make([]string, 0, len(batch))
-	addresses := make([]string, 0, len(batch))
-	written := map[[2]string]struct{}{}
-	for _, row := range batch {
-		// A comment any of whose relation ends is past the store's address bound is left whole
-		// out of the store, so readCommentRows never reads it and this batch never writes one:
-		// a far end past the bound does not reach here (api's commentStored, outbox's rule).
-		var node graphstore.Node
-		node, tuples = graphstore.CommentFacts(tuples, row.id, row.author, row.createdAt, row.event, row.anchor, row.owner)
-		nodes = append(nodes, node)
-		// One write writes a node once, so an author several comments of the batch name is made
-		// by the first of them, and so is the owner a proved session names; each comment still
-		// states its own authored_by and aliases.
-		if authors, facts, named := graphstore.AuthorFacts(graphstore.KindComment, row.id, row.author, row.createdAt, row.event); named {
-			for _, author := range authors {
-				if _, made := written[[2]string{author.Kind, author.ID}]; !made {
-					written[[2]string{author.Kind, author.ID}] = struct{}{}
-					// The author's node is the person's or the session's, whose state and
-					// visibility no comment of theirs owns.
-					author.Restates = true
-					nodes = append(nodes, author)
-				}
-			}
-			tuples = append(tuples, facts...)
-		}
-		ids = append(ids, row.id)
-		addresses = append(addresses, row.id)
-	}
-	if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
+	write := commentWriteOf(batch)
+	if err := graphstore.Write(ctx, tx, write.Nodes, write.Tuples); err != nil {
 		return 0, 0, fmt.Errorf("write the nodes of a comment batch: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `
-		update comments c
-		set node_kind = $3, node_address = p.address
-		from unnest($1::text[], $2::text[]) as p (id, address)
-		where c.id = p.id::uuid
-	`, ids, addresses, graphstore.KindComment); err != nil {
-		return 0, 0, fmt.Errorf("name the nodes of a comment batch on their rows: %w", err)
+	if err := write.NameNodes(ctx, tx); err != nil {
+		return 0, 0, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, 0, fmt.Errorf("commit a comment batch: %w", err)
 	}
-	return int64(len(nodes)), int64(len(tuples)) + 2*int64(len(batch)), nil
+	return int64(len(write.Nodes)), int64(len(write.Tuples)) + 2*int64(len(batch)), nil
 }
 
 // roleRow is one role the store census holds to a node (addressedRoles) whose node or page the

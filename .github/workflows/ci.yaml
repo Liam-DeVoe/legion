@@ -3293,6 +3293,9 @@ jobs:
               - 'packages/envoy/internal/dispatch/files/*'
               - 'packages/envoy/internal/dispatch/githubapp/*'
               - 'packages/envoy/internal/dispatch/githubapp/ratelimit/*'
+              # The block-index tick in docs gives the comments the event log names the
+              # backfill's comment write, so the soak's Dispatch server compiles graphcensus too.
+              - 'packages/envoy/internal/dispatch/graphcensus/*'
               - 'packages/envoy/internal/dispatch/graphstore/*'
               - 'packages/envoy/internal/dispatch/identity/*'
               - 'packages/envoy/internal/dispatch/itemblocks/*'

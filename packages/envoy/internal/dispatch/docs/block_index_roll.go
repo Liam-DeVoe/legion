@@ -10,24 +10,29 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// blockIndexEventPage is the most events one tick's marking reads (markVersionsAnotherBuildWrote).
-// A tick reads the events after its build's cursor, at most this many, and moves the cursor to the
-// last one it read when the page is full, so it reads at most this many event rows however far the
-// log has run ahead of the cursor; a full page makes the tick full (BlockIndexTick.Full), and the
-// next tick, blockIndexStep later, reads on from there. It is the suggestion outcome sweep's page
-// (api's suggestionOutcomePage).
+// blockIndexEventPage is the most events one tick reads (readEventsAfterCursor). A tick reads the
+// events after its build's cursor, at most this many, and moves the cursor to the last one it read
+// when the page is full, so it reads at most this many event rows however far the log has run
+// ahead of the cursor; a full page makes the tick full (BlockIndexTick.Full), and the next tick,
+// blockIndexStep later, reads on from there. It is the suggestion outcome sweep's page (api's
+// suggestionOutcomePage).
 const blockIndexEventPage = 1000
 
 // markVersionedDocuments is one tick's marking, in one statement: it reads up to $3 events after
 // the cursor ($1) and at or below the safe horizon ($2), in id order, and marks owed a block index,
 // with this build's own mark, every document an artifact.version or artifact.created event among
 // them names, and every document of each issue an issue.created event among them names, that
-// holds no such mark yet. It answers how many events it read, the id of the last one (null when it
-// read none) and how many documents it marked.
+// holds no such mark yet and whose blocks this build's store last stated at a version other than
+// the one the document stands at. It answers how many events it read, the id of the last one
+// (null when it read none), how many documents it marked, and the comments a comment.created or
+// comment.answered event among them names, in id order, each beside the first of those events that
+// names it.
 //
 // A version event names its document in payload->>'artifact_id' (ArtifactVersionEventPayload),
 // and the event that creates a document, which records its version 1, carries the whole artifact
@@ -36,15 +41,24 @@ const blockIndexEventPage = 1000
 // primary document, the spec, and records that document's version 1 with the issue.created event
 // alone (api's issue create, read the same way by versionEventID), which names the issue and no
 // document: the event's issue_key, its owner, is the issue, so every document of kind 'doc' that
-// issue holds in artifacts is marked, read through artifacts_issue_key. A document the release
-// before this one creates writes its rows with no node as its edits do, so it is owed this build's
-// pass as they are. Each event names its document whichever build wrote it, and the read filters
-// on nothing else: a project document's event carries no issue key, and an agent's workspace
-// document writes no event at all. The payload is read only for the two artifact types, and a
-// value that is no uuid names nothing rather than failing the tick (store.CastableUUID). Only a
-// document that exists is marked, and only one of kind 'doc', since the row is joined to its
-// artifact. The page bounds the issues as it bounds the documents, and an issue holds a few
-// documents.
+// issue holds in artifacts is marked, read through artifacts_issue_key. A comment's event carries
+// the comment, the reply a comment.answered stores included, and names it in payload->>'id' (api's
+// commentEventPayload). Each event names what it names whichever build wrote it, and the read
+// filters on nothing else: a project document's event carries no issue key, and an agent's
+// workspace document writes no event at all. The payload is read only for the four types that
+// name a document or a comment, and a value that is no uuid names nothing rather than failing the
+// tick (store.CastableUUID). Only a document that exists is marked, and only one of kind 'doc',
+// since the row is joined to its artifact. The page bounds the issues as it bounds the documents,
+// and an issue holds a few documents.
+//
+// A document is marked where store_version, the version whose blocks this build's index pass last
+// stated in the store (refs' standsAtVersion, its one writer), is not the document's version, a
+// null on either side included. The release before this one moves version and never
+// store_version, so a document it indexed after this build's store stated it is marked, and so is
+// one it created, whose store_version is null, and one whose version a write owes an index still
+// (null): whatever that version drops, moves or rewords, which may leave no row naming no node,
+// this build's pass over it states. A document this build wrote and indexed stands at the
+// store_version that pass wrote, and is not marked again.
 //
 // The mark is the one the backfill sets (graphcensus's markStaleBatch) and oweDocumentIndex keeps:
 // store_owed_at, which the release before this one neither reads nor clears. The statement takes
@@ -57,7 +71,9 @@ var markVersionedDocuments = `
 		select id, type, issue_key, case type
 			when 'artifact.version' then ` + store.CastableUUID(`payload->>'artifact_id'`) + `
 			when 'artifact.created' then ` + store.CastableUUID(`payload->'artifact'->>'id'`) + `
-		end as artifact_id
+		end as artifact_id, case when type in ('comment.created', 'comment.answered')
+			then ` + store.CastableUUID(`payload->>'id'`) + `
+		end as comment_id
 		from events
 		where id > $1 and id <= $2
 		order by id
@@ -75,6 +91,7 @@ var markVersionedDocuments = `
 		join artifacts a on a.id = b.artifact_id and a.kind = 'doc'
 		where b.artifact_id = any(array(select artifact_id from named))
 		  and b.store_owed_at is null
+		  and not coalesce(b.store_version = b.version, false)
 		order by b.artifact_id
 		for no key update of b
 	),
@@ -83,69 +100,65 @@ var markVersionedDocuments = `
 		from held
 		where b.artifact_id = held.artifact_id and b.store_owed_at is null
 		returning b.artifact_id
+	),
+	commented as (
+		select comment_id, min(id) as cause from page where comment_id is not null group by comment_id
 	)
-	select (select count(*) from page), (select max(id) from page), (select count(*) from marked)`
+	select (select count(*) from page), (select max(id) from page), (select count(*) from marked),
+	       coalesce((select array_agg(comment_id::text order by comment_id) from commented), '{}'),
+	       coalesce((select array_agg(cause order by comment_id) from commented), '{}')`
 
-// markVersionsAnotherBuildWrote is the first step of a block-index tick: it marks owed a block
-// index, with this build's own mark, every document whose version another build may have written
-// since the tick before it, and counts in tick what it read, what it marked and whether another
-// build serves.
+// readEventsAfterCursor is the first step of every block-index tick: it reads the events after its
+// build's cursor, marks owed a block index, with this build's own mark, every document they name
+// that this build's store has not stated at its version (markVersionedDocuments), gives every
+// comment they name whose row names no node its node and its tuples (writeCommentsTheEventsName),
+// and counts in tick what it read, marked and wrote, and whether another build serves.
 //
 // The release before this one indexes a version it writes, and a document it creates, the spec of
-// an issue it creates included, with no node and states nothing in the node and tuple store, and
-// it neither reads nor sets store_owed_at. A document whose mark this build's drain has cleared
-// and which that release then edits, or one it creates after the drain, therefore holds no mark,
-// and nothing would bring this build's pass to it to name its rows' nodes and state what they
-// project. So while a live server process of another build serves (processes.Live: a process
-// whose Commit is not this build's own), each tick marks owed every document that an
-// artifact.version or artifact.created event after this build's cursor names, and every document
-// of each issue an issue.created event after it names (markVersionedDocuments). Once the fleet
-// serves this build alone, the first tick that finds it so reads once more, which marks what the
-// tick before it left, and once the cursor has passed every event the other build can have
-// written, the tick after reads no event at all: it moves the cursor to the safe horizon and
-// stops. A fleet with no live process, as a test harness registers none, serves this build alone.
+// an issue it creates included, with no node, writes a comment's row with no node, states nothing
+// in the node and tuple store, and neither reads nor sets store_owed_at. A document whose mark this
+// build's drain has cleared and which that release then edits, one it creates after the drain,
+// and a comment it writes after the backfill therefore hold no mark, and nothing would bring this
+// build to them to name their rows' nodes and state what they project. So every tick reads the
+// events after its build's cursor, whether or not another build serves: which build's ticks come
+// first in each period of the shared block-index lease (BlockIndexLease), and so whether this
+// build ticks while that release serves at all, decides nothing, and no roll, rollback or roll
+// forward, with two builds serving at once or none of this code serving for a while, leaves a
+// write of that release unread. tick.AnotherBuild says whether a live server process of another
+// build serves (processes.Live: a process whose Commit is not this build's own); the tick reports
+// it, and the `dispatch: block index` line prints it, and it decides nothing.
 //
 // The cursor is this build's row of block_index_event_cursors (migration 20261118115645). The
-// build's first tick that reads a proven horizon inserts the row, at the newest cursor another
-// build left (below) or, where none has, at that horizon, so it starts at this build's first boot
-// or where the build before it stopped reading and never at the start of the log. It moves with
-// each tick, so each tick reads only the events since the last one and nothing scans a whole
-// table. A tick reads (cursor, safe], safe being the event log's safe horizon
-// (events.Horizon.Safe): event ids are not commit order, so an uncapped `id > cursor` read could
-// pass an event still committing, and the cursor never moves past safe.
-// A Horizon proves an observation only by a later one, so an event is read by the second tick
-// after it commits, or later while a transaction on the instance stays open across those ticks.
+// build's first tick that reads a proven horizon inserts the row, at the earlier of the newest
+// event_id another build's row holds and the horizon the newest backfill recorded when it began
+// (graph_backfill_horizon, graphcensus's recordBackfillHorizon) where both exist, at whichever one
+// exists where only one does, and at that tick's horizon where neither does, so the cursor never
+// starts at the beginning of the log. Another build's cursor is where it stopped reading, and every
+// event above the backfill's horizon is one the backfill cannot have seen, so whatever the release
+// before wrote since either, this build reads. A build that holds a row starts at its own row,
+// however old, and reads every event since, one page a tick. The cursor moves with each tick, so
+// each tick reads only the events since the last one and nothing scans a whole table. A tick reads
+// (cursor, safe], safe being the event log's safe horizon (events.Horizon.Safe): event ids are not
+// commit order, so an uncapped `id > cursor` read could pass an event still committing, and the
+// cursor never moves past safe. A Horizon proves an observation only by a later one, so an event
+// is read by the second tick after it commits, or later while a transaction on the instance stays
+// open across those ticks.
 //
-// The two ends of a roll are each read in their own order. The horizon is read before the
-// registry: a process registers before it serves a request (processes.Register), so a process of
-// another build that this read of the registry does not show writes the events of the requests
-// it serves after the observation safe comes from, above safe, and the next tick, which sees it,
-// reads them. And a process deregisters once its drain has ended, after every event it wrote has
-// committed, so the newest event the log holds after this read of the registry is at or above
-// each of them. A tick that finds another build serving, and the first one that finds the fleet
-// alone after it, records that newest id as read_through, and the ticks read on until the cursor
-// reaches it: the safe horizon lags the log, so one more read up to it can still stop short of
-// the last versions a departing process wrote.
-//
-// A deploy that stops every process of one build before it starts the other's - a rollback, and
-// the roll forward after it - never has two builds serving at once: this build's last tick before
-// it stopped found it serving alone, and so does the first tick after it, or after the next
-// build, starts, while the previous release wrote versions in between. So the first tick of each
-// process that reads a proven horizon (Service.eventCursorJoined) also reads once, from the
-// newest cursor any build left through the newest event. Its start is the highest event_id of
-// every row of block_index_event_cursors: this build's own where it ran last, and where a build
-// whose row this one does not hold yet ran last, the cursor that build stopped reading at, rather
-// than the horizon its versions now lie below. It records the newest event id as read_through,
-// and the ticks read on from that start until the cursor reaches it. A process that boots while
-// others of this build run reads only the few events since their last tick; one that boots after
-// an absence reads every event since, one page a tick. Where no build has left a row, the first
-// of this code to run, the cursor starts at the horizon.
-//
-// The marks and the cursor's move commit together, in one transaction that holds the cursor row
-// `for update` throughout, so a tick that fails moves nothing and the next reads the same events
-// again; a document already marked keeps its mark and its time. A document marked here is listed
-// by the owed documents this same tick reads next, and drained by it when its batch has room.
-func (s *Service) markVersionsAnotherBuildWrote(ctx context.Context, tick *BlockIndexTick) (full bool, err error) {
+// Everything a tick does here commits together, in one transaction, which takes its locks in the
+// store's order: the cursor row `for update` first, which only block-index ticks take; then the
+// marking statement's document_block_versions rows `for no key update`, in ascending artifact_id
+// order; then the comments' node rows, in ascending (kind, id) in one store write, their tuples,
+// and their comments rows. A writer under the revision fence takes a document's
+// document_block_versions row before any node it writes (the fifth invariant on api's
+// markInboxReadThreads), and a settlement takes its document's row and then the node of the
+// session that follows an ask it opens (lockSettlementFence, causeFollows): a tick that wrote a
+// comment's author's node first and then waited for that document's row would hold what the
+// settlement waits for, while the settlement held what the tick waits for. The comment write takes
+// no owner row (graphcensus's writeCommentBatch takes none), so nothing of it goes before the
+// marking. A tick that fails moves nothing and the next reads the same events again; a document
+// already marked keeps its mark and its time. A document marked here is listed by the owed
+// documents this same tick reads next, and drained by it when its batch has room.
+func (s *Service) readEventsAfterCursor(ctx context.Context, tick *BlockIndexTick) (full bool, err error) {
 	safe, err := s.blockIndexHorizon().Safe(ctx)
 	if err != nil {
 		return false, fmt.Errorf("read the event log's safe horizon: %w", err)
@@ -163,77 +176,91 @@ func (s *Service) markVersionsAnotherBuildWrote(ctx context.Context, tick *Block
 	}
 	defer tx.Rollback(ctx)
 	// A safe of 0 is a horizon that has proven nothing yet, as a process's first observation
-	// never does on its own, or an empty log: until a tick reads one, nothing is read, and the
-	// cursor never starts at the beginning of the log. A process's first tick with a proven
-	// horizon starts this build's cursor, or moves it forward, to the newest cursor any build left,
-	// and at the horizon where none has.
-	joining := safe > 0 && !s.eventCursorJoined.Load()
+	// never does on its own, or an empty log: until a tick reads one, nothing is read, and a
+	// build's cursor never starts at the beginning of the log. least() passes over a null, so the
+	// row starts at whichever of the two starts exists where only one does.
 	if safe > 0 {
 		if _, err := tx.Exec(ctx, `
 			insert into block_index_event_cursors (build_commit, event_id)
-			select $1, coalesce(max(event_id), $2) from block_index_event_cursors
+			select $1, coalesce(least(
+				(select max(event_id) from block_index_event_cursors),
+				(select event_id from graph_backfill_horizon where id = 1)), $2)
 			on conflict (build_commit) do nothing
 		`, s.buildCommit, safe); err != nil {
 			return false, fmt.Errorf("start this build's block-index event cursor: %w", err)
 		}
 	}
-	var cursor, readThrough int64
-	var seen bool
+	var cursor int64
 	switch err := tx.QueryRow(ctx, `
-		select event_id, another_build_seen, read_through from block_index_event_cursors
-		where build_commit = $1 for update
-	`, s.buildCommit).Scan(&cursor, &seen, &readThrough); {
+		select event_id from block_index_event_cursors where build_commit = $1 for update
+	`, s.buildCommit).Scan(&cursor); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return false, nil
 	case err != nil:
 		return false, fmt.Errorf("read this build's block-index event cursor: %w", err)
 	}
-	if joining {
-		var left int64
-		if err := tx.QueryRow(ctx, `select max(event_id) from block_index_event_cursors`).Scan(&left); err != nil {
-			return false, fmt.Errorf("read the newest cursor a build left: %w", err)
-		}
-		cursor = max(cursor, left)
-	}
-	if tick.AnotherBuild || seen || joining {
-		var newest int64
-		if err := tx.QueryRow(ctx, `select coalesce(max(id), 0) from events`).Scan(&newest); err != nil {
-			return false, fmt.Errorf("read the newest event: %w", err)
-		}
-		readThrough = max(readThrough, newest)
-	}
 	// Another process of this build may have moved the cursor past this process's horizon; the
 	// cursor never moves back.
 	next := max(cursor, safe)
-	if tick.AnotherBuild || cursor < readThrough {
+	// What the tick counts is what it committed: a read that fails counts nothing.
+	var read, marked, written int
+	if safe > cursor {
 		var last *int64
+		var comments []string
+		var causes []int64
 		if err := tx.QueryRow(ctx, markVersionedDocuments, cursor, safe, blockIndexEventPage).Scan(
-			&tick.Events, &last, &tick.Marked,
+			&read, &last, &marked, &comments, &causes,
 		); err != nil {
-			return false, fmt.Errorf("mark the documents the version events after the cursor name: %w", err)
+			return false, fmt.Errorf("mark the documents the events after the cursor name: %w", err)
 		}
-		if full = tick.Events == blockIndexEventPage; full {
+		if full = read == blockIndexEventPage; full {
 			next = *last
+		}
+		if written, err = writeCommentsTheEventsName(ctx, tx, comments, causes); err != nil {
+			return false, err
 		}
 	}
 	if _, err := tx.Exec(ctx, `
-		update block_index_event_cursors set event_id = $2, another_build_seen = $3, read_through = $4
-		where build_commit = $1
-	`, s.buildCommit, next, tick.AnotherBuild, readThrough); err != nil {
+		update block_index_event_cursors set event_id = $2 where build_commit = $1
+	`, s.buildCommit, next); err != nil {
 		return false, fmt.Errorf("move this build's block-index event cursor: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return false, fmt.Errorf("commit the documents the version events after the cursor name: %w", err)
+		return false, fmt.Errorf("commit what the events after the cursor name: %w", err)
 	}
-	if joining {
-		s.eventCursorJoined.Store(true)
-	}
+	tick.Events, tick.Marked, tick.Comments = read, marked, written
 	return full, nil
 }
 
+// writeCommentsTheEventsName gives each comment of ids whose row names no node the backfill's own
+// write of that row, in tx, and answers how many it wrote: the comment's node, the facts its row
+// projects and who wrote it, in one store write, and then the node named on its row
+// (graphcensus.CommentsNamingNoNode, the one builder of those facts both writers share). causes
+// holds, beside each id, the event that stored the comment, which is the cause of what the write
+// states. A comment written by this build, or by a backfill since, names its node already and is
+// left alone, so this is the backfill's contract applied to the rows the log names, and no
+// reconcile: it writes only a row its marker does not mark. readEventsAfterCursor runs it after its
+// marking, which is why that order is written there.
+func writeCommentsTheEventsName(ctx context.Context, tx pgx.Tx, ids []string, causes []int64) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	write, err := graphcensus.CommentsNamingNoNode(ctx, tx, ids, causes)
+	if err != nil || write.Comments() == 0 {
+		return 0, err
+	}
+	if err := graphstore.Write(ctx, tx, write.Nodes, write.Tuples); err != nil {
+		return 0, fmt.Errorf("write the nodes of the comments the events after the cursor name: %w", err)
+	}
+	if err := write.NameNodes(ctx, tx); err != nil {
+		return 0, err
+	}
+	return write.Comments(), nil
+}
+
 // blockIndexHorizon is the events.Horizon the block-index tick reads the event log's safe horizon
-// through (markVersionsAnotherBuildWrote), built by the first tick that asks for it and observing
-// through the store's horizon pool (store.Pool.Horizon), so an observation never queues behind the
+// through (readEventsAfterCursor), built by the first tick that asks for it and observing through
+// the store's horizon pool (store.Pool.Horizon), so an observation never queues behind the
 // requests holding the shared pool, as the API server's one Horizon does (api's server.horizon).
 // It is the service's own rather than that one because the service is built before the API
 // server, and the tick also runs where no API server is: the service's own tests and the

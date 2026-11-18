@@ -105,6 +105,11 @@ var storeWriteCallSites = map[string]string{
 	"graphcensus/backfill.go#writeCommentBatch":  "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
 	"graphcensus/backfill.go#writeRoleBatch":     "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
 	"graphcensus/backfill.go#writeSessionBatch":  "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
+	// The block-index tick's write of the comments the events after its build's cursor name whose
+	// rows name no node: the backfill's comment write (graphcensus.CommentWrite), in the tick's
+	// transaction, after its cursor row and after the marking statement's document_block_versions
+	// rows, which docs' test holds it to.
+	"docs/block_index_roll.go#writeCommentsTheEventsName": "docs#TestEveryDocsStoreWriterTakesTheStoreLockOrder",
 	// The erase, the one writer that deletes from the store, through EraseNode: the tuples on both
 	// sides of the node, then the node's row. It takes the owner rows it writes under before that
 	// row, and its projection rows after it.

@@ -25,9 +25,9 @@ const storeStepWait = 30 * time.Second
 
 // TestEveryDocsStoreWriterTakesTheStoreLockOrder is this package's half of the check
 // c-lock-order. graphstore's TestEveryStoreWriteCallSiteIsListed lists every call site of the node
-// and tuple store's writers, beside the test that drives each site's lock steps. Three of them
+// and tuple store's writers, beside the test that drives each site's lock steps. Four of them
 // live here, and refs.IndexBlocks runs inside the tick and inside every settlement that writes a
-// version, so this test drives all four, along four paths:
+// version, so this test drives all five, along five paths:
 //
 //   - the block-index tick's pass over an owed document (indexOwedDocument), which takes the
 //     document's owner row, then its document_block_versions row `for no key update`, and indexes
@@ -49,6 +49,15 @@ const storeStepWait = 30 * time.Second
 //   - a settlement that does both: it opens the ask of a block a session wrote in a live edit and
 //     writes the version holding it, so the follow's node comes before the block index's, and the
 //     fence row comes before both.
+//   - the block-index tick's read of the events after its build's cursor (readEventsAfterCursor),
+//     which takes its build's cursor row `for update`, then marks the documents the events name in
+//     one statement that takes their document_block_versions rows `for no key update`, and only
+//     then writes each comment the events name whose row names no node
+//     (writeCommentsTheEventsName): the comment's node and its author's in one store write, their
+//     tuples, and the node named on the comment's row. The fence rows come before the nodes
+//     because a settlement takes its document's fence row and then a session's node: a tick that
+//     took that node first and then waited for the fence row would hold what the settlement
+//     waits for.
 //
 // The order they are held to is the one written on api/inbox_read.go's markInboxReadThreads, which
 // graphstore's TestEveryStoreWriteTakesOneLockOrder reads, as api's
@@ -67,7 +76,7 @@ const storeStepWait = 30 * time.Second
 func TestEveryDocsStoreWriterTakesTheStoreLockOrder(t *testing.T) {
 	ctx := context.Background()
 	rig := newDocsWriterRig(t)
-	for _, writer := range []docsWriter{rig.tick(), rig.settledVersion(), rig.settledAsk(), rig.settledAskAndVersion()} {
+	for _, writer := range []docsWriter{rig.tick(), rig.settledVersion(), rig.settledAsk(), rig.settledAskAndVersion(), rig.tickEvents()} {
 		t.Run(writer.name, func(t *testing.T) {
 			requireTheDocsOrderAdmits(t, writer)
 			requireEachDocsStepIsWaitedAtInTurn(t, ctx, rig, writer)
@@ -82,6 +91,9 @@ type docsOrderStep int
 
 const (
 	docsOwnerStep docsOrderStep = iota
+	// docsCursorStep is the block-index tick's own event cursor row, which no writer but a tick
+	// takes, so the written order names no place for it; the tick takes it before anything else.
+	docsCursorStep
 	docsFenceStep
 	docsNodeStep
 	docsProjectionStep
@@ -115,7 +127,10 @@ type docsStep struct {
 	// caused says the step appends tuples that carry the event the path appends.
 	caused bool
 	// fenced says the step writes part of what a version's block index states about the
-	// document, which a writer under the revision fence writes only once it holds the fence's row.
+	// document, which a writer under the revision fence writes only once it holds the fence's row,
+	// or, in the block-index tick's read of the events after its cursor, a node, a tuple or a
+	// projection row of a comment those events name, which that tick writes only once its marking
+	// holds the fence rows it marks (readEventsAfterCursor).
 	fenced bool
 	// hold takes, in holder, what the step takes, so the write waits for holder at this step.
 	hold func(t *testing.T, ctx context.Context, holder pgx.Tx, run docsRun)
@@ -170,6 +185,14 @@ const (
 	docsEventStatement = "with inserted as ( insert into events ("
 	// docsTupleStatement is graphstore's tuple append, which graphstore.Caused runs.
 	docsTupleStatement = "insert into graph_tuples ("
+	// docsCursorStatement is the block-index tick's take of its build's event cursor row.
+	docsCursorStatement = "select event_id from block_index_event_cursors where build_commit = $1 for update"
+	// docsMarkingStatement is the block-index tick's marking (markVersionedDocuments), which takes
+	// the document_block_versions row of each document it marks `for no key update`.
+	docsMarkingStatement = "with page as ( select id, type, issue_key, case type"
+	// docsCommentRowStatement is the comment write's naming of each comment's node on its row
+	// (graphcensus.CommentWrite's NameNodes).
+	docsCommentRowStatement = "update comments c set node_kind"
 )
 
 // --- the paths ----------------------------------------------------------------------------
@@ -215,6 +238,110 @@ func (r *docsWriterRig) tick() docsWriter {
 				}
 				return nil
 			}}
+		},
+	}
+}
+
+// tickEvents is the block-index tick's read of the events after its build's cursor
+// (readEventsAfterCursor): its cursor row `for update`, then the marking statement's
+// document_block_versions rows `for no key update`, then each comment the events name whose row
+// names no node (writeCommentsTheEventsName) - the comment's node and its author's in one store
+// write, their tuples, and the node named on the comment's row - all in one transaction. Each run
+// first runs that read once, so its build's cursor row is there and stands past every event
+// before the run's own. It then writes as the release before this one writes them a document whose
+// version 1 no build of this code has indexed, with the artifact.created that recorded it, and a
+// comment whose row names no node, with the comment.created that stored it, and waits for the
+// event log's safe horizon to pass both. The cursor row and the fence row are there and are held as
+// rows; the comment's node is new, and is held as a row another transaction inserted and has not
+// committed; the tuple append and the comments row are held as their tables.
+func (r *docsWriterRig) tickEvents() docsWriter {
+	awaitHorizon := func(t *testing.T, ctx context.Context) {
+		t.Helper()
+		awaited, cancel := context.WithTimeout(ctx, storeStepWait)
+		defer cancel()
+		if _, err := r.service.blockIndexHorizon().Await(awaited); err != nil {
+			t.Fatalf("await the event log's safe horizon: %v", err)
+		}
+	}
+	return docsWriter{
+		name: "readEventsAfterCursor",
+		steps: []docsStep{
+			{
+				name: "the event cursor", order: docsCursorStep,
+				hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, _ docsRun) {
+					holdDocsRow(t, ctx, holder, `select 1 from block_index_event_cursors where build_commit = $1 for update`, "")
+				},
+				at: docsCursorStatement,
+				// The insert that starts a build's cursor runs first, and does nothing where the
+				// row is there, as it is here.
+				takes: []docsTableLock{{"block_index_event_cursors", docsRowExclusiveMode}, {"block_index_event_cursors", docsRowShareMode}},
+			},
+			{
+				name: "the revision fence", order: docsFenceStep,
+				hold: holdFenceRow, at: docsMarkingStatement,
+				takes: []docsTableLock{{"document_block_versions", docsRowShareMode}, {"document_block_versions", docsRowExclusiveMode}},
+			},
+			{
+				name: "the comment's node", order: docsNodeStep, fenced: true,
+				hold: holdDocsNewNode, at: docsNodeStatement,
+				takes: []docsTableLock{{"graph_nodes", docsRowExclusiveMode}},
+			},
+			{
+				// The tuples carry the comment.created that stored the comment, which the log
+				// held before the tick began, so no event of this path orders them.
+				name: "the comment's tuples", order: docsTupleStep, fenced: true,
+				hold: holdDocsTableWrites("graph_tuples"), at: docsTupleStatement,
+				takes: []docsTableLock{{"graph_tuples", docsRowExclusiveMode}},
+			},
+			{
+				name: "the comment's row", order: docsProjectionStep, names: "the comment's node", fenced: true,
+				hold: holdDocsTableWrites("comments"), at: docsCommentRowStatement,
+				takes: []docsTableLock{{"comments", docsRowExclusiveMode}},
+			},
+		},
+		ready: func(t *testing.T, ctx context.Context) docsRun {
+			awaitHorizon(t, ctx)
+			if _, err := r.service.readEventsAfterCursor(ctx, &BlockIndexTick{}); err != nil {
+				t.Fatalf("read the events before the run's: %v", err)
+			}
+			slug := r.fresh("lock-steps-unseen")
+			document := createOwedDocument(t, r.database, r.service, "CORE-1", "", slug, "# "+slug+"\n\nA paragraph the release before wrote.\n", "")
+			settle(t, r.database, document)
+			r.recordEvent(t, ctx, "artifact.created", map[string]any{"artifact": map[string]any{"id": document}})
+			author := model.Actor{Kind: "user", ID: r.fresh("lock-steps-commenter")}
+			encoded, err := json.Marshal(author)
+			if err != nil {
+				t.Fatalf("encode the comment's author: %v", err)
+			}
+			var comment string
+			var createdAt time.Time
+			if err := r.database.Pool.QueryRow(ctx, `
+				insert into comments (issue_key, author, body) values ('CORE-1', $1, 'A remark the release before wrote.')
+				returning id::text, created_at
+			`, encoded).Scan(&comment, &createdAt); err != nil {
+				t.Fatalf("write a comment as the release before writes one: %v", err)
+			}
+			r.recordEvent(t, ctx, "comment.created", map[string]any{"id": comment, "issue_key": "CORE-1", "author": author})
+			r.awaitDurable(t, document)
+			awaitHorizon(t, ctx)
+			return docsRun{
+				document: document,
+				made: graphstore.Node{
+					Kind: graphstore.KindComment, ID: comment, Supertag: graphstore.KindComment,
+					Visibility: graphstore.VisibilityProject, State: graphstore.StateLive,
+					MadeAt: createdAt, MadeBy: author, SourceEvent: graphstore.NoEvent,
+				},
+				write: func() error {
+					var tick BlockIndexTick
+					if _, err := r.service.readEventsAfterCursor(ctx, &tick); err != nil {
+						return err
+					}
+					if tick.Marked != 1 || tick.Comments != 1 {
+						return fmt.Errorf("the tick marked %d document(s) and wrote %d comment(s), want the run's one of each", tick.Marked, tick.Comments)
+					}
+					return nil
+				},
+			}
 		},
 	}
 }
@@ -514,7 +641,9 @@ func holdDocsBlockNode(t *testing.T, ctx context.Context, holder pgx.Tx, run doc
 // requireTheDocsOrderAdmits checks a path's steps, in the order the path takes them, against the
 // invariants on markInboxReadThreads: the owner row first, a node before the projection row naming
 // it, the event before every step appending tuples that carry it, and the revision fence's row
-// before every step of the block statement it guards. A path skips the steps it does not take, and
+// before every step of the block statement it guards, and before every write of a comment the
+// block-index tick's events name. The tick's own event cursor row, which the invariants do not
+// name, comes before every other step of its path. A path skips the steps it does not take, and
 // is checked on the order of those it does. Several nodes of one write in ascending (kind, id) is
 // graphstore's own (writeNodes, WriteArms): every node step here is one statement.
 func requireTheDocsOrderAdmits(t *testing.T, writer docsWriter) {
@@ -531,8 +660,8 @@ func requireTheDocsOrderAdmits(t *testing.T, writer docsWriter) {
 		}
 	}
 	for index, step := range writer.steps {
-		if step.order == docsOwnerStep && index != 0 {
-			t.Errorf("%s takes the owner row as its step %d: the owner row comes first", writer.name, index+1)
+		if (step.order == docsOwnerStep || step.order == docsCursorStep) && index != 0 {
+			t.Errorf("%s takes %s as its step %d: it comes first", writer.name, step.name, index+1)
 		}
 		if step.order == docsProjectionStep && step.names != "" {
 			node, listed := position[step.names]
