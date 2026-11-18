@@ -3,12 +3,13 @@
 // The three tests of this tag are dispatch://INFRA-1149's acceptance runs:
 // TestTheStoreCensusReadsZeroDifferences in this file, and TestNoWritePathThisChildChangesGetsSlower
 // (write_cost_test.go) and TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode
-// (read_cost_test.go), which share graph_cost_test.go. Each builds the server at the commit this
-// branch forked from (baseBuild) and compares it with this build, so each needs a checkout that
-// holds origin/main, and each takes from 2 to 45 minutes on an issue pod. They carry a build tag
-// of their own and no CI job runs it: they are run on the pod, one at a time and by name, as
+// (read_cost_test.go), which share graph_cost_test.go. Each builds the server at the commit
+// BASELINE_SHA names (baseBuild, testbaseline.Commit) and compares it with this build, so each
+// needs a checkout that holds that commit, and each takes from 2 to 45 minutes on an issue pod.
+// They carry a build tag of their own and no CI job runs it: they are run on the pod, one at a
+// time and by name, as
 //
-//	go test -tags basebuild ./cmd/dispatch/ -run '^TestTheStoreCensusReadsZeroDifferences$' -count=1 -v
+//	BASELINE_SHA=$(git merge-base origin/main HEAD) go test -tags basebuild ./cmd/dispatch/ -run '^TestTheStoreCensusReadsZeroDifferences$' -count=1 -v
 
 package main
 
@@ -45,6 +46,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testbaseline"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testtmp"
 )
@@ -279,18 +281,16 @@ func censusConnect(t *testing.T, ctx context.Context, databaseURL string) *pgx.C
 
 // ───── the older build ────────────────────────────────────────────────────
 
-// baseBuild builds `./cmd/dispatch` at the commit this branch forked from and answers the binary.
-// The commit is `git merge-base origin/main HEAD` and the source is that commit's own tree, taken
-// out of the repository with `git archive` into a directory of this test's own, so the build is
-// the fork point's and not this working copy's. The directory and the binary go when the test
-// ends, so every run extracts and builds again, which is about a minute.
+// baseBuild builds `./cmd/dispatch` at the commit this build is compared with and answers the
+// binary. The commit is the one BASELINE_SHA names (testbaseline.Commit): the fork point with
+// main for a branch that lands on main, the parent's head for a child stacked on it. The source is
+// that commit's own tree, taken out of the repository with `git archive` into a directory of this
+// test's own, so the build is that commit's and not this working copy's. The directory and the
+// binary go when the test ends, so every run extracts and builds again, which is about a minute.
 func baseBuild(t *testing.T) string {
 	t.Helper()
 	root := gitOutput(t, ".", "rev-parse", "--show-toplevel")
-	commit := gitOutput(t, root, "merge-base", "origin/main", "HEAD")
-	if len(commit) < 12 {
-		t.Fatalf("git merge-base origin/main HEAD answered %q", commit)
-	}
+	commit := testbaseline.Commit(t)
 	// No socket is bound anywhere under the tree, so the room asked for is the directory the
 	// build runs in rather than the longest path of the archive.
 	source := testtmp.Dir(t, filepath.Join("packages", "envoy"))
