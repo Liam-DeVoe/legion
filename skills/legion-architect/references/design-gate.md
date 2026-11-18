@@ -149,7 +149,7 @@ The ordering, which this rule needs and does not change:
 
 - A spec written before the picture is fine. What may not happen is reaching the gate with no picture.
 - A tree whose gate is already open starts no round for the work in flight and writes no spec version
-  for a picture: a new version closes the gate and stops the phase under it ("After approval").
+  for a picture: a new version closes the gate, which holds the merge until approval ("After approval").
 - The round writes no spec version of its own. The agreed pictures go into the version you first
   submit for approval.
 - A picture that must change after approval follows "After approval": it is a new version only when
@@ -343,7 +343,7 @@ reason, and answer it in the spec if the latest version does not already.
 
 Each step's approval is pinned to the version of the document that step records: a new version of
 that document closes that step again, with no wake to say so; you know from your own edit, or
-from the `artifact.version` event on your issue. One step closing holds the tree's work whatever
+from the `artifact.version` event on your issue. One step closing closes the gate whatever
 the other steps stand at. The exceptions are the version a human's own answer to a decision block
 writes when that answer is the whole change since the version they approved, and a version whose
 text is exactly that of the version they approved, with no decision block in it decided
@@ -408,8 +408,7 @@ table, calls a route or runs code that pull request adds, name that child in the
 the deployment's instructions say to stack on unmerged work, build the root's work on that child's
 branch, and accept the root only on a head that carries that child's merge; otherwise link the
 root `blocked_by` that child, whose merge closes it. The architect decides this and asks no
-person. This section is the whole rule, for the root's architect and for the ancestor's
-architect.
+person.
 
 ### When the root is a view
 
@@ -478,7 +477,8 @@ These steps take the place of steps 4 and 5 of "The armed gate":
    `plan-reviewer` the ancestor's approved version. Tell it to say whether the way the root
    delivers each requirement brings in anything that version does not state: a new service, a new
    credential, a new outside dependency, or a cost over a bound that the version sets. Each such
-   thing is a requirement that the ancestor does not state, so send it up.
+   thing is a requirement that the ancestor does not state, so send it up; while a request of the
+   route waits on the person, register on it all the same.
 2. Register each gated step's own document, with the ancestor's document for the same step as its
    basis. For the `spec` step:
 
@@ -588,7 +588,7 @@ up, put to the person for approval. Its request's summary names the roots and th
 root that reads the request can tell it is one. Any other root under the ancestor whose
 registration finds that version waiting on the person may register on it as a pending basis too.
 While a request of the route waits on the person, a second requirement, or a further part found
-after the request opened, waits for that answer and goes into the next version. The root still
+after the request opened, goes up for the next version, which follows that answer. The root still
 registers on the waiting version, and builds that part only once it registers on a version that
 holds it.
 

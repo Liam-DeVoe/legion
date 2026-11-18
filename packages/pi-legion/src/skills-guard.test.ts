@@ -932,7 +932,7 @@ test("the architect shows a person the surface before it asks them to approve th
     "A spec written before the picture is fine. What may not happen is reaching the gate with no picture."
   );
   expect(gate).toContain(
-    'A tree whose gate is already open starts no round for the work in flight and writes no spec version for a picture: a new version closes the gate and stops the phase under it ("After approval").'
+    'A tree whose gate is already open starts no round for the work in flight and writes no spec version for a picture: a new version closes the gate, which holds the merge until approval ("After approval").'
   );
   expect(gate).toContain(
     "The round writes no spec version of its own. The agreed pictures go into the version you first submit for approval."
