@@ -113,7 +113,7 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 		// provisioning token: it is the pod's, not the role's, and a bundle is rendered for it
 		// (refreshGitHubCredential).
 		repo, named := fetchRepository(pod)
-		for _, role := range kind.roles() {
+		for _, role := range kind.roles(r) {
 			r.refreshGitHubCredential(ctx, pod, owner.UID, role, repo)
 		}
 		if _, issue := kind.(issuePod); !issue || !named {

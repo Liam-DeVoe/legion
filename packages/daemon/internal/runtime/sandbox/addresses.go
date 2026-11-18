@@ -451,7 +451,7 @@ func (r *Runtime) movedGhDirs(pod *corev1.Pod, role claim.Role) (movedAddress, b
 	slices.Sort(held)
 	held = ghOwnerDirs(held)
 	repo, _ := fetchRepository(pod)
-	apps, err := podAppRoles(podKindFor(role), nil)
+	apps, err := podAppRoles(r, podKindFor(role))
 	if err != nil {
 		// A pod holding a role that acts as no App cannot be told what it lacks: it is read as
 		// moved, naming why, rather than kept on a set of directories nobody can compute.
@@ -468,15 +468,15 @@ func (r *Runtime) movedGhDirs(pod *corev1.Pod, role claim.Role) (movedAddress, b
 	return movedAddress{where: name, held: ghDirsName(held), handed: ghDirsName(served)}, true
 }
 
-// podAppRoles are the GitHub Apps a pod of kind holds a bundle of, each named once
-// (appauth.AppRoleFor over deployed, the deployment's roles): both of them for an issue pod,
-// whose roles run as one or the other, and the review App alone for the project controller's. It
-// is what the record of the directories a mint found GitHub refuses is read for (movedGhDirs,
-// appauth.LeftOut). A role of the pod that acts as no App is AppRoleFor's error.
-func podAppRoles(kind podKind, deployed appauth.DeploymentApps) ([]appauth.AppRole, error) {
+// podAppRoles are the GitHub Apps a pod of kind holds a bundle of under r, each named once
+// (appauth.AppRoleFor over the runtime's deploymentApps, its kind's roles under r): both of them
+// for an issue pod, whose roles run as one or the other, and the review App alone for the project
+// controller's. It is what the record of the directories a mint found GitHub refuses is read for
+// (movedGhDirs, appauth.LeftOut). A role of the pod that acts as no App is AppRoleFor's error.
+func podAppRoles(r *Runtime, kind podKind) ([]appauth.AppRole, error) {
 	apps := make([]appauth.AppRole, 0, len(appauth.Roles))
-	for _, role := range kind.roles() {
-		app, err := appauth.AppRoleFor(role, deployed)
+	for _, role := range kind.roles(r) {
+		app, err := appauth.AppRoleFor(role, r.deploymentApps)
 		if err != nil {
 			return nil, err
 		}

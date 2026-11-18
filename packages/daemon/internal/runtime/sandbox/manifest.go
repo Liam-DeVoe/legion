@@ -542,7 +542,7 @@ func (r *Runtime) prepare(spec runtime.SpawnSpec) (launch, error) {
 	case named != l.kind:
 		return launch{}, refuse("its pod's labels %v name another kind of pod than the one it builds", r.labels(l))
 	}
-	l.roles = named.roles()
+	l.roles = named.roles(r)
 	prompt, err := runtime.ComposePrompt(spec.Prompt)
 	if err != nil {
 		return launch{}, refuse("%w", err)

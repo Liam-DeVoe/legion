@@ -187,7 +187,13 @@ type podWithRoles struct {
 	launched []claim.Role
 }
 
-func (p podWithRoles) roles() []claim.Role { return p.launched }
+func (p podWithRoles) roles(*Runtime) []claim.Role { return p.launched }
+
+// deployedRuntime is a runtime of a deployment that defines the roles of deployed, as
+// configureProber sets its issue roles and its map.
+func deployedRuntime(deployed appauth.DeploymentApps) *Runtime {
+	return &Runtime{issueRoles: issueRolesOf(deployed), deploymentApps: deployed}
+}
 
 // The Apps a pod holds a bundle of are the Apps its roles act as, each named once, a role of the
 // deployment's acting as the App its setting names (appauth.AppRoleFor). A role that neither
@@ -205,11 +211,11 @@ func TestAPodsAppsAreItsRolesAppsAndARoleNobodyDefinesIsAnError(t *testing.T) {
 		{"a pod of a review role and a deployment role set to implement", podWithRoles{launched: []claim.Role{claim.RoleArchitect, "checker"}},
 			appauth.DeploymentApps{"checker": appauth.Implement}, []appauth.AppRole{appauth.Review, appauth.Implement}},
 	} {
-		if apps, err := podAppRoles(tc.kind, tc.deployed); err != nil || !slices.Equal(apps, tc.want) {
+		if apps, err := podAppRoles(deployedRuntime(tc.deployed), tc.kind); err != nil || !slices.Equal(apps, tc.want) {
 			t.Errorf("%s: podAppRoles = %v, %v; want %v", tc.name, apps, err, tc.want)
 		}
 	}
-	apps, err := podAppRoles(podWithRoles{launched: []claim.Role{claim.RoleArchitect, "checker"}}, nil)
+	apps, err := podAppRoles(deployedRuntime(nil), podWithRoles{launched: []claim.Role{claim.RoleArchitect, "checker"}})
 	if !errors.Is(err, appauth.ErrRoleNotDefined) || apps != nil {
 		t.Errorf("podAppRoles of a pod holding checker, which nothing defines = %v, %v; want no Apps and an error that is appauth.ErrRoleNotDefined", apps, err)
 	}

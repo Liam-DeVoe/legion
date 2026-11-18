@@ -2,13 +2,36 @@ package sandbox
 
 import (
 	"slices"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
+
+// deploymentImplementer is the implementer of the rig's issue, LEGION-208.
+var deploymentImplementer = claim.Token("legion-legion-legion-208-implementer")
+
+// deploymentRig is the sandbox rig of a deployment that defines two roles of its own, the
+// checker acting as the implement App and the critic as the review App, with the daemon's own gh
+// answers built over that map (withProjectTokens reads Options.DeploymentApps, so the rig sets the
+// map first).
+func deploymentRig(t *testing.T) *rig {
+	t.Helper()
+	return newRig(t, nil,
+		withOptions(func(o *Options) {
+			o.DeploymentApps = appauth.DeploymentApps{"checker": appauth.Implement, "critic": appauth.Review}
+		}),
+		withProjectTokens(refusingOwnerTokens{refuse: new(atomic.Bool)}))
+}
 
 // The runtime holds the roles of its deployment (Options.DeploymentApps) as a field of its own:
 // an overlay of a role the deployment defines is taken, the image probe is told it, and two
@@ -39,5 +62,78 @@ func TestTheRuntimeTakesADeploymentRolesOverlays(t *testing.T) {
 	}
 	if slices.Contains(b.roleConfigRoles(), "checker") {
 		t.Errorf("a runtime whose deployment defines no role has the roles %v, want no checker", b.roleConfigRoles())
+	}
+}
+
+// The first launch of a role of an issue makes a pod that runs every role of the runtime: its
+// launcher runs one --role for each role of the deployment too, and the Sandbox owns a role Secret
+// for each of the eight, each holding the gh files of the App its role acts as (the render path
+// writeLauncherSecrets, gitHubBundles, GitHubCredential, AppRoleFor).
+func TestANewIssuePodBindsEachRoleOfTheDeploymentWithItsApp(t *testing.T) {
+	g := deploymentRig(t)
+	loc := g.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree))
+	name := loc.Sandbox.Name
+
+	command := containerNamed(t, g.pod(name).Spec, runtime.IssuePodContainer).Command
+	for _, role := range []string{"checker", "critic"} {
+		at := slices.Index(command, role)
+		if at < 1 || command[at-1] != "--role" {
+			t.Errorf("the launcher's command = %q, want --role %s", command, role)
+		}
+	}
+
+	every := append(slices.Clone(claim.Roles), "checker", "critic")
+	var want, owned []string
+	for _, role := range every {
+		want = append(want, roleSecretName(name, role))
+	}
+	secrets, err := g.kube.CoreV1().Secrets(testNamespace).List(g.ctx, metav1.ListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	uid := g.sandbox(name).UID
+	for _, secret := range secrets.Items {
+		if _, launcher := secret.Data[LauncherTokenFile]; launcher && slices.ContainsFunc(secret.OwnerReferences, func(o metav1.OwnerReference) bool { return o.UID == uid }) {
+			owned = append(owned, secret.Name)
+		}
+	}
+	slices.Sort(want)
+	slices.Sort(owned)
+	if !slices.Equal(owned, want) {
+		t.Errorf("the Sandbox owns the role Secrets %q, want the eight %q", owned, want)
+	}
+
+	for role, prefix := range map[claim.Role]string{"checker": "ghs_implement_", "critic": "ghs_review_"} {
+		secret := g.secret(roleSecretName(name, role))
+		if secret == nil {
+			continue
+		}
+		owner := string(secret.Data[GitHubDefaultKey])
+		token, err := ghconfig.TokenFromHosts(secret.Data[GitHubHostsKey(owner)])
+		if err != nil || !strings.HasPrefix(token, prefix) {
+			t.Errorf("the %s Secret's %s hosts.yml holds %q (%v), want a token that begins %s", role, owner, token, err, prefix)
+		}
+	}
+}
+
+// The launcher of a role of the deployment is accepted on its issue's pod as one of Legion's is,
+// and a role neither Legion nor the deployment defines is refused.
+func TestALauncherOfADeploymentRoleIsAccepted(t *testing.T) {
+	g := deploymentRig(t)
+	loc := g.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree))
+	name := loc.Sandbox.Name
+	secret := g.secret(roleSecretName(name, "checker"))
+	if secret == nil {
+		t.Fatalf("the pod has no checker Secret")
+	}
+	accept := g.r.LauncherResolver()
+	hello := shimwire.LauncherHello{Token: string(secret.Data[LauncherTokenFile]), Sandbox: name, Role: "checker", PodUID: loc.Sandbox.PodUID, LauncherID: "l-checker"}
+	if handler, _, reason := accept(hello); handler == nil {
+		t.Errorf("the checker's launcher was refused: %s", reason)
+	}
+	ghost := hello
+	ghost.Role = "ghost"
+	if handler, _, reason := accept(ghost); handler != nil || reason != "launcher role is not one of its pod's roles" {
+		t.Errorf("a launcher of ghost = %v, %q; want the refusal %q", handler != nil, reason, "launcher role is not one of its pod's roles")
 	}
 }
