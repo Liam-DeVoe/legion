@@ -338,8 +338,9 @@ jobs:
     # THE FILE STORE'S TWO STEPS, AFTER THAT READING. "Wait for the S3-compatible server" runs
     # one-collection.sh's prepare and check around its readiness object, and took 17.9 to 24.3 s
     # on a dev box, against the 24 s above. "Check that no write grew the file store", after the
-    # browser step, is one `weed shell` command and a read of the store's log: 0.09 to 0.27 s
-    # there, and no row above. The second they can add is inside the 16 s between the 1,304 s
+    # browser step, is a read of the store's log, one request to its master and one `weed shell`
+    # command: under a second in each of CI's four shard legs when it was the log and the shell
+    # alone, and no row above. The second they can add is inside the 16 s between the 1,304 s
     # above and the 22 minutes below.
     #
     # The rows behind those seconds were the suite of the head those runs measured. Listed

@@ -48,6 +48,20 @@ const (
 	serverLog  = "/tmp/weed.log"
 )
 
+// scriptDeadline bounds one run of a step of one-collection.sh. The script bounds its own waits,
+// each failing it by name when it runs out: 60 tries a second apart for the volume server, 10 for
+// the grow, 60 s for each weed shell. prepare ended within seconds of the S3 port answering in
+// this script's runs on a dev box, and 11 to 12 s after it with the volume server held back 10 s.
+// So a step still running at 5 minutes is one the script did not end, a stuck docker exec among
+// them, and it fails the test by name 15 minutes before go test's -timeout in the envoy-go job
+// (.github/workflows/ci-job-envoy-go.yaml) ends the whole package with no name.
+const scriptDeadline = 5 * time.Minute
+
+// requestDeadline bounds one request to the server. Its answers come within a second, and a
+// write that waits on storage being made gets its 500 when the filer gives up after 10 s, so a
+// request still open at a minute is to a server that stopped answering.
+const requestDeadline = time.Minute
+
 // Start runs an S3-compatible server holding the empty bucket, removed when t ends, points this
 // process's AWS SDK at it for the rest of t (filestest.PointSDKAt), so files.NewS3(ctx, bucket)
 // reaches it exactly as a deployment's reaches its bucket, and returns the endpoint for a caller
@@ -123,23 +137,47 @@ func startServer(ctx context.Context, t testing.TB, script string) (testcontaine
 }
 
 // runScript runs step of one-collection.sh inside c, for collection and serverLog, and answers
-// its exit code and its output.
+// its exit code and its output; a step that has not ended within scriptDeadline fails t.
 func runScript(ctx context.Context, t testing.TB, c testcontainers.Container, step string) (int, string) {
 	t.Helper()
-	code, reader, err := c.Exec(ctx, []string{scriptPath, step, collection, serverLog}, tcexec.Multiplexed())
-	if err != nil {
-		t.Fatalf("run one-collection.sh %s in the S3-compatible server's container: %v", step, err)
+	ctx, cancel := context.WithTimeout(ctx, scriptDeadline)
+	defer cancel()
+	type result struct {
+		code   int
+		output []byte
+		err    error
 	}
-	output, err := io.ReadAll(reader)
-	if err != nil {
-		t.Fatalf("read the output of one-collection.sh %s: %v", step, err)
+	// c.Exec reads the step's output to its end before it returns, and that read does not stop
+	// with ctx (the docker client's hijacked connection has no deadline of its own), so the run
+	// goes on apart while this waits for it or for the deadline. A run the deadline left ends
+	// when the container is removed with t.
+	done := make(chan result, 1)
+	go func() {
+		code, reader, err := c.Exec(ctx, []string{scriptPath, step, collection, serverLog}, tcexec.Multiplexed())
+		if err != nil {
+			done <- result{err: err}
+			return
+		}
+		output, err := io.ReadAll(reader)
+		done <- result{code: code, output: output, err: err}
+	}()
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("run one-collection.sh %s in the S3-compatible server's container: %v", step, r.err)
+		}
+		return r.code, string(r.output)
+	case <-ctx.Done():
+		t.Fatalf("one-collection.sh %s did not end within %s", step, scriptDeadline)
+		return 0, ""
 	}
-	return code, string(output)
 }
 
 // call sends one anonymous request with body and answers the status and the body of the answer.
 func call(ctx context.Context, t testing.TB, method, url, body string) (int, string) {
 	t.Helper()
+	ctx, cancel := context.WithTimeout(ctx, requestDeadline)
+	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, method, url, bytes.NewBufferString(body))
 	if err != nil {
 		t.Fatalf("build %s %s: %v", method, url, err)

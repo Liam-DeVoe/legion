@@ -43,7 +43,14 @@ usage() {
 step=$1
 collection=$2
 log=$3
-shell="weed shell -master=127.0.0.1:9333 -filer=127.0.0.1:8888"
+# Every `weed shell` runs under timeout(1), which both images carry (busybox's in the SeaweedFS
+# image). Each one runs after registered below has seen a volume server, and is quick there:
+# in each of CI's four shard legs, the check step, then a read of the log and one shell, took under
+# a second. A shell still running at 60 s is talking to a store that stopped answering, and 60 s
+# fails it by name a minute in, rather than at the shard job's 22 minutes or go test's 20. It is
+# ended by KILL: weed shell catches TERM and exits 0, and busybox's timeout answers its program's
+# own exit, so a shell ended by TERM read as one that succeeded in the SeaweedFS image.
+shell="timeout -s KILL 60 weed shell -master=127.0.0.1:9333 -filer=127.0.0.1:8888"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
@@ -60,34 +67,65 @@ fail() {
   exit 1
 }
 
-# 1. The collection's seven volumes, made by `/vol/grow` before anything is written. It runs
-# first, before the rule of step 2 exists, for two reasons. The filer writes a file of its own log
-# about a minute after it starts, and once the rule is in force that file goes into the collection
-# too, so the collection must hold its volumes before the rule can send any write to it. And a
-# `weed shell` that connects before the volume server has registered with the master waits for
-# ever: the master sends a new client one message for each volume server it knows
-# (master_grpc_server.go's KeepConnected), so with none it sends nothing and the shell prints dots
-# until it is killed. The grow is retried because the master answers before the volume server
-# has registered with it, and once it succeeds the volume server is there for every shell below.
-# It names the collection itself, so it needs no rule.
-grow() {
+# master <path> <file>: one request to the master's HTTP port, its answer and any error into file.
+# The master answers each of these within seconds: in the 33 server logs of the first runs of this
+# script on a dev box, the grow of step 2, the slowest, had answered, and the shell after it had
+# connected, within 2.1 s of the grow's request. So 10 s ends a request to a master that took the
+# connection and does not answer, by KILL as for a shell, and the loop that sent it tries again or
+# fails by name.
+master() {
+  timeout -s KILL 10 wget -q -O - "http://127.0.0.1:9333$1" > "$2" 2>&1
+}
+
+# 1. A volume server registered with the master, which the master's /dir/status names by its
+# "Url". A `weed shell` that connects before one has registered waits for ever: the master sends a
+# new client one message for each volume server it knows (master_grpc_server.go's KeepConnected),
+# so with none it sends nothing, and the shell prints dots until it is killed. So every step that
+# runs a shell reads this first: registered <tries> reads it up to that many times, a second apart.
+# prepare waits up to 60 tries, as a step of its own, which no cut of another step removes. In
+# 1,172 starts of this store read on a dev box, none held back on purpose, the volume server
+# registered before the S3 port answered or at most 0.52 s after it, and a stand-in that started
+# it 10 s after the port saw it register 10 to 11 s after; so a minute without one is a volume
+# server that did not start. check reads it once, since prepare saw it: a master that does not
+# answer, or that lists no volume server, is a store that stopped during the run, and it fails by
+# name at once.
+registered() {
   attempt=1
-  until wget -q -O /dev/null "http://127.0.0.1:9333/vol/grow?collection=$collection&count=7"; do
-    [ "$attempt" -lt 60 ] || fail "the master grew no volumes for $collection"
+  until master /dir/status "$work/status.txt" && grep -q '"Url"' "$work/status.txt"; do
+    [ "$attempt" -lt "$1" ] || fail "the master lists no volume server, so the store cannot take a write" "$work/status.txt"
     attempt=$((attempt + 1))
     sleep 1
   done
 }
 
-# 2. The rule: every path into the collection, so each bucket and the filer's own files share
-# it. Then a directory under /etc/seaweedfs, made after the rule, which step 4 waits for.
+# 2. The collection's seven volumes, made by `/vol/grow` before anything is written. It runs
+# before the rule of step 3 exists: the filer writes a file of its own log about a minute after it
+# starts, and once the rule is in force that file goes into the collection too, so the collection
+# must hold its volumes before the rule can send any write to it. It names the collection itself,
+# so it needs no rule. It is retried because a volume server started with `-volume.max=0`, as both
+# are, registers with room for no volume: it learns the volume size limit from the master's first
+# answer, works out its room from it, and only then reports it (store.go's MaybeAdjustVolumeMax),
+# and until then the master answers 406. It reports it at once, or failing that in its next
+# heartbeat, 5 s later (constants.VolumePulseSeconds): 10 tries, a second apart, cover two of
+# those. In the 33 server logs above, the first grow after step 1 succeeded every time.
+grow() {
+  attempt=1
+  until master "/vol/grow?collection=$collection&count=7" "$work/grow.txt"; do
+    [ "$attempt" -lt 10 ] || fail "the master grew no volumes for $collection" "$work/grow.txt"
+    attempt=$((attempt + 1))
+    sleep 1
+  done
+}
+
+# 3. The rule: every path into the collection, so each bucket and the filer's own files share
+# it. Then a directory under /etc/seaweedfs, made after the rule, which step 5 waits for.
 configure() {
   marker="rule-in-force-$$"
   printf 'fs.configure -locationPrefix=/ -collection=%s -apply\nfs.mkdir /etc/seaweedfs/%s\n' "$collection" "$marker" |
     $shell > "$work/rule.txt" 2>&1 || fail "weed shell could not run" "$work/rule.txt"
 }
 
-# 3. The rule, read back. `weed shell` exits 0 when a command inside it fails, and fs.configure
+# 4. The rule, read back. `weed shell` exits 0 when a command inside it fails, and fs.configure
 # returns success on a flag it cannot parse, so neither says whether the rule was stored. The
 # filer's configuration as fs.configure prints it must hold the rule instead.
 read_back() {
@@ -96,7 +134,7 @@ read_back() {
     fail "the filer holds no rule putting every path into $collection" "$work/rule.txt" "$work/configuration.txt"
 }
 
-# 4. The rule in force. fs.configure stores the rule and returns; the filer puts it in force only
+# 5. The rule in force. fs.configure stores the rule and returns; the filer puts it in force only
 # when it processes that change, in order with every change under /etc/seaweedfs, and it logs
 # each one (filer_on_meta_event.go's "procesing", spelt so). Measured on a dev box, that came
 # 0.2 s after a readiness write that had started at once, so the write grew a collection of its
@@ -121,8 +159,8 @@ alone() {
   [ "$(grep -c 'collection:"' "$work/collections.txt")" = 1 ] && grep -q "$1" "$work/collections.txt"
 }
 
-# 5. The collection alone, with its volumes, before any write. Before anything is written a
-# collection can exist only because step 1 made it, so a grow that is missing, aimed at another
+# 6. The collection alone, with its volumes, before any write. Before anything is written a
+# collection can exist only because step 2 made it, so a grow that is missing, aimed at another
 # collection or made nothing fails here, on the plain store, and not only on the rare run where
 # the race comes.
 alone_before_writes() {
@@ -134,19 +172,22 @@ alone_before_writes() {
 # After writes: no write grew storage, and the collection is still the store's only one. The
 # master logs `volume grow &{...}` (master_grpc_server_volume.go) only for a growth that an
 # assign asked for because the layout had no writable volume, which is a write waiting on storage
-# being made; the grow of step 1 logs `volumeGrowHandler received` instead. A log that is missing
-# or empty is a failure, not a pass: nothing could be read from it.
+# being made; the grow of step 2 logs `volumeGrowHandler received` instead. A log that is missing
+# or empty is a failure, not a pass: nothing could be read from it. The log is read before the
+# store is asked anything, so a growth is named even when the store has stopped since.
 check() {
   [ -s "$log" ] || fail "the server's log $log is missing or empty, so no growth can be read from it"
   if grep 'volume grow &' "$log" > "$work/growths.txt"; then
     fail "a write grew the store's storage: the master grew a collection for a write that found no writable volume" "$work/growths.txt"
   fi
+  registered 1
   list
   alone "collection:\"$collection\"" ||
     fail "the store holds a collection other than $collection, so a write grew one" "$work/collections.txt"
 }
 
 prepare() {
+  registered 60
   grow
   configure
   read_back
