@@ -1417,14 +1417,19 @@ function drawStatementBlocks(
   editable: HTMLElement,
   blocks: StatementBlocks = STATEMENT_BLOCKS
 ): Promise<void> {
-  return act(async () => {
-    for (const [id, words] of blocks) {
-      const block = document.createElement("p");
-      block.dataset.blockId = id;
-      block.textContent = words;
-      editable.append(block);
-    }
-  });
+  return act(async () => appendBlocks(editable, blocks));
+}
+
+/** Draws `blocks` in `editable` at once, with no task on after: a case that follows the drawing
+ *  within its task - an editor handed over, or taken out, in the task it drew in - goes on from
+ *  here. */
+function appendBlocks(editable: HTMLElement, blocks: StatementBlocks = STATEMENT_BLOCKS): void {
+  for (const [id, words] of blocks) {
+    const block = document.createElement("p");
+    block.dataset.blockId = id;
+    block.textContent = words;
+    editable.append(block);
+  }
 }
 
 /** The block of the editor the caret is in, by its `data-block-id`: the block of the text it is
@@ -3126,12 +3131,7 @@ test("an editor that has drawn the node's block microtasks before the page hands
   const handed = standInView();
   try {
     await act(async () => {
-      for (const [id, words] of STATEMENT_BLOCKS) {
-        const block = document.createElement("p");
-        block.dataset.blockId = id;
-        block.textContent = words;
-        editable.append(block);
-      }
+      appendBlocks(editable);
       // The row's watch on the drawing looks at the row here, before the editor is handed over.
       await Promise.resolve();
       await Promise.resolve();
@@ -3157,13 +3157,23 @@ test("an editor that has drawn the node's block microtasks before the page hands
   }
 });
 
-/** A plain editable standing in for the document's editor, which `remake.again` takes out of the
- *  page and makes again, as the document makes its editor again for a room that refused its
+/** What takes a `RemadeStandIn` out of the page: `again` makes it again at once, and `gone`
+ *  leaves the row with none until `again`. */
+interface Remake {
+  again?: () => void;
+  gone?: () => void;
+}
+
+/** A plain editable standing in for the document's editor, which `remake` takes out of the page
+ *  and makes again, as the document makes its editor again for a room that refused its
  *  connection and then admitted it. */
-function RemadeStandIn({ remake }: { remake: { again?: () => void } }): ReactNode {
-  const [made, setMade] = useState(0);
-  remake.again = () => setMade((count) => count + 1);
-  return <div contentEditable key={made} suppressContentEditableWarning />;
+function RemadeStandIn({ remake }: { remake: Remake }): ReactNode {
+  const [made, setMade] = useState({ count: 0, drawn: true });
+  remake.again = () => setMade(({ count }) => ({ count: count + 1, drawn: true }));
+  remake.gone = () => setMade(({ count }) => ({ count, drawn: false }));
+  return made.drawn ? (
+    <div contentEditable key={made.count} suppressContentEditableWarning />
+  ) : null;
 }
 
 // Until the reader has acted, the row puts the caret back in the node's block as the editor
@@ -3173,7 +3183,7 @@ test("an editor made again while the row is edited takes the caret back only onc
   setViewport(1440);
   const user = userEvent.setup();
   let handOver: ((editor: RowEditor | undefined) => void) | undefined;
-  const remake: { again?: () => void } = {};
+  const remake: Remake = {};
   const { editable, view } = await enterBeforeDrawn(user, (onEditor) => {
     handOver = onEditor;
     return <RemadeStandIn remake={remake} />;
@@ -3214,6 +3224,76 @@ test("an editor made again while the row is edited takes the caret back only onc
     handOver?.(undefined);
     first.destroy();
     second.destroy();
+  }
+});
+
+// The document makes an editor for each connection to the room, and the room can refuse a
+// connection whose editor is already being made: that editor draws the statement as it is made
+// and is destroyed in the same task, handed to nothing (`doc/ProofDocument.tsx`), and the next
+// connection's editor comes only after that connection has synced. The row read the first as an
+// editor the page would never hand over, and ended the editing. Where the block is no longer
+// drawn a task later the wait starts again, so the next editor, handed over as it draws the
+// block, takes the caret.
+test("an editor that draws the node's block and goes unhanded leaves the row waiting for the next one, which takes the caret", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  let handOver: ((editor: RowEditor | undefined) => void) | undefined;
+  const remake: Remake = {};
+  const { editable, view } = await enterBeforeDrawn(user, (onEditor) => {
+    handOver = onEditor;
+    return <RemadeStandIn remake={remake} />;
+  });
+  const [row] = rowsFor(view.container, "spec#b-r1");
+  const handed = standInView();
+  // More than a task on: the row has read by then whether it was handed an editor.
+  const aTaskOn = () =>
+    act(async () => {
+      const on = Promise.withResolvers<void>();
+      setTimeout(on.resolve, 20);
+      await on.promise;
+    });
+  try {
+    // The refused connection's editor draws the statement, the row's watch on the drawing looks
+    // at the row, and the editor goes, all in one task.
+    appendBlocks(editable);
+    await Promise.resolve();
+    await Promise.resolve();
+    act(() => remake.gone?.());
+    expect(
+      row?.querySelector('[contenteditable="true"]') == null,
+      "the editor that went unhanded is still in the row"
+    ).toBe(true);
+    await aTaskOn();
+    expect(
+      rowReport(view.container),
+      "the row said its editor could not open, of an editor that drew the block and went"
+    ).toBeUndefined();
+    expect(view.edited.at(-1), "the editing ended with the next editor still to come").toBe(
+      "artifact-spec"
+    );
+
+    // The next connection's editor is made, draws the statement and is handed over.
+    await act(async () => remake.again?.());
+    const next = row?.querySelector<HTMLElement>('[contenteditable="true"]');
+    if (next == null || next === editable) throw new Error("the next editor was not made");
+    await act(async () => {
+      appendBlocks(next);
+      await Promise.resolve();
+      await Promise.resolve();
+      handOver?.({ view: handed });
+    });
+    await waitFor(() =>
+      expect(
+        document.activeElement === next && caretBlock() === "r1",
+        "the next editor, handed over, took no caret"
+      ).toBe(true)
+    );
+    await aTaskOn();
+    expect(rowReport(view.container), "the row said its editor could not open").toBeUndefined();
+    expect(view.edited.at(-1), "the editing ended").toBe("artifact-spec");
+  } finally {
+    handOver?.(undefined);
+    handed.destroy();
   }
 });
 

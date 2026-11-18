@@ -259,15 +259,16 @@ const BLOCK_ID_PROPERTY = "blockId";
  *
  * Every transaction the collaboration brings applies, wherever it lands, each marked with
  * y-prosemirror's `ySyncPluginKey`: what y-prosemirror draws from the room - a collaborator's
- * edit, the span of a mark set there, its own undo (Mod-z, `@milkdown/plugin-collab`) - and the
- * editor's projection of the room's `marks` map (`doc/editor.ts`'s `bindRemoteMarks`, through
- * `proof-sdk-upstream`'s `applyRemoteMarks`, which marks its transaction as y-prosemirror marks
- * its own), which carries the marks' records and takes the spans of the suggestions the room has
- * accepted or rejected out of the text. The block's place is mapped through each transaction, and
- * found again by its id where one moved it elsewhere. The undo applies since the row's editor is
- * made for the row, so its undo manager holds this editor's own edits alone, each inside the
- * block. A transaction that changes neither the document nor the selection - a decoration drawn,
- * a mark stored for the next letter - leaves the document as it was, and applies.
+ * edit, the span of a mark set there - and the editor's projection of the room's `marks` map
+ * (`doc/editor.ts`'s `bindRemoteMarks`, through `proof-sdk-upstream`'s `applyRemoteMarks`, which
+ * marks its transaction as y-prosemirror marks its own), which carries the marks' records and
+ * takes the spans of the suggestions the room has accepted or rejected out of the text. The
+ * block's place is mapped through each transaction, and found again by its id where one moved it
+ * elsewhere. Mod-z is answered first by Milkdown's own history, as a local transaction this
+ * filter checks like any other: two rows of one document share one editor, so an undo that would
+ * take back an earlier row's edit, outside this row's block, is refused. A transaction that
+ * changes neither the document nor the selection - a decoration drawn, a mark stored for the next
+ * letter - leaves the document as it was, and applies.
  *
  * The plugin goes on once `parts` have loaded - what it is built of, which the row asks for as it
  * starts editing (`loadEditsHold`) - and `onHeld` is called as it goes on: the row puts no caret

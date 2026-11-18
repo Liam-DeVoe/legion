@@ -342,8 +342,14 @@ export function useNodeEditing({
         const movedOn = acts.signal.aborted && !holdsRowsFocus(row);
         if (hold.current === "awaited" && handing === undefined && drawsBlock(row, editingBlock)) {
           handing = window.setTimeout(() => {
-            unhanded = hold.current === "awaited";
+            // An editor made for a connection the room then refused draws the block and goes
+            // unhanded, and the editor for the next connection comes after a sync: where the
+            // block is no longer drawn, the wait starts again with the next editor that draws it.
+            const now = box.querySelector<HTMLElement>(rowSelector);
+            unhanded =
+              hold.current === "awaited" && now !== null && drawsBlock(now, editingBlock);
             if (unhanded) changed();
+            else handing = undefined;
           }, 0);
         }
         // The hold cannot go on where what it is built of did not load, or where the page has
