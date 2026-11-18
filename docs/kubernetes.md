@@ -95,11 +95,17 @@ It carries:
     A read of a commit that fails quotes git's own message without the user and token a URL in it carries, such as the URL of the promisor remote a partial clone's failed lazy fetch names (`withoutUserinfo`).
     The pod's roles share one memory limit, so the read holds one path's files at a time;
 
+  - every header of a commit and of an annotated tag, each as a record of its own labelled `commit <short> <name>` or `tag <short> <name>`, a tag's own name as `tag <short> name` (`objectHeaders`, `Guard.commitRecords`, `Guard.tagRecords`).
+    A header git writes over more than one line is read with every line of it, and a header is read whole, as a message is.
+    A merge of a signed tag holds that whole tag object, its name, tagger and message among it, in its `mergetag` header, and publishes it whether or not the tag itself is pushed.
+    What a commit's other records hold already is not read again: its tree and parent lines, which hold object ids, and an author or committer line that is its identity record and a date.
+    git formats the last author and the last committer line of a commit that holds two, so an earlier one is read as a header, and so are a tag's second `object` and `type` lines, since git follows a tag by its first;
+
   - a text file it reads above 32 MiB as a setup error that refuses the push and names the file and its size, whichever the shape (`Guard.blobBound`):
     a commit's own file, a file it is compared with, or a tree's file or a blob that a ref is at.
     The guard reads none of the files a commit's file is compared with where the commit's file is binary, and passes over the rest once the files read before them hold every line of it.
     The bound is per file, not per push:
-    what one push holds in memory is no file above it, and every record of the push, each added line, path, identity and message, each annotated tag's name, tagger and message, and each line of a blob a ref is at, until the rules have read them;
+    what one push holds in memory is no file above it, and every record of the push, each added line, path, identity, header and message, each annotated tag's headers and message, and each line of a blob a ref is at, until the rules have read them;
 
   - and no commit that a branch or a tag of the destination already reaches, nor an annotated tag it already holds, nor a tree or a blob one of its tags is at, as one `git ls-remote --heads --tags` of the URL git hands the hook reads them (`Guard.advertised`, `internal/leakguard/held.go`).
     Each push with an update that is not a deletion, to a destination the guard scans, costs that one read, and a read that fails refuses the push as a setup error that names the remote and the URL.
@@ -118,7 +124,7 @@ It carries:
     A branch or a tag at a commit the clone does not have holds nothing, so where that commit is ahead of the clone's, the clone's commits it reaches are read, which fails closed.
     A push whose destination holds nothing the clone has, an empty local bare repository among them, fails closed the same way:
     it reads every commit the branch reaches, at one read of each, which is thousands for a fork's branch.
-    Both reads that ask what the clone has run with `GIT_NO_LAZY_FETCH=1`: the batch check of the shas `git ls-remote` prints, which keeps those the clone has (`Guard.advertised`), and the check of the commit the update says the destination's ref is at now (`Guard.holds`).
+    The four reads of what the clone has run with `GIT_NO_LAZY_FETCH=1`: the batch check of the shas `git ls-remote` prints (`Guard.advertised`), the check of the commit the destination's ref is at (`Guard.holds`), and `git cat-file -t` and `git cat-file tag` of each tag pushed (`Guard.tagRecords`).
     So a partial clone fetches no object it lacks from its promisor remote, and such an object holds nothing there either.
     No ref of the clone's own counts: git moves a remote's `refs/remotes/<remote>/` for a push to whatever URL the remote pushes to at that time, a local bare one that a role points it at for one run (`git remote set-url --push origin <bare>`) included, and a ref can be written by hand.
 

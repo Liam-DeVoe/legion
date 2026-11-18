@@ -4,18 +4,32 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 )
 
-// commitRecords is one commit as records. The identities and the message come from the commit
-// itself, and the added and renamed paths and the added lines from its files: those at which it
-// differs from its parent where it has at most one (commitChanges), and those at which it differs
-// from every parent where it is a merge (mergeChanges), each shape's files read from their blobs
-// alike (Guard.addedLines). The records come in one order whatever the shape, so that a report
-// lists its lines alike from one run to the next: the identities, the message, the paths in path
-// order, then the lines in path order and, within a file, the file's own order.
+// commitRecords is one commit as records. The identities, the commit's other headers and the
+// message come from the commit itself, and the added and renamed paths and the added lines from
+// its files: those at which it differs from its parent where it has at most one (commitChanges),
+// and those at which it differs from every parent where it is a merge (mergeChanges), each shape's
+// files read from their blobs alike (Guard.addedLines). The records come in one order whatever the
+// shape, so that a report lists its lines alike from one run to the next: the identities, the
+// other headers in the commit's own order, the message, the paths in path order, then the lines
+// in path order and, within a file, the file's own order.
+//
+// The identities are the author's and the committer's name and email, and the message is the
+// whole message, as git show formats them. A commit publishes every header it holds, and git show
+// formats no other: a merge of a signed tag holds that whole tag object in its mergetag header, the
+// tag's name, its tagger and its message, and a signed commit holds its signature. So each header
+// is read too, from the commit object as git cat-file writes it, a header of more than one line
+// with its every line (objectHeaders), and is a record labelled "commit <short> <name>", unless
+// the commit's other records hold it already: a tree or a parent line that holds an object id,
+// which names nothing, and an author or a committer line that holds the identity read as that
+// record and its date alone (identityLine). git show formats the last author line and the last
+// committer line of a commit that holds two, so an earlier one that holds anything else is read
+// as a header of its own. The headers are read whole, as the message is.
 //
 // A record about a file carries that file's path as its label and the line or the path as its
 // text, so that the engine reads the path as a path: the rule file's one path-scoped allowlist
@@ -23,8 +37,8 @@ import (
 func (g *Guard) commitRecords(ctx context.Context, dir, commit string) ([]Record, error) {
 	// git writes the separator for itself, as %x00 in the format: an argument of this process's
 	// own holding a zero byte is a child that cannot be started at all. %P comes before the
-	// body, which is the one field that can hold a newline, so the parents are read without a
-	// second git.
+	// body, which is the one field that can hold a newline, so the parents are read with the
+	// identities and the message.
 	const separator = "%x00"
 	out, err := g.git(ctx, dir, "show", "--no-patch", "--no-color",
 		"--format="+separator+"%an <%ae>"+separator+"%cn <%ce>"+separator+"%P"+separator+"%B"+separator, commit)
@@ -35,12 +49,26 @@ func (g *Guard) commitRecords(ctx context.Context, dir, commit string) ([]Record
 	if len(parts) < 5 {
 		return nil, fmt.Errorf("git show %s answered no identity, parents and message", short(commit))
 	}
-	parents := strings.Fields(parts[3])
-	records := []Record{
-		{Label: "commit " + short(commit) + " author", Text: parts[1]},
-		{Label: "commit " + short(commit) + " committer", Text: parts[2]},
-		{Label: "commit " + short(commit) + " message", Text: parts[4]},
+	object, err := g.git(ctx, dir, "cat-file", "commit", commit)
+	if err != nil {
+		return nil, err
 	}
+	parents := strings.Fields(parts[3])
+	label := "commit " + short(commit)
+	records := []Record{
+		{Label: label + " author", Text: parts[1]},
+		{Label: label + " committer", Text: parts[2]},
+	}
+	headers, _, _ := strings.Cut(object, "\n\n")
+	for name, value := range objectHeaders(headers) {
+		if (name == "tree" || name == "parent") && isObjectID(value) ||
+			name == "author" && identityLine(value, parts[1]) ||
+			name == "committer" && identityLine(value, parts[2]) {
+			continue
+		}
+		records = append(records, Record{Label: label + " " + name, Text: value})
+	}
+	records = append(records, Record{Label: label + " message", Text: parts[4]})
 	var paths []string
 	var changes []fileChange
 	kind := "commit"
@@ -316,6 +344,41 @@ func textLines(file string) iter.Seq[string] {
 			}
 		}
 	}
+}
+
+// objectHeaders are the headers of a commit or a tag object, head, as git cat-file writes them
+// ahead of the blank line its message follows: each header's name and value, in head's order. A
+// header is a line "<name> <value>", and each line after it that starts with a space carries its
+// value on, which is how git writes a value of more than one line: a merge's mergetag, which holds
+// the whole tag object the merge is of, or a signature. Such a value is its lines joined by
+// newlines, each with that space off.
+func objectHeaders(head string) iter.Seq2[string, string] {
+	return func(yield func(name, value string) bool) {
+		for rest := head; rest != ""; {
+			header := rest
+			_, rest, _ = strings.Cut(rest, "\n")
+			for strings.HasPrefix(rest, " ") {
+				_, rest, _ = strings.Cut(rest, "\n")
+			}
+			name, value, _ := strings.Cut(strings.TrimSuffix(header[:len(header)-len(rest)], "\n"), " ")
+			if !yield(name, strings.ReplaceAll(value, "\n ", "\n")) {
+				return
+			}
+		}
+	}
+}
+
+// identityDate is what follows the identity in a commit's author or committer line: the date, as
+// seconds since the epoch and a zone (" 1700000000 +0000").
+var identityDate = regexp.MustCompile(`^ [0-9]+ [+-][0-9]{4}$`)
+
+// identityLine is whether value, the value of an author or a committer line of a commit's, is
+// identity, the name and email git show formats of that line (%an <%ae>, %cn <%ce>), followed by
+// its date alone (identityDate): a line the commit's record of that identity holds already, the
+// date aside, which names nothing.
+func identityLine(value, identity string) bool {
+	date, ok := strings.CutPrefix(value, identity)
+	return ok && identityDate.MatchString(date)
 }
 
 // rawEntry is one entry of diff-tree's raw format, which -z writes as

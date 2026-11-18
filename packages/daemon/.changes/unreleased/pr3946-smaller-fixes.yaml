@@ -18,3 +18,6 @@ body: |-
   lines, or the tree's paths and the lines of its files, read by those rules, within the bound a
   commit's files are read within, unless one of the destination's tags is already at that blob or
   tree.
+  A push now has every header of each commit and each annotated tag it adds read by those rules,
+  among them the mergetag of a merge of a signed tag, which holds that tag's name, tagger and
+  message whether or not the tag itself is pushed.

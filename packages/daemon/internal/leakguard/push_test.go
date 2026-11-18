@@ -3,6 +3,7 @@ package leakguard
 import (
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -51,10 +52,10 @@ func commitFiles(t *testing.T, fixture fixturegit.Runner, repo string, files map
 }
 
 // A push's records are read from the commits it would add, out of a real repository: the
-// message, the author identity, each added line of each file, and the ref name are each read,
-// and a commit the destination already holds is not read at all. Every case here pushes one commit
-// that names something private in one of those places, and the last one names nothing anywhere
-// and is passed.
+// message, the author identity, each other header of the commit's, each added line of each file,
+// and the ref name are each read, and a commit the destination already holds is not read at all.
+// Every case here pushes one commit that names something private in one of those places, and the
+// last one names nothing anywhere and is passed.
 func TestAPushsRecordsAreReadFromItsCommits(t *testing.T) {
 	home, root := t.TempDir(), t.TempDir()
 	remote, repo := filepath.Join(root, "remote.git"), filepath.Join(root, "repo")
@@ -72,6 +73,18 @@ func TestAPushsRecordsAreReadFromItsCommits(t *testing.T) {
 		t.Helper()
 		fixture.Run(repo, "git", "checkout", "--quiet", "-B", name, base)
 	}
+	// crafted writes a commit object on base, of base's tree, whose lines after its tree and its
+	// parent are headers, and whose message names nothing, and answers it: git commit writes no
+	// header but its own, and git hash-object writes any a commit can hold.
+	tree := fixture.Run(repo, "git", "rev-parse", base+"^{tree}")
+	crafted := func(t *testing.T, headers string) string {
+		t.Helper()
+		return fixture.Fed(repo, "tree "+tree+"\nparent "+base+"\n"+headers+"\na message of no interest\n", "git", "hash-object", "-t", "commit", "-w", "--stdin")
+	}
+	const (
+		author    = "author builder <builder@example.invalid> 1700000000 +0000\n"
+		committer = "committer builder <builder@example.invalid> 1700000000 +0000\n"
+	)
 
 	for _, tc := range []struct {
 		name string
@@ -126,6 +139,26 @@ func TestAPushsRecordsAreReadFromItsCommits(t *testing.T) {
 			want:   func(string) []string { return []string{"the ref name: " + theClass} },
 		},
 		{
+			name: "a header of the commit's own beyond its identities names a host",
+			build: func(t *testing.T) string {
+				return crafted(t, author+committer+"build-host "+theHost+"\n")
+			},
+			want: func(head string) []string {
+				return []string{"commit " + short(head) + " build-host: " + theClass}
+			},
+		},
+		{
+			name: "an author line the author identity is not read from names a host",
+			build: func(t *testing.T) string {
+				// git show formats the last author line of a commit that holds two, the clean one,
+				// and git's own check of a commit reads no line after its committer.
+				return crafted(t, "author builder <builder@"+theHost+"> 1700000000 +0000\n"+committer+author)
+			},
+			want: func(head string) []string {
+				return []string{"commit " + short(head) + " author: " + theClass}
+			},
+		},
+		{
 			name: "a commit that names nothing",
 			build: func(t *testing.T) string {
 				branch(t, "clean")
@@ -171,9 +204,9 @@ func annotatedTag(t *testing.T, tagger fixturegit.Runner, repo, name, target, me
 	return tagger.Run(repo, "git", "rev-parse", "refs/tags/"+name)
 }
 
-// An annotated tag publishes its name, its tagger and its message with it, so a push of one reads
-// each, as records labelled as a commit's identity and message are, and reads the tag a tag is of
-// in turn, whose name no ref of the push need name.
+// An annotated tag publishes its name, its tagger, each other header it holds and its message
+// with it, so a push of one reads each, as records labelled as a commit's identity, headers and
+// message are, and reads the tag a tag is of in turn, whose name no ref of the push need name.
 // Every tag here is of the commit the destination holds on its main, so the push adds no commit,
 // and each is pushed to refs/tags/pushed, a ref the destination does not hold, which names nothing.
 // A tag the destination already holds, at a ref of its own, is not read again: its message names
@@ -186,6 +219,13 @@ func TestAnAnnotatedTagsTaggerAndMessageAreRead(t *testing.T) {
 	base := commitFiles(t, fixture, repo, map[string]string{"README.md": "one\n"}, "the commit the destination holds")
 	held := annotatedTag(t, fixture, repo, "held", base, "moved the run to "+theHost+" this morning")
 	destination := destinationAt(t, fixture, repo, base+":refs/heads/main", "refs/tags/held:refs/tags/held")
+	// crafted writes a tag object of base named x, whose lines after its tagger are headers and
+	// whose message names nothing, and answers it: git tag writes no header but its own, and git
+	// hash-object writes any a tag can hold.
+	crafted := func(t *testing.T, headers string) string {
+		t.Helper()
+		return fixture.Fed(repo, "object "+base+"\ntype commit\ntag x\ntagger builder <builder@example.invalid> 1700000000 +0000\n"+headers+"\na message of no interest\n", "git", "hash-object", "-t", "tag", "-w", "--stdin")
+	}
 	for _, tc := range []struct {
 		name string
 		// build writes the case's tags and answers the one the push is of, and the report, nil
@@ -221,6 +261,21 @@ func TestAnAnnotatedTagsTaggerAndMessageAreRead(t *testing.T) {
 			},
 		},
 		{
+			name: "a header of the tag's own beyond its name and its tagger names a host",
+			build: func(t *testing.T) (string, []string) {
+				pushed := crafted(t, "release-host "+theHost+"\n")
+				return pushed, []string{"tag " + short(pushed) + " release-host: " + theClass}
+			},
+		},
+		{
+			name: "an object line after the one the tag is of names a host",
+			build: func(t *testing.T) (string, []string) {
+				// git follows a tag by its first object line, so a later one is a header.
+				pushed := crafted(t, "object "+theHost+"\n")
+				return pushed, []string{"tag " + short(pushed) + " object: " + theClass}
+			},
+		},
+		{
 			name: "a tag that names nothing",
 			build: func(t *testing.T) (string, []string) {
 				return annotatedTag(t, fixture, repo, "clean", base, "a message of no interest"), nil
@@ -247,14 +302,84 @@ func TestAnAnnotatedTagsTaggerAndMessageAreRead(t *testing.T) {
 	}
 }
 
+// A merge of a signed tag holds that whole tag object in its mergetag header, the tag's name, its
+// tagger, its message and its signature, which the merge publishes whether or not the tag itself
+// is pushed, so a push of the merge reads that header as a record labelled by the merge, as its
+// identities and message are. git writes the header for a signed tag alone, so each tag here is
+// signed, with an ed25519 key of the test's own under gpg.format=ssh, and each merge is made onto
+// main with a message that names nothing. The destination holds the base on main and the tagged
+// commit on a branch of its own, so the push of main adds the merge alone, and no tag is pushed:
+// what a case names reaches the push through the mergetag header alone.
+func TestAMergeOfASignedTagHasItsMergetagRead(t *testing.T) {
+	if _, err := exec.LookPath("ssh-keygen"); err != nil {
+		t.Skip("no ssh-keygen on this machine, which git signs a tag with under gpg.format=ssh")
+	}
+	home, root := t.TempDir(), t.TempDir()
+	repo := filepath.Join(root, "repo")
+	fixture := fixturegit.Isolated(t, home)
+	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
+	base := commitFiles(t, fixture, repo, map[string]string{"README.md": "one\n"}, "the commit the destination holds")
+	fixture.Run(repo, "git", "checkout", "--quiet", "-b", "release")
+	release := commitFiles(t, fixture, repo, map[string]string{"release.md": "a line of the release\n"}, "the release")
+	destination := destinationAt(t, fixture, repo, base+":refs/heads/main", release+":refs/heads/release")
+	key := filepath.Join(t.TempDir(), "key")
+	fixture.Run(root, "ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "a key of the test's own", "-f", key)
+	for _, tc := range []struct {
+		name string
+		// tag is the signed tag of the release the merge is of, made by tagger with message.
+		tag, message string
+		tagger       fixturegit.Runner
+		// named is whether the tag names a host, which refuses the push for the merge's mergetag.
+		named bool
+	}{
+		{
+			name:    "the tagger of the tag a merge is of names a host",
+			tag:     "tagger",
+			message: "a message of no interest",
+			tagger:  fixture.With("GIT_COMMITTER_EMAIL=builder@" + theHost),
+			named:   true,
+		},
+		{
+			name:    "the message of the tag a merge is of names a host",
+			tag:     "message",
+			message: "moved the run to " + theHost + " this morning",
+			tagger:  fixture,
+			named:   true,
+		},
+		{
+			name:    "a merge of a signed tag that names nothing",
+			tag:     "clean",
+			message: "a message of no interest",
+			tagger:  fixture,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.tagger.Run(repo, "git", "-c", "gpg.format=ssh", "-c", "user.signingkey="+key+".pub", "tag", "-s", "-m", tc.message, tc.tag, release)
+			fixture.Run(repo, "git", "checkout", "--quiet", "-B", "main", base)
+			fixture.Run(repo, "git", "merge", "--quiet", "--no-ff", "-m", "Merge the release", tc.tag)
+			merge := fixture.Run(repo, "git", "rev-parse", "HEAD")
+			if !strings.Contains(fixture.Run(repo, "git", "cat-file", "commit", merge), "\nmergetag object ") {
+				t.Fatalf("the merge %s holds no mergetag header, so the case would prove nothing", short(merge))
+			}
+			var want []string
+			if tc.named {
+				want = []string{"commit " + short(merge) + " mergetag: " + theClass}
+			}
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+			wantRefused(t, guard.Push(bound(t), mainPush(repo, base, merge, "origin", destination)), want)
+		})
+	}
+}
+
 // A ref can be at a blob or a tree, and so can the tag a tag chain ends at, and a push of one
 // publishes that content with no commit around it. A blob is read as a file a commit adds that has
 // no path, each line of it a record labelled by the blob; a tree is read as a root commit's files
-// are, each path it holds and each line of each of its text files. Each file is read within the
-// bound a commit's file is, 64 bytes here: a binary blob adds no line, and a text file above the
-// bound refuses the push as a setup failure that names it. Every case pushes refs/tags/pushed, a
-// ref the destination does not hold, which names nothing. A blob the destination holds, at a tag
-// of its own, is not read again: it names a host here, and a push of it to another ref passes.
+// are, each path it holds, which a path that names something refuses alone, and each line of each
+// of its text files. Each file is read within the bound a commit's file is, 64 bytes here: a
+// binary blob adds no line, and a text file above the bound refuses the push as a setup failure
+// that names it. Every case pushes refs/tags/pushed, a ref the destination does not hold, which
+// names nothing. A blob the destination holds, at a tag of its own, is not read again: it names a
+// host here, and a push of it to another ref passes.
 func TestABlobOrATreeARefOrATagIsAtIsRead(t *testing.T) {
 	home, root := t.TempDir(), t.TempDir()
 	repo := filepath.Join(root, "repo")
@@ -310,6 +435,19 @@ func TestABlobOrATreeARefOrATagIsAtIsRead(t *testing.T) {
 			name: "an annotated tag of a tree whose file names a host",
 			build: func(t *testing.T) (string, []string) {
 				return annotatedTag(t, fixture, repo, "tree-named", tree(t, named+"two\n"), "a message of no interest"), []string{"docs/notes.md: " + theClass}
+			},
+		},
+		{
+			name: "a ref at a tree whose path alone names the deployment repository",
+			build: func(t *testing.T) (string, []string) {
+				// The directory is spelled in two pieces for the reason theHost is, and a report
+				// masks it (TestTheReportMasksAPathComponent). Its file is empty, so the file's path
+				// is the one record the tree adds: a line of the file would be a record labelled by
+				// that path, which the path rules read as well.
+				docs := fixture.Fed(repo, "100644 blob "+blob(t, "")+"\tnotes.md\n", "git", "mktree")
+				pushed := fixture.Fed(repo, "040000 tree "+docs+"\t"+"agen"+"t-c\n", "git", "mktree")
+				const class = "names the private deployment repository or its Dispatch project key"
+				return pushed, []string{"<name>/notes.md: " + class, "<name>/notes.md: " + class + " in its path"}
 			},
 		},
 		{

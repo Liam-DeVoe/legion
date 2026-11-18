@@ -121,10 +121,11 @@ func PushName(remote string) string {
 // destination GitHub reports public, or one the guard cannot name, such as a local path
 // (scanThrough), this repository's own private-name rules read the push's records (pushRecords):
 // each ref name, for each annotated tag the destination does not already hold, the name the tag
-// holds, the tagger and the message, for each commit the destination does not already hold, the
-// author, the committer, the message, each added or renamed path, and each added line, and for a
-// blob or a tree a ref or a tag is at, which the destination does not already hold, each line of
-// the blob, or each path of the tree and each line of its files.
+// holds, the tagger, each other header and the message, for each commit the destination does not
+// already hold, the author, the committer, each other header, such as the mergetag a merge of a
+// signed tag holds, the message, each added or renamed path, and each added line, and for a blob
+// or a tree a ref or a tag is at, which the destination does not already hold, each line of the
+// blob, or each path of the tree and each line of its files.
 //
 // The rules read no commit the destination already holds, which is a commit one of its branches
 // or tags reaches as the destination itself reports them at the push, nor a tag object, a blob or
@@ -180,20 +181,21 @@ func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 }
 
 // pushRecords is everything a push would publish, as records: one per ref name, for each tag
-// object the push would add, one for its name, one for the tagger and one for the message
-// (Guard.tagRecords), for each commit the push would add, one for the author identity, one for
-// the committer identity, one for the message, one for each added or renamed path and one for each
-// added line, and for each blob or tree the push would add, one for each line of the blob
-// (Guard.blobRecords), or one for each path of the tree and each line of its files
-// (Guard.treeRecords). The commits an update adds are those its local side reaches and neither its
-// remote side nor any of held does (Guard.commits), held being the commits the destination holds
-// at its branches and tags (Guard.advertised), and the tag objects it adds are the one its local
-// side is at, where that is a tag, and each tag that tag is of, down to the first of objects, the
-// tag objects, blobs and trees the destination holds at its branches and tags. The blob or the
-// tree it adds is the one its local side is at, or the one the last of those tags is of, where
-// that is not one of objects, and such an update is not walked for commits, since a blob or a tree
-// reaches none. A commit, a tag, a blob or a tree reached by two of the push's refs is read once,
-// and a deletion adds none.
+// object the push would add, one for its name, one for the tagger, one for each other header and
+// one for the message (Guard.tagRecords), for each commit the push would add, one for the author
+// identity, one for the committer identity, one for each other header (Guard.commitRecords), one
+// for the message, one for each added or renamed path and one for each added line, and for each
+// blob or tree the push would add, one for each line of the blob (Guard.blobRecords), or one for
+// each path of the tree and each line of its files (Guard.treeRecords). The commits an update
+// adds are those its local side reaches and neither its remote side nor any of held does
+// (Guard.commits), held being the commits the destination holds at its branches and tags
+// (Guard.advertised), and the tag objects it adds are the one its local side is at, where that is
+// a tag, and each tag that tag is of, down to the first of objects, the tag objects, blobs and
+// trees the destination holds at its branches and tags. The blob or the tree it adds is the one
+// its local side is at, or the one the last of those tags is of, where that is not one of
+// objects, and such an update is not walked for commits, since a blob or a tree reaches none. A
+// commit, a tag, a blob or a tree reached by two of the push's refs is read once, and a deletion
+// adds none.
 func (g *Guard) pushRecords(ctx context.Context, req PushRequest, held, objects []string) ([]Record, error) {
 	// not is held as rev-list's negative revisions, a line ^<sha> each, written once for every
 	// update's read of the commits it adds (Guard.commits).
@@ -256,13 +258,18 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest, held, objects 
 }
 
 // tagRecords are the records of the tag object sha names, where it names one, and of each tag that
-// tag is of in turn, until the object a tag is of is no tag: one for the name the tag holds, one
-// for the tagger and one for the message of each, labelled as a commit's identities and message
-// are (Guard.commitRecords). A tag object holds its own name, which it publishes as it publishes
-// its message, and a chain's inner tag publishes a name no ref need name. A tag in read, one the
-// destination holds or one this push read already, is not read, nor is the tag it is of, which the
-// destination holds or this push read with it. A tag object's headers name the object it is of and
-// that object's type, so git is asked the type of sha alone:
+// tag is of in turn, until the object a tag is of is no tag: one for each header of each tag's but
+// the object it is of and that object's type, which the chain is followed by, and one for its
+// message, labelled as a commit's headers and message are (Guard.commitRecords): "tag <short>
+// name" for the name the tag holds, "tag <short> tagger" for the tagger, and "tag <short> <name>"
+// for any other header, a header of more than one line with its every line (objectHeaders). The
+// object and the type followed are the first object line and the first type line, which are the
+// ones git follows a tag by, and a later line of either is a header like any other. A tag object
+// holds its own name, which it publishes as it publishes its message, and a chain's inner tag
+// publishes a name no ref need name. A tag in read, one the destination holds or one this push
+// read already, is not read, nor is the tag it is of, which the destination holds or this push
+// read with it. A tag object's headers name the object it is of and that object's type, so git is
+// asked the type of sha alone:
 //
 //	git cat-file -t <sha>
 //	git cat-file tag <sha>
@@ -286,20 +293,20 @@ func (g *Guard) tagRecords(ctx context.Context, dir, sha string, read map[string
 		if err != nil {
 			return nil, "", "", err
 		}
-		// "<name> <value>" a header line, then a blank line and the message.
+		// The headers, then a blank line and the message (objectHeaders).
 		headers, message, _ := strings.Cut(out, "\n\n")
 		label := "tag " + short(sha)
 		sha, kind = "", ""
-		for line := range strings.Lines(headers) {
-			switch name, value, _ := strings.Cut(strings.TrimSuffix(line, "\n"), " "); name {
-			case "object":
+		for name, value := range objectHeaders(headers) {
+			switch {
+			case name == "object" && sha == "":
 				sha = value
-			case "type":
+			case name == "type" && kind == "":
 				kind = value
-			case "tag":
+			case name == "tag":
 				records = append(records, Record{Label: label + " name", Text: value})
-			case "tagger":
-				records = append(records, Record{Label: label + " tagger", Text: value})
+			default:
+				records = append(records, Record{Label: label + " " + name, Text: value})
 			}
 		}
 		records = append(records, Record{Label: label + " message", Text: message})
@@ -317,7 +324,7 @@ func short(id string) string {
 
 // git is gitFed with nothing of its own in git's environment and nothing on its standard input.
 // Each of its callers reads what git answers as data: git show's identities and message split on
-// zero bytes, and diff-tree's list of a commit's changes.
+// zero bytes, the headers of a commit object, and diff-tree's list of a commit's changes.
 func (g *Guard) git(ctx context.Context, dir string, args ...string) (string, error) {
 	return g.gitFed(ctx, dir, nil, "", args...)
 }
