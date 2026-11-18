@@ -215,7 +215,7 @@ describe("plan-ratings-read.sh", () => {
     const { code, stdout } = read(printed(), [project, "INFRA-7"]);
     expect(stdout).toContain("FAIL: INFRA-7 lists no plan: INFRA-7 closed");
     expect(stdout).toContain("FAIL: INFRA-7 lists no rating: INFRA-7 closed");
-    expect(stdout).not.toContain("lists no time");
+    expect(stdout.split("\n").filter((line) => line.startsWith("FAIL: "))).toHaveLength(2);
     expect(stdout).not.toContain("PASS");
     expect(code).toBe(1);
   });

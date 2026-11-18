@@ -156,7 +156,7 @@ func (l *planRatingsLive) plans() (string, int) {
 func (l *planRatingsLive) readScript(issue string) (string, int) {
 	t := l.t
 	t.Helper()
-	cli := filepath.Join(l.root, "packages", "envoy-client", "bin", "dispatch.ts")
+	cli := dispatchCLI(l.root)
 	if strings.Contains(cli, "'") {
 		t.Fatalf("the checkout's path %s holds a quotation mark the dispatch wrapper cannot quote", l.root)
 	}
