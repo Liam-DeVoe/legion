@@ -278,8 +278,8 @@ const updateStalledRelaySource = "update-stalled-relay"
 // sweep queued the row (architectEnded) — it failed, it retired, or this daemon no longer
 // supervises it — because the listener refuses that delivery on every attempt, the architect's
 // session not advertising the delivery mode or the listener's own NATS grant denying the forward
-// (noticeAnswered), or because no copy of the notice reached the architect's session and it has
-// been queued again the most times a notice is (reholdNotice). because is which, for the log
+// (noticeAnswered), or because the notice has been queued again the most times a notice is,
+// whatever re-held it (reholdNotice). because is which, for the log
 // line. issue and row are the notice's issue and row, and lingers is whether the issue's tree
 // lingers or has closed, as the caller read the tree. The sweep marked the round told when it
 // queued the row (the supervision's tellUpdateStalled), so no later sweep tells it, and without
@@ -420,13 +420,14 @@ func (r *outbox) reholdNotice(ctx context.Context, reported reportedNotice, reas
 		return nil
 	}
 	if spent {
-		// No copy reached the architect's session, and the sweep marked the round told when it
-		// queued the notice, so an update round the notice tells is told to the controller in its
-		// place, once, as where the listener refuses the notice (relayUpdateStalled). An issue no
-		// longer recorded has no tree, and nothing is relayed for it.
+		// The notice was queued again the most times a notice is, whatever re-held it, and the
+		// sweep marked the round told when it queued the notice, so an update round the notice
+		// tells is told to the controller in its place, once, as where the listener refuses the
+		// notice (relayUpdateStalled). An issue no longer recorded has no tree, and nothing is
+		// relayed for it.
 		if root != "" {
 			if err := r.relayUpdateStalled(ctx, issue, reported.row, notice, lingers, key,
-				"its architect's session did not confirm the delivery, queued again the most times a notice is"); err != nil {
+				"the notice was queued again the most times a notice is"); err != nil {
 				return err
 			}
 		}

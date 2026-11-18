@@ -1375,9 +1375,8 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 // undelivered because nobody will hold the role (its architect stopped with its finished tree, or
 // will not hold its role again) goes to the controller instead (parkDecision), and so does an
 // update round held past its bound, in a tree that does not linger, whose architect's claim has
-// ended, whose notice the listener refuses on every attempt, or whose notice its architect's
-// session confirmed no copy of, queued again the most times a notice is, as the answers below
-// (relayUpdateStalled).
+// ended, whose notice the listener refuses on every attempt, or whose notice was queued again the
+// most times a notice is, whatever re-held it, as the answers below (relayUpdateStalled).
 // What the listener's answer to the publish then decides — a delivery the architect's session did
 // not confirm, a holder that cannot take the payload, a forward the listener's own NATS grant
 // denies, a holder only unresponsive, a role nobody holds — is the re-hold policy's

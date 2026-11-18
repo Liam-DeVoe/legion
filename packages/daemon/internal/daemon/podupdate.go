@@ -1343,10 +1343,10 @@ func (s *supervision) architectHolds(ctx context.Context, held []supervise.Claim
 // The outbox walks again when the row runs, over the machines' live view (noticeArchitect), so a
 // notice whose architect ends between the two finishes undelivered, as every notice of the issue
 // does then, and so does one the listener refuses on every attempt, the architect's session not
-// advertising the delivery mode or the listener's own grant denying the forward, and one whose
-// architect's session confirmed none of its copies, queued again the most times a notice is; in
-// each, the outbox tells the controller of the round in its place (relayUpdateStalled): the round
-// is marked told once its rows are queued, so no later sweep would tell it.
+// advertising the delivery mode or the listener's own grant denying the forward, and one queued
+// again the most times a notice is, whatever re-held it; in each, the outbox tells the controller
+// of the round in its place (relayUpdateStalled): the round is marked told once its rows are
+// queued, so no later sweep would tell it.
 func (s *supervision) architectHears(ctx context.Context, c supervise.Claim) (bool, error) {
 	if s.plan.owner == nil {
 		return false, nil

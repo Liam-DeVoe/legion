@@ -481,11 +481,15 @@ re-admit nothing, set no status, and start nothing.
 ## `update-stalled on <KEY>` (`{kind: "update-stalled", reason, update}`)
 
 The update round over the issue's pod has passed its bound, and something still holds it: a
-suspension that holds, the operator's or yours, or an architect's where no architect can act on
-it, which the notice names with who can resume each claim; a refused pod replacement; no process
-in the pod; or two pods. An architect's suspension is told to the architect that owns the held
-claim instead, unless that architect's claim has failed or been retired, there is none, or the
-hold is over the tree root's own architect. Handle it as
+suspension that holds, the operator's or yours, or an architect's where no architect the daemon
+can reach can act on it, which the notice names with who can resume each claim; a refused pod
+replacement; no process in the pod; or two pods. An architect's suspension is told to the
+architect that owns the held claim instead, unless that architect's claim has failed or been
+retired, there is none, or the hold is over the tree root's own architect. It reaches you in that
+architect's place, too, where the daemon's notice to that architect ended undelivered in a tree
+that does not linger, whether or not that architect still runs: its claim ended before the
+delivery, its session does not advertise the delivery mode, the listener's NATS grant denies the
+forward, or the notice was queued again the most times a notice is. Handle it as
 `skill://legion-controller/references/escalation.md#an-update-round-that-is-not-finishing-update-stalled`
 says.
 
