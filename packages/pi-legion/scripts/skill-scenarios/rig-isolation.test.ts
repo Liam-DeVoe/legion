@@ -199,21 +199,45 @@ put(path.join(work, "services/dispatch-token"), "e2e-token\n");
 /** The tag rig.sh names the work directory's containers with. */
 const tag = `skill-scenarios-${new Bun.CryptoHasher("sha256").update(work).digest("hex").slice(0, 8)}`;
 
-/** The caller's PATH behind the stand-ins, a HOME of the test's own, and the caller's mise data
- * and config directories when the caller names them: jq is a mise shim on a devbox, which finds
- * nothing under a fresh HOME without them. A caller that names neither gets neither, so the
- * developer's own home decides nothing here. */
+/** The caller's PATH behind the stand-ins, a HOME of the test's own, and the caller's mise data,
+ * config and state directories when the caller uses mise: jq and bun are mise shims on a devbox,
+ * which find no tool under a fresh HOME without the data directory, no version for a shim without
+ * the config directory, where the global versions are set, and refuse that config as untrusted
+ * without the state directory, where mise keeps its record of trusted configs. A caller that names
+ * no mise data directory gets none of the three, so the developer's own home decides nothing
+ * here. */
 const miseData =
   process.env.MISE_DATA_DIR ??
   (process.env.XDG_DATA_HOME === undefined
     ? undefined
     : path.join(process.env.XDG_DATA_HOME, "mise"));
+/** One of the caller's mise directories: `named` where the caller names it, else `xdg`/mise where
+ *  the caller names that XDG directory, else `fallback` under the caller's HOME, and none where the
+ *  caller does not use mise. */
+function miseDir(named: string | undefined, xdg: string | undefined, fallback: string) {
+  if (named !== undefined) return named;
+  if (xdg !== undefined) return path.join(xdg, "mise");
+  const home = process.env.HOME;
+  return miseData === undefined || home === undefined ? undefined : path.join(home, fallback);
+}
+const miseConfig = miseDir(
+  process.env.MISE_CONFIG_DIR,
+  process.env.XDG_CONFIG_HOME,
+  ".config/mise"
+);
+const miseState = miseDir(
+  process.env.MISE_STATE_DIR,
+  process.env.XDG_STATE_HOME,
+  ".local/state/mise"
+);
 const env = {
   PATH: `${bin}:${process.env.PATH ?? ""}`,
   HOME: path.join(scratch, "home"),
   USER: process.env.USER ?? "rig",
   TMPDIR: scratch,
   ...(miseData === undefined ? {} : { MISE_DATA_DIR: miseData }),
+  ...(miseConfig === undefined ? {} : { MISE_CONFIG_DIR: miseConfig }),
+  ...(miseState === undefined ? {} : { MISE_STATE_DIR: miseState }),
   ...(process.env.XDG_CONFIG_HOME === undefined
     ? {}
     : { XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }),
