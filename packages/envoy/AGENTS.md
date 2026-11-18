@@ -1910,7 +1910,7 @@ a message parent is taken `for no key update` after its issue, `lockReplyParentM
 Every comment and message a route returns, and every `comment.*` and `message.*` event payload, carries `reply_block` (`model.ReplyBlock`:
 `node`, `ref`, absent for a direct message's block, which has no address, `block_id`, `text`, `removed`), null when the reply names no block, read in one batched query per kind (`refs.ReplyBlocks`, `hydrateCommentReplyBlocks`, `hydrateMessageReplyBlocks`):
 `text` is the block's stored excerpt, which a removal keeps, so a block an edit removed reads the last text it held, and `removed` is true while no current revision holds it;
-a block of an item its author deleted reads removed with no text, and carries the item's `deleted_at` and `deleted_by` (`refs.ReplyBlocks`).
+in a route's answer a block of an item its author deleted reads removed with no text, and carries the item's `deleted_at` and `deleted_by` (`refs.ReplyBlocks`), while an event payload written before the delete keeps the block as that write froze it.
 A message reply naming a block carries that block's text as `reply_body` in place of its parent's.
 A reply naming no block answers the whole item, as before.
 

@@ -41,11 +41,13 @@ import (
 //     instead: a different request under the key is 422 KEY_REUSED, naming the request that used
 //     it; a first request still running (its lease, IdempotencyLease, renewed every
 //     keyedLeaseRenewal while it runs) is 409 KEY_IN_FLIGHT with Retry-After: 1; a finished one is
-//     replayed, its stored status and body with Idempotency-Replayed: ?1, and the handler does not
-//     run again - unless the answer names a comment or a message that is deleted now, or a
-//     document a deleted comment anchors on (answerEndedByDelete), whenever the delete began, and
-//     is then never replayed: a delete is timed from before it waited for the lock a keyed write
-//     may hold, so no time says which of the two read the post first. A repeat that arrives while
+//     answered with Idempotency-Replayed: ?1, and the handler does not run again. A route that
+//     commits a recovery point answers what it made, read now (keyedReplays); a route whose answer
+//     is one comment or issue message answers that post, read now (keyedRereads); any other
+//     answers its stored status and body - unless that answer names a comment or a message that
+//     is deleted now, or a document a deleted comment anchors on (answerEndedByDelete), whenever
+//     the delete began, and is then never replayed: a delete is timed from before it waited for
+//     the lock a keyed write may hold, so no time says which of the two read the post first. A repeat that arrives while
 //     its first request still runs is never spooled (requestKeyInFlight): its body is read off the
 //     connection and discarded, and the repeat is judged by its digest once that body has
 //     arrived, by what the key holds then (answerDrainedRepeat).
@@ -166,9 +168,10 @@ type keyedReread func(s *server, w http.ResponseWriter, r *http.Request, id stri
 // (answerEndedByDelete). The creates are not here: each commits a recovery point and is answered
 // from it (keyedReplays). An answer that is no post - a delivery attempt, which a
 // delivery retry answers and a reply route answers for an error report - holds no body, and is
-// replayed as it was kept (keyedAnswerPost). So is the accept of a delivery, which holds the body
-// of a direct message: only a message on an issue is edited or deleted
-// (lockedMessageForCorrection), so that body is the one the message holds. Each key names a
+// replayed as it was kept (keyedAnswerPost) unless the post it names is deleted
+// (answerEndedByDelete). So is the accept of a delivery, which holds the body of a direct
+// message: only a message on an issue is edited or deleted (lockedMessageForCorrection), so that
+// body is the one the message holds. Each key names a
 // registered route (TestEveryKeyedRouteTableNamesARoute).
 var keyedRereads = map[string]keyedReread{
 	http.MethodPatch + " /api/v1/comments/{id}":        (*server).rereadComment,

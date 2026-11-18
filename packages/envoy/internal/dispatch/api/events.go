@@ -456,13 +456,14 @@ type postKey struct {
 // payload's body anyway.
 //
 // The frozen previews of another post stay, as the delete leaves them: the reply_body and the
-// reply_block.text of a message reply's message.answered and of every later event of that reply
-// (its message.edited and message.deleted), and the reply_block.text of a comment reply's
-// comment.created or comment.answered and of every later event of that reply. Each is part of an
-// event of the post that quoted it, and only the quoted post's own events are marked here. So
-// are the document events of an accepted suggestion, which are no event of the post: the
-// accept's artifact.version, and an artifact.renamed or artifact.removed written before the
-// delete, which carry every version, keep the name the accept gave the version.
+// reply_block.text of a message reply's message.answered and of each later event of that reply
+// written before the delete (its message.edited and message.deleted), and the reply_block.text of
+// a comment reply's comment.created or comment.answered and of each later event of that reply
+// written before the delete. An event of the reply written after the delete carries no text of
+// it. Each is part of an event of the post that quoted it, and only the quoted post's own events
+// are marked here. So are the document events of an accepted suggestion, which are no event of
+// the post: the accept's artifact.version, and an artifact.renamed written before the delete,
+// which carries every version, keep the name the accept gave the version.
 func (s *server) attachPostMarks(ctx context.Context, events []model.Event) error {
 	// The ids the page names, by the kind of post each is an id of; that kind names the table
 	// readPostMarks reads it in.

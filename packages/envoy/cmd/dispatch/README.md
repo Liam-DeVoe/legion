@@ -3353,7 +3353,7 @@ Each item below names a status and code, then its meaning.
 
 - The first status with `ANSWER_NOT_KEPT`
 
-  That repeat, when the first answer was larger than the 1 MiB a key keeps, or names a comment or an issue message that is deleted, or a document a deleted comment was anchored on, since such an answer may hold text the delete withdrew:
+  That repeat, when the first answer was larger than the 1 MiB a key keeps, or, on any route but the eight above and the four kinds of write that keep a recovery point (below), names a comment or an issue message that is deleted, or a document a deleted comment was anchored on, since such an answer may hold text the delete withdrew:
   the write ran, and the caller reads what it wrote again.
 
 - `409 KEY_IN_FLIGHT`, `Retry-After: 1`
