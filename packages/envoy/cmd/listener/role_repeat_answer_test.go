@@ -144,29 +144,47 @@ func TestARolePublishRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy(t *testi
 		}
 	})
 
-	t.Run("control: a repeat to a role nobody claims answers 202 with the kept copy", func(t *testing.T) {
+	// keptRole publishes twice under one key to a role nobody claims, the second time with a body of
+	// its own, and returns both 202 answers and the copy the role's kept lane holds.
+	keptRole := func(t *testing.T) (first, repeat heldAnswer, kept contracts.Envelope) {
+		t.Helper()
 		role := "role-repeat-unclaimed-" + id.New()
 		sender := "ses_role_repeat_unclaimed_sender_" + id.New()
 		key := map[string]any{"idempotency_key": uuid.NewString()}
-		first := held(t, rig.publishFrom(t, sender, contracts.RoleTopicPrefix+role, key))
-		repeat := held(t, rig.publishFrom(t, sender, contracts.RoleTopicPrefix+role,
+		first = held(t, rig.publishFrom(t, sender, contracts.RoleTopicPrefix+role, key))
+		repeat = held(t, rig.publishFrom(t, sender, contracts.RoleTopicPrefix+role,
 			map[string]any{"idempotency_key": key["idempotency_key"], "message": "the repeat's own body"}))
-		kept := heldCopy(t, rig.harness.client, bus.KeptRoleSubject(role))
-		for _, answer := range []struct {
-			what      string
-			duplicate bool
-			heldAnswer
-		}{{"the first publish to the unclaimed role", false, first}, {"the repeated publish to the unclaimed role", true, repeat}} {
-			answer.requireStatus(t, answer.what, http.StatusAccepted)
-			if !reflect.DeepEqual(answer.envelope, kept) {
-				t.Fatalf("%s answered %+v, want the kept copy field for field: %+v", answer.what, answer.envelope, kept)
-			}
-			var fields struct {
-				Kept bool `json:"kept"`
-			}
-			if err := json.Unmarshal([]byte(answer.raw), &fields); err != nil || !fields.Kept || answer.Duplicate != answer.duplicate {
-				t.Fatalf("%s answered %s (%v), want kept: true and duplicate %t", answer.what, answer.raw, err, answer.duplicate)
-			}
+		return first, repeat, heldCopy(t, rig.harness.client, bus.KeptRoleSubject(role))
+	}
+	// requireKept fails unless answer is a 202 with kept: true whose envelope is kept, field for
+	// field, and whose duplicate is duplicate.
+	requireKept := func(t *testing.T, what string, answer heldAnswer, kept contracts.Envelope, duplicate bool) {
+		t.Helper()
+		answer.requireStatus(t, what, http.StatusAccepted)
+		if !reflect.DeepEqual(answer.envelope, kept) {
+			t.Fatalf("%s answered %+v, want the kept copy field for field: %+v", what, answer.envelope, kept)
 		}
+		var fields struct {
+			Kept bool `json:"kept"`
+		}
+		if err := json.Unmarshal([]byte(answer.raw), &fields); err != nil || !fields.Kept || answer.Duplicate != duplicate {
+			t.Fatalf("%s answered %s (%v), want kept: true and duplicate %t", what, answer.raw, err, duplicate)
+		}
+	}
+
+	// The keep already answered a repeat with its kept copy before this change (roleSend.kept), so
+	// this row holds at main and with the change.
+	t.Run("control: a publish and its repeat to a role nobody claims answer 202 with the kept copy", func(t *testing.T) {
+		first, repeat, kept := keptRole(t)
+		requireKept(t, "the first publish to the unclaimed role", first, kept, false)
+		repeat.requireStatus(t, "the repeated publish to the unclaimed role", http.StatusAccepted)
+		if repeat.envelope.EventID != kept.EventID || repeat.envelope.PayloadSummary != kept.PayloadSummary {
+			t.Fatalf("the repeated publish to the unclaimed role answered %s, want the kept copy %+v", repeat.raw, kept)
+		}
+	})
+
+	t.Run("case: a repeat to a role nobody claims answers 202 with the kept copy and duplicate", func(t *testing.T) {
+		_, repeat, kept := keptRole(t)
+		requireKept(t, "the repeated publish to the unclaimed role", repeat, kept, true)
 	})
 }
