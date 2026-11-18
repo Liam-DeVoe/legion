@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -2824,6 +2825,34 @@ func (s *Postgres) HeldRows(ctx context.Context, tx pgx.Tx, project, issue strin
 		return nil, fmt.Errorf("list the held outbox rows of %s: %w", project, err)
 	}
 	return held, nil
+}
+
+// StartsWaitingForPod is, for each issue of project, the roles whose start row waits because the
+// issue's pod was built before the deployment defined them: a supervise start whose last error
+// begins with pods.StartWaitsForPodPrefix (the outbox's roleWaitsForItsPod writes it; the idle
+// view's startWaitsForPodRow reads the same rows). Each role once, in the order of its rows.
+func (s *Postgres) StartsWaitingForPod(ctx context.Context, tx pgx.Tx, project string) (map[string][]claim.Role, error) {
+	rows, err := tx.Query(ctx, `select issue, payload->>'role' from outbox
+		where split_part(issue, '-', 1) = $1 and kind = 'supervise' and payload->>'op' = 'start'
+		and starts_with(coalesce(last_error, ''), $2) order by id`, project, pods.StartWaitsForPodPrefix)
+	if err != nil {
+		return nil, fmt.Errorf("list the starts of %s that wait for their pod: %w", project, err)
+	}
+	defer rows.Close()
+	waiting := map[string][]claim.Role{}
+	for rows.Next() {
+		var issue, role string
+		if err := rows.Scan(&issue, &role); err != nil {
+			return nil, fmt.Errorf("list the starts of %s that wait for their pod: %w", project, err)
+		}
+		if !slices.Contains(waiting[issue], claim.Role(role)) {
+			waiting[issue] = append(waiting[issue], claim.Role(role))
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list the starts of %s that wait for their pod: %w", project, err)
+	}
+	return waiting, nil
 }
 
 func (s *Postgres) WaitingNotices(ctx context.Context, tx pgx.Tx, project string, now time.Time) ([]OutboxRow, error) {
