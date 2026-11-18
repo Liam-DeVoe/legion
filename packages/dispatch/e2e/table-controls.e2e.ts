@@ -25,6 +25,7 @@ import {
   toggleAgentGroup,
 } from "./agents";
 import {
+  answerAsk,
   createAgentMessage,
   createAsk,
   createComment,
@@ -6226,6 +6227,89 @@ test("Add a priority opens its form in view with the focus on Priority to advanc
       if (placed !== "whole") {
         wrong.push(`${at}: Priority to advance stands ${placed}, out of the window or the rail`);
       }
+    }
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+// SLOW(>=2s): one issue's Conversation at two widths, its decided ask changed four times.
+// INFRA-3135, round 14 (the tester's, measured in builds Job infra-3135-r14flake at aa057a19):
+// Change answer on a decided ask takes itself away and puts the answer form in its place, as
+// Add a priority's + does, and the page's rescue decides where the focus lands. At the merge
+// base d85d81e6 the focus falls to the body in all three engines; at aa057a19 Chromium puts it
+// on the turn's 'Open live conversation' link, and Firefox and WebKit on the session button or
+// Pin, scrolling the page 65 px at 1440 on a click, so it lands on a control the reader did not
+// press and that differs by engine. The architect's hand-off ruling (2026-11-18T11:17Z) gives the
+// landing: the control now at the pressed one's place, the form's own first control. A focused
+// control taken away, for which these engines fire no `focusout`: the clause of the `webkit`
+// and `firefox` projects that names the page-own focus row (e2e/playwright.config.ts). By a
+// press of Enter and by a click, at 1440 and 390: the focus is in the answer form, whose first
+// choice stands whole in the window.
+test("Change answer opens the answer form with the focus in it, at 1440 and 390 @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Release train" });
+  const ask = await createAsk(
+    issue.key,
+    { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship it?" },
+    SURFACE_SESSION
+  );
+  await answerAsk(ask.id, { expected_edited_at: null, selected: ["Ship"] });
+  const wrong: string[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    for (const press of ["Enter", "click"] as const) {
+      const at = `${size.width}x${size.height}, by ${press}`;
+      await page.goto(`/issues/${issue.key}/conversation`);
+      const turn = page.locator(`[data-turn="ask:${ask.id}"]`);
+      await expect(turn).toContainText("Answered by alice");
+      const change = turn.getByRole("button", { name: "Change answer" });
+      await change.scrollIntoViewIfNeeded();
+      if (press === "Enter") {
+        await change.focus();
+        await page.keyboard.press("Enter");
+      } else {
+        await change.click();
+      }
+      const form = turn.locator("form").filter({ has: page.getByRole("radio", { name: "Ship" }) });
+      await expect(form, `${at}: Change answer opened no answer form`).toBeVisible();
+      const inForm = await expect(form.locator(":focus"))
+        .toHaveCount(1)
+        .then(
+          () => true,
+          () => false
+        );
+      if (!inForm) {
+        const holder = await page.evaluate(
+          () =>
+            `${document.activeElement?.tagName.toLowerCase()} "${document.activeElement?.getAttribute("aria-label") ?? document.activeElement?.textContent?.trim().slice(0, 40)}"`
+        );
+        wrong.push(`${at}: the focus is on ${holder}, not in the answer form`);
+      }
+      const ship = form.getByRole("radio", { name: "Ship" });
+      const whole = await expect
+        .poll(() =>
+          ship.evaluate((node) => {
+            const box = node.getBoundingClientRect();
+            return (
+              box.top >= 0 &&
+              box.bottom <= window.innerHeight &&
+              box.left >= 0 &&
+              box.right <= window.innerWidth
+            );
+          })
+        )
+        .toBe(true)
+        .then(
+          () => true,
+          () => false
+        );
+      if (!whole) wrong.push(`${at}: the form's first choice, Ship, is not whole in the window`);
     }
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
