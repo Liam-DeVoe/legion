@@ -2,9 +2,9 @@
 -- run of an issue carries out onto Dispatch (plan_record), when the run's work starts.
 --
 -- The row rides the record lane (internal/record's LaneRecord) beside the step records, so a
--- Dispatch that is slow to take a plan, or that backs one off until it has the route, holds no other
--- row of the issue, and it does not hold the issue's pod (it is not among the store's
--- idleWaitingKinds): a record is history, and the work it records never waits for it.
+-- Dispatch that is slow to take a plan, or that backs one off until it has the route, holds no
+-- status write, notice or start of the issue, and it does not hold the issue's pod (it is not among
+-- the store's idleWaitingKinds): a record is history, and the work it records never waits for it.
 --
 -- The check is one list, so the migration that sets it names every kind, as 20261117000528 did:
 -- its twenty-six kinds, which are the kinds the daemon writes, role_holders_publish and
