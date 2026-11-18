@@ -141,12 +141,26 @@ check_boot_without_answers() {
   note "with answers removed: $lines registry, loop or other-route 404 lines this boot (want 0); heartbeat-route lines $beats"
   [ "$lines" = 0 ]
 }
-# bad_cost_lines LINES: the `answers: answered` LINES (one JSON object a line) whose costUSD is not
-# the configured price of the tokens they report, cache writes and cache reads included. `[]` says
-# every one of them recomputes.
+# cost_price is jq's price table of the models the run answers on and prices (answer-loop.sh's
+# answers_prices), USD per million tokens as [input, output, cache write, cache read]: Claude
+# Sonnet 5.5, whichever harness names it, and GPT-6.1; null for any other model.
+cost_price='def cost_price: (.model // "") as $m
+  | if ($m | test("claude-sonnet-5-5")) then [3, 15, 3.75, 0.3]
+    elif $m == "openai/gpt-6.1-sol" then [2, 10, 2.5, 0.1]
+    else null end; '
+# bad_cost_lines LINES: the `answers: answered` LINES (one JSON object a line) of a model cost_price
+# prices whose costUSD is not the price of the tokens they report, cache writes and cache reads
+# included. `[]` says every one of them recomputes. A line of another model is not judged here;
+# unpriced_cost_lines names it.
 bad_cost_lines() {
-  jq -s -c '[.[] | select(((.model // "") | test("claude-sonnet-5-5")))
-    | select(((((.inputTokens // 0) * 3) + ((.outputTokens // 0) * 15) + ((.cacheWriteTokens // 0) * 3.75) + ((.cacheReadTokens // 0) * 0.3)) / 1000000 - (.costUSD // 0) | fabs) > 0.000001)]' <<<"${1:-}"
+  jq -s -c "$cost_price"'[.[] | cost_price as $p | select($p != null)
+    | select(((((.inputTokens // 0) * $p[0]) + ((.outputTokens // 0) * $p[1]) + ((.cacheWriteTokens // 0) * $p[2]) + ((.cacheReadTokens // 0) * $p[3])) / 1000000 - (.costUSD // 0) | fabs) > 0.000001)]' <<<"${1:-}"
+}
+# unpriced_cost_lines LINES: those of the `answers: answered` LINES whose model cost_price does not
+# price, each as {question, model}, so no cost of theirs is recomputed. `[]` says every line is of
+# a model A14 recomputes.
+unpriced_cost_lines() {
+  jq -s -c "$cost_price"'[.[] | select(cost_price == null) | {question, model}]' <<<"${1:-}"
 }
 # cache_read_tokens LINE: the tokens an `answers: answered` LINE read from the provider's cache, 0
 # for a line that reports none and for no line at all.
@@ -313,6 +327,57 @@ transcript_signatures() {
 transcript_thinking() {
   jq -R -s '[split("\n")[] | fromjson? | select(.type == "assistant") | .message.content[]? | select(.type? == "thinking")] | length' <<<"${1:-}"
 }
+# omp_thinking_level TRANSCRIPT: the thinking level an Oh My Pi conversation last ran at, as the
+# loop's reader reads it (conversation/omp's buildContext): its last thinking_level_change, `off`
+# for a change that names no level and for a conversation with no change at all.
+omp_thinking_level() {
+  local level
+  level=$(jq -R -s -r '[split("\n")[] | fromjson? | objects | select(.type == "thinking_level_change")]
+    | last | if . == null then "off" else (.thinkingLevel // "off") end' <<<"${1:-}" 2>/dev/null) || level=
+  printf '%s\n' "${level:-off}"
+}
+# omp_turns holds two jq definitions over an Oh My Pi session's raw text: assistant_turns, its
+# assistant messages in order, and failed, a turn the loop's reader drops, one that ended aborted
+# or in error (conversation/omp's dropFailedTurns), with what it said and asked.
+# openai_reasoning's encrypted_reasoning reads an OpenAI reasoning item, as an Oh My Pi turn stores
+# it, a Responses request carries it or a response returns it: {id, encrypted_content} for an
+# object of type `reasoning` with both, which is the only kind a stateless call can carry back,
+# and nothing for anything else.
+omp_turns='def assistant_turns: [split("\n")[] | fromjson? | objects
+  | select(.type == "message" and .message.role? == "assistant") | .message];
+def failed: (.stopReason? // "") | IN("aborted", "error"); '
+openai_reasoning='def encrypted_reasoning: objects
+  | select(.type? == "reasoning" and (.id? | type) == "string" and (.encrypted_content? | type) == "string")
+  | {id, encrypted_content}; '
+# omp_reasoning_items TRANSCRIPT prints, as one JSON array, the OpenAI reasoning items an Oh My Pi
+# conversation's assistant turns store, each as {id, encrypted_content}: the items of type
+# `reasoning` in a turn's providerPayload (an openaiResponsesHistory), those with both an id and
+# encrypted content, which the loop's replay must carry as they are stored. A failed turn's items
+# are none of them, since the loop's reader drops that turn. `[]` for none.
+omp_reasoning_items() {
+  local items
+  items=$(jq -R -s -c "$omp_turns$openai_reasoning"'[assistant_turns[] | select(failed | not)
+    | (.providerPayload.items? // [])[]? | encrypted_reasoning]' <<<"${1:-}" 2>/dev/null) || items=
+  printf '%s\n' "${items:-[]}"
+}
+# omp_openai_summary TRANSCRIPT: what an Oh My Pi conversation's own turns hold, as one JSON object:
+# how many assistant turns and how many of them failed (omp_turns), the distinct
+# `<provider>/<api>/<model>` they ran on, and, of the turns that did not fail, the tool calls and
+# the OpenAI reasoning items, all of them (`reasoning`) and those with an id and encrypted content
+# (`encrypted`, omp_reasoning_items). A GPT-6.1 transcript whose `encrypted` or `tool_calls` is 0
+# leaves A10's GPT-6.1 clause short of what it replays, which the check reads as a FAIL.
+omp_openai_summary() {
+  local summary
+  summary=$(jq -R -s -c "$omp_turns$openai_reasoning"'assistant_turns as $all | [$all[] | select(failed | not)] as $turns
+    | [$turns[] | (.providerPayload.items? // [])[]? | objects | select(.type? == "reasoning")] as $reasoning
+    | {turns: ($all | length), failed: ([$all[] | select(failed)] | length),
+       models: ([$all[] | [.provider, .api, .model] | map(. // "-") | join("/")] | unique),
+       tool_calls: ([$turns[] | .content[]? | objects | select(.type == "toolCall")] | length),
+       reasoning: ($reasoning | length), encrypted: ([$reasoning[] | encrypted_reasoning] | length)}' \
+    <<<"${1:-}" 2>/dev/null) || summary=
+  [ -n "$summary" ] || summary='{"turns":0,"failed":0,"models":[],"tool_calls":0,"reasoning":0,"encrypted":0}'
+  printf '%s\n' "$summary"
+}
 # answer_question_id REPLY prints the question id of the loop's answer REPLY: the id in the
 # `<!-- legion-answer:<id> -->` marker every reply the loop posts carries (intake.AnswerMarker).
 # A reply carrying no marker, and no reply at all, print nothing.
@@ -405,14 +470,17 @@ stored_for_stopped() {
 # jq's own empty answer and the fallback's after it, two lines where a check reads one.
 #
 # proxy_count LABEL: how many model calls of LABEL the recording proxy has finished. A model call
-# is a request whose body holds a messages array: the proxy records every request of a label, and
-# two of them are no call of the model — Claude Code's `HEAD /api/hello` reachability preflight,
-# which it sends as each session starts, and an Oh My Pi agent's `GET /v1/models`, both with no
-# body at all. (A10 counted those too, so the resumed Claude Code reviewer's "first request" was
-# the preflight, which holds no question.)
+# is a request whose body holds a messages array (Anthropic's Messages API) or an input array
+# (OpenAI's Responses API), which jq's model_call below tests: the proxy records every request of a
+# label, and two of them are no call of the model — Claude Code's `HEAD /api/hello` reachability
+# preflight, which it sends as each session starts, and an Oh My Pi agent's `GET /v1/models`, both
+# with no body at all. (A10 counted those too, so the resumed Claude Code reviewer's "first
+# request" was the preflight, which holds no question.)
+model_call='def model_call: (.request_body | type) == "object"
+  and (((.request_body.messages | type) == "array") or ((.request_body.input | type) == "array")); '
 proxy_count() {
   local count
-  count=$(jq -s --arg l "$1" '[.[] | select(.label == $l and (.request_body | type) == "object" and (.request_body.messages | type) == "array")] | length' \
+  count=$(jq -s --arg l "$1" "$model_call"'[.[] | select(.label == $l and model_call)] | length' \
     "$evidence/model-calls.jsonl" 2>/dev/null) || count=
   printf '%s\n' "${count:-0}"
 }
@@ -430,9 +498,104 @@ proxy_ordinal() {
 # the label are no model call of it, and neither is the body a check reads here.
 first_request_after() {
   local body
-  body=$(jq -s -c --arg l "$1" --argjson n "${2:-0}" '[.[] | select(.label == $l and (.request_body | type) == "object" and (.request_body.messages | type) == "array")] | sort_by(.ordinal) | (.[$n].request_body // null)' \
+  body=$(jq -s -c --arg l "$1" --argjson n "${2:-0}" "$model_call"'[.[] | select(.label == $l and model_call)] | sort_by(.ordinal) | (.[$n].request_body // null)' \
     "$evidence/model-calls.jsonl" 2>/dev/null) || body=
   printf '%s\n' "${body:-null}"
+}
+# answer_calls LABEL MARKER [LATER] prints, as one JSON array in ordinal order, the proxy's records
+# of LABEL's model calls whose request body holds MARKER and not LATER: the calls of the one answer
+# MARKER's question was (A10's GPT-6.1 clause). Every call of an answer carries its question, and
+# every call of a later answer carries the exchange the loop appended for it, that question's
+# marker with it, so LATER, the next question's own marker, leaves the later answer's calls out.
+# `[]` for none.
+answer_calls() {
+  local calls
+  calls=$(jq -s -c --arg l "$1" --arg m "$2" --arg later "${3:-}" "$model_call"'[.[] | select(.label == $l and model_call)
+    | select((.request_body | tostring) as $b | ($b | contains($m)) and ($later == "" or ($b | contains($later) | not)))]
+    | sort_by(.ordinal)' "$evidence/model-calls.jsonl" 2>/dev/null) || calls=
+  printf '%s\n' "${calls:-[]}"
+}
+# calls_on_model CALLS PATH MODEL: CALLS (answer_calls) are at least one call, and each is a POST
+# to PATH whose request names MODEL: the answer was made on that API and on that model.
+calls_on_model() {
+  jq -e --arg p "$2" --arg m "$3" \
+    'type == "array" and length > 0 and all(.[]; .method == "POST" and .path == $p and .request_body.model? == $m)' \
+    <<<"${1:-null}" >/dev/null 2>&1
+}
+# calls_efforts CALLS prints the reasoning effort each of CALLS' requests carries, OpenAI's
+# `reasoning.effort`, as one JSON array in call order, null for a request that carries none.
+# efforts_all CALLS EFFORT: CALLS are at least one call, and every request carries EFFORT.
+calls_efforts() {
+  local efforts
+  efforts=$(jq -c '[(if type == "array" then .[] else empty end) | (.request_body.reasoning.effort? // null)]' \
+    <<<"${1:-null}" 2>/dev/null) || efforts=
+  printf '%s\n' "${efforts:-[]}"
+}
+efforts_all() {
+  jq -e --arg e "$2" 'length > 0 and all(.[]; . == $e)' <<<"$(calls_efforts "$1")" >/dev/null 2>&1
+}
+# reasoning_replayed TRANSCRIPT REQUEST prints `<carried> <stored> [<missing>]`: how many reasoning
+# items an Oh My Pi TRANSCRIPT stores (omp_reasoning_items), how many of them REQUEST, the body of
+# an OpenAI Responses call, carries as a reasoning input item with that id and that encrypted
+# content, byte for byte, and the ids of those it does not carry, joined by commas. The replay
+# holds when the transcript stores some and the request carries each one; `0 0` is a transcript
+# that stores none and leaves nothing to replay. The two go to jq on its standard input, never as
+# arguments: a conversation's encrypted content outgrows one. A request that is no JSON carries
+# none of them.
+reasoning_replayed() {
+  local stored answer
+  stored=$(omp_reasoning_items "$1")
+  answer=$(jq -n -r "$openai_reasoning"'(input) as $stored | (input) as $request
+    | [$request | .. | encrypted_reasoning] as $sent
+    | [$stored[] | select(. as $item | any($sent[]; . == $item) | not) | .id] as $missing
+    | "\(($stored | length) - ($missing | length)) \($stored | length) \($missing | join(","))"' \
+    <<<"${stored:-[]}"$'\n'"${2:-null}" 2>/dev/null) ||
+    answer=$(jq -r '"0 \(length) \(map(.id) | join(","))"' <<<"${stored:-[]}" 2>/dev/null) || answer=
+  answer=${answer% }
+  printf '%s\n' "${answer:-0 0}"
+}
+# reasoning_carried CALLS prints `<carried> <owed>` for one answer's model calls (answer_calls):
+# owed counts each reasoning item a call's response returned, paired with each later call of the
+# answer, and carried the pairs whose later request holds a reasoning item of that id with that
+# encrypted content. What a response returned is what its `response.output_item.done` events hold:
+# the SDK's stream adapter builds the next step's reasoning from that event
+# (grafana/ai-sdk providers/openai, stream_adapter.go, handleOutputItemDone), and agentloop keeps
+# the same items as the step's Step.Native (packages/envoy/agentloop/run.go, readRaw), which the
+# append stores. The proxy keeps a streamed answer as the text it streamed, which also holds each
+# item in `response.output_item.added`, shorter, and in `response.completed`, whose encrypted
+# content differs from the done event's (measured through the model gateway on 2026-11-18):
+# neither is what the next step carries. The answer's last call has no later one, so what it alone
+# returned is owed nowhere, and `0 0` says no step but the last returned reasoning at all.
+reasoning_carried() {
+  local answer
+  answer=$(jq -r "$openai_reasoning"'def returned:
+      if type == "string" then
+        [split("\n")[] | rtrimstr("\r") | select(startswith("data:")) | ltrimstr("data:") | ltrimstr(" ")
+          | fromjson? | objects | select(.type == "response.output_item.done") | .item | encrypted_reasoning]
+      else [] end;
+    def sent: [.request_body | .. | encrypted_reasoning];
+    (if type == "array" then . else [] end) as $calls
+    | [range($calls | length) as $i | ($calls[$i].response_body | returned)[] as $item
+        | range($i + 1; $calls | length) as $j | ($calls[$j] | sent) | any(.[]; . == $item)]
+    | "\(map(select(.)) | length) \(length)"' <<<"${1:-[]}" 2>/dev/null) || answer=
+  printf '%s\n' "${answer:-0 0}"
+}
+# call_cached_tokens CALL prints the input tokens the model read from the provider's cache for one
+# OpenAI Responses call, a record of the proxy (answer_calls): the response's own
+# usage.input_tokens_details.cached_tokens, off the `response.completed` event of a streamed
+# answer or off the response itself. 0 for a call that reports none and for no call at all. It is
+# the one call's read, where an `answers: answered` line's cacheReadTokens sums every call of the
+# answer, and a later call of an answer reads what an earlier call of that same answer wrote.
+call_cached_tokens() {
+  local tokens
+  tokens=$(jq -r '(.response_body? // null)
+    | if type == "string" then
+        [split("\n")[] | rtrimstr("\r") | select(startswith("data:")) | ltrimstr("data:") | ltrimstr(" ")
+          | fromjson? | objects | select(.type == "response.completed")
+          | (.response.usage.input_tokens_details.cached_tokens? // 0)] | last // 0
+      elif type == "object" then (.usage.input_tokens_details.cached_tokens? // 0)
+      else 0 end' <<<"${1:-null}" 2>/dev/null) || tokens=
+  printf '%s\n' "${tokens:-0}"
 }
 # daemon_call_for TEXT prints the proxy's record of the loop's first model call (this store's daemon
 # label) whose request body holds TEXT, `null` for none, and daemon_request_for TEXT that call's
@@ -486,6 +649,43 @@ request_effort() {
   local effort
   effort=$(jq -r '[.. | objects | .effort? // empty] | first // ""' <<<"${1:-null}" 2>/dev/null) || effort=
   printf '%s\n' "$effort"
+}
+# openai_effort LEVEL: the reasoning effort the loop asks of an OpenAI model for a conversation at
+# thinking LEVEL (agentloop's openaiEffort): `none` for `off`, which both of OpenAI's protocols
+# name so, and every other level as it is.
+openai_effort() {
+  if [ "${1:-off}" = off ]; then
+    printf 'none\n'
+  else
+    printf '%s\n' "$1"
+  fi
+}
+
+# ---- the model route's answer ---------------------------------------------------------------------
+# preflight_refusal CODE BODY [KEY] prints how the model route refused answer-loop.sh's GPT-6.1
+# preflight (gpt_preflight), from the HTTP status CODE its POST /v1/responses answered (or curl's
+# `unreachable (curl exited N)` where nothing answered) and the file BODY that holds the answer,
+# and prints nothing where the route served the model: 200 with a response whose status is
+# `completed`. A refusal says `answered <code>`, the response's own status where it has one, and
+# the message the body's error gives — `error.message` in OpenAI's and LiteLLM's shape, a bare
+# `error` string, or `message` or `detail` — on one line, cut to 300 characters. What a LiteLLM
+# refusal says of the key it was sent, its masked tail and its hash (`Received API Key = sk-...abcd,
+# Key Hash (Token) =<hex>`), is left out of it, and so is KEY itself wherever the message echoes
+# it, before the cut, so that no head of a long key is left where the cut fell inside it.
+preflight_refusal() {
+  local code=$1 body=$2 key=${3:-} status message
+  status=$(jq -r '.status? | strings' "$body" 2>/dev/null) || status=
+  [ "$code" != 200 ] || [ "$status" != completed ] || return 0
+  message=$(jq -r '((.error?.message? | strings) // (.error? | strings) // (.message? | strings) // (.detail? | strings) // empty)
+    | gsub("(?i)api key = [^, ]*"; "API key = <left out>") | gsub("(?i)key hash \\(token\\) = ?[0-9a-f]*"; "key hash <left out>")' \
+    "$body" 2>/dev/null) || message=
+  message=${message//[$'\r\n\t']/ }
+  [ -z "$key" ] || message=${message//"$key"/<the key>}
+  case "$code" in
+    [0-9][0-9][0-9]) printf 'answered %s' "$code" ;;
+    *) printf '%s' "$code" ;;
+  esac
+  printf '%s%s\n' "${status:+, response status $status}" "${message:+: ${message:0:300}}"
 }
 
 # ---- the questions file ---------------------------------------------------------------------------

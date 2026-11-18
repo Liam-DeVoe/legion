@@ -50,6 +50,9 @@ const branchOnlyEvidence = join(dir, "branch-only-evidence");
  * the base's with `kept_until` left out, and its Dispatch delivery names no envelope where the
  * base's names one. */
 const presenceEvidence = join(dir, "presence-evidence");
+/** A run's proxy records of A10's GPT-6.1 clause: the preflight, the daemon's two answers to the
+ * merger (the first of two calls, the second of one), and the resumed merger's own calls. */
+const gptEvidence = join(dir, "gpt-evidence");
 
 beforeAll(() => {
   writeFileSync(daemonLog, bootOne + bootTwo);
@@ -73,6 +76,8 @@ beforeAll(() => {
     recursive: true,
   });
   cpSync(join(data, "a13"), join(presenceEvidence, "a13"), { recursive: true });
+  mkdirSync(gptEvidence, { recursive: true });
+  cpSync(join(data, "model-calls-gpt.jsonl"), join(gptEvidence, "model-calls.jsonl"));
   const presence = join(presenceEvidence, "a13", "branch", "files");
   const basePublish = JSON.parse(
     readFileSync(join(data, "a13", "base", "files", "publish.body"), "utf8")
@@ -94,6 +99,8 @@ const conversations = {
   snapcompact: join(data, "omp-architect-snapcompact.jsonl"),
   reviewer: join(data, "claude-reviewer.jsonl"),
   plain: join(data, "claude-reviewer-plain.jsonl"),
+  gpt: join(data, "omp-gpt.jsonl"),
+  gptPlain: join(data, "omp-gpt-plain.jsonl"),
 };
 /** The same Oh My Pi conversation as the session table holds it: one row, its parts joined. */
 const sessionRows = JSON.stringify([{ text: readFileSync(conversations.architect, "utf8") }]);
@@ -124,6 +131,7 @@ empty_evidence=${shq(emptyEvidence)}
 bare_evidence=${shq(bareEvidence)}
 branch_only_evidence=${shq(branchOnlyEvidence)}
 presence_evidence=${shq(presenceEvidence)}
+gpt_evidence=${shq(gptEvidence)}
 daemon_log=${shq(daemonLog)}
 empty_log=${shq(emptyLog)}
 quiet_log=${shq(join(data, "daemon-no-answers-quiet.log.txt"))}
@@ -146,6 +154,8 @@ declare -A agent=(
   [files:snapcompact.file]=${shq(conversations.snapcompact)}
   [files:pre_change.file]=${shq(conversations.reviewer)}
   [files:plain.file]=${shq(conversations.plain)}
+  [files:gpt.file]=${shq(conversations.gpt)}
+  [files:gpt_plain.file]=${shq(conversations.gptPlain)}
   [files:empty.file]=${shq(emptyConversation)}
   [files:gone.file]=${shq(goneConversation)}
   [postgres:architect.file]=${shq(conversations.architect)}
@@ -165,6 +175,26 @@ function read(body: string): { code: number; text: string } {
   const result = run(body);
   return { code: result.code, text: result.out.replace(/\n$/, "") };
 }
+
+/** An `answers: answered` line of an answer on GPT-6.1, with the attributes the loop logs and the
+ * cache counts it logged for the second of two answers through the model gateway on 2026-11-18,
+ * its cache reads summed over its calls. Its costUSD is its tokens at GPT-6.1's prices. */
+const gptLine = {
+  time: "2026-11-18T16:00:12.000Z",
+  level: "INFO",
+  msg: "answers: answered",
+  question: "q-gpt",
+  model: "openai/gpt-6.1-sol",
+  kind: "answer",
+  fault: "",
+  calls: 2,
+  inputTokens: 2480,
+  outputTokens: 88,
+  cacheWriteTokens: 369,
+  cacheReadTokens: 2401,
+  reasoningTokens: 40,
+  costUSD: 0.0070026,
+};
 
 describe("the daemon's log, boot by boot", () => {
   test("run_log reads every boot and boot_log only the current one", () => {
@@ -297,6 +327,35 @@ describe("the daemon's log, boot by boot", () => {
     expect(read("cache_read_tokens '{\"cacheReadTokens\":1000}'").text).toBe("1000");
     expect(read("cache_read_tokens '{\"inputTokens\":3}'").text).toBe("0");
     expect(read('cache_read_tokens ""')).toEqual({ code: 0, text: "0" });
+  });
+
+  // The loop logs one `answers: answered` line whatever the provider (answer.Answer), so an answer
+  // on GPT-6.1 is read as one on Claude is.
+  test("cache_read_tokens reads an OpenAI answer's cost line as it reads a Claude one", () => {
+    expect(read(`cache_read_tokens ${shq(JSON.stringify(gptLine))}`).text).toBe("2401");
+    const unread = JSON.stringify({ ...gptLine, cacheReadTokens: 0 });
+    expect(read(`cache_read_tokens ${shq(unread)}`)).toEqual({ code: 0, text: "0" });
+  });
+
+  // A GPT-6.1 line is recomputed at GPT-6.1's prices, 2/10/2.5/0.1 per million tokens: the line's
+  // tokens cost 0.0070026 USD, and a line that says another cost is no line that recomputes.
+  test("bad_cost_lines recomputes a GPT-6.1 cost line at GPT-6.1's prices", () => {
+    expect(read(`bad_cost_lines ${shq(JSON.stringify(gptLine))}`).text).toBe("[]");
+    const wrong = JSON.stringify({ ...gptLine, question: "q-gpt-wrong", costUSD: 0.0021 });
+    expect(read(`bad_cost_lines ${shq(wrong)} | jq -r '.[].question'`).text).toBe("q-gpt-wrong");
+    // At Sonnet's prices the same tokens would cost another sum: the model decides the price.
+    const asSonnet = JSON.stringify({ ...gptLine, model: "anthropic/claude-sonnet-5-5" });
+    expect(read(`bad_cost_lines ${shq(asSonnet)} | jq length`).text).toBe("1");
+  });
+
+  test("unpriced_cost_lines names the lines of a model no price recomputes", () => {
+    const lines = `lines=$(run_log | jq -c 'select(.msg == "answers: answered" and .fault == "")')`;
+    expect(read(`${lines}; unpriced_cost_lines "$lines"`).text).toBe(
+      '[{"question":"q-six","model":"anthropic/claude-opus-5-5"}]'
+    );
+    const priced = `lines=$(printf '%s\\n' ${shq(JSON.stringify(gptLine))} "$(cat "$fixtures/cost-lines-wrong.jsonl")")`;
+    expect(read(`${priced}; unpriced_cost_lines "$lines"`).text).toBe("[]");
+    expect(read('unpriced_cost_lines ""')).toEqual({ code: 0, text: "[]" });
   });
 
   test("answered_line reads one question's cost line, of this boot alone", () => {
@@ -604,6 +663,46 @@ describe("the stopped agents' conversations", () => {
     expect(read('transcript_thinking ""')).toEqual({ code: 0, text: "0" });
   });
 
+  test("omp_thinking_level reads the level a conversation last ran at, off where none is named", () => {
+    expect(read('omp_thinking_level "$(conversation_text gpt)"')).toEqual({
+      code: 0,
+      text: "high",
+    });
+    // Its last change names no level, which the loop's reader takes as off, not as the high
+    // before it.
+    expect(read('omp_thinking_level "$(conversation_text gpt_plain)"').text).toBe("off");
+    expect(read('omp_thinking_level "$(conversation_text architect)"').text).toBe("off");
+    expect(read('omp_thinking_level ""')).toEqual({ code: 0, text: "off" });
+  });
+
+  test("omp_reasoning_items and omp_openai_summary read the reasoning a GPT-6.1 conversation stores", () => {
+    const items = 'omp_reasoning_items "$(conversation_text gpt)"';
+    // The turn that ended in error, rs_failed's, is one the loop's reader drops with what it holds.
+    expect(read(`${items} | jq -c 'map(.id)'`).text).toBe('["rs_one","rs_two"]');
+    expect(read(`${items} | jq -r '.[1].encrypted_content'`).text).toBe("gAAAAAB-rs-two-stored");
+    // A reasoning item with no encrypted content is none a stateless replay could carry.
+    expect(read('omp_reasoning_items "$(conversation_text gpt_plain)"').text).toBe("[]");
+    expect(read('omp_reasoning_items "$(conversation_text architect)"').text).toBe("[]");
+    expect(read('omp_reasoning_items ""')).toEqual({ code: 0, text: "[]" });
+    // Nor is the failed turn's tool call one the conversation holds.
+    expect(read('omp_openai_summary "$(conversation_text gpt)"').text).toBe(
+      '{"turns":3,"failed":1,"models":["openai/openai-responses/gpt-6.1-sol"],"tool_calls":1,"reasoning":2,"encrypted":2}'
+    );
+    expect(read('omp_openai_summary "$(conversation_text gpt_plain)"').text).toBe(
+      '{"turns":2,"failed":0,"models":["openai/openai-responses/gpt-6.1-sol"],"tool_calls":1,"reasoning":1,"encrypted":0}'
+    );
+    // A conversation with no tool call: A10's GPT-6.1 clause fails it.
+    expect(
+      read(
+        `omp_openai_summary "$(conversation_text architect)" | jq -c '[.tool_calls, .encrypted]'`
+      ).text
+    ).toBe("[0,0]");
+    expect(read('omp_openai_summary ""')).toEqual({
+      code: 0,
+      text: '{"turns":0,"failed":0,"models":[],"tool_calls":0,"reasoning":0,"encrypted":0}',
+    });
+  });
+
   test("answer_question_id reads the question out of the loop's marker", () => {
     expect(
       read(`answer_question_id 'the answer <!-- legion-answer:a1a1a1a1b2b2b2b2 -->'`).text
@@ -890,6 +989,192 @@ describe("the recording proxy's records", () => {
     expect(read('request_effort "$(first_request_after claude-files 0)"').text).toBe("medium");
     expect(read('request_effort "$(first_request_after agents 0)"').text).toBe("");
     expect(read('request_effort ""')).toEqual({ code: 0, text: "" });
+  });
+
+  test("an OpenAI Responses call is a model call, and the preflight's one-line input is none", () => {
+    expect(read("evidence=$gpt_evidence; proxy_count agents-gpt").text).toBe("1");
+    expect(read("evidence=$gpt_evidence; proxy_ordinal agents-gpt").text).toBe("2");
+    expect(read("evidence=$gpt_evidence; proxy_count daemon-files").text).toBe("3");
+    expect(read("evidence=$gpt_evidence; proxy_count gpt-preflight").text).toBe("0");
+    // The resumed merger's first model call, past its GET /v1/models listing.
+    expect(
+      read("evidence=$gpt_evidence; first_request_after agents-gpt 0 | jq -r .model").text
+    ).toBe("gpt-6.1-sol");
+    expect(read("evidence=$gpt_evidence; first_request_after agents-gpt 1").text).toBe("null");
+  });
+
+  test("answer_calls reads one answer's calls, never a later answer's that carry its question", () => {
+    const ordinals = (args: string) =>
+      `evidence=$gpt_evidence; answer_calls daemon-files ${args} | jq -c 'map(.ordinal)'`;
+    expect(read(ordinals("'A10-gpt-1)' 'A10-gpt-2)'"))).toEqual({ code: 0, text: "[1,2]" });
+    // Without the next question's marker, the second answer's call, which carries the first
+    // exchange and its question, reads as the first answer's too.
+    expect(read(ordinals("'A10-gpt-1)'")).text).toBe("[1,2,3]");
+    expect(read(ordinals("'A10-gpt-2)'")).text).toBe("[3]");
+    expect(read(ordinals("'A10-gpt-9)'")).text).toBe("[]");
+    expect(read("evidence=$bare_evidence; answer_calls daemon-files 'A10-gpt-1)'")).toEqual({
+      code: 0,
+      text: "[]",
+    });
+  });
+
+  test("calls_on_model, calls_efforts and efforts_all read every call's API, model and effort", () => {
+    const first = `evidence=$gpt_evidence; calls=$(answer_calls daemon-files 'A10-gpt-1)' 'A10-gpt-2)')`;
+    expect(run(`${first}; calls_on_model "$calls" /v1/responses gpt-6.1-sol`).code).toBe(0);
+    expect(run(`${first}; calls_on_model "$calls" /v1/responses gpt-5`).code).toBe(1);
+    expect(run(`${first}; calls_on_model "$calls" /v1/messages gpt-6.1-sol`).code).toBe(1);
+    expect(run("calls_on_model '[]' /v1/responses gpt-6.1-sol").code).toBe(1);
+    expect(run("calls_on_model '' /v1/responses gpt-6.1-sol").code).toBe(1);
+    expect(read(`${first}; calls_efforts "$calls"`).text).toBe('["high","high"]');
+    expect(run(`${first}; efforts_all "$calls" high`).code).toBe(0);
+    expect(run(`${first}; efforts_all "$calls" medium`).code).toBe(1);
+    // One call of the answer at no effort is an answer not made at the conversation's.
+    const bare = `${first}; calls=$(jq -c '.[1].request_body |= del(.reasoning)' <<<"$calls")`;
+    expect(read(`${bare}; calls_efforts "$calls"`).text).toBe('["high",null]');
+    expect(run(`${bare}; efforts_all "$calls" high`).code).toBe(1);
+    expect(read("calls_efforts ''")).toEqual({ code: 0, text: "[]" });
+    expect(run("efforts_all '[]' high").code).toBe(1);
+  });
+
+  test("reasoning_replayed reads whether a request carries each reasoning item the transcript stores", () => {
+    const request = (ordinal: number) =>
+      `request=$(jq -c 'select(.label == "daemon-files" and .ordinal == ${ordinal}) | .request_body' "$gpt_evidence/model-calls.jsonl")`;
+    const replayed = 'reasoning_replayed "$(conversation_text gpt)" "$request"';
+    expect(read(`${request(1)}; ${replayed}`)).toEqual({ code: 0, text: "2 2" });
+    // The second answer's first request carries them too, after the first answer's own.
+    expect(read(`${request(3)}; ${replayed}`).text).toBe("2 2");
+    // An item replayed with other encrypted content than the transcript stored, or not at all, is
+    // named by its id.
+    const other = `${request(1)}; request=$(jq -c '.input |= map(if .id? == "rs_two" then .encrypted_content = "gAAAAAB-rs-two-other" else . end)' <<<"$request")`;
+    expect(read(`${other}; ${replayed}`).text).toBe("1 2 rs_two");
+    const dropped = `${request(1)}; request=$(jq -c '.input |= map(select(.id? != "rs_one"))' <<<"$request")`;
+    expect(read(`${dropped}; ${replayed}`).text).toBe("1 2 rs_one");
+    // A transcript that stores none leaves nothing to replay.
+    expect(
+      read(`${request(1)}; reasoning_replayed "$(conversation_text gpt_plain)" "$request"`).text
+    ).toBe("0 0");
+    expect(read(`reasoning_replayed "$(conversation_text gpt)" ''`)).toEqual({
+      code: 0,
+      text: "0 2 rs_one,rs_two",
+    });
+    expect(read(`reasoning_replayed "$(conversation_text gpt)" 'not json'`)).toEqual({
+      code: 0,
+      text: "0 2 rs_one,rs_two",
+    });
+    expect(read("reasoning_replayed '' ''")).toEqual({ code: 0, text: "0 0" });
+  });
+
+  // Measured through the model gateway on 2026-11-18: a streamed Responses answer names one
+  // reasoning item's encrypted content three times, a shorter one in `response.output_item.added`
+  // and two of one length that differ in `response.output_item.done` and `response.completed`, and
+  // the next step carried the done event's byte for byte. The fixture's three differ the same way,
+  // so a read of `response.completed` fails the passing case here.
+  test("reasoning_carried reads what an earlier step returned off its output_item.done event", () => {
+    const first = `evidence=$gpt_evidence; calls=$(answer_calls daemon-files 'A10-gpt-1)' 'A10-gpt-2)')`;
+    expect(read(`${first}; reasoning_carried "$calls"`)).toEqual({ code: 0, text: "1 1" });
+    // A later request carrying the item as `response.completed` or `output_item.added` holds it
+    // carries nothing of what the step returned.
+    for (const content of ["gAAAAAB-rs-a1-completed", "gAAAAAB-rs-a1-added"]) {
+      const carrying = `${first}; calls=$(jq -c '.[1].request_body.input |= map(if .id? == "rs_a1" then .encrypted_content = "${content}" else . end)' <<<"$calls")`;
+      expect(read(`${carrying}; reasoning_carried "$calls"`).text).toBe("0 1");
+    }
+    const dropped = `${first}; calls=$(jq -c '.[1].request_body.input |= map(select(.id? != "rs_a1"))' <<<"$calls")`;
+    expect(read(`${dropped}; reasoning_carried "$calls"`).text).toBe("0 1");
+    // An answer of one call owes nothing: what its last call returned no later call carries.
+    expect(
+      read(`evidence=$gpt_evidence; reasoning_carried "$(answer_calls daemon-files 'A10-gpt-2)')"`)
+        .text
+    ).toBe("0 0");
+    expect(read("reasoning_carried '[]'")).toEqual({ code: 0, text: "0 0" });
+    expect(read("reasoning_carried ''")).toEqual({ code: 0, text: "0 0" });
+    expect(read("reasoning_carried 'not json'")).toEqual({ code: 0, text: "0 0" });
+  });
+
+  // An answer of three calls whose first returned reasoning: the loop carries it in both later
+  // calls, so a read that judged only the call after it would pass a third call that dropped it.
+  test("reasoning_carried holds every later call of an answer to what an earlier one returned", () => {
+    const three = `evidence=$gpt_evidence; calls=$(answer_calls daemon-postgres 'A10-gpt-3)')`;
+    expect(read(`${three}; jq length <<<"$calls"`).text).toBe("3");
+    expect(read(`${three}; reasoning_carried "$calls"`)).toEqual({ code: 0, text: "2 2" });
+    const third = `${three}; calls=$(jq -c '.[2].request_body.input |= map(select(.id? != "rs_p1"))' <<<"$calls")`;
+    expect(read(`${third}; reasoning_carried "$calls"`).text).toBe("1 2");
+  });
+
+  // The cost line sums an answer's calls, and a later call reads what an earlier call of the same
+  // answer wrote: the cache read the second answer is judged by is its first call's own.
+  test("call_cached_tokens reads one call's cached input tokens off its response", () => {
+    const second = `evidence=$gpt_evidence; call=$(answer_calls daemon-files 'A10-gpt-2)' | jq -c '.[0]')`;
+    expect(read(`${second}; call_cached_tokens "$call"`)).toEqual({ code: 0, text: "1164" });
+    // A first call that read nothing reads 0, whatever later calls of its answer read: the
+    // three-call answer's first call read nothing and its second 900, which its cost line sums.
+    const first = `evidence=$gpt_evidence; call=$(answer_calls daemon-files 'A10-gpt-1)' 'A10-gpt-2)' | jq -c '.[0]')`;
+    expect(read(`${first}; call_cached_tokens "$call"`).text).toBe("0");
+    const three = (index: number) =>
+      `evidence=$gpt_evidence; call=$(answer_calls daemon-postgres 'A10-gpt-3)' | jq -c '.[${index}]')`;
+    expect(read(`${three(0)}; call_cached_tokens "$call"`).text).toBe("0");
+    expect(read(`${three(1)}; call_cached_tokens "$call"`).text).toBe("900");
+    // A response that is no stream: its own usage.
+    const plain = '{"response_body":{"usage":{"input_tokens_details":{"cached_tokens":7}}}}';
+    expect(read(`call_cached_tokens ${shq(plain)}`).text).toBe("7");
+    expect(read("call_cached_tokens ''")).toEqual({ code: 0, text: "0" });
+    expect(read("call_cached_tokens null")).toEqual({ code: 0, text: "0" });
+    expect(read("call_cached_tokens 'not json'")).toEqual({ code: 0, text: "0" });
+  });
+
+  test("openai_effort words a thinking level as agentloop asks OpenAI for it", () => {
+    expect(read("openai_effort high").text).toBe("high");
+    expect(read("openai_effort xhigh").text).toBe("xhigh");
+    expect(read("openai_effort off").text).toBe("none");
+    expect(read("openai_effort ''")).toEqual({ code: 0, text: "none" });
+  });
+});
+
+describe("the model route's answer", () => {
+  test("preflight_refusal passes a completed response and names what any other answer said", () => {
+    const body = (name: string) => `"$fixtures/${name}"`;
+    expect(read(`preflight_refusal 200 ${body("gpt-preflight-completed.json")}`)).toEqual({
+      code: 0,
+      text: "",
+    });
+    // LiteLLM's answer to a key it does not know names the key's masked tail and its hash.
+    const refused = read(`preflight_refusal 401 ${body("gpt-preflight-refused.json")}`);
+    expect(refused.text).toBe(
+      "answered 401: Authentication Error, Invalid proxy server token passed. Received API key = <left out>, key hash <left out>. Unable to find token in cache or `LiteLLM_VerificationTokenTable`"
+    );
+    expect(refused.text).not.toContain("wxyz");
+    expect(refused.text).not.toContain("0123456789abcdef");
+    expect(read(`preflight_refusal 200 ${body("gpt-preflight-incomplete.json")}`).text).toBe(
+      "answered 200, response status incomplete"
+    );
+    // A completed response under another status is no model served either.
+    expect(read(`preflight_refusal 500 ${body("gpt-preflight-completed.json")}`).text).toBe(
+      "answered 500, response status completed"
+    );
+    expect(
+      read(`preflight_refusal 'unreachable (curl exited 7)' "$bare_evidence/no-body.json"`)
+    ).toEqual({
+      code: 0,
+      text: "unreachable (curl exited 7)",
+    });
+    expect(read('preflight_refusal 404 "$empty_log"')).toEqual({ code: 0, text: "answered 404" });
+  });
+
+  // A route that echoes the key it was sent: the key is taken out before the message is cut to 300
+  // characters, so a key longer than the cut leaves no head of it behind (a gateway's JWT-length
+  // bearer). Without the key the read cannot know it, and the cut keeps its head.
+  test("preflight_refusal takes the key out of an echoing refusal before it cuts the message", () => {
+    const key = `eyJ${"k".repeat(420)}`;
+    const echoed = join(dir, "gpt-preflight-echo.json");
+    writeFileSync(echoed, JSON.stringify({ error: { message: `Received=${key} is not a key` } }));
+    const refusal = read(`preflight_refusal 401 ${shq(echoed)} ${shq(key)}`);
+    expect(refusal).toEqual({ code: 0, text: "answered 401: Received=<the key> is not a key" });
+    expect(read(`preflight_refusal 401 ${shq(echoed)}`).text).toContain(key.slice(0, 40));
+    // A key the message does not hold changes nothing.
+    expect(
+      read(`preflight_refusal 401 "$fixtures/gpt-preflight-refused.json" ${shq(key)}`).text
+    ).toBe(
+      "answered 401: Authentication Error, Invalid proxy server token passed. Received API key = <left out>, key hash <left out>. Unable to find token in cache or `LiteLLM_VerificationTokenTable`"
+    );
   });
 });
 

@@ -28,6 +28,14 @@
       "role": "tester",
       "kind": "parked child of a running tree",
       "task": "Record this test finding and keep it: the flaky test is TestGarnetFalcon; it failed 4 of 25 runs, all on the arm64 runner. Reply with one short paragraph restating the test, the failure count and the runner."
+    },
+    "gpt": {
+      "role": "merger",
+      "kind": "a conversation on GPT-6.1 with reasoning and a tool call, suspended",
+      "harness": "omp",
+      "model": "openai/gpt-6.1-sol",
+      "thinking": "high",
+      "task": "Record this merge finding and keep it: the merge waits on the license scan, tracked under the marker LICENSE-TEAL-207. First make exactly one tool call: run `pwd` with your bash tool. Then weigh in one sentence whether the license scan alone holds the merge or another merge gate could hold it too. Then reply with one short paragraph restating what the merge waits on and the marker."
     }
   },
   "questions": [
@@ -141,6 +149,22 @@
       "to": "a person's reply on the parked child's ask",
       "text": "Decision: yes, quarantine it. Also, which test did you find flaky, and on which runner did it fail?",
       "must_contain": ["TestGarnetFalcon", "arm64"]
+    },
+    {
+      "id": "gpt-repository-module",
+      "criteria": ["A10"],
+      "agent": "gpt",
+      "to": "session",
+      "text": "What does your merge wait on, and under which marker? And read go.mod at commit 6d843f28732dd82163065cb4d2248e488f68ca0b of sjawhar/legion-smoke with your gh tool: which module path does it declare?",
+      "must_contain": ["LICENSE-TEAL-207", "example.com/stage4b-fixture"]
+    },
+    {
+      "id": "gpt-repository-go",
+      "criteria": ["A10"],
+      "agent": "gpt",
+      "to": "session",
+      "text": "Read go.mod at commit 6d843f28732dd82163065cb4d2248e488f68ca0b of sjawhar/legion-smoke again with your gh tool, not from what you read before: which Go version line does it declare, and under which marker is your merge's wait tracked?",
+      "must_contain": ["1.22", "LICENSE-TEAL-207"]
     }
   ],
   "a16": {

@@ -189,7 +189,7 @@ Each item below names a script, then what it proves.
 
 - `answer-loop.sh`
 
-  the answer loop (INFRA-204, acceptance A1-A10, A12-A19) on the branch's daemon, listener and Dispatch with real Anthropic models, under both tmux conversation stores (`files`, then `session_store: postgres`):
+  the answer loop (INFRA-204, acceptance A1-A10, A12-A19) on the branch's daemon, listener and Dispatch with real Anthropic models, and OpenAI's GPT-6.1 where the model route serves it (A10), under both tmux conversation stores (`files`, then `session_store: postgres`):
   stopped agents with real conversations about decisions `answer-loop/questions.json` records, a boot that records them and mirrors them to the listener's Legion agent registry, and one check per criterion with its evidence and a negative control, ending in a PASS / FAIL / WAITING summary that names what each waiting criterion waits on.
   A13 compares a stopped agent's `404`s and failed Dispatch deliveries with the base commit's binaries byte for byte.
   Runs in a Legion issue pod (no docker, no root) and on a devbox; the answering criteria need both role Apps' keys, and A3's second leg drives Playwright's Chromium against the SPA this checkout builds and this run's Dispatch serves
@@ -1369,7 +1369,7 @@ LEGION_E2E_ANTHROPIC_KEY_FILE=<file holding the key> LEGION_E2E_MODEL_BASE_URL=<
 ```
 
 The live proof of the daemon's answer loop (docs/kubernetes.md, "The answer loop"):
-the branch's `legion`, `envoy-listener` and `envoy-dispatch`, built from the checkout, run on this host with real Anthropic models, once under `runtime: tmux`'s files store and once under `runtime.tmux.session_store: postgres`, each pass with its own project, database and state directory.
+the branch's `legion`, `envoy-listener` and `envoy-dispatch`, built from the checkout, run on this host with real Anthropic models, and with OpenAI's GPT-6.1 where the model route serves it (A10), once under `runtime: tmux`'s files store and once under `runtime.tmux.session_store: postgres`, each pass with its own project, database and state directory.
 It needs no docker, no root and no psql or tmux on the host, so it runs in a Legion issue pod as well as on a devbox.
 CI does not run it.
 
@@ -1385,13 +1385,15 @@ CI does not run it.
   Oh My Pi from `LEGION_E2E_OMP_BIN`, else `/opt/omp/bin/omp`, else the `.omp-pin` mise resolves (the run prints which, and the pin beside it, since a pod's build can differ from the pin).
 
 - [`lib/recording-proxy.ts`](lib/recording-proxy.ts), in front of the model route's own endpoint:
-  every model call of the run, the agents' (`/tag/agents`), Claude Code's (`/tag/claude-<store>`) and the daemon's loop's (`/tag/daemon-<store>`), goes through it, and each request and response body is a line of `model-calls.jsonl` in the evidence, the key redacted.
-  All three send their key as `x-api-key` and none can be told otherwise, so under `LEGION_E2E_MODEL_GATEWAY_TOKEN_COMMAND`, whose gateway reads `Authorization: Bearer`, the run starts the proxy with `--api-key-as-bearer`:
+  every model call of the run, the agents' (`/tag/agents`, and `/tag/agents-gpt` for the GPT-6.1 merger), Claude Code's (`/tag/claude-<store>`), the daemon's loop's (`/tag/daemon-<store>`) and the GPT-6.1 preflight (`/tag/gpt-preflight`), goes through it, and each request and response body is a line of `model-calls.jsonl` in the evidence, its credential headers recorded as `<redacted>`.
+  A body is kept as it came, a streamed answer as the text it streamed, so an error body that echoes what it was sent of a key (a LiteLLM refusal names the key's masked tail and its hash) is recorded with it.
+  Every Anthropic call is keyed by `x-api-key` and none of its three clients can be told otherwise, so under `LEGION_E2E_MODEL_GATEWAY_TOKEN_COMMAND`, whose gateway reads `Authorization: Bearer`, the run starts the proxy with `--api-key-as-bearer`:
   a forwarded request's `x-api-key` is dropped and its value sent as `Authorization: Bearer <token>`, and the record keeps both headers `<redacted>`.
   That translation is for that route alone; every other run forwards the headers as they arrived.
+  An OpenAI call, the merger's, the loop's answer to it and the preflight alike, already sends `Authorization: Bearer <key>` and goes on as it came.
   A label's ordinal counts every request it proxies, and not all of them are model calls:
   Claude Code sends a `HEAD /api/hello` reachability preflight as each session starts and an Oh My Pi agent a `GET /v1/models`, both with no body.
-  A check that waits for an agent's next model call, or reads the request it sent, counts and selects the requests that carry a `messages` body (`proxy_count`, `first_request_after`);
+  A check that waits for an agent's next model call, or reads the request it sent, counts and selects the requests that carry a `messages` body (Anthropic's Messages API) or an `input` array (OpenAI's Responses API) (`proxy_count`, `first_request_after`);
   a hold names an ordinal (`proxy_ordinal`).
   A hold file per label stops a label's calls past a given ordinal (`<label>.held` names each waiting one), which is how A7 and A18 put an operator's resume or a daemon's kill between a `gh` call and the reply;
   a stand-in file answers one label with a reply of the proof's own:
@@ -1421,8 +1423,9 @@ CI does not run it.
   A run with no workflow (no review App grant, so every answering criterion only waits) and a run narrowed past A3 build and install neither, and Dispatch then serves its API alone.
   Do not run `bun run build:web` or `bun run e2e` in this checkout while a run is live: either rewrites that directory under the Dispatch process.
 
-The daemon's `answers` block names the model route's endpoint through the proxy, keyed by the route's own key file or key command, with the list prices (`claude-opus-5-5` 5/25/6.25/0.5 and `claude-sonnet-5-5` 3/15/3.75/0.3 USD per million input, output, cache-write and cache-read tokens) and the default bounds;
+The daemon's `answers` block names each provider the loop calls at the model route's endpoint through the proxy, `anthropic` and `openai` (its `base_url` ending in `/v1`, since agentloop's OpenAI client appends `responses` to it), each keyed by the route's own key file or key command, with the prices (Anthropic's list prices, `claude-opus-5-5` 5/25/6.25/0.5 and `claude-sonnet-5-5` 3/15/3.75/0.3 USD per million input, output, cache-write and cache-read tokens, and `gpt-6.1-sol` 2/10/2.5/0.1, the model gateway's own `model_info` for it, `GET /model/info` on 2026-11-18) and the default bounds;
 the postgres pass adds `runtime.tmux.session_store: postgres` with a `session_dsn_file` on the embedded Postgres.
+Where the model route serves GPT-6.1, every branch daemon's file also names the merger's overlay in `role_config_files` (below).
 
 **The stopped agents, and why this way.**
 The agents are real Oh My Pi panes (and Claude Code panes) the daemon launches through its own claim path, the operator's `legion claims spawn`, with a short role prompt and the decision as their first task, on Dispatch issues of the pass's project.
@@ -1441,7 +1444,19 @@ Each agent is stopped the way the spec's kinds are made:
   the branch's boot finds it only by its title, the conversation from before the change that A2 names.
   The base commit is the merge base of `LEGION_E2E_BASE_REV` (default `main@origin`) and the checkout's own head (`merge_base_commit`: the working copy's commit under jj, `HEAD` under git), never the revision itself when it is ahead of the branch, and the run notes which commit it built and why.
   A change the revision carries and the branch does not would otherwise read as the branch's own: proof run 44095624771 built main's tip, `a2b379d1`, whose #4281 adds `requested_by.proven` to Dispatch's deliveries, and A13 read that field as this change's difference.
-  It is built once from a `git archive` of it, its three binaries and installed workspace kept in the cache under `base-<commit>`, with that commit's plugins in a profile of its own.
+  It is built once from a `git archive` of it, its three binaries and installed workspace kept in the cache under `base-<commit>`, with that commit's plugins in a profile of its own;
+
+- the GPT-6.1 merger, on a child, where the model route serves the model: suspended, as the pre-change reviewer is, since A10 answers and resumes it as it does that reviewer.
+  It is the branch daemon's one merger, so its model rides on `role_config_files.merger`, an overlay the run writes (`install_gpt_route`) that makes `openai/gpt-6.1-sol` the default role a pane starts on (`--model @default`) at `defaultThinkingLevel: high`, `questions.json`'s `agents.gpt`, with `enabledModels` naming `anthropic/*` and `openai/*`.
+  Measured with Oh My Pi 18.18.6 (`/opt/omp/bin/omp`) in a Legion issue pod on 2026-11-18: the overlay merges into the profile's `modelRoles` key by key and replaces its lists whole, and `omp --model @default --mode rpc` under it, as a pane starts, writes the overlay's `defaultThinkingLevel` into its session as `thinking_level_change`
+  (`medium` under an overlay naming `medium`, where the profile alone resolves `high`, the level the run's overlay names).
+  The branch's profile gains the `openai` provider (`api: openai-responses`, its `baseUrl` the proxy's `/tag/agents-gpt/v1`, keyed by the same key command as the profile's `anthropic` provider), and `openai` joins its `disabledProviders`:
+  a pane's subagents and retries choose from every enabled provider, and no pane but the merger may fall back to GPT-6.1.
+  The overlay names the profile's `disabledProviders` without `openai`, so the merger's pane resolves `openai/gpt-6.1-sol` with the other providers still disabled, while a pane of the profile alone asked for that model is refused (`Provider "openai" is disabled`), as measured the same day.
+  The run reads what Oh My Pi resolves under the profile and under the overlay, and stops at bring-up when either differs from what it wrote.
+  Its task has it run one `bash` call and then weigh, in one sentence, whether the license scan alone holds the merge before it restates the blocker and its marker, to give its transcript a tool call and reasoning to replay;
+  the run notes the thinking level, the turns' provider, API and model, the failed turns, the tool calls and the reasoning items with encrypted content its transcript holds.
+  Its spawn and its wait are soft: a merger that could not be spawned, or whose turn fails, fails A10's GPT-6.1 clause, naming why, and no other criterion, and its claim is suspended (else retired, which the run waits for) whatever the turn did, so A1's parked tree holds no running claim of it.
 
 **The issues' workspaces.**
 With the workflow on, an operator's spawn spec carries the repository the project's mapping gives the issue, `sjawhar/legion-smoke`, and the tmux runtime then works in the issue's jj workspace, `<state>/workspaces/sjawhar/legion-smoke/<issue lower-cased>` (`workspace.Location`), which must exist already:
@@ -1538,7 +1553,28 @@ The answers to the asker and the controller notices land in `inbox.jsonl` under 
   Compaction leg: the resumed architect's session is compacted as Legion compacts one, by the daemon's own `legion claims compact`, which has Oh My Pi write the summary as text to the daemon's instructions (`compactInstructions`, `packages/daemon/internal/api/compact.go`), and its conversation must then hold a compaction whose summary is text (`text_compactions`).
   A person's bare `/compact` is no such compaction: under the pinned Oh My Pi a compaction that carries no instructions is the image-based snapcompact, which the loop's reader declines, so the question is passed on (docs/kubernetes.md, "The answer loop").
   A question then is answered from the compacted conversation, and the resumed architect's first request holds that exchange once.
-  The GPT-6.1 leg records WAITING: the OpenAI API is paused (dispatch://OSSV-201/ask/71cd9fe8-913a-409d-a6de-1adae3f6dd19).
+
+- A10 (GPT-6.1 clause, a row of its own), where the model route serves the model:
+  before any agent is made the run asks the route once, a `POST /v1/responses` for `gpt-6.1-sol` with a one-line input and `store: false`, through the proxy as `gpt-preflight`, keyed as the loop keys an OpenAI call (`Authorization: Bearer`) with the route's own key (`gpt_preflight`).
+  An answer that says nothing of the model — no answer at all, the proxy's own `502` for an upstream it cannot reach, `408`, `429` or another `5xx` — is asked again ten seconds later, up to three times.
+  Any other answer but `200` with a `completed` response is the route's refusal of the model:
+  the clause records WAITING, naming the route and what it answered
+  — the status, the response's own status and the body's error message, with the key and what a LiteLLM refusal says of it (its masked tail and its hash) left out before the message is cut (`preflight_refusal`)
+  — and no GPT-6.1 agent is made.
+  A route whose last answer is still one of those that say nothing records WAITING as not having answered the preflight, never as not serving the model.
+  Otherwise the stopped GPT-6.1 merger is asked two questions, the second ten seconds after the first answer is posted, each read from `go.mod` at a fixed commit of the smoke repository with `gh`, so that an answer takes more than one model step.
+  An answer's own calls are the daemon's records whose body holds that question's marker (`A10-gpt-1)`, `A10-gpt-2)`) and not the next one's (`answer_calls`).
+  The clause holds when the merger's conversation holds a tool call in a turn that did not fail (`omp_openai_summary`);
+  every call of both answers is a `POST /v1/responses` for the model and both cost lines name it;
+  every request carries `reasoning.effort` at the level the transcript last ran at, as agentloop words it (`off` is `none`; `omp_thinking_level`, `openai_effort`);
+  each answer's first request carries every reasoning item the transcript stores, read just before its question, with its id and encrypted content byte for byte (`reasoning_replayed`), the items of a turn that ended aborted or in error left out, as the loop's reader drops that turn, and the FAIL naming each item a request lacks;
+  each request after a step whose response returned reasoning carries that reasoning as the response's `response.output_item.done` event holds it (`reasoning_carried`), never as `response.completed` does, whose encrypted content differs from the done event's (measured through the model gateway on 2026-11-18);
+  the second answer's first call reads the conversation from cache, its own response reporting `usage.input_tokens_details.cached_tokens > 0` (`call_cached_tokens`), and its cost line reads `cacheReadTokens > 0`, both of which the run prints:
+  the line's count is summed over the answer's calls, and a later call of an answer reads what an earlier call of the same answer wrote, so the line alone shows nothing of the question's first call;
+  both replies hold their keys;
+  and the resumed merger's first call on `/tag/agents-gpt` is for the model and holds both questions once each.
+  A transcript with no tool call, one with no reasoning item carrying encrypted content, and answers in which no step that returned reasoning was followed by another (not every step returns reasoning) each fail the clause, which then says what went unexercised.
+  The conversation the second answer replays is kept as `sessions/<store>/gpt-before-A10-gpt-2.jsonl`.
 
 - A12: the daemon restarted with each bound in turn (`model_calls: 1`, `answer_seconds: 1`, `output_tokens: 16`, a stand-in reply out of form, `daily_usd: 0.01`):
   each ends with `answers: question passed to the controller` naming the fault and the daemon's own reply.
@@ -1549,7 +1585,8 @@ The answers to the asker and the controller notices land in `inbox.jsonl` under 
 
 - A14: every `answers: answered` line of the run
   — every boot of it, since A12 restarts the daemon five times before this check and its own boot has answered nothing
-  — has a `costUSD` that recomputes from its tokens at the configured prices, cache writes included.
+  — has a `costUSD` that recomputes from its tokens at its model's configured prices, Claude Sonnet 5.5's or GPT-6.1's, cache writes included (`bad_cost_lines`);
+  a line of any other model is one no price recomputes, and fails the criterion (`unpriced_cost_lines`).
 
 - A15 (before every other check that asks the same question, which is why the pass runs it right after A5):
   the planner and the Claude Code reviewer answer from `go.mod` at a fixed commit of the smoke repository read with `gh`;
@@ -1632,7 +1669,7 @@ the reachability preflight counted as a model call, the agent's own words counte
 A criterion whose prerequisite is missing records WAITING naming it, each read from the run rather than assumed:
 the daemon's workflow, which carries the answer loop and boots only with two distinct role Apps (without the review App's grant every answering criterion and `boot` wait on it);
 the listener's hand-off, read from the boot's `404` on the heartbeat route;
-INFRA-448's registry routes, read from the checkout (A3); the OpenAI API (A10's GPT-6.1 leg); `LEGION_E2E_REPO_SECOND_OWNER` (A17).
+INFRA-448's registry routes, read from the checkout (A3); a model route that serves `gpt-6.1-sol`, read from the route's own answer to the GPT-6.1 preflight (A10's GPT-6.1 clause); `LEGION_E2E_REPO_SECOND_OWNER` (A17).
 Everything else that runs records PASS or FAIL, and the run exits non-zero on any FAIL.
 **Departure:** the review role cannot stand in as the implement App to boot the workflow without the review App:
 the daemon refuses it at boot (`the review App names bot login "<login>" and the implement App "<login>"; the workflow needs
@@ -1650,6 +1687,8 @@ That input is for a gateway keyed by a short-lived bearer rather than by a hawk 
 The script carries this shell's `PATH`, `HOME`, XDG base directories and `DBUS_SESSION_BUS_ADDRESS`, since the daemon runs a key command under `env -i` and a pane's `HOME` is the run's own; a command that needs anything else names it itself.
 Every model call runs it again and nothing is kept, so a token that expires mid-run is never served, and `prerequisites` runs it once before anything is created, refusing a command that fails or prints something no `Authorization` header can carry.
 The token is echoed nowhere and written to no evidence, and the recording proxy sends it on as `Authorization: Bearer <token>` ([`lib/recording-proxy.ts`](lib/recording-proxy.ts), `--api-key-as-bearer`), the header shape none of the three clients can be told to send itself.
+The run's OpenAI calls are keyed by the same key on either route:
+the GPT-6.1 merger's through the agents' key command, which the profile's `openai` provider names, the loop's answers to it through `answers.providers.openai`, and the preflight that asks the route whether it serves `gpt-6.1-sol` at all.
 
 The App inputs are [`lib/github-apps.sh`](#libgithub-appssh)'s, and both role Apps come from their own key commands:
 `LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND` and `LEGION_E2E_REVIEW_APP_KEY_COMMAND`, each shell text that prints that App's PEM private key on stdout, are required and have no default.
@@ -1668,7 +1707,7 @@ While a check is being fixed, `LEGION_E2E_ANSWER_LOOP_ONLY` (criteria, e.g. `boo
 the bring-up and the stopped agents are made as always.
 A run that proves the criteria sets neither.
 
-**Evidence**: `transcript.log`, `summary.txt` (one `store|criterion|verdict|detail` line each), `logs/` (each service and daemon), `model-calls.jsonl`, `inbox.jsonl` (the asker's and the controller stand-in's deliveries), `sessions/<store>/` (each agent's conversation as its store holds it), `a3/<store>/` (the conversation-page leg's screenshots:
+**Evidence**: `transcript.log`, `summary.txt` (one `store|criterion|verdict|detail` line each), `logs/` (each service and daemon), `model-calls.jsonl` (the GPT-6.1 preflight among them, as `gpt-preflight`), `inbox.jsonl` (the asker's and the controller stand-in's deliveries), `sessions/<store>/` (each agent's conversation as its store holds it, the GPT-6.1 merger's as `gpt.jsonl`), `a3/<store>/` (the conversation-page leg's screenshots:
 the Collaborators view, the conversation it led to, the question sent and the answer, or the step that failed), `a13/{branch,base}/<store>/` (the bodies A13 compares), and `a19/<store>/` (each review A19 delivers by webhook: GitHub's answers for the review and its pull request, and the event body sent).
 
 **GitHub.**

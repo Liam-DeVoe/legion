@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # The answer loop's live proof (INFRA-204; scripts/e2e/README.md, "answer-loop.sh"): the branch's
-# daemon, Envoy listener and Dispatch, run on this host with real Anthropic models, under both of a
-# tmux daemon's conversation stores (runtime.tmux.session_store files, then postgres), with stopped
-# agents whose real conversations hold the decisions scripts/e2e/answer-loop/questions.json names.
+# daemon, Envoy listener and Dispatch, run on this host with real Anthropic models (and OpenAI's
+# GPT-6.1 for A10's GPT-6.1 clause, where the model route serves it), under both of a tmux daemon's
+# conversation stores (runtime.tmux.session_store files, then postgres), with stopped agents whose
+# real conversations hold the decisions scripts/e2e/answer-loop/questions.json names.
 # Every acceptance criterion of the plan's table (A1-A10, A12-A19) is one check that prints its
 # evidence and a negative control; the summary lists each as PASS, FAIL or WAITING with what it
 # waits on. It runs in a Legion issue pod (no docker, no root, no psql, no tmux) and on a devbox.
@@ -14,7 +15,9 @@
 #                                and Stage 3's proofs take it: `key-file`, the default, or
 #                                `gateway`. Every call of the run, the agents', the daemon's answer
 #                                loop's and Claude Code's, goes through the recording proxy to the
-#                                route's endpoint.
+#                                route's endpoint. Whether that endpoint serves GPT-6.1 is asked of
+#                                it once, at bring-up (gpt_preflight), and A10's GPT-6.1 clause
+#                                runs only where it does.
 #   LEGION_E2E_ANTHROPIC_KEY_FILE, LEGION_E2E_CLAUDE_KEY_FILE, ANTHROPIC_API_KEY
 #                                under `key-file`, where the key comes from: a file holding it, or
 #                                the key itself. Whichever is set is copied once into a 0600 file of
@@ -123,8 +126,12 @@ nats_version=v2.15.1
 # Claude Code at the repository's own .claude-code-pin, the file every other caller reads.
 claude_code_version=$(tr -d '[:space:]' <"$root/.claude-code-pin")
 # Anthropic's list prices, USD per million tokens: input, output, cache write (5 minutes), cache read.
+# GPT-6.1's are the model gateway's own for it, as its GET /model/info answered on 2026-11-18:
+# model_info.input_cost_per_token 2e-06, output_cost_per_token 1e-05,
+# cache_creation_input_token_cost 2.5e-06 and cache_read_input_token_cost 1e-07 per token.
 answers_prices='    anthropic/claude-opus-5-5: { input: 5, output: 25, cache_write: 6.25, cache_read: 0.5 }
-    anthropic/claude-sonnet-5-5: { input: 3, output: 15, cache_write: 3.75, cache_read: 0.3 }'
+    anthropic/claude-sonnet-5-5: { input: 3, output: 15, cache_write: 3.75, cache_read: 0.3 }
+    openai/gpt-6.1-sol: { input: 2, output: 10, cache_write: 2.5, cache_read: 0.1 }'
 repo=sjawhar/legion-smoke
 questions_file=$root/scripts/e2e/answer-loop/questions.json
 
@@ -150,6 +157,19 @@ model_upstream=
 model_key_file=
 model_key_command=
 gateway_token_helper=
+# The key command install_model_route gave each profile's anthropic provider, by profile: the
+# command install_gpt_route keys the same profile's openai provider with.
+declare -A profile_key_command=()
+# A10's GPT-6.1 agent, the branch daemon's one merger: its model, as the conversation names it and
+# as its provider does (`openai/gpt-6.1-sol`, `gpt-6.1-sol`), and the thinking level it runs at
+# (questions.json, agents.gpt); why the model route does not serve that model, empty when it does
+# (gpt_preflight); and the Oh My Pi overlay the merger's panes name in PI_CONFIG_FILES
+# (install_gpt_route, role_config_files.merger), written only when the route serves the model.
+gpt_model=
+gpt_model_id=
+gpt_level=
+gpt_refusal='the model route was not asked'
+gpt_overlay=$work/gpt-merger-overlay.yml
 # LEGION_E2E_ANSWER_LOOP_ONLY (criteria, e.g. "boot A1 A6") and LEGION_E2E_ANSWER_LOOP_STORES
 # (default "files postgres") narrow a run while a check is being fixed: the bring-up and the stopped
 # agents are made as always, and only the named checks run. A run that proves the criteria sets
@@ -286,7 +306,7 @@ cleanup() {
   local status=$? p
   set +e
   trap 'printf "cleanup warning: line %s exited %s\n" "$LINENO" "$?" >&2' ERR
-  rm -f "$work/anthropic-key" "$work/anthropic-key-header" "$work/provision-token"
+  rm -f "$work/anthropic-key" "$work/anthropic-key-header" "$work/gpt-preflight-header" "$work/provision-token"
   stop_pid "$daemon_pid"
   [ -z "${tmux_bin:-}" ] || kill_tmux_servers
   stop_pid "$dispatch_pid"
@@ -625,7 +645,7 @@ install_plugins() {
 # file route (lib/install-key-file-model-route.sh) or the gateway's (lib/install-model-gateway.sh),
 # whichever LEGION_E2E_MODEL_ROUTE named — then points it at the recording proxy under LABEL and at
 # the questions file's model, so every agent turn is recorded and reaches the route's own endpoint
-# through the proxy.
+# through the proxy. The key command it installed is kept as the profile's (profile_key_command).
 install_model_route() {
   local home=$1 profile=$2 label=$3 agent_dir model proxy_url key_command
   local -a keying=()
@@ -646,16 +666,144 @@ install_model_route() {
     # command: every one of them keys the same gateway the same way.
     [ -n "$model_key_command" ] || model_key_command=$key_command
   else
-    bash "$root/scripts/e2e/lib/install-key-file-model-route.sh" --profile "$profile" --home "$home" \
+    key_command=$(bash "$root/scripts/e2e/lib/install-key-file-model-route.sh" --profile "$profile" --home "$home" \
       --dest "$evidence/model-route-$label" --key-dir "$work/key-$label" --key-file "$model_key_file" \
-      --base-url "$model_upstream" >/dev/null ||
+      --base-url "$model_upstream") ||
       fail "the agents' model route could not be installed (the reason is above)"
   fi
+  profile_key_command[$profile]=$key_command
   agent_dir=$home/.omp/profiles/$profile/agent
   sed -i "s#baseUrl: $model_upstream#baseUrl: $proxy_url#" "$agent_dir/models.yml"
   sed -i "s#anthropic/claude-opus-4-8#anthropic/$model#g" "$agent_dir/config.yml"
   grep -q "tag/$label" "$agent_dir/models.yml" || fail "the profile's models.yml does not name the proxy"
   note "profile $profile: anthropic/$model through the recording proxy as $label, upstream $model_upstream"
+}
+
+# gpt_preflight asks the run's model route, once and before any agent is made, whether it serves
+# the questions file's GPT model: one POST /v1/responses for it, a one-line input with store false,
+# through the recording proxy under a label of its own, gpt-preflight, so the evidence holds the
+# call and its answer (model-calls.jsonl). It is keyed as the daemon's loop keys an OpenAI call,
+# `Authorization: Bearer <key>` (packages/envoy/agentloop/transport.go), with the key the route
+# keys every other call with: the key-file route's copy, else the gateway route's key command, run
+# once as the daemon runs it. The key reaches curl in a 0600 header file removed as soon as the
+# calls end, and is taken out of the refusal wherever the answer echoes it (preflight_refusal).
+# An answer that says nothing of the model — no answer at all, the proxy's own 502, 408, 429 or
+# another 5xx — is asked again, ten seconds later, up to three times. It sets gpt_refusal to
+# nothing when the call answered 200 with a response whose status is `completed`; to the route's
+# refusal of the model for any other answer; and to the route not answering the preflight where
+# its last answer is still one of those. A10's GPT-6.1 clause records WAITING on the line.
+gpt_preflight() {
+  local header=$work/gpt-preflight-header body=$work/gpt-preflight.json key code status=0 refusal attempt transient
+  if [ -n "$model_key_file" ]; then
+    key=$(<"$model_key_file")
+  else
+    key=$("$model_key_command" 2>/dev/null) || status=$?
+  fi
+  key=${key//[$' \t\r\n']/}
+  if [ "$status" != 0 ] || [ -z "$key" ]; then
+    gpt_refusal="the $model_route route's key command $model_key_command printed no key (exit $status), so nothing asked the route for $gpt_model_id"
+  else
+    (umask 077 && printf 'Authorization: Bearer %s\n' "$key" >"$header")
+    for attempt in 1 2 3 4; do
+      rm -f "$body"
+      code=$(curl -sS --max-time 300 -o "$body" -w '%{http_code}' -H "@$header" -H 'content-type: application/json' \
+        --data "$(jq -cn --arg model "$gpt_model_id" '{model: $model, input: "Reply with the one word: ready.", store: false}')" \
+        "http://127.0.0.1:$port_proxy/tag/gpt-preflight/v1/responses") || code="unreachable (curl exited $?)"
+      case "$code" in
+        408 | 429 | 5[0-9][0-9]) transient=1 ;;
+        [0-9][0-9][0-9]) transient= ;;
+        *) transient=1 ;;
+      esac
+      [ -n "$transient" ] && [ "$attempt" != 4 ] || break
+      note "GPT-6.1: the preflight's call $attempt answered $code, which says nothing of the model; asking again in 10 s"
+      sleep 10
+    done
+    rm -f "$header"
+    refusal=$(preflight_refusal "$code" "$body" "$key")
+    gpt_refusal=
+    if [ -n "$refusal" ] && [ -n "$transient" ]; then
+      gpt_refusal="the $model_route route ($model_upstream) did not answer the preflight ($attempt calls of POST /v1/responses for $gpt_model_id through the recording proxy, gpt-preflight, ten seconds apart; the last $refusal)"
+    elif [ -n "$refusal" ]; then
+      gpt_refusal="the $model_route route ($model_upstream) does not serve $gpt_model_id: POST /v1/responses through the recording proxy (gpt-preflight) $refusal"
+    fi
+  fi
+  unset key
+  if [ -z "$gpt_refusal" ]; then
+    note "GPT-6.1: the $model_route route serves $gpt_model_id: POST /v1/responses through the recording proxy (gpt-preflight) answered 200 at call $attempt, response $(jq -r '.id' "$body") completed on $(jq -r '.model' "$body"); A10's GPT-6.1 clause runs"
+  else
+    note "GPT-6.1: $gpt_refusal; A10's GPT-6.1 clause records WAITING"
+  fi
+}
+
+# gpt_route_setting HOME PROFILE KEY [OVERLAY] prints, as JSON, what the run's Oh My Pi resolves
+# the setting KEY to under PROFILE, and with OVERLAY laid over it as a pane's PI_CONFIG_FILES lays
+# it: `omp config get`, run as install_plugins runs omp, with none of the operator's own session's
+# variables (omp_session_unsets).
+gpt_route_setting() {
+  (cd "$work" && env "${omp_session_unsets[@]}" "HOME=$1" "OMP_PROFILE=$2" ${4:+"PI_CONFIG_FILES=$4"} \
+    "$omp_bin" config get "$3" --json) | jq -c '.value'
+}
+
+# install_gpt_route HOME PROFILE LABEL adds GPT-6.1 to the profile install_model_route routed, for
+# the run's one GPT-6.1 agent and for no other pane. Its models.yml gains the openai provider on
+# OpenAI's Responses API at the recording proxy under LABEL, plus the /v1 that Oh My Pi's
+# openai-responses client appends `responses` to, keyed by the very key command the profile's
+# anthropic provider names (profile_key_command). Its config.yml adds openai to disabledProviders:
+# a pane's subagents and retries choose from every enabled provider (the installers' own
+# config.yml comments), and no pane but the merger may fall back to GPT-6.1. The overlay
+# role_config_files gives the merger alone (write_legion_config) makes GPT-6.1 the model a
+# merger's pane starts on (every pane starts `--model @default`, internal/runtime/tmux/prompt.go)
+# at the questions file's thinking level, which Oh My Pi writes into the session as its
+# thinking_level_change: the level the loop answers that conversation at. Oh My Pi takes a list
+# of an overlay whole, so the overlay names the profile's disabledProviders as they were before
+# openai joined them. What Oh My Pi then resolves is read back, and a profile or overlay that does
+# not resolve as written fails the run.
+install_gpt_route() {
+  local home=$1 profile=$2 label=$3 agent_dir=$1/.omp/profiles/$2/agent disabled resolved
+  disabled=$(gpt_route_setting "$home" "$profile" disabledProviders) &&
+    jq -e 'type == "array" and all(.[]; type == "string") and (index("openai") | not)' <<<"$disabled" >/dev/null ||
+    fail "the profile $profile's disabledProviders read as ${disabled:-nothing}, not a list without openai"
+  cat >>"$agent_dir/models.yml" <<EOF
+  openai:
+    baseUrl: http://127.0.0.1:$port_proxy/tag/$label/v1
+    api: openai-responses
+    auth: apiKey
+    apiKey: "!exec ${profile_key_command[$profile]}"
+    models:
+      - id: $gpt_model_id
+        name: GPT-6.1
+        reasoning: true
+EOF
+  sed -i '/^disabledProviders:$/a\  - openai' "$agent_dir/config.yml"
+  {
+    cat <<EOF
+# Written by scripts/e2e/answer-loop.sh: role_config_files.merger, the Oh My Pi overlay of the run's
+# one GPT-6.1 agent and of no other pane. A pane starts \`--model @default\`, so the default role is
+# the model it runs on, and defaultThinkingLevel the level it runs at, which Oh My Pi records in
+# the session as its thinking_level_change. Oh My Pi merges modelRoles into the profile's key by
+# key, so the other roles stay the profile's, and takes a list whole: enabledModels names both
+# providers, the profile's anthropic and this agent's openai, and disabledProviders is the
+# profile's own list without the openai that keeps every other pane off GPT-6.1.
+enabledModels:
+  - anthropic/*
+  - openai/*
+modelRoles:
+  default: $gpt_model
+defaultThinkingLevel: $gpt_level
+EOF
+    jq -r 'if length == 0 then "disabledProviders: []" else "disabledProviders:", (.[] | "  - \(.)") end' <<<"$disabled"
+  } >"$gpt_overlay"
+  resolved=$(gpt_route_setting "$home" "$profile" disabledProviders) || resolved=null
+  jq -e --argjson before "$disabled" 'type == "array" and sort == ($before + ["openai"] | sort)' <<<"$resolved" >/dev/null ||
+    fail "the profile $profile resolves disabledProviders to $resolved, not $disabled with openai"
+  resolved=$(jq -cn --argjson disabled "$(gpt_route_setting "$home" "$profile" disabledProviders "$gpt_overlay")" \
+    --argjson roles "$(gpt_route_setting "$home" "$profile" modelRoles "$gpt_overlay")" \
+    --argjson level "$(gpt_route_setting "$home" "$profile" defaultThinkingLevel "$gpt_overlay")" \
+    '{disabled: $disabled, default: $roles.default, level: $level}') || resolved=null
+  jq -e --argjson before "$disabled" --arg model "$gpt_model" --arg level "$gpt_level" \
+    '.disabled == $before and .default == $model and .level == $level' <<<"$resolved" >/dev/null ||
+    fail "under the merger's overlay $gpt_overlay the profile $profile resolves $resolved, not disabledProviders $disabled, default $gpt_model and thinking level $gpt_level"
+  note "profile $profile: $gpt_model through the recording proxy as $label, openai among its disabledProviders; the merger's overlay $gpt_overlay resolves $resolved"
 }
 
 # ---- services --------------------------------------------------------------------------------------
@@ -783,14 +931,17 @@ stop_service() {
 # ---- the daemon ------------------------------------------------------------------------------------
 # write_legion_config FILE ANSWERS [BOUNDS] writes the daemon's legion.yaml for the current store:
 # claims-only (no dispatch_url, no github_apps) unless both role Apps were given, the agents'
-# reviewer on Claude Code, the store's runtime, and with ANSWERS=yes the answers block: the model
-# route's endpoint through the recording proxy, keyed by the route's own key file or key command,
-# the list prices, and BOUNDS (a YAML flow mapping) over the defaults. ANSWERS=base is the base
-# commit's daemon's file, in the same mode, on runtime tmux's files store (it has neither
-# session_store nor answers): an agent it starts works in the same workspace the branch daemon
-# later resumes it in, as an upgrade leaves it.
+# reviewer on Claude Code, the merger's overlay (role_config_files, the GPT-6.1 agent's model and
+# thinking level) where the model route serves GPT-6.1, the store's runtime, and with ANSWERS=yes
+# the answers block: each provider the loop calls, anthropic and openai, at the model route's
+# endpoint through the recording proxy (openai's under /v1, which agentloop's OpenAI client appends
+# `responses` to), keyed by the route's own key file or key command, the prices, and BOUNDS (a YAML
+# flow mapping) over the defaults. ANSWERS=base is the base commit's daemon's file, in the same
+# mode, on runtime tmux's files store (it has neither session_store nor answers, and runs no
+# merger): an agent it starts works in the same workspace the branch daemon later resumes it in, as
+# an upgrade leaves it.
 write_legion_config() {
-  local file=$1 answers=$2 bounds=${3:-}
+  local file=$1 answers=$2 bounds=${3:-} provider
   {
     printf 'project: %s\nport: %s\npostgres_dsn: postgres://postgres@127.0.0.1:%s/%s?sslmode=disable\n' \
       "$project" "$port_daemon" "$port_pg" "$daemon_db"
@@ -798,6 +949,9 @@ write_legion_config() {
     printf 'envoy_url: http://127.0.0.1:%s\nenvoy_token_file: %s\nnats_urls:\n  - nats://127.0.0.1:%s\n' \
       "$port_listener" "$work/envoy-token" "$port_nats"
     printf 'probe_interval_seconds: 5\nworker_backends:\n  reviewer: claude\n'
+    if [ "$answers" != base ] && [ -f "$gpt_overlay" ]; then
+      printf 'role_config_files:\n  merger:\n    - %s\n' "$gpt_overlay"
+    fi
     if [ "$store" = postgres ] && [ "$answers" != base ]; then
       printf 'runtime:\n  tmux:\n    session_store: postgres\n    session_dsn_file: %s\n' "$work/sessions-dsn-$store"
     fi
@@ -807,13 +961,16 @@ write_legion_config() {
       cat "$work/github-apps.yaml"
     fi
     if [ "$answers" = yes ]; then
-      printf 'answers:\n  providers:\n    anthropic:\n      base_url: http://127.0.0.1:%s/tag/daemon-%s\n' \
-        "$port_proxy" "$store"
-      if [ -n "$model_key_file" ]; then
-        printf '      api_key_file: %s\n' "$model_key_file"
-      else
-        printf '      api_key_command: %s\n' "$(printf '%s' "$model_key_command" | jq -Rs .)"
-      fi
+      printf 'answers:\n  providers:\n'
+      for provider in anthropic openai; do
+        printf '    %s:\n      base_url: http://127.0.0.1:%s/tag/daemon-%s%s\n' \
+          "$provider" "$port_proxy" "$store" "$([ "$provider" = anthropic ] || printf /v1)"
+        if [ -n "$model_key_file" ]; then
+          printf '      api_key_file: %s\n' "$model_key_file"
+        else
+          printf '      api_key_command: %s\n' "$(printf '%s' "$model_key_command" | jq -Rs .)"
+        fi
+      done
       printf '  prices:\n%s\n' "$answers_prices"
       [ -z "$bounds" ] || printf '  bounds: %s\n' "$bounds"
     fi
@@ -1163,7 +1320,10 @@ produce_pre_change() {
 #   forgets it — through the daemon's own operator route (`legion claims forget-session`, which
 #   takes the session being abandoned so a newly registered one cannot be cleared by mistake) —
 #   resumed with a new session, given its second task, and suspended again: the first session is
-#   the one the second replaced.
+#   the one the second replaced;
+#   the GPT-6.1 merger, on a child, where the model route serves GPT-6.1 (gpt_preflight): suspended,
+#   as the pre-change reviewer is, since A10 answers it and resumes it as it does that reviewer
+#   (spawn_gpt_agent, produce_gpt_agent).
 produce_agents() {
   local tester old task replacement
   task=$(jq -r .agents.architect.task "$questions_file")
@@ -1177,6 +1337,7 @@ produce_agents() {
   spawn_agent architect architect "${agent[$store:root]}" "${agent[$store:root]}" "$task"
   spawn_agent planner planner "${agent[$store:root]}" "${agent[$store:planner.issue]}" "$(jq -r .agents.planner.task "$questions_file")"
   spawn_agent tester tester "${agent[$store:root]}" "${agent[$store:tester.issue]}" "$(jq -r .agents.tester.task "$questions_file")"
+  [ -z "${agent[$store:gpt.issue]:-}" ] || spawn_gpt_agent
   await_turn architect
   await_turn planner
   await_turn tester
@@ -1186,6 +1347,7 @@ produce_agents() {
   until_true 120 "the architect to be suspended" claim_is "${agent[$store:architect.token]}" '.state == "suspended"'
   until_true 120 "the planner to be retired" claim_is "${agent[$store:planner.token]}" '.state == "retired"'
   until_true 120 "the tester to be suspended" claim_is "${agent[$store:tester.token]}" '.state == "suspended"'
+  [ -z "${agent[$store:gpt.issue]:-}" ] || [ -n "${agent[$store:gpt.why]:-}" ] || produce_gpt_agent
   tester=${agent[$store:tester.token]}
   old=${agent[$store:tester.session]}
   agent[$store:tester_old.session]=$old
@@ -1205,13 +1367,59 @@ produce_agents() {
   for name in architect planner tester_old tester pre_change; do
     until_true "$session_ttl_wait" "$name's session to leave the listener's registry" session_gone "${agent[$store:$name.session]}"
   done
-  note "stopped: architect ${agent[$store:architect.session]} (parked), planner ${agent[$store:planner.session]} (closed child), tester $old replaced by ${agent[$store:tester.session]}, pre-change reviewer ${agent[$store:pre_change.session]}"
+  [ -z "${agent[$store:gpt.session]:-}" ] ||
+    soft_wait "$session_ttl_wait" "the GPT-6.1 merger's session to leave the listener's registry" session_gone "${agent[$store:gpt.session]}" ||
+    agent[$store:gpt.why]+="${agent[$store:gpt.why]:+; }its session ${agent[$store:gpt.session]} stayed in the listener's registry"
+  note "stopped: architect ${agent[$store:architect.session]} (parked), planner ${agent[$store:planner.session]} (closed child), tester $old replaced by ${agent[$store:tester.session]}, pre-change reviewer ${agent[$store:pre_change.session]}${agent[$store:gpt.session]:+, GPT-6.1 merger ${agent[$store:gpt.session]}}"
+}
+
+# spawn_gpt_agent spawns the GPT-6.1 merger as spawn_agent spawns an agent, but softly: its
+# workspace and its claim are made in a command substitution, where a refusal ends that alone, and
+# a merger that could not be spawned fails A10's GPT-6.1 clause, naming why
+# (agent[<store>:gpt.why]), and no other criterion.
+spawn_gpt_agent() {
+  local issue=${agent[$store:gpt.issue]} out
+  agent[$store:gpt.token]=$(claim_token "$issue" merger)
+  agent[$store:gpt.role]=merger
+  if out=$({ provision_workspace "$issue" && claims_cmd spawn --json --tree "${agent[$store:root]}" --issue "$issue" --role merger \
+    --prompt-file "$(write_prompt merger "$issue")" --task "$(jq -r .agents.gpt.task "$questions_file")" >/dev/null; } 2>&1); then
+    [ -z "$out" ] || printf '%s\n' "$out"
+    note "spawned gpt: merger of $issue (tree ${agent[$store:root]}), claim ${agent[$store:gpt.token]}"
+  else
+    agent[$store:gpt.why]="the GPT-6.1 merger could not be spawned: $(grep -v '^[[:space:]]*$' <<<"$out" | tail -1)"
+    note "${agent[$store:gpt.why]}"
+  fi
+}
+
+# produce_gpt_agent waits out the GPT-6.1 merger's task and suspends it. The wait is soft: a route
+# that serves the preflight's one call and then fails the agent's turn fails A10's GPT-6.1 clause,
+# naming why (agent[<store>:gpt.why]), and no other criterion. The claim is suspended whatever its
+# turn did, and retired where it will not suspend, so A1's parked tree holds no running claim of
+# it. The note says what the transcript holds: the thinking level it last ran at, the provider, API
+# and model of its turns, its tool calls and its reasoning items, all of them and those with
+# encrypted content, which A10 replays byte for byte.
+produce_gpt_agent() {
+  local token=${agent[$store:gpt.token]} json transcript
+  soft_wait 900 "the GPT-6.1 merger ($token) to finish its task" claim_is "$token" '.state == "idle" and .pending == null' ||
+    agent[$store:gpt.why]="the GPT-6.1 merger did not finish its task within 900 s: $(claim_json "$token" | jq -c '{state, pending, session}' || true)"
+  json=$(claim_json "$token") || json='{}'
+  agent[$store:gpt.session]=$(jq -r '.session // ""' <<<"$json")
+  agent[$store:gpt.file]=$(jq -r '.sessionFile // ""' <<<"$json")
+  claims_cmd suspend --claim "$token" >/dev/null || true
+  if ! soft_wait 120 "the GPT-6.1 merger to be suspended" claim_is "$token" '.state == "suspended"'; then
+    agent[$store:gpt.why]+="${agent[$store:gpt.why]:+; }its claim was not suspended"
+    claims_cmd stop --claim "$token" >/dev/null || true
+    soft_wait 120 "the GPT-6.1 merger to be retired" claim_is "$token" '.state == "retired"' ||
+      agent[$store:gpt.why]+=", nor retired: $(claim_json "$token" | jq -c '{state, session}' || true)"
+  fi
+  transcript=$(conversation_text gpt 2>/dev/null) || transcript=
+  note "the GPT-6.1 merger ${agent[$store:gpt.session]:-(no session)}: thinking level \"$(omp_thinking_level "$transcript")\" (its last thinking_level_change); its turns $(omp_openai_summary "$transcript") (A10 replays each reasoning item with encrypted content byte for byte)"
 }
 
 save_conversations() {
   local name
   mkdir -p "$evidence/sessions/$store"
-  for name in architect planner tester_old tester pre_change; do
+  for name in architect planner tester_old tester pre_change ${agent[$store:gpt.file]:+gpt}; do
     conversation_text "$name" >"$evidence/sessions/$store/$name.jsonl" 2>/dev/null || true
   done
 }
@@ -1308,11 +1516,17 @@ else
   model_key_preflight "${LEGION_E2E_MODEL_BASE_URL:-${ANTHROPIC_BASE_URL:-}}" "$model_key_file" "$work/anthropic-key-header" "$key_source"
   note "model route: key-file, every call through the recording proxy to $model_upstream, keyed by the copy of $key_source in $model_key_file (0600) and nowhere else"
 fi
-note "OpenAI: not used (A10's GPT-6.1 leg is not run: the OpenAI API is paused, dispatch://OSSV-201/ask/71cd9fe8-913a-409d-a6de-1adae3f6dd19)"
 # The questions and their answer keys, read before any model call.
-jq -e '.agents.architect.task and .agents.planner.task and .agents.tester.task and .agents.tester.replacement_task and .agents.pre_change.task and (.questions | length > 0)' \
+jq -e '.agents.architect.task and .agents.planner.task and .agents.tester.task and .agents.tester.replacement_task and .agents.pre_change.task and .agents.gpt.task and .agents.gpt.model and .agents.gpt.thinking and (.questions | length > 0)' \
   "$questions_file" >/dev/null || fail "$questions_file is not the questions file this run reads"
 note "questions: $questions_file, sha256 $(sha256sum "$questions_file" | cut -d' ' -f1), $(jq '.questions | length' "$questions_file") questions"
+# A10's GPT-6.1 agent: an OpenAI model the daemon's answers block prices, since the loop answers a
+# conversation only on a model answers.prices names.
+gpt_model=$(jq -r .agents.gpt.model "$questions_file")
+gpt_model_id=${gpt_model#openai/}
+gpt_level=$(jq -r .agents.gpt.thinking "$questions_file")
+[[ $gpt_model == openai/?* ]] && [[ $answers_prices == *" $gpt_model: "* ]] ||
+  fail "$questions_file's GPT agent runs on $gpt_model, which is no OpenAI model the answers block prices"
 # The role Apps. Each App's credential is a key command of the operator's,
 # LEGION_E2E_<ROLE>_APP_KEY_COMMAND (lib/github-apps.sh): the run runs each once, here, on this
 # host, in the operator's own environment, into $work/app-key/<role>/key.pem (0600, in a directory
@@ -1431,6 +1645,11 @@ branch_profile=legion-e2eal-$$
 make_omp_home "$branch_home"
 install_plugins "$root" "$branch_home" "$branch_profile" "$work/branch-plugins"
 install_model_route "$branch_home" "$branch_profile" agents
+# Whether the route serves GPT-6.1, asked once the proxy runs and the route's key command exists:
+# only then do the branch's profile and the merger's overlay get the model, and A10's GPT-6.1 agent
+# is made; otherwise its clause records WAITING on what the route answered.
+gpt_preflight
+[ -n "$gpt_refusal" ] || install_gpt_route "$branch_home" "$branch_profile" agents-gpt
 note "bring-up took $(($(date +%s) - started_at)) s"
 pass
 
@@ -1438,7 +1657,8 @@ pass
 # criterion ID DESCRIPTION PREREQ... records WAITING for each blocker that applies (and returns 1),
 # or returns 0 so the caller runs the check. A PREREQ names a prerequisite beyond the answering ones,
 # each read from what the run has: infra448 (the listener's registry routes in this checkout, A3),
-# openai (the OpenAI API, paused for this phase), second-owner (LEGION_E2E_REPO_SECOND_OWNER).
+# openai (a model route that serves the GPT model, as gpt_preflight asked it, A10's GPT-6.1
+# clause), second-owner (LEGION_E2E_REPO_SECOND_OWNER).
 criterion() {
   local id=$1 description=$2 blockers line
   shift 2
@@ -1448,7 +1668,8 @@ criterion() {
     case "$line" in
       infra448) grep -rqF '/v1/legion/agents' "$root/packages/envoy/cmd/listener" ||
         blockers+=$'\n'"WAITING (needs INFRA-448): the listener in this checkout has no /v1/legion/agents routes, and Dispatch no Collaborators view" ;;
-      openai) blockers+=$'\n'"WAITING (needs the OpenAI API, paused: dispatch://OSSV-201/ask/71cd9fe8-913a-409d-a6de-1adae3f6dd19): no GPT-6.1 conversation is made" ;;
+      openai) [ -z "$gpt_refusal" ] ||
+        blockers+=$'\n'"WAITING (needs a model route serving $gpt_model): $gpt_refusal; no GPT-6.1 conversation is made" ;;
       second-owner) [ -n "$second_repo" ] || blockers+=$'\n'"WAITING (needs LEGION_E2E_REPO_SECOND_OWNER): no second owner's repository was given" ;;
     esac
   done
@@ -2091,18 +2312,145 @@ check_a9() {
   fi
 }
 
-# check_a10: A10's Claude Code leg (the pre-change reviewer, answered twice within the cache
-# lifetime: the first request carries the effort the transcript last ran at and every thinking
-# signature it holds, byte for byte; an answer of a pair one Anthropic organization served reads
-# the conversation from cache; resumed after, its first request holds both exchanges) and its
-# compaction leg (the architect's session compacted by the daemon's own compaction, is answered
-# from the compacted conversation, and resumes after holding the exchange). The GPT-6.1 leg waits
-# on the OpenAI API. The byte-for-byte clause needs thinking to replay, which is why the pre-change
-# reviewer runs at a raised effort (produce_pre_change); a transcript with no thinking signature
-# fails the leg and says why, since any request carries every signature of a transcript that holds
-# none.
+# a10_gpt is A10's GPT-6.1 clause: the stopped merger, whose conversation ran on GPT-6.1 with
+# reasoning and a tool call (produce_gpt_agent), is asked two questions within the cache lifetime,
+# each read from the smoke repository with the gh tool, so an answer takes more than one model
+# step, and is then resumed in its own harness. It is judged from the recording proxy's records of
+# each answer's own calls (answer_calls: the daemon's label, the question's marker and not the next
+# question's) and from the daemon's `answers: answered` lines:
+#   the conversation: its turns that did not fail hold a tool call (omp_openai_summary);
+#   the model: every call of both answers is a POST /v1/responses for the conversation's model,
+#   and each answered line names it (calls_on_model);
+#   (a) every request carries `reasoning.effort` at the level the conversation last ran at, in
+#   agentloop's words for it (omp_thinking_level, openai_effort, efforts_all);
+#   (b) each answer's first request carries every reasoning item the transcript stores, its id and
+#   encrypted content byte for byte (reasoning_replayed), the transcript read just before that
+#   question, so the second answer's holds the first answer's appended turns too;
+#   (c) every request after a step whose response returned reasoning carries it as that
+#   response's `response.output_item.done` event holds it (reasoning_carried);
+#   (d) the second answer, asked ten seconds after the first answer is posted, as the Claude Code
+#   leg asks its second, reads the conversation from cache: its first call's own response reports
+#   cached input tokens (call_cached_tokens), and its cost line a cache read (cache_read_tokens).
+#   The line's count is summed over the answer's calls, and a later call of an answer reads what
+#   an earlier call of the same answer wrote, so the line alone shows nothing of the first call;
+#   (e) each reply holds its question's answer key;
+#   (f) resumed on its own route (agents-gpt), the merger's first request is for the model and
+#   holds both questions once each.
+# A transcript with no tool call, or with no reasoning item carrying encrypted content, which
+# leaves (b) nothing to replay, and answers in which no step that returned reasoning was followed
+# by another, which leave (c) nothing to carry, each fail the clause and say what went unexercised,
+# since a request carries every item of none.
+a10_gpt() {
+  local session=${agent[$store:gpt.session]:-} token=${agent[$store:gpt.token]:-}
+  local transcript second summary level want t1 t2 s1 s2 e1 e2 calls1 calls2 line1 line2 reply1 reply2 cached1 cached2
+  local replay1 replay2 carried1 carried2 rgot1 rof1 rmiss1 rgot2 rof2 rmiss2 cgot1 cof1 cgot2 cof2 carried owed m request counts
+  local unexercised='' uncarried='' unreplayed='' ok_tools=0 ok_model=0 ok_effort=0 ok_replay=0 ok_carried=0 ok_cache=0 ok_keys=0 ok_resume=0
+  if [ -n "${agent[$store:gpt.why]:-}" ] || [ -z "$session" ]; then
+    record_result A10 FAIL "GPT-6.1: ${agent[$store:gpt.why]:-the merger registered no session}"
+    return 0
+  fi
+  transcript=$(conversation_text gpt)
+  summary=$(omp_openai_summary "$transcript")
+  level=$(omp_thinking_level "$transcript")
+  want=$(openai_effort "$level")
+  note "GPT-6.1: the merger's conversation last ran at thinking level \"$level\", effort \"$want\" in OpenAI's words; its turns $summary"
+  if [ "$(jq -r .tool_calls <<<"$summary")" -gt 0 ]; then
+    ok_tools=1
+  else
+    unexercised="the GPT-6.1 transcript holds no tool call, which the conversation answered must hold"
+  fi
+  if [ "$(jq -r .encrypted <<<"$summary")" = 0 ]; then
+    unexercised+="${unexercised:+; }"
+    if [ "$(jq -r .reasoning <<<"$summary")" = 0 ]; then
+      unexercised+="the GPT-6.1 transcript holds no reasoning item"
+    else
+      unexercised+="the GPT-6.1 transcript's $(jq -r .reasoning <<<"$summary") reasoning items carry no encrypted content"
+    fi
+    unexercised+=", so the clause that the replay carries each reasoning item byte for byte is unexercised"
+  fi
+  [ -z "$unexercised" ] || note "$unexercised: the GPT-6.1 clause fails"
+  t1="$(question_text gpt-repository-module) (question gpt-repository-module of run $run_tag, A10-gpt-1)"
+  t2="$(question_text gpt-repository-go) (question gpt-repository-go of run $run_tag, A10-gpt-2)"
+  s1=$(envoy_ask_text session "$session" "$t1")
+  e1=${s1#* }
+  soft_wait 240 "the GPT-6.1 merger's first answer" inbox_reply "$e1" || true
+  sleep 10
+  # The conversation the second answer's first request replays, kept beside the one the first
+  # answer's replays (save_conversations' gpt.jsonl).
+  second=$(conversation_text gpt)
+  mkdir -p "$evidence/sessions/$store"
+  printf '%s\n' "$second" >"$evidence/sessions/$store/gpt-before-A10-gpt-2.jsonl"
+  s2=$(envoy_ask_text session "$session" "$t2")
+  e2=${s2#* }
+  soft_wait 240 "the GPT-6.1 merger's second answer" inbox_reply "$e2" || true
+  reply1=$(inbox_reply "$e1" || true)
+  reply2=$(inbox_reply "$e2" || true)
+  line1=$(answered_line "$(answer_question_id "$reply1")") || line1=
+  line2=$(answered_line "$(answer_question_id "$reply2")") || line2=
+  calls1=$(answer_calls "daemon-$store" "A10-gpt-1)" "A10-gpt-2)")
+  calls2=$(answer_calls "daemon-$store" "A10-gpt-2)")
+  replay1=$(reasoning_replayed "$transcript" "$(jq -c '.[0].request_body // null' <<<"$calls1")")
+  replay2=$(reasoning_replayed "$second" "$(jq -c '.[0].request_body // null' <<<"$calls2")")
+  carried1=$(reasoning_carried "$calls1")
+  carried2=$(reasoning_carried "$calls2")
+  cached1=$(call_cached_tokens "$(jq -c '.[0] // null' <<<"$calls1")")
+  cached2=$(call_cached_tokens "$(jq -c '.[0] // null' <<<"$calls2")")
+  note "GPT-6.1: listener $s1 and $s2; the answers' calls on daemon-$store: $(jq -c '[.[] | {ordinal, path, model: .request_body.model, status}]' <<<"$calls1") and $(jq -c '[.[] | {ordinal, path, model: .request_body.model, status}]' <<<"$calls2")"
+  note "GPT-6.1: efforts $(calls_efforts "$calls1") and $(calls_efforts "$calls2") (want \"$want\"); of the transcript's reasoning items each first request carried $replay1 and $replay2 (carried, stored, missing); of the reasoning earlier steps returned, later requests carried $carried1 and $carried2 (carried, owed)"
+  note "GPT-6.1: each answer's first call read $cached1 and $cached2 cached input tokens (its response's usage); answered lines $(jq -c '{model, calls, cacheReadTokens, cacheWriteTokens, costUSD}' <<<"${line1:-null}") and $(jq -c '{model, calls, cacheReadTokens, cacheWriteTokens, costUSD}' <<<"${line2:-null}")"
+  note "GPT-6.1: replies: $(head -c 300 <<<"$reply1" | tr '\n' ' ') | $(head -c 300 <<<"$reply2" | tr '\n' ' ')"
+  calls_on_model "$calls1" /v1/responses "$gpt_model_id" && calls_on_model "$calls2" /v1/responses "$gpt_model_id" &&
+    [ "$(jq -r '.model // ""' <<<"${line1:-null}")" = "$gpt_model" ] &&
+    [ "$(jq -r '.model // ""' <<<"${line2:-null}")" = "$gpt_model" ] && ok_model=1
+  efforts_all "$calls1" "$want" && efforts_all "$calls2" "$want" && ok_effort=1
+  read -r rgot1 rof1 rmiss1 <<<"$replay1"
+  read -r rgot2 rof2 rmiss2 <<<"$replay2"
+  [ "$rof1" -gt 0 ] && [ "$rgot1" = "$rof1" ] && [ "$rof2" -gt 0 ] && [ "$rgot2" = "$rof2" ] && ok_replay=1
+  [ -z "$rmiss1" ] || unreplayed="the first answer's first request lacks the stored reasoning items $rmiss1"
+  [ -z "$rmiss2" ] || unreplayed+="${unreplayed:+; }the second answer's first request lacks the stored reasoning items $rmiss2"
+  read -r cgot1 cof1 <<<"$carried1"
+  read -r cgot2 cof2 <<<"$carried2"
+  carried=$((cgot1 + cgot2))
+  owed=$((cof1 + cof2))
+  if [ "$owed" = 0 ]; then
+    uncarried="no step of either answer that returned reasoning was followed by another step, so the clause that a later step carries an earlier step's reasoning is unexercised"
+    note "$uncarried"
+  elif [ "$carried" = "$owed" ]; then
+    ok_carried=1
+  fi
+  [ "$(cache_read_tokens "$line2")" -gt 0 ] && [ "$cached2" -gt 0 ] && ok_cache=1
+  answer_holds gpt-repository-module "$reply1" >/dev/null && answer_holds gpt-repository-go "$reply2" >/dev/null && ok_keys=1
+  m=$(proxy_count agents-gpt)
+  resume_agent gpt || true
+  claims_cmd deliver --claim "$token" --task "While you were stopped you were asked about go.mod twice. What did you answer each time?" >/dev/null || true
+  soft_wait 300 "the resumed GPT-6.1 merger's first model call" more_than "$m" proxy_count agents-gpt || true
+  soft_wait 600 "the resumed merger's turn" claim_is "$token" '.state == "idle" and .pending == null' || true
+  request=$(first_request_after agents-gpt "$m")
+  counts="$(occurrences "$request" "A10-gpt-1)") $(occurrences "$request" "A10-gpt-2)")"
+  note "GPT-6.1: the resumed merger's first request (agents-gpt, after its first $m model calls), for $(jq -r '.model // "no model"' <<<"$request"), holds the two questions: $counts"
+  [ "$counts" = "1 1" ] && [ "$(jq -r '.model // ""' <<<"$request")" = "$gpt_model_id" ] && ok_resume=1
+  suspend_agent gpt || true
+  if [ "$ok_tools$ok_model$ok_effort$ok_replay$ok_carried$ok_cache$ok_keys$ok_resume" = 11111111 ]; then
+    record_result A10 PASS "GPT-6.1: a conversation with $(jq -r .tool_calls <<<"$summary") tool call(s) answered twice on $gpt_model_id through /v1/responses, every request at effort $want, the level it last ran at; each answer's first request carried every reasoning item its transcript stored ($rof1, then $rof2) with its encrypted content byte for byte, and each later step the reasoning an earlier step returned ($owed owed, all carried); the second answer's first call read $cached2 tokens from cache, its cost line $(cache_read_tokens "$line2"); both replies hold their keys; resumed in Oh My Pi on $gpt_model_id, its first request holding both questions once"
+  else
+    record_result A10 FAIL "GPT-6.1: a tool call in the conversation $ok_tools, on the model $ok_model, effort $ok_effort, the transcript's reasoning replayed $ok_replay, earlier steps' reasoning carried $ok_carried ($carried of $owed), the second answer read from cache $ok_cache (its first call $cached2 tokens, its cost line $(cache_read_tokens "$line2")), answer keys $ok_keys, resumed holding both $ok_resume (1 = shown)${unexercised:+; $unexercised}${unreplayed:+; $unreplayed}${uncarried:+; $uncarried}"
+  fi
+}
+
+# check_a10: A10's GPT-6.1 clause (a10_gpt, where the model route serves the model), its Claude
+# Code leg (the pre-change reviewer, answered twice within the cache lifetime: the first request
+# carries the effort the transcript last ran at and every thinking signature it holds, byte for
+# byte; an answer of a pair one Anthropic organization served reads the conversation from cache;
+# resumed after, its first request holds both exchanges) and its compaction leg (the architect's
+# session compacted by the daemon's own compaction, is answered from the compacted conversation,
+# and resumes after holding the exchange). The byte-for-byte clause needs thinking to replay, which
+# is why the pre-change reviewer runs at a raised effort (produce_pre_change); a transcript with no
+# thinking signature fails the leg and says why, since any request carries every signature of a
+# transcript that holds none.
 check_a10() {
-  criterion A10 "a GPT-6.1 conversation's reasoning replayed byte-equal and its cache read" openai || true
+  if criterion A10 "a GPT-6.1 conversation with reasoning and a tool call is answered by that model at its effort, its reasoning replayed and carried byte for byte, its second answer read from cache, and it resumes in Oh My Pi" openai; then
+    a10_gpt
+  fi
   criterion A10 "a Claude Code worker and a compacted Oh My Pi conversation are answered from their conversations and resume after" || return 0
   local session=${agent[$store:pre_change.session]} token=${agent[$store:pre_change.token]} t1 t2 s1 s2 e1 e2 line request transcript effort want_effort sigs thinking unexercised='' missing m counts ok_claude=0 ok_compact=0 t3 s3 e3 compaction
   local asked_at k marker again pair='' pairs='' cache_why='' found judged=''
@@ -2310,16 +2658,18 @@ check_a12() {
 
 check_a14() {
   criterion A14 "a cost line per answer, cache writes included, recomputed from the captured usage and the prices" || return 0
-  local lines bad
+  local lines bad unpriced
   # Every boot of the run, not this one: A12 restarts the daemon five times before this check, and
-  # its own boot has answered nothing yet.
+  # its own boot has answered nothing yet. A line of a model the read has no price for is one whose
+  # cost nothing recomputes, and fails the criterion rather than passing unread.
   lines=$(run_log | jq -c 'select(.msg == "answers: answered" and .fault == "")')
   bad=$(bad_cost_lines "$lines")
+  unpriced=$(unpriced_cost_lines "$lines")
   note "cost lines this run: $(jq -s -c 'map({question, model, inputTokens, outputTokens, cacheWriteTokens, cacheReadTokens, costUSD})' <<<"$lines")"
-  if [ -n "$lines" ] && [ "$bad" = "[]" ]; then
-    record_result A14 PASS "every answer's costUSD equals its tokens at the configured prices, cache writes included ($(grep -c . <<<"$lines") cost lines, every boot of the run)"
+  if [ -n "$lines" ] && [ "$bad" = "[]" ] && [ "$unpriced" = "[]" ]; then
+    record_result A14 PASS "every answer's costUSD equals its tokens at the configured prices of its model, Claude Sonnet 5.5 or GPT-6.1, cache writes included ($(grep -c . <<<"$lines") cost lines, every boot of the run)"
   else
-    record_result A14 FAIL "no cost line, or a cost that does not recompute: $bad"
+    record_result A14 FAIL "no cost line, or a cost that does not recompute: $bad; lines of a model with no price to recompute them at: $unpriced"
   fi
 }
 
@@ -2755,7 +3105,10 @@ for store in $stores; do
   agent[$store:tester.issue]=$(new_rig_issue "Answer loop proof child: the tests" "${agent[$store:root]}")
   agent[$store:pre_change.tree]=$(new_rig_issue "Answer loop proof tree before the change ($store)")
   agent[$store:pre_change.issue]=$(new_rig_issue "Answer loop proof child: before the change" "${agent[$store:pre_change.tree]}")
-  note "project $project, issues: root ${agent[$store:root]}, planner ${agent[$store:planner.issue]}, tester ${agent[$store:tester.issue]}, pre-change ${agent[$store:pre_change.issue]} (tree ${agent[$store:pre_change.tree]})"
+  # A10's GPT-6.1 merger, a child of the tree, only where the model route serves the model.
+  [ -n "$gpt_refusal" ] ||
+    agent[$store:gpt.issue]=$(new_rig_issue "Answer loop proof child: the GPT-6.1 merger" "${agent[$store:root]}")
+  note "project $project, issues: root ${agent[$store:root]}, planner ${agent[$store:planner.issue]}, tester ${agent[$store:tester.issue]}, pre-change ${agent[$store:pre_change.issue]} (tree ${agent[$store:pre_change.tree]})${agent[$store:gpt.issue]:+, GPT-6.1 merger ${agent[$store:gpt.issue]}}"
   pick_port port_daemon
   produce_pre_change
   write_legion_config "$work/answers-$store.yaml" yes
