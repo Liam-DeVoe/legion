@@ -242,10 +242,27 @@ const FEATURE_FILES = collectFeatureFiles(FEATURES_ROOT).map(
   (file) => [join("features", file.slice(FEATURES_ROOT.length + 1)), file] as const
 );
 
+/** Each feature file's text with its comments stripped, by its path under `web/src`: read from
+ *  disk and stripped once, for every scan below that reads it. */
+const featureCode = new Map<string, string>();
+
+function codeOf(relativePath: string, file: string): string {
+  let code = featureCode.get(relativePath);
+  if (code === undefined) {
+    code = stripComments(readFileSync(file, "utf8"), relativePath);
+    featureCode.set(relativePath, code);
+  }
+  return code;
+}
+
 /** Every refusal one file earns, each naming the file, the line and what was found there.
  *  `source` is the file as it stands on disk; its comments are stripped here. */
 function refusals(relativePath: string, source: string): string[] {
-  const code = stripComments(source, relativePath);
+  return codeRefusals(relativePath, stripComments(source, relativePath));
+}
+
+/** `refusals` of a file's text whose comments are stripped already. */
+function codeRefusals(relativePath: string, code: string): string[] {
   const marks = ADDRESS_FEATURES.some((feature) => relativePath.startsWith(`features/${feature}/`))
     ? [...SHARED_MARKS, ...ADDRESS_MARKS]
     : SHARED_MARKS;
@@ -614,7 +631,7 @@ describe("no page builds a control or an address of its own", () => {
   });
 
   test.each(FEATURE_FILES)("%s draws the shared controls", (relativePath, file) => {
-    expect(refusals(relativePath, readFileSync(file, "utf8"))).toEqual([]);
+    expect(codeRefusals(relativePath, codeOf(relativePath, file))).toEqual([]);
   });
 
   test("a `declare module` of the table library that adds anything but `ColumnMeta` is refused", () => {
@@ -653,8 +670,8 @@ describe("no page builds a control or an address of its own", () => {
   });
 
   test("the one `declare module` of the table library is the project List's, which adds `ColumnMeta`", () => {
-    const declaring = FEATURE_FILES.filter(([, file]) =>
-      /\bdeclare\s+module\s+["'`]@tanstack\//.test(readFileSync(file, "utf8"))
+    const declaring = FEATURE_FILES.filter(([relativePath, file]) =>
+      /\bdeclare\s+module\s+["'`]@tanstack\//.test(codeOf(relativePath, file))
     ).map(([relativePath]) => relativePath);
     expect(declaring).toEqual(["features/project/issues-table-columns.tsx"]);
   });
@@ -665,34 +682,24 @@ describe("the shared controls are defined once, under components/", () => {
     expect(flexRender).toBe(libraryFlexRender);
   });
 
-  /** Each shared control, by its component's name and the `data-control` value it sets. */
-  const SHARED_CONTROLS = Object.entries({
-    ColumnFilter: CONTROL.columnFilter,
-    ColumnsMenu: CONTROL.columnsMenu,
-    ControlRow: CONTROL.controlRow,
-    DataTable: CONTROL.dataTable,
-    DisplayMenu: CONTROL.displayMenu,
-    Pager: CONTROL.pager,
-    PanelTrigger: CONTROL.panelTrigger,
-    SearchBox: CONTROL.searchBox,
-    SelectionBar: CONTROL.selectionBar,
-    TableShell: CONTROL.tableShell,
-  });
-  const CONTROL_KEYS = new Map(Object.entries(CONTROL).map(([key, value]) => [value, key]));
+  /** Each shared control, by its component's name and the key of `CONTROL` that holds the
+   *  `data-control` value it sets: the key in PascalCase is the component's name and its file's. */
+  const SHARED_CONTROLS = Object.keys(CONTROL).map(
+    (key) => [`${key.charAt(0).toUpperCase()}${key.slice(1)}`, key] as const
+  );
 
   test.each(
     SHARED_CONTROLS
-  )("%s is exported from components/ and sets its own `data-control`, and no page defines one", (name, value) => {
+  )("%s is exported from components/ and sets its own `data-control`, and no page defines one", (name, key) => {
     const source = stripComments(
       readFileSync(join(import.meta.dir, `${name}.tsx`), "utf8"),
       `components/${name}.tsx`
     );
     expect(source).toMatch(new RegExp(`\\bexport\\s+function\\s+${name}\\b`));
-    expect(source).toMatch(new RegExp(`\\bCONTROL\\.${CONTROL_KEYS.get(value)}\\b`));
+    expect(source).toMatch(new RegExp(`\\bCONTROL\\.${key}\\b`));
+    const defines = new RegExp(`\\b(?:function|const|let|class)\\s+${name}\\b`);
     const definedIn = FEATURE_FILES.filter(([relativePath, file]) =>
-      new RegExp(`\\b(?:function|const|let|class)\\s+${name}\\b`).test(
-        stripComments(readFileSync(file, "utf8"), relativePath)
-      )
+      defines.test(codeOf(relativePath, file))
     ).map(([relativePath]) => relativePath);
     expect(definedIn).toEqual([]);
   });

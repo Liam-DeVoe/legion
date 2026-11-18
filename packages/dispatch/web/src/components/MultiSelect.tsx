@@ -121,6 +121,11 @@ interface SharedProps {
    *  stands in a `<select>`'s place and has to take its box, the text's line is the place to
    *  say so (`features/settings/classes.ts`, `settingsListText`). */
   readonly triggerTextClassName?: string;
+  /** The `title` of the element that holds the trigger's text, beside the chevron, in place of
+   *  a single pick's picked row text: for a host whose children mean more than that row says, as
+   *  the issue header's Repository badge names the repository an issue inherits where its picked
+   *  row reads Inherit. An empty string shows no tooltip. */
+  readonly triggerTitle?: string;
 }
 
 /** Any number of values: a row ticks or unticks its value, and a `Clear` foot empties them. */
@@ -198,6 +203,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     triggerAriaLabel,
     triggerClassName = `rounded-lg border text-sm font-semibold ${controlPadding[size]} ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`,
     triggerTextClassName = "",
+    triggerTitle,
   } = props;
   const single = props.mode === "single";
   // What is picked now, a single pick's value as a list of one, so both modes read it alike.
@@ -394,10 +400,14 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
           // gets: a block from its host's classes, or the flex box `styles.css` makes every
           // button below 1280 px, whose own text ends in no ellipsis (`TruncatedText`). The text
           // takes the room the chevron leaves and ends in an ellipsis where that is too little
-          // (a single pick's whole value is its `title`), and the chevron stays whole at the
-          // trigger's end, at the right edge of a trigger as wide as its box.
+          // (a single pick's whole value is its `title`, unless its host passes its own), and the
+          // chevron stays whole at the trigger's end, at the right edge of a trigger as wide as
+          // its box.
           <span className="flex min-w-0 grow items-center gap-1" id={single ? shownId : undefined}>
-            <TruncatedText className={`min-w-0 grow ${triggerTextClassName}`} title={pickedLabel}>
+            <TruncatedText
+              className={`min-w-0 grow ${triggerTextClassName}`}
+              title={triggerTitle ?? pickedLabel}
+            >
               {triggerText}
             </TruncatedText>
             <ChevronIcon expanded={open} />

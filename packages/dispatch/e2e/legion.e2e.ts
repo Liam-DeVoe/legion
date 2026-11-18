@@ -8,6 +8,7 @@
 // DELETE, both deployment-scoped; the route stores a base URL and never calls the host, so these
 // specs need no daemon to be reachable.
 import { baseUrl, userHeaders } from "./api";
+import { listOf, listTrigger } from "./filters";
 import { LEGION_PROJECT, seedLegionDaemon, seedLegionProject } from "./legion-seed";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -17,11 +18,11 @@ const DAEMON_URL = "http://legion.acme.internal:9731";
 /** Picks LEGION_PROJECT from the Legion project list (`components/MultiSelect.tsx`), as a reader
  *  does: presses its trigger, whose name begins with the list's label and goes on to what it
  *  shows, then the project's option in the list it opens, which is portalled out of the section
- *  and so found by its own name, `Legion project options`. */
+ *  and so found from the trigger that names it (`listOf`). */
 async function pickLegionProject(page: Page): Promise<void> {
-  await page.getByRole("button", { name: /^Legion project\b/ }).click();
-  await page
-    .getByRole("listbox", { exact: true, name: "Legion project options" })
+  const trigger = listTrigger(page, "Legion project");
+  await trigger.click();
+  await listOf(trigger)
     .getByRole("option", { name: new RegExp(`^${LEGION_PROJECT} · `) })
     .click();
 }
