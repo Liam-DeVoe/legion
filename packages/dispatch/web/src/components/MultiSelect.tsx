@@ -1,4 +1,12 @@
-import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
+import {
+  type KeyboardEvent,
+  type ReactNode,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 
 import {
   borderDefault,
@@ -79,9 +87,9 @@ interface SharedProps {
    *  reads that the trigger opens a list (`aria-haspopup` tells a screen reader alone), with
    *  the trigger's text in front of it ending in an ellipsis where the trigger is too narrow for
    *  it. A trigger whose children are a look of their own passes `false` and draws them as they
-   *  are: the tinted badge an ask card's hand-on and the issue header's Assignee and Repository
-   *  show (`badge-select.ts`), and a table header's funnel, whose text-filter twin is a
-   *  `PanelTrigger` that draws none either. */
+   *  are: the tinted badge an ask card's hand-on and the issue header's Assignee show
+   *  (`badge-select.ts`), each of which replaced a badge over an invisible select, and a table
+   *  header's funnel, whose text-filter twin is a `PanelTrigger` that draws none either. */
   readonly chevron?: boolean;
   /** The text of the row `onCreate` adds for a search that matches no option, drawn from the
    *  typed value. Defaults to `Create "<value>"`. */
@@ -94,6 +102,12 @@ interface SharedProps {
   /** The trigger is busy with what the last close committed: it stays focusable, and says so
    *  rather than looking actionable and doing nothing. */
   readonly ariaDisabled?: boolean;
+  /** Takes the focus on its trigger as it is drawn, when the focus is lost then: a list that is
+   *  the first control of a form the reader opened with a control the form takes the place of,
+   *  as **Add a priority**'s does, whose press took the focus away with that control. A list drawn
+   *  while the focus is anywhere else takes none, so a form drawn again without a press (a
+   *  remount on a live update) never pulls the focus from where the reader is. */
+  readonly autoFocus?: boolean;
   /** Shown under the list, e.g. a host's validation message for a rejected `onCreate`. */
   readonly error?: string | null;
   /** Shown in place of the list when nothing is left to choose or nothing matches the search. A
@@ -204,6 +218,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   const {
     ariaDisabled = false,
     children,
+    autoFocus = false,
     chevron = true,
     control,
     createLabel = (value: string) => `Create "${value}"`,
@@ -250,6 +265,13 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // trigger opens it as a click does, on the value picked with an empty search.
   const openedBy = useRef<{ readonly key?: string; readonly query: string } | undefined>(undefined);
   const keysOnTrigger = props.mode === "single" && props.keysOnTrigger === true;
+  // In the commit that draws the list, so the focus is on its trigger before the browser hands a
+  // focus the commit took away to the page: Firefox and WebKit report that loss only afterwards,
+  // and the page's rescue then lands it elsewhere. Only a lost focus is taken (`focusLost`, which
+  // reads a focus still on the removed control as lost): one the reader holds elsewhere stays.
+  useLayoutEffect(() => {
+    if (autoFocus && focusLost()) triggerRef.current?.focus();
+  }, [autoFocus]);
 
   const searchText = query.trim();
   const needle = fold(searchText);

@@ -38,7 +38,8 @@ const NOT_OWNER_NAME = "Write the repository as owner/name.";
  * The issue's repository in the details rail: `Repository:` and a badge naming the repository the
  * issue resolves to (its own, else its nearest ancestor's, else the project's default, muted when
  * not its own; "No repository" when none resolves), which is the trigger of the shared list's
- * single pick (`MultiSelect`), laid over the badge as `AssigneeControl`'s is. Labelled
+ * single pick (`MultiSelect`), laid over the badge as `AssigneeControl`'s is, and ends in the
+ * shared chevron, since the control it replaced was a visible text box. Labelled
  * `Repository of <KEY>`. The badge is hidden from assistive technology; the trigger's name goes on
  * from its label to the words that read what it shows: the repository,
  * `, inherited or the project's default` when it is not the issue's own, or `No repository`.
@@ -142,7 +143,6 @@ export function RepoControl({
       >
         <MultiSelect
           ariaDisabled={held}
-          chevron={false}
           createLabel={(typed) => `Use "${typed}"`}
           disabled={disabled}
           emptyMessage={
