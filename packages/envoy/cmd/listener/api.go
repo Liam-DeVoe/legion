@@ -54,12 +54,14 @@ type messageBody struct {
 }
 
 // sendResponse is the answer to a targeted send. Duplicate reports that JetStream already held
-// this message, so the stream stored nothing new; the publish still reached the agent's subject.
-// The envelope is then the copy the stream holds, read back at the sequence its duplicate verdict
-// named (publishHeld): its event_id, its issued_at and its body are that copy's, not those of the
-// envelope the route built for this request, which no stored message carries. A copy that cannot
-// be read is the 503 with Retry-After: 1 that writeBusUnavailable writes under
-// storedCopyUnreadablePrefix, never an envelope the stream does not hold.
+// another request's copy of this message, so the stream stored nothing new; the publish still
+// reached the agent's subject. The envelope is then the copy the stream holds, read back at the
+// sequence its duplicate verdict named (publishHeld): its event_id, its issued_at and its body are
+// that copy's, not those of the envelope the route built for this request, which no stored message
+// carries. A verdict that names this request's own copy, which a resend after a closed connection
+// can, answers that copy with no Duplicate. A copy that cannot be read is the 503 with
+// Retry-After: 1 that writeBusUnavailable writes under storedCopyUnreadablePrefix, never an
+// envelope the stream does not hold.
 // What recognises that repeat, and for how long, is stated on DELIVERY_DUPLICATE_WINDOW_MS in
 // @legion/contracts (contracts.DeliveryDuplicateWindow here). It can only be true for a send whose
 // dedupe key names the upstream event (contracts.DedupeKeyNamesTheUpstreamEvent): one of
@@ -183,13 +185,14 @@ type publishResponse struct {
 	// sends neither, its answer naming its holder. An older client reads neither field.
 	Recipients          *int `json:"recipients,omitempty"`
 	RecipientsConnected *int `json:"recipients_connected,omitempty"`
-	// Duplicate reports that the stream already held a publish to a topic it captures under this
-	// one's message id, so it stored nothing new and the envelope is the copy it holds
+	// Duplicate reports that the stream already held another request's copy of this message,
+	// under this one's message id, so it stored nothing new and the envelope is the copy it holds
 	// (publishHeld), as a send's Duplicate reports it (sendResponse). Only a publish whose dedupe
 	// key names its event gets a message id (contracts.DedupeKeyNamesTheUpstreamEvent), so only
 	// such a repeat gets it: the shared transport's, under the idempotency_key it mints once per
-	// message, among them. A role send never carries it. Absent means false, which is what an
-	// older listener's answer reads as.
+	// message, among them. A role send's 200 carries it for a forward the stream already held for
+	// its holder (roleSend.deliveredHeld), whatever the key's form, since every forward has a
+	// message id. Absent means false, which is what an older listener's answer reads as.
 	Duplicate bool `json:"duplicate,omitempty"`
 }
 
@@ -403,14 +406,16 @@ const publishDeniedPrefix = "envoy: the message bus denied the publish under thi
 // room.
 const streamFullPrefix = "envoy: the message bus refused the message because its stream is full"
 
-// storedCopyUnreadablePrefix opens the body of the 503 a send or a topic publish is answered when
-// the stream already held the message and the copy it holds could not be read back
-// (errStoredCopyUnread, publishHeld), so one string matches in a test and in a deployed log
-// filter. It is deliberately not busUnansweredPrefix: the bus answered the publish, and the read
-// may have been answered too, with a denial or a message that is not the copy. The message is
-// stored, and the only answer that names it is that copy, so the route answers no envelope and
-// asks for the same request again, which gets the copy once it can be read.
-const storedCopyUnreadablePrefix = "envoy: the stream already holds this message, so the answer is its stored copy"
+// storedCopyUnreadablePrefix opens the body of the 503 a send, a topic publish or a role send is
+// answered when the stream answered the message as a duplicate and the copy that verdict named
+// could not be read back, or when the stream refused it while an earlier publish under the same
+// message id was still in process (errStoredCopyUnread), so one string matches in a test and in a
+// deployed log filter. It says only what was seen: the copy may be gone, deleted or aged out while
+// the stream still remembers its id. It is deliberately not busUnansweredPrefix: the bus answered
+// the publish, and the read may have been answered too, with a denial or a message that is not the
+// copy. The route answers no envelope and asks for the same request again, which gets the copy
+// once it can be read.
+const storedCopyUnreadablePrefix = "envoy: the stream answered this message as a duplicate, and its stored copy could not be read"
 
 // grantGuardPrefix opens the error of the answer POST /v1/roles/set gives a soft claim the grant
 // guard refused (roleGrantGuarded): a role held under the claimant's own session id whose renewal

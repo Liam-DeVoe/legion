@@ -56,10 +56,11 @@ const (
 	// (bus.ErrStreamFull). It is not outcomeBusUnavailable: the bus answered, that the stream is
 	// full, so an operator reading the record looks at the stream's size, not for an outage.
 	outcomeStreamFull requestOutcome = "stream_full"
-	// outcomeStoredCopyUnreadable is a send or a topic publish the stream answered as a duplicate
-	// of a copy it holds, which the listener could not read back to answer (errStoredCopyUnread,
-	// publishHeld): the 503 with Retry-After: 1 under storedCopyUnreadablePrefix. It is not
-	// outcomeBusUnavailable: the bus answered the publish, and the message is stored.
+	// outcomeStoredCopyUnreadable is a send, a topic publish or a role send the stream answered as
+	// a duplicate, whose copy the listener could not read back to answer, or refused while an
+	// earlier publish under the same message id was in process (errStoredCopyUnread): the 503 with
+	// Retry-After: 1 under storedCopyUnreadablePrefix. It is not outcomeBusUnavailable: the bus
+	// answered.
 	outcomeStoredCopyUnreadable requestOutcome = "stored_copy_unreadable"
 	// outcomeSenderRateLimited is a send or publish of an agent session whose count under the
 	// operator's sender limit was empty (sender_limit.go), answered 429 before the route read a

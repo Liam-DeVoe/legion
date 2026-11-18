@@ -2274,11 +2274,15 @@ type PendingForward struct {
 }
 
 // Wait reads the forward's replies until the stream has acknowledged storing it or its window
-// ends, and releases its reply subscription. No acknowledgement by the deadline, the stream's
-// error answer, and the server's no-responders answer (nothing captured the subject) are each
-// ErrForwardNotStored, wrapping the reason and, when publishConfirmed could not confirm the
-// publish, the reason for that.
-func (f *PendingForward) Wait() error {
+// ends, releases its reply subscription, and returns the stream's acknowledgement: the sequence
+// of the copy it holds under the forward's Nats-Msg-Id, and Duplicate where an earlier forward
+// stored that copy. No acknowledgement by the deadline, the stream's error answer, the server's
+// no-responders answer (nothing captured the subject) and a duplicate that names no sequence are
+// each ErrForwardNotStored, wrapping the reason and, when publishConfirmed could not confirm the
+// publish, the reason for that. The last also wraps ErrDuplicateWithoutSequence, which says the
+// stream answered and no later reply comes, so a caller that answers for the forward can say so
+// at once rather than wait out its window.
+func (f *PendingForward) Wait() (StoredAck, error) {
 	defer f.replies.Unsubscribe()
 	for {
 		remaining := time.Until(f.deadline)
@@ -2292,32 +2296,43 @@ func (f *PendingForward) Wait() error {
 		if err != nil {
 			// The server's no-responders answer: nothing, not even a stream, took the forward.
 			if errors.Is(err, nats.ErrNoResponders) {
-				return fmt.Errorf("%w: %w", ErrForwardNotStored, err)
+				return StoredAck{}, fmt.Errorf("%w: %w", ErrForwardNotStored, err)
 			}
-			return err
+			return StoredAck{}, err
 		}
 		ack, ok := readPublishAcknowledgement(response.Data)
 		if !ok {
+			// A duplicate with sequence 0 names no copy (nats-server v2.10.29 staged an id at 0):
+			// nothing says the forward is stored, and no later reply comes.
+			if ack.Duplicate && ack.Error == nil {
+				return StoredAck{}, fmt.Errorf("%w: %w", ErrForwardNotStored, ErrDuplicateWithoutSequence)
+			}
 			continue
 		}
 		// The stream's error answer to the forward, which no later reply changes.
 		if ack.Error != nil {
-			return fmt.Errorf("%w: %w", ErrForwardNotStored, ack.Error)
+			return StoredAck{}, fmt.Errorf("%w: %w", ErrForwardNotStored, ack.Error)
 		}
-		return nil
+		return StoredAck{Sequence: ack.Seq, Duplicate: ack.Duplicate}, nil
 	}
 	if f.unconfirmed != nil {
-		return fmt.Errorf("%w: %w", ErrForwardNotStored, f.unconfirmed)
+		return StoredAck{}, fmt.Errorf("%w: %w", ErrForwardNotStored, f.unconfirmed)
 	}
-	return ErrForwardNotStored
+	return StoredAck{}, ErrForwardNotStored
 }
 
-// publishAcknowledgement is a stream's answer to a publish it captured: the stream and the sequence
-// it stored the message at (a duplicate's earlier sequence), or its error.
+// ErrDuplicateWithoutSequence is wrapped by a forward's Wait when the stream answered it as a
+// duplicate of a copy it named no sequence of, so no copy can be read back (PendingForward.Wait).
+var ErrDuplicateWithoutSequence = errors.New("the stream acknowledged a duplicate with no sequence")
+
+// publishAcknowledgement is a stream's answer to a publish it captured: the stream, the sequence
+// it stored the message at (a duplicate's earlier sequence) and whether it was a duplicate, or its
+// error.
 type publishAcknowledgement struct {
-	Stream string         `json:"stream"`
-	Seq    uint64         `json:"seq"`
-	Error  *nats.APIError `json:"error"`
+	Stream    string         `json:"stream"`
+	Seq       uint64         `json:"seq"`
+	Duplicate bool           `json:"duplicate"`
+	Error     *nats.APIError `json:"error"`
 }
 
 // readPublishAcknowledgement reads data as a stream's publish acknowledgement, reporting false for

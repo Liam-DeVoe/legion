@@ -24,62 +24,6 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// heldAnswer is a send's or a topic publish's answer as these tests read it: the limitedAnswer
-// (status, body, the request's record line), with the envelope the body carries.
-type heldAnswer struct {
-	limitedAnswer
-	envelope contracts.Envelope
-}
-
-// held reads the envelope out of answer's body. An answer that carries none, a refusal, reads as
-// the zero envelope.
-func held(t *testing.T, answer limitedAnswer) heldAnswer {
-	t.Helper()
-	read := heldAnswer{limitedAnswer: answer}
-	if err := json.Unmarshal([]byte(answer.raw), &read.envelope); err != nil {
-		t.Fatalf("decode the envelope of the answer %s: %v", answer.raw, err)
-	}
-	return read
-}
-
-// heldCopy is the one copy the stream holds on subject, read with client, and fails the test
-// unless the stream holds exactly one.
-func heldCopy(t *testing.T, client *bus.Client, subject string) contracts.Envelope {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	stored, err := readStored(ctx, client, subject)
-	if err != nil {
-		t.Fatalf("read what the stream holds on %s: %v", subject, err)
-	}
-	if len(stored) != 1 {
-		t.Fatalf("the stream holds %d copies on %s, want the one copy the first request stored", len(stored), subject)
-	}
-	var kept contracts.Envelope
-	if err := json.Unmarshal(stored[0].Data, &kept); err != nil {
-		t.Fatalf("decode the copy the stream holds on %s: %v", subject, err)
-	}
-	return kept
-}
-
-// requireHeld fails unless the answer is a 200 whose envelope is kept, field for field (its
-// event_id, its issued_at, its body and every other field), whose duplicate is duplicate, and
-// whose record line names kept's event_id.
-func (a heldAnswer) requireHeld(t *testing.T, what string, kept contracts.Envelope, duplicate bool) {
-	t.Helper()
-	a.requireStatus(t, what, http.StatusOK)
-	if !reflect.DeepEqual(a.envelope, kept) {
-		t.Fatalf("%s answered event_id %s issued_at %d, want the stored copy, event_id %s issued_at %d:\nanswer %+v\nstored %+v",
-			what, a.envelope.EventID, a.envelope.IssuedAt, kept.EventID, kept.IssuedAt, a.envelope, kept)
-	}
-	if a.Duplicate != duplicate {
-		t.Fatalf("%s answered duplicate %t, want %t; body %s", what, a.Duplicate, duplicate, a.raw)
-	}
-	if got := a.line["event_id"]; got != kept.EventID {
-		t.Fatalf("%s: the request's line names event_id %v, want the stored copy's %s; line %v", what, got, kept.EventID, a.line)
-	}
-}
-
 // TestASendRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy is check c-send-repeat-stored-copy
 // and the send's half of c-first-send-unchanged. A session sends one message to a session under
 // one idempotency_key, the transport's UUID, which earns the publish a Nats-Msg-Id, and then sends
@@ -230,7 +174,7 @@ func TestARepeatWhoseStoredCopyCannotBeReadAnswers503(t *testing.T) {
 			}
 			// The body names the stored copy it could not read, not a bus that did not answer or
 			// the publish's denial, and the record says the same (storedCopyUnreadablePrefix).
-			if !strings.HasPrefix(repeat.Error, "envoy: the stream already holds this message, so the answer is its stored copy: ") {
+			if !strings.HasPrefix(repeat.Error, "envoy: the stream answered this message as a duplicate, and its stored copy could not be read: ") {
 				t.Fatalf("the %s repeated while the read is denied answered the error %q, want the unread stored copy's", route.name, repeat.Error)
 			}
 			repeat.requireOutcome(t, "the "+route.name+" repeated while the read is denied", "stored_copy_unreadable")
@@ -259,6 +203,13 @@ func TestARepeatWhoseStoredCopyCannotBeReadAnswers503(t *testing.T) {
 // message, and at its own sequence once the stream no longer holds it (an operator's delete, where
 // the read finds the second message next), it is refused. Every refusal wraps
 // errStoredCopyUnread, which the routes answer 503.
+//
+// Two more rows hold the two guards to what they are for. The sequence guard: on a topic of its
+// own two copies carry one dedupe key, the second stored with no message id, and once the first
+// is deleted the read at its sequence finds the second, a copy with the same key the verdict did
+// not name, which is refused. The subject, not the envelope's topic: a role forward stored on a
+// holder's agent subject under the holder's own send key keeps its role topic, and it is the copy
+// a direct send under that key repeats, so it is answered.
 func TestTheStoredCopyIsReadOnlyAtTheSequenceTheVerdictNamed(t *testing.T) {
 	client := setupPublishTestClient(t)
 	topic := "notifications.team.stored-copy-" + id.New()
@@ -277,16 +228,20 @@ func TestTheStoredCopyIsReadOnlyAtTheSequenceTheVerdictNamed(t *testing.T) {
 		t.Fatalf("publish another message: %v", err)
 	}
 
-	held, err := storedCopy(ctx, client, first, firstAck.Sequence)
+	held, err := storedCopy(ctx, client, topic, first, firstAck.Sequence)
 	if err != nil || !reflect.DeepEqual(held, first) {
 		t.Fatalf("the copy at the first message's sequence %d = %+v (%v), want the first message %+v", firstAck.Sequence, held, err, first)
 	}
-	refused := func(what string, from *bus.Client, seq uint64) {
+	refusedOn := func(what, subject string, item contracts.Envelope, from *bus.Client, seq uint64) {
 		t.Helper()
-		held, err := storedCopy(ctx, from, first, seq)
+		held, err := storedCopy(ctx, from, subject, item, seq)
 		if !errors.Is(err, errStoredCopyUnread) || held.EventID != "" {
 			t.Fatalf("the copy %s = %+v (%v), want a refusal wrapping errStoredCopyUnread and no envelope", what, held, err)
 		}
+	}
+	refused := func(what string, from *bus.Client, seq uint64) {
+		t.Helper()
+		refusedOn(what, topic, first, from, seq)
 	}
 	refused("at sequence 0", nil, 0)
 	refused("at another message's sequence", client, otherAck.Sequence)
@@ -295,6 +250,37 @@ func TestTheStoredCopyIsReadOnlyAtTheSequenceTheVerdictNamed(t *testing.T) {
 		t.Fatalf("delete the first message: %v", err)
 	}
 	refused("at the first message's sequence once the stream no longer holds it", client, firstAck.Sequence)
+
+	// The sequence guard: the next copy on the subject carries the same dedupe key.
+	sameKeyTopic := "notifications.team.stored-copy-same-key-" + id.New()
+	sameKey := contracts.MessageEnvelope(contracts.Message{SourceSession: "ses_stored_copy", Text: "one key, two copies"}, sameKeyTopic, publishDedupePrefix+uuid.NewString())
+	keptAck, err := client.PublishStoredAck(ctx, sameKeyTopic, sameKey, bus.ForwardMsgID(sameKey.DedupeKey, sameKeyTopic))
+	if err != nil {
+		t.Fatalf("publish the copy under its message id: %v", err)
+	}
+	again := sameKey
+	again.EventID = id.New()
+	if _, err := client.PublishStoredAck(ctx, sameKeyTopic, again, ""); err != nil {
+		t.Fatalf("publish a second copy under the same dedupe key and no message id: %v", err)
+	}
+	if err := client.JS().DeleteMsg(bus.Stream, keptAck.Sequence); err != nil {
+		t.Fatalf("delete the copy the message id named: %v", err)
+	}
+	refusedOn("at a deleted copy's sequence, the next copy carrying its dedupe key", sameKeyTopic, sameKey, client, keptAck.Sequence)
+
+	// The subject, not the topic: a role forward under a holder's own send key.
+	const holder, key = "ses_stored_copy_holder", "3f2a9c1e-5b7d-4e8f-9a0b-1c2d3e4f5a6c"
+	subject := contracts.LegacyAgentSubject(holder)
+	send := contracts.AgentSendEnvelope(holder, key, contracts.Message{SourceSession: "ses_stored_copy", Text: "a repeat of the forward"})
+	forward := contracts.MessageEnvelope(contracts.Message{SourceSession: "ses_stored_copy", Text: "a comment"}, contracts.RoleTopicPrefix+"stored-copy-role", send.DedupeKey)
+	forwardAck, err := client.PublishStoredAck(ctx, subject, forward, bus.ForwardMsgID(forward.DedupeKey, subject))
+	if err != nil {
+		t.Fatalf("store the forward on %s: %v", subject, err)
+	}
+	held, err = storedCopy(ctx, client, subject, send, forwardAck.Sequence)
+	if err != nil || !reflect.DeepEqual(held, forward) {
+		t.Fatalf("the forward stored on %s under the send's key = %+v (%v), want the forward %+v, its role topic kept", subject, held, err, forward)
+	}
 }
 
 // An answer's expects_reply is the answered envelope's, in the request's spelling where the two

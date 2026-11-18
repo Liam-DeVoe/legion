@@ -653,17 +653,13 @@ or later) needs every program's binary carrying the lower cap first, for the sam
 
 nats-server v2.15.1 keeps no id of a message the full stream refused, so a retry under that id is
 refused the same way while the stream is full and stored once it has room, with no operator step.
-A clustered nats-server of the 2.11 line kept the refused message's id at sequence 0 on the
-stream's leader for 72 hours, a purge notwithstanding, and acknowledged every retry under it as a
-duplicate it does not hold. `/v1/messages/send` and `/v1/messages/publish` answer such a
-duplicate `503` with `Retry-After: 1` and the body `envoy: the stream already holds this message,
-so the answer is its stored copy: …`, since it names no stored copy to answer.
 
-A send or a topic publish that the stream answers as a duplicate of a copy it holds, a repeat
-under the same idempotency key, is answered `200` with `duplicate: true` and that stored copy,
-its `event_id` included, never the envelope the listener built for the repeat. When the listener
-cannot read that copy back, the answer is the same `503`, and the same request again gets the
-copy once it can be read.
+A send, a topic publish or a role send that the stream answers as a duplicate of another
+request's copy, a repeat under the same idempotency key, is answered `200` with `duplicate: true`
+and that stored copy, its `event_id` included, never the envelope the listener built for the
+repeat. When the listener cannot read that copy back, the answer is `503` with `Retry-After: 1`
+and the body `envoy: the stream answered this message as a duplicate, and its stored copy could
+not be read: …`, and the same request again gets the copy once it can be read.
 
 ### The sender limit
 
