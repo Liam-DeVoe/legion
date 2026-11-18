@@ -176,6 +176,15 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           unshare --user --map-root-user true
 
+      # The tests of internal/daemon and internal/intake run a real listener and a real Dispatch,
+      # which they build from packages/envoy while they run (testbuild.EnvoyBinary), and the
+      # daemon's own build never loads those commands, so go-daemon can lack modules they need.
+      # The builds read the module cache with GOPROXY=off, since a fetch inside a test fails it
+      # whenever the module proxy does, on a change that touched nothing it tests; this step
+      # fetches those modules first, from the restored cache and tried again on failure.
+      - name: Fetch the modules of the envoy commands the tests build
+        run: .github/scripts/go-fetch.sh deps packages/envoy ./cmd/dispatch ./cmd/listener
+
       # The step runs every package of the module except the three the race step below tests and
       # internal/textcheck, whose tests are the text-check job's: so each of the three runs once
       # per job, under the detector, and the text checks run once per run of the router, in a

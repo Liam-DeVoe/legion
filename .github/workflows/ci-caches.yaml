@@ -161,12 +161,15 @@ jobs:
       # /dev/null` links each one and writes nothing): running them would want tmux, jj, Oh My Pi,
       # uv, container images and a Postgres service, and the build cache this entry holds is what
       # a compile leaves. The x86_64 leg alone: daemon-go, plugin-pack and pi-legion, which read
-      # these objects, run on ubuntu-24.04.
+      # these objects, run on ubuntu-24.04. Last, the modules daemon-go's fetch step fetches for
+      # the envoy commands its tests build (testbuild.EnvoyBinary), so an entry this fill saves
+      # holds them and that step finds them there.
       - name: Build what daemon-go builds of the daemon module
         if: steps.go-daemon.outputs.cache-hit != 'true' && runner.arch == 'X64'
         run: |
           go test -c -o /dev/null ./...
           go test -c -o /dev/null -race ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/
+          ../../.github/scripts/go-fetch.sh deps ../envoy ./cmd/dispatch ./cmd/listener
         working-directory: packages/daemon
 
       - if: steps.go-daemon.outputs.cache-hit != 'true'
