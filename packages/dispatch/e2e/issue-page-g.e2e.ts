@@ -684,10 +684,11 @@ interface FirstViewFrame {
 
 // Decision 263: a row that stands in view as the page opens is cut before the page paints it, so
 // the reader never sees it whole and it never shrinks in view. At each width a script that runs
-// before the page's own reads the planner's first long row, which stands in the first view, at
-// each animation frame from the first one it is drawn in: it is cut on that first frame, and its
-// height is the same 60 frames later. It carries `@phone` because the phone's first view is
-// another set of rows, laid out at three device pixels to the CSS pixel.
+// before the page's own picks the first of the planner's long rows drawn inside the first view,
+// whichever the body draws there, and reads it at each animation frame from the first one it is
+// drawn in: it is cut on that first frame, and its height is the same 60 frames later. It carries
+// `@phone` because the phone's first view is another set of rows, laid out at three device pixels
+// to the CSS pixel.
 // SLOW(>=2s): sixty-six long rows seeded, and the page loaded at two widths, each watched over
 // 61 frames.
 test("a long row in the first view is drawn cut on the first frame it is drawn in, and its height holds 60 frames later @phone", async ({
@@ -695,11 +696,20 @@ test("a long row in the first view is drawn cut on the first frame it is drawn i
 }) => {
   test.setTimeout(120_000);
   await phase(browser, seedLongRows, async (page, seeded) => {
-    await page.addInitScript((id) => {
+    await page.addInitScript((ids) => {
       const frames: FirstViewFrame[] = [];
       window.__firstViewFrames = frames;
+      let picked: string | null = null;
       const read = () => {
-        const row = document.querySelector(`[data-node-row][data-node-id="${id}"]`);
+        picked ??=
+          [...document.querySelectorAll("[data-node-row]")]
+            .find(
+              (drawn) =>
+                drawn.getBoundingClientRect().top < window.innerHeight &&
+                ids.includes(drawn.getAttribute("data-node-id") ?? "")
+            )
+            ?.getAttribute("data-node-id") ?? null;
+        const row = document.querySelector(`[data-node-row][data-node-id="${picked}"]`);
         if (row !== null) {
           const box = row.getBoundingClientRect();
           frames.push({
@@ -712,7 +722,7 @@ test("a long row in the first view is drawn cut on the first frame it is drawn i
         if (frames.length <= 60) requestAnimationFrame(read);
       };
       requestAnimationFrame(read);
-    }, seeded.rows[0] ?? "");
+    }, seeded.rows);
     for (const size of [DESKTOP, PHONE]) {
       const where = `at ${size.width} px`;
       await page.setViewportSize(size);
