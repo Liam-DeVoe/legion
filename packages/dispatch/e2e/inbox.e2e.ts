@@ -730,11 +730,11 @@ test("the Inbox sets its question's issue priority in place", async ({ browser }
     const page = await alice.newPage();
     await page.goto("/");
     // The question's own controls, where this width puts them: the reading column's head, for
-    // the row it is showing. The control's value is what it says it holds - its badge, which
-    // describes it - since the reading column's head also draws the control's key inside it.
+    // the row it is showing. The control's name ends in the value it holds, its badge's words,
+    // and holds no key, though the reading column's head draws the control's key inside it.
     const controls = await askControls(page, ask.id);
     const control = priorityTrigger(controls, issue.key);
-    await expect(control).toHaveAccessibleDescription("P2");
+    await expect(control).toHaveAccessibleName(`Priority of ${issue.key} P2`);
     const patch = page.waitForRequest(
       (request) =>
         request.method() === "PATCH" &&
@@ -742,7 +742,7 @@ test("the Inbox sets its question's issue priority in place", async ({ browser }
     );
     await pickFromMenu(control, "P0");
     expect((await patch).postDataJSON()).toEqual({ priority: 0 });
-    await expect(control).toHaveAccessibleDescription("P0");
+    await expect(control).toHaveAccessibleName(`Priority of ${issue.key} P0`);
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: 0 });
     // The row's link was not followed.
     expect(new URL(page.url()).pathname).toBe("/");
@@ -755,7 +755,7 @@ test("the Inbox sets its question's issue priority in place", async ({ browser }
     });
 
     await page.reload();
-    await expect(control).toHaveAccessibleDescription("P0");
+    await expect(control).toHaveAccessibleName(`Priority of ${issue.key} P0`);
   } finally {
     await alice.close();
   }

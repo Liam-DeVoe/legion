@@ -18,6 +18,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { installCountingStorage } from "../../__tests__/counting-storage";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { pickNamed } from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
@@ -154,10 +155,9 @@ test("the whole card is the drag activator: no Reorder button, no status pill, s
     // The column header names the status; the card does not repeat it.
     expect(within(card).queryByText("Triage")).not.toBeInTheDocument();
     expect(within(card).getByRole("link", { name: /CORE-1/ })).toBeDefined();
-    expect(within(card).getByRole("button", { name: "Priority of CORE-1" })).toHaveAttribute(
-      "aria-haspopup",
-      "menu"
-    );
+    expect(
+      within(card).getByRole("button", { name: pickNamed("Priority of CORE-1") })
+    ).toHaveAttribute("aria-haspopup", "menu");
   } finally {
     cleanup();
   }

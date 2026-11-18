@@ -2218,12 +2218,12 @@ test("IssuePage keeps state actions available while approval awaits", async () =
     expect(pin.querySelector("path")?.getAttribute("fill")).toBe("none");
 
     const stateActions = screen.getByTestId("issue-state-actions");
-    expect(within(stateActions).getByRole("button", { name: "Status" })).toHaveAttribute(
+    expect(within(stateActions).getByRole("button", { name: pickNamed("Status") })).toHaveAttribute(
       "aria-haspopup",
       "menu"
     );
     expect(
-      within(stateActions).getByRole("button", { name: "Priority of CORE-1" })
+      within(stateActions).getByRole("button", { name: pickNamed("Priority of CORE-1") })
     ).toHaveAttribute("aria-haspopup", "menu");
     expect(within(stateActions).getByRole("button", { name: "Awaiting approval" })).not.toBeNull();
     expect(within(stateActions).getByRole("button", { name: "Approve" })).not.toBeNull();
@@ -2604,7 +2604,7 @@ test("IssuePage closes an issue and reopens it into Backlog", async () => {
   const view = renderIssuePage();
 
   try {
-    const openStatus = await screen.findByRole("button", { name: "Status" });
+    const openStatus = await screen.findByRole("button", { name: pickNamed("Status") });
     expect(await choicesOf(user, openStatus)).not.toContain("Done");
 
     await user.click(screen.getByRole("button", { name: "Close issue" }));
@@ -2622,7 +2622,7 @@ test("IssuePage closes an issue and reopens it into Backlog", async () => {
     });
 
     expect(await screen.findByText("This issue is closed.")).toBeTruthy();
-    const closedStatus = screen.getByRole("button", { name: "Status" });
+    const closedStatus = screen.getByRole("button", { name: pickNamed("Status") });
     expect(closedStatus).toBeDisabled();
     expect(closedStatus).toHaveTextContent("Done");
 
@@ -2642,7 +2642,9 @@ test("IssuePage closes an issue and reopens it into Backlog", async () => {
     await waitFor(() =>
       expect(screen.queryByText("This issue is closed.")).not.toBeInTheDocument()
     );
-    expect(await screen.findByRole("button", { name: "Status" })).toHaveTextContent("Backlog");
+    expect(await screen.findByRole("button", { name: pickNamed("Status") })).toHaveTextContent(
+      "Backlog"
+    );
   } finally {
     view.unmount();
     patchIssue.mockRestore();
@@ -2662,7 +2664,7 @@ test("IssuePage lets a human move a Todo issue to In progress", async () => {
   const view = renderIssuePage("/issues/CORE-1/conversation");
 
   try {
-    const status = await screen.findByRole("button", { name: "Status" });
+    const status = await screen.findByRole("button", { name: pickNamed("Status") });
     expect(status).toHaveTextContent("Todo");
     expect(await choicesOf(user, status)).toEqual([
       "Triage",

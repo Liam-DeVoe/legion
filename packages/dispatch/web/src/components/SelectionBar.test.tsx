@@ -422,6 +422,7 @@ test("the bar emptied by a pick in a menu its own trigger opened hands the focus
       <SelectionBar count={count} label="Selected rows" returnFocus={returnFocus}>
         <ChoiceMenu
           choices={[{ digit: "1", label: "Later today", value: "later" }]}
+          face="Snooze"
           label="Snooze selected asks"
           marks={{}}
           onChoose={(value) => picked.push(value)}

@@ -257,12 +257,23 @@ export function KeyHints({ keys }: { keys: readonly string[] }): ReactNode {
   );
 }
 
+/** The class of a `<kbd>` of a control's key hint: `kbdClass`, with its key drawn by its
+ *  `::before` from its `data-key`. */
+const hintKbdClass = `${kbdClass} before:content-[attr(data-key)]`;
+
 /**
  * The first key of the action a control runs, drawn inside the control beside its label (the
  * reading pane's head, R9), so a reader sees which key also presses it: the person's own key as
  * the host reads it (`useActionKeys`), and nothing for an action with no key. It is for the eye
  * alone: the control names each of its keys in its `aria-keyshortcuts` (`keyshortcutsOf`), so the
  * hint is hidden from assistive tech and stays out of the control's accessible name.
+ *
+ * Each key is CSS generated content, drawn from its `kbd`'s `data-key`, and no text of the page:
+ * the words a control holds, `aria-hidden` ones too, are what WCAG 2.5.3 (Label in Name) holds to
+ * its name, as axe's `label-content-name-mismatch` reads them, so a control named by its
+ * `aria-label` ("Snooze CORE-1") holds its label's words alone. The browser puts generated
+ * content into a name computed from content, so the hint's `aria-hidden` is what keeps the key
+ * out of a name such as Approve's.
  */
 export function ControlKeyHint({ keys }: { keys: readonly string[] | undefined }): ReactNode {
   const first = keys?.[0];
@@ -270,9 +281,7 @@ export function ControlKeyHint({ keys }: { keys: readonly string[] | undefined }
   return (
     <span aria-hidden="true" className="ml-1.5 inline-flex shrink-0 items-center gap-1">
       {keyTokens(first).map(({ key, token }) => (
-        <kbd className={kbdClass} key={key}>
-          {token}
-        </kbd>
+        <kbd className={hintKbdClass} data-key={token} key={key} />
       ))}
     </span>
   );

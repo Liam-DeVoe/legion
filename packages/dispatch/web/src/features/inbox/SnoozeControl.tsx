@@ -111,6 +111,8 @@ export function SnoozeControl({
     : write.pendingUntil === null
       ? "Un-snoozing…"
       : "Snoozing…";
+  // What the menu's trigger shows: on a snoozed row the in-flight label is Un-snooze's.
+  const face = snoozedUntil === null ? (pendingLabel ?? "Snooze") : "Snooze";
 
   // One tree for both states, the menu at the same place in it: a snooze picked from the trigger
   // hands the focus back to the trigger, then makes the row a snoozed one, and a trigger drawn
@@ -144,6 +146,7 @@ export function SnoozeControl({
       )}
       <ChoiceMenu
         choices={snoozeChoices(snoozedUntil !== null)}
+        face={face}
         label={`Snooze ${label}`}
         marks={{ "data-inbox-snooze": "" }}
         onChoose={(choice) => {
@@ -153,9 +156,7 @@ export function SnoozeControl({
         shortcutKeys={shortcutKeys}
         triggerClassName={badgeMenuTrigger}
       >
-        <span className={`${badgeSelectBadge} ${badgeLow.bg} ${badgeLow.text}`}>
-          {snoozedUntil === null ? (pendingLabel ?? "Snooze") : "Snooze"}
-        </span>
+        <span className={`${badgeSelectBadge} ${badgeLow.bg} ${badgeLow.text}`}>{face}</span>
       </ChoiceMenu>
       {failure}
     </>

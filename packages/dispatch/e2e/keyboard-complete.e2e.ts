@@ -74,6 +74,7 @@ import {
   contrastOf,
   dismissThread,
   dismissWrites,
+  expectKeyHint,
   type HeldWrites,
   handOnControl,
   handOnWrites,
@@ -4632,7 +4633,7 @@ async function expectKeysShown(
 ): Promise<void> {
   for (const { find, key, name } of controls) {
     if (key === undefined) continue;
-    await expect(find(paneHead(page)).locator("kbd"), step(`${name} shows ${key}`)).toHaveText(key);
+    await expectKeyHint(find(paneHead(page)), key, step(`${name} shows ${key}`));
   }
 }
 
@@ -4723,6 +4724,73 @@ test("k-pane-head: on approval requests and questions whose titles are 1 and 300
   ).toBeLessThanOrEqual(1);
   expectTitleWhole(threadHead, threadIssue.key, step);
   await expectKeysShown(page, THREAD_CONTROLS, step);
+});
+
+/** How many buttons of the reading pane's head Chromium's own accessibility tree, the one a
+ *  screen reader reads, names exactly `name` (`Accessibility.queryAXTree`, which computes each
+ *  name in the browser). */
+async function headButtonsNamedByChromium(page: Page, name: string): Promise<number> {
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    const { root } = await cdp.send("DOM.getDocument", { depth: 0 });
+    const { nodeId } = await cdp.send("DOM.querySelector", {
+      nodeId: root.nodeId,
+      selector: '[data-testid="inbox-pane"] header',
+    });
+    const { nodes } = await cdp.send("Accessibility.queryAXTree", {
+      accessibleName: name,
+      nodeId,
+      role: "button",
+    });
+    return nodes.filter((node) => node.ignored !== true).length;
+  } finally {
+    await cdp.detach();
+  }
+}
+
+// The key a control draws is CSS generated content, which a browser puts into a name computed
+// from the content, and the hint's `aria-hidden` is what keeps it out: here each name is read as
+// assistive tech gets it, by Playwright's name and by Chromium's own accessibility tree. Approve
+// and Request changes are named by their content, so a key that reached either name would show
+// in it; the priority is named for its menu and then the priority it shows, not for its key.
+// SLOW(>=2s): an approval request on an issue at P2 seeded, and its head read in the pane.
+test("k-pane-head: a control of the head is named without the key it shows, Approve and Request changes by their labels alone and the priority by its menu and then its priority", async ({
+  page,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({
+    force: true,
+    project: "CORE",
+    spec: "# Rollout\n\nThe mirror hands the lease back.\n",
+    title: "Ledger rollout",
+  });
+  await patchIssue(issue.key, { priority: 2 });
+  const requested = withOpenedAsk(
+    await requestApproval(issue.primary_artifact_id, { summary: "The rollout." }, asker)
+  );
+  await page.setViewportSize(WIDE);
+  const head = paneHead(page);
+  const step = (text: string) => `k-pane-head: the names: ${text}`;
+  await openInPane(
+    page,
+    requested.ask.id,
+    head.getByRole("button", { disabled: false, exact: true, name: "Request changes" }),
+    step
+  );
+  for (const [name, key] of [
+    ["Approve", "a"],
+    ["Request changes", "Shift+R"],
+    [`Priority of ${issue.key} P2`, "p"],
+  ] as const) {
+    const control = head.getByRole("button", { exact: true, name });
+    await expect(control, step(`a button is named "${name}", without its key`)).toBeVisible();
+    await expectKeyHint(control, key, step(`"${name}" shows ${key}`));
+    await expect
+      .poll(() => headButtonsNamedByChromium(page, name), {
+        message: step(`Chromium's accessibility tree names one button "${name}"`),
+      })
+      .toBe(1);
+  }
 });
 
 // SLOW(>=2s): an approval request seeded, its document's read held while the head is read and
@@ -5009,10 +5077,7 @@ test("k-remap: a key changed in Settings works at once on the Inbox in another p
     // The Inbox takes the change when the browser tells it, with no reload; the pane head's
     // Snooze shows it as it does.
     const headSnooze = paneHead(inbox).getByRole("button", { name: /^Snooze / });
-    await expect(
-      headSnooze.locator("kbd"),
-      step("the pane head's Snooze shows Shift+B")
-    ).toHaveText("Shift+B");
+    await expectKeyHint(headSnooze, "Shift+B", step("the pane head's Snooze shows Shift+B"));
     const menu = inbox.getByRole("menu");
     await row.focus();
     await inbox.keyboard.press("Shift+B");

@@ -3433,7 +3433,7 @@ test("p opens the priority menu of an ask of an issue, keeps the focus on its ro
     // in no band for a commit and handing the focus to the page.
     await waitFor(() =>
       expect(
-        within(issueRow).getByRole("button", { name: "Priority of CORE-1" })
+        within(issueRow).getByRole("button", { name: pickNamed("Priority of CORE-1") })
       ).toHaveTextContent("P0")
     );
     expect(rowOf("ask-a")).toBe(issueRow);
@@ -3486,7 +3486,9 @@ test("a priority picked from the column's head keeps the column on its ask, thou
     );
     await waitFor(() =>
       expect(
-        within(screen.getByTestId("inbox-pane")).getByRole("button", { name: "Priority of CORE-1" })
+        within(screen.getByTestId("inbox-pane")).getByRole("button", {
+          name: pickNamed("Priority of CORE-1"),
+        })
       ).toHaveTextContent("P0")
     );
     // The selection and the focus stay on the ask whose priority changed.

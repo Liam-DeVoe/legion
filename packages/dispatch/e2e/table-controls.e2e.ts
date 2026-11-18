@@ -93,7 +93,14 @@ import {
 import { leaveFocus } from "./keyboard-issue";
 import { searchPath } from "./keyboard-palette";
 import { seedLegionDaemon } from "./legion-seed";
-import { bulkSnoozeMenu, bulkSnoozeTrigger, choiceOf, menuOf, pickFromMenu } from "./menus";
+import {
+  bulkSnoozeMenu,
+  bulkSnoozeTrigger,
+  choiceOf,
+  menuOf,
+  pickFromMenu,
+  priorityTrigger,
+} from "./menus";
 import { sql } from "./psql";
 import { sessionIds } from "./session-ids";
 import { expandedState, settledState } from "./settled";
@@ -4726,8 +4733,7 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
     if (lanes === "hidden") await showLanes.click();
     await expect(hideLanes).toBeVisible();
     const lane = `P${step + 1}`;
-    const priorityName = `Priority of ${boardCard.key}`;
-    const priority = page.getByRole("button", { exact: true, name: priorityName });
+    const priority = priorityTrigger(page, boardCard.key);
     await priority.focus();
     await page.keyboard.press("Enter");
     await expect(
@@ -4736,9 +4742,7 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
     ).toBeFocused();
     await page.keyboard.press(String(step + 1));
     await expect(
-      page
-        .getByRole("region", { name: `${lane} lane` })
-        .getByRole("button", { exact: true, name: priorityName }),
+      priorityTrigger(page.getByRole("region", { name: `${lane} lane` }), boardCard.key),
       `${where}: the pick left ${boardCard.key} outside the ${lane} lane`
     ).toHaveCount(1);
     await after(where, `a pick of ${lane} on ${boardCard.key}`);

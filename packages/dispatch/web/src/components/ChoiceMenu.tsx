@@ -31,14 +31,13 @@ export interface MenuChoice<V extends string> {
 }
 
 interface ChoiceMenuProps<V extends string> {
-  /** The trigger's and the menu's accessible name: "Snooze <name>", "Priority of <KEY>",
-   *  "Status". */
+  /** The menu's accessible name, and the first words of its trigger's: "Snooze <name>",
+   *  "Priority of <KEY>", "Status". */
   readonly label: string;
   readonly choices: readonly MenuChoice<V>[];
   /** The value a menu of values holds now - a priority, a status. Given, its choices are radios
-   *  (`menuitemradio`), it opens on this one, the trigger is described by what it draws, and
-   *  choosing this value again writes nothing. Absent, the choices are actions (a snooze), and
-   *  the menu opens on the first. */
+   *  (`menuitemradio`), it opens on this one, and choosing this value again writes nothing.
+   *  Absent, the choices are actions (a snooze), and the menu opens on the first. */
   readonly checked?: V;
   readonly onChoose: (value: V) => void;
   /** The trigger takes no press and no focus: a closed issue, a card in Done. */
@@ -54,7 +53,10 @@ interface ChoiceMenuProps<V extends string> {
    *  Inbox's `b` and `p`, in the reading pane's head): named in the trigger's
    *  `aria-keyshortcuts`, and the first drawn inside it after what it draws (`ControlKeyHint`). */
   readonly shortcutKeys?: readonly string[];
-  /** What the trigger draws: the badge or the pill that shows the value. */
+  /** The words the trigger shows, which `children` draws: the value a menu of values holds
+   *  ("P1", "In progress"), or the action of a menu of actions ("Snooze", "Snoozing…"). */
+  readonly face: string;
+  /** What the trigger draws: the badge or the pill that shows `face`. */
   readonly children: ReactNode;
 }
 
@@ -121,6 +123,7 @@ export function ChoiceMenu<V extends string>({
   children,
   choices,
   disabled = false,
+  face,
   held = false,
   label,
   marks,
@@ -130,6 +133,7 @@ export function ChoiceMenu<V extends string>({
 }: ChoiceMenuProps<V>): ReactNode {
   const id = useId();
   const menuId = `${id}-menu`;
+  const nameId = `${id}-name`;
   const faceId = `${id}-face`;
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
@@ -271,17 +275,30 @@ export function ChoiceMenu<V extends string>({
     choose(choice);
   };
 
+  // The trigger is named for its menu and then for what it shows - "Priority of CORE-1 P1",
+  // "Status In progress" - so the words on it, the ones a sighted reader reads and a speech-input
+  // reader says to press it, are in its name (WCAG 2.5.3, Label in Name), and a screen reader
+  // hears the menu and the value it holds, as a single pick's trigger is named (`MultiSelect`).
+  // The menu's name is a hidden element beside the trigger, outside it so the trigger's text
+  // stays the words it shows. A trigger whose face is the first words of its label already -
+  // "Snooze" of "Snooze CORE-1", an unset priority's "Priority" - is named by its label alone.
+  const faceInLabel = label === face || label.startsWith(`${face} `);
   const digits = digitsText(choices);
   return (
     <>
+      {faceInLabel ? null : (
+        <span hidden id={nameId}>
+          {label}
+        </span>
+      )}
       <button
         aria-controls={open ? menuId : undefined}
-        aria-describedby={radio ? faceId : undefined}
         aria-disabled={held || undefined}
         aria-expanded={open}
         aria-haspopup="menu"
         aria-keyshortcuts={keyshortcutsOf(shortcutKeys)}
-        aria-label={label}
+        aria-label={faceInLabel ? label : undefined}
+        aria-labelledby={faceInLabel ? undefined : `${nameId} ${faceId}`}
         className={triggerClassName}
         {...marks}
         disabled={disabled}

@@ -35,8 +35,9 @@ export function panelOf(trigger: Element): HTMLElement {
   return controlledBy(trigger, "the trigger names no open list");
 }
 
-/** The name of the single pick labelled `label`: the label alone where its trigger shows the
- *  label, else the label and then what the trigger shows (`MultiSelect`). */
+/** The name of the single pick or the menu labelled `label`: the label alone where its trigger
+ *  shows the label or the label's first words, else the label and then what the trigger shows
+ *  (`MultiSelect`, `ChoiceMenu`). */
 export function pickNamed(label: string): RegExp {
   return new RegExp(`^${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?: |$)`);
 }

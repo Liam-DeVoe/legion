@@ -2156,6 +2156,7 @@ export function Inbox({
       {selectedAsks.length === 0 && bulkSnoozing === 0 ? null : (
         <ChoiceMenu
           choices={snoozeChoices(false)}
+          face="Snooze"
           held={bulkSnoozing !== 0}
           label="Snooze selected asks"
           marks={{ "data-inbox-bulk-snooze": "" }}

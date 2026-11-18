@@ -5,6 +5,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { pickNamed } from "../../__tests__/list-picks";
 import { choiceOf, choicesOf, pickFromMenu } from "../../__tests__/menu-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import type { InboxRow, Issue, IssueDetails, IssueSummary } from "../../api/types";
@@ -158,7 +159,7 @@ function renderControl() {
 }
 
 function trigger(): HTMLElement {
-  return screen.getByRole("button", { name: "Priority of CORE-1" });
+  return screen.getByRole("button", { name: pickNamed("Priority of CORE-1") });
 }
 
 test("PriorityControl shows the issue's priority and offers Unset and P0-P3, the current one checked", async () => {

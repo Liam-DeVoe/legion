@@ -8,6 +8,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { keyHintOf } from "../../__tests__/key-hints";
 import { pickFromMenu } from "../../__tests__/menu-picks";
 import { ApiError, api } from "../../api/client";
 import type {
@@ -1189,11 +1190,6 @@ function renderHead(ask: InboxRow, artifact?: Artifact, readFailed = false) {
   };
 }
 
-/** The key a control draws for the eye, inside it and hidden from assistive tech. */
-function keyHintOf(control: HTMLElement): string | null | undefined {
-  return control.querySelector('[aria-hidden="true"] kbd')?.textContent;
-}
-
 /** Whether `later` is drawn after `earlier` in the document's order. */
 function drawnAfter(earlier: Node, later: Node): boolean {
   return (earlier.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
@@ -1225,7 +1221,8 @@ test("the head draws its controls in a row of their own and the title whole unde
     const at = [open, priority, assign, snooze, copy, heading].map((node) => drawn.indexOf(node));
     expect(at.includes(-1)).toBe(false);
     expect(at).toEqual([...at].sort((left, right) => left - right));
-    // Each control that has a key draws its first key and names every key it has.
+    // Each control that has a key draws its first key and names every key it has. The key is
+    // CSS's to draw, so no glyph of it is text of the control (WCAG 2.5.3, Label in Name).
     for (const [control, shortcuts, hint] of [
       [priority, "P", "p"],
       [snooze, "B H", "b"],
@@ -1233,6 +1230,7 @@ test("the head draws its controls in a row of their own and the title whole unde
     ] as const) {
       expect(control).toHaveAttribute("aria-keyshortcuts", shortcuts);
       expect(keyHintOf(control)).toBe(hint);
+      expect(control.querySelector("kbd")?.textContent).toBe("");
     }
     // A control with no key draws none.
     for (const control of [open, assign]) {

@@ -1,10 +1,19 @@
 /** The menus a menu button opens - the Snooze, the priority and the status (dispatch://INFRA-2160)
- *  - as the rows reach them. The trigger is a button named as its menu is ("Snooze <name>",
- *  "Snooze selected asks", "Priority of <KEY>", "Status"). The menu is portalled to the body, so
- *  it is found by the id its trigger's `aria-controls` names while it is open, never under the
- *  trigger. A Snooze choice is an action (`menuitem`); a priority or a status is a value
- *  (`menuitemradio`, the current one checked). Nothing here reads the app's own modules. */
+ *  - as the rows reach them. The trigger is a button named for its menu ("Snooze <name>",
+ *  "Snooze selected asks", "Priority of <KEY>", "Status") and then for what it shows ("Priority
+ *  of <KEY> P1", "Status In progress"), unless what it shows is the first words of that name
+ *  already ("Snooze", an unset "Priority"), so it is found by the start of its name
+ *  (`triggerNamed`). The menu is portalled to the body, so it is found by the id its trigger's
+ *  `aria-controls` names while it is open, never under the trigger. A Snooze choice is an action
+ *  (`menuitem`); a priority or a status is a value (`menuitemradio`, the current one checked).
+ *  Nothing here reads the app's own modules. */
 import { expect, type Locator, type Page } from "@playwright/test";
+
+/** The name of the trigger of the menu named `label`: `label` alone, or `label` and then what
+ *  the trigger shows, as a single pick's trigger is found (`listTrigger`). */
+function triggerNamed(label: string): RegExp {
+  return new RegExp(`^${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?: |$)`);
+}
 
 /** The bar of selected rows' Snooze: the trigger of the menu that snoozes every ticked ask. */
 export function bulkSnoozeTrigger(page: Page): Locator {
@@ -20,12 +29,12 @@ export function bulkSnoozeMenu(page: Page): Locator {
 
 /** The issue header's Status: the trigger of the status menu, which shows the status it holds. */
 export function statusTrigger(page: Page): Locator {
-  return page.getByTestId("issue-header").getByRole("button", { exact: true, name: "Status" });
+  return page.getByTestId("issue-header").getByRole("button", { name: triggerNamed("Status") });
 }
 
 /** The trigger of the priority menu of the issue `key`, inside `scope`. */
 export function priorityTrigger(scope: Locator | Page, key: string): Locator {
-  return scope.getByRole("button", { exact: true, name: `Priority of ${key}` });
+  return scope.getByRole("button", { name: triggerNamed(`Priority of ${key}`) });
 }
 
 /** The menu `trigger` holds open: the element its `aria-controls` names. */

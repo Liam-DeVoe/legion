@@ -4,6 +4,8 @@ import { act, fireEvent, render, renderHook, screen, within } from "@testing-lib
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 
+import { keyHintOf } from "../__tests__/key-hints";
+import { pickNamed } from "../__tests__/list-picks";
 import { KeymapProvider } from "../features/shell/KeymapProvider";
 import { useKeymap, useKeymapScope } from "../features/shell/keymap";
 import { ChoiceMenu, type MenuChoice } from "./ChoiceMenu";
@@ -41,6 +43,7 @@ function Page({
       <ChoiceMenu
         checked={checked}
         choices={CHOICES}
+        face={checked ?? "Snooze"}
         held={held}
         label="Snooze CORE-1"
         marks={{ "data-snooze-menu": "" }}
@@ -64,7 +67,7 @@ function renderPage(props: { checked?: string; held?: boolean } = {}) {
       <Page chosen={chosen} taken={taken} {...props} />
     </KeymapProvider>
   );
-  const trigger = screen.getByRole("button", { name: "Snooze CORE-1" });
+  const trigger = screen.getByRole("button", { name: pickNamed("Snooze CORE-1") });
   const row = screen.getByRole("button", { name: "Row" });
   return { chosen, row, taken, trigger, unmount: view.unmount, user };
 }
@@ -267,9 +270,10 @@ test("the focus goes back to the row a key pressed the trigger from, and to the 
 test("a menu of values draws radios with the current one checked, opens on it, and writes nothing when it is chosen again", async () => {
   const { chosen, trigger, unmount, user } = renderPage({ checked: "tomorrow" });
   try {
-    // The trigger is described by what it draws: the value it holds.
-    const described = document.getElementById(trigger.getAttribute("aria-describedby") ?? "");
-    expect(described).toHaveTextContent("tomorrow");
+    // The trigger is named for its menu and then for what it draws: the value it holds.
+    expect(trigger).toHaveAccessibleName("Snooze CORE-1 tomorrow");
+    expect(trigger).not.toHaveAttribute("aria-describedby");
+    expect(trigger).toHaveTextContent(/^tomorrow$/);
     await user.click(trigger);
     const radios = screen.getAllByRole("menuitemradio");
     expect(radios.map((radio) => radio.getAttribute("aria-checked"))).toEqual([
@@ -318,6 +322,7 @@ test("a press on the trigger or in its menu stays out of a draggable parent", as
     >
       <ChoiceMenu
         choices={CHOICES}
+        face="Snooze"
         label="Snooze CORE-1"
         marks={{}}
         onChoose={() => undefined}
@@ -357,6 +362,7 @@ function MovingRows() {
           {id === "ask-a" ? (
             <ChoiceMenu
               choices={CHOICES}
+              face="Snooze"
               label="Snooze CORE-1"
               marks={{}}
               onChoose={() => setOrder(["ask-b", "ask-a"])}
@@ -438,13 +444,14 @@ test("the element a pick hands the focus back to is kept in view as the write mo
 });
 
 // Where its host draws its keys (the Inbox's reading pane), the trigger names each of them to
-// assistive tech and draws the first inside it for the eye, outside what it is called and what
-// it says it holds.
-test("a trigger given its keys names them all and draws the first, outside its name and description", () => {
+// assistive tech and draws the first inside it for the eye, outside what it is called and as no
+// text of it: its name is its menu's and then what it shows, and its words are what it shows.
+test("a trigger given its keys names them all and draws the first, outside its name and its text", () => {
   const view = render(
     <ChoiceMenu
       checked="P2"
       choices={[{ label: "P2", value: "P2" }]}
+      face="P2"
       label="Priority of CORE-1"
       marks={{}}
       onChoose={() => {}}
@@ -455,14 +462,16 @@ test("a trigger given its keys names them all and draws the first, outside its n
     </ChoiceMenu>
   );
   try {
-    const trigger = screen.getByRole("button", { name: "Priority of CORE-1" });
+    const trigger = screen.getByRole("button", { name: "Priority of CORE-1 P2" });
     expect(trigger).toHaveAttribute("aria-keyshortcuts", "P Shift+P");
-    expect(trigger).toHaveAccessibleDescription("P2");
-    expect(Array.from(trigger.querySelectorAll("kbd"), (kbd) => kbd.textContent)).toEqual(["p"]);
-    expect(trigger.querySelector("kbd")?.closest('[aria-hidden="true"]')).not.toBeNull();
+    expect(keyHintOf(trigger)).toBe("p");
+    // The key is CSS's to draw, so the words on the trigger are the value it shows alone, and
+    // its name holds them (WCAG 2.5.3, Label in Name).
+    expect(trigger).toHaveTextContent(/^P2$/);
     view.rerender(
       <ChoiceMenu
         choices={CHOICES}
+        face="P2"
         label="Priority of CORE-1"
         marks={{}}
         onChoose={() => {}}

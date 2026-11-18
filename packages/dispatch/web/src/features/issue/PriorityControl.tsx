@@ -56,7 +56,8 @@ export function PriorityControl({
  * is in flight: a disabled control drops the focus it holds and leaves the tab order, and a pick
  * made meanwhile is queued behind the save rather than refused. A press on the badge or in its
  * menu stays there: a board card is a drag activator, and a held tap on the badge must open the
- * menu, not lift the card. The trigger is labelled `Priority of <KEY>` and marked
+ * menu, not lift the card. The trigger is named `Priority of <KEY>` and then the priority it
+ * shows (`Priority of CORE-1 P2`; an unset one by the label alone) and marked
  * `data-priority-menu`, which the Inbox's, the issue page's and the Board's `p` press.
  *
  * The host passes the write when it has other ways to set the same priority: the issue page
@@ -82,12 +83,14 @@ export function PriorityEditor({
   write: IssuePriorityWrite;
 }): ReactNode {
   const tone = priority === null ? badgeLow : priorityBadge[priority];
+  const face = priority === null ? "Priority" : `P${priority}`;
   return (
     <>
       <ChoiceMenu
         checked={priority === null ? "" : `${priority}`}
         choices={priorityChoices}
         disabled={disabled}
+        face={face}
         held={held}
         label={`Priority of ${issueKey}`}
         marks={{ "data-priority-menu": "" }}
@@ -95,9 +98,7 @@ export function PriorityEditor({
         shortcutKeys={shortcutKeys}
         triggerClassName={badgeMenuTrigger}
       >
-        <span className={`${badgeSelectBadge} ${tone.bg} ${tone.text}`}>
-          {priority === null ? "Priority" : `P${priority}`}
-        </span>
+        <span className={`${badgeSelectBadge} ${tone.bg} ${tone.text}`}>{face}</span>
       </ChoiceMenu>
       {write.failed ? (
         <QueryError

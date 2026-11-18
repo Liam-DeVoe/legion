@@ -241,6 +241,8 @@ export function IssueHeader({
   ]);
   const statusSaving = updateIssue.isPending && updateIssue.variables?.status !== undefined;
   const pendingStatus = statusSaving ? updateIssue.variables?.status : undefined;
+  // What the status menu's trigger shows: the status a pick is saving, else the issue's.
+  const statusShown = statusText(pendingStatus ?? issue.status);
   const selectableStatuses = isClosed ? issueStatuses : openIssueStatuses;
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
@@ -518,6 +520,7 @@ export function IssueHeader({
               value: status,
             }))}
             disabled={isClosed}
+            face={statusShown}
             held={fieldHeld}
             label="Status"
             marks={{ "data-status-menu": "" }}
@@ -528,7 +531,7 @@ export function IssueHeader({
               aria-hidden="true"
               className={`hidden h-2 w-2 rounded-full sm:block ${statusPillDot}`}
             />
-            {statusText(pendingStatus ?? issue.status)}
+            {statusShown}
           </ChoiceMenu>
           <PriorityEditor
             disabled={isClosed}

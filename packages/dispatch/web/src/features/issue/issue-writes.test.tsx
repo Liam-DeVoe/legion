@@ -458,7 +458,7 @@ test("IssuePage ignores a same-task duplicate status save", async () => {
   const { unmount } = renderIssuePage();
 
   try {
-    await user.click(await screen.findByRole("button", { name: "Status" }));
+    await user.click(await screen.findByRole("button", { name: pickNamed("Status") }));
     const backlog = screen.getByRole("menuitemradio", { name: "Backlog" });
     // The same choice pressed twice in one task is what the guard under test ignores: the
     // menu closes on the first press, and a second press in the same task comes before it has.
@@ -481,7 +481,7 @@ test("IssuePage submits the selected priority through the issue mutation", async
   const { unmount } = renderIssuePage();
 
   try {
-    const priority = await screen.findByRole("button", { name: "Priority of CORE-1" });
+    const priority = await screen.findByRole("button", { name: pickNamed("Priority of CORE-1") });
     expect(await choicesOf(user, priority)).toEqual(["Unset", "P0", "P1", "P2", "P3"]);
     await pickFromMenu(user, priority, "P0");
 
@@ -502,7 +502,7 @@ test("IssuePage keeps an optimistic priority selection while its save is pending
   const { unmount } = renderIssuePage();
 
   try {
-    const priority = await screen.findByRole("button", { name: "Priority of CORE-1" });
+    const priority = await screen.findByRole("button", { name: pickNamed("Priority of CORE-1") });
     await pickFromMenu(user, priority, "P0");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
@@ -528,7 +528,7 @@ test("IssuePage restores the previous priority after a failed save", async () =>
   const { unmount } = renderIssuePage();
 
   try {
-    const priority = await screen.findByRole("button", { name: "Priority of CORE-1" });
+    const priority = await screen.findByRole("button", { name: pickNamed("Priority of CORE-1") });
     await pickFromMenu(user, priority, "P0");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
@@ -779,7 +779,11 @@ test("IssuePage drains a title draft after a different issue write settles", asy
   const { unmount } = renderIssuePage();
 
   try {
-    await pickFromMenu(user, await screen.findByRole("button", { name: "Status" }), "Backlog");
+    await pickFromMenu(
+      user,
+      await screen.findByRole("button", { name: pickNamed("Status") }),
+      "Backlog"
+    );
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { status: "backlog" }, keyedAttempt)
     );
@@ -814,7 +818,7 @@ test("IssuePage does not submit a route that was typed but never saved", async (
   const { unmount } = renderIssuePage();
 
   try {
-    const status = await screen.findByRole("button", { name: "Status" });
+    const status = await screen.findByRole("button", { name: pickNamed("Status") });
     const route = await openRouteEditor();
     await pickFromMenu(user, status, "Backlog");
     await waitFor(() =>
@@ -949,7 +953,11 @@ test("IssuePage retries a failed drained title before sending the queued route",
   const { unmount } = renderIssuePage();
 
   try {
-    await pickFromMenu(user, await screen.findByRole("button", { name: "Status" }), "Backlog");
+    await pickFromMenu(
+      user,
+      await screen.findByRole("button", { name: pickNamed("Status") }),
+      "Backlog"
+    );
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { status: "backlog" }, keyedAttempt)
     );
@@ -1137,7 +1145,7 @@ test("a board move then a header status change land in press order after an outa
     </QueryClientProvider>
   );
   try {
-    const status = await screen.findByRole("button", { name: "Status" });
+    const status = await screen.findByRole("button", { name: pickNamed("Status") });
     let moved: Promise<void> | undefined;
     act(() => {
       moved = moveCard?.("CORE-1", "in_progress", 0);

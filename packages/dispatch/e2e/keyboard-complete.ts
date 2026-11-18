@@ -327,6 +327,22 @@ export function handOnControl(scope: Locator | Page, askId: string): Locator {
     .getByRole("button", { name: "Hand this question to" });
 }
 
+/** Holds the key `control` draws beside its label (`ControlKeyHint`) to `key`, for the message
+ *  `message`: a `kbd` hidden from assistive tech whose `data-key` is `key`, which its `::before`
+ *  draws. The key is CSS generated content and no text of the page, so none of the words axe
+ *  holds to the control's name (WCAG 2.5.3, Label in Name) are the key's; the control names its
+ *  keys in its `aria-keyshortcuts`. */
+export async function expectKeyHint(control: Locator, key: string, message: string): Promise<void> {
+  const hint = control.locator('[aria-hidden="true"] kbd');
+  await expect(hint, message).toHaveAttribute("data-key", key);
+  await expect(hint, `${message}, drawn by CSS and no text of the page`).toHaveText("");
+  await expect
+    .poll(() => hint.evaluate((kbd) => getComputedStyle(kbd, "::before").content), {
+      message: `${message}, drawn by its ::before`,
+    })
+    .toBe(JSON.stringify(key));
+}
+
 // ---------------------------------------------------------------------------
 // The seeds.
 // ---------------------------------------------------------------------------
