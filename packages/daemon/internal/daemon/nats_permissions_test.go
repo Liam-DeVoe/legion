@@ -17,7 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-	"github.com/testcontainers/testcontainers-go"
+	tcnats "github.com/testcontainers/testcontainers-go/modules/nats"
 
 	"github.com/sjawhar/envoy/daemonpermissions"
 	"github.com/sjawhar/envoy/testnatsimages"
@@ -309,7 +309,7 @@ func createDaemonNotificationStream(t *testing.T, js jetstream.JetStream) jetstr
 	return stream
 }
 
-func startDaemonGrantServer(t *testing.T, image string, grant daemonpermissions.Permissions) (string, *nats.Conn, jetstream.JetStream, *testcontainers.DockerContainer, string) {
+func startDaemonGrantServer(t *testing.T, image string, grant daemonpermissions.Permissions) (string, *nats.Conn, jetstream.JetStream, *tcnats.NATSContainer, string) {
 	t.Helper()
 	daemonSeed, daemonPublic := testnkeys.User(t)
 	adminSeed, adminPublic := testnkeys.User(t)
@@ -337,7 +337,7 @@ func startDaemonGrantServer(t *testing.T, image string, grant daemonpermissions.
 	return daemonSeed, admin, js, server, uri
 }
 
-func daemonGrantServerLogs(t *testing.T, server *testcontainers.DockerContainer) string {
+func daemonGrantServerLogs(t *testing.T, server *tcnats.NATSContainer) string {
 	t.Helper()
 	text, err := readDaemonGrantServerLogs(server)
 	if err != nil {
@@ -346,7 +346,7 @@ func daemonGrantServerLogs(t *testing.T, server *testcontainers.DockerContainer)
 	return text
 }
 
-func readDaemonGrantServerLogs(server *testcontainers.DockerContainer) (string, error) {
+func readDaemonGrantServerLogs(server *tcnats.NATSContainer) (string, error) {
 	logs, err := server.Logs(context.Background())
 	if err != nil {
 		return "", err

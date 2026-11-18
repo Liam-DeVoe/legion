@@ -829,31 +829,6 @@ Tests and the live proofs run on shared dev boxes as well as on CI runners, and 
 
 - Remove a container with its anonymous volumes: `docker rm -f -v`, since the Postgres images declare a `VOLUME` that a plain `docker rm -f` leaves on the host.
 
-## A container a test starts publishes no port
-
-A test or a live proof never lets Docker choose a host port for a container: no `-p` or `--publish` that names no host port, no `-P`, and no testcontainers-go request on Docker's bridge network, which publishes every port the image declares when the request names none.
-Docker chooses such a port with an allocator of its own: the port after its last choice in the kernel's ephemeral range (`/proc/sys/net/ipv4/ip_local_port_range`), which it binds without asking the kernel whether another program holds it.
-Every `connect()` and every bind to port 0 on the machine takes its port from the same range, so on a busy machine other programs hold ports Docker has not counted.
-Docker tries the next port when its bind fails, ten times in all, and then fails the container's start with `failed to bind host port … address already in use`.
-On one dev box, from 2026-11-16 to 2026-11-17, 32 container starts failed that way, and their tests failed for a cause outside the code under test (dispatch://INFRA-4327).
-
-A server gets its port in one of three ways, by what the server can do:
-
-- A server that binds port 0 and logs the port runs on the host's network (`--network host`), where Docker publishes nothing and the kernel chooses the port at the server's own bind.
-  NATS runs with `-a 127.0.0.1 -p -1`, and `-m -1` where the test reads its monitoring, and the test reads `Listening for client connections on 127.0.0.1:<port>` and `Starting http monitor on 127.0.0.1:<port>` from its log.
-  `packages/envoy/internal/testnats`'s `StartImageConfig`, `packages/daemon/internal/testnats`'s `StartImage` and `StartOpenImage`, the envoy smoke test (whose listener takes `PORT=0` and logs `envoy-listener listening`) and `scripts/e2e/lib/containers.sh`'s `start_nats_container` and `nats_container_ready` start their servers so.
-
-- Postgres, which cannot take port 0, listens on a unix socket alone: `-c listen_addresses= -c unix_socket_directories=/var/run/postgresql,/sockets`, with a directory of the run's own mounted at `/sockets`, mode 0777 for the image's user, and short enough for the 107 bytes of a socket path ("Unix sockets in Go tests" above).
-  Its address is `postgres://<user>:<password>@/<database>?host=<directory>`, which psql, pgx, the daemon's `postgres_dsn` and Dispatch under `DISPATCH_DEV_SIGNIN=1` all take; a WHATWG URL reader (`new URL` in Bun) refuses userinfo before an empty host, so an address such a reader parses names the user and password in the query instead (`postgres:///<database>?host=<directory>&user=<user>&password=<password>`).
-  The test waits for the second `database system is ready to accept connections` line, since the image's entrypoint first runs a server on the same socket to make the database, and stops it.
-  `packages/envoy/internal/testpg` (on the host's network, where testcontainers publishes nothing) and `containers.sh`'s `start_postgres_container` and `postgres_container_ready` start their servers so.
-
-- A server with fixed ports of its own runs on Docker's default bridge network, in a network namespace of its own where no other program holds those ports, and publishes nothing.
-  The test dials it at its container address (`docker inspect`'s `.NetworkSettings.Networks.bridge.IPAddress`), as `packages/envoy/internal/tests3` dials SeaweedFS, or reaches it through `docker exec` alone, as the task health check of `packages/envoy/infra/core/nats_monitor_healthcheck_live_test.go` does, whose subject is the container's own loopback.
-  testcontainers-go publishes the image's declared ports on that network, so these start with the docker CLI; in `packages/envoy` the container-runtime guard of `internal/testnats/nats_test.go` admits that in the rigs' own packages alone, and its walk leaves out the `infra` module.
-
-testcontainers-go's reaper, Ryuk, publishes a port Docker chooses too: every CI job that runs testcontainers sets `TESTCONTAINERS_RYUK_DISABLED`, and so does a developer who runs those tests on a busy machine.
-
 ## A CI job that failed with no log at all
 
 A job that stored no log did not hang: it lost its runner, and the one artifact that outlives the log says so.

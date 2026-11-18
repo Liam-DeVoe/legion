@@ -3,6 +3,7 @@
 package core_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -61,14 +62,16 @@ const (
 // where http.Get would block the row until the package's -timeout.
 var monitorHTTP = &http.Client{Timeout: 2 * time.Second}
 
-// startHubOn runs the hub's image with rig's authorization rendered without its callout, then
-// reconfigures it on config (calloutRig.reconfigure). It returns the client URL and the monitoring
-// endpoint of the restarted server, which StartImageConfig opens on a port the kernel chooses.
+// startHubOn runs the hub's image with rig's authorization rendered without its callout, with its
+// monitoring port open, then reconfigures it on config (calloutRig.reconfigure). It returns the
+// client URL and the monitoring endpoint.
 func startHubOn(t *testing.T, rig *calloutRig, config string) (uri, monitor string) {
 	t.Helper()
-	ctr, _ := testnats.StartImageConfig(t, testnats.HubImage, rig.render(t, false), []string{"-js"}, false)
+	ctr, _ := testnats.StartImageConfig(t, testnats.HubImage, rig.render(t, false), []string{"-js", "-m", "8222"}, false)
 	uri = rig.reconfigure(t, ctr, config)
-	return uri, ctr.MonitorURL(t)
+	monitor, err := ctr.PortEndpoint(context.Background(), "8222/tcp", "http")
+	require.NoError(t, err)
+	return uri, monitor
 }
 
 // hangOutcome is what a hung replica left: whether the server had not closed A by

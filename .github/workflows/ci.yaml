@@ -1012,7 +1012,6 @@ jobs:
               - 'scripts/e2e/lib/rig.sh'
               - 'scripts/e2e/lib/loopback-dsn.sh'
               - 'scripts/e2e/lib/loopback-dsn.py'
-              - 'scripts/e2e/lib/containers.sh'
               - 'scripts/e2e/lib/port-file.sh'
               - 'scripts/e2e/lib/held-port.py'
               - 'scripts/e2e/lib/built-from.sh'
@@ -2736,7 +2735,6 @@ jobs:
               - 'packages/envoy/internal/testpg/*'
               - 'packages/envoy/internal/testpg/testdb/*'
               - 'packages/envoy/internal/testport/*'
-              - 'packages/envoy/internal/testtmp/*'
               - 'packages/envoy/internal/testwait/*'
               # gcp/dispatch.go's outsideOrigin check calls weborigin.Parse, so every build of the
               # component compiles that package.
@@ -3322,7 +3320,6 @@ jobs:
               - 'packages/envoy/internal/testpg/*'
               - 'packages/envoy/internal/testpg/testdb/*'
               - 'packages/envoy/internal/testport/*'
-              - 'packages/envoy/internal/testtmp/*'
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/migrationid/*'
               # cmd/listener/api_test.go:176,421,465, which the soak's run compiles too.

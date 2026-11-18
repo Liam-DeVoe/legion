@@ -100,12 +100,11 @@ func (r *calloutRig) render(t *testing.T, callout bool) string {
 }
 
 // hubContainer is the part of the container testnats.StartImageConfig returns that a restart uses.
-// Its Start restarts the server on new ports, which URL reads from the server's log.
 type hubContainer interface {
 	Stop(ctx context.Context, timeout *time.Duration) error
 	CopyToContainer(ctx context.Context, fileContent []byte, containerFilePath string, fileMode int64) error
 	Start(ctx context.Context) error
-	URL(t testing.TB) string
+	ConnectionString(ctx context.Context) (string, error)
 }
 
 // startHub runs the hub's image on the rig's authorization without its callout, which a client with
@@ -119,8 +118,7 @@ func (r *calloutRig) startHub(t *testing.T) (hubContainer, string) {
 
 // reconfigure stops the container, makes config its whole configuration and starts it again on the
 // same JetStream store, as an operator applies a changed configuration to the hub, and returns its
-// client URL, on the port the restarted server bound. Every test of the rendered block on the hub's
-// image starts its server this way.
+// client URL. Every test of the rendered block on the hub's image starts its server this way.
 func (r *calloutRig) reconfigure(t *testing.T, ctr hubContainer, config string) string {
 	t.Helper()
 	ctx := context.Background()
@@ -128,7 +126,9 @@ func (r *calloutRig) reconfigure(t *testing.T, ctr hubContainer, config string) 
 	require.NoError(t, ctr.Stop(ctx, &stop))
 	require.NoError(t, ctr.CopyToContainer(ctx, []byte(config), "/etc/nats/nats-server.conf", 0o644))
 	require.NoError(t, ctr.Start(ctx))
-	return ctr.URL(t)
+	uri, err := ctr.ConnectionString(ctx)
+	require.NoError(t, err)
+	return uri
 }
 
 // connectWhenUp connects to server as the nkey user whose seed is seed, with options, waiting
