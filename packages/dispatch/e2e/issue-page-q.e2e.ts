@@ -751,7 +751,7 @@ test("under Decisions a row draws the outline's layout, short names and the six-
         .poll(() => decisionStatementNames(page), { message: `${where} names no statement` })
         .not.toEqual([]);
 
-      expectRowLayouts(await rowLayouts(page), where, false, size.width);
+      expectRowLayouts(await rowLayouts(page, seeded.spec), where, false, size.width);
       // The seed's linked question draws its link in its words, so the links' colours below are
       // read on at least one link.
       await expect
@@ -779,7 +779,7 @@ test("under Decisions a row draws the outline's layout, short names and the six-
         const cutOf = async (question: string) => {
           await nodeRow(page, question).first().scrollIntoViewIfNeeded();
           await nextFrames(page);
-          return (await rowLayouts(page)).find((row) => row.id === question);
+          return (await rowLayouts(page, seeded.spec)).find((row) => row.id === question);
         };
         // The control that opens a cut text, in the page's own words: "more · N words".
         const more = new RegExp(
