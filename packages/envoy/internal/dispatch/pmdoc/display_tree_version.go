@@ -20,7 +20,12 @@ import "sync/atomic"
 // The golden testdata/display-tree-version.json holds this number beside a hash of the display
 // corpus's trees in both modes, and TestDisplayTreeVersionGoldenHoldsTheCorpus refuses a change
 // to that hash that leaves the number alone.
-const DisplayTreeVersion = 3
+//
+// It is 4 since the read links an email address whole or not at all (wholeEmailLinks,
+// INFRA-4224): a tree stored at 3 can hold a link that starts inside the address its text spells,
+// as `…/serviceAccounts/agent-hosts@…` was drawn with a link to `hosts@…` alone, so every one is
+// read again under the rule (testdata/corpus-display/email-links-whole-or-not-at-all.md).
+const DisplayTreeVersion = 4
 
 // displayTreeVersionNow is the version this process keys a stored tree by. It is a variable
 // seeded from the constant rather than the constant itself because a test has to stand the

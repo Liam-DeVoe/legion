@@ -2282,7 +2282,7 @@ So the renderer writes a rule that opens a document as `***` where `---` would b
 Two lists of one kind side by side read back as one when written with one marker, so the renderer writes a list whose kind matches the block before it - past an empty paragraph, which it writes as nothing - with its kind's other marker, `*` after `-` and `)` after `.`, alternating as the browser editor does (`otherListMarkers`); a list anywhere else keeps `-` or `.`.
 An edit that leaves two lists side by side (deleting or emptying what stood between them, inserting or accepting a list beside one) therefore stores the two lists it made, and a `replace` refusal that names a list item's marker names the one it is written with (`BlockMarker.Other`).
 
-A bare web address or email is read as the browser editor's engine, remark-gfm, reads it, by both of its readers (INFRA-531).
+A bare web address or email is read as the browser editor's engine reads it: by both of remark-gfm's readers (INFRA-531), and then, for an email link, by one rule of Dispatch's own that the engine applies too (below).
 Its tokenizer (`linkify.go`) reads the markdown as written, before emphasis, code or links form:
 `linkifyGuard`, asked at every ASCII punctuation character, whitespace and head after every other inline parser declines, reads from there to the next character goldmark asks at (`readLiteralAddress`), and `underscoreEmail` reads an email at `_` before emphasis.
 Asking at a character no other parser triggers on ends goldmark's text there, so the guard gives the split text back (`linkifyBlock.settle`), and a markdown holding no address is counted and weighed as without it.
@@ -2292,6 +2292,11 @@ The two readers end an address differently (`x;https://x.test/a_ b` leaves the `
 http\://x.test/a_ b` keeps it), each as the engine does.
 So an address is a link after any punctuation, a letter outside ASCII, `]`, `|`, `!`, a character reference or an escape, a URL after a digit too, and at a line or table cell opening with punctuation, as in a comment and the browser editor.
 An email links to its `mailto:` URL (`emailHref`), as in the engine.
+Last, at the same block close, comes one rule of Dispatch's own, which the engine applies in both of its pipelines too (`remarkWholeEmailLinks`, `packages/proof-editor/src/whole-email-links.ts`, INFRA-4224), since either reader can start an email link inside the address the writer wrote, so that the link names another address (`wholeEmailLinks`, over the links the readers mark as made from a bare address, `bareEmailAttr`):
+an email link that a reader made from a bare address, and that starts inside a run of local-part characters (`[-.+_A-Za-z0-9]`) of the text just before it, is changed.
+The link takes the run, whatever stands before the run (the start of the text, whitespace, punctuation, a symbol, a letter outside ASCII), except a `/`.
+When the character right before the run is `/`, the link goes, and its text joins the text around it.
+So `projects/p/serviceAccounts/agent-hosts@example.com` is stored as written, as `serviceAccounts/agenthosts@example.com` always was, and `x agent&#45;hosts@example.com` as `x [agent-hosts@example.com](mailto:agent-hosts@example.com)`, where remark-gfm alone links `hosts@example.com` in both; a link the writer wrote, `[…](mailto:…)`, `[…][label]` or `<…>`, is never changed, so a rendering stored before the rule keeps its early link, and `xé-agent@example.com` keeps `-agent@example.com`, whose link already starts at its run's start.
 
 The renderer writes a run of inline text so that it reads back as written.
 A bare URL is written as its bytes where the readers read it back whole (`isBareAutolink`, `isBareWWWLink`);

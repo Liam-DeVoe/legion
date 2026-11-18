@@ -7,7 +7,7 @@ import { asUser } from "./users";
 // A bare email address in Markdown a document is written from - a spec an issue starts with, or
 // a line an agent inserts - is an autolink, and the server stores it as a link to the address
 // with the mail scheme: `[a@b.test](mailto:a@b.test)`. This family has no past-version reading
-// row of its own: its one browser row reads the stored document in a browser, and what it reads
+// row of its own: its first browser row reads the stored document in a browser, and what it reads
 // is a link's href, which no paragraph reading holds. The editor and a past version's read-only
 // view render that link with the same href, and the editor's link opener (proof-sdk's
 // markdown-link-click.ts) hands it to `window.open`: on a modifier click in the editable editor,
@@ -33,7 +33,7 @@ const entry = fixture("email-autolinks-in-a-spec");
  *  it, so the two versions the past-version half of the row needs are the entry's own text. */
 const [firstBlock, ...insertedBlocks] = entry.markdown.trimEnd().split("\n\n");
 
-// @pr: The mailto family's only row: an address written into a spec is a link in the editor and in a past version.
+// @pr: The mailto family's one row on the pull-request lane: an address written into a spec is a link in the editor and in a past version.
 test("an email address written into a spec is a mailto link in the editor and in a past version @pr", async ({
   browser,
 }) => {
@@ -101,6 +101,45 @@ test("an email address written into a spec is a mailto link in the editor and in
     );
     await first.click();
     await expect.poll(opened).toEqual(["mailto:second@b.test", "mailto:first@b.test"]);
+  } finally {
+    await alice.close();
+  }
+});
+
+// R4 of dispatch://INFRA-4224, written inline rather than taken from the fixture table: a resource
+// path that holds a hyphenated service account is text, and the account named alone is one link to
+// the whole address. Before the rule both readers, Go's and the editor's engine, linked the path's
+// `hosts@…` alone, which names another account.
+const account = "agent-hosts@theorem-research.iam.gserviceaccount.com";
+const resourcePath = `projects/theorem-research/serviceAccounts/${account}`;
+const grant = `Grant act-as on ${account}.`;
+
+test("a resource path holding a hyphenated address is text, and the address alone is one mailto link", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({
+    project: "CORE",
+    spec: `${resourcePath}\n\n${grant}\n`,
+    title: "A service account in a spec",
+  });
+
+  const stored = (await getIssueArtifactText(issue.key, "spec")).markdown;
+  expect(stored).toContain(`${resourcePath}\n`);
+  expect(stored).toContain(`Grant act-as on [${account}](mailto:${account}).`);
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await openSpec(page, issue.key, grant);
+    const editor = documentEditor(page);
+    const path = editor.locator("p", { hasText: resourcePath });
+    await expect(path).toHaveText(resourcePath);
+    await expect(path.getByRole("link")).toHaveCount(0);
+    const links = editor.getByRole("link");
+    await expect(links).toHaveCount(1);
+    await expect(links).toHaveText(account);
+    await expect(links).toHaveAttribute("href", `mailto:${account}`);
   } finally {
     await alice.close();
   }

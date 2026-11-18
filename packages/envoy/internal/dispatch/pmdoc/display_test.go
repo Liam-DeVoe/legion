@@ -22,10 +22,12 @@ type displayFixture struct {
 
 // displayCorpusDocuments are the documents the display read is held to: every one of
 // testdata/corpus-display, which holds the shapes a reader must still be shown and no writer
-// stores, the documents of testdata/corpus written to carry a U+0000 (nulCorpusDocuments), and
-// the documents of testdata/corpus this change added. Their fixture is a golden of
-// what Go reads, not of what a browser reads: that the two agree is what the differential's
-// cross-reader gate answers, over the whole corpus (gen/differential.sh).
+// stores, and text a writer does store whose reading a change to the reader moved, so that the
+// display tree version's golden pins the new reading (email-links-whole-or-not-at-all.md, which
+// links an email address whole or not at all); the documents of testdata/corpus written to carry
+// a U+0000 (nulCorpusDocuments); and the documents of testdata/corpus this change added. Their
+// fixture is a golden of what Go reads, not of what a browser reads: that the two agree is what
+// the differential's cross-reader gate answers, over the whole corpus (gen/differential.sh).
 func displayCorpusDocuments(t *testing.T) []string {
 	t.Helper()
 	paths, err := filepath.Glob(filepath.Join("testdata", "corpus-display", "*.md"))

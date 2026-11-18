@@ -2,6 +2,7 @@ package pmdoc
 
 import (
 	"bytes"
+	"iter"
 	"strings"
 	"unicode/utf8"
 
@@ -12,12 +13,19 @@ import (
 // This file is the second of the engine's two readers of bare addresses that linkifyGuard
 // describes: mdast-util-gfm-autolink-literal's transform, which links the addresses it finds in
 // each run of a block's text nodes, decoded, at the block's close (linkTextAddresses). linkify.go
-// holds the first, the tokenizer.
+// holds the first, the tokenizer. Last comes Dispatch's own rule for the email links both made
+// (wholeEmailLinks).
 
 // decodedLabelAttr is the attribute holding the decoded text of an autolink the transform made
-// (linkTextAddresses), which its source spells with escapes and references; a tokenizer's autolink
-// shows its source as written.
+// (linkTextAddresses) or the rule moved (wholeEmailLinks), which its source spells with escapes
+// and references; a tokenizer's autolink shows its source as written.
 const decodedLabelAttr = "pmdocDecodedLabel"
+
+// bareEmailAttr is the attribute marking an email autolink a reader made from a bare address, the
+// tokenizer's or the transform's (bareAutolink), with its source offsets, a text.Segment: the
+// links wholeEmailLinks holds to the rule. goldmark's `<…>` autolink, which the writer wrote,
+// carries none.
+const bareEmailAttr = "pmdocBareEmail"
 
 // autolinkText is the text an autolink shows and the href it links to: an email's mailto: URL
 // (emailHref), and a URL's text, `http://` before a www URL's.
@@ -41,30 +49,43 @@ func emailHref(address string) string {
 }
 
 // linkTextAddresses links what mdast-util-gfm-autolink-literal's transform links in parent's
-// text: each run of goldmark's text nodes between other nodes, outside a link, an image, a code
-// span or an autolink, is one of the engine's text nodes (linkRuns). A block inside parent is left
-// to its own CloseBlock, which goldmark calls on every block after its children's: the engine
-// searches each text once, and a second search would read the text beside a link it made alone.
+// text: each run of goldmark's text nodes between other nodes in each of parent's text containers
+// (textContainers) is one of the engine's text nodes (linkRuns).
 func linkTextAddresses(parent ast.Node, source []byte) {
 	var run []ast.Node
-	for node := parent; node != nil; {
-		opaque := node != parent && node.Type() == ast.TypeBlock
-		switch node.(type) {
-		case *ast.Link, *ast.Image, *ast.CodeSpan, *ast.AutoLink:
-			opaque = true
+	for container := range textContainers(parent) {
+		run = linkRuns(container, source, run)
+	}
+}
+
+// textContainers is parent and each node inside it whose children the readers read as text:
+// outside a link, an image, a code span or an autolink. A block inside parent is left to its own
+// CloseBlock, which goldmark calls on every block after its children's: the engine searches each
+// text once, and a second search would read the text beside a link it made alone. Each container
+// is yielded before the walk enters it, so its children may be changed then.
+func textContainers(parent ast.Node) iter.Seq[ast.Node] {
+	return func(yield func(ast.Node) bool) {
+		for node := parent; node != nil; {
+			opaque := node != parent && node.Type() == ast.TypeBlock
+			switch node.(type) {
+			case *ast.Link, *ast.Image, *ast.CodeSpan, *ast.AutoLink:
+				opaque = true
+			}
+			if !opaque && node.FirstChild() != nil {
+				if !yield(node) {
+					return
+				}
+				node = node.FirstChild()
+				continue
+			}
+			for node != parent && node.NextSibling() == nil {
+				node = node.Parent()
+			}
+			if node == parent {
+				return
+			}
+			node = node.NextSibling()
 		}
-		if !opaque && node.FirstChild() != nil {
-			run = linkRuns(node, source, run)
-			node = node.FirstChild()
-			continue
-		}
-		for node != parent && node.NextSibling() == nil {
-			node = node.Parent()
-		}
-		if node == parent {
-			return
-		}
-		node = node.NextSibling()
 	}
 }
 
@@ -345,7 +366,11 @@ func transformBoundary(char rune) bool {
 // `([-.\w+]+)@([-\w]+(?:\.[-\w]+)+)` after the text's start, whitespace, punctuation or a symbol,
 // links in value[from:to], one of the text nodes the URLs left (findEmail): its previous character
 // no `/`, its domain ending in no `-`, digit or `_`. A refused match is searched again one
-// character after where it began.
+// character after where it began. That is remark-gfm's reading and no longer Dispatch's where the
+// `-`, `.`, `+` or `_` a match starts after is inside a run of local-part characters: there the
+// match names another address than the one written (`agent-hosts@…` read after a `/` links
+// `hosts@…`), so the rule that follows both readers moves the link to the run's start, or drops
+// it where a `/` stands before the run (wholeEmailLinks), as the engine does too.
 func findEmails(found []foundLink, value string, from, to int) []foundLink {
 	var local emailRun
 	for at := from; at < to; at++ {
@@ -475,4 +500,102 @@ func (piece textPiece) sourceAt(offset int) (*ast.Text, int, bool) {
 		return nil, 0, false
 	}
 	return text, text.Segment.Start + max(0, raw-text.Segment.Padding), true
+}
+
+// wholeEmailLinks holds each email link a reader made from a bare address in parent's text
+// containers (bareEmailAttr, textContainers) to Dispatch's rule, once both readers have linked
+// them (linkifyGuard): an email link that a reader made from a bare address, and that starts
+// inside a run of local-part characters (`[-.+_A-Za-z0-9]`) of the text just before it, is
+// changed. The link takes the run, whatever stands before the run, except a `/`. When the
+// character right before the run is `/`, the link goes, and its text joins the text around it.
+// The text just before a link is the engine's one text node there: the text and string nodes
+// before it, back to another node or to a text a hard break ends (linkRuns), decoded, so a
+// character reference in the run counts as its character. A container's links are read in order,
+// so the text a link that went has joined is the text before the next one.
+func wholeEmailLinks(parent ast.Node, source []byte) {
+	for container := range textContainers(parent) {
+		for child := container.FirstChild(); child != nil; {
+			next := child.NextSibling()
+			if link, ok := child.(*ast.AutoLink); ok {
+				if span, bare := link.AttributeString(bareEmailAttr); bare {
+					wholeEmailLink(link, span.(text.Segment), source)
+				}
+			}
+			child = next
+		}
+	}
+}
+
+// wholeEmailLink holds link, an email autolink a reader made from the bare address at source
+// offsets span, to the rule (wholeEmailLinks). A link that goes leaves its source as a text node
+// between the texts around it, which the tree reads as one text. A moved link spans the source
+// from the run's first character and shows the run's decoded text before its own
+// (decodedLabelAttr), and the text nodes before it lose the run. A run that starts in a string,
+// which no source spells, leaves the link as it is, as linkFound leaves such an address text. No
+// run starts inside what one character reference decodes to, since none decodes to a local-part
+// character after one that is none.
+func wholeEmailLink(link *ast.AutoLink, span text.Segment, source []byte) {
+	// The pieces the run lies in, from the link back, where it starts in the last of them, and its
+	// length; before is the character right before it, 0 where it opens the text.
+	var held [4]textPiece
+	pieces, from, length := held[:0], 0, 0
+	var before byte
+	for node := link.PreviousSibling(); node != nil; node = node.PreviousSibling() {
+		text, isText := node.(*ast.Text)
+		if _, isString := node.(*ast.String); !isText && !isString || isText && readsAsHardBreak(text, source) {
+			break
+		}
+		if isText && (text.SoftLineBreak() || text.HardLineBreak()) {
+			// The engine's text holds this line's ending after this text's characters.
+			before = '\n'
+			break
+		}
+		piece := textPiece{node: node}
+		if isText {
+			piece.value, piece.offsets = decodeMarkdown(rawValue(node, source), true)
+		} else {
+			piece.value = decodeMarkdownText(rawValue(node, source))
+		}
+		from = len(piece.value)
+		for from > 0 && gfmAtext(piece.value[from-1]) {
+			from--
+		}
+		length += len(piece.value) - from
+		pieces = append(pieces, piece)
+		if from > 0 {
+			before = piece.value[from-1]
+			break
+		}
+	}
+	if length == 0 {
+		return
+	}
+	parent := link.Parent()
+	if before == '/' {
+		parent.ReplaceChild(parent, link, ast.NewTextSegment(span))
+		return
+	}
+	first := pieces[len(pieces)-1]
+	firstText, start, ok := first.sourceAt(from)
+	if !ok {
+		return
+	}
+	label, _ := autolinkText(link, source)
+	var whole strings.Builder
+	whole.Grow(length + len(label))
+	whole.WriteString(first.value[from:])
+	for index := len(pieces) - 2; index >= 0; index-- {
+		whole.WriteString(pieces[index].value)
+		parent.RemoveChild(parent, pieces[index].node)
+	}
+	whole.WriteString(label)
+	if start > firstText.Segment.Start || firstText.Segment.Padding != 0 {
+		firstText.Segment = firstText.Segment.WithStop(start)
+	} else {
+		parent.RemoveChild(parent, firstText)
+	}
+	moved := bareAutolink(ast.AutoLinkEmail, false, start, span.Stop)
+	moved.SetAttributeString(decodedLabelAttr, whole.String())
+	moved.SetPos(start)
+	parent.ReplaceChild(parent, link, moved)
 }
