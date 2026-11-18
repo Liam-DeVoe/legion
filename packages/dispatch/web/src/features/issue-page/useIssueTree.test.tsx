@@ -4629,6 +4629,32 @@ function issueWriteSet(feed: "down" | "up"): RuleWay {
   };
 }
 
+/** A write that Dispatch took and whose answer was lost, so it lands with none (`keyed-write.ts`'
+ *  `writeUnderKey` answers `null`): the write store refreshes every query the app holds
+ *  (`invalidateQueries()`, `write-store.ts`' `#landed`) inside the write, before its mutation
+ *  settles. With the live feed up its event follows 150 ms on. */
+function answerlessLanding(feed: "down" | "up"): RuleWay {
+  return {
+    words: `a write that lands in 200 ms with no answer and a refresh of every query, with the live feed ${feed}`,
+    does: async (rig) => {
+      if (feed === "down") await feedDown(rig);
+      const write = new MutationObserver<void, Error, void, void>(rig.client, {
+        mutationFn: async () => {
+          rig.held = { ...comment, resolved: true };
+          await Bun.sleep(200);
+          void rig.client.invalidateQueries();
+        },
+      });
+      await writeSettles(() => write.mutate(), 200);
+      if (feed === "up") {
+        await tick(150, 10);
+        await commentsEvent(rig);
+      }
+    },
+    ends: treeHoldsComment("settled"),
+  };
+}
+
 /** Dispatch starting the event feed again on the page's open socket, the subscription it sent
  *  there, with the gap replayed whole or in part. */
 async function feedStartsAgain(rig: Rig, replayComplete: boolean): Promise<void> {
@@ -4779,6 +4805,8 @@ const WAYS = {
   resolveRefusedDown: refusedResolve("down"),
   setDataUp: issueWriteSet("up"),
   setDataDown: issueWriteSet("down"),
+  landedBlankUp: answerlessLanding("up"),
+  landedBlankDown: answerlessLanding("down"),
   focusDownWriting: focusWhileWriting(
     "a window focus with the live feed down while a write is out, the write then settling with the feed still down"
   ),
@@ -5366,6 +5394,16 @@ const READ_RULES: readonly ReadRule[] = [
   { read: "spec", state: "answered", observed: false, way: "focusFeedRefused", now: 0, back: 0 },
   { read: "spec", state: "refusedAgain", observed: true, way: "focusDownWriting", now: 1 },
   { read: "spec", state: "refusedAgain", observed: true, way: "focusFeedRefused", now: 1 },
+  // A write that lands with no answer, and the refresh of every query the write store makes for it.
+  { read: "tree", state: "answered", observed: true, way: "landedBlankUp", now: ONE_OR_TWO },
+  { read: "tree", state: "answered", observed: true, way: "landedBlankDown", now: 1 },
+  { read: "tree", state: "answered", observed: false, way: "landedBlankDown", now: 0, back: 1 },
+  { read: "tree", state: "refused", observed: true, way: "landedBlankUp", now: ONE_OR_TWO },
+  { read: "tree", state: "refused", observed: true, way: "landedBlankDown", now: 1 },
+  { read: "tree", state: "refusedHeld", observed: true, way: "landedBlankDown", now: 1 },
+  { read: "spec", state: "answered", observed: true, way: "landedBlankUp", now: ONE_OR_TWO },
+  { read: "spec", state: "answered", observed: true, way: "landedBlankDown", now: 1 },
+  { read: "spec", state: "refused", observed: true, way: "landedBlankDown", now: 1 },
 ];
 
 describe("the rule for when a read of the tree or of a view starts", () => {
