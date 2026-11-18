@@ -1,6 +1,7 @@
 import { useCallback, useMemo } from "react";
 
 import {
+  addressPath,
   choiceParam,
   copyAddress,
   repeatedParam,
@@ -187,8 +188,7 @@ export function buildInboxPath(route: InboxRoute = {}): string {
   for (const field of INBOX_FILTER_FIELDS) {
     TEXT.write(query, field, (route.filters?.[field] ?? []).join(","));
   }
-  const search = query.toString();
-  return search === "" ? "/" : `/?${search}`;
+  return addressPath("/", query);
 }
 
 /**

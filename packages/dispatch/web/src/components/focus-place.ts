@@ -801,15 +801,10 @@ function handOn(loss: Loss, main: HTMLElement | null, caused: boolean): void {
  * the first control of what stands there does. It is focused with no scroll, whoever caused the
  * loss, since it stands where the reader was; for a loss the reader did not cause, one in a row
  * sends the focus to the box the row is drawn in. Only where nothing new stands there - a block
- * taken away with nothing in its place - does the focus walk back. A loss the reader caused - a
- * press of theirs still live (`answerPress`: until a frame and a task after it, or after its hold
- * ends) on the lost control, inside its row, or inside the region (`causedByReader`) - goes to the
- * control the region now draws at its place, else the nearest one before it however many went
- * together, else the region itself, and that control is scrolled into view; a loss they did not
- * cause goes into no row and scrolls nothing (`handOnQuietly`), to a control in no row, or to the
- * box a lost row was drawn in while the reader can see it, else the body. So the page behind a
- * modal dialog is never reached. Only a region that has gone hands the focus out of it: from a
- * dialog or a panel that closed it goes only back to the place it was opened from - a list a
+ * taken away with nothing in its place - does the focus walk back, as `handOn` states for a loss
+ * the reader caused (`causedByReader`) and `handOnQuietly` for one they did not. So the page
+ * behind a modal dialog is never reached. Only a region that has gone hands the focus out of it:
+ * from a dialog or a panel that closed it goes only back to the place it was opened from - a list a
  * pick takes away to its trigger; a dialog opened from the body - a single-key shortcut with
  * nothing focused - leaves the focus on the body, where the reader was, and never puts it in a
  * text box whose next key would be typed. An element the press disabled, itself or through the
