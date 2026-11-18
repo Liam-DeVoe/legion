@@ -74,7 +74,12 @@ type Config struct {
 	// the one task default of an issue whose owner gives no plan, and of a task whose block names
 	// neither steps nor a sub-owner (R5). Nil takes the steps of a project that names none.
 	DefaultSteps []plan.Step
-	Clock        func() time.Time
+	// Deployment is the roles a step of this deployment names, each with its type
+	// (config.Config.Deployment): Legion's own and each role of `roles`. A stored step takes the
+	// type of its role here (planSteps). A Config that sets no roles takes Legion's own
+	// (plan.BuiltinRoles).
+	Deployment plan.Deployment
+	Clock      func() time.Time
 	// ReviewAppLogin is the review App's bot login (<slug>[bot]) from its boot token lease. A review
 	// it submits decides a round whatever GitHub gives its bot account (DecidesRound) and can be the
 	// reviewer's answer to a round it left undecided (reviewersAnswer); a push by it is recorded as
@@ -156,7 +161,8 @@ type Engine struct {
 var _ intake.Handler = (*Engine)(nil)
 
 // New constructs a workflow engine, taking the shipped review round cap, production check bound,
-// default steps and clock for every one of them a caller omits.
+// default steps, deployment and clock for every one of them a caller omits. A deployment it takes
+// is a fresh map of Legion's own roles for each engine, so a role one engine adds reaches no other.
 func New(store record.Store, cfg Config, log *slog.Logger) *Engine {
 	if cfg.ReviewRoundCap <= 0 {
 		cfg.ReviewRoundCap = 3
@@ -172,6 +178,9 @@ func New(store record.Store, cfg Config, log *slog.Logger) *Engine {
 	}
 	if cfg.DefaultSteps == nil {
 		cfg.DefaultSteps = config.Project{}.RunsByDefault()
+	}
+	if cfg.Deployment.Roles == nil {
+		cfg.Deployment = plan.Deployment{Roles: plan.BuiltinRoles()}
 	}
 	if log == nil {
 		log = slog.Default()

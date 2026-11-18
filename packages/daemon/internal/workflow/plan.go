@@ -182,16 +182,19 @@ func (e *Engine) defaultRows(issue record.Issue) (record.PlanVersion, []record.P
 	version := record.PlanVersion{Issue: issue.Key, Generation: issue.Generation, Source: record.PlanSourceDefault, GivenAt: e.now()}
 	task := record.PlanTask{Issue: issue.Key, Generation: issue.Generation, Task: defaultTask, BlockText: "The project's default steps.",
 		StepsByDefault: true, State: record.TaskWaiting}
-	return version, []record.PlanTask{task}, planSteps(issue.Key, issue.Generation, defaultTask, e.cfg.DefaultSteps)
+	return version, []record.PlanTask{task}, planSteps(e.cfg.Deployment, issue.Key, issue.Generation, defaultTask, e.cfg.DefaultSteps)
 }
 
 // planSteps is steps as the rows of the steps of task of issue's plan at generation: each at its
-// place from 1, with its agent key and the type of its role.
-func planSteps(issue string, generation uint64, task string, steps []plan.Step) []record.PlanStep {
+// place from 1, with its agent key and the type its role has in d, the engine's deployment
+// (Config.Deployment), so a role the deployment defines is stored with its own type. It is the
+// one writer of a stored step's type, which the step record names and the return of a failed
+// step, the count of a review round and the commit of a review step read.
+func planSteps(d plan.Deployment, issue string, generation uint64, task string, steps []plan.Step) []record.PlanStep {
 	rows := make([]record.PlanStep, len(steps))
 	for i, step := range steps {
 		rows[i] = record.PlanStep{Issue: issue, Generation: generation, Task: task, Position: i + 1, Role: step.Role,
-			Type: string(builtinDeployment.Roles[step.Role].Type), AgentKey: step.Key}
+			Type: string(d.Roles[step.Role].Type), AgentKey: step.Key}
 	}
 	return rows
 }
@@ -632,7 +635,7 @@ func (e *Engine) planGiven(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven
 		}
 	}
 
-	version, tasks, steps := givenRows(fact, stored, changed, e.cfg.DefaultSteps, e.now())
+	version, tasks, steps := givenRows(fact, stored, changed, e.cfg.DefaultSteps, e.cfg.Deployment, e.now())
 	var removed, stopped []string
 	if stored != nil {
 		for _, task := range stored.Tasks {
@@ -727,8 +730,8 @@ func heldPlan(stored *record.StoredPlan) plan.Plan {
 // the generation holds stands). A task the version leaves as it was keeps its stored steps, the
 // commit a review of each read included; any other task takes the steps its block names (StepsOf),
 // or, for a block that names none, defaults, the project's default steps (Config.DefaultSteps),
-// each with the type of its role (planSteps).
-func givenRows(fact intake.PlanGiven, stored *record.StoredPlan, changed []string, defaults []plan.Step, now time.Time) (record.PlanVersion, []record.PlanTask, []record.PlanStep) {
+// each with the type its role has in d, the engine's deployment (planSteps).
+func givenRows(fact intake.PlanGiven, stored *record.StoredPlan, changed []string, defaults []plan.Step, d plan.Deployment, now time.Time) (record.PlanVersion, []record.PlanTask, []record.PlanStep) {
 	version := record.PlanVersion{Issue: fact.Issue, Generation: fact.Generation, Version: fact.Plan.Version, ArtifactID: fact.Plan.ArtifactID,
 		Source: record.PlanSourceOwner, GivenBy: fact.GivenBy, GivenAt: now}
 	var tasks []record.PlanTask
@@ -741,7 +744,7 @@ func givenRows(fact intake.PlanGiven, stored *record.StoredPlan, changed []strin
 			steps = append(steps, stored.Steps[given.ID]...)
 			continue
 		}
-		steps = append(steps, planSteps(fact.Issue, fact.Generation, given.ID, plan.StepsOf(given, defaults))...)
+		steps = append(steps, planSteps(d, fact.Issue, fact.Generation, given.ID, plan.StepsOf(given, defaults))...)
 	}
 	return version, tasks, steps
 }

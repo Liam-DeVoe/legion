@@ -589,7 +589,9 @@ func (w *workflowRuntime) stepAgent(token claim.Token) workflow.StepAgent {
 // engineConfig is the workflow engine's configuration from the daemon's and the review App's bot
 // login from its boot lease: its own project's production_check is the role that works the checks
 // a merge opens (empty, it opens none), its own project's default steps are what an issue whose
-// owner gives no plan runs, and its own project's declared experiments are what each issue the
+// owner gives no plan runs, the file's deployment (config.Config.Deployment: Legion's own roles of
+// a step and each role of `roles`, with its type) is the engine's, which a stored step takes the
+// type of its role from, and its own project's declared experiments are what each issue the
 // engine records is drawn for. hookPrompts are the words boot read for the hooks that name a file
 // (readBoot), which engineHooks puts in the place of each such hook's path.
 func engineConfig(cfg config.Config, reviewAppLogin string, hookPrompts map[string]string) workflow.Config {
@@ -599,6 +601,7 @@ func engineConfig(cfg config.Config, reviewAppLogin string, hookPrompts map[stri
 		Linger: cfg.Linger, ProductionCheckBound: cfg.ProductionCheckBound,
 		ProductionCheckRole: project.ProductionCheck,
 		DefaultSteps:        project.RunsByDefault(),
+		Deployment:          cfg.Deployment(),
 		ReviewAppLogin:      reviewAppLogin,
 		RepositoryRenames:   cfg.RepositoryRenames, Hooks: engineHooks(cfg.Hooks, hookPrompts),
 		Experiments:  cfg.ExperimentsDeclared(),

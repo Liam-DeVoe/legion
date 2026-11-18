@@ -43,9 +43,6 @@ type Walk struct {
 	Version record.PlanVersion
 }
 
-// builtinDeployment is Legion's own roles of a step (plan.BuiltinRoles).
-var builtinDeployment = plan.Deployment{Roles: plan.BuiltinRoles()}
-
 // walk is the walk of issue's run: its plan rows, or today's line with Stored false. Each step
 // runs as the phase of its role (plan.RunsAs). A run whose rows hold no task or more than one is
 // an error: no plan this release takes writes one (plan.Validate, plan.Supported).

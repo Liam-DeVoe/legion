@@ -33,6 +33,10 @@ func returnEngine() *Engine {
 	return engine
 }
 
+// builtinDeployment is Legion's own roles of a step (plan.BuiltinRoles), the deployment New gives
+// an engine whose Config sets none.
+var builtinDeployment = plan.Deployment{Roles: plan.BuiltinRoles()}
+
 // seedStepsPlan writes the plan key's owner gave for its run generation: version 2, one task a
 // whose steps are words, each `role` or `role:key`, with the type plan.BuiltinRoles gives its
 // role, waiting at no act.
