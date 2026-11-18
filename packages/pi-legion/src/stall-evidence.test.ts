@@ -68,29 +68,28 @@ async function child(
   // The pid is live the moment `spawn` returns, but the kernel carries the process and its
   // environment a moment later. What is awaited is that reading, not a guessed delay: this case
   // is about a real process tree, so there is no clock to fake.
-  let accepted: Extract<StallProcessScan, { read: true }> | undefined;
-  await until(async () => {
-    const scan = await readStallProcesses();
-    if (!scan.read) return false;
-    const found = scan.processes.find((candidate) => candidate.pid === running.pid);
+  const scan = await until(async () => {
+    const reading = await readStallProcesses();
+    if (!reading.read) return undefined;
+    const found = reading.processes.find((candidate) => candidate.pid === running.pid);
     if (
       found === undefined ||
       found.environment.PI_TOOL_CALL_ID !== environment.PI_TOOL_CALL_ID ||
       !found.command.includes("sleep 300")
     ) {
-      return false;
+      return undefined;
     }
-    accepted = scan;
-    return true;
+    return reading;
   });
-  if (accepted === undefined) throw new Error("the machine was ready with no reading of it");
-  return { pid: running.pid, scan: accepted };
+  return { pid: running.pid, scan };
 }
 
-/** Waits for one reading of the machine to come true, up to ten seconds. */
-async function until(ready: () => Promise<boolean>): Promise<void> {
+/** Reads the machine until `read` answers a reading, not `undefined`, up to ten seconds, and
+ * returns that reading. */
+async function until<T>(read: () => Promise<T | undefined>): Promise<T> {
   for (let attempt = 0; attempt < 1_000; attempt += 1) {
-    if (await ready()) return;
+    const reading = await read();
+    if (reading !== undefined) return reading;
     await Bun.sleep(10);
   }
   throw new Error("the machine never reached the state the case needs");

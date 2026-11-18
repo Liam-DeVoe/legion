@@ -1010,11 +1010,13 @@ function submittedReview(
  *   3. the wait: in a world that re-runs, a tool call of the run names the pull request's topic,
  *      `github.<owner>.<repo>.pr.<n>.>`, whatever tool the plugin takes the subscription through;
  *      and in every world the run ran no `sleep`, no `gh run watch` and no `gh pr checks --watch`,
- *      and made no read of the counted set (COUNTED_READ) after its `gh run rerun` call in the
- *      turn that pressed it, which is the page's "Re-reading the head to see whether the re-run
- *      has settled is the poll this forbids, with a `sleep` in it or without one". A read in a
- *      later turn is the one the wake brings, no poll. Each call is placed in the first turn of
- *      <run>/turns.txt that ended at or after it, as condition 7 places the counted set's reads;
+ *      and made no read of the head's CI, any of READ_CI's (the counted set, the commit's
+ *      `check-runs`, `actions/runs`, `gh run view` and `gh run list`), after its `gh run rerun`
+ *      call in the turn that pressed it, which is the page's "A read of the head's checks or runs
+ *      in the turn that pressed the re-run is the poll this forbids, whatever work came between,
+ *      and so are `gh run watch` and `gh pr checks --watch`." A read in a later turn is the one
+ *      the wake brings, no poll. Each call is placed in the first turn of <run>/turns.txt that
+ *      ended at or after it, as condition 7 places the counted set's reads;
  *   4. the outcome the world settles at (world.json's `round`): in `a`, `c`, `g` and `h` the round
  *      goes on, which for a tester is a completion the daemon accepted with the verdict `pass`,
  *      and in `i` a review the reviewer submitted whose event is not REQUEST_CHANGES; in `b` and
@@ -1161,20 +1163,19 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
   const [owner = "", name = ""] = red.repo.split("/");
   const topic = `github.${owner}.${name}.pr.${red.pr}.>`;
   const subscribed = made.some((step) => JSON.stringify(step.args).includes(topic));
-  // The reads of the counted set, and the turns of <run>/turns.txt: a moment is in the first turn
-  // that ended at or after it.
-  const countedAt = ghCalls(COUNTED_READ).map((call) =>
-    instant(call.at, "a read of the counted set")
-  );
+  // The reads of the head's CI (READ_CI), and the turns of <run>/turns.txt: a moment is in the
+  // first turn that ended at or after it.
+  const ciReadAt = ghCalls(READ_CI).map((call) => instant(call.at, "a read of the head's CI"));
   const turns = redTurns(runDir);
-  // A read of the counted set after the re-run, in the turn that pressed it, is the page's
-  // "re-reading the head to see whether the re-run has settled", a poll with a `sleep` in it or
-  // without one. The read the wake brings, in a later turn, is none. A re-run that no recorded
-  // turn end follows is in a turn that runs to the end of the record.
+  // A read of the head's CI after the re-run, in the turn that pressed it, is the page's "A read
+  // of the head's checks or runs in the turn that pressed the re-run is the poll this forbids,
+  // whatever work came between, and so are `gh run watch` and `gh pr checks --watch`." The read
+  // the wake brings, in a later turn, is none. A re-run that no recorded turn end follows is in a
+  // turn that runs to the end of the record.
   const rerunTurn = rerunAt === undefined ? undefined : turns.find((turn) => turn.ended >= rerunAt);
   const reread =
     rerunAt !== undefined &&
-    countedAt.some((at) => at > rerunAt && (rerunTurn === undefined || at <= rerunTurn.ended));
+    ciReadAt.some((at) => at > rerunAt && (rerunTurn === undefined || at <= rerunTurn.ended));
   const polled =
     reread ||
     commands.some((text) => SLEEPS.test(text)) ||
@@ -1261,6 +1262,9 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
     ? readFileSync(path.join(runDir, "reported-at"), "utf8").trim()
     : "";
   const reportedAt = red.report ? instant(reportText, "the rig's report of the check") : undefined;
+  const countedAt = ghCalls(COUNTED_READ).map((call) =>
+    instant(call.at, "a read of the counted set")
+  );
   const firstCounted = earliest(countedAt);
   const readTurn =
     firstCounted === undefined ? undefined : turns.find((turn) => turn.ended >= firstCounted);

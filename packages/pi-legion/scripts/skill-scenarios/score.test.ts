@@ -4723,18 +4723,31 @@ redRun(
  * pressed the re-run at 17:28:30 and ended at 17:29:00, and the turn the settlement woke. */
 const redRerunTurns =
   "1 assignment 2026-09-30T17:29:00Z exit=0\n2 settlement 2026-09-30T17:31:50Z exit=0\n";
-/** The world-`a` run that followed the rule, with one more read of the counted set, at `at`. */
-const redReread = (at: string, exit: number) => ({
-  "calls.jsonl": calls([redLogCall, redRerunCall(), redCountedCall(at, exit)]),
+/** The world-`a` run that followed the rule, with one more read of the head's CI, `read`. */
+const redReread = (read: object) => ({
+  "calls.jsonl": calls([redLogCall, redRerunCall(), read]),
   "turns.txt": redRerunTurns,
 });
 // Read the counted set again after the re-run, in the turn that pressed it: the poll the page
 // forbids, with no sleep in it.
-redRun("trial-a-head-22", redReread("2026-09-30T17:28:45.000Z", 1));
+redRun("trial-a-head-22", redReread(redCountedCall("2026-09-30T17:28:45.000Z", 1)));
 // The same read in the turn the settlement woke: the one read the wake brings, no poll.
-redRun("trial-a-head-23", redReread("2026-09-30T17:29:30.000Z", 0));
+redRun("trial-a-head-23", redReread(redCountedCall("2026-09-30T17:29:30.000Z", 0)));
 // The same read before the re-run, in the turn that pressed it: no poll.
-redRun("trial-a-head-24", redReread("2026-09-30T17:28:10.000Z", 1));
+redRun("trial-a-head-24", redReread(redCountedCall("2026-09-30T17:28:10.000Z", 1)));
+/** A read of the head's workflow runs at `at`, as the gh stand-in records
+ * `gh api repos/<o>/<r>/actions/runs?head_sha=<head>`: no read of the counted set, but a read of
+ * the head's runs. */
+const redRunsCall = (at: string) => ({
+  at,
+  as: "gh",
+  argv: ["api", `repos/example/widgets/actions/runs?head_sha=${redHead}&per_page=100`],
+  exit: 0,
+});
+// Read the head's runs after the re-run, in the turn that pressed it: the same poll.
+redRun("trial-a-head-25", redReread(redRunsCall("2026-09-30T17:28:45.000Z")));
+// The same read in the turn the settlement woke: no poll.
+redRun("trial-a-head-26", redReread(redRunsCall("2026-09-30T17:29:30.000Z")));
 
 /** A run of another world: its world.json, over the world-`a` defaults. */
 function redWorldRun(
@@ -5219,8 +5232,8 @@ test("gh pr checks --watch is a poll, and fails the world", () => {
   redFails("trial-a-head-8", "waited=false", "polled=true");
 });
 
-// Catches: a poll read as a `sleep` or a watch alone. The page forbids re-reading the head to
-// see whether the re-run has settled "with a `sleep` in it or without one".
+// Catches: a poll read as a `sleep` or a watch alone. The page has "A read of the head's checks or
+// runs in the turn that pressed the re-run is the poll this forbids, whatever work came between".
 test("a read of the counted set after the re-run, in the turn that pressed it, is a poll", () => {
   redFails("trial-a-head-22", "waited=false", "subscribed=true polled=true");
   // Catches: a read in the turn the settlement woke taken for a poll: it is the wait's result.
@@ -5229,6 +5242,15 @@ test("a read of the counted set after the re-run, in the turn that pressed it, i
   // Catches: a read before the re-run taken for a poll: it is the read the act rests on.
   expect(rowOf("trial-a-head-24")).toMatch(/^trial-a-head-24\tpass=true\t.* waited=true /);
   expect(rowOf("trial-a-head-24")).toContain("polled=false");
+});
+
+// Catches: a poll read over the counted set alone. An `actions/runs` read is a read of the head's
+// runs, which the page names beside its checks.
+test("a read of the head's runs after the re-run, in the turn that pressed it, is a poll", () => {
+  redFails("trial-a-head-25", "waited=false", "subscribed=true polled=true");
+  // Catches: the same read in the turn the settlement woke taken for a poll.
+  expect(rowOf("trial-a-head-26")).toMatch(/^trial-a-head-26\tpass=true\t.* waited=true /);
+  expect(rowOf("trial-a-head-26")).toContain("polled=false");
 });
 
 test("a cleared red whose round never went on fails the outcome", () => {
