@@ -8,6 +8,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -88,10 +89,10 @@ type keptTelling struct {
 	// to is that the root has an architect to hear it (hears) rather than the generation named.
 	prompt bool
 	hears  bool
-	// retold is whether this telling is one the machine's own take-back made a second time: a
-	// prompt under an id minted when a task was taken back (keptRun.resent), which carries the task
-	// of the row it was queued by again. It is the one extra telling to an architect the
-	// invariant accepts (held).
+	// retold is whether this telling is one the machine's own take-back made a second time: an
+	// accepted take of a delivery an earlier accepted take of which the machine took back, under
+	// the same delivery id, since a take-back keeps it (supervise's interrupted). It is the one
+	// extra telling to an architect the invariant accepts (held).
 	retold bool
 	// afterFailedWrite is whether this telling repeats, to the same architect, a catch-up whose own
 	// telling write failed (keptForgetStore.tellingFailed): the publish reached the architect and
@@ -579,12 +580,24 @@ type keptTree struct {
 	topic string
 	// takes is every take of the architect's worker the daemon accepted, in order, and prompts
 	// how many of them observe has read.
-	takes   []acceptedTake
+	takes   []keptTake
 	prompts int
 	// handed is whether this issue has left the tree it started in for one of its own: a
 	// hand-over at the linger's end, with its run or without it, or a person's todo that orphaned
 	// it. It is no member of the old tree from then on, and nothing hands it over twice.
 	handed bool
+}
+
+// keptTake is one take of an architect's worker the daemon accepted, and what it is as a telling.
+// A take-back keeps the delivery's id (supervise's interrupted), so a take of a delivery taken
+// before is one of two things. Where the earlier take's turn never started, the daemon gave that
+// take back before its worker ran its text (supervise's giveBackTake: a compaction, the second
+// wait, a let-go of a take that awaited its turn), and this take is the same telling made again,
+// which tells nothing new (again). Where the earlier take's turn started (keptRun.ran), the agent
+// ran the task's text and this take tells it a second time (retold), which the take-back earns.
+type keptTake struct {
+	acceptedTake
+	again, retold bool
 }
 
 // keptDeparture is one time a tracked issue left a tree: the tree it left, and the newest outbox
@@ -637,18 +650,16 @@ type keptRun struct {
 	told     map[string][]keptTelling
 	rowGen   map[int64]uint64
 	refIssue map[string]string
-	// sent is every prompt delivery id an architect has been sent, keys every dedupe key a notice
-	// was delivered under — a repeat of either is the same telling, not a second one — and applied
-	// every terminal fact key the run has applied, which is what says a launch's ready has been
-	// told to the workflow already.
-	sent    map[string]bool
+	// keys is every dedupe key a notice was delivered under — a repeat is the same telling, not a
+	// second one — and applied every terminal fact key the run has applied, which is what says a
+	// launch's ready has been told to the workflow already. An accepted take has no such key: what
+	// it is as a telling is its own (keptTake).
 	keys    map[string]bool
 	applied map[string]bool
-	// resent is the outbox row the task of each delivery the machine minted for itself came from,
-	// by the id it minted: a take-back gives the task a new id the shim has no record of
-	// (supervise's takeBackPending, interrupted), so a prompt under one of these is the task of a
-	// row long finished, told again to the architect that was prompted with it before.
-	resent map[string]int64
+	// ran is whether the turn of the last accepted take of each delivery has started, by delivery
+	// id, as each wait reads it off the machine (waitMachines, Delivery.TurnStarted): what tells a
+	// take of that delivery made again from a telling of it made again (keptTake).
+	ran map[string]bool
 	// refused is every driven tree whose catch-up a holder's refusal or the listener's grant
 	// finished undelivered while its root heard, which quiesce ends with that architect's relaunch
 	// (relaunchAfterRefusal).
@@ -698,15 +709,15 @@ type keptRun struct {
 // hand-over of a child into a tree of its own, and intake.ApplyFact for the ready — over a real
 // PostgreSQL, and holds each run to the invariant after every step:
 //
-//   - no decision is told twice (a start task prompt or a published catch-up naming it again),
-//     save for a task the machine itself took back and sent again under a new id, which its
-//     architect may hear once more and no oftener (tell, held);
+//   - no decision is told twice (an accepted take of a start task or a published catch-up naming
+//     it again), save for a task the machine itself took back and its worker took again under the
+//     same delivery id, which its architect may hear once more and no oftener (tell, held);
 //   - every catch-up telling names the generation its root stood at when the daemon decided to
 //     send it — read where its publish began, not once the publish returned, since the publish is
 //     network I/O outside every transaction and a re-admission landing inside it is followed by
 //     that generation's own catch-up (observe) — and every start-task telling reaches a root that
 //     has an architect to hear it: a start task names no generation, and it is held on its claim,
-//     unsent, while its root is parked, lingering or waiting for its slot (supervise's
+//     untaken, while its root is parked, lingering or waiting for its slot (supervise's
 //     Deps.RootHears);
 //   - once the run quiesces — every injected failure off, every row drained, what held a member
 //     out of the line finished, each architect ready and its turns ended, and each architect whose
@@ -894,10 +905,9 @@ func newKeptRun(t *testing.T, seed int64, steps int) *keptRun {
 		closed:     map[uint64]bool{},
 		rowGen:     map[int64]uint64{},
 		refIssue:   map[string]string{},
-		sent:       map[string]bool{},
 		keys:       map[string]bool{},
 		applied:    map[string]bool{},
-		resent:     map[string]int64{},
+		ran:        map[string]bool{},
 	}
 	run.publisher.atPublish = run.rootGeneration
 	parent, childKey := keptRoot, keptChild
@@ -2697,11 +2707,25 @@ func (r *keptRun) awaitingItsTurn(tree *keptTree) bool {
 	return pending != nil && !pending.ConfirmedAt.IsZero() && pending.TakenText != "" && !pending.TurnStarted
 }
 
+// retellings is how many times the machine took back a take of the delivery id whose turn had
+// started and the architect's worker took it again (keptTake.retold): the take-backs that told
+// the task a second time. A take-back keeps the delivery's id (supervise's interrupted), so they
+// are counted by it.
+func retellings(tree *keptTree, id string) int {
+	retold := 0
+	for _, take := range tree.takes {
+		if take.DeliveryID == id && take.retold {
+			retold++
+		}
+	}
+	return retold
+}
+
 // takenBackOnce is whether the task this tree's architect holds is one the machine has already
-// taken back and sent again, so it waits under an id of the machine's own (keptRun.resent). The
-// invariant accepts one telling more to one architect and no more, and one take-back is what
-// earns it, so the model drives one per task: a second would be another accepted fault of the
-// same kind, and says nothing of the machinery the first does not.
+// taken back from a turn and its worker took again (retellings). The invariant accepts one telling
+// more to one architect and no more, and one take-back from a turn is what earns it, so the model
+// drives one per task: a second would be another accepted fault of the same kind, and says
+// nothing of the machinery the first does not.
 func (r *keptRun) takenBackOnce(tree *keptTree) bool {
 	machine, found := r.sup.Machine(tree.token)
 	if !found {
@@ -2711,16 +2735,15 @@ func (r *keptRun) takenBackOnce(tree *keptTree) bool {
 	if pending == nil {
 		return false
 	}
-	_, minted := r.resent[pending.ID]
-	return minted
+	return retellings(tree, pending.ID) > 0
 }
 
 // deathEnabled is whether this tree's architect can be given the death of the process running its
-// task's turn: it holds an acknowledged task a turn is about to confirm, nothing has taken that
-// task back before (takenBackOnce), and it records the process that would run it. A death that
-// would spend the claim's last one (supervise's chargeDeath) and one while every launch is
-// refused are left out: both end in a failed claim, which is the launch budget's own path and is
-// driven by toggleLaunch.
+// task's turn: it holds an accepted take awaiting its turn, nothing has taken that task back
+// before (takenBackOnce), and it records the process that would run it. A death that would spend
+// the claim's last one (supervise's chargeDeath) and one while every launch is refused are left
+// out: both end in a failed claim, which is the launch budget's own path and is driven by
+// toggleLaunch.
 func (r *keptRun) deathEnabled(tree *keptTree) bool {
 	machine, found := r.sup.Machine(tree.token)
 	if !found || r.rt.refusing() || !r.awaitingItsTurn(tree) || r.takenBackOnce(tree) {
@@ -2730,15 +2753,14 @@ func (r *keptRun) deathEnabled(tree *keptTree) bool {
 	return held.Locator != nil && held.Budgets.Deaths+1 < r.sup.deps.Limits.LaunchFailures
 }
 
-// deathInTheTasksTurn is the architect's process dying in the turn on its task, reported by the
-// runtime as the refusal's relaunch is (relaunchAfterRefusal). The turn starts, which confirms the
-// task and tells what it names, and the process is then found gone. Oh My Pi does not go on with
-// an interrupted turn, so the machine takes the task back under a new id the relaunched process's
-// shim has no record of (supervise's interrupted), and the write that records it puts back every
-// mark that confirmation told (putBackARetakenConfirmation). The relaunch's agent comes up and
-// its ready sends the task again, which tells the same decisions to the same architect a second
-// time: the accepted lesser fault, since the turn died and nobody can say what of it the agent
-// read.
+// deathInTheTasksTurn is the architect's process dying in the turn of its accepted take, reported
+// by the runtime as the refusal's relaunch is (relaunchAfterRefusal). The take's turn starts, and
+// the process is then found gone. Oh My Pi does not go on with an interrupted turn, so the machine
+// takes the task back under the delivery id it has (supervise's interrupted), and the write that
+// records it puts back every mark the accepted take told (putBackARetakenConfirmation). The
+// relaunch's agent comes up and its worker takes the task again, which tells the same decisions
+// to the same architect a second time: the accepted lesser fault, since the turn died and nobody
+// can say what of it the agent read.
 func (r *keptRun) deathInTheTasksTurn(tree *keptTree) {
 	machine, found := r.sup.Machine(tree.token)
 	if !found {
@@ -2760,11 +2782,10 @@ func (r *keptRun) deathInTheTasksTurn(tree *keptTree) {
 		r.fatalf("end the process of %s's architect in the turn on its task: %v", tree.key, err)
 	}
 	r.waitMachines()
-	r.noteTakeBack(tree, sent)
 	r.counts.interruptedTasks++
 	r.tracef("death tree=%s delivery=%s pending=%s architect=%s: the process died in the task's turn", tree.key,
 		sent, keptPendingID(machine.Claim()), keptClaimState(r.claimState(tree)))
-	// The relaunch's agent comes up, and its ready is what sends the task again.
+	// The relaunch's agent comes up, and its worker takes the task again once it is ready.
 	if r.readyEnabled(tree) {
 		r.ready(tree)
 	}
@@ -2790,29 +2811,6 @@ func (r *keptRun) endTurnUnconfirmed(tree *keptTree, machine *supervise.Machine,
 	r.waitMachines()
 	r.tracef("%s tree=%s delivery=%s: the turn confirmed no task, so nothing was taken back; pending=%s state=%s",
 		what, tree.key, sent, keptPendingID(machine.Claim()), machine.Claim().State)
-}
-
-// noteTakeBack records a task the machine took back under an id of its own: the outbox row that
-// task was queued by, which the new id no longer names, so a prompt under it is read as that
-// row's telling again and as the one extra telling its architect may hear (keptRun.resent,
-// observe, held). A take-back that kept the delivery's id (supervise's refused) records nothing:
-// the send that follows is the same prompt, which the shim answers without a second turn.
-func (r *keptRun) noteTakeBack(tree *keptTree, before string) {
-	machine, found := r.sup.Machine(tree.token)
-	if !found {
-		return
-	}
-	pending := machine.Claim().Pending
-	if pending == nil || pending.ID == before {
-		return
-	}
-	row := keptRowOfDelivery(before)
-	if origin, minted := r.resent[before]; minted {
-		row = origin
-	}
-	r.resent[pending.ID] = row
-	r.tracef("take-back tree=%s delivery=%s waits as %s: the task of row %d, to be sent again", tree.key, before,
-		pending.ID, row)
 }
 
 // connected is whether a connection is registered for the tree's architect, without which its
@@ -3044,13 +3042,13 @@ func (r *keptRun) report() {
 // to another tree's architect, and any second telling to one architect, is a fault.
 //
 // A task the machine itself took back is the one second telling to one architect that is accepted
-// (retold), and at most one: the task goes again under a new id, naming the same decisions, to
-// the architect that was already prompted with it. The daemon takes a task back where it cannot
-// know whether the agent read it — a confirmation a refusal took back (the agent answered the
-// prompt busy from a turn of its own, or its shim replayed that answer after such a turn had
-// confirmed the task), and a turn the death of its process ended — and sending it again is the
-// lesser fault there too. Zero tellings is never one of them: the resend is excused only beside a
-// telling that stands, so a decision the machine lost between the two is a fault all the same.
+// (retold), and at most one: the worker takes the task again under the same delivery id, naming
+// the same decisions, and the architect that already ran it runs it again. The daemon takes back
+// a take whose turn it cannot vouch for — one given back before its turn started (a compaction,
+// the second wait, a let-go of a take that awaited its turn), and one whose turn the death of its
+// process ended — and telling it again is the lesser fault there too. Zero tellings is never one
+// of them: the second take is excused only beside a telling that stands, so a decision the
+// machine lost between the two is a fault all the same.
 //
 // A catch-up after one whose own telling write failed is counted the same way (afterFailedWrite):
 // the first publish reached the architect and its forget did not commit, so the decision stood
@@ -3066,7 +3064,7 @@ func (r *keptRun) held() {
 			line := fmt.Sprintf("at step %d by %s, the architect of %s, while %s stood in the tree of %s",
 				telling.step, telling.how, telling.tree, tracked.issue, telling.issueTree)
 			if (telling.retold || telling.afterFailedWrite) && told[telling.tree] {
-				// The task this architect was already told was taken back and sent again, or the
+				// The task this architect was already told was taken back and taken again, or the
 				// catch-up that told it failed its own telling write (afterFailedWrite, ruled at
 				// https://github.com/sjawhar/legion/pull/2163#issuecomment-6542200410). The telling
 				// it repeats is the one counted; this one is the accepted second.
@@ -3089,7 +3087,7 @@ func (r *keptRun) held() {
 		}
 		r.fatalf("%s, an ask of %s, which stands in the tree of %s and owes its answer to the architect of %s, was told %d times to that "+
 			"architect, %d times to another tree's architect (%s) and %d times to the architect of a tree it left by a row composed before it "+
-			"left (%s), want once, never, and at most once (%d further tellings were tasks the machine took back and sent again, or catch-ups after one whose telling write failed): a person's "+
+			"left (%s), want once, never, and at most once (%d further tellings were tasks the machine took back and its worker took again, or catch-ups after one whose telling write failed): a person's "+
 			"decision kept while nobody in its tree could hear it must reach the architect of the tree its own issue stood in when it was "+
 			"told, and the architect of the tree it moved into when the move found it still kept or still held",
 			tracked.ref, tracked.issue, stands, owedTo, owed, len(elsewhere), keptElsewhere(elsewhere),
@@ -3172,14 +3170,17 @@ func keptRefs(decisions []record.ParkedDecision) string {
 // the generation it was decided at, and is followed by that generation's own catch-up, queued
 // behind this one.
 //
-// One telling is one delivery, not one frame: a prompt frame carries the daemon's delivery id, and
-// a shim that sees the same id twice answers it without a second turn (supervise.Delivery), so the
-// re-send a reconnect or a retried row makes is the same telling; a published notice carries the
-// outbox key of the row it is a copy of (record.Notice.Published), which the listener's role lane
-// and the hosts dedupe on, so a copy published under a key already delivered is too. A prompt
-// under an id the machine minted when it took a task back is a telling of its own, and the task
-// of the row that queued it (keptRun.resent): the shim has no record of that id, so the agent is
-// prompted again, which is the one extra telling the invariant accepts (held).
+// One telling is one accepted take, not one value written or relayed: the worker runs the text
+// of each take the daemon accepts and of nothing else, so a value written again, relayed again or
+// asked at again is no telling until a take of it is accepted, and a take sent again after its
+// answer was lost is answered from the record and accepted once (keptTree.takes). A published
+// notice carries the outbox key of the row it is a copy of (record.Notice.Published), which the
+// listener's role lane and the hosts dedupe on, so a copy published under a key already delivered
+// is the same telling. A take-back keeps the delivery's id (supervise's interrupted), so a take of
+// a delivery taken before is one of two (keptTake): the same telling made again, where the daemon
+// gave the earlier take back before its turn started, which tells only what the earlier take did
+// not name; or the task of that same row told a second time, where the earlier take's turn
+// started, which is the one extra telling the invariant accepts (retold, held).
 //
 // One prompt comes from no row at all: the daemon's own delivery of what a relaunch ended, which a
 // claim holding no task is given at its ready (supervise's queueRelaunch, dispatch://INFRA-3276
@@ -3191,10 +3192,16 @@ func (r *keptRun) observe() {
 		prompts := tree.takes
 		for ; tree.prompts < len(prompts); tree.prompts++ {
 			prompt := prompts[tree.prompts]
-			if r.sent[prompt.DeliveryID] {
-				continue
+			retold := prompt.retold
+			var replaced []string
+			if prompt.again {
+				for _, earlier := range slices.Backward(prompts[:tree.prompts]) {
+					if earlier.DeliveryID == prompt.DeliveryID {
+						replaced = r.refsIn(earlier.Message)
+						break
+					}
+				}
 			}
-			r.sent[prompt.DeliveryID] = true
 			if strings.HasPrefix(prompt.DeliveryID, relaunchDeliveryPrefix) {
 				if refs := r.refsIn(prompt.Message); len(refs) != 0 {
 					r.fatalf("the architect of %s was told %v by the daemon's own delivery %q of a relaunch's sentence, which names no decision",
@@ -3202,19 +3209,25 @@ func (r *keptRun) observe() {
 				}
 				continue
 			}
-			row, retold := keptRowOfDelivery(prompt.DeliveryID), false
-			if origin, minted := r.resent[prompt.DeliveryID]; minted {
-				row, retold = origin, true
-			}
+			row := keptRowOfDelivery(prompt.DeliveryID)
 			named, known := r.rowGen[row]
 			if !known {
-				r.fatalf("the architect of %s was prompted by delivery %q, whose outbox row %d the run never saw", tree.key, prompt.DeliveryID, row)
+				r.fatalf("the architect of %s took delivery %q, whose outbox row %d the run never saw", tree.key, prompt.DeliveryID, row)
 			}
-			how := fmt.Sprintf("the start task of row %d, prompt %s", row, prompt.DeliveryID)
+			how := fmt.Sprintf("the start task of row %d, take of %s", row, prompt.DeliveryID)
 			if retold {
-				how = fmt.Sprintf("the start task of row %d sent again after the machine took it back, prompt %s", row, prompt.DeliveryID)
+				how = fmt.Sprintf("the start task of row %d taken again after the machine took it back from its turn, take of %s", row, prompt.DeliveryID)
 			}
 			for _, ref := range r.refsIn(prompt.Message) {
+				if slices.Contains(replaced, ref) {
+					// The same telling made again: it counts no second time, and still reaches only
+					// a root that has an architect to hear it.
+					if !r.architectToHear(tree.key) {
+						r.fatalf("%s was told by %s, a take made again of a task the daemon gave back before its turn, while %s has no architect to hear it",
+							ref, how, tree.key)
+					}
+					continue
+				}
 				r.tell(keptTelling{ref: ref, prompt: true, retold: retold, hears: r.architectToHear(tree.key), named: named,
 					root: generation, row: row, tree: tree.key, issueTree: r.treeOf(r.refIssue[ref]), step: r.step, how: how})
 			}
@@ -3276,15 +3289,15 @@ func (r *keptRun) architectToHear(key string) bool {
 // left, so where the debt stands is read once the run has quiesced (held).
 //
 // One second telling to one architect is accepted per cause, and only these: the task it was
-// already told is one the machine took back — a confirmation a refusal took back, or a turn its
-// process died in — and sent again under a new id (retold, keptRun.resent); or the catch-up that
-// told it failed its own telling write (afterFailedWrite: its forget did not commit, so the
-// decision stood kept and a later catch-up named it again), which the architect ruled acceptable
-// (https://github.com/sjawhar/legion/pull/2163#issuecomment-6542200410). The daemon cannot know
-// whether the agent read the first, or the write that would have recorded the telling did not
-// commit, so telling it again is the lesser fault. Every other repeat is a fault: a telling
-// repeats an earlier one only once, and only where that earlier telling's own write failed or its
-// task was taken back.
+// already told is one the machine took back — a take given back before its turn started, or one
+// whose turn its process died in — and its worker took again under the same delivery id
+// (retold); or the catch-up that told it failed its own telling write (afterFailedWrite: its
+// forget did not commit, so the decision stood kept and a later catch-up named it again), which
+// the architect ruled acceptable (https://github.com/sjawhar/legion/pull/2163#issuecomment-6542200410).
+// The daemon cannot know what of the first the agent ran, or the write that would have recorded
+// the telling did not commit, so telling it again is the lesser fault. Every other repeat is a
+// fault: a telling repeats an earlier one only once, and only where that earlier telling's own
+// write failed or its task was taken back.
 func (r *keptRun) tell(telling keptTelling) {
 	var earlier, excused int
 	var first keptTelling
@@ -3307,7 +3320,7 @@ func (r *keptRun) tell(telling keptTelling) {
 	case earlier-excused == 1 && excused == 0 && telling.retold:
 	default:
 		r.fatalf("%s was told %d times to the architect of %s: first at step %d by %s, now by %s; a person's decision reaches its "+
-			"architect once, and a second time only as a task the machine took back and sent again, or after a catch-up whose own "+
+			"architect once, and a second time only as a task the machine took back and its worker took again, or after a catch-up whose own "+
 			"telling write failed",
 			telling.ref, earlier+1, telling.tree, first.step, first.how, telling.how)
 	}
@@ -3594,13 +3607,19 @@ func (r *keptRun) waitsForItsSlot(tree *keptTree) bool {
 	return waits
 }
 
-// waitMachines waits for every decision each architect's machine started to have been made, and
-// then has each architect's worker take the task its claim holds where it may (workerTakes), which
-// is what makes a take part of the step that queued its task.
+// waitMachines waits for every decision each architect's machine started to have been made,
+// records whether the turn of the take each claim holds has started (keptRun.ran, as
+// supervise's Delivery reads a take's turn started: its turn's start recorded, or a confirmed take
+// whose text no record kept), and then has each architect's worker take the task its claim holds
+// where it may (workerTakes), which is what makes a take part of the step that queued its task.
+// Every step that starts a turn waits right after it, so no take's turn starts unread.
 func (r *keptRun) waitMachines() {
 	for _, tree := range r.roots {
 		if machine, found := r.sup.Machine(tree.token); found {
 			machine.Wait()
+			if p := machine.Claim().Pending; p != nil && !p.ConfirmedAt.IsZero() && (p.TakenText == "" || p.TurnStarted) {
+				r.ran[p.ID] = true
+			}
 			r.workerTakes(tree, machine)
 		}
 	}
@@ -3608,9 +3627,11 @@ func (r *keptRun) waitMachines() {
 
 // workerTakes is the architect's worker taking the task its claim holds once its host is idle and
 // its process is connected, as its plugin does: the take of the pending number, recorded where the
-// daemon accepted it. A take a hold refuses leaves the task where it is, and a take the daemon
-// answered with nothing but a failure — a store this run is refusing — is made again at the next
-// wait.
+// daemon accepted it, with what it is as a telling (keptTake): a take of a delivery taken before
+// is a telling made again where the earlier take's turn never started (keptRun.ran), and the task
+// told a second time where it did. A take a hold refuses leaves the task where it is, and a take
+// the daemon answered with nothing but a failure — a store this run is refusing — is made again at
+// the next wait.
 func (r *keptRun) workerTakes(tree *keptTree, machine *supervise.Machine) {
 	c := machine.Claim()
 	p := c.Pending
@@ -3620,7 +3641,12 @@ func (r *keptRun) workerTakes(tree *keptTree, machine *supervise.Machine) {
 	answer, err := machine.Take(r.ctx, supervise.RequestTake{Claim: c.Token, Generation: c.Generation, Session: c.Session, Number: p.Number})
 	machine.Wait()
 	if answer.Outcome == supervise.TakeOutcomeAccepted {
-		tree.takes = append(tree.takes, acceptedTake{DeliveryID: p.ID, Message: answer.Text})
+		take := keptTake{acceptedTake: acceptedTake{DeliveryID: p.ID, Message: answer.Text}}
+		if slices.ContainsFunc(tree.takes, func(earlier keptTake) bool { return earlier.DeliveryID == p.ID }) {
+			take.retold, take.again = r.ran[p.ID], !r.ran[p.ID]
+		}
+		r.ran[p.ID] = false
+		tree.takes = append(tree.takes, take)
 	}
 	r.tracef("take tree=%s delivery=%s outcome=%s hold=%s err=%v", tree.key, p.ID, answer.Outcome, answer.Hold, err)
 }

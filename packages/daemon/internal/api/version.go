@@ -2140,14 +2140,17 @@ package api
 // contract, which waits on a prompt, can take no task (supervise.TaskTakeContract). The operator
 // claim view's delivery loses `deliveredAt`, since no prompt is acknowledged; the failure causes
 // gain `never_reconnected`, a claim a daemon restart restored ready, idle or working whose shim
-// never said hello within the registration deadline while its process lived; and
+// never said hello within the registration deadline while its process lived, which a caller from
+// a pod whose claims record a contract below 157 is served as `never_registered` in `failure.cause`
+// and `pendingCause` (withoutNeverReconnected), since its plugin reads both through a strict enum
+// and refuses the whole body for a word it does not name; and
 // `GET /legion/v1/state` carries `unseenTaskValues`, every running claim whose value nobody
 // reported seeing for a whole first bound (`{claim, issue, role, task, writtenAt}`), which a
 // caller from a pod whose claims record a contract below 157 is served the body without (api's
 // stateFor, withoutUnseenTaskValues), as one below 133 is served every issue without `mergeWait`,
 // one below 111 the issues without the tree's quiet time (withoutQuietTime) and one below 98 the
-// admission block without `held`. It is the last row of stateNarrowings, after 146's, and the
-// narrowings compose. Its settings carry `worker_take_timeout_seconds` and
+// admission block without `held`. They are the last two rows of stateNarrowings, after 146's, and
+// the narrowings compose. Its settings carry `worker_take_timeout_seconds` and
 // `worker_turn_start_timeout_seconds`, keys of legion.yaml, which move no contract of their own.
 // (This change took 106 against the branch's base, which declared 98: by the census this
 // change's orchestrator read on 2026-11-13, main declared 104 at b601d25b and the open pull

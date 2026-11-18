@@ -6,8 +6,10 @@ body: |-
   saw a task and did not take it within `worker_take_timeout_seconds` (300 by default), or took it
   and started no turn within `worker_turn_start_timeout_seconds` (1500 by default). A daemon that
   cannot open or create the bucket refuses to boot and names the missing grant, and so does one that
-  connects as the agents' shared NATS user; `legion probe-boot` makes the same check. The daemon
-  purges its own project's delete markers from the bucket an hour after each delete. A daemon with
+  connects as the agents' shared NATS user; `legion probe-boot` makes the same check, and
+  `legion start --check-config` prints the refusal of a daemon that would connect as that user.
+  The daemon purges its own project's delete markers from the bucket an hour after each delete,
+  and the listener forgets each one at its next whole read of the bucket. A daemon with
   no `nats_urls` boots and launches no worker, and says so. `legion state` names each claim whose
   task nobody reported seeing, and the new `legion task-cost` reads from the daemon's log what task
   delivery cost in a window, and lists each number the record owed that its worker saw and did not
@@ -21,6 +23,8 @@ body: |-
   state in testing, acceptance, retro and merging too, not only while a review round waits on it, so
   a head the push left conflicting goes back to implementing from each of them, and the reason that
   sends it back names the head, GitHub's mergeable and merge-state answer and the time of that read.
+  An issue in merging is read once at such a push, with no read again while GitHub answers
+  `unknown`, which it answers for a head in the merge queue.
   Roll out in this order: the envoy-infra release with the bucket grants first, then the listener
   image, then each project's daemon and worker image together in one apply, then restart any
   controller an operator started and every worker of a daemon that knows no plugin pair to relaunch

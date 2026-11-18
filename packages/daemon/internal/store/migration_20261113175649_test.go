@@ -88,16 +88,23 @@ func taskNumbersLine(written, taken, finished int, session string) string {
 }
 
 // 20261113175649 numbers the task each claim an earlier release left holds as its first. The fill
-// is read on the four shapes it decides between: a claim holding a pending task nobody has taken
-// yet (task 1 written), one holding a task whose turn started (task 1 written and taken), one
-// holding none that served a task — a run, or only a phase entry — (task 1 written, taken and
-// finished in the session it holds), and one that was given nothing (no number at all). The
-// pending claim that has also served a run is the case that tells the two rules apart: the row it
-// holds is its task, so its finished number stays 0.
+// is read on the five shapes it decides between: a claim holding a pending task nobody has taken
+// yet (task 1 written), one holding a task its worker acknowledged and started no turn for (task
+// 1 written and taken, the take awaiting its turn with the task's text, accepted at the
+// acknowledgement), one holding a task whose turn started (task 1 written and taken, its turn
+// started), one holding none that served a task — a run, or only a phase entry — (task 1
+// written, taken and finished in the session it holds), and one that was given nothing (no
+// number at all). The pending claim that has also served a run is the case that tells the two
+// rules apart: the row it holds is its task, so its finished number stays 0. The acknowledged
+// task is read back through the store's own claim read too, where the claim counts as in a turn
+// (supervise.Claim.InTurn) while it is ready: the take awaits its turn, so the turn the old
+// process starts is that take's and a relaunch before one gives the take back.
 //
-// The negative control is the write of a task number before the migration, which the database
-// refuses for a column it does not have; and after it, the three read marks of the push path are
-// gone, so a reader of this record finds one model and not two.
+// The negative controls are the write of a task number before the migration, which the database
+// refuses for a column it does not have; and, for the acknowledged task, the fill without its
+// statement for acknowledged rows, under which that task reads as nobody's take, which is how a
+// prompt the old worker held came to run twice. After the migration the three read marks of the
+// push path are gone, so a reader of this record finds one model and not two.
 func TestMigrationTaskNumbersFillsEachClaimsFirstTask(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -115,25 +122,30 @@ func TestMigrationTaskNumbersFillsEachClaimsFirstTask(t *testing.T) {
 		{"legion-LEGION-303-implementer", "LEGION-303", "implementer", "ses_run", "idle", 2, 0},
 		{"legion-LEGION-304-tester", "LEGION-304", "tester", "ses_entry", "idle", 0, 3},
 		{"legion-LEGION-305-reviewer", "LEGION-305", "reviewer", "ses_nothing", "ready", 0, 0},
+		{"legion-LEGION-306-implementer", "LEGION-306", "implementer", "ses_acknowledged", "ready", 0, 0},
 	} {
 		if _, err := store.pool.Exec(ctx, claimRow, seed.token, seed.issue, seed.role, seed.session, seed.state,
 			seed.serving, seed.entry); err != nil {
 			t.Fatalf("record %s before the migration: %v", seed.token, err)
 		}
 	}
-	// The two pending rows as the push path leaves them: the first acknowledged and waiting for its
-	// turn, the second confirmed by the turn its send started.
+	// The three pending rows as the push path leaves them: the first queued and never sent, the
+	// second acknowledged at minute 5 and waiting for its turn, the third acknowledged at minute 5
+	// and confirmed at minute 6 by the turn its send started.
+	const acknowledgedAt, confirmedAt = 5, 6
 	for _, seed := range []struct {
-		token, id string
-		confirmed bool
+		token, id               string
+		acknowledged, confirmed bool
 	}{
-		{"legion-LEGION-301-implementer", "outbox:31", false},
-		{"legion-LEGION-302-implementer", "outbox:32", true},
+		{"legion-LEGION-301-implementer", "outbox:31", false, false},
+		{"legion-LEGION-306-implementer", "outbox:36", true, false},
+		{"legion-LEGION-302-implementer", "outbox:32", true, true},
 	} {
 		if _, err := store.pool.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task, phase,
 			generation, queued_at, delivered_at, marked_by, prompted, confirmed_at)
-			values ($1, $2, 'Implement the change.', 'implementing', 1, now(), now(), $2, true,
-			case when $3 then now() end)`, seed.token, seed.id, seed.confirmed); err != nil {
+			values ($1, $2, 'Implement the change.', 'implementing', 1, $5, case when $3 then $6::timestamptz end,
+			case when $3 then $2 else '' end, $3, case when $4 then $7::timestamptz end)`,
+			seed.token, seed.id, seed.acknowledged, seed.confirmed, at(1), at(acknowledgedAt), at(confirmedAt)); err != nil {
 			t.Fatalf("record the pending task of %s before the migration: %v", seed.token, err)
 		}
 	}
@@ -173,6 +185,8 @@ func TestMigrationTaskNumbersFillsEachClaimsFirstTask(t *testing.T) {
 	}{
 		{"legion-LEGION-301-implementer", taskNumbersLine(1, 0, 0, ""),
 			"a pending task nobody has taken is task 1 written, whatever run the claim served before it"},
+		{"legion-LEGION-306-implementer", taskNumbersLine(1, 1, 0, ""),
+			"a pending task its worker acknowledged is task 1 written and taken, the take awaiting its turn"},
 		{"legion-LEGION-302-implementer", taskNumbersLine(1, 1, 0, ""),
 			"a pending task whose turn started is task 1 written and taken, and not finished while that turn runs"},
 		{"legion-LEGION-303-implementer", taskNumbersLine(1, 1, 1, "ses_run"),
@@ -187,24 +201,45 @@ func TestMigrationTaskNumbersFillsEachClaimsFirstTask(t *testing.T) {
 		}
 	}
 	for _, want := range []struct {
-		token   string
-		started bool
+		token, taken, why string
+		confirmed         int
+		started           bool
 	}{
-		{"legion-LEGION-301-implementer", false},
-		{"legion-LEGION-302-implementer", true},
+		{"legion-LEGION-301-implementer", "", "no take of a task nobody took", 0, false},
+		{"legion-LEGION-306-implementer", "Implement the change.",
+			"a take accepted at the acknowledgement, answered with the prompt's text, its turn not started", acknowledgedAt, false},
+		{"legion-LEGION-302-implementer", "", "a take whose turn started, its text kept by no record", confirmedAt, true},
 	} {
 		var number int64
 		var origin string
 		var taken string
 		var started bool
-		if err := store.pool.QueryRow(ctx, `select number, origin, taken_text, turn_started from pending_task_deliveries
-			where claim_token = $1`, want.token).Scan(&number, &origin, &taken, &started); err != nil {
+		var confirmed *time.Time
+		if err := store.pool.QueryRow(ctx, `select number, origin, taken_text, turn_started, confirmed_at from pending_task_deliveries
+			where claim_token = $1`, want.token).Scan(&number, &origin, &taken, &started, &confirmed); err != nil {
 			t.Fatalf("read the pending task of %s after the migration: %v", want.token, err)
 		}
-		if number != 1 || origin != "" || taken != "" || started != want.started {
-			t.Errorf("the pending task of %s = number %d, origin %q, taken text %q, turn started %v; want task 1 of no recorded origin, which no take was ever answered for, its turn started %v: a confirmed row's turn started",
-				want.token, number, origin, taken, started, want.started)
+		confirmedRight := confirmed == nil
+		if want.confirmed != 0 {
+			confirmedRight = confirmed != nil && confirmed.Equal(at(want.confirmed))
 		}
+		if number != 1 || origin != "" || taken != want.taken || started != want.started || !confirmedRight {
+			t.Errorf("the pending task of %s = number %d, origin %q, taken text %q, turn started %v, confirmed at %v; want task 1 of no recorded origin, taken text %q, turn started %v, confirmed at minute %d (0 for none): %s",
+				want.token, number, origin, taken, started, confirmed, want.taken, want.started, want.confirmed, want.why)
+		}
+	}
+	claims, err := store.Claims(ctx)
+	if err != nil {
+		t.Fatalf("read the claims after the migration: %v", err)
+	}
+	acknowledged := slices.IndexFunc(claims, func(c supervise.Claim) bool { return c.Token == "legion-LEGION-306-implementer" })
+	if acknowledged < 0 {
+		t.Fatalf("the claims read after the migration hold no legion-LEGION-306-implementer: %+v", claims)
+	}
+	if c := claims[acknowledged]; c.Pending == nil || c.TaskTaken != 1 || c.Pending.TakenText != c.Pending.Task ||
+		c.Pending.TurnStarted || !c.InTurn() {
+		t.Errorf("the acknowledged claim reads back as %+v holding %+v, want task 1 taken, the take awaiting its turn with the task's text, so the ready claim counts as in a turn",
+			c, c.Pending)
 	}
 
 	for _, mark := range taskNumbersReadMarks {

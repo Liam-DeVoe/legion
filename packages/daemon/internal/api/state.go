@@ -898,8 +898,9 @@ func FailureViewOf(c supervise.Claim) *ClaimFailureView {
 // reduced to the five facts a reader of an agent surface decides on: that one is held, which the
 // key's own presence says; Phase, the issue phase it was queued for, empty for a task of no
 // phase (an operator's own, an architect's); QueuedAt, when it was queued; and SendFailures with
-// LastSendError, how many sends of it came back without reaching a turn and the error the last
-// of them failed with, each absent for a task no send has failed for.
+// LastSendError, how many takes of it failed to adopt the working copy and the error the last of
+// them failed with, each absent for a task no adoption has failed for, since an accepted take
+// clears both.
 //
 // The task's own text is never here. The operator routes serve it whole (DeliveryView), and what
 // an agent decides on is that a worker holds a task and has held it since a moment it can read,

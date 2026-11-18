@@ -190,7 +190,10 @@ export const LEGION_FAILURE_CAUSES = [
 
 /** The one word the site that failed a claim chose (`supervise.FailureCause`). A claim view
  * carries it twice over: in `failure.cause`, why the claim failed, and in `pendingCause`, what
- * failed the process whose relaunch is in flight. */
+ * failed the process whose relaunch is in flight. A caller in a pod whose plugin declares a
+ * contract below 157 is served `never_registered` in both where the daemon holds
+ * `never_reconnected`, the word contract 157 added (the daemon's `withoutNeverReconnected`), since
+ * its enum names no such word and would refuse the whole body for it. */
 const legionFailureCause = z.enum(LEGION_FAILURE_CAUSES);
 
 /** `api.ClaimFailureView` — why a claim failed: `cause`, the one word the site that failed it
@@ -220,8 +223,9 @@ const legionClaimFailureView = z.object({
 /** `api.PendingTaskView` — the task a claim holds, as an agent surface shows it: the key's own
  * presence says one is held, `phase` is the issue phase it was queued for (absent for a task of
  * no phase, an operator's own or an architect's), `queuedAt` when it was queued, and
- * `sendFailures` with `lastSendError` the sends that never reached a turn, absent for a task no
- * send has failed for.
+ * `sendFailures` with `lastSendError` how many takes of it failed to adopt the working copy and
+ * the error the last of them failed with, absent for a task no adoption has failed for, since an
+ * accepted take clears both.
  *
  * The task's own text is never here, and this is the difference from `legionDeliveryView`, which
  * the operator routes answer with: what a reader of the state decides on is that a worker holds
@@ -1555,13 +1559,13 @@ const legionDeliveryView = z.object({
   queuedAt: timestamp,
   confirmedAt: timestamp.optional(),
   interrupted: z.literal(true).optional(),
-  /** How many sends of this task came back without reaching a turn, when the last of them failed
+  /** How many takes of this task failed to adopt the working copy, when the last of them failed
    * and the error it failed with. The three are a diagnosis record, not a budget: the budget is
-   * `budgets.promptFailures` and `budgets.promptRetires`, which only a charged failure spends,
-   * while these count every send that failed that way, charged or not — a send lost to the
-   * transport costs nothing and is retried for ever, which is the stall they exist to name. A
-   * prompt the agent acknowledged and then refused is charged and read in the budget instead. A
-   * send that reaches a turn clears all three, so a task no send has failed for carries none. */
+   * `budgets.promptFailures` and `budgets.promptRetires`, which only a refused adoption — the
+   * shim's answer about this workspace — spends, while these count every adoption that failed,
+   * charged or not — an adoption lost to the transport costs nothing and waits for the next take,
+   * which is the stall they exist to name. An accepted take clears all three, so a task no
+   * adoption has failed for carries none. */
   sendFailures: z.number().int().nonnegative().optional(),
   lastSendFailureAt: timestamp.optional(),
   lastSendError: nonEmptyString.optional(),

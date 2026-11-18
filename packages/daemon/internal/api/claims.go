@@ -158,11 +158,12 @@ func (s *server) promptAgentsList() []string {
 // and reports what it lacks — and a row the table has no live row for is dropped and logged by its
 // name cleaned as a detail is (capabilities.Normalize).
 //
-// A ready that carries no report — a boot's, or a role-regain's — first queues the publication of
-// the issue's role sessions to Dispatch (Options.RoleHoldersChanged), before the machine takes the
-// ready, without which no take of the claim's task is accepted (supervise.HoldNotReady). A queue
-// the daemon could not write refuses the ready with 503, so no task goes before the publication is
-// queued, and the plugin tries the ready again.
+// A ready that carries no report — a boot's; a regain of the role sends none, and reads the
+// claim's task value instead (claims/task) — first queues the publication of the issue's role
+// sessions to Dispatch (Options.RoleHoldersChanged), before the machine takes the ready, without
+// which no take of the claim's task is accepted (supervise.HoldNotReady). A queue the daemon could
+// not write refuses the ready with 503, so no take is accepted before the publication is queued,
+// and the plugin tries the ready again.
 func (s *server) ready(w http.ResponseWriter, r *http.Request) {
 	var req claim.ReadyRequest
 	if !s.readBody(w, r, &req, s.claimSecretCheck) || !requireFields(w,

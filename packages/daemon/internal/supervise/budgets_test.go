@@ -34,12 +34,12 @@ func TestLaunchFailuresRunOutIntoFailed(t *testing.T) {
 	}
 }
 
-// A worker that dies with work outstanding — its task's turn running, or the task pending, re-sent
-// after an earlier death — is relaunched with that task, and the relaunch reaches ready again
+// A worker that dies with work outstanding — its task's turn running, or the task pending, taken
+// back after an earlier death — is relaunched with that task, and the relaunch reaches ready again
 // whatever killed it, so ready cannot bound those deaths. An agent that dies each time before it
-// completes a turn — in the task's turn, or ready with the re-sent task not yet begun — is failed at
-// the launch failure limit, where the workflow holds its issue, instead of relaunched for ever. Its
-// task stays pending, for the retry to send.
+// completes a turn — in the task's turn, or ready with the task taken back and not yet begun — is
+// failed at the launch failure limit, where the workflow holds its issue, instead of relaunched for
+// ever. Its task stays pending, for the retry's worker to take.
 func TestAnAgentThatDiesWithWorkOutstandingIsFailedAtTheLimit(t *testing.T) {
 	for name, beforeDeath := range map[string]func(*harness){
 		"dies in each turn of its task": func(h *harness) {

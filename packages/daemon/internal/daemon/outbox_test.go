@@ -2098,14 +2098,14 @@ func TestOutboxRetryStartForAPhaseTheIssueLeftRelaunchesNothing(t *testing.T) {
 	}
 }
 
-// A task handed to a claim waits as its pending delivery until a turn confirms it. An agent that
-// refuses the prompt after acknowledging it — it was already in the turn a human's steer started —
-// has the delivery taken back, and it can finish the phase inside that turn. The worker stays live,
-// so when that turn ends the task is still pending on a claim that can be prompted: it was queued
-// for a phase the issue has left, so it is dropped rather than sent (PhaseHolds), and the claim's
-// next start, for the issue's next phase or round, hands the live worker the new start's own task
-// rather than the finished phase's — for the next round, or for retro once the architect accepts
-// the approved head, never "Phase: implementing" again — without relaunching it.
+// A task handed to a claim waits as its pending delivery until its worker takes it. An agent
+// already in the turn a human's steer started takes nothing, and it can finish the phase inside
+// that turn. The worker stays live, so when that turn ends the task is still pending on a claim
+// whose worker can take: it was queued for a phase the issue has left, so its take is answered
+// dropped (PhaseHolds), and the claim's next start, for the issue's next phase or round, hands the
+// live worker the new start's own task rather than the finished phase's — for the next round, or
+// for retro once the architect accepts the approved head, never "Phase: implementing" again —
+// without relaunching it.
 func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

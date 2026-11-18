@@ -211,3 +211,50 @@ func TestAMergeStateRequestArrivingWhileTheLadderReadsIsNotLost(t *testing.T) {
 		t.Fatalf("%d ladders are still marked as running, want none once the climbs are over", running)
 	}
 }
+
+// A push onto the base asks for a read of every open pull request on it whose issue sits in a
+// phase a conflict with the base is acted on, merging among them (workflow's conflictReadPhase),
+// and every merge into the base is such a push. GitHub answers `unknown` for a head sitting in the
+// merge queue for as long as it sits there, so an issue in merging is read once at the push and
+// its `unknown` is not climbed. An issue in testing, whose `unknown` is GitHub still computing the
+// state, is climbed as before: five reads.
+//
+// The negative control is the climb that reads no phase (climbMergeState without its stop for an
+// issue in merging): the issue in merging is then read five times.
+func TestTheMergeStateOfAMergingIssueIsReadOnceAtABasePush(t *testing.T) {
+	for _, tc := range []struct {
+		from   phase.Phase
+		status string
+		reads  int32
+	}{
+		{phase.Merging, "retro", 1},
+		{phase.Testing, "testing", mergeStateLadderReads},
+	} {
+		t.Run(string(tc.from), func(t *testing.T) {
+			pool := isolatedOutboxPool(t)
+			seedCapture(t, pool, tc.from, tc.status)
+			if _, err := pool.Exec(context.Background(), "update pull_requests set base = 'main' where issue = 'CAPTURE-1'"); err != nil {
+				t.Fatalf("record the pull request's base: %v", err)
+			}
+			var reads atomic.Int32
+			w := readRuntime(pool, countingPullStandIn(t, "unknown", &reads).URL, quietLogger())
+			w.mergeStateRetry = 10 * time.Millisecond
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go w.readMergeStates(ctx)
+
+			if _, err := intake.ApplyFact(ctx, pool, "github", "base-push", intake.BasePush{Repo: "acme/widgets", Branch: "main", After: "main-moved"},
+				w.handlers...); err != nil {
+				t.Fatalf("apply the push onto the base: %v", err)
+			}
+			testwait.Eventually(t, "the base push's reads of GitHub", func() bool { return reads.Load() >= tc.reads })
+
+			// Past the reads the phase calls for nothing reads again, however long the ladder's
+			// wait is given.
+			time.Sleep(20 * w.mergeStateRetry)
+			if got := reads.Load(); got != tc.reads {
+				t.Fatalf("GitHub was read %d times for an issue in %s answered unknown, want %d", got, tc.from, tc.reads)
+			}
+		})
+	}
+}

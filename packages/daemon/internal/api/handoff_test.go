@@ -1751,9 +1751,10 @@ func holdingTask(t *testing.T, h *harness, c liveClaim, task supervise.RequestDe
 	}
 }
 
-// A worker whose task was sent and never acknowledged — a lost prompt, a refusal the agent made
-// in a turn of its own, an adoption that failed — does the phase's work anyway, in whatever turn
-// follows, and its claim serves no run to attribute the completion to. Refusing it costs the
+// A worker whose claim holds a task no take of which stands accepted — a value it has not taken
+// yet, a take refused while it was in a turn of its own, a take whose adoption failed — does the
+// phase's work anyway, in whatever turn follows, and its claim serves no run to attribute the
+// completion to. Refusing it costs the
 // issue a phase for nothing, so the route takes the run and the entry from the task the
 // claim is holding when that task is the issue's own current generation and phase: the completion
 // is recorded against that task's run, not refused and not credited to some other one. The

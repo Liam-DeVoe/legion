@@ -1158,7 +1158,9 @@ func TestStartCheckConfigReadsTheLaunchSecretsAsBootDoes(t *testing.T) {
 			}
 			want := demoCheckConfigOK
 			if tc.key == seedKey {
-				want = "Config OK: project=DEMO design-gate-steps=spec nats-nkey-user=" + public + "\n" + demoProductionCheck
+				// The pane seed is the daemon's own NATS user too, which its boot is refused for
+				// at the task bucket's open (paneSeedLine).
+				want = "Config OK: project=DEMO design-gate-steps=spec nats-nkey-user=" + public + "\n" + paneSeedLine + demoProductionCheck
 			}
 			want += tmuxCapabilityGaps
 			if tc.refusal == nil {

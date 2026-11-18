@@ -276,7 +276,8 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   with `LEGION_LISTEN_FD=<n>` it serves its API on that inherited listening socket instead of binding, and refuses to start unless the file's `bind` and `port` name the socket's address (docs/deployment.md "Serving on a socket the harness holds");
   --check-config never reads it, and also prints the configuration's open capability gaps after its OK line (exit 0), the intake handler limit under either runtime when `worker_rpc_timeout_seconds` derives one above the ten-minute floor (the daemon's boot log names it at every boot, derived or not), and under `runtime: kubernetes` the repository cache each mapped repository gets (docs/kubernetes.md "The repository cache") and the plugin pair a stale-plugin relaunch would install or the gap that leaves it relaunching none (docs/kubernetes.md "Contract discipline");
   for a file that names no NATS (`nats_urls`) it prints, after the OK line and its warnings, the line a booting daemon logs for it (`daemon.NoNATSLine`), still exiting 0:
-  such a daemon boots and serves, and launches no worker, since a worker takes its task from the task bucket on Envoy's NATS (`legion_tasks`) and with no NATS the daemon has no bucket to write it in
+  such a daemon boots and serves, and launches no worker, since a worker takes its task from the task bucket on Envoy's NATS (`legion_tasks`) and with no NATS the daemon has no bucket to write it in;
+  and for a file under which the daemon would connect to NATS as the pane seed's user it prints the sentence its boot is refused with at the bucket's open, still exiting 0
 
 - `legion status <team>`
 

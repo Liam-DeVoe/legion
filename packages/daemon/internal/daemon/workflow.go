@@ -600,10 +600,10 @@ func (w *workflowRuntime) queueRoleHoldersPublish(ctx context.Context) error {
 }
 
 // roleHoldersChanged queues the publication of c's issue's role sessions for the ready route
-// (api's Options.RoleHoldersChanged), before the claim takes a boot's or a role-regain's ready, in
-// a transaction of its own, which owns the commit hook its write registers, so the board lane is
-// woken once it commits. An error is the route's to answer: it refuses the ready with 503, so no
-// task goes first.
+// (api's Options.RoleHoldersChanged), before the claim takes a boot's ready — a regain of the
+// role sends no ready — in a transaction of its own, which owns the commit hook its write
+// registers, so the board lane is woken once it commits. An error is the route's to answer: it
+// refuses the ready with 503, so no take is accepted first.
 func (w *workflowRuntime) roleHoldersChanged(ctx context.Context, c supervise.Claim) error {
 	scoped, committed := intake.WithCommitHooks(ctx)
 	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
@@ -1861,9 +1861,8 @@ func (w *workflowRuntime) claimReady(c supervise.Claim) {
 // whose architect owed that task now waits on a person (workflow's ReconcileAwaiting), which
 // otherwise waits for the next tick. The machine calls it inside its own decision, so the fact is
 // applied on a goroutine of its own, bounded by readyReleaseTimeout; a failure is logged and not
-// the daemon's end, since the tick decides the same thing again. The event id names the claim's
-// task number, which is the task's own whatever takes of it are made, so a task taken again after
-// it was taken back is applied once.
+// the daemon's end, since the tick decides the same thing again. It is applied under
+// confirmationEventID.
 func (w *workflowRuntime) taskConfirmed(c supervise.Claim) {
 	if c.Issue == "" || c.Role == claim.RoleController {
 		return
@@ -1874,17 +1873,29 @@ func (w *workflowRuntime) taskConfirmed(c supervise.Claim) {
 		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(context.Background()), readyReleaseTimeout)
 		defer cancel()
 		fact := intake.TaskConfirmed{Issue: c.Issue, Role: c.Role, Generation: c.Generation}
-		id := fmt.Sprintf("task-confirmed:%s:%d", c.Token, c.Generation)
-		switch p := c.Pending; {
-		case p != nil && p.Number != 0:
-			id = fmt.Sprintf("task-confirmed:%s:task-%d", c.Token, p.Number)
-		case p != nil:
-			id = fmt.Sprintf("task-confirmed:%s:%s", c.Token, p.ID)
-		}
-		if _, err := intake.ApplyFact(ctx, w.pool, "supervise", id, fact, w.handlers...); err != nil {
+		if _, err := intake.ApplyFact(ctx, w.pool, "supervise", confirmationEventID(c), fact, w.handlers...); err != nil {
 			w.log.Warn("apply the confirmation of a task", "claim", c.Token, "error", err)
 		}
 	}()
+}
+
+// confirmationEventID is the event id the confirmation of c's task is applied under. It names
+// the task's delivery id and its number, which a take-back keeps, so a task taken again after it
+// was taken back is applied once. The delivery id is what keeps the id to one lifetime of the
+// numbering: processed_events, which dedupes the fact, is never pruned, and the store
+// migration's way back and roll-forward number every claim from task 1 again
+// (20261113175649_task_numbers.up.sql), so a number alone would name a task 1 the claim took
+// before the rollback, and the confirmation of the new task 1 would come back a duplicate. A
+// task of no number, which no take of this release made, is named by its delivery id alone, and
+// a claim holding no task by its launch.
+func confirmationEventID(c supervise.Claim) string {
+	switch p := c.Pending; {
+	case p != nil && p.Number != 0:
+		return fmt.Sprintf("task-confirmed:%s:%s:task-%d", c.Token, p.ID, p.Number)
+	case p != nil:
+		return fmt.Sprintf("task-confirmed:%s:%s", c.Token, p.ID)
+	}
+	return fmt.Sprintf("task-confirmed:%s:%d", c.Token, c.Generation)
 }
 
 // sessionLost applies the fact that a claim's recorded session is in no session store any more

@@ -294,7 +294,9 @@ func pluginsLine(cfg config.Config) string {
 // since such a key is ignored and never refused.
 // Then, for a file that names no NATS (`nats_urls`), the line a booting daemon logs for it
 // (daemon.NoNATSLine): such a daemon boots and launches no worker, since it has no task bucket to
-// hand one its task through. It is a report, so the exit stays 0.
+// hand one its task through. For a file that names NATS under which the daemon would connect as
+// the pane seed's user, the sentence its boot is refused with at the task bucket's open
+// (daemon.CheckStart's paneSeed). Each is a report, so the exit stays 0.
 // Then one line per project, in key order, naming its `production_check` and what the word
 // decides (productionCheckLine), so an operator reads back which projects open a production
 // check at a merge. After them, one line per configured repository rename
@@ -325,9 +327,9 @@ func checkStartConfig(configPath string, stdout, stderr io.Writer) int {
 	if err == nil {
 		applyLinkedPlugins(&cfg)
 	}
-	paneNatsUser, daemonNatsUser := "", ""
+	paneNatsUser, daemonNatsUser, paneSeedLine := "", "", ""
 	if err == nil {
-		paneNatsUser, daemonNatsUser, err = daemon.CheckStart(cfg, os.LookupEnv)
+		paneNatsUser, daemonNatsUser, paneSeedLine, err = daemon.CheckStart(cfg, os.LookupEnv)
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "legion start: %v\n", err)
@@ -346,6 +348,9 @@ func checkStartConfig(configPath string, stdout, stderr io.Writer) int {
 	}
 	if line := daemon.NoNATSLine(cfg); line != "" {
 		fmt.Fprintln(stdout, line)
+	}
+	if paneSeedLine != "" {
+		fmt.Fprintln(stdout, paneSeedLine)
 	}
 	for _, key := range slices.Sorted(maps.Keys(cfg.Projects)) {
 		fmt.Fprintln(stdout, productionCheckLine(key, cfg.Projects[key]))

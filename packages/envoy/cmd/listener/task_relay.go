@@ -26,6 +26,17 @@ import (
 // and a listener whose grant lacks the reads costs one STREAM.INFO and one ERROR line each.
 const taskRelayInterval = 30 * time.Second
 
+// taskRelayReadInterval is how long after each whole read of the task bucket that completed the
+// task relay's watcher reads the bucket whole again (kvwatch.WithScheduledRead): a minute, the
+// interval the role claim watcher reads its own bucket again at (internal/store's
+// roleClaimRepairInterval). The scheduled read is what takes a finished claim's record out of the
+// relay: a Legion daemon purges each delete marker of its claims once it is old enough
+// (packages/daemon's taskBucket.purgeMarkers), and a purge sends a watch nothing, so only a whole
+// read that no longer finds the key drops its record and what was relayed of it
+// (taskCache.CompleteRead). Without it the relay would hold one record for each claim that ever
+// had a task until a rewatch.
+const taskRelayReadInterval = time.Minute
+
 // taskRelayName labels the task relay's KV watcher and its lines (kvwatch.New).
 const taskRelayName = "task relay"
 
@@ -108,10 +119,12 @@ type taskRelay struct {
 	relays   *sessionRelays
 	registry *store.Registry
 	logger   *logging.Logger
-	// interval is taskRelayInterval, and openWait the JetStream wait of each lookup of the bucket
-	// (bus.RequestTimeout); a test shortens both. Set before run starts and read-only after.
-	interval time.Duration
-	openWait time.Duration
+	// interval is taskRelayInterval, readInterval taskRelayReadInterval, and openWait the
+	// JetStream wait of each lookup of the bucket (bus.RequestTimeout); a test shortens them. Set
+	// before run starts and read-only after.
+	interval     time.Duration
+	readInterval time.Duration
+	openWait     time.Duration
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -155,23 +168,25 @@ type taskRelay struct {
 // startTaskRelay starts the task relay of the listener whose main bus connection is client, beside
 // relays, the relays of its session consumers, reading each role's holder from registry. It opens
 // nothing until the listener gives consumer delivery (sessionDelivery.consumerGrantHeld), and then
-// reads the bucket again every interval while it has no watch of it, each lookup waiting openWait.
-// It ties itself to client: a disconnect stops its copy following the bucket, a reconnect watches
-// the bucket again on the new connection in the background, and the connection's drain ends its
-// watcher (end).
-func startTaskRelay(client *bus.Client, relays *sessionRelays, registry *store.Registry, logger *logging.Logger, interval, openWait time.Duration) *taskRelay {
+// reads the bucket again every interval while it has no watch of it, each lookup waiting openWait;
+// once the watch is up, its watcher reads the bucket whole again readInterval after each whole
+// read that completed. It ties itself to client: a disconnect stops its copy following the bucket,
+// a reconnect watches the bucket again on the new connection in the background, and the
+// connection's drain ends its watcher (end).
+func startTaskRelay(client *bus.Client, relays *sessionRelays, registry *store.Registry, logger *logging.Logger, interval, readInterval, openWait time.Duration) *taskRelay {
 	r := &taskRelay{
-		client:      client,
-		relays:      relays,
-		registry:    registry,
-		logger:      logger,
-		interval:    interval,
-		openWait:    openWait,
-		reconnected: make(chan struct{}, 1),
-		wake:        make(chan struct{}, 1),
-		pending:     map[string]struct{}{},
-		records:     map[string]taskRecord{},
-		relayed:     map[string]taskRelayed{},
+		client:       client,
+		relays:       relays,
+		registry:     registry,
+		logger:       logger,
+		interval:     interval,
+		readInterval: readInterval,
+		openWait:     openWait,
+		reconnected:  make(chan struct{}, 1),
+		wake:         make(chan struct{}, 1),
+		pending:      map[string]struct{}{},
+		records:      map[string]taskRecord{},
+		relayed:      map[string]taskRelayed{},
 	}
 	r.ctx, r.cancel = context.WithCancel(context.Background())
 	client.AddDisconnectHook(r.disconnected)
@@ -238,7 +253,8 @@ func (r *taskRelay) repair(reconnected bool) {
 }
 
 // open opens the bucket on conn, never creating it, makes its watcher, registers the role change
-// hook and starts the watch, whose first read delivers every key the bucket holds.
+// hook and starts the watch, whose first read delivers every key the bucket holds, and which
+// reads the bucket whole again readInterval after each read that completed.
 func (r *taskRelay) open(conn *nats.Conn) error {
 	js, err := conn.JetStream(nats.MaxWait(r.openWait))
 	if err != nil {
@@ -248,7 +264,7 @@ func (r *taskRelay) open(conn *nats.Conn) error {
 	if err != nil {
 		return err
 	}
-	w := kvwatch.New(taskRelayName, kv, taskCache{r}, kvwatch.WithLogger(r.logger.Slog()))
+	w := kvwatch.New(taskRelayName, kv, taskCache{r}, kvwatch.WithLogger(r.logger.Slog()), kvwatch.WithScheduledRead(r.readInterval))
 	r.mu.Lock()
 	if r.stopped {
 		r.mu.Unlock()
@@ -564,7 +580,8 @@ func (c taskCache) Apply(entry kvwatch.Entry, _ kvwatch.Read) {
 }
 
 // CompleteRead drops the record, and what was relayed, of every key the read delivered nothing
-// of: the bucket no longer holds the key at all.
+// of: the bucket no longer holds the key at all, which is how a delete marker the daemon purged
+// leaves the relay (taskRelayReadInterval).
 func (c taskCache) CompleteRead(kvwatch.Read) {
 	r := c.r
 	r.mu.Lock()

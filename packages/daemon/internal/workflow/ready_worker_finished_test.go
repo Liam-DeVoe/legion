@@ -501,9 +501,12 @@ const taskNumbersMigration = 20261113175649
 // The rollout's two waiting workers, as the migration numbers them, are given nothing at their
 // relaunch. A tester whose task was confirmed and retired before the upgrade — it served its run
 // and holds no pending task — is recorded as having finished task 1 in the session it holds, so
-// the ready of its relaunch gives it nothing; one holding a task nobody has confirmed is recorded
-// as written task 1 and taken nothing, so it keeps that task, untaken, and its ready gives it no
-// second.
+// the ready of its relaunch gives it nothing; one holding a task the release before queued and
+// never sent — neither acknowledged nor confirmed — is recorded as written task 1 and taken
+// nothing, so it keeps that task, untaken, and its ready gives it no second. (A task that release
+// sent and its worker acknowledged is filled as a take awaiting its turn instead, which the
+// store's TestMigrationTaskNumbersFillsEachClaimsFirstTask and supervise's
+// TestRelaunchOfAMigratedTakeRunsItOnce read.)
 //
 // The negative control is this test on the merge base, where the record holds no task numbers:
 // the ready of the first tester's relaunch queues the testing phase's resume task.
@@ -536,9 +539,10 @@ func TestWaitingWorkerAfterMigrationIsGivenNothingAtItsRelaunch(t *testing.T) {
 			t.Fatalf("record the tester of %s before the migration: %v", seed.issue, err)
 		}
 	}
-	// The push path's record of a task acknowledged and never confirmed by a turn.
+	// The push path's record of a task queued and never sent: no acknowledgement, no marking
+	// prompt and no prompt sent.
 	if _, err := pool.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task, phase, generation, queued_at,
-		delivered_at, marked_by, prompted) values ($1, 'outbox:31', 'Test the change.', 'testing', 1, now(), now(), 'outbox:31', true)`,
+		delivered_at, marked_by, prompted) values ($1, 'outbox:31', 'Test the change.', 'testing', 1, now(), null, '', false)`,
 		string(testerToken(t, holding))); err != nil {
 		t.Fatalf("record the held task before the migration: %v", err)
 	}

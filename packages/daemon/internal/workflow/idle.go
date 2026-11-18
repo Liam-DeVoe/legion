@@ -245,10 +245,11 @@ type IdleDecision struct {
 // installs no plugin (fixedPlugin: a Claude Code role in a pod, whose plugin is the image's own
 // claude-envoy), the old plugin (oldPlugin). No relaunch brings such a worker a plugin that
 // takes, so it waits for a prompt this daemon never sends, and the update round a new image
-// opens over its pod asks it a task it cannot take, so that round never ends. What moves its
-// plugin is a pod built from the configured image, which a release brings (dispatch://INFRA-2811,
-// decision 18). So a pod holding such a claim that does not run the configured image is released
-// past the three conditions that keep a pod behind for a relaunch or a round to replace
+// opens over its pod asks it a task it cannot take, so that round ends only at its bound, with the
+// worker idle until then (pod_update_grace_minutes). What moves its plugin is a pod built from the
+// configured image, which a release brings (dispatch://INFRA-2811, decision 18). So a pod holding
+// such a claim that does not run the configured image is released past the three conditions that
+// keep a pod behind for a relaunch or a round to replace
 // (IdleHoldImage, IdleHoldPluginContract, IdleHoldUpdateRound), and at once rather than after
 // the idle period (IdleHoldNotIdle), the release's save taking the workspace's unpushed work
 // first as every release's does. That save answers what the round would have asked, so each

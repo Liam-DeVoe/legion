@@ -151,8 +151,8 @@ func TestAStaleEntrysCompletionDoesNotTakeTheNextTestingPhases(t *testing.T) {
 	}
 }
 
-// The second entry's task is delivered to the claim and the worker has not acknowledged it: it
-// still serves the entry its last confirmed task carried, and reports that entry's completion in
+// The second entry's task is queued to the claim and the worker has not taken it: it still
+// serves the entry its last accepted take carried, and reports that entry's completion in
 // a turn of its own. The refusal is the same one, and it names the task waiting on the claim
 // rather than telling the worker to wait for one.
 func TestACompletionIsRefusedWhileTheNextEntrysTaskWaitsUnconfirmed(t *testing.T) {

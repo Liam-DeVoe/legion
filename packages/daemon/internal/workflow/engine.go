@@ -97,8 +97,9 @@ type Config struct {
 	// a conflict with the base sends back to implementing (askMergeState, askMergeStateFor), to read
 	// it: what moves an approved issue to accepting, and the one thing that finds a head a moved
 	// base turned conflicting. The daemon answers it with a ladder of reads
-	// (workflowRuntime.queueMergeState); nil asks for none, which is the API-only daemon and a test
-	// that drives the reads itself.
+	// (workflowRuntime.queueMergeState), one read alone for an issue in merging, whose head GitHub
+	// answers UNKNOWN for while it sits in the merge queue; nil asks for none, which is the
+	// API-only daemon and a test that drives the reads itself.
 	ReadMergeState func(issue string)
 	// Reserve is the moment a wake the engine causes may run, given the caller's own now and
 	// never a moment before it: the daemon's one wake limiter (internal/wakepace, openSupervision

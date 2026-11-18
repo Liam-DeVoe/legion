@@ -26,17 +26,25 @@
 -- turn_started whether that take's turn has started.
 --
 -- The fill numbers what the release before this one left as each claim's first task. A claim
--- holding a pending row holds task 1: the row is number 1 and the claim's task_written is 1, and
--- where the row is confirmed — the turn it was sent for started — its worker took it, so
--- task_taken is 1 as well and the row's turn_started is true. A claim holding no pending row that
--- served a task, a run (serving_generation <> 0) or a phase entry (served_entry > 0), took and
--- finished task 1 in the session it holds, so task_written, task_taken and task_finished are 1
--- and task_finished_session is that session. Every other claim was given nothing and stays at 0
--- throughout. The epochs and revisions start empty, because no value in the bucket is the
--- record's yet, so the first boot writes every owed value once. origin starts empty, which names
--- no source: the task was queued before the record kept one. taken_text starts empty, since no
--- take of such a task was ever answered; a confirmed row's take is therefore one a take sent
--- again is refused in-turn, not answered (supervise's answeredFromRecord).
+-- holding a pending row holds task 1: the row is number 1 and the claim's task_written is 1. A
+-- row neither acknowledged nor confirmed is a task that release queued and nobody took, so
+-- nothing of it is taken. A row acknowledged (delivered_at set) and not confirmed is a prompt
+-- the old process holds and has not started a turn for, which it may still start under this
+-- release: it is filled as an accepted take awaiting its turn — confirmed_at from delivered_at,
+-- taken_text the row's own text, turn_started false, task_taken 1 — so the turn the old process
+-- starts is that take's turn (supervise's Delivery.awaitsTurn), and a process let go before it
+-- starts one gives the take back (supervise's interrupted), so the relaunched worker takes the
+-- task under its number: either way it runs once. Where the row is confirmed — the turn it was
+-- sent for started — its worker took it, so task_taken is 1 as well and the row's turn_started
+-- is true. A claim holding no pending row that served a task, a run (serving_generation <> 0) or
+-- a phase entry (served_entry > 0), took and finished task 1 in the session it holds, so
+-- task_written, task_taken and task_finished are 1 and task_finished_session is that session.
+-- Every other claim was given nothing and stays at 0 throughout. The epochs and revisions start
+-- empty, because no value in the bucket is the record's yet, so the first boot writes every
+-- owed value once. origin starts empty, which names no source: the task was queued before the
+-- record kept one. taken_text is the row's own text on an acknowledged row and empty on every
+-- other, since no take of those was ever answered; a confirmed row's take is therefore one a
+-- take sent again is refused in-turn, not answered (supervise's answeredFromRecord).
 --
 -- Once this migration has run, the daemon of the release before it cannot read the claims table
 -- at all: its own claim read names d.delivered_at, d.marked_by and d.prompted
@@ -120,9 +128,13 @@
 -- What that costs is the numbering, as the phase entry's second fill costs its own: the second
 -- fill reads what the older daemon left exactly as this fill reads what the release before this
 -- one left, so every claim stands at task 1 again, or at 0, whatever number it stood at before the
--- rollback. Nothing reads a number across the rollback: the worker of the older release takes no
--- value, and the epochs and revisions start empty again, so the first boot after the roll-forward
--- writes every owed value once under the number the second fill gave it.
+-- rollback. The one record a number outlives the rollback in is processed_events, which nothing
+-- prunes: the accepted take's confirmation is applied once under an event id, and that id names
+-- the task's delivery id beside its number (internal/daemon's confirmationEventID), so the
+-- confirmation of a task numbered 1 again is not taken for one of the task 1 the claim took
+-- before the rollback. Nothing else reads a number across it: the worker of the older release
+-- takes no value, and the epochs and revisions start empty again, so the first boot after the
+-- roll-forward writes every owed value once under the number the second fill gave it.
 --
 -- The re-arm asks nothing of the other rows. What it does need is that no migration recorded
 -- after this one builds on the thirteen columns it drops, and at this release none of the six
@@ -175,7 +187,13 @@ alter table pending_task_deliveries add column turn_started boolean not null def
 -- start. This comes before any other fill, so it reads confirmed_at as that release left it.
 update pending_task_deliveries set turn_started = confirmed_at is not null;
 
--- Every pending row is its claim's task 1, written; a confirmed one is taken as well.
+-- An acknowledged row that no turn confirmed is a take accepted at its acknowledgement and
+-- awaiting its turn, its text the prompt's; turn_started stays false.
+update pending_task_deliveries set confirmed_at = delivered_at, taken_text = task
+where delivered_at is not null and confirmed_at is null;
+
+-- Every pending row is its claim's task 1, written; a confirmed one — an acknowledged one among
+-- them now — is taken as well.
 update pending_task_deliveries set number = 1;
 update claims c set task_written = 1, task_taken = case when d.confirmed_at is null then 0 else 1 end
 from pending_task_deliveries d

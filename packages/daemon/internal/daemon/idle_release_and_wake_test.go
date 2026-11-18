@@ -62,7 +62,7 @@ func TestIdleReleaseAndWake(t *testing.T) {
 
 	// The subscribed pod's session takes a topic of its own, as `envoy_subscribe` does, before
 	// its process starts. The stuck pod's plan is left alone until its own subtest: a session
-	// that acknowledges a task and takes no turn has a turn due, which is a pod the rule keeps.
+	// that takes a task and starts no turn has a turn due, which is a pod the rule keeps.
 	subscribed := rig.issue(idleRigSubscribed)
 	rig.agents.setPlan(subscribed.key, string(subscribed.role), idleRigPlan{TakeTurn: true, Topics: []string{idleRigSubscribedTopic}})
 
@@ -243,7 +243,7 @@ func TestIdleReleaseAndWake(t *testing.T) {
 
 	t.Run("AResumeWithNoFirstTurnAfterTenMinutesIsWarnedAndRecordedStuck", func(t *testing.T) {
 		issue := rig.issue(idleRigStuck)
-		// From here its session acknowledges the task its wake gives it and takes no turn.
+		// From here its session takes the task its wake gives it and starts no turn.
 		rig.agents.setPlan(issue.key, string(issue.role), idleRigPlan{TakeTurn: false})
 		// A role message, because R5's resume is what the daemon records for a wake it answered
 		// (store.RecordPodWakeTx); a delivery the daemon already held is its own account of why
@@ -261,7 +261,7 @@ func TestIdleReleaseAndWake(t *testing.T) {
 		})
 		// The clock the stuck pass reads is the wake's own recorded moment against the daemon's
 		// now (warnStuckResumes), so the test moves the wake ten minutes into the past. The role
-		// process acknowledged its task and started no turn, so no first turn was ever stamped.
+		// process took its task and started no turn, so no first turn was ever stamped.
 		rig.ageResume(issue, 11*time.Minute)
 		idleRigEventually(t, idleRigWarningWait, "the warning about the resume with no first turn", func() bool {
 			return rig.logged("wake: a released pod's resume has had no first turn since its wake",

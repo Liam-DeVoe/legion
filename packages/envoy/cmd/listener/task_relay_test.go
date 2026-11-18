@@ -24,7 +24,9 @@ import (
 )
 
 // The task relay's interval and lookup wait in these rows: short, so a row that waits for the
-// relay's next look at the bucket spends a tenth of a second rather than thirty.
+// relay's next look at the bucket spends a tenth of a second rather than thirty. The watcher's
+// scheduled whole read keeps the listener's minute (taskRelayReadInterval) but in the row about
+// that read itself, so no other row meets a read it did not make.
 const (
 	taskTestInterval = 100 * time.Millisecond
 	taskTestOpenWait = time.Second
@@ -41,7 +43,14 @@ type taskRig struct {
 // durable binding, so it relays the sessions that register through it.
 func newTaskRig(t *testing.T) *taskRig {
 	t.Helper()
-	rig := newTaskRigOn(t, testnats.URL(t), "test-machine")
+	return newTaskRigReading(t, taskRelayReadInterval)
+}
+
+// newTaskRigReading is newTaskRig with its task relay's watcher reading the bucket whole again
+// readInterval after each read that completed.
+func newTaskRigReading(t *testing.T, readInterval time.Duration) *taskRig {
+	t.Helper()
+	rig := newTaskRigOnReading(t, testnats.URL(t), "test-machine", readInterval)
 	rig.relays.setOwned(true)
 	return rig
 }
@@ -51,6 +60,13 @@ func newTaskRig(t *testing.T) *taskRig {
 // /v1 routes write every registration as test-machine's (newSessionConsumerRigOn), so a session
 // registered through a rig of another machine id is not that rig's to relay.
 func newTaskRigOn(t *testing.T, url, machineID string) *taskRig {
+	t.Helper()
+	return newTaskRigOnReading(t, url, machineID, taskRelayReadInterval)
+}
+
+// newTaskRigOnReading is newTaskRigOn with its task relay's watcher reading the bucket whole
+// again readInterval after each read that completed.
+func newTaskRigOnReading(t *testing.T, url, machineID string, readInterval time.Duration) *taskRig {
 	t.Helper()
 	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1))
 	if err != nil {
@@ -71,15 +87,16 @@ func newTaskRigOn(t *testing.T, url, machineID string) *taskRig {
 	})
 	return &taskRig{
 		relayRig: &relayRig{sessionConsumerRig: consumers, relays: relays, url: url},
-		tasks:    startTestTaskRelay(t, consumers, relays, taskTestInterval, taskTestOpenWait),
+		tasks:    startTestTaskRelay(t, consumers, relays, taskTestInterval, readInterval, taskTestOpenWait),
 	}
 }
 
 // startTestTaskRelay starts the task relay of rig's listener beside relays, as main starts it,
-// with the interval and lookup wait given, and stops it when the test ends.
-func startTestTaskRelay(t *testing.T, rig *sessionConsumerRig, relays *sessionRelays, interval, openWait time.Duration) *taskRelay {
+// with the interval, the scheduled read's interval and the lookup wait given, and stops it when
+// the test ends.
+func startTestTaskRelay(t *testing.T, rig *sessionConsumerRig, relays *sessionRelays, interval, readInterval, openWait time.Duration) *taskRelay {
 	t.Helper()
-	tasks := startTaskRelay(rig.harness.client, relays, rig.harness.registry, rig.harness.config.logger, interval, openWait)
+	tasks := startTaskRelay(rig.harness.client, relays, rig.harness.registry, rig.harness.config.logger, interval, readInterval, openWait)
 	t.Cleanup(tasks.stop)
 	return tasks
 }
@@ -554,6 +571,66 @@ func TestTaskRelayKeepsWhatItRelayedOnlyOfAKeyItHolds(t *testing.T) {
 	}
 }
 
+// relayedRecord is what rig's task relay holds of key: the op of its record, and whether it holds
+// a record and what it relayed of it.
+func relayedRecord(rig *taskRig, key string) (op string, held, relayed bool) {
+	rig.tasks.mu.Lock()
+	defer rig.tasks.mu.Unlock()
+	record, held := rig.tasks.records[key]
+	_, relayed = rig.tasks.relayed[key]
+	return record.op, held, relayed
+}
+
+// A finished claim's value is deleted, and the delete is relayed to the session holding the
+// claim's role. A Legion daemon then purges the delete marker once it is old enough
+// (packages/daemon's taskBucket.purgeMarkers), and a purge sends the watch nothing, so the relay
+// still holds the delete's record and what it relayed of it. Its watcher's scheduled whole read of
+// the bucket (taskRelayReadInterval, here a fifth of a second) finds no record of the key, and
+// both leave the relay's memory, while the record of a key the bucket still holds stays.
+//
+// The negative control is the watcher with no scheduled read (open without
+// kvwatch.WithScheduledRead): the delete's record then stays until a rewatch.
+func TestTaskRelayForgetsAPurgedDeleteAtItsScheduledRead(t *testing.T) {
+	rig := newTaskRigReading(t, 200*time.Millisecond)
+	js, kv := createTaskBucket(t, rig.url)
+	const sessionID = "ses_task_purged"
+	finished, held := "legion-infra-infra-2811-1-tester", "legion-infra-infra-2811-2-tester"
+	session := startTaskStandIn(t, rig.url, sessionID)
+	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
+	claimTaskRole(t, rig.sessionConsumerRig, sessionID, finished)
+	epoch := taskEpoch(t, js)
+
+	revision := putTask(t, kv, finished, 1)
+	session.next(t, 5*time.Second).require(t, finished, legiontasks.OpPut, epoch, revision, encodedTask(t, 1))
+	putTask(t, kv, held, 1)
+	deleteTask(t, kv, finished)
+	session.next(t, 5*time.Second).require(t, finished, legiontasks.OpDelete, epoch, lastTaskRevision(t, js), nil)
+	waitFor(t, 5*time.Second, "the relay's record of the relayed delete", func() bool {
+		op, holds, relayed := relayedRecord(rig, finished)
+		return holds && relayed && op == legiontasks.OpDelete
+	})
+
+	// The daemon's purge of the marker: its key's subject, as purgeMarkers names it.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, err := js.Stream(ctx, legiontasks.Stream)
+	if err != nil {
+		t.Fatalf("read the task bucket's stream: %v", err)
+	}
+	if err := stream.Purge(ctx, jetstream.WithPurgeSubject("$KV."+legiontasks.Bucket+"."+finished)); err != nil {
+		t.Fatalf("purge the delete marker of %s: %v", finished, err)
+	}
+
+	waitFor(t, 10*time.Second, "the scheduled read to drop the purged key's record", func() bool {
+		_, holds, relayed := relayedRecord(rig, finished)
+		return !holds && !relayed
+	})
+	if op, holds, _ := relayedRecord(rig, held); !holds || op != legiontasks.OpPut {
+		t.Fatalf("the relay holds %s as op %q (held %v) after the scheduled read, want its put: the bucket still holds it", held, op, holds)
+	}
+	session.none(t, 0)
+}
+
 // Every listener watches the bucket, and only the one that relays the session's own consumer
 // relays its claim's value: the listener its entry names, while it holds its machine's durable
 // binding. A listener of another machine id relays nothing, nor does a second task of the same
@@ -719,7 +796,7 @@ func TestTaskRelayWithoutTheGrantKeepsServingAndLogsTheGrant(t *testing.T) {
 			defer cancel()
 			relays.stop(ctx)
 		})
-		startTestTaskRelay(t, rig, relays, interval, 200*time.Millisecond)
+		startTestTaskRelay(t, rig, relays, interval, taskRelayReadInterval, 200*time.Millisecond)
 		relays.setOwned(true)
 		refusals := func() int { return logRecords(rig.harness.logs.String(), taskRelayRefusedLine, refusedRecord) }
 		waitFor(t, 10*time.Second, "the task relay's first ERROR naming "+refused, func() bool { return refusals() > 0 })

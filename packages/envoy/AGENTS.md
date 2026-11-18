@@ -154,6 +154,7 @@ Each item below names a task and where its code is, then notes on it.
   A key of the bucket is a claim token, and a claim token is the role its worker's session claims, so the session a key goes to is the holder of that role, read from that role's claim record (`roleLaneClaims.RoleClaim`) and never from the role claim copy, as every listener act that turns on who holds a role reads it.
   It relays each put and delete its watch delivers, and a key's current record, read from that watch's copy of the bucket, when the role's entry changes in the role claim copy (`store.Registry.OnRoleHolderChange`: a claim, a renewal, a delete, and the copy's repair putting a claim back or taking one out) and the claim record then names a holder it has not relayed that record to.
   It runs only on a listener that gives its sessions consumer delivery, opens the bucket and never creates or writes it (the daemons create it, and the daemon is its one writer), and a bucket that does not exist yet or a grant that refuses its reads stops no other route.
+  Its watcher reads the bucket whole again a minute after each whole read that completed (`taskRelayReadInterval`, `kvwatch.WithScheduledRead`), since a daemon's purge of a delete marker sends a watch nothing, and that read is what drops the record of a key the bucket no longer holds and what was relayed of it.
   The value is the delivered copy of the daemon's record, not a second keeper: "Session consumers" below
 
 - **Role lane**: `internal/bus/role_lane.go`, `cmd/listener/role_lane.go`, `internal/bus/nats.go` (`StartRequestStoredTo`)
@@ -4224,7 +4225,9 @@ A read-only broker token carries no project either, but none of the three checks
   A read that times out or ends before its end marker removes nothing:
   kvwatch reads a timed-out one again itself 5 s later (`rereadDelay`), and the reconnect hook or the self-health rebuild starts the read after a watcher that ended.
   A cache that asks for it (`kvwatch.WithScheduledRead`) is also read whole again a set time after each read that completed, by these same rules:
-  the role claim watcher asks, every minute (`roleClaimRepairInterval`, `internal/store/role_claim_repair.go`), so its copy is repaired in both directions, a claim it lost put back and one the bucket no longer holds taken out, and the interest, session and CI caches ask for none.
+  the role claim watcher asks, every minute (`roleClaimRepairInterval`, `internal/store/role_claim_repair.go`), so its copy is repaired in both directions, a claim it lost put back and one the bucket no longer holds taken out;
+  the Legion task relay's watcher asks, every minute too (`taskRelayReadInterval`, `cmd/listener/task_relay.go`), so the record of a key whose delete marker a daemon purged leaves it;
+  and the interest, session and CI caches ask for none.
   That read is the watcher's own re-read (`reread`) on a timer of its own (`scheduledTimer`, `armScheduledRead` in `repair.go`), so the copy has one reader: the read that completed arms it, every watch that installs, the current watcher's own end, a disconnect and `Stop` clear it, so it is never armed while a read is under way, and a rewatch that moved the generation first wins over it.
   It is not the re-read's timer (`rereadTimer`), which `NeedsRead` and the stream probe read as a re-read due now.
   Whether a copy can be served is kvwatch's (`Servable`):

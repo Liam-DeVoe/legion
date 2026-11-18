@@ -2675,7 +2675,8 @@ Deleting the pod alone does not move it: Agent Sandbox recreates a Running Sandb
 A release carrying store migration 20261113175649_task_numbers holds a claim's task as a number the record writes and the worker takes, rather than as a prompt the daemon pushes and then judges by its acknowledgement.
 `claims` carries `task_written`, `task_taken`, `task_finished` and `task_finished_session` — the highest number the record queued, the number of the last take the daemon accepted, the number of the last task whose turn finished and the claim's session when it did — beside `task_seen_epoch`, `task_seen_revision` and `task_take_state`, the bucket epoch and revision of the value its worker last reported seeing and what came of a take at it, and `task_written_epoch` and `task_written_revision`, the daemon's own last write of that value.
 `pending_task_deliveries` carries `number`, `origin`, `taken_text` and `turn_started`, the number the pending task was queued under, the source that queued it, the text its accepted take was answered with, and whether that take's turn has started.
-The migration numbers what the release before it left as each claim's task 1 — a pending task is written, a confirmed one taken as well with its turn started, and a claim holding none that served a run or a phase entry finished it in the session it holds — and leaves the epochs and revisions empty, so the first boot writes every owed value once.
+The migration numbers what the release before it left as each claim's task 1 — a pending task is written, an acknowledged one that no turn confirmed is taken too, its take awaiting its turn with the prompt's text, a confirmed one is taken with its turn started, and a claim holding none that served a run or a phase entry finished it in the session it holds — and leaves the epochs and revisions empty, so the first boot writes every owed value once.
+The acknowledged task is taken so that a turn the old process starts for the prompt it holds is that take's turn, and a relaunch before such a turn gives the take back, so the task runs once.
 It drops the push path's three marks on a pending task, which a task the worker takes has no use for:
 `pending_task_deliveries.delivered_at`, `marked_by` and `prompted`.
 
@@ -2720,7 +2721,10 @@ The thirteen drops and the deleted row are owed to the roll-forward rather than 
 together they re-arm the migration, so the newer image's `Migrate` runs the file again (`versionRecorded` in `internal/store/store.go` decides each migration on its own row) and numbers what the earlier release left exactly as it numbered what the release before it left at the first upgrade.
 Left standing, the columns would be read as current when nothing kept them so: a task the earlier release queued carries number 0 under a claim whose `task_written` names an older task, and a task it finished leaves `task_finished` where it stood.
 What the second fill costs is the numbering:
-every claim stands at task 1 again, or at 0, whatever number it stood at before the rollback, and nothing reads a number across the rollback, since the earlier release's worker takes no value and the epochs and revisions start empty again.
+every claim stands at task 1 again, or at 0, whatever number it stood at before the rollback.
+The one record a number outlives the rollback in is `processed_events`, which nothing prunes:
+an accepted take's confirmation is applied once under an event id that names the task's delivery id beside its number (`confirmationEventID` in `internal/daemon`), so the confirmation of a task numbered 1 again is not taken for one of the task 1 the claim took before the rollback.
+Nothing else reads a number across the rollback, since the earlier release's worker takes no value and the epochs and revisions start empty again.
 The block needs no migration recorded after this one to build on the thirteen columns it drops, and at this release none of the six recorded after it touches them:
 20261113181500_architect_stalled_notices adds the table `architect_stalled_notices`, 20261113182000_architect_entry_upgrade writes the root architects' `phases` rows, their claims' `given_entry` and `served_entry` and that table's marks, 20261114020537_claim_entry_handshake adds the four `claims.handshake_*` columns, 20261114031356_merge_queue_removal rewrites `outbox_kind_check`, 20261114061900_phase_entry_verbatim adds `phases.entry_verbatim`, and 20261116165926_role_holders_publish rewrites `outbox_kind_check` again and adds the unique index `outbox_role_holders_publish_issue_unique`.
 Contract 151 carries all six, so the rollback to it runs this block alone and leaves the six standing.
@@ -3364,6 +3368,7 @@ The daemon's seed is read by the same rule and refusals as the pane seed, the gr
 an unusable daemon seed refuses boot even beside a good pane seed.
 Unset, the daemon connects as the pane seed, and with neither, with no credential.
 A daemon connected as the pane seed's user does not boot: that user, which every pane shares, holds no grant on the task bucket by design, so the bucket's open is refused, and the refusal adds that the daemon connects as the pane seed's user (`NATS_NKEY_SEED_FILE`) and should be given a user of its own (`nats_daemon_nkey_seed_file`).
+`legion start --check-config` knows this offline and prints the same sentence after its OK line for a file under which the daemon would connect as the pane seed's user, still exiting 0.
 Keep it out of the providers Secret, which every pod mounts:
 in-cluster, put it in a Secret of its own, mounted into the daemon's pod alone with `defaultMode: 0440` (0400 with no `fsGroup` for a daemon running as root, as above;
 on a host, a 0600 file the daemon's uid owns), and name that file in `nats_daemon_nkey_seed_file`.

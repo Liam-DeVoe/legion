@@ -70,17 +70,19 @@ func contractServed(t *testing.T, body []byte) (mark map[string]any, carried boo
 	return mark, true
 }
 
-// narrowingState is the state golden with one more member of the waiting line, LEGION-213, a
-// started issue that gave its slot back to wait on another issue (waitingOnIssueContract): the
-// golden itself stands no member of that kind, so without it the row of that contract would
-// find nothing to narrow and write no line, and the rows below could not say that every row of
-// stateNarrowings writes its own.
+// narrowingState is the state golden with two more issues: LEGION-213, a member of the waiting
+// line, a started issue that gave its slot back to wait on another issue
+// (waitingOnIssueContract), and LEGION-214, whose claims carry the failure cause
+// never_reconnected (supervise.TaskTakeContract's word). The golden itself stands neither, so
+// without them the rows of those contracts would find nothing to narrow and write no line, and
+// the rows below could not say that every row of stateNarrowings writes its own.
 func narrowingState(t *testing.T) State {
 	t.Helper()
 	state := populatedState(t)
-	issues := make(map[string]Issue, len(state.Issues)+1)
+	issues := make(map[string]Issue, len(state.Issues)+2)
 	maps.Copy(issues, state.Issues)
 	issues["LEGION-213"] = waitingOnIssueMember()
+	issues["LEGION-214"] = neverReconnectedIssue()
 	state.Issues = issues
 	return state
 }
@@ -88,9 +90,10 @@ func narrowingState(t *testing.T) State {
 // narrowingsExpected is what the daemon's log holds for a caller at contract, in the order
 // stateFor applies them: the `dropped` of every row of stateNarrowings whose contract is above
 // the caller's, since narrowingState carries something of every row. It does not run the rows,
-// so it checks stateFor rather than repeating it. One row writes no line where its contract
-// alone says it should: below whyAndLineFieldsContract, waitingOnIssueContract's row finds no
-// member's `kind` left, because the earlier row already took it, and so drops nothing.
+// so it checks stateFor rather than repeating it. Two rows write no line where their contract
+// alone says they should, each because an earlier row took what it would change: below
+// whyAndLineFieldsContract, waitingOnIssueContract's row finds no member's `kind` left, and below
+// recordFieldsContract, the never_reconnected row finds no `failure` or `pendingCause` left.
 func narrowingsExpected(contract int) []string {
 	var dropped []string
 	for _, narrowing := range stateNarrowings {
@@ -98,6 +101,9 @@ func narrowingsExpected(contract int) []string {
 			continue
 		}
 		if narrowing.contract == waitingOnIssueContract && contract < whyAndLineFieldsContract {
+			continue
+		}
+		if narrowing.dropped == neverReconnectedDropped && contract < recordFieldsContract {
 			continue
 		}
 		dropped = append(dropped, narrowing.dropped)
@@ -233,13 +239,14 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	})
 
 	// The newest narrowing is a row of the table like every other, so the caller below it is
-	// told what it lost: a caller one contract below the highest row stands below that row
-	// alone, so the log holds that row's line and nothing else. This subtest does not catch a
-	// strip applied beside the loop, because it reads both its expectation and its answer from
+	// told what it lost: a caller one contract below assignmentsContract stands below that row
+	// and every row above it, so the log holds those rows' lines and nothing else. The state is
+	// narrowingState, which carries something of every row above it. This subtest does not catch
+	// a strip applied beside the loop, because it reads both its expectation and its answer from
 	// stateNarrowings; the subtest below, which names the line as a literal, is what catches
 	// that.
 	t.Run("the highest narrowing writes its own line", func(t *testing.T) {
-		body, narrowings := stateNarrowed(t, populatedState(t), statePodAddr+":41000", podClaims(assignmentsContract-1))
+		body, narrowings := stateNarrowed(t, narrowingState(t), statePodAddr+":41000", podClaims(assignmentsContract-1))
 
 		if bytes.Contains(body, []byte(`"assignments"`)) {
 			t.Errorf("the body served to a pod below %d carries `assignments`, the field that contract added: %s",

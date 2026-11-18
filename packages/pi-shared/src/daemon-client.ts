@@ -257,8 +257,9 @@ function isNetworkOrTimeoutError(error: unknown): boolean {
 }
 
 /** Runs a ready request, retrying only one that can pass on its own: a 5xx or a network failure.
- * Each Legion host's claim (pi-legion's claim session, claude-envoy's Legion claim) sends its
- * `claims/ready` through it, at boot and after each role regain. */
+ * Each Legion host's claim (pi-legion's claim session, claude-envoy's Legion claim) sends its boot's
+ * `claims/ready` through it; a regain of the role sends no ready, and reads the claim's task value
+ * again instead (`claims/task`, `legion-claim-core.ts`). */
 export async function callReadyWithRetry(label: string, call: () => Promise<void>): Promise<void> {
   for (let attempt = 1; ; attempt++) {
     try {

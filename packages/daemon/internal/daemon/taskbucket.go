@@ -160,9 +160,8 @@ func (b *taskBucket) stream(ctx context.Context, name string) (jetstream.Stream,
 // draws no answer, only the server's permissions violation on the connection
 // (natsauth.RefusedPermission) — the subject its grant is missing, which daemonpermissions.Grant
 // gives a Legion daemon. A daemon connected as the pane seed's user, the user every session of the
-// deployment shares, is told so: that user is granted nothing of the bucket, by design, so such a
-// daemon never boots until it is given a user of its own. The refusal carries the server's own
-// error, so natsauth.Unreachable reads it as the misconfiguration it is.
+// deployment shares, is told so (paneSeedRefusal). The refusal carries the server's own error, so
+// natsauth.Unreachable reads it as the misconfiguration it is.
 func (b *taskBucket) refused(step string, err error) error {
 	err = fmt.Errorf("%s the task bucket %s: %w", step, legiontasks.Bucket, err)
 	last := b.conn.LastError()
@@ -173,11 +172,20 @@ func (b *taskBucket) refused(step string, err error) error {
 	why := fmt.Sprintf("NATS refused the daemon's user (%s) the %s of %q, which the grant of a Legion daemon holds (daemonpermissions.Grant)",
 		b.nats.user, operation, subject)
 	if b.nats.paneUser {
-		why += fmt.Sprintf("; the daemon connects as the pane seed's user (%s), the session user every pane shares, which holds no grant on the task bucket: give the daemon a user of its own (%s)",
-			natsauth.SeedFileVariable, natsauth.DaemonSeedFileKey)
+		why += "; " + paneSeedRefusal
 	}
 	return fmt.Errorf("%w: %s (%w)", err, why, last)
 }
+
+// paneSeedRefusal is the sentence for a daemon that connects to NATS as the pane seed's user: that
+// user is the one every session of the deployment shares, and it is granted nothing of the task
+// bucket, by design, so such a daemon never boots until it is given a user of its own. One
+// sentence, from one place, for its two readers, as NoNATSLine is: the boot's refusal at the
+// bucket's open carries it (refused), and `legion start --check-config` prints it after its OK
+// line (paneSeedLine), so an operator who reads one has read the other word for word.
+const paneSeedRefusal = "the daemon connects as the pane seed's user (" + natsauth.SeedFileVariable +
+	"), the session user every pane shares, which holds no grant on the task bucket: give the daemon a user of its own (" +
+	natsauth.DaemonSeedFileKey + ")"
 
 // handle is the bucket as the daemon last opened it, and its epoch.
 func (b *taskBucket) handle() (jetstream.KeyValue, string) {
@@ -411,9 +419,12 @@ func marked(markers map[claim.Token]jetstream.KeyValueEntry, entry jetstream.Key
 // purgeMarkers removes from the bucket every delete marker in markers older than life, and forgets
 // it. A delete leaves a marker the bucket never drops by itself — it keeps one revision of each key
 // and has no TTL (ensure) — so without this every reader of the bucket would hold one record per
-// claim that ever had a task, for the bucket's whole life. A marker is kept life first, so a
-// listener whose watch is replaying, or whose session was away, still reads the delete that tells
-// it the claim holds no task.
+// claim that ever had a task, for the bucket's whole life. A purge sends a watch nothing, so a
+// reader lets go of a purged key's record only at its next whole read of the bucket: the Envoy
+// listener's task relay reads it whole again a minute after each whole read that completed
+// (packages/envoy's taskRelayReadInterval). A marker is kept life first, so a listener whose watch
+// is replaying, or whose session was away, still reads the delete that tells it the claim holds no
+// task.
 //
 // Each purge names one key's subject and stops at that marker's own revision, so a value written
 // into the key after the marker was read stands, and no key of another project is touched: markers

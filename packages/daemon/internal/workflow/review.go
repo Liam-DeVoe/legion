@@ -1007,11 +1007,14 @@ func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact)
 // (conflictReadPhase) - since this read is the only thing that would find the conflict
 // (mergeability, TriggerConflict in every later phase). In reviewing that is a superset of the
 // round's own rule: an approval waiting on GitHub's answer is read for as before, and so is a
-// round no approval stands in, whose conflict would otherwise go unread until a completion. The
-// guard on a daemon with no reader is here as well as in askMergeState, because a base push
-// reaches this from its handler's walk rather than through that switch (basePush). A pull request
-// that is not open waits on no answer (classify.RoundWaitsOnMergeState holds only for an open
-// one), so the test of its state here only saves the store reads below.
+// round no approval stands in, whose conflict would otherwise go unread until a completion. In
+// merging this read is the only one asked, and the daemon makes it once rather than climbing
+// through GitHub's UNKNOWN (internal/daemon's climbMergeState), which is what GitHub answers for a
+// head sitting in the merge queue (mergeability). The guard on a daemon with no reader is here as
+// well as in askMergeState, because a base push reaches this from its handler's walk rather than
+// through that switch (basePush). A pull request that is not open waits on no answer
+// (classify.RoundWaitsOnMergeState holds only for an open one), so the test of its state here only
+// saves the store reads below.
 func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.PullRequest, basePush bool) error {
 	if e.cfg.ReadMergeState == nil || pr.State != record.PullRequestOpen {
 		return nil

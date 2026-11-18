@@ -1549,7 +1549,7 @@ func main() {
 	// session holding the claim's role, on that session's relay subject, from the listener that
 	// relays the session's consumer. It opens the bucket only once this listener gives consumer
 	// delivery, and nothing it meets ends the start or reaches the self-health monitor (taskRelay).
-	tasks := startTaskRelay(client, relays, registry, logger, taskRelayInterval, bus.RequestTimeout)
+	tasks := startTaskRelay(client, relays, registry, logger, taskRelayInterval, taskRelayReadInterval, bus.RequestTimeout)
 	// The parts a shutdown ends, gathered once: every end of a start that serves /v1 passes them
 	// to shutdownListener.
 	parts := listenerParts{

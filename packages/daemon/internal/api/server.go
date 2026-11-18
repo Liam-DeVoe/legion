@@ -252,12 +252,13 @@ type Options struct {
 	// once it has returned.
 	CapabilityReported func(ctx context.Context, c supervise.Claim, report capabilities.Report)
 	// RoleHoldersChanged is told, before the claim takes a ready that carries no capability report
-	// — a boot's ready, or a role-regain's — of the claim as it stands, when it has an issue and is
-	// not the controller: the daemon queues the publication of that issue's role sessions to
-	// Dispatch, which reads the live set from the store when it runs. A claim takes no task until
-	// it has taken its ready (supervise.HoldNotReady), so the publication is queued before any task
-	// goes. An error refuses the ready with 503: the machine has not taken it, no take is accepted,
-	// and the plugin tries the ready again. Nil queues nothing.
+	// — a boot's ready; a regain of the role sends none, and reads the claim's task value instead
+	// (claims/task) — of the claim as it stands, when it has an issue and is not the controller:
+	// the daemon queues the publication of that issue's role sessions to Dispatch, which reads the
+	// live set from the store when it runs. A claim takes no task until it has taken its ready
+	// (supervise.HoldNotReady), so the publication is queued before any take is accepted. An error
+	// refuses the ready with 503: the machine has not taken it, no take is accepted, and the plugin
+	// tries the ready again. Nil queues nothing.
 	RoleHoldersChanged func(ctx context.Context, c supervise.Claim) error
 	// ReleaseRecords is the store's record of what the idle release has done (store.Store), which
 	// the claim route `POST /legion/v1/claims/release-records` serves a pod. Nil answers that route
@@ -923,10 +924,13 @@ type stateNarrowing struct {
 // and doing nothing; a caller between the lowest and the middle one keeps the field with its
 // `place` and its `length` alone, which no word of `kind` is left in; and a caller below only
 // the highest keeps every field but that one word. A later row that takes something out of a
-// field an earlier row drops whole is sound on those same terms; one that puts a key back, or
-// reads what an earlier row left, is not, and this table is the wrong shape for it. The order is
-// kept beyond that so a reader of this table and a reader of version.go walk the contracts the
-// same way.
+// field an earlier row drops whole is sound on those same terms, and so is one that rewrites a
+// word inside such a field: supervise.TaskTakeContract's never_reconnected row serves
+// never_registered in `failure.cause` and `pendingCause`, two keys recordFieldsContract's row drops
+// whole, so a caller below 75 is served neither key whichever runs first, and a caller from 75 to
+// 156 both with the older word. One that puts a key back, or reads what an earlier row left, is
+// not, and this table is the wrong shape for it. The order is kept beyond that so a reader of this
+// table and a reader of version.go walk the contracts the same way.
 var stateNarrowings = []stateNarrowing{
 	{supervise.PodUpdateContract, carriesUpdateRounds, withoutUpdateRounds, "the claim views' updateRound and updateHead"},
 	{memoryContract, carriesMemory, withoutMemory, "the issues' memoryGroup, memoryDrawMode and memoryDrawnAt"},
@@ -953,6 +957,8 @@ var stateNarrowings = []stateNarrowing{
 	{assignmentsContract, carriesAssignments, withoutAssignments, "the issues' assignments"},
 	{entryTimesContract, carriesEntryTimes, withoutEntryTimes, "the issues' entryQueuedAt, entryConfirmedAt and architectStalls"},
 	{supervise.TaskTakeContract, carriesUnseenTaskValues, withoutUnseenTaskValues, "unseenTaskValues"},
+	{supervise.TaskTakeContract, carriesNeverReconnected, withoutNeverReconnected, "the failure cause " +
+		"never_reconnected in the claim views' failure and pendingCause, served as never_registered"},
 }
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
@@ -1611,6 +1617,41 @@ func withoutClaimsToRefresh(state State) State {
 func withoutUnseenTaskValues(state State) State {
 	state.UnseenTaskValues, state.unseenTaskValuesHidden = nil, true
 	return state
+}
+
+// carriesNeverReconnected is whether any claim view of state names the failure cause
+// supervise.TaskTakeContract added, `never_reconnected`, in `failure.cause` or in `pendingCause`.
+// Only a claim a daemon start restored whose shim never said hello carries it, so this is asked
+// of the state rather than answered true, as carriesLeakCheckCause is.
+func carriesNeverReconnected(state State) bool {
+	return anyClaimView(state, func(view ClaimView) bool {
+		return view.PendingCause == supervise.CauseNeverReconnected ||
+			(view.Failure != nil && view.Failure.Cause == supervise.CauseNeverReconnected)
+	})
+}
+
+// withoutNeverReconnected is state with `never_reconnected` served as `never_registered` in every
+// claim view's `failure.cause` and `pendingCause`. A plugin before supervise.TaskTakeContract reads
+// both through a strict enum of the causes it was built with (legion-api.ts's
+// LEGION_FAILURE_CAUSES), so one word it does not name refuses the whole state body, every claim
+// of the project included. The word is rewritten rather than the key dropped, since a key gone
+// would say the claim holds no failure or nothing failed its relaunching process; never_registered
+// is the nearest cause such a reader knows, a process that never said hello before its deadline.
+// A caller below recordFieldsContract has lost both keys already, so this finds nothing there.
+// The views are copied, and the failure record too, so the state the source answered is left as
+// it was (mapClaimViews).
+func withoutNeverReconnected(state State) State {
+	return mapClaimViews(state, func(view ClaimView) ClaimView {
+		if view.PendingCause == supervise.CauseNeverReconnected {
+			view.PendingCause = supervise.CauseNeverRegistered
+		}
+		if failure := view.Failure; failure != nil && failure.Cause == supervise.CauseNeverReconnected {
+			older := *failure
+			older.Cause = supervise.CauseNeverRegistered
+			view.Failure = &older
+		}
+		return view
+	})
 }
 
 // carriesWhyAndLineFields is whether any issue of state carries either half of what
