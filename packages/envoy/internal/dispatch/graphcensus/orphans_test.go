@@ -1,6 +1,7 @@
 package graphcensus
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -298,6 +299,64 @@ func TestARowWhoseNodeStandsInAnotherProjectHoldsBackNoOtherRow(t *testing.T) {
 		node, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindArtifact, orphanIssue+"/b-md")
 		if err != nil || !held || node.Project != "ORPH" || node.State != graphstore.StateLive {
 			t.Errorf("after pass %d the node of b-md is %+v (held %t, %v), want it live in ORPH", run, node, held, err)
+		}
+	}
+}
+
+// The backfill command holds back no pass for such a row: with the moved node beside a comment
+// whose node names no project, as the comment writer of the build before stored it, the run
+// writes b-md's node and gives the comment's node its project, and then answers the moved row.
+//
+// Its control is Backfill returning at the object pass's moved row: the comment's node then
+// names no project.
+func TestTheBackfillRunsEveryPassPastARowWhoseNodeStandsInAnotherProject(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	seedOrphanIssueWithAsks(t, database, 0)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	at := time.Now().UTC().Add(-time.Hour)
+	const comment = "44444444-4444-4444-8444-0000000000aa"
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `insert into projects (key, name, default_assignee) values ('ELSEWHERE', 'Elsewhere', 'alice')`); err != nil {
+			return err
+		}
+		moved := graphstore.ArtifactNode(orphanIssue+"/a-md", "ELSEWHERE", "", alice, at)
+		if err := graphstore.Write(ctx, tx, []graphstore.Node{moved}, nil); err != nil {
+			return err
+		}
+		moved.State, moved.MadeAt = graphstore.StateGone, at.Add(time.Minute)
+		if err := graphstore.Write(ctx, tx, []graphstore.Node{moved}, nil); err != nil {
+			return err
+		}
+		commentNode, tuples := graphstore.CommentFacts(nil, comment, alice, at, graphstore.NoEvent, "", "", "", nil)
+		if err := graphstore.Write(ctx, tx, []graphstore.Node{commentNode}, tuples); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+			insert into comments (id, issue_key, author, body, created_at, node_kind, node_address)
+			values ($1::uuid, 'ORPH-1', '{"kind":"user","id":"alice"}', 'A remark.', $2, 'comment', $1)
+		`, comment, at); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `
+			insert into artifacts (issue_key, project_key, slug, name, kind, created_by)
+			values ('ORPH-1', 'ORPH', 'a-md', 'A', 'doc', '{"kind":"user","id":"alice"}'),
+			       ('ORPH-1', 'ORPH', 'b-md', 'B', 'doc', '{"kind":"user","id":"alice"}')
+		`)
+		return err
+	}); err != nil {
+		t.Fatalf("seed the moved node, the two rows and the comment: %v", err)
+	}
+	if _, err := Backfill(ctx, database, &bytes.Buffer{}); !errors.Is(err, graphstore.ErrProjectMoved) {
+		t.Fatalf("the backfill answered %v, want the moved row", err)
+	}
+	for _, want := range []struct{ kind, id string }{
+		{graphstore.KindArtifact, orphanIssue + "/b-md"},
+		{graphstore.KindComment, comment},
+	} {
+		node, held, err := graphstore.ReadNode(ctx, database.Pool, want.kind, want.id)
+		if err != nil || !held || node.Project != "ORPH" {
+			t.Errorf("after the backfill the node of %s %s is %+v (held %t, %v), want it in ORPH", want.kind, want.id, node, held, err)
 		}
 	}
 }
